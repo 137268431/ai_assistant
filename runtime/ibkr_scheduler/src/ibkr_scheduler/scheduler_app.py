@@ -21,6 +21,7 @@ from ibkr_scheduler.jobs.compute_dispatch import build_compute_dispatch_runner
 from ibkr_scheduler.jobs.upstream_http import run_upstream_http_job
 from ibkr_scheduler.schedule import cron_matches_minute, cron_slot_token
 from ibkr_compute.core.config import Config
+from ibkr_compute.core.payload_compact import compact_json_payload
 from ibkr_compute.integrations.pb_client import PBClient
 
 
@@ -38,6 +39,16 @@ BAR_TRUTH_AUDIT_JOB_IDS = {
     "ibkr_data_quality_premarket_truth_audit",
     "ibkr_data_quality_truth_audit",
 }
+
+
+def _compact_scheduler_payload(payload: Any) -> Any:
+    return compact_json_payload(
+        payload,
+        max_list_items=60,
+        max_dict_items=160,
+        max_string_length=1200,
+        max_depth=8,
+    )
 
 app = Flask(__name__)
 pb = PBClient(base_url=PB_BASE_URL)
@@ -83,9 +94,12 @@ class SchedulerService:
         return {}
 
     def _save_job_state(self, job_id: str, environment: str, patch: dict[str, Any]) -> dict[str, Any]:
+        safe_patch = dict(patch or {})
+        if "last_result" in safe_patch:
+            safe_patch["last_result"] = _compact_scheduler_payload(safe_patch["last_result"])
         state = {
             **self._load_job_state(job_id, environment),
-            **(patch or {}),
+            **safe_patch,
             "job_id": job_id,
             "environment": environment,
             "updated_at_ms": int(time.time() * 1000),
@@ -116,7 +130,7 @@ class SchedulerService:
                     "title": f"[{environment.upper()}] {title}",
                     "detail": {
                         "job_id": job_id,
-                        **(detail or {}),
+                        **(_compact_scheduler_payload(detail or {}) or {}),
                     },
                     "us_time": now.astimezone(US_TZ).strftime("%Y-%m-%d %H:%M:%S"),
                     "cn_time": now.astimezone(CN_TZ).strftime("%Y-%m-%d %H:%M:%S"),

@@ -102,31 +102,43 @@ def _collect_latest_rows_by_symbol(api_app, collection: str, environment: str, i
 
     symbol_set = set(symbols)
     chart_interval = interval_to_chart_tf(interval) if collection == "ibkr_indicators" else interval
-    filter_parts = [
-        f'interval = "{chart_interval}"',
+    rows_by_symbol = {}
+    environment_filter = (
         api_app.build_bar_environment_filter(environment, include_legacy_empty=True)
         if collection == "ibkr_bars"
-        else f'environment = "{environment}"',
-    ]
-    rows_by_symbol = {}
-    max_pages = max(2, min(12, (len(symbols) + 199) // 200 + 4))
-    for page in range(1, max_pages + 1):
-        rows = api_app.pb.get_records(
-            collection,
-            filter=" && ".join(filter_parts),
-            sort="-bar_time_ms",
-            per_page=200,
-            page=page,
-        )
+        else f'environment = "{environment}"'
+    )
+    for symbol in symbols:
+        safe_symbol = str(symbol or "").strip().upper().replace('"', '\\"')
+        if not safe_symbol or safe_symbol not in symbol_set:
+            continue
+        filter_parts = [
+            f'symbol = "{safe_symbol}"',
+            f'interval = "{chart_interval}"',
+            environment_filter,
+        ]
+        try:
+            rows = api_app.pb.get_records(
+                collection,
+                filter=" && ".join(filter_parts),
+                sort="-bar_time_ms",
+                per_page=1,
+                page=1,
+            )
+        except Exception:
+            rows = []
         if not rows:
-            break
-        for row in rows:
-            symbol = str((row or {}).get("symbol", "")).strip().upper()
-            if not symbol or symbol not in symbol_set or symbol in rows_by_symbol:
-                continue
-            rows_by_symbol[symbol] = dict(row or {})
-        if len(rows_by_symbol) >= len(symbol_set) or len(rows) < 200:
-            break
+            continue
+        matched_row = next(
+            (
+                row
+                for row in rows
+                if str((row or {}).get("symbol", "")).strip().upper() == safe_symbol
+            ),
+            None,
+        )
+        if matched_row:
+            rows_by_symbol[safe_symbol] = dict(matched_row or {})
     return rows_by_symbol
 
 
@@ -214,6 +226,7 @@ def build_multi_timeframe_readiness(
             )
             bar_symbols = sorted(bar_rows.keys())
             indicator_symbols = sorted(indicator_rows.keys())
+            ready_symbols = sorted(set(ready_symbols) | (set(bar_symbols) & set(indicator_symbols)))
             latest_bar_ms = max((int((row or {}).get("bar_time_ms", 0) or 0) for row in bar_rows.values()), default=0)
             latest_indicator_ms = max(
                 (int((row or {}).get("bar_time_ms", 0) or 0) for row in indicator_rows.values()),

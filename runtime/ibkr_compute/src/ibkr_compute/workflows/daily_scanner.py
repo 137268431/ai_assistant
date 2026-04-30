@@ -18,6 +18,7 @@ from typing import Any
 from ibkr_compute.api.compute.runtime_state.universe import get_market_monitor_symbols
 from ibkr_compute.api.market.screener.payload import build_screener_payload
 from ibkr_compute.api.market.screener.runtime import get_api_app
+from ibkr_compute.core.payload_compact import compact_json_payload
 from ibkr_compute.integrations.pb_client import PBClient
 from ibkr_compute.market.bar_freshness import BarFreshnessPlanner
 from ibkr_compute.market.timeframe_utils import COMPUTE_INTERVALS, normalize_interval
@@ -33,6 +34,10 @@ DEFAULT_MIN_AVG_10D_VOLUME = 100_000
 DEFAULT_MIN_ATR_PCT = 0.15
 DEFAULT_MIN_ABS_DAY_CHANGE_PCT = 1.0
 DEFAULT_MIN_PREMARKET_VOLUME = 5_000
+DEFAULT_DATA_COMPLETENESS_INTERVALS = "5m"
+DEFAULT_INDICATOR_SNAPSHOT_INTERVALS = "5m"
+DEFAULT_SCAN_MATERIALIZE_INTERVALS = "5m"
+MAX_DATA_COMPLETENESS_REPAIR_JOBS_IN_RESULT = 40
 MANUAL_TARGET_SOURCES = {
     "ibkr_screener",
     "manual_page",
@@ -306,6 +311,19 @@ def build_daily_scan_rule_summary(environment: str | None = None) -> dict:
     settings = _load_scan_settings(runtime_environment)
     trade_budget = settings["trade_subscription_budget"]
     budget_label = "unlimited" if trade_budget is None else str(int(trade_budget))
+    cfg = getattr(get_api_app(), "cfg", None)
+    try:
+        completeness_blocking = bool(
+            cfg is not None
+            and hasattr(cfg, "get_bool_for_environment")
+            and cfg.get_bool_for_environment(
+                "ibkr_daily_scan_data_completeness_blocking_enabled",
+                runtime_environment,
+                False,
+            )
+        )
+    except Exception:
+        completeness_blocking = False
     return {
         "primary_weight": DAILY_SCAN_PRIMARY_WEIGHT,
         "secondary_weight": DAILY_SCAN_SECONDARY_WEIGHT,
@@ -323,6 +341,7 @@ def build_daily_scan_rule_summary(environment: str | None = None) -> dict:
             "atr_pct_gte": settings["min_atr_pct"],
             "abs_day_change_pct_gte": settings["min_abs_day_change_pct"],
             "premarket_volume_gte": settings["min_premarket_volume"],
+            "data_completeness_blocking": completeness_blocking,
         },
         "subscription_budget": {
             "trade_budget": budget_label,
@@ -347,17 +366,208 @@ class DailyScanner:
         except Exception:
             return hasattr(self.api_app, "bar_freshness_planner")
 
+    def _data_completeness_blocking_enabled(self, environment: str) -> bool:
+        cfg = getattr(self.api_app, "cfg", None)
+        if cfg is None or not hasattr(cfg, "get_bool_for_environment"):
+            return False
+        try:
+            return bool(
+                cfg.get_bool_for_environment(
+                    "ibkr_daily_scan_data_completeness_blocking_enabled",
+                    environment,
+                    False,
+                )
+            )
+        except Exception:
+            return False
+
     def _data_completeness_intervals(self, environment: str) -> list[str]:
         cfg = getattr(self.api_app, "cfg", None)
-        raw = "5m,15m,30m,1h,4h,1d"
+        raw = DEFAULT_DATA_COMPLETENESS_INTERVALS
         if cfg is not None and hasattr(cfg, "get_for_environment"):
             try:
                 raw = str(cfg.get_for_environment("ibkr_daily_scan_data_completeness_intervals", environment, raw) or raw)
             except Exception:
-                raw = "5m,15m,30m,1h,4h,1d"
+                raw = DEFAULT_DATA_COMPLETENESS_INTERVALS
         parsed = [normalize_interval(item) for item in raw.split(",") if str(item or "").strip()]
         parsed = [item for item in dict.fromkeys(parsed) if item in COMPUTE_INTERVALS]
-        return parsed or list(COMPUTE_INTERVALS)
+        return parsed or [normalize_interval(DEFAULT_DATA_COMPLETENESS_INTERVALS)]
+
+    def _scan_materialize_enabled(self, environment: str) -> bool:
+        cfg = getattr(self.api_app, "cfg", None)
+        has_materializer = hasattr(self.api_app, "materialize_engines_from_storage")
+        if cfg is None or not hasattr(cfg, "get_bool_for_environment"):
+            return False
+        try:
+            return bool(
+                cfg.get_bool_for_environment(
+                    "ibkr_daily_scan_materialize_enabled",
+                    environment,
+                    False,
+                )
+            ) and has_materializer
+        except Exception:
+            return False
+
+    def _scan_materialize_intervals(self, environment: str) -> list[str]:
+        cfg = getattr(self.api_app, "cfg", None)
+        raw = DEFAULT_SCAN_MATERIALIZE_INTERVALS
+        if cfg is not None and hasattr(cfg, "get_for_environment"):
+            try:
+                raw = str(cfg.get_for_environment("ibkr_daily_scan_materialize_intervals", environment, raw) or raw)
+            except Exception:
+                raw = DEFAULT_SCAN_MATERIALIZE_INTERVALS
+        parsed = [normalize_interval(item) for item in raw.split(",") if str(item or "").strip()]
+        parsed = [item for item in dict.fromkeys(parsed) if item in COMPUTE_INTERVALS]
+        return parsed or [normalize_interval(DEFAULT_SCAN_MATERIALIZE_INTERVALS)]
+
+    def _materialize_scan_engines(self, environment: str, symbols: list[str]) -> dict:
+        normalized_symbols = sorted({str(symbol or "").strip().upper() for symbol in symbols or [] if str(symbol or "").strip()})
+        if not normalized_symbols or not self._scan_materialize_enabled(environment):
+            return {"enabled": False, "symbols_total": len(normalized_symbols), "intervals": []}
+
+        materialize = getattr(self.api_app, "materialize_engines_from_storage", None)
+        intervals = self._scan_materialize_intervals(environment)
+        interval_results = {}
+        ready_symbols = set()
+        processed_total = 0
+        errors = []
+        for interval in intervals:
+            try:
+                raw_result = materialize(
+                    environment,
+                    normalized_symbols,
+                    interval=interval,
+                    hydrate_signal_state=False,
+                    persist_latest_indicator=False,
+                ) or {}
+            except Exception as exc:
+                errors.append({"interval": interval, "error": str(exc)})
+                continue
+
+            ready = sorted(
+                str(symbol or "").strip().upper()
+                for symbol, item in raw_result.items()
+                if isinstance(item, dict) and bool(item.get("is_ready"))
+            )
+            ready_symbols.update(ready)
+            processed = sum(
+                _safe_int((item or {}).get("processed"), 0)
+                for item in raw_result.values()
+                if isinstance(item, dict)
+            )
+            processed_total += processed
+            reason_counts: dict[str, int] = {}
+            missing_examples = []
+            for symbol, item in raw_result.items():
+                if not isinstance(item, dict) or bool(item.get("is_ready")):
+                    continue
+                reason = str(item.get("reason") or "not_ready")
+                reason_counts[reason] = int(reason_counts.get(reason, 0) or 0) + 1
+                if len(missing_examples) < 10:
+                    missing_examples.append(str(symbol or "").strip().upper())
+            interval_results[interval] = {
+                "ready_count": len(ready),
+                "not_ready_count": max(0, len(normalized_symbols) - len(ready)),
+                "processed": processed,
+                "reason_counts": reason_counts,
+                "not_ready_examples": missing_examples,
+            }
+
+        return {
+            "enabled": True,
+            "intervals": intervals,
+            "symbols_total": len(normalized_symbols),
+            "ready_symbol_count": len(ready_symbols),
+            "processed": processed_total,
+            "errors": errors,
+            "results": interval_results,
+        }
+
+    def _stored_indicator_snapshots_enabled(self, environment: str) -> bool:
+        cfg = getattr(self.api_app, "cfg", None)
+        if cfg is None or not hasattr(cfg, "get_bool_for_environment"):
+            return True
+        try:
+            return bool(
+                cfg.get_bool_for_environment(
+                    "ibkr_daily_scan_indicator_snapshot_enabled",
+                    environment,
+                    True,
+                )
+            )
+        except Exception:
+            return True
+
+    def _stored_indicator_snapshot_intervals(self, environment: str) -> list[str]:
+        cfg = getattr(self.api_app, "cfg", None)
+        raw = DEFAULT_INDICATOR_SNAPSHOT_INTERVALS
+        if cfg is not None and hasattr(cfg, "get_for_environment"):
+            try:
+                raw = str(cfg.get_for_environment("ibkr_daily_scan_indicator_snapshot_intervals", environment, raw) or raw)
+            except Exception:
+                raw = DEFAULT_INDICATOR_SNAPSHOT_INTERVALS
+        parsed = [normalize_interval(item) for item in raw.split(",") if str(item or "").strip()]
+        parsed = [item for item in dict.fromkeys(parsed) if item in COMPUTE_INTERVALS]
+        return parsed or [normalize_interval(DEFAULT_INDICATOR_SNAPSHOT_INTERVALS)]
+
+    def _indicator_interval_aliases(self, interval: str) -> list[str]:
+        normalized = normalize_interval(interval)
+        aliases = [normalized]
+        numeric_aliases = {
+            "5m": "5",
+            "15m": "15",
+            "30m": "30",
+            "1h": "60",
+            "4h": "240",
+            "1d": "1D",
+        }
+        numeric = numeric_aliases.get(normalized)
+        if numeric:
+            aliases.append(numeric)
+        return list(dict.fromkeys(aliases))
+
+    def _load_stored_indicator_snapshots(self, environment: str, symbols: list[str]) -> dict[str, dict[str, dict]]:
+        runtime_environment = str(environment or "live").strip().lower() or "live"
+        normalized_symbols = sorted({str(symbol or "").strip().upper() for symbol in symbols or [] if str(symbol or "").strip()})
+        if not normalized_symbols or not self._stored_indicator_snapshots_enabled(runtime_environment):
+            return {}
+        intervals = self._stored_indicator_snapshot_intervals(runtime_environment)
+        snapshots: dict[str, dict[str, dict]] = {symbol: {} for symbol in normalized_symbols}
+        safe_environment = runtime_environment.replace('"', '\\"')
+        for symbol in normalized_symbols:
+            safe_symbol = symbol.replace('"', '\\"')
+            for interval in intervals:
+                interval_filter = " || ".join(
+                    f'interval = "{alias.replace(chr(34), chr(92) + chr(34))}"'
+                    for alias in self._indicator_interval_aliases(interval)
+                )
+                try:
+                    rows = self.pb_client.get_records(
+                        "ibkr_indicators",
+                        filter=(
+                            f'environment = "{safe_environment}" && '
+                            f'symbol = "{safe_symbol}" && '
+                            f"({interval_filter})"
+                        ),
+                        sort="-bar_time_ms",
+                        per_page=1,
+                    )
+                except Exception:
+                    rows = []
+                if not rows:
+                    continue
+                row = rows[0]
+                extra = _safe_extra(row)
+                if not extra:
+                    continue
+                extra.setdefault("environment", runtime_environment)
+                extra.setdefault("symbol", symbol)
+                extra.setdefault("chart_tf", interval)
+                extra.setdefault("bar_time_ms", row.get("bar_time_ms", 0) or 0)
+                extra.setdefault("us_time", row.get("us_time", "") or "")
+                snapshots[symbol][interval] = extra
+        return {symbol: rows for symbol, rows in snapshots.items() if rows}
 
     def _build_data_completeness_gate(self, environment: str, symbols: list[str]) -> dict:
         normalized_symbols = sorted({str(symbol or "").strip().upper() for symbol in symbols or [] if str(symbol or "").strip()})
@@ -368,9 +578,11 @@ class DailyScanner:
         if planner is None:
             planner = BarFreshnessPlanner(self.pb_client, getattr(self.api_app, "cfg", None), environment=environment)
         intervals = self._data_completeness_intervals(environment)
+        blocking_enabled = self._data_completeness_blocking_enabled(environment)
         items = {}
         incomplete_symbols = []
         repair_jobs = []
+        repair_job_count = 0
         coordinator = getattr(self.api_app, "bar_repair_coordinator", None)
         for symbol in normalized_symbols:
             freshness = planner.plan_symbol(symbol, intervals, environment=environment, required_bars=0)
@@ -380,21 +592,30 @@ class DailyScanner:
             incomplete_symbols.append(symbol)
             if coordinator is not None and hasattr(coordinator, "enqueue_from_freshness"):
                 try:
-                    repair_jobs.extend(
+                    queued_jobs = list(
                         coordinator.enqueue_from_freshness(
                             freshness,
                             priority="daily_scan",
                             trigger="daily_scan_data_completeness",
                         )
+                        or []
                     )
+                    repair_job_count += len(queued_jobs)
+                    remaining_slots = MAX_DATA_COMPLETENESS_REPAIR_JOBS_IN_RESULT - len(repair_jobs)
+                    if remaining_slots > 0:
+                        repair_jobs.extend(queued_jobs[:remaining_slots])
                 except Exception as exc:
-                    repair_jobs.append({"queued": False, "symbol": symbol, "error": str(exc)})
+                    repair_job_count += 1
+                    if len(repair_jobs) < MAX_DATA_COMPLETENESS_REPAIR_JOBS_IN_RESULT:
+                        repair_jobs.append({"queued": False, "symbol": symbol, "error": str(exc)})
         return {
             "enabled": True,
+            "blocking_enabled": blocking_enabled,
             "intervals": intervals,
             "items": items,
             "incomplete_symbols": incomplete_symbols,
             "repairing_symbols": incomplete_symbols,
+            "repair_job_count": repair_job_count,
             "repair_jobs": repair_jobs,
             "status": "ready" if not incomplete_symbols else "repairing",
         }
@@ -460,13 +681,25 @@ class DailyScanner:
             completeness = result.get("data_completeness") or {}
             if completeness:
                 data_completeness["enabled"] = bool(data_completeness.get("enabled")) or bool(completeness.get("enabled"))
+                data_completeness["blocking_enabled"] = (
+                    bool(data_completeness.get("blocking_enabled"))
+                    or bool(completeness.get("blocking_enabled"))
+                )
                 data_completeness["excluded_incomplete_count"] += int(completeness.get("excluded_incomplete_count", 0) or 0)
                 data_completeness["repairing_count"] += int(completeness.get("repairing_count", 0) or 0)
                 data_completeness["incomplete_symbols"].extend(completeness.get("incomplete_symbols") or [])
-                data_completeness["repair_jobs"].extend(completeness.get("repair_jobs") or [])
+                data_completeness["repair_job_count"] = (
+                    int(data_completeness.get("repair_job_count", 0) or 0)
+                    + int(completeness.get("repair_job_count", 0) or 0)
+                )
+                remaining_slots = MAX_DATA_COMPLETENESS_REPAIR_JOBS_IN_RESULT - len(data_completeness["repair_jobs"])
+                if remaining_slots > 0:
+                    data_completeness["repair_jobs"].extend((completeness.get("repair_jobs") or [])[:remaining_slots])
 
         data_completeness["incomplete_symbols"] = sorted(set(data_completeness.get("incomplete_symbols") or []))
+        data_completeness["incomplete_symbol_count"] = len(data_completeness["incomplete_symbols"])
         data_completeness["status"] = "repairing" if data_completeness["incomplete_symbols"] else "ready"
+        data_completeness = compact_json_payload(data_completeness, max_list_items=80)
 
         return {
             "scanned": scanned,
@@ -495,6 +728,9 @@ class DailyScanner:
         )
         completeness_gate = self._build_data_completeness_gate(runtime_environment, watchlist_symbols)
         incomplete_symbols = set(completeness_gate.get("incomplete_symbols") or [])
+        blocking_incomplete_symbols = set(incomplete_symbols) if bool(completeness_gate.get("blocking_enabled")) else set()
+        engine_materialize = self._materialize_scan_engines(runtime_environment, watchlist_symbols)
+        stored_indicator_snapshots = self._load_stored_indicator_snapshots(runtime_environment, watchlist_symbols)
         metric_rows = self._build_metric_rows(date, runtime_environment, watchlist_symbols)
         existing_rows = self._load_today_target_rows(date, runtime_environment)
         manual_rows = {
@@ -516,7 +752,7 @@ class DailyScanner:
             symbol = str(item.get("symbol", "")).strip().upper()
             if not symbol:
                 continue
-            if symbol in incomplete_symbols:
+            if symbol in blocking_incomplete_symbols:
                 freshness = (completeness_gate.get("items") or {}).get(symbol) or {}
                 stale_intervals = list(freshness.get("needs_repair_intervals") or [])
                 _record_rejection(
@@ -526,7 +762,7 @@ class DailyScanner:
                     symbol=symbol,
                     actual=",".join(stale_intervals) or str(freshness.get("status") or "incomplete"),
                     threshold="all required intervals ready",
-                    note="数据不完整，已排除本轮筛选并进入异步 API 补偿",
+                    note="数据不完整，blocking 开启，已排除本轮筛选并进入异步 API 补偿",
                 )
                 continue
             try:
@@ -536,9 +772,19 @@ class DailyScanner:
                     runtime_environment,
                     metrics=metric_rows.get(symbol) or {},
                     settings=settings,
+                    stored_snapshots=stored_indicator_snapshots.get(symbol) or {},
                 )
                 if result and bool(result.get("quality_gate_passed")):
                     result["exchange"] = str(item.get("exchange", "") or result.get("exchange", "")).strip().upper()
+                    if symbol in incomplete_symbols:
+                        freshness = (completeness_gate.get("items") or {}).get(symbol) or {}
+                        result_extra = result.setdefault("extra", {})
+                        result_extra["data_quality"] = {
+                            "needs_repair": True,
+                            "scan_blocking": False,
+                            "needs_repair_intervals": list(freshness.get("needs_repair_intervals") or []),
+                            "status": str(freshness.get("status") or "repairing"),
+                        }
                     eligible.append(result)
                 else:
                     for example in (result or {}).get("rejection_examples") or []:
@@ -645,13 +891,17 @@ class DailyScanner:
             "trade_subscription_budget": trade_budget,
             "manual_active_count": manual_active_count,
             "manual_retained_count": len(manual_retained_symbols),
+            "engine_materialize": engine_materialize,
             "data_completeness": {
                 "enabled": bool(completeness_gate.get("enabled")),
+                "blocking_enabled": bool(completeness_gate.get("blocking_enabled")),
                 "status": str(completeness_gate.get("status") or ("ready" if not incomplete_symbols else "repairing")),
                 "intervals": list(completeness_gate.get("intervals") or []),
-                "excluded_incomplete_count": len(incomplete_symbols),
+                "excluded_incomplete_count": len(blocking_incomplete_symbols),
                 "repairing_count": len(incomplete_symbols),
+                "incomplete_symbol_count": len(incomplete_symbols),
                 "incomplete_symbols": sorted(incomplete_symbols),
+                "repair_job_count": int(completeness_gate.get("repair_job_count", 0) or 0),
                 "repair_jobs": list(completeness_gate.get("repair_jobs") or []),
             },
             "rejection_summary": rejection_summary,
@@ -666,6 +916,7 @@ class DailyScanner:
         *,
         metrics: dict | None = None,
         settings: dict | None = None,
+        stored_snapshots: dict | None = None,
     ) -> dict | None:
         """
         单标的评分：
@@ -678,6 +929,10 @@ class DailyScanner:
         for (engine_environment, sym, tf), engine in self.engines.items():
             if engine_environment == runtime_environment and sym == symbol and engine.is_ready():
                 snapshots[tf] = engine.get_snapshot()
+        for tf, snapshot in (stored_snapshots or {}).items():
+            normalized_tf = normalize_interval(tf)
+            if normalized_tf not in snapshots and isinstance(snapshot, dict):
+                snapshots[normalized_tf] = dict(snapshot)
 
         if not snapshots:
             return {

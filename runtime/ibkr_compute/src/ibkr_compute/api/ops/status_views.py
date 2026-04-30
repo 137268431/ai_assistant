@@ -60,11 +60,15 @@ def _filter_engine_items(engine_items, symbols: list[str] | None):
 
 def _safe_multi_timeframe_readiness(app_mod, requested_environment: str, symbols: list[str] | None = None) -> dict:
     try:
+        # Storage readiness is precise but does many indexed lookups; keep broad
+        # status probes fast and let warmup ask for the small active subscription set.
+        include_storage = bool(symbols) and len(symbols) <= 30
         return build_multi_timeframe_readiness(
             app_mod,
             environment=requested_environment,
             symbols=symbols,
-            include_storage=False,
+            intervals=["5m"],
+            include_storage=include_storage,
         )
     except Exception as exc:
         return {

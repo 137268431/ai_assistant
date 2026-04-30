@@ -64,7 +64,12 @@ class _FakeEngine:
 
 
 class _FakeCfg:
+    def __init__(self, *, blocking=False):
+        self.blocking = blocking
+
     def get_bool_for_environment(self, key, environment, default=False):
+        if key == "ibkr_daily_scan_data_completeness_blocking_enabled":
+            return self.blocking
         return key == "ibkr_daily_scan_data_completeness_enabled"
 
     def get_for_environment(self, key, environment, default=None):
@@ -120,7 +125,7 @@ class BarFreshnessAndScanRepairTest(unittest.TestCase):
         self.assertTrue(payload["needs_repair"])
         self.assertEqual(interval["expected_closed_ms"], _ms(2026, 4, 29, 19, 45))
 
-    def test_daily_scan_excludes_incomplete_symbol_and_enqueues_repair(self):
+    def test_daily_scan_repairs_but_does_not_exclude_incomplete_symbol_by_default(self):
         repair = _FakeRepair()
         api_app = SimpleNamespace(
             cfg=_FakeCfg(),
@@ -163,8 +168,60 @@ class BarFreshnessAndScanRepairTest(unittest.TestCase):
         }):
             result = scanner.run_scan("2026-04-29", environments=["live"])
 
+        self.assertEqual([row["symbol"] for row in pb.upserts], ["AAPL", "NVDA"])
+        self.assertEqual(result["excluded_incomplete_count"], 0)
+        self.assertEqual(result["data_completeness"]["repairing_count"], 1)
+        self.assertEqual(result["data_completeness"]["incomplete_symbol_count"], 1)
+        self.assertFalse(result["data_completeness"]["blocking_enabled"])
+        self.assertNotIn(REJECTION_BUCKET_DATA_INCOMPLETE, result["rejection_summary"])
+        self.assertEqual(repair.calls, [("NVDA", "daily_scan", "daily_scan_data_completeness")])
+
+    def test_daily_scan_can_exclude_incomplete_symbol_when_blocking_enabled(self):
+        repair = _FakeRepair()
+        api_app = SimpleNamespace(
+            cfg=_FakeCfg(blocking=True),
+            bar_freshness_planner=_FakePlanner(),
+            bar_repair_coordinator=repair,
+        )
+        pb = _FakePB(
+            watchlist=[
+                {"symbol": "AAPL", "environment": "live", "symbol_role": "trade"},
+                {"symbol": "NVDA", "environment": "live", "symbol_role": "trade"},
+            ]
+        )
+        engines = {
+            ("live", "AAPL", "5m"): _FakeEngine(),
+            ("live", "NVDA", "5m"): _FakeEngine(),
+        }
+        with mock.patch.object(daily_scanner_mod, "get_api_app", return_value=api_app):
+            scanner = DailyScanner(pb_client=pb, engines=engines)
+        scanner.api_app = api_app
+        scanner._build_metric_rows = lambda date, environment, symbols: {
+            symbol: {
+                "avg_10d_volume": 500000,
+                "premarket_volume": 25000,
+                "atr_pct": 0.5,
+                "day_change_pct": 2.0,
+            }
+            for symbol in symbols
+        }
+
+        with mock.patch.object(daily_scanner_mod, "_load_scan_settings", return_value={
+            "scan_time_et": "09:20",
+            "min_avg_10d_volume": 100000,
+            "min_premarket_volume": 5000,
+            "min_atr_pct": 0.15,
+            "min_abs_day_change_pct": 1.0,
+            "monitor_count": 0,
+            "target_subscription_limit": 80,
+            "total_subscription_limit": 80,
+            "trade_subscription_budget": 80,
+        }):
+            result = scanner.run_scan("2026-04-29", environments=["live"])
+
         self.assertEqual([row["symbol"] for row in pb.upserts], ["AAPL"])
         self.assertEqual(result["excluded_incomplete_count"], 1)
+        self.assertTrue(result["data_completeness"]["blocking_enabled"])
         self.assertEqual(result["rejection_summary"][REJECTION_BUCKET_DATA_INCOMPLETE], 1)
         self.assertEqual(repair.calls, [("NVDA", "daily_scan", "daily_scan_data_completeness")])
 

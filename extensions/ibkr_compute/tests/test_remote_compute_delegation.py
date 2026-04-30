@@ -632,6 +632,42 @@ class RemoteDailyScanDelegationTest(unittest.TestCase):
         self.assertEqual(result["state"]["result"]["error"], "all_scanned_symbols_missing_technical_snapshots")
         self.assertEqual(service.events[0]["title"], "IBKR 盘前日筛失败")
 
+    def test_stale_running_daily_scan_is_retried(self):
+        service = _DummyMarketUniverse()
+        service._daily_scan_state.update({
+            "status": "running",
+            "started_at": "2000-01-01T00:00:00Z",
+            "reason": "poll",
+            "result": {},
+        })
+        remote_result = {
+            "ok": True,
+            "date": "2026-04-27",
+            "scanned": 2,
+            "eligible": 1,
+            "active": 1,
+            "candidates": 0,
+            "errors": 0,
+        }
+
+        with mock.patch(
+            "ibkr_compute.api.service_topology.uses_remote_compute_service",
+            return_value=True,
+        ):
+            with mock.patch(
+                "ibkr_compute.api.compute_status_client.trigger_remote_scan",
+                return_value=remote_result,
+            ) as trigger_mock:
+                result = service._run_daily_scan_if_due(reason="poll")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["state"]["status"], "completed")
+        self.assertEqual(result["state"]["result"], remote_result)
+        trigger_mock.assert_called_once_with({"environment": "live"})
+        persisted_statuses = [row[2]["status"] for row in service.pb.states]
+        self.assertIn("failed", persisted_statuses)
+        self.assertEqual(persisted_statuses[-1], "completed")
+
 
 if __name__ == "__main__":
     unittest.main()

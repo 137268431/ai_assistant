@@ -298,6 +298,12 @@ def build_statusz_live_readiness(
         or str(warmup.get("phase") or "").strip()
         or str(warmup.get("finished_at") or "").strip()
     )
+    prefer_runtime_snapshot = bool(
+        snapshot_present
+        and snapshot_phase == "ready"
+        and snapshot_pending_symbols_total == 0
+        and snapshot_ready_trade_symbols >= snapshot_trade_symbols_total
+    )
 
     for summary in (
         _as_readiness_summary_payload(
@@ -313,7 +319,7 @@ def build_statusz_live_readiness(
             required_interval=required_interval,
         ),
     ):
-        if summary:
+        if summary and not prefer_runtime_snapshot:
             return _build_live_readiness_from_summary(
                 summary,
                 environment=environment,

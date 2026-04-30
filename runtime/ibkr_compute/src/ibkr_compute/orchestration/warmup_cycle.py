@@ -251,9 +251,16 @@ class TradingServiceWarmupCycleMixin:
         )
 
         required_interval = service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL
+        remote_symbols = self._normalize_symbol_list(
+            snapshot.get("subscription_symbols")
+            or list((snapshot.get("trade_symbols") or [])) + list((snapshot.get("monitor_symbols") or []))
+            or snapshot.get("symbols")
+            or []
+        )
+        remote_symbol_set = set(remote_symbols)
         payload = get_remote_compute_status(
             force_refresh=True,
-            symbols=snapshot["symbols"],
+            symbols=remote_symbols,
             include_engines=True,
         )
         if not is_compute_status_payload(payload):
@@ -261,10 +268,14 @@ class TradingServiceWarmupCycleMixin:
                 snapshot,
                 {
                     symbol: {
-                        "ready": False,
+                        "ready": symbol not in remote_symbol_set,
                         "bar_count": 0,
                         "last_bar_time_ms": 0,
-                        "source": "remote_compute_status_unavailable",
+                        "source": (
+                            "scan_pool_non_blocking"
+                            if symbol not in remote_symbol_set
+                            else "remote_compute_status_unavailable"
+                        ),
                     }
                     for symbol in snapshot["symbols"]
                 },
@@ -295,6 +306,14 @@ class TradingServiceWarmupCycleMixin:
         status_by_symbol = {}
         if isinstance(engines, dict):
             for symbol in snapshot["symbols"]:
+                if symbol not in remote_symbol_set:
+                    status_by_symbol[symbol] = {
+                        "ready": True,
+                        "bar_count": 0,
+                        "last_bar_time_ms": 0,
+                        "source": "scan_pool_non_blocking",
+                    }
+                    continue
                 engine_state = dict(
                     engines.get(f"{service_mod.ENVIRONMENT}/{symbol}/{required_interval}") or {}
                 )

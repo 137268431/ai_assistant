@@ -4,6 +4,8 @@ import json
 import time
 from datetime import datetime
 
+from ibkr_compute.core.payload_compact import compact_json_payload
+
 
 def _service_mod():
     from . import trading_service as service_mod
@@ -19,6 +21,7 @@ MANUAL_TARGET_SOURCES = {
     "manual_page_remove",
     "screener_targets_tab",
 }
+DAILY_SCAN_RUNNING_STALE_SECONDS = 10 * 60
 
 
 def _safe_extra(row: dict | None) -> dict:
@@ -67,6 +70,45 @@ def _daily_scan_all_snapshotless(result: dict | None) -> bool:
             if isinstance(summary, dict):
                 no_snapshot += _safe_int(summary.get("no_snapshot"), 0)
     return scanned > 0 and no_snapshot >= scanned
+
+
+def _parse_iso_datetime(value) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(text)
+    except Exception:
+        return None
+
+
+def _daily_scan_running_age_seconds(state: dict | None, now_dt: datetime) -> float | None:
+    if not isinstance(state, dict):
+        return None
+    started_at = _parse_iso_datetime(state.get("started_at"))
+    if started_at is None:
+        return None
+    if started_at.tzinfo is None and now_dt.tzinfo is not None:
+        started_at = started_at.replace(tzinfo=now_dt.tzinfo)
+    elif started_at.tzinfo is not None and now_dt.tzinfo is None:
+        started_at = started_at.replace(tzinfo=None)
+    if now_dt.tzinfo is not None and started_at.tzinfo is not None:
+        started_at = started_at.astimezone(now_dt.tzinfo)
+    return max(0.0, (now_dt - started_at).total_seconds())
+
+
+def _compact_daily_scan_result_for_state(result: dict | None) -> dict:
+    if not isinstance(result, dict):
+        return {}
+    return compact_json_payload(
+        result,
+        max_list_items=60,
+        max_dict_items=160,
+        max_string_length=1200,
+        max_depth=8,
+    )
 
 
 class TradingServiceMarketUniverseMixin:
@@ -464,7 +506,31 @@ class TradingServiceMarketUniverseMixin:
         if not self._scan_window_open():
             return {"ok": True, "skipped": True, "reason": "scan_window_not_open", "state": state}
         if str(state.get("status") or "").strip().lower() == "running":
-            return {"ok": True, "skipped": True, "reason": "scan_running", "state": state}
+            et_zone = getattr(service_mod, "ET", None)
+            running_age = _daily_scan_running_age_seconds(
+                state,
+                datetime.now(et_zone) if et_zone is not None else datetime.now(),
+            )
+            if running_age is None or running_age < DAILY_SCAN_RUNNING_STALE_SECONDS:
+                return {"ok": True, "skipped": True, "reason": "scan_running", "state": state}
+            service_mod.logger.warning(
+                "Daily scan running state is stale; retrying: market_date=%s age=%.1fs",
+                market_date,
+                running_age,
+            )
+            state = self._set_daily_scan_state(
+                market_date=market_date,
+                status="failed",
+                reason=str(state.get("reason") or reason or "poll"),
+                finished_at=self._now_iso(),
+                last_error="stale_running_timeout",
+                result={
+                    "ok": False,
+                    "error": "stale_running_timeout",
+                    "previous_started_at": str(state.get("started_at") or ""),
+                    "age_seconds": round(running_age, 3),
+                },
+            )
         if str(state.get("status") or "").strip().lower() == "completed":
             return {"ok": True, "skipped": True, "reason": "scan_already_completed", "state": state}
 
@@ -548,7 +614,7 @@ class TradingServiceMarketUniverseMixin:
                 reason=reason,
                 finished_at=self._now_iso(),
                 last_error=last_error,
-                result=result,
+                result=_compact_daily_scan_result_for_state(result),
             )
             if scan_ok:
                 self._notify_daily_scan_recovered(completed_state)
