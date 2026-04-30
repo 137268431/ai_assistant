@@ -90,13 +90,6 @@
       justify-items: end;
     }
 
-    .hero-action-row {
-      display: flex;
-      justify-content: flex-end;
-      width: 100%;
-      margin-top: 2px;
-    }
-
     .meta-line {
       color: var(--screen-muted);
       font-size: 12px;
@@ -1252,10 +1245,6 @@
         justify-items: start;
       }
 
-      .hero-action-row {
-        justify-content: flex-start;
-      }
-
       .meta-line {
         text-align: left;
       }
@@ -1595,15 +1584,54 @@
 .domain-tab,
 .subview-tab {
     min-height: 50px;
-    max-height: 58px;
     padding: 10px 11px;
     border-radius: 14px;
+}
+
+.domain-tab {
+    max-height: 58px;
+}
+
+.subview-tab {
+    min-height: 76px;
+    max-height: none;
+    padding: 14px 16px;
+    gap: 5px;
+    justify-content: center;
+    overflow: visible;
 }
 
 .domain-tab-copy,
 .subview-tab-copy {
     font-size: 11px;
     line-height: 1.35;
+}
+
+.subview-tab-copy {
+    display: block;
+    line-height: 1.45;
+    overflow: visible;
+}
+
+#currentViewPanel .table-header {
+    align-items: flex-start;
+}
+
+#currentViewPanel .table-header .leaderboard-meta {
+    flex: 1 1 320px;
+    min-width: 240px;
+}
+
+#currentViewPanel .table-header .row-actions {
+    flex: 0 1 auto;
+    justify-content: flex-end;
+    align-items: center;
+    margin-left: auto;
+}
+
+#currentViewPanel .table-header .mini-btn,
+#currentViewPanel .table-header .mini-link {
+    white-space: nowrap;
 }
 
 .mobile-data-card,
@@ -1629,5 +1657,29 @@
     .subview-tab {
         flex-basis: 72%;
         padding: 10px;
+    }
+
+    .subview-tab {
+        min-height: 74px;
+    }
+
+    #currentViewPanel .table-header {
+        display: grid;
+        grid-template-columns: 1fr;
+    }
+
+    #currentViewPanel .table-header .leaderboard-meta {
+        min-width: 0;
+    }
+
+    #currentViewPanel .table-header .row-actions {
+        width: 100%;
+        margin-left: 0;
+        justify-content: flex-start;
+        align-items: stretch;
+    }
+
+    #currentViewPanel .table-header .row-actions > * {
+        flex: 1 1 150px;
     }
 }

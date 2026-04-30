@@ -226,9 +226,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       if (!buttons.length) return;
       const selectedDate = String(getSelectedMarketDate() || '').trim();
       const isToday = isSelectedDateToday();
-      const shouldShowHeroButton = activeTab === 'screener' && activeScreenerView === 'current';
       buttons.forEach((button) => {
-        if (button.id === 'heroRerunDailyScanBtn') button.hidden = !shouldShowHeroButton;
         button.disabled = manualDailyScanState.running || !isToday;
         button.textContent = manualDailyScanState.running ? '补跑中...' : '补跑今日日筛';
         button.title = isToday
