@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime
+import uuid
+from datetime import datetime, timedelta
 
 from ibkr_compute.core.payload_compact import compact_json_payload
 
@@ -22,6 +23,7 @@ MANUAL_TARGET_SOURCES = {
     "screener_targets_tab",
 }
 DAILY_SCAN_RUNNING_STALE_SECONDS = 10 * 60
+DAILY_SCAN_FINAL_STATUSES = {"completed", "failed", "cancelled"}
 
 
 def _safe_extra(row: dict | None) -> dict:
@@ -111,6 +113,184 @@ def _compact_daily_scan_result_for_state(result: dict | None) -> dict:
     )
 
 
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _compact_daily_scan_diagnostics(payload: dict | None) -> dict:
+    if not isinstance(payload, dict):
+        return {}
+    preload = payload.get("compute_startup_preload") or (payload.get("compute") or {}).get("compute_startup_preload")
+    bar_repair = payload.get("bar_repair_queue") or (payload.get("compute") or {}).get("bar_repair_queue")
+    diagnostics = {}
+    if isinstance(preload, dict):
+        diagnostics["compute_startup_preload"] = {
+            "status": preload.get("status"),
+            "running": bool(preload.get("running")),
+            "symbol_completed": _safe_int(preload.get("symbol_completed"), 0),
+            "symbol_total": _safe_int(preload.get("symbol_total"), 0),
+            "ready_count": _safe_int(preload.get("ready_count"), 0),
+            "elapsed_s": round(_safe_float(preload.get("elapsed_s"), 0.0), 3),
+            "error": str(preload.get("error") or "")[:240],
+        }
+    if isinstance(bar_repair, dict):
+        diagnostics["bar_repair_queue"] = {
+            "pending": _safe_int(bar_repair.get("pending"), 0),
+            "inflight": _safe_int(bar_repair.get("inflight"), 0),
+            "failed": _safe_int(bar_repair.get("failed"), 0),
+            "succeeded": _safe_int(bar_repair.get("succeeded"), 0),
+            "max_concurrency": _safe_int(bar_repair.get("max_concurrency"), 0),
+            "request_spacing_s": _safe_float(bar_repair.get("request_spacing_s"), 0.0),
+        }
+    if payload.get("error") or payload.get("error_code") or payload.get("status_code"):
+        diagnostics["remote_error"] = {
+            "error_code": str(payload.get("error_code") or "")[:120],
+            "status_code": payload.get("status_code"),
+            "error": str(payload.get("error") or "")[:360],
+        }
+    return diagnostics
+
+
+def _extract_daily_scan_failure_evidence(result: dict | None, diagnostics: dict | None = None) -> dict:
+    evidence = {}
+    payload = result if isinstance(result, dict) else {}
+    diag = diagnostics if isinstance(diagnostics, dict) else {}
+    for key in ("status_code", "error_code", "path", "timeout_s"):
+        if payload.get(key) not in (None, ""):
+            evidence[key] = payload.get(key)
+    counts = {
+        "scanned": _safe_int(payload.get("scanned"), 0),
+        "active": _safe_int(payload.get("active"), 0),
+        "candidates": _safe_int(payload.get("candidates"), 0),
+        "errors": _safe_int(payload.get("errors"), 0),
+    }
+    if any(counts.values()):
+        evidence["counts"] = counts
+    if isinstance(payload.get("data_completeness"), dict):
+        completeness = payload.get("data_completeness") or {}
+        evidence["data_completeness"] = {
+            "status": completeness.get("status"),
+            "excluded_incomplete_count": _safe_int(completeness.get("excluded_incomplete_count"), 0),
+            "repairing_count": _safe_int(completeness.get("repairing_count"), 0),
+            "incomplete_symbols": list(completeness.get("incomplete_symbols") or [])[:8],
+        }
+    for key in ("compute_startup_preload", "bar_repair_queue", "remote_error"):
+        if isinstance(diag.get(key), dict):
+            evidence[key] = diag.get(key)
+    return evidence
+
+
+def _classify_daily_scan_failure(
+    error_text: str = "",
+    *,
+    result: dict | None = None,
+    diagnostics: dict | None = None,
+    retryable_default: bool = True,
+) -> dict:
+    payload = result if isinstance(result, dict) else {}
+    diag = diagnostics if isinstance(diagnostics, dict) else {}
+    text = " ".join(
+        str(item or "")
+        for item in (
+            error_text,
+            payload.get("error"),
+            payload.get("error_code"),
+            payload.get("last_error"),
+        )
+    ).strip()
+    lowered = text.lower()
+
+    preload = diag.get("compute_startup_preload") if isinstance(diag.get("compute_startup_preload"), dict) else {}
+    if preload and bool(preload.get("running")):
+        elapsed_s = _safe_float(preload.get("elapsed_s"), 0.0)
+        code = "compute_preload_timeout" if elapsed_s >= 900 else "compute_preload_running"
+        return {
+            "code": code,
+            "retryable": True,
+            "message": "Compute startup preload is still running",
+            "evidence": _extract_daily_scan_failure_evidence(payload, diag),
+            "operator_action": "等待预热完成；若持续超时，检查 IB 历史数据和 bar repair 队列。",
+        }
+
+    if ("client id" in lowered and "in use" in lowered) or "code=326" in lowered:
+        return {
+            "code": "ib_gateway_client_id_conflict",
+            "retryable": True,
+            "message": "IB Gateway client id is already in use",
+            "evidence": _extract_daily_scan_failure_evidence(payload, diag),
+            "operator_action": "检查 runtime / compute / bar repair 的 IB client id 是否冲突。",
+        }
+    bar_repair = diag.get("bar_repair_queue") if isinstance(diag.get("bar_repair_queue"), dict) else {}
+    if bar_repair and _safe_int(bar_repair.get("pending"), 0) >= 100:
+        return {
+            "code": "bar_repair_backlog_high",
+            "retryable": True,
+            "message": "Bar repair queue backlog is high",
+            "evidence": _extract_daily_scan_failure_evidence(payload, diag),
+            "operator_action": "等待补齐队列下降；若持续堆积，检查 IB Gateway client id / 历史数据链路。",
+        }
+    if "validation_json_size_limit" in lowered or "maximum allowed json size" in lowered:
+        return {
+            "code": "state_persist_json_too_large",
+            "retryable": True,
+            "message": "Persisted scan state exceeded PocketBase JSON size limit",
+            "evidence": _extract_daily_scan_failure_evidence(payload, diag),
+            "operator_action": "已裁剪状态后可重试；若仍失败，检查 scan state 写入内容。",
+        }
+    error_code = str(payload.get("error_code") or "").strip()
+    if error_code in {"compute_scan_submit_timeout", "compute_request_timeout", "compute_status_timeout"} or "read timed out" in lowered or "timeout" in lowered:
+        return {
+            "code": "compute_scan_submit_timeout",
+            "retryable": True,
+            "message": "Compute scan request timed out",
+            "evidence": _extract_daily_scan_failure_evidence(payload, diag),
+            "operator_action": "先按 run_id 查询是否已在执行；未执行再重试。",
+        }
+    if error_code == "compute_unreachable" or "connection refused" in lowered or "failed to establish" in lowered:
+        return {
+            "code": "compute_unreachable",
+            "retryable": True,
+            "message": "Compute endpoint is unreachable",
+            "evidence": _extract_daily_scan_failure_evidence(payload, diag),
+            "operator_action": "检查 ibkr-compute 服务和 127.0.0.1:5100。",
+        }
+    if "all_scanned_symbols_missing_technical_snapshots" in lowered:
+        return {
+            "code": "all_scanned_symbols_missing_technical_snapshots",
+            "retryable": True,
+            "message": "All scanned symbols are missing technical snapshots",
+            "evidence": _extract_daily_scan_failure_evidence(payload, diag),
+            "operator_action": "等待指标快照 ready 后重试。",
+        }
+    completeness = payload.get("data_completeness") if isinstance(payload.get("data_completeness"), dict) else {}
+    if completeness and str(completeness.get("status") or "").lower() == "repairing":
+        return {
+            "code": "data_completeness_repairing",
+            "retryable": True,
+            "message": "Daily scan data completeness repair is still running",
+            "evidence": _extract_daily_scan_failure_evidence(payload, diag),
+            "operator_action": "等待缺失周期补齐后重试。",
+        }
+    if "persist" in lowered and ("target" in lowered or "pb_request_failed" in lowered):
+        return {
+            "code": "target_persist_failed",
+            "retryable": False,
+            "message": "Target persistence failed",
+            "evidence": _extract_daily_scan_failure_evidence(payload, diag),
+            "operator_action": "检查 PocketBase targets 写入链路。",
+        }
+    return {
+        "code": str(payload.get("error_code") or payload.get("error") or error_text or "daily_scan_failed")[:120],
+        "retryable": bool(payload.get("retryable", retryable_default)),
+        "message": str(error_text or payload.get("error") or "daily_scan_failed")[:360],
+        "evidence": _extract_daily_scan_failure_evidence(payload, diag),
+        "operator_action": "检查 compute / screener / targets 写入链路，并在修复后重跑 /scan。",
+    }
+
+
 class TradingServiceMarketUniverseMixin:
     def _initial_daily_scan_state(self, market_date: str = "") -> dict:
         return {
@@ -121,6 +301,14 @@ class TradingServiceMarketUniverseMixin:
             "finished_at": "",
             "last_error": "",
             "result": {},
+            "run_id": "",
+            "attempt_count": 0,
+            "retry_count": 0,
+            "next_retry_at": "",
+            "retry_cutoff_at": "",
+            "retry_block_reason": "",
+            "failure": {},
+            "diagnostics": {},
         }
 
     def _load_daily_scan_state(self, market_date: str) -> dict:
@@ -167,6 +355,277 @@ class TradingServiceMarketUniverseMixin:
                 service_mod.logger.warning("Persist daily scan state failed", exc_info=True)
             return dict(next_state)
 
+    def _daily_scan_config_bool(self, key: str, default: bool = False) -> bool:
+        service_mod = _service_mod()
+        config = getattr(self, "config", None)
+        if config is not None and hasattr(config, "get_bool_for_environment"):
+            try:
+                return bool(config.get_bool_for_environment(key, service_mod.ENVIRONMENT, default))
+            except Exception:
+                return bool(default)
+        return bool(default)
+
+    def _daily_scan_config_int(self, key: str, default: int = 0) -> int:
+        service_mod = _service_mod()
+        config = getattr(self, "config", None)
+        if config is not None and hasattr(config, "get_int_for_environment"):
+            try:
+                return int(config.get_int_for_environment(key, service_mod.ENVIRONMENT, default))
+            except Exception:
+                return int(default)
+        return int(default)
+
+    def _daily_scan_config_text(self, key: str, default: str = "") -> str:
+        service_mod = _service_mod()
+        config = getattr(self, "config", None)
+        if config is not None and hasattr(config, "get_for_environment"):
+            try:
+                return str(config.get_for_environment(key, service_mod.ENVIRONMENT, default) or default)
+            except Exception:
+                return str(default or "")
+        return str(default or "")
+
+    def _daily_scan_retry_delays(self) -> list[int]:
+        raw = self._daily_scan_config_text("ibkr_daily_scan_retry_delays_sec", "60,120,240")
+        delays: list[int] = []
+        for item in raw.replace(";", ",").split(","):
+            try:
+                value = int(float(str(item or "").strip()))
+            except Exception:
+                continue
+            if value >= 0:
+                delays.append(value)
+        return delays or [60, 120, 240]
+
+    def _daily_scan_retry_cutoff(self, now_dt: datetime | None = None) -> datetime:
+        service_mod = _service_mod()
+        et_zone = getattr(service_mod, "ET", None)
+        current = now_dt or (datetime.now(et_zone) if et_zone is not None else datetime.now())
+        raw_schedule = self._daily_scan_config_text("ibkr_scan_schedule", "09:20-10:00")
+        end_text = "10:00"
+        if "-" in raw_schedule:
+            end_text = raw_schedule.split("-", 1)[1].strip() or end_text
+        parsed = self._parse_hhmm(end_text)
+        if not parsed:
+            parsed = (10, 0)
+        cutoff = current.replace(hour=parsed[0], minute=parsed[1], second=0, microsecond=0)
+        if cutoff < current and current.hour < 4:
+            cutoff = cutoff + timedelta(days=1)
+        return cutoff
+
+    def _daily_scan_next_retry_at(self, retry_count: int, now_dt: datetime | None = None) -> datetime:
+        service_mod = _service_mod()
+        et_zone = getattr(service_mod, "ET", None)
+        current = now_dt or (datetime.now(et_zone) if et_zone is not None else datetime.now())
+        delays = self._daily_scan_retry_delays()
+        index = min(max(0, int(retry_count or 0)), len(delays) - 1)
+        return current + timedelta(seconds=max(0, delays[index]))
+
+    def _daily_scan_should_retry(self, state: dict, failure: dict, now_dt: datetime | None = None) -> tuple[bool, str, datetime | None, datetime]:
+        service_mod = _service_mod()
+        et_zone = getattr(service_mod, "ET", None)
+        current = now_dt or (datetime.now(et_zone) if et_zone is not None else datetime.now())
+        cutoff = self._daily_scan_retry_cutoff(current)
+        if not self._daily_scan_config_bool("ibkr_daily_scan_auto_retry_enabled", True):
+            return False, "auto_retry_disabled", None, cutoff
+        if not bool((failure or {}).get("retryable")):
+            return False, "failure_not_retryable", None, cutoff
+        retry_count = _safe_int((state or {}).get("retry_count"), 0)
+        max_retries = len(self._daily_scan_retry_delays())
+        if retry_count >= max_retries:
+            return False, "max_retries_reached", None, cutoff
+        next_retry = self._daily_scan_next_retry_at(retry_count, current)
+        if current >= cutoff or next_retry > cutoff:
+            return False, "retry_cutoff_reached", None, cutoff
+        return True, "", next_retry, cutoff
+
+    def _notify_daily_scan_retrying(self, state: dict | None = None):
+        service_mod = _service_mod()
+        failure = (state or {}).get("failure") if isinstance((state or {}).get("failure"), dict) else {}
+        detail = {
+            "状态结论": "今日目标池自动筛选暂未完成，系统会按保守幂等规则自动重试。",
+            "检查时间": self._now_et(),
+            "交易日": str((state or {}).get("market_date") or self._current_market_date or self._market_date()),
+            "Runtime阶段": self._runtime_phase_label(),
+            "失败分类": str(failure.get("code") or (state or {}).get("last_error") or "daily_scan_retry"),
+            "错误信息": str((state or {}).get("last_error") or failure.get("message") or "daily_scan_retry"),
+            "重试次数": str((state or {}).get("retry_count") or 0),
+            "下一次重试": str((state or {}).get("next_retry_at") or ""),
+            "重试截止": str((state or {}).get("retry_cutoff_at") or ""),
+            "处理建议": str(failure.get("operator_action") or "等待自动重试；若超过截止仍失败，再人工检查。"),
+        }
+        evidence = failure.get("evidence") if isinstance(failure.get("evidence"), dict) else {}
+        if evidence:
+            detail["原因证据"] = compact_json_payload(evidence, max_list_items=8, max_dict_items=40, max_string_length=360, max_depth=4)
+        runtime_url = self._runtime_page_url()
+        if runtime_url:
+            detail["运行页"] = runtime_url
+        self._emit_system_event("alert", "warning", "IBKR 盘前日筛重试中", detail)
+
+    def _schedule_or_fail_daily_scan_retry(
+        self,
+        *,
+        market_date: str,
+        reason: str,
+        failure: dict,
+        result: dict | None = None,
+        diagnostics: dict | None = None,
+        run_id: str = "",
+    ) -> dict:
+        state = self._copy_daily_scan_state()
+        can_retry, block_reason, next_retry, cutoff = self._daily_scan_should_retry(state, failure)
+        base_updates = {
+            "market_date": market_date,
+            "reason": reason,
+            "run_id": str(run_id or state.get("run_id") or ""),
+            "last_error": str((failure or {}).get("message") or (failure or {}).get("code") or "daily_scan_failed"),
+            "failure": dict(failure or {}),
+            "diagnostics": compact_json_payload(diagnostics or {}, max_list_items=10, max_dict_items=80, max_string_length=480, max_depth=5),
+            "result": _compact_daily_scan_result_for_state(result or {}),
+        }
+        if can_retry and next_retry is not None:
+            retry_count = _safe_int(state.get("retry_count"), 0) + 1
+            retry_state = self._set_daily_scan_state(
+                **base_updates,
+                status="retry_wait",
+                finished_at=self._now_iso(),
+                retry_count=retry_count,
+                next_retry_at=next_retry.isoformat(),
+                retry_cutoff_at=cutoff.isoformat(),
+                retry_block_reason="",
+            )
+            self._notify_daily_scan_retrying(retry_state)
+            return {"ok": False, "ran": True, "retry_scheduled": True, "state": retry_state, "failure": failure}
+
+        final_failure = {
+            **dict(failure or {}),
+            "retryable": False,
+            "retry_block_reason": block_reason,
+        }
+        failed_state = self._set_daily_scan_state(
+            **base_updates,
+            status="failed",
+            finished_at=self._now_iso(),
+            failure=final_failure,
+            retry_block_reason=block_reason,
+            next_retry_at="",
+            retry_cutoff_at=cutoff.isoformat(),
+        )
+        self._notify_daily_scan_failed(failed_state)
+        return {"ok": False, "ran": True, "retry_scheduled": False, "state": failed_state, "failure": final_failure}
+
+    def _daily_scan_retry_wait_pending(self, state: dict) -> bool:
+        next_retry_at = _parse_iso_datetime((state or {}).get("next_retry_at"))
+        if next_retry_at is None:
+            return False
+        service_mod = _service_mod()
+        et_zone = getattr(service_mod, "ET", None)
+        now_dt = datetime.now(et_zone) if et_zone is not None else datetime.now()
+        if next_retry_at.tzinfo is None and now_dt.tzinfo is not None:
+            next_retry_at = next_retry_at.replace(tzinfo=now_dt.tzinfo)
+        elif next_retry_at.tzinfo is not None and now_dt.tzinfo is not None:
+            next_retry_at = next_retry_at.astimezone(now_dt.tzinfo)
+        return now_dt < next_retry_at
+
+    def _finalize_daily_scan_result(self, *, market_date: str, reason: str, result: dict, run_id: str = "") -> dict:
+        scan_ok = bool(result.get("ok", True))
+        last_error = "" if scan_ok else str(result.get("error") or result.get("last_error") or "daily_scan_failed")
+        if scan_ok and _daily_scan_all_snapshotless(result):
+            last_error = "all_scanned_symbols_missing_technical_snapshots"
+            result = {**result, "ok": False, "error": last_error}
+            scan_ok = False
+        if scan_ok:
+            completed_state = self._set_daily_scan_state(
+                market_date=market_date,
+                status="completed",
+                reason=reason,
+                run_id=run_id,
+                finished_at=self._now_iso(),
+                last_error="",
+                failure={},
+                diagnostics={},
+                next_retry_at="",
+                result=_compact_daily_scan_result_for_state(result),
+            )
+            self._notify_daily_scan_recovered(completed_state)
+            self._last_target_refresh_at = 0.0
+            return {"ok": True, "ran": True, "state": completed_state, "result": result}
+
+        failure = _classify_daily_scan_failure(last_error, result=result, retryable_default=True)
+        return self._schedule_or_fail_daily_scan_retry(
+            market_date=market_date,
+            reason=reason,
+            failure=failure,
+            result=result,
+            diagnostics=failure.get("evidence") if isinstance(failure.get("evidence"), dict) else {},
+            run_id=run_id,
+        )
+
+    def _poll_daily_scan_attempt(self, *, market_date: str, reason: str, state: dict) -> dict:
+        service_mod = _service_mod()
+        run_id = str((state or {}).get("run_id") or "").strip()
+        if not run_id:
+            return {"ok": True, "skipped": True, "reason": "scan_running", "state": state}
+        try:
+            from ibkr_compute.api.compute_status_client import get_remote_scan_status
+
+            payload = get_remote_scan_status(
+                {
+                    "environment": service_mod.ENVIRONMENT,
+                    "date": market_date,
+                    "run_id": run_id,
+                }
+            ) or {}
+        except Exception as exc:
+            payload = {"ok": False, "error": str(exc), "error_code": "compute_status_failed", "retryable": True}
+
+        if payload.get("ok") and str(payload.get("status") or "").strip().lower() in DAILY_SCAN_FINAL_STATUSES:
+            result = payload.get("result") if isinstance(payload.get("result"), dict) else dict(payload)
+            if "ok" not in result:
+                result["ok"] = str(payload.get("status") or "").strip().lower() == "completed"
+            if payload.get("counts") and isinstance(payload.get("counts"), dict):
+                result.update({key: value for key, value in payload.get("counts").items() if key not in result})
+            if payload.get("last_error") and not result.get("error"):
+                result["error"] = payload.get("last_error")
+            return self._finalize_daily_scan_result(market_date=market_date, reason=reason, result=result, run_id=run_id)
+
+        et_zone = getattr(service_mod, "ET", None)
+        now_dt = datetime.now(et_zone) if et_zone is not None else datetime.now()
+        running_age = _daily_scan_running_age_seconds(state, now_dt)
+        stall_timeout = self._daily_scan_config_int("ibkr_daily_scan_retry_stall_timeout_sec", 480)
+        if running_age is not None and running_age >= stall_timeout:
+            diagnostics = _compact_daily_scan_diagnostics(payload)
+            failure = _classify_daily_scan_failure(
+                "compute_scan_stalled",
+                result={"ok": False, "error": "compute_scan_stalled", **payload},
+                diagnostics=diagnostics,
+                retryable_default=True,
+            )
+            if failure.get("code") == "compute_scan_submit_timeout":
+                failure["code"] = "compute_scan_stalled"
+            return self._schedule_or_fail_daily_scan_retry(
+                market_date=market_date,
+                reason=reason,
+                failure=failure,
+                result={"ok": False, "error": "compute_scan_stalled", **payload},
+                diagnostics=diagnostics,
+                run_id=run_id,
+            )
+
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "scan_pending",
+            "run_id": run_id,
+            "state": self._set_daily_scan_state(
+                market_date=market_date,
+                status="pending",
+                reason=reason,
+                run_id=run_id,
+                diagnostics=_compact_daily_scan_diagnostics(payload),
+            ),
+        }
+
     def _reset_daily_scan_alert_state(self, market_date: str = ""):
         self._daily_scan_alert_market_date = str(market_date or "")
         self._daily_scan_alert_error = ""
@@ -183,6 +642,9 @@ class TradingServiceMarketUniverseMixin:
         result = (state or {}).get("result")
         if not isinstance(result, dict):
             result = {}
+        failure = (state or {}).get("failure")
+        if not isinstance(failure, dict):
+            failure = {}
         if self._daily_scan_alert_market_date != market_date:
             self._reset_daily_scan_alert_state(market_date)
         self._daily_scan_failure_count += 1
@@ -207,9 +669,15 @@ class TradingServiceMarketUniverseMixin:
             "Runtime阶段": self._runtime_phase_label(),
             "触发原因": reason,
             "错误信息": error_text,
+            "失败分类": str(failure.get("code") or "daily_scan_failed"),
             "失败次数": str(self._daily_scan_failure_count),
-            "处理建议": "检查 compute / screener / targets 写入链路，并在修复后手动重跑 /scan。",
+            "处理建议": str(failure.get("operator_action") or "检查 compute / screener / targets 写入链路，并在修复后手动重跑 /scan。"),
         }
+        if (state or {}).get("retry_block_reason"):
+            detail["重试停止原因"] = str((state or {}).get("retry_block_reason") or "")
+        evidence = failure.get("evidence") if isinstance(failure.get("evidence"), dict) else {}
+        if evidence:
+            detail["原因证据"] = compact_json_payload(evidence, max_list_items=8, max_dict_items=40, max_string_length=360, max_depth=4)
         scanned = int(result.get("scanned", 0) or 0)
         active = int(result.get("active", 0) or 0)
         candidates = int(result.get("candidates", 0) or 0)
@@ -505,7 +973,34 @@ class TradingServiceMarketUniverseMixin:
 
         if not self._scan_window_open():
             return {"ok": True, "skipped": True, "reason": "scan_window_not_open", "state": state}
-        if str(state.get("status") or "").strip().lower() == "running":
+        state_status = str(state.get("status") or "").strip().lower()
+        if state_status == "retry_wait":
+            if self._daily_scan_retry_wait_pending(state):
+                return {"ok": True, "skipped": True, "reason": "daily_scan_retry_wait", "state": state}
+            state = self._set_daily_scan_state(
+                market_date=market_date,
+                status="idle",
+                reason=reason,
+                started_at="",
+                finished_at="",
+                last_error="",
+                next_retry_at="",
+            )
+            state_status = "idle"
+
+        if state_status in {"pending", "running"} and str(state.get("run_id") or "").strip():
+            try:
+                from ibkr_compute.api.service_topology import uses_remote_compute_service
+
+                if uses_remote_compute_service():
+                    return self._poll_daily_scan_attempt(market_date=market_date, reason=reason, state=state)
+            except Exception:
+                pass
+
+        if state_status == "failed":
+            return {"ok": False, "skipped": True, "reason": "daily_scan_failed", "state": state}
+
+        if state_status == "running":
             et_zone = getattr(service_mod, "ET", None)
             running_age = _daily_scan_running_age_seconds(
                 state,
@@ -577,63 +1072,152 @@ class TradingServiceMarketUniverseMixin:
             self._last_target_refresh_at = 0.0
             return {"ok": True, "ran": True, "state": completed_state}
 
-        self._set_daily_scan_state(
-            market_date=market_date,
-            status="running",
-            reason=reason,
-            started_at=self._now_iso(),
-            finished_at="",
-            last_error="",
-            result={},
-        )
+        attempt_count = _safe_int(state.get("attempt_count"), 0) + 1
+        run_id = f"daily-scan-{service_mod.ENVIRONMENT}-{market_date}-{uuid.uuid4().hex[:10]}"
         try:
             from ibkr_compute.api.service_topology import uses_remote_compute_service
 
-            scan_payload = {"environment": service_mod.ENVIRONMENT}
             if uses_remote_compute_service():
-                from ibkr_compute.api.compute_status_client import trigger_remote_scan
+                from ibkr_compute.api.compute_status_client import get_remote_compute_status, get_remote_scan_status, trigger_remote_scan
 
+                diagnostics = {}
+                compute_status = get_remote_compute_status(force_refresh=True)
+                diagnostics = _compact_daily_scan_diagnostics(compute_status)
+                preload = diagnostics.get("compute_startup_preload") if isinstance(diagnostics.get("compute_startup_preload"), dict) else {}
+                if preload and bool(preload.get("running")):
+                    failure = _classify_daily_scan_failure(
+                        "compute_startup_preload_running",
+                        result={"ok": False, "error": "compute_startup_preload_running"},
+                        diagnostics=diagnostics,
+                        retryable_default=True,
+                    )
+                    return self._schedule_or_fail_daily_scan_retry(
+                        market_date=market_date,
+                        reason=reason,
+                        failure=failure,
+                        result={"ok": False, "error": "compute_startup_preload_running"},
+                        diagnostics=diagnostics,
+                        run_id=run_id,
+                    )
+
+                pending_state = self._set_daily_scan_state(
+                    market_date=market_date,
+                    status="pending",
+                    reason=reason,
+                    run_id=run_id,
+                    attempt_count=attempt_count,
+                    started_at=self._now_iso(),
+                    finished_at="",
+                    last_error="",
+                    failure={},
+                    diagnostics=diagnostics,
+                    result={},
+                )
+                scan_payload = {
+                    "environment": service_mod.ENVIRONMENT,
+                    "async": True,
+                    "run_id": run_id,
+                    "trigger_source": reason,
+                }
                 result = trigger_remote_scan(scan_payload) or {}
+                if result.get("ok") and (result.get("accepted") or result.get("async")):
+                    accepted_state = self._set_daily_scan_state(
+                        market_date=market_date,
+                        status="pending",
+                        reason=reason,
+                        run_id=str(result.get("run_id") or run_id),
+                        attempt_count=attempt_count,
+                        started_at=str(pending_state.get("started_at") or self._now_iso()),
+                        finished_at="",
+                        last_error="",
+                        failure={},
+                        diagnostics=diagnostics,
+                        result=_compact_daily_scan_result_for_state(result),
+                    )
+                    return {
+                        "ok": True,
+                        "ran": True,
+                        "pending": True,
+                        "run_id": accepted_state.get("run_id"),
+                        "state": accepted_state,
+                        "result": result,
+                    }
+
+                if not result.get("ok"):
+                    status_payload = get_remote_scan_status(
+                        {
+                            "environment": service_mod.ENVIRONMENT,
+                            "date": market_date,
+                            "run_id": run_id,
+                        }
+                    ) or {}
+                    if status_payload.get("ok") and str(status_payload.get("status") or "").lower() not in {"not_found", ""}:
+                        poll_state = self._set_daily_scan_state(
+                            market_date=market_date,
+                            status="pending",
+                            reason=reason,
+                            run_id=run_id,
+                            attempt_count=attempt_count,
+                            started_at=str(pending_state.get("started_at") or self._now_iso()),
+                            finished_at="",
+                            last_error="",
+                            diagnostics={**diagnostics, **_compact_daily_scan_diagnostics(status_payload)},
+                            result=_compact_daily_scan_result_for_state(status_payload),
+                        )
+                        return self._poll_daily_scan_attempt(market_date=market_date, reason=reason, state=poll_state)
+
+                    diagnostics = {
+                        **diagnostics,
+                        **_compact_daily_scan_diagnostics(result),
+                    }
+                    failure = _classify_daily_scan_failure(
+                        str(result.get("error") or result.get("error_code") or "daily_scan_submit_failed"),
+                        result=result,
+                        diagnostics=diagnostics,
+                        retryable_default=bool(result.get("retryable", True)),
+                    )
+                    return self._schedule_or_fail_daily_scan_retry(
+                        market_date=market_date,
+                        reason=reason,
+                        failure=failure,
+                        result=result,
+                        diagnostics=diagnostics,
+                        run_id=run_id,
+                    )
+
+                return self._finalize_daily_scan_result(market_date=market_date, reason=reason, result=result, run_id=run_id)
             else:
+                self._set_daily_scan_state(
+                    market_date=market_date,
+                    status="running",
+                    reason=reason,
+                    run_id=run_id,
+                    attempt_count=attempt_count,
+                    started_at=self._now_iso(),
+                    finished_at="",
+                    last_error="",
+                    result={},
+                )
+                scan_payload = {"environment": service_mod.ENVIRONMENT}
                 from ibkr_compute.api import server as compute_server
 
                 result = compute_server._run_internal_scan(scan_payload) or {}
-            scan_ok = bool(result.get("ok", True))
-            last_error = "" if scan_ok else str(result.get("error") or "daily_scan_failed")
-            if scan_ok and _daily_scan_all_snapshotless(result):
-                last_error = "all_scanned_symbols_missing_technical_snapshots"
-                result = {
-                    **result,
-                    "ok": False,
-                    "error": last_error,
-                }
-                scan_ok = False
-            completed_state = self._set_daily_scan_state(
-                market_date=market_date,
-                status="completed" if scan_ok else "failed",
-                reason=reason,
-                finished_at=self._now_iso(),
-                last_error=last_error,
-                result=_compact_daily_scan_result_for_state(result),
-            )
-            if scan_ok:
-                self._notify_daily_scan_recovered(completed_state)
-                self._last_target_refresh_at = 0.0
-            else:
-                self._notify_daily_scan_failed(completed_state)
-            return {"ok": scan_ok, "ran": True, "state": completed_state, "result": result}
+            return self._finalize_daily_scan_result(market_date=market_date, reason=reason, result=result, run_id=run_id)
         except Exception as exc:
-            failed_state = self._set_daily_scan_state(
-                market_date=market_date,
-                status="failed",
-                reason=reason,
-                finished_at=self._now_iso(),
-                last_error=str(exc),
-                result={},
+            failure = _classify_daily_scan_failure(
+                str(exc),
+                result={"ok": False, "error": str(exc)},
+                retryable_default=True,
             )
             service_mod.logger.error("Daily scan execution failed: %s", exc)
-            self._notify_daily_scan_failed(failed_state)
-            return {"ok": False, "ran": True, "state": failed_state, "error": str(exc)}
+            return self._schedule_or_fail_daily_scan_retry(
+                market_date=market_date,
+                reason=reason,
+                failure=failure,
+                result={"ok": False, "error": str(exc)},
+                diagnostics={},
+                run_id=run_id,
+            )
 
     def _apply_live_subscriptions(self, target_date: str, conid_map: dict, reason: str = "", trade_symbols: list[str] | None = None):
         service_mod = _service_mod()

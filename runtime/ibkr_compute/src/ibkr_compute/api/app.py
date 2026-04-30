@@ -9,6 +9,7 @@ from ibkr_compute.api.app_entrypoints import (
     build_proxy_legacy_pb_collections_response,
     build_recompute_entrypoint_response,
     build_scan_entrypoint_response,
+    build_scan_status_entrypoint_response,
 )
 from ibkr_compute.api.app_exports import apply_app_exports
 from ibkr_compute.api.app_bootstrap import (
@@ -54,6 +55,10 @@ def compute_prime():
 
 def scan():
     return build_scan_entrypoint_response()
+
+
+def scan_status():
+    return build_scan_status_entrypoint_response()
 
 
 def recompute():

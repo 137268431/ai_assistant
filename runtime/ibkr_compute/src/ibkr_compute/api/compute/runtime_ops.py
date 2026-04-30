@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+import threading
 import time
 import traceback
+import uuid
 from datetime import datetime
 
-from flask import jsonify
+from flask import jsonify, request
 
 from ibkr_compute.api.compute.request import build_compute_disabled_payload, get_requested_environments
 from ibkr_compute.api.runtime_status_client import get_remote_runtime_status, is_runtime_status_payload
 from ibkr_compute.api.shared.service_status import get_service_status_snapshot
 from ibkr_compute.api.service_topology import is_runtime_remote_mode
+from ibkr_compute.core.payload_compact import compact_json_payload
 from ibkr_compute.core.time_utils import ET
 from ibkr_compute.workflows.daily_scanner import DEFAULT_SCAN_TIME_ET, DailyScanner
+
+
+SCAN_ATTEMPT_STATE_KEY = "ibkr_daily_scan_attempt_state"
 
 
 def _api_app():
@@ -111,6 +117,266 @@ def _scan_window_state(api_app, environment: str, now_et: datetime | None = None
     }
 
 
+def _scan_attempt_lock(api_app):
+    lock = getattr(api_app, "_scan_attempt_state_lock", None)
+    if lock is None:
+        lock = threading.RLock()
+        setattr(api_app, "_scan_attempt_state_lock", lock)
+    return lock
+
+
+def _scan_attempt_state(api_app) -> dict:
+    state = getattr(api_app, "_scan_attempt_state", None)
+    if not isinstance(state, dict):
+        state = {"by_key": {}, "by_run_id": {}}
+        setattr(api_app, "_scan_attempt_state", state)
+    state.setdefault("by_key", {})
+    state.setdefault("by_run_id", {})
+    return state
+
+
+def _scan_attempt_key(environment: str, date_str: str) -> str:
+    env = str(environment or "live").strip().lower() or "live"
+    date_text = str(date_str or "").strip()
+    return f"{env}:{date_text}"
+
+
+def _compact_scan_attempt_result(result: dict | None) -> dict:
+    if not isinstance(result, dict):
+        return {}
+    return compact_json_payload(
+        result,
+        max_list_items=30,
+        max_dict_items=120,
+        max_string_length=800,
+        max_depth=7,
+    )
+
+
+def _scan_result_counts(result: dict | None) -> dict:
+    payload = result if isinstance(result, dict) else {}
+    return {
+        "scanned": int(payload.get("scanned", 0) or 0),
+        "eligible": int(payload.get("eligible", 0) or 0),
+        "active": int(payload.get("active", 0) or 0),
+        "candidates": int(payload.get("candidates", 0) or 0),
+        "removed": int(payload.get("removed", 0) or 0),
+        "errors": int(payload.get("errors", 0) or 0),
+    }
+
+
+def _persist_scan_attempt_state(api_app, state: dict) -> None:
+    pb = getattr(api_app, "pb", None)
+    if pb is None or not hasattr(pb, "upsert_state"):
+        return
+    environment = str(state.get("environment") or "live").strip().lower() or "live"
+    date_str = str(state.get("date") or state.get("market_date") or "global").strip() or "global"
+    try:
+        pb.upsert_state(
+            SCAN_ATTEMPT_STATE_KEY,
+            environment,
+            compact_json_payload(state, max_list_items=30, max_dict_items=120, max_string_length=800, max_depth=7),
+            date=date_str,
+        )
+    except Exception:
+        # Scan status is best-effort; in-memory state still keeps this process observable.
+        pass
+
+
+def _set_scan_attempt_state(api_app, state: dict) -> dict:
+    next_state = dict(state or {})
+    environment = str(next_state.get("environment") or "live").strip().lower() or "live"
+    date_str = str(next_state.get("date") or next_state.get("market_date") or api_app.current_market_date()).strip()
+    run_id = str(next_state.get("run_id") or "").strip()
+    next_state["environment"] = environment
+    next_state["date"] = date_str
+    next_state["market_date"] = date_str
+    if not run_id:
+        run_id = f"scan-{environment}-{date_str}-{uuid.uuid4().hex[:12]}"
+        next_state["run_id"] = run_id
+    key = _scan_attempt_key(environment, date_str)
+    with _scan_attempt_lock(api_app):
+        store = _scan_attempt_state(api_app)
+        store["by_key"][key] = dict(next_state)
+        store["by_run_id"][run_id] = dict(next_state)
+    _persist_scan_attempt_state(api_app, next_state)
+    return dict(next_state)
+
+
+def _get_scan_attempt_state(api_app, environment: str, date_str: str, run_id: str = "") -> dict | None:
+    normalized_run_id = str(run_id or "").strip()
+    normalized_env = str(environment or "live").strip().lower() or "live"
+    normalized_date = str(date_str or api_app.current_market_date()).strip()
+    with _scan_attempt_lock(api_app):
+        store = _scan_attempt_state(api_app)
+        if normalized_run_id:
+            candidate = store["by_run_id"].get(normalized_run_id)
+            if isinstance(candidate, dict):
+                return dict(candidate)
+        candidate = store["by_key"].get(_scan_attempt_key(normalized_env, normalized_date))
+        if isinstance(candidate, dict):
+            return dict(candidate)
+
+    pb = getattr(api_app, "pb", None)
+    if pb is not None and hasattr(pb, "get_state"):
+        try:
+            row = pb.get_state(SCAN_ATTEMPT_STATE_KEY, normalized_env, date=normalized_date)
+            data = row.get("data") if isinstance(row, dict) else {}
+            if isinstance(data, dict):
+                if not normalized_run_id or str(data.get("run_id") or "") == normalized_run_id:
+                    return dict(data)
+        except Exception:
+            pass
+    return None
+
+
+def _scan_terminal_status(status: str) -> bool:
+    return str(status or "").strip().lower() in {"completed", "failed", "cancelled"}
+
+
+def _execute_async_scan(api_app, initial_state: dict, enabled_environments: list[str], force_scan: bool, scan_windows: list[dict]):
+    run_id = str(initial_state.get("run_id") or "")
+    environment = str(initial_state.get("environment") or (enabled_environments[0] if enabled_environments else "live"))
+    date_str = str(initial_state.get("date") or api_app.current_market_date())
+    _set_scan_attempt_state(
+        api_app,
+        {
+            **initial_state,
+            "status": "running",
+            "started_at": datetime.now(ET).isoformat(),
+            "finished_at": "",
+            "last_error": "",
+            "failure": {},
+            "diagnostics": {},
+        },
+    )
+    try:
+        scanner = DailyScanner(pb_client=api_app.pb, engines=api_app.engines)
+        result = scanner.run_scan(date_str, environments=enabled_environments)
+        api_app.last_scan_time = time.time()
+        scan_ok = bool(result.get("ok", True))
+        error_text = "" if scan_ok else str(result.get("error") or "daily_scan_failed")
+        final_state = {
+            "ok": scan_ok,
+            "async": True,
+            "run_id": run_id,
+            "status": "completed" if scan_ok else "failed",
+            "date": date_str,
+            "market_date": date_str,
+            "environment": environment,
+            "requested_environments": enabled_environments,
+            "environments": enabled_environments,
+            "force": force_scan,
+            "scan_windows": scan_windows,
+            "started_at": str(initial_state.get("started_at") or ""),
+            "finished_at": datetime.now(ET).isoformat(),
+            "last_error": error_text,
+            "failure": {"code": str(result.get("error") or ""), "retryable": False} if not scan_ok else {},
+            "counts": _scan_result_counts(result),
+            "result": _compact_scan_attempt_result({"ok": scan_ok, **result}),
+        }
+        _set_scan_attempt_state(api_app, final_state)
+    except Exception as exc:
+        _set_scan_attempt_state(
+            api_app,
+            {
+                **initial_state,
+                "ok": False,
+                "async": True,
+                "status": "failed",
+                "finished_at": datetime.now(ET).isoformat(),
+                "last_error": str(exc),
+                "failure": {
+                    "code": "scan_exception",
+                    "retryable": True,
+                    "message": str(exc),
+                },
+                "result": {"ok": False, "error": str(exc)},
+            },
+        )
+
+
+def _build_async_scan_response(api_app, *, payload: dict, enabled_environments: list[str], force_scan: bool, scan_windows: list[dict]):
+    date_str = api_app.current_market_date()
+    environment = str((payload.get("environment") or (enabled_environments[0] if enabled_environments else "live")) or "live").strip().lower() or "live"
+    existing = _get_scan_attempt_state(api_app, environment, date_str)
+    if existing and not _scan_terminal_status(str(existing.get("status") or "")):
+        return jsonify({
+            "ok": True,
+            "accepted": True,
+            "async": True,
+            "existing": True,
+            "run_id": existing.get("run_id"),
+            "status": existing.get("status") or "running",
+            "date": date_str,
+            "environment": environment,
+            "state": existing,
+        })
+
+    run_id = str(payload.get("run_id") or "").strip() or f"scan-{environment}-{date_str}-{uuid.uuid4().hex[:12]}"
+    now_iso = datetime.now(ET).isoformat()
+    initial_state = _set_scan_attempt_state(
+        api_app,
+        {
+            "ok": True,
+            "accepted": True,
+            "async": True,
+            "run_id": run_id,
+            "status": "accepted",
+            "date": date_str,
+            "market_date": date_str,
+            "environment": environment,
+            "requested_environments": enabled_environments,
+            "environments": enabled_environments,
+            "force": force_scan,
+            "scan_windows": scan_windows,
+            "trigger_source": str(payload.get("trigger_source") or payload.get("source") or "").strip(),
+            "started_at": now_iso,
+            "finished_at": "",
+            "last_error": "",
+            "failure": {},
+            "diagnostics": {},
+            "result": {},
+        },
+    )
+    thread = threading.Thread(
+        target=_execute_async_scan,
+        args=(api_app, initial_state, list(enabled_environments), force_scan, list(scan_windows)),
+        name=f"daily-scan-{environment}",
+        daemon=True,
+    )
+    thread.start()
+    return jsonify({
+        "ok": True,
+        "accepted": True,
+        "async": True,
+        "run_id": run_id,
+        "status": "accepted",
+        "date": date_str,
+        "environment": environment,
+        "environments": enabled_environments,
+        "scan_windows": scan_windows,
+    })
+
+
+def build_scan_status_response():
+    api_app = _api_app()
+    environment = str(request.args.get("environment") or "live").strip().lower() or "live"
+    date_str = str(request.args.get("date") or request.args.get("market_date") or api_app.current_market_date()).strip()
+    run_id = str(request.args.get("run_id") or "").strip()
+    state = _get_scan_attempt_state(api_app, environment, date_str, run_id=run_id)
+    if not state:
+        return jsonify({
+            "ok": False,
+            "status": "not_found",
+            "error": "scan_attempt_not_found",
+            "environment": environment,
+            "date": date_str,
+            "run_id": run_id,
+        }), 404
+    return jsonify({"ok": True, **state})
+
+
 def build_scan_response(payload=None):
     api_app = _api_app()
     api_app.cfg.refresh()
@@ -133,6 +399,15 @@ def build_scan_response(payload=None):
             "scan_windows": scan_windows,
             "requires_force": True,
         })
+
+    if _payload_bool(payload.get("async"), False):
+        return _build_async_scan_response(
+            api_app,
+            payload=payload,
+            enabled_environments=enabled_environments,
+            force_scan=force_scan,
+            scan_windows=scan_windows,
+        )
 
     date_str = api_app.current_market_date()
     scanner = DailyScanner(pb_client=api_app.pb, engines=api_app.engines)

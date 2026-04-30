@@ -12,4 +12,5 @@ def register_compute_routes(app):
         methods=["POST"],
     )
     app.add_url_rule("/scan", endpoint="scan", view_func=lambda: get_app_module().scan(), methods=["POST"])
+    app.add_url_rule("/scan/status", endpoint="scan_status", view_func=lambda: get_app_module().scan_status(), methods=["GET"])
     app.add_url_rule("/recompute", endpoint="recompute", view_func=lambda: get_app_module().recompute(), methods=["POST"])

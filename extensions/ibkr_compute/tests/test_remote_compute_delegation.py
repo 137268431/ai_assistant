@@ -73,6 +73,21 @@ class _DummyStatePB:
         return {"ok": True}
 
 
+class _DummyConfig:
+    def get_for_environment(self, key, environment, default=None):
+        if key == "ibkr_scan_schedule":
+            return "00:00-23:59"
+        if key == "ibkr_daily_scan_retry_delays_sec":
+            return "1,2,3"
+        return default
+
+    def get_bool_for_environment(self, key, environment, default=False):
+        return default
+
+    def get_int_for_environment(self, key, environment, default=0):
+        return default
+
+
 class _DummyMarketUniverse(TradingServiceMarketUniverseMixin):
     def __init__(self):
         self._current_market_date = "2026-04-27"
@@ -87,6 +102,7 @@ class _DummyMarketUniverse(TradingServiceMarketUniverseMixin):
         self._daily_scan_alert_active = False
         self._daily_scan_failure_count = 0
         self.pb = _DummyStatePB()
+        self.config = _DummyConfig()
         self.events = []
 
     def _market_date(self) -> str:
@@ -691,13 +707,55 @@ class RemoteDailyScanDelegationTest(unittest.TestCase):
         service = _DummyMarketUniverse()
         remote_result = {
             "ok": True,
-            "date": "2026-04-27",
-            "scanned": 2,
-            "eligible": 1,
-            "active": 1,
-            "candidates": 0,
-            "errors": 0,
-            "rejection_summary": {"vote_tie": 1},
+            "accepted": True,
+            "async": True,
+            "run_id": "scan-live-2026-04-27-test",
+            "status": "accepted",
+        }
+
+        with mock.patch(
+            "ibkr_compute.api.service_topology.uses_remote_compute_service",
+            return_value=True,
+        ):
+            with mock.patch("ibkr_compute.api.compute_status_client.get_remote_compute_status", return_value={}):
+                with mock.patch(
+                    "ibkr_compute.api.compute_status_client.trigger_remote_scan",
+                    return_value=remote_result,
+                ) as trigger_mock:
+                    result = service._run_daily_scan_if_due(reason="poll")
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["pending"])
+        self.assertEqual(result["state"]["status"], "pending")
+        self.assertEqual(result["state"]["run_id"], "scan-live-2026-04-27-test")
+        self.assertEqual(service._last_target_refresh_at, 10.0)
+        trigger_payload = trigger_mock.call_args.args[0]
+        self.assertEqual(trigger_payload["environment"], "live")
+        self.assertTrue(trigger_payload["async"])
+        self.assertEqual(trigger_payload["trigger_source"], "poll")
+        self.assertTrue(str(trigger_payload["run_id"]).startswith("daily-scan-live-2026-04-27-"))
+
+    def test_daily_scan_poll_completes_pending_remote_attempt(self):
+        service = _DummyMarketUniverse()
+        service._daily_scan_state = {
+            **service._initial_daily_scan_state("2026-04-27"),
+            "status": "pending",
+            "run_id": "scan-live-2026-04-27-test",
+            "started_at": "2026-04-27T09:20:03-04:00",
+        }
+        status_result = {
+            "ok": True,
+            "status": "completed",
+            "run_id": "scan-live-2026-04-27-test",
+            "result": {
+                "ok": True,
+                "date": "2026-04-27",
+                "scanned": 2,
+                "eligible": 1,
+                "active": 1,
+                "candidates": 0,
+                "errors": 0,
+            },
         }
 
         with mock.patch(
@@ -705,18 +763,17 @@ class RemoteDailyScanDelegationTest(unittest.TestCase):
             return_value=True,
         ):
             with mock.patch(
-                "ibkr_compute.api.compute_status_client.trigger_remote_scan",
-                return_value=remote_result,
-            ) as trigger_mock:
+                "ibkr_compute.api.compute_status_client.get_remote_scan_status",
+                return_value=status_result,
+            ) as status_mock:
                 result = service._run_daily_scan_if_due(reason="poll")
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["state"]["status"], "completed")
-        self.assertEqual(result["state"]["result"], remote_result)
         self.assertEqual(service._last_target_refresh_at, 0.0)
-        trigger_mock.assert_called_once_with({"environment": "live"})
+        status_mock.assert_called_once()
 
-    def test_daily_scan_all_snapshotless_result_is_failed_not_completed(self):
+    def test_daily_scan_all_snapshotless_result_schedules_retry(self):
         service = _DummyMarketUniverse()
         snapshotless_result = {
             "ok": True,
@@ -733,21 +790,75 @@ class RemoteDailyScanDelegationTest(unittest.TestCase):
             "ibkr_compute.api.service_topology.uses_remote_compute_service",
             return_value=True,
         ):
-            with mock.patch(
-                "ibkr_compute.api.compute_status_client.trigger_remote_scan",
-                return_value=snapshotless_result,
-            ):
-                result = service._run_daily_scan_if_due(reason="poll")
+            with mock.patch("ibkr_compute.api.compute_status_client.get_remote_compute_status", return_value={}):
+                with mock.patch(
+                    "ibkr_compute.api.compute_status_client.trigger_remote_scan",
+                    return_value=snapshotless_result,
+                ):
+                    result = service._run_daily_scan_if_due(reason="poll")
 
         self.assertFalse(result["ok"])
-        self.assertEqual(result["state"]["status"], "failed")
-        self.assertEqual(
-            result["state"]["last_error"],
-            "all_scanned_symbols_missing_technical_snapshots",
-        )
+        self.assertTrue(result["retry_scheduled"])
+        self.assertEqual(result["state"]["status"], "retry_wait")
+        self.assertEqual(result["state"]["last_error"], "All scanned symbols are missing technical snapshots")
+        self.assertEqual(result["state"]["failure"]["code"], "all_scanned_symbols_missing_technical_snapshots")
         self.assertFalse(result["state"]["result"]["ok"])
         self.assertEqual(result["state"]["result"]["error"], "all_scanned_symbols_missing_technical_snapshots")
-        self.assertEqual(service.events[0]["title"], "IBKR 盘前日筛失败")
+        self.assertEqual(service.events[0]["title"], "IBKR 盘前日筛重试中")
+
+    def test_daily_scan_waits_when_compute_preload_is_running(self):
+        service = _DummyMarketUniverse()
+        compute_status = {
+            "ok": True,
+            "compute_startup_preload": {
+                "status": "running",
+                "running": True,
+                "symbol_completed": 14,
+                "symbol_total": 712,
+                "ready_count": 14,
+                "elapsed_s": 815,
+            },
+        }
+
+        with mock.patch(
+            "ibkr_compute.api.service_topology.uses_remote_compute_service",
+            return_value=True,
+        ):
+            with mock.patch("ibkr_compute.api.compute_status_client.get_remote_compute_status", return_value=compute_status):
+                with mock.patch("ibkr_compute.api.compute_status_client.trigger_remote_scan") as trigger_mock:
+                    result = service._run_daily_scan_if_due(reason="poll")
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["retry_scheduled"])
+        self.assertEqual(result["state"]["status"], "retry_wait")
+        self.assertEqual(result["state"]["failure"]["code"], "compute_preload_running")
+        self.assertEqual(result["state"]["failure"]["evidence"]["compute_startup_preload"]["symbol_total"], 712)
+        trigger_mock.assert_not_called()
+
+    def test_daily_scan_submit_timeout_checks_status_then_schedules_retry(self):
+        service = _DummyMarketUniverse()
+        timeout_result = {
+            "ok": False,
+            "error_code": "compute_scan_submit_timeout",
+            "error": "HTTPConnectionPool(host='127.0.0.1', port=5100): Read timed out.",
+            "retryable": True,
+        }
+        not_found = {"ok": False, "status": "not_found", "error": "scan_attempt_not_found"}
+
+        with mock.patch(
+            "ibkr_compute.api.service_topology.uses_remote_compute_service",
+            return_value=True,
+        ):
+            with mock.patch("ibkr_compute.api.compute_status_client.get_remote_compute_status", return_value={}):
+                with mock.patch("ibkr_compute.api.compute_status_client.trigger_remote_scan", return_value=timeout_result):
+                    with mock.patch("ibkr_compute.api.compute_status_client.get_remote_scan_status", return_value=not_found) as status_mock:
+                        result = service._run_daily_scan_if_due(reason="poll")
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["retry_scheduled"])
+        self.assertEqual(result["state"]["failure"]["code"], "compute_scan_submit_timeout")
+        self.assertEqual(result["state"]["failure"]["evidence"]["error_code"], "compute_scan_submit_timeout")
+        status_mock.assert_called_once()
 
     def test_stale_running_daily_scan_is_retried(self):
         service = _DummyMarketUniverse()
@@ -771,16 +882,19 @@ class RemoteDailyScanDelegationTest(unittest.TestCase):
             "ibkr_compute.api.service_topology.uses_remote_compute_service",
             return_value=True,
         ):
-            with mock.patch(
-                "ibkr_compute.api.compute_status_client.trigger_remote_scan",
-                return_value=remote_result,
-            ) as trigger_mock:
-                result = service._run_daily_scan_if_due(reason="poll")
+            with mock.patch("ibkr_compute.api.compute_status_client.get_remote_compute_status", return_value={}):
+                with mock.patch(
+                    "ibkr_compute.api.compute_status_client.trigger_remote_scan",
+                    return_value=remote_result,
+                ) as trigger_mock:
+                    result = service._run_daily_scan_if_due(reason="poll")
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["state"]["status"], "completed")
         self.assertEqual(result["state"]["result"], remote_result)
-        trigger_mock.assert_called_once_with({"environment": "live"})
+        trigger_payload = trigger_mock.call_args.args[0]
+        self.assertEqual(trigger_payload["environment"], "live")
+        self.assertTrue(trigger_payload["async"])
         persisted_statuses = [row[2]["status"] for row in service.pb.states]
         self.assertIn("failed", persisted_statuses)
         self.assertEqual(persisted_statuses[-1], "completed")

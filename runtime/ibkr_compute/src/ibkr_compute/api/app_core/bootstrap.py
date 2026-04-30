@@ -133,6 +133,8 @@ def build_runtime_state_bundle() -> dict:
         "_start_time": time.time(),
         "_compute_startup_preload_state_lock": threading.Lock(),
         "_compute_startup_preload_state": {},
+        "_scan_attempt_state_lock": threading.RLock(),
+        "_scan_attempt_state": {"by_key": {}, "by_run_id": {}},
         "_ibkr_service": None,
         "_ibkr_service_lock": threading.Lock(),
         "_ibkr_restore_attempted": False,

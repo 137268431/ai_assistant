@@ -120,8 +120,25 @@ def _post_remote_compute_path(path: str, payload: dict | None = None) -> dict:
             json=payload or {},
             timeout=COMPUTE_TRIGGER_TIMEOUT_SECONDS,
         )
+    except requests.exceptions.Timeout as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "error_code": "compute_scan_submit_timeout" if safe_path == "/scan" else "compute_request_timeout",
+            "retryable": True,
+            "path": safe_path,
+            "timeout_s": COMPUTE_TRIGGER_TIMEOUT_SECONDS,
+        }
+    except requests.exceptions.ConnectionError as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "error_code": "compute_unreachable",
+            "retryable": True,
+            "path": safe_path,
+        }
     except Exception as exc:
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": str(exc), "error_code": "compute_request_failed", "retryable": True, "path": safe_path}
 
     candidate: dict[str, Any] = {}
     try:
@@ -144,6 +161,62 @@ def _post_remote_compute_path(path: str, payload: dict | None = None) -> dict:
         "ok": False,
         "status_code": response.status_code,
         "error": str(response.text or "").strip() or f"http_{response.status_code}",
+        "error_code": "compute_http_error",
+        "retryable": response.status_code >= 500,
+        "path": safe_path,
+    }
+
+
+def _get_remote_compute_path(path: str, params: dict | None = None) -> dict:
+    safe_path = "/" + str(path or "").strip().lstrip("/")
+    try:
+        response = requests.get(
+            f"{get_compute_internal_url()}{safe_path}",
+            params=params or {},
+            timeout=COMPUTE_STATUS_TIMEOUT_SECONDS,
+        )
+    except requests.exceptions.Timeout as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "error_code": "compute_status_timeout",
+            "retryable": True,
+            "path": safe_path,
+            "timeout_s": COMPUTE_STATUS_TIMEOUT_SECONDS,
+        }
+    except requests.exceptions.ConnectionError as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "error_code": "compute_unreachable",
+            "retryable": True,
+            "path": safe_path,
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "error_code": "compute_status_failed", "retryable": True, "path": safe_path}
+
+    candidate: dict[str, Any] = {}
+    try:
+        json_payload = response.json()
+        if isinstance(json_payload, dict):
+            candidate = dict(json_payload)
+    except Exception:
+        candidate = {}
+    if candidate:
+        if response.ok or "status_code" in candidate:
+            return candidate
+        return {
+            **candidate,
+            "ok": bool(candidate.get("ok", False)),
+            "status_code": response.status_code,
+        }
+    return {
+        "ok": False,
+        "status_code": response.status_code,
+        "error": str(response.text or "").strip() or f"http_{response.status_code}",
+        "error_code": "compute_http_error",
+        "retryable": response.status_code >= 500,
+        "path": safe_path,
     }
 
 
@@ -157,3 +230,7 @@ def trigger_remote_prime(payload: dict | None = None) -> dict:
 
 def trigger_remote_scan(payload: dict | None = None) -> dict:
     return _post_remote_compute_path("/scan", payload)
+
+
+def get_remote_scan_status(payload: dict | None = None) -> dict:
+    return _get_remote_compute_path("/scan/status", payload)
