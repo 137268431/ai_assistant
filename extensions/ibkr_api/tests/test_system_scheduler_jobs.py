@@ -15,6 +15,7 @@ for src_root in SERVICE_SRC_ROOTS:
 os.environ.setdefault("IBKR_SCHEDULER_AUTOSTART", "false")
 
 from ibkr_api.system.jobs.auth import build_auth_immediate_issue, is_operational_2fa_issue
+from ibkr_api.system.jobs.early_expansion_topup import build_early_expansion_topup_response
 from ibkr_api.system.jobs.order_expiry import build_order_expiry_response
 from ibkr_api.system.jobs.reminders import (
     build_system_daily_report_response,
@@ -308,6 +309,84 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         state = pb.states[("system_notify_daily", "live", "2026-04-23")]["data"]
         self.assertNotIn("open_sent_at", state)
         self.assertEqual(state["open_error"], "send_failed")
+
+    def test_early_expansion_topup_notifies_only_when_new_targets_exist(self):
+        sent = []
+        events = []
+
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            self.assertEqual(method, "POST")
+            self.assertEqual(path, "/scan")
+            self.assertEqual(json_body["mode"], "topup")
+            self.assertTrue(json_body["force"])
+            return {
+                "ok": True,
+                "status_code": 200,
+                "payload": {
+                    "ok": True,
+                    "scanned": 2,
+                    "eligible": 1,
+                    "new_active": 1,
+                    "new_candidates": 0,
+                    "new_targets": [
+                        {
+                            "symbol": "NVDA",
+                            "status": "active",
+                            "direction_bias": "long",
+                            "score": 18,
+                            "scan_reason": "5m:ema_bullish",
+                        }
+                    ],
+                },
+            }
+
+        payload, status_code = build_early_expansion_topup_response(
+            payload={"environment": "live"},
+            normalize_environment=lambda value, default: str(value or default).strip().lower() or default,
+            time_strings=lambda: {"us": "2026-04-23 09:40:00", "cn": "2026-04-23 21:40:00", "date": "2026-04-23"},
+            request_json_request=request_json_request,
+            compute_base_url="http://compute",
+            feishu_send_interactive=lambda card, chat_id, environment: sent.append({"card": card, "chat_id": chat_id}) or {"success": True, "message_id": "msg-topup"},
+            write_system_event_record=lambda *args, **kwargs: events.append(args) or {"id": "event-1"},
+            config_value=lambda key, default, environment: default,
+            console_base_url=lambda: "https://quant.lzw-glory.top",
+            startup_chat_id=lambda environment: f"startup-chat-{environment}",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["notified"])
+        self.assertEqual(payload["message_id"], "msg-topup")
+        self.assertEqual(payload["new_active"], 1)
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["chat_id"], "startup-chat-live")
+        self.assertEqual(events[0][0], "early_expansion_topup")
+
+    def test_early_expansion_topup_skips_notification_without_new_targets(self):
+        sent = []
+
+        payload, status_code = build_early_expansion_topup_response(
+            payload={"environment": "live"},
+            normalize_environment=lambda value, default: str(value or default).strip().lower() or default,
+            time_strings=lambda: {"us": "2026-04-23 09:50:00", "cn": "2026-04-23 21:50:00", "date": "2026-04-23"},
+            request_json_request=lambda method, base_url, path, params=None, json_body=None, timeout=5.0: {
+                "ok": True,
+                "status_code": 200,
+                "payload": {"ok": True, "new_targets": [], "new_active": 0, "new_candidates": 0},
+            },
+            compute_base_url="http://compute",
+            feishu_send_interactive=lambda card, chat_id, environment: sent.append(card) or {"success": True},
+            write_system_event_record=lambda *args, **kwargs: {"id": "event-1"},
+            config_value=lambda key, default, environment: default,
+            console_base_url=lambda: "https://quant.lzw-glory.top",
+            startup_chat_id=lambda environment: f"startup-chat-{environment}",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["skipped"])
+        self.assertEqual(payload["reason"], "no_new_targets")
+        self.assertEqual(sent, [])
 
     def test_daily_report_skips_outside_target_window(self):
         pb = _ReminderPB()

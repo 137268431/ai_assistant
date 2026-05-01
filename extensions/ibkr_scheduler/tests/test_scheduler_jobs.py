@@ -150,6 +150,19 @@ class SchedulerJobsTest(unittest.TestCase):
             )
         )
 
+    def test_early_expansion_topup_crons_match_0930_to_1030_et(self):
+        early = next(item for item in scheduler_app_mod.CRON_DEFINITIONS if item["id"] == "ibkr_early_expansion_topup")
+        late = next(item for item in scheduler_app_mod.CRON_DEFINITIONS if item["id"] == "ibkr_early_expansion_topup_late")
+
+        self.assertEqual(early["cron_expr"], "30,40,50 9 * * 1-5")
+        self.assertEqual(late["cron_expr"], "0,10,20,30 10 * * 1-5")
+        self.assertEqual(early["cron_timezone"], "America/New_York")
+        self.assertEqual(late["cron_timezone"], "America/New_York")
+        self.assertTrue(cron_matches_minute(early["cron_expr"], datetime(2026, 4, 20, 13, 30, tzinfo=timezone.utc), early["cron_timezone"]))
+        self.assertTrue(cron_matches_minute(late["cron_expr"], datetime(2026, 4, 20, 14, 30, tzinfo=timezone.utc), late["cron_timezone"]))
+        self.assertFalse(cron_matches_minute(early["cron_expr"], datetime(2026, 4, 20, 13, 20, tzinfo=timezone.utc), early["cron_timezone"]))
+        self.assertFalse(cron_matches_minute(late["cron_expr"], datetime(2026, 4, 20, 14, 40, tzinfo=timezone.utc), late["cron_timezone"]))
+
     def test_compute_dispatch_updates_cursor_from_latest_persisted_bars(self):
         pb = _FakePB()
         pb.states[(BAR_INGEST_CURSOR_STATE_KEY, "live", "global")] = {
@@ -451,7 +464,11 @@ class SchedulerJobsTest(unittest.TestCase):
             str(definition.get("id") or "")
             for definition in scheduler_app_mod.CRON_DEFINITIONS
             if str(definition.get("runner_kind") or "").strip().lower().startswith("native_")
-            and cron_matches_minute(str(definition.get("cron_expr") or ""), when_utc)
+            and cron_matches_minute(
+                str(definition.get("cron_expr") or ""),
+                when_utc,
+                str(definition.get("cron_timezone") or "UTC"),
+            )
         }
         self.assertEqual(called_job_ids, expected_job_ids)
         called_slots = {call.kwargs["scheduled_slot"] for call in run_job_mock.call_args_list}

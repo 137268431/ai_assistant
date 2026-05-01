@@ -8,6 +8,7 @@ from ibkr_api.system.jobs import (
     build_auth_edge_guard_response,
     build_auth_pending_guard_response,
     build_data_gap_guard_response,
+    build_early_expansion_topup_response,
     build_order_expiry_response,
     build_system_daily_report_response,
     build_system_heartbeat_response,
@@ -37,6 +38,8 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
     emit_system_event = deps["emit_system_event"]
     build_system_monitor_payload = deps["build_system_monitor_payload"]
     build_system_summary_payload = deps["build_system_summary_payload"]
+    request_json_request = deps["request_json_request"]
+    compute_base_url = deps["compute_base_url"]
     time_strings = deps["time_strings"]
     get_state_payload = deps["get_state_payload"]
     normalize_two_factor_state_with_runtime = deps["normalize_two_factor_state_with_runtime"]
@@ -287,6 +290,25 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
         return response if status_code == 200 else (response, status_code)
 
     exports["custom_system_job_scan_summary"] = custom_system_job_scan_summary
+
+    @app.route("/api/custom/system/jobs/early_expansion_topup", methods=["POST"])
+    def custom_system_job_early_expansion_topup() -> Response:
+        payload, status_code = build_early_expansion_topup_response(
+            payload=request.get_json(silent=True) or {},
+            normalize_environment=normalize_environment,
+            time_strings=time_strings,
+            request_json_request=request_json_request,
+            compute_base_url=compute_base_url,
+            feishu_send_interactive=feishu_send_interactive,
+            write_system_event_record=write_system_event_record,
+            config_value=config_value,
+            console_base_url=console_base_url,
+            startup_chat_id=startup_chat_id,
+        )
+        response = jsonify(payload)
+        return response if status_code == 200 else (response, status_code)
+
+    exports["custom_system_job_early_expansion_topup"] = custom_system_job_early_expansion_topup
 
     @app.route("/api/custom/system/jobs/monitor_alert_guard", methods=["POST"])
     def custom_system_job_monitor_alert_guard() -> Response:

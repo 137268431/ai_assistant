@@ -14,7 +14,7 @@ from ibkr_compute.api.shared.service_status import get_service_status_snapshot
 from ibkr_compute.api.service_topology import is_runtime_remote_mode
 from ibkr_compute.core.payload_compact import compact_json_payload
 from ibkr_compute.core.time_utils import ET
-from ibkr_compute.workflows.daily_scanner import DEFAULT_SCAN_TIME_ET, DailyScanner
+from ibkr_compute.workflows.daily_scanner import DEFAULT_SCAN_TIME_ET, DAILY_SCAN_MODE_SEED, DailyScanner
 
 
 SCAN_ATTEMPT_STATE_KEY = "ibkr_daily_scan_attempt_state"
@@ -135,10 +135,17 @@ def _scan_attempt_state(api_app) -> dict:
     return state
 
 
-def _scan_attempt_key(environment: str, date_str: str) -> str:
+def _normalize_scan_mode(value) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"topup", "incremental", "early_expansion_topup"}:
+        return "topup"
+    return DAILY_SCAN_MODE_SEED
+
+
+def _scan_attempt_key(environment: str, date_str: str, mode: str = DAILY_SCAN_MODE_SEED) -> str:
     env = str(environment or "live").strip().lower() or "live"
     date_text = str(date_str or "").strip()
-    return f"{env}:{date_text}"
+    return f"{env}:{date_text}:{_normalize_scan_mode(mode)}"
 
 
 def _compact_scan_attempt_result(result: dict | None) -> dict:
@@ -191,10 +198,11 @@ def _set_scan_attempt_state(api_app, state: dict) -> dict:
     next_state["environment"] = environment
     next_state["date"] = date_str
     next_state["market_date"] = date_str
+    next_state["mode"] = _normalize_scan_mode(next_state.get("mode"))
     if not run_id:
         run_id = f"scan-{environment}-{date_str}-{uuid.uuid4().hex[:12]}"
         next_state["run_id"] = run_id
-    key = _scan_attempt_key(environment, date_str)
+    key = _scan_attempt_key(environment, date_str, next_state["mode"])
     with _scan_attempt_lock(api_app):
         store = _scan_attempt_state(api_app)
         store["by_key"][key] = dict(next_state)
@@ -203,17 +211,18 @@ def _set_scan_attempt_state(api_app, state: dict) -> dict:
     return dict(next_state)
 
 
-def _get_scan_attempt_state(api_app, environment: str, date_str: str, run_id: str = "") -> dict | None:
+def _get_scan_attempt_state(api_app, environment: str, date_str: str, run_id: str = "", mode: str = DAILY_SCAN_MODE_SEED) -> dict | None:
     normalized_run_id = str(run_id or "").strip()
     normalized_env = str(environment or "live").strip().lower() or "live"
     normalized_date = str(date_str or api_app.current_market_date()).strip()
+    normalized_mode = _normalize_scan_mode(mode)
     with _scan_attempt_lock(api_app):
         store = _scan_attempt_state(api_app)
         if normalized_run_id:
             candidate = store["by_run_id"].get(normalized_run_id)
             if isinstance(candidate, dict):
                 return dict(candidate)
-        candidate = store["by_key"].get(_scan_attempt_key(normalized_env, normalized_date))
+        candidate = store["by_key"].get(_scan_attempt_key(normalized_env, normalized_date, normalized_mode))
         if isinstance(candidate, dict):
             return dict(candidate)
 
@@ -238,6 +247,7 @@ def _execute_async_scan(api_app, initial_state: dict, enabled_environments: list
     run_id = str(initial_state.get("run_id") or "")
     environment = str(initial_state.get("environment") or (enabled_environments[0] if enabled_environments else "live"))
     date_str = str(initial_state.get("date") or api_app.current_market_date())
+    scan_mode = _normalize_scan_mode(initial_state.get("mode"))
     _set_scan_attempt_state(
         api_app,
         {
@@ -252,7 +262,7 @@ def _execute_async_scan(api_app, initial_state: dict, enabled_environments: list
     )
     try:
         scanner = DailyScanner(pb_client=api_app.pb, engines=api_app.engines)
-        result = scanner.run_scan(date_str, environments=enabled_environments)
+        result = scanner.run_scan(date_str, environments=enabled_environments, mode=scan_mode)
         api_app.last_scan_time = time.time()
         scan_ok = bool(result.get("ok", True))
         error_text = "" if scan_ok else str(result.get("error") or "daily_scan_failed")
@@ -267,6 +277,7 @@ def _execute_async_scan(api_app, initial_state: dict, enabled_environments: list
             "requested_environments": enabled_environments,
             "environments": enabled_environments,
             "force": force_scan,
+            "mode": scan_mode,
             "scan_windows": scan_windows,
             "started_at": str(initial_state.get("started_at") or ""),
             "finished_at": datetime.now(ET).isoformat(),
@@ -299,7 +310,8 @@ def _execute_async_scan(api_app, initial_state: dict, enabled_environments: list
 def _build_async_scan_response(api_app, *, payload: dict, enabled_environments: list[str], force_scan: bool, scan_windows: list[dict]):
     date_str = api_app.current_market_date()
     environment = str((payload.get("environment") or (enabled_environments[0] if enabled_environments else "live")) or "live").strip().lower() or "live"
-    existing = _get_scan_attempt_state(api_app, environment, date_str)
+    scan_mode = _normalize_scan_mode(payload.get("mode"))
+    existing = _get_scan_attempt_state(api_app, environment, date_str, mode=scan_mode)
     if existing and not _scan_terminal_status(str(existing.get("status") or "")):
         return jsonify({
             "ok": True,
@@ -310,6 +322,7 @@ def _build_async_scan_response(api_app, *, payload: dict, enabled_environments: 
             "status": existing.get("status") or "running",
             "date": date_str,
             "environment": environment,
+            "mode": scan_mode,
             "state": existing,
         })
 
@@ -326,6 +339,7 @@ def _build_async_scan_response(api_app, *, payload: dict, enabled_environments: 
             "date": date_str,
             "market_date": date_str,
             "environment": environment,
+            "mode": scan_mode,
             "requested_environments": enabled_environments,
             "environments": enabled_environments,
             "force": force_scan,
@@ -354,6 +368,7 @@ def _build_async_scan_response(api_app, *, payload: dict, enabled_environments: 
         "status": "accepted",
         "date": date_str,
         "environment": environment,
+        "mode": scan_mode,
         "environments": enabled_environments,
         "scan_windows": scan_windows,
     })
@@ -364,7 +379,8 @@ def build_scan_status_response():
     environment = str(request.args.get("environment") or "live").strip().lower() or "live"
     date_str = str(request.args.get("date") or request.args.get("market_date") or api_app.current_market_date()).strip()
     run_id = str(request.args.get("run_id") or "").strip()
-    state = _get_scan_attempt_state(api_app, environment, date_str, run_id=run_id)
+    scan_mode = _normalize_scan_mode(request.args.get("mode"))
+    state = _get_scan_attempt_state(api_app, environment, date_str, run_id=run_id, mode=scan_mode)
     if not state:
         return jsonify({
             "ok": False,
@@ -387,6 +403,7 @@ def build_scan_response(payload=None):
         return jsonify(build_compute_disabled_payload(requested_environments))
 
     force_scan = _payload_bool(payload.get("force"), False)
+    scan_mode = _normalize_scan_mode(payload.get("mode"))
     scan_windows = [_scan_window_state(api_app, env) for env in enabled_environments]
     blocked_windows = [window for window in scan_windows if not window["open"]]
     if blocked_windows and not force_scan:
@@ -411,7 +428,7 @@ def build_scan_response(payload=None):
 
     date_str = api_app.current_market_date()
     scanner = DailyScanner(pb_client=api_app.pb, engines=api_app.engines)
-    result = scanner.run_scan(date_str, environments=enabled_environments)
+    result = scanner.run_scan(date_str, environments=enabled_environments, mode=scan_mode)
     api_app.last_scan_time = time.time()
 
     return jsonify({
@@ -420,6 +437,7 @@ def build_scan_response(payload=None):
         "requested_environments": requested_environments,
         "environments": enabled_environments,
         "force": force_scan,
+        "mode": scan_mode,
         "scan_windows": scan_windows,
         **result,
     })

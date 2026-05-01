@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-SRC_ROOT = Path(__file__).resolve().parents[2] / "runtime" / "ibkr_compute" / "src"
+SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
@@ -148,6 +148,90 @@ class DailyScanRejectionSummaryTest(unittest.TestCase):
         self.assertEqual(result["rejection_summary"]["atr_pct_below_threshold"], 2)
         self.assertEqual(result["rejection_summary"]["day_change_below_threshold"], 2)
         self.assertTrue(result["rejection_examples"])
+
+    def test_topup_only_adds_new_symbols_and_keeps_existing_targets(self):
+        watchlist = [
+            {"symbol": "AAPL", "environment": "live", "symbol_role": "trade", "exchange": "SMART"},
+            {"symbol": "NVDA", "environment": "live", "symbol_role": "trade", "exchange": "SMART"},
+        ]
+        existing_targets = [
+            {
+                "id": "target-aapl",
+                "symbol": "AAPL",
+                "environment": "live",
+                "date": "2026-04-21",
+                "status": "active",
+                "extra": {"source": "daily_scan", "scan_stage": "early_expansion_seed"},
+            }
+        ]
+        pb_client = DummyPBClient(watchlist=watchlist, existing_targets=existing_targets)
+        engines = {
+            ("live", "AAPL", "5m"): FakeEngine({"ema_bullish": True}),
+            ("live", "NVDA", "5m"): FakeEngine({"ema_bullish": True}),
+        }
+        scanner = DailyScanner(pb_client=pb_client, engines=engines)
+        scanner._build_metric_rows = lambda date, environment, symbols: {
+            symbol: {
+                "avg_10d_volume": 3500000,
+                "premarket_volume": 25000,
+                "atr_pct": 0.8,
+                "day_change_pct": 2.5,
+                "exchange": "SMART",
+            }
+            for symbol in symbols
+        }
+
+        result = scanner.run_scan("2026-04-21", environments=["live"], mode="topup")
+
+        self.assertEqual([row["symbol"] for row in pb_client.upserts], ["NVDA"])
+        self.assertEqual(pb_client.upserts[0]["status"], "active")
+        self.assertEqual(pb_client.upserts[0]["extra"]["scan_stage"], "early_expansion_topup")
+        self.assertEqual(result["mode"], "topup")
+        self.assertEqual(result["active"], 2)
+        self.assertEqual(result["new_active"], 1)
+        self.assertEqual(result["new_targets"][0]["symbol"], "NVDA")
+        self.assertEqual(pb_client.updated, [])
+
+    def test_topup_writes_candidate_when_active_budget_is_full(self):
+        self.settings["trade_subscription_budget"] = 1
+        daily_scanner_mod._load_scan_settings.return_value = dict(self.settings)
+        watchlist = [
+            {"symbol": "AAPL", "environment": "live", "symbol_role": "trade", "exchange": "SMART"},
+            {"symbol": "NVDA", "environment": "live", "symbol_role": "trade", "exchange": "SMART"},
+        ]
+        existing_targets = [
+            {
+                "id": "target-aapl",
+                "symbol": "AAPL",
+                "environment": "live",
+                "date": "2026-04-21",
+                "status": "active",
+                "extra": {"source": "daily_scan", "scan_stage": "early_expansion_seed"},
+            }
+        ]
+        pb_client = DummyPBClient(watchlist=watchlist, existing_targets=existing_targets)
+        engines = {
+            ("live", "AAPL", "5m"): FakeEngine({"ema_bullish": True}),
+            ("live", "NVDA", "5m"): FakeEngine({"ema_bullish": True}),
+        }
+        scanner = DailyScanner(pb_client=pb_client, engines=engines)
+        scanner._build_metric_rows = lambda date, environment, symbols: {
+            symbol: {
+                "avg_10d_volume": 3500000,
+                "premarket_volume": 25000,
+                "atr_pct": 0.8,
+                "day_change_pct": 2.5,
+                "exchange": "SMART",
+            }
+            for symbol in symbols
+        }
+
+        result = scanner.run_scan("2026-04-21", environments=["live"], mode="topup")
+
+        self.assertEqual([row["symbol"] for row in pb_client.upserts], ["NVDA"])
+        self.assertEqual(pb_client.upserts[0]["status"], "candidate")
+        self.assertEqual(result["new_active"], 0)
+        self.assertEqual(result["new_candidates"], 1)
 
 
 if __name__ == "__main__":

@@ -591,11 +591,21 @@ async function collectPageExpectationIssues(page, url, mobile) {
       const visibleDesktopTables = Array.from(activeTab.querySelectorAll('.desktop-table-wrap')).filter(visible);
       const rulesPanels = Array.from(document.querySelectorAll('#rulesBoard .rules-panel'));
       const toggleButton = document.getElementById('toggleCurrentAdvancedFiltersBtn');
+      const isCurrentScreenerView = isScreenerTab && currentViewPanel?.classList.contains('active');
+      const rerunDailyScanButton = document.getElementById('rerunDailyScanBtn');
+      const manualDailyScanFeedback = document.getElementById('manualDailyScanFeedback');
+      const manualDailyScanCluster = document.querySelector('.manual-daily-scan-cluster');
+
+      if (isCurrentScreenerView) {
+        if (!visible(rerunDailyScanButton)) issues.push('manual_daily_scan_button_hidden');
+        if (!visible(manualDailyScanFeedback)) issues.push('manual_daily_scan_feedback_hidden');
+        if (!visible(manualDailyScanCluster)) issues.push('manual_daily_scan_cluster_hidden');
+      }
 
       if (isMobileViewport) {
         if (!activeMobileLists.length) issues.push('missing_visible_mobile_card_list');
         if (visibleDesktopTables.length) issues.push(`desktop_table_visible:${visibleDesktopTables.length}`);
-        if (isScreenerTab && currentViewPanel?.classList.contains('active')) {
+        if (isCurrentScreenerView) {
           const currentCards = document.getElementById('currentTargetsCards');
           if (!visible(currentCards)) issues.push('current_targets_mobile_cards_hidden');
           if (toggleButton && !visible(toggleButton)) issues.push('current_filter_toggle_hidden');

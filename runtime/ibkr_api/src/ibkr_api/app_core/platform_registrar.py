@@ -30,6 +30,7 @@ def register_platform_routes(app, deps: dict[str, Any]) -> dict[str, Any]:
                 "feishu_update_interactive": deps["feishu_update_interactive"],
                 "build_system_summary_payload": deps["build_system_summary_payload"],
                 "build_system_monitor_payload": deps["build_system_monitor_payload"],
+                "compute_base_url": deps["compute_base_url"],
                 "request_two_factor_approval": deps["request_two_factor_approval"],
                 "emit_system_event": deps["emit_system_event"],
                 "label_title_with_environment": deps["label_title_with_environment"],

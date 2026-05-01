@@ -43,6 +43,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
     const manualDailyScanState = {
       running: false,
       lastResult: null,
+      status: 'idle',
+      message: '等待补跑',
     };
     const screenerPaginationState = {
       page: 1,
@@ -232,16 +234,28 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
 
     function syncManualDailyScanButton() {
       const buttons = Array.from(document.querySelectorAll('[data-manual-daily-scan-btn]'));
-      if (!buttons.length) return;
+      const feedback = document.getElementById('manualDailyScanFeedback');
+      if (!buttons.length && !feedback) return;
       const selectedDate = String(getSelectedMarketDate() || '').trim();
       const isToday = isSelectedDateToday();
+      const status = !isToday ? 'blocked' : (manualDailyScanState.running ? 'running' : manualDailyScanState.status);
+      const statusMessage = isToday
+        ? (manualDailyScanState.running ? '正在补跑并刷新目标池...' : manualDailyScanState.message)
+        : `仅支持当前美东日期 ${getUsDate()}`;
       buttons.forEach((button) => {
         button.disabled = manualDailyScanState.running || !isToday;
         button.textContent = manualDailyScanState.running ? '补跑中...' : '补跑今日日筛';
+        button.setAttribute('aria-busy', manualDailyScanState.running ? 'true' : 'false');
+        button.classList.remove('is-running', 'is-success', 'is-error', 'is-blocked');
+        if (status !== 'idle') button.classList.add(`is-${status}`);
         button.title = isToday
           ? '手动补跑一次 09:20 ET 日筛，刷新今日 candidate / active。'
           : `只支持当前美东日期 ${getUsDate()}，当前选择 ${selectedDate || '--'}。`;
       });
+      if (feedback) {
+        feedback.textContent = statusMessage;
+        feedback.dataset.status = status;
+      }
     }
 
     function getScreenerLoadKey(marketDate = getSelectedMarketDate()) {
@@ -1884,9 +1898,23 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       return `补跑完成: active ${active}, candidate ${candidates}, removed ${removed}, errors ${errors}`;
     }
 
+    function didManualDailyScanSucceed(payload) {
+      const schedulerResult = payload?.scheduler_result && typeof payload.scheduler_result === 'object'
+        ? payload.scheduler_result
+        : {};
+      const scanResult = payload?.scan_result && typeof payload.scan_result === 'object'
+        ? payload.scan_result
+        : (schedulerResult.payload && typeof schedulerResult.payload === 'object' ? schedulerResult.payload : {});
+      if (schedulerResult.skipped) return false;
+      const errors = Number(scanResult.errors || 0) || 0;
+      return !errors;
+    }
+
     window.rerunTodayDailyScan = async function() {
       if (manualDailyScanState.running) return;
       if (!isSelectedDateToday()) {
+        manualDailyScanState.status = 'error';
+        manualDailyScanState.message = `补跑失败: 只支持当前美东日期 ${getUsDate()}`;
         showToast(`只支持补跑当前美东日期 ${getUsDate()}`);
         syncManualDailyScanButton();
         return;
@@ -1897,6 +1925,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       if (!confirmed) return;
 
       manualDailyScanState.running = true;
+      manualDailyScanState.status = 'running';
+      manualDailyScanState.message = '正在补跑并刷新目标池...';
       syncManualDailyScanButton();
       try {
         showLoading('正在补跑今日日筛...');
@@ -1909,13 +1939,23 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
           }
         });
         manualDailyScanState.lastResult = payload;
-        showToast(summarizeManualDailyScanResult(payload));
+        const resultMessage = summarizeManualDailyScanResult(payload);
+        const succeeded = didManualDailyScanSucceed(payload);
+        const resultDetail = resultMessage.replace(/^补跑(?:完成|跳过): /, '');
+        manualDailyScanState.status = succeeded ? 'success' : 'error';
+        manualDailyScanState.message = succeeded
+          ? `补跑成功: ${resultDetail}`
+          : `补跑未成功: ${resultDetail}`;
+        showToast(manualDailyScanState.message);
         currentTargetState.page = 1;
         screenerLoadKey = '';
         await loadScreener(false, { force: true });
         await loadDailyTargets(false);
       } catch (error) {
-        showToast(`补跑失败: ${error.message || error}`);
+        const errorMessage = `补跑失败: ${error.message || error}`;
+        manualDailyScanState.status = 'error';
+        manualDailyScanState.message = errorMessage;
+        showToast(errorMessage);
       } finally {
         manualDailyScanState.running = false;
         syncManualDailyScanButton();

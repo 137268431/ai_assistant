@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime
 from typing import Any
 
 from ibkr_compute.api.compute.runtime_state.universe import get_market_monitor_symbols
@@ -20,12 +21,16 @@ from ibkr_compute.api.market.screener.payload import build_screener_payload
 from ibkr_compute.api.market.screener.runtime import get_api_app
 from ibkr_compute.core.payload_compact import compact_json_payload
 from ibkr_compute.integrations.pb_client import PBClient
+from ibkr_compute.core.time_utils import ET
 from ibkr_compute.market.bar_freshness import BarFreshnessPlanner
 from ibkr_compute.market.timeframe_utils import COMPUTE_INTERVALS, normalize_interval
 
 WATCHLIST_SYMBOL_ROLE_TRADE = "trade"
 DAILY_SCAN_SOURCE = "daily_scan"
-DAILY_SCAN_STAGE = "daily_scan_0920"
+DAILY_SCAN_MODE_SEED = "seed"
+DAILY_SCAN_MODE_TOPUP = "topup"
+DAILY_SCAN_STAGE = "early_expansion_seed"
+DAILY_SCAN_TOPUP_STAGE = "early_expansion_topup"
 DAILY_SCAN_PRIMARY_WEIGHT = 2
 DAILY_SCAN_SECONDARY_WEIGHT = 1
 DAILY_SCAN_READY_TIMEFRAME_BONUS = 1
@@ -131,6 +136,13 @@ def _target_row_is_manual(row: dict | None) -> bool:
     if source.startswith("manual_"):
         return True
     return source in MANUAL_TARGET_SOURCES
+
+
+def _normalize_scan_mode(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in {DAILY_SCAN_MODE_TOPUP, "incremental", "early_expansion_topup"}:
+        return DAILY_SCAN_MODE_TOPUP
+    return DAILY_SCAN_MODE_SEED
 
 
 def _format_threshold(value: float | int) -> str:
@@ -620,7 +632,7 @@ class DailyScanner:
             "status": "ready" if not incomplete_symbols else "repairing",
         }
 
-    def run_scan(self, date: str, environments=None) -> dict:
+    def run_scan(self, date: str, environments=None, *, mode: str = DAILY_SCAN_MODE_SEED) -> dict:
         """
         执行每日自动筛选。
 
@@ -644,10 +656,11 @@ class DailyScanner:
             "repair_jobs": [],
         }
 
+        scan_mode = _normalize_scan_mode(mode)
         runtime_environments = environments or ["live", "paper"]
 
         for environment in runtime_environments:
-            result = self._run_environment_scan(date, environment)
+            result = self._run_environment_scan(date, environment, mode=scan_mode)
             environment_results.append(result)
             scanned += int(result.get("scanned", 0) or 0)
             eligible += int(result.get("eligible", 0) or 0)
@@ -702,6 +715,8 @@ class DailyScanner:
         data_completeness = compact_json_payload(data_completeness, max_list_items=80)
 
         return {
+            "mode": scan_mode,
+            "scan_stage": DAILY_SCAN_TOPUP_STAGE if scan_mode == DAILY_SCAN_MODE_TOPUP else DAILY_SCAN_STAGE,
             "scanned": scanned,
             "eligible": eligible,
             "candidates": candidates,
@@ -713,10 +728,19 @@ class DailyScanner:
             "data_completeness": data_completeness,
             "excluded_incomplete_count": int(data_completeness.get("excluded_incomplete_count", 0) or 0),
             "environment_results": environment_results,
+            "new_targets": [
+                row
+                for result in environment_results
+                for row in (result.get("new_targets") or [])
+            ],
+            "new_active": sum(int(result.get("new_active", 0) or 0) for result in environment_results),
+            "new_candidates": sum(int(result.get("new_candidates", 0) or 0) for result in environment_results),
         }
 
-    def _run_environment_scan(self, date: str, environment: str) -> dict:
+    def _run_environment_scan(self, date: str, environment: str, *, mode: str = DAILY_SCAN_MODE_SEED) -> dict:
         runtime_environment = str(environment or "live").strip().lower() or "live"
+        scan_mode = _normalize_scan_mode(mode)
+        scan_stage = DAILY_SCAN_TOPUP_STAGE if scan_mode == DAILY_SCAN_MODE_TOPUP else DAILY_SCAN_STAGE
         settings = _load_scan_settings(runtime_environment)
         watchlist = self._get_watchlist(runtime_environment)
         watchlist_symbols = sorted(
@@ -814,27 +838,46 @@ class DailyScanner:
 
         trade_budget = settings["trade_subscription_budget"]
         if trade_budget is None:
-            auto_active_budget = len(eligible)
+            active_limit = len(existing_rows) + len(eligible)
+        elif scan_mode == DAILY_SCAN_MODE_TOPUP:
+            active_limit = max(0, int(trade_budget))
         else:
-            auto_active_budget = max(0, int(trade_budget) - manual_active_count)
+            active_limit = max(0, int(trade_budget) - manual_active_count)
 
-        retained_symbols = set(manual_retained_symbols)
-        active_symbols = {
-            symbol
-            for symbol, row in manual_rows.items()
-            if str(row.get("status", "")).strip().lower() == "active"
+        existing_target_symbols = {
+            str(row.get("symbol", "")).strip().upper()
+            for row in existing_rows
+            if str(row.get("symbol", "")).strip()
         }
+        retained_symbols = set(existing_target_symbols if scan_mode == DAILY_SCAN_MODE_TOPUP else manual_retained_symbols)
+        active_symbols = {
+            str(row.get("symbol", "")).strip().upper()
+            for row in existing_rows
+            if str(row.get("status", "")).strip().lower() == "active"
+            and str(row.get("symbol", "")).strip()
+        }
+        if scan_mode != DAILY_SCAN_MODE_TOPUP:
+            active_symbols = {
+                symbol
+                for symbol, row in manual_rows.items()
+                if str(row.get("status", "")).strip().lower() == "active"
+            }
         active_count = 0
         candidate_count = 0
+        new_targets: list[dict] = []
 
         auto_rank = 0
         for result in eligible:
             symbol = str(result.get("symbol", "")).strip().upper()
-            if not symbol or symbol in manual_retained_symbols:
+            if not symbol:
+                continue
+            if scan_mode == DAILY_SCAN_MODE_TOPUP and symbol in existing_target_symbols:
+                continue
+            if scan_mode != DAILY_SCAN_MODE_TOPUP and symbol in manual_retained_symbols:
                 continue
 
             auto_rank += 1
-            status = "active" if auto_rank <= auto_active_budget else "candidate"
+            status = "active" if len(active_symbols) < active_limit else "candidate"
             retained_symbols.add(symbol)
             if status == "active":
                 active_symbols.add(symbol)
@@ -846,7 +889,9 @@ class DailyScanner:
                 **(result.get("extra") or {}),
                 "environment": runtime_environment,
                 "source": DAILY_SCAN_SOURCE,
-                "scan_stage": DAILY_SCAN_STAGE,
+                "scan_mode": scan_mode,
+                "scan_stage": scan_stage,
+                "topup_round_time_et": datetime.now(ET).strftime("%H:%M") if scan_mode == DAILY_SCAN_MODE_TOPUP else "",
                 "technical_score": round(_safe_float(result.get("technical_score")), 3),
                 "avg_10d_volume": round(_safe_float(result.get("avg_10d_volume")), 2),
                 "premarket_volume": round(_safe_float(result.get("premarket_volume")), 2),
@@ -868,26 +913,54 @@ class DailyScanner:
                     "extra": extra,
                 }
             )
+            new_targets.append(
+                {
+                    "environment": runtime_environment,
+                    "symbol": symbol,
+                    "exchange": str(result.get("exchange", "") or "").strip().upper(),
+                    "date": date,
+                    "status": status,
+                    "direction_bias": result.get("direction_bias", "neutral"),
+                    "score": round(_safe_float(result.get("score")), 3),
+                    "scan_reason": result.get("reason", ""),
+                    "scan_stage": scan_stage,
+                }
+            )
 
-        removed = self._reconcile_removed_targets(
-            date=date,
-            environment=runtime_environment,
-            retained_symbols=retained_symbols,
-        )
+        removed = 0
+        if scan_mode != DAILY_SCAN_MODE_TOPUP:
+            removed = self._reconcile_removed_targets(
+                date=date,
+                environment=runtime_environment,
+                retained_symbols=retained_symbols,
+            )
 
         return {
             "environment": runtime_environment,
-            "scan_stage": DAILY_SCAN_STAGE,
+            "mode": scan_mode,
+            "scan_stage": scan_stage,
             "scanned": len(watchlist_symbols),
-            "eligible": len([item for item in eligible if str(item.get("symbol", "")).strip().upper() not in manual_retained_symbols]),
+            "eligible": len([
+                item
+                for item in eligible
+                if str(item.get("symbol", "")).strip().upper()
+                not in (existing_target_symbols if scan_mode == DAILY_SCAN_MODE_TOPUP else manual_retained_symbols)
+            ]),
             "candidates": candidate_count + sum(
                 1
-                for row in manual_rows.values()
+                for row in (existing_rows if scan_mode == DAILY_SCAN_MODE_TOPUP else manual_rows.values())
                 if str(row.get("status", "")).strip().lower() == "candidate"
             ),
-            "active": active_count + manual_active_count,
+            "active": active_count + sum(
+                1
+                for row in (existing_rows if scan_mode == DAILY_SCAN_MODE_TOPUP else manual_rows.values())
+                if str(row.get("status", "")).strip().lower() == "active"
+            ),
             "removed": removed,
             "errors": errors,
+            "new_targets": new_targets,
+            "new_active": sum(1 for row in new_targets if row.get("status") == "active"),
+            "new_candidates": sum(1 for row in new_targets if row.get("status") == "candidate"),
             "trade_subscription_budget": trade_budget,
             "manual_active_count": manual_active_count,
             "manual_retained_count": len(manual_retained_symbols),

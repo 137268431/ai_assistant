@@ -6,6 +6,7 @@ from ibkr_api.system.jobs.auth import (
     build_weekly_reauth_reminder_response,
 )
 from ibkr_api.system.jobs.data_gap import build_data_gap_guard_response
+from ibkr_api.system.jobs.early_expansion_topup import build_early_expansion_topup_response
 from ibkr_api.system.jobs.monitor_alert import build_system_monitor_alert_guard_response
 from ibkr_api.system.jobs.order_expiry import build_order_expiry_response
 from ibkr_api.system.jobs.reminders import (
