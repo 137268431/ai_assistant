@@ -1252,3 +1252,33 @@
         grid-template-columns: minmax(0, 1fr);
     }
 }
+
+/* Card-density pass: keep target cards and secondary panels readable on wide viewports. */
+@media (min-width: 1181px) {
+    .home-secondary-grid {
+        grid-template-columns: repeat(2, minmax(0, 620px));
+        justify-content: center;
+        align-items: start;
+    }
+
+    .home-targets-grid {
+        grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 360px));
+        justify-content: start;
+    }
+
+    .home-target-card,
+    .home-targets-more {
+        max-width: 360px;
+    }
+}
+
+@media (min-width: 1181px) and (max-width: 1360px) {
+    .home-targets-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .home-target-card,
+    .home-targets-more {
+        max-width: none;
+    }
+}

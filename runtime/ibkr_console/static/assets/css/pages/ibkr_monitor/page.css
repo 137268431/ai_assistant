@@ -927,3 +927,208 @@
         padding-inline: 12px;
     }
 }
+
+/* Card density pass: fixed column counts prevent orphan 7+1 / 7+3 rows. */
+.market-overview-section .section-body {
+    display: grid;
+    gap: 10px;
+}
+
+.market-overview-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+    margin-bottom: 0;
+}
+
+.market-overview-grid .metric-card {
+    min-width: 0;
+    padding: 9px 10px;
+    gap: 5px;
+}
+
+.market-overview-grid .metric-value {
+    font-size: 17px;
+}
+
+.market-overview-grid .metric-copy {
+    line-height: 1.35;
+}
+
+.market-monitor-cards {
+    grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 360px));
+    justify-content: start;
+    gap: 9px;
+}
+
+.market-card {
+    min-width: 0;
+    padding: 9px 10px 9px 12px;
+    gap: 7px;
+}
+
+.market-symbol {
+    font-size: 16px;
+}
+
+.market-price {
+    font-size: 19px;
+}
+
+.market-change {
+    font-size: 12px;
+}
+
+.market-freshness-grid {
+    gap: 5px;
+}
+
+.market-freshness-grid > div {
+    padding: 6px;
+}
+
+.market-freshness-grid strong,
+.market-card-foot,
+.market-subtitle {
+    overflow-wrap: anywhere;
+}
+
+.critical-metric-strip {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.critical-metric-card {
+    padding: 11px;
+    gap: 6px;
+}
+
+.critical-metric-value {
+    font-size: 18px;
+    overflow-wrap: anywhere;
+}
+
+.critical-metric-copy,
+.critical-metric-meta {
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.section > .section-body > .metric-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.sample-grid {
+    grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 360px));
+    justify-content: start;
+}
+
+.split-grid {
+    grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 460px));
+    justify-content: start;
+    align-items: start;
+    gap: 12px;
+}
+
+.split-grid .section-header {
+    padding: 11px 12px 8px;
+}
+
+.split-grid .section-body {
+    padding: 10px 12px 12px;
+}
+
+.split-grid .section > .section-body > .metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.split-grid .metric-card {
+    padding: 10px;
+    gap: 6px;
+}
+
+.metric-card,
+.critical-metric-card {
+    min-width: 0;
+}
+
+.metric-label,
+.metric-value,
+.metric-copy,
+.critical-metric-label,
+.critical-metric-copy,
+.critical-metric-meta {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.metric-label > span,
+.critical-metric-label {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.metric-copy,
+.critical-metric-copy {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+}
+
+@media (max-width: 1200px) {
+    .market-overview-grid,
+    .section > .section-body > .metric-grid {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .market-monitor-cards {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .critical-metric-strip {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .split-grid {
+        grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 440px));
+        justify-content: start;
+    }
+
+    .split-grid .section > .section-body > .metric-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 900px) {
+    .market-overview-grid,
+    .market-monitor-cards,
+    .critical-metric-strip,
+    .section > .section-body > .metric-grid,
+    .split-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .split-grid .section > .section-body > .metric-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 720px) {
+    .market-overview-grid,
+    .market-monitor-cards,
+    .critical-metric-strip,
+    .section > .section-body > .metric-grid,
+    .split-grid,
+    .split-grid .section > .section-body > .metric-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .market-card,
+    .critical-metric-card,
+    .metric-card {
+        padding: 10px;
+    }
+}

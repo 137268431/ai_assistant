@@ -1194,3 +1194,31 @@
         font-size: 20px;
     }
 }
+
+/* Card-density pass: bound operational/config cards so sparse rows do not look oversized. */
+@media (min-width: 1121px) {
+    .ops-summary-grid {
+        grid-template-columns: repeat(auto-fill, minmax(min(100%, 190px), 260px));
+        justify-content: start;
+    }
+
+    .scheduler-summary-grid {
+        grid-template-columns: repeat(auto-fill, minmax(min(100%, 180px), 260px));
+        justify-content: start;
+    }
+
+    .config-grid {
+        grid-template-columns: repeat(auto-fill, minmax(min(100%, 190px), 260px));
+        justify-content: start;
+    }
+
+    .config-grid-primary,
+    .config-grid-secondary {
+        grid-template-columns: repeat(auto-fill, minmax(min(100%, 190px), 260px));
+    }
+
+    .cron-grid {
+        grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 320px));
+        justify-content: start;
+    }
+}

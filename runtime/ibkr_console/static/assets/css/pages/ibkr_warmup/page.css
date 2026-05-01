@@ -690,10 +690,16 @@
 
 .metric-card,
 .warmup-link-card,
-.detail-card {
+.detail-card,
+.detail-item {
     padding: 12px;
     border-radius: 14px;
     gap: 8px;
+}
+
+.detail-grid {
+    grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 260px));
+    justify-content: start;
 }
 
 .warmup-link-summary {
@@ -719,5 +725,9 @@
 @media (max-width: 720px) {
     .page-shell {
         padding-inline: 12px;
+    }
+
+    .detail-grid {
+        grid-template-columns: 1fr;
     }
 }

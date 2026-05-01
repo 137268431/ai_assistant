@@ -889,3 +889,30 @@
     grid-template-columns: 46px minmax(0, 1fr);
   }
 }
+
+/* Card-density pass: cap sparse config and cron cards instead of stretching them edge to edge. */
+@media (min-width: 901px) {
+  .config-grid {
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 360px));
+    justify-content: start;
+    align-items: stretch;
+  }
+
+  .cron-grid {
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 292px), 350px));
+    justify-content: start;
+    align-items: stretch;
+  }
+
+  .config-item,
+  .cron-card {
+    max-width: 100%;
+  }
+}
+
+@media (min-width: 901px) and (max-width: 1180px) {
+  .config-grid,
+  .cron-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

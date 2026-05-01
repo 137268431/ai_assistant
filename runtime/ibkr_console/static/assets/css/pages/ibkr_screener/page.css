@@ -1759,3 +1759,32 @@
         flex-basis: min(84%, 320px);
     }
 }
+
+/* Card-density pass: prefer balanced desktop rows over 4+1 or 5+1 rule/control grids. */
+@media (min-width: 1021px) {
+    .rules-board {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .rules-chip-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .filters,
+    .control-grid,
+    .current-control-grid-primary,
+    .current-control-grid-advanced {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+}
+
+@media (min-width: 1021px) and (max-width: 1240px) {
+    .rules-board,
+    .rules-chip-grid,
+    .filters,
+    .control-grid,
+    .current-control-grid-primary,
+    .current-control-grid-advanced {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
