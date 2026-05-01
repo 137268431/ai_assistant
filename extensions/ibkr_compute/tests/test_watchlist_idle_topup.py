@@ -371,6 +371,56 @@ class WatchlistIdleTopupCandidateSelectionTest(unittest.TestCase):
 
         self.assertEqual(self._candidate_symbols(result), ["NVDA", "TSLA", "MSFT"])
 
+    def test_dynamic_candidate_scan_limits_active_first_selection(self):
+        if not hasattr(self.service, "_watchlist_idle_topup_candidates"):
+            self.skipTest("_watchlist_idle_topup_candidates helper is not implemented yet")
+        self.service._watchlist_symbols = ["AAPL", "MSFT", "NVDA", "TSLA", "META"]
+        self.service.data_backfill.latest_by_symbol.update(
+            {
+                "MSFT": 3_000,
+                "NVDA": 0,
+                "TSLA": 1_000,
+                "META": 0,
+            }
+        )
+        self.service.config = DummyConfig(
+            {
+                "ibkr_watchlist_idle_topup_candidate_scan_size": 2,
+                "ibkr_watchlist_active_due_guard_sec": 45,
+            }
+        )
+
+        first = self.service._watchlist_idle_topup_candidates(scan_all=False)
+        second = self.service._watchlist_idle_topup_candidates(scan_all=False)
+
+        self.assertEqual(self._candidate_symbols(first), ["NVDA", "MSFT"])
+        self.assertEqual(self._candidate_symbols(second), ["META", "TSLA"])
+        self.assertEqual(self.service._watchlist_idle_topup_cursor, 0)
+
+    def test_static_candidate_scan_all_ignores_dynamic_scan_window(self):
+        if not hasattr(self.service, "_watchlist_idle_topup_candidates"):
+            self.skipTest("_watchlist_idle_topup_candidates helper is not implemented yet")
+        self.service._watchlist_symbols = ["AAPL", "MSFT", "NVDA", "TSLA", "META"]
+        self.service.data_backfill.latest_by_symbol.update(
+            {
+                "MSFT": 3_000,
+                "NVDA": 0,
+                "TSLA": 1_000,
+                "META": 0,
+            }
+        )
+        self.service.config = DummyConfig(
+            {
+                "ibkr_watchlist_idle_topup_candidate_scan_size": 2,
+                "ibkr_watchlist_active_due_guard_sec": 45,
+            }
+        )
+
+        result = self.service._watchlist_idle_topup_candidates(scan_all=True)
+
+        self.assertEqual(self._candidate_symbols(result), ["NVDA", "META", "TSLA", "MSFT"])
+        self.assertEqual(self.service._watchlist_idle_topup_cursor, 0)
+
 
 class WatchlistIdleTopupCycleTest(unittest.TestCase):
     def setUp(self):
@@ -384,6 +434,12 @@ class WatchlistIdleTopupCycleTest(unittest.TestCase):
 
     def tearDown(self):
         self.patcher.stop()
+
+    def _called_symbols(self):
+        symbols = []
+        for call in self.service.data_backfill.backfill_all_calls:
+            symbols.extend(list((call.get("conid_map") or {}).keys()))
+        return symbols
 
     def test_no_active_targets_full_loads_all_stale_watchlist_in_batches(self):
         self.service._active_subscription_symbols = set()
@@ -404,12 +460,13 @@ class WatchlistIdleTopupCycleTest(unittest.TestCase):
         self.assertEqual(state["last_attempted_symbols_total"], 4)
         self.assertEqual(state["last_processed_symbols_total"], 4)
         self.assertEqual(state["last_loaded_bars"], 4)
-        self.assertEqual(len(self.service.data_backfill.backfill_all_calls), 2)
+        self.assertGreaterEqual(len(self.service.data_backfill.backfill_all_calls), 1)
+        self.assertEqual(self._called_symbols(), state["last_attempted_symbols"])
         self.assertEqual(
             [call["trace_source"] for call in self.service.data_backfill.backfill_all_calls],
-            ["watchlist_idle_topup", "watchlist_idle_topup"],
+            ["watchlist_idle_topup"] * len(self.service.data_backfill.backfill_all_calls),
         )
-        self.assertEqual(self.service.bar_writer.flush_calls, 2)
+        self.assertEqual(self.service.bar_writer.flush_calls, len(self.service.data_backfill.backfill_all_calls))
 
     def test_active_targets_pause_when_next_due_budget_is_too_close(self):
         self.service.config = DummyConfig(
@@ -425,6 +482,29 @@ class WatchlistIdleTopupCycleTest(unittest.TestCase):
         self.assertEqual(state["status"], "skipped")
         self.assertEqual(state["skip_reason"], "active_5m_due_guard")
         self.assertEqual(self.service.data_backfill.backfill_all_calls, [])
+
+    def test_active_targets_pause_between_dynamic_batches_when_due_budget_tightens(self):
+        self.service.config = DummyConfig(
+            {
+                "ibkr_watchlist_idle_topup_batch_size": 2,
+                "ibkr_watchlist_idle_topup_max_symbols_per_cycle": 0,
+                "ibkr_watchlist_active_due_guard_sec": 45,
+            }
+        )
+
+        with mock.patch.object(
+            self.service,
+            "_seconds_until_next_active_5m_due",
+            side_effect=[600, 600, 50],
+        ):
+            state = self.service._run_watchlist_idle_topup_cycle()
+
+        self.assertEqual(state["status"], "completed")
+        self.assertEqual(state["mode"], "continuous_until_active_due")
+        self.assertEqual(state["last_stop_reason"], "active_5m_due_guard")
+        self.assertEqual(state["last_attempted_symbols"], ["NVDA", "TSLA", "MSFT"])
+        self.assertEqual(state["last_processed_symbols"], ["NVDA", "TSLA", "MSFT"])
+        self.assertEqual(len(self.service.data_backfill.backfill_all_calls), 1)
 
     def test_active_targets_continue_across_batches_until_candidates_done(self):
         self.service.config = DummyConfig(
@@ -443,7 +523,143 @@ class WatchlistIdleTopupCycleTest(unittest.TestCase):
         self.assertEqual(state["last_stop_reason"], "max_symbols_per_cycle")
         self.assertEqual(state["last_attempted_symbols_total"], 3)
         self.assertEqual(state["last_processed_symbols_total"], 3)
-        self.assertEqual(len(self.service.data_backfill.backfill_all_calls), 3)
+        self.assertEqual(state["last_request_count"], 3)
+        self.assertEqual(self._called_symbols(), state["last_attempted_symbols"])
+        self.assertGreaterEqual(len(self.service.data_backfill.backfill_all_calls), 1)
+
+    def test_dynamic_active_first_selects_multiple_symbols_per_batch_and_preserves_order(self):
+        self.service._watchlist_symbols = ["AAPL", "MSFT", "NVDA", "TSLA", "META"]
+        self.service.data_backfill.latest_by_symbol.update(
+            {
+                "MSFT": 3_000,
+                "NVDA": 0,
+                "TSLA": 1_000,
+                "META": 0,
+            }
+        )
+        self.service.config = DummyConfig(
+            {
+                "ibkr_watchlist_idle_topup_batch_size": 2,
+                "ibkr_watchlist_idle_topup_max_symbols_per_cycle": 4,
+                "ibkr_watchlist_idle_topup_candidate_scan_size": 2,
+                "ibkr_watchlist_active_due_guard_sec": 45,
+            }
+        )
+
+        state = self.service._run_watchlist_idle_topup_cycle()
+
+        self.assertEqual(state["status"], "completed")
+        self.assertEqual(state["mode"], "continuous_until_active_due")
+        self.assertEqual(state["last_stop_reason"], "max_symbols_per_cycle")
+        self.assertEqual(self._called_symbols(), ["NVDA", "META", "TSLA", "MSFT"])
+        self.assertEqual(state["last_attempted_symbols"], ["NVDA", "META", "TSLA", "MSFT"])
+        self.assertEqual(state["last_processed_symbols"], ["NVDA", "META", "TSLA", "MSFT"])
+        self.assertEqual(state["last_request_count"], 4)
+
+    def test_static_full_load_preserves_multi_symbol_batches_when_active_guard_disabled(self):
+        self.service._watchlist_symbols = ["AAPL", "MSFT", "NVDA", "TSLA", "META"]
+        self.service.data_backfill.latest_by_symbol.update(
+            {
+                "MSFT": 3_000,
+                "NVDA": 0,
+                "TSLA": 1_000,
+                "META": 0,
+            }
+        )
+        self.service.config = DummyConfig(
+            {
+                "ibkr_watchlist_idle_topup_batch_size": 3,
+                "ibkr_watchlist_idle_topup_dynamic_enabled": False,
+                "ibkr_watchlist_idle_topup_candidate_scan_size": 1,
+                "ibkr_watchlist_idle_topup_max_symbols_per_cycle": 0,
+                "ibkr_watchlist_active_due_guard_sec": 45,
+            }
+        )
+        self.service_mod.build_market_session_snapshot.return_value = {"kind": "closed"}
+
+        state = self.service._run_watchlist_idle_topup_cycle()
+
+        self.assertEqual(state["status"], "completed")
+        self.assertEqual(state["mode"], "full_load_off_active_window")
+        self.assertEqual(
+            [call["conid_map"] for call in self.service.data_backfill.backfill_all_calls],
+            [{"NVDA": 3, "META": 5, "TSLA": 4}, {"MSFT": 2}],
+        )
+        self.assertEqual(state["last_attempted_symbols"], ["NVDA", "META", "TSLA", "MSFT"])
+        self.assertEqual(state["last_processed_symbols"], ["NVDA", "META", "TSLA", "MSFT"])
+
+    def test_dynamic_symbol_budget_truncates_batch_when_exposed(self):
+        if not hasattr(self.service, "_watchlist_idle_topup_max_symbols_per_cycle"):
+            self.skipTest("watchlist idle topup symbol budget is not exposed")
+        self.service._watchlist_symbols = ["AAPL", "MSFT", "NVDA", "TSLA", "META"]
+        self.service.data_backfill.latest_by_symbol.update(
+            {
+                "MSFT": 3_000,
+                "NVDA": 0,
+                "TSLA": 1_000,
+                "META": 0,
+            }
+        )
+        self.service.config = DummyConfig(
+            {
+                "ibkr_watchlist_idle_topup_batch_size": 4,
+                "ibkr_watchlist_idle_topup_max_symbols_per_cycle": 3,
+                "ibkr_watchlist_idle_topup_candidate_scan_size": 4,
+                "ibkr_watchlist_active_due_guard_sec": 45,
+            }
+        )
+
+        state = self.service._run_watchlist_idle_topup_cycle()
+
+        self.assertEqual(state["status"], "completed")
+        self.assertEqual(state["last_stop_reason"], "max_symbols_per_cycle")
+        self.assertEqual(state["last_attempted_symbols"], ["NVDA", "META", "TSLA"])
+        self.assertEqual(state["last_processed_symbols"], ["NVDA", "META", "TSLA"])
+        self.assertEqual(self._called_symbols(), ["NVDA", "META", "TSLA"])
+
+    def test_dynamic_estimated_bar_budget_truncates_batch_when_exposed(self):
+        self.service._watchlist_symbols = ["AAPL", "MSFT", "NVDA", "TSLA", "META"]
+        self.service.data_backfill.latest_by_symbol.update(
+            {
+                "MSFT": 3_000,
+                "NVDA": 0,
+                "TSLA": 1_000,
+                "META": 0,
+            }
+        )
+        self.service.config = DummyConfig(
+            {
+                "ibkr_watchlist_idle_topup_dynamic_max_symbols_per_cycle": 4,
+                "ibkr_watchlist_idle_topup_max_estimated_bars_per_cycle": 300,
+                "ibkr_watchlist_idle_topup_candidate_scan_size": 4,
+                "ibkr_watchlist_active_due_guard_sec": 45,
+            }
+        )
+
+        state = self.service._run_watchlist_idle_topup_cycle()
+
+        self.assertEqual(state["status"], "completed")
+        self.assertEqual(state["last_stop_reason"], "estimated_bars_budget")
+        self.assertEqual(state["last_attempted_symbols"], ["NVDA", "META"])
+        self.assertEqual(state["estimated_bars_selected"], 300)
+        self.assertEqual(self._called_symbols(), ["NVDA", "META"])
+
+    def test_due_budget_helper_blocks_batch_when_exposed(self):
+        if not hasattr(self.service, "_watchlist_idle_topup_due_budget_allows_batch"):
+            self.skipTest("watchlist idle topup due-budget helper is not exposed")
+
+        allowed, reason = self.service._watchlist_idle_topup_due_budget_allows_batch(
+            {
+                "active_due_guard_required": True,
+                "active_target_count": 1,
+                "seconds_until_next_active_5m_due": 64,
+                "active_due_guard_sec": 45,
+            },
+            20,
+        )
+
+        self.assertFalse(allowed)
+        self.assertEqual(reason, "active_5m_due_guard")
 
     def test_closed_session_full_loads_even_when_active_targets_exist(self):
         self.service.config = DummyConfig(
@@ -470,7 +686,7 @@ class WatchlistIdleTopupCycleTest(unittest.TestCase):
         self.assertEqual(state["status"], "completed")
         self.assertEqual(state["mode"], "full_load_off_active_window")
         self.assertEqual(state["last_processed_symbols_total"], 3)
-        self.assertGreaterEqual(len(self.service.data_backfill.backfill_all_calls), 2)
+        self.assertGreaterEqual(len(self.service.data_backfill.backfill_all_calls), 1)
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@
   <script src="/common.js"></script>
   <script>document.write(getCommonStyles())</script>
   <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-  <link rel="stylesheet" href="/assets/css/pages/ibkr_screener/page.css?v=20260430-single-manual-scan-entry">
+  <link rel="stylesheet" href="/assets/css/pages/ibkr_screener/page.css?v=20260501-compact-nav-1">
 </head>
 <body>
   <div id="nav"></div>
@@ -54,52 +54,60 @@
         </section>
 
         <div id="currentViewPanel" class="subview-panel active">
-          <section class="panel">
-            <div class="panel-title">当前标的榜</div>
-            <div class="panel-copy">只看当前环境、当前交易日的 <code>candidate + active</code> 标的。</div>
-
-            <div class="control-grid current-control-grid current-control-grid-primary">
-              <div class="field span-2">
-                <label for="currentTargetSearch">Symbol / Reason Search</label>
-                <input id="currentTargetSearch" type="text" placeholder="AAPL / NVDA / waiting / EMA多头" />
-              </div>
-              <div class="field">
-                <label for="currentSignalStateFilter">Signal State</label>
-                <select id="currentSignalStateFilter">
-                  <option value="">全部</option>
-                  <option value="needs_action">needs action</option>
-                  <option value="signaled">signaled</option>
-                  <option value="no_signal">no signal</option>
-                  <option value="awaiting_confirm">awaiting confirm</option>
-                  <option value="pending">pending</option>
-                  <option value="executed">executed</option>
-                  <option value="closed">closed</option>
-                  <option value="expired">expired</option>
-                  <option value="rejected">rejected</option>
-                </select>
-              </div>
-              <div class="field">
-                <label for="currentTargetStatusFilter">Target Status</label>
-                <select id="currentTargetStatusFilter">
-                  <option value="">全部</option>
-                  <option value="active">active</option>
-                  <option value="candidate">candidate</option>
-                </select>
-              </div>
-              <div class="field">
-                <label for="currentTargetSortBy">Sort</label>
-                <select id="currentTargetSortBy">
-                  <option value="attention_asc">按关注优先级</option>
-                  <option value="signal_desc">按最新信号时间</option>
-                  <option value="tradability_desc">按可操作分</option>
-                  <option value="target_desc">按目标池分数</option>
-                  <option value="symbol_asc">按Symbol</option>
-                </select>
+          <section class="panel current-target-panel">
+            <div class="current-target-head">
+              <div>
+                <div class="panel-title">当前标的榜</div>
+                <div class="panel-copy">只看当前环境、当前交易日的 <code>candidate + active</code> 标的。</div>
               </div>
             </div>
 
-            <div class="mobile-filter-actions">
-              <button id="toggleCurrentAdvancedFiltersBtn" class="ghost-btn mobile-filter-toggle" type="button" aria-expanded="false">更多筛选</button>
+            <div class="current-target-toolbar">
+              <div class="control-grid current-control-grid current-control-grid-primary">
+                <div class="field span-2 current-target-search-field">
+                  <label for="currentTargetSearch">Symbol / Reason Search</label>
+                  <input id="currentTargetSearch" type="text" placeholder="AAPL / NVDA / waiting / EMA多头" />
+                </div>
+                <div class="field">
+                  <label for="currentSignalStateFilter">Signal State</label>
+                  <select id="currentSignalStateFilter">
+                    <option value="">全部</option>
+                    <option value="needs_action">needs action</option>
+                    <option value="signaled">signaled</option>
+                    <option value="no_signal">no signal</option>
+                    <option value="awaiting_confirm">awaiting confirm</option>
+                    <option value="pending">pending</option>
+                    <option value="executed">executed</option>
+                    <option value="closed">closed</option>
+                    <option value="expired">expired</option>
+                    <option value="rejected">rejected</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="currentTargetStatusFilter">Target Status</label>
+                  <select id="currentTargetStatusFilter">
+                    <option value="">全部</option>
+                    <option value="active">active</option>
+                    <option value="candidate">candidate</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="currentTargetSortBy">Sort</label>
+                  <select id="currentTargetSortBy">
+                    <option value="attention_asc">按关注优先级</option>
+                    <option value="signal_desc">按最新信号时间</option>
+                    <option value="tradability_desc">按可操作分</option>
+                    <option value="target_desc">按目标池分数</option>
+                    <option value="symbol_asc">按Symbol</option>
+                  </select>
+                </div>
+              </div>
+              <div class="current-toolbar-actions">
+                <button id="rerunDailyScanBtn" data-manual-daily-scan-btn class="mini-btn scan-rerun-btn" type="button" onclick="rerunTodayDailyScan()">补跑今日日筛</button>
+                <a id="todayTargetsJumpLink" class="mini-link" href="/ibkr_screener.html?tab=screener&view=current">打开当前标的工作台</a>
+                <button id="openUniverseViewBtn" class="mini-btn" type="button">切到全量筛选</button>
+                <button id="toggleCurrentAdvancedFiltersBtn" class="mini-btn current-filter-toggle" type="button" aria-expanded="false">更多筛选</button>
+              </div>
             </div>
 
             <div id="currentAdvancedFilters" class="current-advanced-filters">
@@ -131,31 +139,23 @@
                     <option value="100">100</option>
                   </select>
                 </div>
-                <div class="field">
+                <div class="field current-checkbox-field">
                   <div class="checkbox-row">
                     <input id="currentReadyOnly" type="checkbox" />
                     <label for="currentReadyOnly">仅技术 ready</label>
                   </div>
                 </div>
-                <div class="field">
+                <div class="field current-checkbox-field">
                   <div class="checkbox-row">
                     <input id="currentSignaledOnly" type="checkbox" />
                     <label for="currentSignaledOnly">仅今日已出信号</label>
                   </div>
                 </div>
-                <div class="field current-advanced-hint">
-                  <div class="muted-copy">手机端默认先保留主筛选，方向、分页和复核开关收在这里。</div>
-                </div>
               </div>
             </div>
 
-            <div class="table-header">
+            <div class="table-header current-target-table-header">
               <div class="leaderboard-meta" id="currentTargetsMeta">等待加载...</div>
-              <div class="row-actions">
-                <button id="rerunDailyScanBtn" data-manual-daily-scan-btn class="mini-btn scan-rerun-btn" type="button" onclick="rerunTodayDailyScan()">补跑今日日筛</button>
-                <a id="todayTargetsJumpLink" class="mini-link" href="/ibkr_screener.html?tab=screener&view=current">打开当前标的工作台</a>
-                <button id="openUniverseViewBtn" class="mini-btn" type="button">切到全量筛选</button>
-              </div>
             </div>
             <div class="leaderboard-note" id="currentTargetsMetaSecondary">09:20 ET 日筛生成 candidate / active，并完成盘前检查，盘中按 5m close 刷新技术与信号阶段。</div>
             <div class="pagination-bar pagination-bar-top">
@@ -580,6 +580,6 @@
     </section>
   </div>
 
-  <script src="/assets/js/pages/ibkr_screener/page.js?v=20260430-manual-scan-entry"></script>
+  <script src="/assets/js/pages/ibkr_screener/page.js?v=20260501-compact-nav-1"></script>
 </body>
 </html>

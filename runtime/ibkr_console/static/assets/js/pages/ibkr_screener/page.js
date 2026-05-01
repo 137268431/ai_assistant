@@ -276,8 +276,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       const button = document.getElementById('toggleCurrentAdvancedFiltersBtn');
       if (!root || !button) return;
 
-      const isMobile = isPhoneViewport();
-      root.classList.toggle('is-collapsed', isMobile && !currentFiltersExpanded);
+      root.classList.toggle('is-collapsed', !currentFiltersExpanded);
       button.setAttribute('aria-expanded', (!root.classList.contains('is-collapsed')).toString());
       button.textContent = currentFiltersExpanded ? '收起筛选' : '更多筛选';
     }

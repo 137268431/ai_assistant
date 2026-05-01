@@ -1597,6 +1597,14 @@ class TradingServiceMarketUniverseMixin:
             "mode": "continuous_until_active_due",
             "batch_size": 8,
             "max_symbols_per_cycle": 0,
+            "dynamic_enabled": True,
+            "active_first_enabled": True,
+            "estimated_bars_budget": 3000,
+            "estimated_bars_selected": 0,
+            "history_concurrency": 8,
+            "request_spacing_s": 0.35,
+            "selected_symbol_count": 0,
+            "dynamic_reason": "",
             "loop_interval_sec": 60,
             "last_batches": [],
             "last_attempted_symbols": [],
@@ -1644,14 +1652,64 @@ class TradingServiceMarketUniverseMixin:
             True,
         )
 
+    def _watchlist_idle_topup_dynamic_enabled(self) -> bool:
+        service_mod = _service_mod()
+        return self.config.get_bool_for_environment(
+            "ibkr_watchlist_idle_topup_dynamic_enabled",
+            service_mod.ENVIRONMENT,
+            True,
+        )
+
+    def _watchlist_idle_topup_active_first_enabled(self) -> bool:
+        service_mod = _service_mod()
+        return self.config.get_bool_for_environment(
+            "ibkr_watchlist_idle_topup_active_first_enabled",
+            service_mod.ENVIRONMENT,
+            True,
+        )
+
     def _watchlist_idle_topup_loop_interval_sec(self) -> int:
         service_mod = _service_mod()
+        if self._watchlist_idle_topup_dynamic_enabled():
+            return max(
+                5,
+                self.config.get_int_for_environment(
+                    "ibkr_watchlist_idle_topup_dynamic_loop_interval_sec",
+                    service_mod.ENVIRONMENT,
+                    15,
+                ),
+            )
         return max(
             5,
             self.config.get_int_for_environment(
                 "ibkr_watchlist_idle_topup_loop_interval_sec",
                 service_mod.ENVIRONMENT,
                 60,
+            ),
+        )
+
+    def _watchlist_idle_topup_dynamic_max_symbols_per_cycle(self) -> int:
+        service_mod = _service_mod()
+        return max(
+            1,
+            min(
+                50,
+                self.config.get_int_for_environment(
+                    "ibkr_watchlist_idle_topup_dynamic_max_symbols_per_cycle",
+                    service_mod.ENVIRONMENT,
+                    24,
+                ),
+            ),
+        )
+
+    def _watchlist_idle_topup_max_estimated_bars_per_cycle(self) -> int:
+        service_mod = _service_mod()
+        return max(
+            0,
+            self.config.get_int_for_environment(
+                "ibkr_watchlist_idle_topup_max_estimated_bars_per_cycle",
+                service_mod.ENVIRONMENT,
+                3000,
             ),
         )
 
@@ -1679,6 +1737,46 @@ class TradingServiceMarketUniverseMixin:
                 ),
             ),
         )
+
+    def _watchlist_idle_topup_history_concurrency(self) -> int:
+        getter = getattr(getattr(self, "data_backfill", None), "_max_concurrency", None)
+        if callable(getter):
+            try:
+                return int(getter())
+            except Exception:
+                pass
+        service_mod = _service_mod()
+        return max(
+            1,
+            min(
+                10,
+                self.config.get_int_for_environment(
+                    "ibkr_history_max_concurrency",
+                    service_mod.ENVIRONMENT,
+                    8,
+                ),
+            ),
+        )
+
+    def _watchlist_idle_topup_history_request_spacing(self) -> float:
+        getter = getattr(getattr(self, "data_backfill", None), "_request_spacing", None)
+        if callable(getter):
+            try:
+                return round(max(0.0, float(getter())), 3)
+            except Exception:
+                pass
+        service_mod = _service_mod()
+        try:
+            value = float(
+                self.config.get_for_environment(
+                    "ibkr_history_request_spacing",
+                    service_mod.ENVIRONMENT,
+                    "0.35",
+                )
+            )
+        except Exception:
+            value = 0.35
+        return round(max(0.0, value), 3)
 
     def _watchlist_idle_topup_mode(
         self,
@@ -1871,7 +1969,10 @@ class TradingServiceMarketUniverseMixin:
         active_target_count = len(self._active_trade_symbols)
         market_session = service_mod.build_market_session_snapshot()
         market_session_kind = str(market_session.get("kind") or "").strip().lower()
+        active_first_enabled = self._watchlist_idle_topup_active_first_enabled()
         active_due_guard_required = bool(
+            active_first_enabled
+            and
             market_session_kind in {"regular", "close_transition"}
             and active_target_count > 0
         )
@@ -1939,6 +2040,7 @@ class TradingServiceMarketUniverseMixin:
             "seconds_until_next_active_5m_due": seconds_until_due,
             "active_due_guard_sec": due_guard_sec,
             "active_due_guard_required": active_due_guard_required,
+            "active_first_enabled": active_first_enabled,
             "market_session": market_session_kind,
             "resource_governor": resource_governor,
         }
@@ -1959,6 +2061,7 @@ class TradingServiceMarketUniverseMixin:
         *,
         exclude_symbols: set[str] | None = None,
         scan_all: bool = False,
+        scan_size_override: int | None = None,
     ) -> list[dict]:
         service_mod = _service_mod()
         with self._subscription_lock:
@@ -1978,11 +2081,13 @@ class TradingServiceMarketUniverseMixin:
 
         scan_size = max(
             1,
-            self.config.get_int_for_environment(
-                "ibkr_watchlist_idle_topup_candidate_scan_size",
-                service_mod.ENVIRONMENT,
-                24,
-            ),
+            _safe_int(scan_size_override, 0)
+            if scan_size_override is not None
+            else self.config.get_int_for_environment(
+                    "ibkr_watchlist_idle_topup_candidate_scan_size",
+                    service_mod.ENVIRONMENT,
+                    24,
+                ),
         )
         start = self._watchlist_idle_topup_cursor % len(pool)
         ordered = pool[start:] + pool[:start]
@@ -2008,21 +2113,105 @@ class TradingServiceMarketUniverseMixin:
         candidates.sort(key=lambda item: (0 if item.get("missing") else 1, _safe_int(item.get("latest_ms"), 0)))
         return candidates
 
+    def _watchlist_idle_topup_estimated_missing_bars(
+        self,
+        candidate: dict | None,
+        *,
+        now_ms: int | None = None,
+    ) -> int:
+        interval_ms = interval_to_ms("5m")
+        current_ms = int(now_ms or time.time() * 1000)
+        latest_ms = _safe_int((candidate or {}).get("latest_ms"), 0)
+        if latest_ms <= 0:
+            return 150
+        missing = int(max(1, (current_ms - latest_ms + interval_ms - 1) // interval_ms))
+        return max(1, min(150, missing))
+
+    def _watchlist_idle_topup_dynamic_candidates(
+        self,
+        *,
+        exclude_symbols: set[str] | None = None,
+        scan_all: bool = False,
+        max_symbols: int,
+        remaining_estimated_bars: int,
+    ) -> tuple[list[dict], int, str]:
+        max_symbols = max(1, int(max_symbols or 1))
+        remaining_estimated_bars = int(remaining_estimated_bars or 0)
+        if remaining_estimated_bars <= 0:
+            remaining_estimated_bars = 1_000_000_000
+
+        scan_size = max(
+            max_symbols,
+            self._watchlist_idle_topup_dynamic_max_symbols_per_cycle(),
+            self._watchlist_idle_topup_history_concurrency(),
+        )
+        candidates = self._watchlist_idle_topup_candidates(
+            exclude_symbols=exclude_symbols,
+            scan_all=scan_all,
+            scan_size_override=scan_size,
+        )
+        selected: list[dict] = []
+        selected_estimated_bars = 0
+        reason = "no_candidates"
+        for item in candidates:
+            if len(selected) >= max_symbols:
+                reason = "max_symbols_per_cycle"
+                break
+            estimated_missing = self._watchlist_idle_topup_estimated_missing_bars(item)
+            if selected and selected_estimated_bars + estimated_missing > remaining_estimated_bars:
+                reason = "estimated_bars_budget"
+                break
+            if not selected and estimated_missing > remaining_estimated_bars:
+                reason = "estimated_bars_budget"
+                break
+            selected_item = dict(item or {})
+            selected_item["estimated_missing_bars"] = estimated_missing
+            selected.append(selected_item)
+            selected_estimated_bars += estimated_missing
+            reason = ""
+
+        if not selected and candidates:
+            reason = reason or "estimated_bars_budget"
+        return selected, selected_estimated_bars, reason
+
     def _run_watchlist_idle_topup_cycle(self) -> dict:
         service_mod = _service_mod()
         if not hasattr(self, "_watchlist_idle_topup_state"):
             self._watchlist_idle_topup_state = self._initial_watchlist_idle_topup_state()
 
         enabled = self._watchlist_idle_topup_enabled()
+        dynamic_enabled = self._watchlist_idle_topup_dynamic_enabled()
+        active_first_enabled = self._watchlist_idle_topup_active_first_enabled()
         loop_interval_sec = self._watchlist_idle_topup_loop_interval_sec()
-        batch_size = self._watchlist_idle_topup_batch_size()
-        max_symbols = self._watchlist_idle_topup_max_symbols_per_cycle()
+        configured_max_symbols = self._watchlist_idle_topup_max_symbols_per_cycle()
+        if dynamic_enabled:
+            max_symbols = (
+                max(1, min(50, configured_max_symbols))
+                if configured_max_symbols > 0
+                else self._watchlist_idle_topup_dynamic_max_symbols_per_cycle()
+            )
+            batch_size = max(1, min(50, max_symbols))
+            estimated_bars_budget = self._watchlist_idle_topup_max_estimated_bars_per_cycle()
+        else:
+            batch_size = self._watchlist_idle_topup_batch_size()
+            max_symbols = configured_max_symbols
+            estimated_bars_budget = 0
+        history_concurrency = self._watchlist_idle_topup_history_concurrency()
+        request_spacing_s = self._watchlist_idle_topup_history_request_spacing()
         request_period = self._watchlist_idle_topup_request_period()
         self._set_watchlist_idle_topup_state(
             enabled=enabled,
             loop_interval_sec=loop_interval_sec,
             batch_size=batch_size,
             max_symbols_per_cycle=max_symbols,
+            dynamic_enabled=dynamic_enabled,
+            active_first_enabled=active_first_enabled,
+            estimated_bars_budget=estimated_bars_budget,
+            estimated_bars_selected=0,
+            history_concurrency=history_concurrency,
+            request_spacing_s=request_spacing_s,
+            selected_symbol_count=0,
+            dynamic_reason="",
             request_period=request_period,
         )
         if not enabled:
@@ -2086,6 +2275,7 @@ class TradingServiceMarketUniverseMixin:
         attempted_set: set[str] = set()
         batch_summaries: list[dict] = []
         request_count = 0
+        estimated_bars_selected = 0
         stop_reason = ""
         last_error = ""
         full_load_candidates: list[dict] | None = None
@@ -2106,6 +2296,9 @@ class TradingServiceMarketUniverseMixin:
             last_processed_symbols_total=0,
             last_loaded_bars=0,
             last_request_count=0,
+            estimated_bars_selected=0,
+            selected_symbol_count=0,
+            dynamic_reason="",
         )
 
         try:
@@ -2138,7 +2331,40 @@ class TradingServiceMarketUniverseMixin:
                     break
 
                 scan_all = active_target_count <= 0 or not active_due_guard_required
-                if scan_all:
+                batch_estimated_bars = 0
+                dynamic_reason = ""
+                if dynamic_enabled:
+                    remaining_symbols = max_symbols - len(attempted_set)
+                    if remaining_symbols <= 0:
+                        stop_reason = "max_symbols_per_cycle"
+                        break
+                    remaining_estimated_bars = (
+                        estimated_bars_budget - estimated_bars_selected
+                        if estimated_bars_budget > 0
+                        else 0
+                    )
+                    if estimated_bars_budget > 0 and remaining_estimated_bars <= 0:
+                        stop_reason = "estimated_bars_budget"
+                        break
+                    batch_candidates, batch_estimated_bars, dynamic_reason = self._watchlist_idle_topup_dynamic_candidates(
+                        exclude_symbols=attempted_set,
+                        scan_all=scan_all,
+                        max_symbols=remaining_symbols,
+                        remaining_estimated_bars=remaining_estimated_bars,
+                    )
+                    if not batch_candidates:
+                        stop_reason = (
+                            dynamic_reason
+                            or ("no_stale_or_missing_symbols" if not processed_symbols else "no_candidates")
+                        )
+                        break
+                    batch_symbols = [
+                        str((item or {}).get("symbol") or "").strip().upper()
+                        for item in batch_candidates
+                        if str((item or {}).get("symbol") or "").strip()
+                    ]
+                    batch_symbols = [symbol for symbol in batch_symbols if symbol not in attempted_set]
+                elif scan_all:
                     if not full_load_candidate_initialized:
                         full_load_candidates = self._watchlist_idle_topup_candidates(
                             exclude_symbols=attempted_set,
@@ -2149,24 +2375,41 @@ class TradingServiceMarketUniverseMixin:
                         item for item in (full_load_candidates or [])
                         if str((item or {}).get("symbol") or "").strip().upper() not in attempted_set
                     ]
+                    if not candidates:
+                        stop_reason = "no_stale_or_missing_symbols" if not processed_symbols else "no_candidates"
+                        break
+
+                    remaining = max_symbols - len(attempted_set) if max_symbols > 0 else batch_size
+                    take_count = min(batch_size, max(1, remaining))
+                    batch_candidates = candidates[:take_count]
+                    for item in batch_candidates:
+                        batch_estimated_bars += self._watchlist_idle_topup_estimated_missing_bars(item)
+                    batch_symbols = [
+                        str((item or {}).get("symbol") or "").strip().upper()
+                        for item in batch_candidates
+                        if str((item or {}).get("symbol") or "").strip()
+                    ]
+                    batch_symbols = [symbol for symbol in batch_symbols if symbol not in attempted_set]
                 else:
                     candidates = self._watchlist_idle_topup_candidates(
                         exclude_symbols=attempted_set,
                         scan_all=False,
                     )
-                if not candidates:
-                    stop_reason = "no_stale_or_missing_symbols" if not processed_symbols else "no_candidates"
-                    break
+                    if not candidates:
+                        stop_reason = "no_stale_or_missing_symbols" if not processed_symbols else "no_candidates"
+                        break
 
-                remaining = max_symbols - len(attempted_set) if max_symbols > 0 else batch_size
-                take_count = min(batch_size, max(1, remaining))
-                batch_candidates = candidates[:take_count]
-                batch_symbols = [
-                    str((item or {}).get("symbol") or "").strip().upper()
-                    for item in batch_candidates
-                    if str((item or {}).get("symbol") or "").strip()
-                ]
-                batch_symbols = [symbol for symbol in batch_symbols if symbol not in attempted_set]
+                    remaining = max_symbols - len(attempted_set) if max_symbols > 0 else batch_size
+                    take_count = min(batch_size, max(1, remaining))
+                    batch_candidates = candidates[:take_count]
+                    for item in batch_candidates:
+                        batch_estimated_bars += self._watchlist_idle_topup_estimated_missing_bars(item)
+                    batch_symbols = [
+                        str((item or {}).get("symbol") or "").strip().upper()
+                        for item in batch_candidates
+                        if str((item or {}).get("symbol") or "").strip()
+                    ]
+                    batch_symbols = [symbol for symbol in batch_symbols if symbol not in attempted_set]
                 if not batch_symbols:
                     stop_reason = "no_candidates"
                     break
@@ -2174,6 +2417,7 @@ class TradingServiceMarketUniverseMixin:
                 for symbol in batch_symbols:
                     attempted_set.add(symbol)
                     attempted_symbols.append(symbol)
+                estimated_bars_selected += int(batch_estimated_bars or 0)
 
                 batch_started = time.perf_counter()
                 raw_conid_map = self.conid_resolver.resolve_bulk(batch_symbols)
@@ -2265,6 +2509,8 @@ class TradingServiceMarketUniverseMixin:
                     "resolved_symbols": list(conid_map.keys()),
                     "unresolved_symbols": unresolved_symbols,
                     "written_bars": int(batch_written or 0),
+                    "estimated_missing_bars": int(batch_estimated_bars or 0),
+                    "dynamic_reason": dynamic_reason,
                     "duration_s": batch_duration_s,
                     "flush_ok": flush_ok,
                 }
@@ -2285,6 +2531,9 @@ class TradingServiceMarketUniverseMixin:
                     last_loaded_bars=written_total,
                     last_written_bars=written_total,
                     last_request_count=request_count,
+                    estimated_bars_selected=estimated_bars_selected,
+                    selected_symbol_count=len(attempted_symbols),
+                    dynamic_reason=dynamic_reason,
                 )
 
                 if max_symbols > 0 and len(attempted_set) >= max_symbols:
@@ -2307,6 +2556,9 @@ class TradingServiceMarketUniverseMixin:
                 last_processed_symbols_total=len(processed_symbols),
                 last_loaded_bars=written_total,
                 last_request_count=request_count,
+                estimated_bars_selected=estimated_bars_selected,
+                selected_symbol_count=len(attempted_symbols),
+                dynamic_reason=stop_reason if dynamic_enabled else "",
             )
             service_mod.logger.warning("Watchlist idle topup failed: %s", exc)
             return state
@@ -2347,15 +2599,20 @@ class TradingServiceMarketUniverseMixin:
             active_target_count=active_target_count,
             seconds_until_next_active_5m_due=seconds_until_due,
             estimated_next_batch_s=self._watchlist_idle_topup_estimated_batch_seconds(batch_summaries),
+            estimated_bars_selected=estimated_bars_selected,
+            selected_symbol_count=len(attempted_symbols),
+            dynamic_reason=stop_reason if dynamic_enabled else "",
         )
         service_mod.logger.info(
-            "Watchlist idle topup cycle finished: mode=%s status=%s stop=%s attempted=%d processed=%d written=%d batches=%d next_due_s=%s estimate_s=%.1f",
+            "Watchlist idle topup cycle finished: mode=%s dynamic=%s status=%s stop=%s attempted=%d processed=%d written=%d estimated_bars=%d batches=%d next_due_s=%s estimate_s=%.1f",
             mode,
+            dynamic_enabled,
             status,
             stop_reason,
             len(attempted_symbols),
             len(processed_symbols),
             written_total,
+            estimated_bars_selected,
             len(batch_summaries),
             seconds_until_due,
             float(state.get("estimated_next_batch_s", 0) or 0),

@@ -213,8 +213,8 @@ class BackfillFutureGuardTest(unittest.TestCase):
             broker=_FakeBroker([]),
         )
 
-        self.assertEqual(backfill._max_concurrency(), 8)
-        self.assertEqual(backfill._request_spacing(), 0.35)
+        self.assertEqual(backfill._max_concurrency(), 10)
+        self.assertEqual(backfill._request_spacing(), 0.15)
         self.assertEqual(backfill._interval_delay(), 0.10)
 
         class HighConcurrencyConfig:
