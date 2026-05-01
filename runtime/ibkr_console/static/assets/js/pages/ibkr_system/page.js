@@ -907,15 +907,15 @@ function renderSchedulerOverview(cronPayload = {}, summary = {}) {
                                 <span class="cron-meta-label">最近成功</span>
                                 <span class="cron-meta-value">${escapeHtml(card.lastSuccessLabel)}</span>
                             </div>
-                            <div class="cron-meta-row">
+                            <div class="cron-meta-row cron-meta-row-wide">
                                 <span class="cron-meta-label">窗口</span>
                                 <span class="cron-meta-value">${escapeHtml(card.windowLabel)}</span>
                             </div>
-                            <div class="cron-meta-row">
+                            <div class="cron-meta-row cron-meta-row-wide">
                                 <span class="cron-meta-label">周期</span>
                                 <span class="cron-meta-value">${escapeHtml(card.primaryCycleLabel)}</span>
                             </div>
-                            <div class="cron-meta-row">
+                            <div class="cron-meta-row cron-meta-row-wide">
                                 <span class="cron-meta-label">结果</span>
                                 <span class="cron-meta-value">${escapeHtml(card.lastError || card.resultReason || '--')}</span>
                             </div>
@@ -974,7 +974,7 @@ function renderCronSummary(definitions, configMap) {
                         </div>
                         <div class="cron-copy">${escapeHtml(card.functionSummary)}</div>
                         <div class="cron-meta">
-                            <div class="cron-meta-row">
+                            <div class="cron-meta-row cron-meta-row-wide">
                                 <span class="cron-meta-label">时区</span>
                                 <div class="cron-meta-value">
                                     <details class="cron-time-details">

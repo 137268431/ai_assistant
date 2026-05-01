@@ -1,5 +1,5 @@
 """
-Write validated bar records into PocketBase via the IBKR custom hook.
+Write validated bar records into PocketBase storage.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import threading
 import time
 from typing import Dict
 
+from .pocketbase_sqlite import open_pb_sqlite, upsert_bars
 from .timeframe_utils import (
     build_bar_close_timestamps,
     build_runtime_timestamps,
@@ -20,11 +21,22 @@ from .timeframe_utils import (
 
 logger = logging.getLogger(__name__)
 
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
 DEFAULT_ENVIRONMENT = os.environ.get("IBKR_ENVIRONMENT", "live")
 BAR_BATCH_SIZE = max(1, int(os.environ.get("IBKR_BAR_BATCH_SIZE", "40")))
 BAR_FLUSH_INTERVAL_SECONDS = max(0.5, float(os.environ.get("IBKR_BAR_FLUSH_INTERVAL", "2.0")))
 BAR_FLUSH_RETRY_ATTEMPTS = max(1, int(os.environ.get("IBKR_BAR_FLUSH_RETRY_ATTEMPTS", "4")))
 BAR_FLUSH_RETRY_BACKOFF_SECONDS = max(0.5, float(os.environ.get("IBKR_BAR_FLUSH_RETRY_BACKOFF_SECONDS", "1.0")))
+BAR_DIRECT_SQLITE_ENABLED = _env_bool("IBKR_BAR_DIRECT_SQLITE_ENABLED", True)
+BAR_DIRECT_SQLITE_FALLBACK_API_ENABLED = _env_bool("IBKR_BAR_DIRECT_SQLITE_FALLBACK_API_ENABLED", True)
+BAR_DIRECT_SQLITE_TIMEOUT_SECONDS = max(1.0, float(os.environ.get("IBKR_BAR_DIRECT_SQLITE_TIMEOUT_SECONDS", "30.0")))
 BAR_PENDING_QUEUE_DIR = str(os.environ.get("IBKR_BAR_PENDING_QUEUE_DIR") or "").strip()
 BAR_INGEST_CURSOR_STATE_KEY = "ibkr_bar_ingest_cursor"
 NON_COMPUTE_DISPATCH_SOURCES = {
@@ -60,6 +72,9 @@ class DataWriter:
         self._write_count = 0
         self._skip_count = 0
         self._error_count = 0
+        self._direct_sqlite_write_count = 0
+        self._api_write_count = 0
+        self._direct_sqlite_fallback_count = 0
         self._pending_batch = []
         self._inflight_batch = []
         self._lock = threading.Lock()
@@ -83,6 +98,14 @@ class DataWriter:
             return fallback
         return self.config.get_float_for_environment(key, self.environment, fallback)
 
+    def _get_bool_setting(self, key: str, fallback: bool) -> bool:
+        if not self.config or not hasattr(self.config, "get_bool_for_environment"):
+            return fallback
+        try:
+            return bool(self.config.get_bool_for_environment(key, self.environment, fallback))
+        except Exception:
+            return fallback
+
     def _batch_size(self) -> int:
         return max(1, self._get_int_setting("ibkr_bar_batch_size", BAR_BATCH_SIZE))
 
@@ -94,6 +117,27 @@ class DataWriter:
 
     def _retry_backoff_seconds(self) -> float:
         return max(0.5, self._get_float_setting("ibkr_bar_flush_retry_backoff_seconds", BAR_FLUSH_RETRY_BACKOFF_SECONDS))
+
+    def _direct_sqlite_enabled(self) -> bool:
+        return self.collection == "ibkr_bars" and self._get_bool_setting(
+            "ibkr_bar_direct_sqlite_enabled",
+            BAR_DIRECT_SQLITE_ENABLED,
+        )
+
+    def _direct_sqlite_fallback_api_enabled(self) -> bool:
+        return self._get_bool_setting(
+            "ibkr_bar_direct_sqlite_fallback_api_enabled",
+            BAR_DIRECT_SQLITE_FALLBACK_API_ENABLED,
+        )
+
+    def _direct_sqlite_timeout(self) -> float:
+        return max(
+            1.0,
+            self._get_float_setting(
+                "ibkr_bar_direct_sqlite_timeout_sec",
+                BAR_DIRECT_SQLITE_TIMEOUT_SECONDS,
+            ),
+        )
 
     def _build_queue_path(self) -> str:
         base_dir = BAR_PENDING_QUEUE_DIR or os.path.join(os.getcwd(), "runtime_state")
@@ -288,6 +332,49 @@ class DataWriter:
             date="global",
         )
 
+    def _write_batch_direct_sqlite(self, batch) -> dict:
+        conn = open_pb_sqlite(readonly=False, timeout=self._direct_sqlite_timeout())
+        try:
+            with conn:
+                written = upsert_bars(conn, batch)
+        finally:
+            conn.close()
+        return {
+            "ok": True,
+            "created": int(written or 0),
+            "updated": 0,
+            "skipped": max(0, len(batch) - int(written or 0)),
+            "write_path": "direct_sqlite",
+        }
+
+    def _write_batch_via_api(self, batch) -> dict:
+        if not self.pb_client or not hasattr(self.pb_client, "upsert_bars"):
+            raise RuntimeError("pb_client.upsert_bars unavailable")
+        result = self.pb_client.upsert_bars(batch)
+        if isinstance(result, dict):
+            result.setdefault("write_path", "pocketbase_api")
+            return result
+        return {"ok": False, "error": "invalid_bar_upsert_result", "write_path": "pocketbase_api"}
+
+    def _write_batch(self, batch) -> dict:
+        if self._direct_sqlite_enabled():
+            try:
+                result = self._write_batch_direct_sqlite(batch)
+                self._direct_sqlite_write_count += 1
+                return result
+            except Exception as exc:
+                self._direct_sqlite_fallback_count += 1
+                if not self._direct_sqlite_fallback_api_enabled():
+                    raise
+                logger.warning(
+                    "Direct SQLite bar batch write failed; falling back to PocketBase API: %s",
+                    exc,
+                )
+
+        result = self._write_batch_via_api(batch)
+        self._api_write_count += 1
+        return result
+
     def _flush_batch(self, batch) -> bool:
         if not batch:
             return True
@@ -297,7 +384,7 @@ class DataWriter:
         last_error = None
         for attempt in range(1, max_attempts + 1):
             try:
-                result = self.pb_client.upsert_bars(batch)
+                result = self._write_batch(batch)
                 if not result.get("ok", False):
                     raise RuntimeError(result.get("error") or "bar_upsert_failed")
 
@@ -435,5 +522,10 @@ class DataWriter:
             "inflight_batch": inflight,
             "batch_size": self._batch_size(),
             "flush_interval_s": self._flush_interval(),
+            "direct_sqlite_enabled": self._direct_sqlite_enabled(),
+            "direct_sqlite_timeout_s": self._direct_sqlite_timeout(),
+            "direct_sqlite_batch_writes": self._direct_sqlite_write_count,
+            "pocketbase_api_batch_writes": self._api_write_count,
+            "direct_sqlite_fallbacks": self._direct_sqlite_fallback_count,
             "pending_queue_path": self._queue_path,
         }

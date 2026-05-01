@@ -13,6 +13,9 @@ from ibkr_compute.market import data_writer as data_writer_mod
 
 
 class _FakeConfig:
+    def __init__(self, bools=None):
+        self.bools = dict(bools or {})
+
     def get_int_for_environment(self, key, environment, fallback):
         return fallback
 
@@ -20,6 +23,9 @@ class _FakeConfig:
         if key == "ibkr_bar_flush_interval":
             return 3600.0
         return fallback
+
+    def get_bool_for_environment(self, key, environment, fallback):
+        return self.bools.get(key, fallback)
 
 
 class _FakePBClient:
@@ -62,7 +68,7 @@ def _bar(symbol="AAPL", bar_time_ms=1713797100000):
 class DataWriterQueueTest(unittest.TestCase):
     def test_flush_persists_ingest_cursor_and_clears_disk_queue(self):
         pb = _FakePBClient()
-        config = _FakeConfig()
+        config = _FakeConfig({"ibkr_bar_direct_sqlite_enabled": False})
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.object(data_writer_mod, "BAR_PENDING_QUEUE_DIR", tmpdir):
@@ -84,7 +90,7 @@ class DataWriterQueueTest(unittest.TestCase):
 
     def test_backfill_only_flush_does_not_advance_compute_ingest_cursor(self):
         pb = _FakePBClient()
-        config = _FakeConfig()
+        config = _FakeConfig({"ibkr_bar_direct_sqlite_enabled": False})
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.object(data_writer_mod, "BAR_PENDING_QUEUE_DIR", tmpdir):
@@ -106,7 +112,7 @@ class DataWriterQueueTest(unittest.TestCase):
 
     def test_mixed_flush_tracks_latest_compute_eligible_bar_separately(self):
         pb = _FakePBClient()
-        config = _FakeConfig()
+        config = _FakeConfig({"ibkr_bar_direct_sqlite_enabled": False})
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with mock.patch.object(data_writer_mod, "BAR_PENDING_QUEUE_DIR", tmpdir):
@@ -130,7 +136,7 @@ class DataWriterQueueTest(unittest.TestCase):
 
     def test_reloads_pending_and_inflight_items_from_disk(self):
         pb = _FakePBClient()
-        config = _FakeConfig()
+        config = _FakeConfig({"ibkr_bar_direct_sqlite_enabled": False})
 
         with tempfile.TemporaryDirectory() as tmpdir:
             queue_path = Path(tmpdir) / "ibkr_bar_pending_paper.json"
@@ -144,6 +150,56 @@ class DataWriterQueueTest(unittest.TestCase):
                     status = writer.status()
                     self.assertEqual(status["pending_batch"], 2)
                     self.assertEqual(status["inflight_batch"], 0)
+                finally:
+                    writer.close()
+
+    def test_flush_prefers_direct_sqlite_batch_write(self):
+        pb = _FakePBClient()
+        config = _FakeConfig()
+        direct_batches = []
+
+        def fake_upsert_bars(conn, batch):
+            direct_batches.append(list(batch))
+            return len(batch)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(data_writer_mod, "BAR_PENDING_QUEUE_DIR", tmpdir), mock.patch.object(
+                data_writer_mod,
+                "open_pb_sqlite",
+            ) as open_sqlite, mock.patch.object(data_writer_mod, "upsert_bars", side_effect=fake_upsert_bars):
+                open_sqlite.return_value.__enter__.return_value = object()
+                writer = data_writer_mod.DataWriter(pb, config=config, environment="paper")
+                try:
+                    self.assertTrue(writer.write_bar(_bar()))
+                    self.assertTrue(writer.flush())
+                    self.assertEqual(len(direct_batches), 1)
+                    self.assertEqual(pb.batches, [])
+                    status = writer.status()
+                    self.assertEqual(status["direct_sqlite_batch_writes"], 1)
+                    self.assertEqual(status["pocketbase_api_batch_writes"], 0)
+                    self.assertEqual(status["direct_sqlite_fallbacks"], 0)
+                finally:
+                    writer.close()
+
+    def test_flush_falls_back_to_api_when_direct_sqlite_fails(self):
+        pb = _FakePBClient()
+        config = _FakeConfig()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(data_writer_mod, "BAR_PENDING_QUEUE_DIR", tmpdir), mock.patch.object(
+                data_writer_mod,
+                "open_pb_sqlite",
+                side_effect=RuntimeError("sqlite busy"),
+            ):
+                writer = data_writer_mod.DataWriter(pb, config=config, environment="paper")
+                try:
+                    self.assertTrue(writer.write_bar(_bar()))
+                    self.assertTrue(writer.flush())
+                    self.assertEqual(len(pb.batches), 1)
+                    status = writer.status()
+                    self.assertEqual(status["direct_sqlite_batch_writes"], 0)
+                    self.assertEqual(status["pocketbase_api_batch_writes"], 1)
+                    self.assertEqual(status["direct_sqlite_fallbacks"], 1)
                 finally:
                     writer.close()
 
