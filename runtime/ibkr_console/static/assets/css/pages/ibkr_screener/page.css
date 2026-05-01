@@ -350,6 +350,36 @@
       pointer-events: none;
     }
 
+    .page-shell > #pageBridge > .screener-domain-bridge.page-bridge {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 6px;
+      margin: 0 0 6px;
+    }
+
+    .screener-domain-bridge .screener-domain-tab.page-bridge-link {
+      min-height: 42px;
+      max-height: none;
+      padding: 7px 11px;
+      gap: 2px;
+      overflow: visible;
+    }
+
+    .screener-domain-bridge .page-bridge-kicker {
+      font-size: 8.5px;
+      line-height: 1.15;
+      letter-spacing: 0.12em;
+    }
+
+    .screener-domain-bridge .page-bridge-label {
+      font-size: 12.5px;
+      line-height: 1.2;
+      font-weight: 700;
+    }
+
+    .screener-domain-bridge .page-bridge-copy {
+      display: none;
+    }
+
     .domain-tabs {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
