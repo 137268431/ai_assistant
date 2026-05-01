@@ -83,7 +83,7 @@ class SystemScanSummaryTest(unittest.TestCase):
             config_value=lambda key, default, environment: "TRUE",
             console_base_url=lambda: "https://quant.lzw-glory.top",
             signal_chat_id=lambda environment: f"signal-chat-{environment}",
-            system_status_chat_id=lambda environment: f"status-chat-{environment}",
+            startup_chat_id=lambda environment: f"startup-chat-{environment}",
             load_market_snapshots=lambda environment, symbols, market_date, computed_at_ms: [
                 {"symbol": "SPY", "price": 500, "change_pct": 0.5, "latest_us_time": "2026-04-28 09:30:00", "freshness_min": 0, "status": "live"}
             ],
@@ -91,8 +91,12 @@ class SystemScanSummaryTest(unittest.TestCase):
 
         self.assertEqual(status_code, 200)
         self.assertTrue(payload["notified"])
-        self.assertEqual(sent[0]["chat_id"], "status-chat-live")
+        self.assertEqual(sent[0]["chat_id"], "startup-chat-live")
         self.assertEqual(sent[0]["environment"], "live")
+        card_text = "\n".join(element.get("content", "") for element in sent[0]["card"]["elements"] if element.get("tag") == "markdown")
+        self.assertIn("**结论**", card_text)
+        self.assertIn("**需要处理**", card_text)
+        self.assertIn("今日标的", card_text)
         self.assertEqual(states[("system_notify_daily", "live")]["open_message_id"], "om-scan")
         self.assertEqual(states[("system_notify_daily", "live")]["open_sent_at"], "2026-04-28 09:30:17")
         self.assertEqual(events[0][0][0], "open_report")
@@ -128,7 +132,7 @@ class SystemScanSummaryTest(unittest.TestCase):
             config_value=lambda key, default, environment: "SPY,QQQ,VIX" if key == "ibkr_market_ws_symbols" else "TRUE",
             console_base_url=lambda: "https://quant.lzw-glory.top",
             signal_chat_id=lambda environment: f"signal-chat-{environment}",
-            system_status_chat_id=lambda environment: f"status-chat-{environment}",
+            startup_chat_id=lambda environment: f"startup-chat-{environment}",
             load_market_snapshots=lambda environment, symbols, market_date, computed_at_ms: [],
         )
 

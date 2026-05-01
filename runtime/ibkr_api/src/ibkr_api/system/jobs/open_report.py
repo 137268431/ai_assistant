@@ -22,7 +22,7 @@ GetStatePayload = Callable[[str, str], dict[str, Any]]
 UpsertState = Callable[[str, str, dict[str, Any], str], dict[str, Any]]
 ConfigValue = Callable[[str, str, str], str]
 ConsoleBaseUrl = Callable[[], str]
-SystemStatusChatId = Callable[[str], str]
+StartupChatId = Callable[[str], str]
 LoadMarketSnapshots = Callable[[str, list[str], str, int], list[dict[str, Any]]]
 
 
@@ -311,8 +311,80 @@ def _system_lines(summary: dict[str, Any], monitor: dict[str, Any]) -> tuple[str
     return service_line, link_line, services_line
 
 
+def _status_problem(status: Any) -> bool:
+    text = _to_text(status).lower()
+    return bool(text) and text not in {"running", "ok", "ready", "healthy", "connected", "authenticated", "completed"}
+
+
+def _open_issue_lines(summary: dict[str, Any], monitor: dict[str, Any], targets_payload: dict[str, Any]) -> tuple[list[str], bool]:
+    issues: list[str] = []
+    blocking = False
+    scan_issue = _scan_issue_text(targets_payload)
+    if scan_issue:
+        issues.append(scan_issue)
+    summary_status = _to_text(summary.get("status")).lower()
+    monitor_status = _to_text(monitor.get("status")).lower()
+    if summary_status and summary_status not in {"running", "ok"}:
+        issues.append(f"总体状态 {summary_status}")
+        blocking = blocking or summary_status in {"offline", "error", "failed"}
+    if monitor_status and monitor_status not in {"running", "ok"}:
+        issues.append(f"监控状态 {monitor_status}")
+        blocking = blocking or monitor_status in {"offline", "error", "failed"}
+    compute = _as_dict(summary.get("ibkr_compute") or monitor.get("compute"))
+    runtime = {**_as_dict(summary.get("ibkr_runtime")), **_as_dict(monitor.get("runtime"))}
+    scheduler = _as_dict(monitor.get("scheduler"))
+    for label, status in (
+        ("Compute", compute.get("status")),
+        ("Runtime", runtime.get("status")),
+        ("Scheduler", scheduler.get("status")),
+    ):
+        if _status_problem(status):
+            issues.append(f"{label} {_to_text(status)}")
+            blocking = True
+    gateway = _as_dict(runtime.get("gateway"))
+    session = _as_dict(runtime.get("session"))
+    websocket = _as_dict(runtime.get("websocket"))
+    if "gateway" in runtime and not (gateway.get("running") or gateway.get("reachable")):
+        issues.append("Gateway offline")
+        blocking = True
+    if "session" in runtime and not session.get("authenticated"):
+        issues.append("Session pending")
+        blocking = True
+    if "websocket" in runtime and not (websocket.get("connected") or websocket.get("ready")):
+        issues.append("WebSocket offline")
+        blocking = True
+    summary_counts = _as_dict(targets_payload.get("summary"))
+    if _to_int(summary_counts.get("total"), 0) <= 0:
+        issues.append("今日暂无 active / candidate 标的")
+    return issues, blocking
+
+
+def _open_conclusion(summary: dict[str, Any], monitor: dict[str, Any], targets_payload: dict[str, Any]) -> str:
+    issues, blocking = _open_issue_lines(summary, monitor, targets_payload)
+    if blocking:
+        return "不建议开仓: " + "；".join(issues[:3])
+    if issues:
+        return "需关注: " + "；".join(issues[:3])
+    return "可交易: 系统链路已就绪，按今日标的池观察信号。"
+
+
+def _open_operator_action(summary: dict[str, Any], monitor: dict[str, Any], targets_payload: dict[str, Any]) -> str:
+    issues, blocking = _open_issue_lines(summary, monitor, targets_payload)
+    if not issues:
+        return "无需处理；重点关注今日标的、信号确认和大盘方向。"
+    joined = "；".join(issues)
+    if "日筛" in joined:
+        return "先检查 compute / screener / targets 写入链路，修复后手动重跑 scan；未刷新前不要只按旧标的池操作。"
+    if blocking:
+        return "先恢复 Gateway / Session / WebSocket 与核心服务，再允许自动交易。"
+    return "确认今日标的池与系统状态后再按策略执行。"
+
+
 def _report_level(summary: dict[str, Any], monitor: dict[str, Any], targets_payload: dict[str, Any]) -> str:
-    if _scan_issue_text(targets_payload):
+    issues, blocking = _open_issue_lines(summary, monitor, targets_payload)
+    if blocking:
+        return "error"
+    if issues:
         return "warning"
     status_values = [
         _to_text(summary.get("status")).lower(),
@@ -326,6 +398,8 @@ def _report_level(summary: dict[str, Any], monitor: dict[str, Any], targets_payl
 
 
 def _report_template(level: str, targets_payload: dict[str, Any]) -> str:
+    if level == "error":
+        return "red"
     if _scan_issue_text(targets_payload):
         return "orange"
     return "green" if level == "info" else "orange"
@@ -363,6 +437,8 @@ def _build_open_report_card(
         {
             "tag": "markdown",
             "content": (
+                f"**结论**: {_open_conclusion(summary, monitor, targets_payload)}\n"
+                f"**需要处理**: {_open_operator_action(summary, monitor, targets_payload)}\n"
                 f"**交易日**: {market_date or 'n/a'}\n"
                 f"**检查时间**: 美东 {_to_text(times.get('us')) or 'n/a'} | 北京 {_to_text(times.get('cn')) or 'n/a'}\n"
                 f"**系统**: {service_line}\n"
@@ -377,7 +453,7 @@ def _build_open_report_card(
         elements.append(
             {
                 "tag": "markdown",
-                "content": f"**需要关注**: {issue_text}\n**建议**: 先检查 compute / screener / targets 写入链路，修复后手动重跑 scan；未刷新前不要只按旧标的池操作。",
+                "content": f"**需要关注**: {issue_text}\n**建议**: {_open_operator_action(summary, monitor, targets_payload)}",
             }
         )
     actions = []
@@ -427,6 +503,8 @@ def _event_detail(
     detail = {
         "检查时间": _to_text(times.get("us")),
         "交易日": _to_text(targets_payload.get("market_date")) or _to_text(times.get("date")),
+        "结论": _open_conclusion(summary, monitor, targets_payload),
+        "需要处理": _open_operator_action(summary, monitor, targets_payload),
         "系统": service_line,
         "IBKR链路": link_line,
         "服务统计": services_line,
@@ -452,7 +530,7 @@ def build_system_open_report_response(
     upsert_state: UpsertState,
     config_value: ConfigValue,
     console_base_url: ConsoleBaseUrl,
-    system_status_chat_id: SystemStatusChatId,
+    startup_chat_id: StartupChatId,
     load_market_snapshots: LoadMarketSnapshots | None = None,
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
@@ -532,7 +610,7 @@ def build_system_open_report_response(
         market_snapshots=market_snapshots,
         console_base_url=console_base_url(),
     )
-    result = _as_dict(feishu_send_interactive(card, system_status_chat_id(environment), environment))
+    result = _as_dict(feishu_send_interactive(card, startup_chat_id(environment), environment))
     notified = bool(result.get("success")) and not bool(result.get("suppressed"))
     finalized = bool(notified or result.get("skipped") or result.get("suppressed"))
     level = _report_level(summary, monitor, targets_payload)

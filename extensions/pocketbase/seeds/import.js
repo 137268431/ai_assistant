@@ -87,8 +87,8 @@ const configData = [
   cfg('ibkr_server_boot_resume_only', 'TRUE', 'TRUE', '服务重启仅做 Resume', '启动策略', 774, '开启后，ibkr-compute / deploy / server_boot 自动恢复不会先重启 gateway，也不会强制 fresh 2FA；适合正常发布和进程重启'),
   cfg('ibkr_server_boot_publish_startup_card', 'TRUE', 'TRUE', '服务重启发送启动卡片', '启动策略', 776, '关闭时，server_boot / auto_restore 不新建启动卡片；开启后，即使只是 deploy 恢复，也会在启动群里单独发出当前轮次卡片'),
 
-  cfg('system_status_chat_id', 'oc_b7b52fc28816d90e27ce50ca7922a9ac', 'oc_b7b52fc28816d90e27ce50ca7922a9ac', '状态群 Chat ID', '通知路由', 600, '正常状态提醒与日常运行反馈默认发送到这里'),
-  cfg('system_startup_chat_id', 'oc_cc5d0a950797b1c2c010953e14bceeff', 'oc_cc5d0a950797b1c2c010953e14bceeff', '启动群 Chat ID', '通知路由', 602, '所有启动轮次卡片统一发送到这里；每次新的启动 / 干净重开都会生成独立卡片并持续更新当前轮次'),
+  cfg('system_status_chat_id', 'oc_b7b52fc28816d90e27ce50ca7922a9ac', 'oc_b7b52fc28816d90e27ce50ca7922a9ac', '状态群 Chat ID', '通知路由', 600, '定时状态提醒与日常运行反馈默认发送到这里；09:30 开盘摘要和 16:05 收盘汇总发送到启动群'),
+  cfg('system_startup_chat_id', 'oc_cc5d0a950797b1c2c010953e14bceeff', 'oc_cc5d0a950797b1c2c010953e14bceeff', '启动群 Chat ID', '通知路由', 602, '所有启动轮次卡片、09:30 开盘摘要和 16:05 收盘汇总统一发送到这里'),
   cfg('system_2fa_chat_id', 'oc_c48c10447685e80cfea0c003864aa51f', 'oc_c48c10447685e80cfea0c003864aa51f', '2FA 群 Chat ID', '通知路由', 605, '所有 2FA 卡片、2FA 超时/失败/待确认、Session 失效与运行态未认证提醒统一发送到这里'),
   cfg('system_alert_chat_id', 'oc_91aa4f84bc6fedb125b1a263d91d4104', 'oc_91aa4f84bc6fedb125b1a263d91d4104', '告警群 Chat ID', '通知路由', 610, '所有非 2FA 的 warning / error 级别且影响系统运行的异常默认发送到这里'),
   cfg('signal_chat_id', 'oc_edb26dcc52938b7833ac9f32ae6b1620', 'oc_edb26dcc52938b7833ac9f32ae6b1620', '信号群 Chat ID', '通知路由', 620, '新信号卡片默认发送到这里'),

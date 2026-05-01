@@ -47,7 +47,7 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
     build_order_detail_integrity_response = deps["build_order_detail_integrity_response"]
     build_today_targets_response = deps["build_today_targets_response"]
     write_system_event_record = deps["write_system_event_record"]
-    system_status_chat_id = deps["system_status_chat_id"]
+    startup_chat_id = deps["startup_chat_id"]
 
     @app.route("/api/custom/system/jobs/signal_expiry", methods=["POST"])
     def custom_system_job_signal_expiry() -> Response:
@@ -211,7 +211,7 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
             upsert_state=lambda key, environment, data, date: pb.upsert_state(key, environment, data, date=date),
             config_value=config_value,
             console_base_url=console_base_url,
-            system_status_chat_id=system_status_chat_id,
+            startup_chat_id=startup_chat_id,
             load_market_snapshots=lambda environment, symbols, market_date, computed_at_ms: load_market_snapshots_from_pb(
                 pb,
                 environment,
@@ -274,7 +274,7 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
             config_value=config_value,
             console_base_url=console_base_url,
             signal_chat_id=signal_chat_id,
-            system_status_chat_id=system_status_chat_id,
+            startup_chat_id=startup_chat_id,
             load_market_snapshots=lambda environment, symbols, market_date, computed_at_ms: load_market_snapshots_from_pb(
                 pb,
                 environment,
@@ -312,9 +312,14 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
             time_strings=time_strings,
             build_system_summary_payload=lambda environment, lite_mode=False: build_system_summary_payload(environment, lite_mode=lite_mode),
             build_system_monitor_payload=build_system_monitor_payload,
-            emit_system_event=emit_system_event,
+            feishu_send_interactive=feishu_send_interactive,
+            write_system_event_record=write_system_event_record,
             get_state_payload=lambda state_key, environment: get_state_payload(state_key, environment, date=time_strings()["date"]),
             upsert_state=lambda key, environment, data, date: pb.upsert_state(key, environment, data, date=date),
+            config_value=config_value,
+            console_base_url=console_base_url,
+            startup_chat_id=startup_chat_id,
+            build_today_targets_response=lambda payload: build_today_targets_response(payload=payload),
         )
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)

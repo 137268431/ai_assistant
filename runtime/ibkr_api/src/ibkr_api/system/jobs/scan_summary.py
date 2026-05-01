@@ -14,7 +14,7 @@ UpsertState = Callable[[str, str, dict[str, Any], str], dict[str, Any]]
 ConfigValue = Callable[[str, str, str], str]
 ConsoleBaseUrl = Callable[[], str]
 SignalChatId = Callable[[str], str]
-SystemStatusChatId = Callable[[str], str]
+StartupChatId = Callable[[str], str]
 LoadMarketSnapshots = Callable[[str, list[str], str, int], list[dict[str, Any]]]
 
 
@@ -33,7 +33,7 @@ def build_system_scan_summary_response(
     config_value: ConfigValue,
     console_base_url: ConsoleBaseUrl,
     signal_chat_id: SignalChatId,
-    system_status_chat_id: SystemStatusChatId,
+    startup_chat_id: StartupChatId,
     load_market_snapshots: LoadMarketSnapshots | None = None,
 ) -> tuple[dict[str, Any], int]:
     from ibkr_api.system.jobs.open_report import build_system_open_report_response
@@ -52,7 +52,7 @@ def build_system_scan_summary_response(
         upsert_state=upsert_state,
         config_value=config_value,
         console_base_url=console_base_url,
-        system_status_chat_id=system_status_chat_id,
+        startup_chat_id=startup_chat_id,
         load_market_snapshots=load_market_snapshots,
     )
     report["job_id"] = "system_scan_summary"

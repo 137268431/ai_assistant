@@ -104,10 +104,31 @@ class _ReminderPB:
 
 
 class SystemSchedulerJobsTest(unittest.TestCase):
-    def _reminder_deps(self, pb, sent, now_us="2026-04-23 09:30:00", date="2026-04-23", event_result=None):
+    def _reminder_deps(
+        self,
+        pb,
+        sent,
+        now_us="2026-04-23 09:30:00",
+        date="2026-04-23",
+        event_result=None,
+        config_overrides=None,
+        today=None,
+        daily=False,
+    ):
         def emit_system_event(**kwargs):
             sent.append(kwargs)
             return dict(event_result or {"notified": True, "persisted": True, "message_id": "msg-1"})
+
+        def feishu_send_interactive(card, chat_id, environment):
+            sent.append({"card": card, "chat_id": chat_id, "environment": environment})
+            return dict(event_result or {"success": True, "message_id": "msg-1"})
+
+        def write_system_event_record(*args, **kwargs):
+            return {"id": "event-1", "args": args, "kwargs": kwargs}
+
+        def config_value(key, default, environment):
+            overrides = config_overrides or {}
+            return overrides.get(key, default)
 
         def get_state_payload(state_key, environment, state_date=date):
             return {
@@ -119,7 +140,7 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         def build_system_summary_payload(environment, lite_mode=False):
             return {
                 "status": "running",
-                "today": {"ibkr_bars": 10, "ibkr_signals": 2, "orders": 1, "events": 0},
+                "today": dict(today or {"ibkr_bars": 10, "ibkr_signals": 2, "orders": 1, "events": 0}),
                 "ibkr_compute": {"status": "running"},
                 "ibkr_runtime": {"status": "running"},
                 "daily_scan": {"status": "completed", "market_date": date},
@@ -137,7 +158,22 @@ class SystemSchedulerJobsTest(unittest.TestCase):
                 "service_monitor": {"status_counts": {"running": 6}},
             }
 
-        return {
+        def build_today_targets_response(*, payload):
+            return {
+                "market_date": payload.get("market_date") or date,
+                "daily_scan": {"status": "completed", "market_date": payload.get("market_date") or date},
+                "summary": {
+                    "total": 2,
+                    "active_count": 1,
+                    "candidate_count": 1,
+                    "operable_count": 2,
+                    "technical_ready_count": 1,
+                    "signaled_count": 0,
+                },
+                "items": [],
+            }, 200
+
+        deps = {
             "normalize_environment": lambda value, default: str(value or default).strip().lower() or default,
             "time_strings": lambda: {"us": now_us, "cn": "2026-04-23 21:30:00", "date": date},
             "build_system_summary_payload": build_system_summary_payload,
@@ -146,6 +182,19 @@ class SystemSchedulerJobsTest(unittest.TestCase):
             "get_state_payload": get_state_payload,
             "upsert_state": lambda key, environment, data, state_date: pb.upsert_state(key, environment, data, date=state_date),
         }
+        if daily:
+            deps.pop("emit_system_event", None)
+            deps.update(
+                {
+                    "feishu_send_interactive": feishu_send_interactive,
+                    "write_system_event_record": write_system_event_record,
+                    "config_value": config_value,
+                    "console_base_url": lambda: "https://quant.lzw-glory.top",
+                    "startup_chat_id": lambda environment: f"startup-chat-{environment}",
+                    "build_today_targets_response": build_today_targets_response,
+                }
+            )
+        return deps
 
     def test_order_expiry_marks_group_canceled(self):
         pb = _OrderExpiryPB()
@@ -266,7 +315,7 @@ class SystemSchedulerJobsTest(unittest.TestCase):
 
         payload, status_code = build_system_daily_report_response(
             payload={"environment": "live"},
-            **self._reminder_deps(pb, sent, now_us="2026-04-28 00:00:45", date="2026-04-28"),
+            **self._reminder_deps(pb, sent, now_us="2026-04-28 00:00:45", date="2026-04-28", daily=True),
         )
 
         self.assertEqual(status_code, 200)
@@ -284,7 +333,7 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         for _ in range(2):
             payload, status_code = build_system_daily_report_response(
                 payload={"environment": "live"},
-                **self._reminder_deps(pb, sent, now_us="2026-04-23 16:05:00"),
+                **self._reminder_deps(pb, sent, now_us="2026-04-23 16:05:00", daily=True),
             )
             self.assertEqual(status_code, 200)
             self.assertTrue(payload["ok"])
@@ -295,7 +344,11 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertTrue(state["close_notified"])
         self.assertTrue(state["close_persisted"])
         self.assertEqual(state["close_message_id"], "msg-1")
-        self.assertEqual(sent[0]["source"], "ibkr_api")
+        self.assertEqual(sent[0]["chat_id"], "startup-chat-live")
+        card_text = "\n".join(element.get("content", "") for element in sent[0]["card"]["elements"] if element.get("tag") == "markdown")
+        self.assertIn("**结论**", card_text)
+        self.assertIn("**需要处理**", card_text)
+        self.assertIn("今日结果", card_text)
 
     def test_daily_report_does_not_mark_sent_when_notification_fails(self):
         pb = _ReminderPB()
@@ -308,6 +361,7 @@ class SystemSchedulerJobsTest(unittest.TestCase):
                 sent,
                 now_us="2026-04-23 16:05:00",
                 event_result={"notified": False, "persisted": True, "error": "missing_token"},
+                daily=True,
             ),
         )
 
@@ -331,7 +385,8 @@ class SystemSchedulerJobsTest(unittest.TestCase):
                 pb,
                 sent,
                 now_us="2026-04-23 16:05:00",
-                event_result={"notified": False, "persisted": True, "skipped": True, "reason": "notify_disabled"},
+                config_overrides={"daily_summary_notify_enabled": "FALSE"},
+                daily=True,
             ),
         )
 
@@ -340,8 +395,32 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertTrue(payload["skipped"])
         state = pb.states[("system_notify_daily", "live", "2026-04-23")]["data"]
         self.assertEqual(state["close_sent_at"], "2026-04-23 16:05:00")
-        self.assertEqual(state["close_reason"], "notify_disabled")
+        self.assertEqual(state["close_reason"], "daily_summary_notify_disabled")
         self.assertEqual(state["close_error"], "")
+        self.assertEqual(len(sent), 0)
+
+    def test_daily_report_highlights_zero_bars_at_live_close(self):
+        pb = _ReminderPB()
+        sent = []
+
+        payload, status_code = build_system_daily_report_response(
+            payload={"environment": "live"},
+            **self._reminder_deps(
+                pb,
+                sent,
+                now_us="2026-04-23 16:05:00",
+                today={"ibkr_bars": 0, "ibkr_signals": 0, "orders": 0, "events": 0},
+                daily=True,
+            ),
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(sent[0]["card"]["header"]["template"], "orange")
+        card_text = "\n".join(element.get("content", "") for element in sent[0]["card"]["elements"] if element.get("tag") == "markdown")
+        self.assertIn("bars 0", card_text)
+        self.assertIn("数据链路可能未落库", card_text)
+        self.assertIn("Scheduler ingest", card_text)
 
 
 if __name__ == "__main__":
