@@ -205,7 +205,8 @@ class MonitorSnapshotTest(unittest.TestCase):
         self.assertIn("host_memory_high", flag_codes)
         self.assertIn("host_load_high", flag_codes)
         self.assertIn("pending_subscriptions", flag_codes)
-        self.assertIn("history_throttle_detected", flag_codes)
+        self.assertNotIn("history_throttle_detected", flag_codes)
+        self.assertNotIn("history_request_retry_or_error", flag_codes)
 
     def test_build_monitor_snapshot_keeps_recent_warmup_symbol_out_of_stale_list(self):
         fake_service = FakeService(subscription_limit=10)
@@ -327,6 +328,58 @@ class MonitorSnapshotTest(unittest.TestCase):
         flag_codes = {item["code"] for item in flags}
         self.assertNotIn("subscription_utilization_high", flag_codes)
         self.assertNotIn("subscription_utilization_critical", flag_codes)
+
+    def test_history_cumulative_throttle_is_display_only(self):
+        flags = server._build_monitor_flags(
+            {
+                "gateway": {"running": True, "reachable": True},
+                "session": {"authenticated": True},
+                "websocket": {"connected": True, "ready": True},
+            },
+            {
+                "subscription_limit": 70,
+                "active_subscription_count": 2,
+                "utilization_pct": 2.86,
+                "pending_subscription_count": 0,
+                "retry_count": 3,
+                "throttle_count": 123,
+                "last_trace_retry_count": 0,
+                "last_trace_throttle_count": 0,
+                "last_trace_error": "",
+            },
+            {},
+            {},
+        )
+
+        flag_codes = {item["code"] for item in flags}
+        self.assertNotIn("history_throttle_detected", flag_codes)
+        self.assertNotIn("history_request_retry_or_error", flag_codes)
+
+    def test_recent_history_retry_or_error_warns(self):
+        flags = server._build_monitor_flags(
+            {
+                "gateway": {"running": True, "reachable": True},
+                "session": {"authenticated": True},
+                "websocket": {"connected": True, "ready": True},
+            },
+            {
+                "subscription_limit": 70,
+                "active_subscription_count": 2,
+                "utilization_pct": 2.86,
+                "pending_subscription_count": 0,
+                "retry_count": 3,
+                "throttle_count": 123,
+                "last_trace_retry_count": 1,
+                "last_trace_throttle_count": 2,
+                "last_trace_error": "history_fetch_failed",
+            },
+            {},
+            {},
+        )
+
+        flag_codes = {item["code"] for item in flags}
+        self.assertIn("history_request_retry_or_error", flag_codes)
+        self.assertNotIn("history_throttle_detected", flag_codes)
 
     def test_subscription_utilization_warns_at_limit(self):
         flags = server._build_monitor_flags(

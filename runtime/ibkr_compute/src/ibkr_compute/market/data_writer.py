@@ -27,6 +27,28 @@ BAR_FLUSH_RETRY_ATTEMPTS = max(1, int(os.environ.get("IBKR_BAR_FLUSH_RETRY_ATTEM
 BAR_FLUSH_RETRY_BACKOFF_SECONDS = max(0.5, float(os.environ.get("IBKR_BAR_FLUSH_RETRY_BACKOFF_SECONDS", "1.0")))
 BAR_PENDING_QUEUE_DIR = str(os.environ.get("IBKR_BAR_PENDING_QUEUE_DIR") or "").strip()
 BAR_INGEST_CURSOR_STATE_KEY = "ibkr_bar_ingest_cursor"
+NON_COMPUTE_DISPATCH_SOURCES = {
+    "backfill",
+    "history_backfill",
+    "history_rebuild",
+    "history_repair",
+    "ibkr_history_backfill",
+    "ibkr_history_rebuild",
+}
+
+
+def _normalize_source(value) -> str:
+    return str(value or "").strip().lower()
+
+
+def _bar_source(payload: dict) -> str:
+    extra = payload.get("extra") if isinstance(payload.get("extra"), dict) else {}
+    return _normalize_source(extra.get("source") or payload.get("source"))
+
+
+def _is_compute_dispatch_source(source: str) -> bool:
+    normalized = _normalize_source(source)
+    return not normalized or normalized not in NON_COMPUTE_DISPATCH_SOURCES
 
 
 class DataWriter:
@@ -170,6 +192,12 @@ class DataWriter:
                     "latest_batch_symbols": set(),
                     "latest_batch_size": 0,
                     "latest_sources": set(),
+                    "latest_compute_ingest_bar_time_ms": 0,
+                    "latest_compute_ingest_bar_us": "",
+                    "latest_compute_ingest_bar_cn": "",
+                    "latest_compute_ingest_symbols": set(),
+                    "latest_compute_ingest_sources": set(),
+                    "latest_compute_ingest_batch_size": 0,
                 },
             )
             bar_time_ms = int(item.get("bar_time_ms", 0) or 0)
@@ -180,10 +208,20 @@ class DataWriter:
             symbol = str(item.get("symbol") or "").strip().upper()
             if symbol:
                 current["latest_batch_symbols"].add(symbol)
-            source = str((item.get("extra") or {}).get("source") or "").strip()
+            source = _bar_source(item)
             if source:
                 current["latest_sources"].add(source)
             current["latest_batch_size"] += 1
+            if _is_compute_dispatch_source(source):
+                if bar_time_ms >= current["latest_compute_ingest_bar_time_ms"]:
+                    current["latest_compute_ingest_bar_time_ms"] = bar_time_ms
+                    current["latest_compute_ingest_bar_us"] = str(item.get("us_time") or "")
+                    current["latest_compute_ingest_bar_cn"] = str(item.get("cn_time") or "")
+                if symbol:
+                    current["latest_compute_ingest_symbols"].add(symbol)
+                if source:
+                    current["latest_compute_ingest_sources"].add(source)
+                current["latest_compute_ingest_batch_size"] += 1
 
         try:
             existing = self.pb_client.get_state(BAR_INGEST_CURSOR_STATE_KEY, self.environment, date="global")
@@ -203,7 +241,7 @@ class DataWriter:
                 int(update.get("latest_bar_time_ms", 0) or 0),
             )
             latest_sources = sorted(update["latest_sources"])
-            intervals[interval] = {
+            next_interval = {
                 **previous,
                 "latest_bar_time_ms": latest_bar_time_ms,
                 "latest_bar_us": update.get("latest_bar_us") or previous.get("latest_bar_us") or "",
@@ -213,6 +251,28 @@ class DataWriter:
                 "latest_sources": latest_sources,
                 "last_write_at_ms": now_ms,
             }
+            previous_compute_ms = int(previous.get("latest_compute_ingest_bar_time_ms", 0) or 0)
+            update_compute_ms = int(update.get("latest_compute_ingest_bar_time_ms", 0) or 0)
+            if update_compute_ms > 0 and update_compute_ms >= previous_compute_ms:
+                next_interval.update(
+                    {
+                        "latest_compute_ingest_bar_time_ms": update_compute_ms,
+                        "latest_compute_ingest_bar_us": update.get("latest_compute_ingest_bar_us") or "",
+                        "latest_compute_ingest_bar_cn": update.get("latest_compute_ingest_bar_cn") or "",
+                        "latest_compute_ingest_symbols": sorted(update["latest_compute_ingest_symbols"]),
+                        "latest_compute_ingest_sources": sorted(update["latest_compute_ingest_sources"]),
+                        "latest_compute_ingest_batch_size": int(update.get("latest_compute_ingest_batch_size", 0) or 0),
+                    }
+                )
+            else:
+                next_interval.setdefault("latest_compute_ingest_bar_time_ms", previous_compute_ms)
+                next_interval.setdefault("latest_compute_ingest_bar_us", previous.get("latest_compute_ingest_bar_us") or "")
+                next_interval.setdefault("latest_compute_ingest_bar_cn", previous.get("latest_compute_ingest_bar_cn") or "")
+                next_interval.setdefault("latest_compute_ingest_symbols", list(previous.get("latest_compute_ingest_symbols") or []))
+                next_interval.setdefault("latest_compute_ingest_sources", list(previous.get("latest_compute_ingest_sources") or []))
+                next_interval.setdefault("latest_compute_ingest_batch_size", int(previous.get("latest_compute_ingest_batch_size", 0) or 0))
+            next_interval["compute_ingest_source_policy"] = "non_compute_sources_filtered"
+            intervals[interval] = next_interval
 
         next_payload = {
             **payload,

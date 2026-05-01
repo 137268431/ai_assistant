@@ -8,6 +8,7 @@ if str(SERVICE_SRC_ROOT) not in sys.path:
 
 from ibkr_api.system.monitor_support import build_system_monitor_payload
 from ibkr_api.system.monitor_support import derive_monitor_service_map
+from ibkr_api.system.scheduler_support import build_scheduler_summary
 from ibkr_api.system.service_state import derive_compute_state
 
 
@@ -173,6 +174,112 @@ class SystemMonitorSupportTest(unittest.TestCase):
         scheduler = service_monitor["services"]["ibkr-scheduler"]
         self.assertEqual(scheduler["status"], "degraded")
         self.assertNotIn("deferred by compute preload", scheduler["detail"])
+
+    def test_scheduler_backfill_only_lag_stays_running(self):
+        service_monitor = derive_monitor_service_map(
+            "live",
+            {
+                "status": "ok",
+                "runtime": {
+                    "status": "running",
+                    "runtime_phase": "running",
+                    "gateway": {"running": True, "reachable": True},
+                    "session": {"authenticated": True},
+                    "websocket": {"connected": True, "ready": True},
+                },
+                "compute": {
+                    "status": "running",
+                    "total_engines": 10,
+                    "ready_engines": 10,
+                    "compute_startup_preload": {"status": "completed", "running": False},
+                },
+                "service_topology": {"services": {}},
+            },
+            {
+                "status": "running",
+                "dispatch_lag_min": 0.0,
+                "raw_dispatch_lag_min": 20.0,
+                "latest_ingested_bar_time_ms": 1713798000000,
+                "latest_compute_ingested_bar_time_ms": 1713796800000,
+                "dispatch_lag_compute_relevant": False,
+                "dispatch_lag_reason": "non_compute_ingest_source",
+                "loop_interval_seconds": 30,
+                "job_count": 12,
+            },
+            console_probe={"ok": True, "status_code": 200, "target_url": "https://quant.lzw-glory.top/index.html"},
+            pb_health={"ok": True, "status_code": 200},
+            build_service_topology=lambda: {"services": {}},
+        )
+
+        scheduler = service_monitor["services"]["ibkr-scheduler"]
+        self.assertEqual(scheduler["status"], "running")
+        self.assertIn("non-compute ingest", scheduler["detail"])
+
+    def test_scheduler_summary_filters_legacy_backfill_only_cursor(self):
+        summary = build_scheduler_summary(
+            "live",
+            {
+                "ok": True,
+                "status": "running",
+                "environment": "live",
+                "loop_interval_seconds": 30,
+                "ingest_cursor": {
+                    "intervals": {
+                        "5m": {
+                            "latest_bar_time_ms": 1713798000000,
+                            "latest_sources": ["ibkr_history_backfill"],
+                        }
+                    }
+                },
+                "compute_dispatch_cursor": {
+                    "intervals": {
+                        "5m": {
+                            "latest_bar_time_ms": 1713796800000,
+                        }
+                    }
+                },
+                "jobs": {},
+            },
+        )
+
+        self.assertEqual(summary["raw_dispatch_lag_min"], 20.0)
+        self.assertEqual(summary["dispatch_lag_min"], 0.0)
+        self.assertFalse(summary["dispatch_lag_compute_relevant"])
+        self.assertEqual(summary["dispatch_lag_reason"], "non_compute_ingest_source")
+
+    def test_scheduler_summary_uses_compute_ingest_cursor_when_present(self):
+        summary = build_scheduler_summary(
+            "live",
+            {
+                "ok": True,
+                "status": "running",
+                "environment": "live",
+                "loop_interval_seconds": 30,
+                "ingest_cursor": {
+                    "intervals": {
+                        "5m": {
+                            "latest_bar_time_ms": 1713798000000,
+                            "latest_sources": ["ibkr_history_backfill"],
+                            "latest_compute_ingest_bar_time_ms": 1713797400000,
+                            "latest_compute_ingest_sources": ["ibkr_history_close"],
+                        }
+                    }
+                },
+                "compute_dispatch_cursor": {
+                    "intervals": {
+                        "5m": {
+                            "latest_bar_time_ms": 1713796800000,
+                        }
+                    }
+                },
+                "jobs": {},
+            },
+        )
+
+        self.assertEqual(summary["raw_dispatch_lag_min"], 20.0)
+        self.assertEqual(summary["dispatch_lag_min"], 10.0)
+        self.assertTrue(summary["dispatch_lag_compute_relevant"])
+        self.assertEqual(summary["latest_compute_ingest_sources"], ["ibkr_history_close"])
 
     def test_scheduler_exact_lag_threshold_stays_running(self):
         service_monitor = derive_monitor_service_map(

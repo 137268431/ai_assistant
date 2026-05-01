@@ -381,14 +381,19 @@ def _build_monitor_flags(runtime_status: dict, api_utilization: dict, host_snaps
             f"当前还有 {pending_subscription_count} 个待完成订阅。",
         )
 
-    throttle_count = int(api_utilization.get("throttle_count", 0) or 0)
-    if throttle_count > 0:
+    last_trace_retry_count = int(api_utilization.get("last_trace_retry_count", 0) or 0)
+    last_trace_throttle_count = int(api_utilization.get("last_trace_throttle_count", 0) or 0)
+    last_trace_error = str(api_utilization.get("last_trace_error") or "").strip()
+    if last_trace_error or last_trace_retry_count > 0:
         _append_monitor_flag(
             flags,
             "warning",
-            "history_throttle_detected",
-            "History throttle detected",
-            f"历史回填已累计出现 {throttle_count} 次节流。",
+            "history_request_retry_or_error",
+            "History request retry/error",
+            (
+                f"最近一次历史回填 trace 出现 retry={last_trace_retry_count}、"
+                f"throttle={last_trace_throttle_count}、error={last_trace_error or '--'}。"
+            ),
         )
 
     last_message_age_s = api_utilization.get("last_message_age_s")

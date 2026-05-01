@@ -7,12 +7,71 @@ RequestJsonRequest = Callable[..., dict[str, Any]]
 SchedulerStatusFn = Callable[[str], dict[str, Any]]
 
 MANUAL_SCHEDULER_JOB_ALLOWLIST = {"ibkr_scan_runtime"}
+NON_COMPUTE_DISPATCH_SOURCES = {
+    "backfill",
+    "history_backfill",
+    "history_rebuild",
+    "history_repair",
+    "ibkr_history_backfill",
+    "ibkr_history_rebuild",
+}
 
 
 def extract_cursor_interval(cursor_payload: dict[str, Any], interval: str = "5m") -> dict[str, Any]:
     intervals = cursor_payload.get("intervals") if isinstance(cursor_payload.get("intervals"), dict) else {}
     bucket = intervals.get(interval) if isinstance(intervals, dict) else {}
     return dict(bucket) if isinstance(bucket, dict) else {}
+
+
+def _cursor_sources(bucket: dict[str, Any], key: str = "latest_sources") -> list[str]:
+    raw_sources = bucket.get(key)
+    if not isinstance(raw_sources, list):
+        raw_sources = []
+    sources = []
+    seen = set()
+    for item in raw_sources:
+        source = str(item or "").strip().lower()
+        if not source or source in seen:
+            continue
+        seen.add(source)
+        sources.append(source)
+    return sources
+
+
+def _sources_are_non_compute_only(sources: list[str]) -> bool:
+    return bool(sources) and all(source in NON_COMPUTE_DISPATCH_SOURCES for source in sources)
+
+
+def _resolve_compute_ingest_cursor(ingest_5m: dict[str, Any], latest_dispatched_bar_time_ms: int) -> dict[str, Any]:
+    raw_latest = int(ingest_5m.get("latest_bar_time_ms") or 0)
+    explicit_latest = int(ingest_5m.get("latest_compute_ingest_bar_time_ms") or 0)
+    raw_sources = _cursor_sources(ingest_5m, "latest_sources")
+    explicit_sources = _cursor_sources(ingest_5m, "latest_compute_ingest_sources")
+    if explicit_latest > 0:
+        return {
+            "latest_compute_ingested_bar_time_ms": explicit_latest,
+            "latest_compute_ingest_sources": explicit_sources,
+            "dispatch_lag_compute_relevant": True,
+            "dispatch_lag_reason": "",
+            "compute_ingest_source_policy": str(
+                ingest_5m.get("compute_ingest_source_policy") or "compute_ingest_cursor"
+            ),
+        }
+    if raw_latest > 0 and _sources_are_non_compute_only(raw_sources):
+        return {
+            "latest_compute_ingested_bar_time_ms": int(latest_dispatched_bar_time_ms or 0),
+            "latest_compute_ingest_sources": [],
+            "dispatch_lag_compute_relevant": False,
+            "dispatch_lag_reason": "non_compute_ingest_source",
+            "compute_ingest_source_policy": "legacy_non_compute_source_filter",
+        }
+    return {
+        "latest_compute_ingested_bar_time_ms": raw_latest,
+        "latest_compute_ingest_sources": raw_sources,
+        "dispatch_lag_compute_relevant": True,
+        "dispatch_lag_reason": "",
+        "compute_ingest_source_policy": "legacy_ingest_cursor",
+    }
 
 
 
@@ -25,7 +84,13 @@ def build_scheduler_summary(environment: str, scheduler_payload: dict[str, Any])
     dispatch_5m = extract_cursor_interval(dispatch_cursor, "5m")
     latest_ingested_bar_time_ms = int(ingest_5m.get("latest_bar_time_ms") or 0)
     latest_dispatched_bar_time_ms = int(dispatch_5m.get("latest_bar_time_ms") or 0)
-    lag_ms = max(0, latest_ingested_bar_time_ms - latest_dispatched_bar_time_ms) if latest_ingested_bar_time_ms else 0
+    compute_ingest = _resolve_compute_ingest_cursor(ingest_5m, latest_dispatched_bar_time_ms)
+    latest_compute_ingested_bar_time_ms = int(compute_ingest.get("latest_compute_ingested_bar_time_ms") or 0)
+    lag_ms = (
+        max(0, latest_compute_ingested_bar_time_ms - latest_dispatched_bar_time_ms)
+        if latest_compute_ingested_bar_time_ms else 0
+    )
+    raw_lag_ms = max(0, latest_ingested_bar_time_ms - latest_dispatched_bar_time_ms) if latest_ingested_bar_time_ms else 0
 
     status_counts: dict[str, int] = {}
     for state in jobs.values():
@@ -43,10 +108,18 @@ def build_scheduler_summary(environment: str, scheduler_payload: dict[str, Any])
         "ingest_cursor": ingest_cursor,
         "compute_dispatch_cursor": dispatch_cursor,
         "latest_ingested_bar_time_ms": latest_ingested_bar_time_ms,
+        "latest_ingest_sources": _cursor_sources(ingest_5m, "latest_sources"),
+        "latest_compute_ingested_bar_time_ms": latest_compute_ingested_bar_time_ms,
+        "latest_compute_ingest_sources": list(compute_ingest.get("latest_compute_ingest_sources") or []),
         "latest_dispatched_bar_time_ms": latest_dispatched_bar_time_ms,
         "last_dispatch_at_ms": int(dispatch_5m.get("last_dispatched_at_ms") or 0),
+        "raw_dispatch_lag_ms": raw_lag_ms,
+        "raw_dispatch_lag_min": round(raw_lag_ms / 60000.0, 2) if raw_lag_ms else 0.0,
         "dispatch_lag_ms": lag_ms,
         "dispatch_lag_min": round(lag_ms / 60000.0, 2) if lag_ms else 0.0,
+        "dispatch_lag_compute_relevant": bool(compute_ingest.get("dispatch_lag_compute_relevant", True)),
+        "dispatch_lag_reason": str(compute_ingest.get("dispatch_lag_reason") or ""),
+        "compute_ingest_source_policy": str(compute_ingest.get("compute_ingest_source_policy") or ""),
     }
 
 

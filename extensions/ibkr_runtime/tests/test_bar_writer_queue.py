@@ -75,9 +75,56 @@ class DataWriterQueueTest(unittest.TestCase):
                     self.assertEqual(status["inflight_batch"], 0)
                     cursor = pb.state[(data_writer_mod.BAR_INGEST_CURSOR_STATE_KEY, "paper", "global")]["data"]
                     self.assertEqual(cursor["intervals"]["5m"]["latest_bar_time_ms"], 1713797100000)
+                    self.assertEqual(cursor["intervals"]["5m"]["latest_compute_ingest_bar_time_ms"], 1713797100000)
                     queue_payload = json.loads(Path(status["pending_queue_path"]).read_text(encoding="utf-8"))
                     self.assertEqual(queue_payload["pending"], [])
                     self.assertEqual(queue_payload["inflight"], [])
+                finally:
+                    writer.close()
+
+    def test_backfill_only_flush_does_not_advance_compute_ingest_cursor(self):
+        pb = _FakePBClient()
+        config = _FakeConfig()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(data_writer_mod, "BAR_PENDING_QUEUE_DIR", tmpdir):
+                writer = data_writer_mod.DataWriter(pb, config=config, environment="paper")
+                try:
+                    row = _bar("MSFT", 1713797400000)
+                    row["source"] = "backfill"
+                    row["extra"] = {"source": "ibkr_history_backfill"}
+                    self.assertTrue(writer.write_bar(row))
+                    self.assertTrue(writer.flush())
+                    cursor = pb.state[(data_writer_mod.BAR_INGEST_CURSOR_STATE_KEY, "paper", "global")]["data"]
+                    interval = cursor["intervals"]["5m"]
+                    self.assertEqual(interval["latest_bar_time_ms"], 1713797400000)
+                    self.assertEqual(interval["latest_sources"], ["ibkr_history_backfill"])
+                    self.assertEqual(interval["latest_compute_ingest_bar_time_ms"], 0)
+                    self.assertEqual(interval["latest_compute_ingest_sources"], [])
+                finally:
+                    writer.close()
+
+    def test_mixed_flush_tracks_latest_compute_eligible_bar_separately(self):
+        pb = _FakePBClient()
+        config = _FakeConfig()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(data_writer_mod, "BAR_PENDING_QUEUE_DIR", tmpdir):
+                writer = data_writer_mod.DataWriter(pb, config=config, environment="paper")
+                try:
+                    compute_row = _bar("AAPL", 1713797100000)
+                    compute_row["extra"] = {"source": "ibkr_history_close"}
+                    backfill_row = _bar("MSFT", 1713797400000)
+                    backfill_row["source"] = "backfill"
+                    backfill_row["extra"] = {"source": "ibkr_history_backfill"}
+                    self.assertTrue(writer.write_bar(compute_row))
+                    self.assertTrue(writer.write_bar(backfill_row))
+                    self.assertTrue(writer.flush())
+                    cursor = pb.state[(data_writer_mod.BAR_INGEST_CURSOR_STATE_KEY, "paper", "global")]["data"]
+                    interval = cursor["intervals"]["5m"]
+                    self.assertEqual(interval["latest_bar_time_ms"], 1713797400000)
+                    self.assertEqual(interval["latest_compute_ingest_bar_time_ms"], 1713797100000)
+                    self.assertEqual(interval["latest_compute_ingest_sources"], ["ibkr_history_close"])
                 finally:
                     writer.close()
 
