@@ -8,7 +8,7 @@
   <script src="/common.js"></script>
   <script>document.write(getCommonStyles())</script>
   <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-  <link rel="stylesheet" href="/assets/css/pages/ibkr_screener/page.css?v=20260501-bridge-fix-1">
+  <link rel="stylesheet" href="/assets/css/pages/ibkr_screener/page.css?v=20260502-manual-scan-confirm">
 </head>
 <body>
   <div id="nav"></div>
@@ -103,13 +103,13 @@
                 </div>
               </div>
               <div class="current-toolbar-actions">
-                <div class="manual-daily-scan-cluster">
-                  <button id="rerunDailyScanBtn" data-manual-daily-scan-btn class="mini-btn scan-rerun-btn" type="button" onclick="rerunTodayDailyScan()">补跑今日日筛</button>
-                  <div id="manualDailyScanFeedback" class="manual-daily-scan-feedback" role="status" aria-live="polite">等待补跑</div>
-                </div>
                 <a id="todayTargetsJumpLink" class="mini-link" href="/ibkr_screener.html?tab=screener&view=current">打开当前标的工作台</a>
                 <button id="openUniverseViewBtn" class="mini-btn" type="button">切到全量筛选</button>
                 <button id="toggleCurrentAdvancedFiltersBtn" class="mini-btn current-filter-toggle" type="button" aria-expanded="false">更多筛选</button>
+                <div class="manual-daily-scan-cluster">
+                  <button id="rerunDailyScanBtn" data-manual-daily-scan-btn class="mini-btn scan-rerun-btn" type="button" onclick="rerunTodayDailyScan()">补跑日筛</button>
+                  <div id="manualDailyScanFeedback" class="manual-daily-scan-feedback" role="status" aria-live="polite" hidden></div>
+                </div>
               </div>
             </div>
 
@@ -583,6 +583,6 @@
     </section>
   </div>
 
-  <script src="/assets/js/pages/ibkr_screener/page.js?v=20260501-bridge-fix-1"></script>
+  <script src="/assets/js/pages/ibkr_screener/page.js?v=20260502-manual-scan-confirm"></script>
 </body>
 </html>

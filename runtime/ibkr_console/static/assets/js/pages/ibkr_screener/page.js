@@ -244,7 +244,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         : `仅支持当前美东日期 ${getUsDate()}`;
       buttons.forEach((button) => {
         button.disabled = manualDailyScanState.running || !isToday;
-        button.textContent = manualDailyScanState.running ? '补跑中...' : '补跑今日日筛';
+        button.textContent = manualDailyScanState.running ? '补跑中' : '补跑日筛';
         button.setAttribute('aria-busy', manualDailyScanState.running ? 'true' : 'false');
         button.classList.remove('is-running', 'is-success', 'is-error', 'is-blocked');
         if (status !== 'idle') button.classList.add(`is-${status}`);
@@ -253,7 +253,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
           : `只支持当前美东日期 ${getUsDate()}，当前选择 ${selectedDate || '--'}。`;
       });
       if (feedback) {
-        feedback.textContent = statusMessage;
+        const shouldShowFeedback = status !== 'idle';
+        feedback.hidden = !shouldShowFeedback;
+        feedback.textContent = shouldShowFeedback ? statusMessage : '';
         feedback.dataset.status = status;
       }
     }
@@ -1910,6 +1912,57 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       return !errors;
     }
 
+    function confirmManualDailyScan() {
+      return new Promise((resolve) => {
+        const existing = document.getElementById('manualDailyScanConfirmOverlay');
+        if (existing) {
+          resolve(false);
+          return;
+        }
+
+        const overlay = document.createElement('div');
+        overlay.id = 'manualDailyScanConfirmOverlay';
+        overlay.className = 'manual-daily-scan-confirm-overlay';
+        overlay.setAttribute('role', 'presentation');
+        overlay.innerHTML = `
+          <div class="manual-daily-scan-confirm" role="dialog" aria-modal="true" aria-labelledby="manualDailyScanConfirmTitle" aria-describedby="manualDailyScanConfirmCopy">
+            <div class="manual-daily-scan-confirm-kicker">Manual Daily Scan</div>
+            <div id="manualDailyScanConfirmTitle" class="manual-daily-scan-confirm-title">确认补跑今日日筛</div>
+            <div id="manualDailyScanConfirmCopy" class="manual-daily-scan-confirm-copy">
+              <div>这会重新计算今日 <code>candidate / active</code>。</div>
+              <div>手动加入的标的会保留。</div>
+              <div>不会直接下单，也不会触发信号确认。</div>
+            </div>
+            <div class="manual-daily-scan-confirm-actions">
+              <button type="button" class="mini-btn" data-confirm-action="cancel">取消</button>
+              <button type="button" class="mini-btn scan-rerun-btn" data-confirm-action="confirm">确认补跑</button>
+            </div>
+          </div>
+        `;
+
+        const cleanup = (value) => {
+          document.removeEventListener('keydown', handleKeydown);
+          overlay.remove();
+          resolve(value);
+        };
+        const handleKeydown = (event) => {
+          if (event.key === 'Escape') cleanup(false);
+        };
+
+        overlay.addEventListener('click', (event) => {
+          if (event.target === overlay) cleanup(false);
+        });
+        overlay.querySelector('[data-confirm-action="cancel"]')?.addEventListener('click', () => cleanup(false));
+        overlay.querySelector('[data-confirm-action="confirm"]')?.addEventListener('click', () => cleanup(true));
+        document.addEventListener('keydown', handleKeydown);
+        document.body.appendChild(overlay);
+        window.requestAnimationFrame(() => {
+          overlay.classList.add('show');
+          overlay.querySelector('[data-confirm-action="confirm"]')?.focus();
+        });
+      });
+    }
+
     window.rerunTodayDailyScan = async function() {
       if (manualDailyScanState.running) return;
       if (!isSelectedDateToday()) {
@@ -1919,9 +1972,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         syncManualDailyScanButton();
         return;
       }
-      const confirmed = window.confirm(
-        '确认补跑一次今日日筛？\\n\\n这会重新计算今日 candidate / active，保留手动加入标的，不会直接下单或触发信号确认。'
-      );
+      const confirmed = await confirmManualDailyScan();
       if (!confirmed) return;
 
       manualDailyScanState.running = true;

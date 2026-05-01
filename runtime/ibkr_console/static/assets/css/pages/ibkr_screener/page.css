@@ -617,9 +617,9 @@
 
     .manual-daily-scan-cluster {
       display: grid;
-      gap: 5px;
-      min-width: 158px;
-      max-width: 260px;
+      gap: 4px;
+      min-width: 112px;
+      max-width: 190px;
     }
 
     .current-toolbar-actions .mini-btn,
@@ -636,13 +636,17 @@
     }
 
     .manual-daily-scan-feedback {
-      min-height: 15px;
       color: var(--screen-muted);
-      font-size: 10px;
+      font-size: 9.5px;
       line-height: 1.25;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+      text-align: right;
+    }
+
+    .manual-daily-scan-feedback[hidden] {
+      display: none;
     }
 
     .manual-daily-scan-feedback[data-status="running"] {
@@ -858,34 +862,104 @@
     }
 
     .mini-btn.scan-rerun-btn {
-      border-color: rgba(246, 173, 85, 0.5);
-      background: linear-gradient(180deg, rgba(99, 64, 24, 0.98), rgba(31, 22, 13, 0.96));
-      color: #ffd6a3;
-      font-weight: 800;
-      box-shadow: 0 0 0 1px rgba(246, 173, 85, 0.08), 0 10px 22px rgba(246, 173, 85, 0.08);
+      border-color: rgba(246, 173, 85, 0.32);
+      background: rgba(246, 173, 85, 0.06);
+      color: #f8c891;
+      font-weight: 700;
+      box-shadow: none;
     }
 
     .mini-btn.scan-rerun-btn:hover {
-      border-color: rgba(246, 173, 85, 0.72);
+      border-color: rgba(246, 173, 85, 0.58);
+      background: rgba(246, 173, 85, 0.1);
     }
 
     .mini-btn.scan-rerun-btn.is-running {
       border-color: rgba(246, 224, 94, 0.42);
-      background: linear-gradient(180deg, rgba(82, 67, 23, 0.98), rgba(24, 20, 12, 0.96));
+      background: rgba(246, 224, 94, 0.08);
       color: var(--screen-warn);
     }
 
     .mini-btn.scan-rerun-btn.is-success {
       border-color: rgba(104, 211, 145, 0.38);
-      background: linear-gradient(180deg, rgba(26, 57, 47, 0.98), rgba(9, 18, 25, 0.94));
+      background: rgba(104, 211, 145, 0.08);
       color: var(--screen-good);
     }
 
     .mini-btn.scan-rerun-btn.is-error,
     .mini-btn.scan-rerun-btn.is-blocked {
       border-color: rgba(252, 129, 129, 0.42);
-      background: linear-gradient(180deg, rgba(74, 32, 32, 0.98), rgba(22, 14, 16, 0.96));
+      background: rgba(252, 129, 129, 0.08);
       color: var(--screen-bad);
+    }
+
+    .manual-daily-scan-confirm-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 10000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+      background: rgba(2, 8, 23, 0.66);
+      opacity: 0;
+      transition: opacity 0.16s ease;
+    }
+
+    .manual-daily-scan-confirm-overlay.show {
+      opacity: 1;
+    }
+
+    .manual-daily-scan-confirm {
+      width: min(460px, 100%);
+      display: grid;
+      gap: 12px;
+      padding: 18px;
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      border-radius: 8px;
+      background: linear-gradient(180deg, rgba(13, 27, 38, 0.98), rgba(7, 16, 24, 0.98));
+      box-shadow: 0 24px 70px rgba(0, 0, 0, 0.42);
+    }
+
+    .manual-daily-scan-confirm-kicker {
+      color: var(--screen-accent-2);
+      font-family: var(--screen-mono-font);
+      font-size: 10px;
+      letter-spacing: 0.14em;
+      line-height: 1.2;
+      text-transform: uppercase;
+    }
+
+    .manual-daily-scan-confirm-title {
+      color: var(--screen-text);
+      font-size: 17px;
+      font-weight: 800;
+      line-height: 1.24;
+    }
+
+    .manual-daily-scan-confirm-copy {
+      display: grid;
+      gap: 7px;
+      color: var(--screen-muted);
+      font-size: 12px;
+      line-height: 1.48;
+    }
+
+    .manual-daily-scan-confirm-copy code {
+      color: var(--screen-text);
+      font-family: var(--screen-mono-font);
+    }
+
+    .manual-daily-scan-confirm-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 4px;
+    }
+
+    .manual-daily-scan-confirm-actions .mini-btn {
+      min-height: 34px;
+      padding: 7px 13px;
     }
 
     .mini-btn:disabled,
@@ -1670,11 +1744,15 @@
       }
 
       .current-toolbar-actions > * {
-        flex: 1 1 142px;
+        flex: 0 1 auto;
       }
 
       .manual-daily-scan-cluster {
         max-width: none;
+      }
+
+      .manual-daily-scan-feedback {
+        text-align: left;
       }
 
       .table-header,
@@ -1741,8 +1819,16 @@
         flex: 1 1 142px;
       }
 
+      .current-toolbar-actions .manual-daily-scan-cluster {
+        flex: 0 1 142px;
+      }
+
       .manual-daily-scan-feedback {
         white-space: normal;
+      }
+
+      .manual-daily-scan-cluster {
+        min-width: 0;
       }
 
       .mobile-data-price {
