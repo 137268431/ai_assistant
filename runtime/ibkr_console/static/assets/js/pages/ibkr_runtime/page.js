@@ -169,6 +169,60 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             return formatIbkrSecondsLabel(value);
         }
 
+        function formatRuntimeSlowStage(stage) {
+            const payload = stage && typeof stage === 'object' ? stage : {};
+            const name = String(payload.stage || '').trim() || '--';
+            const symbol = String(payload.symbol || '').trim().toUpperCase();
+            return `${name}${symbol ? `/${symbol}` : ''} ${formatSecondsLabel(payload.duration_s)}`;
+        }
+
+        function formatRuntimePercent(value) {
+            const number = Number(value);
+            return Number.isFinite(number) ? `${number.toFixed(1)}%` : '--';
+        }
+
+        function getHistoryFetchModel(status) {
+            const backfill = status?.data_backfill || {};
+            const lastTrace = backfill?.last_trace || {};
+            const slowest = backfill?.slowest_recent_stage || lastTrace?.slowest_stage || {};
+            const activeRequests = Number(backfill?.active_requests || 0) || 0;
+            const activeSymbols = Number(backfill?.active_symbols_total || 0) || 0;
+            const requestCount = Number(backfill?.request_count || 0) || 0;
+            const traceDuration = Number(lastTrace?.duration_s);
+            const traceId = String(lastTrace?.trace_id || '').trim();
+            return {
+                label: activeRequests > 0 ? 'ACTIVE' : (String(lastTrace?.error || '').trim() ? 'ERROR' : 'IDLE'),
+                value: activeRequests > 0
+                    ? `${formatCompactNumber(activeRequests)} active`
+                    : (Number.isFinite(traceDuration) && traceDuration > 0 ? formatSecondsLabel(traceDuration) : formatCompactNumber(requestCount)),
+                copy: `active ${activeRequests}/${activeSymbols} · requests ${formatCompactNumber(requestCount)} · throttle ${formatCompactNumber(backfill?.throttle_count || 0)}`,
+                trace: traceId || '--',
+                slowest: formatRuntimeSlowStage(slowest),
+                workers: Number(backfill?.max_concurrency || 0) || 0,
+                spacing: formatSecondsLabel(backfill?.request_spacing_s),
+            };
+        }
+
+        function getWatchlistTopupModel(status) {
+            const topup = status?.watchlist_idle_topup || {};
+            const completion = topup?.completion || {};
+            const statusText = String(topup?.status || 'idle').trim().toUpperCase();
+            const running = Boolean(topup?.running) || statusText === 'RUNNING';
+            const processed = Number(topup?.last_processed_symbols_total || 0) || 0;
+            const attempted = Number(topup?.last_attempted_symbols_total || 0) || 0;
+            const loadedBars = Number(topup?.last_loaded_bars ?? topup?.last_written_bars ?? 0) || 0;
+            const stopReason = String(topup?.last_stop_reason || topup?.skip_reason || '--');
+            return {
+                label: running ? 'RUNNING' : statusText,
+                value: running ? `${processed}/${attempted}` : formatCompactNumber(loadedBars),
+                copy: `${String(topup?.mode || '--').replace(/_/g, ' ')} · batch ${topup?.batch_size || 0} · stop ${stopReason}`,
+                detail: `completion ${formatRuntimePercent(completion?.progress_pct)} · due ${formatSecondsLabel(topup?.seconds_until_next_active_5m_due)} · next ${formatSecondsLabel(topup?.estimated_next_batch_s)}`,
+                processed,
+                attempted,
+                loadedBars,
+            };
+        }
+
         function getExtraObject(record) {
             return getIbkrExtraObject(record);
         }
@@ -890,6 +944,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const realtimeMetrics = deriveRealtimeMetrics(status, latestBar);
             const warmup = normalizeWarmup(status);
             const repairQueue = status?.bar_repair_queue || {};
+            const historyFetch = getHistoryFetchModel(status);
+            const watchlistTopup = getWatchlistTopupModel(status);
             const runtimeStatus = getEffectiveRuntimeStatusCardModel(status, twoFactorState);
             const twoFactorStatus = String(twoFactorState?.status || '').trim().toUpperCase() || '--';
             const sessionCopy = runtimeStatus.snapshotIncomplete
@@ -936,6 +992,16 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                     label: 'Data Freshness',
                     value: dataIsLoading ? 'LOADING' : (dataHealth.last_bar_age_min != null ? `${dataHealth.last_bar_age_min}m` : '--'),
                     copy: dataHealth.last_bar_time_ms ? `${dataHealth.last_symbol || 'n/a'} · ${dataHealth.last_bar_label}` : (dataIsLoading ? 'loading latest bar' : 'no latest')
+                },
+                {
+                    label: 'History Fetch',
+                    value: historyFetch.value,
+                    copy: historyFetch.copy
+                },
+                {
+                    label: 'Watchlist Topup',
+                    value: watchlistTopup.value,
+                    copy: watchlistTopup.copy
                 },
                 {
                     label: 'Bar Repair',
@@ -1413,6 +1479,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const warmup = normalizeWarmup(status);
             const warmupElapsedS = getWarmupElapsedSeconds(warmup);
             const canonical = status?.canonical_5m || {};
+            const historyFetch = getHistoryFetchModel(status);
+            const watchlistTopup = getWatchlistTopupModel(status);
             const twoFactor = deriveTwoFactorUiState(twoFactorState);
             const startup = normalizeStartupUiState(startupState);
             const startupStrategy = getStartupStrategy(status);
@@ -1488,12 +1556,25 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 ['Preload Finish', formatComputeStartupPreloadTimestamp(computeStartupPreload.finishedAt)],
                 ['Uptime', `${Math.round(Number(computeHealth.uptime_s || 0) / 60)} min`],
                 ['Backfill Written', String(status?.data_backfill?.total_backfilled || 0)],
+                ['History Active Requests', `${String(status?.data_backfill?.active_requests || 0)} / symbols ${String(status?.data_backfill?.active_symbols_total || 0)}`],
+                ['History Trace', historyFetch.trace],
+                ['History Workers', `${String(historyFetch.workers)} · spacing ${historyFetch.spacing}`],
+                ['History Slowest', historyFetch.slowest],
                 ['Canonical Due Bucket', String(canonical?.last_due_bucket_us || '--')],
                 ['Canonical Completed Bucket', String(canonical?.last_completed_bucket_us || '--')],
                 ['Canonical Lag', formatSecondsLabel(canonical?.lag_s)],
+                ['Canonical Trace', String(canonical?.last_trace_id || '--')],
+                ['Canonical Fetch Workers', String(canonical?.fetch_workers || 0)],
+                ['Canonical Fetch Duration', formatSecondsLabel(canonical?.last_duration_s)],
+                ['Canonical Slowest', formatRuntimeSlowStage(canonical?.slowest_stage || {})],
                 ['Canonical Written Bars', String(canonical?.last_written_bars || 0)],
                 ['Canonical Pending', String(canonical?.pending_symbols_total || 0)],
                 ['Canonical Pending Symbols', (Array.isArray(canonical?.pending_symbols) && canonical.pending_symbols.length) ? canonical.pending_symbols.slice(0, 8).join(', ') : '--'],
+                ['Watchlist Topup', `${watchlistTopup.label} · ${watchlistTopup.value}`],
+                ['Watchlist Topup Detail', watchlistTopup.copy],
+                ['Watchlist Topup Budget', watchlistTopup.detail],
+                ['Watchlist Attempted', String(status?.watchlist_idle_topup?.last_attempted_symbols_total || 0)],
+                ['Watchlist Processed', String(status?.watchlist_idle_topup?.last_processed_symbols_total || 0)],
                 ['Close Compute Runs', String(status?.realtime_compute?.runs || 0)],
                 ['Close Compute State', String(realtimeState?.phase || '--').toUpperCase()],
                 ['Close Compute Queue', String(status?.realtime_compute?.queue_size || 0)],

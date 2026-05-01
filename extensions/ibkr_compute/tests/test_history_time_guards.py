@@ -91,6 +91,34 @@ class HistoricalRequestFormatDateTest(unittest.TestCase):
         self.assertTrue(app.reqHistoricalData.called)
         self.assertEqual(app.reqHistoricalData.call_args.args[7], 2)
 
+    def test_request_historical_bars_reuses_resolved_contract_details(self):
+        app = _IBGatewayApp("127.0.0.1", 4001, 31)
+        app.connect_and_start = mock.Mock(return_value=True)
+        app.request_contract_details = mock.Mock(return_value=[])
+        app._next_request = mock.Mock(return_value=(1001, _PendingRequest(kind="historical")))
+        app._await = mock.Mock(return_value=[])
+        app.reqHistoricalData = mock.Mock()
+
+        app.request_historical_bars(
+            conid=121665622,
+            symbol="ZTS",
+            duration="1 D",
+            bar_size="5 mins",
+            end_datetime="",
+            use_rth=False,
+            timeout=30,
+            contract_details={
+                "conid": 121665622,
+                "symbol": "ZTS",
+                "sec_type": "STK",
+                "exchange": "SMART",
+                "currency": "USD",
+            },
+        )
+
+        app.request_contract_details.assert_not_called()
+        self.assertTrue(app.reqHistoricalData.called)
+
 
 class BackfillFutureGuardTest(unittest.TestCase):
     def test_long_5m_history_requests_are_chunked(self):
@@ -273,6 +301,58 @@ class BackfillFutureGuardTest(unittest.TestCase):
                 self.assertEqual(rows, [])
                 self.assertEqual(broker.calls, 1)
                 sleep_mock.assert_not_called()
+
+    def test_backfill_all_exposes_trace_status(self):
+        class Writer:
+            def __init__(self):
+                self.rows = []
+                self.pb_client = None
+
+            def write_bar(self, payload):
+                self.rows.append(dict(payload))
+                return True
+
+        class TraceConfig:
+            def get_int_for_environment(self, key, environment, fallback):
+                del environment
+                if key == "ibkr_history_max_concurrency":
+                    return 2
+                return fallback
+
+            def get_float_for_environment(self, key, environment, fallback):
+                del environment
+                if key in {"ibkr_history_request_spacing", "ibkr_history_interval_delay"}:
+                    return 0.0
+                return fallback
+
+            def get_bool_for_environment(self, key, environment, fallback):
+                del key, environment
+                return fallback
+
+        bar_ms = _et_ms(2026, 4, 17, 10, 45)
+        backfill = DataBackfill(
+            data_writer=Writer(),
+            config=TraceConfig(),
+            environment="live",
+            broker=_FakeBroker([_history_bar(bar_ms)]),
+        )
+
+        with mock.patch("ibkr_compute.market.data_backfill.time.sleep"):
+            result = backfill.backfill_all(
+                {"ZTS": 121665622},
+                symbol_meta={"ZTS": {"exchange": "BATS"}},
+                intervals=["5m"],
+                trace_source="unit_test_trace",
+            )
+
+        status = backfill.status()
+        self.assertEqual(result["ZTS"]["5m"], 1)
+        self.assertEqual(status["active_requests"], 0)
+        self.assertTrue(status["trace_enabled"])
+        self.assertEqual(status["last_trace"]["source"], "unit_test_trace")
+        self.assertEqual(status["last_trace"]["request_count"], 1)
+        self.assertEqual(status["last_trace"]["written"], 1)
+        self.assertGreaterEqual(status["recent_traces_total"], 1)
 
 
 if __name__ == "__main__":

@@ -200,6 +200,7 @@ def _build_api_utilization_snapshot(service, runtime_environment: str, runtime_s
     websocket = runtime_status.get("websocket") or {}
     market_universe = runtime_status.get("market_universe") or {}
     data_backfill = runtime_status.get("data_backfill") or {}
+    last_trace = data_backfill.get("last_trace") if isinstance(data_backfill.get("last_trace"), dict) else {}
     active_trade_symbol_count = int(market_universe.get("active_target_count") or 0)
     active_subscription_count = int(
         market_universe.get("active_subscription_count")
@@ -260,6 +261,11 @@ def _build_api_utilization_snapshot(service, runtime_environment: str, runtime_s
         "throttle_count": int(data_backfill.get("throttle_count", 0) or 0),
         "request_spacing_s": float(data_backfill.get("request_spacing_s", 0) or 0),
         "max_concurrency": int(data_backfill.get("max_concurrency", 0) or 0),
+        "active_requests": int(data_backfill.get("active_requests", 0) or 0),
+        "active_symbols": list(data_backfill.get("active_symbols") or []),
+        "active_symbols_total": int(data_backfill.get("active_symbols_total", 0) or 0),
+        "slowest_recent_stage": dict(data_backfill.get("slowest_recent_stage") or {}),
+        "last_trace_id": str(last_trace.get("trace_id") or ""),
         "websocket_message_count": int(websocket.get("message_count", 0) or 0),
         "order_update_count": int(websocket.get("order_update_count", 0) or 0),
         "last_message": websocket.get("last_message"),

@@ -852,16 +852,19 @@ class _IBGatewayApp(EWrapper, EClient):
         end_datetime: str = "",
         use_rth: bool = False,
         timeout: int = 30,
+        contract_details: Optional[dict] = None,
     ) -> List[dict]:
         self._ensure_ready(timeout, "request_historical_bars")
-        details = self.request_contract_details(conid=conid, timeout=timeout)
-        if not details and symbol:
-            details = self.request_contract_details(
-                symbol=symbol,
-                exchange=exchange or "SMART",
-                sec_type=sec_type or "STK",
-                timeout=timeout,
-            )
+        details = [dict(contract_details)] if isinstance(contract_details, dict) and contract_details.get("conid") else []
+        if not details:
+            details = self.request_contract_details(conid=conid, timeout=timeout)
+            if not details and symbol:
+                details = self.request_contract_details(
+                    symbol=symbol,
+                    exchange=exchange or "SMART",
+                    sec_type=sec_type or "STK",
+                    timeout=timeout,
+                )
         if not details:
             raise RuntimeError(f"contract_not_found:{symbol or conid}")
         contract = Contract()
@@ -1553,6 +1556,7 @@ class BrokerAdapter:
             end_datetime=end_datetime,
             use_rth=use_rth,
             timeout=timeout,
+            contract_details=contract,
         )
 
     def subscribe_market_data(self, conid: int, symbol: str, exchange: str = "SMART") -> int:

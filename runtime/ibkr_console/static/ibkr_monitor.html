@@ -746,6 +746,62 @@
             };
         }
 
+        function formatSlowStage(stage) {
+            const payload = stage && typeof stage === 'object' ? stage : {};
+            const stageName = String(payload.stage || '').trim() || '--';
+            const symbol = String(payload.symbol || '').trim().toUpperCase();
+            const duration = formatSeconds(payload.duration_s);
+            return `${stageName}${symbol ? `/${symbol}` : ''} ${duration}`;
+        }
+
+        function deriveHistoryFetchStatus(payload) {
+            const runtime = payload?.runtime || {};
+            const apiUtilization = payload?.api_utilization || {};
+            const backfill = runtime?.data_backfill || {};
+            const lastTrace = backfill?.last_trace || {};
+            const slowest = backfill?.slowest_recent_stage || lastTrace?.slowest_stage || apiUtilization?.slowest_recent_stage || {};
+            const activeRequests = Number(backfill?.active_requests ?? apiUtilization?.active_requests ?? 0) || 0;
+            const activeSymbolsTotal = Number(backfill?.active_symbols_total ?? apiUtilization?.active_symbols_total ?? 0) || 0;
+            const requestCount = Number(backfill?.request_count ?? apiUtilization?.request_count ?? 0) || 0;
+            const traceDuration = getFiniteNumber(lastTrace?.duration_s);
+            const traceError = String(lastTrace?.error || '').trim();
+            const traceId = String(lastTrace?.trace_id || apiUtilization?.last_trace_id || '').trim();
+            const tone = traceError
+                ? 'chip-error'
+                : (activeRequests > 0 ? 'chip-warn' : (requestCount > 0 ? 'chip-ok' : 'chip-muted'));
+            return {
+                tone,
+                label: activeRequests > 0 ? 'ACTIVE' : (traceError ? 'ERROR' : 'IDLE'),
+                value: activeRequests > 0 ? `${formatInteger(activeRequests)} active` : (traceDuration != null ? formatSeconds(traceDuration) : formatInteger(requestCount)),
+                copy: `active symbols ${formatInteger(activeSymbolsTotal)} · requests ${formatInteger(requestCount)} · throttle ${formatInteger(backfill?.throttle_count || apiUtilization?.throttle_count || 0)}`,
+                meta: `workers ${formatInteger(backfill?.max_concurrency || apiUtilization?.max_concurrency || 0)} · spacing ${formatSeconds(backfill?.request_spacing_s || apiUtilization?.request_spacing_s)} · trace ${traceId || '--'}`,
+                summary: `history ${activeRequests > 0 ? `${activeRequests} active` : 'idle'} · slowest ${formatSlowStage(slowest)}`,
+            };
+        }
+
+        function deriveWatchlistTopupStatus(payload) {
+            const topup = payload?.runtime?.watchlist_idle_topup || {};
+            const completion = topup?.completion || {};
+            const status = String(topup?.status || 'idle').trim().toLowerCase();
+            const running = Boolean(topup?.running) || status === 'running';
+            const stopReason = String(topup?.last_stop_reason || topup?.skip_reason || '').trim();
+            const processed = Number(topup?.last_processed_symbols_total ?? (Array.isArray(topup?.last_processed_symbols) ? topup.last_processed_symbols.length : 0) ?? 0) || 0;
+            const attempted = Number(topup?.last_attempted_symbols_total ?? (Array.isArray(topup?.last_attempted_symbols) ? topup.last_attempted_symbols.length : 0) ?? 0) || 0;
+            const loadedBars = Number(topup?.last_loaded_bars ?? topup?.last_written_bars ?? 0) || 0;
+            const mode = String(topup?.mode || '--').replace(/_/g, ' ');
+            const tone = status === 'error'
+                ? 'chip-error'
+                : (running ? 'chip-warn' : (status === 'completed' ? 'chip-ok' : 'chip-muted'));
+            return {
+                tone,
+                label: running ? 'RUNNING' : String(status || 'idle').toUpperCase(),
+                value: running ? `${formatInteger(processed)}/${formatInteger(attempted)}` : formatInteger(loadedBars),
+                copy: `${mode} · batch ${formatInteger(topup?.batch_size || 0)} · stop ${stopReason || '--'}`,
+                meta: `completion ${formatPercent(completion?.progress_pct, 1)} · due ${formatSeconds(topup?.seconds_until_next_active_5m_due)} · next batch ${formatSeconds(topup?.estimated_next_batch_s)}`,
+                summary: `watchlist ${running ? 'running' : (stopReason || status || 'idle')} · loaded ${formatInteger(loadedBars)} bars`,
+            };
+        }
+
         function deriveComputeHealthStatus(payload) {
             const runtime = payload?.runtime || {};
             const realtime = runtime?.realtime_compute || {};
@@ -1169,6 +1225,8 @@
             const pushStatus = deriveWebSocketPushStatus(payload);
             const computeStatus = deriveComputeHealthStatus(payload);
             const tradingGateStatus = deriveTradingGateStatus(payload);
+            const historyStatus = deriveHistoryFetchStatus(payload);
+            const watchlistStatus = deriveWatchlistTopupStatus(payload);
             const monitorRows = getMarketMonitorRows(payload);
             const marketSummary = summarizeMarketMonitors(monitorRows);
 
@@ -1219,6 +1277,20 @@
                     copy: canonicalStatus.copy,
                     meta: runtime?.canonical_5m?.last_completed_bucket_us || '--',
                     toneClass: metricToneFromChip(canonicalStatus.tone),
+                },
+                {
+                    label: 'History Fetch',
+                    value: historyStatus.value,
+                    copy: historyStatus.copy,
+                    meta: historyStatus.meta,
+                    toneClass: metricToneFromChip(historyStatus.tone),
+                },
+                {
+                    label: 'Watchlist Topup',
+                    value: watchlistStatus.value,
+                    copy: watchlistStatus.copy,
+                    meta: watchlistStatus.meta,
+                    toneClass: metricToneFromChip(watchlistStatus.tone),
                 },
                 {
                     label: 'Quote Coverage',
@@ -1313,6 +1385,8 @@
             const canonicalStatus = deriveCanonical5mStatus(payload);
             const computeStatus = deriveComputeHealthStatus(payload);
             const tradingGateStatus = deriveTradingGateStatus(payload);
+            const historyStatus = deriveHistoryFetchStatus(payload);
+            const watchlistStatus = deriveWatchlistTopupStatus(payload);
             const marketSummary = summarizeMarketMonitors(getMarketMonitorRows(payload));
             const displayFlags = getDisplayFlags(payload);
             const hasDisplayError = displayFlags.some((item) => String(item?.severity || '').toLowerCase() === 'error');
@@ -1333,6 +1407,8 @@
                 { label: `Data ${dataStatus.label}`, tone: dataStatus.tone },
                 { label: `Market Monitor ${marketSummary.total ? `${marketSummary.up}/${marketSummary.down}` : 'NONE'}`, tone: marketSummary.tone },
                 { label: `5m ${canonicalStatus.label}`, tone: canonicalStatus.tone },
+                { label: `History ${historyStatus.label}`, tone: historyStatus.tone },
+                { label: `Watchlist ${watchlistStatus.label}`, tone: watchlistStatus.tone },
                 { label: `Compute ${computeStatus.label}`, tone: computeStatus.tone },
                 { label: `Gate ${tradingGateStatus.label}`, tone: tradingGateStatus.tone },
                 { label: `API ${apiServiceStatus}`, tone: getSystemServiceTone(apiServiceStatus) === 'is-error' ? 'chip-error' : 'chip-ok' },
@@ -1357,6 +1433,8 @@
                 pushStatus.summary,
                 `market ${marketSummary.up}↑ ${marketSummary.down}↓ stale ${marketSummary.stale}`,
                 canonicalStatus.summary,
+                historyStatus.summary,
+                watchlistStatus.summary,
                 computeStatus.summary,
                 tradingGateStatus.summary,
                 `pb_data ${formatBytes(payload?.pocketbase?.disk?.data_size_bytes)}`,
@@ -1399,8 +1477,11 @@
         function renderUtilization(payload, deltas) {
             const apiUtilization = payload?.api_utilization || {};
             const config = payload?.config || {};
+            const historyStatus = deriveHistoryFetchStatus(payload);
+            const watchlistStatus = deriveWatchlistTopupStatus(payload);
             document.getElementById('utilMeta').textContent = [
                 `limit ${apiUtilization.subscription_limit || 0}`,
+                `history active ${apiUtilization.active_requests || 0}`,
                 `spacing ${config.ibkr_history_request_spacing || apiUtilization.request_spacing_s || '--'}s`,
                 `refresh ${config.ibkr_target_refresh_sec || '--'}s`
             ].join(' · ');
@@ -1419,8 +1500,18 @@
                 {
                     label: 'History Requests',
                     value: formatInteger(apiUtilization.request_count || 0),
-                    copy: `spacing ${formatNumber(apiUtilization.request_spacing_s, 2)}s · max concurrency ${apiUtilization.max_concurrency || 0}`,
+                    copy: `active ${apiUtilization.active_requests || 0}/${apiUtilization.active_symbols_total || 0} · max concurrency ${apiUtilization.max_concurrency || 0}`,
                     delta: deltas.request_count,
+                },
+                {
+                    label: 'History Fetch',
+                    value: historyStatus.value,
+                    copy: historyStatus.summary,
+                },
+                {
+                    label: 'Watchlist Topup',
+                    value: watchlistStatus.value,
+                    copy: watchlistStatus.copy,
                 },
                 {
                     label: 'History Retry',
@@ -1559,6 +1650,8 @@
             const samples = payload?.samples || {};
             const pullStatus = deriveAsyncPullStatus(payload);
             const pushStatus = deriveWebSocketPushStatus(payload);
+            const historyStatus = deriveHistoryFetchStatus(payload);
+            const watchlistStatus = deriveWatchlistTopupStatus(payload);
             const activeBars = Array.isArray(samples.active_bar_symbols) ? samples.active_bar_symbols : [];
             const realtime = runtime?.realtime_compute || {};
             const lastBarCloseMs = parseIsoMs(realtime.last_bar_close);
@@ -1614,6 +1707,16 @@
                     label: 'Backfill Total',
                     value: formatInteger(runtime?.data_backfill?.total_backfilled || 0),
                     copy: `requests ${runtime?.data_backfill?.request_count || 0} · retry ${runtime?.data_backfill?.retry_count || 0}`,
+                },
+                {
+                    label: 'Backfill Trace',
+                    value: historyStatus.value,
+                    copy: `${historyStatus.meta} · slowest ${formatSlowStage(runtime?.data_backfill?.slowest_recent_stage || {})}`,
+                },
+                {
+                    label: 'Watchlist Load',
+                    value: watchlistStatus.value,
+                    copy: watchlistStatus.meta,
                 },
                 {
                     label: 'Order Tracker',

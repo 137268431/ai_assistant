@@ -4,6 +4,7 @@ Historical bar backfill across the IBKR timeframes used by the pipeline.
 
 from __future__ import annotations
 
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from ibkr_compute.core.time_utils import ET
@@ -12,6 +13,7 @@ import os
 import time
 import logging
 import threading
+import uuid
 from typing import Dict, List, Optional, Sequence
 
 from ibkr_compute.broker import BrokerAdapter
@@ -66,6 +68,8 @@ DEFAULT_HISTORY_CLOSE_DELAY_SECONDS = max(
     1,
     int(os.environ.get("IBKR_OFFICIAL_5M_CLOSE_DELAY_SEC", "8")),
 )
+TRACE_RECENT_LIMIT = max(1, int(os.environ.get("IBKR_HISTORY_TRACE_RECENT_LIMIT", "20")))
+TRACE_SLOW_SECONDS = max(0.1, float(os.environ.get("IBKR_HISTORY_TRACE_SLOW_SEC", "2.0")))
 
 IB_DURATION_SUFFIX = {
     "s": "S",
@@ -233,6 +237,11 @@ class DataBackfill:
         self._count_lock = threading.Lock()
         self._request_gate_lock = threading.Lock()
         self._next_request_at = 0.0
+        self._trace_lock = threading.RLock()
+        self._recent_traces = deque(maxlen=max(TRACE_RECENT_LIMIT, 100))
+        self._last_trace: Dict = {}
+        self._active_requests = 0
+        self._active_symbol_counts: Dict[str, int] = {}
 
     def _resolve_intervals(self, intervals: Optional[Sequence[str]]) -> List[str]:
         if intervals is None:
@@ -249,6 +258,11 @@ class DataBackfill:
             return fallback
         return self.config.get_float_for_environment(key, self.environment, fallback)
 
+    def _get_bool_setting(self, key: str, fallback: bool) -> bool:
+        if not self.config or not hasattr(self.config, "get_bool_for_environment"):
+            return bool(fallback)
+        return bool(self.config.get_bool_for_environment(key, self.environment, fallback))
+
     def _request_spacing(self) -> float:
         return max(0.0, self._get_float_setting("ibkr_history_request_spacing", REQUEST_SPACING_SECONDS))
 
@@ -257,6 +271,274 @@ class DataBackfill:
 
     def _max_concurrency(self) -> int:
         return max(1, min(10, self._get_int_setting("ibkr_history_max_concurrency", MAX_CONCURRENT_REQUESTS)))
+
+    def _trace_enabled(self) -> bool:
+        return self._get_bool_setting("ibkr_history_trace_enabled", True)
+
+    def _trace_log_all_requests(self) -> bool:
+        return self._get_bool_setting("ibkr_history_trace_log_all_requests", True)
+
+    def _trace_recent_limit(self) -> int:
+        return max(1, min(100, self._get_int_setting("ibkr_history_trace_recent_limit", TRACE_RECENT_LIMIT)))
+
+    def _trace_slow_seconds(self) -> float:
+        return max(0.1, self._get_float_setting("ibkr_history_trace_slow_sec", TRACE_SLOW_SECONDS))
+
+    def _new_trace(self, source: str, symbols: Sequence[str], intervals: Sequence[str]) -> Optional[Dict]:
+        if not self._trace_enabled():
+            return None
+        normalized_symbols = [
+            str(symbol or "").strip().upper()
+            for symbol in (symbols or [])
+            if str(symbol or "").strip()
+        ]
+        normalized_intervals = [
+            normalize_interval(interval)
+            for interval in (intervals or [])
+            if str(interval or "").strip()
+        ]
+        with self._count_lock:
+            request_start = self._request_count
+            retry_start = self._retry_count
+            throttle_start = self._throttle_count
+        trace = {
+            "trace_id": uuid.uuid4().hex[:12],
+            "source": str(source or "history").strip() or "history",
+            "environment": self.environment,
+            "symbols": normalized_symbols,
+            "intervals": normalized_intervals,
+            "started_at": time.time(),
+            "request_count_start": request_start,
+            "retry_count_start": retry_start,
+            "throttle_count_start": throttle_start,
+            "max_concurrency": self._max_concurrency(),
+            "request_spacing_s": self._request_spacing(),
+            "interval_delay_s": self._interval_delay(),
+            "requests": [],
+            "writes": [],
+            "symbols_timing": [],
+        }
+        logger.info(
+            "[HistoryTrace] stage=start trace=%s source=%s symbols=%d intervals=%s workers=%d spacing_s=%.3f",
+            trace["trace_id"],
+            trace["source"],
+            len(normalized_symbols),
+            ",".join(normalized_intervals) or "--",
+            trace["max_concurrency"],
+            trace["request_spacing_s"],
+        )
+        return trace
+
+    def _active_request_enter(self, symbol: str) -> tuple[int, list[str]]:
+        normalized_symbol = str(symbol or "").strip().upper()
+        with self._trace_lock:
+            self._active_requests += 1
+            if normalized_symbol:
+                self._active_symbol_counts[normalized_symbol] = (
+                    int(self._active_symbol_counts.get(normalized_symbol, 0) or 0) + 1
+                )
+            return self._active_requests, sorted(self._active_symbol_counts.keys())
+
+    def _active_request_exit(self, symbol: str) -> tuple[int, list[str]]:
+        normalized_symbol = str(symbol or "").strip().upper()
+        with self._trace_lock:
+            self._active_requests = max(0, self._active_requests - 1)
+            if normalized_symbol and normalized_symbol in self._active_symbol_counts:
+                next_count = int(self._active_symbol_counts.get(normalized_symbol, 0) or 0) - 1
+                if next_count > 0:
+                    self._active_symbol_counts[normalized_symbol] = next_count
+                else:
+                    self._active_symbol_counts.pop(normalized_symbol, None)
+            return self._active_requests, sorted(self._active_symbol_counts.keys())
+
+    def _record_trace_request(
+        self,
+        trace: Optional[Dict],
+        *,
+        symbol: str,
+        interval: str,
+        attempt: int,
+        wait_s: float,
+        broker_s: float,
+        rows: int = 0,
+        error: str = "",
+        active_at_start: int = 0,
+    ) -> None:
+        if not trace:
+            return
+        payload = {
+            "symbol": str(symbol or "").strip().upper(),
+            "interval": normalize_interval(interval),
+            "attempt": int(attempt or 0),
+            "request_wait_s": round(max(0.0, float(wait_s or 0.0)), 3),
+            "broker_request_s": round(max(0.0, float(broker_s or 0.0)), 3),
+            "rows": int(rows or 0),
+            "error": str(error or ""),
+            "active_at_start": int(active_at_start or 0),
+        }
+        with self._trace_lock:
+            requests = trace.setdefault("requests", [])
+            if len(requests) < 80:
+                requests.append(payload)
+        should_log = self._trace_log_all_requests() or payload["broker_request_s"] >= self._trace_slow_seconds()
+        if should_log:
+            logger.info(
+                "[HistoryTrace] stage=request_done trace=%s symbol=%s interval=%s active=%d wait_s=%.3f broker_s=%.3f rows=%d attempt=%d error=%s",
+                trace.get("trace_id", ""),
+                payload["symbol"],
+                payload["interval"],
+                payload["active_at_start"],
+                payload["request_wait_s"],
+                payload["broker_request_s"],
+                payload["rows"],
+                payload["attempt"],
+                payload["error"] or "--",
+            )
+
+    def _record_trace_write(
+        self,
+        trace: Optional[Dict],
+        *,
+        symbol: str,
+        interval: str,
+        rows: int,
+        written: int,
+        write_s: float,
+    ) -> None:
+        if not trace:
+            return
+        payload = {
+            "symbol": str(symbol or "").strip().upper(),
+            "interval": normalize_interval(interval),
+            "rows": int(rows or 0),
+            "written": int(written or 0),
+            "write_s": round(max(0.0, float(write_s or 0.0)), 3),
+        }
+        with self._trace_lock:
+            writes = trace.setdefault("writes", [])
+            if len(writes) < 80:
+                writes.append(payload)
+        if payload["write_s"] >= self._trace_slow_seconds():
+            logger.info(
+                "[HistoryTrace] stage=write_done trace=%s symbol=%s interval=%s rows=%d written=%d write_s=%.3f",
+                trace.get("trace_id", ""),
+                payload["symbol"],
+                payload["interval"],
+                payload["rows"],
+                payload["written"],
+                payload["write_s"],
+            )
+
+    def _record_trace_symbol(
+        self,
+        trace: Optional[Dict],
+        *,
+        symbol: str,
+        fetch_s: float,
+        intervals: Sequence[str],
+        rows_by_interval: Dict[str, int],
+    ) -> None:
+        if not trace:
+            return
+        payload = {
+            "symbol": str(symbol or "").strip().upper(),
+            "fetch_s": round(max(0.0, float(fetch_s or 0.0)), 3),
+            "intervals": [normalize_interval(interval) for interval in intervals or []],
+            "rows_by_interval": {
+                normalize_interval(interval): int(count or 0)
+                for interval, count in (rows_by_interval or {}).items()
+            },
+        }
+        with self._trace_lock:
+            symbols_timing = trace.setdefault("symbols_timing", [])
+            if len(symbols_timing) < 80:
+                symbols_timing.append(payload)
+        if payload["fetch_s"] >= self._trace_slow_seconds():
+            logger.info(
+                "[HistoryTrace] stage=symbol_fetch_done trace=%s symbol=%s fetch_s=%.3f rows=%s",
+                trace.get("trace_id", ""),
+                payload["symbol"],
+                payload["fetch_s"],
+                payload["rows_by_interval"],
+            )
+
+    def _slowest_trace_stage(self, trace: Dict) -> dict:
+        slowest = {"stage": "", "duration_s": 0.0, "symbol": "", "interval": ""}
+        for request in trace.get("requests") or []:
+            for stage_key in ("request_wait_s", "broker_request_s"):
+                duration = float(request.get(stage_key, 0) or 0)
+                if duration > slowest["duration_s"]:
+                    slowest = {
+                        "stage": stage_key.replace("_s", ""),
+                        "duration_s": round(duration, 3),
+                        "symbol": str(request.get("symbol") or ""),
+                        "interval": str(request.get("interval") or ""),
+                    }
+        for write in trace.get("writes") or []:
+            duration = float(write.get("write_s", 0) or 0)
+            if duration > slowest["duration_s"]:
+                slowest = {
+                    "stage": "write",
+                    "duration_s": round(duration, 3),
+                    "symbol": str(write.get("symbol") or ""),
+                    "interval": str(write.get("interval") or ""),
+                }
+        for item in trace.get("symbols_timing") or []:
+            duration = float(item.get("fetch_s", 0) or 0)
+            if duration > slowest["duration_s"]:
+                slowest = {
+                    "stage": "symbol_fetch",
+                    "duration_s": round(duration, 3),
+                    "symbol": str(item.get("symbol") or ""),
+                    "interval": ",".join(item.get("intervals") or []),
+                }
+        return slowest
+
+    def _finish_trace(self, trace: Optional[Dict], *, total_written: int = 0, error: str = "") -> Dict:
+        if not trace:
+            return {}
+        finished_at = time.time()
+        with self._count_lock:
+            request_delta = self._request_count - int(trace.get("request_count_start", 0) or 0)
+            retry_delta = self._retry_count - int(trace.get("retry_count_start", 0) or 0)
+            throttle_delta = self._throttle_count - int(trace.get("throttle_count_start", 0) or 0)
+        summary = {
+            "trace_id": trace.get("trace_id", ""),
+            "source": trace.get("source", ""),
+            "environment": self.environment,
+            "symbols_total": len(trace.get("symbols") or []),
+            "intervals": list(trace.get("intervals") or []),
+            "duration_s": round(max(0.0, finished_at - float(trace.get("started_at", finished_at) or finished_at)), 3),
+            "request_count": int(request_delta or 0),
+            "retry_count": int(retry_delta or 0),
+            "throttle_count": int(throttle_delta or 0),
+            "written": int(total_written or 0),
+            "max_concurrency": trace.get("max_concurrency", self._max_concurrency()),
+            "request_spacing_s": trace.get("request_spacing_s", self._request_spacing()),
+            "slowest_stage": self._slowest_trace_stage(trace),
+            "error": str(error or ""),
+            "request_samples": list((trace.get("requests") or [])[-8:]),
+            "symbol_timings": list((trace.get("symbols_timing") or [])[-12:]),
+            "finished_at_ms": int(finished_at * 1000),
+        }
+        with self._trace_lock:
+            self._last_trace = dict(summary)
+            self._recent_traces.append(dict(summary))
+        logger.info(
+            "[HistoryTrace] stage=done trace=%s source=%s total_s=%.3f requests=%d retry=%d throttle=%d written=%d slowest=%s/%s %.3fs error=%s",
+            summary["trace_id"],
+            summary["source"],
+            summary["duration_s"],
+            summary["request_count"],
+            summary["retry_count"],
+            summary["throttle_count"],
+            summary["written"],
+            summary["slowest_stage"].get("stage") or "--",
+            summary["slowest_stage"].get("symbol") or "--",
+            float(summary["slowest_stage"].get("duration_s", 0) or 0),
+            summary["error"] or "--",
+        )
+        return summary
 
     def _max_retries(self) -> int:
         return max(0, self._get_int_setting("ibkr_history_max_retries", MAX_RETRIES))
@@ -314,10 +596,10 @@ class DataBackfill:
             now_ms=int((now_ts or time.time()) * 1000),
         )
 
-    def _wait_for_request_slot(self):
+    def _wait_for_request_slot(self) -> float:
         request_spacing = self._request_spacing()
         if request_spacing <= 0:
-            return
+            return 0.0
 
         delay = 0.0
         with self._request_gate_lock:
@@ -328,7 +610,10 @@ class DataBackfill:
             self._next_request_at = now + request_spacing
 
         if delay > 0:
+            with self._count_lock:
+                self._throttle_count += 1
             time.sleep(delay)
+        return delay
 
     def _request_history_json(
         self,
@@ -339,14 +624,17 @@ class DataBackfill:
         bar_size: str,
         start_time: str = "",
         exchange: str = "",
+        trace: Optional[Dict] = None,
     ) -> Dict:
         max_retries = self._max_retries()
         retry_base_delay = self._retry_base_delay()
         for attempt in range(max_retries + 1):
-            self._wait_for_request_slot()
+            wait_s = self._wait_for_request_slot()
             with self._count_lock:
                 self._request_count += 1
 
+            active_at_start, _ = self._active_request_enter(symbol)
+            request_started = time.perf_counter()
             try:
                 bars = self.broker.request_historical_bars(
                     conid=int(conid or 0),
@@ -358,6 +646,17 @@ class DataBackfill:
                     use_rth=False,
                     timeout=30,
                 )
+                broker_s = time.perf_counter() - request_started
+                self._record_trace_request(
+                    trace,
+                    symbol=symbol,
+                    interval=interval,
+                    attempt=attempt + 1,
+                    wait_s=wait_s,
+                    broker_s=broker_s,
+                    rows=len(bars or []),
+                    active_at_start=active_at_start,
+                )
                 return {
                     "serverId": "ib_gateway_socket",
                     "symbol": str(symbol or "").upper(),
@@ -367,6 +666,18 @@ class DataBackfill:
                     "mdAvailability": "IBGW",
                 }
             except Exception as exc:
+                broker_s = time.perf_counter() - request_started
+                self._record_trace_request(
+                    trace,
+                    symbol=symbol,
+                    interval=interval,
+                    attempt=attempt + 1,
+                    wait_s=wait_s,
+                    broker_s=broker_s,
+                    rows=0,
+                    error=str(exc),
+                    active_at_start=active_at_start,
+                )
                 if self._is_terminal_history_error(exc):
                     raise RuntimeError(
                         f"history_fetch_terminal:{symbol}:{interval}:{conid}:{exc}"
@@ -389,6 +700,8 @@ class DataBackfill:
                     exc,
                 )
                 time.sleep(delay)
+            finally:
+                self._active_request_exit(symbol)
         raise RuntimeError(f"history_fetch_failed_after_retries:{symbol}:{interval}:{conid}")
 
     def _build_history_rows(
@@ -465,8 +778,18 @@ class DataBackfill:
         repair: bool,
         end_datetime: str = "",
         parent_period: str = "",
+        trace: Optional[Dict] = None,
     ) -> List[Dict]:
-        data = self._request_history_json(conid, symbol, interval, period, bar_size, end_datetime, exchange=exchange)
+        data = self._request_history_json(
+            conid,
+            symbol,
+            interval,
+            period,
+            bar_size,
+            end_datetime,
+            exchange=exchange,
+            trace=trace,
+        )
         fetch_meta_extra = {}
         if data.get("mktDataDelay") is not None:
             fetch_meta_extra["mkt_data_delay"] = data.get("mktDataDelay")
@@ -500,6 +823,7 @@ class DataBackfill:
         bar_size: str,
         exchange: str,
         repair: bool,
+        trace: Optional[Dict] = None,
     ) -> List[Dict]:
         normalized = normalize_interval(interval)
         interval_ms = max(1, interval_to_ms(normalized))
@@ -531,6 +855,7 @@ class DataBackfill:
                 repair=repair,
                 end_datetime=end_datetime,
                 parent_period=period,
+                trace=trace,
             )
             chunks_requested += 1
             remaining_days -= current_chunk_days
@@ -559,12 +884,31 @@ class DataBackfill:
         return rows
 
     def _write_bars(self, bars: List[Dict]) -> int:
+        return self._write_bars_with_trace(bars)
+
+    def _write_bars_with_trace(
+        self,
+        bars: List[Dict],
+        *,
+        trace: Optional[Dict] = None,
+        symbol: str = "",
+        interval: str = "",
+    ) -> int:
+        started = time.perf_counter()
         written = 0
         for bar_data in bars:
             if self.data_writer and self.data_writer.write_bar(bar_data):
                 written += 1
         with self._count_lock:
             self._backfill_count += written
+        self._record_trace_write(
+            trace,
+            symbol=symbol or (str((bars[0] or {}).get("symbol") or "") if bars else ""),
+            interval=interval or (str((bars[0] or {}).get("interval") or "") if bars else ""),
+            rows=len(bars or []),
+            written=written,
+            write_s=time.perf_counter() - started,
+        )
         return written
 
     def _get_latest_stored_bar_ms(self, symbol: str, interval: str) -> int:
@@ -811,6 +1155,7 @@ class DataBackfill:
         exchange: str = "",
         repair: bool = False,
         request_period: Optional[str] = None,
+        trace: Optional[Dict] = None,
     ) -> List[Dict]:
         normalized = normalize_interval(interval)
         period, bar_size = PERIOD_MAP.get(normalized, PERIOD_MAP["5m"])
@@ -836,6 +1181,7 @@ class DataBackfill:
                     bar_size=bar_size,
                     exchange=exchange,
                     repair=repair,
+                    trace=trace,
                 )
             else:
                 result = self._fetch_history_rows_once(
@@ -846,6 +1192,7 @@ class DataBackfill:
                     bar_size=bar_size,
                     exchange=exchange,
                     repair=repair,
+                    trace=trace,
                 )
 
             safe_upper_ms = self._safe_history_upper_bound_ms(normalized)
@@ -907,6 +1254,7 @@ class DataBackfill:
         exchange: str = "",
         repair: bool = False,
         request_period: Optional[str] = None,
+        trace: Optional[Dict] = None,
     ) -> int:
         bars = self.fetch_history(
             conid,
@@ -915,8 +1263,9 @@ class DataBackfill:
             exchange=exchange,
             repair=repair,
             request_period=request_period,
+            trace=trace,
         )
-        written = self._write_bars(bars)
+        written = self._write_bars_with_trace(bars, trace=trace, symbol=symbol, interval=interval)
         logger.info(
             "Backfill %s/%s (%s): %d/%d bars written",
             symbol,
@@ -935,6 +1284,7 @@ class DataBackfill:
         intervals: Optional[List[str]] = None,
         repair: bool = False,
         period_overrides: Optional[Dict[str, str]] = None,
+        trace: Optional[Dict] = None,
     ) -> Dict[str, int]:
         results = {}
         for interval in self._resolve_intervals(intervals):
@@ -946,6 +1296,7 @@ class DataBackfill:
                 exchange=exchange,
                 repair=repair,
                 request_period=str((period_overrides or {}).get(normalized) or "").strip() or None,
+                trace=trace,
             )
             results[normalized] = written
             interval_delay = self._interval_delay()
@@ -961,8 +1312,10 @@ class DataBackfill:
         intervals: Sequence[str],
         repair: bool,
         period_overrides: Optional[Dict[str, str]] = None,
+        trace: Optional[Dict] = None,
     ) -> Dict[str, List[Dict]]:
         fetched = {}
+        started = time.perf_counter()
         for interval in self._resolve_intervals(intervals):
             normalized = normalize_interval(interval)
             fetched[normalized] = self.fetch_history(
@@ -972,10 +1325,18 @@ class DataBackfill:
                 exchange=exchange,
                 repair=repair,
                 request_period=str((period_overrides or {}).get(normalized) or "").strip() or None,
+                trace=trace,
             )
             interval_delay = self._interval_delay()
             if interval_delay > 0:
                 time.sleep(interval_delay)
+        self._record_trace_symbol(
+            trace,
+            symbol=symbol,
+            fetch_s=time.perf_counter() - started,
+            intervals=list(fetched.keys()),
+            rows_by_interval={interval: len(rows or []) for interval, rows in fetched.items()},
+        )
         return fetched
 
     def backfill_all(
@@ -985,6 +1346,7 @@ class DataBackfill:
         intervals: Optional[List[str]] = None,
         repair_symbols: Optional[Sequence[str]] = None,
         period_overrides: Optional[Dict[str, Dict[str, str]]] = None,
+        trace_source: str = "backfill_all",
     ) -> Dict[str, Dict[str, int]]:
         results = {}
         metadata = symbol_meta or {}
@@ -998,6 +1360,7 @@ class DataBackfill:
             return results
 
         worker_count = min(self._max_concurrency(), len(conid_map))
+        trace = self._new_trace(trace_source, list(conid_map.keys()), interval_list)
         logger.info(
             "Starting history backfill: symbols=%d, tasks=%d, intervals=%s, workers=%d",
             len(conid_map),
@@ -1006,6 +1369,8 @@ class DataBackfill:
             worker_count,
         )
 
+        total_written = 0
+        trace_error = ""
         with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="ibkr-backfill") as executor:
             future_map = {
                 executor.submit(
@@ -1016,16 +1381,22 @@ class DataBackfill:
                     interval_list,
                     symbol in repair_set,
                     dict((period_overrides or {}).get(symbol) or {}),
+                    trace,
                 ): symbol
                 for symbol, conid in conid_map.items()
             }
-
             for future in as_completed(future_map):
                 symbol = future_map[future]
                 try:
                     fetched = future.result()
                     for interval, bars in fetched.items():
-                        written = self._write_bars(bars)
+                        written = self._write_bars_with_trace(
+                            bars,
+                            trace=trace,
+                            symbol=symbol,
+                            interval=interval,
+                        )
+                        total_written += written
                         results[symbol][normalize_interval(interval)] = written
                         logger.info(
                             "Backfill %s/%s complete: %d/%d bars written",
@@ -1035,10 +1406,28 @@ class DataBackfill:
                             len(bars),
                         )
                 except Exception as e:
+                    trace_error = str(e)
                     logger.error("Backfill task failed for %s: %s", symbol, e)
+        self._finish_trace(trace, total_written=sum(
+            int(count or 0)
+            for per_symbol in results.values()
+            for count in per_symbol.values()
+        ), error=trace_error)
         return results
 
     def status(self) -> dict:
+        with self._trace_lock:
+            recent_limit = self._trace_recent_limit()
+            recent_traces = list(self._recent_traces)[-recent_limit:]
+            active_symbols = sorted(self._active_symbol_counts.keys())
+            last_trace = dict(self._last_trace)
+            active_requests = int(self._active_requests or 0)
+        slowest_recent = {"stage": "", "duration_s": 0.0, "symbol": "", "interval": ""}
+        for trace in recent_traces:
+            candidate = trace.get("slowest_stage") if isinstance(trace, dict) else {}
+            duration = float((candidate or {}).get("duration_s", 0) or 0)
+            if duration > float(slowest_recent.get("duration_s", 0) or 0):
+                slowest_recent = dict(candidate or {})
         return {
             "total_backfilled": self._backfill_count,
             "request_count": self._request_count,
@@ -1049,4 +1438,12 @@ class DataBackfill:
             "max_concurrency": self._max_concurrency(),
             "request_spacing_s": self._request_spacing(),
             "interval_delay_s": self._interval_delay(),
+            "active_requests": active_requests,
+            "active_symbols": active_symbols,
+            "active_symbols_total": len(active_symbols),
+            "trace_enabled": self._trace_enabled(),
+            "last_trace": last_trace,
+            "recent_traces": recent_traces,
+            "recent_traces_total": len(recent_traces),
+            "slowest_recent_stage": slowest_recent,
         }

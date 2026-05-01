@@ -103,6 +103,7 @@ const runtimeHtml = readStatic('ibkr_runtime.html');
 const runtimeJs = readStatic('assets/js/pages/ibkr_runtime/page.js');
 assert(runtimeHtml.includes('操作前链路摘要'), 'runtime_missing_link_summary_title');
 assert(runtimeJs.includes('runtime-link-action') && runtimeJs.includes('/ibkr_monitor.html'), 'runtime_summary_missing_monitor_link');
+assert(includesAll(runtimeJs, ['History Fetch', 'Watchlist Topup', 'Canonical Trace', 'History Active Requests']), 'runtime_missing_history_watchlist_monitoring');
 assert(runtimeHtml.includes('核心模块控制') && runtimeHtml.includes('id="serviceControlGrid"'), 'runtime_missing_service_control_panel');
 assert(runtimeJs.includes('/api/custom/ibkr/services/action'), 'runtime_missing_service_action_api');
 assert(includesAll(runtimeJs, ['ibkr-runtime', 'ibkr-gateway', 'ibkr-compute', 'ibkr-scheduler']), 'runtime_service_control_missing_core_services');
@@ -123,6 +124,7 @@ const monitorHtml = readStatic('ibkr_monitor.html');
 assert(monitorHtml.includes('ops-route-panel'), 'monitor_missing_ops_route_panel');
 assert(includesAll(monitorHtml, ['监控大盘', '预热', '数据质量', '历史重建']), 'monitor_ops_route_missing_labels');
 assert(includesAll(monitorHtml, ['大盘行情雷达', '关键监控指标带', 'marketOverviewGrid', 'criticalMetricsGrid']), 'monitor_missing_market_or_critical_metrics');
+assert(includesAll(monitorHtml, ['History Fetch', 'Watchlist Topup', 'Backfill Trace', 'Watchlist Load']), 'monitor_missing_history_watchlist_cards');
 
 const warmupHtml = readStatic('ibkr_warmup.html');
 assert(warmupHtml.includes('warmup-guide-section'), 'warmup_missing_guide_section');
@@ -144,4 +146,4 @@ if (issues.length) {
   process.exit(1);
 }
 
-console.log(JSON.stringify({ ok: true, checks: 36, staticRoot }, null, 2));
+console.log(JSON.stringify({ ok: true, checks: 38, staticRoot }, null, 2));

@@ -58,8 +58,16 @@ class _FakeBackfill:
     def __init__(self, writer: _FakeWriter, initial_rows=None, incremental_rows=None, repair_rows=None):
         self.writer = writer
         self.initial_rows = [dict(row) for row in (initial_rows or [])]
-        self.incremental_rows = [dict(row) for row in (incremental_rows or [])]
-        self.repair_rows = [dict(row) for row in (repair_rows or [])]
+        self.incremental_rows_by_symbol = {
+            str(symbol or "").upper(): [dict(row) for row in rows]
+            for symbol, rows in (incremental_rows or {}).items()
+        } if isinstance(incremental_rows, dict) else {}
+        self.repair_rows_by_symbol = {
+            str(symbol or "").upper(): [dict(row) for row in rows]
+            for symbol, rows in (repair_rows or {}).items()
+        } if isinstance(repair_rows, dict) else {}
+        self.incremental_rows = [] if isinstance(incremental_rows, dict) else [dict(row) for row in (incremental_rows or [])]
+        self.repair_rows = [] if isinstance(repair_rows, dict) else [dict(row) for row in (repair_rows or [])]
         self.repair_fetch_calls = 0
         self.backfill_all_calls = []
 
@@ -84,10 +92,15 @@ class _FakeBackfill:
         exchange: str = "",
         repair: bool = False,
         request_period: str | None = None,
+        trace=None,
     ) -> list[dict]:
         if repair:
             self.repair_fetch_calls += 1
+            if self.repair_rows_by_symbol:
+                return [dict(row) for row in self.repair_rows_by_symbol.get(str(symbol or "").upper(), [])]
             return [dict(row) for row in self.repair_rows]
+        if self.incremental_rows_by_symbol:
+            return [dict(row) for row in self.incremental_rows_by_symbol.get(str(symbol or "").upper(), [])]
         return [dict(row) for row in self.incremental_rows]
 
     def get_required_sequence_snapshot(
@@ -441,6 +454,53 @@ class Official5mCloseFlushTest(unittest.TestCase):
         self.assertEqual(state["written_symbols"], ["AAPL"])
         self.assertEqual(len(writer.flushed_rows), 1)
         self.assertEqual(writer.flushed_rows[0]["symbol"], "AAPL")
+
+    def test_close_cycle_fetches_multiple_trade_symbols_with_worker_trace(self):
+        due_bucket_ms = int(datetime(2026, 4, 17, 10, 50, tzinfo=ET).timestamp() * 1000)
+        previous_bucket_ms = due_bucket_ms - STEP_MS
+        writer = _FakeWriter()
+        backfill = _FakeBackfill(
+            writer,
+            initial_rows=[
+                _bar("AAPL", previous_bucket_ms),
+                _bar("MSFT", previous_bucket_ms),
+            ],
+            incremental_rows={
+                "AAPL": [_bar("AAPL", due_bucket_ms)],
+                "MSFT": [_bar("MSFT", due_bucket_ms)],
+            },
+            repair_rows={},
+        )
+        pipeline = _DummyPipeline(
+            due_bucket_ms=due_bucket_ms,
+            last_completed_bucket_ms=previous_bucket_ms,
+            data_writer=writer,
+            data_backfill=backfill,
+            snapshot={
+                "symbols": ["AAPL", "MSFT"],
+                "trade_symbols": ["AAPL", "MSFT"],
+                "monitor_symbols": [],
+                "conid_map": {"AAPL": 1, "MSFT": 2},
+                "symbol_meta": {
+                    "AAPL": {"exchange": "NASDAQ"},
+                    "MSFT": {"exchange": "NASDAQ"},
+                },
+            },
+        )
+
+        with mock.patch("ibkr_compute.orchestration.runtime_pipeline._service_mod", return_value=self._service_mod()):
+            pipeline._run_official_5m_close_cycle()
+
+        state = pipeline._copy_official_5m_state()
+        self.assertEqual(state["pending_symbols_total"], 0)
+        self.assertEqual(state["written_symbols"], ["AAPL", "MSFT"])
+        self.assertEqual(state["fetch_workers"], 2)
+        self.assertTrue(str(state["last_trace_id"]).startswith("official5m_"))
+        self.assertEqual(
+            sorted(item["symbol"] for item in state["last_symbol_timings"]),
+            ["AAPL", "MSFT"],
+        )
+        self.assertEqual(sorted(row["symbol"] for row in writer.flushed_rows), ["AAPL", "MSFT"])
 
     def test_startup_cycle_fetches_missing_official_bars_instead_of_restoring_only(self):
         session_start_ms = int(datetime(2026, 4, 17, 9, 30, tzinfo=ET).timestamp() * 1000)
