@@ -12,6 +12,34 @@ AsDict = Callable[[Any], dict[str, Any]]
 MergeServiceTopology = Callable[..., dict[str, Any]]
 LoadRecentSystemEvents = Callable[[str, int], list[dict[str, Any]]]
 TimeStrings = Callable[[float | None], dict[str, str]]
+LoadTodayCounts = Callable[[str, str], dict[str, Any]]
+
+
+def _to_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def _empty_today_counts() -> dict[str, int]:
+    return {
+        "ibkr_signals": 0,
+        "ibkr_indicators": 0,
+        "orders": 0,
+        "ibkr_bars": 0,
+        "ibkr_targets": 0,
+        "events": 0,
+    }
+
+
+def _coerce_today_counts(value: Any) -> tuple[dict[str, int], dict[str, Any]]:
+    source = dict(value) if isinstance(value, dict) else {}
+    counts = _empty_today_counts()
+    for key in counts:
+        counts[key] = _to_int(source.get(key), 0)
+    errors = source.get("errors") if isinstance(source.get("errors"), dict) else {}
+    return counts, dict(errors)
 
 
 
@@ -29,8 +57,11 @@ def build_system_summary_payload(
     merge_service_topology: MergeServiceTopology,
     load_recent_system_events: LoadRecentSystemEvents,
     time_strings: TimeStrings,
+    load_today_counts: LoadTodayCounts,
 ) -> dict[str, Any]:
     runtime_environment = normalize_environment(environment, "live")
+    times = time_strings()
+    market_date = str(times.get("date") or "").strip()
     config_map = load_effective_config_map(runtime_environment)
     compute_enabled = runtime_environment != "backtest" and is_enabled_text(config_map.get("ibkr_compute_enabled", "TRUE"))
     trading_enabled = runtime_environment != "backtest" and is_enabled_text(
@@ -87,12 +118,18 @@ def build_system_summary_payload(
         runtime_summary["error"] = str(runtime_status.get("error") or "")
 
     actual_runtime_environment = normalize_environment(runtime_summary.get("environment") or runtime_environment, runtime_environment)
+    today_errors: dict[str, Any] = {}
+    try:
+        today_counts, today_errors = _coerce_today_counts(load_today_counts(runtime_environment, market_date))
+    except Exception as exc:
+        today_counts = _empty_today_counts()
+        today_errors = {"_summary": str(exc)}
     ok = bool(compute_summary.get("ok")) and (bool(runtime_summary.get("ok")) or not runtime_payload)
     degraded = bool(compute_summary.get("ok")) or bool(runtime_summary.get("ok")) or bool(runtime_payload)
-    return {
+    payload = {
         "ok": ok,
         "status": "running" if ok else ("degraded" if degraded else "offline"),
-        "timestamp": time_strings()["us"],
+        "timestamp": times["us"],
         "environment": runtime_environment,
         "requested_environment": runtime_environment,
         "actual_runtime_environment": actual_runtime_environment,
@@ -100,14 +137,8 @@ def build_system_summary_payload(
         "compute_enabled": compute_enabled,
         "ibkr_trading_enabled": trading_enabled,
         "config": config_map,
-        "today": {
-            "ibkr_signals": 0,
-            "ibkr_indicators": 0,
-            "orders": 0,
-            "ibkr_bars": 0,
-            "ibkr_targets": 0,
-            "events": 0,
-        },
+        "today": today_counts,
+        "today_market_date": market_date,
         "ibkr_compute": compute_summary,
         "ibkr_runtime": runtime_summary,
         "service_topology": merged_topology,
@@ -117,6 +148,9 @@ def build_system_summary_payload(
         "lite_mode": bool(lite_mode),
         "source": "ibkr-api",
     }
+    if today_errors:
+        payload["today_errors"] = today_errors
+    return payload
 
 
 __all__ = ["build_system_summary_payload"]

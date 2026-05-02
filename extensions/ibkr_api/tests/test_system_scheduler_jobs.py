@@ -21,6 +21,7 @@ from ibkr_api.system.jobs.reminders import (
     build_system_daily_report_response,
     build_system_market_open_reminder_response,
 )
+from ibkr_api.system.summary_support import build_system_summary_payload
 
 
 class _OrderExpiryPB:
@@ -428,6 +429,9 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertIn("**结论**", card_text)
         self.assertIn("**需要处理**", card_text)
         self.assertIn("今日结果", card_text)
+        self.assertEqual(sent[0]["card"]["header"]["template"], "green")
+        self.assertIn("bars 10", card_text)
+        self.assertNotIn("数据链路可能未落库", card_text)
 
     def test_daily_report_does_not_mark_sent_when_notification_fails(self):
         pb = _ReminderPB()
@@ -500,6 +504,58 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertIn("bars 0", card_text)
         self.assertIn("数据链路可能未落库", card_text)
         self.assertIn("Scheduler ingest", card_text)
+
+    def test_system_summary_payload_uses_loaded_today_counts(self):
+        payload = build_system_summary_payload(
+            "live",
+            lite_mode=True,
+            normalize_environment=lambda value, default="live": str(value or default).strip().lower() or default,
+            load_effective_config_map=lambda environment, selected_keys=None: {},
+            is_enabled_text=lambda value: True,
+            fetch_compute_health=lambda environment: {"ok": True, "payload": {"status": "running"}},
+            fetch_compute_status=lambda environment: {"ok": True, "payload": {"status": "running"}},
+            fetch_runtime_status=lambda environment: {"ok": True, "payload": {"status": "running", "environment": environment}},
+            as_dict=lambda value: dict(value) if isinstance(value, dict) else {},
+            merge_service_topology=lambda *payloads: {"services": {}},
+            load_recent_system_events=lambda environment, limit: [],
+            time_strings=lambda now_ts=None: {"us": "2026-05-01 16:05:00", "cn": "2026-05-02 04:05:00", "date": "2026-05-01"},
+            load_today_counts=lambda environment, market_date: {
+                "ibkr_bars": 22134,
+                "ibkr_indicators": 8494,
+                "ibkr_signals": 0,
+                "orders": 0,
+                "events": 98,
+                "ibkr_targets": 9,
+            },
+        )
+
+        self.assertEqual(payload["today_market_date"], "2026-05-01")
+        self.assertEqual(payload["today"]["ibkr_bars"], 22134)
+        self.assertEqual(payload["today"]["ibkr_indicators"], 8494)
+        self.assertEqual(payload["today"]["events"], 98)
+        self.assertEqual(payload["today"]["ibkr_targets"], 9)
+        self.assertNotIn("today_errors", payload)
+
+    def test_system_summary_payload_preserves_response_when_today_counts_fail(self):
+        payload = build_system_summary_payload(
+            "live",
+            lite_mode=True,
+            normalize_environment=lambda value, default="live": str(value or default).strip().lower() or default,
+            load_effective_config_map=lambda environment, selected_keys=None: {},
+            is_enabled_text=lambda value: True,
+            fetch_compute_health=lambda environment: {"ok": True, "payload": {"status": "running"}},
+            fetch_compute_status=lambda environment: {"ok": True, "payload": {"status": "running"}},
+            fetch_runtime_status=lambda environment: {"ok": True, "payload": {"status": "running", "environment": environment}},
+            as_dict=lambda value: dict(value) if isinstance(value, dict) else {},
+            merge_service_topology=lambda *payloads: {"services": {}},
+            load_recent_system_events=lambda environment, limit: [],
+            time_strings=lambda now_ts=None: {"us": "2026-05-01 16:05:00", "cn": "2026-05-02 04:05:00", "date": "2026-05-01"},
+            load_today_counts=lambda environment, market_date: (_ for _ in ()).throw(RuntimeError("pb offline")),
+        )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["today"]["ibkr_bars"], 0)
+        self.assertIn("_summary", payload["today_errors"])
 
 
 if __name__ == "__main__":

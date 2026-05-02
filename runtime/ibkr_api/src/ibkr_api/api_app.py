@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -260,6 +260,74 @@ def _load_recent_system_events(environment: str, limit: int = 20) -> list[dict[s
         normalize_environment=_normalize_environment,
         escape_filter_string=_escape_filter_string,
     )
+
+
+def _pb_count_records(collection: str, filter_expr: str) -> int:
+    request_fn = getattr(pb, "_request", None)
+    if not callable(request_fn):
+        get_all_records = getattr(pb, "get_all_records", None)
+        if callable(get_all_records):
+            return len(get_all_records(collection, filter=filter_expr, max_pages=100) or [])
+        return len(pb.get_records(collection, filter=filter_expr, per_page=200, page=1) or [])
+    url = f"{pb.base_url}/api/collections/{collection}/records"
+    response = request_fn(
+        "GET",
+        url,
+        params={"filter": filter_expr, "perPage": 1, "page": 1},
+        timeout=15,
+    )
+    return int((response.json() or {}).get("totalItems") or 0)
+
+
+def _load_today_counts(environment: str, market_date: str) -> dict[str, Any]:
+    runtime_environment = _normalize_environment(environment, "live")
+    date_token = str(market_date or _time_strings()["date"]).strip() or _time_strings()["date"]
+    try:
+        next_date = (datetime.strptime(date_token, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    except Exception:
+        date_token = _time_strings()["date"]
+        next_date = (datetime.strptime(date_token, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    env = _escape_filter_string(runtime_environment)
+    start_us = _escape_filter_string(f"{date_token} 00:00:00")
+    end_us = _escape_filter_string(f"{next_date} 00:00:00")
+    date_filter = _escape_filter_string(date_token)
+    specs = {
+        "ibkr_bars": (
+            "ibkr_bars",
+            f'environment = "{env}" && interval = "5m" && us_time >= "{start_us}" && us_time < "{end_us}"',
+        ),
+        "ibkr_indicators": (
+            "ibkr_indicators",
+            f'environment = "{env}" && interval = "5" && us_time >= "{start_us}" && us_time < "{end_us}"',
+        ),
+        "ibkr_signals": (
+            "ibkr_signals",
+            f'environment = "{env}" && us_time >= "{start_us}" && us_time < "{end_us}"',
+        ),
+        "orders": (
+            "orders",
+            f'environment = "{env}" && us_time >= "{start_us}" && us_time < "{end_us}"',
+        ),
+        "events": (
+            "system_events",
+            f'environment = "{env}" && us_time >= "{start_us}" && us_time < "{end_us}"',
+        ),
+        "ibkr_targets": (
+            "ibkr_targets",
+            f'environment = "{env}" && date = "{date_filter}"',
+        ),
+    }
+    counts: dict[str, Any] = {}
+    errors: dict[str, str] = {}
+    for key, (collection, filter_expr) in specs.items():
+        try:
+            counts[key] = _pb_count_records(collection, filter_expr)
+        except Exception as exc:
+            counts[key] = 0
+            errors[key] = str(exc)
+    if errors:
+        counts["errors"] = errors
+    return counts
 
 
 def _is_enabled_text(value: Any) -> bool:
