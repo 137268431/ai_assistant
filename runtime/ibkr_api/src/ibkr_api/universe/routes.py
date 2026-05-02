@@ -4,6 +4,7 @@ from typing import Any
 
 from flask import Response, jsonify, request
 
+from ibkr_api.universe.active_window_progress import build_active_window_progress_response
 from ibkr_api.universe.screener import build_screener_proxy_response
 from ibkr_api.universe.today_targets import build_today_targets_response
 from ibkr_api.universe.targets import (
@@ -121,6 +122,19 @@ def register_universe_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
         return response if status_code == 200 else (response, status_code)
 
     exports["custom_ibkr_today_targets"] = custom_ibkr_today_targets
+
+    @app.route("/api/custom/ibkr/active-window-progress", methods=["GET"])
+    def custom_ibkr_active_window_progress() -> Response:
+        payload, status_code = build_active_window_progress_response(
+            pb,
+            payload=request.args.to_dict(flat=True),
+            normalize_environment=normalize_environment,
+            time_strings=time_strings,
+        )
+        response = jsonify(payload)
+        return response if status_code == 200 else (response, status_code)
+
+    exports["custom_ibkr_active_window_progress"] = custom_ibkr_active_window_progress
 
     @app.route("/api/custom/ibkr/screener/targets", methods=["POST"])
     def custom_ibkr_screener_targets() -> Response:

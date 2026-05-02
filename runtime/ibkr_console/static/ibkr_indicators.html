@@ -1293,8 +1293,8 @@
             const archiveStatus = compareIndicatorArchiveStatus(payload, bar?.bar_time_ms);
             container.innerHTML = `
                 <div class="cursor-card">
-                    <div class="cursor-label">Cursor Time</div>
-                    <div class="cursor-value">${escapeHtml(bar?.us_time || '--')}</div>
+                    <div class="cursor-label">Bar Start (ET)</div>
+                    <div class="cursor-value">${escapeHtml(getIbkrBarStartLabel(bar))}<br><span class="muted">Close ${escapeHtml(getIbkrBarCloseLabel(bar))}</span></div>
                 </div>
                 <div class="cursor-card">
                     <div class="cursor-label">OHLC</div>

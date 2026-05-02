@@ -55,6 +55,24 @@ class _FakePB:
         self.upserts.append(dict(payload))
 
 
+class _FakeCfgWithSqliteRead:
+    def __init__(self, enabled=True):
+        self.enabled = enabled
+
+    def get_bool_for_environment(self, key, _environment, default=False):
+        if key == "ibkr_bar_direct_sqlite_read_enabled":
+            return self.enabled
+        return default
+
+    def get_float_for_environment(self, _key, _environment, default=0.0):
+        return default
+
+    def get_int_for_environment(self, key, _environment, default=0):
+        if key == "ibkr_official_5m_close_delay_sec":
+            return default
+        return default
+
+
 class _FakeEngine:
     def is_ready(self):
         return True
@@ -111,6 +129,30 @@ class _FakeRepair:
 
 
 class BarFreshnessAndScanRepairTest(unittest.TestCase):
+    def test_planner_prefers_direct_sqlite_latest_and_count(self):
+        pb = _FakePB(rows=[{"symbol": "SPY", "interval": "5m", "bar_time_ms": _ms(2026, 4, 29, 10, 0)}])
+        planner = BarFreshnessPlanner(pb, config=_FakeCfgWithSqliteRead(), environment="live")
+
+        with mock.patch("ibkr_compute.market.bar_freshness.open_pb_sqlite") as open_sqlite, mock.patch(
+            "ibkr_compute.market.bar_freshness.fetch_latest_bar",
+            return_value={"symbol": "SPY", "interval": "5m", "bar_time_ms": _ms(2026, 4, 29, 19, 55)},
+        ), mock.patch(
+            "ibkr_compute.market.bar_freshness.count_recent_bars",
+            return_value=260,
+        ):
+            open_sqlite.return_value.__enter__.return_value = object()
+            payload = planner.plan_symbol(
+                "SPY",
+                ["5m"],
+                environment="live",
+                required_bars=260,
+                now_ms=_ms(2026, 4, 29, 20, 5),
+            )
+
+        self.assertTrue(payload["ready"])
+        self.assertEqual(payload["latest_5m_ms"], _ms(2026, 4, 29, 19, 55))
+        self.assertEqual(pb.upserts, [])
+
     def test_high_interval_stale_even_when_source_5m_has_afterhours(self):
         rows = [
             {"symbol": "SPY", "interval": "5m", "environment": "live", "bar_time_ms": _ms(2026, 4, 29, 19, 55), "extra": {"conid": 756733}},

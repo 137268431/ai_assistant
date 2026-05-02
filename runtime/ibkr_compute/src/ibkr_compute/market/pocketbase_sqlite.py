@@ -63,6 +63,33 @@ ON CONFLICT(state_key, date, environment) DO UPDATE SET
 """
 
 
+PB_INDICATOR_UPSERT_SQL = """
+INSERT INTO ibkr_indicators (
+    id,
+    symbol,
+    exchange,
+    interval,
+    script_tag,
+    us_time,
+    cn_time,
+    bar_time_ms,
+    bar_index,
+    extra,
+    environment,
+    created,
+    updated
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(symbol, interval, bar_time_ms, environment) DO UPDATE SET
+    exchange = excluded.exchange,
+    script_tag = excluded.script_tag,
+    us_time = excluded.us_time,
+    cn_time = excluded.cn_time,
+    bar_index = excluded.bar_index,
+    extra = excluded.extra,
+    updated = excluded.updated
+"""
+
+
 def pb_now_text() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%fZ")
 
@@ -187,6 +214,272 @@ def delete_rows(
 
 def delete_rows_by_environment(conn: sqlite3.Connection, table: str, environment: str) -> int:
     return delete_rows(conn, table, where="environment = ?", params=(str(environment or "live"),))
+
+
+def _bar_environment_values(environment: str, *, include_legacy_empty: bool = True) -> list[str]:
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    values = [runtime_environment]
+    if include_legacy_empty and runtime_environment == "live":
+        values.append("")
+    return values
+
+
+def _bar_environment_sql(environment: str, *, include_legacy_empty: bool = True) -> tuple[str, list[Any]]:
+    values = _bar_environment_values(environment, include_legacy_empty=include_legacy_empty)
+    if len(values) == 1:
+        return "environment = ?", values
+    placeholders = ", ".join("?" for _ in values)
+    return f"environment IN ({placeholders})", values
+
+
+def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any]:
+    return dict(row) if row is not None else {}
+
+
+def fetch_latest_bar(
+    conn: sqlite3.Connection,
+    symbol: str,
+    interval: str,
+    environment: str,
+    *,
+    safe_upper_ms: int = 0,
+    include_legacy_empty: bool = True,
+) -> dict[str, Any]:
+    env_sql, env_params = _bar_environment_sql(environment, include_legacy_empty=include_legacy_empty)
+    where_parts = [
+        "symbol = ?",
+        "interval = ?",
+        env_sql,
+    ]
+    params: list[Any] = [
+        str(symbol or "").strip().upper(),
+        normalize_interval(interval),
+        *env_params,
+    ]
+    if int(safe_upper_ms or 0) > 0:
+        where_parts.append("bar_time_ms <= ?")
+        params.append(int(safe_upper_ms or 0))
+
+    row = conn.execute(
+        f"""
+        SELECT id, symbol, exchange, interval, open, high, low, close, volume,
+               session_type, us_time, cn_time, bar_time_ms, extra, environment,
+               created, updated
+        FROM ibkr_bars
+        WHERE {' AND '.join(where_parts)}
+        ORDER BY bar_time_ms DESC
+        LIMIT 1
+        """,
+        tuple(params),
+    ).fetchone()
+    return _row_to_dict(row)
+
+
+def fetch_recent_bars(
+    conn: sqlite3.Connection,
+    symbol: str,
+    interval: str,
+    environment: str,
+    *,
+    limit: int = 400,
+    include_legacy_empty: bool = False,
+) -> list[dict[str, Any]]:
+    env_sql, env_params = _bar_environment_sql(environment, include_legacy_empty=include_legacy_empty)
+    rows = conn.execute(
+        f"""
+        SELECT id, symbol, exchange, interval, open, high, low, close, volume,
+               session_type, us_time, cn_time, bar_time_ms, extra, environment,
+               created, updated
+        FROM ibkr_bars
+        WHERE symbol = ?
+          AND interval = ?
+          AND {env_sql}
+        ORDER BY bar_time_ms DESC
+        LIMIT ?
+        """,
+        (
+            str(symbol or "").strip().upper(),
+            normalize_interval(interval),
+            *env_params,
+            max(1, int(limit or 1)),
+        ),
+    ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
+def count_recent_bars(
+    conn: sqlite3.Connection,
+    symbol: str,
+    interval: str,
+    environment: str,
+    *,
+    limit: int = 0,
+    include_legacy_empty: bool = True,
+) -> int:
+    env_sql, env_params = _bar_environment_sql(environment, include_legacy_empty=include_legacy_empty)
+    params: list[Any] = [
+        str(symbol or "").strip().upper(),
+        normalize_interval(interval),
+        *env_params,
+    ]
+    if int(limit or 0) > 0:
+        params.append(int(limit or 0))
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS total
+            FROM (
+                SELECT 1
+                FROM ibkr_bars
+                WHERE symbol = ?
+                  AND interval = ?
+                  AND {env_sql}
+                ORDER BY bar_time_ms DESC
+                LIMIT ?
+            )
+            """,
+            tuple(params),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS total
+            FROM ibkr_bars
+            WHERE symbol = ?
+              AND interval = ?
+              AND {env_sql}
+            """,
+            tuple(params),
+        ).fetchone()
+    return int((row["total"] if row else 0) or 0)
+
+
+def fetch_bar_times_in_range(
+    conn: sqlite3.Connection,
+    symbol: str,
+    interval: str,
+    environment: str,
+    *,
+    start_ms: int,
+    end_ms: int,
+    session_type: str = "",
+    include_legacy_empty: bool = False,
+) -> list[int]:
+    env_sql, env_params = _bar_environment_sql(environment, include_legacy_empty=include_legacy_empty)
+    where_parts = [
+        "symbol = ?",
+        "interval = ?",
+        env_sql,
+        "bar_time_ms >= ?",
+        "bar_time_ms <= ?",
+    ]
+    params: list[Any] = [
+        str(symbol or "").strip().upper(),
+        normalize_interval(interval),
+        *env_params,
+        int(start_ms or 0),
+        int(end_ms or 0),
+    ]
+    if str(session_type or "").strip():
+        where_parts.append("session_type = ?")
+        params.append(str(session_type or "").strip())
+
+    rows = conn.execute(
+        f"""
+        SELECT bar_time_ms
+        FROM ibkr_bars
+        WHERE {' AND '.join(where_parts)}
+        ORDER BY bar_time_ms
+        """,
+        tuple(params),
+    ).fetchall()
+    return [
+        int(row["bar_time_ms"] or 0)
+        for row in rows
+        if int(row["bar_time_ms"] or 0) > 0
+    ]
+
+
+def fetch_bars(
+    conn: sqlite3.Connection,
+    environment: str,
+    interval: str,
+    *,
+    symbols: Sequence[str] | None = None,
+    start_ms: int = 0,
+    end_ms: int = 0,
+    before_ms: int = 0,
+    limit: int = 0,
+    descending: bool = False,
+    include_legacy_empty: bool = True,
+) -> list[dict[str, Any]]:
+    env_sql, env_params = _bar_environment_sql(environment, include_legacy_empty=include_legacy_empty)
+    where_parts = [
+        "interval = ?",
+        env_sql,
+    ]
+    params: list[Any] = [
+        normalize_interval(interval),
+        *env_params,
+    ]
+    normalized_symbols = _normalize_symbols(symbols)
+    if normalized_symbols:
+        placeholders = ", ".join("?" for _ in normalized_symbols)
+        where_parts.append(f"symbol IN ({placeholders})")
+        params.extend(normalized_symbols)
+    if int(start_ms or 0) > 0:
+        where_parts.append("bar_time_ms >= ?")
+        params.append(int(start_ms or 0))
+    if int(end_ms or 0) > 0:
+        where_parts.append("bar_time_ms <= ?")
+        params.append(int(end_ms or 0))
+    if int(before_ms or 0) > 0:
+        where_parts.append("bar_time_ms < ?")
+        params.append(int(before_ms or 0))
+
+    order_direction = "DESC" if descending else "ASC"
+    sql = f"""
+        SELECT id, symbol, exchange, interval, open, high, low, close, volume,
+               session_type, us_time, cn_time, bar_time_ms, extra, environment,
+               created, updated
+        FROM ibkr_bars
+        WHERE {' AND '.join(where_parts)}
+        ORDER BY bar_time_ms {order_direction}, symbol ASC
+    """
+    if int(limit or 0) > 0:
+        sql += " LIMIT ?"
+        params.append(int(limit or 0))
+    rows = conn.execute(sql, tuple(params)).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
+def prepare_indicator_payload(indicator: dict[str, Any]) -> tuple[Any, ...] | None:
+    symbol = str(indicator.get("symbol") or "").strip().upper()
+    interval = str(indicator.get("interval") or "").strip()
+    environment = str(indicator.get("environment") or "live").strip().lower() or "live"
+    bar_time_ms = int(indicator.get("bar_time_ms", 0) or 0)
+    if not symbol or not interval or bar_time_ms <= 0:
+        return None
+
+    extra = dict(indicator.get("extra") or {})
+    extra.update(build_bar_close_timestamps(bar_time_ms, interval))
+    extra.setdefault("environment", environment)
+    extra.setdefault("source", "ibkr_compute")
+    now_text = pb_now_text()
+    return (
+        pb_record_id(),
+        symbol,
+        str(indicator.get("exchange") or "").strip().upper(),
+        interval,
+        str(indicator.get("script_tag") or "").strip(),
+        str(indicator.get("us_time") or "").strip(),
+        str(indicator.get("cn_time") or "").strip(),
+        bar_time_ms,
+        int(indicator.get("bar_index")) if indicator.get("bar_index") is not None else 0,
+        pb_json_dumps(extra),
+        environment,
+        now_text,
+        now_text,
+    )
 
 
 def _normalize_symbols(symbols: Sequence[str] | None) -> list[str]:
@@ -343,4 +636,16 @@ def upsert_bars(conn: sqlite3.Connection, bars: Iterable[dict]) -> int:
         )
 
     conn.executemany(PB_BAR_UPSERT_SQL, payload)
+    return len(payload)
+
+
+def upsert_indicators(conn: sqlite3.Connection, indicators: Iterable[dict]) -> int:
+    payload = [
+        prepared
+        for prepared in (prepare_indicator_payload(item) for item in list(indicators or []))
+        if prepared is not None
+    ]
+    if not payload:
+        return 0
+    conn.executemany(PB_INDICATOR_UPSERT_SQL, payload)
     return len(payload)

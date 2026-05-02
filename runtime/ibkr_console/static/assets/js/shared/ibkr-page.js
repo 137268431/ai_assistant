@@ -42,18 +42,8 @@ function formatIbkrSecondsLabel(value) {
     return `${Math.round(number)}s`;
 }
 
-function getIbkrExtraObject(record) {
-    return record && typeof record.extra === 'object' && record.extra ? record.extra : {};
-}
-
-function getIbkrComputedTimeLabel(record) {
-    const extra = getIbkrExtraObject(record);
-    return extra.computed_at_us || extra.computed_at_cn || record?.updated || record?.created || '--';
-}
-
 function getIbkrRecordBarLabel(record) {
-    if (!record) return '--';
-    return record.bar_time_ms ? formatBarTimeMsToET(record.bar_time_ms) : (record.us_time || '--');
+    return getIbkrBarStartLabel(record);
 }
 
 function normalizeIbkrInterval(value, fallback = '') {

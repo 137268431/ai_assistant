@@ -19,6 +19,49 @@ function showToast(msg, duration = 2500) {
   }, duration);
 }
 
+function getIbkrExtraObject(record) {
+  return record && typeof record.extra === 'object' && record.extra ? record.extra : {};
+}
+
+function getIbkrIntervalMs(value) {
+  const text = String(value ?? '').trim().toLowerCase();
+  const mapping = {
+    '5': 5 * 60 * 1000,
+    '5m': 5 * 60 * 1000,
+    '15': 15 * 60 * 1000,
+    '15m': 15 * 60 * 1000,
+    '30': 30 * 60 * 1000,
+    '30m': 30 * 60 * 1000,
+    '60': 60 * 60 * 1000,
+    '1h': 60 * 60 * 1000,
+    '240': 4 * 60 * 60 * 1000,
+    '4h': 4 * 60 * 60 * 1000,
+    'd': 24 * 60 * 60 * 1000,
+    '1d': 24 * 60 * 60 * 1000,
+  };
+  return mapping[text] || 0;
+}
+
+function getIbkrBarStartLabel(record) {
+  if (!record) return '--';
+  if (record.bar_time_ms) return formatBarTimeMsToET(record.bar_time_ms);
+  return record.us_time || '--';
+}
+
+function getIbkrBarCloseLabel(record) {
+  if (!record) return '--';
+  const extra = getIbkrExtraObject(record);
+  if (extra.bar_close_us_time) return extra.bar_close_us_time;
+  const startMs = Number(record.bar_time_ms || 0);
+  const intervalMs = getIbkrIntervalMs(record.interval || extra.interval || extra.chart_tf);
+  return startMs > 0 && intervalMs > 0 ? formatBarTimeMsToET(startMs + intervalMs) : '--';
+}
+
+function getIbkrComputedTimeLabel(record) {
+  const extra = getIbkrExtraObject(record);
+  return extra.computed_at_us || extra.computed_at_cn || record?.updated || record?.created || '--';
+}
+
 // ── 底部导航 ──
 function renderNav(activePage) {
   const pages = [
@@ -310,27 +353,37 @@ function buildIndicatorBadges(signal, latestIndicator) {
 function renderIndicatorModal(latestIndicator) {
   if (!latestIndicator) return '<div class="modal-section">暂无技术指标数据</div>';
   const indicatorView = mergeIndicatorWithRealtimeQuote(latestIndicator) || latestIndicator;
+  const indicatorExtra = typeof getIbkrExtraObject === 'function' ? getIbkrExtraObject(latestIndicator) : {};
+  const barStartEt = typeof getIbkrBarStartLabel === 'function'
+    ? getIbkrBarStartLabel(latestIndicator)
+    : (latestIndicator.bar_time_ms ? formatBarTimeMsToET(latestIndicator.bar_time_ms) : (latestIndicator.us_time || '-'));
+  const barCloseEt = typeof getIbkrBarCloseLabel === 'function'
+    ? getIbkrBarCloseLabel(latestIndicator)
+    : '-';
+  const computedAt = typeof getIbkrComputedTimeLabel === 'function'
+    ? getIbkrComputedTimeLabel(latestIndicator)
+    : (latestIndicator.created ? formatBeijingTime(latestIndicator.created) : '-');
 
   // 时间信息 section（放在最上面）
   const timeSection = `
     <div class="modal-section" style="background: var(--surface2); border-radius: 8px; padding: 12px; margin-bottom: 16px;">
-      <div class="modal-section-title">⏰ 时间信息</div>
+      <div class="modal-section-title">时间信息</div>
       <div class="modal-grid">
         <div class="modal-item">
-          <div class="modal-label">美国时间</div>
-          <div class="modal-value">${latestIndicator.us_time || '-'}</div>
+          <div class="modal-label">Bar Start (ET)</div>
+          <div class="modal-value">${barStartEt || '-'}</div>
         </div>
         <div class="modal-item">
-          <div class="modal-label">中国时间</div>
-          <div class="modal-value">${latestIndicator.cn_time || '-'}</div>
+          <div class="modal-label">Bar Close (ET)</div>
+          <div class="modal-value">${barCloseEt || '-'}</div>
         </div>
         <div class="modal-item">
-          <div class="modal-label">Bar时间戳</div>
-          <div class="modal-value">${latestIndicator.bar_time_ms ? formatBarTimeMsToET(latestIndicator.bar_time_ms) : '-'}</div>
+          <div class="modal-label">Bar Close (CN)</div>
+          <div class="modal-value">${indicatorExtra.bar_close_cn_time || '-'}</div>
         </div>
         <div class="modal-item">
-          <div class="modal-label">创建时间</div>
-          <div class="modal-value">${latestIndicator.created ? formatBeijingTime(latestIndicator.created) : '-'}</div>
+          <div class="modal-label">Computed At</div>
+          <div class="modal-value">${computedAt || '-'}</div>
         </div>
       </div>
     </div>
@@ -620,12 +673,12 @@ function renderIndicatorModal(latestIndicator) {
       <div class="modal-section-title">时间信息</div>
       <div class="modal-grid">
         <div class="modal-item">
-          <div class="modal-label">美东时间</div>
-          <div class="modal-value">${latestIndicator.us_time || 'N/A'}</div>
+          <div class="modal-label">Bar Start (ET)</div>
+          <div class="modal-value">${barStartEt || 'N/A'}</div>
         </div>
         <div class="modal-item">
-          <div class="modal-label">北京时间</div>
-          <div class="modal-value">${latestIndicator.cn_time || 'N/A'}</div>
+          <div class="modal-label">Bar Close (ET)</div>
+          <div class="modal-value">${barCloseEt || 'N/A'}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">K线索引</div>
@@ -1415,6 +1468,11 @@ window.closeIndicatorModal = function() {
 };
 
 window.showIndicatorModal = showIndicatorModal;
+window.getIbkrExtraObject = getIbkrExtraObject;
+window.getIbkrIntervalMs = getIbkrIntervalMs;
+window.getIbkrBarStartLabel = getIbkrBarStartLabel;
+window.getIbkrBarCloseLabel = getIbkrBarCloseLabel;
+window.getIbkrComputedTimeLabel = getIbkrComputedTimeLabel;
 window.getIndicatorModalStyles = getIndicatorModalStyles;
 window.renderPageRefreshControl = renderPageRefreshControl;
 window.renderPageTopSection = renderPageTopSection;

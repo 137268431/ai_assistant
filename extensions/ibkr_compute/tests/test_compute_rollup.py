@@ -1,11 +1,13 @@
+import json
 import os
+import sqlite3
 import sys
 import types
 import unittest
 from pathlib import Path
 from unittest import mock
 
-SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
+SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
@@ -46,6 +48,159 @@ except ModuleNotFoundError:
 from ibkr_compute.api.compute import request as compute_request
 from ibkr_compute.api.compute import rollup as compute_rollup
 from ibkr_compute.api.compute.runtime_state import timing as compute_timing
+
+
+class _FakeConfig:
+    def __init__(self, bools=None):
+        self.bools = dict(bools or {})
+
+    def get_bool_for_environment(self, key, environment, fallback):
+        return self.bools.get(key, fallback)
+
+    def get_float_for_environment(self, key, environment, fallback):
+        return fallback
+
+
+class _FakeConn:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def close(self):
+        return None
+
+
+class _ReusableSqliteConn:
+    def __init__(self, conn):
+        self.conn = conn
+
+    def execute(self, *args, **kwargs):
+        return self.conn.execute(*args, **kwargs)
+
+    def close(self):
+        return None
+
+
+def _normalize_symbols(symbols):
+    if isinstance(symbols, str):
+        symbols = [symbols]
+    normalized = []
+    seen = set()
+    for item in symbols or []:
+        symbol = str(item or "").strip().upper()
+        if symbol and symbol not in seen:
+            seen.add(symbol)
+            normalized.append(symbol)
+    return normalized
+
+
+def _build_fake_app():
+    fake_app = mock.Mock()
+    fake_app.HIGHER_INTERVALS = ["15m", "30m", "1h", "4h", "1d"]
+    fake_app.ROLLUP_BATCH_SIZE = 100
+    fake_app.last_interval_fetch_ms = {}
+    fake_app.cfg = _FakeConfig()
+    fake_app.normalize_symbols.side_effect = _normalize_symbols
+    fake_app.build_symbol_filter.side_effect = lambda symbols: (
+        "(" + " || ".join(f'symbol = "{symbol}"' for symbol in _normalize_symbols(symbols)) + ")"
+        if _normalize_symbols(symbols)
+        else ""
+    )
+    fake_app.build_bar_environment_filter.side_effect = lambda environment, include_legacy_empty=True: (
+        '(environment = "live" || environment = "")'
+        if include_legacy_empty and str(environment or "").lower() == "live"
+        else f'environment = "{str(environment or "live").lower()}"'
+    )
+    fake_app.normalize_bar_environment.side_effect = lambda bar, environment: {
+        **dict(bar),
+        "environment": str(environment or "live").strip().lower() or "live",
+    }
+    return fake_app
+
+
+def _sqlite_bars(rows):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE ibkr_bars (
+            id TEXT,
+            symbol TEXT,
+            exchange TEXT,
+            interval TEXT,
+            open REAL,
+            high REAL,
+            low REAL,
+            close REAL,
+            volume REAL,
+            session_type TEXT,
+            us_time TEXT,
+            cn_time TEXT,
+            bar_time_ms INTEGER,
+            extra TEXT,
+            environment TEXT,
+            created TEXT,
+            updated TEXT
+        )
+        """
+    )
+    for row in rows:
+        payload = {
+            "id": row.get("id", f"row_{row.get('symbol', 'AAPL')}_{row.get('bar_time_ms', 0)}"),
+            "symbol": row.get("symbol", "AAPL"),
+            "exchange": row.get("exchange", "SMART"),
+            "interval": row.get("interval", "5m"),
+            "open": row.get("open", 100.0),
+            "high": row.get("high", 101.0),
+            "low": row.get("low", 99.0),
+            "close": row.get("close", 100.5),
+            "volume": row.get("volume", 1000),
+            "session_type": row.get("session_type", "regular"),
+            "us_time": row.get("us_time", ""),
+            "cn_time": row.get("cn_time", ""),
+            "bar_time_ms": row.get("bar_time_ms", 0),
+            "extra": row.get("extra", "{}") if isinstance(row.get("extra", "{}"), str) else json.dumps(row.get("extra", {})),
+            "environment": row.get("environment", "live"),
+            "created": row.get("created", ""),
+            "updated": row.get("updated", ""),
+        }
+        conn.execute(
+            """
+            INSERT INTO ibkr_bars (
+                id, symbol, exchange, interval, open, high, low, close, volume,
+                session_type, us_time, cn_time, bar_time_ms, extra, environment,
+                created, updated
+            ) VALUES (
+                :id, :symbol, :exchange, :interval, :open, :high, :low, :close, :volume,
+                :session_type, :us_time, :cn_time, :bar_time_ms, :extra, :environment,
+                :created, :updated
+            )
+            """,
+            payload,
+        )
+    conn.commit()
+    return conn
+
+
+def _base_bar(symbol="AAPL", bar_time_ms=1713797100000):
+    return {
+        "symbol": symbol,
+        "exchange": "SMART",
+        "interval": "5m",
+        "environment": "live",
+        "open": 100.0,
+        "high": 101.0,
+        "low": 99.0,
+        "close": 100.5,
+        "volume": 1000,
+        "session_type": "regular",
+        "us_time": "2026-04-22 09:35:00",
+        "cn_time": "2026-04-22 21:35:00",
+        "bar_time_ms": bar_time_ms,
+        "extra": {},
+    }
 
 
 class ComputeRollupPlanTest(unittest.TestCase):
@@ -261,6 +416,111 @@ class IncrementalRollupWindowTest(unittest.TestCase):
         )
         self.assertTrue(results["live"]["targeted"])
         self.assertTrue(results["live"]["incremental"])
+
+
+class RollupDirectSqliteTest(unittest.TestCase):
+    def test_latest_and_interval_reads_prefer_direct_sqlite(self):
+        fake_app = _build_fake_app()
+        fake_app.pb.get_records.side_effect = AssertionError("PB API should not be used")
+        fake_app.pb.get_all_records.side_effect = AssertionError("PB API should not be used")
+        conn = _sqlite_bars(
+            [
+                _base_bar("AAPL", 1713796800000),
+                _base_bar("AAPL", 1713797100000),
+                _base_bar("MSFT", 1713797400000),
+                {**_base_bar("AAPL", 1713796800000), "interval": "15m", "environment": ""},
+            ]
+        )
+
+        try:
+            with mock.patch.object(compute_rollup, "_api_app", return_value=fake_app), \
+                    mock.patch.object(compute_rollup, "open_pb_sqlite", return_value=_ReusableSqliteConn(conn)), \
+                    mock.patch.object(compute_rollup, "get_fetch_since_ms", return_value=1713797000000):
+                self.assertEqual(
+                    compute_rollup._latest_targeted_5m_bar_ms("live", ["AAPL"]),
+                    1713797100000,
+                )
+                self.assertTrue(compute_rollup.has_interval_bars("live", "15m", symbols=["AAPL"]))
+                rows = compute_rollup.fetch_interval_bars("live", "5m", symbols=["AAPL"])
+
+            self.assertEqual([row["bar_time_ms"] for row in rows], [1713797100000])
+            self.assertEqual(fake_app.last_interval_fetch_ms[("live", "5m")], 1713797100000)
+            fake_app.pb.get_records.assert_not_called()
+            fake_app.pb.get_all_records.assert_not_called()
+        finally:
+            conn.close()
+
+    def test_fetch_interval_bars_does_not_fallback_to_api_on_empty_sqlite_result(self):
+        fake_app = _build_fake_app()
+        fake_app.pb.get_all_records.side_effect = AssertionError("empty SQLite result should not hit PB API")
+        conn = _sqlite_bars([])
+
+        try:
+            with mock.patch.object(compute_rollup, "_api_app", return_value=fake_app), \
+                    mock.patch.object(compute_rollup, "open_pb_sqlite", return_value=_ReusableSqliteConn(conn)), \
+                    mock.patch.object(compute_rollup, "get_fetch_since_ms", return_value=1713797000000):
+                rows = compute_rollup.fetch_interval_bars("live", "5m", symbols=["AAPL"])
+
+            self.assertEqual(rows, [])
+            fake_app.pb.get_all_records.assert_not_called()
+        finally:
+            conn.close()
+
+    def test_rebuild_reads_from_sqlite_and_writes_rollup_batch_directly(self):
+        fake_app = _build_fake_app()
+        fake_app.ROLLUP_BATCH_SIZE = 1
+        fake_app.pb.get_all_records.side_effect = AssertionError("PB API read should not be used")
+        fake_app.pb.upsert_bars.side_effect = AssertionError("PB API write should not be used")
+        read_conn = _sqlite_bars(
+            [
+                _base_bar("AAPL", 1713796800000),
+                _base_bar("AAPL", 1713797100000),
+                _base_bar("AAPL", 1713797700000),
+            ]
+        )
+        written_batches = []
+
+        def fake_open_pb_sqlite(*, readonly=False, timeout=30.0):
+            return _ReusableSqliteConn(read_conn) if readonly else _FakeConn()
+
+        def fake_upsert_bars(conn, batch):
+            written_batches.append(list(batch))
+            return len(batch)
+
+        try:
+            with mock.patch.object(compute_rollup, "_api_app", return_value=fake_app), \
+                    mock.patch.object(compute_rollup, "open_pb_sqlite", side_effect=fake_open_pb_sqlite), \
+                    mock.patch.object(compute_rollup, "upsert_bars", side_effect=fake_upsert_bars):
+                result = compute_rollup.rebuild_higher_timeframe_bars(
+                    "live",
+                    symbols=["AAPL"],
+                    intervals=["15m"],
+                )
+
+            self.assertEqual(result["processed_5m"], 3)
+            self.assertEqual(result["written"], 1)
+            self.assertEqual(result["errors"], 0)
+            self.assertEqual(len(written_batches), 1)
+            self.assertEqual(written_batches[0][0]["interval"], "15m")
+            fake_app.pb.get_all_records.assert_not_called()
+            fake_app.pb.upsert_bars.assert_not_called()
+        finally:
+            read_conn.close()
+
+    def test_rebuild_falls_back_to_pb_when_direct_sqlite_read_fails(self):
+        fake_app = _build_fake_app()
+        fake_app.pb.get_all_records.return_value = []
+
+        with mock.patch.object(compute_rollup, "_api_app", return_value=fake_app), \
+                mock.patch.object(compute_rollup, "open_pb_sqlite", side_effect=RuntimeError("sqlite unavailable")):
+            result = compute_rollup.rebuild_higher_timeframe_bars(
+                "live",
+                symbols=["AAPL"],
+                intervals=["15m"],
+            )
+
+        self.assertEqual(result["processed_5m"], 0)
+        fake_app.pb.get_all_records.assert_called_once()
 
 
 if __name__ == "__main__":

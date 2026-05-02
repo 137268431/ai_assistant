@@ -948,6 +948,7 @@
         }
 
         function toNumericOrNull(value) {
+            if (value === null || value === undefined || value === '') return null;
             const num = Number(value);
             return Number.isFinite(num) ? num : null;
         }
@@ -970,6 +971,110 @@
                 return formatBarTimeMsToET(barTimeMs).split(' ')[0];
             }
             return '';
+        }
+
+        function getRecordTimeMs(record) {
+            const barTimeMs = Number(record?.bar_time_ms || record?.extra?.bar_time_ms || 0);
+            return barTimeMs > 0 ? barTimeMs : 0;
+        }
+
+        function getRecordUpdateText(record) {
+            const usTime = String(record?.us_time || record?.extra?.us_time || '').trim();
+            if (usTime) return usTime;
+            const barTimeMs = getRecordTimeMs(record);
+            return barTimeMs ? formatBarTimeMsToET(barTimeMs) : '--';
+        }
+
+        function getRecordPrice(record) {
+            const price = getMetricValue(record, 'close');
+            return price != null && price > 0 ? price : null;
+        }
+
+        function parseQuoteUpdateMs(quote) {
+            const timestamp = Date.parse(String(quote?.last_update || '').trim());
+            return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : 0;
+        }
+
+        function formatQuoteUpdateText(quote) {
+            const timestamp = parseQuoteUpdateMs(quote);
+            if (timestamp > 0) return formatBarTimeMsToET(timestamp);
+            return String(quote?.last_update || '').trim() || '--';
+        }
+
+        function formatAgeSeconds(value) {
+            const seconds = toNumericOrNull(value);
+            if (seconds == null) return '--';
+            if (seconds < 10) return `${seconds.toFixed(1)}s`;
+            return `${Math.round(seconds)}s`;
+        }
+
+        function selectMarketPriceSource({ quote, indicator, bar, dailyBars }) {
+            const quotePrice = toNumericOrNull(quote?.last_price);
+            if (quotePrice != null && quotePrice > 0) {
+                return {
+                    kind: 'quote',
+                    price: quotePrice,
+                    record: null,
+                    timeMs: parseQuoteUpdateMs(quote),
+                    updateText: formatQuoteUpdateText(quote),
+                    quoteAgeS: toNumericOrNull(quote?.quote_age_s),
+                };
+            }
+
+            const candidates = [
+                { kind: 'indicator', record: indicator, price: getRecordPrice(indicator), priority: 3 },
+                { kind: 'bar', record: bar, price: getRecordPrice(bar), priority: 2 },
+                { kind: 'daily', record: Array.isArray(dailyBars) ? dailyBars[0] || null : null, price: getRecordPrice(Array.isArray(dailyBars) ? dailyBars[0] || null : null), priority: 1 },
+            ].filter((item) => item.price != null && item.price > 0);
+
+            if (!candidates.length) return null;
+            candidates.sort((left, right) => {
+                const timeDiff = getRecordTimeMs(right.record) - getRecordTimeMs(left.record);
+                if (timeDiff !== 0) return timeDiff;
+                return right.priority - left.priority;
+            });
+            const selected = candidates[0];
+            return {
+                ...selected,
+                timeMs: getRecordTimeMs(selected.record),
+                updateText: getRecordUpdateText(selected.record),
+            };
+        }
+
+        function getMarketSourceText(source, fallbackMetrics) {
+            if (!source) return 'NO DATA';
+            if (source.kind === 'quote') {
+                return `RT ${formatAgeSeconds(source.quoteAgeS)}`;
+            }
+            if (source.kind === 'indicator') return 'IND 5m';
+            if (source.kind === 'bar') return fallbackMetrics ? 'BAR 5m + 1D' : 'BAR 5m';
+            return 'BAR 1D';
+        }
+
+        function getMarketFreshnessText(source) {
+            if (!source) return '--';
+            if (source.kind === 'quote') {
+                const ageText = formatAgeSeconds(source.quoteAgeS);
+                return ageText === '--' ? 'quote age --' : `quote ${ageText} old`;
+            }
+            const recordTimeMs = Number(source.timeMs || 0);
+            const ageMin = recordTimeMs ? Math.max(0, Math.round((Date.now() - recordTimeMs) / 60000)) : null;
+            return ageMin == null ? '--' : `${ageMin}m old`;
+        }
+
+        function getMarketDateFromSource(source, fallbackRecord) {
+            if (source?.kind === 'quote' && Number(source.timeMs || 0) > 0) {
+                return formatBarTimeMsToET(source.timeMs).split(' ')[0];
+            }
+            return getMarketDateFromRecord(source?.record || fallbackRecord || null);
+        }
+
+        function chooseSourceMetric(source, indicator, fallbackMetrics, fieldName) {
+            const indicatorValue = getMetricValue(indicator, fieldName);
+            const fallbackValue = fallbackMetrics?.[fieldName] ?? null;
+            return source?.kind === 'indicator'
+                ? (indicatorValue ?? fallbackValue)
+                : (fallbackValue ?? indicatorValue);
         }
 
         function computePctChange(currentValue, referenceValue) {
@@ -1185,6 +1290,8 @@
 
                 let html = '';
                 let hasData = false;
+                let realtimeCount = 0;
+                const staleSymbols = [];
                 const pulseMetrics = [];
 
                 bundles.forEach((bundle) => {
@@ -1192,31 +1299,34 @@
                     const indicator = bundle.indicator;
                     const bar = bundle.bar;
                     const dailyBars = bundle.dailyBars;
-                    const data = indicator || bar || dailyBars[0] || null;
+                    const quote = getRealtimeQuote(symbol);
+                    const source = selectMarketPriceSource({ quote, indicator, bar, dailyBars });
 
-                    if (!data) {
+                    if (!source) {
                         html += `
                             <div class="home-market-card">
                                 <div class="home-market-symbol">${escapeHtml(symbol)}</div>
                                 <div class="home-market-price">--</div>
                                 <div class="home-market-change">1D --<br>7D --</div>
-                                <div class="home-market-meta">暂无 5m 数据</div>
+                                <div class="home-market-meta">NO DATA<br>未返回有效价格</div>
                             </div>
                         `;
                         return;
                     }
 
                     hasData = true;
-                    const price = Number(indicator?.close ?? indicator?.extra?.close ?? bar?.close ?? dailyBars[0]?.close ?? 0);
-                    const quote = getRealtimeQuote(symbol);
-                    const displayPrice = Number(quote?.last_price ?? price ?? 0);
-                    const marketDate = getMarketDateFromRecord(bar || indicator || dailyBars[0] || null);
-                    const fallbackMetrics = buildBarFallbackMetrics(price, dailyBars, marketDate);
-                    const changePct = quote?.day_change_pct ?? getMetricValue(indicator, 'day_change_pct') ?? fallbackMetrics?.day_change_pct ?? null;
-                    const change7d = getMetricValue(indicator, 'change_7d') ?? fallbackMetrics?.change_7d ?? null;
-                    const lastBarMs = Number(data.bar_time_ms || 0) || 0;
-                    const ageMin = lastBarMs ? Math.max(0, Math.round((Date.now() - lastBarMs) / 60000)) : null;
-                    const updateText = data.us_time || '--';
+                    if (source.kind === 'quote') {
+                        realtimeCount += 1;
+                    } else if (source.timeMs && Date.now() - source.timeMs > 30 * 60 * 1000) {
+                        staleSymbols.push(symbol);
+                    }
+                    const displayPrice = source.price;
+                    const marketDate = getMarketDateFromSource(source, bar || indicator || dailyBars[0] || null);
+                    const fallbackMetrics = buildBarFallbackMetrics(displayPrice, dailyBars, marketDate);
+                    const changePct = quote?.day_change_pct ?? chooseSourceMetric(source, indicator, fallbackMetrics, 'day_change_pct');
+                    const change7d = chooseSourceMetric(source, indicator, fallbackMetrics, 'change_7d');
+                    const updateText = source.updateText || '--';
+                    const freshnessText = getMarketFreshnessText(source);
                     const changeClass = changePct > 0 ? 'positive' : (changePct < 0 ? 'negative' : 'neutral');
                     const changeText = formatSignedPercent(changePct);
                     const change7dText = formatSignedPercent(change7d);
@@ -1242,11 +1352,7 @@
                         changePct
                     });
 
-                    const dataSourceText = quote?.last_price != null
-                        ? `RT ${quote.quote_age_s != null ? `${quote.quote_age_s}s` : ''}`.trim()
-                        : indicator
-                            ? 'IND 5m'
-                            : (bar && fallbackMetrics ? 'BAR 5m + 1D' : (bar ? 'BAR 5m' : 'BAR 1D'));
+                    const dataSourceText = getMarketSourceText(source, fallbackMetrics);
 
                     const chartUrl = buildPageUrl('/ibkr_chart.html', {
                         symbol,
@@ -1263,14 +1369,16 @@
                                 <span class="${changeClass}">1D ${escapeHtml(changeText)}</span><br>
                                 <span class="${change7d > 0 ? 'positive' : (change7d < 0 ? 'negative' : 'neutral')}">7D ${escapeHtml(change7dText)}</span>
                             </div>
-                            <div class="home-market-meta">${escapeHtml(dataSourceText)} · ${escapeHtml(updateText)}<br>${ageMin == null ? '--' : `${ageMin}m ago`}</div>
+                            <div class="home-market-meta">${escapeHtml(dataSourceText)} · ${escapeHtml(updateText)}<br>${escapeHtml(freshnessText)}</div>
                         </a>
                     `;
                 });
 
                 updateMarketPulse(pulseMetrics, symbols.length);
+                const fallbackCount = Math.max(symbols.length - realtimeCount, 0);
+                const staleText = staleSymbols.length ? ` · 旧源 ${staleSymbols.join('/')}` : '';
                 document.getElementById('marketSummaryText').textContent = hasData
-                    ? `监控 ${symbols.length} 个标的 · 数据已加载`
+                    ? `监控 ${symbols.length} 个标的 · 实时 ${realtimeCount} · fallback ${fallbackCount}${staleText}`
                     : `监控 ${symbols.length} 个标的 · 暂无有效数据`;
 
                 if (!hasData) {

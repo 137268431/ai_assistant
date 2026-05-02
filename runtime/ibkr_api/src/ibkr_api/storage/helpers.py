@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
+
+
+ET = ZoneInfo("America/New_York")
+CN = ZoneInfo("Asia/Shanghai")
 
 
 def normalize_interval_value(value: Any) -> str:
@@ -35,11 +40,10 @@ def interval_to_ms(value: Any) -> int:
     return mapping.get(normalize_interval_value(value), mapping["5m"])
 
 
-def format_offset_datetime(ms: int, offset_minutes: int) -> str:
+def format_zoned_datetime(ms: int, tz: ZoneInfo) -> str:
     if not isinstance(ms, int) or ms <= 0:
         return ""
-    adjusted = (ms + (offset_minutes * 60 * 1000)) / 1000.0
-    return datetime.fromtimestamp(adjusted, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc).astimezone(tz).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def build_bar_close_meta(bar_time_ms: int, interval_value: Any) -> dict[str, Any]:
@@ -49,8 +53,8 @@ def build_bar_close_meta(bar_time_ms: int, interval_value: Any) -> dict[str, Any
     return {
         "bar_time_semantics": "start",
         "bar_close_time_ms": close_ms,
-        "bar_close_us_time": format_offset_datetime(close_ms, -4 * 60),
-        "bar_close_cn_time": format_offset_datetime(close_ms, 8 * 60),
+        "bar_close_us_time": format_zoned_datetime(close_ms, ET),
+        "bar_close_cn_time": format_zoned_datetime(close_ms, CN),
     }
 
 
@@ -93,6 +97,7 @@ def prepare_indicator_row(payload: dict[str, Any], environment: str) -> tuple[di
     if not symbol or not interval or bar_time_ms <= 0:
         return None, "missing_symbol_interval_or_bar_time_ms"
     extra = _as_dict(payload.get("extra"))
+    extra.update(build_bar_close_meta(bar_time_ms, interval))
     extra.setdefault("environment", environment)
     extra.setdefault("source", "ibkr_compute")
     return {

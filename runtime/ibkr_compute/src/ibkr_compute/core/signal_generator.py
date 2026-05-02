@@ -248,35 +248,7 @@ class SignalGenerator:
             filter_reason_sell=filter_reason_sell,
         )
 
-        # ── 6. 窗口消费 ──
-        if buy_once:
-            if sd_upper_valid and self.sd_upper_bull_touch_seen and self.sd_upper_bull_fractal_seen and bull_div_seen:
-                self.sd_upper_mr_used = True
-            if sd_lower_valid and self.sd_lower_bull_fractal_seen and bull_div_seen:
-                self.sd_lower_mr_used = True
-        if sell_once:
-            if sd_upper_valid and self.sd_upper_bear_fractal_seen and bear_div_seen:
-                self.sd_upper_mr_used = True
-            if sd_lower_valid and self.sd_lower_bear_touch_seen and self.sd_lower_bear_fractal_seen and bear_div_seen:
-                self.sd_lower_mr_used = True
-
-        # ── 7. 组件清除 ──
-        if buy_raw and should_filter_buy:
-            self._clear_bull_components()
-            events.append(f"多头候选被过滤: {filter_reason_buy or '未知原因'}")
-        if sell_raw and should_filter_sell:
-            self._clear_bear_components()
-            events.append(f"空头候选被过滤: {filter_reason_sell or '未知原因'}")
-        if buy_once:
-            self.buy_consumed = True
-            self._clear_bull_components()
-            events.append("多头信号确认并消费窗口")
-        if sell_once:
-            self.sell_consumed = True
-            self._clear_bear_components()
-            events.append("空头信号确认并消费窗口")
-
-        # ── 8. 生成信号 ──
+        # ── 6. 生成信号预览 ──
         signal = None
         stage = "none"
         preview_signal = None
@@ -294,6 +266,49 @@ class SignalGenerator:
         elif sell_raw:
             preview_signal = self._build_signal("short", snapshot, sd_upper_valid, sd_lower_valid)
             stage = "blocked" if should_filter_sell else "candidate"
+
+        trace_component_flags = {
+            "sd_upper_bull_touch_seen": self.sd_upper_bull_touch_seen,
+            "sd_upper_bull_fractal_seen": self.sd_upper_bull_fractal_seen,
+            "sd_upper_bear_fractal_seen": self.sd_upper_bear_fractal_seen,
+            "sd_lower_bull_fractal_seen": self.sd_lower_bull_fractal_seen,
+            "sd_lower_bear_touch_seen": self.sd_lower_bear_touch_seen,
+            "sd_lower_bear_fractal_seen": self.sd_lower_bear_fractal_seen,
+            "bull_crsi_div_seen": self.bull_crsi_div_seen,
+            "bear_crsi_div_seen": self.bear_crsi_div_seen,
+            "bull_obv_div_seen": self.bull_obv_div_seen,
+            "bear_obv_div_seen": self.bear_obv_div_seen,
+            "buy_raw": buy_raw,
+            "sell_raw": sell_raw,
+        }
+
+        # ── 7. 窗口消费 ──
+        if buy_once:
+            if sd_upper_valid and self.sd_upper_bull_touch_seen and self.sd_upper_bull_fractal_seen and bull_div_seen:
+                self.sd_upper_mr_used = True
+            if sd_lower_valid and self.sd_lower_bull_fractal_seen and bull_div_seen:
+                self.sd_lower_mr_used = True
+        if sell_once:
+            if sd_upper_valid and self.sd_upper_bear_fractal_seen and bear_div_seen:
+                self.sd_upper_mr_used = True
+            if sd_lower_valid and self.sd_lower_bear_touch_seen and self.sd_lower_bear_fractal_seen and bear_div_seen:
+                self.sd_lower_mr_used = True
+
+        # ── 8. 组件清除 ──
+        if buy_raw and should_filter_buy:
+            self._clear_bull_components()
+            events.append(f"多头候选被过滤: {filter_reason_buy or '未知原因'}")
+        if sell_raw and should_filter_sell:
+            self._clear_bear_components()
+            events.append(f"空头候选被过滤: {filter_reason_sell or '未知原因'}")
+        if buy_once:
+            self.buy_consumed = True
+            self._clear_bull_components()
+            events.append("多头信号确认并消费窗口")
+        if sell_once:
+            self.sell_consumed = True
+            self._clear_bear_components()
+            events.append("空头信号确认并消费窗口")
 
         self.last_trace = self._build_trace_payload(
             snapshot,
@@ -314,20 +329,7 @@ class SignalGenerator:
                 "sd_upper_age_bars": self._window_age_bars("upper") if self.sd_upper_mr_active else 0,
                 "sd_lower_age_bars": self._window_age_bars("lower") if self.sd_lower_mr_active else 0,
             },
-            component_flags={
-                "sd_upper_bull_touch_seen": self.sd_upper_bull_touch_seen,
-                "sd_upper_bull_fractal_seen": self.sd_upper_bull_fractal_seen,
-                "sd_upper_bear_fractal_seen": self.sd_upper_bear_fractal_seen,
-                "sd_lower_bull_fractal_seen": self.sd_lower_bull_fractal_seen,
-                "sd_lower_bear_touch_seen": self.sd_lower_bear_touch_seen,
-                "sd_lower_bear_fractal_seen": self.sd_lower_bear_fractal_seen,
-                "bull_crsi_div_seen": self.bull_crsi_div_seen,
-                "bear_crsi_div_seen": self.bear_crsi_div_seen,
-                "bull_obv_div_seen": self.bull_obv_div_seen,
-                "bear_obv_div_seen": self.bear_obv_div_seen,
-                "buy_raw": buy_raw,
-                "sell_raw": sell_raw,
-            },
+            component_flags=trace_component_flags,
         )
 
         return signal

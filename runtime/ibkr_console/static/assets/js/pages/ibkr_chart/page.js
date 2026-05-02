@@ -2318,7 +2318,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const bars = Array.isArray(payload?.bars) ? payload.bars : [];
             if (!bars.length) {
                 document.getElementById('cursorStrip').innerHTML = [
-                    buildCursorCard('Cursor Time', '--', chartWorkspaceState === 'loading' ? '等待 bars / indicators' : '暂无游标上下文'),
+                    buildCursorCard('Bar Start (ET)', '--', chartWorkspaceState === 'loading' ? '等待 bars / indicators' : '暂无游标上下文'),
                     buildCursorCard('OHLC', '--', '--'),
                     buildCursorCard('EMA / VWAP', '--', '--'),
                     buildCursorCard('SD / Fractal', '--', '--'),
@@ -2346,7 +2346,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 const ibkrChain = formatInlineCompareChain(compareRow?.ibkr?.indicator);
                 const diff = formatInlineCompareDiff(compareRow);
                 document.getElementById('cursorStrip').innerHTML = [
-                    buildCursorCard('Cursor Time', bar?.us_time || '--', summarizeCompareStatusLine(compareRow?.status)),
+                    buildCursorCard('Bar Start (ET)', getIbkrBarStartLabel(bar), `Close ${getIbkrBarCloseLabel(bar)} · ${summarizeCompareStatusLine(compareRow?.status)}`),
                     buildCursorCard('Stored Bars', storedBar.primary, storedBar.secondary, { valueClass: 'compact' }),
                     buildCursorCard('IBKR API Bars', ibkrBar.primary, ibkrBar.secondary, { valueClass: 'compact' }),
                     buildCursorCard('Stored Chain', storedChain.primary, storedChain.secondary, { valueClass: 'compact' }),
@@ -2366,7 +2366,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 ? `CRSI ${formatNumber(indicator.crsi)} · OBV ${formatNumber(indicator.obv_rsi)} · ATR ${formatPercent(indicator.atr_pct)}`
                 : (isPreviewBar ? '预览 bar 收盘后生成 Osc 指标' : '--');
             document.getElementById('cursorStrip').innerHTML = [
-                buildCursorCard('Cursor Time', bar?.us_time || '--', cursorState),
+                buildCursorCard('Bar Start (ET)', getIbkrBarStartLabel(bar), `Close ${getIbkrBarCloseLabel(bar)} · ${cursorState}`),
                 buildCursorCard('OHLC', ohlc.primary, ohlc.secondary),
                 buildCursorCard('EMA / VWAP', isPreviewBar && !indicator ? '预览 bar 暂无正式均线' : chain.primary, isPreviewBar && !indicator ? '收盘后生成 EMA / VWAP' : chain.secondary),
                 buildCursorCard('SD / Fractal', isPreviewBar && !indicator ? '预览 bar 暂无正式指标' : `Zone ${getSdZoneText(indicator?.sd_zone)} · ${getSdTrendText(indicator?.sd_trend)}`, isPreviewBar && !indicator ? '收盘后计算 SD / Fractal' : `Frac ${getFractalSummary(indicator)}`),

@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from ibkr_compute.market.timeframe_utils import build_runtime_timestamps, build_signal_id, interval_to_chart_tf
+from ibkr_compute.market.timeframe_utils import (
+    build_bar_close_timestamps,
+    build_runtime_timestamps,
+    build_signal_id,
+    interval_to_chart_tf,
+)
 
 from ibkr_compute.api.compute.runtime_state.caches import (
     get_daily_change_fields,
@@ -26,6 +31,7 @@ def build_indicator_payload(environment: str, symbol: str, interval: str, bar: d
         "environment": environment,
         "session_type": bar.get("session_type", "regular"),
         "source": "ibkr_compute",
+        **build_bar_close_timestamps(bar_ms, interval),
         **build_runtime_timestamps(),
     }
 

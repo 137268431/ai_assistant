@@ -863,11 +863,18 @@ class TradingServiceRuntimePipelineMixin:
             if str(symbol or "").strip()
         }
         snapshot_symbols = list(snapshot.get("symbols") or [])
+        trade_symbols_declared = "trade_symbols" in snapshot
+        trade_set = (
+            set(self._normalize_symbol_list(snapshot.get("trade_symbols") or []))
+            if trade_symbols_declared
+            else set(self._normalize_symbol_list(snapshot_symbols))
+        )
+        monitor_set = set(self._normalize_symbol_list(snapshot.get("monitor_symbols") or []))
         if override_set:
             symbols = [symbol for symbol in snapshot_symbols if symbol in override_set]
-        elif "trade_symbols" in snapshot:
-            trade_set = set(self._normalize_symbol_list(snapshot.get("trade_symbols") or []))
-            symbols = [symbol for symbol in snapshot_symbols if symbol in trade_set]
+        elif trade_symbols_declared:
+            refresh_set = trade_set | monitor_set
+            symbols = [symbol for symbol in snapshot_symbols if symbol in refresh_set]
         else:
             symbols = snapshot_symbols
         conid_map = dict(snapshot.get("conid_map") or {})
@@ -1212,7 +1219,7 @@ class TradingServiceRuntimePipelineMixin:
         written_symbols = [symbol for symbol in symbols if symbol in written_symbol_set]
         compute_symbols = [
             symbol for symbol in symbols
-            if symbol not in next_pending_symbols
+            if symbol in trade_set and symbol not in next_pending_symbols
         ]
         due_compute_symbols = self._official_5m_due_compute_symbols(
             service_mod.ENVIRONMENT,

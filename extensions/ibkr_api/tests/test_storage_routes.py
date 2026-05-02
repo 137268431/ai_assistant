@@ -44,11 +44,22 @@ class StorageHelpersTest(unittest.TestCase):
         self.assertEqual("live", row["environment"])
         self.assertEqual("ibkr_compute", row["extra"]["source"])
         self.assertEqual(123.4, row["extra"]["close"])
+        self.assertEqual("start", row["extra"]["bar_time_semantics"])
+        self.assertEqual(1234567890 + 300_000, row["extra"]["bar_close_time_ms"])
 
     def test_build_bar_close_meta_uses_interval_bucket(self):
         meta = build_bar_close_meta(1_000, "5m")
         self.assertEqual(301_000, meta["bar_close_time_ms"])
         self.assertEqual("start", meta["bar_time_semantics"])
+
+    def test_build_bar_close_meta_uses_new_york_dst(self):
+        winter_meta = build_bar_close_meta(1770042600000, "5m")
+        summer_meta = build_bar_close_meta(1776358800000, "5m")
+
+        self.assertEqual("2026-02-02 09:35:00", winter_meta["bar_close_us_time"])
+        self.assertEqual("2026-02-02 22:35:00", winter_meta["bar_close_cn_time"])
+        self.assertEqual("2026-04-16 13:05:00", summer_meta["bar_close_us_time"])
+        self.assertEqual("2026-04-17 01:05:00", summer_meta["bar_close_cn_time"])
 
     def test_batch_upsert_records_patches_existing_integrity_row(self):
         pb = _FakePB()

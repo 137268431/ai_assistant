@@ -35,6 +35,9 @@ async function collectHomeOverviewIssues(page, mobile = false) {
     const stackLink = document.getElementById('overviewStackLink');
     const configLink = document.getElementById('actionConfigLink');
     const toolChips = Array.from(document.querySelectorAll('#homeQuickLinks .home-tool-chip'));
+    const marketSection = document.getElementById('homeMarket');
+    const marketSummary = document.getElementById('marketSummaryText');
+    const marketCards = Array.from(document.querySelectorAll('#marketIndexGrid .home-market-card'));
 
     const tipText = String(tip?.textContent || '').trim();
     const badgeText = String(badge?.textContent || '').trim();
@@ -49,6 +52,8 @@ async function collectHomeOverviewIssues(page, mobile = false) {
     const stackRowStatuses = stackRows
       .map((row) => String(row.querySelector('.home-stack-service-status')?.textContent || '').trim())
       .filter(Boolean);
+    const marketReady = ['ready', 'empty'].includes(String(marketSection?.dataset.ready || '').trim());
+    const marketSummaryText = String(marketSummary?.textContent || '').trim();
 
     if (!tip) issues.push('missing_targets_time_tip');
     if (!badge) issues.push('missing_targets_tip_badge');
@@ -78,6 +83,23 @@ async function collectHomeOverviewIssues(page, mobile = false) {
       }
     });
     if (stackRowStatuses.length < 5) issues.push(`overview_stack_status_count:${stackRowStatuses.length}`);
+    if (!marketSection) issues.push('missing_market_section');
+    if (!marketSummary) issues.push('missing_market_summary');
+    if (marketReady && marketCards.length && !/实时\s+\d+/.test(marketSummaryText)) {
+      issues.push(`market_summary_missing_realtime_count:${marketSummaryText || 'empty'}`);
+    }
+    marketCards.forEach((card) => {
+      const symbol = String(card.querySelector('.home-market-symbol')?.textContent || 'unknown').trim() || 'unknown';
+      const meta = String(card.querySelector('.home-market-meta')?.textContent || '').trim();
+      if (/^RT\b/.test(meta)) {
+        if (!/quote/i.test(meta)) {
+          issues.push(`market_rt_meta_missing_quote_age:${symbol}`);
+        }
+        if (/\d+\s*m\s*(ago|old)\b/i.test(meta)) {
+          issues.push(`market_rt_meta_uses_bar_age:${symbol}:${meta}`);
+        }
+      }
+    });
 
     return issues;
   }, {

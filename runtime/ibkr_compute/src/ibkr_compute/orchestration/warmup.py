@@ -409,7 +409,7 @@ class TradingServiceWarmupMixin:
         scan_symbols = self._normalize_symbol_list(self._watchlist_trade_symbols)
         monitor_symbols = self._market_ws_symbols()
         subscription_symbols = self._normalize_symbol_list(monitor_symbols + trade_symbols)
-        backfill_symbol_set = set(trade_symbols)
+        backfill_symbol_set = set(trade_symbols) | set(monitor_symbols)
         conid_map = {
             symbol: int(active_conid_map.get(symbol) or 0)
             for symbol in symbols

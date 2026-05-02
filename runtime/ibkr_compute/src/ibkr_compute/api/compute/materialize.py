@@ -3,11 +3,174 @@ from __future__ import annotations
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Sequence
 
 from ibkr_compute.market.timeframe_utils import latest_safe_closed_bucket_ms, normalize_interval
+from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite
 
 from ibkr_compute.api.compute.runtime_state.engines import get_or_create_engine
 from ibkr_compute.api.compute.runtime_state.runtime import _api_app
+
+
+def _cfg_bool(api_app, key: str, environment: str, default: bool) -> bool:
+    cfg = getattr(api_app, "cfg", None)
+    if cfg is not None and hasattr(cfg, "get_bool_for_environment"):
+        try:
+            return bool(cfg.get_bool_for_environment(key, environment, default))
+        except Exception:
+            return bool(default)
+    return bool(default)
+
+
+def _cfg_float(api_app, key: str, environment: str, default: float) -> float:
+    cfg = getattr(api_app, "cfg", None)
+    if cfg is not None and hasattr(cfg, "get_float_for_environment"):
+        try:
+            return float(cfg.get_float_for_environment(key, environment, default))
+        except Exception:
+            return float(default)
+    return float(default)
+
+
+def _direct_sqlite_read_enabled(api_app, environment: str) -> bool:
+    return _cfg_bool(api_app, "ibkr_bar_direct_sqlite_read_enabled", environment, True)
+
+
+def _direct_sqlite_read_timeout(api_app, environment: str) -> float:
+    fallback = _cfg_float(api_app, "ibkr_bar_direct_sqlite_timeout_sec", environment, 30.0)
+    return max(
+        0.5,
+        _cfg_float(
+            api_app,
+            "ibkr_bar_direct_sqlite_read_timeout_sec",
+            environment,
+            fallback,
+        ),
+    )
+
+
+def _log_direct_sqlite_read_fallback(api_app, message: str, *args) -> None:
+    logger = getattr(api_app, "logger", None)
+    if logger is not None and hasattr(logger, "debug"):
+        try:
+            logger.debug(message, *args)
+        except Exception:
+            return
+
+
+def _bar_environment_sql(environment: str, *, include_legacy_empty: bool = True) -> tuple[str, list[Any]]:
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    values = [runtime_environment]
+    if include_legacy_empty and runtime_environment == "live":
+        values.append("")
+    if len(values) == 1:
+        return "environment = ?", values
+    placeholders = ", ".join("?" for _ in values)
+    return f"environment IN ({placeholders})", values
+
+
+def _sqlite_rows_to_dicts(rows) -> list[dict[str, Any]]:
+    return [dict(row) for row in (rows or [])]
+
+
+def _select_bar_columns_sql() -> str:
+    return (
+        "id, symbol, exchange, interval, open, high, low, close, volume, "
+        "session_type, us_time, cn_time, bar_time_ms, extra, environment, "
+        "created, updated"
+    )
+
+
+def _fetch_bootstrap_bars_sqlite(
+    *,
+    api_app,
+    environment: str,
+    symbol: str,
+    interval: str,
+    before_bar_time_ms: int,
+    inclusive: bool,
+    safe_upper_ms: int,
+    limit: int,
+) -> list[dict[str, Any]]:
+    env_sql, env_params = _bar_environment_sql(environment, include_legacy_empty=True)
+    where_parts = [
+        "symbol = ?",
+        "interval = ?",
+        env_sql,
+    ]
+    params: list[Any] = [
+        str(symbol or ""),
+        normalize_interval(interval),
+        *env_params,
+    ]
+    if int(safe_upper_ms or 0) > 0:
+        where_parts.append("bar_time_ms <= ?")
+        params.append(int(safe_upper_ms or 0))
+    if int(before_bar_time_ms or 0) > 0:
+        where_parts.append("bar_time_ms <= ?" if inclusive else "bar_time_ms < ?")
+        params.append(int(before_bar_time_ms or 0))
+    params.append(max(1, int(limit or 1)))
+
+    with open_pb_sqlite(readonly=True, timeout=_direct_sqlite_read_timeout(api_app, environment)) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT {_select_bar_columns_sql()}
+            FROM ibkr_bars
+            WHERE {' AND '.join(where_parts)}
+            ORDER BY bar_time_ms DESC
+            LIMIT ?
+            """,
+            tuple(params),
+        ).fetchall()
+    return _sqlite_rows_to_dicts(rows)
+
+
+def _fetch_latest_bars_sqlite(
+    *,
+    api_app,
+    environment: str,
+    symbols: Sequence[str],
+    interval: str,
+    safe_upper_ms: int,
+    limit: int,
+) -> list[dict[str, Any]]:
+    normalized_symbols = [
+        str(symbol or "")
+        for symbol in (symbols or [])
+        if str(symbol or "").strip()
+    ]
+    if not normalized_symbols:
+        return []
+
+    env_sql, env_params = _bar_environment_sql(environment, include_legacy_empty=True)
+    symbol_placeholders = ", ".join("?" for _ in normalized_symbols)
+    where_parts = [
+        "interval = ?",
+        env_sql,
+        f"symbol IN ({symbol_placeholders})",
+    ]
+    params: list[Any] = [
+        normalize_interval(interval),
+        *env_params,
+        *normalized_symbols,
+    ]
+    if int(safe_upper_ms or 0) > 0:
+        where_parts.append("bar_time_ms <= ?")
+        params.append(int(safe_upper_ms or 0))
+    params.append(max(1, int(limit or 1)))
+
+    with open_pb_sqlite(readonly=True, timeout=_direct_sqlite_read_timeout(api_app, environment)) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT {_select_bar_columns_sql()}
+            FROM ibkr_bars
+            WHERE {' AND '.join(where_parts)}
+            ORDER BY bar_time_ms DESC
+            LIMIT ?
+            """,
+            tuple(params),
+        ).fetchall()
+    return _sqlite_rows_to_dicts(rows)
 
 
 def _safe_storage_upper_bound_ms(api_app, environment: str, interval: str) -> int:
@@ -90,12 +253,38 @@ def bootstrap_engine_state(
     if target_ms > 0:
         filter_parts.append(f"bar_time_ms {comparison} {target_ms}")
 
-    rows = api_app.pb.get_all_records(
-        "ibkr_bars",
-        filter=" && ".join(filter_parts),
-        sort="-bar_time_ms",
-        max_pages=max_pages,
-    )
+    fetch_limit = lookback if lookback > 0 else max_pages * 200
+    rows = []
+    sqlite_read_ok = False
+    if _direct_sqlite_read_enabled(api_app, runtime_environment):
+        try:
+            rows = _fetch_bootstrap_bars_sqlite(
+                api_app=api_app,
+                environment=runtime_environment,
+                symbol=symbol,
+                interval=normalized_interval,
+                before_bar_time_ms=target_ms,
+                inclusive=inclusive,
+                safe_upper_ms=safe_upper_ms,
+                limit=fetch_limit,
+            )
+            sqlite_read_ok = True
+        except Exception as exc:
+            _log_direct_sqlite_read_fallback(
+                api_app,
+                "Direct SQLite bootstrap bar lookup failed for %s/%s/%s, falling back to PocketBase API: %s",
+                runtime_environment,
+                symbol,
+                normalized_interval,
+                exc,
+            )
+    if not sqlite_read_ok:
+        rows = api_app.pb.get_all_records(
+            "ibkr_bars",
+            filter=" && ".join(filter_parts),
+            sort="-bar_time_ms",
+            max_pages=max_pages,
+        )
     if lookback > 0:
         rows = rows[:lookback]
     rows = list(reversed(rows))
@@ -166,12 +355,36 @@ def materialize_engines_from_storage(
     safe_upper_ms = _safe_storage_upper_bound_ms(api_app, runtime_environment, normalized_interval)
     if safe_upper_ms > 0:
         filter_parts.append(f"bar_time_ms <= {safe_upper_ms}")
-    rows = api_app.pb.get_all_records(
-        "ibkr_bars",
-        filter=" && ".join(filter_parts),
-        sort="-bar_time_ms",
-        max_pages=max(4, len(normalized_symbols)),
-    )
+    max_pages = max(4, len(normalized_symbols))
+    rows = []
+    sqlite_read_ok = False
+    if _direct_sqlite_read_enabled(api_app, runtime_environment):
+        try:
+            rows = _fetch_latest_bars_sqlite(
+                api_app=api_app,
+                environment=runtime_environment,
+                symbols=normalized_symbols,
+                interval=normalized_interval,
+                safe_upper_ms=safe_upper_ms,
+                limit=max_pages * 200,
+            )
+            sqlite_read_ok = True
+        except Exception as exc:
+            _log_direct_sqlite_read_fallback(
+                api_app,
+                "Direct SQLite materialize latest bar lookup failed for %s/%s symbols=%d, falling back to PocketBase API: %s",
+                runtime_environment,
+                normalized_interval,
+                len(normalized_symbols),
+                exc,
+            )
+    if not sqlite_read_ok:
+        rows = api_app.pb.get_all_records(
+            "ibkr_bars",
+            filter=" && ".join(filter_parts),
+            sort="-bar_time_ms",
+            max_pages=max_pages,
+        )
 
     latest_by_symbol = {}
     latest_row_by_symbol = {}

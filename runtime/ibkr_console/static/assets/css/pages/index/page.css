@@ -1258,7 +1258,7 @@
     .home-secondary-grid {
         grid-template-columns: repeat(2, minmax(0, 620px));
         justify-content: center;
-        align-items: start;
+        align-items: stretch;
     }
 
     .home-targets-grid {

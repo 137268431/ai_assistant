@@ -1,13 +1,22 @@
 from __future__ import annotations
 
+import json
 import traceback
 
+from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite, upsert_bars
 from ibkr_compute.market.timeframe_builder import TimeframeBarBuilder
 from ibkr_compute.market.timeframe_utils import bucket_start_ms, interval_to_ms, normalize_interval
 
 from ibkr_compute.api.compute.runtime_state.runtime import _api_app
 from ibkr_compute.api.compute.runtime_state.timing import get_fetch_since_ms
 from .materialize import reset_compute_state_for_symbols
+
+
+BAR_COLUMNS = """
+id, symbol, exchange, interval, open, high, low, close, volume,
+session_type, us_time, cn_time, bar_time_ms, extra, environment,
+created, updated
+"""
 
 
 def _normalize_target_intervals(api_app, intervals=None) -> list[str]:
@@ -29,12 +38,221 @@ def _build_rollup_filter(api_app, environment: str, normalized_symbols, since_ms
     return " && ".join(filter_parts)
 
 
+def _runtime_environment(environment: str) -> str:
+    return str(environment or "live").strip().lower() or "live"
+
+
+def _cfg_bool(api_app, key: str, environment: str, default: bool) -> bool:
+    cfg = getattr(api_app, "cfg", None)
+    if cfg is not None and hasattr(cfg, "get_bool_for_environment"):
+        try:
+            return bool(cfg.get_bool_for_environment(key, environment, default))
+        except Exception:
+            return bool(default)
+    return bool(default)
+
+
+def _cfg_float(api_app, key: str, environment: str, default: float) -> float:
+    cfg = getattr(api_app, "cfg", None)
+    if cfg is not None and hasattr(cfg, "get_float_for_environment"):
+        try:
+            return float(cfg.get_float_for_environment(key, environment, default))
+        except Exception:
+            return float(default)
+    return float(default)
+
+
+def _direct_sqlite_read_enabled(api_app, environment: str) -> bool:
+    return _cfg_bool(api_app, "ibkr_bar_direct_sqlite_read_enabled", environment, True)
+
+
+def _direct_sqlite_read_fallback_api_enabled(api_app, environment: str) -> bool:
+    return _cfg_bool(api_app, "ibkr_bar_direct_sqlite_read_fallback_api_enabled", environment, True)
+
+
+def _direct_sqlite_write_enabled(api_app, environment: str) -> bool:
+    return _cfg_bool(api_app, "ibkr_bar_direct_sqlite_enabled", environment, True)
+
+
+def _direct_sqlite_write_fallback_api_enabled(api_app, environment: str) -> bool:
+    return _cfg_bool(api_app, "ibkr_bar_direct_sqlite_fallback_api_enabled", environment, True)
+
+
+def _direct_sqlite_read_timeout(api_app, environment: str) -> float:
+    fallback = _cfg_float(api_app, "ibkr_bar_direct_sqlite_timeout_sec", environment, 30.0)
+    return max(0.5, _cfg_float(api_app, "ibkr_bar_direct_sqlite_read_timeout_sec", environment, fallback))
+
+
+def _direct_sqlite_write_timeout(api_app, environment: str) -> float:
+    return max(1.0, _cfg_float(api_app, "ibkr_bar_direct_sqlite_timeout_sec", environment, 30.0))
+
+
+def _bar_environment_sql(environment: str, *, include_legacy_empty: bool = True) -> tuple[str, list]:
+    runtime_environment = _runtime_environment(environment)
+    if include_legacy_empty and runtime_environment == "live":
+        return "environment IN (?, ?)", [runtime_environment, ""]
+    return "environment = ?", [runtime_environment]
+
+
+def _symbol_sql(api_app, symbols) -> tuple[str, list]:
+    normalized_symbols = api_app.normalize_symbols(symbols)
+    if not normalized_symbols:
+        return "", []
+    placeholders = ", ".join("?" for _ in normalized_symbols)
+    return f"symbol IN ({placeholders})", list(normalized_symbols)
+
+
+def _sqlite_bar_row(row) -> dict:
+    payload = dict(row) if row is not None else {}
+    extra = payload.get("extra")
+    if isinstance(extra, str) and extra.strip():
+        try:
+            payload["extra"] = json.loads(extra)
+        except Exception:
+            payload["extra"] = {}
+        if not isinstance(payload["extra"], dict):
+            payload["extra"] = {}
+    elif not isinstance(extra, dict):
+        payload["extra"] = {}
+    return payload
+
+
+def _fetch_bars_from_sqlite(
+    api_app,
+    environment: str,
+    interval: str,
+    *,
+    symbols=None,
+    since_ms: int | None = None,
+    sort: str = "bar_time_ms",
+    limit: int = 0,
+) -> list[dict]:
+    normalized_interval = normalize_interval(interval)
+    env_sql, env_params = _bar_environment_sql(environment, include_legacy_empty=True)
+    where_parts = [
+        "interval = ?",
+        env_sql,
+    ]
+    params = [normalized_interval, *env_params]
+    symbol_sql, symbol_params = _symbol_sql(api_app, symbols)
+    if symbol_sql:
+        where_parts.append(symbol_sql)
+        params.extend(symbol_params)
+    if since_ms is not None and int(since_ms or 0) > 0:
+        where_parts.append("bar_time_ms >= ?")
+        params.append(int(since_ms or 0))
+
+    order_clause = "bar_time_ms DESC" if str(sort or "").strip() == "-bar_time_ms" else "bar_time_ms ASC"
+    limit_clause = ""
+    if int(limit or 0) > 0:
+        limit_clause = " LIMIT ?"
+        params.append(int(limit or 0))
+
+    conn = open_pb_sqlite(readonly=True, timeout=_direct_sqlite_read_timeout(api_app, environment))
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT {BAR_COLUMNS}
+            FROM ibkr_bars
+            WHERE {' AND '.join(where_parts)}
+            ORDER BY {order_clause}
+            {limit_clause}
+            """,
+            tuple(params),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [_sqlite_bar_row(row) for row in rows]
+
+
+def _has_bars_in_sqlite(api_app, environment: str, interval: str, symbols=None) -> bool:
+    normalized_interval = normalize_interval(interval)
+    env_sql, env_params = _bar_environment_sql(environment, include_legacy_empty=True)
+    where_parts = [
+        "interval = ?",
+        env_sql,
+    ]
+    params = [normalized_interval, *env_params]
+    symbol_sql, symbol_params = _symbol_sql(api_app, symbols)
+    if symbol_sql:
+        where_parts.append(symbol_sql)
+        params.extend(symbol_params)
+
+    conn = open_pb_sqlite(readonly=True, timeout=_direct_sqlite_read_timeout(api_app, environment))
+    try:
+        row = conn.execute(
+            f"""
+            SELECT 1
+            FROM ibkr_bars
+            WHERE {' AND '.join(where_parts)}
+            ORDER BY bar_time_ms DESC
+            LIMIT 1
+            """,
+            tuple(params),
+        ).fetchone()
+    finally:
+        conn.close()
+    return row is not None
+
+
+def _write_rollup_batch(api_app, environment: str, batch: list[dict]) -> dict:
+    if _direct_sqlite_write_enabled(api_app, environment):
+        try:
+            conn = open_pb_sqlite(readonly=False, timeout=_direct_sqlite_write_timeout(api_app, environment))
+            try:
+                with conn:
+                    written = upsert_bars(conn, batch)
+            finally:
+                conn.close()
+            return {
+                "ok": True,
+                "created": int(written or 0),
+                "updated": 0,
+                "skipped": max(0, len(batch) - int(written or 0)),
+                "write_path": "direct_sqlite",
+            }
+        except Exception:
+            if not _direct_sqlite_write_fallback_api_enabled(api_app, environment):
+                traceback.print_exc()
+                return {
+                    "ok": False,
+                    "created": 0,
+                    "updated": 0,
+                    "skipped": len(batch),
+                    "write_path": "direct_sqlite",
+                }
+
+    result = api_app.pb.upsert_bars(batch)
+    if isinstance(result, dict):
+        result.setdefault("write_path", "pocketbase_api")
+        return result
+    return {"ok": False, "created": 0, "updated": 0, "skipped": len(batch), "write_path": "pocketbase_api"}
+
+
 def _latest_targeted_5m_bar_ms(environment: str, normalized_symbols) -> int:
     api_app = _api_app()
     interval_key = (environment, "5m")
     cached_ms = int(api_app.last_interval_fetch_ms.get(interval_key, 0) or 0)
     if cached_ms > 0:
         return cached_ms
+
+    if _direct_sqlite_read_enabled(api_app, environment):
+        try:
+            rows = _fetch_bars_from_sqlite(
+                api_app,
+                environment,
+                "5m",
+                symbols=normalized_symbols,
+                sort="-bar_time_ms",
+                limit=1,
+            )
+            if rows:
+                return int(rows[0].get("bar_time_ms", 0) or 0)
+            return 0
+        except Exception:
+            if not _direct_sqlite_read_fallback_api_enabled(api_app, environment):
+                traceback.print_exc()
+                return 0
 
     rows = api_app.pb.get_records(
         "ibkr_bars",
@@ -80,6 +298,14 @@ def _incremental_due_intervals(latest_5m_ms: int, intervals=None) -> list[str]:
 def has_interval_bars(environment: str, interval: str, symbols=None) -> bool:
     api_app = _api_app()
     normalized_interval = normalize_interval(interval)
+    if _direct_sqlite_read_enabled(api_app, environment):
+        try:
+            return _has_bars_in_sqlite(api_app, environment, normalized_interval, symbols=symbols)
+        except Exception:
+            if not _direct_sqlite_read_fallback_api_enabled(api_app, environment):
+                traceback.print_exc()
+                return False
+
     symbol_filter = api_app.build_symbol_filter(symbols)
     filter_parts = [
         f'interval = "{normalized_interval}"',
@@ -105,12 +331,33 @@ def rebuild_higher_timeframe_bars(environment: str, symbols=None, intervals=None
     api_app = _api_app()
     normalized_symbols = api_app.normalize_symbols(symbols)
     target_intervals = _normalize_target_intervals(api_app, intervals)
-    base_rows = api_app.pb.get_all_records(
-        "ibkr_bars",
-        filter=_build_rollup_filter(api_app, environment, normalized_symbols, since_ms=since_ms),
-        sort="bar_time_ms",
-        max_pages=1000,
-    )
+    base_rows = []
+    read_from_api = not _direct_sqlite_read_enabled(api_app, environment)
+    if not read_from_api:
+        try:
+            base_rows = _fetch_bars_from_sqlite(
+                api_app,
+                environment,
+                "5m",
+                symbols=normalized_symbols,
+                since_ms=since_ms,
+                sort="bar_time_ms",
+            )
+        except Exception:
+            if not _direct_sqlite_read_fallback_api_enabled(api_app, environment):
+                traceback.print_exc()
+                base_rows = []
+            else:
+                base_rows = []
+                read_from_api = True
+
+    if read_from_api:
+        base_rows = api_app.pb.get_all_records(
+            "ibkr_bars",
+            filter=_build_rollup_filter(api_app, environment, normalized_symbols, since_ms=since_ms),
+            sort="bar_time_ms",
+            max_pages=1000,
+        )
     if not base_rows:
         return {
             "processed_5m": 0,
@@ -136,7 +383,7 @@ def rebuild_higher_timeframe_bars(environment: str, symbols=None, intervals=None
         if not batch:
             return
         try:
-            result = api_app.pb.upsert_bars(batch)
+            result = _write_rollup_batch(api_app, environment, batch)
             if result.get("ok", False):
                 written += int(result.get("created", 0) or 0) + int(result.get("updated", 0) or 0)
             else:
@@ -264,6 +511,36 @@ def ensure_higher_timeframe_bars(
 def fetch_interval_bars(environment: str, interval: str, symbols=None, full_scan: bool = False):
     api_app = _api_app()
     normalized_interval = normalize_interval(interval)
+    since_ms = None if full_scan else get_fetch_since_ms(environment, normalized_interval)
+    rows = []
+    read_from_api = not _direct_sqlite_read_enabled(api_app, environment)
+    if not read_from_api:
+        try:
+            rows = _fetch_bars_from_sqlite(
+                api_app,
+                environment,
+                normalized_interval,
+                symbols=symbols,
+                since_ms=since_ms,
+                sort="bar_time_ms",
+            )
+        except Exception:
+            if not _direct_sqlite_read_fallback_api_enabled(api_app, environment):
+                traceback.print_exc()
+                rows = []
+            else:
+                rows = []
+                read_from_api = True
+
+    if rows:
+        api_app.last_interval_fetch_ms[(environment, normalized_interval)] = max(
+            int(row.get("bar_time_ms", 0) or 0) for row in rows
+        )
+        return rows
+
+    if not read_from_api:
+        return []
+
     symbol_filter = api_app.build_symbol_filter(symbols)
     filter_parts = [
         f'interval = "{normalized_interval}"',
@@ -272,7 +549,7 @@ def fetch_interval_bars(environment: str, interval: str, symbols=None, full_scan
     if symbol_filter:
         filter_parts.append(symbol_filter)
     if not full_scan:
-        filter_parts.append(f"bar_time_ms >= {get_fetch_since_ms(environment, normalized_interval)}")
+        filter_parts.append(f"bar_time_ms >= {int(since_ms or 0)}")
     rows = api_app.pb.get_all_records(
         "ibkr_bars",
         filter=" && ".join(filter_parts),

@@ -419,14 +419,20 @@ class Official5mCloseFlushTest(unittest.TestCase):
             ],
         )
 
-    def test_default_close_cycle_only_tracks_trade_symbols(self):
+    def test_default_close_cycle_refreshes_trade_and_monitor_but_computes_trade_only(self):
         due_bucket_ms = int(datetime(2026, 4, 17, 10, 50, tzinfo=ET).timestamp() * 1000)
         previous_bucket_ms = due_bucket_ms - STEP_MS
         writer = _FakeWriter()
         backfill = _FakeBackfill(
             writer,
-            initial_rows=[_bar("AAPL", previous_bucket_ms)],
-            incremental_rows=[_bar("AAPL", due_bucket_ms)],
+            initial_rows=[
+                _bar("AAPL", previous_bucket_ms),
+                _bar("MSFT", previous_bucket_ms),
+            ],
+            incremental_rows={
+                "AAPL": [_bar("AAPL", due_bucket_ms)],
+                "MSFT": [_bar("MSFT", due_bucket_ms)],
+            },
             repair_rows=[],
         )
         pipeline = _DummyPipeline(
@@ -434,6 +440,7 @@ class Official5mCloseFlushTest(unittest.TestCase):
             last_completed_bucket_ms=previous_bucket_ms,
             data_writer=writer,
             data_backfill=backfill,
+            pb=_FakePB(cursor_map={"AAPL|5m": previous_bucket_ms, "MSFT|5m": previous_bucket_ms}),
             snapshot={
                 "symbols": ["AAPL", "MSFT"],
                 "trade_symbols": ["AAPL"],
@@ -451,9 +458,18 @@ class Official5mCloseFlushTest(unittest.TestCase):
 
         state = pipeline._copy_official_5m_state()
         self.assertEqual(state["pending_symbols"], [])
-        self.assertEqual(state["written_symbols"], ["AAPL"])
-        self.assertEqual(len(writer.flushed_rows), 1)
-        self.assertEqual(writer.flushed_rows[0]["symbol"], "AAPL")
+        self.assertEqual(state["written_symbols"], ["AAPL", "MSFT"])
+        self.assertEqual(sorted(row["symbol"] for row in writer.flushed_rows), ["AAPL", "MSFT"])
+        self.assertEqual(
+            pipeline.compute_events,
+            [
+                {
+                    "source": "canonical_close",
+                    "bar_count": 2,
+                    "symbols": ["AAPL"],
+                }
+            ],
+        )
 
     def test_close_cycle_fetches_multiple_trade_symbols_with_worker_trace(self):
         due_bucket_ms = int(datetime(2026, 4, 17, 10, 50, tzinfo=ET).timestamp() * 1000)

@@ -18,6 +18,12 @@ from typing import Dict, List, Optional, Sequence
 
 from ibkr_compute.broker import BrokerAdapter
 
+from .pocketbase_sqlite import (
+    fetch_bar_times_in_range,
+    fetch_latest_bar,
+    fetch_recent_bars,
+    open_pb_sqlite,
+)
 from .timeframe_utils import (
     build_runtime_timestamps,
     latest_safe_closed_bucket_ms,
@@ -283,6 +289,16 @@ class DataBackfill:
 
     def _trace_slow_seconds(self) -> float:
         return max(0.1, self._get_float_setting("ibkr_history_trace_slow_sec", TRACE_SLOW_SECONDS))
+
+    def _direct_sqlite_read_enabled(self) -> bool:
+        return self._get_bool_setting("ibkr_bar_direct_sqlite_read_enabled", True)
+
+    def _direct_sqlite_read_fallback_api_enabled(self) -> bool:
+        return self._get_bool_setting("ibkr_bar_direct_sqlite_read_fallback_api_enabled", True)
+
+    def _direct_sqlite_read_timeout(self) -> float:
+        fallback = self._get_float_setting("ibkr_bar_direct_sqlite_timeout_sec", 30.0)
+        return max(0.5, self._get_float_setting("ibkr_bar_direct_sqlite_read_timeout_sec", fallback))
 
     def _new_trace(self, source: str, symbols: Sequence[str], intervals: Sequence[str]) -> Optional[Dict]:
         if not self._trace_enabled():
@@ -912,14 +928,43 @@ class DataBackfill:
         return written
 
     def _get_latest_stored_bar_ms(self, symbol: str, interval: str) -> int:
-        if not self.pb_client:
-            return 0
-
         normalized = normalize_interval(interval)
         safe_symbol = str(symbol or "").upper().replace('"', '\\"')
         safe_interval = normalized.replace('"', '\\"')
         safe_environment = str(self.environment or "live").strip().lower().replace('"', '\\"')
         safe_upper_ms = self._safe_history_upper_bound_ms(normalized)
+
+        if self._direct_sqlite_read_enabled():
+            try:
+                with open_pb_sqlite(readonly=True, timeout=self._direct_sqlite_read_timeout()) as conn:
+                    row = fetch_latest_bar(
+                        conn,
+                        safe_symbol,
+                        normalized,
+                        self.environment,
+                        safe_upper_ms=safe_upper_ms,
+                        include_legacy_empty=False,
+                    )
+                return int((row or {}).get("bar_time_ms", 0) or 0)
+            except Exception as exc:
+                if not self._direct_sqlite_read_fallback_api_enabled():
+                    logger.warning(
+                        "Failed to query latest stored bar via SQLite for %s/%s: %s",
+                        symbol,
+                        normalized,
+                        exc,
+                    )
+                    return 0
+                logger.debug(
+                    "Direct SQLite latest bar lookup failed for %s/%s, falling back to PocketBase API: %s",
+                    symbol,
+                    normalized,
+                    exc,
+                )
+
+        if not self.pb_client:
+            return 0
+
         try:
             filter_parts = [
                 f'symbol = "{safe_symbol}"',
@@ -972,7 +1017,7 @@ class DataBackfill:
             "bad_ohlc_count": 0,
             "bad_ohlc_examples": [],
         }
-        if not self.pb_client:
+        if not self.pb_client and not self._direct_sqlite_read_enabled():
             return snapshot
 
         safe_symbol = snapshot["symbol"].replace('"', '\\"')
@@ -981,25 +1026,58 @@ class DataBackfill:
         bars_needed = max(1, int(min_bars or 0), int(gap_lookback or 0), 400)
         max_pages = max(1, min(8, (bars_needed + 199) // 200))
 
-        try:
-            rows = self.pb_client.get_all_records(
-                "ibkr_bars",
-                filter=(
-                    f'symbol = "{safe_symbol}" && '
-                    f'interval = "{safe_interval}" && '
-                    f'environment = "{safe_environment}"'
-                ),
-                sort="-bar_time_ms",
-                max_pages=max_pages,
-            )
-        except Exception as exc:
-            logger.warning(
-                "Failed to inspect stored bars for %s/%s: %s",
-                symbol,
-                normalized,
-                exc,
-            )
-            return snapshot
+        rows = []
+        sqlite_read_ok = False
+        if self._direct_sqlite_read_enabled():
+            try:
+                with open_pb_sqlite(readonly=True, timeout=self._direct_sqlite_read_timeout()) as conn:
+                    rows = fetch_recent_bars(
+                        conn,
+                        snapshot["symbol"],
+                        normalized,
+                        self.environment,
+                        limit=max_pages * 200,
+                        include_legacy_empty=False,
+                    )
+                sqlite_read_ok = True
+            except Exception as exc:
+                if not self._direct_sqlite_read_fallback_api_enabled():
+                    logger.warning(
+                        "Failed to inspect stored bars via SQLite for %s/%s: %s",
+                        symbol,
+                        normalized,
+                        exc,
+                    )
+                    return snapshot
+                logger.debug(
+                    "Direct SQLite stored bar inspection failed for %s/%s, falling back to PocketBase API: %s",
+                    symbol,
+                    normalized,
+                    exc,
+                )
+
+        if not rows and not sqlite_read_ok:
+            if not self.pb_client:
+                return snapshot
+            try:
+                rows = self.pb_client.get_all_records(
+                    "ibkr_bars",
+                    filter=(
+                        f'symbol = "{safe_symbol}" && '
+                        f'interval = "{safe_interval}" && '
+                        f'environment = "{safe_environment}"'
+                    ),
+                    sort="-bar_time_ms",
+                    max_pages=max_pages,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to inspect stored bars for %s/%s: %s",
+                    symbol,
+                    normalized,
+                    exc,
+                )
+                return snapshot
 
         if not rows:
             return snapshot
@@ -1089,7 +1167,7 @@ class DataBackfill:
             "missing_us_times": [],
             "query_error": "",
         }
-        if not self.pb_client:
+        if not self.pb_client and not self._direct_sqlite_read_enabled():
             return snapshot
         if range_start_ms <= 0 or range_end_ms <= 0 or range_start_ms > range_end_ms:
             return snapshot
@@ -1104,37 +1182,75 @@ class DataBackfill:
         safe_environment = str(self.environment or "live").strip().lower().replace('"', '\\"')
         max_pages = max(1, min(8, (len(expected_bar_times) + 199) // 200))
 
-        try:
-            rows = self.pb_client.get_all_records(
-                "ibkr_bars",
-                filter=(
-                    f'symbol = "{safe_symbol}" && '
-                    f'interval = "{safe_interval}" && '
-                    f'environment = "{safe_environment}" && '
-                    f'session_type = "regular" && '
-                    f'bar_time_ms >= {range_start_ms} && '
-                    f'bar_time_ms <= {range_end_ms}'
-                ),
-                sort="bar_time_ms",
-                max_pages=max_pages,
-            )
-        except Exception as exc:
-            snapshot["query_error"] = str(exc)
-            logger.warning(
-                "Failed to inspect required sequence for %s/%s (%s -> %s): %s",
-                normalized_symbol,
-                normalized,
-                snapshot["start_us"] or range_start_ms,
-                snapshot["end_us"] or range_end_ms,
-                exc,
-            )
-            return snapshot
+        stored_bar_times = []
+        sqlite_read_ok = False
+        if self._direct_sqlite_read_enabled():
+            try:
+                with open_pb_sqlite(readonly=True, timeout=self._direct_sqlite_read_timeout()) as conn:
+                    stored_bar_times = fetch_bar_times_in_range(
+                        conn,
+                        normalized_symbol,
+                        normalized,
+                        self.environment,
+                        start_ms=range_start_ms,
+                        end_ms=range_end_ms,
+                        session_type="regular",
+                        include_legacy_empty=False,
+                    )
+                sqlite_read_ok = True
+            except Exception as exc:
+                if not self._direct_sqlite_read_fallback_api_enabled():
+                    snapshot["query_error"] = str(exc)
+                    logger.warning(
+                        "Failed to inspect required sequence via SQLite for %s/%s (%s -> %s): %s",
+                        normalized_symbol,
+                        normalized,
+                        snapshot["start_us"] or range_start_ms,
+                        snapshot["end_us"] or range_end_ms,
+                        exc,
+                    )
+                    return snapshot
+                logger.debug(
+                    "Direct SQLite sequence inspection failed for %s/%s, falling back to PocketBase API: %s",
+                    normalized_symbol,
+                    normalized,
+                    exc,
+                )
 
-        stored_bar_times = sorted({
-            int(row.get("bar_time_ms", 0) or 0)
-            for row in (rows or [])
-            if int(row.get("bar_time_ms", 0) or 0) > 0
-        })
+        if not stored_bar_times and not sqlite_read_ok:
+            if not self.pb_client:
+                return snapshot
+            try:
+                rows = self.pb_client.get_all_records(
+                    "ibkr_bars",
+                    filter=(
+                        f'symbol = "{safe_symbol}" && '
+                        f'interval = "{safe_interval}" && '
+                        f'environment = "{safe_environment}" && '
+                        f'session_type = "regular" && '
+                        f'bar_time_ms >= {range_start_ms} && '
+                        f'bar_time_ms <= {range_end_ms}'
+                    ),
+                    sort="bar_time_ms",
+                    max_pages=max_pages,
+                )
+            except Exception as exc:
+                snapshot["query_error"] = str(exc)
+                logger.warning(
+                    "Failed to inspect required sequence for %s/%s (%s -> %s): %s",
+                    normalized_symbol,
+                    normalized,
+                    snapshot["start_us"] or range_start_ms,
+                    snapshot["end_us"] or range_end_ms,
+                    exc,
+                )
+                return snapshot
+
+            stored_bar_times = sorted({
+                int(row.get("bar_time_ms", 0) or 0)
+                for row in (rows or [])
+                if int(row.get("bar_time_ms", 0) or 0) > 0
+            })
         snapshot["stored_count"] = len(stored_bar_times)
 
         stored_set = set(stored_bar_times)

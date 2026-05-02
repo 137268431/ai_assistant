@@ -45,6 +45,11 @@
               <div class="subview-tab-label">当前标的榜</div>
               <div class="subview-tab-copy">技术状态 / 信号 / 操作。</div>
             </button>
+            <button class="subview-tab" type="button" data-view="window-progress">
+              <div class="subview-tab-kicker">Window</div>
+              <div class="subview-tab-label">窗口进度</div>
+              <div class="subview-tab-copy">上下轨窗口 / 组件 / Trace。</div>
+            </button>
             <button class="subview-tab" type="button" data-view="universe">
               <div class="subview-tab-kicker">Universe</div>
               <div class="subview-tab-label">全量筛选</div>
@@ -188,6 +193,48 @@
             <div class="pagination-bar pagination-bar-bottom">
               <div class="pagination-group" id="currentTargetsPaginationBottom"></div>
               <div class="pagination-status" id="currentTargetsPaginationStatusBottom">第 1 / 1 页</div>
+            </div>
+          </section>
+        </div>
+
+        <div id="windowProgressViewPanel" class="subview-panel">
+          <section class="panel current-target-panel window-progress-panel">
+            <div class="current-target-head">
+              <div>
+                <div class="panel-title">窗口进度</div>
+                <div class="panel-copy">当前 active 窗口的 5m bar 收集、上下轨状态、候选信号与过滤原因。</div>
+              </div>
+              <button id="refreshWindowProgressBtn" class="mini-btn" type="button">刷新窗口</button>
+            </div>
+
+            <div class="table-header current-target-table-header">
+              <div class="leaderboard-meta" id="windowProgressMeta">等待加载...</div>
+            </div>
+            <div class="leaderboard-note" id="windowProgressMetaSecondary">默认优先显示 candidate / blocked / near_expiry，再按剩余 bars、组件进度、freshness 和目标分排序。</div>
+            <div class="table-wrap desktop-table-wrap window-progress-table-wrap">
+              <table class="window-progress-table">
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th>最新5m bar</th>
+                    <th>freshness</th>
+                    <th>上轨窗口</th>
+                    <th>下轨窗口</th>
+                    <th>剩余bars</th>
+                    <th>已收集组件</th>
+                    <th>缺失组件</th>
+                    <th>候选信号</th>
+                    <th>过滤原因</th>
+                    <th>Trace 链接</th>
+                  </tr>
+                </thead>
+                <tbody id="windowProgressTable">
+                  <tr><td colspan="11" class="loading">加载中...</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div id="windowProgressCards" class="mobile-card-list" aria-live="polite">
+              <div class="empty-state">加载中...</div>
             </div>
           </section>
         </div>

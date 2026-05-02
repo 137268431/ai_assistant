@@ -15,6 +15,7 @@ from ibkr_compute.market.timeframe_utils import (
     interval_to_ms,
     normalize_interval,
 )
+from ibkr_compute.market.pocketbase_sqlite import count_recent_bars, fetch_latest_bar, open_pb_sqlite
 
 EXTENDED_SESSION_OPEN_MINUTE = 4 * 60
 EXTENDED_SESSION_CLOSE_MINUTE = 20 * 60
@@ -171,7 +172,49 @@ class BarFreshnessPlanner:
                 return DEFAULT_CLOSE_DELAY_SECONDS
         return DEFAULT_CLOSE_DELAY_SECONDS
 
+    def _get_bool_setting(self, key: str, environment: str, default: bool) -> bool:
+        cfg = self.config
+        if cfg is not None and hasattr(cfg, "get_bool_for_environment"):
+            try:
+                return bool(cfg.get_bool_for_environment(key, environment, default))
+            except Exception:
+                return bool(default)
+        return bool(default)
+
+    def _get_float_setting(self, key: str, environment: str, default: float) -> float:
+        cfg = self.config
+        if cfg is not None and hasattr(cfg, "get_float_for_environment"):
+            try:
+                return float(cfg.get_float_for_environment(key, environment, default))
+            except Exception:
+                return float(default)
+        return float(default)
+
+    def _direct_sqlite_read_enabled(self, environment: str) -> bool:
+        return self._get_bool_setting("ibkr_bar_direct_sqlite_read_enabled", environment, True)
+
+    def _direct_sqlite_read_fallback_api_enabled(self, environment: str) -> bool:
+        return self._get_bool_setting("ibkr_bar_direct_sqlite_read_fallback_api_enabled", environment, True)
+
+    def _direct_sqlite_read_timeout(self, environment: str) -> float:
+        fallback = self._get_float_setting("ibkr_bar_direct_sqlite_timeout_sec", environment, 30.0)
+        return max(0.5, self._get_float_setting("ibkr_bar_direct_sqlite_read_timeout_sec", environment, fallback))
+
     def _get_latest_row(self, environment: str, symbol: str, interval: str) -> dict:
+        if self._direct_sqlite_read_enabled(environment):
+            try:
+                with open_pb_sqlite(readonly=True, timeout=self._direct_sqlite_read_timeout(environment)) as conn:
+                    return fetch_latest_bar(
+                        conn,
+                        symbol,
+                        interval,
+                        environment,
+                        include_legacy_empty=True,
+                    )
+            except Exception:
+                if not self._direct_sqlite_read_fallback_api_enabled(environment):
+                    return {}
+
         if self.pb is None:
             return {}
         filter_text = (
@@ -190,6 +233,21 @@ class BarFreshnessPlanner:
         return {}
 
     def _count_rows(self, environment: str, symbol: str, interval: str, required_bars: int) -> int:
+        if self._direct_sqlite_read_enabled(environment):
+            try:
+                with open_pb_sqlite(readonly=True, timeout=self._direct_sqlite_read_timeout(environment)) as conn:
+                    return count_recent_bars(
+                        conn,
+                        symbol,
+                        interval,
+                        environment,
+                        limit=max(0, int(required_bars or 0)),
+                        include_legacy_empty=True,
+                    )
+            except Exception:
+                if not self._direct_sqlite_read_fallback_api_enabled(environment):
+                    return 0
+
         if self.pb is None or not hasattr(self.pb, "get_all_records"):
             return 0
         pages = 1

@@ -1267,14 +1267,20 @@
     }
 
     .status-chip.ready,
-    .status-chip.executed {
+    .status-chip.executed,
+    .status-chip.confirmed,
+    .status-chip.both_active,
+    .status-chip.upper_active,
+    .status-chip.lower_active {
       background: rgba(104, 211, 145, 0.16);
       color: var(--screen-good);
     }
 
     .status-chip.awaiting_confirm,
     .status-chip.pending,
-    .status-chip.ready_no_signal {
+    .status-chip.ready_no_signal,
+    .status-chip.near_expiry,
+    .status-chip.blocked {
       background: rgba(246, 173, 85, 0.16);
       color: var(--screen-accent);
     }
@@ -1296,7 +1302,10 @@
     .status-chip.watch,
     .status-chip.signaled,
     .status-chip.no_signal,
-    .status-chip.neutral {
+    .status-chip.neutral,
+    .status-chip.no_window,
+    .status-chip.inactive,
+    .status-chip.used {
       background: rgba(148, 163, 184, 0.14);
       color: var(--screen-muted);
     }
@@ -1516,6 +1525,46 @@
       font-size: 13px;
     }
 
+    .window-progress-panel {
+      min-width: 0;
+    }
+
+    .window-progress-table {
+      min-width: 1360px;
+    }
+
+    .window-progress-table th,
+    .window-progress-table td {
+      font-size: 11.5px;
+      line-height: 1.35;
+    }
+
+    .window-progress-table th:nth-child(7),
+    .window-progress-table th:nth-child(8),
+    .window-progress-table th:nth-child(10),
+    .window-progress-table td:nth-child(7),
+    .window-progress-table td:nth-child(8),
+    .window-progress-table td:nth-child(10) {
+      min-width: 150px;
+      max-width: 220px;
+    }
+
+    .window-progress-subline {
+      margin-top: 5px;
+      font-size: 10.5px;
+      line-height: 1.3;
+    }
+
+    .window-progress-pill-wrap {
+      align-items: flex-start;
+    }
+
+    .window-progress-card .mobile-section-copy,
+    .window-progress-card .mobile-metric-value {
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
     @media (max-width: 900px) {
       .search-row {
         grid-template-columns: 1fr;
@@ -1706,6 +1755,7 @@
       }
 
       #currentViewPanel,
+      #windowProgressViewPanel,
       #universeViewPanel {
         order: 2;
       }
@@ -1980,28 +2030,34 @@
     overflow: visible;
 }
 
-#currentViewPanel .table-header {
+#currentViewPanel .table-header,
+#windowProgressViewPanel .table-header {
     align-items: flex-start;
 }
 
+#windowProgressViewPanel .table-header .leaderboard-meta,
 #currentViewPanel .table-header .leaderboard-meta {
     flex: 1 1 320px;
     min-width: 240px;
 }
 
+#windowProgressViewPanel .current-target-table-header,
 #currentViewPanel .current-target-table-header {
     margin-top: 8px;
 }
 
+#windowProgressViewPanel .current-target-table-header .leaderboard-meta,
 #currentViewPanel .current-target-table-header .leaderboard-meta {
     min-width: 0;
 }
 
+#windowProgressViewPanel .leaderboard-meta,
 #currentViewPanel .leaderboard-meta {
     font-size: 10.5px;
     line-height: 1.35;
 }
 
+#windowProgressViewPanel .leaderboard-note,
 #currentViewPanel .leaderboard-note {
     margin-top: 6px;
     font-size: 10.5px;
@@ -2012,11 +2068,14 @@
     margin-top: 8px;
 }
 
-#currentViewPanel .table-wrap {
+#currentViewPanel .table-wrap,
+#windowProgressViewPanel .table-wrap {
     margin-top: 10px;
     border-radius: 14px;
 }
 
+#windowProgressViewPanel th,
+#windowProgressViewPanel td,
 #currentViewPanel th,
 #currentViewPanel td {
     padding: 8px 10px;
@@ -2024,6 +2083,7 @@
     line-height: 1.35;
 }
 
+#windowProgressViewPanel th,
 #currentViewPanel th {
     font-size: 10px;
     letter-spacing: 0.04em;
@@ -2037,11 +2097,18 @@
 }
 
 #currentViewPanel .muted,
+#windowProgressViewPanel .muted,
+#windowProgressViewPanel .reason-copy,
 #currentViewPanel .reason-copy {
     font-size: 11px;
     line-height: 1.35;
 }
 
+#windowProgressViewPanel .score-pill,
+#windowProgressViewPanel .status-chip,
+#windowProgressViewPanel .reason-pill,
+#windowProgressViewPanel .pool-pill,
+#windowProgressViewPanel .symbol-chip,
 #currentViewPanel .score-pill,
 #currentViewPanel .status-chip,
 #currentViewPanel .reason-pill,
@@ -2054,6 +2121,8 @@
 }
 
 #currentViewPanel .reason-wrap,
+#windowProgressViewPanel .reason-wrap,
+#windowProgressViewPanel .pill-row,
 #currentViewPanel .pill-row {
     gap: 6px;
 }
@@ -2113,6 +2182,7 @@
     .panel,
     .tab-panel,
     .subview-panel,
+    #windowProgressViewPanel,
     .panel-stack,
     .rules-board,
     .mobile-card-list,

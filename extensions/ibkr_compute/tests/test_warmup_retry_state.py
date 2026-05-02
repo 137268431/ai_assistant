@@ -19,7 +19,61 @@ class DummyWarmupRetryState(TradingServiceWarmupMixin):
         return "2026-04-21T09:00:00Z"
 
 
+class _DummyConfig:
+    def get_bool_for_environment(self, key: str, environment: str, default=False):
+        del key, environment
+        return default
+
+    def get_for_environment(self, key: str, environment: str, default=None):
+        del environment
+        if key == "ibkr_market_ws_symbols":
+            return "SPY,VIX"
+        return default
+
+
+class _DummyConidResolver:
+    def __init__(self):
+        self.calls = []
+
+    def resolve_bulk(self, symbols):
+        normalized = [str(symbol or "").strip().upper() for symbol in (symbols or []) if str(symbol or "").strip()]
+        self.calls.append(normalized)
+        return {"VIX": 3}
+
+
+class DummyWarmupSnapshot(TradingServiceWarmupMixin):
+    def __init__(self):
+        self._subscription_lock = threading.Lock()
+        self._active_target_date = "2026-04-21"
+        self._current_market_date = "2026-04-21"
+        self._active_trade_symbols = ["AAPL"]
+        self._active_subscription_map = {"AAPL": 1, "SPY": 2}
+        self._symbol_meta = {
+            "AAPL": {"exchange": "NASDAQ"},
+            "SPY": {"exchange": "ARCA"},
+        }
+        self._watchlist_symbols = ["AAPL"]
+        self._watchlist_trade_symbols = ["AAPL"]
+        self._watchlist_monitor_symbols = []
+        self.config = _DummyConfig()
+        self.conid_resolver = _DummyConidResolver()
+
+    def _market_date(self) -> str:
+        return "2026-04-21"
+
+
 class WarmupRetryStateTest(unittest.TestCase):
+    def test_warmup_snapshot_resolves_market_monitor_conids(self):
+        service = DummyWarmupSnapshot()
+
+        state = service._warmup_snapshot_from_subscriptions()
+
+        self.assertEqual(state["symbols"], ["AAPL", "SPY", "VIX"])
+        self.assertEqual(state["trade_symbols"], ["AAPL"])
+        self.assertEqual(state["monitor_symbols"], ["SPY", "VIX"])
+        self.assertEqual(state["conid_map"], {"AAPL": 1, "SPY": 2, "VIX": 3})
+        self.assertEqual(service.conid_resolver.calls, [["VIX"]])
+
     def test_retry_preserves_ready_snapshot_when_scope_is_still_ready(self):
         service = DummyWarmupRetryState()
         previous = service._initial_warmup_state()

@@ -53,6 +53,42 @@ def _history_bar(bar_time_ms):
     return {"t": int(bar_time_ms / 1000), "o": 1.0, "h": 1.2, "l": 0.9, "c": 1.1, "v": 10}
 
 
+class _FakeWriter:
+    def __init__(self, rows=None):
+        self.pb_client = _FakePB(rows or [])
+
+    def write_bar(self, _bar):
+        return True
+
+
+class _FakePB:
+    def __init__(self, rows):
+        self.rows = list(rows or [])
+        self.calls = []
+
+    def get_records(self, collection, **kwargs):
+        self.calls.append((collection, dict(kwargs)))
+        return list(self.rows)
+
+    def get_all_records(self, collection, **kwargs):
+        self.calls.append((collection, dict(kwargs)))
+        return list(self.rows)
+
+
+class _FakeConfig:
+    def __init__(self, values=None):
+        self.values = dict(values or {})
+
+    def get_bool_for_environment(self, key, _environment, default=False):
+        return bool(self.values.get(key, default))
+
+    def get_float_for_environment(self, key, _environment, default=0.0):
+        return float(self.values.get(key, default))
+
+    def get_int_for_environment(self, key, _environment, default=0):
+        return int(self.values.get(key, default))
+
+
 class HistoricalRequestFormatDateTest(unittest.TestCase):
     def test_daily_history_date_parses_as_session_date(self):
         self.assertEqual(
@@ -353,6 +389,48 @@ class BackfillFutureGuardTest(unittest.TestCase):
         self.assertEqual(status["last_trace"]["request_count"], 1)
         self.assertEqual(status["last_trace"]["written"], 1)
         self.assertGreaterEqual(status["recent_traces_total"], 1)
+
+    def test_latest_stored_bar_prefers_direct_sqlite_read(self):
+        writer = _FakeWriter(rows=[{"bar_time_ms": 111}])
+        backfill = DataBackfill(data_writer=writer, config=_FakeConfig(), environment="live", broker=_FakeBroker([]))
+
+        with mock.patch("ibkr_compute.market.data_backfill.open_pb_sqlite") as open_sqlite, mock.patch(
+            "ibkr_compute.market.data_backfill.fetch_latest_bar",
+            return_value={"bar_time_ms": 222},
+        ) as fetch_latest:
+            open_sqlite.return_value.__enter__.return_value = object()
+            latest_ms = backfill.get_latest_stored_bar_ms("AAPL", "5m")
+
+        self.assertEqual(latest_ms, 222)
+        self.assertEqual(writer.pb_client.calls, [])
+        fetch_latest.assert_called_once()
+
+    def test_latest_stored_bar_falls_back_to_api_when_sqlite_read_fails(self):
+        writer = _FakeWriter(rows=[{"bar_time_ms": 333}])
+        backfill = DataBackfill(data_writer=writer, config=_FakeConfig(), environment="live", broker=_FakeBroker([]))
+
+        with mock.patch(
+            "ibkr_compute.market.data_backfill.open_pb_sqlite",
+            side_effect=RuntimeError("sqlite busy"),
+        ):
+            latest_ms = backfill.get_latest_stored_bar_ms("AAPL", "5m")
+
+        self.assertEqual(latest_ms, 333)
+        self.assertEqual(len(writer.pb_client.calls), 1)
+
+    def test_integrity_snapshot_uses_empty_sqlite_result_without_api_fallback(self):
+        writer = _FakeWriter(rows=[{"bar_time_ms": 333}])
+        backfill = DataBackfill(data_writer=writer, config=_FakeConfig(), environment="live", broker=_FakeBroker([]))
+
+        with mock.patch("ibkr_compute.market.data_backfill.open_pb_sqlite") as open_sqlite, mock.patch(
+            "ibkr_compute.market.data_backfill.fetch_recent_bars",
+            return_value=[],
+        ):
+            open_sqlite.return_value.__enter__.return_value = object()
+            snapshot = backfill.get_integrity_snapshot("AAPL", "5m")
+
+        self.assertEqual(snapshot["latest_stored_ms"], 0)
+        self.assertEqual(writer.pb_client.calls, [])
 
 
 if __name__ == "__main__":
