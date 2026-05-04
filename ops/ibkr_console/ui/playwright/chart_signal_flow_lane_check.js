@@ -74,7 +74,9 @@ function makeIndicator(bar, index) {
     fractal_bull: index === 2,
     obv_reg_bull_div: index === 3,
     crsi_reg_bull_div: index === 4,
+    dtp_dir: index >= 3 ? -1 : 0,
     dtp_phase: index >= 3 ? '红初中' : '',
+    dtp_phase_bars: index >= 3 ? index - 2 : 0,
   };
 }
 
@@ -140,7 +142,9 @@ function makeTrace(bar, index) {
     structure: {
       ema_bullish: true,
       ema_bearish: false,
+      dtp_dir: index >= 3 ? -1 : 0,
       dtp_phase: index >= 3 ? '红初中' : '',
+      dtp_phase_bars: index >= 3 ? index - 2 : 0,
       fractal_tokens: index === 2 ? ['F↑'] : [],
       touch_tokens: [],
     },
@@ -213,6 +217,10 @@ async function main() {
       await route.fulfill({ status: 204, body: '' });
       return;
     }
+    if (url.includes('cdn.jsdelivr.net/npm/flatpickr')) {
+      await route.continue();
+      return;
+    }
     if (url.startsWith(CONSOLE_BASE)) {
       await fulfillStatic(route);
       return;
@@ -240,13 +248,23 @@ async function main() {
     const candidateSeries = series.find((item) => item.name === 'Flow 候选');
     const blockedSeries = series.find((item) => item.name === 'Flow 已过滤');
     const blockedMain = series.find((item) => item.name === 'Blocked Trace');
+    const dtpChangeSeries = series.find((item) => item.name === 'Flow DTP转换');
+    const flowGrid = Array.isArray(option.grid) ? option.grid[1] : null;
+    const flowYAxis = Array.isArray(option.yAxis) ? option.yAxis[1] : null;
     const flowNames = series.map((item) => item.name).filter((name) => String(name || '').startsWith('Flow '));
     return {
       gridCount: Array.isArray(option.grid) ? option.grid.length : 0,
       xAxisCount: Array.isArray(option.xAxis) ? option.xAxis.length : 0,
       yAxisCount: Array.isArray(option.yAxis) ? option.yAxis.length : 0,
+      flowGridHeight: flowGrid?.height || '',
+      flowYAxisMin: flowYAxis?.min,
+      flowYAxisMax: flowYAxis?.max,
       flowNames,
       hasFlowTitle: (Array.isArray(option.title) ? option.title : []).some((item) => /Signal Flow/.test(item.text || '')),
+      hasLongFlowSubtitle: (Array.isArray(option.title) ? option.title : []).some((item) => /菱形=过滤/.test(item.subtext || '')),
+      dtpChangeCount: Array.isArray(dtpChangeSeries?.data) ? dtpChangeSeries.data.length : 0,
+      dtpChangeLabel: dtpChangeSeries?.data?.[0]?.labelText || '',
+      dtpChangeLabelShow: Boolean(dtpChangeSeries?.label?.show),
       componentDataCount: Array.isArray(componentSeries?.data) ? componentSeries.data.length : 0,
       componentLabelShow: Boolean(componentSeries?.label?.show),
       componentFirstLabel: componentSeries?.data?.[0]?.labelText || '',
@@ -257,6 +275,8 @@ async function main() {
       blockedMainCount: Array.isArray(blockedMain?.data) ? blockedMain.data.length : 0,
       customStartValue: document.getElementById('customRangeStart')?.value || '',
       customEndValue: document.getElementById('customRangeEnd')?.value || '',
+      customStartHasPicker: Boolean(document.getElementById('customRangeStart')?._flatpickr),
+      customEndHasPicker: Boolean(document.getElementById('customRangeEnd')?._flatpickr),
       customZoneText: document.getElementById('customRangeForm')?.textContent || '',
       cursorText: document.getElementById('cursorStrip')?.textContent || '',
       traceText: document.getElementById('tracePanelShell')?.textContent || '',
@@ -298,8 +318,8 @@ async function main() {
   await page.locator('button.range-btn', { hasText: '自定义' }).click();
   await page.waitForTimeout(250);
   const afterCustomSelectRequests = timelineRequests.length;
-  await page.fill('#customRangeStart', '2026-05-04T10:35');
-  await page.fill('#customRangeEnd', '2026-05-04T10:50');
+  await page.fill('#customRangeStart', '2026/05/04 10:35');
+  await page.fill('#customRangeEnd', '2026/05/04 10:50');
   const applyResponsePromise = page.waitForResponse((response) => {
     if (!response.url().includes('/api/custom/ibkr/proxy')) return false;
     const requestBody = response.request().postData() || '';
@@ -326,10 +346,18 @@ async function main() {
   if (beforeClick.xAxisCount !== 4) failures.push(`x_axis_count_${beforeClick.xAxisCount}`);
   if (beforeClick.yAxisCount !== 5) failures.push(`y_axis_count_${beforeClick.yAxisCount}`);
   if (!beforeClick.hasFlowTitle) failures.push('missing_signal_flow_title');
+  if (beforeClick.hasLongFlowSubtitle) failures.push('signal_flow_subtitle_should_be_compact');
+  if (String(beforeClick.flowGridHeight) !== '10%') failures.push(`flow_grid_height_${beforeClick.flowGridHeight}`);
+  if (Number(beforeClick.flowYAxisMin) > -0.1) failures.push(`flow_y_min_${beforeClick.flowYAxisMin}`);
+  if (Number(beforeClick.flowYAxisMax) < 4.4) failures.push(`flow_y_max_${beforeClick.flowYAxisMax}`);
   if (!beforeClick.layerText.includes('Signal Flow')) failures.push('missing_signal_flow_layer');
   if (!beforeClick.flowNames.includes('Flow 下轨窗口')) failures.push('missing_lower_window_series');
+  if (!beforeClick.flowNames.includes('Flow DTP转换')) failures.push('missing_dtp_change_series');
   if (!beforeClick.flowNames.includes('Flow 组件收集')) failures.push('missing_component_flow_series');
   if (!beforeClick.flowNames.includes('Flow 已过滤')) failures.push('missing_blocked_flow_series');
+  if (beforeClick.dtpChangeCount < 1) failures.push(`dtp_change_count_${beforeClick.dtpChangeCount}`);
+  if (!beforeClick.dtpChangeLabel.includes('DTP红初中')) failures.push(`dtp_change_label_${beforeClick.dtpChangeLabel}`);
+  if (!beforeClick.dtpChangeLabelShow) failures.push('dtp_change_label_should_be_visible');
   if (beforeClick.componentDataCount < 1) failures.push(`component_flow_count_${beforeClick.componentDataCount}`);
   if (beforeClick.componentLabelShow) failures.push('component_label_should_be_hidden');
   if (beforeClick.candidateLabelShow) failures.push('candidate_label_should_be_hidden');
@@ -337,8 +365,10 @@ async function main() {
   if (beforeClick.blockedMainCount !== 1) failures.push(`blocked_main_count_${beforeClick.blockedMainCount}`);
   if (!beforeClick.blockedLabel.includes('DTP红初中')) failures.push('missing_blocked_label_reason');
   if (!beforeClick.blockedLabelShow) failures.push('blocked_label_should_be_visible');
-  if (beforeClick.customStartValue !== '2026-05-04T10:30') failures.push(`custom_start_not_et_${beforeClick.customStartValue}`);
-  if (beforeClick.customEndValue !== '2026-05-04T11:00') failures.push(`custom_end_not_et_${beforeClick.customEndValue}`);
+  if (!beforeClick.customStartHasPicker) failures.push('custom_start_missing_flatpickr');
+  if (!beforeClick.customEndHasPicker) failures.push('custom_end_missing_flatpickr');
+  if (beforeClick.customStartValue !== '2026/05/04 10:30') failures.push(`custom_start_not_et_${beforeClick.customStartValue}`);
+  if (beforeClick.customEndValue !== '2026/05/04 11:00') failures.push(`custom_end_not_et_${beforeClick.customEndValue}`);
   if (!beforeClick.customZoneText.includes('ET')) failures.push('missing_custom_range_et_badge');
   if (!beforeClick.cursorText.includes('blocked · DTP红初中')) failures.push('cursor_missing_blocked_reason');
   if (!beforeClick.traceText.includes('blocked · DTP红初中')) failures.push('trace_missing_blocked_reason');
@@ -350,8 +380,8 @@ async function main() {
   if (afterCustomApplyRequests <= afterCustomSelectRequests) failures.push('custom_apply_did_not_reload');
   if (customApplyRequest.start_ms !== BAR_TIMES[1]) failures.push(`custom_apply_start_ms_${customApplyRequest.start_ms}`);
   if (customApplyRequest.end_ms !== BAR_TIMES[4]) failures.push(`custom_apply_end_ms_${customApplyRequest.end_ms}`);
-  if (customState.startValue !== '2026-05-04T10:35') failures.push(`custom_state_start_${customState.startValue}`);
-  if (customState.endValue !== '2026-05-04T10:50') failures.push(`custom_state_end_${customState.endValue}`);
+  if (customState.startValue !== '2026/05/04 10:35') failures.push(`custom_state_start_${customState.startValue}`);
+  if (customState.endValue !== '2026/05/04 10:50') failures.push(`custom_state_end_${customState.endValue}`);
   if (!customState.href.includes(`start_ms=${BAR_TIMES[1]}`) || !customState.href.includes(`end_ms=${BAR_TIMES[4]}`)) {
     failures.push('custom_url_missing_applied_ms');
   }

@@ -2435,6 +2435,91 @@ body.chart-focus-mode .chart-stage {
     padding: 0 14px;
 }
 
+.flatpickr-calendar.ibkr-chart-picker {
+    background: rgba(7, 12, 20, 0.98);
+    border: 1px solid rgba(99, 179, 237, 0.18);
+    border-radius: 14px;
+    box-shadow: 0 18px 52px rgba(0, 0, 0, 0.46), 0 0 0 1px rgba(15, 23, 42, 0.75);
+    color: #D7E2F0;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.flatpickr-calendar.ibkr-chart-picker.arrowTop:before,
+.flatpickr-calendar.ibkr-chart-picker.arrowTop:after,
+.flatpickr-calendar.ibkr-chart-picker.arrowBottom:before,
+.flatpickr-calendar.ibkr-chart-picker.arrowBottom:after {
+    border-bottom-color: rgba(7, 12, 20, 0.98);
+    border-top-color: rgba(7, 12, 20, 0.98);
+}
+
+.ibkr-chart-picker .flatpickr-months,
+.ibkr-chart-picker .flatpickr-month,
+.ibkr-chart-picker .flatpickr-current-month,
+.ibkr-chart-picker .flatpickr-weekdays,
+.ibkr-chart-picker .flatpickr-weekday,
+.ibkr-chart-picker .flatpickr-time {
+    background: transparent;
+    color: #D7E2F0;
+}
+
+.ibkr-chart-picker .flatpickr-current-month .flatpickr-monthDropdown-months,
+.ibkr-chart-picker .flatpickr-current-month input.cur-year,
+.ibkr-chart-picker .flatpickr-time input,
+.ibkr-chart-picker .flatpickr-time .flatpickr-am-pm {
+    background: rgba(15, 23, 42, 0.82);
+    border: 1px solid rgba(99, 179, 237, 0.14);
+    color: #E2EAF4;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 700;
+}
+
+.ibkr-chart-picker .flatpickr-current-month .flatpickr-monthDropdown-months .flatpickr-monthDropdown-month {
+    background: #0B1220;
+    color: #E2EAF4;
+}
+
+.ibkr-chart-picker .flatpickr-day {
+    border-color: transparent;
+    color: #B9C7D9;
+}
+
+.ibkr-chart-picker .flatpickr-day:hover,
+.ibkr-chart-picker .flatpickr-day:focus {
+    background: rgba(99, 179, 237, 0.14);
+    border-color: rgba(99, 179, 237, 0.24);
+    color: #E2EAF4;
+}
+
+.ibkr-chart-picker .flatpickr-day.today {
+    border-color: rgba(251, 191, 36, 0.56);
+}
+
+.ibkr-chart-picker .flatpickr-day.selected,
+.ibkr-chart-picker .flatpickr-day.startRange,
+.ibkr-chart-picker .flatpickr-day.endRange {
+    background: rgba(74, 222, 128, 0.18);
+    border-color: rgba(74, 222, 128, 0.62);
+    color: #BBF7D0;
+}
+
+.ibkr-chart-picker .flatpickr-day.prevMonthDay,
+.ibkr-chart-picker .flatpickr-day.nextMonthDay,
+.ibkr-chart-picker .flatpickr-day.flatpickr-disabled {
+    color: rgba(139, 164, 196, 0.36);
+}
+
+.ibkr-chart-picker .flatpickr-time {
+    border-top-color: rgba(99, 179, 237, 0.12);
+}
+
+.ibkr-chart-picker .flatpickr-time .numInputWrapper span.arrowUp:after {
+    border-bottom-color: #8BA4C4;
+}
+
+.ibkr-chart-picker .flatpickr-time .numInputWrapper span.arrowDown:after {
+    border-top-color: #8BA4C4;
+}
+
 .summary-strip {
     display: flex;
 }
@@ -2476,12 +2561,12 @@ body.chart-focus-mode .chart-stage {
 
 .chart-stage {
     height: 72vh;
-    min-height: 620px;
+    min-height: 660px;
 }
 
 body.chart-focus-mode .chart-stage {
     height: 82vh;
-    min-height: 680px;
+    min-height: 720px;
 }
 
 .tv-floating-legend {
@@ -2557,12 +2642,12 @@ body.chart-focus-mode .chart-stage {
 
     .chart-stage {
         height: 56dvh;
-        min-height: 390px;
+        min-height: 420px;
     }
 
     body.chart-focus-mode .chart-stage {
         height: 70dvh;
-        min-height: 430px;
+        min-height: 460px;
     }
 
     .mobile-quick-card {

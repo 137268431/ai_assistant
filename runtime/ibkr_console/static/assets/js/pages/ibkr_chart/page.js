@@ -17,6 +17,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         let customRangeStartMs = 0;
         let customRangeEndMs = 0;
         let customRangeFormOpen = false;
+        let customRangeStartPicker = null;
+        let customRangeEndPicker = null;
         let pendingFocusBarTimeMs = 0;
         let currentIndicatorId = '';
         let chartInstance = null;
@@ -74,11 +76,12 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             volume: true,
         };
         const SIGNAL_LIFECYCLE_Y = Object.freeze({
-            upperWindow: 3.32,
-            lowerWindow: 2.92,
+            upperWindow: 4.15,
+            lowerWindow: 3.8,
+            dtp: 3.02,
             component: 2.05,
-            decision: 1.05,
-            cleared: 0.35,
+            decision: 1.08,
+            cleared: 0.46,
         });
         const CHART_REALTIME_WARN_INTERVAL_MS = 60 * 1000;
         const chartRealtimeWarnState = {
@@ -209,13 +212,13 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         function formatDateTimeEtInputValue(ms) {
             const parts = parseEtDateParts(ms);
             if (!parts) return '';
-            return `${parts.year}-${padDatePart(parts.month)}-${padDatePart(parts.day)}T${padDatePart(parts.hour)}:${padDatePart(parts.minute)}`;
+            return `${parts.year}/${padDatePart(parts.month)}/${padDatePart(parts.day)} ${padDatePart(parts.hour)}:${padDatePart(parts.minute)}`;
         }
 
         function parseDateTimeEtInputValue(value) {
             const text = String(value || '').trim();
             if (!text) return 0;
-            const match = text.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/);
+            const match = text.match(/^(\d{4})[-/](\d{2})[-/](\d{2})(?:T|\s+)(\d{2}):(\d{2})(?::(\d{2}))?$/);
             if (!match) return 0;
             const [, yearText, monthText, dayText, hourText, minuteText, secondText] = match;
             const year = Number(yearText);
@@ -239,6 +242,57 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 resolvedMs = wallUtcMs - getEtOffsetMinutes(resolvedMs) * 60000;
             }
             return Number.isFinite(resolvedMs) ? resolvedMs : 0;
+        }
+
+        function syncCustomRangePickerValue(picker, value) {
+            if (picker && typeof picker.setDate === 'function') {
+                picker.setDate(value || null, false, 'Y/m/d H:i');
+                return;
+            }
+            if (picker?.input) picker.input.value = value || '';
+        }
+
+        function ensureCustomRangePickers() {
+            const startInput = document.getElementById('customRangeStart');
+            const endInput = document.getElementById('customRangeEnd');
+            if (!startInput || !endInput || typeof flatpickr !== 'function') return;
+            const locale = flatpickr.l10ns?.zh || undefined;
+            const baseOptions = {
+                enableTime: true,
+                time_24hr: true,
+                dateFormat: 'Y/m/d H:i',
+                minuteIncrement: 1,
+                allowInput: true,
+                disableMobile: true,
+                locale,
+                appendTo: document.body,
+            };
+            if (!customRangeStartPicker) {
+                customRangeStartPicker = flatpickr(startInput, {
+                    ...baseOptions,
+                    onReady(_, __, instance) {
+                        instance.calendarContainer?.classList.add('ibkr-chart-picker');
+                    },
+                    onChange(selectedDates, dateStr) {
+                        if (customRangeEndPicker && selectedDates?.[0]) {
+                            customRangeEndPicker.set('minDate', dateStr || null);
+                        }
+                    },
+                });
+            }
+            if (!customRangeEndPicker) {
+                customRangeEndPicker = flatpickr(endInput, {
+                    ...baseOptions,
+                    onReady(_, __, instance) {
+                        instance.calendarContainer?.classList.add('ibkr-chart-picker');
+                    },
+                    onChange(selectedDates, dateStr) {
+                        if (customRangeStartPicker && selectedDates?.[0]) {
+                            customRangeStartPicker.set('maxDate', dateStr || null);
+                        }
+                    },
+                });
+            }
         }
 
         function parseQueryTimeMs(value) {
@@ -1650,8 +1704,13 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             form.hidden = !show;
             if (!show) return;
             seedCustomRangeFromPayload();
-            startInput.value = formatDateTimeEtInputValue(customRangeStartMs);
-            endInput.value = formatDateTimeEtInputValue(customRangeEndMs);
+            ensureCustomRangePickers();
+            const startValue = formatDateTimeEtInputValue(customRangeStartMs);
+            const endValue = formatDateTimeEtInputValue(customRangeEndMs);
+            syncCustomRangePickerValue(customRangeStartPicker, startValue);
+            syncCustomRangePickerValue(customRangeEndPicker, endValue);
+            startInput.value = startValue;
+            endInput.value = endValue;
         }
 
         function renderSummaryStrip(payload) {
@@ -3504,6 +3563,57 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             return [...tokens.slice(0, maxItems), `+${tokens.length - maxItems}`];
         }
 
+        function normalizeDtpDir(value, phaseText = '') {
+            const num = Number(value);
+            if (num === 1) return 1;
+            if (num === -1) return -1;
+            const text = String(phaseText || '').trim().toLowerCase();
+            if (/蓝|blue|bull|long|up/.test(text)) return 1;
+            if (/红|red|bear|short|down/.test(text)) return -1;
+            return 0;
+        }
+
+        function getTraceDtpState(trace) {
+            const structure = trace?.structure && typeof trace.structure === 'object' ? trace.structure : {};
+            const phase = String(structure.dtp_phase || '').trim();
+            const dir = normalizeDtpDir(structure.dtp_dir, phase);
+            const bars = Number(structure.dtp_phase_bars || 0);
+            return {
+                dir,
+                phase,
+                bars: Number.isFinite(bars) && bars > 0 ? bars : 0,
+            };
+        }
+
+        function getDtpPhaseShortText(phase) {
+            const text = String(phase || '').trim();
+            if (!text) return '';
+            if (/红|蓝|中性/.test(text)) return text;
+            const lowered = text.toLowerCase();
+            if (lowered === 'early') return '初';
+            if (lowered === 'confirmed') return '中';
+            if (lowered === 'mature') return '熟';
+            if (lowered === 'weakening') return '弱';
+            if (lowered === 'neutral') return '中性';
+            return text;
+        }
+
+        function formatDtpStateLabel(state, { compact = false } = {}) {
+            const dir = Number(state?.dir || 0);
+            const phase = getDtpPhaseShortText(state?.phase || '');
+            if (phase && /^(红|蓝|中性)/.test(phase)) return compact ? phase : `DTP${phase}`;
+            const dirText = dir === 1 ? '蓝' : dir === -1 ? '红' : '中性';
+            const label = dir === 0 ? '中性' : `${dirText}${phase && phase !== '中性' ? phase : ''}`;
+            return compact ? label : `DTP${label}`;
+        }
+
+        function getDtpStateColor(state) {
+            const dir = Number(state?.dir || 0);
+            if (dir === 1) return '#38BDF8';
+            if (dir === -1) return '#FB7185';
+            return '#94A3B8';
+        }
+
         function buildLifecycleLineSeries(name, data, options = {}) {
             const color = options.color || '#7DD3FC';
             return {
@@ -3576,15 +3686,43 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             };
         }
 
+        function buildDtpStateSeries(name, data, options = {}) {
+            return {
+                name,
+                type: 'line',
+                xAxisIndex: 1,
+                yAxisIndex: 1,
+                data,
+                symbol: 'none',
+                connectNulls: false,
+                smooth: false,
+                silent: true,
+                z: Number(options.z || 6),
+                tooltip: { show: false },
+                lineStyle: {
+                    width: Number(options.width || 5),
+                    color: options.color || '#94A3B8',
+                    opacity: Number(options.opacity ?? 0.82),
+                    cap: 'round',
+                },
+                emphasis: { disabled: true },
+            };
+        }
+
         function buildSignalLifecycleSeries(traceTimeline, bars, { showLabels = true } = {}) {
             const indexByMs = new Map(bars.map((bar, index) => [Number(bar?.bar_time_ms || 0), index]));
             const upperWindow = bars.map(() => null);
             const lowerWindow = bars.map(() => null);
+            const dtpRed = bars.map(() => null);
+            const dtpBlue = bars.map(() => null);
+            const dtpNeutral = bars.map(() => null);
+            const dtpChanges = [];
             const components = [];
             const candidates = [];
             const blocked = [];
             const confirmed = [];
             const cleared = [];
+            let previousDtpKey = '';
             traceTimeline.forEach((trace) => {
                 const barMs = Number(trace?.bar_time_ms || 0);
                 const index = indexByMs.get(barMs);
@@ -3595,11 +3733,39 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
 
                 const eventTokens = getTraceEventTokens(trace);
                 const componentTokens = getTraceFlowTokens(trace, 5);
+                const dtpState = getTraceDtpState(trace);
                 const common = {
                     bar_index: index,
                     bar_time_ms: barMs,
                     us_time: trace?.us_time || '',
                 };
+                if (dtpState.phase || dtpState.dir) {
+                    const dtpPoint = {
+                        value: [index, SIGNAL_LIFECYCLE_Y.dtp],
+                        labelText: formatDtpStateLabel(dtpState),
+                        state: dtpState,
+                    };
+                    if (dtpState.dir === 1) {
+                        dtpBlue[index] = dtpPoint;
+                    } else if (dtpState.dir === -1) {
+                        dtpRed[index] = dtpPoint;
+                    } else {
+                        dtpNeutral[index] = dtpPoint;
+                    }
+                    const dtpKey = `${dtpState.dir}:${dtpState.phase}`;
+                    if (dtpKey && dtpKey !== previousDtpKey) {
+                        dtpChanges.push({
+                            ...common,
+                            value: [index, SIGNAL_LIFECYCLE_Y.dtp],
+                            labelText: formatDtpStateLabel(dtpState),
+                            name: formatDtpStateLabel(dtpState),
+                            direction: dtpState.dir === 1 ? 'bullish' : dtpState.dir === -1 ? 'bearish' : 'neutral',
+                            dtp_phase: dtpState.phase,
+                            dtp_phase_bars: dtpState.bars,
+                        });
+                    }
+                    previousDtpKey = dtpKey;
+                }
                 if (componentTokens.length && (hasTraceComponentFlags(trace?.component_flags) || eventTokens.length)) {
                     components.push({
                         ...common,
@@ -3654,10 +3820,14 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             return [
                 buildLifecycleLineSeries('Flow 上轨窗口', upperWindow, { color: 'rgba(248,113,113,0.78)', width: 4 }),
                 buildLifecycleLineSeries('Flow 下轨窗口', lowerWindow, { color: 'rgba(74,222,128,0.78)', width: 4 }),
+                buildDtpStateSeries('Flow DTP红', dtpRed, { color: 'rgba(251,113,133,0.82)', width: 5 }),
+                buildDtpStateSeries('Flow DTP蓝', dtpBlue, { color: 'rgba(56,189,248,0.82)', width: 5 }),
+                buildDtpStateSeries('Flow DTP中性', dtpNeutral, { color: 'rgba(148,163,184,0.66)', width: 4 }),
+                buildLifecycleScatterSeries('Flow DTP转换', dtpChanges, { color: '#FDE68A', symbol: 'diamond', symbolSize: 10, showLabel: showLabels, labelPosition: 'top', labelDistance: 7, labelFontSize: 9, shadowBlur: 8, shadowColor: 'rgba(253,230,138,0.18)', z: 12 }),
                 buildLifecycleScatterSeries('Flow 组件收集', components, { color: '#38BDF8', symbol: 'circle', symbolSize: 7, showLabel: false, labelPosition: 'top' }),
                 buildLifecycleScatterSeries('Flow 候选', candidates, { color: '#FBBF24', symbol: 'diamond', symbolSize: 10, showLabel: false, labelPosition: 'bottom', shadowBlur: 8, shadowColor: 'rgba(251,191,36,0.22)' }),
-                buildLifecycleScatterSeries('Flow 已过滤', blocked, { color: '#F97316', symbol: 'diamond', symbolSize: 12, showLabel: showLabels, labelPosition: 'bottom', shadowBlur: 10, shadowColor: 'rgba(249,115,22,0.26)' }),
-                buildLifecycleScatterSeries('Flow 已确认', confirmed, { color: '#22C55E', symbol: 'circle', symbolSize: 11, showLabel: showLabels, labelPosition: 'bottom', shadowBlur: 10, shadowColor: 'rgba(34,197,94,0.24)' }),
+                buildLifecycleScatterSeries('Flow 已过滤', blocked, { color: '#F97316', symbol: 'diamond', symbolSize: 12, showLabel: showLabels, labelPosition: 'top', labelDistance: 7, shadowBlur: 10, shadowColor: 'rgba(249,115,22,0.26)' }),
+                buildLifecycleScatterSeries('Flow 已确认', confirmed, { color: '#22C55E', symbol: 'circle', symbolSize: 11, showLabel: showLabels, labelPosition: 'top', labelDistance: 7, shadowBlur: 10, shadowColor: 'rgba(34,197,94,0.24)' }),
                 buildLifecycleScatterSeries('Flow 清空/过期', cleared, { color: '#94A3B8', symbol: 'pin', symbolRotate: 180, symbolSize: 10, showLabel: false }),
             ];
         }
@@ -3760,6 +3930,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 : 'No signal on this bar';
             const traceStage = getTraceStage(context?.trace);
             const traceText = traceStage ? formatTraceDecisionLabel(context?.trace, signal) : '';
+            const dtpState = context?.trace ? getTraceDtpState(context.trace) : null;
+            const dtpLabel = dtpState && (dtpState.phase || dtpState.dir) ? formatDtpStateLabel(dtpState) : '';
             return `
                 <div style="font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.75;min-width:240px;">
                     <div style="font-size:12px;font-weight:700;color:#E2EAF4;margin-bottom:6px;">${escapeHtml(bar.us_time || '--')}</div>
@@ -3769,6 +3941,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     <div style="margin-top:6px;color:#8BA4C4;">${isPreviewBar && !indicator ? 'EMA / VWAP 待收盘' : `EMA20 ${escapeHtml(formatPrice(indicator?.ema_fast))} · EMA50 ${escapeHtml(formatPrice(indicator?.ema_slow))}`}</div>
                     <div style="color:#8BA4C4;">${isPreviewBar && !indicator ? '指标待收盘确认' : `EMA100 ${escapeHtml(formatPrice(indicator?.ema_trend))} · VWAP ${escapeHtml(formatPrice(indicator?.vwap))}`}</div>
                     <div style="color:#8BA4C4;">${isPreviewBar && !indicator ? '预览 bar 仅 OHLC / Volume' : `CRSI ${escapeHtml(formatNumber(indicator?.crsi))} · OBV ${escapeHtml(formatNumber(indicator?.obv_rsi))} · ATR ${escapeHtml(formatPercent(indicator?.atr_pct))}`}</div>
+                    ${dtpLabel ? `<div style="margin-top:6px;color:${escapeHtml(getDtpStateColor(dtpState))};">${escapeHtml(dtpLabel)}</div>` : ''}
                     <div style="margin-top:6px;color:#8BA4C4;">${isPreviewBar && !indicator ? '收盘入库后补齐指标' : `SD ${escapeHtml(getSdZoneText(indicator?.sd_zone))} · ${escapeHtml(getSdTrendText(indicator?.sd_trend))} · Fractal ${escapeHtml(getFractalSummary(indicator))}`}</div>
                     <div style="color:#8BA4C4;">${isPreviewBar && !indicator ? 'Preview bar 仅用于盘中参考' : `Touch ${escapeHtml(getTouchSummary(indicator))} · Div ${escapeHtml(getDivergenceSummary(indicator, 6))}`}</div>
                     ${traceText ? `<div style="margin-top:6px;color:${traceStage === 'blocked' ? '#FDBA74' : traceStage === 'confirmed' ? '#86EFAC' : '#FDE68A'};">${escapeHtml(traceText)}</div>` : ''}
@@ -3991,35 +4164,35 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const compactChart = isCompactViewport();
             const chartGrids = compactChart
                 ? [
-                    { left: gridLeft, right: gridRight, top: 74, height: '36%' },
-                    { left: gridLeft, right: gridRight, top: '55.5%', height: '5.4%' },
-                    { left: gridLeft, right: gridRight, top: '64%', height: '9.8%' },
-                    { left: gridLeft, right: gridRight, top: '80%', height: '9.8%' },
+                    { left: gridLeft, right: gridRight, top: 74, height: '34%' },
+                    { left: gridLeft, right: gridRight, top: '52.5%', height: '9%' },
+                    { left: gridLeft, right: gridRight, top: '66%', height: '9.5%' },
+                    { left: gridLeft, right: gridRight, top: '81%', height: '9.2%' },
                 ]
                 : [
-                    { left: gridLeft, right: gridRight, top: 68, height: '42.5%' },
-                    { left: gridLeft, right: gridRight, top: '54.5%', height: '5.7%' },
-                    { left: gridLeft, right: gridRight, top: '63.5%', height: '10.5%' },
-                    { left: gridLeft, right: gridRight, top: '79%', height: '10.5%' },
+                    { left: gridLeft, right: gridRight, top: 68, height: '39.5%' },
+                    { left: gridLeft, right: gridRight, top: '51.5%', height: '10%' },
+                    { left: gridLeft, right: gridRight, top: '66%', height: '10.2%' },
+                    { left: gridLeft, right: gridRight, top: '81%', height: '9.5%' },
                 ];
             const subplotTitles = [
                 {
                     text: chartLayerState.lifecycle ? 'Signal Flow' : 'Signal Flow Hidden',
-                    subtext: '线=SD窗口，点=组件，菱形=过滤/候选，圆点=确认',
+                    subtext: '',
                     left: gridLeft,
-                    top: compactChart ? '53.8%' : '52.8%',
+                    top: compactChart ? '50.9%' : '49.9%',
                 },
                 {
                     text: 'CRSI / OBV RSI',
                     subtext: '优先展示 cRSI 动态带，80 / 20 仅作弱参考',
                     left: gridLeft,
-                    top: compactChart ? '62.7%' : '62.2%',
+                    top: compactChart ? '64.7%' : '64.7%',
                 },
                 {
                     text: chartLayerState.volume ? '成交量 / ATR%' : 'ATR%',
                     subtext: chartLayerState.volume ? '柱体=成交量，折线=ATR%' : '当前只显示 ATR% 折线',
                     left: gridLeft,
-                    top: compactChart ? '78.6%' : '77.8%',
+                    top: compactChart ? '79.7%' : '79.7%',
                 }
             ];
             const focusMarkPoint = buildFocusMarkPointConfig(focus?.index ?? -1, displayPayload);
@@ -4378,17 +4551,20 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     },
                     {
                         gridIndex: 1,
-                        min: 0,
-                        max: 4,
-                        splitLine: { lineStyle: { color: 'rgba(99,179,237,0.045)' } },
+                        min: -0.2,
+                        max: 4.45,
+                        interval: 1,
+                        splitLine: { lineStyle: { color: 'rgba(99,179,237,0.05)' } },
                         axisTick: { show: false },
                         axisLine: { show: false },
                         axisLabel: {
                             color: '#8BA4C4',
                             fontSize: 9,
+                            margin: 12,
                             formatter(value) {
-                                const num = Number(value);
-                                if (num === 3) return 'SD';
+                                const num = Math.round(Number(value));
+                                if (num === 4) return '窗口';
+                                if (num === 3) return 'DTP';
                                 if (num === 2) return '组件';
                                 if (num === 1) return '决策';
                                 return '';

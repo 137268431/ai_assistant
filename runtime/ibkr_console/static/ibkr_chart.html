@@ -9,6 +9,7 @@
     <script>document.write(getCommonStyles());</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
     <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.css">
     <link rel="stylesheet" href="/assets/css/pages/ibkr_chart/page.css">
 </head>
 <body>
@@ -43,9 +44,9 @@
                             <div class="range-group" id="rangeGroup"></div>
                         </div>
                         <div class="custom-range-form" id="customRangeForm" hidden>
-                            <input id="customRangeStart" class="custom-range-input" type="datetime-local" aria-label="自定义开始时间">
+                            <input id="customRangeStart" class="custom-range-input" type="text" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD HH:mm" aria-label="自定义开始时间">
                             <span class="custom-range-separator">→</span>
-                            <input id="customRangeEnd" class="custom-range-input" type="datetime-local" aria-label="自定义结束时间">
+                            <input id="customRangeEnd" class="custom-range-input" type="text" inputmode="numeric" autocomplete="off" placeholder="YYYY/MM/DD HH:mm" aria-label="自定义结束时间">
                             <span class="custom-range-zone" title="自定义时间按美东时间筛选">ET</span>
                             <button class="toolbar-btn custom-range-apply" type="button" onclick="applyCustomChartRange()">应用</button>
                         </div>
@@ -154,6 +155,8 @@
 
     <div id="nav"></div>
 
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/l10n/zh.js"></script>
     <script src="/assets/js/pages/ibkr_chart/page.js"></script>
 </body>
 </html>
