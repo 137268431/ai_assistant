@@ -46,14 +46,13 @@ def build_runtime_timeline(
         else None
     )
 
-    sorted_bars = sorted(
-        (
-            _normalize_bar(bar)
-            for bar in (bars or [])
-            if int((bar or {}).get("bar_time_ms", 0) or 0) > 0
-        ),
-        key=lambda item: int(item.get("bar_time_ms", 0) or 0),
-    )
+    bars_by_ms: dict[int, dict[str, Any]] = {}
+    for raw_bar in bars or []:
+        bar_ms = int((raw_bar or {}).get("bar_time_ms", 0) or 0)
+        if bar_ms <= 0:
+            continue
+        bars_by_ms[bar_ms] = _normalize_bar(raw_bar)
+    sorted_bars = [bars_by_ms[bar_ms] for bar_ms in sorted(bars_by_ms)]
 
     rows = []
     previous_day = ""

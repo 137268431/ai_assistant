@@ -1045,11 +1045,14 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             }
             const previewBarTimeMs = Number(formingBarSnapshot.bar_time_ms || 0);
             const latestFormalBarMs = Number(baseBars[baseBars.length - 1]?.bar_time_ms || 0);
-            if (!previewBarTimeMs || (latestFormalBarMs && previewBarTimeMs <= latestFormalBarMs)) {
+            if (!previewBarTimeMs || (latestFormalBarMs && previewBarTimeMs < latestFormalBarMs)) {
                 return payload;
             }
 
+            const matchedBarIndex = baseBars.findIndex((bar) => Number(bar?.bar_time_ms || 0) === previewBarTimeMs);
+            const baseBar = matchedBarIndex >= 0 ? baseBars[matchedBarIndex] : null;
             const previewBar = {
+                ...(baseBar || {}),
                 ...formingBarSnapshot,
                 symbol: formingBarSnapshot?.symbol || currentSymbol || '',
                 preview: true,
@@ -1072,9 +1075,15 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 previewBar.low = Math.min(previewLow || previewOpen || previewClose, previewOpen, previewClose);
             }
             previewBar.volume = Number(previewBar.volume || 0);
+            const nextBars = baseBars.slice();
+            if (matchedBarIndex >= 0) {
+                nextBars[matchedBarIndex] = previewBar;
+            } else {
+                nextBars.push(previewBar);
+            }
             return {
                 ...payload,
-                bars: [...baseBars, previewBar],
+                bars: nextBars,
                 preview_bar: previewBar,
             };
         }
@@ -3429,11 +3438,12 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         function renderChart(payload) {
             const displayPayload = buildChartDisplayPayload(payload);
             chartDisplayPayload = displayPayload || payload || null;
+            const chartSeriesPayload = displayPayload || payload || {};
             const bars = Array.isArray(displayPayload?.bars) ? displayPayload.bars.slice() : [];
             const formalBars = Array.isArray(payload?.bars) ? payload.bars.slice() : [];
-            const indicators = Array.isArray(payload?.indicators) ? payload.indicators.slice() : [];
-            const signals = Array.isArray(payload?.signals) ? payload.signals.slice() : [];
-            const latest = payload?.latestIndicator || null;
+            const indicators = Array.isArray(chartSeriesPayload?.indicators) ? chartSeriesPayload.indicators.slice() : [];
+            const signals = Array.isArray(chartSeriesPayload?.signals) ? chartSeriesPayload.signals.slice() : [];
+            const latest = chartSeriesPayload?.latestIndicator || null;
             const canvas = document.getElementById('chartCanvas');
             const note = document.getElementById('chartNote');
 

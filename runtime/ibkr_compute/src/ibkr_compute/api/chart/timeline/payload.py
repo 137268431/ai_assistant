@@ -113,6 +113,8 @@ def build_chart_timeline_payload_from_source(
             "low": round(float(row.get("low", 0) or 0), 4),
             "close": round(float(row.get("close", 0) or 0), 4),
             "volume": round(float(row.get("volume", 0) or 0), 4),
+            "preview": bool(row.get("preview") or row.get("is_preview")),
+            "is_preview": bool(row.get("preview") or row.get("is_preview")),
         }
         for row in timeline_rows
     ]
@@ -222,8 +224,14 @@ def build_chart_timeline_payload(
         chart_freshness = {"status": "unknown", "error": str(exc), "symbol": normalized_symbol, "environment": runtime_environment}
         repair_meta = {"queued": False, "status": "error", "error": str(exc)}
     if normalized_preview_bar:
+        source_rows_by_ms = {
+            int((row or {}).get("bar_time_ms", 0) or 0): dict(row)
+            for row in (source.get("source_rows") or [])
+            if int((row or {}).get("bar_time_ms", 0) or 0) > 0
+        }
+        source_rows_by_ms[int(normalized_preview_bar.get("bar_time_ms", 0) or 0)] = normalized_preview_bar
         source = build_chart_source_window_from_rows(
-            (source.get("source_rows") or []) + [normalized_preview_bar],
+            source_rows_by_ms.values(),
             normalized_interval,
             start_ms=start_ms,
             end_ms=effective_end_ms,

@@ -1559,6 +1559,55 @@
       align-items: flex-start;
     }
 
+    .window-component-groups {
+      display: grid;
+      gap: 7px;
+      min-width: 0;
+    }
+
+    .window-component-group {
+      display: grid;
+      gap: 5px;
+      min-width: 0;
+      padding-bottom: 7px;
+      border-bottom: 1px solid rgba(147, 197, 253, 0.1);
+    }
+
+    .window-component-group:last-child {
+      padding-bottom: 0;
+      border-bottom: 0;
+    }
+
+    .window-component-group-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .window-component-group-title {
+      min-width: 0;
+      overflow-wrap: anywhere;
+      color: var(--screen-text);
+      font-size: 10.5px;
+      line-height: 1.25;
+      font-weight: 750;
+    }
+
+    .window-component-group-progress {
+      flex: 0 0 auto;
+      color: var(--screen-accent-2);
+      font-family: var(--screen-mono-font);
+      font-size: 10px;
+      line-height: 1.2;
+      font-weight: 700;
+    }
+
+    .window-component-group.ready .window-component-group-progress {
+      color: var(--screen-good);
+    }
+
     .window-progress-card .mobile-section-copy,
     .window-progress-card .mobile-metric-value {
       min-width: 0;

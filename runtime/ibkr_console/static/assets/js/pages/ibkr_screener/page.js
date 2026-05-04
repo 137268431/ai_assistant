@@ -1331,6 +1331,88 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       return `<div class="reason-wrap window-progress-pill-wrap">${items.slice(0, 8).map((item) => `<span class="reason-pill">${escapeHtml(item)}</span>`).join('')}</div>`;
     }
 
+    const WINDOW_COMPONENT_GROUP_ORDER = ['type1_long_trend', 'type3_short_mr', 'type2_long_mr', 'type4_short_trend'];
+    const WINDOW_COMPONENT_GROUP_LABELS = {
+      type1_long_trend: 'Type1 顺势多',
+      type2_long_mr: 'Type2 回归多',
+      type3_short_mr: 'Type3 回归空',
+      type4_short_trend: 'Type4 顺势空',
+    };
+
+    function toFiniteNumber(value, fallback = NaN) {
+      if (value === undefined || value === null || value === '') return fallback;
+      const numberValue = Number(value);
+      return Number.isFinite(numberValue) ? numberValue : fallback;
+    }
+
+    function getWindowComponentGroups(row) {
+      const source = row?.component_groups && typeof row.component_groups === 'object'
+        ? row.component_groups
+        : (row?.component_detail && typeof row.component_detail === 'object' ? row.component_detail : {});
+      const sourceKeys = Object.keys(source || {});
+      if (!sourceKeys.length) return [];
+      const orderedKeys = [
+        ...WINDOW_COMPONENT_GROUP_ORDER,
+        ...sourceKeys.filter((key) => !WINDOW_COMPONENT_GROUP_ORDER.includes(key)),
+      ];
+      const seen = new Set();
+      return orderedKeys.map((key) => {
+        if (seen.has(key)) return null;
+        seen.add(key);
+        const group = source[key];
+        if (!group || typeof group !== 'object') return null;
+        const active = group.active === true || String(group.active || '').trim().toLowerCase() === 'true';
+        if (!active) return null;
+        const present = normalizeWindowProgressList(group.present_labels ?? group.collected_labels ?? group.ready_labels ?? group.present ?? group.collected ?? group.ready);
+        const missing = normalizeWindowProgressList(group.missing_labels ?? group.missing);
+        const completed = toFiniteNumber(group.completed, present.length);
+        const total = toFiniteNumber(group.total, Math.max(completed + missing.length, present.length + missing.length));
+        const progress = toFiniteNumber(group.progress, total > 0 ? completed / total : NaN);
+        return {
+          key,
+          label: group.label || WINDOW_COMPONENT_GROUP_LABELS[key] || key,
+          present,
+          missing,
+          completed,
+          total,
+          progress,
+          ready: Boolean(group.ready) || (total > 0 && completed >= total),
+        };
+      }).filter(Boolean);
+    }
+
+    function formatWindowComponentGroupProgress(group) {
+      if (Number.isFinite(group?.completed) && Number.isFinite(group?.total) && group.total > 0) {
+        return `${formatWindowProgressCount(group.completed)}/${formatWindowProgressCount(group.total)}`;
+      }
+      if (Number.isFinite(group?.progress)) {
+        return `${formatNumber((group.progress <= 1 ? group.progress * 100 : group.progress), 0)}%`;
+      }
+      return '--';
+    }
+
+    function buildWindowComponentGroupColumn(row, kind, fallbackValue, emptyText = '--') {
+      const groups = getWindowComponentGroups(row);
+      if (!groups.length) return buildWindowListPills(fallbackValue, emptyText);
+      return `
+        <div class="window-component-groups">
+          ${groups.map((group) => {
+            const items = kind === 'missing' ? group.missing : group.present;
+            const groupEmptyText = kind === 'missing' && group.ready ? '已完成' : emptyText;
+            return `
+              <div class="window-component-group ${group.ready ? 'ready' : ''}" data-component-group="${escapeHtml(group.key)}">
+                <div class="window-component-group-head">
+                  <span class="window-component-group-title">${escapeHtml(group.label)}</span>
+                  <span class="window-component-group-progress">${escapeHtml(formatWindowComponentGroupProgress(group))}</span>
+                </div>
+                ${buildWindowListPills(items, groupEmptyText)}
+              </div>
+            `;
+          }).join('')}
+        </div>
+      `;
+    }
+
     function formatWindowSide(row, side) {
       const prefix = side === 'upper' ? 'upper' : 'lower';
       const windowData = row?.[`${prefix}_window`] && typeof row[`${prefix}_window`] === 'object' ? row[`${prefix}_window`] : {};
@@ -1429,8 +1511,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
               ${buildMobileMetricCard('下轨窗口', formatWindowSide(row, 'lower'))}
             </div>
 
-            ${buildMobileSection('已收集组件', buildWindowListPills(collected, '暂无'))}
-            ${buildMobileSection('缺失组件', buildWindowListPills(missing, '无缺失'))}
+            ${buildMobileSection('已收集组件', buildWindowComponentGroupColumn(row, 'present', collected, '暂无'))}
+            ${buildMobileSection('缺失组件', buildWindowComponentGroupColumn(row, 'missing', missing, '无缺失'))}
             ${buildMobileSection('候选信号', escapeHtml(getWindowCandidateLabel(row)))}
             ${buildMobileSection('过滤原因', buildWindowListPills(filterReasons, '未触发过滤'))}
 
@@ -1496,8 +1578,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
               <span class="mono">${escapeHtml(formatWindowProgressCount(barsRemaining))}</span><br>
               <span class="muted">progress ${escapeHtml(formatWindowComponentProgress(row))}</span>
             </td>
-            <td>${buildWindowListPills(collected, '暂无')}</td>
-            <td>${buildWindowListPills(missing, '无缺失')}</td>
+            <td>${buildWindowComponentGroupColumn(row, 'present', collected, '暂无')}</td>
+            <td>${buildWindowComponentGroupColumn(row, 'missing', missing, '无缺失')}</td>
             <td>${escapeHtml(getWindowCandidateLabel(row))}</td>
             <td>${buildWindowListPills(filterReasons, '未触发过滤')}</td>
             <td>
