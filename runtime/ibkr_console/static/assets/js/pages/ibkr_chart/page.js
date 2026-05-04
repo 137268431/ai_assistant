@@ -69,8 +69,16 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             emaTouch: true,
             divergence: true,
             tradeSignals: true,
+            lifecycle: true,
             volume: true,
         };
+        const SIGNAL_LIFECYCLE_Y = Object.freeze({
+            upperWindow: 3.32,
+            lowerWindow: 2.92,
+            component: 2.05,
+            decision: 1.05,
+            cleared: 0.35,
+        });
         const CHART_REALTIME_WARN_INTERVAL_MS = 60 * 1000;
         const chartRealtimeWarnState = {
             quote: { key: '', at: 0 },
@@ -428,6 +436,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 { key: 'emaTouch', label: 'EMA Touch', shortLabel: 'Touch', disabled: false, swatches: ['#00C853', '#D50000'], description: 'EMA touch 多空提示' },
                 { key: 'divergence', label: 'Divergence', shortLabel: 'Div', disabled: false, swatches: ['#2196F3', '#9C27B0'], description: '背离提示标记' },
                 { key: 'tradeSignals', label: 'Trade Signals', shortLabel: 'Signal', disabled: !isTradeSignalInterval(), swatches: ['#48BB78', '#FC8181'], description: '多空交易信号' },
+                { key: 'lifecycle', label: 'Signal Flow', shortLabel: 'Flow', disabled: !isTradeSignalInterval(), swatches: ['#4ADE80', '#F97316', '#38BDF8'], description: 'SD窗口、组件收集、候选/过滤/确认生命周期' },
                 { key: 'volume', label: 'Volume', shortLabel: 'Vol', disabled: false, swatches: ['#38BDF8'], description: '成交量柱体' },
             ].filter((item) => !item.disabled);
         }
@@ -617,12 +626,64 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             return signalState && typeof signalState.signal_payload === 'object' ? signalState.signal_payload : null;
         }
 
+        function getTraceSignalKey(trace) {
+            const signal = getTraceSignalPayload(trace);
+            const signalState = getTraceSignalState(trace);
+            const barMs = Number(trace?.bar_time_ms || 0) || 0;
+            return String(
+                signal?.signal_id
+                || signal?.id
+                || signalState?.signal_id
+                || (barMs ? `trace:${barMs}` : '')
+            );
+        }
+
+        function getTraceStage(trace) {
+            return String(getTraceSignalState(trace)?.stage || '').trim().toLowerCase();
+        }
+
+        function getTraceDirection(trace) {
+            const signalState = getTraceSignalState(trace);
+            return String(signalState.direction || signalState.signal_payload?.direction || '').trim().toLowerCase();
+        }
+
+        function cleanTraceReasonText(text) {
+            return String(text || '')
+                .replace(/^(多头|空头)?候选被过滤[:：]\s*/, '')
+                .replace(/^(多头|空头)?过滤[:：]\s*/, '')
+                .trim();
+        }
+
+        function getTraceFilterReason(trace) {
+            const signalState = getTraceSignalState(trace);
+            const direct = cleanTraceReasonText(signalState.filter_reason || '');
+            if (direct) return direct;
+            const filters = Array.isArray(trace?.filters) ? trace.filters : [];
+            const filterMatch = filters.map(cleanTraceReasonText).find((text) => text && !/^未触发/.test(text));
+            if (filterMatch) return filterMatch;
+            const events = Array.isArray(trace?.event_chain) ? trace.event_chain : [];
+            const eventMatch = events
+                .map((text) => {
+                    const match = String(text || '').match(/候选被过滤[:：]\s*(.+)$/);
+                    return cleanTraceReasonText(match?.[1] || '');
+                })
+                .find(Boolean);
+            return eventMatch || '';
+        }
+
+        function formatTraceDecisionLabel(trace, fallbackSignal = null) {
+            const stage = getTraceStage(trace);
+            const reason = getTraceFilterReason(trace);
+            if (stage === 'blocked') return `blocked · ${reason || buildTraceDecisionLabel(trace, fallbackSignal)}`;
+            return buildTraceDecisionLabel(trace, fallbackSignal);
+        }
+
         function getDecisionSignalContext(context) {
             if (!context) return { signal: null, traceSignal: null, signalState: {} };
             const signalState = getTraceSignalState(context.trace);
             const traceSignal = getTraceSignalPayload(context.trace);
             return {
-                signal: context.activeSignal || null,
+                signal: context.activeSignal || context.activeTraceSignal || null,
                 traceSignal,
                 signalState,
             };
@@ -1635,6 +1696,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 || null;
             const exactIndicator = indicatorMap.get(Number(bar?.bar_time_ms || 0)) || null;
             const exactTrace = traceMap.get(Number(bar?.bar_time_ms || 0)) || null;
+            const traceSignal = getTraceSignalPayload(exactTrace);
+            const traceSignalKey = getTraceSignalKey(exactTrace);
             const isPreviewBar = Boolean(bar?.preview || bar?.is_preview);
             return {
                 index: safeIndex,
@@ -1643,6 +1706,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 indicator: exactIndicator || (isPreviewBar ? null : payload?.latestIndicator || null),
                 signalMatches,
                 activeSignal,
+                activeTraceSignal: traceSignalKey && String(signalId || '') === traceSignalKey ? traceSignal : null,
                 trace: exactTrace,
             };
         }
@@ -1799,8 +1863,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const compact = isCompactViewport();
             const signalLabel = signal ? buildTradeSignalLabel(signal) : (isTradeSignalInterval() ? 'No trade signal' : 'Labels 仅 5m');
             const decisionSignal = getDecisionSignalContext(context);
-            const traceStage = String(decisionSignal.signalState?.stage || '').trim().toLowerCase();
-            const traceLabel = buildTraceDecisionLabel(context?.trace, signal || decisionSignal.traceSignal);
+            const traceStage = getTraceStage(context?.trace);
+            const traceLabel = formatTraceDecisionLabel(context?.trace, signal || decisionSignal.traceSignal);
             const summaryTime = compact ? String(bar?.us_time || '--').slice(5) : (bar?.us_time || '--');
             const summaryPills = [
                 buildFloatingLegendChip(`${currentSymbol || '--'} · ${getIntervalLabel(currentInterval)}`, '当前查看的标的与周期。', 'brand'),
@@ -2178,9 +2242,9 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     tableHtml: '<div class="trace-empty">当前窗口暂无可展示的 trace 记录。</div>',
                 };
             }
-            const candidateCount = traceRows.filter((item) => String(item?.signal_state?.stage || '') === 'candidate').length;
-            const blockedCount = traceRows.filter((item) => String(item?.signal_state?.stage || '') === 'blocked').length;
-            const confirmedCount = traceRows.filter((item) => String(item?.signal_state?.stage || '') === 'confirmed').length;
+            const candidateCount = traceRows.filter((item) => getTraceStage(item) === 'candidate').length;
+            const blockedCount = traceRows.filter((item) => getTraceStage(item) === 'blocked').length;
+            const confirmedCount = traceRows.filter((item) => getTraceStage(item) === 'confirmed').length;
             const chips = [
                 buildTraceToken(`${traceRows.length} bars`),
                 buildTraceToken(`${confirmedCount} confirmed`, confirmedCount ? 'positive' : ''),
@@ -2190,7 +2254,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             ].filter(Boolean);
             const rowsHtml = traceRows.map((item) => {
                 const barTimeMs = Number(item?.bar_time_ms || 0) || 0;
-                const stage = String(item?.signal_state?.stage || '').trim().toLowerCase();
+                const stage = getTraceStage(item);
                 const active = activeBarMs > 0 && activeBarMs === barTimeMs;
                 const isPreview = Boolean(item?.is_preview);
                 const structure = [
@@ -2218,7 +2282,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 const filters = Array.isArray(item?.filters) && item.filters.length
                     ? item.filters.slice(0, embedded ? 2 : 3)
                     : ['未触发过滤'];
-                const signalLabel = buildTraceDecisionLabel(item, null);
+                const signalLabel = formatTraceDecisionLabel(item, null);
                 return `
                     <tr class="${active ? 'active ' : ''}${isPreview ? 'preview' : ''}" data-trace-bar-ms="${barTimeMs}" onclick="focusTraceBar('${barTimeMs}')">
                         <td>
@@ -2345,8 +2409,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const isPreviewBar = Boolean(context?.isPreviewBar);
             const decisionSignal = getDecisionSignalContext(context);
             const signal = decisionSignal.signal || decisionSignal.traceSignal || null;
-            const traceLabel = buildTraceDecisionLabel(context?.trace, signal);
-            const traceStage = String(decisionSignal.signalState?.stage || '').trim().toLowerCase();
+            const traceLabel = formatTraceDecisionLabel(context?.trace, signal);
+            const traceStage = getTraceStage(context?.trace);
             const compareRow = getCompareRowByBarTime(bar?.bar_time_ms);
             if (comparePayload && compareRow) {
                 const storedBar = formatInlineOHLC(compareRow?.stored?.bar);
@@ -2368,9 +2432,9 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const ohlc = formatInlineOHLC(bar);
             const chain = formatInlineChain(indicator);
             const cursorState = chartPointerLocked ? 'Locked cursor' : (hoverBarIndex >= 0 ? 'Hover cursor' : 'Latest focus');
-            const signalPrimary = signal
+            const signalPrimary = traceStage
                 ? traceLabel
-                : (isTradeSignalInterval() ? '暂无信号' : '标签仅 5m');
+                : (signal ? traceLabel : (isTradeSignalInterval() ? '暂无信号' : '标签仅 5m'));
             const signalSecondary = indicator
                 ? `CRSI ${formatNumber(indicator.crsi)} · OBV ${formatNumber(indicator.obv_rsi)} · ATR ${formatPercent(indicator.atr_pct)}`
                 : (isPreviewBar ? '预览 bar 收盘后生成 Osc 指标' : '--');
@@ -2923,7 +2987,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const orderDetailsUrl = buildOrderDetailsUrl(focusSignal, focusDate);
             const accountUrl = buildPageUrl('/ibkr_account.html', {}, { environment: currentEnvironment });
             const compareRow = getCompareRowByBarTime(focusBar?.bar_time_ms);
-            const focusTraceLabel = buildTraceDecisionLabel(focus?.trace, focusSignal || focusTraceSignal);
+            const focusTraceLabel = formatTraceDecisionLabel(focus?.trace, focusSignal || focusTraceSignal);
 
             if (comparePayload) {
                 const compareSummary = comparePayload?.comparison?.summary || {};
@@ -3307,6 +3371,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     itemStyle: { color },
                     name: buildTradeSignalLabel(signal),
                     signal_id: signal.signal_id || '',
+                    bar_index: xIndex,
+                    bar_time_ms: barMs,
                     labelText: typeof labelBuilder === 'function' ? String(labelBuilder(signal) || '') : '',
                 };
             }).filter(Boolean);
@@ -3320,7 +3386,249 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 if (!Number.isFinite(yValue) || yValue <= 0) return null;
                 return {
                     value: [index, yValue],
+                    bar_index: index,
+                    bar_time_ms: Number(bar?.bar_time_ms || 0),
                     labelText: typeof labelBuilder === 'function' ? String(labelBuilder(indicator, bar, index) || '') : '',
+                };
+            }).filter(Boolean);
+        }
+
+        function hasTraceComponentFlags(flags) {
+            if (!flags || typeof flags !== 'object') return false;
+            return Object.keys(flags).some((key) => Boolean(flags[key]));
+        }
+
+        function getTraceComponentTokens(trace) {
+            const flags = trace?.component_flags && typeof trace.component_flags === 'object' ? trace.component_flags : {};
+            const tokens = [];
+            if (flags.sd_upper_bull_touch_seen) tokens.push('上轨E多');
+            if (flags.sd_lower_bear_touch_seen) tokens.push('下轨E空');
+            if (flags.sd_upper_bull_fractal_seen) tokens.push('上F多');
+            if (flags.sd_lower_bull_fractal_seen) tokens.push('下F多');
+            if (flags.sd_upper_bear_fractal_seen) tokens.push('上F空');
+            if (flags.sd_lower_bear_fractal_seen) tokens.push('下F空');
+            if (flags.bull_crsi_div_seen) tokens.push('c多背');
+            if (flags.bull_obv_div_seen) tokens.push('o多背');
+            if (flags.bear_crsi_div_seen) tokens.push('c空背');
+            if (flags.bear_obv_div_seen) tokens.push('o空背');
+            if (flags.buy_raw) tokens.push('多候选');
+            if (flags.sell_raw) tokens.push('空候选');
+            return tokens;
+        }
+
+        function getTraceEventTokens(trace) {
+            const events = Array.isArray(trace?.event_chain) ? trace.event_chain : [];
+            const tokens = [];
+            events.forEach((event) => {
+                const text = String(event || '');
+                if (/SD下轨触发/.test(text)) tokens.push('开下轨');
+                if (/SD上轨触发/.test(text)) tokens.push('开上轨');
+                if (/EMA 多头触及/.test(text)) tokens.push('E多');
+                if (/EMA 空头触及/.test(text)) tokens.push('E空');
+                if (/多头分形/.test(text)) tokens.push('F多');
+                if (/空头分形/.test(text)) tokens.push('F空');
+                if (/cRSI 多头背离/.test(text)) tokens.push('c多背');
+                if (/cRSI 空头背离/.test(text)) tokens.push('c空背');
+                if (/OBV 多头背离/.test(text)) tokens.push('o多背');
+                if (/OBV 空头背离/.test(text)) tokens.push('o空背');
+                if (/清空|消费|超过/.test(text)) tokens.push('清空');
+            });
+            return Array.from(new Set(tokens));
+        }
+
+        function getTraceFlowTokens(trace, maxItems = 4) {
+            const tokens = Array.from(new Set([
+                ...getTraceEventTokens(trace),
+                ...getTraceComponentTokens(trace),
+            ]));
+            if (!tokens.length) return [];
+            if (tokens.length <= maxItems) return tokens;
+            return [...tokens.slice(0, maxItems), `+${tokens.length - maxItems}`];
+        }
+
+        function buildLifecycleLineSeries(name, data, options = {}) {
+            const color = options.color || '#7DD3FC';
+            return {
+                name,
+                type: 'line',
+                xAxisIndex: 1,
+                yAxisIndex: 1,
+                data,
+                symbol: 'none',
+                connectNulls: false,
+                smooth: false,
+                silent: true,
+                z: Number(options.z || 5),
+                tooltip: { show: false },
+                lineStyle: {
+                    width: Number(options.width || 5),
+                    color,
+                    opacity: Number(options.opacity ?? 0.86),
+                    cap: 'round',
+                },
+                emphasis: { disabled: true },
+            };
+        }
+
+        function buildLifecycleScatterSeries(name, data, options = {}) {
+            const color = options.color || '#7DD3FC';
+            const showLabel = Boolean(options.showLabel);
+            return {
+                name,
+                type: 'scatter',
+                xAxisIndex: 1,
+                yAxisIndex: 1,
+                data,
+                symbol: options.symbol || 'circle',
+                symbolSize: Number(options.symbolSize || 8),
+                symbolRotate: Number(options.symbolRotate || 0),
+                z: Number(options.z || 10),
+                tooltip: { show: false },
+                label: {
+                    show: showLabel,
+                    formatter(params) {
+                        return params?.data?.labelText || '';
+                    },
+                    position: options.labelPosition || 'right',
+                    distance: Number(options.labelDistance ?? 5),
+                    color: options.labelColor || color,
+                    fontSize: Number(options.labelFontSize || 10),
+                    fontWeight: 700,
+                    fontFamily: 'JetBrains Mono, monospace',
+                    backgroundColor: showLabel ? 'rgba(8,12,20,0.88)' : 'transparent',
+                    borderColor: color,
+                    borderWidth: showLabel ? 1 : 0,
+                    borderRadius: 6,
+                    padding: showLabel ? [2, 5] : 0,
+                },
+                labelLayout: {
+                    hideOverlap: true,
+                    moveOverlap: 'shiftY',
+                },
+                itemStyle: {
+                    color,
+                    borderColor: options.borderColor || 'rgba(8,12,20,0.96)',
+                    borderWidth: Number(options.borderWidth ?? 1.2),
+                    shadowBlur: Number(options.shadowBlur || 0),
+                    shadowColor: options.shadowColor || 'transparent',
+                },
+                emphasis: {
+                    scale: 1.08,
+                },
+            };
+        }
+
+        function buildSignalLifecycleSeries(traceTimeline, bars, { showLabels = true } = {}) {
+            const indexByMs = new Map(bars.map((bar, index) => [Number(bar?.bar_time_ms || 0), index]));
+            const upperWindow = bars.map(() => null);
+            const lowerWindow = bars.map(() => null);
+            const components = [];
+            const candidates = [];
+            const blocked = [];
+            const confirmed = [];
+            const cleared = [];
+            traceTimeline.forEach((trace) => {
+                const barMs = Number(trace?.bar_time_ms || 0);
+                const index = indexByMs.get(barMs);
+                if (!Number.isInteger(index)) return;
+                const flags = trace?.window_flags && typeof trace.window_flags === 'object' ? trace.window_flags : {};
+                if (flags.sd_upper_valid || flags.sd_upper_active) upperWindow[index] = SIGNAL_LIFECYCLE_Y.upperWindow;
+                if (flags.sd_lower_valid || flags.sd_lower_active) lowerWindow[index] = SIGNAL_LIFECYCLE_Y.lowerWindow;
+
+                const eventTokens = getTraceEventTokens(trace);
+                const componentTokens = getTraceFlowTokens(trace, 5);
+                const common = {
+                    bar_index: index,
+                    bar_time_ms: barMs,
+                    us_time: trace?.us_time || '',
+                };
+                if (componentTokens.length && (hasTraceComponentFlags(trace?.component_flags) || eventTokens.length)) {
+                    components.push({
+                        ...common,
+                        value: [index, SIGNAL_LIFECYCLE_Y.component],
+                        labelText: componentTokens.join(' '),
+                        name: componentTokens.join(' / '),
+                    });
+                }
+
+                const stage = getTraceStage(trace);
+                const direction = getTraceDirection(trace);
+                const reason = getTraceFilterReason(trace);
+                const label = formatTraceDecisionLabel(trace, null);
+                if (stage === 'blocked') {
+                    blocked.push({
+                        ...common,
+                        value: [index, SIGNAL_LIFECYCLE_Y.decision],
+                        labelText: reason || 'blocked',
+                        name: label,
+                        signal_id: getTraceSignalKey(trace),
+                        direction,
+                    });
+                } else if (stage === 'confirmed') {
+                    confirmed.push({
+                        ...common,
+                        value: [index, SIGNAL_LIFECYCLE_Y.decision],
+                        labelText: direction === 'short' ? '确认空' : '确认多',
+                        name: label,
+                        signal_id: getTraceSignalKey(trace),
+                        direction,
+                    });
+                } else if (stage === 'candidate') {
+                    candidates.push({
+                        ...common,
+                        value: [index, SIGNAL_LIFECYCLE_Y.decision],
+                        labelText: direction === 'short' ? '候选空' : '候选多',
+                        name: label,
+                        signal_id: getTraceSignalKey(trace),
+                        direction,
+                    });
+                }
+
+                if (eventTokens.some((token) => token === '清空')) {
+                    cleared.push({
+                        ...common,
+                        value: [index, SIGNAL_LIFECYCLE_Y.cleared],
+                        labelText: '清空',
+                        name: getTraceEventTokens(trace).join(' / '),
+                    });
+                }
+            });
+            return [
+                buildLifecycleLineSeries('Flow 上轨窗口', upperWindow, { color: 'rgba(248,113,113,0.78)', width: 4 }),
+                buildLifecycleLineSeries('Flow 下轨窗口', lowerWindow, { color: 'rgba(74,222,128,0.78)', width: 4 }),
+                buildLifecycleScatterSeries('Flow 组件收集', components, { color: '#38BDF8', symbol: 'circle', symbolSize: 7, showLabel: showLabels, labelPosition: 'top' }),
+                buildLifecycleScatterSeries('Flow 候选', candidates, { color: '#FBBF24', symbol: 'diamond', symbolSize: 10, showLabel: showLabels, labelPosition: 'bottom', shadowBlur: 8, shadowColor: 'rgba(251,191,36,0.22)' }),
+                buildLifecycleScatterSeries('Flow 已过滤', blocked, { color: '#F97316', symbol: 'diamond', symbolSize: 12, showLabel: showLabels, labelPosition: 'bottom', shadowBlur: 10, shadowColor: 'rgba(249,115,22,0.26)' }),
+                buildLifecycleScatterSeries('Flow 已确认', confirmed, { color: '#22C55E', symbol: 'circle', symbolSize: 11, showLabel: showLabels, labelPosition: 'bottom', shadowBlur: 10, shadowColor: 'rgba(34,197,94,0.24)' }),
+                buildLifecycleScatterSeries('Flow 清空/过期', cleared, { color: '#94A3B8', symbol: 'pin', symbolRotate: 180, symbolSize: 10, showLabel: false }),
+            ];
+        }
+
+        function buildBlockedTraceMarkers(traceTimeline, bars, indicatorMap, markerOffset) {
+            const indexByMs = new Map(bars.map((bar, index) => [Number(bar?.bar_time_ms || 0), index]));
+            return traceTimeline.map((trace) => {
+                if (getTraceStage(trace) !== 'blocked') return null;
+                const barMs = Number(trace?.bar_time_ms || 0);
+                const index = indexByMs.get(barMs);
+                if (!Number.isInteger(index)) return null;
+                const bar = bars[index] || null;
+                if (!bar) return null;
+                const indicator = indicatorMap.get(barMs) || {};
+                const direction = getTraceDirection(trace);
+                const below = direction !== 'short';
+                const yValue = below
+                    ? Number(bar.low || 0) - markerOffset(indicator, bar, 4.2)
+                    : Number(bar.high || 0) + markerOffset(indicator, bar, 4.2);
+                if (!Number.isFinite(yValue) || yValue <= 0) return null;
+                const reason = getTraceFilterReason(trace);
+                return {
+                    value: [index, yValue],
+                    bar_index: index,
+                    bar_time_ms: barMs,
+                    labelText: reason || 'blocked',
+                    name: formatTraceDecisionLabel(trace, null),
+                    signal_id: getTraceSignalKey(trace),
+                    direction,
                 };
             }).filter(Boolean);
         }
@@ -3392,6 +3700,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 : signal
                 ? `${escapeHtml(buildTradeSignalLabel(signal))} · ${escapeHtml(String(signal.direction || '--').toUpperCase())}`
                 : 'No signal on this bar';
+            const traceStage = getTraceStage(context?.trace);
+            const traceText = traceStage ? formatTraceDecisionLabel(context?.trace, signal) : '';
             return `
                 <div style="font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.75;min-width:240px;">
                     <div style="font-size:12px;font-weight:700;color:#E2EAF4;margin-bottom:6px;">${escapeHtml(bar.us_time || '--')}</div>
@@ -3403,6 +3713,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     <div style="color:#8BA4C4;">${isPreviewBar && !indicator ? '预览 bar 仅 OHLC / Volume' : `CRSI ${escapeHtml(formatNumber(indicator?.crsi))} · OBV ${escapeHtml(formatNumber(indicator?.obv_rsi))} · ATR ${escapeHtml(formatPercent(indicator?.atr_pct))}`}</div>
                     <div style="margin-top:6px;color:#8BA4C4;">${isPreviewBar && !indicator ? '收盘入库后补齐指标' : `SD ${escapeHtml(getSdZoneText(indicator?.sd_zone))} · ${escapeHtml(getSdTrendText(indicator?.sd_trend))} · Fractal ${escapeHtml(getFractalSummary(indicator))}`}</div>
                     <div style="color:#8BA4C4;">${isPreviewBar && !indicator ? 'Preview bar 仅用于盘中参考' : `Touch ${escapeHtml(getTouchSummary(indicator))} · Div ${escapeHtml(getDivergenceSummary(indicator, 6))}`}</div>
+                    ${traceText ? `<div style="margin-top:6px;color:${traceStage === 'blocked' ? '#FDBA74' : traceStage === 'confirmed' ? '#86EFAC' : '#FDE68A'};">${escapeHtml(traceText)}</div>` : ''}
                     <div style="margin-top:6px;color:${signal ? signalColor : bar?.preview || bar?.is_preview ? '#7DD3FC' : '#8BA4C4'};">${signalText}</div>
                 </div>
             `;
@@ -3532,6 +3843,10 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 '#FBBF24',
                 () => '候选'
             );
+            const lifecycleSeries = buildSignalLifecycleSeries(traceTimeline, sortedBars, {
+                showLabels: densityTier !== 'wide',
+            });
+            const blockedTraceMarkers = buildBlockedTraceMarkers(traceTimeline, sortedBars, indicatorMap, markerOffset);
             const fractalBullMarkers = buildIndicatorMarkerPoints(
                 sortedBars,
                 indicatorMap,
@@ -3615,18 +3930,38 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const latestPriceLineItem = buildLatestPriceMarkLineItem(latestClose, latestLineColor);
             const gridLeft = isCompactViewport() ? 66 : 78;
             const gridRight = isCompactViewport() ? 96 : 116;
+            const compactChart = isCompactViewport();
+            const chartGrids = compactChart
+                ? [
+                    { left: gridLeft, right: gridRight, top: 74, height: '36%' },
+                    { left: gridLeft, right: gridRight, top: '55.5%', height: '5.4%' },
+                    { left: gridLeft, right: gridRight, top: '64%', height: '9.8%' },
+                    { left: gridLeft, right: gridRight, top: '80%', height: '9.8%' },
+                ]
+                : [
+                    { left: gridLeft, right: gridRight, top: 68, height: '42.5%' },
+                    { left: gridLeft, right: gridRight, top: '54.5%', height: '5.7%' },
+                    { left: gridLeft, right: gridRight, top: '63.5%', height: '10.5%' },
+                    { left: gridLeft, right: gridRight, top: '79%', height: '10.5%' },
+                ];
             const subplotTitles = [
+                {
+                    text: chartLayerState.lifecycle ? 'Signal Flow' : 'Signal Flow Hidden',
+                    subtext: '线=SD窗口，点=组件，菱形=过滤/候选，圆点=确认',
+                    left: gridLeft,
+                    top: compactChart ? '53.8%' : '52.8%',
+                },
                 {
                     text: 'CRSI / OBV RSI',
                     subtext: '优先展示 cRSI 动态带，80 / 20 仅作弱参考',
                     left: gridLeft,
-                    top: '59.3%',
+                    top: compactChart ? '62.7%' : '62.2%',
                 },
                 {
                     text: chartLayerState.volume ? '成交量 / ATR%' : 'ATR%',
                     subtext: chartLayerState.volume ? '柱体=成交量，折线=ATR%' : '当前只显示 ATR% 折线',
                     left: gridLeft,
-                    top: '77.2%',
+                    top: compactChart ? '78.6%' : '77.8%',
                 }
             ];
             const focusMarkPoint = buildFocusMarkPointConfig(focus?.index ?? -1, displayPayload);
@@ -3746,6 +4081,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 ...(isTradeSignalInterval() && chartLayerState.tradeSignals ? [
                     buildMarkerScatterSeries('LONG Signal', longSignals, { color: '#48BB78', symbol: 'circle', symbolSize: 12, showLabel: showTradeLabels, labelPosition: 'bottom', shadowBlur: 14, shadowColor: 'rgba(72,187,120,0.28)' }),
                     buildMarkerScatterSeries('SHORT Signal', shortSignals, { color: '#FC8181', symbol: 'circle', symbolSize: 12, showLabel: showTradeLabels, labelPosition: 'top', shadowBlur: 14, shadowColor: 'rgba(252,129,129,0.28)' }),
+                    buildMarkerScatterSeries('Blocked Trace', blockedTraceMarkers, { color: '#F97316', symbol: 'diamond', symbolSize: 13, showLabel: showTradeLabels, labelPosition: 'bottom', shadowBlur: 12, shadowColor: 'rgba(249,115,22,0.28)' }),
                     buildMarkerScatterSeries('Preview Signal', previewCandidateSignals, { color: '#FBBF24', symbol: 'diamond', symbolSize: 13, showLabel: showTradeLabels, labelPosition: 'top', shadowBlur: 12, shadowColor: 'rgba(251,191,36,0.26)' }),
                 ] : []),
             ];
@@ -3783,11 +4119,12 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     { name: 'VWAP', type: 'line', data: vwap, symbol: 'none', connectNulls: true, smooth: true, lineStyle: { width: 1.15, color: '#34D399' } },
                 ] : []),
                 ...overlaySeries,
+                ...(isTradeSignalInterval() && chartLayerState.lifecycle ? lifecycleSeries : []),
                 {
                     name: 'cRSI Upper Band',
                     type: 'line',
-                    xAxisIndex: 1,
-                    yAxisIndex: 1,
+                    xAxisIndex: 2,
+                    yAxisIndex: 2,
                     data: crsiUpperBand,
                     symbol: 'none',
                     connectNulls: true,
@@ -3796,8 +4133,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 {
                     name: 'cRSI Lower Band',
                     type: 'line',
-                    xAxisIndex: 1,
-                    yAxisIndex: 1,
+                    xAxisIndex: 2,
+                    yAxisIndex: 2,
                     data: crsiLowerBand,
                     symbol: 'none',
                     connectNulls: true,
@@ -3806,8 +4143,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 {
                     name: 'CRSI',
                     type: 'line',
-                    xAxisIndex: 1,
-                    yAxisIndex: 1,
+                    xAxisIndex: 2,
+                    yAxisIndex: 2,
                     data: crsi,
                     symbol: 'none',
                     connectNulls: true,
@@ -3818,15 +4155,15 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                         ...sessionDividerItemsSub,
                     ])
                 },
-                { name: 'OBV RSI', type: 'line', xAxisIndex: 1, yAxisIndex: 1, data: obvRsi, symbol: 'none', connectNulls: true, lineStyle: { width: 1.2, color: '#F59E0B' } },
+                { name: 'OBV RSI', type: 'line', xAxisIndex: 2, yAxisIndex: 2, data: obvRsi, symbol: 'none', connectNulls: true, lineStyle: { width: 1.2, color: '#F59E0B' } },
                 ...(chartLayerState.volume ? [
-                    { name: 'Volume', type: 'bar', xAxisIndex: 2, yAxisIndex: 2, data: volume, itemStyle: { color: 'rgba(56,189,248,0.34)' } },
+                    { name: 'Volume', type: 'bar', xAxisIndex: 3, yAxisIndex: 3, data: volume, itemStyle: { color: 'rgba(56,189,248,0.34)' } },
                 ] : []),
                 {
                     name: 'ATR %',
                     type: 'line',
-                    xAxisIndex: 2,
-                    yAxisIndex: 3,
+                    xAxisIndex: 3,
+                    yAxisIndex: 4,
                     data: atrPct,
                     symbol: 'none',
                     connectNulls: true,
@@ -3900,14 +4237,12 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     }
                 },
                 grid: [
-                    { left: gridLeft, right: gridRight, top: 68, height: '49%' },
-                    { left: gridLeft, right: gridRight, top: '59%', height: '12%' },
-                    { left: gridLeft, right: gridRight, top: '77%', height: '12%' }
+                    ...chartGrids
                 ],
                 dataZoom: [
                     {
                         type: 'inside',
-                        xAxisIndex: [0, 1, 2],
+                        xAxisIndex: [0, 1, 2, 3],
                         start: zoomWindow.start,
                         end: zoomWindow.end,
                         // Custom wheel handling separates horizontal two-finger pan from pinch/ctrl zoom.
@@ -3917,7 +4252,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     },
                     {
                         type: 'slider',
-                        xAxisIndex: [0, 1, 2],
+                        xAxisIndex: [0, 1, 2, 3],
                         start: zoomWindow.start,
                         end: zoomWindow.end,
                         bottom: 10,
@@ -3960,6 +4295,15 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                         type: 'category',
                         gridIndex: 2,
                         data: categories,
+                        axisLabel: { show: false },
+                        axisTick: { show: false },
+                        axisLine: { lineStyle: { color: '#30435E' } },
+                        splitLine: { show: false }
+                    },
+                    {
+                        type: 'category',
+                        gridIndex: 3,
+                        data: categories,
                         axisLabel: { color: '#8BA4C4', fontSize: 10, hideOverlap: true },
                         axisTick: { show: false },
                         axisLine: { lineStyle: { color: '#30435E' } },
@@ -3977,18 +4321,37 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     {
                         gridIndex: 1,
                         min: 0,
+                        max: 4,
+                        splitLine: { lineStyle: { color: 'rgba(99,179,237,0.045)' } },
+                        axisTick: { show: false },
+                        axisLine: { show: false },
+                        axisLabel: {
+                            color: '#8BA4C4',
+                            fontSize: 9,
+                            formatter(value) {
+                                const num = Number(value);
+                                if (num === 3) return 'SD';
+                                if (num === 2) return '组件';
+                                if (num === 1) return '决策';
+                                return '';
+                            }
+                        },
+                    },
+                    {
+                        gridIndex: 2,
+                        min: 0,
                         max: 100,
                         position: 'right',
                         splitLine: { lineStyle: { color: 'rgba(99,179,237,0.06)' } },
                         axisLabel: { color: '#8BA4C4', fontSize: 10 }
                     },
                     {
-                        gridIndex: 2,
+                        gridIndex: 3,
                         splitLine: { show: false },
                         axisLabel: { color: '#8BA4C4', fontSize: 10, formatter: (value) => formatCompactAxisNumber(value) },
                     },
                     {
-                        gridIndex: 2,
+                        gridIndex: 3,
                         position: 'right',
                         splitLine: { show: false },
                         axisLabel: { color: '#8BA4C4', fontSize: 10, formatter: '{value}%' }
@@ -4000,6 +4363,31 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             chartInstance.off('dataZoom');
             chartInstance.off('click');
             chartInstance.off('dblclick');
+            let chartSeriesClickAt = 0;
+            const handleChartPointSelection = (index, signalKey = '', { tracePoint = false } = {}) => {
+                if (index < 0) return;
+                dismissMobileGestureHint();
+                if (isCompactViewport() && chartPointerLocked) {
+                    lockChartPointerAtIndex(index, signalKey);
+                    const lockedContext = getFocusContext(getChartDisplayPayload());
+                    if (lockedContext?.activeSignal) {
+                        openSignalDrawer(lockedContext.activeSignal, lockedContext);
+                    }
+                    return;
+                }
+                chartPointerLocked = false;
+                focusBarIndex(index, signalKey);
+                syncCursorIndex(index);
+                ensureBarVisible(index, displayPayload);
+                const context = buildContext(displayPayload, index, signalKey);
+                if (context?.activeSignal) {
+                    openSignalDrawer(context.activeSignal, context);
+                } else if (tracePoint && context?.activeTraceSignal) {
+                    openSignalDrawer(context.activeTraceSignal, context);
+                } else if (tracePoint && getTraceStage(context?.trace) && chartTracePanelOpen) {
+                    scrollTraceRowIntoView(context?.bar?.bar_time_ms);
+                }
+            };
             chartInstance.on('updateAxisPointer', (params) => {
                 const axisInfo = Array.isArray(params?.axesInfo) ? params.axesInfo[0] : null;
                 const axisValue = Number(axisInfo?.value);
@@ -4024,28 +4412,15 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     suppressNextChartClick = false;
                     return;
                 }
-                const index = Number.isInteger(params?.dataIndex)
-                    ? params.dataIndex
-                    : (Array.isArray(params?.value) && Number.isInteger(params.value[0]) ? params.value[0] : -1);
+                chartSeriesClickAt = Date.now();
+                const index = Number.isInteger(params?.data?.bar_index)
+                    ? params.data.bar_index
+                    : (Array.isArray(params?.value) && Number.isInteger(params.value[0]) ? params.value[0]
+                    : (Number.isInteger(params?.dataIndex) ? params.dataIndex : -1));
                 if (index < 0) return;
-                dismissMobileGestureHint();
                 const signalKey = params?.data?.signal_id ? String(params.data.signal_id) : '';
-                if (isCompactViewport() && chartPointerLocked) {
-                    lockChartPointerAtIndex(index, signalKey);
-                    const lockedContext = getFocusContext(getChartDisplayPayload());
-                    if (lockedContext?.activeSignal) {
-                        openSignalDrawer(lockedContext.activeSignal, lockedContext);
-                    }
-                    return;
-                }
-                chartPointerLocked = false;
-                focusBarIndex(index, signalKey);
-                syncCursorIndex(index);
-                ensureBarVisible(index, displayPayload);
-                const context = buildContext(displayPayload, index, signalKey);
-                if (context?.activeSignal) {
-                    openSignalDrawer(context.activeSignal, context);
-                }
+                const isTracePoint = String(params?.seriesName || '').startsWith('Flow ') || params?.seriesName === 'Blocked Trace';
+                handleChartPointSelection(index, signalKey, { tracePoint: isTracePoint });
             });
             chartInstance.on('dblclick', () => {
                 chartPointerLocked = false;
@@ -4057,6 +4432,29 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 zr.off('globalout');
                 zr.on('globalout', () => {
                     clearTransientChartCursor();
+                });
+                zr.on('click', (event) => {
+                    const clickAt = Date.now();
+                    window.setTimeout(() => {
+                        if (chartSeriesClickAt && chartSeriesClickAt >= clickAt - 40) return;
+                        const point = [Number(event?.offsetX ?? event?.zrX), Number(event?.offsetY ?? event?.zrY)];
+                        if (!Number.isFinite(point[0]) || !Number.isFinite(point[1])) return;
+                        const resolveIndex = (xAxisIndex, yAxisIndex) => {
+                            try {
+                                const converted = chartInstance.convertFromPixel({ xAxisIndex, yAxisIndex }, point);
+                                const rawIndex = Array.isArray(converted) ? converted[0] : converted;
+                                const index = Math.round(Number(rawIndex));
+                                return Number.isInteger(index) ? clampIndex(index, sortedBars.length) : -1;
+                            } catch (_) {
+                                return -1;
+                            }
+                        };
+                        if (chartInstance.containPixel({ gridIndex: 1 }, point)) {
+                            handleChartPointSelection(resolveIndex(1, 1), '', { tracePoint: true });
+                        } else if (chartInstance.containPixel({ gridIndex: 0 }, point)) {
+                            handleChartPointSelection(resolveIndex(0, 0), '', { tracePoint: false });
+                        }
+                    }, 0);
                 });
             }
             registerChartTouchInteractions();
