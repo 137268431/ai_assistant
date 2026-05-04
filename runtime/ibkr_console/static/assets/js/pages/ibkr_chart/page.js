@@ -16,6 +16,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         let currentAnchorMs = 0;
         let customRangeStartMs = 0;
         let customRangeEndMs = 0;
+        let customRangeFormOpen = false;
         let pendingFocusBarTimeMs = 0;
         let currentIndicatorId = '';
         let chartInstance = null;
@@ -170,18 +171,74 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             return String(value).padStart(2, '0');
         }
 
-        function formatDateTimeLocalValue(ms) {
+        function parseEtDateParts(ms) {
             const num = Number(ms || 0);
-            if (!Number.isFinite(num) || num <= 0) return '';
-            const date = new Date(num);
-            return `${date.getFullYear()}-${padDatePart(date.getMonth() + 1)}-${padDatePart(date.getDate())}T${padDatePart(date.getHours())}:${padDatePart(date.getMinutes())}`;
+            if (!Number.isFinite(num) || num <= 0) return null;
+            try {
+                const parts = new Intl.DateTimeFormat('en-US', {
+                    timeZone: 'America/New_York',
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                    hourCycle: 'h23',
+                }).formatToParts(new Date(num));
+                const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+                return {
+                    year: Number(byType.year || 0),
+                    month: Number(byType.month || 0),
+                    day: Number(byType.day || 0),
+                    hour: Number(byType.hour || 0),
+                    minute: Number(byType.minute || 0),
+                    second: Number(byType.second || 0),
+                };
+            } catch (_) {
+                return null;
+            }
         }
 
-        function parseDateTimeLocalValue(value) {
+        function getEtOffsetMinutes(ms) {
+            const parts = parseEtDateParts(ms);
+            if (!parts) return 0;
+            const asUtcMs = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second || 0);
+            return Math.round((asUtcMs - Number(ms || 0)) / 60000);
+        }
+
+        function formatDateTimeEtInputValue(ms) {
+            const parts = parseEtDateParts(ms);
+            if (!parts) return '';
+            return `${parts.year}-${padDatePart(parts.month)}-${padDatePart(parts.day)}T${padDatePart(parts.hour)}:${padDatePart(parts.minute)}`;
+        }
+
+        function parseDateTimeEtInputValue(value) {
             const text = String(value || '').trim();
             if (!text) return 0;
-            const ms = new Date(text).getTime();
-            return Number.isFinite(ms) ? ms : 0;
+            const match = text.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/);
+            if (!match) return 0;
+            const [, yearText, monthText, dayText, hourText, minuteText, secondText] = match;
+            const year = Number(yearText);
+            const month = Number(monthText);
+            const day = Number(dayText);
+            const hour = Number(hourText);
+            const minute = Number(minuteText);
+            const second = Number(secondText || 0);
+            if (![year, month, day, hour, minute, second].every(Number.isFinite)) return 0;
+            const wallUtcMs = Date.UTC(year, month - 1, day, hour, minute, second);
+            let resolvedMs = wallUtcMs - getEtOffsetMinutes(wallUtcMs) * 60000;
+            const resolvedParts = parseEtDateParts(resolvedMs);
+            if (
+                resolvedParts
+                && (resolvedParts.year !== year
+                    || resolvedParts.month !== month
+                    || resolvedParts.day !== day
+                    || resolvedParts.hour !== hour
+                    || resolvedParts.minute !== minute)
+            ) {
+                resolvedMs = wallUtcMs - getEtOffsetMinutes(resolvedMs) * 60000;
+            }
+            return Number.isFinite(resolvedMs) ? resolvedMs : 0;
         }
 
         function parseQueryTimeMs(value) {
@@ -1566,7 +1623,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
 
         function renderRangeGroup() {
             document.getElementById('rangeGroup').innerHTML = RANGE_PRESETS.map((preset) => `
-                <button class="range-btn ${preset.key === currentRangeKey ? 'active' : ''}" type="button" onclick="selectChartRange('${preset.key}')">${escapeHtml(preset.shortLabel)}</button>
+                <button class="range-btn ${preset.key === currentRangeKey || (preset.key === 'custom' && customRangeFormOpen) ? 'active' : ''}" type="button" onclick="selectChartRange('${preset.key}')">${escapeHtml(preset.shortLabel)}</button>
             `).join('');
             renderCustomRangeForm();
         }
@@ -1589,12 +1646,12 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const startInput = document.getElementById('customRangeStart');
             const endInput = document.getElementById('customRangeEnd');
             if (!form || !startInput || !endInput) return;
-            const show = isCustomRange();
+            const show = customRangeFormOpen || isCustomRange();
             form.hidden = !show;
             if (!show) return;
             seedCustomRangeFromPayload();
-            startInput.value = formatDateTimeLocalValue(customRangeStartMs);
-            endInput.value = formatDateTimeLocalValue(customRangeEndMs);
+            startInput.value = formatDateTimeEtInputValue(customRangeStartMs);
+            endInput.value = formatDateTimeEtInputValue(customRangeEndMs);
         }
 
         function renderSummaryStrip(payload) {
@@ -2537,6 +2594,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             }
             chartFocusMarkerSyncRaf = window.requestAnimationFrame(() => {
                 chartFocusMarkerSyncRaf = 0;
+                if (!chartInstance) return;
                 const markPoint = buildFocusMarkPointConfig(index, payload);
                 chartInstance.setOption({
                     series: [{
@@ -3596,8 +3654,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             return [
                 buildLifecycleLineSeries('Flow 上轨窗口', upperWindow, { color: 'rgba(248,113,113,0.78)', width: 4 }),
                 buildLifecycleLineSeries('Flow 下轨窗口', lowerWindow, { color: 'rgba(74,222,128,0.78)', width: 4 }),
-                buildLifecycleScatterSeries('Flow 组件收集', components, { color: '#38BDF8', symbol: 'circle', symbolSize: 7, showLabel: showLabels, labelPosition: 'top' }),
-                buildLifecycleScatterSeries('Flow 候选', candidates, { color: '#FBBF24', symbol: 'diamond', symbolSize: 10, showLabel: showLabels, labelPosition: 'bottom', shadowBlur: 8, shadowColor: 'rgba(251,191,36,0.22)' }),
+                buildLifecycleScatterSeries('Flow 组件收集', components, { color: '#38BDF8', symbol: 'circle', symbolSize: 7, showLabel: false, labelPosition: 'top' }),
+                buildLifecycleScatterSeries('Flow 候选', candidates, { color: '#FBBF24', symbol: 'diamond', symbolSize: 10, showLabel: false, labelPosition: 'bottom', shadowBlur: 8, shadowColor: 'rgba(251,191,36,0.22)' }),
                 buildLifecycleScatterSeries('Flow 已过滤', blocked, { color: '#F97316', symbol: 'diamond', symbolSize: 12, showLabel: showLabels, labelPosition: 'bottom', shadowBlur: 10, shadowColor: 'rgba(249,115,22,0.26)' }),
                 buildLifecycleScatterSeries('Flow 已确认', confirmed, { color: '#22C55E', symbol: 'circle', symbolSize: 11, showLabel: showLabels, labelPosition: 'bottom', shadowBlur: 10, shadowColor: 'rgba(34,197,94,0.24)' }),
                 buildLifecycleScatterSeries('Flow 清空/过期', cleared, { color: '#94A3B8', symbol: 'pin', symbolRotate: 180, symbolSize: 10, showLabel: false }),
@@ -4688,12 +4746,16 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         };
 
         window.selectChartRange = async function(rangeKey) {
-            currentRangeKey = normalizeRangeKey(rangeKey, currentInterval);
-            if (isCustomRange()) {
+            const nextRangeKey = normalizeRangeKey(rangeKey, currentInterval);
+            if (isCustomRange(nextRangeKey)) {
+                customRangeFormOpen = true;
                 seedCustomRangeFromPayload();
                 currentAnchorMs = customRangeEndMs || currentAnchorMs;
                 renderRangeGroup();
+                return;
             }
+            currentRangeKey = nextRangeKey;
+            customRangeFormOpen = false;
             pendingFocusBarTimeMs = 0;
             selectedBarIndex = -1;
             selectedSignalId = '';
@@ -4706,8 +4768,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         window.applyCustomChartRange = async function() {
             const startInput = document.getElementById('customRangeStart');
             const endInput = document.getElementById('customRangeEnd');
-            const startMs = parseDateTimeLocalValue(startInput?.value || '');
-            const endMs = parseDateTimeLocalValue(endInput?.value || '');
+            const startMs = parseDateTimeEtInputValue(startInput?.value || '');
+            const endMs = parseDateTimeEtInputValue(endInput?.value || '');
             if (!startMs || !endMs) {
                 showToast('请填写自定义开始和结束时间');
                 return;
@@ -4717,6 +4779,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 return;
             }
             currentRangeKey = 'custom';
+            customRangeFormOpen = false;
             customRangeStartMs = startMs;
             customRangeEndMs = endMs;
             currentAnchorMs = endMs;

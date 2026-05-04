@@ -2415,6 +2415,20 @@ body.chart-focus-mode .chart-stage {
     font-family: 'JetBrains Mono', monospace;
 }
 
+.custom-range-zone {
+    min-height: 34px;
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid rgba(125, 211, 252, 0.16);
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.74);
+    color: #8BA4C4;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 0 10px;
+}
+
 .custom-range-apply {
     min-height: 34px;
     border-radius: 999px;

@@ -157,6 +157,7 @@ function makeTrace(bar, index) {
 const bars = BAR_TIMES.map(makeBar);
 const indicatorTimeline = bars.map(makeIndicator);
 const traceTimeline = bars.map(makeTrace);
+const timelineRequests = [];
 
 const mockTimelinePayload = {
   ok: true,
@@ -193,6 +194,7 @@ async function main() {
     if (url.includes('/api/custom/ibkr/proxy')) {
       const requestJson = route.request().postDataJSON();
       if (requestJson?.action === 'chart/timeline') {
+        timelineRequests.push(requestJson);
         await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(mockTimelinePayload) });
         return;
       }
@@ -234,6 +236,8 @@ async function main() {
     const chart = window.echarts.getInstanceByDom(dom);
     const option = chart.getOption();
     const series = Array.isArray(option.series) ? option.series : [];
+    const componentSeries = series.find((item) => item.name === 'Flow 组件收集');
+    const candidateSeries = series.find((item) => item.name === 'Flow 候选');
     const blockedSeries = series.find((item) => item.name === 'Flow 已过滤');
     const blockedMain = series.find((item) => item.name === 'Blocked Trace');
     const flowNames = series.map((item) => item.name).filter((name) => String(name || '').startsWith('Flow '));
@@ -243,9 +247,17 @@ async function main() {
       yAxisCount: Array.isArray(option.yAxis) ? option.yAxis.length : 0,
       flowNames,
       hasFlowTitle: (Array.isArray(option.title) ? option.title : []).some((item) => /Signal Flow/.test(item.text || '')),
+      componentDataCount: Array.isArray(componentSeries?.data) ? componentSeries.data.length : 0,
+      componentLabelShow: Boolean(componentSeries?.label?.show),
+      componentFirstLabel: componentSeries?.data?.[0]?.labelText || '',
+      candidateLabelShow: Boolean(candidateSeries?.label?.show),
       blockedDataCount: Array.isArray(blockedSeries?.data) ? blockedSeries.data.length : 0,
       blockedLabel: blockedSeries?.data?.[0]?.labelText || '',
+      blockedLabelShow: Boolean(blockedSeries?.label?.show),
       blockedMainCount: Array.isArray(blockedMain?.data) ? blockedMain.data.length : 0,
+      customStartValue: document.getElementById('customRangeStart')?.value || '',
+      customEndValue: document.getElementById('customRangeEnd')?.value || '',
+      customZoneText: document.getElementById('customRangeForm')?.textContent || '',
       cursorText: document.getElementById('cursorStrip')?.textContent || '',
       traceText: document.getElementById('tracePanelShell')?.textContent || '',
       layerText: document.getElementById('layerStrip')?.textContent || '',
@@ -279,6 +291,33 @@ async function main() {
     activeTraceText: document.querySelector('#tracePanelShell tr.active')?.textContent || '',
   }));
 
+  const beforeCustomApplyRequests = timelineRequests.length;
+  await page.evaluate(() => {
+    if (typeof window.closeSignalDrawer === 'function') window.closeSignalDrawer();
+  });
+  await page.locator('button.range-btn', { hasText: '自定义' }).click();
+  await page.waitForTimeout(250);
+  const afterCustomSelectRequests = timelineRequests.length;
+  await page.fill('#customRangeStart', '2026-05-04T10:35');
+  await page.fill('#customRangeEnd', '2026-05-04T10:50');
+  const applyResponsePromise = page.waitForResponse((response) => {
+    if (!response.url().includes('/api/custom/ibkr/proxy')) return false;
+    const requestBody = response.request().postData() || '';
+    return requestBody.includes('"action":"chart/timeline"') || requestBody.includes('"action": "chart/timeline"');
+  }, { timeout: 30000 });
+  await Promise.all([
+    applyResponsePromise,
+    page.click('.custom-range-apply'),
+  ]);
+  await page.waitForTimeout(800);
+  const afterCustomApplyRequests = timelineRequests.length;
+  const customApplyRequest = timelineRequests[timelineRequests.length - 1] || {};
+  const customState = await page.evaluate(() => ({
+    startValue: document.getElementById('customRangeStart')?.value || '',
+    endValue: document.getElementById('customRangeEnd')?.value || '',
+    href: window.location.href,
+  }));
+
   await browser.close();
 
   const failures = [];
@@ -289,18 +328,48 @@ async function main() {
   if (!beforeClick.hasFlowTitle) failures.push('missing_signal_flow_title');
   if (!beforeClick.layerText.includes('Signal Flow')) failures.push('missing_signal_flow_layer');
   if (!beforeClick.flowNames.includes('Flow 下轨窗口')) failures.push('missing_lower_window_series');
+  if (!beforeClick.flowNames.includes('Flow 组件收集')) failures.push('missing_component_flow_series');
   if (!beforeClick.flowNames.includes('Flow 已过滤')) failures.push('missing_blocked_flow_series');
+  if (beforeClick.componentDataCount < 1) failures.push(`component_flow_count_${beforeClick.componentDataCount}`);
+  if (beforeClick.componentLabelShow) failures.push('component_label_should_be_hidden');
+  if (beforeClick.candidateLabelShow) failures.push('candidate_label_should_be_hidden');
   if (beforeClick.blockedDataCount !== 1) failures.push(`blocked_flow_count_${beforeClick.blockedDataCount}`);
   if (beforeClick.blockedMainCount !== 1) failures.push(`blocked_main_count_${beforeClick.blockedMainCount}`);
   if (!beforeClick.blockedLabel.includes('DTP红初中')) failures.push('missing_blocked_label_reason');
+  if (!beforeClick.blockedLabelShow) failures.push('blocked_label_should_be_visible');
+  if (beforeClick.customStartValue !== '2026-05-04T10:30') failures.push(`custom_start_not_et_${beforeClick.customStartValue}`);
+  if (beforeClick.customEndValue !== '2026-05-04T11:00') failures.push(`custom_end_not_et_${beforeClick.customEndValue}`);
+  if (!beforeClick.customZoneText.includes('ET')) failures.push('missing_custom_range_et_badge');
   if (!beforeClick.cursorText.includes('blocked · DTP红初中')) failures.push('cursor_missing_blocked_reason');
   if (!beforeClick.traceText.includes('blocked · DTP红初中')) failures.push('trace_missing_blocked_reason');
   if (!clickProbe.ok) failures.push(`click_failed_${clickProbe.reason || 'unknown'}`);
   if (!afterClick.drawerVisible) failures.push('blocked_click_did_not_open_drawer');
   if (!afterClick.drawerText.includes('DTP红初中')) failures.push('drawer_missing_blocked_reason');
   if (!afterClick.activeTraceText.includes('DTP红初中')) failures.push('active_trace_missing_reason');
+  if (afterCustomSelectRequests !== beforeCustomApplyRequests) failures.push('custom_select_should_not_reload');
+  if (afterCustomApplyRequests <= afterCustomSelectRequests) failures.push('custom_apply_did_not_reload');
+  if (customApplyRequest.start_ms !== BAR_TIMES[1]) failures.push(`custom_apply_start_ms_${customApplyRequest.start_ms}`);
+  if (customApplyRequest.end_ms !== BAR_TIMES[4]) failures.push(`custom_apply_end_ms_${customApplyRequest.end_ms}`);
+  if (customState.startValue !== '2026-05-04T10:35') failures.push(`custom_state_start_${customState.startValue}`);
+  if (customState.endValue !== '2026-05-04T10:50') failures.push(`custom_state_end_${customState.endValue}`);
+  if (!customState.href.includes(`start_ms=${BAR_TIMES[1]}`) || !customState.href.includes(`end_ms=${BAR_TIMES[4]}`)) {
+    failures.push('custom_url_missing_applied_ms');
+  }
 
-  const output = { ok: failures.length === 0, failures, beforeClick, clickProbe, afterClick };
+  const output = {
+    ok: failures.length === 0,
+    failures,
+    beforeClick,
+    clickProbe,
+    afterClick,
+    customRange: {
+      beforeCustomApplyRequests,
+      afterCustomSelectRequests,
+      afterCustomApplyRequests,
+      customApplyRequest,
+      customState,
+    },
+  };
   console.log(JSON.stringify(output, null, 2));
   if (failures.length) process.exit(1);
 }
