@@ -468,6 +468,141 @@
             transform: none;
         }
 
+        .runtime-confirm-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 2000;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 18px;
+            background: rgba(2, 8, 23, 0.78);
+            backdrop-filter: blur(10px);
+        }
+        .runtime-confirm-overlay.show {
+            display: flex;
+        }
+        .runtime-confirm-modal {
+            width: min(520px, 100%);
+            max-height: min(82vh, 620px);
+            overflow: auto;
+            border-radius: 18px;
+            border: 1px solid rgba(99, 179, 237, 0.20);
+            background: linear-gradient(160deg, rgba(14, 20, 32, 0.98), rgba(9, 15, 24, 0.98));
+            box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
+            padding: 22px;
+        }
+        .runtime-confirm-overlay.tone-danger .runtime-confirm-modal {
+            border-color: rgba(252, 129, 129, 0.36);
+        }
+        .runtime-confirm-overlay.tone-warn .runtime-confirm-modal {
+            border-color: rgba(246, 173, 85, 0.34);
+        }
+        .runtime-confirm-kicker {
+            color: var(--accent);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+        .runtime-confirm-overlay.tone-danger .runtime-confirm-kicker {
+            color: var(--danger);
+        }
+        .runtime-confirm-overlay.tone-warn .runtime-confirm-kicker {
+            color: var(--warning);
+        }
+        .runtime-confirm-title {
+            color: var(--text);
+            font-size: 22px;
+            line-height: 1.25;
+            font-weight: 800;
+        }
+        .runtime-confirm-message {
+            margin-top: 12px;
+            color: var(--muted);
+            font-size: 14px;
+            line-height: 1.75;
+            white-space: pre-wrap;
+        }
+        .runtime-confirm-input-wrap {
+            display: grid;
+            gap: 8px;
+            margin-top: 18px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+        }
+        .runtime-confirm-input-wrap.is-hidden {
+            display: none;
+        }
+        .runtime-confirm-input {
+            width: 100%;
+            min-height: 44px;
+            border: 1px solid rgba(99, 179, 237, 0.22);
+            border-radius: 12px;
+            background: rgba(2, 8, 23, 0.72);
+            color: var(--text);
+            font: 700 14px 'JetBrains Mono', monospace;
+            padding: 0 12px;
+            outline: none;
+        }
+        .runtime-confirm-input:focus {
+            border-color: rgba(79, 209, 197, 0.50);
+            box-shadow: 0 0 0 3px rgba(79, 209, 197, 0.10);
+        }
+        .runtime-confirm-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 22px;
+        }
+        .runtime-confirm-btn {
+            min-width: 108px;
+            min-height: 44px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.10);
+            color: var(--text);
+            font-size: 13px;
+            font-weight: 800;
+            cursor: pointer;
+        }
+        .runtime-confirm-btn.secondary {
+            background: rgba(148, 163, 184, 0.14);
+        }
+        .runtime-confirm-btn.primary {
+            border-color: rgba(79, 209, 197, 0.36);
+            background: linear-gradient(180deg, rgba(79, 209, 197, 0.24), rgba(79, 209, 197, 0.10));
+        }
+        .tone-warn .runtime-confirm-btn.primary {
+            border-color: rgba(246, 173, 85, 0.40);
+            background: linear-gradient(180deg, rgba(246, 173, 85, 0.26), rgba(246, 173, 85, 0.10));
+        }
+        .tone-danger .runtime-confirm-btn.primary {
+            border-color: rgba(252, 129, 129, 0.42);
+            background: linear-gradient(180deg, rgba(252, 129, 129, 0.28), rgba(252, 129, 129, 0.10));
+        }
+        .runtime-confirm-btn:disabled {
+            cursor: not-allowed;
+            opacity: 0.48;
+        }
+        @media (max-width: 640px) {
+            .runtime-confirm-modal {
+                padding: 18px;
+                border-radius: 16px;
+            }
+            .runtime-confirm-title {
+                font-size: 19px;
+            }
+            .runtime-confirm-actions {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                display: grid;
+            }
+            .runtime-confirm-btn {
+                min-width: 0;
+            }
+        }
+
         .last-action {
             margin-top: 14px;
             padding: 12px 14px;

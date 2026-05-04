@@ -936,6 +936,124 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             renderAuthActionBanner(latestNextActionModel);
         }
 
+        function ensureRuntimeConfirmDialog() {
+            let dialog = document.getElementById('runtimeConfirmDialog');
+            if (dialog) return dialog;
+            dialog = document.createElement('div');
+            dialog.id = 'runtimeConfirmDialog';
+            dialog.className = 'runtime-confirm-overlay';
+            dialog.innerHTML = `
+                <div class="runtime-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="runtimeConfirmTitle">
+                    <div class="runtime-confirm-kicker" id="runtimeConfirmKicker">Confirm Action</div>
+                    <div class="runtime-confirm-title" id="runtimeConfirmTitle">确认操作</div>
+                    <div class="runtime-confirm-message" id="runtimeConfirmMessage"></div>
+                    <label class="runtime-confirm-input-wrap is-hidden" id="runtimeConfirmInputWrap">
+                        <span id="runtimeConfirmInputLabel">输入确认文本</span>
+                        <input id="runtimeConfirmInput" class="runtime-confirm-input" autocomplete="off" spellcheck="false">
+                    </label>
+                    <div class="runtime-confirm-actions">
+                        <button class="runtime-confirm-btn secondary" type="button" id="runtimeConfirmCancel">取消</button>
+                        <button class="runtime-confirm-btn primary" type="button" id="runtimeConfirmOk">确定</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(dialog);
+            return dialog;
+        }
+
+        function showRuntimeConfirm({
+            title = '确认操作',
+            message = '',
+            confirmText = '',
+            confirmLabel = '确定',
+            cancelLabel = '取消',
+            tone = 'warn',
+            inputLabel = '',
+            inputValue = '',
+        } = {}) {
+            return new Promise((resolve) => {
+                const dialog = ensureRuntimeConfirmDialog();
+                const modal = dialog.querySelector('.runtime-confirm-modal');
+                const kickerEl = dialog.querySelector('#runtimeConfirmKicker');
+                const titleEl = dialog.querySelector('#runtimeConfirmTitle');
+                const messageEl = dialog.querySelector('#runtimeConfirmMessage');
+                const inputWrap = dialog.querySelector('#runtimeConfirmInputWrap');
+                const inputLabelEl = dialog.querySelector('#runtimeConfirmInputLabel');
+                const inputEl = dialog.querySelector('#runtimeConfirmInput');
+                const cancelButton = dialog.querySelector('#runtimeConfirmCancel');
+                const okButton = dialog.querySelector('#runtimeConfirmOk');
+                const requiredText = String(confirmText || '').trim();
+                let settled = false;
+
+                const cleanup = (result) => {
+                    if (settled) return;
+                    settled = true;
+                    dialog.classList.remove('show');
+                    document.removeEventListener('keydown', onKeydown);
+                    inputEl.removeEventListener('input', syncConfirmButton);
+                    cancelButton.removeEventListener('click', onCancel);
+                    okButton.removeEventListener('click', onConfirm);
+                    dialog.removeEventListener('click', onBackdrop);
+                    resolve(Boolean(result));
+                };
+                const syncConfirmButton = () => {
+                    okButton.disabled = Boolean(requiredText) && String(inputEl.value || '').trim() !== requiredText;
+                };
+                const onCancel = () => cleanup(false);
+                const onConfirm = () => {
+                    if (okButton.disabled) return;
+                    cleanup(true);
+                };
+                const onBackdrop = (event) => {
+                    if (event.target === dialog) cleanup(false);
+                };
+                const onKeydown = (event) => {
+                    if (event.key === 'Escape') {
+                        event.preventDefault();
+                        cleanup(false);
+                    }
+                    if (event.key === 'Enter' && document.activeElement === inputEl && !okButton.disabled) {
+                        event.preventDefault();
+                        cleanup(true);
+                    }
+                };
+
+                dialog.classList.remove('tone-danger', 'tone-warn', 'tone-info');
+                dialog.classList.add(`tone-${String(tone || 'warn').trim() || 'warn'}`);
+                kickerEl.textContent = requiredText ? 'Type To Confirm' : 'Confirm Action';
+                titleEl.textContent = title;
+                messageEl.textContent = message;
+                cancelButton.textContent = cancelLabel;
+                okButton.textContent = confirmLabel;
+                inputEl.value = '';
+                inputEl.placeholder = inputValue || requiredText;
+                if (requiredText) {
+                    inputWrap.classList.remove('is-hidden');
+                    inputLabelEl.textContent = inputLabel || `请输入 ${requiredText}`;
+                } else {
+                    inputWrap.classList.add('is-hidden');
+                    inputLabelEl.textContent = '';
+                }
+                syncConfirmButton();
+
+                inputEl.addEventListener('input', syncConfirmButton);
+                cancelButton.addEventListener('click', onCancel);
+                okButton.addEventListener('click', onConfirm);
+                dialog.addEventListener('click', onBackdrop);
+                document.addEventListener('keydown', onKeydown);
+                dialog.classList.add('show');
+
+                window.requestAnimationFrame(() => {
+                    if (requiredText) {
+                        inputEl.focus();
+                    } else {
+                        okButton.focus();
+                    }
+                    if (modal) modal.scrollTop = 0;
+                });
+            });
+        }
+
         function renderMetricCards(summary, health, status, twoFactorState, latestBar) {
             const today = summary?.today || {};
             const computeHealth = normalizeIbkrComputeHealth(health);
@@ -2442,7 +2560,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             return '启动';
         }
 
-        function confirmServiceAction(serviceName, action) {
+        async function confirmServiceAction(serviceName, action) {
             const moduleDef = getServiceModuleDef(serviceName);
             if (!moduleDef) return false;
             const service = moduleDef.service;
@@ -2450,10 +2568,21 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const label = getServiceActionLabel(normalizedAction);
             const highRiskAction = moduleDef.highRiskRestart && ['restart', 'stop'].includes(normalizedAction);
             if (highRiskAction) {
-                const answer = window.prompt(`确认${label} ${service}？请输入服务名：${service}`);
-                return String(answer || '').trim() === service;
+                return showRuntimeConfirm({
+                    title: `确认${label} ${service}`,
+                    message: `${service} 会影响当前 runtime / Gateway 会话。继续前请输入服务名确认。`,
+                    confirmText: service,
+                    inputLabel: '输入完整服务名',
+                    confirmLabel: label,
+                    tone: normalizedAction === 'stop' ? 'danger' : 'warn',
+                });
             }
-            return window.confirm(`确认${label} ${service}？`);
+            return showRuntimeConfirm({
+                title: `确认${label} ${service}`,
+                message: `即将对 systemd 服务 ${service} 执行${label}。`,
+                confirmLabel: label,
+                tone: 'info',
+            });
         }
 
         function summarizeServiceAction(payload) {
@@ -2489,7 +2618,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 showToast(runtimeMismatch.message);
                 return;
             }
-            if (!confirmServiceAction(moduleDef.service, normalizedAction)) return;
+            if (!await confirmServiceAction(moduleDef.service, normalizedAction)) return;
             if (!ensureIbkrPageAuth()) return;
 
             setActionState(true);
@@ -2585,10 +2714,20 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 syncActionLocks();
                 return;
             }
-            if (action === 'emergency_all' && !window.confirm('确认执行全部急停？这会关闭 compute / trading / bars publish / IBKR Scheduler，并停止当前 runtime。')) {
+            if (action === 'emergency_all' && !await showRuntimeConfirm({
+                title: '确认执行全部急停',
+                message: '这会关闭 compute / trading / bars publish / IBKR Scheduler，并停止当前 runtime。',
+                confirmLabel: '全部急停',
+                tone: 'danger',
+            })) {
                 return;
             }
-            if (action === 'recover_all' && !window.confirm('确认恢复 compute / trading / bars publish / IBKR Scheduler 开关？这不会自动重启服务。')) {
+            if (action === 'recover_all' && !await showRuntimeConfirm({
+                title: '确认恢复运行开关',
+                message: '这会恢复 compute / trading / bars publish / IBKR Scheduler 开关，但不会自动重启服务。',
+                confirmLabel: '恢复',
+                tone: 'info',
+            })) {
                 return;
             }
             if (action === 'gateway_restart') {
@@ -2598,14 +2737,33 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 const message = requiresFreshCycle
                     ? '确认重启 systemd ibkr-gateway？这会重启 IBC + IB Gateway GUI/API，并在新的启动卡片上等待你手动触发 2FA。'
                     : '确认重启 systemd ibkr-gateway？当前不会自动恢复 ibkr-runtime，也不会自动触发新的 2FA。';
-                if (!window.confirm(message)) {
+                if (!await showRuntimeConfirm({
+                    title: '确认重启 IB Gateway',
+                    message,
+                    confirmText: 'ibkr-gateway',
+                    inputLabel: '输入完整服务名',
+                    confirmLabel: '重启',
+                    tone: 'warn',
+                })) {
                     return;
                 }
             }
-            if (action === 'reauth_force_new' && !window.confirm('确认开始 2FA？这会触发 IBKR 手机验证；如果已有手机通知或 Challenge，请取消并继续当前轮次。')) {
+            if (action === 'reauth_force_new' && !await showRuntimeConfirm({
+                title: '确认开始新一轮 2FA',
+                message: '这会触发 IBKR 手机验证；如果已有手机通知或 Challenge，请取消并继续当前轮次。',
+                confirmLabel: '开始 2FA',
+                tone: 'warn',
+            })) {
                 return;
             }
-            if (action === 'panic_reset_2fa' && !window.confirm('确认重开 2FA？将清空旧 Challenge / Response / 接管状态，并重启验证。')) {
+            if (action === 'panic_reset_2fa' && !await showRuntimeConfirm({
+                title: '确认重开 2FA',
+                message: '将清空旧 Challenge / Response / 接管状态，并重启验证。旧手机通知和旧飞书卡片都不要再处理。',
+                confirmText: '重开2FA',
+                inputLabel: '输入 重开2FA',
+                confirmLabel: '重开',
+                tone: 'danger',
+            })) {
                 return;
             }
             if (!ensureIbkrPageAuth()) return;
