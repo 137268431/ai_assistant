@@ -5,15 +5,8 @@ const CONSOLE_BASE = process.env.CONSOLE_BASE_URL || 'http://127.0.0.1:5104';
 const STATIC_ROOT = process.env.IBKR_CONSOLE_STATIC_ROOT
   || path.resolve(__dirname, '../../../../runtime/ibkr_console/static');
 
-const BAR_TIMES = [
-  1777905000000,
-  1777905300000,
-  1777905600000,
-  1777905900000,
-  1777906200000,
-  1777906500000,
-  1777906800000,
-];
+const BAR_START_MS = 1777905000000;
+const BAR_TIMES = Array.from({ length: 45 }, (_, index) => BAR_START_MS + index * 5 * 60 * 1000);
 
 function staticPathForUrl(url) {
   const parsed = new URL(url);
@@ -34,11 +27,14 @@ async function fulfillStatic(route) {
 function makeBar(ms, index) {
   const open = 100 + index * 0.25;
   const close = open + (index % 2 === 0 ? 0.18 : -0.12);
+  const totalMinutes = 10 * 60 + 30 + index * 5;
+  const hour = Math.floor(totalMinutes / 60);
+  const minute = totalMinutes % 60;
   return {
     symbol: 'MOCK',
     interval: '5m',
     bar_time_ms: ms,
-    us_time: `2026-05-04 ${String(10 + Math.floor(index / 6)).padStart(2, '0')}:${String(30 + (index % 6) * 5).padStart(2, '0')}:00`,
+    us_time: `2026-05-04 ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00`,
     open,
     high: open + 0.7,
     low: open - 0.7,
@@ -60,7 +56,7 @@ function makeIndicator(bar, index) {
     sd_signal_lower: 98 + index * 0.12,
     sd_filter_upper: 102.4 + index * 0.12,
     sd_filter_lower: 97.6 + index * 0.12,
-    sd_zone: index <= 4 ? -1 : 0,
+    sd_zone: index <= 4 || index === 24 ? -1 : 0,
     sd_trend: 1,
     atr: 0.5,
     atr_raw: 0.5,
@@ -70,12 +66,12 @@ function makeIndicator(bar, index) {
     crsi_db: 30,
     obv_rsi: 45 + index * 2,
     vwap_dist: 0.2,
-    sd_lower: index === 0 || index === 4,
-    fractal_bull: index === 2 || index === 4,
-    bull_touch_fast: index === 4,
-    bull_touch_slow: index === 4,
-    obv_reg_bull_div: index === 3 || index === 4,
-    crsi_reg_bull_div: index === 4,
+    sd_lower: index === 0 || index === 4 || index === 24,
+    fractal_bull: index === 2 || index === 4 || index === 24,
+    bull_touch_fast: index === 4 || index === 24,
+    bull_touch_slow: index === 4 || index === 24,
+    obv_reg_bull_div: index === 3 || index === 4 || index === 24,
+    crsi_reg_bull_div: index === 4 || index === 24,
     dtp_dir: index >= 3 ? -1 : 0,
     dtp_phase: index >= 3 ? '红初中' : '',
     dtp_phase_bars: index >= 3 ? index - 2 : 0,
@@ -89,15 +85,17 @@ function makeTrace(bar, index) {
     3: ['记录 OBV 多头背离'],
     4: ['记录 cRSI 多头背离', '多头候选被过滤: DTP红初中'],
     5: ['出现反向空头组件，清空多头窗口组件'],
+    24: ['记录 cRSI 多头背离', '多头候选被过滤: DTP红初中'],
   };
+  const isBlocked = index === 4 || index === 24;
   const componentFlags = {
-    sd_lower_bull_fractal_seen: index >= 2 && index <= 4,
-    bull_obv_div_seen: index >= 3 && index <= 4,
-    bull_crsi_div_seen: index >= 4 && index <= 4,
-    buy_raw: index === 4,
+    sd_lower_bull_fractal_seen: (index >= 2 && index <= 4) || index === 24,
+    bull_obv_div_seen: (index >= 3 && index <= 4) || index === 24,
+    bull_crsi_div_seen: index === 4 || index === 24,
+    buy_raw: isBlocked,
   };
-  const signalPayload = index === 4 ? {
-    signal_id: 'mock-blocked-1050',
+  const signalPayload = isBlocked ? {
+    signal_id: `mock-blocked-${index}`,
     symbol: 'MOCK',
     direction: 'long',
     signal: 'long',
@@ -116,25 +114,25 @@ function makeTrace(bar, index) {
     cn_time: '2026-05-04 22:50:00',
     close: bar.close,
     event_chain: eventsByIndex[index] || [],
-    filters: index === 4 ? ['多头过滤: DTP红初中'] : [],
+    filters: isBlocked ? ['多头过滤: DTP红初中'] : [],
     signal_state: {
-      stage: index === 4 ? 'blocked' : 'none',
-      direction: index === 4 ? 'long' : '',
-      signal: index === 4 ? 'long' : '',
-      label: index === 4 ? '回归多已过滤' : '无信号',
+      stage: isBlocked ? 'blocked' : 'none',
+      direction: isBlocked ? 'long' : '',
+      signal: isBlocked ? 'long' : '',
+      label: isBlocked ? '回归多已过滤' : '无信号',
       reason: '',
-      filter_reason: index === 4 ? 'DTP红初中' : '',
-      signal_window: index === 4 ? 'sd_lower' : '',
-      signal_mode: index === 4 ? 'mr' : '',
+      filter_reason: isBlocked ? 'DTP红初中' : '',
+      signal_window: isBlocked ? 'sd_lower' : '',
+      signal_mode: isBlocked ? 'mr' : '',
       ema_touch_line: '',
       div_source: '',
       signal_payload: signalPayload,
     },
     window_flags: {
       sd_upper_valid: false,
-      sd_lower_valid: index >= 0 && index <= 4,
+      sd_lower_valid: (index >= 0 && index <= 4) || index === 24,
       sd_upper_active: false,
-      sd_lower_active: index >= 0 && index <= 4,
+      sd_lower_active: (index >= 0 && index <= 4) || index === 24,
       sd_upper_used: false,
       sd_lower_used: false,
       sd_upper_age_bars: 0,
@@ -147,15 +145,15 @@ function makeTrace(bar, index) {
       dtp_dir: index >= 3 ? -1 : 0,
       dtp_phase: index >= 3 ? '红初中' : '',
       dtp_phase_bars: index >= 3 ? index - 2 : 0,
-      fractal_tokens: index === 2 ? ['F↑'] : [],
+      fractal_tokens: index === 2 || index === 24 ? ['F↑'] : [],
       touch_tokens: [],
     },
-    position: { vwap_dist: 0.2, sd_zone: index <= 4 ? -1 : 0, sd_trend: 1 },
+    position: { vwap_dist: 0.2, sd_zone: index <= 4 || index === 24 ? -1 : 0, sd_trend: 1 },
     volatility: { atr: 0.5, atr_pct: 0.5 },
     momentum: {
       crsi: 38 + index * 4,
       obv_rsi: 45 + index * 2,
-      divergence_tokens: index >= 3 ? ['oR↑', 'cR↑'] : [],
+      divergence_tokens: ((index >= 3 && index <= 5) || index === 24) ? ['oR↑', 'cR↑'] : [],
     },
   };
 }
@@ -241,6 +239,24 @@ async function main() {
   }, { timeout: 30000 });
   await page.waitForTimeout(800);
 
+  const initialTraceScrollState = await page.evaluate(() => ({
+    scrollY: window.scrollY,
+    chartTop: document.getElementById('chartCanvas')?.getBoundingClientRect().top ?? 0,
+    traceTop: document.getElementById('tracePanelShell')?.getBoundingClientRect().top ?? 0,
+  }));
+
+  const reopenTraceScrollState = await page.evaluate(() => {
+    window.scrollTo(0, 0);
+    const beforeOpen = window.scrollY;
+    if (typeof window.toggleChartTracePanel === 'function') window.toggleChartTracePanel();
+    if (typeof window.toggleChartTracePanel === 'function') window.toggleChartTracePanel();
+    return {
+      beforeOpen,
+      afterOpen: window.scrollY,
+      traceTop: document.getElementById('tracePanelShell')?.getBoundingClientRect().top ?? 0,
+    };
+  });
+
   const beforeClick = await page.evaluate(() => {
     const dom = document.getElementById('chartCanvas');
     const chart = window.echarts.getInstanceByDom(dom);
@@ -307,6 +323,11 @@ async function main() {
       customZoneText: document.getElementById('customRangeForm')?.textContent || '',
       cursorText: document.getElementById('cursorStrip')?.textContent || '',
       traceText: document.getElementById('tracePanelShell')?.textContent || '',
+      traceItemCount: document.querySelectorAll('#tracePanelShell .trace-review-item').length,
+      traceListCount: document.querySelectorAll('#tracePanelShell .trace-review-list').length,
+      traceTableCount: document.querySelectorAll('#tracePanelShell .trace-panel-table').length,
+      tracePageText: document.querySelector('#tracePanelShell .trace-pagination-status')?.textContent || '',
+      activeTraceText: document.querySelector('#tracePanelShell .trace-review-item.active')?.textContent || '',
       layerText: document.getElementById('layerStrip')?.textContent || '',
     };
   });
@@ -366,8 +387,33 @@ async function main() {
     drawerVisible: Boolean(document.querySelector('#signalDetailDrawer.show')),
     drawerText: document.getElementById('signalDetailContent')?.textContent || '',
     cursorText: document.getElementById('cursorStrip')?.textContent || '',
-    activeTraceText: document.querySelector('#tracePanelShell tr.active')?.textContent || '',
+    activeTraceText: document.querySelector('#tracePanelShell .trace-review-item.active')?.textContent || '',
   }));
+
+  const afterNextPage = await page.evaluate(() => {
+    const buttons = Array.from(document.querySelectorAll('#tracePanelShell .trace-page-btn'));
+    const nextButton = buttons.find((item) => item.textContent.trim() === 'Next');
+    nextButton?.click();
+    return {
+      tracePageText: document.querySelector('#tracePanelShell .trace-pagination-status')?.textContent || '',
+      traceItemCount: document.querySelectorAll('#tracePanelShell .trace-review-item').length,
+      firstTraceText: document.querySelector('#tracePanelShell .trace-review-item')?.textContent || '',
+      activeTraceText: document.querySelector('#tracePanelShell .trace-review-item.active')?.textContent || '',
+    };
+  });
+
+  const afterFocusLaterTrace = await page.evaluate((barTimeMs) => {
+    window.scrollTo(0, 0);
+    const beforeFocus = window.scrollY;
+    if (typeof window.focusTraceBar === 'function') window.focusTraceBar(barTimeMs);
+    return {
+      beforeFocus,
+      afterFocus: window.scrollY,
+      tracePageText: document.querySelector('#tracePanelShell .trace-pagination-status')?.textContent || '',
+      traceItemCount: document.querySelectorAll('#tracePanelShell .trace-review-item').length,
+      activeTraceText: document.querySelector('#tracePanelShell .trace-review-item.active')?.textContent || '',
+    };
+  }, BAR_TIMES[24]);
 
   const beforeCustomApplyRequests = timelineRequests.length;
   await page.evaluate(() => {
@@ -400,6 +446,11 @@ async function main() {
 
   const failures = [];
   if (errors.length) failures.push(...errors);
+  if (initialTraceScrollState.scrollY > 24) failures.push(`initial_trace_auto_scroll_${initialTraceScrollState.scrollY}`);
+  if (initialTraceScrollState.traceTop < initialTraceScrollState.chartTop + 120) failures.push(`initial_trace_too_near_chart_${initialTraceScrollState.traceTop}`);
+  if (Math.abs(reopenTraceScrollState.afterOpen - reopenTraceScrollState.beforeOpen) > 8) {
+    failures.push(`trace_reopen_scroll_jump_${reopenTraceScrollState.beforeOpen}_${reopenTraceScrollState.afterOpen}`);
+  }
   if (beforeClick.gridCount !== 4) failures.push(`grid_count_${beforeClick.gridCount}`);
   if (beforeClick.xAxisCount !== 4) failures.push(`x_axis_count_${beforeClick.xAxisCount}`);
   if (beforeClick.yAxisCount !== 5) failures.push(`y_axis_count_${beforeClick.yAxisCount}`);
@@ -421,8 +472,8 @@ async function main() {
   if (!beforeClick.tooltipExtraCssText.includes('max-height:280px')) failures.push('tooltip_missing_max_height');
   if (beforeClick.componentLabelShow) failures.push('component_label_should_be_hidden');
   if (beforeClick.candidateLabelShow) failures.push('candidate_label_should_be_hidden');
-  if (beforeClick.blockedDataCount !== 1) failures.push(`blocked_flow_count_${beforeClick.blockedDataCount}`);
-  if (beforeClick.blockedMainCount !== 1) failures.push(`blocked_main_count_${beforeClick.blockedMainCount}`);
+  if (beforeClick.blockedDataCount !== 2) failures.push(`blocked_flow_count_${beforeClick.blockedDataCount}`);
+  if (beforeClick.blockedMainCount !== 2) failures.push(`blocked_main_count_${beforeClick.blockedMainCount}`);
   if (!beforeClick.blockedLabel.includes('DTP红初中')) failures.push('missing_blocked_label_reason');
   if (!beforeClick.blockedLabelShow) failures.push('blocked_label_should_be_visible');
   if (beforeClick.markerCluster.length < 6) failures.push(`marker_cluster_count_${beforeClick.markerCluster.length}`);
@@ -436,10 +487,15 @@ async function main() {
   if (!beforeClick.customStartHasPicker) failures.push('custom_start_missing_flatpickr');
   if (!beforeClick.customEndHasPicker) failures.push('custom_end_missing_flatpickr');
   if (beforeClick.customStartValue !== '2026/05/04 10:30') failures.push(`custom_start_not_et_${beforeClick.customStartValue}`);
-  if (beforeClick.customEndValue !== '2026/05/04 11:00') failures.push(`custom_end_not_et_${beforeClick.customEndValue}`);
+  if (beforeClick.customEndValue !== '2026/05/04 14:10') failures.push(`custom_end_not_et_${beforeClick.customEndValue}`);
   if (!beforeClick.customZoneText.includes('ET')) failures.push('missing_custom_range_et_badge');
   if (!beforeClick.cursorText.includes('blocked · DTP红初中')) failures.push('cursor_missing_blocked_reason');
   if (!beforeClick.traceText.includes('blocked · DTP红初中')) failures.push('trace_missing_blocked_reason');
+  if (beforeClick.traceListCount !== 1) failures.push(`trace_list_count_${beforeClick.traceListCount}`);
+  if (beforeClick.traceTableCount !== 0) failures.push(`trace_table_count_${beforeClick.traceTableCount}`);
+  if (beforeClick.traceItemCount !== 20) failures.push(`trace_item_count_${beforeClick.traceItemCount}`);
+  if (!beforeClick.tracePageText.includes('1-20 / 45')) failures.push(`trace_page_text_${beforeClick.tracePageText}`);
+  if (!beforeClick.activeTraceText.includes('bar #5')) failures.push('trace_active_initial_bar_missing');
   if (!componentClickProbe.ok) failures.push(`component_click_failed_${componentClickProbe.reason || 'unknown'}`);
   if (!afterComponentClick.drawerVisible) failures.push('component_click_did_not_open_drawer');
   if (!afterComponentClick.drawerText.includes('Component Detail')) failures.push('component_drawer_missing_title');
@@ -449,6 +505,17 @@ async function main() {
   if (!afterClick.drawerVisible) failures.push('blocked_click_did_not_open_drawer');
   if (!afterClick.drawerText.includes('DTP红初中')) failures.push('drawer_missing_blocked_reason');
   if (!afterClick.activeTraceText.includes('DTP红初中')) failures.push('active_trace_missing_reason');
+  if (!afterNextPage.tracePageText.includes('21-40 / 45')) failures.push(`trace_next_page_text_${afterNextPage.tracePageText}`);
+  if (afterNextPage.traceItemCount !== 20) failures.push(`trace_next_page_count_${afterNextPage.traceItemCount}`);
+  if (!afterNextPage.firstTraceText.includes('bar #21')) failures.push('trace_next_page_first_bar_missing');
+  if (afterNextPage.activeTraceText) failures.push('trace_manual_page_should_not_focus');
+  if (!afterFocusLaterTrace.tracePageText.includes('21-40 / 45')) failures.push(`trace_focus_page_text_${afterFocusLaterTrace.tracePageText}`);
+  if (afterFocusLaterTrace.traceItemCount !== 20) failures.push(`trace_focus_page_count_${afterFocusLaterTrace.traceItemCount}`);
+  if (!afterFocusLaterTrace.activeTraceText.includes('bar #25')) failures.push('trace_focus_later_bar_missing');
+  if (!afterFocusLaterTrace.activeTraceText.includes('DTP红初中')) failures.push('trace_focus_later_reason_missing');
+  if (Math.abs(afterFocusLaterTrace.afterFocus - afterFocusLaterTrace.beforeFocus) > 8) {
+    failures.push(`trace_focus_scroll_jump_${afterFocusLaterTrace.beforeFocus}_${afterFocusLaterTrace.afterFocus}`);
+  }
   if (afterCustomSelectRequests !== beforeCustomApplyRequests) failures.push('custom_select_should_not_reload');
   if (afterCustomApplyRequests <= afterCustomSelectRequests) failures.push('custom_apply_did_not_reload');
   if (customApplyRequest.start_ms !== BAR_TIMES[1]) failures.push(`custom_apply_start_ms_${customApplyRequest.start_ms}`);
@@ -462,11 +529,15 @@ async function main() {
   const output = {
     ok: failures.length === 0,
     failures,
+    initialTraceScrollState,
+    reopenTraceScrollState,
     beforeClick,
     componentClickProbe,
     afterComponentClick,
     clickProbe,
     afterClick,
+    afterNextPage,
+    afterFocusLaterTrace,
     customRange: {
       beforeCustomApplyRequests,
       afterCustomSelectRequests,

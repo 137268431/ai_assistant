@@ -46,7 +46,9 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         let chartFocusMode = false;
         let chartPointerLocked = false;
         let inspectorDrawerOpen = false;
+        const TRACE_PANEL_PAGE_SIZE = 20;
         let chartTracePanelOpen = false;
+        let tracePanelPage = 1;
         let chartLegendCollapsed = true;
         let chartMarkerDensityTier = '';
         let chartTooltipSyncRaf = 0;
@@ -820,6 +822,14 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             if (key === 'blocked') return 'negative';
             if (key === 'candidate') return 'warning';
             return '';
+        }
+
+        function getTraceStageLabel(stage) {
+            const key = String(stage || '').trim().toLowerCase();
+            if (key === 'confirmed') return 'Confirmed';
+            if (key === 'blocked') return 'Blocked';
+            if (key === 'candidate') return 'Candidate';
+            return 'No event';
         }
 
         function getChartMarkerDensityTier(barsCount) {
@@ -2267,16 +2277,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 ? '焦点模式'
                 : '工作台模式';
             sub.innerHTML = `${escapeHtml(focus?.bar?.us_time || '等待图表数据')}<br>${escapeHtml(stateText)}`;
-            const traceBody = buildTracePanelBody(payload, { embedded: true });
-            const traceCard = chartTracePanelOpen ? `
-                <div class="rail-card">
-                    <div class="rail-kicker">Trace</div>
-                    <div class="rail-sub">Trace 简版；完整表在下方。</div>
-                    <div class="trace-panel-summary">${traceBody.chips.join('')}</div>
-                    ${traceBody.tableHtml}
-                </div>
-            ` : '';
-            body.innerHTML = `${rail?.innerHTML || '<div class="rail-card"><div class="rail-kicker">Inspector</div><div class="rail-sub">等待图表数据...</div></div>'}${traceCard}`;
+            body.innerHTML = rail?.innerHTML || '<div class="rail-card"><div class="rail-kicker">Inspector</div><div class="rail-sub">等待图表数据...</div></div>';
             drawer.classList.toggle('show', inspectorDrawerOpen);
             drawer.setAttribute('aria-hidden', inspectorDrawerOpen ? 'false' : 'true');
         }
@@ -2462,17 +2463,109 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             return Array.isArray(payload?.traceTimeline) ? payload.traceTimeline : [];
         }
 
+        function getTracePanelTotalPages(traceRows) {
+            const totalRows = Array.isArray(traceRows) ? traceRows.length : 0;
+            return Math.max(1, Math.ceil(totalRows / TRACE_PANEL_PAGE_SIZE));
+        }
+
+        function clampTracePanelPage(page, totalPages) {
+            return Math.min(Math.max(Math.round(Number(page) || 1), 1), Math.max(1, Number(totalPages) || 1));
+        }
+
+        function findTracePanelPageForBar(payload, barTimeMs) {
+            const traceRows = getTraceRows(payload);
+            const target = Number(barTimeMs || 0);
+            if (!traceRows.length || !target) return tracePanelPage;
+            const rowIndex = traceRows.findIndex((item) => Number(item?.bar_time_ms || 0) === target);
+            if (rowIndex < 0) return tracePanelPage;
+            return clampTracePanelPage(Math.floor(rowIndex / TRACE_PANEL_PAGE_SIZE) + 1, getTracePanelTotalPages(traceRows));
+        }
+
+        function syncTracePanelPageToFocus(payload) {
+            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            if (!bars.length) {
+                tracePanelPage = 1;
+                return;
+            }
+            const focus = buildContext(payload, getEffectiveCursorIndex(payload), selectedSignalId);
+            if (!focus?.bar?.bar_time_ms) return;
+            tracePanelPage = findTracePanelPageForBar(payload, focus.bar.bar_time_ms);
+        }
+
+        function buildTraceTokens(tokens, className = '') {
+            return (Array.isArray(tokens) ? tokens : [])
+                .filter((item) => item !== null && item !== undefined && String(typeof item === 'object' ? item.text : item).trim())
+                .map((item) => {
+                    if (item && typeof item === 'object') {
+                        return buildTraceToken(item.text, item.className || className);
+                    }
+                    return buildTraceToken(item, className);
+                })
+                .join('');
+        }
+
+        function buildTraceReviewSection(label, tokenHtml) {
+            return `
+                <div class="trace-review-section">
+                    <div class="trace-review-section-label">${escapeHtml(label)}</div>
+                    <div class="trace-token-row">${tokenHtml || buildTraceToken('--')}</div>
+                </div>
+            `;
+        }
+
+        function buildTracePaginationControls({ page, totalPages, totalRows, startIndex, endIndex }) {
+            if (!totalRows) return '';
+            const pages = [];
+            if (totalPages <= 7) {
+                for (let i = 1; i <= totalPages; i += 1) pages.push(i);
+            } else {
+                pages.push(1);
+                if (page > 3) pages.push('left');
+                for (let i = Math.max(2, page - 1); i <= Math.min(totalPages - 1, page + 1); i += 1) {
+                    pages.push(i);
+                }
+                if (page < totalPages - 2) pages.push('right');
+                pages.push(totalPages);
+            }
+            const pageButtons = pages.map((item) => {
+                if (typeof item !== 'number') return '<span class="trace-page-ellipsis">...</span>';
+                const active = item === page;
+                return `<button class="trace-page-btn ${active ? 'active' : ''}" type="button" onclick="setTracePanelPage(${item})" ${active ? 'aria-current="page"' : ''}>${item}</button>`;
+            }).join('');
+            return `
+                <div class="trace-pagination-bar">
+                    <div class="trace-pagination-status">${escapeHtml(`${startIndex + 1}-${endIndex} / ${totalRows}`)}</div>
+                    <div class="trace-pagination-pages">
+                        <button class="trace-page-btn" type="button" onclick="setTracePanelPage(${page - 1})" ${page <= 1 ? 'disabled' : ''}>Prev</button>
+                        ${pageButtons}
+                        <button class="trace-page-btn" type="button" onclick="setTracePanelPage(${page + 1})" ${page >= totalPages ? 'disabled' : ''}>Next</button>
+                    </div>
+                </div>
+            `;
+        }
+
         function buildTracePanelBody(payload, { embedded = false } = {}) {
             const traceRows = getTraceRows(payload);
             const bars = Array.isArray(payload?.bars) ? payload.bars : [];
             const focus = bars.length ? buildContext(payload, getEffectiveCursorIndex(payload), selectedSignalId) : null;
             const activeBarMs = Number(focus?.bar?.bar_time_ms || 0) || 0;
+            const totalRows = traceRows.length;
+            const totalPages = getTracePanelTotalPages(traceRows);
+            const page = clampTracePanelPage(tracePanelPage, totalPages);
+            tracePanelPage = page;
+            const startIndex = totalRows ? (page - 1) * TRACE_PANEL_PAGE_SIZE : 0;
+            const endIndex = totalRows ? Math.min(totalRows, startIndex + TRACE_PANEL_PAGE_SIZE) : 0;
             if (!traceRows.length) {
                 return {
                     chips: [
                         buildTraceToken(`Trace ${chartTracePanelOpen ? 'On' : 'Off'}`),
                     ],
-                    tableHtml: '<div class="trace-empty">当前窗口暂无可展示的 trace 记录。</div>',
+                    listHtml: '<div class="trace-empty">当前窗口暂无可展示的 trace 记录。</div>',
+                    page,
+                    totalPages,
+                    totalRows,
+                    startIndex,
+                    endIndex,
                 };
             }
             const candidateCount = traceRows.filter((item) => getTraceStage(item) === 'candidate').length;
@@ -2485,106 +2578,109 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 buildTraceToken(`${blockedCount} blocked`, blockedCount ? 'negative' : ''),
                 focus?.trace?.is_preview || focus?.isPreviewBar ? buildTraceToken('当前焦点含预估 bar', 'preview') : '',
             ].filter(Boolean);
-            const rowsHtml = traceRows.map((item) => {
+            const pageRows = traceRows.slice(startIndex, endIndex);
+            const itemsHtml = pageRows.map((item) => {
                 const barTimeMs = Number(item?.bar_time_ms || 0) || 0;
                 const stage = getTraceStage(item);
                 const active = activeBarMs > 0 && activeBarMs === barTimeMs;
                 const isPreview = Boolean(item?.is_preview);
+                const eventChain = Array.isArray(item?.event_chain) ? item.event_chain.filter(Boolean) : [];
+                const filters = Array.isArray(item?.filters) ? item.filters.filter(Boolean) : [];
+                const flowTokens = getTraceFlowTokens(item, 8);
+                const hasKeyEvent = Boolean(stage && stage !== 'none') || eventChain.length || filters.length || hasTraceComponentFlags(item?.component_flags);
+                const itemClasses = [
+                    'trace-review-item',
+                    active ? 'active' : '',
+                    isPreview ? 'preview' : '',
+                    hasKeyEvent ? '' : 'quiet',
+                    stage ? `stage-${stage}` : '',
+                ].filter(Boolean).join(' ');
                 const structure = [
                     item?.structure?.ema_bullish ? 'EMA 多头' : item?.structure?.ema_bearish ? 'EMA 空头' : 'EMA 中性',
                     item?.structure?.dtp_phase ? `DTP ${item.structure.dtp_phase}` : '',
                     ...(Array.isArray(item?.structure?.fractal_tokens) ? item.structure.fractal_tokens : []),
                 ].filter(Boolean);
-                const position = [
+                const touchTokens = Array.isArray(item?.structure?.touch_tokens) ? item.structure.touch_tokens : [];
+                const tech = [
                     `VWAP ${formatPercent(item?.position?.vwap_dist)}`,
                     `SD ${getSdZoneText(item?.position?.sd_zone)}`,
-                    `Trend ${getSdTrendText(item?.position?.sd_trend)}`,
-                ];
-                const volatility = [
                     `ATR ${formatPrice(item?.volatility?.atr)}`,
                     `ATR% ${formatPercent(item?.volatility?.atr_pct)}`,
-                ];
-                const momentum = [
                     `CRSI ${formatNumber(item?.momentum?.crsi)}`,
                     `OBV ${formatNumber(item?.momentum?.obv_rsi)}`,
-                    ...((item?.momentum?.divergence_tokens || []).slice(0, 3)),
                 ].filter(Boolean);
-                const events = Array.isArray(item?.event_chain) && item.event_chain.length
-                    ? item.event_chain.slice(0, embedded ? 2 : 3)
-                    : ['无新增事件'];
-                const filters = Array.isArray(item?.filters) && item.filters.length
-                    ? item.filters.slice(0, embedded ? 2 : 3)
-                    : ['未触发过滤'];
+                const divergence = Array.isArray(item?.momentum?.divergence_tokens) ? item.momentum.divergence_tokens.slice(0, 4) : [];
+                const eventTokens = eventChain.length ? eventChain.slice(0, embedded ? 2 : 4) : ['无新增事件'];
+                const filterTokens = filters.length ? filters.slice(0, embedded ? 2 : 3) : ['未触发过滤'];
                 const signalLabel = formatTraceDecisionLabel(item, null);
                 return `
-                    <tr class="${active ? 'active ' : ''}${isPreview ? 'preview' : ''}" data-trace-bar-ms="${barTimeMs}" onclick="focusTraceBar('${barTimeMs}')">
-                        <td>
-                            <div class="trace-cell-main">${escapeHtml(item?.us_time || '--')}</div>
-                            <div class="trace-cell-sub">${escapeHtml(item?.cn_time || '--')}${isPreview ? ' · 预估' : ''}</div>
-                        </td>
-                        <td>
-                            <div class="trace-cell-main">${escapeHtml(formatPrice(item?.close))}</div>
-                            <div class="trace-cell-sub">bar #${escapeHtml(String(item?.bar_index || '--'))}</div>
-                        </td>
-                        <td><div class="trace-stack"><div class="trace-token-row">${structure.map((text) => buildTraceToken(text)).join('')}</div><div class="trace-token-row">${(item?.structure?.touch_tokens || []).map((text) => buildTraceToken(text, 'warning')).join('') || buildTraceToken('无触及')}</div></div></td>
-                        <td><div class="trace-stack"><div class="trace-token-row">${position.map((text) => buildTraceToken(text)).join('')}</div></div></td>
-                        <td><div class="trace-stack"><div class="trace-token-row">${volatility.map((text) => buildTraceToken(text)).join('')}</div></div></td>
-                        <td><div class="trace-stack"><div class="trace-token-row">${momentum.map((text) => buildTraceToken(text)).join('')}</div></div></td>
-                        <td><div class="trace-stack"><div class="trace-token-row">${events.map((text) => buildTraceToken(text, 'warning')).join('')}</div></div></td>
-                        <td><div class="trace-stack"><div class="trace-token-row">${filters.map((text) => buildTraceToken(text, filters[0] === '未触发过滤' ? '' : 'negative')).join('')}</div></div></td>
-                        <td><div class="trace-stack"><div class="trace-token-row">${buildTraceToken(signalLabel, getTraceStageBadgeClass(stage))}${isPreview ? buildTraceToken('预估', 'preview') : ''}</div><div class="trace-cell-sub">${escapeHtml(item?.signal_state?.reason || item?.signal_state?.filter_reason || 'bars 实时推演')}</div></div></td>
-                    </tr>
+                    <button class="${escapeHtml(itemClasses)}" type="button" data-trace-bar-ms="${barTimeMs}" onclick="focusTraceBar('${barTimeMs}')">
+                        <div class="trace-review-head">
+                            <div>
+                                <div class="trace-review-time">${escapeHtml(item?.us_time || '--')}</div>
+                                <div class="trace-review-sub">${escapeHtml(item?.cn_time || '--')}${isPreview ? ' · 预估' : ''}</div>
+                            </div>
+                            <div class="trace-review-price">
+                                ${escapeHtml(formatPrice(item?.close))}
+                                <span>bar #${escapeHtml(String(item?.bar_index || '--'))}</span>
+                            </div>
+                        </div>
+                        <div class="trace-review-primary">
+                            ${buildTraceToken(getTraceStageLabel(stage), getTraceStageBadgeClass(stage))}
+                            ${buildTraceToken(signalLabel, getTraceStageBadgeClass(stage))}
+                            ${isPreview ? buildTraceToken('预估', 'preview') : ''}
+                        </div>
+                        <div class="trace-review-grid">
+                            ${buildTraceReviewSection('Structure', buildTraceTokens([
+                                ...structure,
+                                ...touchTokens.map((text) => ({ text, className: 'warning' })),
+                            ]))}
+                            ${buildTraceReviewSection('Flow', buildTraceTokens(flowTokens.length ? flowTokens : ['无组件'], flowTokens.length ? 'warning' : ''))}
+                            ${buildTraceReviewSection('Events', buildTraceTokens(eventTokens, eventChain.length ? 'warning' : ''))}
+                            ${buildTraceReviewSection('Filters', buildTraceTokens(filterTokens, filters.length ? 'negative' : ''))}
+                            ${buildTraceReviewSection('Tech', buildTraceTokens(tech))}
+                            ${buildTraceReviewSection('Divergence', buildTraceTokens(divergence.length ? divergence : ['无背离']))}
+                        </div>
+                        <div class="trace-review-reason">${escapeHtml(item?.signal_state?.reason || item?.signal_state?.filter_reason || 'bars 实时推演')}</div>
+                    </button>
                 `;
             }).join('');
+            const paginationHtml = buildTracePaginationControls({ page, totalPages, totalRows, startIndex, endIndex });
             return {
                 chips,
-                tableHtml: `
-                    <div class="trace-panel-table-wrap">
-                        <table class="trace-panel-table">
-                            <thead>
-                                <tr>
-                                    <th>Time</th>
-                                    <th>Close</th>
-                                    <th>Structure</th>
-                                    <th>Position</th>
-                                    <th>Volatility</th>
-                                    <th>Momentum</th>
-                                    <th>Events</th>
-                                    <th>Filters</th>
-                                    <th>Signal</th>
-                                </tr>
-                            </thead>
-                            <tbody>${rowsHtml}</tbody>
-                        </table>
+                listHtml: `
+                    <div class="trace-review-shell">
+                        ${paginationHtml}
+                        <div class="trace-review-list">${itemsHtml}</div>
+                        ${paginationHtml}
                     </div>
                 `,
+                page,
+                totalPages,
+                totalRows,
+                startIndex,
+                endIndex,
             };
         }
 
-        function scrollTraceRowIntoView(barTimeMs) {
-            const shell = document.getElementById('tracePanelShell');
-            const target = shell?.querySelector?.(`[data-trace-bar-ms="${Number(barTimeMs || 0)}"]`);
-            if (!target || typeof target.scrollIntoView !== 'function') return;
-            window.requestAnimationFrame(() => {
-                target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-            });
-        }
-
-        function renderTracePanel(payload = getChartDisplayPayload()) {
+        function renderTracePanel(payload = getChartDisplayPayload(), { syncToFocus = true } = {}) {
             const shell = document.getElementById('tracePanelShell');
             if (!shell) return;
-            const body = buildTracePanelBody(payload);
             const hidden = !chartTracePanelOpen;
             shell.classList.toggle('hidden', hidden);
             if (hidden) {
                 shell.innerHTML = '';
                 return;
             }
+            if (syncToFocus) {
+                syncTracePanelPageToFocus(payload);
+            }
+            const body = buildTracePanelBody(payload);
             shell.innerHTML = `
                 <div class="trace-panel-head">
                     <div>
                         <div class="trace-panel-title">Bar Trace</div>
-                        <div class="trace-panel-copy">每根 bar 一行，串起结构、位置、动量、过滤与信号状态；预估 bar 只显示候选/过滤，不并入确认信号。</div>
+                        <div class="trace-panel-copy">按 bar 逐条复盘结构、组件、事件、过滤与信号状态；关键事件优先突出，普通 bar 降低视觉权重。</div>
                     </div>
                     <div class="trace-panel-actions">
                         <button class="tv-tool-btn" type="button" onclick="toggleChartTracePanel()">隐藏 Trace</button>
@@ -2592,12 +2688,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     </div>
                 </div>
                 <div class="trace-panel-summary">${body.chips.join('')}</div>
-                ${body.tableHtml}
+                ${body.listHtml}
             `;
-            const focus = payload ? buildContext(payload, getEffectiveCursorIndex(payload), selectedSignalId) : null;
-            if (focus?.bar?.bar_time_ms) {
-                scrollTraceRowIntoView(focus.bar.bar_time_ms);
-            }
         }
 
         window.toggleChartTracePanel = function() {
@@ -2609,6 +2701,13 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             updateQueryState();
         };
 
+        window.setTracePanelPage = function(page) {
+            const payload = getChartDisplayPayload();
+            const totalPages = getTracePanelTotalPages(getTraceRows(payload));
+            tracePanelPage = clampTracePanelPage(page, totalPages);
+            renderTracePanel(payload, { syncToFocus: false });
+        };
+
         window.focusTraceBar = function(barTimeMs) {
             const payload = getChartDisplayPayload();
             const bars = Array.isArray(payload?.bars) ? payload.bars : [];
@@ -2616,7 +2715,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             if (targetIndex < 0) return;
             focusBarIndex(targetIndex);
             if (chartTracePanelOpen) {
-                scrollTraceRowIntoView(barTimeMs);
+                tracePanelPage = findTracePanelPageForBar(payload, barTimeMs);
+                renderTracePanel(payload, { syncToFocus: false });
             }
         };
 
@@ -4845,8 +4945,6 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     openComponentDrawer(context);
                 } else if (tracePoint && context?.activeTraceSignal) {
                     openSignalDrawer(context.activeTraceSignal, context);
-                } else if (tracePoint && getTraceStage(context?.trace) && chartTracePanelOpen) {
-                    scrollTraceRowIntoView(context?.bar?.bar_time_ms);
                 }
             };
             chartInstance.on('updateAxisPointer', (params) => {
