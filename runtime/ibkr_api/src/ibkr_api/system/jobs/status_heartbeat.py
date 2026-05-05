@@ -18,6 +18,8 @@ NormalizeEnvironment = Callable[[Any, str], str]
 TimeStrings = Callable[[], dict[str, str]]
 BuildSystemSummaryPayload = Callable[..., dict[str, Any]]
 BuildSystemMonitorPayload = Callable[[str], dict[str, Any]]
+BuildTodayTargetsResponse = Callable[..., tuple[dict[str, Any], int]]
+BuildActiveWindowProgressResponse = Callable[..., tuple[dict[str, Any], int]]
 EmitSystemEvent = Callable[..., dict[str, Any]]
 GetStatePayload = Callable[[str, str], dict[str, Any]]
 UpsertState = Callable[[str, str, dict[str, Any], str], dict[str, Any]]
@@ -92,6 +94,16 @@ def _append_unique(items: list[str], value: str) -> None:
 
 def _join_human(items: list[str], fallback: str) -> str:
     return "；".join(item for item in items if _to_text(item)) or fallback
+
+
+def _join_limited(items: list[str], *, limit: int = 12, fallback: str = "无") -> str:
+    cleaned = [item for item in items if _to_text(item)]
+    if not cleaned:
+        return fallback
+    shown = cleaned[:limit]
+    if len(cleaned) > len(shown):
+        shown.append(f"另有 {len(cleaned) - len(shown)} 个")
+    return "、".join(shown)
 
 
 def _service_status_items(services: dict[str, Any], statuses: set[str]) -> list[dict[str, str]]:
@@ -408,6 +420,210 @@ def _heartbeat_detail(snapshot: dict[str, Any], *, timestamp_us: str) -> dict[st
     return detail
 
 
+def _direction_label(value: Any) -> str:
+    direction = _to_text(value).lower()
+    return {"long": "多", "short": "空", "neutral": "中性"}.get(direction, direction)
+
+
+def _signal_status_label(value: Any) -> str:
+    status = _to_text(value).lower()
+    return {
+        "awaiting_confirm": "待确认",
+        "pending": "待执行",
+        "executed": "已执行",
+        "expired": "已过期",
+        "rejected": "已拒绝",
+        "closed": "已平仓",
+    }.get(status, status)
+
+
+def _target_label(item: dict[str, Any], *, include_signal_status: bool = False) -> str:
+    symbol = _to_text(item.get("symbol")).upper()
+    if not symbol:
+        return ""
+    parts: list[str] = []
+    direction = _direction_label(item.get("direction_bias"))
+    if direction:
+        parts.append(direction)
+    if include_signal_status:
+        status = _signal_status_label(item.get("latest_signal_status"))
+        if status:
+            parts.append(status)
+    return f"{symbol}({','.join(parts)})" if parts else symbol
+
+
+def _target_signal_summary(targets_payload: dict[str, Any]) -> dict[str, str]:
+    summary = _as_dict(targets_payload.get("summary"))
+    items = [_as_dict(item) for item in targets_payload.get("items") or [] if isinstance(item, dict)]
+    trading_items = [item for item in items if _to_text(item.get("symbol"))]
+    expired_items = [item for item in items if _to_text(item.get("latest_signal_status")).lower() == "expired"]
+    no_signal_items = [item for item in items if not bool(item.get("has_signal_today"))]
+    return {
+        "今日标的": (
+            f"total {_to_int(summary.get('total'), len(trading_items))} | "
+            f"active {_to_int(summary.get('active_count'), 0)} | "
+            f"candidate {_to_int(summary.get('candidate_count'), 0)} | "
+            f"operable {_to_int(summary.get('operable_count'), 0)} | "
+            f"ready {_to_int(summary.get('technical_ready_count'), 0)} | "
+            f"signals {_to_int(summary.get('signaled_count'), 0)} | "
+            f"awaiting {_to_int(summary.get('awaiting_confirm_count'), 0)} | "
+            f"pending {_to_int(summary.get('pending_count'), 0)} | "
+            f"expired {len(expired_items)} | "
+            f"no_signal {len(no_signal_items)}"
+        ),
+        "今日交易标的": _join_limited([_target_label(item, include_signal_status=True) for item in trading_items]),
+        "已过期标的": _join_limited([_target_label(item, include_signal_status=True) for item in expired_items]),
+        "未出信号标的": _join_limited([_target_label(item) for item in no_signal_items]),
+    }
+
+
+def _window_side_label(item: dict[str, Any]) -> str:
+    upper_valid = bool(item.get("sd_upper_valid"))
+    lower_valid = bool(item.get("sd_lower_valid"))
+    if upper_valid and lower_valid:
+        return "上下窗口"
+    if upper_valid:
+        return "上窗口"
+    if lower_valid:
+        return "下窗口"
+    status = _to_text(item.get("window_status") or item.get("status")).lower()
+    return {
+        "upper_active": "上窗口",
+        "lower_active": "下窗口",
+        "both_active": "上下窗口",
+        "near_expiry": "临近过期",
+    }.get(status, status)
+
+
+def _window_status_label(value: Any) -> str:
+    status = _to_text(value).lower()
+    return {
+        "upper_active": "上窗口",
+        "lower_active": "下窗口",
+        "both_active": "上下窗口",
+        "near_expiry": "临近过期",
+        "used": "已使用",
+        "expired": "已过期",
+        "no_window": "无窗口",
+        "blocked": "受阻",
+        "candidate": "候选信号",
+        "confirmed": "已确认",
+    }.get(status, status or "未知")
+
+
+def _window_item_label(item: dict[str, Any], *, active: bool) -> str:
+    symbol = _to_text(item.get("symbol")).upper()
+    if not symbol:
+        return ""
+    if active:
+        side = _window_side_label(item)
+        bars_remaining = _to_int(item.get("bars_remaining"), 0)
+        return f"{symbol}({side},{bars_remaining} bars)" if bars_remaining > 0 else f"{symbol}({side})"
+    return f"{symbol}({_window_status_label(item.get('window_status') or item.get('status'))})"
+
+
+def _active_window_item(item: dict[str, Any]) -> bool:
+    status = _to_text(item.get("window_status") or item.get("status")).lower()
+    return bool(item.get("sd_upper_valid") or item.get("sd_lower_valid")) or status in {
+        "upper_active",
+        "lower_active",
+        "both_active",
+        "near_expiry",
+    }
+
+
+def _active_window_summary(active_window_payload: dict[str, Any], targets_payload: dict[str, Any]) -> dict[str, str]:
+    summary = _as_dict(active_window_payload.get("summary"))
+    window_items = [_as_dict(item) for item in active_window_payload.get("items") or [] if isinstance(item, dict)]
+    window_by_symbol = {_to_text(item.get("symbol")).upper(): item for item in window_items if _to_text(item.get("symbol"))}
+    target_symbols = [_to_text(_as_dict(item).get("symbol")).upper() for item in targets_payload.get("items") or [] if isinstance(item, dict)]
+    symbols = [symbol for symbol in target_symbols if symbol] or list(window_by_symbol)
+    active_items: list[dict[str, Any]] = []
+    inactive_items: list[dict[str, Any]] = []
+    for symbol in symbols:
+        item = window_by_symbol.get(symbol) or {"symbol": symbol, "window_status": "no_window"}
+        if _active_window_item(item):
+            active_items.append(item)
+        else:
+            inactive_items.append(item)
+    return {
+        "窗口统计": (
+            f"active {_to_int(summary.get('window_active_count'), 0)} | "
+            f"valid {_to_int(summary.get('window_valid_count'), len(active_items))} | "
+            f"candidate {_to_int(summary.get('candidate_signal_count'), 0)} | "
+            f"near_expiry {_to_int(summary.get('near_expiry_count'), 0)}"
+        ),
+        "窗口已激活": _join_limited([_window_item_label(item, active=True) for item in active_items]),
+        "窗口未激活": _join_limited([_window_item_label(item, active=False) for item in inactive_items]),
+    }
+
+
+def _load_today_targets_payload(
+    *,
+    environment: str,
+    market_date: str,
+    build_today_targets_response: BuildTodayTargetsResponse | None,
+) -> dict[str, Any]:
+    if not callable(build_today_targets_response):
+        return {}
+    try:
+        payload, _ = build_today_targets_response(
+            payload={
+                "environment": environment,
+                "market_date": market_date,
+                "date": market_date,
+                "per_page": 200,
+                "page": 1,
+                "paginate": False,
+                "sort_by": "attention_asc",
+            }
+        )
+    except Exception as exc:
+        return {"summary": {}, "items": [], "error": f"targets_summary_error:{exc}"}
+    return _as_dict(payload)
+
+
+def _load_active_window_payload(
+    *,
+    environment: str,
+    market_date: str,
+    build_active_window_progress_response: BuildActiveWindowProgressResponse | None,
+) -> dict[str, Any]:
+    if not callable(build_active_window_progress_response):
+        return {}
+    try:
+        payload, _ = build_active_window_progress_response(
+            payload={
+                "environment": environment,
+                "market_date": market_date,
+                "date": market_date,
+                "status": "all",
+                "interval": "5m",
+                "limit": 200,
+            }
+        )
+    except Exception as exc:
+        return {"summary": {}, "items": [], "error": f"active_window_error:{exc}"}
+    return _as_dict(payload)
+
+
+def _enrich_status_detail_with_targets(
+    detail: dict[str, Any],
+    *,
+    targets_payload: dict[str, Any],
+    active_window_payload: dict[str, Any],
+) -> dict[str, Any]:
+    if targets_payload:
+        detail.update(_target_signal_summary(targets_payload))
+        if targets_payload.get("error"):
+            detail["标的摘要错误"] = _to_text(targets_payload.get("error"))
+    if active_window_payload:
+        detail.update(_active_window_summary(active_window_payload, targets_payload))
+        if active_window_payload.get("error"):
+            detail["窗口摘要错误"] = _to_text(active_window_payload.get("error"))
+    return detail
+
+
 def build_system_heartbeat_response(
     *,
     payload: dict[str, Any] | None,
@@ -522,6 +738,8 @@ def build_system_status_reminder_response(
     build_system_summary_payload: BuildSystemSummaryPayload,
     build_system_monitor_payload: BuildSystemMonitorPayload,
     emit_system_event: EmitSystemEvent,
+    build_today_targets_response: BuildTodayTargetsResponse | None = None,
+    build_active_window_progress_response: BuildActiveWindowProgressResponse | None = None,
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
     environment = normalize_environment(request_payload.get("environment"), "live")
@@ -544,13 +762,28 @@ def build_system_status_reminder_response(
         build_system_summary_payload=build_system_summary_payload,
         build_system_monitor_payload=build_system_monitor_payload,
     )
+    targets_payload = _load_today_targets_payload(
+        environment=environment,
+        market_date=times["date"],
+        build_today_targets_response=build_today_targets_response,
+    )
+    active_window_payload = _load_active_window_payload(
+        environment=environment,
+        market_date=times["date"],
+        build_active_window_progress_response=build_active_window_progress_response,
+    )
+    detail = _enrich_status_detail_with_targets(
+        _heartbeat_detail(snapshot, timestamp_us=times["us"]),
+        targets_payload=targets_payload,
+        active_window_payload=active_window_payload,
+    )
     title = _heartbeat_title(snapshot, reminder=True)
     event = emit_system_event(
         event_type="status_change",
         level="warning" if snapshot.get("unhealthy") else "info",
         source="ibkr-api",
         title=title,
-        detail=_heartbeat_detail(snapshot, timestamp_us=times["us"]),
+        detail=detail,
         environment=environment,
     )
     return {

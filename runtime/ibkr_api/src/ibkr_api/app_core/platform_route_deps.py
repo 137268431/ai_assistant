@@ -119,6 +119,12 @@ def build_platform_route_deps(
             normalize_environment=globals_dict["_normalize_environment"],
             time_strings=globals_dict["_time_strings"],
         ),
+        "build_active_window_progress_response": lambda payload: globals_dict["build_active_window_progress_response"](
+            pb,
+            payload=payload,
+            normalize_environment=globals_dict["_normalize_environment"],
+            time_strings=globals_dict["_time_strings"],
+        ),
         "system_status_chat_id": globals_dict["_system_status_chat_id"],
         "cancel_broker_order": lambda environment, order_id, payload=None: globals_dict[
             "_cancel_broker_order_via_runtime_support"

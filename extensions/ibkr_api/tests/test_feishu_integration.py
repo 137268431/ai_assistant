@@ -138,6 +138,52 @@ class FeishuIntegrationTest(unittest.TestCase):
         self.assertEqual(result["error"], "missing_token")
         self.assertEqual(len(requests_module.post_calls), 1)
 
+    def test_feishu_send_interactive_records_error_detail(self):
+        requests_module = _FakeRequests(
+            post_responses=[
+                _FakeResponse({"code": 99991663, "msg": "invalid card payload"}, status_code=400),
+            ]
+        )
+
+        result = feishu_send_interactive(
+            {"elements": []},
+            "oc_system_chat",
+            "live",
+            normalize_environment=self._normalize_environment,
+            token_loader=lambda: "token-789",
+            requests_module=requests_module,
+        )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error"], "http_400")
+        self.assertEqual(result["http_status"], 400)
+        self.assertEqual(result["api_code"], 99991663)
+        self.assertEqual(result["api_message"], "invalid card payload")
+        self.assertIn("invalid card payload", result["response_body"])
+
+    def test_feishu_update_interactive_records_error_detail(self):
+        requests_module = _FakeRequests(
+            patch_responses=[
+                _FakeResponse({"code": 230099, "msg": "message not found"}, status_code=200),
+            ]
+        )
+
+        result = feishu_update_interactive(
+            "om-missing",
+            {"elements": []},
+            "live",
+            normalize_environment=self._normalize_environment,
+            token_loader=lambda: "token-789",
+            requests_module=requests_module,
+        )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["message_id"], "om-missing")
+        self.assertEqual(result["error"], "api_230099")
+        self.assertEqual(result["http_status"], 200)
+        self.assertEqual(result["api_code"], 230099)
+        self.assertEqual(result["api_message"], "message not found")
+
 
 if __name__ == "__main__":
     unittest.main()

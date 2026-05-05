@@ -808,6 +808,12 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             return '无信号';
         }
 
+        function getTraceSignalStageText(trace) {
+            const stage = getTraceStage(trace);
+            if (stage && stage !== 'none') return stage;
+            return 'none';
+        }
+
         function getTraceStageBadgeClass(stage) {
             const key = String(stage || '').trim().toLowerCase();
             if (key === 'confirmed') return 'positive';
@@ -2845,12 +2851,88 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             renderMobileGestureHint(getChartDisplayPayload());
         }
 
+        function renderComponentDrawer(context = null) {
+            const drawer = document.getElementById('signalDetailDrawer');
+            const content = document.getElementById('signalDetailContent');
+            if (!drawer || !content || !context?.bar) return;
+            const bar = context.bar;
+            const indicator = context.indicator || {};
+            const trace = context.trace || {};
+            const componentTokens = getTraceFlowTokens(trace, 8);
+            const eventTokens = Array.isArray(trace?.event_chain) ? trace.event_chain : [];
+            const filters = Array.isArray(trace?.filters) && trace.filters.length ? trace.filters : ['未触发过滤'];
+            const dtpState = getTraceDtpState(trace);
+            const dtpText = dtpState.phase || dtpState.dir ? formatDtpStateLabel(dtpState) : '--';
+            const windowFlags = trace?.window_flags && typeof trace.window_flags === 'object' ? trace.window_flags : {};
+            const windowText = [
+                windowFlags.sd_upper_valid || windowFlags.sd_upper_active ? '上轨窗口' : '',
+                windowFlags.sd_lower_valid || windowFlags.sd_lower_active ? '下轨窗口' : '',
+            ].filter(Boolean).join(' / ') || '无窗口';
+            const signalStage = getTraceSignalStageText(trace);
+            const signalState = getTraceSignalState(trace);
+            const traceReason = getTraceFilterReason(trace) || signalState.reason || signalState.filter_reason || 'bars 实时推演';
+            const ohlc = formatInlineOHLC(bar);
+            content.innerHTML = `
+                <div class="drawer-head">
+                    <div>
+                        <div class="drawer-kicker">Component Detail</div>
+                        <div class="drawer-title">${escapeHtml(currentSymbol || bar.symbol || '--')} · 组件收集</div>
+                        <div class="drawer-sub">${escapeHtml(String(bar.us_time || trace.us_time || '--'))}<br>${escapeHtml(getIntervalLabel(currentInterval))} · bar #${escapeHtml(String(trace.bar_index || bar.bar_index || context.index + 1 || '--'))}</div>
+                    </div>
+                    <button class="drawer-close" type="button" onclick="closeSignalDrawer()">×</button>
+                </div>
+
+                <div class="drawer-grid">
+                    <div class="drawer-metric">
+                        <div class="drawer-label">OHLC</div>
+                        <div class="drawer-value">${escapeHtml(ohlc.primary)}<br>${escapeHtml(ohlc.secondary)}</div>
+                    </div>
+                    <div class="drawer-metric">
+                        <div class="drawer-label">Volume / ATR</div>
+                        <div class="drawer-value">${escapeHtml(formatNumber(bar.volume || 0, 0))}<br>${escapeHtml(formatPercent(indicator?.atr_pct))}</div>
+                    </div>
+                    <div class="drawer-metric">
+                        <div class="drawer-label">DTP / Signal</div>
+                        <div class="drawer-value"><span style="color:${escapeHtml(getDtpStateColor(dtpState))};">${escapeHtml(dtpText)}</span><br>${escapeHtml(signalStage)}</div>
+                    </div>
+                    <div class="drawer-metric">
+                        <div class="drawer-label">SD Window</div>
+                        <div class="drawer-value">${escapeHtml(windowText)}<br>${escapeHtml(`SD ${getSdZoneText(trace?.position?.sd_zone ?? indicator?.sd_zone)} · ${getSdTrendText(trace?.position?.sd_trend ?? indicator?.sd_trend)}`)}</div>
+                    </div>
+                </div>
+
+                <div class="drawer-block">
+                    <div class="drawer-block-title">Components</div>
+                    <div class="drawer-token-row">${componentTokens.length ? componentTokens.map((text) => buildTraceToken(text, 'warning')).join('') : buildTraceToken('无组件')}</div>
+                </div>
+
+                <div class="drawer-block">
+                    <div class="drawer-block-title">Events</div>
+                    <div class="drawer-copy">${escapeHtml(eventTokens.length ? eventTokens.join(' · ') : '无新增事件')}</div>
+                </div>
+
+                <div class="drawer-block">
+                    <div class="drawer-block-title">Filters / Reason</div>
+                    <div class="drawer-token-row">${filters.map((text) => buildTraceToken(text, filters[0] === '未触发过滤' ? '' : 'negative')).join('')}</div>
+                    <div class="drawer-copy">${escapeHtml(traceReason)}</div>
+                </div>
+            `;
+            drawer.classList.add('show');
+            drawer.setAttribute('aria-hidden', 'false');
+            activeDrawerSignalId = `component:${Number(bar?.bar_time_ms || trace?.bar_time_ms || 0) || context.index}`;
+            renderMobileGestureHint(getChartDisplayPayload());
+        }
+
         function closeSignalDrawer() {
             renderSignalDrawer(null);
         }
 
         function openSignalDrawer(signal, context = null) {
             renderSignalDrawer(signal, context);
+        }
+
+        function openComponentDrawer(context = null) {
+            renderComponentDrawer(context);
         }
 
         function openFocusedSignalDrawer() {
@@ -2873,6 +2955,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const context = buildContext(payload, safeIndex, selectedSignalId);
             if (document.getElementById('signalDetailDrawer')?.classList.contains('show')) {
                 if (context?.activeSignal) openSignalDrawer(context.activeSignal, context);
+                else if (String(selectedSignalId || '').startsWith('component:')) openComponentDrawer(context);
                 else closeSignalDrawer();
             }
             syncChartTooltip(safeIndex);
@@ -3772,6 +3855,10 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                         value: [index, SIGNAL_LIFECYCLE_Y.component],
                         labelText: componentTokens.join(' '),
                         name: componentTokens.join(' / '),
+                        signal_id: `component:${barMs}`,
+                        trace_kind: 'component',
+                        component_tokens: componentTokens,
+                        event_tokens: eventTokens,
                     });
                 }
 
@@ -3963,17 +4050,17 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 return [Math.max(padding, viewWidth - contentWidth - padding), padding];
             }
             const anchorX = Number(point[0] || 0);
+            const anchorY = Number(point[1] || 0);
             let left = anchorX + padding;
             if (left + contentWidth > viewWidth - padding) {
                 left = Math.max(padding, anchorX - contentWidth - padding);
             }
-            const top = Math.max(
-                padding,
-                Math.min(
-                    viewHeight - contentHeight - padding,
-                    Math.round(viewHeight * 0.5)
-                )
-            );
+            const maxTop = Math.max(padding, viewHeight - contentHeight - padding);
+            const signalFlowGuard = Math.round(viewHeight * 0.48);
+            const topCandidate = anchorY < signalFlowGuard
+                ? padding
+                : Math.max(padding, anchorY - contentHeight - padding);
+            const top = Math.min(maxTop, Math.min(topCandidate, signalFlowGuard - Math.min(contentHeight, 220)));
             return [left, top];
         }
 
@@ -4438,11 +4525,12 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     axisPointer: { type: 'cross', snap: true },
                     alwaysShowContent: chartTooltipPinned,
                     transitionDuration: 0,
-                    backgroundColor: 'rgba(8,12,20,0.96)',
+                    backgroundColor: 'rgba(8,12,20,0.94)',
                     borderColor: 'rgba(99,179,237,0.16)',
                     textStyle: { color: '#E2EAF4' },
                     enterable: false,
                     confine: true,
+                    extraCssText: 'max-width:420px;max-height:280px;overflow:auto;box-shadow:0 14px 44px rgba(0,0,0,0.34);',
                     position(point, params, dom, rect, size) {
                         return resolveChartTooltipPosition(point, size);
                     },
@@ -4601,11 +4689,14 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const handleChartPointSelection = (index, signalKey = '', { tracePoint = false } = {}) => {
                 if (index < 0) return;
                 dismissMobileGestureHint();
+                const traceKind = String(signalKey || '').startsWith('component:') ? 'component' : '';
                 if (isCompactViewport() && chartPointerLocked) {
                     lockChartPointerAtIndex(index, signalKey);
                     const lockedContext = getFocusContext(getChartDisplayPayload());
                     if (lockedContext?.activeSignal) {
                         openSignalDrawer(lockedContext.activeSignal, lockedContext);
+                    } else if (traceKind === 'component') {
+                        openComponentDrawer(lockedContext);
                     }
                     return;
                 }
@@ -4616,6 +4707,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 const context = buildContext(displayPayload, index, signalKey);
                 if (context?.activeSignal) {
                     openSignalDrawer(context.activeSignal, context);
+                } else if (traceKind === 'component') {
+                    openComponentDrawer(context);
                 } else if (tracePoint && context?.activeTraceSignal) {
                     openSignalDrawer(context.activeTraceSignal, context);
                 } else if (tracePoint && getTraceStage(context?.trace) && chartTracePanelOpen) {

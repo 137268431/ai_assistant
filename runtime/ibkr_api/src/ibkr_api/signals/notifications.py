@@ -67,6 +67,19 @@ def _page_url(console_base_url: str, path: str, **params: Any) -> str:
     return f"{url}?{query}" if query else url
 
 
+def _webhook_url(console_base_url: str, path: str, **params: Any) -> str:
+    return _page_url(console_base_url, path, **params)
+
+
+def _button_url(url: str) -> dict[str, str]:
+    return {
+        "url": url,
+        "pc_url": url,
+        "ios_url": url,
+        "android_url": url,
+    }
+
+
 def _view_buttons(console_base_url: str, *, environment: str, signal_id: str) -> list[dict[str, Any]]:
     buttons: list[dict[str, Any]] = []
     signals_url = _page_url(
@@ -92,12 +105,7 @@ def _view_buttons(console_base_url: str, *, environment: str, signal_id: str) ->
                 "tag": "button",
                 "type": "default",
                 "text": {"tag": "plain_text", "content": label},
-                "multi_url": {
-                    "url": url,
-                    "pc_url": url,
-                    "ios_url": url,
-                    "android_url": url,
-                },
+                "multi_url": _button_url(url),
             }
         )
     return buttons
@@ -145,60 +153,31 @@ def build_signal_notification_card(record_or_data: Any, *, console_base_url: str
         {"tag": "hr"},
     ]
     if status == "awaiting_confirm" and signal_id:
-        elements.append(
-            {
-                "tag": "column_set",
-                "horizontal_spacing": "default",
-                "columns": [
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "elements": [
-                            {
-                                "tag": "button",
-                                "type": "primary",
-                                "width": "fill",
-                                "text": {"tag": "plain_text", "content": "✅ 确认"},
-                                "behaviors": [
-                                    {
-                                        "type": "callback",
-                                        "value": {
-                                            "action": "confirm",
-                                            "signal_id": signal_id,
-                                            "environment": environment,
-                                        },
-                                    }
-                                ],
-                            }
-                        ],
-                    },
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "elements": [
-                            {
-                                "tag": "button",
-                                "type": "danger",
-                                "width": "fill",
-                                "text": {"tag": "plain_text", "content": "❌ 拒绝"},
-                                "behaviors": [
-                                    {
-                                        "type": "callback",
-                                        "value": {
-                                            "action": "reject",
-                                            "signal_id": signal_id,
-                                            "environment": environment,
-                                        },
-                                    }
-                                ],
-                            }
-                        ],
-                    },
-                ],
-            }
-        )
+        confirm_url = _webhook_url(console_base_url, "webhook/signal/confirm", id=signal_id, environment=environment)
+        cancel_url = _webhook_url(console_base_url, "webhook/signal/cancel", id=signal_id, environment=environment)
+        actions: list[dict[str, Any]] = []
+        if confirm_url:
+            actions.append(
+                {
+                    "tag": "button",
+                    "type": "primary",
+                    "text": {"tag": "plain_text", "content": "确认"},
+                    "multi_url": _button_url(confirm_url),
+                }
+            )
+        if cancel_url:
+            actions.append(
+                {
+                    "tag": "button",
+                    "type": "danger",
+                    "text": {"tag": "plain_text", "content": "拒绝"},
+                    "multi_url": _button_url(cancel_url),
+                }
+            )
+        if actions:
+            elements.append({"tag": "action", "actions": actions})
+        else:
+            elements.append({"tag": "markdown", "content": "**人工确认** · 控制台链接未配置，请到 Signals 页面处理"})
     else:
         elements.append(
             {
@@ -220,7 +199,6 @@ def build_signal_notification_card(record_or_data: Any, *, console_base_url: str
         )
 
     return {
-        "schema": "2.0",
         "config": {"update_multi": True, "wide_screen_mode": True},
         "header": {
             "title": {
@@ -232,10 +210,7 @@ def build_signal_notification_card(record_or_data: Any, *, console_base_url: str
             },
             "template": "green" if direction == "long" else "red",
         },
-        "body": {
-            "direction": "vertical",
-            "elements": elements,
-        },
+        "elements": elements,
     }
 
 
@@ -268,6 +243,16 @@ def _build_notification_patch(
         "feishu_signal_notify_last_at_ms": now_ms,
         "feishu_signal_notify_error": "" if success else to_text(result.get("error") or "unknown_error"),
     }
+    if not success:
+        for result_key, patch_key in (
+            ("http_status", "feishu_signal_notify_http_status"),
+            ("api_code", "feishu_signal_notify_api_code"),
+            ("api_message", "feishu_signal_notify_api_message"),
+            ("response_body", "feishu_signal_notify_response_body"),
+        ):
+            value = result.get(result_key)
+            if value not in (None, ""):
+                patch[patch_key] = value
     if success:
         patch["feishu_signal_notify_sent_at_ms"] = now_ms
         if notify_key:
@@ -367,7 +352,6 @@ def build_signal_status_card(record_or_data: Any, *, message: str = "", console_
             ]
         )
     return {
-        "schema": "2.0",
         "config": {"update_multi": True, "wide_screen_mode": True},
         "header": {
             "title": {
@@ -376,10 +360,7 @@ def build_signal_status_card(record_or_data: Any, *, message: str = "", console_
             },
             "template": meta["template"],
         },
-        "body": {
-            "direction": "vertical",
-            "elements": elements,
-        },
+        "elements": elements,
     }
 
 

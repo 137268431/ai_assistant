@@ -80,6 +80,7 @@ from ibkr_api.control.runtime_guard import (
     inspect_requested_runtime_environment,
 )
 from ibkr_api.integrations.runtime_orders import cancel_broker_order_via_runtime as _cancel_broker_order_via_runtime_support
+from ibkr_api.universe.active_window_progress import build_active_window_progress_response
 from ibkr_api.universe.today_targets import build_today_targets_response
 from ibkr_api.orders.cancel_sync import build_order_cancel_sync_response
 from ibkr_api.orders.group_cancel import build_order_cancel_group_response

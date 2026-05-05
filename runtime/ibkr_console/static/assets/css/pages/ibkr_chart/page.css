@@ -1738,6 +1738,13 @@
             line-height: 1.7;
         }
 
+        .drawer-token-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 8px;
+        }
+
         .drawer-actions {
             display: flex;
             gap: 8px;

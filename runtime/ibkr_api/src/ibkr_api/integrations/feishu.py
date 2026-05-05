@@ -38,6 +38,32 @@ def _payload_code(payload: Any, *, default: int = -1) -> int:
         return int(default)
 
 
+def _compact_payload(payload: Any, *, limit: int = 1200) -> str:
+    if payload in (None, ""):
+        return ""
+    try:
+        text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        text = str(payload)
+    return text[:limit]
+
+
+def _response_error_result(response: Any, payload: Any, *, message_id: str = "") -> dict[str, Any]:
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    api_code = _payload_code(payload)
+    api_msg = str((payload or {}).get("msg") or (payload or {}).get("message") or "").strip() if isinstance(payload, dict) else ""
+    error = f"http_{status_code}" if not bool(getattr(response, "ok", False)) else f"api_{api_code}"
+    return {
+        "success": False,
+        "message_id": str(message_id or ""),
+        "error": error,
+        "http_status": status_code,
+        "api_code": api_code,
+        "api_message": api_msg,
+        "response_body": _compact_payload(payload),
+    }
+
+
 
 def feishu_suppressed(environment: str, *, normalize_environment: NormalizeEnvironment) -> bool:
     return normalize_environment(environment, "live") == "paper"
@@ -128,11 +154,7 @@ def feishu_send_interactive(
         return {"success": False, "message_id": "", "error": str(exc)}
 
     if not response.ok or _payload_code(payload) != 0:
-        return {
-            "success": False,
-            "message_id": "",
-            "error": f"http_{response.status_code}" if not response.ok else f"api_{payload.get('code')}",
-        }
+        return _response_error_result(response, payload)
 
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
     return {"success": True, "message_id": str(data.get("message_id") or ""), "data": data}
@@ -179,11 +201,7 @@ def feishu_update_interactive(
         return {"success": False, "message_id": str(message_id or ""), "error": str(exc)}
 
     if not response.ok or _payload_code(payload) != 0:
-        return {
-            "success": False,
-            "message_id": str(message_id or ""),
-            "error": f"http_{response.status_code}" if not response.ok else f"api_{payload.get('code')}",
-        }
+        return _response_error_result(response, payload, message_id=message_id)
 
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
     return {"success": True, "message_id": str(message_id or ""), "data": data}

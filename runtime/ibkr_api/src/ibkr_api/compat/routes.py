@@ -71,6 +71,7 @@ NATIVE_CUSTOM_ROUTES = [
     "system/jobs/daily_report",
     "system/jobs/data_gap_guard",
     "system/jobs/heartbeat",
+    "system/jobs/intraday_window_admission",
     "system/jobs/market_open_reminder",
     "system/jobs/monitor_alert_guard",
     "system/jobs/order_detail_integrity",

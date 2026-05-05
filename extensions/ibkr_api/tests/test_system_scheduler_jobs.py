@@ -1,7 +1,9 @@
 import os
 import sys
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
 SERVICE_SRC_ROOTS = [
     Path(__file__).resolve().parents[3] / "runtime" / "ibkr_api" / "src",
@@ -16,12 +18,14 @@ os.environ.setdefault("IBKR_SCHEDULER_AUTOSTART", "false")
 
 from ibkr_api.system.jobs.auth import build_auth_immediate_issue, is_operational_2fa_issue
 from ibkr_api.system.jobs.early_expansion_topup import build_early_expansion_topup_response
+from ibkr_api.system.jobs.intraday_window_admission import build_intraday_window_admission_response
 from ibkr_api.system.jobs.order_expiry import build_order_expiry_response
 from ibkr_api.system.jobs.reminders import (
     build_system_daily_report_response,
     build_system_market_open_reminder_response,
 )
 from ibkr_api.system.summary_support import build_system_summary_payload
+from ibkr_compute.market.timeframe_utils import ET
 
 
 class _OrderExpiryPB:
@@ -103,6 +107,60 @@ class _ReminderPB:
     def upsert_state(self, state_key, environment, data, date="global"):
         self.states[(state_key, environment, date)] = {"data": dict(data)}
         return self.states[(state_key, environment, date)]
+
+
+class _IntradayAdmissionPB:
+    def __init__(self):
+        self.records = {
+            "watchlist": [],
+            "ibkr_targets": [],
+            "ibkr_bars": [],
+            "ibkr_indicators": [],
+            "system_events": [],
+        }
+        self.created = []
+        self.updated = []
+
+    def get_records(self, collection, filter=None, sort=None, per_page=200, page=1):
+        return [dict(row) for row in self.records.get(collection, [])]
+
+    def get_all_records(self, collection, filter=None, sort=None, max_pages=10):
+        return [dict(row) for row in self.records.get(collection, [])]
+
+    def get_first_record(self, collection, filter=None, sort=None):
+        filter_text = str(filter or "")
+        rows = self.records.get(collection, [])
+        for row in rows:
+            if self._matches(row, filter_text):
+                return dict(row)
+        return None
+
+    def create_record(self, collection, data):
+        payload = dict(data)
+        payload.setdefault("id", f"{collection}-{len(self.records.get(collection, [])) + 1}")
+        self.records.setdefault(collection, []).append(payload)
+        self.created.append((collection, payload))
+        return dict(payload)
+
+    def update_record(self, collection, record_id, data):
+        for row in self.records.setdefault(collection, []):
+            if row.get("id") == record_id:
+                row.update(dict(data))
+                self.updated.append((collection, record_id, dict(data)))
+                return dict(row)
+        raise KeyError(record_id)
+
+    @staticmethod
+    def _matches(row, filter_text):
+        text = str(filter_text or "")
+        for field in ("symbol", "environment", "date"):
+            marker = f'{field} = "'
+            if marker not in text:
+                continue
+            value = text.split(marker, 1)[1].split('"', 1)[0]
+            if str(row.get(field, "") or "").strip() != value:
+                return False
+        return True
 
 
 class SystemSchedulerJobsTest(unittest.TestCase):
@@ -197,6 +255,111 @@ class SystemSchedulerJobsTest(unittest.TestCase):
                 }
             )
         return deps
+
+    def _admission_bar(self, symbol, minutes, **overrides):
+        base_dt = datetime(2026, 4, 23, 9, 35, tzinfo=ET) + timedelta(minutes=minutes)
+        close = float(overrides.pop("close", 10.0))
+        return {
+            "symbol": symbol,
+            "environment": "live",
+            "interval": "5m",
+            "bar_time_ms": int(base_dt.timestamp() * 1000),
+            "us_time": base_dt.strftime("%Y-%m-%d %H:%M:%S"),
+            "cn_time": "",
+            "session_type": "regular",
+            "exchange": "NASDAQ",
+            "open": close,
+            "high": close + 0.2,
+            "low": close - 0.2,
+            "close": close,
+            "volume": float(overrides.pop("volume", 200000)),
+            **overrides,
+        }
+
+    def _admission_daily_bar(self, symbol, days_ago, volume=800000, close=9.0):
+        dt = datetime(2026, 4, 23, 0, 0, tzinfo=ET) - timedelta(days=days_ago)
+        return {
+            "symbol": symbol,
+            "environment": "live",
+            "interval": "1d",
+            "bar_time_ms": int(dt.timestamp() * 1000),
+            "us_time": dt.strftime("%Y-%m-%d 00:00:00"),
+            "close": close,
+            "volume": volume,
+        }
+
+    def _run_admission(self, pb, *, payload=None, request_calls=None, config_overrides=None):
+        request_calls = request_calls if request_calls is not None else []
+        config_overrides = config_overrides or {}
+
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            request_calls.append({"method": method, "path": path, "json_body": json_body})
+            if method == "GET" and path == "/ibkr/status":
+                return {"status_code": 200, "payload": {"market_date": "2026-04-23"}}
+            if method == "POST" and path == "/ibkr/universe/reconcile":
+                return {
+                    "status_code": 200,
+                    "payload": {"ok": True, "primed": list((json_body or {}).get("prime_symbols") or [])},
+                    "target_url": "http://compute/ibkr/universe/reconcile",
+                }
+            return {"status_code": 200, "payload": {"ok": True}}
+
+        return build_intraday_window_admission_response(
+            pb,
+            payload={
+                "environment": "live",
+                "market_date": "2026-04-23",
+                "force": True,
+                **(payload or {}),
+            },
+            normalize_environment=lambda value, default: str(value or default).strip().lower() or default,
+            escape_filter_string=lambda value: str(value or "").replace("\\", "\\\\").replace('"', '\\"'),
+            time_strings=lambda: {"us": "2026-04-23 09:50:00", "cn": "2026-04-23 21:50:00", "date": "2026-04-23"},
+            request_json_request=request_json_request,
+            compute_base_url="http://compute",
+            config_value=lambda key, default, environment: config_overrides.get(key, default),
+            write_system_event_record=lambda *args, **kwargs: pb.create_record(
+                "system_events",
+                {"event_type": args[0], "title": args[3], "detail": args[4]},
+            ),
+        )
+
+    def _admission_window_payload(self, symbol="MSFT", *, status="upper_active"):
+        valid = status in {"upper_active", "both_active", "near_expiry"}
+        return {
+            "summary": {"total": 1, "window_valid_count": 1 if valid else 0},
+            "items": [
+                {
+                    "symbol": symbol,
+                    "window_status": status,
+                    "trace_stage": "none",
+                    "sd_upper_valid": valid,
+                    "sd_lower_valid": False,
+                    "sd_upper_active": valid,
+                    "sd_lower_active": False,
+                    "bars_remaining": 10 if valid else 0,
+                    "component_progress": 0.5,
+                    "window_flags": {
+                        "sd_upper_valid": valid,
+                        "sd_lower_valid": False,
+                        "sd_upper_active": valid,
+                        "sd_lower_active": False,
+                        "sd_upper_used": False,
+                        "sd_lower_used": False,
+                        "sd_upper_age_bars": 2 if valid else 0,
+                        "sd_lower_age_bars": 0,
+                    },
+                    "signal_state": {"stage": "none", "direction": ""},
+                    "components": {"ready_groups": [], "best_group": ""},
+                    "component_detail": {},
+                    "latest_bar_time_ms": self._admission_bar(symbol, 5)["bar_time_ms"],
+                    "latest_us_time": "2026-04-23 09:40:00",
+                    "price": 10.2,
+                    "atr_pct": 2.5,
+                    "target_score": 0,
+                }
+            ],
+        }
 
     def test_order_expiry_marks_group_canceled(self):
         pb = _OrderExpiryPB()
@@ -388,6 +551,131 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertTrue(payload["skipped"])
         self.assertEqual(payload["reason"], "no_new_targets")
         self.assertEqual(sent, [])
+
+    def test_intraday_window_admission_adds_valid_window_target_and_reconciles(self):
+        pb = _IntradayAdmissionPB()
+        pb.records["watchlist"] = [
+            {"id": "wl-1", "symbol": "MSFT", "environment": "live", "symbol_role": "trade", "exchange": "NASDAQ"}
+        ]
+        pb.records["ibkr_bars"] = [
+            *[self._admission_daily_bar("MSFT", days_ago, volume=900000, close=9.0 + days_ago * 0.01) for days_ago in range(1, 12)],
+            self._admission_bar("MSFT", 0, sd_upper=True, close=10.0, volume=250000),
+            self._admission_bar("MSFT", 5, close=10.2, volume=250000),
+        ]
+        pb.records["ibkr_indicators"] = [
+            {
+                "symbol": "MSFT",
+                "environment": "live",
+                "interval": "5",
+                "bar_time_ms": self._admission_bar("MSFT", 5)["bar_time_ms"],
+                "atr_pct": 2.5,
+                "trend_dir": 1,
+            }
+        ]
+        request_calls = []
+
+        with mock.patch("ibkr_api.system.jobs.intraday_window_admission.time.time", return_value=datetime(2026, 4, 23, 9, 50, tzinfo=ET).timestamp()):
+            with mock.patch(
+                "ibkr_api.system.jobs.intraday_window_admission.build_active_window_items_for_symbols",
+                return_value=self._admission_window_payload("MSFT"),
+            ):
+                payload, status_code = self._run_admission(pb, request_calls=request_calls)
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["admitted_symbols"], ["MSFT"])
+        target = next(row for row in pb.records["ibkr_targets"] if row["symbol"] == "MSFT")
+        self.assertEqual(target["status"], "active")
+        self.assertEqual(target["direction_bias"], "long")
+        self.assertEqual(target["extra"]["intraday_window_admission"]["window_status"], "upper_active")
+        reconcile_calls = [call for call in request_calls if call["path"] == "/ibkr/universe/reconcile"]
+        self.assertEqual(reconcile_calls[0]["json_body"]["prime_symbols"], ["MSFT"])
+        self.assertTrue(any(collection == "system_events" for collection, _ in pb.created))
+
+    def test_intraday_window_admission_dry_run_does_not_write_or_reconcile(self):
+        pb = _IntradayAdmissionPB()
+        pb.records["watchlist"] = [
+            {"id": "wl-1", "symbol": "MSFT", "environment": "live", "symbol_role": "trade", "exchange": "NASDAQ"}
+        ]
+        pb.records["ibkr_bars"] = [
+            *[self._admission_daily_bar("MSFT", days_ago, volume=900000) for days_ago in range(1, 12)],
+            self._admission_bar("MSFT", 0, sd_upper=True, close=10.0),
+            self._admission_bar("MSFT", 5, close=10.2),
+        ]
+        pb.records["ibkr_indicators"] = [
+            {"symbol": "MSFT", "environment": "live", "interval": "5", "bar_time_ms": self._admission_bar("MSFT", 5)["bar_time_ms"], "atr_pct": 2.5}
+        ]
+        request_calls = []
+
+        with mock.patch("ibkr_api.system.jobs.intraday_window_admission.time.time", return_value=datetime(2026, 4, 23, 9, 50, tzinfo=ET).timestamp()):
+            with mock.patch(
+                "ibkr_api.system.jobs.intraday_window_admission.build_active_window_items_for_symbols",
+                return_value=self._admission_window_payload("MSFT"),
+            ):
+                payload, status_code = self._run_admission(pb, payload={"dry_run": True}, request_calls=request_calls)
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["dry_run"])
+        self.assertEqual(payload["would_admit"], 1)
+        self.assertEqual(payload["admitted"], 0)
+        self.assertEqual(pb.records["ibkr_targets"], [])
+        self.assertFalse(any(call["path"] == "/ibkr/universe/reconcile" for call in request_calls))
+
+    def test_intraday_window_admission_rejects_without_current_window(self):
+        pb = _IntradayAdmissionPB()
+        pb.records["watchlist"] = [
+            {"id": "wl-1", "symbol": "MSFT", "environment": "live", "symbol_role": "trade", "exchange": "NASDAQ"}
+        ]
+        pb.records["ibkr_bars"] = [
+            *[self._admission_daily_bar("MSFT", days_ago, volume=900000) for days_ago in range(1, 12)],
+            self._admission_bar("MSFT", 0, close=10.0),
+            self._admission_bar("MSFT", 5, close=10.2),
+        ]
+        pb.records["ibkr_indicators"] = [
+            {"symbol": "MSFT", "environment": "live", "interval": "5", "bar_time_ms": self._admission_bar("MSFT", 5)["bar_time_ms"], "atr_pct": 2.5}
+        ]
+
+        with mock.patch("ibkr_api.system.jobs.intraday_window_admission.time.time", return_value=datetime(2026, 4, 23, 9, 50, tzinfo=ET).timestamp()):
+            payload, status_code = self._run_admission(pb)
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["admitted"], 0)
+        self.assertEqual(payload["reason"], "no_eligible_active_windows")
+        self.assertIn("no_window", payload["rejection_summary"])
+
+    def test_intraday_window_admission_respects_full_budget(self):
+        pb = _IntradayAdmissionPB()
+        pb.records["watchlist"] = [
+            {"id": "wl-1", "symbol": "MSFT", "environment": "live", "symbol_role": "trade", "exchange": "NASDAQ"}
+        ]
+        pb.records["ibkr_targets"] = [
+            {"id": "target-1", "symbol": "AAPL", "environment": "live", "date": "2026-04-23", "status": "active"}
+        ]
+        pb.records["ibkr_bars"] = [
+            *[self._admission_daily_bar("MSFT", days_ago, volume=900000) for days_ago in range(1, 12)],
+            self._admission_bar("MSFT", 0, sd_upper=True, close=10.0),
+            self._admission_bar("MSFT", 5, close=10.2),
+        ]
+        pb.records["ibkr_indicators"] = [
+            {"symbol": "MSFT", "environment": "live", "interval": "5", "bar_time_ms": self._admission_bar("MSFT", 5)["bar_time_ms"], "atr_pct": 2.5}
+        ]
+
+        with mock.patch("ibkr_api.system.jobs.intraday_window_admission.time.time", return_value=datetime(2026, 4, 23, 9, 50, tzinfo=ET).timestamp()):
+            payload, status_code = self._run_admission(
+                pb,
+                config_overrides={
+                    "ibkr_target_subscription_limit": "1",
+                    "ibkr_total_subscription_limit": "0",
+                },
+            )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["skipped"])
+        self.assertEqual(payload["reason"], "subscription_budget_full")
+        self.assertEqual(payload["admitted"], 0)
 
     def test_daily_report_skips_outside_target_window(self):
         pb = _ReminderPB()

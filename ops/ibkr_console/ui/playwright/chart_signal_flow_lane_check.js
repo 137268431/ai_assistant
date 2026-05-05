@@ -268,6 +268,8 @@ async function main() {
       componentDataCount: Array.isArray(componentSeries?.data) ? componentSeries.data.length : 0,
       componentLabelShow: Boolean(componentSeries?.label?.show),
       componentFirstLabel: componentSeries?.data?.[0]?.labelText || '',
+      componentFirstSignalId: componentSeries?.data?.[0]?.signal_id || '',
+      tooltipExtraCssText: option.tooltip?.[0]?.extraCssText || option.tooltip?.extraCssText || '',
       candidateLabelShow: Boolean(candidateSeries?.label?.show),
       blockedDataCount: Array.isArray(blockedSeries?.data) ? blockedSeries.data.length : 0,
       blockedLabel: blockedSeries?.data?.[0]?.labelText || '',
@@ -286,6 +288,37 @@ async function main() {
 
   await page.locator('#chartCanvas').scrollIntoViewIfNeeded();
   await page.waitForTimeout(200);
+  const componentClickProbe = await page.evaluate(() => {
+    const dom = document.getElementById('chartCanvas');
+    const chart = window.echarts.getInstanceByDom(dom);
+    const option = chart.getOption();
+    const seriesIndex = option.series.findIndex((item) => item.name === 'Flow 组件收集');
+    if (seriesIndex < 0) return { ok: false, reason: 'series_missing' };
+    const series = option.series[seriesIndex];
+    const pointData = Array.isArray(series?.data) ? series.data[0] : null;
+    const value = Array.isArray(pointData?.value) ? pointData.value : null;
+    if (!value) return { ok: false, reason: 'point_missing' };
+    const point = chart.convertToPixel({ xAxisIndex: 1, yAxisIndex: 1 }, value);
+    if (!Array.isArray(point)) return { ok: false, reason: 'pixel_missing' };
+    return { ok: true, seriesIndex, x: Number(point[0]), y: Number(point[1]), label: pointData.labelText || '', signalId: pointData.signal_id || '' };
+  });
+  if (componentClickProbe.ok) {
+    const canvasBox = await page.locator('#chartCanvas canvas').first().boundingBox();
+    if (canvasBox) {
+      await page.mouse.click(canvasBox.x + componentClickProbe.x, canvasBox.y + componentClickProbe.y);
+    }
+  }
+  await page.waitForTimeout(600);
+  const afterComponentClick = await page.evaluate(() => ({
+    drawerVisible: Boolean(document.querySelector('#signalDetailDrawer.show')),
+    drawerText: document.getElementById('signalDetailContent')?.textContent || '',
+    cursorText: document.getElementById('cursorStrip')?.textContent || '',
+  }));
+
+  await page.evaluate(() => {
+    if (typeof window.closeSignalDrawer === 'function') window.closeSignalDrawer();
+  });
+  await page.waitForTimeout(150);
   const clickProbe = await page.evaluate(() => {
     const dom = document.getElementById('chartCanvas');
     const chart = window.echarts.getInstanceByDom(dom);
@@ -359,6 +392,8 @@ async function main() {
   if (!beforeClick.dtpChangeLabel.includes('DTP红初中')) failures.push(`dtp_change_label_${beforeClick.dtpChangeLabel}`);
   if (!beforeClick.dtpChangeLabelShow) failures.push('dtp_change_label_should_be_visible');
   if (beforeClick.componentDataCount < 1) failures.push(`component_flow_count_${beforeClick.componentDataCount}`);
+  if (!String(beforeClick.componentFirstSignalId).startsWith('component:')) failures.push(`component_signal_id_${beforeClick.componentFirstSignalId}`);
+  if (!beforeClick.tooltipExtraCssText.includes('max-height:280px')) failures.push('tooltip_missing_max_height');
   if (beforeClick.componentLabelShow) failures.push('component_label_should_be_hidden');
   if (beforeClick.candidateLabelShow) failures.push('candidate_label_should_be_hidden');
   if (beforeClick.blockedDataCount !== 1) failures.push(`blocked_flow_count_${beforeClick.blockedDataCount}`);
@@ -372,6 +407,11 @@ async function main() {
   if (!beforeClick.customZoneText.includes('ET')) failures.push('missing_custom_range_et_badge');
   if (!beforeClick.cursorText.includes('blocked · DTP红初中')) failures.push('cursor_missing_blocked_reason');
   if (!beforeClick.traceText.includes('blocked · DTP红初中')) failures.push('trace_missing_blocked_reason');
+  if (!componentClickProbe.ok) failures.push(`component_click_failed_${componentClickProbe.reason || 'unknown'}`);
+  if (!afterComponentClick.drawerVisible) failures.push('component_click_did_not_open_drawer');
+  if (!afterComponentClick.drawerText.includes('Component Detail')) failures.push('component_drawer_missing_title');
+  if (!afterComponentClick.drawerText.includes('开下轨')) failures.push('component_drawer_missing_token');
+  if (!afterComponentClick.drawerText.includes('SD下轨触发')) failures.push('component_drawer_missing_event');
   if (!clickProbe.ok) failures.push(`click_failed_${clickProbe.reason || 'unknown'}`);
   if (!afterClick.drawerVisible) failures.push('blocked_click_did_not_open_drawer');
   if (!afterClick.drawerText.includes('DTP红初中')) failures.push('drawer_missing_blocked_reason');
@@ -390,6 +430,8 @@ async function main() {
     ok: failures.length === 0,
     failures,
     beforeClick,
+    componentClickProbe,
+    afterComponentClick,
     clickProbe,
     afterClick,
     customRange: {

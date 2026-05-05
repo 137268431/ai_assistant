@@ -51,6 +51,7 @@ def register_platform_routes(app, deps: dict[str, Any]) -> dict[str, Any]:
                 "build_signal_expiry_response": deps["build_signal_expiry_response"],
                 "build_order_detail_integrity_response": deps["build_order_detail_integrity_response"],
                 "build_today_targets_response": deps["build_today_targets_response"],
+                "build_active_window_progress_response": deps["build_active_window_progress_response"],
                 "system_status_chat_id": deps["system_status_chat_id"],
                 "startup_chat_id": deps["startup_chat_id"],
                 "cancel_broker_order": deps["cancel_broker_order"],

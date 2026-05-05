@@ -163,6 +163,37 @@ class SchedulerJobsTest(unittest.TestCase):
         self.assertFalse(cron_matches_minute(early["cron_expr"], datetime(2026, 4, 20, 13, 20, tzinfo=timezone.utc), early["cron_timezone"]))
         self.assertFalse(cron_matches_minute(late["cron_expr"], datetime(2026, 4, 20, 14, 40, tzinfo=timezone.utc), late["cron_timezone"]))
 
+    def test_intraday_window_admission_cron_matches_regular_session_et(self):
+        definition = next(item for item in scheduler_app_mod.CRON_DEFINITIONS if item["id"] == "ibkr_intraday_window_admission")
+
+        self.assertEqual(definition["cron_expr"], "*/5 9-15 * * 1-5")
+        self.assertEqual(definition["cron_timezone"], "America/New_York")
+        self.assertEqual(
+            scheduler_app_mod.NATIVE_API_HTTP_JOB_ENDPOINTS["ibkr_intraday_window_admission"],
+            ("POST", "/api/custom/system/jobs/intraday_window_admission"),
+        )
+        self.assertTrue(
+            cron_matches_minute(
+                definition["cron_expr"],
+                datetime(2026, 4, 20, 13, 35, tzinfo=timezone.utc),
+                definition["cron_timezone"],
+            )
+        )
+        self.assertTrue(
+            cron_matches_minute(
+                definition["cron_expr"],
+                datetime(2026, 1, 5, 20, 55, tzinfo=timezone.utc),
+                definition["cron_timezone"],
+            )
+        )
+        self.assertFalse(
+            cron_matches_minute(
+                definition["cron_expr"],
+                datetime(2026, 4, 20, 20, 0, tzinfo=timezone.utc),
+                definition["cron_timezone"],
+            )
+        )
+
     def test_compute_dispatch_updates_cursor_from_latest_persisted_bars(self):
         pb = _FakePB()
         pb.states[(BAR_INGEST_CURSOR_STATE_KEY, "live", "global")] = {

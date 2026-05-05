@@ -142,6 +142,89 @@ class SignalIngressBuildersTest(unittest.TestCase):
         self.assertEqual(row["extra"]["feishu_signal_message_id"], "signal-chat-live:live")
         self.assertEqual(row["extra"]["feishu_signal_card_version"], 1)
 
+    def test_signal_notification_failure_records_feishu_error_detail(self):
+        pb = _FakePB()
+
+        payload, status_code = build_signal_ingest_response(
+            pb,
+            payload={
+                "environment": "live",
+                "symbol": "aapl",
+                "signal_id": "sig-failed",
+                "direction": "long",
+                "entry": 180.0,
+                "stop_loss": 178.0,
+                "take_profit": 184.0,
+                "bar_time_ms": 1713797700000,
+            },
+            normalize_environment=self.normalize_environment,
+            escape_filter_string=self.escape_filter_string,
+            config_value=self.config_value,
+            send_interactive=lambda *_args, **_kwargs: {
+                "success": False,
+                "error": "http_400",
+                "http_status": 400,
+                "api_code": 99991663,
+                "api_message": "invalid card payload",
+                "response_body": '{"code":99991663,"msg":"invalid card payload"}',
+            },
+            update_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "unused"},
+            signal_chat_id_fn=self.signal_chat_id_fn,
+            console_base_url="https://console.example.com",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        extra = pb.signals["ibkr_signals-1"]["extra"]
+        self.assertEqual(extra["feishu_signal_notify_last_result"], "failed")
+        self.assertEqual(extra["feishu_signal_notify_error"], "http_400")
+        self.assertEqual(extra["feishu_signal_notify_http_status"], 400)
+        self.assertEqual(extra["feishu_signal_notify_api_code"], 99991663)
+        self.assertEqual(extra["feishu_signal_notify_api_message"], "invalid card payload")
+        self.assertIn("invalid card payload", extra["feishu_signal_notify_response_body"])
+
+    def test_signal_notification_card_uses_url_actions(self):
+        sent = []
+        pb = _FakePB()
+
+        payload, status_code = build_signal_ingest_response(
+            pb,
+            payload={
+                "environment": "live",
+                "symbol": "aapl",
+                "signal_id": "sig-url",
+                "direction": "long",
+                "entry": 180.0,
+                "stop_loss": 178.0,
+                "take_profit": 184.0,
+                "bar_time_ms": 1713797700000,
+            },
+            normalize_environment=self.normalize_environment,
+            escape_filter_string=self.escape_filter_string,
+            config_value=self.config_value,
+            send_interactive=lambda card, chat_id, environment: sent.append(card) or {"success": True, "message_id": "msg-url"},
+            update_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "unused"},
+            signal_chat_id_fn=self.signal_chat_id_fn,
+            console_base_url="https://console.example.com",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        card = sent[0]
+        self.assertIn("elements", card)
+        self.assertNotIn("schema", card)
+        self.assertNotIn("body", card)
+        actions = [
+            action
+            for element in card["elements"]
+            if element.get("tag") == "action"
+            for action in element.get("actions", [])
+        ]
+        action_urls = [action.get("multi_url", {}).get("url", "") for action in actions]
+        self.assertTrue(any("/webhook/signal/confirm" in url and "id=sig-url" in url for url in action_urls))
+        self.assertTrue(any("/webhook/signal/cancel" in url and "id=sig-url" in url for url in action_urls))
+        self.assertEqual([], [action for action in actions if "behaviors" in action])
+
     def test_signal_ingest_skips_duplicate_bar_signal_and_annotates_existing_row(self):
         pb = _FakePB(
             [

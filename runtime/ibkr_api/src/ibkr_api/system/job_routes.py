@@ -9,6 +9,7 @@ from ibkr_api.system.jobs import (
     build_auth_pending_guard_response,
     build_data_gap_guard_response,
     build_early_expansion_topup_response,
+    build_intraday_window_admission_response,
     build_order_expiry_response,
     build_system_daily_report_response,
     build_system_heartbeat_response,
@@ -49,6 +50,7 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
     build_signal_expiry_response = deps["build_signal_expiry_response"]
     build_order_detail_integrity_response = deps["build_order_detail_integrity_response"]
     build_today_targets_response = deps["build_today_targets_response"]
+    build_active_window_progress_response = deps["build_active_window_progress_response"]
     write_system_event_record = deps["write_system_event_record"]
     startup_chat_id = deps["startup_chat_id"]
 
@@ -255,6 +257,8 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
             build_system_summary_payload=lambda environment, lite_mode=False: build_system_summary_payload(environment, lite_mode=lite_mode),
             build_system_monitor_payload=build_system_monitor_payload,
             emit_system_event=emit_system_event,
+            build_today_targets_response=lambda payload: build_today_targets_response(payload=payload),
+            build_active_window_progress_response=lambda payload: build_active_window_progress_response(payload=payload),
         )
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
@@ -309,6 +313,24 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
         return response if status_code == 200 else (response, status_code)
 
     exports["custom_system_job_early_expansion_topup"] = custom_system_job_early_expansion_topup
+
+    @app.route("/api/custom/system/jobs/intraday_window_admission", methods=["POST"])
+    def custom_system_job_intraday_window_admission() -> Response:
+        payload, status_code = build_intraday_window_admission_response(
+            pb,
+            payload=request.get_json(silent=True) or {},
+            normalize_environment=normalize_environment,
+            escape_filter_string=escape_filter_string,
+            time_strings=time_strings,
+            request_json_request=request_json_request,
+            compute_base_url=compute_base_url,
+            config_value=config_value,
+            write_system_event_record=write_system_event_record,
+        )
+        response = jsonify(payload)
+        return response if status_code == 200 else (response, status_code)
+
+    exports["custom_system_job_intraday_window_admission"] = custom_system_job_intraday_window_admission
 
     @app.route("/api/custom/system/jobs/monitor_alert_guard", methods=["POST"])
     def custom_system_job_monitor_alert_guard() -> Response:

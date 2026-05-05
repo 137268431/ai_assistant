@@ -322,6 +322,7 @@ class ControlPlaneSplitStackTest(unittest.TestCase):
         self.assertIn("system/event", payload["compatibility"]["native_custom_routes"])
         self.assertIn("system/healthz", payload["compatibility"]["native_custom_routes"])
         self.assertIn("system/jobs/heartbeat", payload["compatibility"]["native_custom_routes"])
+        self.assertIn("system/jobs/intraday_window_admission", payload["compatibility"]["native_custom_routes"])
         self.assertIn("system/jobs/monitor_alert_guard", payload["compatibility"]["native_custom_routes"])
         self.assertIn("system/jobs/scan_summary", payload["compatibility"]["native_custom_routes"])
         self.assertIn("system/jobs/status_reminder", payload["compatibility"]["native_custom_routes"])

@@ -159,6 +159,132 @@ class SystemScanSummaryTest(unittest.TestCase):
         self.assertEqual(payload["reason"], "open_report_window")
         self.assertEqual(emitted, [])
 
+    def test_status_reminder_includes_targets_and_active_windows(self):
+        emitted = []
+
+        def build_today_targets_response(*, payload):
+            return {
+                "market_date": payload["market_date"],
+                "summary": {
+                    "total": 4,
+                    "active_count": 4,
+                    "candidate_count": 0,
+                    "operable_count": 3,
+                    "technical_ready_count": 2,
+                    "signaled_count": 2,
+                    "awaiting_confirm_count": 1,
+                    "pending_count": 0,
+                },
+                "items": [
+                    {
+                        "symbol": "AAPL",
+                        "direction_bias": "long",
+                        "has_signal_today": True,
+                        "latest_signal_status": "expired",
+                    },
+                    {
+                        "symbol": "INTC",
+                        "direction_bias": "short",
+                        "has_signal_today": True,
+                        "latest_signal_status": "awaiting_confirm",
+                    },
+                    {
+                        "symbol": "NVDA",
+                        "direction_bias": "long",
+                        "has_signal_today": False,
+                        "latest_signal_status": "",
+                    },
+                    {
+                        "symbol": "TSLA",
+                        "direction_bias": "short",
+                        "has_signal_today": False,
+                        "latest_signal_status": "",
+                    },
+                ],
+            }, 200
+
+        def build_active_window_progress_response(*, payload):
+            return {
+                "summary": {
+                    "window_active_count": 3,
+                    "window_valid_count": 2,
+                    "candidate_signal_count": 1,
+                    "near_expiry_count": 1,
+                },
+                "items": [
+                    {
+                        "symbol": "AAPL",
+                        "window_status": "upper_active",
+                        "sd_upper_valid": True,
+                        "sd_lower_valid": False,
+                        "bars_remaining": 4,
+                    },
+                    {
+                        "symbol": "INTC",
+                        "window_status": "near_expiry",
+                        "sd_upper_valid": False,
+                        "sd_lower_valid": True,
+                        "bars_remaining": 1,
+                    },
+                    {
+                        "symbol": "NVDA",
+                        "window_status": "no_window",
+                        "sd_upper_valid": False,
+                        "sd_lower_valid": False,
+                        "bars_remaining": 0,
+                    },
+                    {
+                        "symbol": "TSLA",
+                        "window_status": "used",
+                        "sd_upper_valid": False,
+                        "sd_lower_valid": False,
+                        "bars_remaining": 0,
+                    },
+                ],
+            }, 200
+
+        payload, status_code = build_system_status_reminder_response(
+            payload={"environment": "live"},
+            normalize_environment=lambda value, default: str(value or default).strip().lower(),
+            time_strings=lambda: {"us": "2026-04-28 10:00:01", "cn": "2026-04-28 22:00:01", "date": "2026-04-28"},
+            build_system_summary_payload=lambda environment, lite_mode=False: {
+                "status": "running",
+                "today": {"ibkr_bars": 10, "ibkr_signals": 2, "orders": 0},
+                "ibkr_compute": {"status": "running"},
+                "ibkr_runtime": {"status": "running"},
+                "daily_scan": {"status": "completed"},
+            },
+            build_system_monitor_payload=lambda environment: {
+                "status": "ok",
+                "runtime": {
+                    "status": "running",
+                    "gateway": {"running": True},
+                    "session": {"authenticated": True},
+                    "websocket": {"connected": True},
+                },
+                "scheduler": {"status": "running", "latest_ingested_bar_time_ms": 1, "dispatch_lag_min": 0},
+                "service_monitor": {"status_counts": {"running": 6}},
+            },
+            emit_system_event=lambda **kwargs: emitted.append(kwargs) or {"notified": True},
+            build_today_targets_response=build_today_targets_response,
+            build_active_window_progress_response=build_active_window_progress_response,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        detail = emitted[0]["detail"]
+        self.assertIn("expired 1", detail["今日标的"])
+        self.assertIn("no_signal 2", detail["今日标的"])
+        self.assertIn("AAPL(多,已过期)", detail["今日交易标的"])
+        self.assertIn("INTC(空,待确认)", detail["今日交易标的"])
+        self.assertIn("AAPL(多,已过期)", detail["已过期标的"])
+        self.assertIn("NVDA(多)", detail["未出信号标的"])
+        self.assertIn("valid 2", detail["窗口统计"])
+        self.assertIn("AAPL(上窗口,4 bars)", detail["窗口已激活"])
+        self.assertIn("INTC(下窗口,1 bars)", detail["窗口已激活"])
+        self.assertIn("NVDA(无窗口)", detail["窗口未激活"])
+        self.assertIn("TSLA(已使用)", detail["窗口未激活"])
+
 
 if __name__ == "__main__":
     unittest.main()
