@@ -37,7 +37,7 @@ const mockWindowProgressPayload = {
   environment: 'live',
   market_date: '2026-05-04',
   computed_at_us: '2026-05-04 10:31:00',
-  summary: { total: 1, active_count: 1, near_expiry_count: 1 },
+  summary: { total: 6, active_count: 1, candidate_count: 1, blocked_count: 1, near_expiry_count: 1 },
   items: [
     {
       symbol: 'MOCK',
@@ -104,6 +104,101 @@ const mockWindowProgressPayload = {
       filter_reasons: [],
       trace_url: '/ibkr_chart.html?symbol=MOCK',
     },
+    {
+      symbol: 'CAND',
+      status: 'candidate',
+      target_status: 'active',
+      score: 39,
+      latest_us_time: '2026-05-04 10:25:00',
+      freshness_min: 4,
+      bars_remaining: 7,
+      component_progress: 1,
+      sd_upper_active: true,
+      sd_lower_active: false,
+      upper_window: { active: true, valid: true, status: 'upper_active', age_bars: 3, bars_remaining: 7 },
+      lower_window: { active: false, valid: false, status: 'inactive', age_bars: 0, bars_remaining: 0 },
+      collected_components: ['上轨 EMA 多头触及', '上轨多头分形', '多头背离(cRSI/OBV)'],
+      missing_components: [],
+      candidate_signal_label: 'LONG',
+      filter_reasons: [],
+      trace_url: '/ibkr_chart.html?symbol=CAND',
+    },
+    {
+      symbol: 'BLKD',
+      status: 'blocked',
+      target_status: 'active',
+      score: 31,
+      latest_us_time: '2026-05-04 10:25:00',
+      freshness_min: 5,
+      bars_remaining: 5,
+      component_progress: 0.75,
+      sd_upper_active: true,
+      sd_lower_active: false,
+      upper_window: { active: true, valid: true, status: 'upper_active', age_bars: 5, bars_remaining: 5 },
+      lower_window: { active: false, valid: false, status: 'inactive', age_bars: 0, bars_remaining: 0 },
+      collected_components: ['上轨 EMA 多头触及'],
+      missing_components: ['上轨多头分形'],
+      candidate_signal_label: '',
+      filter_reasons: ['MR Short 过滤'],
+      trace_url: '/ibkr_chart.html?symbol=BLKD',
+    },
+    {
+      symbol: 'ACTV',
+      status: 'upper_active',
+      target_status: 'active',
+      score: 28,
+      latest_us_time: '2026-05-04 10:25:00',
+      freshness_min: 7,
+      bars_remaining: 8,
+      component_progress: 0.25,
+      sd_upper_active: true,
+      sd_lower_active: false,
+      upper_window: { active: true, valid: true, status: 'upper_active', age_bars: 2, bars_remaining: 8 },
+      lower_window: { active: false, valid: false, status: 'inactive', age_bars: 0, bars_remaining: 0 },
+      collected_components: ['上轨 EMA 多头触及'],
+      missing_components: ['上轨多头分形'],
+      candidate_signal_label: '',
+      filter_reasons: [],
+      trace_url: '/ibkr_chart.html?symbol=ACTV',
+    },
+    {
+      symbol: 'NONE',
+      status: 'no_window',
+      target_status: 'candidate',
+      score: 18,
+      latest_us_time: '2026-05-04 10:25:00',
+      freshness_min: 9,
+      bars_remaining: 0,
+      component_progress: 0,
+      sd_upper_active: false,
+      sd_lower_active: false,
+      upper_window: { active: false, valid: false, status: 'inactive', age_bars: 0, bars_remaining: 0 },
+      lower_window: { active: false, valid: false, status: 'inactive', age_bars: 0, bars_remaining: 0 },
+      collected_components: [],
+      missing_components: [],
+      candidate_signal_label: '',
+      filter_reasons: [],
+      trace_url: '/ibkr_chart.html?symbol=NONE',
+    },
+    {
+      symbol: 'DONE',
+      status: 'confirmed',
+      target_status: 'active',
+      score: 44,
+      latest_us_time: '2026-05-04 10:25:00',
+      freshness_min: 2,
+      bars_remaining: 3,
+      component_progress: 1,
+      sd_upper_active: false,
+      sd_lower_active: true,
+      upper_window: { active: false, valid: false, status: 'inactive', age_bars: 0, bars_remaining: 0 },
+      lower_window: { active: true, valid: true, status: 'lower_active', age_bars: 7, bars_remaining: 3 },
+      collected_components: ['下轨空头分形', '空头背离(cRSI/OBV)'],
+      missing_components: [],
+      candidate_signal_label: 'SHORT',
+      filter_reasons: [],
+      trace_url: '/ibkr_chart.html?symbol=DONE',
+    },
   ],
 };
 
@@ -160,8 +255,15 @@ async function main() {
         key: node.getAttribute('data-component-group'),
         text: node.textContent || '',
       }));
+    const tabCounts = Object.fromEntries(Array.from(document.querySelectorAll('#windowProgressStatusTabs [data-window-status]'))
+      .map((node) => [
+        node.getAttribute('data-window-status'),
+        node.querySelector('.window-progress-status-count')?.textContent?.trim(),
+      ]));
     return {
       visibleGroups,
+      tabCounts,
+      defaultRowCount: document.querySelectorAll('#windowProgressTable tr').length,
       hasType2: text.includes('Type2 回归多'),
       hasType4: text.includes('Type4 顺势空'),
       hasInactiveType1: text.includes('Type1 顺势多'),
@@ -170,6 +272,37 @@ async function main() {
       hasMissingByPath: visibleGroups.some((group) => group.key === 'type2_long_mr' && group.text.includes('下轨多头分形') && group.text.includes('多头背离')),
     };
   });
+
+  await page.click('#windowProgressStatusTabs [data-window-status="blocked"]');
+  await page.waitForFunction(() => {
+    const text = document.querySelector('#windowProgressTable')?.textContent || '';
+    return text.includes('BLKD') && !text.includes('CAND') && !text.includes('MOCK');
+  });
+
+  const blockedResult = await page.evaluate(() => ({
+    tableText: document.querySelector('#windowProgressTable')?.textContent || '',
+    cardText: document.querySelector('#windowProgressCards')?.textContent || '',
+    metaText: document.querySelector('#windowProgressMeta')?.textContent || '',
+    activeStatus: document.querySelector('#windowProgressStatusTabs .window-progress-status-tab.active')?.getAttribute('data-window-status'),
+    url: window.location.href,
+  }));
+
+  await page.goto(`${CONSOLE_BASE}/ibkr_screener.html?environment=live&tab=screener&view=window-progress&window_status=active`, {
+    waitUntil: 'domcontentloaded',
+    timeout: 20000,
+  });
+  await page.waitForFunction(() => {
+    const active = document.querySelector('#windowProgressStatusTabs .window-progress-status-tab.active')?.getAttribute('data-window-status');
+    const text = document.querySelector('#windowProgressTable')?.textContent || '';
+    return active === 'active' && text.includes('ACTV') && !text.includes('BLKD');
+  });
+
+  const deepLinkResult = await page.evaluate(() => ({
+    tableText: document.querySelector('#windowProgressTable')?.textContent || '',
+    cardText: document.querySelector('#windowProgressCards')?.textContent || '',
+    activeStatus: document.querySelector('#windowProgressStatusTabs .window-progress-status-tab.active')?.getAttribute('data-window-status'),
+    url: window.location.href,
+  }));
 
   await browser.close();
 
@@ -181,8 +314,31 @@ async function main() {
   if (result.hasInactiveType3) failures.push('inactive_type3_visible');
   if (!result.hasCollectedByPath) failures.push('type4_collected_missing');
   if (!result.hasMissingByPath) failures.push('type2_missing_missing');
+  if (result.defaultRowCount !== 6) failures.push(`unexpected_default_row_count:${result.defaultRowCount}`);
+  const expectedCounts = { all: '6', candidate: '1', blocked: '1', near_expiry: '1', active: '1', no_window: '1', other: '1' };
+  for (const [status, expected] of Object.entries(expectedCounts)) {
+    if (result.tabCounts[status] !== expected) failures.push(`bad_tab_count:${status}:${result.tabCounts[status]}`);
+  }
+  if (blockedResult.activeStatus !== 'blocked') failures.push(`blocked_tab_not_active:${blockedResult.activeStatus}`);
+  if (!blockedResult.tableText.includes('BLKD') || blockedResult.tableText.includes('CAND') || blockedResult.tableText.includes('MOCK')) {
+    failures.push('blocked_table_filter_failed');
+  }
+  if (!blockedResult.cardText.includes('BLKD') || blockedResult.cardText.includes('CAND') || blockedResult.cardText.includes('MOCK')) {
+    failures.push('blocked_mobile_filter_failed');
+  }
+  if (!blockedResult.metaText.includes('1/6 条') || !blockedResult.metaText.includes('当前 阻塞')) {
+    failures.push(`blocked_meta_bad:${blockedResult.metaText}`);
+  }
+  if (!blockedResult.url.includes('window_status=blocked')) failures.push(`blocked_url_missing:${blockedResult.url}`);
+  if (deepLinkResult.activeStatus !== 'active') failures.push(`deeplink_active_tab_bad:${deepLinkResult.activeStatus}`);
+  if (!deepLinkResult.tableText.includes('ACTV') || deepLinkResult.tableText.includes('BLKD')) {
+    failures.push('deeplink_active_filter_failed');
+  }
+  if (!deepLinkResult.cardText.includes('ACTV') || deepLinkResult.cardText.includes('BLKD')) {
+    failures.push('deeplink_active_mobile_filter_failed');
+  }
 
-  const output = { ok: failures.length === 0, failures, result };
+  const output = { ok: failures.length === 0, failures, result, blockedResult, deepLinkResult };
   console.log(JSON.stringify(output, null, 2));
   if (failures.length) process.exit(1);
 }

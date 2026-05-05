@@ -1529,6 +1529,68 @@
       min-width: 0;
     }
 
+    .window-progress-status-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 7px;
+      margin: 13px 0 10px;
+      min-width: 0;
+    }
+
+    .window-progress-status-tab {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      min-height: 34px;
+      padding: 7px 10px;
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      border-radius: 10px;
+      background: rgba(8, 14, 24, 0.46);
+      color: var(--screen-muted);
+      font-family: var(--screen-body-font);
+      font-size: 12px;
+      line-height: 1.2;
+      font-weight: 700;
+      white-space: nowrap;
+      cursor: pointer;
+      transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
+    }
+
+    .window-progress-status-tab:hover {
+      border-color: rgba(45, 212, 191, 0.34);
+      color: var(--screen-text);
+    }
+
+    .window-progress-status-tab.active {
+      border-color: rgba(45, 212, 191, 0.42);
+      background: rgba(20, 184, 166, 0.14);
+      color: var(--screen-text);
+      box-shadow: inset 0 0 0 1px rgba(45, 212, 191, 0.08);
+    }
+
+    .window-progress-status-count {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 22px;
+      height: 20px;
+      padding: 0 6px;
+      border-radius: 8px;
+      background: rgba(148, 163, 184, 0.14);
+      color: var(--screen-accent-2);
+      font-family: var(--screen-mono-font);
+      font-size: 10.5px;
+      line-height: 1;
+      font-weight: 800;
+    }
+
+    .window-progress-status-tab.active .window-progress-status-count {
+      background: rgba(45, 212, 191, 0.16);
+      color: var(--screen-good);
+    }
+
     .window-progress-table {
       min-width: 1360px;
     }
@@ -1736,7 +1798,8 @@
       }
 
       .domain-tabs,
-      .subview-tabs {
+      .subview-tabs,
+      .window-progress-status-tabs {
         display: flex;
         flex-wrap: nowrap;
         overflow-x: auto;
@@ -1751,6 +1814,11 @@
         min-height: 0;
         padding: 11px 12px;
         border-radius: 17px;
+        scroll-snap-align: start;
+      }
+
+      .window-progress-status-tab {
+        flex: 0 0 auto;
         scroll-snap-align: start;
       }
 
@@ -2241,8 +2309,9 @@
     }
 
     .summary-grid,
-    .domain-tabs,
-    .subview-tabs {
+        .domain-tabs,
+    .subview-tabs,
+    .window-progress-status-tabs {
         max-width: 100%;
         overflow-x: auto;
         overflow-y: hidden;
@@ -2259,12 +2328,14 @@
     }
 
     .domain-tabs,
-    .subview-tabs {
+    .subview-tabs,
+    .window-progress-status-tabs {
         padding-right: 10px;
     }
 
     .domain-tabs::-webkit-scrollbar,
     .subview-tabs::-webkit-scrollbar,
+    .window-progress-status-tabs::-webkit-scrollbar,
     .summary-grid::-webkit-scrollbar {
         display: none;
     }
@@ -2274,6 +2345,10 @@
         flex: 0 0 min(72%, 286px);
         max-width: calc(100vw - 40px);
         min-width: 0;
+    }
+
+    .window-progress-status-tab {
+        flex: 0 0 auto;
     }
 
     .mobile-data-head,

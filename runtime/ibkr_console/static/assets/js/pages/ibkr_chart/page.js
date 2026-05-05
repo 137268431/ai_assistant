@@ -832,6 +832,115 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             return 'tight';
         }
 
+        function getMarkerPointBarIndex(point) {
+            const direct = Number(point?.bar_index);
+            if (Number.isInteger(direct)) return direct;
+            const value = Array.isArray(point?.value) ? Number(point.value[0]) : NaN;
+            return Number.isInteger(value) ? value : -1;
+        }
+
+        function normalizeMarkerLabelSide(position) {
+            const text = String(position || 'top').toLowerCase();
+            if (text.includes('bottom')) return 'bottom';
+            if (text.includes('left')) return 'left';
+            if (text.includes('right')) return 'right';
+            return 'top';
+        }
+
+        function estimateChartLabelWidth(text, fontSize, padding) {
+            const safeText = String(text || '');
+            let units = 0;
+            for (const char of safeText) {
+                units += /[\u2e80-\u9fff\uff00-\uffef]/.test(char) ? 1.02 : 0.62;
+            }
+            const pad = Array.isArray(padding)
+                ? Number(padding[1] ?? padding[0] ?? 0) * 2
+                : Number(padding || 0) * 2;
+            return Math.max(14, units * Number(fontSize || 10) + pad + 8);
+        }
+
+        function createChartLabelLaneAllocator(options = {}) {
+            const barsCount = Math.max(1, Number(options.barsCount || 0));
+            const viewport = chartViewportState.totalBars === barsCount
+                ? chartViewportState
+                : getCurrentZoomWindow(barsCount);
+            const visibleBars = Math.max(1, Number(viewport.visibleBars || barsCount || 1));
+            const canvas = document.getElementById('chartCanvas');
+            const chartWidth = Math.max(320, Number(canvas?.clientWidth || window.innerWidth || 1200));
+            const plotWidth = Math.max(
+                220,
+                chartWidth - Number(options.gridLeft || 0) - Number(options.gridRight || 0)
+            );
+            const pxPerBar = Math.max(4, plotWidth / visibleBars);
+            const densityTier = String(options.densityTier || chartMarkerDensityTier || getChartMarkerDensityTier(barsCount));
+            const maxLanes = Number(options.maxLanes || (densityTier === 'mid' ? 4 : 6));
+            const laneStep = Number(options.laneStep || (densityTier === 'mid' ? 8 : 9));
+            const minGapPx = Number(options.minGapPx || (densityTier === 'mid' ? 6 : 8));
+            const lanesBySide = {
+                top: [],
+                bottom: [],
+                left: [],
+                right: [],
+            };
+
+            function apply(data, config = {}) {
+                if (!Array.isArray(data) || !data.length || !config.showLabel) return data;
+                const side = normalizeMarkerLabelSide(config.position);
+                const lanes = lanesBySide[side] || (lanesBySide[side] = []);
+                const baseDistance = Number(config.baseDistance ?? config.labelDistance ?? 4);
+                const fontSize = Number(config.fontSize || 10);
+                const padding = config.padding || [2, 4];
+                const laneEntries = data
+                    .map((point, dataIndex) => ({ point, dataIndex, x: getMarkerPointBarIndex(point) }))
+                    .filter((entry) => Number.isInteger(entry.x) && entry.x >= 0)
+                    .sort((a, b) => a.x - b.x || a.dataIndex - b.dataIndex);
+
+                laneEntries.forEach(({ point, x }) => {
+                    const text = String(point?.labelText || point?.name || '');
+                    if (!text) return;
+                    const halfBars = Math.max(
+                        0.35,
+                        (estimateChartLabelWidth(text, fontSize, padding) + minGapPx) / Math.max(pxPerBar, 1) / 2
+                    );
+                    const interval = { left: x - halfBars, right: x + halfBars };
+                    let lane = -1;
+                    for (let index = 0; index < lanes.length; index += 1) {
+                        const intervals = Array.isArray(lanes[index]) ? lanes[index] : [];
+                        const overlaps = intervals.some((item) => interval.left < item.right && interval.right > item.left);
+                        if (!overlaps) {
+                            lane = index;
+                            break;
+                        }
+                    }
+                    if (lane < 0 && lanes.length < maxLanes) {
+                        lane = lanes.length;
+                        lanes.push([]);
+                    }
+                    if (lane < 0) {
+                        lane = lanes
+                            .map((items, index) => ({ count: Array.isArray(items) ? items.length : 0, index }))
+                            .sort((a, b) => a.count - b.count)[0]?.index ?? 0;
+                    }
+                    if (!Array.isArray(lanes[lane])) lanes[lane] = [];
+                    lanes[lane].push(interval);
+                    const sideSign = side === 'bottom' ? 1 : -1;
+                    const verticalOffset = side === 'top' || side === 'bottom'
+                        ? [0, lane * laneStep * sideSign]
+                        : [0, (lane % 2 === 0 ? -1 : 1) * Math.ceil(lane / 2) * laneStep];
+                    point._labelLane = lane;
+                    point.label = {
+                        ...(point.label || {}),
+                        show: true,
+                        distance: Math.max(0, baseDistance + lane * laneStep),
+                        offset: verticalOffset,
+                    };
+                });
+                return data;
+            }
+
+            return { apply };
+        }
+
         function toggleChartLegendCollapsed() {
             chartLegendCollapsed = !chartLegendCollapsed;
             saveChartUiPrefs();
@@ -3955,12 +4064,25 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const defaultLabelDistance = densityTier === 'mid' ? 3 : 4;
             const defaultLabelFontSize = densityTier === 'mid' ? 9 : 10;
             const defaultLabelPadding = densityTier === 'mid' ? [1, 3] : [2, 4];
+            const labelPosition = options.labelPosition || 'top';
+            const labelDistance = Number(options.labelDistance ?? defaultLabelDistance);
+            const labelFontSize = Number(options.labelFontSize ?? defaultLabelFontSize);
+            const labelPadding = options.labelPadding || defaultLabelPadding;
+            const seriesData = options.labelLaneAllocator
+                ? options.labelLaneAllocator.apply(data, {
+                    showLabel,
+                    position: labelPosition,
+                    baseDistance: labelDistance,
+                    fontSize: labelFontSize,
+                    padding: labelPadding,
+                })
+                : data;
             return {
                 name,
                 type: 'scatter',
                 xAxisIndex: 0,
                 yAxisIndex: 0,
-                data,
+                data: seriesData,
                 symbol: options.symbol || 'triangle',
                 symbolRotate: Number(options.symbolRotate || 0),
                 symbolSize: Number(options.symbolSize || 12),
@@ -3972,17 +4094,17 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     formatter(params) {
                         return params?.data?.labelText || '';
                     },
-                    position: options.labelPosition || 'top',
-                    distance: Number(options.labelDistance ?? defaultLabelDistance),
+                    position: labelPosition,
+                    distance: labelDistance,
                     color: options.labelColor || color,
-                    fontSize: Number(options.labelFontSize ?? defaultLabelFontSize),
+                    fontSize: labelFontSize,
                     fontWeight: 700,
                     fontFamily: 'JetBrains Mono, monospace',
                     backgroundColor: showLabel ? (densityTier === 'mid' ? 'rgba(8,12,20,0.82)' : 'rgba(8,12,20,0.92)') : 'transparent',
                     borderColor: color,
                     borderWidth: showLabel ? 1 : 0,
                     borderRadius: 6,
-                    padding: showLabel ? (options.labelPadding || defaultLabelPadding) : 0,
+                    padding: showLabel ? labelPadding : 0,
                 },
                 labelLayout: {
                     hideOverlap: true,
@@ -4324,6 +4446,16 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             }
             canvas.innerHTML = '';
             chartInstance = echarts.init(canvas);
+            const mainLabelLaneAllocator = createChartLabelLaneAllocator({
+                barsCount: sortedBars.length,
+                gridLeft,
+                gridRight,
+                densityTier,
+            });
+            const withMainLabelLanes = (options = {}) => ({
+                ...options,
+                labelLaneAllocator: mainLabelLaneAllocator,
+            });
             const overlaySeries = [
                 ...(chartLayerState.sdChannel ? [
                     {
@@ -4365,42 +4497,42 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     { name: 'SD Signal Lower', type: 'line', data: sdSignalLower, symbol: 'none', connectNulls: true, smooth: false, z: 5, lineStyle: { width: 1.55, color: 'rgba(74,222,128,0.84)' } },
                     { name: 'SD Filter Upper', type: 'line', data: sdFilterUpper, symbol: 'none', connectNulls: true, smooth: false, z: 4, lineStyle: { width: 1.15, color: 'rgba(248,113,113,0.46)', type: 'dashed' } },
                     { name: 'SD Filter Lower', type: 'line', data: sdFilterLower, symbol: 'none', connectNulls: true, smooth: false, z: 4, lineStyle: { width: 1.15, color: 'rgba(74,222,128,0.46)', type: 'dashed' } },
-                    buildMarkerScatterSeries('SD MR Bull', sdLowerMarkers, { color: '#4CAF50', symbol: 'triangle', symbolSize: 13, showLabel: showMarkerLabels, labelPosition: 'bottom', shadowBlur: 10, shadowColor: 'rgba(76,175,80,0.24)' }),
-                    buildMarkerScatterSeries('SD MR Bear', sdUpperMarkers, { color: '#FF8A00', symbol: 'triangle', symbolRotate: 180, symbolSize: 13, showLabel: showMarkerLabels, labelPosition: 'top', shadowBlur: 10, shadowColor: 'rgba(255,138,0,0.24)' }),
+                    buildMarkerScatterSeries('SD MR Bull', sdLowerMarkers, withMainLabelLanes({ color: '#4CAF50', symbol: 'triangle', symbolSize: 13, showLabel: showMarkerLabels, labelPosition: 'bottom', shadowBlur: 10, shadowColor: 'rgba(76,175,80,0.24)' })),
+                    buildMarkerScatterSeries('SD MR Bear', sdUpperMarkers, withMainLabelLanes({ color: '#FF8A00', symbol: 'triangle', symbolRotate: 180, symbolSize: 13, showLabel: showMarkerLabels, labelPosition: 'top', shadowBlur: 10, shadowColor: 'rgba(255,138,0,0.24)' })),
                 ] : []),
                 ...(chartLayerState.fractal ? [
-                    buildMarkerScatterSeries('Fractal Bull', fractalBullMarkers, { color: '#14B8A6', symbol: 'triangle', symbolSize: 11, showLabel: showMarkerLabels, labelPosition: 'bottom' }),
-                    buildMarkerScatterSeries('Fractal Bear', fractalBearMarkers, { color: '#F44336', symbol: 'triangle', symbolRotate: 180, symbolSize: 11, showLabel: showMarkerLabels, labelPosition: 'top' }),
+                    buildMarkerScatterSeries('Fractal Bull', fractalBullMarkers, withMainLabelLanes({ color: '#14B8A6', symbol: 'triangle', symbolSize: 11, showLabel: showMarkerLabels, labelPosition: 'bottom' })),
+                    buildMarkerScatterSeries('Fractal Bear', fractalBearMarkers, withMainLabelLanes({ color: '#F44336', symbol: 'triangle', symbolRotate: 180, symbolSize: 11, showLabel: showMarkerLabels, labelPosition: 'top' })),
                 ] : []),
                 ...(chartLayerState.emaTouch && showContextMarkers ? [
-                    buildMarkerScatterSeries('EMA Touch Bull Fast', bullTouchFastMarkers, { color: '#00C853', symbol: 'triangle', symbolSize: 11, showLabel: showMarkerLabels, labelPosition: 'bottom' }),
-                    buildMarkerScatterSeries('EMA Touch Bull Slow', bullTouchSlowMarkers, { color: '#64DD17', symbol: 'triangle', symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'bottom' }),
-                    buildMarkerScatterSeries('EMA Touch Bear Fast', bearTouchFastMarkers, { color: '#FF1744', symbol: 'triangle', symbolRotate: 180, symbolSize: 11, showLabel: showMarkerLabels, labelPosition: 'top' }),
-                    buildMarkerScatterSeries('EMA Touch Bear Slow', bearTouchSlowMarkers, { color: '#D50000', symbol: 'triangle', symbolRotate: 180, symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'top' }),
+                    buildMarkerScatterSeries('EMA Touch Bull Fast', bullTouchFastMarkers, withMainLabelLanes({ color: '#00C853', symbol: 'triangle', symbolSize: 11, showLabel: showMarkerLabels, labelPosition: 'bottom' })),
+                    buildMarkerScatterSeries('EMA Touch Bull Slow', bullTouchSlowMarkers, withMainLabelLanes({ color: '#64DD17', symbol: 'triangle', symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'bottom' })),
+                    buildMarkerScatterSeries('EMA Touch Bear Fast', bearTouchFastMarkers, withMainLabelLanes({ color: '#FF1744', symbol: 'triangle', symbolRotate: 180, symbolSize: 11, showLabel: showMarkerLabels, labelPosition: 'top' })),
+                    buildMarkerScatterSeries('EMA Touch Bear Slow', bearTouchSlowMarkers, withMainLabelLanes({ color: '#D50000', symbol: 'triangle', symbolRotate: 180, symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'top' })),
                 ] : []),
                 ...(chartLayerState.divergence && showContextMarkers ? [
-                    buildMarkerScatterSeries('cRSI Reg Bull Div', crsiRegBullMarkers, { color: '#2196F3', symbol: 'triangle', symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'bottom' }),
-                    buildMarkerScatterSeries('cRSI Wide Bull Div', crsiWideBullMarkers, { color: '#2196F3', symbol: 'triangle', symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'bottom' }),
-                    buildMarkerScatterSeries('OBV Reg Bull Div', obvRegBullMarkers, { color: '#2196F3', symbol: 'triangle', symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'bottom' }),
-                    buildMarkerScatterSeries('OBV Wide Bull Div', obvWideBullMarkers, { color: '#2196F3', symbol: 'triangle', symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'bottom' }),
-                    buildMarkerScatterSeries('cRSI Hid Bull', crsiRegHidBullMarkers, { color: '#2196F3', symbol: 'triangle', symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'bottom' }),
-                    buildMarkerScatterSeries('cRSI Wide Hid Bull', crsiWideHidBullMarkers, { color: '#2196F3', symbol: 'triangle', symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'bottom' }),
-                    buildMarkerScatterSeries('OBV Hid Bull', obvRegHidBullMarkers, { color: '#2196F3', symbol: 'triangle', symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'bottom' }),
-                    buildMarkerScatterSeries('OBV Wide Hid Bull', obvWideHidBullMarkers, { color: '#2196F3', symbol: 'triangle', symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'bottom' }),
-                    buildMarkerScatterSeries('cRSI Reg Bear Div', crsiRegBearMarkers, { color: '#9C27B0', symbol: 'triangle', symbolRotate: 180, symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'top' }),
-                    buildMarkerScatterSeries('cRSI Wide Bear Div', crsiWideBearMarkers, { color: '#9C27B0', symbol: 'triangle', symbolRotate: 180, symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'top' }),
-                    buildMarkerScatterSeries('OBV Reg Bear Div', obvRegBearMarkers, { color: '#9C27B0', symbol: 'triangle', symbolRotate: 180, symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'top' }),
-                    buildMarkerScatterSeries('OBV Wide Bear Div', obvWideBearMarkers, { color: '#9C27B0', symbol: 'triangle', symbolRotate: 180, symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'top' }),
-                    buildMarkerScatterSeries('cRSI Hid Bear', crsiRegHidBearMarkers, { color: '#9C27B0', symbol: 'triangle', symbolRotate: 180, symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'top' }),
-                    buildMarkerScatterSeries('cRSI Wide Hid Bear', crsiWideHidBearMarkers, { color: '#9C27B0', symbol: 'triangle', symbolRotate: 180, symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'top' }),
-                    buildMarkerScatterSeries('OBV Hid Bear', obvRegHidBearMarkers, { color: '#9C27B0', symbol: 'triangle', symbolRotate: 180, symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'top' }),
-                    buildMarkerScatterSeries('OBV Wide Hid Bear', obvWideHidBearMarkers, { color: '#9C27B0', symbol: 'triangle', symbolRotate: 180, symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'top' }),
+                    buildMarkerScatterSeries('cRSI Reg Bull Div', crsiRegBullMarkers, withMainLabelLanes({ color: '#2196F3', symbol: 'triangle', symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'bottom' })),
+                    buildMarkerScatterSeries('cRSI Wide Bull Div', crsiWideBullMarkers, withMainLabelLanes({ color: '#2196F3', symbol: 'triangle', symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'bottom' })),
+                    buildMarkerScatterSeries('OBV Reg Bull Div', obvRegBullMarkers, withMainLabelLanes({ color: '#2196F3', symbol: 'triangle', symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'bottom' })),
+                    buildMarkerScatterSeries('OBV Wide Bull Div', obvWideBullMarkers, withMainLabelLanes({ color: '#2196F3', symbol: 'triangle', symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'bottom' })),
+                    buildMarkerScatterSeries('cRSI Hid Bull', crsiRegHidBullMarkers, withMainLabelLanes({ color: '#2196F3', symbol: 'triangle', symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'bottom' })),
+                    buildMarkerScatterSeries('cRSI Wide Hid Bull', crsiWideHidBullMarkers, withMainLabelLanes({ color: '#2196F3', symbol: 'triangle', symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'bottom' })),
+                    buildMarkerScatterSeries('OBV Hid Bull', obvRegHidBullMarkers, withMainLabelLanes({ color: '#2196F3', symbol: 'triangle', symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'bottom' })),
+                    buildMarkerScatterSeries('OBV Wide Hid Bull', obvWideHidBullMarkers, withMainLabelLanes({ color: '#2196F3', symbol: 'triangle', symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'bottom' })),
+                    buildMarkerScatterSeries('cRSI Reg Bear Div', crsiRegBearMarkers, withMainLabelLanes({ color: '#9C27B0', symbol: 'triangle', symbolRotate: 180, symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'top' })),
+                    buildMarkerScatterSeries('cRSI Wide Bear Div', crsiWideBearMarkers, withMainLabelLanes({ color: '#9C27B0', symbol: 'triangle', symbolRotate: 180, symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'top' })),
+                    buildMarkerScatterSeries('OBV Reg Bear Div', obvRegBearMarkers, withMainLabelLanes({ color: '#9C27B0', symbol: 'triangle', symbolRotate: 180, symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'top' })),
+                    buildMarkerScatterSeries('OBV Wide Bear Div', obvWideBearMarkers, withMainLabelLanes({ color: '#9C27B0', symbol: 'triangle', symbolRotate: 180, symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'top' })),
+                    buildMarkerScatterSeries('cRSI Hid Bear', crsiRegHidBearMarkers, withMainLabelLanes({ color: '#9C27B0', symbol: 'triangle', symbolRotate: 180, symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'top' })),
+                    buildMarkerScatterSeries('cRSI Wide Hid Bear', crsiWideHidBearMarkers, withMainLabelLanes({ color: '#9C27B0', symbol: 'triangle', symbolRotate: 180, symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'top' })),
+                    buildMarkerScatterSeries('OBV Hid Bear', obvRegHidBearMarkers, withMainLabelLanes({ color: '#9C27B0', symbol: 'triangle', symbolRotate: 180, symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'top' })),
+                    buildMarkerScatterSeries('OBV Wide Hid Bear', obvWideHidBearMarkers, withMainLabelLanes({ color: '#9C27B0', symbol: 'triangle', symbolRotate: 180, symbolSize: 10, showLabel: showMarkerLabels, labelPosition: 'top' })),
                 ] : []),
                 ...(isTradeSignalInterval() && chartLayerState.tradeSignals ? [
-                    buildMarkerScatterSeries('LONG Signal', longSignals, { color: '#48BB78', symbol: 'circle', symbolSize: 12, showLabel: showTradeLabels, labelPosition: 'bottom', shadowBlur: 14, shadowColor: 'rgba(72,187,120,0.28)' }),
-                    buildMarkerScatterSeries('SHORT Signal', shortSignals, { color: '#FC8181', symbol: 'circle', symbolSize: 12, showLabel: showTradeLabels, labelPosition: 'top', shadowBlur: 14, shadowColor: 'rgba(252,129,129,0.28)' }),
-                    buildMarkerScatterSeries('Blocked Trace', blockedTraceMarkers, { color: '#F97316', symbol: 'diamond', symbolSize: 13, showLabel: showTradeLabels, labelPosition: 'bottom', shadowBlur: 12, shadowColor: 'rgba(249,115,22,0.28)' }),
-                    buildMarkerScatterSeries('Preview Signal', previewCandidateSignals, { color: '#FBBF24', symbol: 'diamond', symbolSize: 13, showLabel: showTradeLabels, labelPosition: 'top', shadowBlur: 12, shadowColor: 'rgba(251,191,36,0.26)' }),
+                    buildMarkerScatterSeries('LONG Signal', longSignals, withMainLabelLanes({ color: '#48BB78', symbol: 'circle', symbolSize: 12, showLabel: showTradeLabels, labelPosition: 'bottom', shadowBlur: 14, shadowColor: 'rgba(72,187,120,0.28)' })),
+                    buildMarkerScatterSeries('SHORT Signal', shortSignals, withMainLabelLanes({ color: '#FC8181', symbol: 'circle', symbolSize: 12, showLabel: showTradeLabels, labelPosition: 'top', shadowBlur: 14, shadowColor: 'rgba(252,129,129,0.28)' })),
+                    buildMarkerScatterSeries('Blocked Trace', blockedTraceMarkers, withMainLabelLanes({ color: '#F97316', symbol: 'diamond', symbolSize: 13, showLabel: showTradeLabels, labelPosition: 'bottom', shadowBlur: 12, shadowColor: 'rgba(249,115,22,0.28)' })),
+                    buildMarkerScatterSeries('Preview Signal', previewCandidateSignals, withMainLabelLanes({ color: '#FBBF24', symbol: 'diamond', symbolSize: 13, showLabel: showTradeLabels, labelPosition: 'top', shadowBlur: 12, shadowColor: 'rgba(251,191,36,0.26)' })),
                 ] : []),
             ];
             const series = [

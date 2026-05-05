@@ -8,7 +8,7 @@
   <script src="/common.js"></script>
   <script>document.write(getCommonStyles())</script>
   <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-  <link rel="stylesheet" href="/assets/css/pages/ibkr_screener/page.css?v=20260504-window-components">
+  <link rel="stylesheet" href="/assets/css/pages/ibkr_screener/page.css?v=20260506-window-status-tabs">
 </head>
 <body>
   <div id="nav"></div>
@@ -205,6 +205,30 @@
                 <div class="panel-copy">当前 active 窗口的 5m bar 收集、上下轨状态、候选信号与过滤原因。</div>
               </div>
               <button id="refreshWindowProgressBtn" class="mini-btn" type="button">刷新窗口</button>
+            </div>
+
+            <div class="window-progress-status-tabs" id="windowProgressStatusTabs" role="tablist" aria-label="窗口进度状态">
+              <button class="window-progress-status-tab active" type="button" role="tab" data-window-status="all" aria-selected="true">
+                <span>全部</span><span class="window-progress-status-count">0</span>
+              </button>
+              <button class="window-progress-status-tab" type="button" role="tab" data-window-status="candidate" aria-selected="false">
+                <span>候选</span><span class="window-progress-status-count">0</span>
+              </button>
+              <button class="window-progress-status-tab" type="button" role="tab" data-window-status="blocked" aria-selected="false">
+                <span>阻塞</span><span class="window-progress-status-count">0</span>
+              </button>
+              <button class="window-progress-status-tab" type="button" role="tab" data-window-status="near_expiry" aria-selected="false">
+                <span>临期</span><span class="window-progress-status-count">0</span>
+              </button>
+              <button class="window-progress-status-tab" type="button" role="tab" data-window-status="active" aria-selected="false">
+                <span>活跃</span><span class="window-progress-status-count">0</span>
+              </button>
+              <button class="window-progress-status-tab" type="button" role="tab" data-window-status="no_window" aria-selected="false">
+                <span>无窗口</span><span class="window-progress-status-count">0</span>
+              </button>
+              <button class="window-progress-status-tab" type="button" role="tab" data-window-status="other" aria-selected="false">
+                <span>其他</span><span class="window-progress-status-count">0</span>
+              </button>
             </div>
 
             <div class="table-header current-target-table-header">
@@ -630,6 +654,6 @@
     </section>
   </div>
 
-  <script src="/assets/js/pages/ibkr_screener/page.js?v=20260504-window-components"></script>
+  <script src="/assets/js/pages/ibkr_screener/page.js?v=20260506-window-status-tabs"></script>
 </body>
 </html>

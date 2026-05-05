@@ -70,9 +70,11 @@ function makeIndicator(bar, index) {
     crsi_db: 30,
     obv_rsi: 45 + index * 2,
     vwap_dist: 0.2,
-    sd_lower: index === 0,
-    fractal_bull: index === 2,
-    obv_reg_bull_div: index === 3,
+    sd_lower: index === 0 || index === 4,
+    fractal_bull: index === 2 || index === 4,
+    bull_touch_fast: index === 4,
+    bull_touch_slow: index === 4,
+    obv_reg_bull_div: index === 3 || index === 4,
     crsi_reg_bull_div: index === 4,
     dtp_dir: index >= 3 ? -1 : 0,
     dtp_phase: index >= 3 ? '红初中' : '',
@@ -249,6 +251,26 @@ async function main() {
     const blockedSeries = series.find((item) => item.name === 'Flow 已过滤');
     const blockedMain = series.find((item) => item.name === 'Blocked Trace');
     const dtpChangeSeries = series.find((item) => item.name === 'Flow DTP转换');
+    const markerClusterNames = [
+      'SD MR Bull',
+      'Fractal Bull',
+      'EMA Touch Bull Fast',
+      'EMA Touch Bull Slow',
+      'cRSI Reg Bull Div',
+      'OBV Reg Bull Div',
+      'Blocked Trace',
+    ];
+    const markerCluster = markerClusterNames.map((name) => {
+      const item = series.find((candidate) => candidate.name === name);
+      const point = Array.isArray(item?.data) ? item.data.find((entry) => Number(entry?.bar_index) === 4) : null;
+      return point ? {
+        name,
+        lane: point._labelLane,
+        labelDistance: point.label?.distance,
+        offsetY: Array.isArray(point.label?.offset) ? point.label.offset[1] : null,
+      } : null;
+    }).filter(Boolean);
+    const markerClusterLanes = Array.from(new Set(markerCluster.map((item) => item.lane).filter((lane) => Number.isInteger(lane))));
     const flowGrid = Array.isArray(option.grid) ? option.grid[1] : null;
     const flowYAxis = Array.isArray(option.yAxis) ? option.yAxis[1] : null;
     const flowNames = series.map((item) => item.name).filter((name) => String(name || '').startsWith('Flow '));
@@ -275,6 +297,8 @@ async function main() {
       blockedLabel: blockedSeries?.data?.[0]?.labelText || '',
       blockedLabelShow: Boolean(blockedSeries?.label?.show),
       blockedMainCount: Array.isArray(blockedMain?.data) ? blockedMain.data.length : 0,
+      markerCluster,
+      markerClusterLanes,
       customStartValue: document.getElementById('customRangeStart')?.value || '',
       customEndValue: document.getElementById('customRangeEnd')?.value || '',
       customStartHasPicker: Boolean(document.getElementById('customRangeStart')?._flatpickr),
@@ -400,6 +424,11 @@ async function main() {
   if (beforeClick.blockedMainCount !== 1) failures.push(`blocked_main_count_${beforeClick.blockedMainCount}`);
   if (!beforeClick.blockedLabel.includes('DTP红初中')) failures.push('missing_blocked_label_reason');
   if (!beforeClick.blockedLabelShow) failures.push('blocked_label_should_be_visible');
+  if (beforeClick.markerCluster.length < 6) failures.push(`marker_cluster_count_${beforeClick.markerCluster.length}`);
+  if (beforeClick.markerClusterLanes.length < 4) failures.push(`marker_cluster_lanes_${beforeClick.markerClusterLanes.join(',')}`);
+  if (!beforeClick.markerCluster.some((item) => Number(item.labelDistance) > 12 || Math.abs(Number(item.offsetY || 0)) >= 9)) {
+    failures.push('marker_cluster_missing_lane_offset');
+  }
   if (!beforeClick.customStartHasPicker) failures.push('custom_start_missing_flatpickr');
   if (!beforeClick.customEndHasPicker) failures.push('custom_end_missing_flatpickr');
   if (beforeClick.customStartValue !== '2026/05/04 10:30') failures.push(`custom_start_not_et_${beforeClick.customStartValue}`);

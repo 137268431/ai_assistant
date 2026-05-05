@@ -22,6 +22,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
     let rulesLoadError = '';
     let filteredRows = [];
     let filteredCurrentTargetRows = [];
+    let activeWindowProgressStatus = 'all';
     const selectedSymbols = new Set();
     const dailyTargetsState = {
       selectedDate: '',
@@ -50,6 +51,15 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       requestToken: 0,
       loadedKey: '',
     };
+    const WINDOW_PROGRESS_STATUS_TABS = [
+      { key: 'all', label: '全部' },
+      { key: 'candidate', label: '候选' },
+      { key: 'blocked', label: '阻塞' },
+      { key: 'near_expiry', label: '临期' },
+      { key: 'active', label: '活跃' },
+      { key: 'no_window', label: '无窗口' },
+      { key: 'other', label: '其他' },
+    ];
     const manualDailyScanState = {
       running: false,
       lastResult: null,
@@ -287,6 +297,17 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       if (value === 'universe') return 'universe';
       if (value === 'window-progress' || value === 'window_progress' || value === 'windows') return 'window-progress';
       return 'current';
+    }
+
+    function normalizeWindowProgressStatusTab(value) {
+      const normalized = String(value || '').trim().toLowerCase().replace(/-/g, '_');
+      if (normalized === 'all' || normalized === '') return 'all';
+      if (WINDOW_PROGRESS_STATUS_TABS.some((tab) => tab.key === normalized)) return normalized;
+      return 'all';
+    }
+
+    function getRequestedWindowProgressStatus() {
+      return normalizeWindowProgressStatusTab(new URLSearchParams(window.location.search).get('window_status'));
     }
 
     function isPhoneViewport() {
@@ -659,14 +680,15 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
     function renderWindowProgressSummary() {
       const rows = getSortedWindowProgressRows();
       const summary = windowProgressPayload.summary || {};
+      const counts = getWindowProgressStatusCounts(rows);
       const countByStatus = (status) => rows.filter((row) => getWindowProgressStatus(row) === status).length;
       renderSummaryCards([
         { label: 'WINDOWS', value: summary.total ?? rows.length, copy: '窗口记录数' },
-        { label: 'CANDIDATE', value: summary.candidate_count ?? countByStatus('candidate'), copy: '候选信号', className: 'accent' },
-        { label: 'BLOCKED', value: summary.blocked_count ?? countByStatus('blocked'), copy: '过滤阻塞', className: 'accent' },
-        { label: 'NEAR EXPIRY', value: summary.near_expiry_count ?? countByStatus('near_expiry'), copy: '即将过期', className: 'teal' },
+        { label: 'CANDIDATE', value: summary.candidate_count ?? counts.candidate, copy: '候选信号', className: 'accent' },
+        { label: 'BLOCKED', value: summary.blocked_count ?? counts.blocked, copy: '过滤阻塞', className: 'accent' },
+        { label: 'NEAR EXPIRY', value: summary.near_expiry_count ?? counts.near_expiry, copy: '即将过期', className: 'teal' },
         { label: 'CONFIRMED', value: summary.confirmed_count ?? countByStatus('confirmed'), copy: '已确认', className: 'good' },
-        { label: 'ACTIVE', value: summary.active_count ?? rows.filter((row) => ['upper_active', 'lower_active', 'both_active'].includes(getWindowProgressStatus(row))).length, copy: '上下轨 active', className: 'good' }
+        { label: 'ACTIVE', value: summary.active_count ?? counts.active, copy: '上下轨 active', className: 'good' }
       ]);
     }
 
@@ -962,6 +984,20 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       });
     }
 
+    function bindWindowProgressStatusEvents() {
+      document.querySelectorAll('#windowProgressStatusTabs [data-window-status]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const nextStatus = normalizeWindowProgressStatusTab(button.dataset.windowStatus);
+          if (nextStatus === activeWindowProgressStatus) return;
+          activeWindowProgressStatus = nextStatus;
+          renderWindowProgressTable();
+          if (activeTab === 'screener' && activeScreenerView === 'window-progress') {
+            syncUrl();
+          }
+        });
+      });
+    }
+
     function syncUrl() {
       const screenerDate = document.getElementById('marketDate').value || getDailyTargetDate() || '';
       const params = { market_date: screenerDate };
@@ -974,6 +1010,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       }
       if (activeTab === 'screener') {
         params.view = activeScreenerView;
+        if (activeScreenerView === 'window-progress' && normalizeWindowProgressStatusTab(activeWindowProgressStatus) !== 'all') {
+          params.window_status = normalizeWindowProgressStatusTab(activeWindowProgressStatus);
+        }
       }
       const nextUrl = buildPageUrl('/ibkr_screener.html', params, { environment: currentEnvironment });
       if (`${location.pathname}${location.search}` !== nextUrl) {
@@ -1238,6 +1277,47 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       return 'no_window';
     }
 
+    function getWindowProgressStatusTabForRow(row) {
+      const status = getWindowProgressStatus(row);
+      if (['candidate', 'blocked', 'near_expiry', 'no_window'].includes(status)) return status;
+      if (['upper_active', 'lower_active', 'both_active'].includes(status)) return 'active';
+      return 'other';
+    }
+
+    function getWindowProgressStatusCounts(rows = getSortedWindowProgressRows()) {
+      const counts = WINDOW_PROGRESS_STATUS_TABS.reduce((acc, tab) => {
+        acc[tab.key] = 0;
+        return acc;
+      }, {});
+      counts.all = rows.length;
+      rows.forEach((row) => {
+        const tab = getWindowProgressStatusTabForRow(row);
+        counts[tab] = (counts[tab] || 0) + 1;
+      });
+      return counts;
+    }
+
+    function getFilteredWindowProgressRows(rows = getSortedWindowProgressRows()) {
+      const selectedStatus = normalizeWindowProgressStatusTab(activeWindowProgressStatus);
+      if (selectedStatus === 'all') return rows;
+      return rows.filter((row) => getWindowProgressStatusTabForRow(row) === selectedStatus);
+    }
+
+    function renderWindowProgressStatusTabs(rows = getSortedWindowProgressRows()) {
+      const root = document.getElementById('windowProgressStatusTabs');
+      if (!root) return;
+      const counts = getWindowProgressStatusCounts(rows);
+      const selectedStatus = normalizeWindowProgressStatusTab(activeWindowProgressStatus);
+      root.querySelectorAll('[data-window-status]').forEach((button) => {
+        const key = normalizeWindowProgressStatusTab(button.dataset.windowStatus);
+        const active = key === selectedStatus;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-selected', active ? 'true' : 'false');
+        const countNode = button.querySelector('.window-progress-status-count');
+        if (countNode) countNode.textContent = formatWindowProgressCount(counts[key] || 0);
+      });
+    }
+
     function getWindowProgressStatusLabel(value) {
       const labels = {
         no_window: 'no_window',
@@ -1466,11 +1546,11 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       return ['candidate', 'confirmed', 'blocked'].includes(status) ? status : '--';
     }
 
-    function renderWindowProgressCards(rows, marketDate) {
+    function renderWindowProgressCards(rows, marketDate, emptyMessage = '当前没有窗口进度记录。') {
       const mount = document.getElementById('windowProgressCards');
       if (!mount) return;
       if (!Array.isArray(rows) || !rows.length) {
-        renderMobileCardState('windowProgressCards', '当前没有窗口进度记录。');
+        renderMobileCardState('windowProgressCards', emptyMessage);
         return;
       }
 
@@ -1530,20 +1610,29 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       const meta = document.getElementById('windowProgressMeta');
       const metaSecondary = document.getElementById('windowProgressMetaSecondary');
       if (!tbody || !meta || !metaSecondary) return;
-      const rows = getSortedWindowProgressRows();
+      const allRows = getSortedWindowProgressRows();
+      const rows = getFilteredWindowProgressRows(allRows);
       const marketDate = windowProgressPayload.market_date || todayTargetsPayload.market_date || document.getElementById('marketDate')?.value || getUsDate();
-      const candidateCount = rows.filter((row) => getWindowProgressStatus(row) === 'candidate').length;
-      const blockedCount = rows.filter((row) => getWindowProgressStatus(row) === 'blocked').length;
-      const nearExpiryCount = rows.filter((row) => getWindowProgressStatus(row) === 'near_expiry').length;
-      const activeCount = rows.filter((row) => ['upper_active', 'lower_active', 'both_active'].includes(getWindowProgressStatus(row))).length;
-      meta.textContent = `${rows.length} 条 · candidate ${candidateCount} · blocked ${blockedCount} · near_expiry ${nearExpiryCount} · active ${activeCount}`;
+      const counts = getWindowProgressStatusCounts(allRows);
+      const selectedStatus = normalizeWindowProgressStatusTab(activeWindowProgressStatus);
+      const selectedLabel = WINDOW_PROGRESS_STATUS_TABS.find((tab) => tab.key === selectedStatus)?.label || '全部';
+      renderWindowProgressStatusTabs(allRows);
+      meta.textContent = selectedStatus === 'all'
+        ? `${allRows.length} 条 · candidate ${counts.candidate || 0} · blocked ${counts.blocked || 0} · near_expiry ${counts.near_expiry || 0} · active ${counts.active || 0}`
+        : `${rows.length}/${allRows.length} 条 · 当前 ${selectedLabel} · candidate ${counts.candidate || 0} · blocked ${counts.blocked || 0} · near_expiry ${counts.near_expiry || 0} · active ${counts.active || 0}`;
       metaSecondary.textContent = windowProgressPayload.computed_at_us
-        ? `计算时间 ${windowProgressPayload.computed_at_us}。排序: candidate/blocked/near_expiry, bars_remaining asc, component_progress desc, freshness_min asc, target_score desc。`
-        : '排序: candidate/blocked/near_expiry, bars_remaining asc, component_progress desc, freshness_min asc, target_score desc。';
+        ? `计算时间 ${windowProgressPayload.computed_at_us}。筛选: ${selectedLabel}。排序: candidate/blocked/near_expiry, bars_remaining asc, component_progress desc, freshness_min asc, target_score desc。`
+        : `筛选: ${selectedLabel}。排序: candidate/blocked/near_expiry, bars_remaining asc, component_progress desc, freshness_min asc, target_score desc。`;
 
-      if (!rows.length) {
+      if (!allRows.length) {
         tbody.innerHTML = '<tr><td colspan="11" class="empty-state">当前没有窗口进度记录。</td></tr>';
         renderWindowProgressCards([], marketDate);
+        return;
+      }
+      if (!rows.length) {
+        const emptyMessage = `当前没有${selectedLabel}状态的窗口进度记录。`;
+        tbody.innerHTML = `<tr><td colspan="11" class="empty-state">${escapeHtml(emptyMessage)}</td></tr>`;
+        renderWindowProgressCards([], marketDate, emptyMessage);
         return;
       }
 
@@ -3641,6 +3730,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       const params = { market_date: document.getElementById('marketDate').value || '' };
       if (activeTab === 'screener') {
         params.view = activeScreenerView;
+        if (activeScreenerView === 'window-progress' && normalizeWindowProgressStatusTab(activeWindowProgressStatus) !== 'all') {
+          params.window_status = normalizeWindowProgressStatusTab(activeWindowProgressStatus);
+        }
       }
       windowProgressState.loadedKey = '';
       if (activeTab === 'watchlist') params.tab = 'watchlist';
@@ -3658,6 +3750,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       const query = new URLSearchParams(window.location.search);
       activeTab = getRequestedTab();
       activeScreenerView = getRequestedScreenerView();
+      activeWindowProgressStatus = getRequestedWindowProgressStatus();
       setMarketDateFromUrl();
       dailyTargetsState.selectedDate = query.get('date')
         || document.getElementById('marketDate').value
@@ -3674,6 +3767,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       document.getElementById('pageBridge').innerHTML = renderDomainTabs();
       bindTabEvents();
       bindScreenerViewEvents();
+      bindWindowProgressStatusEvents();
       bindResponsiveState();
       bindFilterEvents();
       bindCurrentTargetFilterEvents();
