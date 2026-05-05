@@ -873,9 +873,10 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             );
             const pxPerBar = Math.max(4, plotWidth / visibleBars);
             const densityTier = String(options.densityTier || chartMarkerDensityTier || getChartMarkerDensityTier(barsCount));
-            const maxLanes = Number(options.maxLanes || (densityTier === 'mid' ? 4 : 6));
-            const laneStep = Number(options.laneStep || (densityTier === 'mid' ? 8 : 9));
-            const minGapPx = Number(options.minGapPx || (densityTier === 'mid' ? 6 : 8));
+            const maxLanes = Number(options.maxLanes || (densityTier === 'mid' ? 5 : 7));
+            const laneStep = Number(options.laneStep || (densityTier === 'mid' ? 15 : 20));
+            const minGapPx = Number(options.minGapPx || (densityTier === 'mid' ? 10 : 14));
+            const xStep = Number(options.xStep || (densityTier === 'mid' ? 8 : 12));
             const lanesBySide = {
                 top: [],
                 bottom: [],
@@ -924,8 +925,9 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     if (!Array.isArray(lanes[lane])) lanes[lane] = [];
                     lanes[lane].push(interval);
                     const sideSign = side === 'bottom' ? 1 : -1;
+                    const horizontalOffset = (lane % 2 === 0 ? 1 : -1) * Math.ceil(lane / 2) * xStep;
                     const verticalOffset = side === 'top' || side === 'bottom'
-                        ? [0, lane * laneStep * sideSign]
+                        ? [horizontalOffset, Math.max(0, lane - 1) * Math.round(laneStep * 0.35) * sideSign]
                         : [0, (lane % 2 === 0 ? -1 : 1) * Math.ceil(lane / 2) * laneStep];
                     point._labelLane = lane;
                     point.label = {

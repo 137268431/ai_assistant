@@ -267,6 +267,7 @@ async function main() {
         name,
         lane: point._labelLane,
         labelDistance: point.label?.distance,
+        offsetX: Array.isArray(point.label?.offset) ? point.label.offset[0] : null,
         offsetY: Array.isArray(point.label?.offset) ? point.label.offset[1] : null,
       } : null;
     }).filter(Boolean);
@@ -426,8 +427,11 @@ async function main() {
   if (!beforeClick.blockedLabelShow) failures.push('blocked_label_should_be_visible');
   if (beforeClick.markerCluster.length < 6) failures.push(`marker_cluster_count_${beforeClick.markerCluster.length}`);
   if (beforeClick.markerClusterLanes.length < 4) failures.push(`marker_cluster_lanes_${beforeClick.markerClusterLanes.join(',')}`);
-  if (!beforeClick.markerCluster.some((item) => Number(item.labelDistance) > 12 || Math.abs(Number(item.offsetY || 0)) >= 9)) {
-    failures.push('marker_cluster_missing_lane_offset');
+  if (!beforeClick.markerCluster.some((item) => Number(item.labelDistance) >= 40)) {
+    failures.push('marker_cluster_missing_large_distance');
+  }
+  if (!beforeClick.markerCluster.some((item) => Math.abs(Number(item.offsetX || 0)) >= 12)) {
+    failures.push('marker_cluster_missing_horizontal_offset');
   }
   if (!beforeClick.customStartHasPicker) failures.push('custom_start_missing_flatpickr');
   if (!beforeClick.customEndHasPicker) failures.push('custom_end_missing_flatpickr');
