@@ -94,6 +94,10 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
             escape_filter_string=escape_filter_string,
             config_value=config_value,
             cancel_broker_order=cancel_broker_order,
+            send_interactive=feishu_send_interactive,
+            update_interactive=feishu_update_interactive,
+            signal_chat_id_fn=signal_chat_id,
+            console_base_url=console_base_url(),
         )
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)

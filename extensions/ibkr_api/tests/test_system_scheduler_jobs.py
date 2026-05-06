@@ -39,6 +39,7 @@ class _OrderExpiryPB:
                     "trade_group_id": "tg-1",
                     "environment": "live",
                     "symbol": "AAPL",
+                    "signal_id": "sig-1",
                     "status": "Submitted",
                     "role": "entry",
                     "broker_order_id": "12345",
@@ -58,6 +59,7 @@ class _OrderExpiryPB:
                     "trade_group_id": "tg-1",
                     "environment": "live",
                     "symbol": "AAPL",
+                    "signal_id": "sig-1",
                     "status": "Init",
                     "role": "tp",
                     "broker_order_id": "12346",
@@ -72,6 +74,16 @@ class _OrderExpiryPB:
                 },
             ],
             "ibkr_order_details": [],
+            "ibkr_signals": [
+                {
+                    "id": "sig-row-1",
+                    "signal_id": "sig-1",
+                    "environment": "live",
+                    "symbol": "AAPL",
+                    "status": "submitted",
+                    "extra": {"feishu_signal_message_id": "sig-msg-1"},
+                }
+            ],
         }
         self.created = []
         self.updated = []
@@ -82,7 +94,13 @@ class _OrderExpiryPB:
                 return [dict(self.records["orders"][0])]
             if 'trade_group_id = "tg-1"' in str(filter):
                 return [dict(row) for row in self.records["orders"]]
+        if collection == "ibkr_signals":
+            return [dict(row) for row in self.records["ibkr_signals"]]
         return [dict(row) for row in self.records.get(collection, [])]
+
+    def get_first_record(self, collection, filter=None, sort=None):
+        rows = self.get_records(collection, filter=filter, sort=sort, per_page=1, page=1)
+        return dict(rows[0]) if rows else None
 
     def update_record(self, collection, record_id, data):
         for row in self.records[collection]:
@@ -363,6 +381,7 @@ class SystemSchedulerJobsTest(unittest.TestCase):
 
     def test_order_expiry_marks_group_canceled(self):
         pb = _OrderExpiryPB()
+        updated_cards = []
 
         def cancel_broker_order(environment, order_id, payload):
             self.assertEqual(environment, "live")
@@ -377,6 +396,10 @@ class SystemSchedulerJobsTest(unittest.TestCase):
             escape_filter_string=lambda value: str(value or "").replace('"', '\\"'),
             config_value=lambda key, default, environment: "30",
             cancel_broker_order=cancel_broker_order,
+            send_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "unused"},
+            update_interactive=lambda message_id, card, environment: updated_cards.append((message_id, card, environment)) or {"success": True, "message_id": message_id},
+            signal_chat_id_fn=lambda environment: f"signal-chat-{environment}",
+            console_base_url="https://console.example.com",
         )
 
         self.assertEqual(status_code, 200)
@@ -387,6 +410,16 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         statuses = {row["id"]: row["status"] for row in pb.records["orders"]}
         self.assertEqual(statuses["entry-1"], "Canceled")
         self.assertEqual(statuses["tp-1"], "Canceled")
+        signal_row = pb.records["ibkr_signals"][0]
+        self.assertEqual(signal_row["status"], "expired")
+        self.assertEqual(signal_row["note"], "order_expired")
+        self.assertEqual(signal_row["extra"]["expired_by"], "order_expiry_check")
+        self.assertEqual(signal_row["extra"]["status_reason"], "order_expired")
+        self.assertEqual(signal_row["extra"]["feishu_signal_notify_last_action"], "expired")
+        self.assertEqual(payload["signal_expired_count"], 1)
+        self.assertEqual(payload["signal_results"][0]["signal_id"], "sig-1")
+        self.assertEqual(updated_cards[0][0], "sig-msg-1")
+        self.assertIn("挂单超时自动取消", updated_cards[0][1]["elements"][0]["content"])
 
     def test_auth_issue_treats_stale_broker_as_operational_recovery(self):
         issue = build_auth_immediate_issue(
