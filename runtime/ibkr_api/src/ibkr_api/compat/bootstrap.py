@@ -52,6 +52,8 @@ def build_compat_proxy_deps(
         ("POST", "ibkr/data_quality/rescan"): (compute_base_url, "/ibkr/data-quality/scan"),
         ("POST", "ibkr/data_quality/repair"): (compute_base_url, "/ibkr/data-quality/repair"),
         ("POST", "ibkr/data_quality/truth_audit"): (compute_base_url, "/ibkr/data-quality/truth-audit"),
+        ("POST", "ibkr/data_quality/daily_rescan"): (compute_base_url, "/ibkr/data-quality/daily-rescan"),
+        ("POST", "ibkr/data_quality/daily_repair"): (compute_base_url, "/ibkr/data-quality/daily-repair"),
         ("GET", "ibkr/bar-repair/status"): (compute_base_url, "/ibkr/bar-repair/status"),
         ("GET", "ibkr/bar_repair/status"): (compute_base_url, "/ibkr/bar-repair/status"),
     }

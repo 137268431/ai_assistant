@@ -145,6 +145,21 @@ def _build_data_quality_coverage(symbols: list[str], rows: list[dict]) -> dict:
     }
 
 
+def _coerce_session_modes(value) -> list[str]:
+    if isinstance(value, str):
+        raw_items = value.split(",")
+    elif isinstance(value, list):
+        raw_items = value
+    else:
+        raw_items = ["regular", "extended"]
+    modes = []
+    for item in raw_items:
+        mode = str(item or "").strip().lower()
+        if mode in {"regular", "extended"} and mode not in modes:
+            modes.append(mode)
+    return modes or ["regular"]
+
+
 def _build_data_quality_response(*, force_repair: bool | None = None):
     _, service, unavailable = require_ibkr_service()
     if unavailable:
@@ -294,5 +309,138 @@ def build_ibkr_data_quality_truth_audit_response():
             "rows": rows,
             "summary": summary,
             "errors": errors,
+        }
+    ), 200
+
+
+def build_ibkr_data_quality_daily_rescan_response():
+    _, service, unavailable = require_ibkr_service()
+    if unavailable:
+        return unavailable
+
+    payload = get_json_payload()
+    symbols = _resolve_data_quality_symbols(service, payload)
+    market_date = str(payload.get("market_date") or "").strip()
+    date_from = str(payload.get("date_from") or market_date or "").strip()
+    date_to = str(payload.get("date_to") or market_date or date_from).strip()
+    if not date_from:
+        date_from = service._bar_integrity_market_date() if hasattr(service, "_bar_integrity_market_date") else ""
+    if not date_to:
+        date_to = date_from
+    persist = coerce_request_bool(payload.get("persist"), True)
+    result = service.scan_bar_coverage_daily(
+        symbols,
+        market_date=market_date,
+        date_from=date_from,
+        date_to=date_to,
+        interval=str(payload.get("interval") or "5m").strip() or "5m",
+        session_modes=_coerce_session_modes(payload.get("session_modes")),
+        source=str(payload.get("source") or "manual_scan").strip() or "manual_scan",
+        persist=persist,
+    )
+    return jsonify({"ok": bool(result.get("ok", False)), "symbols": symbols, **result}), _status_code_for_result(result, error_status=500)
+
+
+def build_ibkr_data_quality_daily_repair_response():
+    app_mod = get_app_module()
+    _, service, unavailable = require_ibkr_service()
+    if unavailable:
+        return unavailable
+
+    payload = get_json_payload()
+    symbols = _resolve_data_quality_symbols(service, payload)
+    market_date = str(payload.get("market_date") or "").strip()
+    date_from = str(payload.get("date_from") or market_date or "").strip()
+    date_to = str(payload.get("date_to") or market_date or date_from).strip()
+    if not date_from:
+        date_from = service._bar_integrity_market_date() if hasattr(service, "_bar_integrity_market_date") else ""
+    if not date_to:
+        date_to = date_from
+    interval = str(payload.get("interval") or "5m").strip() or "5m"
+    source_environment = app_mod._ibkr_service_environment(service)
+    initial = service.scan_bar_coverage_daily(
+        symbols,
+        market_date=market_date,
+        date_from=date_from,
+        date_to=date_to,
+        interval=interval,
+        session_modes=_coerce_session_modes(payload.get("session_modes") or ["regular"]),
+        source=str(payload.get("source") or "manual_repair_scan").strip() or "manual_repair_scan",
+        persist=True,
+    )
+    if not initial.get("ok"):
+        return jsonify({"ok": False, "symbols": symbols, "initial": initial}), 500
+
+    backtest_service = getattr(app_mod, "backtest_service", None)
+    if backtest_service is None or getattr(backtest_service, "data_backfill", None) is None:
+        return jsonify({"ok": False, "error": "history_repair_unavailable", "symbols": symbols, "initial": initial}), 409
+    if hasattr(backtest_service, "is_running") and backtest_service.is_running():
+        return jsonify({"ok": False, "error": "backtest_service_busy", "symbols": symbols, "initial": initial}), 409
+
+    max_symbols = coerce_request_int(payload.get("repair_max_symbols"), len(symbols), minimum=1)
+    max_windows = coerce_request_int(payload.get("repair_max_windows"), 200, minimum=1)
+    rows = list(initial.get("rows") or [])
+    windows_by_symbol: dict[str, list[dict]] = {}
+    for row in rows:
+        if not bool(row.get("needs_repair")):
+            continue
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+        for window in row.get("repair_windows") or []:
+            if len(windows_by_symbol.setdefault(symbol, [])) >= max_windows:
+                break
+            windows_by_symbol[symbol].append(dict(window or {}))
+    selected_symbols = sorted(windows_by_symbol.keys())[:max_symbols]
+    results: dict[str, dict] = {}
+    for symbol in selected_symbols:
+        fetched_rows = []
+        repair_results = []
+        for window in windows_by_symbol.get(symbol, [])[:max_windows]:
+            repair = backtest_service._backfill_symbol_history(
+                symbol,
+                source_environment,
+                int(window.get("start_ms", 0) or 0),
+                int(window.get("end_ms", 0) or 0),
+                interval=interval,
+                max_elapsed_s=coerce_request_int(payload.get("repair_symbol_timeout_s"), 600, minimum=30),
+                max_batches=coerce_request_int(payload.get("repair_max_batches"), 120, minimum=1),
+                history_timeout_s=coerce_request_int(payload.get("history_timeout_s"), 20, minimum=5),
+                history_max_retries=coerce_request_int(payload.get("history_max_retries"), 1, minimum=0),
+            )
+            repair_result = {key: value for key, value in (repair or {}).items() if key != "rows"}
+            repair_result["window"] = window
+            repair_results.append(repair_result)
+            fetched_rows.extend(list((repair or {}).get("rows") or []))
+        deduped = backtest_service._dedupe_backfill_rows(fetched_rows)
+        persisted = backtest_service._persist_backfill_rows(deduped) if deduped else 0
+        rolled = backtest_service._rollup_symbol_history(symbol, source_environment) if persisted > 0 else 0
+        results[symbol] = {
+            "ok": bool(persisted > 0 or not windows_by_symbol.get(symbol)),
+            "fetched_rows": len(deduped),
+            "persisted_rows": persisted,
+            "rolled_rows": rolled,
+            "repair_window_count": len(windows_by_symbol.get(symbol) or []),
+            "repair_results": repair_results[:20],
+        }
+
+    final = service.scan_bar_coverage_daily(
+        symbols,
+        market_date=market_date,
+        date_from=date_from,
+        date_to=date_to,
+        interval=interval,
+        session_modes=_coerce_session_modes(payload.get("session_modes") or ["regular"]),
+        source=str(payload.get("source") or "manual_repair_verify").strip() or "manual_repair_verify",
+        persist=True,
+    )
+    return jsonify(
+        {
+            "ok": True,
+            "symbols": symbols,
+            "source_environment": source_environment,
+            "initial": initial,
+            "results": results,
+            "final": final,
         }
     ), 200

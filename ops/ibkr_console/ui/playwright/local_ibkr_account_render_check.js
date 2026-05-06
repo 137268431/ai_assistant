@@ -163,6 +163,18 @@ const mockSnapshot = enrichAccountSnapshot(
         order_type: 'LMT',
         price: 180,
         client_order_id: 'coid-1',
+        signal_id: 'sig-1',
+        trade_group_id: 'tg-1',
+        entry_order_unique_id: 'coid-1',
+        match_state: 'matched',
+        pb_context: {
+          signal_id: 'sig-1',
+          trade_group_id: 'tg-1',
+          entry_order_unique_id: 'coid-1',
+          match_state: 'matched',
+          relation_status: 'active',
+          pb_status: 'Submitted',
+        },
         can_cancel: true,
         can_modify: true,
         is_open: true,
@@ -187,6 +199,18 @@ const mockSnapshot = enrichAccountSnapshot(
         order_type: 'LMT',
         price: 186,
         client_order_id: 'coid-1-tp',
+        signal_id: 'sig-1',
+        trade_group_id: 'tg-1',
+        entry_order_unique_id: 'coid-1',
+        match_state: 'matched',
+        pb_context: {
+          signal_id: 'sig-1',
+          trade_group_id: 'tg-1',
+          entry_order_unique_id: 'coid-1',
+          match_state: 'matched',
+          relation_status: 'planned',
+          pb_status: 'PreSubmitted',
+        },
         can_cancel: true,
         can_modify: true,
         is_open: true,
@@ -210,6 +234,8 @@ const mockSnapshot = enrichAccountSnapshot(
         order_type: 'LMT',
         price: 170,
         client_order_id: '',
+        match_state: 'broker_only',
+        diagnostic_tags: ['missing_client_order_id'],
         can_cancel: true,
         can_modify: false,
         is_open: true,
@@ -224,7 +250,48 @@ const mockSnapshot = enrichAccountSnapshot(
         raw: { orderId: '3001' },
       },
     ],
-    counts: {},
+    pb_only_order_groups: [
+      {
+        symbol: 'MSFT',
+        signal_id: 'sig-2',
+        trade_group_id: 'tg-2',
+        entry_order_unique_id: 'coid-2',
+        latest_order_status: 'Submitted',
+        latest_updated: '2026-04-10T09:35:00Z',
+        order_count: 1,
+        matched_broker_orders: 0,
+        orders: [
+          {
+            role: 'stop_loss',
+            status: 'Submitted',
+            quantity: 50,
+            filled_qty: 0,
+            relation_status: 'planned',
+            unique_id: 'coid-2-sl',
+            broker_order_id: '2002',
+            updated: '2026-04-10T09:35:00Z',
+          },
+        ],
+      },
+    ],
+    counts: {
+      open_orders: 3,
+      cancelable_orders: 3,
+      editable_orders: 2,
+      outside_rth_orders: 0,
+    },
+    order_reconciliation: {
+      broker_matched_groups: 1,
+      broker_only_groups: 1,
+      pb_shadow_groups: 1,
+      cancelable_orders: 3,
+      editable_orders: 2,
+      missing_client_order_id_orders: 1,
+      status_mismatch_orders: 0,
+      quantity_mismatch_orders: 0,
+      filled_qty_mismatch_orders: 0,
+      coverage_state: 'recovered',
+    },
     live_order_coverage: {
       coverage_state: 'recovered',
       bulk_open_count: 2,
@@ -316,7 +383,10 @@ html = html.replace(/<link href="https:\/\/fonts\.googleapis\.com[^"]+" rel="sty
     summaryText: document.getElementById('ordersSummary')?.innerText || '',
     areaText: document.getElementById('ordersArea')?.innerText || '',
     sectionTitles: Array.from(document.querySelectorAll('.orders-section-card .section-title')).map((el) => el.textContent.trim()),
-    orderRowCount: document.querySelectorAll('.order-row').length,
+    tableCount: document.querySelectorAll('.orders-live-table').length,
+    chainRowCount: document.querySelectorAll('.order-chain-row').length,
+    legRowCount: document.querySelectorAll('.order-leg-row').length,
+    diagnosticsCount: document.querySelectorAll('.order-diagnostics').length,
   }));
 
   const screenshot = '/tmp/local_ibkr_account_render_check.png';
@@ -329,7 +399,10 @@ html = html.replace(/<link href="https:\/\/fonts\.googleapis\.com[^"]+" rel="sty
     && result.areaText.includes('Matched Live Chains')
     && result.areaText.includes('PB Shadow Chains')
     && result.areaText.includes('missing_client_order_id')
-    && result.orderRowCount >= 4
+    && result.tableCount >= 3
+    && result.chainRowCount >= 3
+    && result.legRowCount >= 4
+    && result.diagnosticsCount >= 3
     && pageErrors.length === 0;
 
   const output = {

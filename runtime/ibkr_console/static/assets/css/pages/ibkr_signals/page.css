@@ -2,6 +2,108 @@
             overflow: hidden;
         }
 
+        .signals-command-bar {
+            display: grid;
+            grid-template-columns: minmax(260px, 0.72fr) minmax(420px, 1.28fr);
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 12px;
+            padding: 12px 14px;
+            border-radius: 18px;
+            border: 1px solid rgba(79, 209, 197, 0.18);
+            background:
+                radial-gradient(circle at 8% 20%, rgba(79, 209, 197, 0.13), transparent 28%),
+                radial-gradient(circle at 98% 18%, rgba(246, 173, 85, 0.10), transparent 30%),
+                linear-gradient(145deg, rgba(8, 22, 31, 0.98), rgba(7, 15, 23, 0.98));
+            box-shadow: 0 14px 32px rgba(2, 8, 23, 0.22);
+        }
+
+        .signals-command-main {
+            min-width: 0;
+            display: grid;
+            gap: 8px;
+        }
+
+        .signals-command-kicker {
+            color: var(--accent);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            letter-spacing: 1.6px;
+            text-transform: uppercase;
+        }
+
+        .signals-command-title {
+            color: var(--text);
+            font-size: clamp(18px, 1.8vw, 22px);
+            font-weight: 800;
+            line-height: 1.05;
+            letter-spacing: -0.04em;
+        }
+
+        .signals-command-copy {
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.45;
+        }
+
+        .signals-command-summary .chip-row {
+            gap: 6px;
+        }
+
+        .signals-command-summary .status-chip {
+            padding: 5px 9px;
+            font-size: 10px;
+        }
+
+        .signals-command-tools {
+            min-width: 0;
+            display: grid;
+            grid-template-columns: minmax(220px, 0.68fr) minmax(260px, 1fr) auto;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .signals-command-date,
+        .signals-command-refresh {
+            min-width: 0;
+        }
+
+        .signals-command-date .date-picker {
+            margin-bottom: 0;
+            gap: 6px;
+            flex-wrap: nowrap;
+        }
+
+        .signals-command-date .date-btn {
+            padding: 7px 10px;
+            font-size: 11px;
+        }
+
+        .signals-command-date .date-input {
+            min-width: 142px;
+            padding: 8px 10px;
+            font-size: 11px;
+        }
+
+        .signals-command-search {
+            min-height: 38px;
+            padding: 9px 12px;
+            border-radius: 12px;
+        }
+
+        .signals-command-refresh .refresh-control {
+            justify-content: flex-end;
+            gap: 6px;
+        }
+
+        .signals-command-refresh .refresh-btn,
+        .signals-command-refresh .refresh-select {
+            min-height: 38px;
+            padding: 8px 10px;
+            border-radius: 12px;
+        }
+
         .search-row {
             margin-bottom: 6px;
         }
@@ -1596,7 +1698,50 @@
             border-color: var(--accent);
         }
 
+        @media (max-width: 1180px) {
+            .signals-command-bar,
+            .signals-command-tools {
+                grid-template-columns: 1fr;
+            }
+
+            .signals-command-tools {
+                align-items: stretch;
+            }
+
+            .signals-command-refresh .refresh-control {
+                justify-content: flex-start;
+            }
+        }
+
         @media (max-width: 720px) {
+            .signals-command-bar {
+                margin-bottom: 10px;
+                padding: 11px;
+                border-radius: 16px;
+            }
+
+            .signals-command-main {
+                gap: 7px;
+            }
+
+            .signals-command-tools,
+            .signals-command-date .date-picker,
+            .signals-command-refresh .refresh-control {
+                gap: 7px;
+            }
+
+            .signals-command-date .date-picker,
+            .signals-command-refresh .refresh-control {
+                flex-wrap: wrap;
+            }
+
+            .signals-command-search,
+            .signals-command-refresh .refresh-btn,
+            .signals-command-refresh .refresh-select,
+            .signals-command-date .date-input {
+                width: 100%;
+            }
+
             .pipeline-strip-shell {
                 padding: 12px;
             }

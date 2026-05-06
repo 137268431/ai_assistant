@@ -17,13 +17,21 @@
     <div id="pageTopSection"></div>
 
     <div class="content">
-        <div class="search-row">
-            <div class="page-toolbar-row">
-                <div id="datePicker" style="flex:1;"></div>
-                <div id="signalsRefreshControl"></div>
+        <section class="signals-command-bar" id="signalsCommandBar">
+            <div class="signals-command-main">
+                <div>
+                    <div class="signals-command-kicker">Execution Signals</div>
+                    <div class="signals-command-title">主信号池</div>
+                    <div class="signals-command-copy">当天主信号 / 执行状态 / 订单联动</div>
+                </div>
+                <div class="signals-command-summary" id="signalsCommandSummary"></div>
             </div>
-            <input class="search-input" id="searchInput" placeholder="🔍 搜索股票/信号ID..." oninput="onSearchChange(this.value)">
-        </div>
+            <div class="signals-command-tools">
+                <div class="signals-command-date" id="datePicker"></div>
+                <input class="search-input signals-command-search" id="searchInput" placeholder="🔍 搜索股票/信号ID..." oninput="onSearchChange(this.value)">
+                <div class="signals-command-refresh" id="signalsRefreshControl"></div>
+            </div>
+        </section>
         <div id="filterNote"></div>
         <div id="latencySummary" class="pipeline-strip"></div>
         <!-- 状态筛选 Tab -->
@@ -358,19 +366,18 @@
                 { label: '交易日', value: currentDate || '--' },
                 { label: '范围', value: scopeText },
             ]);
-            const statusHtml = `
+            const summaryNode = document.getElementById('signalsCommandSummary');
+            if (summaryNode) {
+                summaryNode.innerHTML = `
                 <div class="chip-row">
                     <span class="status-chip"><span class="dot" style="color:#4FD1C5"></span>结果 ${escapeHtml(String(getSignalsResultCount()))}</span>
                     <span class="status-chip"><span class="dot" style="color:#63B3ED"></span>${escapeHtml(getSignalsDirectionLabel())}</span>
                     <span class="status-chip"><span class="dot" style="color:#F6AD55"></span>${escapeHtml(getSignalsStatusLabel())}</span>
                 </div>
             `;
-            document.getElementById('pageTopSection').innerHTML = renderPageTopSection({
-                kicker: 'Execution Signals',
-                title: '主信号池',
-                copy: '聚焦当天主信号、执行状态与订单联动；当前标的工作台和规则上下文统一放到筛选页。',
-                statusHtml,
-            });
+            }
+            const legacyTopSection = document.getElementById('pageTopSection');
+            if (legacyTopSection) legacyTopSection.innerHTML = '';
         }
 
         function renderSignalsPageChrome() {

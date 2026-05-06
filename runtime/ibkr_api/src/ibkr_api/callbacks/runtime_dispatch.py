@@ -34,8 +34,15 @@ def build_dispatch_feishu_signal_callback(
             signal_id,
             environment,
             pb=pb,
+            normalize_environment=globals_dict["_normalize_environment"],
             escape_filter_string=globals_dict["_escape_filter_string"],
+            cancel_broker_order=globals_dict["_cancel_broker_order_via_runtime"],
+            build_signal_confirm_webhook_response_fn=globals_dict["build_signal_confirm_webhook_response"],
+            build_signal_cancel_webhook_response_fn=globals_dict["build_signal_cancel_webhook_response"],
             callback_toast_fn=globals_dict["_callback_toast"],
+            update_signal_card=globals_dict["_feishu_update_interactive"],
+            console_base_url=globals_dict["_console_base_url"](),
+            config_value=lambda key, default, env: globals_dict["_config_value"](key, default, env),
         )
 
     return _dispatch_feishu_signal_callback

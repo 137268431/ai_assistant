@@ -83,6 +83,17 @@ def _button_url(url: str) -> dict[str, str]:
     }
 
 
+def _callback_button(label: str, button_type: str, callback_url: str, *, action: str, signal_id: str, environment: str) -> dict[str, Any]:
+    return {
+        "tag": "button",
+        "type": button_type,
+        "text": {"tag": "plain_text", "content": label},
+        "action_type": "request",
+        "url": callback_url,
+        "value": {"action": action, "signal_id": signal_id, "environment": environment},
+    }
+
+
 def _view_buttons(console_base_url: str, *, environment: str, signal_id: str) -> list[dict[str, Any]]:
     buttons: list[dict[str, Any]] = []
     signals_url = _page_url(
@@ -156,31 +167,15 @@ def build_signal_notification_card(record_or_data: Any, *, console_base_url: str
         {"tag": "hr"},
     ]
     if status == "awaiting_confirm" and signal_id:
-        confirm_url = _webhook_url(console_base_url, "webhook/signal/confirm", id=signal_id, environment=environment)
-        cancel_url = _webhook_url(console_base_url, "webhook/signal/cancel", id=signal_id, environment=environment)
+        callback_url = _webhook_url(console_base_url, "webhook/feishu/callback")
         actions: list[dict[str, Any]] = []
-        if confirm_url:
-            actions.append(
-                {
-                    "tag": "button",
-                    "type": "primary",
-                    "text": {"tag": "plain_text", "content": "确认"},
-                    "multi_url": _button_url(confirm_url),
-                }
-            )
-        if cancel_url:
-            actions.append(
-                {
-                    "tag": "button",
-                    "type": "danger",
-                    "text": {"tag": "plain_text", "content": "拒绝"},
-                    "multi_url": _button_url(cancel_url),
-                }
-            )
+        if callback_url:
+            actions.append(_callback_button("确认", "primary", callback_url, action="confirm", signal_id=signal_id, environment=environment))
+            actions.append(_callback_button("拒绝", "danger", callback_url, action="reject", signal_id=signal_id, environment=environment))
         if actions:
             elements.append({"tag": "action", "actions": actions})
         else:
-            elements.append({"tag": "markdown", "content": "**人工确认** · 控制台链接未配置，请到 Signals 页面处理"})
+            elements.append({"tag": "markdown", "content": "**人工确认** · 飞书回调未配置，请到 Signals 页面处理"})
     else:
         elements.append(
             {

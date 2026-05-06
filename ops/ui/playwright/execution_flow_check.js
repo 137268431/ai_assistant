@@ -74,7 +74,7 @@ function deriveDate(item) {
     if (resp.status() >= 400) errors.push(`response:${resp.status()}:${resp.url()}`);
   });
 
-  const signalsUrl = new URL('/ibkr_signals.html', BASE);
+  const signalsUrl = new URL('/ibkr_signals.html', CONSOLE_BASE);
   signalsUrl.searchParams.set('environment', 'live');
   if (date) signalsUrl.searchParams.set('date', date);
   if (signalId) signalsUrl.searchParams.set('signal_id', signalId);

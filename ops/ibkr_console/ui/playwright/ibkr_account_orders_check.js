@@ -59,6 +59,9 @@ async function auth() {
   const ordersMeta = await page.locator('#ordersMeta').textContent().catch(() => '');
   const ordersAreaText = await page.locator('#ordersArea').innerText().catch(() => '');
   const ordersSummaryText = await page.locator('#ordersSummary').innerText().catch(() => '');
+  const tableCount = await page.locator('.orders-live-table').count().catch(() => 0);
+  const chainRowCount = await page.locator('.order-chain-row').count().catch(() => 0);
+  const legRowCount = await page.locator('.order-leg-row').count().catch(() => 0);
 
   // parse broker open count from ordersSummary cards
   const brokerOpenMatch = ordersSummaryText.match(/LIVE OPEN[\s\S]*?(\d+)/i)
@@ -87,9 +90,11 @@ async function auth() {
   await context.close();
   await browser.close();
 
+  const renderedOpenOrders = snapshotOrderCount === null || snapshotOrderCount === 0 || legRowCount >= snapshotOrderCount;
   const passed = snapshotOrderCount !== null
     ? (snapshotOpenOrderCount === null || snapshotOpenOrderCount === snapshotOrderCount)
       && coverageState !== 'degraded'
+      && renderedOpenOrders
     : (hasBrokerOrders && !hasPbOnlyFallback);
 
   const result = {
@@ -100,6 +105,9 @@ async function auth() {
     snapshot_order_count: snapshotOrderCount,
     snapshot_open_order_count: snapshotOpenOrderCount,
     coverage_state: coverageState,
+    table_count: tableCount,
+    chain_row_count: chainRowCount,
+    leg_row_count: legRowCount,
     has_broker_orders: hasBrokerOrders,
     has_pb_only_fallback: hasPbOnlyFallback,
     api_snapshot_ok: apiResponses.account_snapshot?.ok ?? null,

@@ -38,7 +38,7 @@ const configData = [
   cfg('pb_cron_ibkr_2fa_hourly_check_enabled', 'TRUE', 'TRUE', '2FA 每小时提醒', 'Scheduler 调度(兼容 key)', 138, '若 2FA 仍未恢复，则按小时补发飞书验证卡片提醒。Cron: 5 4-20 * * 1-5；周期: 工作日 UTC 每小时 05 分；时间窗口: 盘前到盘后。受 Scheduler 总开关和本开关共同控制。'),
   cfg('pb_cron_system_market_open_reminder_enabled', 'TRUE', 'TRUE', '09:30 开盘交易摘要', 'Scheduler 调度(兼容 key)', 139, '每日 09:30 发送开盘交易摘要，包含系统状态、今日标的、日筛错误和 SPY/QQQ/VIX 等大盘监控。Cron: */5 * * * *；周期: 每 5 分钟轮询一次；时间窗口: 内部按 ET 09:30-09:39 仅发送一次。受 Scheduler 总开关、本开关和 status_notify_enabled 共同控制。'),
   cfg('pb_cron_system_daily_report_enabled', 'TRUE', 'TRUE', '系统日报', 'Scheduler 调度(兼容 key)', 139, '汇总当日信号、订单、bars、targets 和系统事件，并在收盘后发送日报。Cron: */5 * * * *；周期: 每 5 分钟轮询一次；时间窗口: 内部按 ET 16:05 仅发送一次，周末/非交易日也会发送闭市汇总。日报是否真正发送，还受 daily_summary_notify_enabled 控制。'),
-  cfg('pb_cron_ibkr_history_retention_enabled', 'TRUE', 'TRUE', '历史数据留存', 'Scheduler 调度(兼容 key)', 140, '清理超过留存窗口的 ibkr_bars / ibkr_indicators / ibkr_signals / ibkr_reverse_signals / ibkr_targets / ibkr_bar_integrity 历史数据。Cron: 10 * * * *；周期: 每小时第 10 分钟；时间窗口: 全天。受 Scheduler 总开关、本开关以及 ibkr_history_retention_enabled / ibkr_history_retention_days 配置共同控制；运行态线程会在每小时第 12 分钟做同小时兜底。'),
+  cfg('pb_cron_ibkr_history_retention_enabled', 'TRUE', 'TRUE', '历史数据留存', 'Scheduler 调度(兼容 key)', 140, '清理超过留存窗口的 ibkr_bars / ibkr_indicators / ibkr_signals / ibkr_reverse_signals / ibkr_targets / ibkr_bar_integrity / ibkr_bar_coverage_daily 历史数据。Cron: 10 * * * *；周期: 每小时第 10 分钟；时间窗口: 全天。受 Scheduler 总开关、本开关以及 ibkr_history_retention_enabled / ibkr_history_retention_days 配置共同控制；运行态线程会在每小时第 12 分钟做同小时兜底。'),
 
   cfg('ibkr_signal_source', 'both', 'both', '信号来源', '信号与反转', 200, 'both=接收全部 pending 信号；tradingview=只处理 TV webhook；ibkr_compute=只处理 compute 生成信号'),
   cfg('signal_manual_confirm_enabled', 'TRUE', 'TRUE', '手动确认信号', '信号与反转', 205, '开启后，新信号会先进入 awaiting_confirm，由人工确认后再进入正式下单链路'),
@@ -82,10 +82,10 @@ const configData = [
   cfg('ibkr_watchlist_backfill_interval_min', '30', '30', '底池回补间隔', '行情链路', 710, '非目标标的按批次执行 5m 增量回补的间隔'),
   cfg('ibkr_watchlist_backfill_batch_size', '12', '12', '底池回补批次', '行情链路', 720, '每轮底池回补最多处理多少个非目标标的'),
   cfg('ibkr_watchlist_backfill_stale_min', '20', '20', '底池回补滞后阈值', '行情链路', 730, '仅当最近 5m bar 超过该阈值未更新时才触发回补'),
-  cfg('ibkr_watchlist_integrity_enabled', 'TRUE', 'TRUE', '底池完整性巡检', '行情链路', 740, '启用后按批次巡检非目标标的的 5m bars 完整性，并将结果写入 ibkr_bar_integrity'),
+  cfg('ibkr_watchlist_integrity_enabled', 'TRUE', 'TRUE', '底池完整性巡检', '行情链路', 740, '启用后按批次巡检非目标标的的 5m bars 完整性，并将结果写入 ibkr_bar_integrity，同时增量更新 ibkr_bar_coverage_daily 日级覆盖账本'),
   cfg('ibkr_watchlist_integrity_batch_size', '8', '8', '底池巡检批次', '行情链路', 750, '每轮底池完整性巡检最多处理多少个非目标标的'),
   cfg('ibkr_history_retention_enabled', 'TRUE', 'TRUE', '历史留存清理', '行情链路', 760, '统一控制历史行情链路数据的留存清理；默认由 ibkr-scheduler 在每小时第 10 分钟触发，运行态线程会在每小时第 12 分钟做同小时兜底；关闭后两条路径都会跳过执行'),
-  cfg('ibkr_history_retention_days', '365', '365', '历史留存天数', '行情链路', 770, '历史行情链路数据默认仅保留最近多少天；当前会作用于 ibkr_bars / ibkr_indicators / ibkr_signals / ibkr_reverse_signals / ibkr_targets / ibkr_bar_integrity'),
+  cfg('ibkr_history_retention_days', '365', '365', '历史留存天数', '行情链路', 770, '历史行情链路数据默认仅保留最近多少天；当前会作用于 ibkr_bars / ibkr_indicators / ibkr_signals / ibkr_reverse_signals / ibkr_targets / ibkr_bar_integrity / ibkr_bar_coverage_daily'),
   cfg('ibkr_server_boot_resume_only', 'TRUE', 'TRUE', '服务重启仅做 Resume', '启动策略', 774, '开启后，ibkr-compute / deploy / server_boot 自动恢复不会先重启 gateway，也不会强制 fresh 2FA；适合正常发布和进程重启'),
   cfg('ibkr_server_boot_publish_startup_card', 'TRUE', 'TRUE', '服务重启发送启动卡片', '启动策略', 776, '关闭时，server_boot / auto_restore 不新建启动卡片；开启后，即使只是 deploy 恢复，也会在启动群里单独发出当前轮次卡片'),
 

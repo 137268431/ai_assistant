@@ -63,6 +63,71 @@ ON CONFLICT(state_key, date, environment) DO UPDATE SET
 """
 
 
+PB_BAR_COVERAGE_DAILY_UPSERT_SQL = """
+INSERT INTO ibkr_bar_coverage_daily (
+    id,
+    environment,
+    market_date,
+    symbol,
+    interval,
+    session_mode,
+    status,
+    hard_gate,
+    needs_repair,
+    expected_count,
+    actual_count,
+    missing_count,
+    gap_count,
+    duplicate_count,
+    bad_ohlc_count,
+    expected_start_ms,
+    expected_end_ms,
+    first_bar_ms,
+    last_bar_ms,
+    last_checked_at,
+    last_repair_at,
+    missing_windows,
+    missing_examples,
+    repair_windows,
+    expected_mask_hex,
+    actual_mask_hex,
+    missing_mask_hex,
+    source,
+    extra,
+    created,
+    updated
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(environment, market_date, symbol, interval, session_mode) DO UPDATE SET
+    status = excluded.status,
+    hard_gate = excluded.hard_gate,
+    needs_repair = excluded.needs_repair,
+    expected_count = excluded.expected_count,
+    actual_count = excluded.actual_count,
+    missing_count = excluded.missing_count,
+    gap_count = excluded.gap_count,
+    duplicate_count = excluded.duplicate_count,
+    bad_ohlc_count = excluded.bad_ohlc_count,
+    expected_start_ms = excluded.expected_start_ms,
+    expected_end_ms = excluded.expected_end_ms,
+    first_bar_ms = excluded.first_bar_ms,
+    last_bar_ms = excluded.last_bar_ms,
+    last_checked_at = excluded.last_checked_at,
+    last_repair_at = CASE
+        WHEN COALESCE(excluded.last_repair_at, '') != '' THEN excluded.last_repair_at
+        ELSE ibkr_bar_coverage_daily.last_repair_at
+    END,
+    missing_windows = excluded.missing_windows,
+    missing_examples = excluded.missing_examples,
+    repair_windows = excluded.repair_windows,
+    expected_mask_hex = excluded.expected_mask_hex,
+    actual_mask_hex = excluded.actual_mask_hex,
+    missing_mask_hex = excluded.missing_mask_hex,
+    source = excluded.source,
+    extra = excluded.extra,
+    updated = excluded.updated
+"""
+
+
 PB_INDICATOR_UPSERT_SQL = """
 INSERT INTO ibkr_indicators (
     id,
@@ -636,6 +701,62 @@ def upsert_bars(conn: sqlite3.Connection, bars: Iterable[dict]) -> int:
         )
 
     conn.executemany(PB_BAR_UPSERT_SQL, payload)
+    return len(payload)
+
+
+def upsert_bar_coverage_daily(conn: sqlite3.Connection, rows: Iterable[dict]) -> int:
+    items = list(rows or [])
+    if not items:
+        return 0
+
+    now_text = pb_now_text()
+    payload = []
+    for row in items:
+        symbol = str((row or {}).get("symbol") or "").strip().upper()
+        market_date = str((row or {}).get("market_date") or "").strip()
+        interval = normalize_interval((row or {}).get("interval") or "5m")
+        environment = str((row or {}).get("environment") or "live").strip().lower() or "live"
+        session_mode = str((row or {}).get("session_mode") or "regular").strip().lower() or "regular"
+        if not symbol or not market_date:
+            continue
+        payload.append(
+            (
+                pb_record_id(),
+                environment,
+                market_date,
+                symbol,
+                interval,
+                session_mode,
+                str((row or {}).get("status") or "ok").strip() or "ok",
+                1 if bool((row or {}).get("hard_gate")) else 0,
+                1 if bool((row or {}).get("needs_repair")) else 0,
+                int((row or {}).get("expected_count") or 0),
+                int((row or {}).get("actual_count") or 0),
+                int((row or {}).get("missing_count") or 0),
+                int((row or {}).get("gap_count") or 0),
+                int((row or {}).get("duplicate_count") or 0),
+                int((row or {}).get("bad_ohlc_count") or 0),
+                int((row or {}).get("expected_start_ms") or 0),
+                int((row or {}).get("expected_end_ms") or 0),
+                int((row or {}).get("first_bar_ms") or 0),
+                int((row or {}).get("last_bar_ms") or 0),
+                str((row or {}).get("last_checked_at") or "").strip(),
+                str((row or {}).get("last_repair_at") or "").strip(),
+                pb_json_dumps((row or {}).get("missing_windows") or []),
+                pb_json_dumps((row or {}).get("missing_examples") or []),
+                pb_json_dumps((row or {}).get("repair_windows") or []),
+                str((row or {}).get("expected_mask_hex") or "").strip(),
+                str((row or {}).get("actual_mask_hex") or "").strip(),
+                str((row or {}).get("missing_mask_hex") or "").strip(),
+                str((row or {}).get("source") or "manual_scan").strip() or "manual_scan",
+                pb_json_dumps((row or {}).get("extra") or {}),
+                now_text,
+                now_text,
+            )
+        )
+    if not payload:
+        return 0
+    conn.executemany(PB_BAR_COVERAGE_DAILY_UPSERT_SQL, payload)
     return len(payload)
 
 

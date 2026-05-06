@@ -171,6 +171,47 @@ def prepare_bar_integrity_row(payload: dict[str, Any], environment: str) -> tupl
     }, ""
 
 
+def prepare_bar_coverage_daily_row(payload: dict[str, Any], environment: str) -> tuple[dict[str, Any] | None, str]:
+    symbol = str(payload.get("symbol") or "").strip().upper()
+    market_date = str(payload.get("market_date") or "").strip()
+    interval = normalize_interval_value(payload.get("interval") or "5m")
+    session_mode = str(payload.get("session_mode") or "regular").strip().lower() or "regular"
+    if not symbol or not market_date:
+        return None, "missing_symbol_or_market_date"
+    if session_mode not in {"regular", "extended"}:
+        session_mode = "regular"
+    return {
+        "environment": environment,
+        "market_date": market_date,
+        "symbol": symbol,
+        "interval": interval,
+        "session_mode": session_mode,
+        "status": str(payload.get("status") or "ok").strip() or "ok",
+        "hard_gate": bool(payload.get("hard_gate")),
+        "needs_repair": bool(payload.get("needs_repair")),
+        "expected_count": int(payload.get("expected_count") or 0),
+        "actual_count": int(payload.get("actual_count") or 0),
+        "missing_count": int(payload.get("missing_count") or 0),
+        "gap_count": int(payload.get("gap_count") or 0),
+        "duplicate_count": int(payload.get("duplicate_count") or 0),
+        "bad_ohlc_count": int(payload.get("bad_ohlc_count") or 0),
+        "expected_start_ms": int(payload.get("expected_start_ms") or 0),
+        "expected_end_ms": int(payload.get("expected_end_ms") or 0),
+        "first_bar_ms": int(payload.get("first_bar_ms") or 0),
+        "last_bar_ms": int(payload.get("last_bar_ms") or 0),
+        "last_checked_at": str(payload.get("last_checked_at") or "").strip(),
+        "last_repair_at": str(payload.get("last_repair_at") or "").strip(),
+        "missing_windows": list(payload.get("missing_windows") or []),
+        "missing_examples": list(payload.get("missing_examples") or []),
+        "repair_windows": list(payload.get("repair_windows") or []),
+        "expected_mask_hex": str(payload.get("expected_mask_hex") or "").strip(),
+        "actual_mask_hex": str(payload.get("actual_mask_hex") or "").strip(),
+        "missing_mask_hex": str(payload.get("missing_mask_hex") or "").strip(),
+        "source": str(payload.get("source") or "manual_scan").strip() or "manual_scan",
+        "extra": _as_dict(payload.get("extra")),
+    }, ""
+
+
 def prepare_bar_truth_row(payload: dict[str, Any], environment: str) -> tuple[dict[str, Any] | None, str]:
     symbol = str(payload.get("symbol") or "").strip().upper()
     market_date = str(payload.get("market_date") or "").strip()
@@ -237,6 +278,13 @@ def merge_bar_integrity_row(item: dict[str, Any], existing_row: dict[str, Any] |
     if not merged.get("last_repair_at"):
         merged["last_repair_at"] = str((existing_row or {}).get("last_repair_at") or "")
         merged["last_repair_result"] = _as_dict((existing_row or {}).get("last_repair_result"))
+    return merged
+
+
+def merge_bar_coverage_daily_row(item: dict[str, Any], existing_row: dict[str, Any] | None) -> dict[str, Any]:
+    merged = dict(item or {})
+    if not merged.get("last_repair_at"):
+        merged["last_repair_at"] = str((existing_row or {}).get("last_repair_at") or "")
     return merged
 
 

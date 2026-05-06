@@ -57,6 +57,12 @@ DEFAULT_RETENTION_POLICIES = (
         "include_legacy_empty": False,
     },
     {
+        "collection": "ibkr_bar_coverage_daily",
+        "field": "market_date",
+        "kind": "date_text",
+        "include_legacy_empty": False,
+    },
+    {
         "collection": "ibkr_bar_truth_audit",
         "field": "market_date",
         "kind": "date_text",

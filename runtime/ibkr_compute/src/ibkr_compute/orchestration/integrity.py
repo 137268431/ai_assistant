@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import time
 
+from ibkr_compute.market.bar_coverage_daily import build_range_daily_coverage
 from ibkr_compute.market.bar_freshness import expected_closed_ms_from_latest_5m
+from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite, upsert_bar_coverage_daily
 from ibkr_compute.market.timeframe_utils import HIGHER_INTERVALS, format_us_time
 
 
@@ -13,6 +15,100 @@ def _service_mod():
 
 
 class TradingServiceIntegrityMixin:
+    def scan_bar_coverage_daily(
+        self,
+        symbols,
+        *,
+        market_date: str = "",
+        date_from: str = "",
+        date_to: str = "",
+        interval: str = "5m",
+        session_modes=None,
+        source: str = "manual_scan",
+        persist: bool = True,
+    ) -> dict:
+        service_mod = _service_mod()
+        normalized_symbols = sorted(
+            {str(symbol or "").upper() for symbol in (symbols or []) if str(symbol or "").strip()}
+        )
+        if not normalized_symbols:
+            return {"ok": True, "rows": [], "summary": {"symbols": [], "repair_candidate_symbols": []}}
+
+        target_from = str(date_from or market_date or self._bar_integrity_market_date()).strip()
+        target_to = str(date_to or market_date or target_from).strip()
+        requested_sessions = session_modes if session_modes is not None else ("regular", "extended")
+        active_trade_symbols = set(getattr(self, "_active_trade_symbols", set()) or set())
+        rows = []
+        try:
+            with open_pb_sqlite(readonly=True, timeout=10.0) as conn:
+                rows = build_range_daily_coverage(
+                    conn,
+                    symbols=normalized_symbols,
+                    environment=service_mod.ENVIRONMENT,
+                    date_from=target_from,
+                    date_to=target_to,
+                    interval=interval,
+                    session_modes=requested_sessions,
+                    source=source,
+                    active_trade_symbols=active_trade_symbols,
+                )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": str(exc),
+                "rows": [],
+                "summary": {
+                    "symbols": normalized_symbols,
+                    "date_from": target_from,
+                    "date_to": target_to,
+                    "source": source,
+                },
+            }
+
+        persisted = 0
+        persist_error = ""
+        if persist and rows:
+            try:
+                with open_pb_sqlite(readonly=False, timeout=30.0) as conn:
+                    with conn:
+                        persisted = upsert_bar_coverage_daily(conn, rows)
+            except Exception as exc:
+                persist_error = str(exc)
+                try:
+                    result = self.pb.upsert_bar_coverage_daily_items(rows)
+                    persisted = int(result.get("created", 0) or 0) + int(result.get("updated", 0) or 0)
+                except Exception as pb_exc:
+                    persist_error = f"{persist_error};pb:{pb_exc}" if persist_error else str(pb_exc)
+                    service_mod.logger.warning("Failed to persist daily bar coverage rows: %s", persist_error)
+
+        status_counts = {}
+        repair_symbols = set()
+        hard_gate_symbols = set()
+        for row in rows:
+            status = str(row.get("status") or "missing")
+            status_counts[status] = int(status_counts.get(status, 0) or 0) + 1
+            if bool(row.get("needs_repair")):
+                repair_symbols.add(str(row.get("symbol") or "").upper())
+            if bool(row.get("hard_gate")):
+                hard_gate_symbols.add(str(row.get("symbol") or "").upper())
+        return {
+            "ok": not persist_error,
+            "rows": rows,
+            "summary": {
+                "symbols": normalized_symbols,
+                "date_from": target_from,
+                "date_to": target_to,
+                "interval": interval,
+                "session_modes": [str(item or "").strip().lower() for item in (requested_sessions or [])],
+                "source": source,
+                "status_counts": status_counts,
+                "repair_candidate_symbols": sorted(repair_symbols),
+                "hard_gate_symbols": sorted(hard_gate_symbols),
+                "persisted": persisted,
+                "persist_error": persist_error,
+            },
+        }
+
     def _should_defer_background_repairs(self) -> tuple[bool, dict]:
         service_mod = _service_mod()
         queue_size = int(self._compute_queue.qsize())
@@ -424,6 +520,20 @@ class TradingServiceIntegrityMixin:
             except Exception as exc:
                 service_mod.logger.warning("Failed to persist bar integrity rows: %s", exc)
 
+        daily_coverage_summary = {}
+        try:
+            daily_coverage = self.scan_bar_coverage_daily(
+                normalized_symbols,
+                market_date=self._bar_integrity_market_date(),
+                interval="5m",
+                session_modes=("regular", "extended"),
+                source=f"{scan_scope}_integrity",
+                persist=persist,
+            )
+            daily_coverage_summary = dict(daily_coverage.get("summary") or {})
+        except Exception as exc:
+            service_mod.logger.warning("Failed to update daily bar coverage rows: %s", exc)
+
         summary = {
             "symbols": normalized_symbols,
             "scan_scope": scan_scope,
@@ -451,6 +561,7 @@ class TradingServiceIntegrityMixin:
                 "repaired": sum(1 for row in rows if row.get("status") == "repaired"),
                 "repair_failed": sum(1 for row in rows if row.get("status") == "repair_failed"),
             },
+            "daily_coverage": daily_coverage_summary,
         }
         return {
             "ok": True,

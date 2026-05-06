@@ -67,6 +67,44 @@ def serialize_truth_record(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def serialize_daily_coverage_record(record: dict[str, Any]) -> dict[str, Any]:
+    row = dict(record or {})
+    return {
+        "id": to_text(row.get("id")),
+        "environment": to_text(row.get("environment")),
+        "market_date": to_text(row.get("market_date")),
+        "symbol": to_text(row.get("symbol")).upper(),
+        "interval": to_text(row.get("interval") or "5m") or "5m",
+        "session_mode": to_text(row.get("session_mode") or "regular") or "regular",
+        "status": to_text(row.get("status")),
+        "hard_gate": bool(row.get("hard_gate")),
+        "needs_repair": bool(row.get("needs_repair")),
+        "expected_count": int(row.get("expected_count") or 0),
+        "actual_count": int(row.get("actual_count") or 0),
+        "missing_count": int(row.get("missing_count") or 0),
+        "gap_count": int(row.get("gap_count") or 0),
+        "duplicate_count": int(row.get("duplicate_count") or 0),
+        "bad_ohlc_count": int(row.get("bad_ohlc_count") or 0),
+        "expected_start_ms": int(row.get("expected_start_ms") or 0),
+        "expected_end_ms": int(row.get("expected_end_ms") or 0),
+        "first_bar_ms": int(row.get("first_bar_ms") or 0),
+        "last_bar_ms": int(row.get("last_bar_ms") or 0),
+        "last_checked_at": to_text(row.get("last_checked_at")),
+        "last_repair_at": to_text(row.get("last_repair_at")),
+        "missing_windows": list(row.get("missing_windows") or []),
+        "missing_examples": list(row.get("missing_examples") or []),
+        "repair_windows": list(row.get("repair_windows") or []),
+        "expected_mask_hex": to_text(row.get("expected_mask_hex")),
+        "actual_mask_hex": to_text(row.get("actual_mask_hex")),
+        "missing_mask_hex": to_text(row.get("missing_mask_hex")),
+        "source": to_text(row.get("source")),
+        "extra": ensure_object(row.get("extra")),
+        "created": to_text(row.get("created")),
+        "updated": to_text(row.get("updated")),
+        "row_updated_at": to_text(row.get("updated") or row.get("last_checked_at")),
+    }
+
+
 def _latest_by_key(records: list[dict[str, Any]], serializer: Callable[[dict[str, Any]], dict[str, Any]], key_builder: Callable[[dict[str, Any]], str]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -147,6 +185,45 @@ def load_truth_items(pb: Any, environment: str, *, market_date: str = "", symbol
         serialize_truth_record,
         lambda item: f'{to_text(item.get("symbol")).upper()}::{to_text(item.get("interval") or "5m")}',
     )
+
+
+def load_daily_coverage_items(
+    pb: Any,
+    environment: str,
+    *,
+    market_date: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    symbol: str = "",
+    session_mode: str = "",
+    status: str = "",
+    needs_repair: bool | None = None,
+) -> list[dict[str, Any]]:
+    filter_parts = [f'environment = "{to_text(environment).lower() or "live"}"']
+    if market_date:
+        filter_parts.append(f'market_date = "{to_text(market_date)}"')
+    if date_from:
+        filter_parts.append(f'market_date >= "{to_text(date_from)}"')
+    if date_to:
+        filter_parts.append(f'market_date <= "{to_text(date_to)}"')
+    if symbol:
+        filter_parts.append(f'symbol = "{to_text(symbol).upper()}"')
+    if session_mode:
+        filter_parts.append(f'session_mode = "{to_text(session_mode).lower()}"')
+    if status:
+        filter_parts.append(f'status = "{to_text(status).lower()}"')
+    if needs_repair is not None:
+        filter_parts.append(f'needs_repair = {str(bool(needs_repair)).lower()}')
+    try:
+        rows = pb.get_all_records(
+            "ibkr_bar_coverage_daily",
+            filter=" && ".join(filter_parts),
+            sort="-market_date,-updated",
+            max_pages=60,
+        )
+    except Exception:
+        rows = []
+    return [serialize_daily_coverage_record(dict(row)) for row in rows or []]
 
 
 def resolve_proof(item: dict[str, Any]) -> dict[str, str]:
@@ -369,6 +446,61 @@ def build_truth_summary(environment: str, market_date: str, truth_items: list[di
     return summary
 
 
+def build_daily_coverage_summary(environment: str, items: list[dict[str, Any]]) -> dict[str, Any]:
+    rows = list(items or [])
+    status_counts: dict[str, int] = {}
+    session_counts: dict[str, int] = {}
+    symbols: dict[str, bool] = {}
+    dates: dict[str, bool] = {}
+    needs_repair = 0
+    hard_gate = 0
+    missing_count = 0
+    gap_count = 0
+    latest_checked_at = ""
+    latest_repair_at = ""
+    for row in rows:
+        status = to_text(row.get("status") or "missing").lower() or "missing"
+        session_mode = to_text(row.get("session_mode") or "regular").lower() or "regular"
+        status_counts[status] = status_counts.get(status, 0) + 1
+        session_counts[session_mode] = session_counts.get(session_mode, 0) + 1
+        symbol = to_text(row.get("symbol")).upper()
+        market_date = to_text(row.get("market_date"))
+        if symbol:
+            symbols[symbol] = True
+        if market_date:
+            dates[market_date] = True
+        if bool(row.get("needs_repair")):
+            needs_repair += 1
+        if bool(row.get("hard_gate")):
+            hard_gate += 1
+        missing_count += int(row.get("missing_count") or 0)
+        gap_count += int(row.get("gap_count") or 0)
+        checked_at = to_text(row.get("last_checked_at"))
+        repaired_at = to_text(row.get("last_repair_at"))
+        if checked_at and (not latest_checked_at or checked_at > latest_checked_at):
+            latest_checked_at = checked_at
+        if repaired_at and (not latest_repair_at or repaired_at > latest_repair_at):
+            latest_repair_at = repaired_at
+    return {
+        "environment": environment,
+        "total": len(rows),
+        "symbols_total": len(symbols),
+        "dates_total": len(dates),
+        "symbols": sorted(symbols.keys()),
+        "date_from": min(dates.keys()) if dates else "",
+        "date_to": max(dates.keys()) if dates else "",
+        "status_counts": status_counts,
+        "session_mode_counts": session_counts,
+        "needs_repair": needs_repair,
+        "hard_gate": hard_gate,
+        "missing_count": missing_count,
+        "gap_count": gap_count,
+        "latest_checked_at": latest_checked_at,
+        "latest_repair_at": latest_repair_at,
+        "database_clean": needs_repair == 0 and hard_gate == 0 and status_counts.get("hard_gap", 0) == 0,
+    }
+
+
 def paginate(items: list[dict[str, Any]], *, page: int, per_page: int) -> dict[str, Any]:
     offset = max(0, (int(page) - 1) * int(per_page))
     visible = list(items or [])[offset : offset + int(per_page)]
@@ -376,14 +508,17 @@ def paginate(items: list[dict[str, Any]], *, page: int, per_page: int) -> dict[s
 
 
 __all__ = [
+    "build_daily_coverage_summary",
     "build_summary",
     "build_truth_summary",
+    "load_daily_coverage_items",
     "load_effective_watchlist_symbols",
     "load_integrity_items",
     "load_truth_items",
     "merge_items",
     "paginate",
     "resolve_proof",
+    "serialize_daily_coverage_record",
     "serialize_integrity_record",
     "serialize_truth_record",
 ]

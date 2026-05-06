@@ -583,6 +583,159 @@
             gap: 12px;
         }
 
+        #ordersArea.section-scroll-body {
+            max-height: none;
+            overflow: visible;
+            scrollbar-gutter: auto;
+        }
+
+        .orders-live-table-wrap {
+            overflow-x: auto;
+            border: 1px solid rgba(99,179,237,0.14);
+            border-radius: 16px;
+            background:
+                radial-gradient(circle at 8% 0%, rgba(79, 209, 197, 0.08), transparent 28%),
+                linear-gradient(180deg, rgba(10, 16, 28, 0.96), rgba(6, 11, 20, 0.98));
+            box-shadow: 0 14px 32px rgba(2, 8, 23, 0.18);
+        }
+
+        .orders-live-table {
+            width: 100%;
+            min-width: 980px;
+            border-collapse: separate;
+            border-spacing: 0;
+            color: var(--text);
+            font-size: 12px;
+        }
+
+        .orders-live-table th {
+            padding: 10px 12px;
+            text-align: left;
+            color: var(--muted);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            background: rgba(7, 12, 22, 0.92);
+            border-bottom: 1px solid rgba(99,179,237,0.12);
+            white-space: nowrap;
+        }
+
+        .orders-live-table td {
+            padding: 10px 12px;
+            vertical-align: top;
+            border-top: 1px solid rgba(255,255,255,0.055);
+        }
+
+        .orders-live-table tbody:first-of-type .order-chain-row td {
+            border-top: none;
+        }
+
+        .order-chain-row td {
+            background: linear-gradient(180deg, rgba(19, 31, 50, 0.92), rgba(13, 21, 36, 0.92));
+        }
+
+        .order-chain-row.pb-shadow td {
+            background: linear-gradient(180deg, rgba(42, 28, 12, 0.82), rgba(18, 19, 27, 0.92));
+        }
+
+        .order-leg-row td {
+            background: rgba(9, 14, 24, 0.82);
+        }
+
+        .order-leg-row.pb-shadow td {
+            background: rgba(20, 16, 20, 0.82);
+        }
+
+        .order-diagnostics-row td {
+            padding: 0 12px 12px;
+            background: rgba(7, 12, 22, 0.88);
+            border-top: none;
+            border-bottom: 1px solid rgba(99,179,237,0.08);
+        }
+
+        .order-chain-cell {
+            min-width: 190px;
+        }
+
+        .order-chain-symbol {
+            font-size: 18px;
+            font-weight: 800;
+            line-height: 1.1;
+            letter-spacing: -0.04em;
+        }
+
+        .order-leg-id {
+            font-size: 13px;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 800;
+            color: #E6F4FF;
+        }
+
+        .order-table-sub {
+            margin-top: 3px;
+            color: var(--muted);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            line-height: 1.35;
+            word-break: break-all;
+        }
+
+        .order-table-strong {
+            font-weight: 800;
+            color: #E6F4FF;
+        }
+
+        .order-muted {
+            color: var(--muted);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .orders-cell-stack {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+            max-width: 180px;
+        }
+
+        .order-table-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            min-width: 112px;
+        }
+
+        .order-table-actions .action-btn {
+            padding: 6px 9px;
+            border-radius: 9px;
+            font-size: 10px;
+            line-height: 1.1;
+            white-space: nowrap;
+        }
+
+        .order-diagnostics {
+            margin-top: 8px;
+            border: 1px solid rgba(99,179,237,0.10);
+            border-radius: 12px;
+            background: rgba(12, 18, 30, 0.72);
+            padding: 9px 11px;
+        }
+
+        .order-diagnostics summary {
+            cursor: pointer;
+            color: var(--muted);
+            font-size: 10.5px;
+            font-family: 'JetBrains Mono', monospace;
+            line-height: 1.45;
+        }
+
+        .raw-details.compact {
+            margin-top: 8px;
+            background: rgba(7, 12, 22, 0.78);
+        }
+
         .section-note {
             color: var(--muted);
             font-size: 11px;
@@ -787,6 +940,16 @@
             }
             .record-actions {
                 flex-direction: column;
+            }
+
+            .orders-live-table {
+                min-width: 780px;
+                font-size: 11px;
+            }
+
+            .orders-live-table th,
+            .orders-live-table td {
+                padding: 9px 10px;
             }
 
             .ticket-drawer {

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ibkr_api.signals.notifications import build_signal_status_card
+from ibkr_api.signals.values import load_signal_record, signal_status
+
 
 def callback_toast(toast_type: str, content: str, *, card: Any = None) -> dict[str, Any]:
     payload = {"toast": {"type": str(toast_type or "info"), "content": str(content or "")}}
@@ -39,48 +42,90 @@ def dispatch_feishu_2fa_callback(
     return callback_toast_fn("error", str(payload.get("error") or payload.get("message") or "2FA 触发失败"))
 
 
+def _signal_callback_toast_type(action: str, payload: dict[str, Any], status_code: int) -> str:
+    if int(status_code or 0) >= 400:
+        return "error"
+    page_kind = str((payload or {}).get("page_kind") or "").strip().lower()
+    title = str((payload or {}).get("title") or "").strip()
+    detail = str((payload or {}).get("detail") or "").strip()
+    if page_kind == "warn":
+        return "warning"
+    if page_kind == "fail":
+        return "success" if action == "reject" and title == "信号已拒绝" and "成功" in detail else "warning"
+    if "无需" in detail or "请勿重复" in detail or "成功" not in detail:
+        return "info"
+    return "success"
+
+
+def _signal_callback_message(action: str, payload: dict[str, Any], record: dict[str, Any] | None) -> str:
+    current_status = signal_status(record or {})
+    detail = str((payload or {}).get("detail") or (payload or {}).get("title") or "").strip()
+    if action == "confirm" and current_status == "pending":
+        return "信号已确认，等待执行"
+    if action == "reject" and current_status == "rejected":
+        return "信号已拒绝，暂不执行" if detail in {"", "拒绝成功"} else detail
+    return detail
+
+
+def _signal_callback_card(
+    record: dict[str, Any] | None,
+    *,
+    message: str,
+    console_base_url: str,
+) -> dict[str, Any] | None:
+    if not isinstance(record, dict) or not record.get("id"):
+        return None
+    return build_signal_status_card(record, message=message, console_base_url=console_base_url)
+
+
 def dispatch_feishu_signal_callback(
     action: str,
     signal_id: str,
     environment: str,
     *,
     pb: Any,
+    normalize_environment: Callable[[Any, str], str],
     escape_filter_string: Callable[[Any], str],
+    cancel_broker_order: Callable[[str, str, dict[str, Any] | None], dict[str, Any]],
+    build_signal_confirm_webhook_response_fn: Callable[..., tuple[dict[str, Any], int]],
+    build_signal_cancel_webhook_response_fn: Callable[..., tuple[dict[str, Any], int]],
     callback_toast_fn: Callable[..., dict[str, Any]],
+    update_signal_card: Callable[[str, dict[str, Any], str], dict[str, Any]] | None = None,
+    console_base_url: str = "",
+    config_value: Callable[[str, str, str], str] | None = None,
 ) -> tuple[dict[str, Any], int]:
-    record = pb.get_first_record(
-        "ibkr_signals",
-        filter=(
-            f'(id = "{escape_filter_string(signal_id)}" || signal_id = "{escape_filter_string(signal_id)}") && '
-            f'environment = "{escape_filter_string(environment)}"'
-        ),
-    )
-    if not record or not record.get("id"):
-        return callback_toast_fn("error", "信号不存在", card=None), 404
-
-    current_status = str(record.get("status") or "").strip()
-    if current_status in {"expired", "rejected", "executed", "submitted", "protected_active", "protection_incomplete", "closed"}:
-        return callback_toast_fn("warning", f"该信号已是 {current_status}，无法继续操作"), 200
-
+    runtime_environment = normalize_environment(environment, "live")
+    action_payload = {"id": signal_id, "environment": runtime_environment}
     if action == "confirm":
-        if current_status == "pending":
-            return callback_toast_fn("info", "⏳ 信号已确认，请勿重复操作"), 200
-        if current_status != "awaiting_confirm":
-            return callback_toast_fn("warning", f"该信号当前状态为 {current_status or '--'}，无法确认"), 200
-        pb.update_record("ibkr_signals", str(record.get("id")), {"status": "pending"})
-        return callback_toast_fn("success", "确认成功"), 200
+        payload, status_code = build_signal_confirm_webhook_response_fn(
+            pb,
+            payload=action_payload,
+            normalize_environment=normalize_environment,
+            escape_filter_string=escape_filter_string,
+            update_signal_card=update_signal_card,
+            console_base_url=console_base_url,
+            config_value=config_value,
+        )
+    elif action == "reject":
+        payload, status_code = build_signal_cancel_webhook_response_fn(
+            pb,
+            payload=action_payload,
+            normalize_environment=normalize_environment,
+            escape_filter_string=escape_filter_string,
+            cancel_broker_order=cancel_broker_order,
+            update_signal_card=update_signal_card,
+            console_base_url=console_base_url,
+        )
+    else:
+        return callback_toast_fn("error", f"未知操作: {action}"), 400
 
-    if action == "reject":
-        if current_status == "rejected":
-            return callback_toast_fn("info", "❌ 信号已拒绝，请勿重复操作"), 200
-        if current_status == "pending":
-            return callback_toast_fn("warning", "⏳ 信号正在等待执行，无法拒绝"), 200
-        if current_status != "awaiting_confirm":
-            return callback_toast_fn("warning", f"该信号当前状态为 {current_status or '--'}，无法拒绝"), 200
-        pb.update_record("ibkr_signals", str(record.get("id")), {"status": "rejected"})
-        return callback_toast_fn("success", "拒绝成功"), 200
-
-    return callback_toast_fn("error", f"未知操作: {action}"), 400
+    latest_record = load_signal_record(pb, signal_id, runtime_environment, escape_filter=escape_filter_string)
+    latest_record = latest_record if isinstance(latest_record, dict) else None
+    message = _signal_callback_message(action, payload, latest_record)
+    card = _signal_callback_card(latest_record, message=message, console_base_url=console_base_url)
+    toast_type = _signal_callback_toast_type(action, payload, int(status_code or 200))
+    content = message or str(payload.get("title") or "操作完成")
+    return callback_toast_fn(toast_type, content, card=card), int(status_code or 200)
 
 
 def dispatch_feishu_order_callback(

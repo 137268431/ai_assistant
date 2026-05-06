@@ -22,8 +22,16 @@ from ibkr_compute.core.timeline_builder import build_runtime_timeline
 from ibkr_compute.broker import BrokerAdapter
 from ibkr_compute.integrations.pb_client import PBClient
 from ibkr_compute.market.conid_resolver import ConidResolver
+from ibkr_compute.market.bar_coverage_daily import (
+    DAILY_COVERAGE_OK_STATUSES,
+    build_range_daily_coverage,
+    load_daily_coverage_rows,
+    market_date_from_ms,
+    summarize_symbol_daily_coverage,
+    trading_date_strings_from_ms,
+)
 from ibkr_compute.market.data_backfill import DataBackfill
-from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite, upsert_bars
+from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite, upsert_bar_coverage_daily, upsert_bars
 from ibkr_compute.market.timeframe_builder import TimeframeBarBuilder
 from ibkr_compute.market.timeframe_utils import (
     COMPUTE_INTERVALS,
@@ -2064,10 +2072,20 @@ class BacktestService:
         date_to: str,
         *,
         warmup_bars: int = BACKTEST_WARMUP_BARS,
+        refresh_daily_coverage: bool = False,
     ) -> dict:
         start_ms, end_ms = self._date_to_ms_range(date_from, date_to)
         warmup_lookback_ms = interval_to_ms("5m") * max(0, int(warmup_bars or 0), BACKTEST_WARMUP_BARS)
         requested_start_ms = max(0, start_ms - warmup_lookback_ms)
+        daily_summary = self._symbol_range_coverage_summary_from_daily_coverage(
+            symbol,
+            source_environment,
+            start_ms,
+            end_ms,
+            refresh=refresh_daily_coverage,
+        )
+        if daily_summary is not None:
+            return daily_summary
         sqlite_summary = self._symbol_range_coverage_summary_from_sqlite(
             symbol,
             source_environment,
@@ -2120,6 +2138,83 @@ class BacktestService:
             "repair_windows_truncated": max(0, len(repair_windows) - 20),
             "diagnostic_source": "python_rows",
         }
+
+    def _symbol_range_coverage_summary_from_daily_coverage(
+        self,
+        symbol: str,
+        source_environment: str,
+        requested_start_ms: int,
+        requested_end_ms: int,
+        *,
+        refresh: bool = False,
+    ) -> dict | None:
+        db_path = str(BACKTEST_SQLITE_PATH or "").strip()
+        if not db_path or not os.path.exists(db_path):
+            return None
+
+        normalized_symbol = str(symbol or "").strip().upper()
+        if not normalized_symbol:
+            return None
+        date_from = market_date_from_ms(int(requested_start_ms))
+        date_to = market_date_from_ms(int(requested_end_ms))
+        expected_dates = trading_date_strings_from_ms(int(requested_start_ms), int(requested_end_ms))
+        if not expected_dates:
+            return None
+
+        try:
+            with sqlite3.connect(db_path, timeout=20) as conn:
+                conn.row_factory = sqlite3.Row
+                existing_rows = load_daily_coverage_rows(
+                    conn,
+                    symbols=[normalized_symbol],
+                    environment=source_environment,
+                    date_from=date_from,
+                    date_to=date_to,
+                    interval="5m",
+                    session_mode="regular",
+                )
+                by_date = {str(row.get("market_date") or ""): dict(row) for row in existing_rows}
+                dates_to_rebuild = []
+                for market_date in expected_dates:
+                    row = by_date.get(market_date)
+                    status = str((row or {}).get("status") or "").strip().lower()
+                    if refresh or row is None or status not in DAILY_COVERAGE_OK_STATUSES:
+                        dates_to_rebuild.append(market_date)
+
+                if dates_to_rebuild:
+                    rebuilt_rows = build_range_daily_coverage(
+                        conn,
+                        symbols=[normalized_symbol],
+                        environment=source_environment,
+                        date_from=min(dates_to_rebuild),
+                        date_to=max(dates_to_rebuild),
+                        interval="5m",
+                        session_modes=("regular",),
+                        source="backtest_preflight",
+                        date_filter=dates_to_rebuild,
+                    )
+                    if rebuilt_rows:
+                        with conn:
+                            upsert_bar_coverage_daily(conn, rebuilt_rows)
+                        for row in rebuilt_rows:
+                            by_date[str(row.get("market_date") or "")] = dict(row)
+
+                rows = [by_date[market_date] for market_date in expected_dates if market_date in by_date]
+                summary = summarize_symbol_daily_coverage(
+                    symbol=normalized_symbol,
+                    rows=rows,
+                    requested_start_ms=int(requested_start_ms),
+                    requested_end_ms=int(requested_end_ms),
+                    interval="5m",
+                )
+                summary["daily_coverage"]["rebuilt_dates"] = dates_to_rebuild[:20]
+                summary["daily_coverage"]["rebuilt_dates_truncated"] = max(0, len(dates_to_rebuild) - 20)
+                return summary
+        except sqlite3.OperationalError:
+            return None
+        except Exception:
+            traceback.print_exc()
+            return None
 
     def _symbol_range_coverage_summary_from_sqlite(
         self,

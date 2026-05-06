@@ -10,6 +10,9 @@ from ibkr_api.system.service_state import canonicalize_topology
 
 NATIVE_CUSTOM_ROUTES = [
     "ibkr/bars",
+    "ibkr/data_quality/daily_list",
+    "ibkr/data_quality/daily_summary",
+    "ibkr/data_quality/daily_upsert",
     "ibkr/data_quality/list",
     "ibkr/data_quality/summary",
     "ibkr/data_quality/truth_list",

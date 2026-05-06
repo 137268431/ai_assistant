@@ -184,7 +184,7 @@ class SignalIngressBuildersTest(unittest.TestCase):
         self.assertEqual(extra["feishu_signal_notify_api_message"], "invalid card payload")
         self.assertIn("invalid card payload", extra["feishu_signal_notify_response_body"])
 
-    def test_signal_notification_card_uses_url_actions(self):
+    def test_signal_notification_card_uses_callback_request_actions(self):
         sent = []
         pb = _FakePB()
 
@@ -221,9 +221,20 @@ class SignalIngressBuildersTest(unittest.TestCase):
             if element.get("tag") == "action"
             for action in element.get("actions", [])
         ]
+        request_actions = [action for action in actions if action.get("action_type") == "request"]
+        self.assertEqual([action["text"]["content"] for action in request_actions], ["确认", "拒绝"])
+        self.assertTrue(all(action.get("url") == "https://console.example.com/webhook/feishu/callback" for action in request_actions))
+        self.assertEqual(
+            [action.get("value") for action in request_actions],
+            [
+                {"action": "confirm", "signal_id": "sig-url", "environment": "live"},
+                {"action": "reject", "signal_id": "sig-url", "environment": "live"},
+            ],
+        )
         action_urls = [action.get("multi_url", {}).get("url", "") for action in actions]
-        self.assertTrue(any("/webhook/signal/confirm" in url and "id=sig-url" in url for url in action_urls))
-        self.assertTrue(any("/webhook/signal/cancel" in url and "id=sig-url" in url for url in action_urls))
+        self.assertFalse(any("/webhook/signal/confirm" in url for url in action_urls))
+        self.assertFalse(any("/webhook/signal/cancel" in url for url in action_urls))
+        self.assertTrue(any("/ibkr_signals.html" in url and "signal_id=sig-url" in url for url in action_urls))
         self.assertEqual([], [action for action in actions if "behaviors" in action])
 
     def test_signal_ingest_skips_duplicate_bar_signal_and_annotates_existing_row(self):

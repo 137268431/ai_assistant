@@ -1,6 +1,7 @@
 import copy
 import sys
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 SERVICE_SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_api" / "src"
@@ -15,6 +16,7 @@ from ibkr_api.callbacks.feishu import (
     handle_feishu_callback,
 )
 from ibkr_api.integrations.runtime_orders import cancel_broker_order_via_runtime
+from ibkr_api.signals.webhooks import build_signal_cancel_webhook_response, build_signal_confirm_webhook_response
 
 
 class _FakePB:
@@ -39,6 +41,16 @@ class FeishuCallbacksTest(unittest.TestCase):
         self.as_dict = lambda value: dict(value) if isinstance(value, dict) else {}
         self.normalize_environment = lambda value, default: str(value or default).strip().lower() or default
         self.escape_filter_string = lambda value: str(value or "").replace("\\", "\\\\").replace('"', '\\"')
+        self.config_value = lambda key, default, environment: default
+        self.now_provider = lambda: datetime(2026, 4, 23, 1, 2, 3, tzinfo=timezone.utc)
+
+    def _confirm_builder(self, *args, **kwargs):
+        kwargs.setdefault("now_provider", self.now_provider)
+        return build_signal_confirm_webhook_response(*args, **kwargs)
+
+    def _cancel_builder(self, *args, **kwargs):
+        kwargs.setdefault("now_provider", self.now_provider)
+        return build_signal_cancel_webhook_response(*args, **kwargs)
 
     def test_callback_toast_with_card(self):
         payload = callback_toast("success", "ok", card={"hello": "world"})
@@ -64,35 +76,80 @@ class FeishuCallbacksTest(unittest.TestCase):
         self.assertEqual(calls[0][1]["json_body"]["environment"], "paper")
 
     def test_dispatch_feishu_signal_callback_confirms_signal(self):
-        pb = _FakePB(signal={"id": "sig-row-1", "status": "awaiting_confirm"})
+        pb = _FakePB(signal={"id": "sig-row-1", "signal_id": "sig-1", "environment": "live", "symbol": "AAPL", "status": "awaiting_confirm", "extra": {}})
 
         payload, status_code = dispatch_feishu_signal_callback(
             "confirm",
             "sig-1",
             "live",
             pb=pb,
+            normalize_environment=self.normalize_environment,
             escape_filter_string=self.escape_filter_string,
+            cancel_broker_order=lambda environment, order_id, payload=None: {"ok": True},
+            build_signal_confirm_webhook_response_fn=self._confirm_builder,
+            build_signal_cancel_webhook_response_fn=self._cancel_builder,
             callback_toast_fn=callback_toast,
+            console_base_url="https://console.example.com",
+            config_value=self.config_value,
         )
 
         self.assertEqual(status_code, 200)
         self.assertEqual(payload["toast"]["type"], "success")
+        self.assertEqual(payload["toast"]["content"], "信号已确认，等待执行")
+        self.assertIn("card", payload)
         self.assertEqual(pb.updated[0][2]["status"], "pending")
+        self.assertEqual(pb.signal["extra"]["confirmed_by"], "manual")
+        self.assertEqual(pb.signal["extra"]["confirmed_at"], "2026-04-23T01:02:03Z")
+        self.assertEqual(pb.signal["extra"]["status_reason"], "confirmed_by_user")
+
+    def test_dispatch_feishu_signal_callback_rejects_signal(self):
+        pb = _FakePB(signal={"id": "sig-row-1", "signal_id": "sig-1", "environment": "live", "symbol": "AAPL", "status": "awaiting_confirm", "extra": {}})
+
+        payload, status_code = dispatch_feishu_signal_callback(
+            "reject",
+            "sig-1",
+            "live",
+            pb=pb,
+            normalize_environment=self.normalize_environment,
+            escape_filter_string=self.escape_filter_string,
+            cancel_broker_order=lambda environment, order_id, payload=None: {"ok": True},
+            build_signal_confirm_webhook_response_fn=self._confirm_builder,
+            build_signal_cancel_webhook_response_fn=self._cancel_builder,
+            callback_toast_fn=callback_toast,
+            console_base_url="https://console.example.com",
+            config_value=self.config_value,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["toast"]["type"], "success")
+        self.assertEqual(payload["toast"]["content"], "信号已拒绝，暂不执行")
+        self.assertIn("card", payload)
+        self.assertEqual(pb.updated[0][2]["status"], "rejected")
+        self.assertEqual(pb.signal["extra"]["rejected_by"], "manual")
+        self.assertEqual(pb.signal["extra"]["rejected_at"], "2026-04-23T01:02:03Z")
+        self.assertEqual(pb.signal["extra"]["status_reason"], "manual_rejected")
 
     def test_dispatch_feishu_signal_callback_treats_submitted_as_terminal(self):
-        pb = _FakePB(signal={"id": "sig-row-1", "status": "submitted"})
+        pb = _FakePB(signal={"id": "sig-row-1", "signal_id": "sig-1", "environment": "live", "symbol": "AAPL", "status": "submitted", "extra": {}})
 
         payload, status_code = dispatch_feishu_signal_callback(
             "confirm",
             "sig-1",
             "live",
             pb=pb,
+            normalize_environment=self.normalize_environment,
             escape_filter_string=self.escape_filter_string,
+            cancel_broker_order=lambda environment, order_id, payload=None: {"ok": True},
+            build_signal_confirm_webhook_response_fn=self._confirm_builder,
+            build_signal_cancel_webhook_response_fn=self._cancel_builder,
             callback_toast_fn=callback_toast,
+            console_base_url="https://console.example.com",
+            config_value=self.config_value,
         )
 
         self.assertEqual(status_code, 200)
-        self.assertEqual(payload["toast"]["type"], "warning")
+        self.assertEqual(payload["toast"]["type"], "info")
+        self.assertIn("card", payload)
         self.assertEqual(pb.updated, [])
 
     def test_dispatch_feishu_order_callback_wraps_builder_response(self):

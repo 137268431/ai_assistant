@@ -366,6 +366,14 @@ class PBClient:
             timeout=30,
         )
 
+    def upsert_bar_coverage_daily_items(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        return self.call_custom_api(
+            "ibkr/data_quality/daily_upsert",
+            method="POST",
+            data={"items": items},
+            timeout=30,
+        )
+
     def upsert_bar_truth_audit_items(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
         return self.call_custom_api(
             "ibkr/data_quality/truth_upsert",

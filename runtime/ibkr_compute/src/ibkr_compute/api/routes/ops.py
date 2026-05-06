@@ -9,6 +9,8 @@ from ibkr_compute.api.ops.views import (
     build_bar_repair_status_response,
     build_history_rebuild_start_response,
     build_history_rebuild_status_response,
+    build_ibkr_data_quality_daily_repair_response,
+    build_ibkr_data_quality_daily_rescan_response,
     build_ibkr_data_quality_repair_response,
     build_ibkr_data_quality_scan_response,
     build_ibkr_data_quality_truth_audit_response,
@@ -68,6 +70,8 @@ def register_ops_routes(app):
         register_runtime_proxy_route(app, "ibkr_data_quality_scan", "/ibkr/data-quality/scan", ["POST"])
         register_runtime_proxy_route(app, "ibkr_data_quality_repair", "/ibkr/data-quality/repair", ["POST"])
         register_runtime_proxy_route(app, "ibkr_data_quality_truth_audit", "/ibkr/data-quality/truth-audit", ["POST"])
+        register_runtime_proxy_route(app, "ibkr_data_quality_daily_rescan", "/ibkr/data-quality/daily-rescan", ["POST"])
+        register_runtime_proxy_route(app, "ibkr_data_quality_daily_repair", "/ibkr/data-quality/daily-repair", ["POST"])
     else:
         @app.route("/ibkr/data-quality/scan", methods=["POST"])
         def ibkr_data_quality_scan():
@@ -80,3 +84,11 @@ def register_ops_routes(app):
         @app.route("/ibkr/data-quality/truth-audit", methods=["POST"])
         def ibkr_data_quality_truth_audit():
             return build_ibkr_data_quality_truth_audit_response()
+
+        @app.route("/ibkr/data-quality/daily-rescan", methods=["POST"])
+        def ibkr_data_quality_daily_rescan():
+            return build_ibkr_data_quality_daily_rescan_response()
+
+        @app.route("/ibkr/data-quality/daily-repair", methods=["POST"])
+        def ibkr_data_quality_daily_repair():
+            return build_ibkr_data_quality_daily_repair_response()
