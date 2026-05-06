@@ -406,6 +406,7 @@
 
       body > #contextBar > .page-context-bar,
       body > #pageBridge > .page-bridge,
+      body > #pageTopSection > .page-top-section,
       body > #configEnvironmentBar > .page-context-bar {
         width: min(calc(100% - (var(--page-gutter) * 2)), var(--page-shell-max));
         margin-left: auto;
