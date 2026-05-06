@@ -5,6 +5,7 @@ from typing import Any, Callable
 from ibkr_api.orders.group_common import (
     CANCEL_GROUP_ACTION,
     append_group_order_detail,
+    broker_cancel_response_looks_closed,
     is_closed_status,
     load_order_action_context,
     normalize_order_row,
@@ -65,6 +66,9 @@ def _cancel_open_broker_orders(
     for order_id in cancel_ids:
         result = cancel_broker_order(environment, order_id, payload)
         if result.get("ok"):
+            cancelled_ids.append(order_id)
+            continue
+        if broker_cancel_response_looks_closed(result):
             cancelled_ids.append(order_id)
             continue
         failed_ids.append(

@@ -17,12 +17,24 @@ NormalizeEnvironment = Callable[[Any, str], str]
 RequestJsonRequest = Callable[..., dict[str, Any]]
 
 
+def _is_broker_confirmed_live_order(order: dict[str, Any]) -> bool:
+    item = ensure_object(order)
+    authority = to_text(item.get("authority") or item.get("order_authority")).lower()
+    if authority in {"pb_stale", "pb_only", "pb_shadow"}:
+        return False
+    source = to_text(item.get("source") or item.get("order_source") or item.get("recovery_source") or item.get("_recovery_source")).lower()
+    if source in {"pb", "pocketbase", "pb_stale", "pb_only", "pb_shadow"}:
+        return False
+    return True
+
+
 def enrich_account_snapshot(pb: Any, payload: dict[str, Any], environment: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return payload
     positions = list(payload.get("positions") or [])
     broker_orders = list(payload.get("orders") or [])
-    live_open_orders = list(payload.get("live_open_orders") or []) or [item for item in broker_orders if not _is_closed_order_status((item or {}).get("status_key") or (item or {}).get("status"))]
+    live_open_orders_raw = list(payload.get("live_open_orders") or []) or [item for item in broker_orders if not _is_closed_order_status((item or {}).get("status_key") or (item or {}).get("status"))]
+    live_open_orders = [item for item in live_open_orders_raw if isinstance(item, dict) and _is_broker_confirmed_live_order(item)]
     managed_context = build_managed_order_context(pb, environment, live_open_orders)
     symbols = [to_text((item or {}).get("symbol")).upper() for item in positions]
     symbols.extend(to_text((group or {}).get("symbol")).upper() for group in managed_context.get("active_groups", []))
@@ -86,6 +98,7 @@ def enrich_account_snapshot(pb: Any, payload: dict[str, Any], environment: str) 
     payload["matched_order_groups"] = managed_context.get("matched_order_groups", [])
     payload["broker_only_order_groups"] = managed_context.get("broker_only_order_groups", [])
     payload["managed_order_groups"] = managed_context.get("active_groups", [])
+    payload["stale_pb_order_groups"] = managed_context.get("stale_pb_order_groups", [])
     payload["pb_only_order_groups"] = managed_context.get("pb_only_active_groups", [])
     counts = ensure_object(payload.get("counts"))
     payload["counts"] = {
@@ -102,6 +115,7 @@ def enrich_account_snapshot(pb: Any, payload: dict[str, Any], environment: str) 
         "flat_positions": flat_count,
         "pb_active_order_groups": len(managed_context.get("active_groups", [])),
         "pb_active_orders": to_int(managed_context.get("active_order_count"), 0),
+        "stale_pb_order_groups": len(managed_context.get("stale_pb_order_groups", [])),
         "pb_only_active_order_groups": len(managed_context.get("pb_only_active_groups", [])),
         "pb_shadow_groups": len(managed_context.get("pb_only_active_groups", [])),
         "missing_client_order_id_orders": to_int(managed_context.get("missing_client_order_id_count"), 0),
@@ -118,6 +132,8 @@ def enrich_account_snapshot(pb: Any, payload: dict[str, Any], environment: str) 
         "broker_only_groups": len(managed_context.get("broker_only_order_groups", [])),
         "pb_active_order_groups": len(managed_context.get("active_groups", [])),
         "pb_active_orders": to_int(managed_context.get("active_order_count"), 0),
+        "stale_pb_groups": managed_context.get("stale_pb_order_groups", []),
+        "stale_pb_order_groups": len(managed_context.get("stale_pb_order_groups", [])),
         "pb_only_active_order_groups": len(managed_context.get("pb_only_active_groups", [])),
         "pb_shadow_groups": len(managed_context.get("pb_only_active_groups", [])),
         "broker_only_orders": managed_context.get("broker_only_orders", []),

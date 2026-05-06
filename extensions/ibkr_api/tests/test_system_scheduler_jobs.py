@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import unittest
 from datetime import datetime, timedelta
@@ -72,6 +73,26 @@ class _OrderExpiryPB:
                     "cn_time": "2026-04-23 21:30:00",
                     "extra": {},
                 },
+                {
+                    "id": "sl-1",
+                    "unique_id": "sl-1",
+                    "entry_order_unique_id": "entry-1",
+                    "trade_group_id": "tg-1",
+                    "environment": "live",
+                    "symbol": "AAPL",
+                    "signal_id": "sig-1",
+                    "status": "Init",
+                    "role": "sl",
+                    "broker_order_id": "12347",
+                    "order_id": "12347",
+                    "quantity": 10,
+                    "direction": "SELL",
+                    "order_type": "STP",
+                    "bar_time_ms": 1,
+                    "us_time": "2026-04-23 09:30:00",
+                    "cn_time": "2026-04-23 21:30:00",
+                    "extra": {},
+                },
             ],
             "ibkr_order_details": [],
             "ibkr_signals": [
@@ -90,10 +111,7 @@ class _OrderExpiryPB:
 
     def get_records(self, collection, filter=None, sort=None, per_page=200, page=1):
         if collection == "orders":
-            if 'role = "entry"' in str(filter):
-                return [dict(self.records["orders"][0])]
-            if 'trade_group_id = "tg-1"' in str(filter):
-                return [dict(row) for row in self.records["orders"]]
+            return [dict(row) for row in self._filter_orders(filter)]
         if collection == "ibkr_signals":
             return [dict(row) for row in self.records["ibkr_signals"]]
         return [dict(row) for row in self.records.get(collection, [])]
@@ -116,6 +134,57 @@ class _OrderExpiryPB:
         self.created.append((collection, payload))
         self.records.setdefault(collection, []).append(payload)
         return payload
+
+    def _filter_orders(self, filter_value):
+        text = str(filter_value or "")
+        rows = []
+        environment = self._filter_environment(text)
+        fields = self._filter_fields(text)
+        values = set(self._filter_values(text))
+        max_bar_time_ms = self._filter_max_bar_time_ms(text)
+        wants_entry = 'role = "entry"' in text
+        wants_open_expiry_status = 'status = "Init"' in text and 'status = "Submitted"' in text
+        for row in self.records["orders"]:
+            if environment and str(row.get("environment") or "") != environment:
+                continue
+            if max_bar_time_ms is not None and int(row.get("bar_time_ms") or 0) > max_bar_time_ms:
+                continue
+            if wants_entry and str(row.get("role") or "") not in {"entry", ""}:
+                continue
+            if wants_open_expiry_status and str(row.get("status") or "") not in {"Init", "Submitted"}:
+                continue
+            if fields and values:
+                extra = row.get("extra") if isinstance(row.get("extra"), dict) else {}
+                if not any(str(row.get(field) or extra.get(field) or "") in values for field in fields):
+                    continue
+            rows.append(row)
+        return rows
+
+    @staticmethod
+    def _filter_values(filter_value):
+        matches = re.findall(r'=\s*"([^"]*)"', str(filter_value or ""))
+        environment = _OrderExpiryPB._filter_environment(filter_value)
+        if environment and matches and matches[-1] == environment:
+            return matches[:-1]
+        return matches
+
+    @staticmethod
+    def _filter_environment(filter_value):
+        match = re.search(r'environment\s*=\s*"([^"]*)"', str(filter_value or ""))
+        return match.group(1) if match else ""
+
+    @staticmethod
+    def _filter_fields(filter_value):
+        return [
+            field
+            for field in re.findall(r'([a-zA-Z_]+)\s*=\s*"[^"]*"', str(filter_value or ""))
+            if field not in {"environment", "status", "role"}
+        ]
+
+    @staticmethod
+    def _filter_max_bar_time_ms(filter_value):
+        match = re.search(r"bar_time_ms\s*<=\s*(\d+)", str(filter_value or ""))
+        return int(match.group(1)) if match else None
 
 
 class _ReminderPB:
@@ -382,11 +451,12 @@ class SystemSchedulerJobsTest(unittest.TestCase):
     def test_order_expiry_marks_group_canceled(self):
         pb = _OrderExpiryPB()
         updated_cards = []
+        cancel_calls = []
 
         def cancel_broker_order(environment, order_id, payload):
             self.assertEqual(environment, "live")
-            self.assertEqual(order_id, "12345")
             self.assertEqual(payload["trade_group_id"], "tg-1")
+            cancel_calls.append(order_id)
             return {"ok": True, "status_code": 200, "payload": {"ok": True}}
 
         payload, status_code = build_order_expiry_response(
@@ -404,12 +474,15 @@ class SystemSchedulerJobsTest(unittest.TestCase):
 
         self.assertEqual(status_code, 200)
         self.assertTrue(payload["ok"])
-        self.assertEqual(payload["processed_count"], 2)
+        self.assertEqual(payload["processed_count"], 3)
         self.assertEqual(payload["expired_group_count"], 1)
-        self.assertEqual(len(payload["detail_record_ids"]), 2)
+        self.assertEqual(payload["cancelled_order_ids"], ["12345", "12346", "12347"])
+        self.assertEqual(cancel_calls, ["12345", "12346", "12347"])
+        self.assertEqual(len(payload["detail_record_ids"]), 3)
         statuses = {row["id"]: row["status"] for row in pb.records["orders"]}
         self.assertEqual(statuses["entry-1"], "Canceled")
         self.assertEqual(statuses["tp-1"], "Canceled")
+        self.assertEqual(statuses["sl-1"], "Canceled")
         signal_row = pb.records["ibkr_signals"][0]
         self.assertEqual(signal_row["status"], "expired")
         self.assertEqual(signal_row["note"], "order_expired")
@@ -420,6 +493,142 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(payload["signal_results"][0]["signal_id"], "sig-1")
         self.assertEqual(updated_cards[0][0], "sig-msg-1")
         self.assertIn("挂单超时自动取消", updated_cards[0][1]["elements"][0]["content"])
+
+    def test_order_expiry_matches_split_group_aliases_and_cleans_up_closed_broker_rows(self):
+        pb = _OrderExpiryPB()
+        pb.records["orders"] = [
+            {
+                "id": "nflx-entry",
+                "unique_id": "NFLX_short_20260423",
+                "entry_order_unique_id": "NFLX_short_20260423",
+                "trade_group_id": "NFLX_short_20260423",
+                "environment": "live",
+                "symbol": "NFLX",
+                "signal_id": "sig-nflx",
+                "status": "Submitted",
+                "role": "entry",
+                "broker_order_id": "301",
+                "order_id": "301",
+                "quantity": 5,
+                "bar_time_ms": 1,
+                "extra": {},
+            },
+            {
+                "id": "nflx-tp",
+                "unique_id": "NFLX_short_20260423_tp",
+                "entry_order_unique_id": "entry_NFLX_short_20260423",
+                "trade_group_id": "entry_NFLX_short_20260423",
+                "environment": "live",
+                "symbol": "NFLX",
+                "signal_id": "sig-nflx",
+                "status": "Submitted",
+                "role": "tp",
+                "broker_order_id": "302",
+                "order_id": "302",
+                "quantity": 5,
+                "bar_time_ms": 1,
+                "extra": {},
+            },
+            {
+                "id": "nflx-sl",
+                "unique_id": "NFLX_short_20260423_sl",
+                "entry_order_unique_id": "entry_NFLX_short_20260423",
+                "trade_group_id": "entry_NFLX_short_20260423",
+                "environment": "live",
+                "symbol": "NFLX",
+                "signal_id": "sig-nflx",
+                "status": "Submitted",
+                "role": "sl",
+                "broker_order_id": "303",
+                "order_id": "303",
+                "quantity": 5,
+                "bar_time_ms": 1,
+                "extra": {},
+            },
+        ]
+        pb.records["ibkr_signals"] = [
+            {
+                "id": "sig-row-nflx",
+                "signal_id": "sig-nflx",
+                "environment": "live",
+                "symbol": "NFLX",
+                "status": "submitted",
+                "extra": {},
+            }
+        ]
+        cancel_calls = []
+
+        def cancel_broker_order(environment, order_id, payload):
+            cancel_calls.append(order_id)
+            if order_id == "302":
+                return {"ok": False, "status_code": 404, "payload": {"error": "Order not found"}}
+            if order_id == "303":
+                return {"ok": False, "status_code": 400, "message": "Already cancelled"}
+            return {"ok": True, "status_code": 200}
+
+        payload, status_code = build_order_expiry_response(
+            pb,
+            payload={"environment": "live"},
+            normalize_environment=lambda value, default: str(value or default).strip().lower() or default,
+            escape_filter_string=lambda value: str(value or "").replace('"', '\\"'),
+            config_value=lambda key, default, environment: "30",
+            cancel_broker_order=cancel_broker_order,
+            send_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "unused"},
+            update_interactive=lambda *_args, **_kwargs: {"success": True},
+            signal_chat_id_fn=lambda environment: f"signal-chat-{environment}",
+            console_base_url="https://console.example.com",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(cancel_calls, ["301", "302", "303"])
+        self.assertEqual(payload["cancelled_order_ids"], ["301", "302", "303"])
+        self.assertEqual({row["status"] for row in pb.records["orders"]}, {"Canceled"})
+        self.assertTrue(all(row["relation_status"] == "closed" for row in pb.records["orders"]))
+        self.assertEqual(payload["processed_count"], 3)
+        self.assertEqual(len(payload["detail_record_ids"]), 3)
+
+    def test_order_expiry_repairs_stale_children_after_entry_canceled(self):
+        pb = _OrderExpiryPB()
+        for row in pb.records["orders"]:
+            if row["role"] == "entry":
+                row["status"] = "Canceled"
+                row["relation_status"] = "closed"
+            else:
+                row["status"] = "Submitted"
+                row["relation_status"] = "active"
+        cancel_calls = []
+
+        def cancel_broker_order(environment, order_id, payload):
+            cancel_calls.append((environment, order_id, payload["trade_group_id"]))
+            return {"ok": False, "message": "order not found"}
+
+        payload, status_code = build_order_expiry_response(
+            pb,
+            payload={"environment": "live"},
+            normalize_environment=lambda value, default: str(value or default).strip().lower() or default,
+            escape_filter_string=lambda value: str(value or "").replace('"', '\\"'),
+            config_value=lambda key, default, environment: "30",
+            cancel_broker_order=cancel_broker_order,
+            send_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "unused"},
+            update_interactive=lambda *_args, **_kwargs: {"success": True},
+            signal_chat_id_fn=lambda environment: f"signal-chat-{environment}",
+            console_base_url="https://console.example.com",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["processed_count"], 2)
+        self.assertEqual(payload["expired_group_count"], 1)
+        self.assertEqual(payload["cancelled_order_ids"], ["12346", "12347"])
+        self.assertEqual(cancel_calls, [("live", "12346", "tg-1"), ("live", "12347", "tg-1")])
+        statuses = {row["id"]: row["status"] for row in pb.records["orders"]}
+        self.assertEqual(statuses["entry-1"], "Canceled")
+        self.assertEqual(statuses["tp-1"], "Canceled")
+        self.assertEqual(statuses["sl-1"], "Canceled")
+        created_details = [row for row in pb.records["ibkr_order_details"] if row.get("extra", {}).get("stale_pb_repair")]
+        self.assertEqual(len(created_details), 2)
+        self.assertTrue(all(row["extra"]["source"] == "order_reconcile_stale_pb" for row in created_details))
 
     def test_auth_issue_treats_stale_broker_as_operational_recovery(self):
         issue = build_auth_immediate_issue(

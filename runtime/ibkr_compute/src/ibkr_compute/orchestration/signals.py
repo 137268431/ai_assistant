@@ -435,6 +435,8 @@ class TradingServiceSignalsMixin:
         tp_unique_id = result.get("tp_coid") or ""
         sl_unique_id = result.get("sl_coid") or ""
         trade_group_id = result.get("bracket_group") or entry_unique_id
+        oca_group = str(result.get("oca_group") or trade_group_id or "").strip()
+        order_family_type = str(result.get("order_family_type") or ("bracket_oco" if trade_group_id else "")).strip()
         bar_time_ms = int(raw.get("bar_time_ms") or 0)
         us_time = raw.get("us_time") or sig.get("signal_time") or ""
         cn_time = raw.get("cn_time") or ""
@@ -467,6 +469,11 @@ class TradingServiceSignalsMixin:
                     "sibling_order_unique_id": sl_unique_id,
                     "limit_price": sig["take_profit"],
                     "status": "Submitted" if protection_complete else "Init",
+                    "extra": {
+                        "bracket_group": trade_group_id,
+                        "oca_group": oca_group,
+                        "order_family_type": order_family_type,
+                    },
                 }
             )
         if sl_unique_id:
@@ -482,6 +489,11 @@ class TradingServiceSignalsMixin:
                     "sibling_order_unique_id": tp_unique_id,
                     "limit_price": sig["stop_loss"],
                     "status": "Submitted" if protection_complete else "Init",
+                    "extra": {
+                        "bracket_group": trade_group_id,
+                        "oca_group": oca_group,
+                        "order_family_type": order_family_type,
+                    },
                 }
             )
 
@@ -508,6 +520,9 @@ class TradingServiceSignalsMixin:
                 "source": "ibkr_compute",
                 "reason": "order_submitted_by_ibkr_compute",
                 "ack_source": "ibkr_service",
+                "bracket_group": trade_group_id,
+                "oca_group": oca_group,
+                "order_family_type": order_family_type,
                 "signal_lifecycle_status": signal_status,
                 "protection_complete": protection_complete,
                 "protection_incomplete": protection_incomplete,

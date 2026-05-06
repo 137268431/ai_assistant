@@ -7,6 +7,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from ibkr_compute.broker import ib_gateway
+from ibkr_compute.order.order_placer import OrderPlacer
 from ibkr_compute.signal.signal_router import SignalRouter
 
 
@@ -63,6 +64,31 @@ class FakePBClient:
 
     def get_records(self, collection, filter=None, sort=None, per_page=100, page=1):
         return list(self.rows)
+
+
+class FakeOrderPBClient:
+    def __init__(self):
+        self.upserts = []
+
+    def upsert_order(self, data):
+        self.upserts.append(dict(data))
+        return {"success": True}
+
+
+class FakeBracketBroker:
+    def place_bracket_order(self, **kwargs):
+        return {
+            "ok": True,
+            "entry_coid": "entry_NFLX_short_20260506_101500",
+            "tp_coid": "tp_NFLX_short_20260506_101500",
+            "sl_coid": "sl_NFLX_short_20260506_101500",
+            "bracket_group": "NFLX_short_20260506_101500",
+            "oca_group": "NFLX_short_20260506_101500",
+            "order_family_type": "bracket_oco",
+            "order_ids": ["101", "102", "103"],
+            "submission": {"ok": True},
+            "protection_complete": True,
+        }
 
 
 class FakeConfig:
@@ -200,6 +226,94 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertTrue(result["protection_complete"])
         self.assertEqual(["206", "207", "208"], result["order_ids"])
+
+    def test_place_bracket_order_sets_child_oca_metadata(self):
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeClient(
+            submission_result={
+                "ok": True,
+                "orders": {"101": {"ok": True}, "102": {"ok": True}, "103": {"ok": True}},
+                "missing_order_ids": [],
+            }
+        )
+        adapter.resolve_contract = lambda **kwargs: {
+            "conid": 123,
+            "symbol": "NFLX",
+            "sec_type": "STK",
+            "exchange": "SMART",
+            "currency": "USD",
+        }
+
+        original_order = ib_gateway.Order
+        original_contract = ib_gateway.Contract
+        try:
+            ib_gateway.Order = FakeOrder
+            ib_gateway.Contract = FakeContract
+            result = ib_gateway.BrokerAdapter.place_bracket_order(
+                adapter,
+                conid=123,
+                symbol="NFLX",
+                direction="short",
+                quantity=7,
+                entry_price=600.0,
+                take_profit_price=580.0,
+                stop_loss_price=610.0,
+            )
+        finally:
+            ib_gateway.Order = original_order
+            ib_gateway.Contract = original_contract
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["bracket_group"], result["oca_group"])
+        self.assertEqual("bracket_oco", result["order_family_type"])
+        entry_order = adapter.client.placed_orders[0][1]
+        tp_order = adapter.client.placed_orders[1][1]
+        sl_order = adapter.client.placed_orders[2][1]
+        self.assertEqual(0, getattr(entry_order, "parentId", 0))
+        self.assertEqual(101, tp_order.parentId)
+        self.assertEqual(101, sl_order.parentId)
+        self.assertFalse(entry_order.transmit)
+        self.assertFalse(tp_order.transmit)
+        self.assertTrue(sl_order.transmit)
+        self.assertEqual(result["oca_group"], tp_order.ocaGroup)
+        self.assertEqual(result["oca_group"], sl_order.ocaGroup)
+        self.assertEqual(1, tp_order.ocaType)
+        self.assertEqual(1, sl_order.ocaType)
+
+
+class OrderPlacerBracketMetadataTest(unittest.TestCase):
+    def test_pb_upserts_use_canonical_bracket_trade_group_and_oco_metadata(self):
+        pb_client = FakeOrderPBClient()
+        placer = OrderPlacer(pb_client=pb_client, broker=FakeBracketBroker(), account_id="DU123")
+
+        result = placer.place_bracket_order(
+            conid=123,
+            symbol="NFLX",
+            direction="short",
+            quantity=7,
+            entry_price=600.0,
+            take_profit_price=580.0,
+            stop_loss_price=610.0,
+            signal_id="sig-nflx",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("NFLX_short_20260506_101500", result["bracket_group"])
+        self.assertEqual("NFLX_short_20260506_101500", result["oca_group"])
+        self.assertEqual("bracket_oco", result["order_family_type"])
+        self.assertEqual(3, len(pb_client.upserts))
+        for upsert in pb_client.upserts:
+            self.assertEqual("NFLX_short_20260506_101500", upsert["trade_group_id"])
+            self.assertEqual("NFLX_short_20260506_101500", upsert["bracket_group"])
+            self.assertEqual("NFLX_short_20260506_101500", upsert["oca_group"])
+            self.assertEqual("bracket_oco", upsert["order_family_type"])
+            self.assertEqual("NFLX_short_20260506_101500", upsert["extra"]["bracket_group"])
+            self.assertEqual("NFLX_short_20260506_101500", upsert["extra"]["oca_group"])
+            self.assertEqual("bracket_oco", upsert["extra"]["order_family_type"])
+            self.assertEqual("entry_NFLX_short_20260506_101500", upsert["entry_order_unique_id"])
+        self.assertEqual("entry_NFLX_short_20260506_101500", pb_client.upserts[0]["unique_id"])
+        self.assertEqual("entry_NFLX_short_20260506_101500", pb_client.upserts[1]["parent_order_unique_id"])
+        self.assertEqual("entry_NFLX_short_20260506_101500", pb_client.upserts[2]["parent_order_unique_id"])
 
 
 class SignalRouterDedupeTest(unittest.TestCase):

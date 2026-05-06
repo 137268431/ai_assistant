@@ -93,6 +93,9 @@ class OrderPlacer:
                 signal_id=signal_id,
                 account=acct_id,
                 order_ids=result.get("order_ids") or [],
+                bracket_group=result.get("bracket_group") or "",
+                oca_group=result.get("oca_group") or result.get("bracket_group") or "",
+                order_family_type=result.get("order_family_type") or "bracket_oco",
             )
         missing_order_ids = [
             str(item or "").strip()
@@ -109,6 +112,10 @@ class OrderPlacer:
             "tp_coid": str(result.get("tp_coid") or ""),
             "sl_coid": str(result.get("sl_coid") or ""),
             "bracket_group": str(result.get("bracket_group") or result.get("entry_coid") or ""),
+            "oca_group": str(result.get("oca_group") or result.get("bracket_group") or ""),
+            "order_family_type": str(
+                result.get("order_family_type") or ("bracket_oco" if result.get("bracket_group") else "")
+            ),
             "order_ids": [str(item or "").strip() for item in (result.get("order_ids") or []) if str(item or "").strip()],
             "error": result.get("error"),
             "entry_error": result.get("entry_error"),
@@ -160,6 +167,12 @@ class OrderPlacer:
             entry_unique_id = kwargs.get("entry_coid")
             tp_unique_id = kwargs.get("tp_coid")
             sl_unique_id = kwargs.get("sl_coid")
+            bracket_group = str(kwargs.get("bracket_group") or "").strip()
+            if not bracket_group and str(entry_unique_id or "").startswith("entry_"):
+                bracket_group = str(entry_unique_id or "")[len("entry_") :]
+            trade_group_id = bracket_group or entry_unique_id
+            oca_group = str(kwargs.get("oca_group") or bracket_group or "").strip()
+            order_family_type = str(kwargs.get("order_family_type") or "bracket_oco").strip()
             symbol = kwargs.get("symbol")
             signal_id = kwargs.get("signal_id", "")
             order_ids = [str(item or "").strip() for item in (kwargs.get("order_ids") or [])]
@@ -172,12 +185,20 @@ class OrderPlacer:
                     "symbol": symbol,
                     "direction": direction,
                     "position_side": direction,
-                    "trade_group_id": entry_unique_id,
+                    "trade_group_id": trade_group_id,
+                    "bracket_group": bracket_group,
+                    "oca_group": oca_group,
+                    "order_family_type": order_family_type,
                     "entry_order_unique_id": entry_unique_id,
                     "quantity": quantity,
                     "signal_id": signal_id,
                     "us_time": us_time,
                     "bar_time_ms": int(et_now.timestamp() * 1000),
+                    "extra": {
+                        "bracket_group": bracket_group,
+                        "oca_group": oca_group,
+                        "order_family_type": order_family_type,
+                    },
                 }
                 self.pb_client.upsert_order({
                     **base_payload,

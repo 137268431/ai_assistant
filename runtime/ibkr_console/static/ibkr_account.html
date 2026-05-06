@@ -302,7 +302,7 @@
                 all: '全部订单链',
                 matched: 'Matched',
                 broker_only: 'Broker Only',
-                pb_shadow: 'PB Shadow',
+                pb_shadow: 'PB Stale / Needs Repair',
                 cancelable: '可撤单',
                 editable: '可改单',
                 entry: 'ENTRY',
@@ -346,7 +346,7 @@
             const brokerOnlyGroups = Array.isArray(snapshot?.broker_only_order_groups) && snapshot.broker_only_order_groups.length
                 ? snapshot.broker_only_order_groups.slice()
                 : liveGroups.filter((group) => String(group?.match_state || '').toLowerCase() !== 'matched');
-            const pbOnlyGroups = (Array.isArray(snapshot?.pb_only_order_groups) ? snapshot.pb_only_order_groups.slice() : []).map((group) => ({ ...group, is_pb_shadow: true }));
+            const pbOnlyGroups = getStalePbGroups(snapshot);
             const visibleGroupCount = filterOrderGroups(matchedGroups).length
                 + filterOrderGroups(brokerOnlyGroups).length
                 + filterOrderGroups(pbOnlyGroups).length;
@@ -370,7 +370,7 @@
                 <div class="chip-row">
                     <span class="status-chip"><span class="dot" style="color:#4FD1C5"></span>Net Liq ${escapeHtml(getAccountNetLiqLabel(snapshot))}</span>
                     <span class="status-chip"><span class="dot" style="color:#63B3ED"></span>持仓 ${escapeHtml(String(counts.open_positions || 0))}</span>
-                    <span class="status-chip"><span class="dot" style="color:#F6AD55"></span>挂单 ${escapeHtml(String(metrics.liveOrdersCount || counts.open_orders || 0))}</span>
+                    <span class="status-chip"><span class="dot" style="color:#F6AD55"></span>IBKR 挂单 ${escapeHtml(String(metrics.liveOrdersCount || counts.open_orders || 0))}</span>
                     <span class="status-chip"><span class="dot" style="color:#FC8181"></span>订单链 ${escapeHtml(String(metrics.visibleGroupCount || 0))}</span>
                 </div>
             `;
@@ -571,11 +571,28 @@
             window.location.href = buildPageUrl('/orders.html', {}, { environment: currentEnvironment });
         }
 
+        function isBrokerConfirmedOrder(order) {
+            const authority = String(order?.authority || order?.order_authority || '').trim().toLowerCase();
+            if (['pb_stale', 'pb_only', 'pb_shadow'].includes(authority)) return false;
+            const source = String(order?.source || order?.order_source || '').trim().toLowerCase();
+            return !['pb', 'pocketbase', 'pb_stale', 'pb_only', 'pb_shadow'].includes(source);
+        }
+
         function getLiveOrders(snapshot) {
-            const liveOrders = Array.isArray(snapshot?.live_open_orders) ? snapshot.live_open_orders.slice() : [];
+            const liveOrders = Array.isArray(snapshot?.live_open_orders) ? snapshot.live_open_orders.slice().filter(isBrokerConfirmedOrder) : [];
             if (liveOrders.length) return liveOrders;
             const orders = Array.isArray(snapshot?.orders) ? snapshot.orders.slice() : [];
-            return orders.filter((order) => order?.is_open || order?.can_cancel);
+            return orders.filter((order) => (order?.is_open || order?.can_cancel) && isBrokerConfirmedOrder(order));
+        }
+
+        function getStalePbGroups(snapshot) {
+            const reconciliation = snapshot?.order_reconciliation || {};
+            const groups = Array.isArray(snapshot?.stale_pb_order_groups) && snapshot.stale_pb_order_groups.length
+                ? snapshot.stale_pb_order_groups
+                : Array.isArray(reconciliation?.stale_pb_groups) && reconciliation.stale_pb_groups.length
+                    ? reconciliation.stale_pb_groups
+                    : (Array.isArray(snapshot?.pb_only_order_groups) ? snapshot.pb_only_order_groups : []);
+            return groups.map((group) => ({ ...group, authority: 'pb_stale', match_state: 'pb_stale', is_pb_shadow: true }));
         }
 
         function buildFallbackLiveGroups(liveOrders) {
@@ -717,7 +734,7 @@
             const tone = getCoverageTone(snapshot);
             const rows = [
                 `bulk=${Number(coverage.bulk_open_count || reconciliation.bulk_open_count || 0)} · recovered=${Number(coverage.recovered_from_status_count || reconciliation.recovered_open_orders || 0)} · unresolved=${Number(coverage.unresolved_seed_count || reconciliation.unresolved_seed_count || 0)}`,
-                `live_open=${Number(snapshot?.counts?.open_orders || liveOrders.length || 0)} · cancelable=${Number(snapshot?.counts?.cancelable_orders || reconciliation.cancelable_orders || 0)} · editable=${Number(snapshot?.counts?.editable_orders || reconciliation.editable_orders || 0)}`,
+                `ibkr_live_open=${Number(snapshot?.counts?.open_orders || liveOrders.length || 0)} · cancelable=${Number(snapshot?.counts?.cancelable_orders || reconciliation.cancelable_orders || 0)} · editable=${Number(snapshot?.counts?.editable_orders || reconciliation.editable_orders || 0)}`,
             ];
             if (unresolvedIds.length) rows.push(`unresolved ids: ${unresolvedIds.join(', ')}`);
             const title = coverageState === 'degraded'
@@ -759,11 +776,11 @@
             const statusLine = formatCompactCountMap(statusCounts, (key, count) => `${key}×${count}`) || '--';
             const symbolLine = formatCompactCountMap(symbolCounts, (key, count) => `${key}×${count}`) || '--';
             const cards = [
-                ['Live Open', String(snapshot?.counts?.open_orders || liveOrders.length || 0), 'Broker 已确认仍在挂着的订单'],
+                ['IBKR Live Open', String(snapshot?.counts?.open_orders || liveOrders.length || 0), 'IBKR broker 已确认仍在挂着的订单'],
                 ['Chains', String(liveGroups.length || 0), '按订单链 / bracket 聚合'],
                 ['Matched', String(reconciliation.broker_matched_groups || 0), '已关联到 PB 订单链'],
                 ['Broker Only', String(reconciliation.broker_only_groups || 0), 'broker 有，PB 未匹配'],
-                ['PB Shadow', String(reconciliation.pb_shadow_groups || pbOnlyGroups.length || 0), 'PB 仍活跃，但 broker 未确认'],
+                ['PB Stale / Needs Repair', String(reconciliation.stale_pb_order_groups || reconciliation.pb_shadow_groups || pbOnlyGroups.length || 0), 'PB 仍活跃但 IBKR 未确认，需修复'],
                 ['Editable / Cancelable', `${snapshot?.counts?.editable_orders || 0} / ${snapshot?.counts?.cancelable_orders || 0}`, '可改 / 可撤'],
                 ['Outside RTH', String(snapshot?.counts?.outside_rth_orders || 0), '盘前盘后订单数'],
                 ['Remaining Qty', formatQty(computeBracketAwareRemainingQty(liveOrders)), '去重后的剩余待成交数量'],
@@ -795,7 +812,7 @@
                         ${renderFilterChip('全部', 'all')}
                         ${renderFilterChip('Matched', 'matched')}
                         ${renderFilterChip('Broker Only', 'broker_only')}
-                        ${renderFilterChip('PB Shadow', 'pb_shadow')}
+                        ${renderFilterChip('PB Stale / Needs Repair', 'pb_shadow')}
                         ${renderFilterChip('可撤', 'cancelable')}
                         ${renderFilterChip('可改', 'editable')}
                         ${renderFilterChip('ENTRY', 'entry')}
@@ -1113,7 +1130,7 @@
                             <div class="summary-sub mono">broker=${escapeHtml(order?.broker_order_id || '--')} · unique=${escapeHtml(order?.unique_id || '--')}</div>
                         </div>
                         <div class="badge-row">
-                            <span class="badge warn">PB SHADOW</span>
+                            <span class="badge warn">PB STALE</span>
                             <span class="${badgeClass(String(order?.status || '').toLowerCase())}">${escapeHtml(String(order?.status || '--').toUpperCase())}</span>
                         </div>
                     </div>
@@ -1189,7 +1206,7 @@
                             <div class="summary-sub mono">group=${escapeHtml(tradeGroupId || '--')} · signal=${escapeHtml(signalId || '--')}</div>
                         </div>
                         <div class="badge-row">
-                            <span class="badge warn">PB SHADOW</span>
+                            <span class="badge warn">PB STALE</span>
                             <span class="${badgeClass(String(group?.latest_order_status || '').toLowerCase())}">${escapeHtml(String(group?.latest_order_status || '--').toUpperCase())}</span>
                         </div>
                     </div>
@@ -1245,7 +1262,7 @@
 
         function renderOrderDiagnosticsDetails(group, orders, { pbShadow = false } = {}) {
             const detailItems = [
-                pbShadow ? 'pb_shadow=true' : `matched=${String(group?.matched_live_orders || 0)}`,
+                pbShadow ? 'authority=pb_stale' : `matched=${String(group?.matched_live_orders || 0)}`,
                 pbShadow ? `broker_match=${String(group?.matched_broker_orders || 0)}` : `broker_only=${String(group?.broker_only_live_orders || 0)}`,
                 `outside_rth=${String(group?.outside_rth_orders || 0)}`,
                 `updated=${formatTimeLabel(group?.latest_updated)}`,
@@ -1385,7 +1402,7 @@
                     <td><span class="order-table-strong">${escapeHtml(roleSummary)}</span></td>
                     <td>
                         <div class="orders-cell-stack">
-                            <span class="badge warn">PB SHADOW</span>
+                            <span class="badge warn">PB STALE</span>
                             <span class="${badgeClass(String(group?.latest_order_status || '').toLowerCase())}">${escapeHtml(String(group?.latest_order_status || '--').toUpperCase())}</span>
                         </div>
                     </td>
@@ -1410,7 +1427,7 @@
                         <td>${escapeHtml(formatQty(order?.quantity))} / ${escapeHtml(formatQty(order?.filled_qty))}</td>
                         <td>${escapeHtml(formatOptionalMoney(order?.limit_price || order?.fill_price))}</td>
                         <td><span class="order-table-strong">${escapeHtml(formatQty(remaining))}</span></td>
-                        <td><span class="order-muted">PB only</span></td>
+                        <td><span class="order-muted">PB stale</span></td>
                     </tr>
                 `;
             }).join('');
@@ -1470,7 +1487,7 @@
             const brokerOnlyGroups = Array.isArray(snapshot?.broker_only_order_groups) && snapshot.broker_only_order_groups.length
                 ? snapshot.broker_only_order_groups.slice()
                 : liveGroups.filter((group) => String(group?.match_state || '').toLowerCase() !== 'matched');
-            const pbOnlyGroups = (Array.isArray(snapshot?.pb_only_order_groups) ? snapshot.pb_only_order_groups.slice() : []).map((group) => ({ ...group, is_pb_shadow: true }));
+            const pbOnlyGroups = getStalePbGroups(snapshot);
             const filteredMatchedGroups = filterOrderGroups(matchedGroups);
             const filteredBrokerOnlyGroups = filterOrderGroups(brokerOnlyGroups);
             const filteredPbOnlyGroups = filterOrderGroups(pbOnlyGroups);
@@ -1482,7 +1499,7 @@
                 pbOnlyGroupsCount: pbOnlyGroups.length,
                 visibleGroupCount,
             });
-            document.getElementById('ordersMeta').textContent = `${liveOrders.length} live · groups ${liveGroups.length} · showing ${visibleGroupCount}`;
+            document.getElementById('ordersMeta').textContent = `${liveOrders.length} IBKR live · ${pbOnlyGroups.length} PB stale · groups ${liveGroups.length} · showing ${visibleGroupCount}`;
             const area = document.getElementById('ordersArea');
             renderOrdersSummary(snapshot, liveOrders, liveGroups, pbOnlyGroups, visibleGroupCount);
 
@@ -1490,7 +1507,7 @@
             if (filteredBrokerOnlyGroups.length) {
                 sections.push(renderOrdersSection(
                     'Broker Only Live Chains',
-                    '这些订单已被 broker 实时确认仍在挂着，但当前没有匹配到 PB 订单记录，优先排查 broker_order_id / client_order_id 回填。',
+                    '这些订单已被 IBKR broker 实时确认仍在挂着，但当前没有匹配到 PB 订单记录，优先排查 broker_order_id / client_order_id 回填。',
                     filteredBrokerOnlyGroups,
                     renderLiveGroupTableRows,
                 ));
@@ -1498,15 +1515,15 @@
             if (filteredMatchedGroups.length) {
                 sections.push(renderOrdersSection(
                     'Matched Live Chains',
-                    '这些订单链已完成 broker 实时挂单与 PB 订单链关联，可以直接从单条订单查看完整 broker + PB 维度。',
+                    '这些订单链已完成 IBKR broker 实时挂单与 PB 订单链关联，可以直接从单条订单查看完整 broker + PB 维度。',
                     filteredMatchedGroups,
                     renderLiveGroupTableRows,
                 ));
             }
             if (filteredPbOnlyGroups.length) {
                 sections.push(renderOrdersSection(
-                    'PB Shadow Chains',
-                    'PB 仍认为这些订单组处于活跃状态，但 broker 当前没有确认对应的实时挂单。它们不计入当前实时挂单数。',
+                    'PB Stale / Needs Repair Chains',
+                    'PB 仍认为这些订单组处于活跃状态，但 IBKR 当前没有确认对应的实时挂单。它们只作为修复警告，不计入 IBKR Live Open / remaining。',
                     filteredPbOnlyGroups,
                     renderPbShadowGroupTableRows,
                 ));
@@ -1516,7 +1533,7 @@
                 if (String(reconciliation.coverage_state || '').toLowerCase() === 'degraded') {
                     area.innerHTML = `<div class="empty-state">当前无法确认完整实时挂单列表。未解析订单: ${escapeHtml((reconciliation.unresolved_order_ids || []).join(', ') || '--')}</div>`;
                 } else {
-                    area.innerHTML = '<div class="empty-state">当前没有 broker 已确认仍在挂着的实时订单。</div>';
+                    area.innerHTML = '<div class="empty-state">当前没有 IBKR broker 已确认仍在挂着的实时订单。</div>';
                 }
                 return;
             }

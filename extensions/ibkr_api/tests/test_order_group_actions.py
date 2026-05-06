@@ -275,6 +275,83 @@ class OrderGroupActionsTest(unittest.TestCase):
         self.assertEqual(pb.orders["order-1"]["status"], "Canceled")
         self.assertEqual(pb.created[0][0], "ibkr_order_details")
 
+    def test_cancel_group_matches_entry_alias_and_cancels_all_split_group_legs(self):
+        pb = _FakePB(
+            [
+                {
+                    "id": "entry",
+                    "unique_id": "NFLX_short_20260423",
+                    "symbol": "NFLX",
+                    "environment": "live",
+                    "status": "Submitted",
+                    "role": "entry",
+                    "order_type": "Entry",
+                    "order_id": "201",
+                    "broker_order_id": "201",
+                    "trade_group_id": "NFLX_short_20260423",
+                    "entry_order_unique_id": "NFLX_short_20260423",
+                    "quantity": 5,
+                    "filled_qty": 0,
+                    "extra": {"environment": "live", "role": "entry", "trade_group_id": "NFLX_short_20260423"},
+                },
+                {
+                    "id": "tp",
+                    "unique_id": "NFLX_short_20260423_tp",
+                    "symbol": "NFLX",
+                    "environment": "live",
+                    "status": "Submitted",
+                    "role": "take_profit",
+                    "order_type": "TakeProfit",
+                    "order_id": "202",
+                    "broker_order_id": "202",
+                    "trade_group_id": "entry_NFLX_short_20260423",
+                    "entry_order_unique_id": "entry_NFLX_short_20260423",
+                    "parent_order_unique_id": "NFLX_short_20260423",
+                    "quantity": 5,
+                    "filled_qty": 0,
+                    "extra": {"environment": "live", "role": "take_profit", "trade_group_id": "entry_NFLX_short_20260423"},
+                },
+                {
+                    "id": "sl",
+                    "unique_id": "NFLX_short_20260423_sl",
+                    "symbol": "NFLX",
+                    "environment": "live",
+                    "status": "Submitted",
+                    "role": "stop_loss",
+                    "order_type": "StopLoss",
+                    "order_id": "203",
+                    "broker_order_id": "203",
+                    "trade_group_id": "entry_NFLX_short_20260423",
+                    "entry_order_unique_id": "entry_NFLX_short_20260423",
+                    "parent_order_unique_id": "NFLX_short_20260423",
+                    "quantity": 5,
+                    "filled_qty": 0,
+                    "extra": {"environment": "live", "role": "stop_loss", "trade_group_id": "entry_NFLX_short_20260423"},
+                },
+            ]
+        )
+        cancel_calls = []
+
+        def fake_cancel_broker_order(environment, order_id, payload):
+            cancel_calls.append((environment, order_id, payload.get("id")))
+            return {"ok": True, "order_id": order_id}
+
+        payload, status_code = build_order_cancel_group_response(
+            pb,
+            payload={"id": "NFLX_short_20260423", "environment": "live"},
+            normalize_environment=lambda value, default: to_text(value or default) or default,
+            escape_filter_string=escape_filter_string,
+            cancel_broker_order=fake_cancel_broker_order,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["cancelled_order_ids"], ["201", "202", "203"])
+        self.assertEqual(cancel_calls, [("live", "201", "NFLX_short_20260423"), ("live", "202", "NFLX_short_20260423"), ("live", "203", "NFLX_short_20260423")])
+        self.assertEqual({row["status"] for row in pb.orders.values()}, {"Canceled"})
+        self.assertTrue(all(row["relation_status"] == "closed" for row in pb.orders.values()))
+        self.assertEqual(len([row for collection, row in pb.created if collection == "ibkr_order_details"]), 3)
+
     def test_close_group_closes_entry_and_cancels_children(self):
         pb = _FakePB(
             [

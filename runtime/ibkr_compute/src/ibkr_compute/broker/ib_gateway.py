@@ -443,6 +443,8 @@ class _IBGatewayApp(EWrapper, EClient):
             "auxPrice": _safe_float(getattr(order, "auxPrice", 0), 0.0),
             "status": str(getattr(orderState, "status", "") or ""),
             "parentId": str(getattr(order, "parentId", 0) or ""),
+            "ocaGroup": str(getattr(order, "ocaGroup", "") or ""),
+            "ocaType": _safe_int(getattr(order, "ocaType", 0), 0),
             "cOID": str(getattr(order, "orderRef", "") or ""),
             "orderRef": str(getattr(order, "orderRef", "") or ""),
             "tif": str(getattr(order, "tif", "") or ""),
@@ -1557,6 +1559,8 @@ class BrokerAdapter:
         close_side = "SELL" if side == "BUY" else "BUY"
         stamp = datetime.now(ET).strftime("%Y%m%d_%H%M%S")
         group = f"{contract.symbol}_{direction}_{stamp}"
+        oca_group = group
+        order_family_type = "bracket_oco"
         entry_ref = f"entry_{group}"
         tp_ref = f"tp_{group}"
         sl_ref = f"sl_{group}"
@@ -1582,6 +1586,8 @@ class BrokerAdapter:
         tp.tif = "GTC"
         tp.parentId = int(order_ids[0])
         tp.orderRef = tp_ref
+        tp.ocaGroup = oca_group
+        tp.ocaType = 1
         tp.transmit = False
         self._clear_legacy_order_flags(tp)
 
@@ -1594,6 +1600,8 @@ class BrokerAdapter:
         sl.tif = "GTC"
         sl.parentId = int(order_ids[0])
         sl.orderRef = sl_ref
+        sl.ocaGroup = oca_group
+        sl.ocaType = 1
         sl.transmit = True
         self._clear_legacy_order_flags(sl)
 
@@ -1604,7 +1612,17 @@ class BrokerAdapter:
             self.client.place_order(contract, tp)
             self.client.place_order(contract, sl)
         except Exception as exc:
-            return {"ok": False, "error": str(exc)}
+            return {
+                "ok": False,
+                "error": str(exc),
+                "order_ids": [str(order_ids[0]), str(order_ids[1]), str(order_ids[2])],
+                "bracket_group": group,
+                "oca_group": oca_group,
+                "order_family_type": order_family_type,
+                "entry_coid": entry_ref,
+                "tp_coid": tp_ref,
+                "sl_coid": sl_ref,
+            }
 
         submission_result = self.client.await_order_submissions(
             [str(order_ids[0]), str(order_ids[1]), str(order_ids[2])],
@@ -1650,6 +1668,8 @@ class BrokerAdapter:
                     "missing_protection_roles": missing_roles,
                     "order_ids": [str(order_ids[0]), str(order_ids[1]), str(order_ids[2])],
                     "bracket_group": group,
+                    "oca_group": oca_group,
+                    "order_family_type": order_family_type,
                     "entry_coid": entry_ref,
                     "tp_coid": tp_ref,
                     "sl_coid": sl_ref,
@@ -1665,6 +1685,8 @@ class BrokerAdapter:
                 "missing_protection_roles": missing_roles,
                 "order_ids": [str(order_ids[0]), str(order_ids[1]), str(order_ids[2])],
                 "bracket_group": group,
+                "oca_group": oca_group,
+                "order_family_type": order_family_type,
                 "entry_coid": entry_ref,
                 "tp_coid": tp_ref,
                 "sl_coid": sl_ref,
@@ -1674,6 +1696,8 @@ class BrokerAdapter:
             "ok": True,
             "order_ids": [str(order_ids[0]), str(order_ids[1]), str(order_ids[2])],
             "bracket_group": group,
+            "oca_group": oca_group,
+            "order_family_type": order_family_type,
             "entry_coid": entry_ref,
             "tp_coid": tp_ref,
             "sl_coid": sl_ref,

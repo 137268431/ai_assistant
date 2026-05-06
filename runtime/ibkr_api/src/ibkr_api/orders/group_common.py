@@ -69,6 +69,38 @@ def is_closed_status(status: Any) -> bool:
     return to_text(status) in {"Filled", "Canceled", "Closed"}
 
 
+def broker_cancel_response_looks_closed(payload: dict[str, Any] | None) -> bool:
+    data = ensure_object(payload)
+    nested_payload = ensure_object(data.get("payload"))
+    error_text = to_text(
+        first_defined(
+            data.get("error"),
+            data.get("message"),
+            data.get("raw"),
+            nested_payload.get("error"),
+            nested_payload.get("message"),
+            nested_payload.get("raw"),
+        )
+    ).lower()
+    if not error_text:
+        return False
+    return any(
+        marker in error_text
+        for marker in (
+            "already canceled",
+            "already cancelled",
+            "already inactive",
+            "not active",
+            "inactive",
+            "not found",
+            "cannot be cancelled",
+            "cannot be canceled",
+            "cannot cancel",
+            "filled",
+        )
+    )
+
+
 def resolve_trade_group_id(order_row: dict[str, Any] | None) -> str:
     return normalize_order_row(order_row).get("trade_group_id", "")
 
@@ -117,11 +149,72 @@ def _query_order_rows(pb: Any, filter_value: str) -> list[dict[str, Any]]:
     return [dict(row) for row in rows or []]
 
 
-def build_lookup_filter(fields: tuple[str, ...], value: str, environment: str, escape_filter_string: Callable[[Any], str]) -> str:
-    escaped_value = escape_filter_string(value)
+def _add_lookup_alias(aliases: list[str], value: Any) -> None:
+    text = to_text(value)
+    if text and text not in aliases:
+        aliases.append(text)
+
+
+def build_group_lookup_aliases(*values: Any) -> list[str]:
+    aliases: list[str] = []
+    for value in values:
+        text = to_text(value)
+        if not text:
+            continue
+        _add_lookup_alias(aliases, text)
+        if text.startswith("entry_"):
+            _add_lookup_alias(aliases, text.removeprefix("entry_"))
+        else:
+            _add_lookup_alias(aliases, f"entry_{text}")
+    return aliases
+
+
+def build_lookup_filter_for_values(
+    fields: tuple[str, ...],
+    values: list[str] | tuple[str, ...],
+    environment: str,
+    escape_filter_string: Callable[[Any], str],
+) -> str:
     escaped_environment = escape_filter_string(environment)
-    or_terms = " || ".join(f'{field} = "{escaped_value}"' for field in fields)
-    return f"({or_terms}) && environment = \"{escaped_environment}\""
+    or_terms = []
+    for value in values:
+        escaped_value = escape_filter_string(value)
+        or_terms.extend(f'{field} = "{escaped_value}"' for field in fields)
+    return f"({' || '.join(or_terms)}) && environment = \"{escaped_environment}\""
+
+
+def build_lookup_filter(fields: tuple[str, ...], value: str, environment: str, escape_filter_string: Callable[[Any], str]) -> str:
+    return build_lookup_filter_for_values(fields, [value], environment, escape_filter_string)
+
+
+def query_order_rows_by_aliases(
+    pb: Any,
+    *,
+    fields: tuple[str, ...],
+    aliases: list[str] | tuple[str, ...],
+    environment: str,
+    escape_filter_string: Callable[[Any], str],
+) -> list[dict[str, Any]]:
+    lookup_values = [value for value in aliases if to_text(value)]
+    if not lookup_values:
+        return []
+    return _query_order_rows(
+        pb,
+        build_lookup_filter_for_values(fields, lookup_values, environment, escape_filter_string),
+    )
+
+
+def build_related_group_aliases(rows: list[dict[str, Any]] | None, *seed_values: Any) -> list[str]:
+    aliases = build_group_lookup_aliases(*seed_values)
+    for row in rows or []:
+        normalized = normalize_order_row(row)
+        aliases = build_group_lookup_aliases(
+            *aliases,
+            normalized.get("trade_group_id"),
+            normalized.get("entry_order_unique_id"),
+            normalized.get("unique_id"),
+        )
+    return aliases
 
 
 def load_order_action_context(
@@ -137,14 +230,12 @@ def load_order_action_context(
 
     matched_rows: list[dict[str, Any]] = []
     if target_id:
-        matched_rows = _query_order_rows(
+        matched_rows = query_order_rows_by_aliases(
             pb,
-            build_lookup_filter(
-                ("unique_id", "entry_order_unique_id", "trade_group_id"),
-                target_id,
-                environment,
-                escape_filter_string,
-            ),
+            fields=("unique_id", "entry_order_unique_id", "trade_group_id"),
+            aliases=build_group_lookup_aliases(target_id),
+            environment=environment,
+            escape_filter_string=escape_filter_string,
         )
     if not matched_rows and broker_lookup_id:
         matched_rows = _query_order_rows(
@@ -184,15 +275,14 @@ def load_order_action_context(
     initial_trade_group_id = resolve_trade_group_id(primary_from_matches or action_row)
 
     related_rows = []
-    if initial_trade_group_id:
-        related_rows = _query_order_rows(
+    related_aliases = build_related_group_aliases(deduped_rows, initial_trade_group_id, target_id)
+    if related_aliases:
+        related_rows = query_order_rows_by_aliases(
             pb,
-            build_lookup_filter(
-                ("trade_group_id", "entry_order_unique_id", "unique_id"),
-                initial_trade_group_id,
-                environment,
-                escape_filter_string,
-            ),
+            fields=("trade_group_id", "entry_order_unique_id", "unique_id"),
+            aliases=related_aliases,
+            environment=environment,
+            escape_filter_string=escape_filter_string,
         )
     resolved_related_rows = dedupe_order_rows(related_rows or deduped_rows)
     primary_row = pick_primary_order_row(resolved_related_rows, primary_from_matches or action_row)

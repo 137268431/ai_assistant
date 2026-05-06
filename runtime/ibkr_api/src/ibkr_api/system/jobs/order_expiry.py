@@ -5,15 +5,18 @@ from typing import Any, Callable
 
 from ibkr_api.orders.group_common import (
     append_group_order_detail,
+    broker_cancel_response_looks_closed,
+    build_related_group_aliases,
     build_group_status_patch,
     dedupe_order_rows,
     is_closed_status,
     normalize_order_row,
     pick_primary_order_row,
+    query_order_rows_by_aliases,
     resolve_cancelable_broker_order_id,
     resolve_trade_group_id,
 )
-from ibkr_api.orders.values import ensure_object, to_text
+from ibkr_api.orders.values import to_text
 from ibkr_api.signals.notifications import SendInteractive, UpdateInteractive, sync_signal_status_notification
 from ibkr_api.signals.values import get_signal_extra, merge_signal_extra
 
@@ -38,30 +41,6 @@ def _validity_minutes(config_value: ConfigValue | None, environment: str) -> int
     except Exception:
         raw = DEFAULT_VALIDITY_MINUTES
     return max(1, raw)
-
-
-def _cancel_failure_looks_closed(payload: dict[str, Any] | None) -> bool:
-    error_text = to_text(
-        (payload or {}).get("error")
-        or (payload or {}).get("message")
-        or (payload or {}).get("raw")
-    ).lower()
-    if not error_text:
-        return False
-    return any(
-        marker in error_text
-        for marker in (
-            "already canceled",
-            "already cancelled",
-            "already inactive",
-            "not active",
-            "inactive",
-            "not found",
-            "cannot be cancelled",
-            "cannot be canceled",
-            "filled",
-        )
-    )
 
 
 def _query_order_rows(pb: Any, filter_value: str) -> list[dict[str, Any]]:
@@ -202,52 +181,105 @@ def _load_expired_entry_rows(
     return _query_order_rows(pb, filter_expr)
 
 
+def _load_stale_child_rows(
+    pb: Any,
+    *,
+    environment: str,
+    escape_filter_string: EscapeFilterString,
+) -> list[dict[str, Any]]:
+    env = escape_filter_string(environment)
+    filter_expr = (
+        '(status = "Init" || status = "Submitted") && '
+        f'environment = "{env}" && '
+        '(role = "take_profit" || role = "stop_loss" || role = "tp" || role = "sl")'
+    )
+    return _query_order_rows(pb, filter_expr)
+
+
+def _has_canceled_unfilled_entry(related_rows: list[dict[str, Any]] | None) -> bool:
+    entry_rows = []
+    for row in related_rows or []:
+        snapshot = normalize_order_row(row)
+        if snapshot.get("role") == "entry":
+            entry_rows.append(snapshot)
+    if not entry_rows:
+        return False
+    for snapshot in entry_rows:
+        status = to_text(snapshot.get("status")).lower()
+        if status not in {"canceled", "cancelled", "closed", "inactive", "rejected", "expired"}:
+            return False
+        if float(snapshot.get("filled_qty") or 0.0) > 0:
+            return False
+    return True
+
+
 def _load_related_trade_group_rows(
     pb: Any,
     *,
     environment: str,
     trade_group_id: str,
+    seed_rows: list[dict[str, Any]] | None = None,
     escape_filter_string: EscapeFilterString,
 ) -> list[dict[str, Any]]:
-    escaped_group = escape_filter_string(trade_group_id)
-    escaped_environment = escape_filter_string(environment)
-    return _query_order_rows(
+    return query_order_rows_by_aliases(
         pb,
-        (
-            f'(trade_group_id = "{escaped_group}" || '
-            f'entry_order_unique_id = "{escaped_group}" || '
-            f'unique_id = "{escaped_group}") && '
-            f'environment = "{escaped_environment}"'
-        ),
+        fields=("trade_group_id", "entry_order_unique_id", "unique_id"),
+        aliases=build_related_group_aliases(seed_rows, trade_group_id),
+        environment=environment,
+        escape_filter_string=escape_filter_string,
     )
 
 
-def _cancel_group_broker_order(
-    primary_row: dict[str, Any] | None,
+def _cancel_group_broker_orders(
+    related_rows: list[dict[str, Any]] | None,
     *,
     environment: str,
     cancel_broker_order: CancelBrokerOrder,
     trade_group_id: str,
 ) -> dict[str, Any]:
-    cancel_order_id = resolve_cancelable_broker_order_id(primary_row)
-    if not cancel_order_id:
+    cancel_order_ids: list[str] = []
+    for row in related_rows or []:
+        snapshot = normalize_order_row(row)
+        if is_closed_status(snapshot.get("status")):
+            continue
+        cancel_order_id = resolve_cancelable_broker_order_id(row)
+        if cancel_order_id and cancel_order_id not in cancel_order_ids:
+            cancel_order_ids.append(cancel_order_id)
+    if not cancel_order_ids:
         return {"ok": True, "skipped": True, "reason": "no_cancelable_broker_order_id"}
-    result = dict(cancel_broker_order(environment, cancel_order_id, {"trade_group_id": trade_group_id}) or {})
-    if result.get("ok"):
-        return {"ok": True, "cancelled_order_id": cancel_order_id, "payload": result}
-    payload = ensure_object(result.get("payload"))
-    if _cancel_failure_looks_closed({**payload, "error": result.get("error"), "message": result.get("message")}):
+    cancelled_order_ids: list[str] = []
+    treated_as_closed_ids: list[str] = []
+    failed_order_ids: list[dict[str, Any]] = []
+    for cancel_order_id in cancel_order_ids:
+        result = dict(cancel_broker_order(environment, cancel_order_id, {"trade_group_id": trade_group_id}) or {})
+        if result.get("ok"):
+            cancelled_order_ids.append(cancel_order_id)
+            continue
+        if broker_cancel_response_looks_closed(result):
+            cancelled_order_ids.append(cancel_order_id)
+            treated_as_closed_ids.append(cancel_order_id)
+            continue
+        failed_order_ids.append(
+            {
+                "order_id": cancel_order_id,
+                "error": to_text(result.get("error") or result.get("message") or "cancel_failed"),
+                "payload": result,
+            }
+        )
+    if not failed_order_ids:
         return {
             "ok": True,
-            "cancelled_order_id": cancel_order_id,
-            "payload": result,
-            "treated_as_closed": True,
+            "cancelled_order_id": cancelled_order_ids[0] if cancelled_order_ids else "",
+            "cancelled_order_ids": cancelled_order_ids,
+            "treated_as_closed": bool(treated_as_closed_ids),
+            "treated_as_closed_ids": treated_as_closed_ids,
         }
     return {
         "ok": False,
-        "cancelled_order_id": cancel_order_id,
-        "error": to_text(result.get("error") or result.get("message") or payload.get("error") or payload.get("message")) or "cancel_failed",
-        "payload": result,
+        "cancelled_order_id": cancelled_order_ids[0] if cancelled_order_ids else (failed_order_ids[0]["order_id"] if failed_order_ids else ""),
+        "cancelled_order_ids": cancelled_order_ids,
+        "failed_order_ids": failed_order_ids,
+        "error": f"cancel_failed:{len(failed_order_ids)}",
     }
 
 
@@ -275,7 +307,13 @@ def build_order_expiry_response(
         cutoff_ms=cutoff_ms,
         escape_filter_string=escape_filter_string,
     )
-    if not expired_rows:
+    stale_child_rows = _load_stale_child_rows(
+        pb,
+        environment=environment,
+        escape_filter_string=escape_filter_string,
+    )
+    candidate_rows = dedupe_order_rows([*expired_rows, *stale_child_rows])
+    if not candidate_rows:
         return (
             {
                 "ok": True,
@@ -303,43 +341,62 @@ def build_order_expiry_response(
     failed_groups: list[dict[str, Any]] = []
     signal_results: list[dict[str, Any]] = []
     processed_count = 0
+    processed_group_count = 0
     signal_chat_id = _signal_chat_id(signal_chat_id_fn, environment)
 
-    for row in expired_rows:
+    for row in candidate_rows:
+        row_snapshot = normalize_order_row(row)
+        is_stale_child_repair = row_snapshot.get("role") != "entry"
         trade_group_id = resolve_trade_group_id(row) or normalize_order_row(row).get("unique_id") or to_text(row.get("id"))
         if not trade_group_id or trade_group_id in processed_groups:
             continue
-        processed_groups.add(trade_group_id)
 
         related_rows = dedupe_order_rows(
             _load_related_trade_group_rows(
                 pb,
                 environment=environment,
                 trade_group_id=trade_group_id,
+                seed_rows=[row],
                 escape_filter_string=escape_filter_string,
             )
             or [dict(row)]
         )
         primary_row = pick_primary_order_row(related_rows, row)
-        cancel_result = _cancel_group_broker_order(
-            primary_row,
+        related_rows = dedupe_order_rows([primary_row] + related_rows if primary_row else related_rows)
+        related_aliases = build_related_group_aliases(related_rows, trade_group_id)
+        if any(alias in processed_groups for alias in related_aliases):
+            continue
+        if is_stale_child_repair and not _has_canceled_unfilled_entry(related_rows):
+            continue
+        processed_groups.update(related_aliases or [trade_group_id])
+        processed_group_count += 1
+        cancel_result = _cancel_group_broker_orders(
+            related_rows,
             environment=environment,
             cancel_broker_order=cancel_broker_order,
             trade_group_id=trade_group_id,
         )
-        if cancel_result.get("cancelled_order_id"):
-            cancelled_order_ids.append(str(cancel_result.get("cancelled_order_id") or ""))
+        for cancelled_order_id in cancel_result.get("cancelled_order_ids") or []:
+            if cancelled_order_id and cancelled_order_id not in cancelled_order_ids:
+                cancelled_order_ids.append(str(cancelled_order_id))
         if not cancel_result.get("ok"):
             failed_groups.append(
                 {
                     "trade_group_id": trade_group_id,
                     "error": to_text(cancel_result.get("error")) or "cancel_failed",
                     "cancelled_order_id": to_text(cancel_result.get("cancelled_order_id")),
+                    "cancelled_order_ids": list(cancel_result.get("cancelled_order_ids") or []),
+                    "failed_order_ids": list(cancel_result.get("failed_order_ids") or []),
                 }
             )
             continue
 
-        reason = f"订单超时自动取消（有效期 {validity_minutes} 分钟）"
+        source = "order_reconcile_stale_pb" if is_stale_child_repair else "order_expiry_check"
+        reason = (
+            "PB 残留订单自动关闭：主单已取消且 IBKR 未确认保护单仍活跃"
+            if is_stale_child_repair
+            else f"订单超时自动取消（有效期 {validity_minutes} 分钟）"
+        )
         group_updated = 0
         group_updated_record_ids: list[str] = []
         for related_row in related_rows:
@@ -349,7 +406,7 @@ def build_order_expiry_response(
             patch, event_times = build_group_status_patch(
                 related_row,
                 next_status="Canceled",
-                source="order_expiry_check",
+                source=source,
                 reason=reason,
             )
             updated_row = pb.update_record("orders", to_text(related_row.get("id")), patch)
@@ -359,7 +416,7 @@ def build_order_expiry_response(
             detail_row = append_group_order_detail(
                 pb,
                 updated_row if isinstance(updated_row, dict) else {**related_row, **patch},
-                source="order_expiry_check",
+                source=source,
                 reason=reason,
                 event_times=event_times,
                 extra_patch={
@@ -367,8 +424,11 @@ def build_order_expiry_response(
                     "validity_minutes": validity_minutes,
                     "cutoff_ms": cutoff_ms,
                     "cancelled_broker_order_id": to_text(cancel_result.get("cancelled_order_id")),
+                    "cancelled_broker_order_ids": list(cancel_result.get("cancelled_order_ids") or []),
                     "trade_group_id": trade_group_id,
                     "treated_as_closed": bool(cancel_result.get("treated_as_closed")),
+                    "treated_as_closed_ids": list(cancel_result.get("treated_as_closed_ids") or []),
+                    "stale_pb_repair": bool(is_stale_child_repair),
                 },
             )
             detail_record_ids.append(to_text((detail_row or {}).get("id")))
@@ -389,7 +449,7 @@ def build_order_expiry_response(
                 validity_minutes=validity_minutes,
                 cutoff_ms=cutoff_ms,
                 updated_order_ids=group_updated_record_ids,
-                cancelled_order_id=to_text(cancel_result.get("cancelled_order_id")),
+                cancelled_order_id=",".join(str(item) for item in cancel_result.get("cancelled_order_ids") or []),
                 send_interactive=send_interactive,
                 update_interactive=update_interactive,
                 signal_chat_id=signal_chat_id,
@@ -402,7 +462,7 @@ def build_order_expiry_response(
         "ok": not failed_groups,
         "environment": environment,
         "processed_count": processed_count,
-        "expired_group_count": len(processed_groups),
+        "expired_group_count": processed_group_count,
         "cancelled_order_ids": [item for item in cancelled_order_ids if item],
         "updated_record_ids": [item for item in updated_record_ids if item],
         "detail_record_ids": [item for item in detail_record_ids if item],

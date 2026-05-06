@@ -33,7 +33,7 @@ from ibkr_api.account.snapshot import build_account_snapshot_response, enrich_ac
 
 
 class _FakePB:
-    def __init__(self):
+    def __init__(self, rows=None):
         self.rows = {
             "orders": [
                 {
@@ -67,6 +67,8 @@ class _FakePB:
                 }
             ],
         }
+        if rows is not None:
+            self.rows = rows
 
     def get_records(self, collection, filter=None, sort=None, per_page=200, page=1):
         return list(self.rows.get(collection, []))
@@ -106,6 +108,86 @@ class AccountSnapshotRoutesTest(unittest.TestCase):
         self.assertEqual(1, enriched["order_reconciliation"]["broker_matched_orders"])
         self.assertEqual(1, len(enriched["matched_order_groups"]))
         self.assertEqual("matched", enriched["live_open_orders"][0]["pb_context"]["match_state"])
+
+    def test_pb_only_active_orders_are_stale_not_live_open(self):
+        pb = _FakePB(
+            {
+                "orders": [
+                    {
+                        "id": "ord-stale-1",
+                        "environment": "live",
+                        "symbol": "MSFT",
+                        "status": "Submitted",
+                        "signal_id": "sig-stale",
+                        "trade_group_id": "grp-stale",
+                        "entry_order_unique_id": "entry-stale",
+                        "unique_id": "entry-stale",
+                        "role": "entry",
+                        "relation_status": "active",
+                        "direction": "long",
+                        "position_side": "long",
+                        "quantity": 50,
+                        "filled_qty": 0,
+                        "limit_price": 420,
+                        "updated": "2026-04-23 09:50:00",
+                    }
+                ],
+                "ibkr_signals": [],
+            }
+        )
+        payload = {
+            "ok": True,
+            "environment": "live",
+            "positions": [],
+            "orders": [],
+            "live_open_orders": [],
+            "live_order_coverage": {"coverage_state": "complete", "bulk_open_count": 0},
+            "counts": {"open_orders": 99, "cancelable_orders": 99},
+        }
+
+        enriched = enrich_account_snapshot(pb, payload, "live")
+
+        self.assertEqual([], enriched["live_open_orders"])
+        self.assertEqual([], enriched["live_order_groups"])
+        self.assertEqual(0, enriched["counts"]["open_orders"])
+        self.assertEqual(0, enriched["counts"]["cancelable_orders"])
+        self.assertEqual(1, len(enriched["stale_pb_order_groups"]))
+        self.assertEqual("pb_stale", enriched["stale_pb_order_groups"][0]["authority"])
+        self.assertEqual("pb_stale", enriched["stale_pb_order_groups"][0]["orders"][0]["authority"])
+        self.assertEqual(enriched["stale_pb_order_groups"], enriched["pb_only_order_groups"])
+        self.assertEqual(enriched["stale_pb_order_groups"], enriched["order_reconciliation"]["stale_pb_groups"])
+        self.assertEqual(1, enriched["order_reconciliation"]["stale_pb_order_groups"])
+        self.assertEqual(1, enriched["counts"]["pb_shadow_groups"])
+
+    def test_pb_authority_rows_in_payload_do_not_count_as_broker_live(self):
+        pb = _FakePB({"orders": [], "ibkr_signals": []})
+        payload = {
+            "ok": True,
+            "environment": "live",
+            "positions": [],
+            "orders": [],
+            "live_open_orders": [
+                {
+                    "order_id": "pb-local-1",
+                    "client_order_id": "entry-stale",
+                    "symbol": "MSFT",
+                    "status": "Submitted",
+                    "total_quantity": 50,
+                    "remaining_quantity": 50,
+                    "can_cancel": True,
+                    "authority": "pb_stale",
+                    "source": "pb",
+                }
+            ],
+            "counts": {},
+        }
+
+        enriched = enrich_account_snapshot(pb, payload, "live")
+
+        self.assertEqual([], enriched["live_open_orders"])
+        self.assertEqual(0, enriched["counts"]["open_orders"])
+        self.assertEqual(0, enriched["counts"]["cancelable_orders"])
+        self.assertEqual(0, enriched["order_reconciliation"]["broker_open_orders"])
 
     def test_account_snapshot_response_wraps_runtime_upstream(self):
         pb = _FakePB()

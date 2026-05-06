@@ -463,7 +463,19 @@ def build_managed_order_context(pb: Any, environment: str, live_orders: list[dic
             -to_int(item.get("latest_updated_ms"), 0),
         )
     )
-    pb_only_active_groups = [group for group in active_groups if group.get("has_active_order") and not group.get("broker_matched")]
+    stale_pb_order_groups = [
+        {
+            **group,
+            "authority": "pb_stale",
+            "match_state": "pb_stale",
+            "broker_matched": False,
+            "matched_broker_orders": 0,
+            "orders": [{**order, "authority": "pb_stale"} for order in group.get("orders", [])],
+        }
+        for group in active_groups
+        if group.get("has_active_order") and not group.get("broker_matched")
+    ]
+    pb_only_active_groups = stale_pb_order_groups
     live_order_groups = _sort_groups([_finalize_group(group) for group in live_groups_by_key.values()])
     matched_order_groups = [group for group in live_order_groups if to_int(group.get("matched_live_orders"), 0) > 0]
     broker_only_order_groups = [group for group in live_order_groups if to_int(group.get("matched_live_orders"), 0) == 0]
@@ -478,6 +490,7 @@ def build_managed_order_context(pb: Any, environment: str, live_orders: list[dic
         "order_records": normalized_order_records,
         "active_groups": active_groups,
         "pb_only_active_groups": pb_only_active_groups,
+        "stale_pb_order_groups": stale_pb_order_groups,
         "active_order_count": active_order_count,
         "broker_only_orders": broker_only_orders,
         "live_orders": normalized_live_orders,
