@@ -320,6 +320,24 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             return entries.map(([key, value]) => `${key}:${value}`).join(' · ');
         }
 
+        function formatDailyCounts(counts) {
+            const entries = Array.isArray(counts)
+                ? counts.map((item) => [item?.date, Number(item?.open_count || item?.count || 0)])
+                : Object.entries(counts || {}).map(([date, value]) => [date, Number(value || 0)]);
+            const filtered = entries
+                .filter(([date, value]) => String(date || '').trim() && Number(value || 0) > 0)
+                .sort((a, b) => String(b[0]).localeCompare(String(a[0])));
+            if (!filtered.length) return '--';
+            return filtered.slice(0, 5).map(([date, value]) => `${date}:${value}`).join(' · ');
+        }
+
+        function sumDailyOpenCounts(counts) {
+            if (Array.isArray(counts)) {
+                return counts.reduce((sum, item) => sum + Number(item?.open_count || item?.count || 0), 0);
+            }
+            return Object.values(counts || {}).reduce((sum, value) => sum + Number(value || 0), 0);
+        }
+
         function summarizeRunSymbols(run) {
             const raw = String(run?.symbols || '').trim();
             if (!raw) return '--';
@@ -971,6 +989,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 ['Portfolio Exposure', formatMoney(metrics.portfolio_max_gross_exposure || 0), '', `borrow max ${formatMoney(metrics.portfolio_max_borrowed_amount || 0)}`],
                 ['Signal Rejects', String(Object.values(metrics.portfolio_rejection_counts || {}).reduce((sum, value) => sum + Number(value || 0), 0)), '', formatBreakdown(metrics.portfolio_rejection_counts || {})],
                 ['Replay Targets', String(metrics.backtest_target_count || 0), '', `${metrics.historical_targeting?.target_date_count || 0} trade dates`],
+                ['Daily Opens', String(sumDailyOpenCounts(metrics.daily_open_counts || [])), '', formatDailyCounts(metrics.daily_open_counts || [])],
+                ['Target → Entry', formatPct(metrics.target_to_entry_rate || 0), classForValue((metrics.target_to_entry_rate || 0) - 25), metrics.target_funnel_enabled ? 'historical target funnel' : 'target funnel disabled'],
+                ['Signal → Entry', formatPct(metrics.signal_to_entry_rate || 0), classForValue((metrics.signal_to_entry_rate || 0) - 50), `${metrics.funnel_executed_signal_count ?? metrics.executed_signal_count ?? 0}/${metrics.funnel_signal_count ?? metrics.signal_count ?? 0} executed`],
                 ['Reverse Actions', String(metrics.backtest_reverse_signal_count || 0), '', formatBreakdown(metrics.backtest_reverse_action_breakdown || {})],
             ];
             if (scanDiagnostics.enabled) {
@@ -1074,6 +1095,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const extra = selectedRun.extra || {};
             const portfolioRisk = metrics.portfolio_risk || extra.portfolio_risk || {};
             const monthlyReturns = Array.isArray(metrics.monthly_returns) ? metrics.monthly_returns : [];
+            const dailyFunnel = Array.isArray(metrics.daily_funnel) ? metrics.daily_funnel : [];
             const qualityRows = Array.isArray(metrics.data_quality) ? metrics.data_quality : [];
             const skipped = Array.isArray(metrics.skipped_symbols) ? metrics.skipped_symbols : [];
             const detailHtml = `
@@ -1123,6 +1145,39 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                         </div>
                     ` : '<div class="empty-state">暂无数据质量汇总。</div>'}
                     ${skipped.length ? `<div class="foot-note">Skipped: ${escapeHtml(skipped.join(', '))}</div>` : ''}
+                </div>
+                <div class="detail-card">
+                    <div class="subhead">Daily Funnel</div>
+                    ${dailyFunnel.length ? `
+                        <div class="table-wrap">
+                            <table class="data-table" style="min-width: 760px;">
+                                <thead>
+                                    <tr>
+                                        <th>Date</th>
+                                        <th>Targets</th>
+                                        <th>Signals</th>
+                                        <th>Executed</th>
+                                        <th>Trades</th>
+                                        <th>Target → Entry</th>
+                                        <th>Signal → Entry</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${dailyFunnel.map((item) => `
+                                        <tr>
+                                            <td class="mono">${escapeHtml(item.date || '--')}</td>
+                                            <td>${escapeHtml(String(item.target_count || 0))}</td>
+                                            <td>${escapeHtml(String(item.signal_count || 0))}</td>
+                                            <td>${escapeHtml(String(item.executed_signal_count || 0))}</td>
+                                            <td>${escapeHtml(String(item.open_count || item.trade_count || 0))}</td>
+                                            <td>${escapeHtml(formatPct(item.target_to_entry_rate || 0))}</td>
+                                            <td>${escapeHtml(formatPct(item.signal_to_entry_rate || 0))}</td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    ` : '<div class="empty-state">暂无每日漏斗统计；旧 run 需要重新回测后生成。</div>'}
                 </div>
                 <div class="detail-card">
                     <div class="subhead">Monthly Returns</div>
@@ -1234,7 +1289,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                                     <td class="${classForValue(trade.pnl)}">${escapeHtml(formatMoney(trade.pnl))}<br>${escapeHtml(formatPct(trade.pnl_pct))}</td>
                                     <td>${escapeHtml(String(trade.bars_held || 0))}</td>
                                     <td>${escapeHtml(trade.exit_reason || '--')}</td>
-                                    <td><button class="btn ghost" type="button" onclick="replayTrade('${escapeHtml(trade.symbol || '')}', ${Number(trade.entry_bar_ms || 0)})">回放</button></td>
+                                    <td>
+                                        <button class="btn ghost" type="button" onclick="replayTrade('${escapeHtml(trade.symbol || '')}', ${Number(trade.entry_bar_ms || 0)})">回放</button>
+                                        <button class="btn ghost" type="button" onclick="openTradeChart('${escapeHtml(trade.symbol || '')}', ${Number(trade.entry_bar_ms || 0)}, ${Number(trade.exit_bar_ms || 0)})">主图</button>
+                                    </td>
                                 </tr>
                             `).join('')}
                         </tbody>
@@ -1799,6 +1857,28 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             await loadReplayForSelection();
         }
 
+        function openTradeChart(symbol, entryBarMs, exitBarMs) {
+            const safeSymbol = String(symbol || '').trim().toUpperCase();
+            if (!safeSymbol || !selectedRunId) return;
+            const entryMs = Number(entryBarMs || 0);
+            const exitMs = Number(exitBarMs || entryMs || 0);
+            const padMs = 90 * 60 * 1000;
+            const params = {
+                symbol: safeSymbol,
+                interval: '5m',
+                backtest_run_id: selectedRunId,
+            };
+            if (entryMs > 0) {
+                params.range = 'custom';
+                params.bar_time_ms = entryMs;
+                params.start_ms = Math.max(0, entryMs - padMs);
+                params.end_ms = Math.max(exitMs, entryMs) + padMs;
+            } else {
+                params.range = '1d';
+            }
+            window.location.href = buildPageUrl('/ibkr_chart.html', params, { environment: selectedRun?.source_environment || currentEnvironment });
+        }
+
         function applyDefaultDates() {
             const today = new Date();
             const from = new Date(today);
@@ -1823,6 +1903,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         window.setBacktestTab = setBacktestTab;
         window.loadReplayForSelection = loadReplayForSelection;
         window.replayTrade = replayTrade;
+        window.openTradeChart = openTradeChart;
         window.replayTarget = replayTarget;
         window.syncSymbolSourceUI = syncSymbolSourceUI;
         window.syncTvCompareUI = syncTvCompareUI;

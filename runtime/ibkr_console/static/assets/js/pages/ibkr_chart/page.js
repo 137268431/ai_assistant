@@ -13,6 +13,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         let currentSymbol = '';
         let currentInterval = '5m';
         let currentRangeKey = '1d';
+        let currentBacktestRunId = '';
         let currentAnchorMs = 0;
         let customRangeStartMs = 0;
         let customRangeEndMs = 0;
@@ -1017,6 +1018,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 customEndMs: endMs,
                 barTimeMs: Number(params.get('bar_time_ms') || 0) || 0,
                 indicatorId: String(params.get('indicator_id') || '').trim(),
+                backtestRunId: String(params.get('backtest_run_id') || '').trim(),
                 traceOpen: ['1', 'true', 'yes'].includes(String(params.get('trace') || '').trim().toLowerCase()),
             };
         }
@@ -1033,6 +1035,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             }
             if (chartTracePanelOpen) params.trace = 1;
             if (currentIndicatorId) params.indicator_id = currentIndicatorId;
+            if (currentBacktestRunId) params.backtest_run_id = currentBacktestRunId;
             const url = buildPageUrl('/ibkr_chart.html', params, { environment: currentEnvironment });
             window.history.replaceState({}, '', url);
         }
@@ -1177,6 +1180,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     end_ms: requestBounds.endMs,
                     include_signals: currentInterval === '5m',
                     include_trace: true,
+                    backtest_run_id: currentBacktestRunId,
                     preview_bar: requestBounds.previewBar || undefined,
                 }
             }, 2);
@@ -1321,6 +1325,9 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const traceTimeline = Array.isArray(response?.trace_timeline)
                 ? response.trace_timeline.slice().sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0))
                 : [];
+            const backtestEvents = Array.isArray(response?.backtest_events)
+                ? response.backtest_events.slice().sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0))
+                : [];
             const latestIndicator = normalizeIndicatorRecord(response?.latest_indicator || null) || (indicators.length ? indicators[indicators.length - 1] : null);
             return {
                 latestIndicator,
@@ -1328,6 +1335,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 indicators,
                 signals,
                 traceTimeline,
+                backtestEvents,
                 meta: response?.meta && typeof response.meta === 'object' ? response.meta : {}
             };
         }
@@ -1549,6 +1557,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             currentIndicatorId = query.indicatorId;
             currentSymbol = query.symbol;
             currentInterval = query.interval;
+            currentBacktestRunId = query.backtestRunId;
             currentRangeKey = normalizeRangeKey(query.range, currentInterval);
             customRangeStartMs = Number(query.customStartMs || 0) || 0;
             customRangeEndMs = Number(query.customEndMs || 0) || 0;
@@ -1847,6 +1856,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const bars = Array.isArray(payload?.bars) ? payload.bars : [];
             const indicators = Array.isArray(payload?.indicators) ? payload.indicators : [];
             const signals = Array.isArray(payload?.signals) ? payload.signals : [];
+            const backtestEvents = Array.isArray(payload?.backtestEvents) ? payload.backtestEvents : [];
             const focus = bars.length ? buildContext(payload, getEffectiveCursorIndex(payload), selectedSignalId) : null;
             const focusBar = focus?.bar || null;
             const latestBar = bars.length ? bars[bars.length - 1] : null;
@@ -1858,7 +1868,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const freshnessState = getChartFreshnessChipState(payload);
             const chips = [
                 { text: `${currentSymbol || '--'} · ${getIntervalLabel(currentInterval)} · ${getRangeShortLabel(currentRangeKey)}`, className: currentSymbol ? '' : 'placeholder', title: getRangeLabel(currentRangeKey) },
-                { text: `${bars.length} bars · ${indicators.length} ind · ${signals.length} sig`, className: chartWorkspaceState === 'loading' ? 'loading' : '', title: '当前图表窗口实际绘制的数据量。' },
+                { text: `${bars.length} bars · ${indicators.length} ind · ${signals.length} sig${backtestEvents.length ? ` · BT ${backtestEvents.length}` : ''}`, className: chartWorkspaceState === 'loading' ? 'loading' : '', title: '当前图表窗口实际绘制的数据量。' },
                 { text: `Focus ${focusBar ? String(focusBar.us_time || '--').slice(5) : '--'}`, className: focusBar ? '' : 'placeholder', title: '当前复盘焦点时间。' },
                 { text: `Latest ${latestBar ? String(latestBar.us_time || '--').slice(5) : '--'}`, className: latestBar ? '' : 'placeholder', title: '当前窗口最后一根 bar。' },
                 { text: stateBadge.text.replace('工作区 ', ''), className: stateBadge.className, title: '图表工作区状态。' },
@@ -1880,6 +1890,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const bars = Array.isArray(payload?.bars) ? payload.bars : [];
             const indicators = Array.isArray(payload?.indicators) ? payload.indicators : [];
             const signals = Array.isArray(payload?.signals) ? payload.signals : [];
+            const backtestEvents = Array.isArray(payload?.backtestEvents) ? payload.backtestEvents : [];
             const focus = bars.length ? buildContext(payload, getEffectiveCursorIndex(payload), selectedSignalId) : null;
             const focusIndicator = focus?.indicator || null;
             const focusBar = focus?.bar || null;
@@ -1891,6 +1902,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 { text: `K线 ${bars.length}`, title: '当前图表窗口实际绘制的 bars 数量。' },
                 { text: `指标 ${indicators.length}`, title: '当前窗口成功匹配到的指标快照数量。' },
                 { text: `信号 ${signals.length}`, title: '当前窗口内的交易信号数量。' },
+                ...(backtestEvents.length ? [{ text: `回测 ${backtestEvents.length}`, title: '当前窗口内叠加的回测买卖事件。' }] : []),
                 { text: `范围 ${getRangeShortLabel(currentRangeKey)}`, title: getRangeLabel(currentRangeKey) },
                 { text: `焦点 ${focusBar ? String(focusBar.us_time || '--').slice(5) : '--'}`, title: '当前 focus bar 时间。' },
                 { text: `趋势 ${focusIndicator ? getTrendText(focusIndicator.trend_dir) : '--'}`, title: '趋势方向。' },
@@ -4026,6 +4038,42 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             }).filter(Boolean);
         }
 
+        function formatBacktestEventLabel(event) {
+            const type = String(event?.event_type || '').trim().toLowerCase();
+            const direction = String(event?.direction || '').trim().toLowerCase();
+            if (type === 'entry_filled') return direction === 'short' ? 'BT Sell' : 'BT Buy';
+            if (type === 'exit_take_profit') return 'BT TP';
+            if (type === 'exit_stop_loss') return 'BT SL';
+            if (type === 'exit_reverse') return 'BT Rev';
+            if (type === 'exit_eod') return 'BT EOD';
+            if (type === 'exit_last_bar') return 'BT Exit';
+            if (type.startsWith('signal_')) return 'BT Sig';
+            return 'BT';
+        }
+
+        function buildBacktestEventScatter(events, bars, color, predicate, yResolver, labelBuilder = formatBacktestEventLabel) {
+            const indexByMs = new Map(bars.map((bar, index) => [Number(bar.bar_time_ms || 0), index]));
+            return (Array.isArray(events) ? events : []).map((event) => {
+                if (typeof predicate === 'function' && !predicate(event)) return null;
+                const barMs = Number(event?.bar_time_ms || 0);
+                const xIndex = indexByMs.get(barMs);
+                if (xIndex === undefined) return null;
+                const bar = bars[xIndex] || {};
+                const yValue = Number((typeof yResolver === 'function' ? yResolver(event, bar) : event?.price) || 0);
+                if (!Number.isFinite(yValue) || yValue <= 0) return null;
+                return {
+                    value: [xIndex, yValue],
+                    itemStyle: { color },
+                    name: labelBuilder(event),
+                    signal_id: event.signal_id || '',
+                    bar_index: xIndex,
+                    bar_time_ms: barMs,
+                    labelText: labelBuilder(event),
+                    backtest_event_type: event.event_type || '',
+                };
+            }).filter(Boolean);
+        }
+
         function buildIndicatorMarkerPoints(bars, indicatorMap, predicate, yResolver, labelBuilder) {
             return bars.map((bar, index) => {
                 const indicator = indicatorMap.get(Number(bar?.bar_time_ms || 0));
@@ -4607,6 +4655,45 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 buildTradeSignalLabel
             );
             const traceTimeline = Array.isArray(displayPayload?.traceTimeline) ? displayPayload.traceTimeline : [];
+            const backtestEvents = Array.isArray(displayPayload?.backtestEvents) ? displayPayload.backtestEvents : [];
+            const backtestLongEntryMarkers = buildBacktestEventScatter(
+                backtestEvents,
+                sortedFormalBars,
+                '#22C55E',
+                (event) => String(event?.event_type || '').toLowerCase() === 'entry_filled' && String(event?.direction || '').toLowerCase() !== 'short',
+                (event, bar) => event.price || bar.low
+            );
+            const backtestShortEntryMarkers = buildBacktestEventScatter(
+                backtestEvents,
+                sortedFormalBars,
+                '#FB7185',
+                (event) => String(event?.event_type || '').toLowerCase() === 'entry_filled' && String(event?.direction || '').toLowerCase() === 'short',
+                (event, bar) => event.price || bar.high
+            );
+            const backtestTakeProfitMarkers = buildBacktestEventScatter(
+                backtestEvents,
+                sortedFormalBars,
+                '#38BDF8',
+                (event) => String(event?.event_type || '').toLowerCase() === 'exit_take_profit',
+                (event, bar) => event.price || bar.high
+            );
+            const backtestStopLossMarkers = buildBacktestEventScatter(
+                backtestEvents,
+                sortedFormalBars,
+                '#F97316',
+                (event) => String(event?.event_type || '').toLowerCase() === 'exit_stop_loss',
+                (event, bar) => event.price || bar.low || bar.high
+            );
+            const backtestOtherExitMarkers = buildBacktestEventScatter(
+                backtestEvents,
+                sortedFormalBars,
+                '#A78BFA',
+                (event) => {
+                    const type = String(event?.event_type || '').toLowerCase();
+                    return type.startsWith('exit_') && type !== 'exit_take_profit' && type !== 'exit_stop_loss';
+                },
+                (event, bar) => event.price || bar.close
+            );
             const previewCandidateSignals = buildSignalScatter(
                 traceTimeline
                     .filter((item) => Boolean(item?.is_preview) && ['candidate', 'blocked'].includes(String(item?.signal_state?.stage || '').trim().toLowerCase()))
@@ -4751,7 +4838,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const barsMetaText = `${sortedFormalBars.length} bars${previewBar ? ' + live preview' : ''}`;
             document.getElementById('chartMeta').textContent = compareSummary
                 ? `${barsMetaText} · ${indicators.length} ind · ${signals.length} signals · compare bar ${compareSummary.bar_mismatch_count || 0} / ind ${compareSummary.indicator_mismatch_count || 0} / sig ${compareSummary.signal_mismatch_count || 0}`
-                : `${barsMetaText} · ${indicators.length} ind · ${signals.length} signals · ${latest?.us_time || sortedFormalBars[sortedFormalBars.length - 1]?.us_time || '--'}`;
+                : `${barsMetaText} · ${indicators.length} ind · ${signals.length} signals${backtestEvents.length ? ` · ${backtestEvents.length} backtest events` : ''} · ${latest?.us_time || sortedFormalBars[sortedFormalBars.length - 1]?.us_time || '--'}`;
             note.textContent = !indicators.length
                 ? '当前窗口的 bars 尚未形成可展示的指标快照；EMA / VWAP / Osc 将暂时不可见。'
                 : currentInterval === '5m'
@@ -4767,6 +4854,9 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 note.textContent += ' 当前主图仍展示 stored bars 链路；右侧 Compare 与上方 Cursor 显示 IBKR API 临时对比结果。';
             } else if (compareError) {
                 note.textContent += ' 最近一次 IBKR 对比失败，可查看右侧错误卡。';
+            }
+            if (currentBacktestRunId && backtestEvents.length) {
+                note.textContent += ` 已叠加回测 ${currentBacktestRunId} 的买入 / 卖出 / TP / SL 标记。`;
             }
             const freshnessStatus = String(payload?.meta?.freshness?.status || '').trim().toLowerCase();
             if (freshnessStatus && freshnessStatus !== 'ready') {
@@ -4872,6 +4962,11 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     buildMarkerScatterSeries('SHORT Signal', shortSignals, withMainLabelLanes({ color: '#FC8181', symbol: 'circle', symbolSize: 12, showLabel: showTradeLabels, labelPosition: 'top', shadowBlur: 14, shadowColor: 'rgba(252,129,129,0.28)' })),
                     buildMarkerScatterSeries('Blocked Trace', blockedTraceMarkers, withMainLabelLanes({ color: '#F97316', symbol: 'diamond', symbolSize: 13, showLabel: showTradeLabels, labelPosition: 'bottom', shadowBlur: 12, shadowColor: 'rgba(249,115,22,0.28)' })),
                     buildMarkerScatterSeries('Preview Signal', previewCandidateSignals, withMainLabelLanes({ color: '#FBBF24', symbol: 'diamond', symbolSize: 13, showLabel: showTradeLabels, labelPosition: 'top', shadowBlur: 12, shadowColor: 'rgba(251,191,36,0.26)' })),
+                    buildMarkerScatterSeries('Backtest Buy', backtestLongEntryMarkers, withMainLabelLanes({ color: '#22C55E', symbol: 'pin', symbolSize: 14, showLabel: showTradeLabels, labelPosition: 'bottom', shadowBlur: 14, shadowColor: 'rgba(34,197,94,0.28)' })),
+                    buildMarkerScatterSeries('Backtest Sell', backtestShortEntryMarkers, withMainLabelLanes({ color: '#FB7185', symbol: 'pin', symbolRotate: 180, symbolSize: 14, showLabel: showTradeLabels, labelPosition: 'top', shadowBlur: 14, shadowColor: 'rgba(251,113,133,0.28)' })),
+                    buildMarkerScatterSeries('Backtest TP', backtestTakeProfitMarkers, withMainLabelLanes({ color: '#38BDF8', symbol: 'diamond', symbolSize: 13, showLabel: showTradeLabels, labelPosition: 'top', shadowBlur: 14, shadowColor: 'rgba(56,189,248,0.28)' })),
+                    buildMarkerScatterSeries('Backtest SL', backtestStopLossMarkers, withMainLabelLanes({ color: '#F97316', symbol: 'diamond', symbolSize: 13, showLabel: showTradeLabels, labelPosition: 'bottom', shadowBlur: 14, shadowColor: 'rgba(249,115,22,0.28)' })),
+                    buildMarkerScatterSeries('Backtest Exit', backtestOtherExitMarkers, withMainLabelLanes({ color: '#A78BFA', symbol: 'rect', symbolSize: 12, showLabel: showTradeLabels, labelPosition: 'top', shadowBlur: 14, shadowColor: 'rgba(167,139,250,0.28)' })),
                 ] : []),
             ];
             const series = [
@@ -5335,6 +5430,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                         end_ms: requestBounds.endMs,
                         include_signals: currentInterval === '5m',
                         include_trace: true,
+                        backtest_run_id: currentBacktestRunId,
                     }
                 }, 2);
                 const timelinePayload = buildTimelinePayloadFromResponse(timelineResp);

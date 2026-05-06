@@ -162,6 +162,195 @@ class ChartTraceTimelineTest(unittest.TestCase):
         self.assertTrue(result["bars"][-1]["is_preview"])
         self.assertTrue(result["trace_timeline"][-1]["is_preview"])
 
+    def test_chart_timeline_payload_adds_backtest_events_only_when_requested(self):
+        fake_pb = SimpleNamespace(
+            get_all_records=mock.Mock(
+                side_effect=[
+                    [
+                        {
+                            "id": "trade-1",
+                            "run_id": "run123",
+                            "symbol": "SPY",
+                            "direction": "long",
+                            "signal": "mr_L",
+                            "signal_id": "sig-1",
+                            "entry_bar_ms": 1776691800000,
+                            "exit_bar_ms": 1776692100000,
+                            "entry_us_time": "2026-04-20 09:30:00",
+                            "exit_us_time": "2026-04-20 09:35:00",
+                            "entry_price": 100.0,
+                            "exit_price": 110.0,
+                            "shares": 10,
+                            "pnl": 100.0,
+                            "pnl_pct": 10.0,
+                            "exit_reason": "take_profit",
+                            "trade_index": 1,
+                            "extra": {},
+                        }
+                    ],
+                    [
+                        {
+                            "id": "trade-1",
+                            "run_id": "run123",
+                            "symbol": "SPY",
+                            "direction": "long",
+                            "signal": "mr_L",
+                            "signal_id": "sig-1",
+                            "entry_bar_ms": 1776691800000,
+                            "exit_bar_ms": 1776692100000,
+                            "entry_us_time": "2026-04-20 09:30:00",
+                            "exit_us_time": "2026-04-20 09:35:00",
+                            "entry_price": 100.0,
+                            "exit_price": 110.0,
+                            "shares": 10,
+                            "pnl": 100.0,
+                            "pnl_pct": 10.0,
+                            "exit_reason": "take_profit",
+                            "trade_index": 1,
+                            "extra": {},
+                        }
+                    ],
+                    [
+                        {
+                            "id": "signal-1",
+                            "run_id": "run123",
+                            "status": "executed",
+                            "symbol": "SPY",
+                            "direction": "long",
+                            "signal": "mr_L",
+                            "signal_id": "sig-1",
+                            "entry": 100.0,
+                            "stop_loss": 95.0,
+                            "take_profit": 110.0,
+                            "shares": 10,
+                            "bar_time_ms": 1776691800000,
+                            "us_time": "2026-04-20 09:30:00",
+                            "extra": {"signal_status_reason": "entry_limit_filled"},
+                        }
+                    ],
+                ]
+            )
+        )
+        fake_app = SimpleNamespace(
+            pb=fake_pb,
+            get_signal_generator_params=lambda environment: {},
+            get_daily_change_fields=lambda environment, symbol, close, bar_ms: {},
+        )
+        source = {
+            "source_rows": [
+                {
+                    "bar_time_ms": 1776691800000,
+                    "us_time": "2026-04-20 09:30:00",
+                    "cn_time": "2026-04-20 21:30:00",
+                    "open": 100,
+                    "high": 101,
+                    "low": 99.5,
+                    "close": 100.5,
+                    "volume": 1000,
+                    "exchange": "SMART",
+                },
+                {
+                    "bar_time_ms": 1776692100000,
+                    "us_time": "2026-04-20 09:35:00",
+                    "cn_time": "2026-04-20 21:35:00",
+                    "open": 101,
+                    "high": 111,
+                    "low": 100.5,
+                    "close": 110.0,
+                    "volume": 1200,
+                    "exchange": "SMART",
+                },
+            ],
+            "visible_rows": [{"bar_time_ms": 1776691800000}, {"bar_time_ms": 1776692100000}],
+            "meta": {},
+        }
+
+        with mock.patch.object(chart_payload, "_api_app", return_value=fake_app):
+            with mock.patch.object(chart_rows, "_api_app", return_value=fake_app):
+                default_result = chart_payload.build_chart_timeline_payload_from_source(
+                    "live",
+                    "SPY",
+                    "5m",
+                    source,
+                    start_ms=1776691800000,
+                    end_ms=1776692100000,
+                )
+                result = chart_payload.build_chart_timeline_payload_from_source(
+                    "live",
+                    "SPY",
+                    "5m",
+                    source,
+                    start_ms=1776691800000,
+                    end_ms=1776692100000,
+                    backtest_run_id="run123",
+                )
+
+        self.assertNotIn("backtest_events", default_result)
+        self.assertEqual(
+            [item["event_type"] for item in result["backtest_events"]],
+            ["entry_filled", "signal_executed", "exit_take_profit"],
+        )
+        self.assertEqual(result["meta"]["backtest_run_id"], "run123")
+        self.assertEqual(fake_pb.get_all_records.call_count, 3)
+
+    def test_backtest_events_are_clipped_to_visible_window(self):
+        trade_row = {
+            "id": "trade-1",
+            "run_id": "run123",
+            "symbol": "SPY",
+            "direction": "long",
+            "signal": "mr_L",
+            "signal_id": "sig-1",
+            "entry_bar_ms": 1776691800000,
+            "exit_bar_ms": 1776692100000,
+            "entry_us_time": "2026-04-20 09:30:00",
+            "exit_us_time": "2026-04-20 09:35:00",
+            "entry_price": 100.0,
+            "exit_price": 110.0,
+            "shares": 10,
+            "pnl": 100.0,
+            "pnl_pct": 10.0,
+            "exit_reason": "take_profit",
+            "trade_index": 1,
+            "extra": {},
+        }
+        fake_pb = SimpleNamespace(
+            get_all_records=mock.Mock(
+                side_effect=[
+                    [trade_row],
+                    [],
+                    [
+                        {
+                            "id": "signal-1",
+                            "run_id": "run123",
+                            "status": "executed",
+                            "symbol": "SPY",
+                            "direction": "long",
+                            "signal": "mr_L",
+                            "signal_id": "sig-1",
+                            "entry": 100.0,
+                            "bar_time_ms": 1776691800000,
+                            "us_time": "2026-04-20 09:30:00",
+                            "extra": {},
+                        }
+                    ],
+                ]
+            )
+        )
+        fake_app = SimpleNamespace(pb=fake_pb)
+
+        with mock.patch.object(chart_payload, "_api_app", return_value=fake_app):
+            events = chart_payload.load_backtest_chart_events(
+                "run123",
+                "SPY",
+                "5m",
+                start_ms=1776691800000,
+                end_ms=1776691800000,
+            )
+
+        self.assertEqual([item["event_type"] for item in events], ["entry_filled", "signal_executed"])
+        self.assertTrue(all(item["bar_time_ms"] == 1776691800000 for item in events))
+
     def test_signal_generator_trace_label_uses_decision_language(self):
         signal_gen = SignalGenerator("SPY", "5m", params={})
         trace = signal_gen._build_trace_payload(

@@ -1580,6 +1580,14 @@ class BacktestService:
             backtest_target_rows,
             all_signal_rows,
         )
+        metrics.update(
+            self._build_backtest_funnel_metrics(
+                request,
+                backtest_target_rows,
+                all_signal_rows,
+                all_trades,
+            )
+        )
         metrics["signal_fill_rate"] = (
             round((metrics["executed_signal_count"] / metrics["signal_count"]) * 100.0, 4)
             if metrics["signal_count"] else 0.0
@@ -5430,6 +5438,136 @@ class BacktestService:
             "skipped_not_selected_samples": skipped_not_selected_samples,
             "symbol_summary": symbol_summary[:20],
             "daily_summary": daily_summary,
+        }
+
+    def _build_backtest_funnel_metrics(
+        self,
+        request: dict,
+        target_rows: list[dict],
+        signal_rows: list[dict],
+        trades: list[dict],
+    ) -> dict:
+        def pct(numerator: int, denominator: int) -> float:
+            return round((float(numerator) / float(denominator)) * 100.0, 4) if denominator else 0.0
+
+        def row_date(row: dict, *field_names: str) -> str:
+            for field_name in field_names:
+                value = row.get(field_name)
+                if value not in (None, ""):
+                    text = str(value)
+                    if len(text) >= 10:
+                        return text[:10]
+            bar_ms = int(row.get("bar_time_ms", row.get("entry_bar_ms", 0)) or 0)
+            return ms_to_et(bar_ms).strftime("%Y-%m-%d") if bar_ms > 0 else ""
+
+        target_pairs_by_date: dict[str, set[str]] = {}
+        for row in target_rows or []:
+            symbol = str(row.get("symbol", "") or "").strip().upper()
+            date_text = row_date(row, "date", "us_time")
+            if not symbol or not date_text:
+                continue
+            target_pairs_by_date.setdefault(date_text, set()).add(symbol)
+
+        target_enabled = bool(target_pairs_by_date) and str(request.get("symbol_source") or "") == "daily_scan_replay"
+        signal_counts_by_date: dict[str, int] = {}
+        executed_signal_counts_by_date: dict[str, int] = {}
+        signal_pairs_by_date: dict[str, set[str]] = {}
+        for row in signal_rows or []:
+            symbol = str(row.get("symbol", "") or "").strip().upper()
+            date_text = row_date(row, "date", "us_time")
+            if not symbol or not date_text:
+                continue
+            if target_enabled and symbol not in target_pairs_by_date.get(date_text, set()):
+                continue
+            signal_pairs_by_date.setdefault(date_text, set()).add(symbol)
+            signal_counts_by_date[date_text] = int(signal_counts_by_date.get(date_text, 0) or 0) + 1
+            if str(row.get("status", "") or "").strip().lower() == "executed":
+                executed_signal_counts_by_date[date_text] = int(executed_signal_counts_by_date.get(date_text, 0) or 0) + 1
+
+        open_counts_by_date: dict[str, int] = {}
+        opened_pairs_by_date: dict[str, set[str]] = {}
+        for row in trades or []:
+            date_text = row_date(row, "entry_us_time")
+            if not date_text:
+                continue
+            open_counts_by_date[date_text] = int(open_counts_by_date.get(date_text, 0) or 0) + 1
+            symbol = str(row.get("symbol", "") or "").strip().upper()
+            if symbol:
+                opened_pairs_by_date.setdefault(date_text, set()).add(symbol)
+
+        all_dates = sorted(
+            set(target_pairs_by_date.keys())
+            | set(signal_counts_by_date.keys())
+            | set(executed_signal_counts_by_date.keys())
+            | set(open_counts_by_date.keys())
+        )
+        daily_funnel = []
+        for date_text in all_dates:
+            target_count = len(target_pairs_by_date.get(date_text, set())) if target_enabled else 0
+            signal_count = int(signal_counts_by_date.get(date_text, 0) or 0)
+            target_signal_count = (
+                len(target_pairs_by_date.get(date_text, set()) & signal_pairs_by_date.get(date_text, set()))
+                if target_enabled
+                else 0
+            )
+            executed_signal_count = int(executed_signal_counts_by_date.get(date_text, 0) or 0)
+            open_count = int(open_counts_by_date.get(date_text, 0) or 0)
+            target_entry_count = (
+                len(target_pairs_by_date.get(date_text, set()) & opened_pairs_by_date.get(date_text, set()))
+                if target_enabled
+                else 0
+            )
+            daily_funnel.append(
+                {
+                    "date": date_text,
+                    "target_enabled": target_enabled,
+                    "target_count": target_count,
+                    "signal_count": signal_count,
+                    "target_signal_count": target_signal_count,
+                    "executed_signal_count": executed_signal_count,
+                    "target_entry_count": target_entry_count,
+                    "open_count": open_count,
+                    "target_to_signal_rate": pct(target_signal_count, target_count) if target_enabled else 0.0,
+                    "target_to_entry_rate": pct(target_entry_count, target_count) if target_enabled else 0.0,
+                    "signal_to_entry_rate": pct(executed_signal_count, signal_count),
+                }
+            )
+
+        target_count = sum(len(symbols) for symbols in target_pairs_by_date.values()) if target_enabled else 0
+        target_signal_count = (
+            sum(
+                len(target_pairs_by_date.get(date_text, set()) & signal_pairs_by_date.get(date_text, set()))
+                for date_text in target_pairs_by_date.keys()
+            )
+            if target_enabled
+            else 0
+        )
+        target_entry_count = (
+            sum(
+                len(target_pairs_by_date.get(date_text, set()) & opened_pairs_by_date.get(date_text, set()))
+                for date_text in target_pairs_by_date.keys()
+            )
+            if target_enabled
+            else 0
+        )
+        signal_count = sum(int(value or 0) for value in signal_counts_by_date.values())
+        executed_signal_count = sum(int(value or 0) for value in executed_signal_counts_by_date.values())
+        open_count = sum(int(value or 0) for value in open_counts_by_date.values())
+        return {
+            "daily_open_counts": [
+                {"date": date_text, "open_count": int(open_counts_by_date.get(date_text, 0) or 0)}
+                for date_text in sorted(open_counts_by_date.keys())
+            ],
+            "daily_funnel": daily_funnel,
+            "target_funnel_enabled": target_enabled,
+            "funnel_signal_count": signal_count,
+            "funnel_executed_signal_count": executed_signal_count,
+            "target_signal_count": target_signal_count,
+            "target_to_signal_rate": pct(target_signal_count, target_count) if target_enabled else 0.0,
+            "target_entry_count": target_entry_count,
+            "open_count": open_count,
+            "target_to_entry_rate": pct(target_entry_count, target_count) if target_enabled else 0.0,
+            "signal_to_entry_rate": pct(executed_signal_count, signal_count),
         }
 
     def _build_backtest_reverse_samples(self, rows: list[dict], limit: int = 8) -> list[dict]:

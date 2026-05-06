@@ -18,6 +18,7 @@ def load_chart_request_payload() -> dict:
         "include_signals": coerce_request_bool(payload.get("include_signals"), True),
         "include_trace": coerce_request_bool(payload.get("include_trace"), False),
         "preview_bar": preview_bar if isinstance(preview_bar, dict) else None,
+        "backtest_run_id": str(payload.get("backtest_run_id") or "").strip(),
     }
 
 

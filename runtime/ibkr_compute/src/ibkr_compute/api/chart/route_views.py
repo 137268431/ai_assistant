@@ -40,6 +40,7 @@ def build_chart_timeline_response():
         include_signals=params["include_signals"],
         include_trace=params["include_trace"],
         preview_bar=params["preview_bar"],
+        backtest_run_id=params["backtest_run_id"],
     )
     return jsonify(result), 200
 

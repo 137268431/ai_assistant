@@ -179,6 +179,60 @@ class BacktestDailyScanReplayTests(unittest.TestCase):
         self.assertEqual(diagnostics["top_not_selected_symbols"][0], {"key": "AAPL", "count": 1})
         self.assertEqual(diagnostics["skipped_not_selected_samples"][0]["symbol"], "AMD")
 
+    def test_backtest_funnel_metrics_counts_daily_opens_and_target_entry_rate(self):
+        metrics = self.service._build_backtest_funnel_metrics(
+            {"symbol_source": "daily_scan_replay"},
+            [
+                {"symbol": "NVDA", "date": "2026-04-22"},
+                {"symbol": "TSLA", "date": "2026-04-22"},
+                {"symbol": "AAPL", "date": "2026-04-23"},
+            ],
+            [
+                {"symbol": "NVDA", "date": "2026-04-22", "status": "executed"},
+                {"symbol": "TSLA", "date": "2026-04-22", "status": "skipped"},
+                {"symbol": "AMD", "date": "2026-04-22", "status": "skipped", "extra": {"signal_status_reason": "symbol_not_selected_for_day"}},
+                {"symbol": "AAPL", "date": "2026-04-23", "status": "generated"},
+            ],
+            [
+                {"symbol": "NVDA", "entry_us_time": "2026-04-22 10:05:00"},
+                {"symbol": "AAPL", "entry_us_time": "2026-04-23 10:10:00"},
+            ],
+        )
+
+        self.assertTrue(metrics["target_funnel_enabled"])
+        self.assertEqual(
+            metrics["daily_open_counts"],
+            [
+                {"date": "2026-04-22", "open_count": 1},
+                {"date": "2026-04-23", "open_count": 1},
+            ],
+        )
+        self.assertEqual(metrics["target_to_entry_rate"], 66.6667)
+        self.assertEqual(metrics["target_to_signal_rate"], 100.0)
+        self.assertEqual(metrics["signal_to_entry_rate"], 33.3333)
+        self.assertEqual(metrics["funnel_signal_count"], 3)
+        self.assertEqual(metrics["funnel_executed_signal_count"], 1)
+        self.assertEqual(metrics["target_entry_count"], 2)
+        self.assertEqual(metrics["target_signal_count"], 3)
+        self.assertEqual(metrics["daily_funnel"][0]["target_count"], 2)
+        self.assertEqual(metrics["daily_funnel"][0]["signal_count"], 2)
+        self.assertEqual(metrics["daily_funnel"][0]["target_signal_count"], 2)
+        self.assertEqual(metrics["daily_funnel"][0]["open_count"], 1)
+        self.assertEqual(metrics["daily_funnel"][0]["target_to_entry_rate"], 50.0)
+
+    def test_backtest_funnel_metrics_disables_target_rates_for_manual_symbols(self):
+        metrics = self.service._build_backtest_funnel_metrics(
+            {"symbol_source": "manual"},
+            [{"symbol": "NVDA", "date": "2026-04-22"}],
+            [{"symbol": "NVDA", "date": "2026-04-22", "status": "executed"}],
+            [{"symbol": "NVDA", "entry_us_time": "2026-04-22 10:05:00"}],
+        )
+
+        self.assertFalse(metrics["target_funnel_enabled"])
+        self.assertEqual(metrics["target_to_entry_rate"], 0.0)
+        self.assertEqual(metrics["daily_funnel"][0]["target_count"], 0)
+        self.assertEqual(metrics["daily_funnel"][0]["signal_to_entry_rate"], 100.0)
+
     def test_historical_scan_metric_row_uses_cutoff_limited_premarket_data(self):
         trade_date = "2026-04-24"
         day_start = datetime.strptime(trade_date, "%Y-%m-%d").replace(tzinfo=ET)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from ibkr_compute.core.timeline_builder import build_runtime_timeline
 from ibkr_compute.market.bar_freshness import BarFreshnessPlanner
 from ibkr_compute.market.timeframe_utils import interval_to_chart_tf, normalize_interval
@@ -14,6 +16,197 @@ from ibkr_compute.api.chart.timeline.source import (
     build_chart_source_window_from_rows,
     load_chart_timeline_source_bars,
 )
+
+BACKTEST_TRADE_COLLECTION = "ibkr_backtest_trades"
+BACKTEST_SIGNAL_COLLECTION = "ibkr_backtest_signals"
+
+
+def _parse_extra(value) -> dict:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _escape_filter_string(value: str) -> str:
+    return str(value or "").replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _load_backtest_records(collection: str, run_id: str, symbol: str, start_ms: int, end_ms: int, time_field: str) -> list[dict]:
+    api_app = _api_app()
+    pb = getattr(api_app, "pb", None)
+    if pb is None or not hasattr(pb, "get_all_records"):
+        return []
+    filter_parts = [
+        f'run_id = "{_escape_filter_string(run_id)}"',
+        f'symbol = "{_escape_filter_string(symbol)}"',
+    ]
+    if start_ms > 0:
+        filter_parts.append(f"{time_field} >= {int(start_ms)}")
+    if end_ms > 0:
+        filter_parts.append(f"{time_field} <= {int(end_ms)}")
+    return list(
+        pb.get_all_records(
+            collection,
+            filter=" && ".join(filter_parts),
+            sort=time_field,
+            max_pages=20,
+        )
+        or []
+    )
+
+
+def _backtest_exit_event_type(exit_reason: str) -> str:
+    reason = str(exit_reason or "").strip().lower()
+    if reason == "take_profit":
+        return "exit_take_profit"
+    if reason == "stop_loss":
+        return "exit_stop_loss"
+    if reason.startswith("reverse_"):
+        return "exit_reverse"
+    if reason in {"eod", "force_flat_eod"}:
+        return "exit_eod"
+    if reason == "last_bar":
+        return "exit_last_bar"
+    return f"exit_{reason}" if reason else "exit"
+
+
+def _build_backtest_trade_events(run_id: str, row: dict) -> list[dict]:
+    extra = _parse_extra(row.get("extra"))
+    base = {
+        "run_id": run_id,
+        "symbol": str(row.get("symbol", "") or "").strip().upper(),
+        "direction": str(row.get("direction", "") or "").strip().lower(),
+        "signal": str(row.get("signal", "") or ""),
+        "signal_id": str(row.get("signal_id", "") or ""),
+        "trade_index": int(row.get("trade_index", 0) or 0),
+        "shares": int(row.get("shares", 0) or 0),
+        "pnl": round(float(row.get("pnl", 0) or 0), 4),
+        "pnl_pct": round(float(row.get("pnl_pct", 0) or 0), 4),
+        "exit_reason": str(row.get("exit_reason", "") or ""),
+        "source": "ibkr_backtest_trades",
+    }
+    events = []
+    entry_ms = int(row.get("entry_bar_ms", 0) or 0)
+    if entry_ms > 0:
+        events.append(
+            {
+                **base,
+                "event_type": "entry_filled",
+                "bar_time_ms": entry_ms,
+                "us_time": str(row.get("entry_us_time", "") or ""),
+                "price": round(float(row.get("entry_price", 0) or 0), 4),
+                "extra": {
+                    "entry_price": round(float(row.get("entry_price", 0) or 0), 4),
+                    "exit_price": round(float(row.get("exit_price", 0) or 0), 4),
+                    **extra,
+                },
+            }
+        )
+    exit_ms = int(row.get("exit_bar_ms", 0) or 0)
+    if exit_ms > 0:
+        events.append(
+            {
+                **base,
+                "event_type": _backtest_exit_event_type(str(row.get("exit_reason", "") or "")),
+                "bar_time_ms": exit_ms,
+                "us_time": str(row.get("exit_us_time", "") or ""),
+                "price": round(float(row.get("exit_price", 0) or 0), 4),
+                "extra": {
+                    "entry_price": round(float(row.get("entry_price", 0) or 0), 4),
+                    "exit_price": round(float(row.get("exit_price", 0) or 0), 4),
+                    **extra,
+                },
+            }
+        )
+    return events
+
+
+def _build_backtest_signal_event(run_id: str, row: dict) -> dict:
+    extra = _parse_extra(row.get("extra"))
+    status = str(row.get("status", "") or "generated").strip().lower() or "generated"
+    return {
+        "run_id": run_id,
+        "event_type": f"signal_{status}",
+        "bar_time_ms": int(row.get("bar_time_ms", 0) or 0),
+        "us_time": str(row.get("us_time", "") or ""),
+        "symbol": str(row.get("symbol", "") or "").strip().upper(),
+        "direction": str(row.get("direction", "") or "").strip().lower(),
+        "signal": str(row.get("signal", "") or ""),
+        "signal_id": str(row.get("signal_id", "") or ""),
+        "status": status,
+        "reason": str(extra.get("signal_status_reason") or row.get("reason", "") or ""),
+        "price": round(float(row.get("entry", 0) or 0), 4),
+        "shares": int(row.get("shares", 0) or 0),
+        "source": "ibkr_backtest_signals",
+        "extra": {
+            "entry": round(float(row.get("entry", 0) or 0), 4),
+            "stop_loss": round(float(row.get("stop_loss", 0) or 0), 4),
+            "take_profit": round(float(row.get("take_profit", 0) or 0), 4),
+            **extra,
+        },
+    }
+
+
+def load_backtest_chart_events(run_id: str, symbol: str, interval: str, start_ms: int = 0, end_ms: int = 0) -> list[dict]:
+    safe_run_id = str(run_id or "").strip()
+    normalized_symbol = str(symbol or "").strip().upper()
+    if not safe_run_id or not normalized_symbol or normalize_interval(interval) != "5m":
+        return []
+    safe_start_ms = int(start_ms or 0)
+    safe_end_ms = int(end_ms or 0)
+    trade_rows = _load_backtest_records(
+        BACKTEST_TRADE_COLLECTION,
+        safe_run_id,
+        normalized_symbol,
+        safe_start_ms,
+        safe_end_ms,
+        "entry_bar_ms",
+    )
+    exit_trade_rows = _load_backtest_records(
+        BACKTEST_TRADE_COLLECTION,
+        safe_run_id,
+        normalized_symbol,
+        safe_start_ms,
+        safe_end_ms,
+        "exit_bar_ms",
+    )
+    signal_rows = _load_backtest_records(
+        BACKTEST_SIGNAL_COLLECTION,
+        safe_run_id,
+        normalized_symbol,
+        safe_start_ms,
+        safe_end_ms,
+        "bar_time_ms",
+    )
+    trades_by_key = {}
+    for row in [*trade_rows, *exit_trade_rows]:
+        key = str(row.get("id") or row.get("trade_index") or f"{row.get('entry_bar_ms')}-{row.get('exit_bar_ms')}")
+        trades_by_key[key] = row
+    events = []
+    for row in trades_by_key.values():
+        events.extend(_build_backtest_trade_events(safe_run_id, row))
+    events.extend(_build_backtest_signal_event(safe_run_id, row) for row in signal_rows)
+    clipped_events = [
+        event
+        for event in events
+        if int(event.get("bar_time_ms", 0) or 0) > 0
+        and (safe_start_ms <= 0 or int(event.get("bar_time_ms", 0) or 0) >= safe_start_ms)
+        and (safe_end_ms <= 0 or int(event.get("bar_time_ms", 0) or 0) <= safe_end_ms)
+    ]
+    return sorted(
+        clipped_events,
+        key=lambda item: (
+            int(item.get("bar_time_ms", 0) or 0),
+            str(item.get("symbol", "") or ""),
+            str(item.get("event_type", "") or ""),
+        ),
+    )
 
 
 def _normalize_preview_bar(preview_bar: dict | None, symbol: str, interval: str) -> dict | None:
@@ -52,6 +245,7 @@ def build_chart_timeline_payload_from_source(
     end_ms: int = 0,
     include_signals: bool = True,
     include_trace: bool = False,
+    backtest_run_id: str = "",
 ) -> dict:
     api_app = _api_app()
     runtime_environment = str(environment or "live").strip().lower() or "live"
@@ -63,7 +257,7 @@ def build_chart_timeline_payload_from_source(
     source_meta = source.get("meta") or {}
 
     if not visible_rows:
-        return {
+        payload = {
             "ok": True,
             "bars": [],
             "indicator_timeline": [],
@@ -86,6 +280,11 @@ def build_chart_timeline_payload_from_source(
                 **source_meta,
             },
         }
+        if str(backtest_run_id or "").strip():
+            payload["backtest_events"] = []
+            payload["meta"]["backtest_run_id"] = str(backtest_run_id or "").strip()
+            payload["meta"]["backtest_event_count"] = 0
+        return payload
 
     timeline = build_runtime_timeline(
         normalized_symbol,
@@ -139,7 +338,14 @@ def build_chart_timeline_payload_from_source(
             for row in timeline_rows
         ]
 
-    return {
+    backtest_events = load_backtest_chart_events(
+        backtest_run_id,
+        normalized_symbol,
+        normalized_interval,
+        start_ms=start_ms,
+        end_ms=end_ms,
+    ) if str(backtest_run_id or "").strip() else []
+    payload = {
         "ok": True,
         "bars": bars,
         "indicator_timeline": indicators,
@@ -161,6 +367,11 @@ def build_chart_timeline_payload_from_source(
             **source_meta,
         },
     }
+    if str(backtest_run_id or "").strip():
+        payload["backtest_events"] = backtest_events
+        payload["meta"]["backtest_run_id"] = str(backtest_run_id or "").strip()
+        payload["meta"]["backtest_event_count"] = len(backtest_events)
+    return payload
 
 
 def build_chart_timeline_payload(
@@ -172,6 +383,7 @@ def build_chart_timeline_payload(
     include_signals: bool = True,
     include_trace: bool = False,
     preview_bar: dict | None = None,
+    backtest_run_id: str = "",
 ) -> dict:
     api_app = _api_app()
     runtime_environment = str(environment or "live").strip().lower() or "live"
@@ -260,10 +472,12 @@ def build_chart_timeline_payload(
         end_ms=effective_end_ms,
         include_signals=include_signals,
         include_trace=include_trace,
+        backtest_run_id=backtest_run_id,
     )
 
 
 __all__ = [
     "build_chart_timeline_payload",
     "build_chart_timeline_payload_from_source",
+    "load_backtest_chart_events",
 ]
