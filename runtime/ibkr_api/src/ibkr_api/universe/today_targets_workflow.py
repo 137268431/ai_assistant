@@ -18,6 +18,26 @@ from ibkr_compute.api.market.screener.scoring import (
     TRADABILITY_OPERABLE_MIN_SCORE,
 )
 
+READY_REQUIRED_ALIGNED_FLAGS = 2
+READY_LONG_FLAGS = ("EMA多头", "多头背离", "分形↑", "EMA支撑", "趋势多头", "VWAP多头")
+READY_SHORT_FLAGS = ("EMA空头", "空头背离", "分形↓", "EMA压力", "趋势空头", "VWAP空头")
+
+
+def _format_count(value: Any) -> str:
+    try:
+        return f"{int(float(value or 0)):,}"
+    except Exception:
+        return "0"
+
+
+def _format_number(value: Any, digits: int = 0) -> str:
+    parsed = to_float(value)
+    if parsed is None:
+        return "0"
+    if digits <= 0:
+        return str(int(round(parsed)))
+    return f"{parsed:.{digits}f}".rstrip("0").rstrip(".")
+
 
 def build_technical_flags(indicator_extra: dict[str, Any]) -> list[str]:
     flags: list[str] = []
@@ -89,9 +109,86 @@ def resolve_technical_state(row: dict[str, Any], aligned_flags: list[str]) -> st
     freshness_min = row.get("freshness_min") if isinstance(row.get("freshness_min"), int) else None
     if not row.get("has_live_bar") or freshness_min is None or freshness_min > TRADABILITY_OPERABLE_MAX_FRESHNESS_MIN:
         return "stale"
-    if row.get("is_operable") and len(aligned_flags or []) >= 2:
+    if row.get("is_operable") and len(aligned_flags or []) >= READY_REQUIRED_ALIGNED_FLAGS:
         return "ready"
     return DEFAULT_TECHNICAL_STATE
+
+
+def build_ready_definition() -> dict[str, Any]:
+    return {
+        "title": "READY 判定",
+        "summary": (
+            "READY = 可操作条件通过 + 方向一致技术条件达到阈值；"
+            "它表示标的进入等待信号触发阶段，不代表已经出信号、下单或成交。"
+        ),
+        "thresholds": {
+            "has_live_bar": True,
+            "price_gt": 0,
+            "avg_10d_volume_gte": TRADABILITY_OPERABLE_MIN_AVG_10D_VOLUME,
+            "tradability_score_gte": TRADABILITY_OPERABLE_MIN_SCORE,
+            "freshness_lte_min": TRADABILITY_OPERABLE_MAX_FRESHNESS_MIN,
+        },
+        "required_aligned_flags": READY_REQUIRED_ALIGNED_FLAGS,
+        "long_flags": list(READY_LONG_FLAGS),
+        "short_flags": list(READY_SHORT_FLAGS),
+        "not_signal_or_execution": True,
+    }
+
+
+def build_ready_explanation(row: dict[str, Any]) -> dict[str, Any]:
+    passed: list[str] = []
+    missing: list[str] = []
+    aligned_flags = row.get("technical_aligned_flags") if isinstance(row.get("technical_aligned_flags"), list) else []
+    freshness_min = row.get("freshness_min") if isinstance(row.get("freshness_min"), int) else None
+    price = to_float(row.get("price")) or 0.0
+    avg_10d_volume = to_float(row.get("avg_10d_volume")) or 0.0
+    tradability_score = to_float(row.get("tradability_score")) or 0.0
+
+    if row.get("has_live_bar"):
+        push_unique_text(passed, "当日 5m bar")
+        if freshness_min is not None and freshness_min <= TRADABILITY_OPERABLE_MAX_FRESHNESS_MIN:
+            push_unique_text(passed, f"freshness {freshness_min}m <= {TRADABILITY_OPERABLE_MAX_FRESHNESS_MIN}m")
+        else:
+            label = "freshness 未就绪" if freshness_min is None else f"freshness {freshness_min}m > {TRADABILITY_OPERABLE_MAX_FRESHNESS_MIN}m"
+            push_unique_text(missing, label)
+    else:
+        push_unique_text(missing, "缺少当日 5m bar")
+
+    if price > 0:
+        push_unique_text(passed, "价格已就绪")
+    else:
+        push_unique_text(missing, "价格未就绪")
+
+    if avg_10d_volume >= TRADABILITY_OPERABLE_MIN_AVG_10D_VOLUME:
+        push_unique_text(passed, f"10D均量 {_format_count(avg_10d_volume)} >= {_format_count(TRADABILITY_OPERABLE_MIN_AVG_10D_VOLUME)}")
+    else:
+        push_unique_text(missing, f"10D均量 {_format_count(avg_10d_volume)} < {_format_count(TRADABILITY_OPERABLE_MIN_AVG_10D_VOLUME)}")
+
+    if tradability_score >= TRADABILITY_OPERABLE_MIN_SCORE:
+        push_unique_text(passed, f"tradability {_format_number(tradability_score)} >= {TRADABILITY_OPERABLE_MIN_SCORE}")
+    else:
+        push_unique_text(missing, f"tradability {_format_number(tradability_score)} < {TRADABILITY_OPERABLE_MIN_SCORE}")
+
+    aligned_count = len(aligned_flags)
+    aligned_label = f"方向一致技术条件 {aligned_count}/{READY_REQUIRED_ALIGNED_FLAGS}"
+    if aligned_count >= READY_REQUIRED_ALIGNED_FLAGS:
+        push_unique_text(passed, aligned_label)
+    else:
+        push_unique_text(missing, aligned_label)
+
+    ready = to_text(row.get("technical_state")).lower() == "ready"
+    summary = (
+        "已满足 READY 判定；等待信号触发，不代表已下单或成交。"
+        if ready
+        else "尚未达到 READY；先处理缺失条件，再等待 5m close 刷新。"
+    )
+    return {
+        "ready": ready,
+        "passed": passed,
+        "missing": missing,
+        "aligned_flags": [to_text(item) for item in aligned_flags if to_text(item)],
+        "summary": summary,
+    }
 
 
 def resolve_attention_state(row: dict[str, Any]) -> tuple[str, int]:
@@ -122,13 +219,14 @@ def build_primary_view_url(runtime_environment: str, market_date: str) -> str:
     )
 
 
-def build_workflow_guide(runtime_environment: str, market_date: str) -> dict[str, str]:
+def build_workflow_guide(runtime_environment: str, market_date: str) -> dict[str, Any]:
     return {
         "scan_summary_time_et": DAILY_SCAN_SUMMARY_TIME_ET,
         "open_check_time_et": MARKET_OPEN_CHECK_TIME_ET,
         "intraday_refresh_rule": INTRADAY_REFRESH_RULE,
         "focus_order_rule": "先看 awaiting_confirm / pending，再看 ready 未出信号，最后看 executed / stale。",
         "primary_view_url": build_primary_view_url(runtime_environment, market_date),
+        "ready_definition": build_ready_definition(),
     }
 
 
@@ -229,6 +327,8 @@ def build_workflow_meta(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def ensure_row_details(row: dict[str, Any]) -> dict[str, Any]:
+    if not row.get("ready_explanation"):
+        row["ready_explanation"] = build_ready_explanation(row)
     if row.get("workflow_summary"):
         return row
     workflow = build_workflow_meta(row)
@@ -370,6 +470,8 @@ def build_filtered_summary(rows: list[dict[str, Any]]) -> dict[str, int]:
 __all__ = [
     "build_aligned_technical_flags",
     "build_filtered_summary",
+    "build_ready_definition",
+    "build_ready_explanation",
     "build_technical_flags",
     "build_workflow_guide",
     "ensure_row_details",

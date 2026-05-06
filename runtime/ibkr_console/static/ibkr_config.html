@@ -113,7 +113,8 @@ const ACTIVE_CONFIG_KEYS = new Set([
   'ibkr_api_internal_url',
   'ibkr_scheduler_internal_url',
   'ibkr_compute_enabled',
-  'ibkr_bar_publish_enabled'
+  'ibkr_bar_publish_enabled',
+  'tv_webhook_ingest_enabled'
 ])
 
 function meta(displayName, groupName, sortOrder, defaultValue = '', description = '') {
@@ -168,6 +169,7 @@ const CONFIG_META = {
   ibkr_market_ws_symbols: meta('默认市场 WS 标的', '标的订阅', 640, 'SPY,QQQ,VIX', '用于首页/监控页的默认实时大盘符号，逗号分隔'),
 
   ibkr_bar_publish_enabled: meta('K线发布开关', '行情链路', 700, 'TRUE', '控制实时 / 回补 bars 是否写入 PocketBase；关闭后页面与指标链路不会收到新 OHLCV'),
+  tv_webhook_ingest_enabled: meta('TV Webhook 入库开关', '行情链路', 702, 'TRUE', '控制 /webhook/tv 是否写入 tv_signals / tv_indicators；关闭后直接返回 skipped'),
   ibkr_active_repair_interval_min: meta('活跃修复间隔', '行情链路', 705, '5', '当前实时订阅标的的缺口 / rollup 异常巡检间隔，按 5m 链路优先修复'),
   ibkr_live_warmup_days: meta('启动预热天数', '行情链路', 708, '14', '启动或全量重建时默认补齐并预热最近多少天的 5m bars'),
   ibkr_watchlist_backfill_interval_min: meta('底池回补间隔', '行情链路', 710, '30', '非目标标的按批次执行 5m 增量回补的间隔'),
@@ -233,6 +235,7 @@ const BOOLEAN_CONFIG_KEYS = new Set([
   'pb_scheduler_enabled',
   'ibkr_compute_enabled',
   'ibkr_bar_publish_enabled',
+  'tv_webhook_ingest_enabled',
   'ibkr_market_ws_enabled'
 ])
 

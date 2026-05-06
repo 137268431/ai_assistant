@@ -72,7 +72,7 @@
                             <div class="runtime-control-kicker">Runtime Flow</div>
                             <div class="runtime-control-title">主运行流程</div>
                         </div>
-                        <div class="runtime-control-copy">业务线程一键启动/停止、静默探测与手动刷新。</div>
+                        <div class="runtime-control-copy">业务线程一键启动/停止、认证检查与手动刷新。</div>
                     </div>
                     <div class="runtime-note runtime-note-strategy" id="startupStrategyInfo">
                         启动策略加载中...
@@ -83,8 +83,8 @@
                             <span class="action-copy">启动 runtime 内部交易/行情线程；是否重启 Gateway 由启动策略决定。</span>
                         </button>
                         <button class="action-btn action-accent" data-action="probe" onclick="handleRuntimeAction('probe')">
-                            <span class="action-label">立即静默探测</span>
-                            <span class="action-copy">快速确认 Gateway 会话和 runtime 认证状态。</span>
+                            <span class="action-label">检查当前认证</span>
+                            <span class="action-copy">只在你已经完成手机确认或 Response 后使用；不 stop/start，不新开 2FA，只检查 Gateway 会话是否已恢复。</span>
                         </button>
                         <button class="action-btn" onclick="loadRuntimeData(true)">
                             <span class="action-label">手动刷新</span>

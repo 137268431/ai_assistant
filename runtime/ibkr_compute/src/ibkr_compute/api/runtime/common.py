@@ -105,6 +105,31 @@ def _background_start_ibkr_service(service, trigger_login: bool, reason: str, so
     return thread
 
 
+def _background_panic_reset_auth(
+    service,
+    *,
+    restart_gateway: bool,
+    restart_runtime: bool,
+    trigger_login: bool,
+    reason: str,
+    source: str,
+):
+    thread = threading.Thread(
+        target=service.panic_reset_auth,
+        kwargs={
+            "restart_gateway": bool(restart_gateway),
+            "restart_runtime": bool(restart_runtime),
+            "trigger_login": bool(trigger_login),
+            "reason": reason,
+            "source": source,
+        },
+        daemon=True,
+        name=f"ibkr-panic-reset-{source}",
+    )
+    thread.start()
+    return thread
+
+
 def get_ibkr_service():
     from ibkr_compute.api.service_topology import is_runtime_remote_mode
 

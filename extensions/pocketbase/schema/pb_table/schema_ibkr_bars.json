@@ -230,7 +230,10 @@
             "CREATE INDEX idx_ibkr_bars_symbol ON ibkr_bars (symbol)",
             "CREATE INDEX idx_ibkr_bars_created ON ibkr_bars (created)",
             "CREATE INDEX idx_ibkr_bars_symbol_interval_created ON ibkr_bars (symbol, interval, created)",
-            "CREATE INDEX idx_ibkr_bars_environment ON ibkr_bars (environment)"
+            "CREATE INDEX idx_ibkr_bars_environment ON ibkr_bars (environment)",
+            "CREATE INDEX IF NOT EXISTS idx_ibkr_bars_env_interval_bar_time_ms ON ibkr_bars (environment, interval, bar_time_ms)",
+            "CREATE INDEX IF NOT EXISTS idx_ibkr_bars_env_interval_us_time ON ibkr_bars (environment, interval, us_time)",
+            "CREATE INDEX IF NOT EXISTS idx_ibkr_bars_env_created ON ibkr_bars (environment, created)"
         ],
         "system": false
     }

@@ -36,7 +36,8 @@ def build_trading_route_deps(
             *args,
             **kwargs,
         ),
-        "config_value": globals_dict["_config_value"],
+        "config_value": lambda key, default, environment: globals_dict["_config_value"](key, default, environment),
+        "parse_boolean": globals_dict["_parse_boolean"],
         "get_state_payload": lambda state_key, environment, date="global": globals_dict["_get_state_payload"](
             state_key,
             environment,

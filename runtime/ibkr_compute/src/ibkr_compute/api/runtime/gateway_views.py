@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from ibkr_compute.api.monitor.views import _build_gateway_action_payload
+from ibkr_compute.api.monitor.runtime.actions import _build_gateway_action_payload
 from ibkr_compute.api.runtime.common import (
     _api_app,
+    _background_panic_reset_auth,
     _ibkr_service_environment,
     get_ibkr_service,
     set_ibkr_runtime_control,
@@ -153,7 +154,8 @@ def _build_ibkr_gateway_restart_response(payload: dict | None = None) -> tuple[d
                 "last_restore_trigger_login": False,
             },
         )
-        result = service.panic_reset_auth(
+        _background_panic_reset_auth(
+            service,
             restart_gateway=True,
             restart_runtime=True,
             trigger_login=False,
@@ -165,17 +167,19 @@ def _build_ibkr_gateway_restart_response(payload: dict | None = None) -> tuple[d
                 service,
                 "restart",
                 ok=True,
-                message="Gateway 已重启并进入新的启动轮次；下一步请在新的启动卡片点击“开始 2FA 验证”。",
+                message="Gateway 重启已受理，正在创建新的 2FA 启动轮次。",
                 reason=reason,
                 source=source,
                 extra={
-                    "gateway_restarted": bool(result.get("gateway_restarted")),
-                    "runtime_restart_requested": bool(result.get("runtime_started")),
+                    "accepted": True,
+                    "operation": "gateway_restart_fresh_cycle",
+                    "gateway_restarted": False,
+                    "runtime_restart_requested": True,
                     "startup_cycle_planned": True,
-                    "panic_reset": result,
+                    "background": True,
                 },
             ),
-            200,
+            202,
         )
 
     ok = bool(service.gateway_manager.restart())

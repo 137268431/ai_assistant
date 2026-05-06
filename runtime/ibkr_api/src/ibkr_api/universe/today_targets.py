@@ -29,6 +29,7 @@ from ibkr_api.universe.today_targets_shared import (
 from ibkr_api.universe.today_targets_workflow import (
     build_aligned_technical_flags,
     build_filtered_summary,
+    build_ready_explanation,
     build_technical_flags,
     build_workflow_guide,
     ensure_row_details,
@@ -336,6 +337,7 @@ def build_today_targets_response(
         row["technical_flags"] = build_technical_flags(indicator_extra)
         row["technical_aligned_flags"] = build_aligned_technical_flags(indicator_extra, direction_bias)
         row["technical_state"] = resolve_technical_state(row, row["technical_aligned_flags"])
+        row["ready_explanation"] = build_ready_explanation(row)
         row["has_signal_today"] = bool(signal_agg.get("count"))
         row["signal_count_today"] = int(signal_agg.get("count") or 0)
         row["latest_signal_id"] = to_text((latest_signal or {}).get("signal_id"))

@@ -1,5 +1,8 @@
 let currentEnvironment = getCurrentRuntimeEnvironment();
         let refreshTimer = null;
+        let refreshMode = 'steady';
+        let refreshBoostStartedAt = 0;
+        let refreshInFlight = false;
         let actionPending = false;
         let latestRuntimeStatus = {};
         let latestTwoFactorState = {};
@@ -143,6 +146,52 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const navigationLike = message.includes('Failed to fetch') || message.includes('ERR_ABORTED');
             if (!navigationLike) return false;
             return runtimePageClosing || document.visibilityState === 'hidden';
+        }
+
+        function clearRefreshTimer() {
+            if (refreshTimer) {
+                window.clearTimeout(refreshTimer);
+                refreshTimer = null;
+            }
+        }
+
+        function getRefreshDelayMs() {
+            if (refreshMode !== 'boost') return 60000;
+            const elapsed = Date.now() - Number(refreshBoostStartedAt || 0);
+            if (elapsed < 2 * 60 * 1000) return 3000;
+            if (elapsed < 5 * 60 * 1000) return 10000;
+            refreshMode = 'steady';
+            refreshBoostStartedAt = 0;
+            return 60000;
+        }
+
+        function scheduleRuntimeRefresh(delayMs = null) {
+            clearRefreshTimer();
+            if (runtimePageClosing) return;
+            const effectiveDelay = delayMs == null ? getRefreshDelayMs() : Number(delayMs);
+            refreshTimer = window.setTimeout(() => {
+                refreshTimer = null;
+                void loadRuntimeData(false);
+            }, Math.max(1000, Number.isFinite(effectiveDelay) ? effectiveDelay : 60000));
+        }
+
+        function boostRuntimeRefresh() {
+            refreshMode = 'boost';
+            refreshBoostStartedAt = Date.now();
+            scheduleRuntimeRefresh(3000);
+        }
+
+        function shouldKeepBoostRefresh(status = latestRuntimeStatus, twoFactorState = latestTwoFactorState, startupState = latestStartupState) {
+            const runtimeStatus = getIbkrRuntimeStatusCardModel(status);
+            const startup = normalizeStartupUiState(startupState);
+            const twoFactor = deriveTwoFactorUiState(twoFactorState);
+            const twoFactorPhase = getIbkrTwoFactorCyclePhase(twoFactor);
+            const recoveryPhase = String(twoFactor?.recovery_phase || '').trim().toLowerCase();
+            if (startup.active) return true;
+            if (!runtimeStatus.authenticated && (runtimeStatus.gatewayActive || runtimeStatus.started)) return true;
+            if (['requested', 'triggered', 'waiting_confirm', 'waiting_response_ready', 'waiting_response_waiting', 'waiting_response_received', 'waiting_response_submitted'].includes(twoFactorPhase)) return true;
+            if (['panic_resetting', 'silent_probe', 'manual_takeover'].includes(recoveryPhase)) return true;
+            return false;
         }
 
         function parseIsoMs(value) {
@@ -849,6 +898,12 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
 
             const state = deriveTwoFactorUiState(twoFactorState);
             if (!isIbkrTwoFactorCycleActive(state)) return '';
+            if (action === 'probe') {
+                const cyclePhase = getIbkrTwoFactorCyclePhase(state);
+                if (['waiting_confirm', 'waiting_response_submitted', 'waiting_response_received'].includes(cyclePhase)) {
+                    return '';
+                }
+            }
             return getIbkrTwoFactorCycleActionLockReason(action, getIbkrTwoFactorCyclePhase(state));
         }
 
@@ -856,10 +911,22 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             document.querySelectorAll('.action-btn').forEach((button) => {
                 const action = String(button?.dataset?.action || '').trim();
                 const lockReason = actionPending ? '' : getTwoFactorActionLockReason(action);
-                button.disabled = actionPending || Boolean(lockReason);
+                let probeReason = '';
+                if (!actionPending && !lockReason && action === 'probe') {
+                    const state = deriveTwoFactorUiState(latestTwoFactorState);
+                    const recoveryPhase = String(state?.recovery_phase || '').trim().toLowerCase();
+                    const cyclePhase = getIbkrTwoFactorCyclePhase(state);
+                    const canProbe = state.manual_takeover_active === true
+                        || ['waiting_confirm', 'waiting_response_submitted', 'waiting_response_received'].includes(cyclePhase)
+                        || ['silent_probe', 'manual_takeover'].includes(recoveryPhase);
+                    if (!canProbe) {
+                        probeReason = '只有在已完成手机确认/Response、人工接管中，或系统正在恢复探测时，才需要手动检查当前认证。';
+                    }
+                }
+                button.disabled = actionPending || Boolean(lockReason) || Boolean(probeReason);
                 button.title = actionPending
                     ? '动作执行中，请稍候。'
-                    : (lockReason || '');
+                    : (lockReason || probeReason || '');
             });
             document.querySelectorAll('.service-action-btn').forEach((button) => {
                 button.disabled = actionPending;
@@ -870,6 +937,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         function summarizeAction(action, payload) {
             if (!payload || typeof payload !== 'object') {
                 return `${action} 已执行。`;
+            }
+            if (payload.accepted === true || payload.status_code === 202) {
+                return payload.message || `${action} 已受理，正在后台处理；页面会自动刷新状态。`;
             }
             if (action === 'start') {
                 if (payload.message && payload.trigger_login === false) {
@@ -892,7 +962,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             }
             if (action === 'probe' || action === 'panic_reset_2fa') {
                 if (payload.message) return payload.message;
-                if (action === 'probe') return '已触发静默探测。';
+                if (action === 'probe') return '已触发认证检查；如果会话已恢复，状态会自动转为 success。';
                 return '已全量清空旧状态并重新拉起新的验证周期。';
             }
             if (action === 'compute') {
@@ -2254,6 +2324,11 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
 
         async function loadRuntimeData(showToastOnSuccess = false) {
             if (!ensureIbkrPageAuth()) return;
+            if (refreshInFlight) {
+                scheduleRuntimeRefresh(1500);
+                return;
+            }
+            refreshInFlight = true;
             const loadId = ++latestRuntimeLoadId;
             const isInitialLoad = !hasLoadedRuntimeData;
             if (isInitialLoad) {
@@ -2324,6 +2399,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 renderRuntimeSnapshot(baseSummary, latestRuntimeIndicatorSnapshot, { dataLoading: recentDataLoading });
                 renderTwoFactorPanel(twoFactorState);
                 syncActionLocks();
+                if (refreshMode === 'boost' && !shouldKeepBoostRefresh(status, latestTwoFactorState, latestStartupState)) {
+                    refreshMode = 'steady';
+                    refreshBoostStartedAt = 0;
+                }
                 renderEngineTable(status);
                 renderServiceTopology(status);
                 void loadEngineDetail(loadId, status);
@@ -2382,10 +2461,12 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 document.getElementById('lastAction').textContent = `加载失败：${error.message || error}`;
                 showToast(`加载失败: ${error.message || error}`);
             } finally {
+                refreshInFlight = false;
                 if (isInitialLoad) {
                     hasLoadedRuntimeData = true;
                     setIbkrPageLoading(false);
                 }
+                scheduleRuntimeRefresh();
             }
         }
 
@@ -2441,6 +2522,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 if (input) input.value = '';
                 document.getElementById('lastAction').textContent = `最近动作：Challenge 已提交 (${payload.status || 'ok'})`;
                 showToast('Response Code 已收到，等待浏览器提交流程');
+                boostRuntimeRefresh();
                 await loadRuntimeData(false);
             } catch (error) {
                 const message = `提交 Response 失败：${error.message || error}`;
@@ -2537,6 +2619,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 document.getElementById('lastAction').textContent = `最近动作：${message}`;
                 setAuthActionFeedback(`最近动作：${message}`, payload?.ok === false ? 'error' : 'ok');
                 showToast(message);
+                if (payload?.accepted === true || Number(payload?.status_code || 0) === 202 || ['start', 'gateway_restart', 'reauth', 'reauth_force_new', 'probe', 'panic_reset_2fa'].includes(action)) {
+                    boostRuntimeRefresh();
+                }
                 await loadRuntimeData(false);
             } catch (error) {
                 const message = `动作失败：${action} · ${error.message || error}`;
@@ -2785,15 +2870,16 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             window.addEventListener('pagehide', () => {
                 runtimePageClosing = true;
                 latestRuntimeLoadId += 1;
+                clearRefreshTimer();
             });
             window.addEventListener('beforeunload', () => {
                 runtimePageClosing = true;
                 latestRuntimeLoadId += 1;
+                clearRefreshTimer();
             });
             document.getElementById('nav').innerHTML = renderNav('/ibkr_runtime.html');
             document.getElementById('contextBar').innerHTML = renderPageContextBar('🎛️ IBKR 运行时', { subtitle: '控制 / 调度 / 链路' });
             document.getElementById('pageBridge').innerHTML = renderSystemBridge('/ibkr_runtime.html');
             document.getElementById('configLink').href = buildPageUrl('/ibkr_config.html', {}, { allowGlobal: true, environment: currentEnvironment });
             await loadRuntimeData(false);
-            refreshTimer = setInterval(() => loadRuntimeData(false), 60000);
         });

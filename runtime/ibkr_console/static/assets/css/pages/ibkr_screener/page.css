@@ -136,12 +136,131 @@
       border: 1px solid rgba(148, 163, 184, 0.12);
     }
 
+    .summary-label-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+    }
+
     .summary-label {
       font-size: 10px;
       letter-spacing: 0.12em;
       color: var(--screen-muted);
       text-transform: uppercase;
       font-family: var(--screen-mono-font);
+    }
+
+    .ready-tip {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      vertical-align: middle;
+      z-index: 6;
+    }
+
+    .ready-tip-button {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      border: 1px solid rgba(148, 163, 184, 0.24);
+      background: rgba(8, 12, 20, 0.72);
+      color: var(--screen-muted);
+      font-size: 11px;
+      font-weight: 800;
+      line-height: 1;
+      display: inline-grid;
+      place-items: center;
+      cursor: help;
+      padding: 0;
+    }
+
+    .ready-tip-button.good {
+      color: var(--screen-good);
+      border-color: rgba(104, 211, 145, 0.32);
+      background: rgba(104, 211, 145, 0.08);
+    }
+
+    .ready-tip-button.warn {
+      color: var(--screen-accent);
+      border-color: rgba(246, 173, 85, 0.32);
+      background: rgba(246, 173, 85, 0.08);
+    }
+
+    .ready-tip-button:hover,
+    .ready-tip-button:focus-visible {
+      color: var(--screen-text);
+      border-color: rgba(99, 179, 237, 0.5);
+      outline: none;
+    }
+
+    .ready-tip-popover {
+      width: min(340px, calc(100vw - 32px));
+      display: none;
+      gap: 8px;
+      padding: 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(99, 179, 237, 0.24);
+      background: rgba(8, 14, 22, 0.98);
+      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.42);
+      color: var(--screen-text);
+      text-transform: none;
+      letter-spacing: 0;
+      font-family: var(--screen-font);
+      white-space: normal;
+      text-align: left;
+      z-index: 80;
+    }
+
+    .ready-tip-portal {
+      position: fixed;
+      z-index: 10000;
+      pointer-events: none;
+    }
+
+    .ready-tip-portal .ready-tip-popover {
+      display: grid;
+      width: 100%;
+      pointer-events: auto;
+    }
+
+    .ready-tip-title {
+      font-size: 13px;
+      font-weight: 800;
+      line-height: 1.25;
+    }
+
+    .ready-tip-summary,
+    .ready-tip-line {
+      color: var(--screen-muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .ready-tip-section {
+      display: grid;
+      gap: 5px;
+    }
+
+    .ready-tip-section-label {
+      color: var(--screen-accent-2);
+      font-family: var(--screen-mono-font);
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .ready-tip-list {
+      display: grid;
+      gap: 3px;
+    }
+
+    .state-chip-with-tip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      max-width: 100%;
     }
 
     .summary-value {

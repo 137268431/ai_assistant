@@ -202,12 +202,13 @@ class UniverseRoutesTest(unittest.TestCase):
             "data": {"status": "completed", "result": {"symbols": ["AAPL"]}}
         }
 
-        payload, status_code = build_today_targets_response(
-            pb,
-            payload={"environment": "live", "market_date": "2026-04-23"},
-            normalize_environment=lambda value, default="live": str(value or default).strip().lower() or default,
-            time_strings=lambda: {"us": "2026-04-23 09:40:00", "cn": "2026-04-23 21:40:00", "date": "2026-04-23"},
-        )
+        with mock.patch("ibkr_api.universe.today_targets.time.time", return_value=et_ms("2026-04-23 09:40:00") / 1000):
+            payload, status_code = build_today_targets_response(
+                pb,
+                payload={"environment": "live", "market_date": "2026-04-23"},
+                normalize_environment=lambda value, default="live": str(value or default).strip().lower() or default,
+                time_strings=lambda: {"us": "2026-04-23 09:40:00", "cn": "2026-04-23 21:40:00", "date": "2026-04-23"},
+            )
 
         self.assertEqual(200, status_code)
         self.assertTrue(payload["ok"])
@@ -219,6 +220,70 @@ class UniverseRoutesTest(unittest.TestCase):
         self.assertEqual("信号待确认", payload["items"][0]["workflow_label"])
         self.assertTrue(payload["items"][0]["has_signal_today"])
         self.assertEqual("completed", payload["daily_scan"]["status"])
+        ready_definition = payload["workflow"]["ready_definition"]
+        self.assertEqual(2, ready_definition["required_aligned_flags"])
+        self.assertEqual(500000, ready_definition["thresholds"]["avg_10d_volume_gte"])
+        self.assertEqual(60, ready_definition["thresholds"]["tradability_score_gte"])
+        self.assertEqual(90, ready_definition["thresholds"]["freshness_lte_min"])
+        ready_explanation = payload["items"][0]["ready_explanation"]
+        self.assertTrue(ready_explanation["ready"])
+        self.assertIn("方向一致技术条件 5/2", ready_explanation["passed"])
+        self.assertEqual([], ready_explanation["missing"])
+
+    def test_today_targets_explains_missing_ready_conditions(self):
+        pb = _MinimalPB()
+        pb._records["ibkr_targets"] = [
+            {
+                "id": "target-2",
+                "symbol": "MSFT",
+                "environment": "live",
+                "date": "2026-04-23",
+                "status": "candidate",
+                "direction_bias": "long",
+                "score": 6,
+                "scan_reason": "manual_review",
+                "exchange": "NASDAQ",
+                "updated": "2026-04-23 09:36:00",
+                "extra": {},
+            }
+        ]
+
+        def et_ms(text: str) -> int:
+            return int(datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=ET).timestamp() * 1000)
+
+        pb._all_records["ibkr_bars"] = [
+            {"symbol": "MSFT", "environment": "live", "interval": "1d", "bar_time_ms": et_ms("2026-04-22 00:00:00"), "close": 25, "volume": 100000, "us_time": "2026-04-22 16:00:00"},
+            {"symbol": "MSFT", "environment": "live", "interval": "5m", "bar_time_ms": et_ms("2026-04-23 09:35:00"), "close": 26, "volume": 5000, "us_time": "2026-04-23 09:35:00", "exchange": "NASDAQ", "session_type": "regular"},
+        ]
+        pb._all_records["ibkr_indicators"] = [
+            {
+                "symbol": "MSFT",
+                "environment": "live",
+                "interval": "5",
+                "bar_time_ms": et_ms("2026-04-23 09:35:00"),
+                "atr_pct": 0.4,
+                "ema_bullish": True,
+                "trend_dir": 0,
+                "vwap_bullish": False,
+            }
+        ]
+
+        with mock.patch("ibkr_api.universe.today_targets.time.time", return_value=et_ms("2026-04-23 09:40:00") / 1000):
+            payload, status_code = build_today_targets_response(
+                pb,
+                payload={"environment": "live", "market_date": "2026-04-23"},
+                normalize_environment=lambda value, default="live": str(value or default).strip().lower() or default,
+                time_strings=lambda: {"us": "2026-04-23 09:40:00", "cn": "2026-04-23 21:40:00", "date": "2026-04-23"},
+            )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertEqual("watch", payload["items"][0]["technical_state"])
+        ready_explanation = payload["items"][0]["ready_explanation"]
+        self.assertFalse(ready_explanation["ready"])
+        self.assertIn("当日 5m bar", ready_explanation["passed"])
+        self.assertIn("方向一致技术条件 1/2", ready_explanation["missing"])
+        self.assertTrue(any(item.startswith("10D均量") for item in ready_explanation["missing"]))
 
     def test_cancel_sync_wraps_group_cancel_shape(self):
         with mock.patch("ibkr_api.orders.cancel_sync.build_order_cancel_group_response", return_value=({"ok": True, "action": "cancel_group"}, 200)):

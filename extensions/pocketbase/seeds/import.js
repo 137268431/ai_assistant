@@ -77,6 +77,7 @@ const configData = [
   cfg('ibkr_market_ws_symbols', 'SPY,QQQ,VIX', 'SPY,QQQ,VIX', '市场监控标的', '标的订阅', 626, '系统级 WS 市场监控默认订阅标的；用于 monitor / runtime 状态页和行情链路基准观测'),
 
   cfg('ibkr_bar_publish_enabled', 'TRUE', 'TRUE', 'K线发布开关', '行情链路', 700, '控制实时 / 回补 bars 是否写入 PocketBase；关闭后页面与指标链路不会收到新 OHLCV'),
+  cfg('tv_webhook_ingest_enabled', 'TRUE', 'TRUE', 'TV Webhook 入库开关', '行情链路', 702, '控制 /webhook/tv 是否写入 tv_signals / tv_indicators；关闭后直接返回 skipped'),
   cfg('ibkr_active_repair_interval_min', '5', '5', '活跃修复间隔', '行情链路', 705, '当前实时订阅标的的缺口 / rollup 异常巡检间隔，按 5m 链路优先修复'),
   cfg('ibkr_watchlist_backfill_interval_min', '30', '30', '底池回补间隔', '行情链路', 710, '非目标标的按批次执行 5m 增量回补的间隔'),
   cfg('ibkr_watchlist_backfill_batch_size', '12', '12', '底池回补批次', '行情链路', 720, '每轮底池回补最多处理多少个非目标标的'),

@@ -9,6 +9,7 @@ import statistics
 import threading
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
@@ -74,6 +75,9 @@ DEFAULT_SCAN_CUTOFF_TIME = "09:20"
 DEFAULT_BACKTEST_RETENTION_LIMIT = 30
 MAX_BACKTEST_RETENTION_LIMIT = 200
 MAX_BACKTEST_WARMUP_BARS = 2000
+DEFAULT_BACKTEST_BACKFILL_CONCURRENCY = 4
+MAX_BACKTEST_BACKFILL_CONCURRENCY = 5
+BACKTEST_COVERAGE_EDGE_GRACE_DAYS = 5
 SCAN_INTERVALS = tuple(COMPUTE_INTERVALS)
 BACKTEST_IMPROVEMENT_NOTIFY_THRESHOLD = 0.05
 BACKTEST_IMPROVEMENT_SHARPE_THRESHOLD = 0.1
@@ -550,6 +554,8 @@ class BacktestService:
             "premarket_cutoff_time": request.get("premarket_cutoff_time", DEFAULT_SCAN_CUTOFF_TIME),
             "scan_session_mode": request.get("scan_session_mode", "extended"),
             "retention_limit": request.get("retention_limit", DEFAULT_BACKTEST_RETENTION_LIMIT),
+            "preflight_backfill": bool(request.get("preflight_backfill", True)),
+            "backfill_concurrency": int(request.get("backfill_concurrency", DEFAULT_BACKTEST_BACKFILL_CONCURRENCY) or DEFAULT_BACKTEST_BACKFILL_CONCURRENCY),
             **self._build_execution_extra(request),
             **build_runtime_timestamps(),
         }
@@ -620,6 +626,8 @@ class BacktestService:
                     "premarket_cutoff_time": request.get("premarket_cutoff_time", DEFAULT_SCAN_CUTOFF_TIME),
                     "scan_session_mode": request.get("scan_session_mode", "extended"),
                     "retention_limit": request.get("retention_limit", DEFAULT_BACKTEST_RETENTION_LIMIT),
+                    "preflight_backfill": bool(request.get("preflight_backfill", True)),
+                    "backfill_concurrency": int(request.get("backfill_concurrency", DEFAULT_BACKTEST_BACKFILL_CONCURRENCY) or DEFAULT_BACKTEST_BACKFILL_CONCURRENCY),
                     **self._build_execution_extra(request),
                     **build_runtime_timestamps(),
                 },
@@ -876,6 +884,7 @@ class BacktestService:
         backtest_reverse_capture: dict | None = None,
         historical_targeting: dict | None = None,
         analysis_report: dict | None = None,
+        preflight_backfill: dict | None = None,
     ) -> dict:
         extra = {
             "force_flat_eod": request["force_flat_eod"],
@@ -891,6 +900,8 @@ class BacktestService:
             "premarket_cutoff_time": str(request.get("premarket_cutoff_time") or DEFAULT_SCAN_CUTOFF_TIME),
             "scan_session_mode": str(request.get("scan_session_mode") or "extended"),
             "retention_limit": int(request.get("retention_limit", DEFAULT_BACKTEST_RETENTION_LIMIT) or DEFAULT_BACKTEST_RETENTION_LIMIT),
+            "preflight_backfill": bool(request.get("preflight_backfill", True)),
+            "backfill_concurrency": int(request.get("backfill_concurrency", DEFAULT_BACKTEST_BACKFILL_CONCURRENCY) or DEFAULT_BACKTEST_BACKFILL_CONCURRENCY),
             **self._build_execution_extra(request),
             **build_runtime_timestamps(),
         }
@@ -927,6 +938,8 @@ class BacktestService:
             extra["historical_targeting"] = historical_targeting
         if analysis_report is not None:
             extra["analysis_report"] = analysis_report
+        if preflight_backfill is not None:
+            extra["preflight_backfill"] = preflight_backfill
         return extra
 
     def _escape_pb_filter_value(self, raw_value: Any) -> str:
@@ -1445,6 +1458,7 @@ class BacktestService:
             raise ValueError("No symbols resolved for backtest")
         request["symbols"] = symbols
         request["symbols_text"] = ",".join(symbols)
+        preflight_backfill = self._preflight_backfill_symbols(symbols, request, progress_context=progress_context)
         self._update_run(
             run_id,
             {
@@ -1454,6 +1468,7 @@ class BacktestService:
                     symbols,
                     backtest_target_capture=backtest_target_capture,
                     historical_targeting=historical_targeting,
+                    preflight_backfill=preflight_backfill,
                 ),
             },
         )
@@ -1494,7 +1509,7 @@ class BacktestService:
             for symbol in symbols:
                 if self._cancel_event.is_set():
                     raise BacktestCancelled()
-                progress_value = 5 + int((completed_symbols / total_symbols) * 70)
+                progress_value = 16 + int((completed_symbols / total_symbols) * 59)
                 self._set_progress_context("running", "loading", f"loading {symbol}", progress_value, progress_context)
                 bars = self._load_symbol_bars(
                     symbol,
@@ -1502,6 +1517,7 @@ class BacktestService:
                     request["date_from"],
                     request["date_to"],
                     request["session_mode"],
+                    allow_backfill=False,
                 )
                 if len(bars) < 40:
                     skipped_symbols.append(symbol)
@@ -1557,6 +1573,7 @@ class BacktestService:
             request["date_to"],
             request["session_mode"],
             initial_capital,
+            allow_backfill=False,
         )
         metrics = self._compute_metrics(initial_capital, all_trades, daily_equity)
         metrics.update(portfolio_metrics)
@@ -1663,6 +1680,7 @@ class BacktestService:
                     backtest_reverse_capture=backtest_reverse_capture,
                     historical_targeting=historical_targeting,
                     analysis_report=analysis_report,
+                    preflight_backfill=preflight_backfill,
                 ),
                 "error": "",
             },
@@ -1974,6 +1992,194 @@ class BacktestService:
         start = datetime.strptime(date_from, "%Y-%m-%d").replace(tzinfo=ET)
         end = datetime.strptime(date_to, "%Y-%m-%d").replace(tzinfo=ET) + timedelta(days=1) - timedelta(milliseconds=1)
         return int(start.timestamp() * 1000), int(end.timestamp() * 1000)
+
+    def _session_edge_grace_ms(self, days: int = BACKTEST_COVERAGE_EDGE_GRACE_DAYS) -> int:
+        return max(0, int(days or 0)) * 24 * 60 * 60 * 1000
+
+    def _symbol_range_coverage_summary(
+        self,
+        symbol: str,
+        source_environment: str,
+        date_from: str,
+        date_to: str,
+        *,
+        warmup_bars: int = BACKTEST_WARMUP_BARS,
+    ) -> dict:
+        start_ms, end_ms = self._date_to_ms_range(date_from, date_to)
+        warmup_lookback_ms = interval_to_ms("5m") * max(0, int(warmup_bars or 0), BACKTEST_WARMUP_BARS)
+        requested_start_ms = max(0, start_ms - warmup_lookback_ms)
+        rows = self._load_bar_rows_from_sqlite(
+            symbol,
+            source_environment,
+            start_ms=requested_start_ms,
+            end_ms=end_ms,
+            descending=False,
+        )
+        first_bar_ms = int(rows[0].get("bar_time_ms", 0) or 0) if rows else 0
+        last_bar_ms = int(rows[-1].get("bar_time_ms", 0) or 0) if rows else 0
+        gap_count = self._count_internal_5m_gaps(rows) if rows else 0
+        edge_grace_ms = self._session_edge_grace_ms()
+        missing_start = not rows or first_bar_ms <= 0 or first_bar_ms > requested_start_ms + edge_grace_ms
+        missing_end = not rows or last_bar_ms <= 0 or last_bar_ms < end_ms - edge_grace_ms
+        needs_backfill = bool(not rows or missing_start or missing_end or gap_count > 0)
+        reasons = []
+        if not rows:
+            reasons.append("no_rows")
+        if missing_start:
+            reasons.append("missing_start")
+        if missing_end:
+            reasons.append("missing_end")
+        if gap_count > 0:
+            reasons.append("internal_gaps")
+        return {
+            "symbol": symbol,
+            "needs_backfill": needs_backfill,
+            "reasons": reasons,
+            "row_count": len(rows),
+            "gap_count": gap_count,
+            "first_bar_ms": first_bar_ms,
+            "last_bar_ms": last_bar_ms,
+            "first_bar_us": format_us_time(first_bar_ms) if first_bar_ms > 0 else "",
+            "last_bar_us": format_us_time(last_bar_ms) if last_bar_ms > 0 else "",
+            "requested_start_ms": requested_start_ms,
+            "requested_end_ms": end_ms,
+            "requested_start_us": format_us_time(requested_start_ms) if requested_start_ms > 0 else "",
+            "requested_end_us": format_us_time(end_ms) if end_ms > 0 else "",
+        }
+
+    def _preflight_backfill_symbols(
+        self,
+        symbols: list[str],
+        request: dict,
+        progress_context: dict | None = None,
+    ) -> dict:
+        if not bool(request.get("preflight_backfill", True)):
+            return {
+                "enabled": False,
+                "symbols": list(symbols or []),
+                "needed_symbols": [],
+                "initial": [],
+                "results": {},
+                "final": [],
+            }
+        if not symbols:
+            return {"enabled": True, "symbols": [], "needed_symbols": [], "initial": [], "results": {}, "final": []}
+
+        self._set_progress_context("running", "preflight", "checking bar coverage", 4, progress_context)
+        initial = [
+            self._symbol_range_coverage_summary(
+                symbol,
+                request["source_environment"],
+                request["date_from"],
+                request["date_to"],
+                warmup_bars=int(request.get("warmup_bars", BACKTEST_WARMUP_BARS) or BACKTEST_WARMUP_BARS),
+            )
+            for symbol in symbols
+        ]
+        needed_symbols = [item["symbol"] for item in initial if item.get("needs_backfill")]
+        if not needed_symbols:
+            return {
+                "enabled": True,
+                "symbols": list(symbols),
+                "needed_symbols": [],
+                "initial": initial,
+                "results": {},
+                "final": initial,
+            }
+
+        start_ms, end_ms = self._date_to_ms_range(request["date_from"], request["date_to"])
+        warmup_lookback_ms = interval_to_ms("5m") * (
+            max(
+                BACKTEST_WARMUP_BARS,
+                int(request.get("warmup_bars", BACKTEST_WARMUP_BARS) or BACKTEST_WARMUP_BARS),
+            )
+            + 20
+        )
+        backfill_start_ms = max(0, start_ms - warmup_lookback_ms)
+        max_workers = min(
+            max(1, int(request.get("backfill_concurrency", DEFAULT_BACKTEST_BACKFILL_CONCURRENCY) or DEFAULT_BACKTEST_BACKFILL_CONCURRENCY)),
+            MAX_BACKTEST_BACKFILL_CONCURRENCY,
+            len(needed_symbols),
+        )
+        self._set_progress_context(
+            "running",
+            "preflight_backfill",
+            f"backfilling {len(needed_symbols)} symbols with {max_workers} workers",
+            5,
+            progress_context,
+        )
+
+        results: dict[str, dict] = {}
+        completed = 0
+
+        def run_symbol(symbol: str) -> dict:
+            if self._cancel_event.is_set():
+                raise BacktestCancelled()
+            repair = self._backfill_symbol_history(
+                symbol,
+                request["source_environment"],
+                backfill_start_ms,
+                end_ms,
+                interval="5m",
+            )
+            repair_rows = list((repair or {}).get("rows") or [])
+            persisted_rows = self._persist_backfill_rows(repair_rows) if repair_rows else 0
+            rolled_rows = self._rollup_symbol_history(symbol, request["source_environment"]) if persisted_rows > 0 else 0
+            return {
+                "symbol": symbol,
+                "ok": bool((repair or {}).get("ok")) and (not repair_rows or persisted_rows > 0),
+                "reason": str((repair or {}).get("reason") or ""),
+                "fetched_rows": int((repair or {}).get("fetched_rows", 0) or 0),
+                "batches": int((repair or {}).get("batches", 0) or 0),
+                "persisted_rows": int(persisted_rows or 0),
+                "rolled_rows": int(rolled_rows or 0),
+            }
+
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="ibkr-backtest-preflight") as executor:
+            future_map = {executor.submit(run_symbol, symbol): symbol for symbol in needed_symbols}
+            for future in as_completed(future_map):
+                symbol = future_map[future]
+                if self._cancel_event.is_set():
+                    raise BacktestCancelled()
+                try:
+                    results[symbol] = future.result()
+                except BacktestCancelled:
+                    raise
+                except Exception as exc:
+                    traceback.print_exc()
+                    results[symbol] = {"symbol": symbol, "ok": False, "error": str(exc)[:500]}
+                completed += 1
+                progress_value = 5 + int((completed / max(1, len(needed_symbols))) * 10)
+                self._set_progress_context(
+                    "running",
+                    "preflight_backfill",
+                    f"backfilled {completed}/{len(needed_symbols)} symbols",
+                    progress_value,
+                    progress_context,
+                )
+
+        self._set_progress_context("running", "preflight", "rechecking bar coverage", 15, progress_context)
+        final = [
+            self._symbol_range_coverage_summary(
+                symbol,
+                request["source_environment"],
+                request["date_from"],
+                request["date_to"],
+                warmup_bars=int(request.get("warmup_bars", BACKTEST_WARMUP_BARS) or BACKTEST_WARMUP_BARS),
+            )
+            for symbol in symbols
+        ]
+        return {
+            "enabled": True,
+            "symbols": list(symbols),
+            "needed_symbols": needed_symbols,
+            "initial": initial,
+            "results": results,
+            "final": final,
+            "backfill_start_us": format_us_time(backfill_start_ms) if backfill_start_ms > 0 else "",
+            "backfill_end_us": format_us_time(end_ms) if end_ms > 0 else "",
+            "concurrency": max_workers,
+        }
 
     def _format_backfill_start_time(self, anchor_ms: int) -> str:
         return ms_to_et(anchor_ms).strftime("%Y%m%d-%H:%M:%S")
@@ -2323,6 +2529,8 @@ class BacktestService:
         date_from: str,
         date_to: str,
         session_mode: str,
+        *,
+        allow_backfill: bool = True,
     ) -> list[dict]:
         start_ms, end_ms = self._date_to_ms_range(date_from, date_to)
         rows = self._load_bar_rows_from_sqlite(
@@ -2348,7 +2556,7 @@ class BacktestService:
         else:
             first_bar_ms = 0
             last_bar_ms = 0
-        if not rows or first_bar_ms > start_ms or last_bar_ms < end_ms - interval_to_ms("5m"):
+        if allow_backfill and (not rows or first_bar_ms > start_ms or last_bar_ms < end_ms - self._session_edge_grace_ms()):
             warmup_lookback_ms = interval_to_ms("5m") * (BACKTEST_WARMUP_BARS + 20)
             repair = self._backfill_symbol_history(
                 symbol,
@@ -2361,7 +2569,7 @@ class BacktestService:
             if repair_rows:
                 self._persist_backfill_rows(repair_rows)
             rows = self._merge_backfill_rows(rows, repair_rows)
-        if rows and self._count_internal_5m_gaps(rows) > 0:
+        if allow_backfill and rows and self._count_internal_5m_gaps(rows) > 0:
             warmup_lookback_ms = interval_to_ms("5m") * (BACKTEST_WARMUP_BARS + 20)
             repair = self._backfill_symbol_history(
                 symbol,
@@ -3666,7 +3874,7 @@ class BacktestService:
         for completed_symbols, symbol in enumerate(symbols):
             if self._cancel_event.is_set():
                 raise BacktestCancelled()
-            progress_value = 5 + int((completed_symbols / total_symbols) * 18)
+            progress_value = 16 + int((completed_symbols / total_symbols) * 8)
             self._set_progress_context("running", "loading", f"loading {symbol}", progress_value, progress_context)
             bars = self._load_symbol_bars(
                 symbol,
@@ -3674,6 +3882,7 @@ class BacktestService:
                 request["date_from"],
                 request["date_to"],
                 request["session_mode"],
+                allow_backfill=False,
             )
             state, quality = self._prepare_portfolio_symbol_state(
                 symbol,
@@ -6382,11 +6591,20 @@ class BacktestService:
         date_to: str,
         session_mode: str,
         initial_capital: float,
+        *,
+        allow_backfill: bool = True,
     ) -> list[dict]:
         benchmark_symbol = str(symbol or "").strip().upper()
         if not benchmark_symbol:
             return []
-        bars = self._load_symbol_bars(benchmark_symbol, source_environment, date_from, date_to, session_mode)
+        bars = self._load_symbol_bars(
+            benchmark_symbol,
+            source_environment,
+            date_from,
+            date_to,
+            session_mode,
+            allow_backfill=allow_backfill,
+        )
         if not bars:
             return []
         closes_by_day = {}

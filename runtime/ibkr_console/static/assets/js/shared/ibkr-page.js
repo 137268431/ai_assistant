@@ -594,6 +594,10 @@ function getIbkrRuntimeHeroAuthSummaryText({
         return `session authenticated · ${startupActive ? startupStepLabel : warmupSummaryText}`;
     }
 
+    if (!runtimeStatus?.started && startupActive) {
+        return `gateway restart / 2FA flow · ${startupStepLabel}`;
+    }
+
     if (!runtimeStatus?.started) {
         return 'runtime stopped · waiting manual start';
     }
@@ -1044,6 +1048,25 @@ function getIbkrRuntimeAuthGuidanceModel({
         };
     }
 
+    if (
+        !sessionAuthenticated
+        && !runtimeStarted
+        && startup?.active
+        && ['manual_gateway_restart', 'panic_reset_2fa'].includes(safeReason)
+    ) {
+        return {
+            visible: true,
+            tone: 'warn',
+            badge: safeReasonLabel,
+            stepLabel: safeStartupStepLabel,
+            title: 'Gateway 重启已受理，等待启动轮次',
+            copy: startup?.operator_action || startup?.current_blocker || '后台正在重启 Gateway 并创建新的 2FA 启动轮次。看到“去飞书开始”后，再去飞书点开始验证。',
+            meta: [startup?.summary || '不要重复点 Gateway 重启', '页面会自动刷新'],
+            buttonLabel: '刷新状态',
+            behavior: 'refresh'
+        };
+    }
+
     if (twoFactorCyclePhase === 'triggered') {
         return {
             visible: true,
@@ -1362,8 +1385,10 @@ function getIbkrRuntimePrimaryBlockerCardModel({
         blocker.copy = '飞书/控制请求已发送，但没有确认 IBKR 手机 Push 已发出。请先重启 IB Gateway 服务，看到 Gateway 进入 Second Factor 后再看手机。';
     } else if (blockerPhase === 'runtime_stopped') {
         blocker.tone = 'warn';
-        blocker.title = 'Runtime 当前未启动';
-        blocker.copy = '这次更像是 runtime service 没有拉起，不是单纯 session pending；重启 compute 后如果没有自动恢复，需要重新触发一次 IBKR start / 2FA。';
+        blocker.title = startup?.active ? 'Gateway/2FA 启动轮次处理中' : 'Runtime 当前未启动';
+        blocker.copy = startup?.active
+            ? (startup?.operator_action || startup?.current_blocker || '后台正在推进 Gateway 重启和 2FA 启动轮次，页面会自动刷新。')
+            : '这次更像是 runtime service 没有拉起，不是单纯 session pending；重启 compute 后如果没有自动恢复，需要重新触发一次 IBKR start / 2FA。';
     } else if (blockerPhase === 'waiting_response_reset') {
         blocker.tone = 'error';
         blocker.title = '旧 2FA / Session 状态已失配';

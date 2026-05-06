@@ -748,6 +748,23 @@ class ControlPlaneSplitStackTest(unittest.TestCase):
         self.assertIs(payload, sentinel)
         upsert_mock.assert_called_once_with({"type": "indicator", "symbol": "AAPL"})
 
+    def test_webhook_tv_indicator_skips_ingest_when_disabled(self):
+        with mock.patch.object(
+            api_app_mod.request,
+            "get_json",
+            return_value={"type": "indicator", "symbol": "AAPL", "environment": "live"},
+        ):
+            with mock.patch.object(api_app_mod, "_config_value", return_value="FALSE") as config_mock:
+                with mock.patch.object(api_app_mod, "_upsert_tv_indicator") as upsert_mock:
+                    payload = api_app_mod.webhook_tv()
+
+        self.assertEqual(payload["ok"], True)
+        self.assertEqual(payload["skipped"], True)
+        self.assertEqual(payload["reason"], "tv_webhook_ingest_enabled=false")
+        self.assertEqual(payload["config_value"], "FALSE")
+        config_mock.assert_called_once_with("tv_webhook_ingest_enabled", "TRUE", "live")
+        upsert_mock.assert_not_called()
+
     def test_webhook_tv_signal_route_uses_native_signal_upsert(self):
         sentinel = {"ok": True, "kind": "signal"}
         with mock.patch.object(api_app_mod.request, "get_json", return_value={"symbol": "AAPL"}):

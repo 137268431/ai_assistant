@@ -254,6 +254,13 @@ def normalize_request(payload: dict) -> dict:
         minimum=1,
         maximum=service_module.MAX_BACKTEST_RETENTION_LIMIT,
     )
+    preflight_backfill = normalize_bool(payload.get("preflight_backfill"), True)
+    backfill_concurrency = normalize_positive_int(
+        payload.get("backfill_concurrency"),
+        default=service_module.DEFAULT_BACKTEST_BACKFILL_CONCURRENCY,
+        minimum=1,
+        maximum=service_module.MAX_BACKTEST_BACKFILL_CONCURRENCY,
+    )
     raw_params = payload.get("strategy_params") or payload.get("params") or {}
     strategy_params = normalize_strategy_params(raw_params)
     if payload.get("signal_window_max_bars") not in (None, ""):
@@ -308,6 +315,8 @@ def normalize_request(payload: dict) -> dict:
         "scan_warmup_bars": scan_warmup_bars,
         "premarket_cutoff_time": premarket_cutoff_time,
         "retention_limit": retention_limit,
+        "preflight_backfill": preflight_backfill,
+        "backfill_concurrency": backfill_concurrency,
         "params": {
             "strategy_params": strategy_params,
             "strategy_tag": strategy_tag,
@@ -317,6 +326,8 @@ def normalize_request(payload: dict) -> dict:
             "scan_warmup_bars": scan_warmup_bars,
             "premarket_cutoff_time": premarket_cutoff_time,
             "persist_backtest_indicators": persist_backtest_indicators,
+            "preflight_backfill": preflight_backfill,
+            "backfill_concurrency": backfill_concurrency,
             "requested_symbol_source": symbol_source,
             "historical_targets_replay": historical_targets_replay,
             "execution_model": execution_model,
