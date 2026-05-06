@@ -1,21 +1,23 @@
 // Shared compatibility entrypoint.
 // Source-of-truth browser modules now live under /assets/js/shared and /assets/css.
 (function loadSharedCommonBundle() {
-  const scriptTags = [
-    '<script src="/assets/js/shared/runtime-config.js"></script>',
-    '<script src="/assets/js/shared/base.js"></script>',
-    '<script src="/assets/js/shared/ui.js"></script>'
+  const sharedScriptPaths = [
+    '/assets/js/shared/runtime-config.js',
+    '/assets/js/shared/base.js',
+    '/assets/js/shared/ui-toast-nav.js',
+    '/assets/js/shared/ui-time-indicator.js',
+    '/assets/js/shared/ui-page.js',
+    '/assets/js/shared/ui-bridges.js',
+    '/assets/js/shared/ui-legacy.js',
+    '/assets/js/shared/ui.js'
   ];
+  const scriptTags = sharedScriptPaths.map((src) => `<script src="${src}"></script>`);
 
   if (typeof document !== 'undefined') {
     if (document.readyState === 'loading') {
       document.write(scriptTags.join(''));
     } else {
-      [
-        '/assets/js/shared/runtime-config.js',
-        '/assets/js/shared/base.js',
-        '/assets/js/shared/ui.js'
-      ].forEach((src) => {
+      sharedScriptPaths.forEach((src) => {
         if (document.querySelector(`script[src="${src}"]`)) return;
         const script = document.createElement('script');
         script.src = src;
@@ -49,12 +51,28 @@
       formatEtRefreshDateTime: (...args) => pick('formatEtRefreshDateTime')(...args),
       setPageRefreshTime: (...args) => pick('setPageRefreshTime')(...args),
       setPageContextMeta: (...args) => pick('setPageContextMeta')(...args),
+      renderPageRefreshControl: (...args) => pick('renderPageRefreshControl')(...args),
+      renderPageTopSection: (...args) => pick('renderPageTopSection')(...args),
+      renderPageLoadingOverlay: (...args) => pick('renderPageLoadingOverlay')(...args),
+      ensurePageLoadingOverlay: (...args) => pick('ensurePageLoadingOverlay')(...args),
+      setPageLoading: (...args) => pick('setPageLoading')(...args),
+      withPageLoading: (...args) => pick('withPageLoading')(...args),
+      spinPageRefreshButton: (...args) => pick('spinPageRefreshButton')(...args),
+      renderSystemBridge: (...args) => pick('renderSystemBridge')(...args),
+      renderExecutionBridge: (...args) => pick('renderExecutionBridge')(...args),
+      renderAnalyticsBridge: (...args) => pick('renderAnalyticsBridge')(...args),
+      renderHomeBridge: (...args) => pick('renderHomeBridge')(...args),
+      renderOpsBridge: (...args) => pick('renderOpsBridge')(...args),
+      renderBacktestsBridge: (...args) => pick('renderBacktestsBridge')(...args),
       getCurrentEtDateString: (...args) => pick('getCurrentEtDateString')(...args),
       formatRelativeTime: (...args) => pick('formatRelativeTime')(...args),
       formatTime: (...args) => pick('formatTime')(...args),
       showLoading: (...args) => pick('showLoading')(...args),
       hideLoading: (...args) => pick('hideLoading')(...args),
       withLoading: (...args) => pick('withLoading')(...args),
+      guardedLoader: (...args) => pick('guardedLoader')(...args),
+      getIndicatorModalStyles: (...args) => pick('getIndicatorModalStyles')(...args),
+      showIndicatorModal: (...args) => pick('showIndicatorModal')(...args),
     };
   }
 })();

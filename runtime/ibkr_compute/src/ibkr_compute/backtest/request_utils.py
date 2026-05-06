@@ -5,12 +5,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from ibkr_compute.core.indicator_engine import DEFAULT_PARAMS
-
-
-def _runtime_service_module():
-    from . import runtime_service as service_module
-
-    return service_module
+from ibkr_compute.backtest import constants
 
 
 def parse_symbols(raw_symbols: str) -> list[str]:
@@ -49,8 +44,7 @@ def normalize_positive_int(raw_value: Any, default: int, minimum: int = 0, maxim
 
 
 def normalize_hhmm(raw_value: Any, default: str | None = None) -> str:
-    service_module = _runtime_service_module()
-    default_value = str(default or service_module.DEFAULT_SCAN_CUTOFF_TIME)
+    default_value = str(default or constants.DEFAULT_SCAN_CUTOFF_TIME)
     text = str(raw_value or "").strip()
     if ":" not in text:
         return default_value
@@ -109,12 +103,11 @@ def normalize_strategy_params(raw_params: dict, base_params: dict | None = None)
 
 
 def normalize_variants(raw_variants: list, base_params: dict, default_strategy_tag: str) -> list[dict]:
-    service_module = _runtime_service_module()
     if not isinstance(raw_variants, list):
         return []
 
     variants = []
-    for index, item in enumerate(raw_variants[:service_module.MAX_BATCH_VARIANTS], start=1):
+    for index, item in enumerate(raw_variants[:constants.MAX_BATCH_VARIANTS], start=1):
         if not isinstance(item, dict):
             continue
         label = str(item.get("label") or item.get("name") or f"Variant {index}").strip() or f"Variant {index}"
@@ -153,13 +146,12 @@ def build_variant_request(base_request: dict, variant: dict, variant_index: int)
 
 
 def normalize_request(payload: dict) -> dict:
-    service_module = _runtime_service_module()
-    now = datetime.now(service_module.ET)
+    now = datetime.now(constants.ET)
     latest_complete_date = (now.date() - timedelta(days=1)).strftime("%Y-%m-%d")
     name = str(payload.get("name") or "").strip() or f"Backtest {now.strftime('%Y-%m-%d %H:%M')}"
     source_environment = str(payload.get("source_environment") or "live").strip().lower() or "live"
     symbol_source = str(payload.get("symbol_source") or "manual").strip().lower() or "manual"
-    if symbol_source not in service_module.SYMBOL_SOURCE_VALUES:
+    if symbol_source not in constants.SYMBOL_SOURCE_VALUES:
         symbol_source = "manual"
 
     symbols = parse_symbols(payload.get("symbols") or payload.get("symbols_text") or "")
@@ -177,32 +169,32 @@ def normalize_request(payload: dict) -> dict:
     )
     effective_symbol_source = "daily_scan_replay" if historical_targets_replay else symbol_source
     session_mode = str(payload.get("session_mode") or "extended").strip().lower() or "extended"
-    if session_mode not in service_module.SESSION_MODE_VALUES:
+    if session_mode not in constants.SESSION_MODE_VALUES:
         session_mode = "extended"
 
     initial_capital = max(1000.0, float(payload.get("initial_capital") or 10000))
     commission_per_share = max(0.0, float(payload.get("commission_per_share") or 0.005))
     slippage_bps = max(0.0, float(payload.get("slippage_bps") or 2.0))
     force_flat_eod = True
-    max_symbols = max(1, min(service_module.DEFAULT_MAX_SYMBOLS, int(payload.get("max_symbols") or service_module.DEFAULT_MAX_SYMBOLS)))
+    max_symbols = max(1, min(constants.DEFAULT_MAX_SYMBOLS, int(payload.get("max_symbols") or constants.DEFAULT_MAX_SYMBOLS)))
     execution_model = str(payload.get("execution_model") or "portfolio_stream").strip().lower() or "portfolio_stream"
-    if execution_model not in service_module.EXECUTION_MODEL_VALUES:
+    if execution_model not in constants.EXECUTION_MODEL_VALUES:
         execution_model = "portfolio_stream"
     borrow_limit_mode = str(payload.get("borrow_limit_mode") or "").strip().lower()
     if not borrow_limit_mode:
         borrow_limit_mode = "account_buying_power" if execution_model == "portfolio_stream" else "none"
-    if borrow_limit_mode not in service_module.BORROW_LIMIT_MODE_VALUES:
+    if borrow_limit_mode not in constants.BORROW_LIMIT_MODE_VALUES:
         borrow_limit_mode = "none"
     max_borrow_amount = normalize_positive_float(payload.get("max_borrow_amount"), 0.0)
     position_limit_max = normalize_positive_int(
         payload.get("position_limit_max"),
-        default=service_module.DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX,
+        default=constants.DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX,
         minimum=1,
         maximum=100,
     )
     signal_validity_minutes = normalize_positive_int(
         payload.get("signal_validity_minutes"),
-        default=service_module.DEFAULT_PORTFOLIO_SIGNAL_VALIDITY_MINUTES,
+        default=constants.DEFAULT_PORTFOLIO_SIGNAL_VALIDITY_MINUTES,
         minimum=1,
         maximum=390,
     )
@@ -214,21 +206,21 @@ def normalize_request(payload: dict) -> dict:
     atr_stop_min_change = normalize_positive_float(payload.get("atr_stop_min_change"), 0.01, minimum=0.0, maximum=100.0)
     trade_window_start_time = normalize_hhmm(
         payload.get("trade_window_start_time"),
-        service_module.DEFAULT_PORTFOLIO_TRADE_WINDOW_START,
+        constants.DEFAULT_PORTFOLIO_TRADE_WINDOW_START,
     )
     trade_window_end_time = normalize_hhmm(
         payload.get("trade_window_end_time"),
-        service_module.DEFAULT_PORTFOLIO_TRADE_WINDOW_END,
+        constants.DEFAULT_PORTFOLIO_TRADE_WINDOW_END,
     )
     order_window_end_time = normalize_hhmm(
         payload.get("order_window_end_time"),
-        service_module.DEFAULT_PORTFOLIO_ORDER_WINDOW_END,
+        constants.DEFAULT_PORTFOLIO_ORDER_WINDOW_END,
     )
     simultaneous_signal_priority = str(payload.get("simultaneous_signal_priority") or "daily_target_rank").strip().lower()
-    if simultaneous_signal_priority not in service_module.SIGNAL_PRIORITY_VALUES:
+    if simultaneous_signal_priority not in constants.SIGNAL_PRIORITY_VALUES:
         simultaneous_signal_priority = "daily_target_rank"
     manual_confirm_mode = str(payload.get("manual_confirm_mode") or "auto").strip().lower() or "auto"
-    if manual_confirm_mode not in service_module.MANUAL_CONFIRM_MODE_VALUES:
+    if manual_confirm_mode not in constants.MANUAL_CONFIRM_MODE_VALUES:
         manual_confirm_mode = "auto"
     confirm_delay_minutes = normalize_positive_int(
         payload.get("confirm_delay_minutes"),
@@ -241,56 +233,56 @@ def normalize_request(payload: dict) -> dict:
     persist_backtest_indicators = normalize_bool(payload.get("persist_backtest_indicators"), False)
     warmup_bars = normalize_positive_int(
         payload.get("warmup_bars") or payload.get("preheat_bars"),
-        default=service_module.BACKTEST_WARMUP_BARS,
+        default=constants.BACKTEST_WARMUP_BARS,
         minimum=0,
-        maximum=service_module.MAX_BACKTEST_WARMUP_BARS,
+        maximum=constants.MAX_BACKTEST_WARMUP_BARS,
     )
     scan_warmup_bars = normalize_positive_int(
         payload.get("scan_warmup_bars") or payload.get("selection_warmup_bars"),
         default=warmup_bars,
         minimum=0,
-        maximum=service_module.MAX_BACKTEST_WARMUP_BARS,
+        maximum=constants.MAX_BACKTEST_WARMUP_BARS,
     )
     premarket_cutoff_time = normalize_hhmm(payload.get("premarket_cutoff_time") or payload.get("scan_cutoff_time"))
     scan_session_mode = str(payload.get("scan_session_mode") or "extended").strip().lower() or "extended"
-    if scan_session_mode not in service_module.SESSION_MODE_VALUES:
+    if scan_session_mode not in constants.SESSION_MODE_VALUES:
         scan_session_mode = "extended"
     retention_limit = normalize_positive_int(
         payload.get("retention_limit"),
-        default=service_module.DEFAULT_BACKTEST_RETENTION_LIMIT,
+        default=constants.DEFAULT_BACKTEST_RETENTION_LIMIT,
         minimum=1,
-        maximum=service_module.MAX_BACKTEST_RETENTION_LIMIT,
+        maximum=constants.MAX_BACKTEST_RETENTION_LIMIT,
     )
     preflight_backfill = normalize_bool(payload.get("preflight_backfill"), True)
     backfill_concurrency = normalize_positive_int(
         payload.get("backfill_concurrency"),
-        default=service_module.DEFAULT_BACKTEST_BACKFILL_CONCURRENCY,
+        default=constants.DEFAULT_BACKTEST_BACKFILL_CONCURRENCY,
         minimum=1,
-        maximum=service_module.MAX_BACKTEST_BACKFILL_CONCURRENCY,
+        maximum=constants.MAX_BACKTEST_BACKFILL_CONCURRENCY,
     )
     backfill_symbol_timeout_s = normalize_positive_int(
         payload.get("backfill_symbol_timeout_s") or payload.get("backfill_symbol_timeout_seconds"),
-        default=service_module.DEFAULT_BACKTEST_BACKFILL_SYMBOL_TIMEOUT_SECONDS,
+        default=constants.DEFAULT_BACKTEST_BACKFILL_SYMBOL_TIMEOUT_SECONDS,
         minimum=30,
-        maximum=service_module.MAX_BACKTEST_BACKFILL_SYMBOL_TIMEOUT_SECONDS,
+        maximum=constants.MAX_BACKTEST_BACKFILL_SYMBOL_TIMEOUT_SECONDS,
     )
     backfill_max_batches = normalize_positive_int(
         payload.get("backfill_max_batches"),
-        default=service_module.DEFAULT_BACKTEST_BACKFILL_MAX_BATCHES,
+        default=constants.DEFAULT_BACKTEST_BACKFILL_MAX_BATCHES,
         minimum=1,
-        maximum=service_module.MAX_BACKTEST_BACKFILL_MAX_BATCHES,
+        maximum=constants.MAX_BACKTEST_BACKFILL_MAX_BATCHES,
     )
     backfill_history_timeout_s = normalize_positive_int(
         payload.get("backfill_history_timeout_s") or payload.get("backfill_history_timeout_seconds"),
-        default=service_module.DEFAULT_BACKTEST_BACKFILL_HISTORY_TIMEOUT_SECONDS,
+        default=constants.DEFAULT_BACKTEST_BACKFILL_HISTORY_TIMEOUT_SECONDS,
         minimum=5,
-        maximum=service_module.MAX_BACKTEST_BACKFILL_HISTORY_TIMEOUT_SECONDS,
+        maximum=constants.MAX_BACKTEST_BACKFILL_HISTORY_TIMEOUT_SECONDS,
     )
     backfill_history_max_retries = normalize_positive_int(
         payload.get("backfill_history_max_retries"),
-        default=service_module.DEFAULT_BACKTEST_BACKFILL_HISTORY_MAX_RETRIES,
+        default=constants.DEFAULT_BACKTEST_BACKFILL_HISTORY_MAX_RETRIES,
         minimum=0,
-        maximum=service_module.MAX_BACKTEST_BACKFILL_HISTORY_MAX_RETRIES,
+        maximum=constants.MAX_BACKTEST_BACKFILL_HISTORY_MAX_RETRIES,
     )
     raw_params = payload.get("strategy_params") or payload.get("params") or {}
     strategy_params = normalize_strategy_params(raw_params)

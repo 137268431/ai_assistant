@@ -8,7 +8,11 @@
     <script src="common.js"></script>
     <script>document.write(getCommonStyles());</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-    <script src="/assets/js/shared/ibkr-page.js?v=20260429-console-cohesion"></script>
+    <script src="/assets/js/shared/ibkr-page-core.js?v=20260507-shared-split"></script>
+    <script src="/assets/js/shared/ibkr-page-engine.js?v=20260507-shared-split"></script>
+    <script src="/assets/js/shared/ibkr-page-auth.js?v=20260507-shared-split"></script>
+    <script src="/assets/js/shared/ibkr-page-config.js?v=20260507-shared-split"></script>
+    <script src="/assets/js/shared/ibkr-page.js?v=20260507-shared-split"></script>
     <link rel="stylesheet" href="/assets/css/pages/ibkr_system/page.css?v=20260502-scheduler-layout">
 </head>
 <body>
@@ -149,6 +153,10 @@
         </div>
     </div>
 
-    <script src="/assets/js/pages/ibkr_system/page.js?v=20260502-scheduler-layout"></script>
+    <script src="/assets/js/pages/ibkr_system/state-api.js?v=20260507-system-split"></script>
+    <script src="/assets/js/pages/ibkr_system/renderers.js?v=20260507-system-split"></script>
+    <script src="/assets/js/pages/ibkr_system/cards.js?v=20260507-system-split"></script>
+    <script src="/assets/js/pages/ibkr_system/actions.js?v=20260507-system-split"></script>
+    <script src="/assets/js/pages/ibkr_system/page.js?v=20260507-system-split"></script>
 </body>
 </html>

@@ -21,6 +21,16 @@ function readStatic(relativePath) {
   return fs.readFileSync(path.join(staticRoot, relativePath), 'utf8');
 }
 
+function readPageScriptBundle(htmlRelativePath, scriptPrefix, fallbackRelativePath) {
+  const html = readStatic(htmlRelativePath);
+  const matches = Array.from(html.matchAll(/<script\s+[^>]*src="([^"]+)"[^>]*><\/script>/g));
+  const scriptPaths = matches
+    .map((match) => String(match[1] || '').split('?')[0].replace(/^\/+/, ''))
+    .filter((src) => src.startsWith(scriptPrefix));
+  if (!scriptPaths.length) return readStatic(fallbackRelativePath);
+  return scriptPaths.map((src) => readStatic(src)).join('\n');
+}
+
 function assert(condition, issue) {
   if (!condition) issues.push(issue);
 }
@@ -100,14 +110,18 @@ assert(systemHtml.includes('运维摘要'), 'system_missing_ops_summary_section'
 assert(systemJs.includes('ops-summary-link') && systemJs.includes('/ibkr_monitor.html'), 'system_summary_missing_monitor_link');
 
 const runtimeHtml = readStatic('ibkr_runtime.html');
-const runtimeJs = readStatic('assets/js/pages/ibkr_runtime/page.js');
+const runtimeJs = readPageScriptBundle(
+  'ibkr_runtime.html',
+  'assets/js/pages/ibkr_runtime/',
+  'assets/js/pages/ibkr_runtime/page.js',
+);
 assert(runtimeHtml.includes('操作前链路摘要'), 'runtime_missing_link_summary_title');
 assert(runtimeJs.includes('runtime-link-action') && runtimeJs.includes('/ibkr_monitor.html'), 'runtime_summary_missing_monitor_link');
 assert(runtimeHtml.includes('核心模块控制') && runtimeHtml.includes('id="serviceControlGrid"'), 'runtime_missing_service_control_panel');
 assert(runtimeJs.includes('/api/custom/ibkr/services/action'), 'runtime_missing_service_action_api');
 assert(includesAll(runtimeJs, ['ibkr-runtime', 'ibkr-gateway', 'ibkr-compute', 'ibkr-scheduler']), 'runtime_service_control_missing_core_services');
 assert(includesAll(runtimeJs, ['shouldShowServiceStopAction', '停止服务', "'stop'"]), 'runtime_service_control_missing_stop_action');
-assert(includesAll(runtimeHtml, ['runtimeFlowToggleButton', '全部急停', '恢复运行开关', 'runtime-trim']), 'runtime_trimmed_controls_missing');
+assert(includesAll(runtimeHtml, ['runtimeFlowToggleButton', '全部急停', '恢复运行开关', 'runtime-control-danger']), 'runtime_trimmed_controls_missing');
 assert(runtimeJs.includes('recover_all') && runtimeJs.includes('/api/custom/ibkr/recover'), 'runtime_missing_recover_action');
 const runtimeExpectedStaticActions = ['start', 'probe', 'compute', 'emergency_all', 'recover_all'];
 const runtimeUnexpectedStaticActions = collectDataActions(runtimeHtml).filter((action) => !runtimeExpectedStaticActions.includes(action));
