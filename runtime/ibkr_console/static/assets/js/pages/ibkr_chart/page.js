@@ -49,6 +49,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         const TRACE_PANEL_PAGE_SIZE = 20;
         let chartTracePanelOpen = false;
         let tracePanelPage = 1;
+        let tracePanelManualPage = false;
         let chartLegendCollapsed = true;
         let chartMarkerDensityTier = '';
         let chartTooltipSyncRaf = 0;
@@ -2444,7 +2445,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             `;
         }
 
-        function renderChartWorkspaceChrome(payload = getChartDisplayPayload()) {
+        function renderChartWorkspaceChrome(payload = getChartDisplayPayload(), { includeTrace = true } = {}) {
             renderChartToolbar(payload);
             renderChartFloatingLegend(payload);
             renderChartBottomBar(payload);
@@ -2452,7 +2453,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             renderMobileQuickPanel(payload);
             renderInspectorDrawer(payload);
             renderMobileGestureHint(payload);
-            renderTracePanel(payload);
+            if (includeTrace) renderTracePanel(payload);
         }
 
         function buildTraceToken(text, className = '') {
@@ -2481,13 +2482,25 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             return clampTracePanelPage(Math.floor(rowIndex / TRACE_PANEL_PAGE_SIZE) + 1, getTracePanelTotalPages(traceRows));
         }
 
+        function getCommittedTraceFocusContext(payload) {
+            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            if (!bars.length) return null;
+            const index = selectedBarIndex >= 0 ? clampIndex(selectedBarIndex, bars.length) : bars.length - 1;
+            return buildContext(payload, index, selectedSignalId);
+        }
+
+        function clearTraceManualPage() {
+            tracePanelManualPage = false;
+        }
+
         function syncTracePanelPageToFocus(payload) {
+            if (tracePanelManualPage) return;
             const bars = Array.isArray(payload?.bars) ? payload.bars : [];
             if (!bars.length) {
                 tracePanelPage = 1;
                 return;
             }
-            const focus = buildContext(payload, getEffectiveCursorIndex(payload), selectedSignalId);
+            const focus = getCommittedTraceFocusContext(payload);
             if (!focus?.bar?.bar_time_ms) return;
             tracePanelPage = findTracePanelPageForBar(payload, focus.bar.bar_time_ms);
         }
@@ -2530,15 +2543,15 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const pageButtons = pages.map((item) => {
                 if (typeof item !== 'number') return '<span class="trace-page-ellipsis">...</span>';
                 const active = item === page;
-                return `<button class="trace-page-btn ${active ? 'active' : ''}" type="button" onclick="setTracePanelPage(${item})" ${active ? 'aria-current="page"' : ''}>${item}</button>`;
+                return `<button class="trace-page-btn ${active ? 'active' : ''}" type="button" onclick="setTracePanelPage(${item}, event)" ${active ? 'aria-current="page"' : ''}>${item}</button>`;
             }).join('');
             return `
                 <div class="trace-pagination-bar">
                     <div class="trace-pagination-status">${escapeHtml(`${startIndex + 1}-${endIndex} / ${totalRows}`)}</div>
                     <div class="trace-pagination-pages">
-                        <button class="trace-page-btn" type="button" onclick="setTracePanelPage(${page - 1})" ${page <= 1 ? 'disabled' : ''}>Prev</button>
+                        <button class="trace-page-btn" type="button" onclick="setTracePanelPage(${page - 1}, event)" ${page <= 1 ? 'disabled' : ''}>Prev</button>
                         ${pageButtons}
-                        <button class="trace-page-btn" type="button" onclick="setTracePanelPage(${page + 1})" ${page >= totalPages ? 'disabled' : ''}>Next</button>
+                        <button class="trace-page-btn" type="button" onclick="setTracePanelPage(${page + 1}, event)" ${page >= totalPages ? 'disabled' : ''}>Next</button>
                     </div>
                 </div>
             `;
@@ -2547,7 +2560,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         function buildTracePanelBody(payload, { embedded = false } = {}) {
             const traceRows = getTraceRows(payload);
             const bars = Array.isArray(payload?.bars) ? payload.bars : [];
-            const focus = bars.length ? buildContext(payload, getEffectiveCursorIndex(payload), selectedSignalId) : null;
+            const focus = bars.length ? getCommittedTraceFocusContext(payload) : null;
             const activeBarMs = Number(focus?.bar?.bar_time_ms || 0) || 0;
             const totalRows = traceRows.length;
             const totalPages = getTracePanelTotalPages(traceRows);
@@ -2694,6 +2707,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
 
         window.toggleChartTracePanel = function() {
             chartTracePanelOpen = !chartTracePanelOpen;
+            clearTraceManualPage();
             saveChartUiPrefs();
             renderTracePanel(getChartDisplayPayload());
             renderChartToolbar(getChartDisplayPayload());
@@ -2701,10 +2715,13 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             updateQueryState();
         };
 
-        window.setTracePanelPage = function(page) {
+        window.setTracePanelPage = function(page, event = null) {
+            if (event?.preventDefault) event.preventDefault();
+            if (event?.stopPropagation) event.stopPropagation();
             const payload = getChartDisplayPayload();
             const totalPages = getTracePanelTotalPages(getTraceRows(payload));
             tracePanelPage = clampTracePanelPage(page, totalPages);
+            tracePanelManualPage = true;
             renderTracePanel(payload, { syncToFocus: false });
         };
 
@@ -2713,6 +2730,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const bars = Array.isArray(payload?.bars) ? payload.bars : [];
             const targetIndex = findBarIndexByTime(bars, Number(barTimeMs || 0));
             if (targetIndex < 0) return;
+            clearTraceManualPage();
             focusBarIndex(targetIndex);
             if (chartTracePanelOpen) {
                 tracePanelPage = findTracePanelPageForBar(payload, barTimeMs);
@@ -2720,7 +2738,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             }
         };
 
-        function renderCursorStrip(payload) {
+        function renderCursorStrip(payload, { includeTrace = true } = {}) {
             const bars = Array.isArray(payload?.bars) ? payload.bars : [];
             if (!bars.length) {
                 document.getElementById('cursorStrip').innerHTML = [
@@ -2731,7 +2749,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     buildCursorCard('Touch / Divergence', '--', '--'),
                     buildCursorCard('Signal / Osc', chartWorkspaceState === 'error' ? '加载失败' : '--', chartWorkspaceState === 'error' ? '请检查 ibkr_bars / 网络状态' : '--'),
                 ].join('');
-                renderChartWorkspaceChrome(payload);
+                renderChartWorkspaceChrome(payload, { includeTrace });
                 return;
             }
             const fallbackIndex = selectedBarIndex >= 0 ? selectedBarIndex : bars.length - 1;
@@ -2759,7 +2777,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     buildCursorCard('IBKR API Chain', ibkrChain.primary, ibkrChain.secondary, { valueClass: 'compact' }),
                     buildCursorCard('Diff', diff.primary, diff.secondary, { valueClass: 'compact' }),
                 ].join('');
-                renderChartWorkspaceChrome(payload);
+                renderChartWorkspaceChrome(payload, { includeTrace });
                 return;
             }
             const ohlc = formatInlineOHLC(bar);
@@ -2779,7 +2797,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 buildCursorCard('Touch / Divergence', isPreviewBar && !indicator ? '预览中' : getTouchDetailText(indicator), isPreviewBar && !indicator ? 'Touch / Div 待收盘确认' : getDivergenceDetailText(indicator)),
                 buildCursorCard('Signal / Osc', isPreviewBar && !indicator ? '未收盘预览' : signalPrimary, `${traceStage ? `Stage ${traceStage} · ` : ''}${signalSecondary}`),
             ].join('');
-            renderChartWorkspaceChrome(payload);
+            renderChartWorkspaceChrome(payload, { includeTrace });
         }
 
         function renderLayerStrip() {
@@ -2855,7 +2873,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             hoverBarIndex = -1;
             hideChartTooltip();
             if (!payload || !Array.isArray(payload.bars) || !payload.bars.length) return;
-            renderCursorStrip(payload);
+            renderCursorStrip(payload, { includeTrace: false });
             const focusIndex = getEffectiveCursorIndex(payload);
             if (focusIndex >= 0) {
                 scheduleChartFocusMarkerSync(focusIndex, payload);
@@ -2887,7 +2905,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             if (chartPointerLocked) return;
             const safeIndex = Math.min(Math.max(Number(index) || 0, 0), payload.bars.length - 1);
             hoverBarIndex = safeIndex;
-            renderCursorStrip(payload);
+            renderCursorStrip(payload, { includeTrace: false });
             scheduleChartFocusMarkerSync(safeIndex, payload);
         }
 
@@ -2928,6 +2946,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         function lockChartPointerAtIndex(index, signalId = '') {
             const payload = getChartDisplayPayload();
             if (!payload || !Array.isArray(payload.bars) || !payload.bars.length) return;
+            clearTraceManualPage();
             const bars = payload.bars;
             let safeIndex = clampIndex(index, bars.length);
             let safeSignalId = String(signalId || '');
@@ -3321,6 +3340,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         function focusRelativeBar(delta) {
             const payload = getChartDisplayPayload();
             if (!payload || !Array.isArray(payload.bars) || !payload.bars.length) return;
+            clearTraceManualPage();
             const bars = payload.bars;
             const activeIndex = getEffectiveCursorIndex(payload);
             const targetIndex = clampIndex(activeIndex + Number(delta || 0), bars.length);
@@ -3331,6 +3351,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         }
 
         function focusSignalByStep(step) {
+            clearTraceManualPage();
             if (!lastPayload || !Array.isArray(lastPayload.signals) || !lastPayload.signals.length) {
                 showToast('当前窗口暂无信号');
                 return;
@@ -3361,6 +3382,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         function focusLatestBarAction() {
             const payload = getChartDisplayPayload();
             if (!payload || !Array.isArray(payload.bars) || !payload.bars.length) return;
+            clearTraceManualPage();
             const latestIndex = payload.bars.length - 1;
             focusBarIndex(latestIndex);
             hoverBarIndex = latestIndex;
@@ -4935,6 +4957,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                     return;
                 }
                 chartPointerLocked = false;
+                clearTraceManualPage();
                 focusBarIndex(index, signalKey);
                 syncCursorIndex(index);
                 ensureBarVisible(index, displayPayload);
@@ -5311,6 +5334,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 return;
             }
             const displayPayload = getChartDisplayPayload();
+            clearTraceManualPage();
             focusBarIndex(index, signalId);
             ensureBarVisible(index, displayPayload || lastPayload, { center: true });
             const context = buildContext(displayPayload || lastPayload, index, signalId ? decodeURIComponent(signalId) : '');
@@ -5363,6 +5387,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 return;
             }
             const displayPayload = getChartDisplayPayload();
+            clearTraceManualPage();
             focusBarIndex(index, '');
             ensureBarVisible(index, displayPayload || lastPayload, { center: true });
         };
@@ -5498,6 +5523,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             }
             if (event.key === 'Home') {
                 event.preventDefault();
+                clearTraceManualPage();
                 focusBarIndex(0);
                 hoverBarIndex = 0;
                 ensureBarVisible(0, displayPayload, { center: true });

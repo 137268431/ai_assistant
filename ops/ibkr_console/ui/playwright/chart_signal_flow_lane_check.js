@@ -6,7 +6,7 @@ const STATIC_ROOT = process.env.IBKR_CONSOLE_STATIC_ROOT
   || path.resolve(__dirname, '../../../../runtime/ibkr_console/static');
 
 const BAR_START_MS = 1777905000000;
-const BAR_TIMES = Array.from({ length: 45 }, (_, index) => BAR_START_MS + index * 5 * 60 * 1000);
+const BAR_TIMES = Array.from({ length: 104 }, (_, index) => BAR_START_MS + index * 5 * 60 * 1000);
 
 function staticPathForUrl(url) {
   const parsed = new URL(url);
@@ -390,17 +390,43 @@ async function main() {
     activeTraceText: document.querySelector('#tracePanelShell .trace-review-item.active')?.textContent || '',
   }));
 
-  const afterNextPage = await page.evaluate(() => {
-    const buttons = Array.from(document.querySelectorAll('#tracePanelShell .trace-page-btn'));
-    const nextButton = buttons.find((item) => item.textContent.trim() === 'Next');
-    nextButton?.click();
-    return {
-      tracePageText: document.querySelector('#tracePanelShell .trace-pagination-status')?.textContent || '',
-      traceItemCount: document.querySelectorAll('#tracePanelShell .trace-review-item').length,
-      firstTraceText: document.querySelector('#tracePanelShell .trace-review-item')?.textContent || '',
-      activeTraceText: document.querySelector('#tracePanelShell .trace-review-item.active')?.textContent || '',
-    };
+  await page.evaluate(() => {
+    if (typeof window.closeSignalDrawer === 'function') window.closeSignalDrawer();
   });
+  await page.waitForTimeout(150);
+  const pageFiveButton = page.locator('#tracePanelShell .trace-page-btn', { hasText: /^5$/ }).first();
+  await pageFiveButton.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(80);
+  await pageFiveButton.click();
+  await page.waitForTimeout(150);
+  const afterPageFiveClick = await page.evaluate(() => ({
+    tracePageText: document.querySelector('#tracePanelShell .trace-pagination-status')?.textContent || '',
+    traceItemCount: document.querySelectorAll('#tracePanelShell .trace-review-item').length,
+    firstTraceText: document.querySelector('#tracePanelShell .trace-review-item')?.textContent || '',
+    activeTraceText: document.querySelector('#tracePanelShell .trace-review-item.active')?.textContent || '',
+    activePageText: document.querySelector('#tracePanelShell .trace-page-btn.active')?.textContent || '',
+  }));
+  await page.waitForTimeout(3400);
+  const afterPageFiveRealtime = await page.evaluate(() => ({
+    tracePageText: document.querySelector('#tracePanelShell .trace-pagination-status')?.textContent || '',
+    traceItemCount: document.querySelectorAll('#tracePanelShell .trace-review-item').length,
+    firstTraceText: document.querySelector('#tracePanelShell .trace-review-item')?.textContent || '',
+    activePageText: document.querySelector('#tracePanelShell .trace-page-btn.active')?.textContent || '',
+  }));
+  await page.locator('#tracePanelShell .trace-page-btn', { hasText: 'Prev' }).first().click();
+  await page.waitForTimeout(150);
+  const afterPrevPageClick = await page.evaluate(() => ({
+    tracePageText: document.querySelector('#tracePanelShell .trace-pagination-status')?.textContent || '',
+    firstTraceText: document.querySelector('#tracePanelShell .trace-review-item')?.textContent || '',
+    activePageText: document.querySelector('#tracePanelShell .trace-page-btn.active')?.textContent || '',
+  }));
+  await page.locator('#tracePanelShell .trace-page-btn', { hasText: 'Next' }).first().click();
+  await page.waitForTimeout(150);
+  const afterNextPageClick = await page.evaluate(() => ({
+    tracePageText: document.querySelector('#tracePanelShell .trace-pagination-status')?.textContent || '',
+    firstTraceText: document.querySelector('#tracePanelShell .trace-review-item')?.textContent || '',
+    activePageText: document.querySelector('#tracePanelShell .trace-page-btn.active')?.textContent || '',
+  }));
 
   const afterFocusLaterTrace = await page.evaluate((barTimeMs) => {
     window.scrollTo(0, 0);
@@ -487,14 +513,14 @@ async function main() {
   if (!beforeClick.customStartHasPicker) failures.push('custom_start_missing_flatpickr');
   if (!beforeClick.customEndHasPicker) failures.push('custom_end_missing_flatpickr');
   if (beforeClick.customStartValue !== '2026/05/04 10:30') failures.push(`custom_start_not_et_${beforeClick.customStartValue}`);
-  if (beforeClick.customEndValue !== '2026/05/04 14:10') failures.push(`custom_end_not_et_${beforeClick.customEndValue}`);
+  if (beforeClick.customEndValue !== '2026/05/04 19:05') failures.push(`custom_end_not_et_${beforeClick.customEndValue}`);
   if (!beforeClick.customZoneText.includes('ET')) failures.push('missing_custom_range_et_badge');
   if (!beforeClick.cursorText.includes('blocked · DTP红初中')) failures.push('cursor_missing_blocked_reason');
   if (!beforeClick.traceText.includes('blocked · DTP红初中')) failures.push('trace_missing_blocked_reason');
   if (beforeClick.traceListCount !== 1) failures.push(`trace_list_count_${beforeClick.traceListCount}`);
   if (beforeClick.traceTableCount !== 0) failures.push(`trace_table_count_${beforeClick.traceTableCount}`);
   if (beforeClick.traceItemCount !== 20) failures.push(`trace_item_count_${beforeClick.traceItemCount}`);
-  if (!beforeClick.tracePageText.includes('1-20 / 45')) failures.push(`trace_page_text_${beforeClick.tracePageText}`);
+  if (!beforeClick.tracePageText.includes('1-20 / 104')) failures.push(`trace_page_text_${beforeClick.tracePageText}`);
   if (!beforeClick.activeTraceText.includes('bar #5')) failures.push('trace_active_initial_bar_missing');
   if (!componentClickProbe.ok) failures.push(`component_click_failed_${componentClickProbe.reason || 'unknown'}`);
   if (!afterComponentClick.drawerVisible) failures.push('component_click_did_not_open_drawer');
@@ -505,11 +531,21 @@ async function main() {
   if (!afterClick.drawerVisible) failures.push('blocked_click_did_not_open_drawer');
   if (!afterClick.drawerText.includes('DTP红初中')) failures.push('drawer_missing_blocked_reason');
   if (!afterClick.activeTraceText.includes('DTP红初中')) failures.push('active_trace_missing_reason');
-  if (!afterNextPage.tracePageText.includes('21-40 / 45')) failures.push(`trace_next_page_text_${afterNextPage.tracePageText}`);
-  if (afterNextPage.traceItemCount !== 20) failures.push(`trace_next_page_count_${afterNextPage.traceItemCount}`);
-  if (!afterNextPage.firstTraceText.includes('bar #21')) failures.push('trace_next_page_first_bar_missing');
-  if (afterNextPage.activeTraceText) failures.push('trace_manual_page_should_not_focus');
-  if (!afterFocusLaterTrace.tracePageText.includes('21-40 / 45')) failures.push(`trace_focus_page_text_${afterFocusLaterTrace.tracePageText}`);
+  if (!afterPageFiveClick.tracePageText.includes('81-100 / 104')) failures.push(`trace_page_five_text_${afterPageFiveClick.tracePageText}`);
+  if (afterPageFiveClick.traceItemCount !== 20) failures.push(`trace_page_five_count_${afterPageFiveClick.traceItemCount}`);
+  if (!afterPageFiveClick.firstTraceText.includes('bar #81')) failures.push('trace_page_five_first_bar_missing');
+  if (afterPageFiveClick.activeTraceText) failures.push('trace_manual_page_should_not_focus');
+  if (afterPageFiveClick.activePageText.trim() !== '5') failures.push(`trace_page_five_active_${afterPageFiveClick.activePageText}`);
+  if (!afterPageFiveRealtime.tracePageText.includes('81-100 / 104')) failures.push(`trace_page_five_realtime_text_${afterPageFiveRealtime.tracePageText}`);
+  if (!afterPageFiveRealtime.firstTraceText.includes('bar #81')) failures.push('trace_page_five_realtime_first_bar_missing');
+  if (afterPageFiveRealtime.activePageText.trim() !== '5') failures.push(`trace_page_five_realtime_active_${afterPageFiveRealtime.activePageText}`);
+  if (!afterPrevPageClick.tracePageText.includes('61-80 / 104')) failures.push(`trace_prev_page_text_${afterPrevPageClick.tracePageText}`);
+  if (!afterPrevPageClick.firstTraceText.includes('bar #61')) failures.push('trace_prev_page_first_bar_missing');
+  if (afterPrevPageClick.activePageText.trim() !== '4') failures.push(`trace_prev_page_active_${afterPrevPageClick.activePageText}`);
+  if (!afterNextPageClick.tracePageText.includes('81-100 / 104')) failures.push(`trace_next_page_text_${afterNextPageClick.tracePageText}`);
+  if (!afterNextPageClick.firstTraceText.includes('bar #81')) failures.push('trace_next_page_first_bar_missing');
+  if (afterNextPageClick.activePageText.trim() !== '5') failures.push(`trace_next_page_active_${afterNextPageClick.activePageText}`);
+  if (!afterFocusLaterTrace.tracePageText.includes('21-40 / 104')) failures.push(`trace_focus_page_text_${afterFocusLaterTrace.tracePageText}`);
   if (afterFocusLaterTrace.traceItemCount !== 20) failures.push(`trace_focus_page_count_${afterFocusLaterTrace.traceItemCount}`);
   if (!afterFocusLaterTrace.activeTraceText.includes('bar #25')) failures.push('trace_focus_later_bar_missing');
   if (!afterFocusLaterTrace.activeTraceText.includes('DTP红初中')) failures.push('trace_focus_later_reason_missing');
@@ -536,7 +572,10 @@ async function main() {
     afterComponentClick,
     clickProbe,
     afterClick,
-    afterNextPage,
+    afterPageFiveClick,
+    afterPageFiveRealtime,
+    afterPrevPageClick,
+    afterNextPageClick,
     afterFocusLaterTrace,
     customRange: {
       beforeCustomApplyRequests,

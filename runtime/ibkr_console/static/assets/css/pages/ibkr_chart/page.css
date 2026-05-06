@@ -1154,11 +1154,15 @@
         }
 
         .trace-pagination-bar {
+            position: relative;
+            z-index: 2;
             display: flex;
             align-items: center;
             justify-content: space-between;
             gap: 10px;
             padding-top: 12px;
+            pointer-events: auto;
+            touch-action: manipulation;
         }
 
         .trace-pagination-status {
@@ -1169,15 +1173,21 @@
         }
 
         .trace-pagination-pages {
+            position: relative;
+            z-index: 3;
             display: flex;
             align-items: center;
             justify-content: flex-end;
             flex-wrap: wrap;
             gap: 6px;
             min-width: 0;
+            pointer-events: auto;
+            touch-action: manipulation;
         }
 
         .trace-page-btn {
+            position: relative;
+            z-index: 4;
             min-width: 32px;
             min-height: 30px;
             padding: 0 9px;
@@ -1188,6 +1198,8 @@
             font-size: 11px;
             font-family: 'JetBrains Mono', monospace;
             cursor: pointer;
+            pointer-events: auto;
+            touch-action: manipulation;
         }
 
         .trace-page-btn:hover:not(:disabled),
