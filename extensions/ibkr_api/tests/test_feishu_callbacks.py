@@ -79,6 +79,22 @@ class FeishuCallbacksTest(unittest.TestCase):
         self.assertEqual(payload["toast"]["type"], "success")
         self.assertEqual(pb.updated[0][2]["status"], "pending")
 
+    def test_dispatch_feishu_signal_callback_treats_submitted_as_terminal(self):
+        pb = _FakePB(signal={"id": "sig-row-1", "status": "submitted"})
+
+        payload, status_code = dispatch_feishu_signal_callback(
+            "confirm",
+            "sig-1",
+            "live",
+            pb=pb,
+            escape_filter_string=self.escape_filter_string,
+            callback_toast_fn=callback_toast,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["toast"]["type"], "warning")
+        self.assertEqual(pb.updated, [])
+
     def test_dispatch_feishu_order_callback_wraps_builder_response(self):
         payload, status_code = dispatch_feishu_order_callback(
             "cancel",

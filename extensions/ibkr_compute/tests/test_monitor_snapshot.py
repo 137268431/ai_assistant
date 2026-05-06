@@ -381,6 +381,34 @@ class MonitorSnapshotTest(unittest.TestCase):
         self.assertIn("history_request_retry_or_error", flag_codes)
         self.assertNotIn("history_throttle_detected", flag_codes)
 
+    def test_no_active_targets_warns_when_trade_watchlist_has_no_active_target(self):
+        flags = server._build_monitor_flags(
+            {
+                "gateway": {"running": True, "reachable": True},
+                "session": {"authenticated": True},
+                "websocket": {"connected": True, "ready": True},
+                "market_universe": {
+                    "watchlist_trade_count": 2,
+                    "active_target_count": 0,
+                    "no_active_targets": True,
+                    "inactive_trade_symbols_total": 2,
+                    "inactive_trade_symbols_sample": ["AAPL", "MSFT"],
+                },
+            },
+            {
+                "subscription_limit": 70,
+                "active_subscription_count": 0,
+                "utilization_pct": 0.0,
+                "pending_subscription_count": 0,
+            },
+            {},
+            {},
+        )
+
+        warning = next(item for item in flags if item["code"] == "no_active_targets")
+        self.assertEqual(warning["severity"], "warning")
+        self.assertIn("AAPL", warning["detail"])
+
     def test_subscription_utilization_warns_at_limit(self):
         flags = server._build_monitor_flags(
             {

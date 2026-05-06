@@ -286,6 +286,7 @@ class _IBGatewayApp(EWrapper, EClient):
             self._ready = False
             self._ready_event.clear()
             self._status_code = 0
+            self._next_order_id = None
             self._last_disconnect_at = time.time()
         thread = self._thread
         self._thread = None
@@ -353,6 +354,7 @@ class _IBGatewayApp(EWrapper, EClient):
                 self._ready_event.clear()
                 self._last_disconnect_at = time.time()
                 self._status_code = 0
+                self._next_order_id = None
                 self._order_errors = {}
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5)
@@ -364,6 +366,7 @@ class _IBGatewayApp(EWrapper, EClient):
             self._status_code = 0
             self._ready_event.clear()
             self._last_disconnect_at = time.time()
+            self._next_order_id = None
             self._order_errors = {}
 
     def nextValidId(self, orderId: int):  # noqa: N802
@@ -398,6 +401,7 @@ class _IBGatewayApp(EWrapper, EClient):
             if errorCode in {502, 504, 1100, 2110}:
                 self._ready = False
                 self._status_code = 503
+                self._next_order_id = None
                 self._ready_event.clear()
         ctx = self._pending_requests.get(int(reqId or 0))
         if ctx and errorCode not in BENIGN_ERROR_CODES:
@@ -787,16 +791,41 @@ class _IBGatewayApp(EWrapper, EClient):
             except Exception:
                 logger.exception("Order update listener failed")
 
-    def next_order_ids(self, count: int) -> List[int]:
+    def next_order_ids(self, count: int, minimum: int = 0) -> List[int]:
         if not self._ready_event.wait(DEFAULT_CONNECT_TIMEOUT_SECONDS):
             raise RuntimeError("ib_gateway_not_ready")
         count = max(1, int(count))
         with self._state_lock:
             if self._next_order_id is None:
                 raise RuntimeError("missing_next_order_id")
-            start = int(self._next_order_id)
+            start = max(int(self._next_order_id), int(minimum or 0))
             self._next_order_id += count
+            self._next_order_id = max(int(self._next_order_id), start + count)
         return list(range(start, start + count))
+
+    @staticmethod
+    def _extract_order_id(payload: dict | None) -> int:
+        if not isinstance(payload, dict):
+            return 0
+        return _safe_int(
+            payload.get("orderId")
+            or payload.get("order_id")
+            or payload.get("id")
+            or payload.get("broker_order_id"),
+            0,
+        )
+
+    def max_seen_order_id(self) -> int:
+        with self._state_lock:
+            candidates = [
+                self._extract_order_id(item)
+                for item in list(self._open_orders.values())
+            ]
+            candidates.append(_safe_int(self._next_order_id, 0) - 1)
+        return max([0, *candidates])
+
+    def next_order_ids_above(self, count: int, minimum: int = 0) -> List[int]:
+        return self.next_order_ids(count, minimum=max(0, int(minimum or 0)))
 
     def next_ticker_ids(self, count: int) -> List[int]:
         count = max(1, int(count))
@@ -1052,6 +1081,115 @@ class _IBGatewayApp(EWrapper, EClient):
             "ok": False,
             "order_id": normalized_order_id,
             "error": "order_submission_unconfirmed",
+        }
+
+    def await_order_submissions(
+        self,
+        order_ids: Iterable[str],
+        *,
+        timeout: float = 5.0,
+        poll_interval: float = 0.2,
+    ) -> dict:
+        expected_ids = [str(item or "").strip() for item in (order_ids or []) if str(item or "").strip()]
+        if not expected_ids:
+            return {"ok": False, "error": "missing_order_ids", "orders": {}, "missing_order_ids": []}
+
+        deadline = time.time() + max(0.5, float(timeout or 0.0))
+        request_timeout = max(1, min(3, int(max(1.0, float(timeout or 0.0)))))
+        confirmed: dict[str, dict] = {}
+        failures: dict[str, dict] = {}
+
+        while time.time() < deadline and len(confirmed) + len(failures) < len(expected_ids):
+            for order_id in expected_ids:
+                if order_id in confirmed or order_id in failures:
+                    continue
+                order_error = self.get_order_error(order_id)
+                if order_error:
+                    failures[order_id] = {
+                        "ok": False,
+                        "order_id": order_id,
+                        "error": str(order_error.get("message") or "order_rejected"),
+                        "details": order_error,
+                    }
+                    continue
+                snapshot = self.get_order_snapshot(order_id)
+                if snapshot:
+                    confirmed[order_id] = {
+                        "ok": True,
+                        "order_id": order_id,
+                        "source": "snapshot",
+                        "order": snapshot,
+                    }
+
+            missing_ids = [
+                order_id
+                for order_id in expected_ids
+                if order_id not in confirmed and order_id not in failures
+            ]
+            if not missing_ids:
+                break
+
+            try:
+                open_orders = self.request_open_orders(timeout=request_timeout)
+            except Exception as exc:
+                logger.debug("await_order_submissions reqOpenOrders failed for %s: %s", ",".join(missing_ids), exc)
+                open_orders = []
+            for open_order in open_orders or []:
+                open_order_id = str(
+                    open_order.get("orderId")
+                    or open_order.get("order_id")
+                    or open_order.get("id")
+                    or ""
+                ).strip()
+                if open_order_id in missing_ids:
+                    confirmed[open_order_id] = {
+                        "ok": True,
+                        "order_id": open_order_id,
+                        "source": "open_orders",
+                        "order": dict(open_order),
+                    }
+
+            time.sleep(max(0.05, float(poll_interval or 0.2)))
+
+        for order_id in expected_ids:
+            if order_id in confirmed or order_id in failures:
+                continue
+            order_error = self.get_order_error(order_id)
+            if order_error:
+                failures[order_id] = {
+                    "ok": False,
+                    "order_id": order_id,
+                    "error": str(order_error.get("message") or "order_rejected"),
+                    "details": order_error,
+                }
+
+        missing_ids = [
+            order_id
+            for order_id in expected_ids
+            if order_id not in confirmed and order_id not in failures
+        ]
+        if failures:
+            first = next(iter(failures.values()))
+            return {
+                "ok": False,
+                "error": str(first.get("error") or "order_submission_failed"),
+                "orders": confirmed,
+                "failures": failures,
+                "missing_order_ids": missing_ids,
+            }
+        if missing_ids:
+            return {
+                "ok": False,
+                "error": "order_submission_unconfirmed",
+                "orders": confirmed,
+                "failures": failures,
+                "missing_order_ids": missing_ids,
+            }
+        return {
+            "ok": True,
+            "orders": confirmed,
+            "failures": {},
+            "missing_order_ids": [],
         }
 
     def status(self) -> dict:
@@ -1609,6 +1747,19 @@ class BrokerAdapter:
     def list_recent_fills(self) -> List[dict]:
         return self.client.request_executions()
 
+    def _next_bracket_order_ids(self) -> List[int]:
+        high_water = self.client.max_seen_order_id() if hasattr(self.client, "max_seen_order_id") else 0
+        try:
+            open_orders = self.list_open_orders(include_all=True)
+        except Exception as exc:
+            logger.debug("Bracket order high-water open-order scan failed: %s", exc)
+            open_orders = []
+        for item in open_orders or []:
+            high_water = max(high_water, _IBGatewayApp._extract_order_id(item))
+        if hasattr(self.client, "next_order_ids_above"):
+            return self.client.next_order_ids_above(3, minimum=high_water + 1)
+        return self.client.next_order_ids(3)
+
     def place_bracket_order(
         self,
         *,
@@ -1632,7 +1783,7 @@ class BrokerAdapter:
         contract.exchange = str(contract_info.get("exchange") or "SMART")
         contract.currency = str(contract_info.get("currency") or "USD")
 
-        order_ids = self.client.next_order_ids(3)
+        order_ids = self._next_bracket_order_ids()
         side = "BUY" if str(direction).lower() == "long" else "SELL"
         close_side = "SELL" if side == "BUY" else "BUY"
         stamp = datetime.now(ET).strftime("%Y%m%d_%H%M%S")
@@ -1686,16 +1837,63 @@ class BrokerAdapter:
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
-        entry_result = self.client.await_order_submission(str(order_ids[0]), timeout=3.0, poll_interval=0.2)
-        if not entry_result.get("ok"):
+        submission_result = self.client.await_order_submissions(
+            [str(order_ids[0]), str(order_ids[1]), str(order_ids[2])],
+            timeout=5.0,
+            poll_interval=0.2,
+        )
+        if not submission_result.get("ok"):
+            failures = submission_result.get("failures") if isinstance(submission_result.get("failures"), dict) else {}
+            entry_result = failures.get(str(order_ids[0])) if isinstance(failures.get(str(order_ids[0])), dict) else {}
             entry_error = entry_result.get("details") or {}
-            error_message = str(entry_result.get("error") or "order_submission_failed")
+            missing_order_ids = [
+                str(item or "").strip()
+                for item in (submission_result.get("missing_order_ids") or [])
+                if str(item or "").strip()
+            ]
+            child_failure_ids = [
+                str(item or "").strip()
+                for item in failures.keys()
+                if str(item or "").strip() and str(item or "").strip() != str(order_ids[0])
+            ]
+            protection_issue_ids = list(dict.fromkeys([*missing_order_ids, *child_failure_ids]))
+            missing_roles = []
+            if str(order_ids[1]) in protection_issue_ids:
+                missing_roles.append("take_profit")
+            if str(order_ids[2]) in protection_issue_ids:
+                missing_roles.append("stop_loss")
+            error_message = str(submission_result.get("error") or "order_submission_failed")
             if entry_error.get("code"):
                 error_message = f"{error_message} (code={entry_error.get('code')})"
+            if protection_issue_ids:
+                error_message = f"{error_message}:missing={','.join(protection_issue_ids)}"
+            entry_confirmed = str(order_ids[0]) in (submission_result.get("orders") or {})
+            entry_failed = bool(entry_result) or str(order_ids[0]) in missing_order_ids
+            if entry_confirmed and not entry_failed and protection_issue_ids:
+                return {
+                    "ok": True,
+                    "error": error_message,
+                    "entry_error": {},
+                    "submission": submission_result,
+                    "protection_complete": False,
+                    "protection_incomplete": True,
+                    "missing_order_ids": protection_issue_ids,
+                    "missing_protection_roles": missing_roles,
+                    "order_ids": [str(order_ids[0]), str(order_ids[1]), str(order_ids[2])],
+                    "bracket_group": group,
+                    "entry_coid": entry_ref,
+                    "tp_coid": tp_ref,
+                    "sl_coid": sl_ref,
+                }
             return {
                 "ok": False,
                 "error": error_message,
-                "entry_error": entry_result,
+                "entry_error": entry_result or submission_result,
+                "submission": submission_result,
+                "protection_complete": False,
+                "protection_incomplete": bool(protection_issue_ids),
+                "missing_order_ids": protection_issue_ids,
+                "missing_protection_roles": missing_roles,
                 "order_ids": [str(order_ids[0]), str(order_ids[1]), str(order_ids[2])],
                 "bracket_group": group,
                 "entry_coid": entry_ref,
@@ -1710,6 +1908,8 @@ class BrokerAdapter:
             "entry_coid": entry_ref,
             "tp_coid": tp_ref,
             "sl_coid": sl_ref,
+            "submission": submission_result,
+            "protection_complete": True,
         }
 
     def place_market_close(self, *, conid: int, symbol: str, direction: str, quantity: int) -> dict:

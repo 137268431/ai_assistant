@@ -311,6 +311,9 @@
                 "values": [
                     "awaiting_confirm",
                     "pending",
+                    "submitted",
+                    "protected_active",
+                    "protection_incomplete",
                     "executed",
                     "expired",
                     "rejected",

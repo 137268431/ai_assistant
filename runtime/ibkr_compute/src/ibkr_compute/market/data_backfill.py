@@ -641,8 +641,11 @@ class DataBackfill:
         start_time: str = "",
         exchange: str = "",
         trace: Optional[Dict] = None,
+        timeout: Optional[int] = None,
+        max_retries: Optional[int] = None,
     ) -> Dict:
-        max_retries = self._max_retries()
+        max_retries = self._max_retries() if max_retries is None else max(0, int(max_retries or 0))
+        request_timeout = max(1, int(timeout or 30))
         retry_base_delay = self._retry_base_delay()
         for attempt in range(max_retries + 1):
             wait_s = self._wait_for_request_slot()
@@ -660,7 +663,7 @@ class DataBackfill:
                     bar_size=_to_ib_bar_size(bar_size),
                     end_datetime=str(start_time or ""),
                     use_rth=False,
-                    timeout=30,
+                    timeout=request_timeout,
                 )
                 broker_s = time.perf_counter() - request_started
                 self._record_trace_request(

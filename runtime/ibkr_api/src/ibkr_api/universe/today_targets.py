@@ -118,6 +118,9 @@ def build_today_targets_response(
                 "signaled_count": 0,
                 "awaiting_confirm_count": 0,
                 "pending_count": 0,
+                "submitted_count": 0,
+                "protected_active_count": 0,
+                "protection_incomplete_count": 0,
                 "executed_count": 0,
                 "stale_count": 0,
             },
@@ -257,6 +260,9 @@ def build_today_targets_response(
     signaled_count = 0
     awaiting_confirm_count = 0
     pending_count = 0
+    submitted_count = 0
+    protected_active_count = 0
+    protection_incomplete_count = 0
     executed_count = 0
     stale_count = 0
 
@@ -366,6 +372,12 @@ def build_today_targets_response(
             awaiting_confirm_count += 1
         if row["latest_signal_status"] == "pending":
             pending_count += 1
+        if row["latest_signal_status"] == "submitted":
+            submitted_count += 1
+        if row["latest_signal_status"] == "protected_active":
+            protected_active_count += 1
+        if row["latest_signal_status"] == "protection_incomplete":
+            protection_incomplete_count += 1
         if row["latest_signal_status"] == "executed":
             executed_count += 1
         items.append(row)
@@ -398,6 +410,9 @@ def build_today_targets_response(
             "signaled_count": signaled_count,
             "awaiting_confirm_count": awaiting_confirm_count,
             "pending_count": pending_count,
+            "submitted_count": submitted_count,
+            "protected_active_count": protected_active_count,
+            "protection_incomplete_count": protection_incomplete_count,
             "executed_count": executed_count,
             "stale_count": stale_count,
         },

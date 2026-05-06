@@ -1278,6 +1278,7 @@
         .pill-ok,
         .pill-filled,
         .pill-online,
+        .pill-protected_active,
         .pill-success { color: #48BB78; }
         .pill-short,
         .pill-error,
@@ -1293,6 +1294,7 @@
         .pill-waiting_confirm,
         .pill-waiting_response,
         .pill-submitted,
+        .pill-protection_incomplete,
         .pill-timeout { color: #F6AD55; }
         .pill-neutral,
         .pill-expired,

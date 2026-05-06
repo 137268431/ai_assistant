@@ -1001,6 +1001,18 @@
             ];
         }
 
+        function getMonitorFlagView(item) {
+            const code = String(item?.code || '').trim();
+            if (code === 'no_active_targets') {
+                return {
+                    ...item,
+                    title: '没有 active 交易目标',
+                    detail: item?.detail || 'watchlist 中有交易标的，但当前 active target 数为 0；实时信号不会产生可交易目标。',
+                };
+            }
+            return item || {};
+        }
+
         function renderMetricCard({ label, value, copy, delta = null, toneClass = '' }) {
             const badge = delta == null
                 ? ''
@@ -1465,10 +1477,11 @@
                 || flags.find((item) => String(item?.severity || '').toLowerCase() === 'warning')
                 || flags[0];
             if (firstFlag) {
+                const flagView = getMonitorFlagView(firstFlag);
                 const tone = String(firstFlag.severity || '').toLowerCase() === 'error'
                     ? 'error'
                     : (String(firstFlag.severity || '').toLowerCase() === 'warning' ? 'warn' : 'ok');
-                callout.innerHTML = `<div class="callout ${tone}">${escapeHtml(firstFlag.title || '--')} · ${escapeHtml(firstFlag.detail || '--')}</div>`;
+                callout.innerHTML = `<div class="callout ${tone}">${escapeHtml(flagView.title || flagView.code || '--')} · ${escapeHtml(flagView.detail || '--')}</div>`;
             } else {
                 callout.innerHTML = '';
             }
@@ -1852,15 +1865,18 @@
                 document.getElementById('flagList').innerHTML = '<div class="empty-state">当前没有 flags。</div>';
                 return;
             }
-            document.getElementById('flagList').innerHTML = flags.map((item) => `
+            document.getElementById('flagList').innerHTML = flags.map((item) => {
+                const flagView = getMonitorFlagView(item);
+                return `
                 <div class="flag-item">
                     <div class="flag-head">
-                        <div class="flag-title">${escapeHtml(item.title || item.code || '--')}</div>
-                        <span class="severity ${escapeHtml(String(item.severity || 'info').toLowerCase())}">${escapeHtml(item.severity || 'info')}</span>
+                        <div class="flag-title">${escapeHtml(flagView.title || flagView.code || '--')}</div>
+                        <span class="severity ${escapeHtml(String(flagView.severity || 'info').toLowerCase())}">${escapeHtml(flagView.severity || 'info')}</span>
                     </div>
-                    <div class="flag-detail">${escapeHtml(item.detail || '--')}</div>
+                    <div class="flag-detail">${escapeHtml(flagView.detail || '--')}</div>
                 </div>
-            `).join('');
+            `;
+            }).join('');
         }
 
         function renderRecentEvents(payload) {

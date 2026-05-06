@@ -9,6 +9,7 @@ if str(SERVICE_SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SERVICE_SRC_ROOT))
 
 from ibkr_api.signals.ingest import build_signal_ingest_response, build_signals_ingest_response
+from ibkr_api.signals.notifications import build_signal_status_card
 
 
 class _FakePB:
@@ -324,6 +325,69 @@ class SignalIngressBuildersTest(unittest.TestCase):
         self.assertEqual(row["status"], "executed")
         self.assertEqual(row["note"], "broker_filled")
         self.assertEqual(row["extra"]["status_reason"], "broker_filled")
+
+    def test_signal_ingest_preserves_submitted_status_on_replay(self):
+        pb = _FakePB(
+            [
+                {
+                    "id": "sig-row-1",
+                    "signal_id": "sig-1",
+                    "environment": "live",
+                    "symbol": "AAPL",
+                    "direction": "long",
+                    "status": "submitted",
+                    "note": "order_submitted_by_ibkr_compute",
+                    "extra": {"status_reason": "order_submitted_by_ibkr_compute"},
+                }
+            ]
+        )
+
+        payload, status_code = build_signal_ingest_response(
+            pb,
+            payload={
+                "environment": "live",
+                "symbol": "AAPL",
+                "signal_id": "sig-1",
+                "direction": "long",
+                "status": "pending",
+                "note": "manual_confirmation_required",
+                "entry": 180.0,
+                "stop_loss": 178.0,
+                "take_profit": 184.0,
+            },
+            normalize_environment=self.normalize_environment,
+            escape_filter_string=self.escape_filter_string,
+            config_value=self.config_value,
+            send_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "msg-1"},
+            update_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "msg-1"},
+            signal_chat_id_fn=self.signal_chat_id_fn,
+            console_base_url="https://console.example.com",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["status"], "submitted")
+        row = pb.signals["sig-row-1"]
+        self.assertEqual(row["status"], "submitted")
+        self.assertEqual(row["note"], "order_submitted_by_ibkr_compute")
+        self.assertEqual(row["extra"]["status_reason"], "order_submitted_by_ibkr_compute")
+
+    def test_signal_status_card_labels_protected_active(self):
+        card = build_signal_status_card(
+            {
+                "id": "sig-row-1",
+                "signal_id": "sig-1",
+                "symbol": "AAPL",
+                "direction": "long",
+                "environment": "live",
+                "status": "protected_active",
+                "extra": {"status_reason": "entry_filled_and_protection_submitted"},
+            },
+            message="entry filled",
+            console_base_url="https://console.example.com",
+        )
+
+        self.assertIn("保护单已生效", card["header"]["title"]["content"])
+        self.assertIn("保护单已生效", card["elements"][0]["content"])
 
     def test_signals_batch_aggregates_created_duplicate_and_error_counts(self):
         pb = _FakePB(

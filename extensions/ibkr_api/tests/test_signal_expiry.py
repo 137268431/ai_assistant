@@ -99,7 +99,7 @@ class SignalExpiryBuildersTest(unittest.TestCase):
         self.assertEqual(row["extra"]["feishu_signal_message_id"], "msg-old")
         self.assertEqual(row["extra"]["feishu_signal_notify_last_action"], "expired")
 
-    def test_signal_expiry_repairs_signal_to_executed_when_orders_exist(self):
+    def test_signal_expiry_repairs_signal_to_submitted_when_orders_exist(self):
         pb = _FakePB(
             signal_rows=[
                 {
@@ -118,6 +118,8 @@ class SignalExpiryBuildersTest(unittest.TestCase):
                     "unique_id": "sig-1_entry",
                     "signal_id": "sig-1",
                     "environment": "live",
+                    "role": "entry",
+                    "status": "Submitted",
                 }
             ],
         )
@@ -136,12 +138,75 @@ class SignalExpiryBuildersTest(unittest.TestCase):
 
         self.assertEqual(status_code, 200)
         self.assertTrue(payload["ok"])
-        self.assertEqual(payload["repaired_to_executed_count"], 1)
+        self.assertEqual(payload["repaired_to_order_status_count"], 1)
         row = pb.signals["sig-row-1"]
-        self.assertEqual(row["status"], "executed")
+        self.assertEqual(row["status"], "submitted")
         self.assertEqual(row["extra"]["status_repaired_by"], "signal_expiry_check")
         self.assertEqual(row["extra"]["status_repair_reason"], "orders_detected_before_expiry")
         self.assertEqual(row["extra"]["linked_order_unique_ids"], ["sig-1_entry"])
+
+    def test_signal_expiry_repairs_signal_to_protected_active_when_entry_filled_with_protection(self):
+        pb = _FakePB(
+            signal_rows=[
+                {
+                    "id": "sig-row-1",
+                    "signal_id": "sig-1",
+                    "environment": "live",
+                    "symbol": "AAPL",
+                    "status": "pending",
+                    "bar_time_ms": 1713797700000,
+                    "extra": {},
+                }
+            ],
+            order_rows=[
+                {
+                    "id": "order-1",
+                    "unique_id": "sig-1_entry",
+                    "signal_id": "sig-1",
+                    "environment": "live",
+                    "role": "entry",
+                    "status": "Filled",
+                },
+                {
+                    "id": "order-2",
+                    "unique_id": "sig-1_tp",
+                    "signal_id": "sig-1",
+                    "environment": "live",
+                    "role": "take_profit",
+                    "status": "Submitted",
+                },
+                {
+                    "id": "order-3",
+                    "unique_id": "sig-1_sl",
+                    "signal_id": "sig-1",
+                    "environment": "live",
+                    "role": "stop_loss",
+                    "status": "Submitted",
+                },
+            ],
+        )
+
+        payload, status_code = build_signal_expiry_response(
+            pb,
+            payload={"environment": "live"},
+            normalize_environment=self.normalize_environment,
+            escape_filter_string=self.escape_filter_string,
+            config_value=lambda key, default, environment: "30",
+            send_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "msg-1"},
+            update_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "msg-1"},
+            signal_chat_id_fn=self.signal_chat_id_fn,
+            console_base_url="https://console.example.com",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        row = pb.signals["sig-row-1"]
+        self.assertEqual(row["status"], "protected_active")
+        self.assertEqual(row["extra"]["status_repair_reason"], "entry_filled_and_protection_submitted")
+        self.assertEqual(
+            row["extra"]["linked_order_unique_ids"],
+            ["sig-1_entry", "sig-1_tp", "sig-1_sl"],
+        )
 
 
 if __name__ == "__main__":

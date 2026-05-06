@@ -931,6 +931,7 @@
 
         .target-focus-pill.awaiting_confirm,
         .target-focus-pill.pending,
+        .target-focus-pill.protection_incomplete,
         .target-focus-pill.ready_no_signal {
             background: rgba(246,173,85,0.18);
             color: var(--pending);
@@ -1158,6 +1159,21 @@
 
         .status-pending,
         .status-awaiting_confirm {
+            background: rgba(246,173,85,0.2);
+            color: var(--pending);
+        }
+
+        .status-submitted {
+            background: rgba(99,179,237,0.18);
+            color: var(--accent);
+        }
+
+        .status-protected_active {
+            background: rgba(72,187,120,0.18);
+            color: var(--long);
+        }
+
+        .status-protection_incomplete {
             background: rgba(246,173,85,0.2);
             color: var(--pending);
         }

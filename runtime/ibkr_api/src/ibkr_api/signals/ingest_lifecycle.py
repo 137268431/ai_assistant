@@ -6,7 +6,7 @@ from ibkr_api.orders.values import ensure_object, to_text
 from ibkr_api.signals.values import get_signal_extra
 
 
-FINAL_SIGNAL_STATUSES = {"executed", "rejected", "expired", "closed"}
+FINAL_SIGNAL_STATUSES = {"submitted", "protected_active", "protection_incomplete", "executed", "rejected", "expired", "closed"}
 
 
 def prepare_signal_lifecycle(

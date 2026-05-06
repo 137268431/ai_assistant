@@ -197,6 +197,12 @@ def resolve_attention_state(row: dict[str, Any]) -> tuple[str, int]:
         return "awaiting_confirm", 10
     if signal_status == "pending":
         return "pending", 11
+    if signal_status == "submitted":
+        return "submitted", 12
+    if signal_status == "protected_active":
+        return "protected_active", 13
+    if signal_status == "protection_incomplete":
+        return "protection_incomplete", 14
     if not row.get("has_signal_today") and row.get("technical_state") == "ready":
         return "ready_no_signal", 20
     if signal_status == "executed":
@@ -224,7 +230,7 @@ def build_workflow_guide(runtime_environment: str, market_date: str) -> dict[str
         "scan_summary_time_et": DAILY_SCAN_SUMMARY_TIME_ET,
         "open_check_time_et": MARKET_OPEN_CHECK_TIME_ET,
         "intraday_refresh_rule": INTRADAY_REFRESH_RULE,
-        "focus_order_rule": "先看 awaiting_confirm / pending，再看 ready 未出信号，最后看 executed / stale。",
+        "focus_order_rule": "先看 awaiting_confirm / pending / submitted / protected_active / protection_incomplete，再看 ready 未出信号，最后看 executed / stale。",
         "primary_view_url": build_primary_view_url(runtime_environment, market_date),
         "ready_definition": build_ready_definition(),
     }
@@ -278,6 +284,39 @@ def build_workflow_meta(row: dict[str, Any]) -> dict[str, Any]:
         push_unique_text(blockers, "等待下单或成交反馈")
         push_unique_text(blockers, row.get("latest_signal_note"))
         next_action = "优先查看 Signals / Orders，确认挂单、成交和风控状态。"
+    elif signal_status == "submitted":
+        stage = "submitted"
+        label = "订单已提交"
+        summary = (
+            f"{row.get('latest_signal_time')} 信号订单已提交到券商，等待成交或订单回报。"
+            if row.get("latest_signal_time")
+            else "今日信号订单已提交到券商，等待成交或订单回报。"
+        )
+        push_unique_text(blockers, "等待券商成交或订单状态回报")
+        push_unique_text(blockers, row.get("latest_signal_note"))
+        next_action = "优先查看 Orders 页，确认 entry / TP / SL 三腿订单状态。"
+    elif signal_status == "protected_active":
+        stage = "protected_active"
+        label = "保护单已生效"
+        summary = (
+            f"{row.get('latest_signal_time')} 入场已成交，止盈/止损保护单已提交。"
+            if row.get("latest_signal_time")
+            else "入场已成交，止盈/止损保护单已提交。"
+        )
+        push_unique_text(blockers, "跟踪保护单与退出状态")
+        push_unique_text(blockers, row.get("latest_signal_note"))
+        next_action = "查看 Orders / Account，确认保护单仍在 Submitted 或后续退出状态。"
+    elif signal_status == "protection_incomplete":
+        stage = "protection_incomplete"
+        label = "保护单不完整"
+        summary = (
+            f"{row.get('latest_signal_time')} 信号已推进，但止盈/止损保护单未完整生效。"
+            if row.get("latest_signal_time")
+            else "信号已推进，但止盈/止损保护单未完整生效。"
+        )
+        push_unique_text(blockers, "保护单未完整生效")
+        push_unique_text(blockers, row.get("latest_signal_note"))
+        next_action = "立即查看 Orders / Account，确认 entry、TP、SL 三腿状态，必要时人工补保护或减仓。"
     elif not row.get("has_signal_today") and row.get("technical_state") == "ready":
         stage = "ready_no_signal"
         label = "技术已就绪"
@@ -359,7 +398,7 @@ def matches_signal_state(row: dict[str, Any], signal_state: str) -> bool:
         return True
     latest_status = normalize_signal_status(row.get("latest_signal_status"))
     if value == "needs_action":
-        return latest_status in {"awaiting_confirm", "pending"}
+        return latest_status in {"awaiting_confirm", "pending", "submitted", "protected_active", "protection_incomplete"}
     if value == "signaled":
         return bool(row.get("has_signal_today"))
     if value == "no_signal":
@@ -457,7 +496,7 @@ def build_filtered_summary(rows: list[dict[str, Any]]) -> dict[str, int]:
             ready_count += 1
         if row.get("has_signal_today"):
             signaled_count += 1
-        if normalize_signal_status(row.get("latest_signal_status")) in {"awaiting_confirm", "pending"}:
+        if normalize_signal_status(row.get("latest_signal_status")) in {"awaiting_confirm", "pending", "submitted", "protected_active", "protection_incomplete"}:
             needs_action_count += 1
     return {
         "total": len(rows),

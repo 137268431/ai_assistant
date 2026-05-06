@@ -59,7 +59,7 @@ def dispatch_feishu_signal_callback(
         return callback_toast_fn("error", "信号不存在", card=None), 404
 
     current_status = str(record.get("status") or "").strip()
-    if current_status in {"expired", "rejected", "executed", "closed"}:
+    if current_status in {"expired", "rejected", "executed", "submitted", "protected_active", "protection_incomplete", "closed"}:
         return callback_toast_fn("warning", f"该信号已是 {current_status}，无法继续操作"), 200
 
     if action == "confirm":

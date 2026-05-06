@@ -10,6 +10,90 @@ def _service_mod():
 
 
 class TradingServiceSignalsMixin:
+    @staticmethod
+    def _is_protection_incomplete_result(result: dict) -> bool:
+        if not isinstance(result, dict):
+            return False
+        if bool(result.get("protection_complete")):
+            return False
+        missing_order_ids = [item for item in (result.get("missing_order_ids") or []) if str(item or "").strip()]
+        order_ids = [item for item in (result.get("order_ids") or []) if str(item or "").strip()]
+        error_text = str(result.get("error") or "").lower()
+        return bool(
+            missing_order_ids
+            or (order_ids and "order_submission_unconfirmed" in error_text)
+            or (order_ids and "missing=" in error_text)
+        )
+
+    def _build_protection_incomplete_diagnostic(self, sig: dict, result: dict, reason: str) -> dict:
+        handler = getattr(getattr(self, "order_lifecycle", None), "handle_protection_incomplete", None)
+        if callable(handler):
+            diagnostic = handler(
+                signal_id=str(sig.get("signal_id") or ""),
+                symbol=str(sig.get("symbol") or ""),
+                direction=str(sig.get("direction") or ""),
+                result=result if isinstance(result, dict) else {},
+                reason=reason,
+            )
+            if not isinstance(diagnostic, dict):
+                diagnostic = {}
+            return {
+                **diagnostic,
+                "missing_protection_roles": list(
+                    diagnostic.get("missing_protection_roles")
+                    or (result or {}).get("missing_protection_roles")
+                    or []
+                ),
+                "protection_order_statuses": dict(
+                    diagnostic.get("protection_order_statuses")
+                    or (result or {}).get("protection_order_statuses")
+                    or {}
+                ),
+                "protection_orders_checked": int(
+                    diagnostic.get("protection_orders_checked")
+                    or (result or {}).get("protection_orders_checked")
+                    or 0
+                ),
+            }
+        return {
+            "status": "protection_incomplete",
+            "reason": reason,
+            "signal_id": str(sig.get("signal_id") or ""),
+            "symbol": str(sig.get("symbol") or "").upper(),
+            "direction": str(sig.get("direction") or "").lower(),
+            "protection_complete": False,
+            "missing_order_ids": list((result or {}).get("missing_order_ids") or []),
+            "submitted_order_ids": list((result or {}).get("order_ids") or []),
+            "missing_protection_roles": list((result or {}).get("missing_protection_roles") or []),
+            "protection_order_statuses": dict((result or {}).get("protection_order_statuses") or {}),
+            "protection_orders_checked": int((result or {}).get("protection_orders_checked") or 0),
+            "safe_action": "diagnostic_only_no_broker_call",
+            "recommended_action": "review_and_cancel_or_repair_unprotected_entry",
+            "cancel_recommended": True,
+        }
+
+    @staticmethod
+    def _protection_fields(result: dict, diagnostic: dict) -> dict:
+        result = result if isinstance(result, dict) else {}
+        diagnostic = diagnostic if isinstance(diagnostic, dict) else {}
+        return {
+            "missing_protection_roles": list(
+                result.get("missing_protection_roles")
+                or diagnostic.get("missing_protection_roles")
+                or []
+            ),
+            "protection_order_statuses": dict(
+                result.get("protection_order_statuses")
+                or diagnostic.get("protection_order_statuses")
+                or {}
+            ),
+            "protection_orders_checked": int(
+                result.get("protection_orders_checked")
+                or diagnostic.get("protection_orders_checked")
+                or 0
+            ),
+        }
+
     def _signal_loop(self):
         service_mod = _service_mod()
         signal_poll_interval = service_mod.DEFAULT_SIGNAL_POLL_INTERVAL
@@ -296,13 +380,27 @@ class TradingServiceSignalsMixin:
             if not isinstance(entry_error, dict):
                 entry_error = {}
 
+            protection_incomplete = self._is_protection_incomplete_result(result or {})
+            status = "protection_incomplete" if protection_incomplete else "rejected"
+            note = "protection_incomplete" if protection_incomplete else "submit_failed"
+            status_reason = "bracket_protection_incomplete" if protection_incomplete else "submit_failed"
+            diagnostic = (
+                self._build_protection_incomplete_diagnostic(
+                    sig,
+                    result or {},
+                    "bracket_submission_protection_incomplete",
+                )
+                if protection_incomplete
+                else {}
+            )
+            protection_fields = self._protection_fields(result or {}, diagnostic)
             patch = {
-                "status": "rejected",
-                "note": "submit_failed",
+                "status": status,
+                "note": note,
                 "extra": {
                     **existing_extra,
-                    "status_reason": "submit_failed",
-                    "submit_failed": True,
+                    "status_reason": status_reason,
+                    "submit_failed": not protection_incomplete,
                     "submit_failed_error": error_text,
                     "submit_failed_at": self._now_iso(),
                     "submit_failed_order_ids": list((result or {}).get("order_ids") or []),
@@ -310,6 +408,12 @@ class TradingServiceSignalsMixin:
                     "submit_failed_entry_error_code": entry_error.get("code"),
                     "submit_failed_entry_error": str(entry_error.get("error") or ""),
                     "submit_failed_entry_details": entry_error,
+                    "protection_incomplete": protection_incomplete,
+                    "protection_complete": False if protection_incomplete else bool((result or {}).get("protection_complete")),
+                    "missing_order_ids": list((result or {}).get("missing_order_ids") or []),
+                    **protection_fields,
+                    "protection_incomplete_diagnostic": diagnostic,
+                    "safety_cancel_recommended": bool(diagnostic.get("cancel_recommended")) if diagnostic else False,
                 },
             }
             self.pb.update_record("ibkr_signals", record["id"], patch)
@@ -334,6 +438,20 @@ class TradingServiceSignalsMixin:
         bar_time_ms = int(raw.get("bar_time_ms") or 0)
         us_time = raw.get("us_time") or sig.get("signal_time") or ""
         cn_time = raw.get("cn_time") or ""
+        protection_complete = bool(result.get("protection_complete"))
+        protection_incomplete = not protection_complete
+        diagnostic = (
+            self._build_protection_incomplete_diagnostic(
+                sig,
+                result,
+                "bracket_ack_protection_incomplete",
+            )
+            if protection_incomplete
+            else {}
+        )
+        protection_fields = self._protection_fields(result, diagnostic)
+        signal_status = "submitted" if protection_complete else "protection_incomplete"
+        signal_note = "order_submitted_by_ibkr_compute" if protection_complete else "protection_incomplete"
 
         child_orders = []
         if tp_unique_id:
@@ -348,7 +466,7 @@ class TradingServiceSignalsMixin:
                     "parent_order_unique_id": entry_unique_id,
                     "sibling_order_unique_id": sl_unique_id,
                     "limit_price": sig["take_profit"],
-                    "status": "Init",
+                    "status": "Submitted" if protection_complete else "Init",
                 }
             )
         if sl_unique_id:
@@ -363,7 +481,7 @@ class TradingServiceSignalsMixin:
                     "parent_order_unique_id": entry_unique_id,
                     "sibling_order_unique_id": tp_unique_id,
                     "limit_price": sig["stop_loss"],
-                    "status": "Init",
+                    "status": "Submitted" if protection_complete else "Init",
                 }
             )
 
@@ -373,7 +491,7 @@ class TradingServiceSignalsMixin:
             "broker_order_id": entry_order_id,
             "order_type": "Entry",
             "role": "entry",
-            "relation_status": "active",
+            "relation_status": "active" if protection_complete else "protection_incomplete",
             "direction": sig["direction"],
             "position_side": sig["direction"],
             "quantity": sig["shares"],
@@ -390,13 +508,24 @@ class TradingServiceSignalsMixin:
                 "source": "ibkr_compute",
                 "reason": "order_submitted_by_ibkr_compute",
                 "ack_source": "ibkr_service",
+                "signal_lifecycle_status": signal_status,
+                "protection_complete": protection_complete,
+                "protection_incomplete": protection_incomplete,
+                "missing_order_ids": list(result.get("missing_order_ids") or []),
+                **protection_fields,
+                "submitted_order_ids": list(result.get("order_ids") or []),
+                "status_reason": "order_submitted_by_ibkr_compute"
+                if protection_complete
+                else "bracket_protection_incomplete",
+                "protection_incomplete_diagnostic": diagnostic,
+                "safety_cancel_recommended": bool(diagnostic.get("cancel_recommended")) if diagnostic else False,
             },
         }
 
         ack_result = self.pb.ack_ibkr_signal(
             signal_id=sig["signal_id"],
-            status="executed",
-            note="order_submitted_by_ibkr_compute",
+            status=signal_status,
+            note=signal_note,
             order=ack_payload,
             child_orders=child_orders,
             environment=service_mod.ENVIRONMENT,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from ibkr_api.orders.group_cancel import CancelBrokerOrder
@@ -15,11 +16,15 @@ HTML_CONTENT_TYPE = "text/html; charset=utf-8"
 NormalizeEnvironment = Callable[[Any, str], str]
 EscapeFilterString = Callable[[Any], str]
 UpdateSignalCard = Callable[[str, dict[str, Any], str], dict[str, Any]]
+ConfigValue = Callable[[str, str, str], str]
 
 _CONFIRM_STATUS_HINTS = {
     "expired": ("fail", "信号已过期", "该信号超时自动失效，无法操作"),
     "rejected": ("fail", "信号已拒绝", "该信号已被拒绝，无法重复操作"),
     "executed": ("ok", "信号已执行", "该信号已执行，无需重复操作"),
+    "submitted": ("ok", "订单已提交", "该信号已提交到券商，等待成交或后续订单回报"),
+    "protected_active": ("ok", "保护单已生效", "入场已成交且止盈/止损保护单已提交，无需重复确认"),
+    "protection_incomplete": ("warn", "保护单不完整", "入场或下单链路已推进，但保护单未完整生效；请到 Orders / Account 核查"),
     "pending": ("ok", "信号已确认", "该信号已确认，无需重复操作"),
 }
 
@@ -27,6 +32,9 @@ _CANCEL_STATUS_HINTS = {
     "expired": ("fail", "信号已过期", "该信号超时自动失效，无法操作"),
     "rejected": ("fail", "信号已拒绝", "该信号已被拒绝，无法重复操作"),
     "executed": ("warn", "信号已执行", "信号已执行，无法取消"),
+    "submitted": ("warn", "订单已提交", "订单已提交到券商，不能再按信号拒绝取消"),
+    "protected_active": ("warn", "保护单已生效", "入场已成交且保护单已提交，不能再按信号拒绝取消"),
+    "protection_incomplete": ("warn", "保护单不完整", "保护单未完整生效，不能再按信号拒绝取消；请先核查券商订单"),
     "pending": ("warn", "信号已确认", "该信号已确认，无法取消"),
 }
 
@@ -73,6 +81,60 @@ def _status_hint_response(action: str, page_kind: str, title: str, detail: str, 
         page_kind=page_kind,
         action=action,
     )
+
+
+def _parse_timestamp_ms(value: Any) -> int:
+    text = to_text(value)
+    if not text:
+        return 0
+    try:
+        if text.endswith("Z"):
+            return int(datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp() * 1000)
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return int(parsed.timestamp() * 1000)
+    except Exception:
+        return 0
+
+
+def _clock_ms(clock: Callable[[], Any] | None) -> int:
+    if callable(clock):
+        value = clock()
+        if isinstance(value, datetime):
+            return int(value.astimezone(timezone.utc).timestamp() * 1000)
+        parsed = _parse_timestamp_ms(value)
+        if parsed > 0:
+            return parsed
+    return int(datetime.now(timezone.utc).timestamp() * 1000)
+
+
+def _signal_reference_ms(record: dict[str, Any]) -> int:
+    extra = merge_signal_extra(record, {})
+    try:
+        bar_time_ms = int(record.get("bar_time_ms") or extra.get("bar_time_ms") or 0)
+    except Exception:
+        bar_time_ms = 0
+    if bar_time_ms > 0:
+        return bar_time_ms
+    return _parse_timestamp_ms(record.get("created")) or _parse_timestamp_ms(record.get("updated"))
+
+
+def _signal_validity_minutes(config_value: ConfigValue | None, environment: str) -> int:
+    if not callable(config_value):
+        return 30
+    try:
+        raw = int(str(config_value("signal_validity_minutes", "30", environment) or "30").strip())
+    except Exception:
+        raw = 30
+    return raw if raw > 0 else 30
+
+
+def _signal_is_expired(record: dict[str, Any], *, validity_minutes: int, clock: Callable[[], Any] | None) -> bool:
+    reference_ms = _signal_reference_ms(record)
+    if reference_ms <= 0:
+        return False
+    return _clock_ms(clock) - reference_ms > int(validity_minutes or 30) * 60 * 1000
 
 
 def _fail_response(title: str, detail: str, symbol: str = "", *, status_code: int, action: str) -> tuple[dict[str, Any], int]:
@@ -137,6 +199,7 @@ def build_signal_confirm_webhook_response(
     notify_signal_status: SignalStatusNotifier | None = None,
     update_signal_card: UpdateSignalCard | None = None,
     console_base_url: str = "",
+    config_value: ConfigValue | None = None,
     now_provider: Callable[[], Any] | None = None,
     clock: Callable[[], Any] | None = None,
 ) -> tuple[dict[str, Any], int]:
@@ -157,6 +220,47 @@ def build_signal_confirm_webhook_response(
             ("warn", "无法操作", f"状态: {current_status or '--'}"),
         )
         return _status_hint_response("signal_confirm", page_kind, title, detail, symbol)
+
+    validity_minutes = _signal_validity_minutes(config_value, environment)
+    if _signal_is_expired(record, validity_minutes=validity_minutes, clock=now_provider or clock):
+        extra_patch = merge_signal_extra(
+            record,
+            {
+                "expired_by": "signal_confirm_webhook",
+                "expired_at": now_iso_utc(now_provider or clock),
+                "status_reason": "confirm_too_late",
+                "signal_validity_minutes": validity_minutes,
+            },
+        )
+        updated_record = pb.update_record(
+            "ibkr_signals",
+            str(record.get("id")),
+            {
+                "status": "expired",
+                "note": "confirm_too_late",
+                "extra": extra_patch,
+            },
+        )
+        updated_row = updated_record if isinstance(updated_record, dict) else {**dict(record), "status": "expired", "note": "confirm_too_late", "extra": extra_patch}
+        try:
+            _sync_signal_notification(
+                pb,
+                updated_row,
+                action="expired",
+                message=f"确认超时，信号已失效（有效期 {validity_minutes} 分钟）",
+                notify_signal_status=notify_signal_status,
+                update_signal_card=update_signal_card,
+                console_base_url=console_base_url,
+            )
+        except Exception:
+            pass
+        return _status_hint_response(
+            "signal_confirm",
+            "fail",
+            "信号已过期",
+            f"确认超时，信号已失效（有效期 {validity_minutes} 分钟）",
+            symbol,
+        )
 
     extra_patch = merge_signal_extra(
         record,

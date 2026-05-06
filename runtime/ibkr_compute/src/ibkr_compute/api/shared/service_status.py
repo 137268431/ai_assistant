@@ -83,6 +83,20 @@ def _build_minimal_runtime_status(service, error: Exception | None = None) -> di
             errors.append({"section": "_market_ws_symbols", "error": str(exc)})
     websocket_status = _safe_component_status(service, "ws_client", errors)
     active_subscription_symbols = _safe_list_attr(service, "_active_subscription_symbols")
+    watchlist_trade_symbols = _safe_list_attr(service, "_watchlist_trade_symbols")
+    active_trade_symbols = _safe_list_attr(service, "_active_trade_symbols")
+    active_trade_symbol_set = set(active_trade_symbols)
+    inactive_trade_symbols = [
+        symbol for symbol in watchlist_trade_symbols
+        if symbol not in active_trade_symbol_set
+    ]
+    no_active_targets = bool(watchlist_trade_symbols) and not bool(active_trade_symbol_set)
+    if active_trade_symbol_set:
+        trade_universe_status = "ready"
+    elif watchlist_trade_symbols:
+        trade_universe_status = "no_active_targets"
+    else:
+        trade_universe_status = "no_trade_symbols"
     active_subscription_set = set(active_subscription_symbols)
     market_ws_symbols_ready = len([symbol for symbol in market_ws_symbols if symbol in active_subscription_set])
     status = {
@@ -110,11 +124,18 @@ def _build_minimal_runtime_status(service, error: Exception | None = None) -> di
         "market_universe": {
             "market_date": str(getattr(service, "_current_market_date", "") or ""),
             "active_target_date": str(getattr(service, "_active_target_date", "") or ""),
-            "active_target_count": len(_safe_list_attr(service, "_active_trade_symbols")),
+            "watchlist_trade_count": len(watchlist_trade_symbols),
+            "trade_universe_ready": bool(active_trade_symbol_set),
+            "trade_universe_status": trade_universe_status,
+            "trade_universe_reason": trade_universe_status,
+            "no_active_targets": no_active_targets,
+            "inactive_trade_symbols_total": len(inactive_trade_symbols),
+            "inactive_trade_symbols_sample": inactive_trade_symbols[:25],
+            "active_target_count": len(active_trade_symbols),
             "active_subscription_count": len(active_subscription_symbols),
-            "active_target_symbols": _safe_list_attr(service, "_active_trade_symbols"),
+            "active_target_symbols": active_trade_symbols,
             "active_subscription_symbols": active_subscription_symbols,
-            "active_trade_symbols": _safe_list_attr(service, "_active_trade_symbols"),
+            "active_trade_symbols": active_trade_symbols,
             "market_ws_symbols": market_ws_symbols,
             "market_ws_symbols_total": len(market_ws_symbols),
             "market_ws_symbols_ready": market_ws_symbols_ready,

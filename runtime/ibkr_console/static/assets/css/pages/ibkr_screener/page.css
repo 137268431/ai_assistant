@@ -1387,6 +1387,7 @@
 
     .status-chip.ready,
     .status-chip.executed,
+    .status-chip.protected_active,
     .status-chip.confirmed,
     .status-chip.both_active,
     .status-chip.upper_active,
@@ -1397,6 +1398,8 @@
 
     .status-chip.awaiting_confirm,
     .status-chip.pending,
+    .status-chip.submitted,
+    .status-chip.protection_incomplete,
     .status-chip.ready_no_signal,
     .status-chip.near_expiry,
     .status-chip.blocked {

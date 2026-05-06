@@ -162,6 +162,42 @@ class SignalWebhookBuildersTest(unittest.TestCase):
         self.assertEqual(notify_calls[0][0], "pending")
         self.assertEqual(notify_calls[0][2]["message"], "信号已确认，等待执行")
 
+    def test_confirm_webhook_expires_signal_when_confirmation_is_too_late(self):
+        pb = _FakePB(
+            [
+                {
+                    "id": "sig-row-1",
+                    "signal_id": "sig-1",
+                    "environment": "live",
+                    "symbol": "AAPL",
+                    "status": "awaiting_confirm",
+                    "note": "wait_user",
+                    "bar_time_ms": 1778060100000,
+                    "extra": {"foo": "bar"},
+                }
+            ]
+        )
+        now_provider = lambda: datetime.fromtimestamp((1778060100000 + 31 * 60 * 1000) / 1000, tz=timezone.utc)
+
+        page, status_code = build_signal_confirm_webhook_response(
+            pb,
+            payload={"id": "sig-1", "environment": "live"},
+            normalize_environment=self.normalize_environment,
+            escape_filter_string=self.escape_filter_string,
+            now_provider=now_provider,
+            config_value=lambda key, default, environment: "30" if key == "signal_validity_minutes" else default,
+            notify_signal_status=lambda *_args, **_kwargs: {"success": True, "message_id": "sig-msg-1"},
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(page["page_kind"], "fail")
+        self.assertEqual(page["title"], "信号已过期")
+        self.assertEqual(pb.signals["sig-row-1"]["status"], "expired")
+        self.assertEqual(pb.signals["sig-row-1"]["note"], "confirm_too_late")
+        self.assertEqual(pb.signals["sig-row-1"]["extra"]["foo"], "bar")
+        self.assertEqual(pb.signals["sig-row-1"]["extra"]["status_reason"], "confirm_too_late")
+        self.assertEqual(pb.signals["sig-row-1"]["extra"]["signal_validity_minutes"], 30)
+
     def test_confirm_webhook_returns_terminal_status_page_without_updates(self):
         pb = _FakePB(
             [
@@ -187,6 +223,61 @@ class SignalWebhookBuildersTest(unittest.TestCase):
         self.assertEqual(status_code, 200)
         self.assertEqual(page["page_kind"], "ok")
         self.assertEqual(page["title"], "信号已执行")
+        self.assertEqual(pb.updated, [])
+
+    def test_confirm_webhook_reports_submitted_status_without_updates(self):
+        pb = _FakePB(
+            [
+                {
+                    "id": "sig-row-1",
+                    "signal_id": "sig-1",
+                    "environment": "live",
+                    "symbol": "AAPL",
+                    "status": "submitted",
+                    "note": "order_submitted",
+                    "extra": {},
+                }
+            ]
+        )
+
+        page, status_code = build_signal_confirm_webhook_response(
+            pb,
+            payload={"id": "sig-1", "environment": "live"},
+            normalize_environment=self.normalize_environment,
+            escape_filter_string=self.escape_filter_string,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(page["page_kind"], "ok")
+        self.assertEqual(page["title"], "订单已提交")
+        self.assertEqual(pb.updated, [])
+
+    def test_cancel_webhook_reports_protected_active_without_updates(self):
+        pb = _FakePB(
+            [
+                {
+                    "id": "sig-row-1",
+                    "signal_id": "sig-1",
+                    "environment": "live",
+                    "symbol": "AAPL",
+                    "status": "protected_active",
+                    "note": "entry_filled",
+                    "extra": {},
+                }
+            ]
+        )
+
+        page, status_code = build_signal_cancel_webhook_response(
+            pb,
+            payload={"id": "sig-1", "environment": "live"},
+            normalize_environment=self.normalize_environment,
+            escape_filter_string=self.escape_filter_string,
+            cancel_broker_order=lambda *_args, **_kwargs: {"ok": True},
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(page["page_kind"], "warn")
+        self.assertEqual(page["title"], "保护单已生效")
         self.assertEqual(pb.updated, [])
 
     def test_cancel_webhook_rejects_awaiting_confirm_without_canceling_orders(self):

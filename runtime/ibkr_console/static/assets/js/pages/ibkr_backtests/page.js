@@ -36,6 +36,47 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             runtimeExtra: false,
         };
 
+        function toIsoDate(date) {
+            return date.toISOString().slice(0, 10);
+        }
+
+        function getLatestCompleteBacktestDate() {
+            const now = new Date();
+            const etFormatter = new Intl.DateTimeFormat('en-CA', {
+                timeZone: 'America/New_York',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+            });
+            const parts = Object.fromEntries(
+                etFormatter.formatToParts(now)
+                    .filter((part) => part.type !== 'literal')
+                    .map((part) => [part.type, part.value])
+            );
+            const todayEt = new Date(Date.UTC(
+                Number(parts.year),
+                Number(parts.month) - 1,
+                Number(parts.day),
+                12,
+                0,
+                0
+            ));
+            todayEt.setUTCDate(todayEt.getUTCDate() - 1);
+            return toIsoDate(todayEt);
+        }
+
+        function syncBacktestDateLimits() {
+            const latestCompleteDate = getLatestCompleteBacktestDate();
+            const dateFrom = document.getElementById('dateFrom');
+            const dateTo = document.getElementById('dateTo');
+            if (dateFrom) dateFrom.max = latestCompleteDate;
+            if (dateTo) dateTo.max = latestCompleteDate;
+            if (dateFrom?.value && dateFrom.value > latestCompleteDate) dateFrom.value = latestCompleteDate;
+            if (dateTo?.value && dateTo.value > latestCompleteDate) dateTo.value = latestCompleteDate;
+            if (dateFrom?.value && dateTo?.value && dateFrom.value > dateTo.value) dateFrom.value = dateTo.value;
+            return latestCompleteDate;
+        }
+
         function initAuth() {
             try {
                 requireAuth(`${location.pathname}${location.search}`);
@@ -1591,6 +1632,11 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 showToast('Date From 不能大于 Date To');
                 return;
             }
+            const latestCompleteDate = syncBacktestDateLimits();
+            if (dateTo > latestCompleteDate) {
+                showToast(`Date To 最晚只能选到 ${latestCompleteDate}（美东昨天），不能包含今天。`);
+                return;
+            }
             if (strategyParamsText) {
                 try {
                     strategyParams = JSON.parse(strategyParamsText);
@@ -1880,12 +1926,13 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         }
 
         function applyDefaultDates() {
-            const today = new Date();
-            const from = new Date(today);
-            from.setDate(today.getDate() - 14);
-            const toIso = (date) => date.toISOString().slice(0, 10);
-            document.getElementById('dateFrom').value = toIso(from);
-            document.getElementById('dateTo').value = toIso(today);
+            const latestCompleteDate = syncBacktestDateLimits();
+            const toDate = new Date(`${latestCompleteDate}T12:00:00Z`);
+            const from = new Date(toDate);
+            from.setUTCDate(toDate.getUTCDate() - 14);
+            document.getElementById('dateFrom').value = toIsoDate(from);
+            document.getElementById('dateTo').value = latestCompleteDate;
+            syncBacktestDateLimits();
         }
 
         window.handleStartBacktest = handleStartBacktest;
@@ -1921,6 +1968,8 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             document.getElementById('pageBridge').innerHTML = renderBacktestsBridge('/ibkr_backtests.html');
             document.getElementById('overviewChartToggle')?.addEventListener('toggle', resizeBacktestCharts);
             applyDefaultDates();
+            document.getElementById('dateFrom')?.addEventListener('change', syncBacktestDateLimits);
+            document.getElementById('dateTo')?.addEventListener('change', syncBacktestDateLimits);
             syncSymbolSourceUI();
             syncTvCompareUI();
             setBacktestTab(activeBacktestTab);

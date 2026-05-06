@@ -430,6 +430,9 @@ def _signal_status_label(value: Any) -> str:
     return {
         "awaiting_confirm": "待确认",
         "pending": "待执行",
+        "submitted": "已提交",
+        "protected_active": "保护中",
+        "protection_incomplete": "保护不完整",
         "executed": "已执行",
         "expired": "已过期",
         "rejected": "已拒绝",
@@ -468,6 +471,9 @@ def _target_signal_summary(targets_payload: dict[str, Any]) -> dict[str, str]:
             f"signals {_to_int(summary.get('signaled_count'), 0)} | "
             f"awaiting {_to_int(summary.get('awaiting_confirm_count'), 0)} | "
             f"pending {_to_int(summary.get('pending_count'), 0)} | "
+            f"submitted {_to_int(summary.get('submitted_count'), 0)} | "
+            f"protected {_to_int(summary.get('protected_active_count'), 0)} | "
+            f"protect_incomplete {_to_int(summary.get('protection_incomplete_count'), 0)} | "
             f"expired {len(expired_items)} | "
             f"no_signal {len(no_signal_items)}"
         ),

@@ -593,7 +593,7 @@ class ControlPlaneSplitStackTest(unittest.TestCase):
         request_payload = {
             "environment": "live",
             "signal_id": "sig-1",
-            "status": "executed",
+            "status": "submitted",
             "note": "broker_ack",
             "order": {
                 "unique_id": "sig-1_entry",
@@ -602,6 +602,7 @@ class ControlPlaneSplitStackTest(unittest.TestCase):
                 "direction": "long",
                 "quantity": 10,
                 "limit_price": 180.1,
+                "extra": {"protection_complete": True},
             },
         }
         upsert_result = (
@@ -615,22 +616,42 @@ class ControlPlaneSplitStackTest(unittest.TestCase):
             },
             200,
         )
+        call_order = []
+
+        def fake_update_record(*args, **kwargs):
+            call_order.append("signal_patch")
+            return {"id": "sig-row-1"}
+
+        def fake_order_upsert(*args, **kwargs):
+            call_order.append("order_upsert")
+            return upsert_result
 
         with mock.patch.object(api_app_mod.request, "get_json", return_value=request_payload):
             with mock.patch.object(api_app_mod.pb, "get_first_record", return_value=signal_row):
-                with mock.patch.object(api_app_mod.pb, "update_record", return_value={"id": "sig-row-1"}) as update_mock:
-                    with mock.patch.object(api_app_mod, "build_order_upsert_response", return_value=upsert_result) as req_mock:
+                with mock.patch.object(api_app_mod.pb, "update_record", side_effect=fake_update_record) as update_mock:
+                    with mock.patch.object(api_app_mod, "build_order_upsert_response", side_effect=fake_order_upsert) as req_mock:
                         payload = api_app_mod.custom_ibkr_signals_ack()
 
+        self.assertEqual(call_order, ["order_upsert", "order_upsert", "order_upsert", "signal_patch"])
         update_mock.assert_called_once_with(
             "ibkr_signals",
             "sig-row-1",
-            {"status": "executed", "note": "broker_ack"},
+            {
+                "status": "submitted",
+                "note": "broker_ack",
+                "extra": {
+                    "last_ack_status": "submitted",
+                    "last_ack_note": "broker_ack",
+                    "last_ack_source": "ibkr-api",
+                    "protection_complete": True,
+                },
+            },
         )
         self.assertEqual(req_mock.call_count, 3)
         self.assertTrue(payload["success"])
         self.assertEqual(payload["signal_id"], "sig-1")
         self.assertEqual(payload["status"], "Submitted")
+        self.assertEqual(payload["signal_status"], "submitted")
         self.assertEqual(payload["order_results"][0]["unique_id"], "sig-1_entry")
 
     def test_signals_ack_route_requires_signal_id(self):
@@ -638,6 +659,101 @@ class ControlPlaneSplitStackTest(unittest.TestCase):
             payload, status_code = api_app_mod.custom_ibkr_signals_ack()
         self.assertEqual(status_code, 400)
         self.assertEqual(payload["error"], "Missing signal_id")
+
+    def test_signals_ack_route_defaults_to_submitted_not_executed(self):
+        signal_row = {
+            "id": "sig-row-1",
+            "signal_id": "sig-1",
+            "symbol": "AAPL",
+            "direction": "long",
+            "shares": 10,
+            "entry": 180.0,
+            "stop_loss": 178.0,
+            "take_profit": 184.0,
+            "extra": {},
+        }
+        request_payload = {
+            "environment": "live",
+            "signal_id": "sig-1",
+            "order": {
+                "unique_id": "sig-1_entry",
+                "order_type": "Entry",
+                "status": "Submitted",
+                "direction": "long",
+                "quantity": 10,
+                "limit_price": 180.1,
+            },
+        }
+        upsert_result = (
+            {"success": True, "order": {"unique_id": "sig-1_entry", "status": "Submitted"}},
+            200,
+        )
+
+        with mock.patch.object(api_app_mod.request, "get_json", return_value=request_payload):
+            with mock.patch.object(api_app_mod.pb, "get_first_record", return_value=signal_row):
+                with mock.patch.object(api_app_mod.pb, "update_record", return_value={"id": "sig-row-1"}) as update_mock:
+                    with mock.patch.object(api_app_mod, "build_order_upsert_response", return_value=upsert_result):
+                        payload = api_app_mod.custom_ibkr_signals_ack()
+
+        update_mock.assert_called_once()
+        patch = update_mock.call_args.args[2]
+        self.assertEqual(patch["status"], "submitted")
+        self.assertEqual(patch["extra"]["last_ack_status"], "submitted")
+        self.assertTrue(payload["success"])
+
+    def test_signals_ack_route_records_partial_when_order_upsert_fails(self):
+        signal_row = {
+            "id": "sig-row-1",
+            "signal_id": "sig-1",
+            "symbol": "AAPL",
+            "direction": "long",
+            "shares": 10,
+            "entry": 180.0,
+            "stop_loss": 178.0,
+            "take_profit": 184.0,
+            "extra": {},
+        }
+        request_payload = {
+            "environment": "live",
+            "signal_id": "sig-1",
+            "status": "protected_active",
+            "note": "broker_ack",
+            "order": {
+                "unique_id": "sig-1_entry",
+                "order_type": "Entry",
+                "status": "Submitted",
+                "direction": "long",
+                "quantity": 10,
+                "limit_price": 180.1,
+                "extra": {"protection_complete": True},
+            },
+        }
+        upsert_results = [
+            ({"success": True, "order": {"unique_id": "sig-1_entry", "status": "Submitted"}}, 200),
+            ({"error": "pb write failed"}, 500),
+        ]
+
+        with mock.patch.object(api_app_mod.request, "get_json", return_value=request_payload):
+            with mock.patch.object(api_app_mod.pb, "get_first_record", return_value=signal_row):
+                with mock.patch.object(api_app_mod.pb, "update_record", return_value={"id": "sig-row-1"}) as update_mock:
+                    with mock.patch.object(api_app_mod, "build_order_upsert_response", side_effect=upsert_results) as req_mock:
+                        payload, status_code = api_app_mod.custom_ibkr_signals_ack()
+
+        self.assertEqual(status_code, 500)
+        self.assertEqual(req_mock.call_count, 2)
+        update_mock.assert_called_once()
+        patch = update_mock.call_args.args[2]
+        self.assertEqual(patch["status"], "protection_incomplete")
+        self.assertEqual(patch["note"], "order_upsert_failed")
+        self.assertTrue(patch["extra"]["ack_partial"])
+        self.assertEqual(patch["extra"]["ack_partial_status"], "ack_partial")
+        self.assertTrue(patch["extra"]["order_upsert_failed"])
+        self.assertEqual(patch["extra"]["order_upsert_error"], "pb write failed")
+        self.assertEqual(payload["status"], "protection_incomplete")
+        self.assertEqual(payload["ack_status"], "ack_partial")
+        self.assertEqual(payload["signal_status"], "protection_incomplete")
+        self.assertEqual(payload["diagnostic"], "order_upsert_failed")
+        self.assertEqual(payload["order_results"][1]["ok"], False)
 
     def test_reverse_dispatch_route_uses_native_builder(self):
         sentinel = {"ok": True, "source": "ibkr-api"}
@@ -699,16 +815,20 @@ class ControlPlaneSplitStackTest(unittest.TestCase):
 
     def test_signal_confirm_webhook_uses_native_builder(self):
         with mock.patch.object(api_app_mod.request, "args", {"id": "sig-1", "environment": "live"}):
-            with mock.patch.object(
-                api_app_mod,
-                "build_signal_confirm_webhook_response",
-                return_value=({"body": "<html>confirm</html>", "content_type": "text/html; charset=utf-8"}, 200),
-            ) as builder_mock:
-                response = api_app_mod.webhook_signal_confirm()
+            with mock.patch.object(api_app_mod, "_config_value", return_value="7") as config_mock:
+                with mock.patch.object(
+                    api_app_mod,
+                    "build_signal_confirm_webhook_response",
+                    return_value=({"body": "<html>confirm</html>", "content_type": "text/html; charset=utf-8"}, 200),
+                ) as builder_mock:
+                    response = api_app_mod.webhook_signal_confirm()
         self.assertEqual(response[0], "<html>confirm</html>")
         self.assertEqual(response[1], 200)
         self.assertEqual(response[2]["Content-Type"], "text/html; charset=utf-8")
         builder_mock.assert_called_once()
+        self.assertIn("config_value", builder_mock.call_args.kwargs)
+        self.assertTrue(callable(builder_mock.call_args.kwargs["config_value"]))
+        config_mock.assert_not_called()
 
     def test_signal_cancel_webhook_uses_native_builder(self):
         with mock.patch.object(api_app_mod.request, "args", {"id": "sig-1", "environment": "live"}):
@@ -722,6 +842,8 @@ class ControlPlaneSplitStackTest(unittest.TestCase):
         self.assertEqual(response[1], 200)
         self.assertEqual(response[2]["Content-Type"], "text/html; charset=utf-8")
         builder_mock.assert_called_once()
+        self.assertNotIn("config_value", builder_mock.call_args.kwargs)
+        self.assertIn("cancel_broker_order", builder_mock.call_args.kwargs)
 
     def test_feishu_callback_response_sets_update_card_token_header(self):
         class _JsonResponse:

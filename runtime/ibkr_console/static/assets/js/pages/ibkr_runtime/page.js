@@ -91,10 +91,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             const text = String(value || '').trim().toLowerCase();
             if (!text) return 'pill-neutral';
             if (['ready', 'open', 'success', 'recovered', 'authenticated'].includes(text)) return text === 'success' ? 'pill-success' : 'pill-ok';
-            if (['warming', 'blocked', 'degraded', 'closed', 'panic_resetting', 'manual_takeover', 'received'].includes(text)) return 'pill-warning';
+            if (['warming', 'blocked', 'degraded', 'closed', 'panic_resetting', 'manual_takeover', 'received', 'no_active_targets'].includes(text)) return 'pill-warning';
             if (['stopped'].includes(text)) return 'pill-error';
-            if (['running', 'ok', 'online', 'filled', 'long', 'buy', 'active', 'executed'].includes(text)) return `pill-${text}`;
-            if (['warning', 'delayed', 'pending', 'requested', 'triggered', 'awaiting_confirm', 'waiting_confirm', 'waiting_response', 'submitted', 'timeout'].includes(text)) return `pill-${text}`;
+            if (['running', 'ok', 'online', 'filled', 'long', 'buy', 'active', 'executed', 'protected_active'].includes(text)) return `pill-${text}`;
+            if (['warning', 'delayed', 'pending', 'requested', 'triggered', 'awaiting_confirm', 'waiting_confirm', 'waiting_response', 'submitted', 'protection_incomplete', 'timeout'].includes(text)) return `pill-${text}`;
             if (['error', 'offline', 'cancelled', 'rejected', 'gateway_rejected', 'submit_failed', 'short', 'sell', 'failed'].includes(text)) return `pill-${text}`;
             if (['expired', 'init', 'candidate'].includes(text)) return 'pill-neutral';
             return 'pill-neutral';
@@ -103,12 +103,41 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         function chipTone(value) {
             const text = String(value || '').trim().toLowerCase();
             if (['ready', 'open', 'recovered', 'authenticated'].includes(text)) return 'chip-ok';
-            if (['warming', 'blocked', 'degraded', 'closed', 'panic_resetting', 'manual_takeover', 'received', 'submitted'].includes(text)) return 'chip-warn';
+            if (['protected_active'].includes(text)) return 'chip-ok';
+            if (['warming', 'blocked', 'degraded', 'closed', 'panic_resetting', 'manual_takeover', 'received', 'submitted', 'protection_incomplete', 'no_active_targets'].includes(text)) return 'chip-warn';
             if (['stopped'].includes(text)) return 'chip-error';
             if (['running', 'ok', 'online', 'success'].includes(text)) return 'chip-ok';
             if (['warning', 'delayed', 'pending', 'requested', 'triggered', 'awaiting_confirm', 'waiting_confirm', 'waiting_response', 'timeout'].includes(text)) return 'chip-warn';
             if (['error', 'offline', 'failed', 'rejected', 'gateway_rejected', 'submit_failed'].includes(text)) return 'chip-error';
             return 'chip-muted';
+        }
+
+        function formatRuntimeSignalStatus(value) {
+            const key = String(value || '').trim().toLowerCase();
+            const labels = {
+                awaiting_confirm: '待确认',
+                pending: '等待执行',
+                submitted: '已提交',
+                protected_active: '保护中',
+                protection_incomplete: '保护不完整',
+                executed: '已执行',
+                closed: '已平仓',
+                expired: '已过期',
+                rejected: '已拒绝',
+            };
+            return labels[key] || (key ? key.replace(/_/g, ' ') : '--');
+        }
+
+        function formatTradeUniverseStatus(value) {
+            const key = String(value || '').trim().toLowerCase();
+            const labels = {
+                active: 'ACTIVE',
+                ready: 'READY',
+                empty_watchlist: 'EMPTY WATCHLIST',
+                no_active_targets: 'NO ACTIVE TARGETS',
+                unknown: 'UNKNOWN',
+            };
+            return labels[key] || (key ? key.replace(/_/g, ' ').toUpperCase() : '--');
         }
 
         function normalizeCode(value) {
@@ -1797,6 +1826,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 ['Bar Repair Recent', Array.isArray(status?.bar_repair_queue?.recent_jobs) ? status.bar_repair_queue.recent_jobs.slice(0, 3).map((job) => `${job.symbol || '--'} ${job.interval || '--'} ${job.status || '--'}`).join(' | ') || '--' : '--'],
                 ['Market Date', String(status?.market_universe?.market_date || '--')],
                 ['Last Daily Reset', formatTimeLabel(status?.market_universe?.last_daily_reset)],
+                ['Trade Universe Status', formatTradeUniverseStatus(status?.market_universe?.trade_universe_status || status?.runtime?.market_universe?.trade_universe_status)],
                 ['Watchlist Pool', String(status?.market_universe?.watchlist_pool_count || 0)],
                 ['Today Targets', String(status?.market_universe?.active_target_count || 0)],
                 ['Trade Targets', Array.isArray(status?.market_universe?.active_trade_symbols) ? status.market_universe.active_trade_symbols.join(', ') || '--' : '--'],
@@ -2027,7 +2057,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 {
                     label: 'Latest Signal',
                     value: latestSignal ? `${latestSignal.symbol || '--'} ${String(latestSignal.direction || '--').toUpperCase()}` : '--',
-                    copy: latestSignal ? `${getRecordBarLabel(latestSignal)} · ${latestSignal.status || '--'}` : '无新信号',
+                    copy: latestSignal ? `${getRecordBarLabel(latestSignal)} · ${formatRuntimeSignalStatus(latestSignal.status)}` : '无新信号',
                 },
                 {
                     label: 'Warmup Gate',
@@ -2257,7 +2287,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                                     <td class="mono">${escapeHtml((item.us_time || item.created || '--').slice(0, 19))}</td>
                                     <td>${escapeHtml(item.symbol || '--')}</td>
                                     <td><span class="pill ${direction === 'short' ? 'pill-short' : 'pill-long'}">${escapeHtml((item.direction || '--').toUpperCase())}</span></td>
-                                    <td><span class="pill ${statusClass(status)}">${escapeHtml(item.status || '--')}</span></td>
+                                    <td><span class="pill ${statusClass(status)}">${escapeHtml(formatRuntimeSignalStatus(item.status))}</span></td>
                                     <td>${formatMoney(item.entry)}</td>
                                     <td>${escapeHtml(String(item.rr || '--'))}</td>
                                 </tr>

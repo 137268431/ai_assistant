@@ -94,6 +94,15 @@ class OrderPlacer:
                 account=acct_id,
                 order_ids=result.get("order_ids") or [],
             )
+        missing_order_ids = [
+            str(item or "").strip()
+            for item in (result.get("missing_order_ids") or [])
+            if str(item or "").strip()
+        ]
+        protection_complete = bool(result.get("protection_complete"))
+        protection_incomplete = bool(missing_order_ids) or (
+            "protection_complete" in result and not protection_complete and bool(result.get("order_ids"))
+        )
         return {
             "ok": bool(result.get("ok")),
             "entry_coid": str(result.get("entry_coid") or ""),
@@ -102,6 +111,18 @@ class OrderPlacer:
             "bracket_group": str(result.get("bracket_group") or result.get("entry_coid") or ""),
             "order_ids": [str(item or "").strip() for item in (result.get("order_ids") or []) if str(item or "").strip()],
             "error": result.get("error"),
+            "entry_error": result.get("entry_error"),
+            "submission": result.get("submission"),
+            "protection_complete": protection_complete,
+            "protection_incomplete": protection_incomplete,
+            "missing_order_ids": missing_order_ids,
+            "missing_protection_roles": list(result.get("missing_protection_roles") or []),
+            "protection_order_statuses": dict(result.get("protection_order_statuses") or {}),
+            "protection_orders_checked": int(result.get("protection_orders_checked") or 0),
+            "recommended_action": "review_and_cancel_or_repair_unprotected_entry"
+            if protection_incomplete
+            else "",
+            "safe_action": "diagnostic_only_no_broker_call" if protection_incomplete else "",
             "raw_response": result.get("raw"),
         }
 

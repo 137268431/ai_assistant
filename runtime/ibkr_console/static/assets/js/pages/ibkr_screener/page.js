@@ -914,9 +914,15 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         { label: 'SIGNALLED', value: summary.signaled_count || 0, copy: '已有信号', className: 'teal' },
         {
           label: 'NEEDS ACTION',
-          value: (summary.awaiting_confirm_count || 0) + (summary.pending_count || 0),
-          copy: '待处理',
+          value: (summary.awaiting_confirm_count || 0) + (summary.pending_count || 0) + (summary.protection_incomplete_count || 0),
+          copy: '待确认/待执行/保护异常',
           className: 'accent'
+        },
+        {
+          label: 'SUBMITTED',
+          value: (summary.submitted_count || 0) + (summary.protected_active_count || 0) + (summary.protection_incomplete_count || 0),
+          copy: '券商订单/保护单',
+          className: 'teal'
         },
         { label: 'EXECUTED', value: summary.executed_count || 0, copy: '已执行', className: 'good' },
         { label: 'STALE', value: summary.stale_count || 0, copy: '数据过期', className: 'accent' }
@@ -1141,7 +1147,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         const summary = todayTargetsPayload.summary || {};
         const visible = Array.isArray(filteredCurrentTargetRows) ? filteredCurrentTargetRows.length : 0;
         const visibleReady = (filteredCurrentTargetRows || []).filter((row) => row.technical_state === 'ready').length;
-        const visibleActionable = (filteredCurrentTargetRows || []).filter((row) => ['awaiting_confirm', 'pending'].includes(String(row.latest_signal_status || ''))).length;
+        const visibleActionable = (filteredCurrentTargetRows || []).filter((row) => ['awaiting_confirm', 'pending', 'submitted', 'protected_active', 'protection_incomplete'].includes(String(row.latest_signal_status || ''))).length;
         const currentPage = Math.max(1, Number(todayTargetsPayload.page || currentTargetState.page || 1) || 1);
         const totalPages = Math.max(1, Number(todayTargetsPayload.total_pages || 1) || 1);
         const filteredTotal = Number(todayTargetsPayload.filtered_total || visible || 0) || 0;
@@ -2219,6 +2225,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         no_signal: 'no signal',
         awaiting_confirm: 'awaiting confirm',
         pending: 'pending',
+        submitted: 'submitted',
+        protected_active: 'protected active',
+        protection_incomplete: 'protection incomplete',
         executed: 'executed',
         closed: 'closed',
         expired: 'expired',
@@ -2255,7 +2264,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
       const currentPage = Math.max(1, Number(todayTargetsPayload.page || currentTargetState.page || 1) || 1);
       const totalPages = Math.max(1, Number(todayTargetsPayload.total_pages || 1) || 1);
       const readyCount = rows.filter((row) => row.technical_state === 'ready').length;
-      const needsActionCount = rows.filter((row) => ['awaiting_confirm', 'pending'].includes(String(row.latest_signal_status || ''))).length;
+      const needsActionCount = rows.filter((row) => ['awaiting_confirm', 'pending', 'submitted', 'protected_active', 'protection_incomplete'].includes(String(row.latest_signal_status || ''))).length;
       const signaledCount = rows.filter((row) => row.has_signal_today).length;
       const scanTimeEt = String(workflow.scan_summary_time_et || '09:20');
       const openCheckTimeEt = String(workflow.open_check_time_et || scanTimeEt);

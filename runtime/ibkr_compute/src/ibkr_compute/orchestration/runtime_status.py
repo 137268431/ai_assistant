@@ -93,6 +93,18 @@ class TradingServiceRuntimeStatusMixin:
         with self._subscription_lock:
             active_subscription_symbols = list(self._active_subscription_symbols)
         active_subscription_set = set(active_subscription_symbols)
+        active_trade_symbol_set = set(self._active_trade_symbols)
+        inactive_trade_symbols = [
+            symbol for symbol in scan_symbols
+            if symbol not in active_trade_symbol_set
+        ]
+        no_active_targets = bool(scan_symbols) and not bool(active_trade_symbol_set)
+        if active_trade_symbol_set:
+            trade_universe_status = "ready"
+        elif scan_symbols:
+            trade_universe_status = "no_active_targets"
+        else:
+            trade_universe_status = "no_trade_symbols"
         market_ws_subscribed_symbols = [
             symbol for symbol in market_ws_symbols if symbol in active_subscription_set
         ]
@@ -235,6 +247,12 @@ class TradingServiceRuntimeStatusMixin:
                 ),
                 "watchlist_pool_count": len(self._watchlist_symbols),
                 "watchlist_trade_count": len(self._watchlist_trade_symbols),
+                "trade_universe_ready": bool(active_trade_symbol_set),
+                "trade_universe_status": trade_universe_status,
+                "trade_universe_reason": trade_universe_status,
+                "no_active_targets": no_active_targets,
+                "inactive_trade_symbols_total": len(inactive_trade_symbols),
+                "inactive_trade_symbols_sample": list(inactive_trade_symbols[:25]),
                 "data_symbols_total": len(data_symbols),
                 "scan_symbols_total": len(scan_symbols),
                 "market_ws_symbols_total": len(market_ws_symbols),

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from ibkr_api.orders.upsert import build_order_upsert_response
+from ibkr_api.orders.values import ensure_object
 from ibkr_api.signals.ack import build_signal_ack_orders
 
 
@@ -187,7 +188,7 @@ def build_signals_ack_response(
 ) -> tuple[dict[str, Any], int]:
     environment = normalize_environment(payload.get("environment"), "live")
     signal_id = str(payload.get("signal_id") or "").strip()
-    status = str(payload.get("status") or "executed").strip() or "executed"
+    status = str(payload.get("status") or "submitted").strip() or "submitted"
     note = str(payload.get("note") or "")
 
     if not signal_id:
@@ -204,25 +205,72 @@ def build_signals_ack_response(
         if not signal_record or not signal_record.get("id"):
             return {"error": "Signal not found"}, 404
 
-        pb.update_record(
-            "ibkr_signals",
-            str(signal_record.get("id")),
-            {
-                "status": status,
-                "note": note,
-            },
-        )
+        existing_extra = ensure_object(signal_record.get("extra"))
+        signal_extra = {
+            **existing_extra,
+            "last_ack_status": status,
+            "last_ack_note": note,
+            "last_ack_source": "ibkr-api",
+        }
+        order_input = ensure_object(payload.get("order"))
+        order_extra = ensure_object(order_input.get("extra"))
+        if "protection_complete" in order_extra:
+            signal_extra["protection_complete"] = bool(order_extra.get("protection_complete"))
+        if order_extra.get("missing_order_ids") is not None:
+            signal_extra["missing_order_ids"] = order_extra.get("missing_order_ids")
 
         ack_orders = build_signal_ack_orders(signal_record, payload, environment)
         primary_status = "Init"
         order_results: list[dict[str, Any]] = []
+
+        def record_partial_ack(error: str) -> None:
+            failure_status = "protection_incomplete"
+            diagnostic_extra = {
+                **signal_extra,
+                "ack_partial": True,
+                "ack_partial_status": "ack_partial",
+                "ack_error": "order_upsert_failed",
+                "order_upsert_failed": True,
+                "order_upsert_error": error,
+                "order_results": order_results,
+                "status_reason": "order_upsert_failed",
+                "protection_incomplete": True,
+                "protection_complete": False,
+            }
+            try:
+                pb.update_record(
+                    "ibkr_signals",
+                    str(signal_record.get("id")),
+                    {
+                        "status": failure_status,
+                        "note": "order_upsert_failed",
+                        "extra": diagnostic_extra,
+                    },
+                )
+            except Exception:
+                try:
+                    pb.update_record(
+                        "ibkr_signals",
+                        str(signal_record.get("id")),
+                        {
+                            "note": "order_upsert_failed",
+                            "extra": diagnostic_extra,
+                        },
+                    )
+                except Exception:
+                    pass
+
         for order_payload in ack_orders:
-            response_payload, response_status_code = order_upsert_builder(
-                pb,
-                payload=order_payload,
-                normalize_environment=normalize_environment,
-                escape_filter_string=escape_filter_string,
-            )
+            try:
+                response_payload, response_status_code = order_upsert_builder(
+                    pb,
+                    payload=order_payload,
+                    normalize_environment=normalize_environment,
+                    escape_filter_string=escape_filter_string,
+                )
+            except Exception as exc:
+                response_payload = {"error": str(exc)}
+                response_status_code = 500
             order_response = response_payload.get("order") if isinstance(response_payload.get("order"), dict) else {}
             order_results.append(
                 {
@@ -239,22 +287,40 @@ def build_signals_ack_response(
             elif not primary_status or primary_status == "Init":
                 primary_status = str(order_results[-1]["status"] or primary_status)
             if not bool(order_results[-1].get("ok")):
+                error = str(response_payload.get("error") or "orders_upsert_failed")
+                record_partial_ack(error)
                 return (
                     {
-                        "error": str(response_payload.get("error") or "orders_upsert_failed"),
+                        "error": error,
+                        "diagnostic": "order_upsert_failed",
+                        "ack_status": "ack_partial",
                         "signal_id": signal_id,
-                        "status": primary_status or "Init",
+                        "status": "protection_incomplete",
+                        "signal_status": "protection_incomplete",
+                        "primary_order_status": primary_status or "Init",
                         "order_results": order_results,
                         "source": "ibkr-api",
                     },
                     int(response_status_code or 500 or 500),
                 )
 
+        pb.update_record(
+            "ibkr_signals",
+            str(signal_record.get("id")),
+            {
+                "status": status,
+                "note": note,
+                "extra": signal_extra,
+            },
+        )
+
         return (
             {
                 "success": True,
                 "signal_id": signal_id,
                 "status": primary_status or "Init",
+                "signal_status": status,
+                "primary_order_status": primary_status or "Init",
                 "order_results": order_results,
                 "source": "ibkr-api",
             },

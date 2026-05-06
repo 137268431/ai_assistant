@@ -59,6 +59,44 @@ def _validity_minutes(config_value: ConfigValue | None, environment: str) -> int
     return raw if raw > 0 else 30
 
 
+def _order_status(row: dict[str, Any]) -> str:
+    return to_text((row or {}).get("status"))
+
+
+def _order_role(row: dict[str, Any]) -> str:
+    return to_text((row or {}).get("role")).lower()
+
+
+def _has_filled_entry(orders: list[dict[str, Any]]) -> bool:
+    for row in orders:
+        if _order_role(row) == "entry" and _order_status(row) == "Filled":
+            return True
+    return False
+
+
+def _has_submitted_order(orders: list[dict[str, Any]]) -> bool:
+    return any(_order_status(row) in {"Submitted", "Filled"} for row in orders)
+
+
+def _has_submitted_protection(orders: list[dict[str, Any]]) -> bool:
+    roles = {
+        _order_role(row)
+        for row in orders
+        if _order_status(row) == "Submitted"
+    }
+    return "take_profit" in roles and "stop_loss" in roles
+
+
+def _repair_status_from_orders(orders: list[dict[str, Any]]) -> tuple[str, str]:
+    if _has_filled_entry(orders):
+        if _has_submitted_protection(orders):
+            return "protected_active", "entry_filled_and_protection_submitted"
+        return "submitted", "entry_filled_but_protection_not_confirmed"
+    if _has_submitted_order(orders):
+        return "submitted", "orders_detected_before_expiry"
+    return "", ""
+
+
 def _apply_notification_patch(pb: Any, row: dict[str, Any], notify_result: dict[str, Any]) -> dict[str, Any]:
     extra_patch = notify_result.get("extra_patch") if isinstance(notify_result, dict) else None
     record_id = to_text((row or {}).get("id"))
@@ -132,25 +170,28 @@ def build_signal_expiry_response(
                 for order_row in related_orders
                 if to_text(order_row.get("unique_id") or order_row.get("order_id"))
             ]
-            if order_refs:
+            repair_status, repair_reason = _repair_status_from_orders(
+                [dict(order_row) for order_row in related_orders if isinstance(order_row, dict)]
+            )
+            if repair_status:
                 updated = pb.update_record(
                     "ibkr_signals",
                     to_text(row.get("id")),
                     {
-                        "status": "executed",
+                        "status": repair_status,
                         "extra": {
                             **get_signal_extra(row),
                             "status_repaired_by": "signal_expiry_check",
                             "status_repaired_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                            "status_repair_reason": "orders_detected_before_expiry",
+                            "status_repair_reason": repair_reason,
                             "linked_order_unique_ids": order_refs,
                         },
                     },
                 )
-                updated_row = dict(updated) if isinstance(updated, dict) else {**row, "status": "executed"}
+                updated_row = dict(updated) if isinstance(updated, dict) else {**row, "status": repair_status}
                 notify_result = sync_signal_status_notification(
                     updated_row,
-                    action="executed",
+                    action=repair_status,
                     message=f"检测到关联订单，已自动修正信号状态（{len(order_refs)} 条订单）",
                     send_interactive=send_interactive,
                     signal_chat_id=signal_chat_id,
@@ -162,8 +203,9 @@ def build_signal_expiry_response(
                 results.append(
                     {
                         "signal_id": signal_id,
-                        "status": "executed",
+                        "status": repair_status,
                         "action": "repaired_from_orders",
+                        "repair_reason": repair_reason,
                         "linked_order_unique_ids": order_refs,
                     }
                 )
@@ -211,7 +253,8 @@ def build_signal_expiry_response(
                 "candidate_count": len(candidates),
                 "expired_candidate_count": len(expired_rows),
                 "expired_count": expired_count,
-                "repaired_to_executed_count": repaired_count,
+                "repaired_to_order_status_count": repaired_count,
+                "repaired_to_executed_count": 0,
                 "results": results,
                 "source": "ibkr-api",
             },

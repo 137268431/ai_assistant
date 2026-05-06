@@ -389,7 +389,7 @@ class PBClient:
     def ack_ibkr_signal(
         self,
         signal_id: str,
-        status: str = "executed",
+        status: str = "submitted",
         note: str = "",
         order: Optional[Dict[str, Any]] = None,
         child_orders: Optional[List[Dict[str, Any]]] = None,

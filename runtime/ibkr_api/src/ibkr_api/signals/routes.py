@@ -98,6 +98,7 @@ def register_signal_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             escape_filter_string=escape_filter_string,
             update_signal_card=feishu_update_interactive,
             console_base_url=console_base_url(),
+            config_value=config_value,
         )
         return payload.get("body") or "", int(status_code or 200), {"Content-Type": str(payload.get("content_type") or "text/html; charset=utf-8")}
     exports["webhook_signal_confirm"] = webhook_signal_confirm

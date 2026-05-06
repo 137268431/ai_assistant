@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from ibkr_compute.core.indicator_engine import DEFAULT_PARAMS
@@ -155,6 +155,7 @@ def build_variant_request(base_request: dict, variant: dict, variant_index: int)
 def normalize_request(payload: dict) -> dict:
     service_module = _runtime_service_module()
     now = datetime.now(service_module.ET)
+    latest_complete_date = (now.date() - timedelta(days=1)).strftime("%Y-%m-%d")
     name = str(payload.get("name") or "").strip() or f"Backtest {now.strftime('%Y-%m-%d %H:%M')}"
     source_environment = str(payload.get("source_environment") or "live").strip().lower() or "live"
     symbol_source = str(payload.get("symbol_source") or "manual").strip().lower() or "manual"
@@ -163,8 +164,14 @@ def normalize_request(payload: dict) -> dict:
 
     symbols = parse_symbols(payload.get("symbols") or payload.get("symbols_text") or "")
     benchmark_symbol = str(payload.get("benchmark_symbol") or "SPY").strip().upper() or "SPY"
-    date_from = str(payload.get("date_from") or now.strftime("%Y-%m-%d")).strip()
+    date_from = str(payload.get("date_from") or latest_complete_date).strip()
     date_to = str(payload.get("date_to") or date_from).strip()
+    clamped_date_to = False
+    if date_to > latest_complete_date:
+        date_to = latest_complete_date
+        clamped_date_to = True
+    if date_from > date_to:
+        date_from = date_to
     historical_targets_replay = symbol_source == "targets" and (
         date_from != now.strftime("%Y-%m-%d") or date_to != now.strftime("%Y-%m-%d")
     )
@@ -261,6 +268,30 @@ def normalize_request(payload: dict) -> dict:
         minimum=1,
         maximum=service_module.MAX_BACKTEST_BACKFILL_CONCURRENCY,
     )
+    backfill_symbol_timeout_s = normalize_positive_int(
+        payload.get("backfill_symbol_timeout_s") or payload.get("backfill_symbol_timeout_seconds"),
+        default=service_module.DEFAULT_BACKTEST_BACKFILL_SYMBOL_TIMEOUT_SECONDS,
+        minimum=30,
+        maximum=service_module.MAX_BACKTEST_BACKFILL_SYMBOL_TIMEOUT_SECONDS,
+    )
+    backfill_max_batches = normalize_positive_int(
+        payload.get("backfill_max_batches"),
+        default=service_module.DEFAULT_BACKTEST_BACKFILL_MAX_BATCHES,
+        minimum=1,
+        maximum=service_module.MAX_BACKTEST_BACKFILL_MAX_BATCHES,
+    )
+    backfill_history_timeout_s = normalize_positive_int(
+        payload.get("backfill_history_timeout_s") or payload.get("backfill_history_timeout_seconds"),
+        default=service_module.DEFAULT_BACKTEST_BACKFILL_HISTORY_TIMEOUT_SECONDS,
+        minimum=5,
+        maximum=service_module.MAX_BACKTEST_BACKFILL_HISTORY_TIMEOUT_SECONDS,
+    )
+    backfill_history_max_retries = normalize_positive_int(
+        payload.get("backfill_history_max_retries"),
+        default=service_module.DEFAULT_BACKTEST_BACKFILL_HISTORY_MAX_RETRIES,
+        minimum=0,
+        maximum=service_module.MAX_BACKTEST_BACKFILL_HISTORY_MAX_RETRIES,
+    )
     raw_params = payload.get("strategy_params") or payload.get("params") or {}
     strategy_params = normalize_strategy_params(raw_params)
     if payload.get("signal_window_max_bars") not in (None, ""):
@@ -284,6 +315,8 @@ def normalize_request(payload: dict) -> dict:
         "benchmark_symbol": benchmark_symbol,
         "date_from": date_from,
         "date_to": date_to,
+        "latest_complete_date": latest_complete_date,
+        "date_to_clamped": clamped_date_to,
         "session_mode": session_mode,
         "scan_session_mode": scan_session_mode,
         "initial_capital": initial_capital,
@@ -317,6 +350,10 @@ def normalize_request(payload: dict) -> dict:
         "retention_limit": retention_limit,
         "preflight_backfill": preflight_backfill,
         "backfill_concurrency": backfill_concurrency,
+        "backfill_symbol_timeout_s": backfill_symbol_timeout_s,
+        "backfill_max_batches": backfill_max_batches,
+        "backfill_history_timeout_s": backfill_history_timeout_s,
+        "backfill_history_max_retries": backfill_history_max_retries,
         "params": {
             "strategy_params": strategy_params,
             "strategy_tag": strategy_tag,
@@ -328,9 +365,15 @@ def normalize_request(payload: dict) -> dict:
             "persist_backtest_indicators": persist_backtest_indicators,
             "preflight_backfill": preflight_backfill,
             "backfill_concurrency": backfill_concurrency,
+            "backfill_symbol_timeout_s": backfill_symbol_timeout_s,
+            "backfill_max_batches": backfill_max_batches,
+            "backfill_history_timeout_s": backfill_history_timeout_s,
+            "backfill_history_max_retries": backfill_history_max_retries,
             "requested_symbol_source": symbol_source,
             "historical_targets_replay": historical_targets_replay,
             "execution_model": execution_model,
+            "latest_complete_date": latest_complete_date,
+            "date_to_clamped": clamped_date_to,
             "borrow_limit_mode": borrow_limit_mode,
             "max_borrow_amount": max_borrow_amount,
             "cooldown_bars_after_sl": cooldown_bars_after_sl,

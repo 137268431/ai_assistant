@@ -1,13 +1,16 @@
+import sqlite3
 import sys
+import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest import mock
 
 SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from ibkr_compute.backtest import request_utils
+from ibkr_compute.backtest import request_utils, runtime_service
 from ibkr_compute.backtest.runtime_service import BacktestService
 from ibkr_compute.core.risk_management import compute_atr_tightened_stop
 from ibkr_compute.core.signal_generator import SignalGenerator
@@ -78,6 +81,127 @@ class StrategyReliabilityEnhancementTests(unittest.TestCase):
 
         self.assertTrue(request["persist_backtest_indicators"])
         self.assertTrue(request["params"]["persist_backtest_indicators"])
+
+    def test_backtest_date_to_is_clamped_to_latest_complete_et_date(self):
+        real_datetime = request_utils.datetime
+        with mock.patch.object(request_utils, "datetime") as mock_datetime:
+            mock_datetime.now.return_value = real_datetime(2026, 5, 6, 10, 0, tzinfo=ET)
+            request = request_utils.normalize_request(
+                {
+                    "name": "no current day",
+                    "symbol_source": "manual",
+                    "symbols": "AAPL",
+                    "date_from": "2026-05-06",
+                    "date_to": "2026-05-06",
+                }
+            )
+
+        self.assertEqual(request["date_from"], "2026-05-05")
+        self.assertEqual(request["date_to"], "2026-05-05")
+        self.assertEqual(request["latest_complete_date"], "2026-05-05")
+        self.assertTrue(request["date_to_clamped"])
+        self.assertTrue(request["params"]["date_to_clamped"])
+
+    def test_backtest_backfill_limits_are_normalized(self):
+        request = request_utils.normalize_request(
+            {
+                "name": "bounded preflight",
+                "symbol_source": "manual",
+                "symbols": "AAPL",
+                "date_from": "2026-05-01",
+                "date_to": "2026-05-01",
+                "backfill_concurrency": 99,
+                "backfill_symbol_timeout_s": 999999,
+                "backfill_max_batches": 999999,
+                "backfill_history_timeout_s": 999999,
+                "backfill_history_max_retries": 999999,
+            }
+        )
+
+        self.assertEqual(request["backfill_concurrency"], 5)
+        self.assertEqual(request["backfill_symbol_timeout_s"], 3600)
+        self.assertEqual(request["backfill_max_batches"], 240)
+        self.assertEqual(request["backfill_history_timeout_s"], 60)
+        self.assertEqual(request["backfill_history_max_retries"], 5)
+        self.assertEqual(request["params"]["backfill_max_batches"], 240)
+
+    def test_backtest_repair_windows_scope_to_missing_segments(self):
+        service = BacktestService(None)
+        interval_ms = 5 * 60 * 1000
+        rows = [
+            {"bar_time_ms": 100 * interval_ms, "us_time": "2026-05-05 09:30:00"},
+            {"bar_time_ms": 101 * interval_ms, "us_time": "2026-05-05 09:35:00"},
+            {"bar_time_ms": 106 * interval_ms, "us_time": "2026-05-05 10:00:00"},
+            {"bar_time_ms": 107 * interval_ms, "us_time": "2026-05-05 10:05:00"},
+        ]
+
+        windows = service._build_backfill_repair_windows(
+            rows,
+            requested_start_ms=100 * interval_ms,
+            requested_end_ms=107 * interval_ms,
+        )
+
+        self.assertEqual(len(windows), 1)
+        self.assertEqual(windows[0]["start_ms"], 102 * interval_ms)
+        self.assertEqual(windows[0]["end_ms"], 105 * interval_ms)
+        self.assertEqual(windows[0]["reason"], "internal_gap")
+
+    def test_backtest_coverage_summary_uses_sqlite_window_diagnostics(self):
+        service = BacktestService(None)
+        bar_times = [
+            datetime(2026, 5, 5, 9, 30, tzinfo=ET),
+            datetime(2026, 5, 5, 9, 35, tzinfo=ET),
+            datetime(2026, 5, 5, 10, 0, tzinfo=ET),
+            datetime(2026, 5, 5, 10, 5, tzinfo=ET),
+        ]
+        with tempfile.NamedTemporaryFile(suffix=".db") as tmp:
+            with sqlite3.connect(tmp.name) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE ibkr_bars (
+                        symbol TEXT,
+                        interval TEXT,
+                        environment TEXT,
+                        bar_time_ms INTEGER,
+                        us_time TEXT
+                    )
+                    """
+                )
+                conn.executemany(
+                    "INSERT INTO ibkr_bars(symbol, interval, environment, bar_time_ms, us_time) VALUES (?, ?, ?, ?, ?)",
+                    [
+                        (
+                            "AAPL",
+                            "5m",
+                            "live",
+                            int(item.timestamp() * 1000),
+                            item.strftime("%Y-%m-%d %H:%M:%S"),
+                        )
+                        for item in bar_times
+                    ],
+                )
+                conn.commit()
+
+            old_path = runtime_service.BACKTEST_SQLITE_PATH
+            runtime_service.BACKTEST_SQLITE_PATH = tmp.name
+            try:
+                summary = service._symbol_range_coverage_summary(
+                    "AAPL",
+                    "live",
+                    "2026-05-05",
+                    "2026-05-05",
+                    warmup_bars=0,
+                )
+            finally:
+                runtime_service.BACKTEST_SQLITE_PATH = old_path
+
+        self.assertEqual(summary["diagnostic_source"], "sqlite_window")
+        self.assertTrue(summary["needs_backfill"])
+        self.assertEqual(summary["gap_count"], 1)
+        self.assertEqual(summary["repair_window_count"], 1)
+        self.assertEqual(summary["repair_windows"][0]["reason"], "internal_gap")
+        self.assertEqual(summary["repair_windows"][0]["start_us"], "2026-05-05 09:40:00")
+        self.assertEqual(summary["repair_windows"][0]["end_us"], "2026-05-05 09:55:00")
 
     def test_signal_window_expires_after_configured_bar_count(self):
         gen = SignalGenerator("AAPL", "5m", {"signal_window_max_bars": 1})

@@ -9,7 +9,7 @@ import statistics
 import threading
 import time
 import traceback
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
@@ -78,6 +78,15 @@ MAX_BACKTEST_WARMUP_BARS = 2000
 DEFAULT_BACKTEST_BACKFILL_CONCURRENCY = 4
 MAX_BACKTEST_BACKFILL_CONCURRENCY = 5
 BACKTEST_COVERAGE_EDGE_GRACE_DAYS = 5
+DEFAULT_BACKTEST_BACKFILL_SYMBOL_TIMEOUT_SECONDS = 600
+MAX_BACKTEST_BACKFILL_SYMBOL_TIMEOUT_SECONDS = 3600
+DEFAULT_BACKTEST_BACKFILL_MAX_BATCHES = 120
+MAX_BACKTEST_BACKFILL_MAX_BATCHES = 240
+DEFAULT_BACKTEST_BACKFILL_HISTORY_TIMEOUT_SECONDS = 20
+MAX_BACKTEST_BACKFILL_HISTORY_TIMEOUT_SECONDS = 60
+DEFAULT_BACKTEST_BACKFILL_HISTORY_MAX_RETRIES = 1
+MAX_BACKTEST_BACKFILL_HISTORY_MAX_RETRIES = 5
+BACKTEST_PREFLIGHT_HEARTBEAT_SECONDS = 15
 SCAN_INTERVALS = tuple(COMPUTE_INTERVALS)
 BACKTEST_IMPROVEMENT_NOTIFY_THRESHOLD = 0.05
 BACKTEST_IMPROVEMENT_SHARPE_THRESHOLD = 0.1
@@ -556,6 +565,23 @@ class BacktestService:
             "retention_limit": request.get("retention_limit", DEFAULT_BACKTEST_RETENTION_LIMIT),
             "preflight_backfill": bool(request.get("preflight_backfill", True)),
             "backfill_concurrency": int(request.get("backfill_concurrency", DEFAULT_BACKTEST_BACKFILL_CONCURRENCY) or DEFAULT_BACKTEST_BACKFILL_CONCURRENCY),
+            "backfill_symbol_timeout_s": int(
+                request.get("backfill_symbol_timeout_s", DEFAULT_BACKTEST_BACKFILL_SYMBOL_TIMEOUT_SECONDS)
+                or DEFAULT_BACKTEST_BACKFILL_SYMBOL_TIMEOUT_SECONDS
+            ),
+            "backfill_max_batches": int(
+                request.get("backfill_max_batches", DEFAULT_BACKTEST_BACKFILL_MAX_BATCHES)
+                or DEFAULT_BACKTEST_BACKFILL_MAX_BATCHES
+            ),
+            "backfill_history_timeout_s": int(
+                request.get("backfill_history_timeout_s", DEFAULT_BACKTEST_BACKFILL_HISTORY_TIMEOUT_SECONDS)
+                or DEFAULT_BACKTEST_BACKFILL_HISTORY_TIMEOUT_SECONDS
+            ),
+            "backfill_history_max_retries": int(
+                request.get("backfill_history_max_retries")
+                if request.get("backfill_history_max_retries") is not None
+                else DEFAULT_BACKTEST_BACKFILL_HISTORY_MAX_RETRIES
+            ),
             **self._build_execution_extra(request),
             **build_runtime_timestamps(),
         }
@@ -628,6 +654,23 @@ class BacktestService:
                     "retention_limit": request.get("retention_limit", DEFAULT_BACKTEST_RETENTION_LIMIT),
                     "preflight_backfill": bool(request.get("preflight_backfill", True)),
                     "backfill_concurrency": int(request.get("backfill_concurrency", DEFAULT_BACKTEST_BACKFILL_CONCURRENCY) or DEFAULT_BACKTEST_BACKFILL_CONCURRENCY),
+                    "backfill_symbol_timeout_s": int(
+                        request.get("backfill_symbol_timeout_s", DEFAULT_BACKTEST_BACKFILL_SYMBOL_TIMEOUT_SECONDS)
+                        or DEFAULT_BACKTEST_BACKFILL_SYMBOL_TIMEOUT_SECONDS
+                    ),
+                    "backfill_max_batches": int(
+                        request.get("backfill_max_batches", DEFAULT_BACKTEST_BACKFILL_MAX_BATCHES)
+                        or DEFAULT_BACKTEST_BACKFILL_MAX_BATCHES
+                    ),
+                    "backfill_history_timeout_s": int(
+                        request.get("backfill_history_timeout_s", DEFAULT_BACKTEST_BACKFILL_HISTORY_TIMEOUT_SECONDS)
+                        or DEFAULT_BACKTEST_BACKFILL_HISTORY_TIMEOUT_SECONDS
+                    ),
+                    "backfill_history_max_retries": int(
+                        request.get("backfill_history_max_retries")
+                        if request.get("backfill_history_max_retries") is not None
+                        else DEFAULT_BACKTEST_BACKFILL_HISTORY_MAX_RETRIES
+                    ),
                     **self._build_execution_extra(request),
                     **build_runtime_timestamps(),
                 },
@@ -902,6 +945,23 @@ class BacktestService:
             "retention_limit": int(request.get("retention_limit", DEFAULT_BACKTEST_RETENTION_LIMIT) or DEFAULT_BACKTEST_RETENTION_LIMIT),
             "preflight_backfill": bool(request.get("preflight_backfill", True)),
             "backfill_concurrency": int(request.get("backfill_concurrency", DEFAULT_BACKTEST_BACKFILL_CONCURRENCY) or DEFAULT_BACKTEST_BACKFILL_CONCURRENCY),
+            "backfill_symbol_timeout_s": int(
+                request.get("backfill_symbol_timeout_s", DEFAULT_BACKTEST_BACKFILL_SYMBOL_TIMEOUT_SECONDS)
+                or DEFAULT_BACKTEST_BACKFILL_SYMBOL_TIMEOUT_SECONDS
+            ),
+            "backfill_max_batches": int(
+                request.get("backfill_max_batches", DEFAULT_BACKTEST_BACKFILL_MAX_BATCHES)
+                or DEFAULT_BACKTEST_BACKFILL_MAX_BATCHES
+            ),
+            "backfill_history_timeout_s": int(
+                request.get("backfill_history_timeout_s", DEFAULT_BACKTEST_BACKFILL_HISTORY_TIMEOUT_SECONDS)
+                or DEFAULT_BACKTEST_BACKFILL_HISTORY_TIMEOUT_SECONDS
+            ),
+            "backfill_history_max_retries": int(
+                request.get("backfill_history_max_retries")
+                if request.get("backfill_history_max_retries") is not None
+                else DEFAULT_BACKTEST_BACKFILL_HISTORY_MAX_RETRIES
+            ),
             **self._build_execution_extra(request),
             **build_runtime_timestamps(),
         }
@@ -2008,6 +2068,15 @@ class BacktestService:
         start_ms, end_ms = self._date_to_ms_range(date_from, date_to)
         warmup_lookback_ms = interval_to_ms("5m") * max(0, int(warmup_bars or 0), BACKTEST_WARMUP_BARS)
         requested_start_ms = max(0, start_ms - warmup_lookback_ms)
+        sqlite_summary = self._symbol_range_coverage_summary_from_sqlite(
+            symbol,
+            source_environment,
+            requested_start_ms,
+            end_ms,
+        )
+        if sqlite_summary is not None:
+            return sqlite_summary
+
         rows = self._load_bar_rows_from_sqlite(
             symbol,
             source_environment,
@@ -2022,6 +2091,7 @@ class BacktestService:
         missing_start = not rows or first_bar_ms <= 0 or first_bar_ms > requested_start_ms + edge_grace_ms
         missing_end = not rows or last_bar_ms <= 0 or last_bar_ms < end_ms - edge_grace_ms
         needs_backfill = bool(not rows or missing_start or missing_end or gap_count > 0)
+        repair_windows = self._build_backfill_repair_windows(rows, requested_start_ms, end_ms) if needs_backfill else []
         reasons = []
         if not rows:
             reasons.append("no_rows")
@@ -2045,6 +2115,161 @@ class BacktestService:
             "requested_end_ms": end_ms,
             "requested_start_us": format_us_time(requested_start_ms) if requested_start_ms > 0 else "",
             "requested_end_us": format_us_time(end_ms) if end_ms > 0 else "",
+            "repair_window_count": len(repair_windows),
+            "repair_windows": repair_windows[:20],
+            "repair_windows_truncated": max(0, len(repair_windows) - 20),
+            "diagnostic_source": "python_rows",
+        }
+
+    def _symbol_range_coverage_summary_from_sqlite(
+        self,
+        symbol: str,
+        source_environment: str,
+        requested_start_ms: int,
+        requested_end_ms: int,
+    ) -> dict | None:
+        db_path = str(BACKTEST_SQLITE_PATH or "").strip()
+        if not db_path or not os.path.exists(db_path):
+            return None
+
+        normalized_interval = "5m"
+        interval_ms = interval_to_ms(normalized_interval)
+        try:
+            with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5) as conn:
+                conn.row_factory = sqlite3.Row
+                summary = conn.execute(
+                    """
+                    SELECT COUNT(*) AS row_count,
+                           MIN(bar_time_ms) AS first_bar_ms,
+                           MAX(bar_time_ms) AS last_bar_ms,
+                           SUM(CASE WHEN COALESCE(us_time, '') = '' THEN 1 ELSE 0 END) AS missing_us_time_count
+                    FROM ibkr_bars
+                    WHERE symbol = ?
+                      AND interval = ?
+                      AND environment = ?
+                      AND bar_time_ms >= ?
+                      AND bar_time_ms <= ?
+                    """,
+                    (
+                        symbol,
+                        normalized_interval,
+                        source_environment,
+                        int(requested_start_ms),
+                        int(requested_end_ms),
+                    ),
+                ).fetchone()
+                if summary is None:
+                    return None
+
+                row_count = int(summary["row_count"] or 0)
+                missing_us_time_count = int(summary["missing_us_time_count"] or 0)
+                if row_count > 0 and missing_us_time_count > 0:
+                    return None
+
+                first_bar_ms = int(summary["first_bar_ms"] or 0)
+                last_bar_ms = int(summary["last_bar_ms"] or 0)
+                raw_windows: list[dict] = []
+                if row_count <= 0:
+                    raw_windows.append(
+                        {
+                            "start_ms": int(requested_start_ms),
+                            "end_ms": int(requested_end_ms),
+                            "reason": "no_rows",
+                        }
+                    )
+                    gap_count = 0
+                else:
+                    edge_grace_ms = self._session_edge_grace_ms()
+                    if first_bar_ms > int(requested_start_ms) + edge_grace_ms:
+                        raw_windows.append(
+                            {
+                                "start_ms": int(requested_start_ms),
+                                "end_ms": max(0, first_bar_ms - interval_ms),
+                                "reason": "missing_start",
+                            }
+                        )
+                    if last_bar_ms < int(requested_end_ms) - edge_grace_ms:
+                        raw_windows.append(
+                            {
+                                "start_ms": last_bar_ms + interval_ms,
+                                "end_ms": int(requested_end_ms),
+                                "reason": "missing_end",
+                            }
+                        )
+                    gap_rows = conn.execute(
+                        """
+                        WITH ordered AS (
+                            SELECT bar_time_ms,
+                                   substr(us_time, 1, 10) AS us_day,
+                                   LAG(bar_time_ms) OVER (
+                                       PARTITION BY substr(us_time, 1, 10)
+                                       ORDER BY bar_time_ms
+                                   ) AS prev_ms
+                            FROM ibkr_bars
+                            WHERE symbol = ?
+                              AND interval = ?
+                              AND environment = ?
+                              AND bar_time_ms >= ?
+                              AND bar_time_ms <= ?
+                        )
+                        SELECT prev_ms + ? AS start_ms,
+                               bar_time_ms - ? AS end_ms,
+                               'internal_gap' AS reason
+                        FROM ordered
+                        WHERE prev_ms IS NOT NULL
+                          AND us_day != ''
+                          AND bar_time_ms - prev_ms > ?
+                        ORDER BY start_ms
+                        LIMIT 500
+                        """,
+                        (
+                            symbol,
+                            normalized_interval,
+                            source_environment,
+                            int(requested_start_ms),
+                            int(requested_end_ms),
+                            interval_ms,
+                            interval_ms,
+                            interval_ms * 3,
+                        ),
+                    ).fetchall()
+                    gap_count = len(gap_rows)
+                    raw_windows.extend(dict(row) for row in gap_rows)
+        except Exception:
+            traceback.print_exc()
+            return None
+
+        repair_windows = self._merge_backfill_repair_windows(raw_windows)
+        missing_start = any("missing_start" in str(item.get("reason") or "") for item in repair_windows)
+        missing_end = any("missing_end" in str(item.get("reason") or "") for item in repair_windows)
+        needs_backfill = bool(row_count <= 0 or missing_start or missing_end or gap_count > 0)
+        reasons = []
+        if row_count <= 0:
+            reasons.append("no_rows")
+        if missing_start:
+            reasons.append("missing_start")
+        if missing_end:
+            reasons.append("missing_end")
+        if gap_count > 0:
+            reasons.append("internal_gaps")
+        return {
+            "symbol": symbol,
+            "needs_backfill": needs_backfill,
+            "reasons": reasons,
+            "row_count": row_count,
+            "gap_count": gap_count,
+            "first_bar_ms": first_bar_ms,
+            "last_bar_ms": last_bar_ms,
+            "first_bar_us": format_us_time(first_bar_ms) if first_bar_ms > 0 else "",
+            "last_bar_us": format_us_time(last_bar_ms) if last_bar_ms > 0 else "",
+            "requested_start_ms": int(requested_start_ms),
+            "requested_end_ms": int(requested_end_ms),
+            "requested_start_us": format_us_time(int(requested_start_ms)) if int(requested_start_ms) > 0 else "",
+            "requested_end_us": format_us_time(int(requested_end_ms)) if int(requested_end_ms) > 0 else "",
+            "repair_window_count": len(repair_windows),
+            "repair_windows": repair_windows[:20],
+            "repair_windows_truncated": max(0, len(repair_windows) - 20),
+            "diagnostic_source": "sqlite_window",
         }
 
     def _preflight_backfill_symbols(
@@ -2101,6 +2326,44 @@ class BacktestService:
             MAX_BACKTEST_BACKFILL_CONCURRENCY,
             len(needed_symbols),
         )
+        symbol_timeout_s = min(
+            MAX_BACKTEST_BACKFILL_SYMBOL_TIMEOUT_SECONDS,
+            max(
+                30,
+                int(
+                    request.get("backfill_symbol_timeout_s", DEFAULT_BACKTEST_BACKFILL_SYMBOL_TIMEOUT_SECONDS)
+                    or DEFAULT_BACKTEST_BACKFILL_SYMBOL_TIMEOUT_SECONDS
+                ),
+            ),
+        )
+        max_batches = min(
+            MAX_BACKTEST_BACKFILL_MAX_BATCHES,
+            max(
+                1,
+                int(request.get("backfill_max_batches", DEFAULT_BACKTEST_BACKFILL_MAX_BATCHES) or DEFAULT_BACKTEST_BACKFILL_MAX_BATCHES),
+            ),
+        )
+        history_timeout_s = min(
+            MAX_BACKTEST_BACKFILL_HISTORY_TIMEOUT_SECONDS,
+            max(
+                5,
+                int(
+                    request.get("backfill_history_timeout_s", DEFAULT_BACKTEST_BACKFILL_HISTORY_TIMEOUT_SECONDS)
+                    or DEFAULT_BACKTEST_BACKFILL_HISTORY_TIMEOUT_SECONDS
+                ),
+            ),
+        )
+        history_max_retries = min(
+            MAX_BACKTEST_BACKFILL_HISTORY_MAX_RETRIES,
+            max(
+                0,
+                int(
+                    request.get("backfill_history_max_retries")
+                    if request.get("backfill_history_max_retries") is not None
+                    else DEFAULT_BACKTEST_BACKFILL_HISTORY_MAX_RETRIES
+                ),
+            ),
+        )
         self._set_progress_context(
             "running",
             "preflight_backfill",
@@ -2111,52 +2374,147 @@ class BacktestService:
 
         results: dict[str, dict] = {}
         completed = 0
+        repair_windows_by_symbol = {
+            str(item.get("symbol") or "").upper(): list(item.get("repair_windows") or [])
+            for item in initial
+            if item.get("needs_backfill")
+        }
 
         def run_symbol(symbol: str) -> dict:
             if self._cancel_event.is_set():
                 raise BacktestCancelled()
-            repair = self._backfill_symbol_history(
-                symbol,
-                request["source_environment"],
-                backfill_start_ms,
-                end_ms,
-                interval="5m",
-            )
-            repair_rows = list((repair or {}).get("rows") or [])
+            windows = repair_windows_by_symbol.get(symbol) or [
+                {
+                    "start_ms": backfill_start_ms,
+                    "end_ms": end_ms,
+                    "reason": "legacy_full_range",
+                }
+            ]
+            repair_rows = []
+            repair_results = []
+            remaining_batches = max_batches
+            window_started_at = time.monotonic()
+            for window in windows:
+                if self._cancel_event.is_set():
+                    raise BacktestCancelled()
+                if remaining_batches <= 0:
+                    repair_results.append(
+                        {
+                            "ok": bool(repair_rows),
+                            "reason": "max_batches_reached",
+                            "fetched_rows": 0,
+                            "batches": 0,
+                            "window": window,
+                        }
+                    )
+                    break
+                elapsed_s = time.monotonic() - window_started_at
+                remaining_elapsed_s = max(30, int(symbol_timeout_s - elapsed_s))
+                if elapsed_s >= symbol_timeout_s:
+                    repair_results.append(
+                        {
+                            "ok": bool(repair_rows),
+                            "reason": "symbol_timeout",
+                            "fetched_rows": 0,
+                            "batches": 0,
+                            "window": window,
+                        }
+                    )
+                    break
+                repair = self._backfill_symbol_history(
+                    symbol,
+                    request["source_environment"],
+                    int(window.get("start_ms", backfill_start_ms) or backfill_start_ms),
+                    int(window.get("end_ms", end_ms) or end_ms),
+                    interval="5m",
+                    max_elapsed_s=remaining_elapsed_s,
+                    max_batches=remaining_batches,
+                    history_timeout_s=history_timeout_s,
+                    history_max_retries=history_max_retries,
+                    cancel_check=self._cancel_event.is_set,
+                )
+                repair_result = {
+                    key: value
+                    for key, value in (repair or {}).items()
+                    if key not in {"rows"}
+                }
+                repair_result["window"] = window
+                repair_results.append(repair_result)
+                repair_rows.extend(list((repair or {}).get("rows") or []))
+                remaining_batches -= int((repair or {}).get("batches", 0) or 0)
+                if str((repair or {}).get("reason") or "") in {"symbol_timeout", "cancelled", "partial_cancelled", "max_batches_reached"}:
+                    break
+
+            repair_rows = self._dedupe_backfill_rows(repair_rows)
             persisted_rows = self._persist_backfill_rows(repair_rows) if repair_rows else 0
             rolled_rows = self._rollup_symbol_history(symbol, request["source_environment"]) if persisted_rows > 0 else 0
+            ok = bool(repair_rows) and persisted_rows > 0
+            if not repair_rows and all(str(item.get("reason") or "") == "no_rows_fetched" for item in repair_results):
+                ok = False
+            reason = "ok" if ok else str((repair_results[-1] if repair_results else {}).get("reason") or "no_rows_fetched")
             return {
                 "symbol": symbol,
-                "ok": bool((repair or {}).get("ok")) and (not repair_rows or persisted_rows > 0),
-                "reason": str((repair or {}).get("reason") or ""),
-                "fetched_rows": int((repair or {}).get("fetched_rows", 0) or 0),
-                "batches": int((repair or {}).get("batches", 0) or 0),
+                "ok": ok,
+                "reason": reason,
+                "fetched_rows": len(repair_rows),
+                "batches": int(sum(int(item.get("batches", 0) or 0) for item in repair_results)),
+                "elapsed_s": round(time.monotonic() - window_started_at, 3),
                 "persisted_rows": int(persisted_rows or 0),
                 "rolled_rows": int(rolled_rows or 0),
+                "repair_window_count": len(windows),
+                "repair_windows": windows[:20],
+                "repair_results": repair_results[:20],
             }
 
         with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="ibkr-backtest-preflight") as executor:
-            future_map = {executor.submit(run_symbol, symbol): symbol for symbol in needed_symbols}
-            for future in as_completed(future_map):
-                symbol = future_map[future]
+            pending = {executor.submit(run_symbol, symbol): symbol for symbol in needed_symbols}
+            while pending:
                 if self._cancel_event.is_set():
+                    for pending_future in pending:
+                        pending_future.cancel()
                     raise BacktestCancelled()
-                try:
-                    results[symbol] = future.result()
-                except BacktestCancelled:
-                    raise
-                except Exception as exc:
-                    traceback.print_exc()
-                    results[symbol] = {"symbol": symbol, "ok": False, "error": str(exc)[:500]}
-                completed += 1
-                progress_value = 5 + int((completed / max(1, len(needed_symbols))) * 10)
-                self._set_progress_context(
-                    "running",
-                    "preflight_backfill",
-                    f"backfilled {completed}/{len(needed_symbols)} symbols",
-                    progress_value,
-                    progress_context,
+                done, pending_futures = wait(
+                    pending,
+                    timeout=BACKTEST_PREFLIGHT_HEARTBEAT_SECONDS,
+                    return_when=FIRST_COMPLETED,
                 )
+                if not done:
+                    inflight_symbols = [pending[future] for future in pending]
+                    progress_value = 5 + int((completed / max(1, len(needed_symbols))) * 10)
+                    inflight_text = ",".join(inflight_symbols[:6]) or "--"
+                    if len(inflight_symbols) > 6:
+                        inflight_text += f"+{len(inflight_symbols) - 6}"
+                    self._set_progress_context(
+                        "running",
+                        "preflight_backfill",
+                        f"backfilled {completed}/{len(needed_symbols)} symbols; inflight {inflight_text}",
+                        progress_value,
+                        progress_context,
+                    )
+                    continue
+
+                symbol_by_future = dict(pending)
+                pending = {future: symbol_by_future[future] for future in pending_futures}
+                for future in done:
+                    symbol = symbol_by_future.get(future, "")
+                    try:
+                        results[symbol] = future.result()
+                    except BacktestCancelled:
+                        for pending_future in pending:
+                            pending_future.cancel()
+                        raise
+                    except Exception as exc:
+                        traceback.print_exc()
+                        results[symbol] = {"symbol": symbol, "ok": False, "error": str(exc)[:500]}
+                    completed += 1
+                    progress_value = 5 + int((completed / max(1, len(needed_symbols))) * 10)
+                    self._set_progress_context(
+                        "running",
+                        "preflight_backfill",
+                        f"backfilled {completed}/{len(needed_symbols)} symbols",
+                        progress_value,
+                        progress_context,
+                    )
 
         self._set_progress_context("running", "preflight", "rechecking bar coverage", 15, progress_context)
         final = [
@@ -2179,6 +2537,10 @@ class BacktestService:
             "backfill_start_us": format_us_time(backfill_start_ms) if backfill_start_ms > 0 else "",
             "backfill_end_us": format_us_time(end_ms) if end_ms > 0 else "",
             "concurrency": max_workers,
+            "symbol_timeout_s": symbol_timeout_s,
+            "max_batches": max_batches,
+            "history_timeout_s": history_timeout_s,
+            "history_max_retries": history_max_retries,
         }
 
     def _format_backfill_start_time(self, anchor_ms: int) -> str:
@@ -2191,6 +2553,12 @@ class BacktestService:
         start_ms: int,
         end_ms: int,
         interval: str = "5m",
+        *,
+        max_elapsed_s: int | None = None,
+        max_batches: int | None = None,
+        history_timeout_s: int | None = None,
+        history_max_retries: int | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> dict:
         if (
             not self.pb
@@ -2221,9 +2589,46 @@ class BacktestService:
         batches = 0
         fetched_rows = []
         seen_bar_ms = set()
-        max_batches = 240
+        started_at = time.monotonic()
+        batch_limit = min(
+            MAX_BACKTEST_BACKFILL_MAX_BATCHES,
+            max(1, int(max_batches or DEFAULT_BACKTEST_BACKFILL_MAX_BATCHES)),
+        )
+        elapsed_limit_s = min(
+            MAX_BACKTEST_BACKFILL_SYMBOL_TIMEOUT_SECONDS,
+            max(30, int(max_elapsed_s or DEFAULT_BACKTEST_BACKFILL_SYMBOL_TIMEOUT_SECONDS)),
+        )
+        request_timeout_s = min(
+            MAX_BACKTEST_BACKFILL_HISTORY_TIMEOUT_SECONDS,
+            max(5, int(history_timeout_s or DEFAULT_BACKTEST_BACKFILL_HISTORY_TIMEOUT_SECONDS)),
+        )
+        request_max_retries = min(
+            MAX_BACKTEST_BACKFILL_HISTORY_MAX_RETRIES,
+            max(
+                0,
+                int(
+                    history_max_retries
+                    if history_max_retries is not None
+                    else DEFAULT_BACKTEST_BACKFILL_HISTORY_MAX_RETRIES
+                ),
+            ),
+        )
 
-        while anchor_ms >= earliest_needed_ms and batches < max_batches:
+        stop_reason = ""
+        while anchor_ms >= earliest_needed_ms and batches < batch_limit:
+            if cancel_check and cancel_check():
+                fetched_rows.sort(key=lambda item: int(item.get("bar_time_ms", 0) or 0))
+                return {
+                    "ok": bool(fetched_rows),
+                    "reason": "cancelled" if not fetched_rows else "partial_cancelled",
+                    "fetched_rows": len(fetched_rows),
+                    "batches": batches,
+                    "rows": fetched_rows,
+                    "elapsed_s": round(time.monotonic() - started_at, 3),
+                }
+            if time.monotonic() - started_at >= elapsed_limit_s:
+                stop_reason = "symbol_timeout"
+                break
             start_time = self._format_backfill_start_time(anchor_ms)
             try:
                 payload = self.data_backfill._request_history_json(
@@ -2233,8 +2638,11 @@ class BacktestService:
                     period,
                     bar_size,
                     start_time=start_time,
+                    timeout=request_timeout_s,
+                    max_retries=request_max_retries,
                 )
             except Exception as exc:
+                fetched_rows.sort(key=lambda item: int(item.get("bar_time_ms", 0) or 0))
                 return {
                     "ok": bool(fetched_rows),
                     "reason": "partial_history_fetch_failed" if fetched_rows else "history_fetch_failed",
@@ -2242,6 +2650,7 @@ class BacktestService:
                     "fetched_rows": len(fetched_rows),
                     "batches": batches,
                     "rows": fetched_rows,
+                    "elapsed_s": round(time.monotonic() - started_at, 3),
                 }
             bars = list(payload.get("data") or [])
             if not bars:
@@ -2297,13 +2706,17 @@ class BacktestService:
                 break
             anchor_ms = next_anchor_ms
 
+        if not stop_reason and anchor_ms >= earliest_needed_ms and batches >= batch_limit:
+            stop_reason = "max_batches_reached"
+
         fetched_rows.sort(key=lambda item: int(item.get("bar_time_ms", 0) or 0))
         return {
             "ok": bool(fetched_rows),
-            "reason": "ok" if fetched_rows else "no_rows_fetched",
+            "reason": stop_reason or ("ok" if fetched_rows else "no_rows_fetched"),
             "fetched_rows": len(fetched_rows),
             "batches": batches,
             "rows": fetched_rows,
+            "elapsed_s": round(time.monotonic() - started_at, 3),
         }
 
     def _merge_backfill_rows(self, rows: list[dict], fetched_rows: list[dict]) -> list[dict]:
@@ -2315,6 +2728,14 @@ class BacktestService:
         for row in fetched_rows or []:
             bar_ms = int(row.get("bar_time_ms", 0) or 0)
             if bar_ms > 0 and bar_ms not in merged:
+                merged[bar_ms] = row
+        return [merged[key] for key in sorted(merged)]
+
+    def _dedupe_backfill_rows(self, rows: list[dict]) -> list[dict]:
+        merged = {}
+        for row in rows or []:
+            bar_ms = int((row or {}).get("bar_time_ms", 0) or 0)
+            if bar_ms > 0:
                 merged[bar_ms] = row
         return [merged[key] for key in sorted(merged)]
 
@@ -2358,6 +2779,82 @@ class BacktestService:
             previous_ms = bar_ms
             previous_day = current_day
         return gap_count
+
+    def _merge_backfill_repair_windows(self, raw_windows: list[dict]) -> list[dict]:
+        interval_ms = interval_to_ms("5m")
+        windows: list[dict] = []
+        for window in sorted(raw_windows or [], key=lambda item: (int(item.get("start_ms", 0) or 0), int(item.get("end_ms", 0) or 0))):
+            start_ms = max(0, int(window.get("start_ms", 0) or 0))
+            end_ms = int(window.get("end_ms", 0) or 0)
+            if start_ms <= 0 or end_ms <= 0 or end_ms < start_ms:
+                continue
+            if windows and start_ms <= int(windows[-1]["end_ms"]) + interval_ms:
+                windows[-1]["end_ms"] = max(int(windows[-1]["end_ms"]), end_ms)
+                reasons = set(str(windows[-1].get("reason") or "").split(","))
+                reasons.add(str(window.get("reason") or ""))
+                windows[-1]["reason"] = ",".join(sorted(item for item in reasons if item))
+                continue
+            windows.append(
+                {
+                    "start_ms": start_ms,
+                    "end_ms": end_ms,
+                    "reason": str(window.get("reason") or "missing"),
+                }
+            )
+        for window in windows:
+            window["start_us"] = format_us_time(int(window["start_ms"]))
+            window["end_us"] = format_us_time(int(window["end_ms"]))
+        return windows
+
+    def _build_backfill_repair_windows(
+        self,
+        rows: list[dict],
+        requested_start_ms: int,
+        requested_end_ms: int,
+    ) -> list[dict]:
+        interval_ms = interval_to_ms("5m")
+        edge_grace_ms = self._session_edge_grace_ms()
+        raw_windows: list[dict] = []
+
+        def add_window(start_ms: int, end_ms: int, reason: str):
+            start_ms = max(0, int(start_ms or 0))
+            end_ms = int(end_ms or 0)
+            if start_ms <= 0 or end_ms <= 0 or end_ms < start_ms:
+                return
+            raw_windows.append(
+                {
+                    "start_ms": start_ms,
+                    "end_ms": end_ms,
+                    "reason": reason,
+                }
+            )
+
+        sorted_rows = sorted(
+            [row for row in rows or [] if int((row or {}).get("bar_time_ms", 0) or 0) > 0],
+            key=lambda item: int(item.get("bar_time_ms", 0) or 0),
+        )
+        if not sorted_rows:
+            add_window(requested_start_ms, requested_end_ms, "no_rows")
+            return self._merge_backfill_repair_windows(raw_windows)
+
+        first_bar_ms = int(sorted_rows[0].get("bar_time_ms", 0) or 0)
+        last_bar_ms = int(sorted_rows[-1].get("bar_time_ms", 0) or 0)
+        if first_bar_ms > requested_start_ms + edge_grace_ms:
+            add_window(requested_start_ms, first_bar_ms - interval_ms, "missing_start")
+        if last_bar_ms < requested_end_ms - edge_grace_ms:
+            add_window(last_bar_ms + interval_ms, requested_end_ms, "missing_end")
+
+        previous_ms = 0
+        previous_day = ""
+        for row in sorted_rows:
+            bar_ms = int((row or {}).get("bar_time_ms", 0) or 0)
+            current_day = str((row or {}).get("us_time", "") or "")[:10] or ms_to_et(bar_ms).strftime("%Y-%m-%d")
+            if previous_ms > 0 and previous_day == current_day and bar_ms - previous_ms > interval_ms * 3:
+                add_window(previous_ms + interval_ms, bar_ms - interval_ms, "internal_gap")
+            previous_ms = bar_ms
+            previous_day = current_day
+
+        return self._merge_backfill_repair_windows(raw_windows)
 
     def _rollup_symbol_history(self, symbol: str, source_environment: str) -> int:
         try:

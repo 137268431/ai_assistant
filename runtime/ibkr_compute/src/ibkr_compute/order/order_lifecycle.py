@@ -156,6 +156,68 @@ class OrderLifecycle:
     def increment_position_count(self):
         self._daily_position_count += 1
 
+    def handle_protection_incomplete(
+        self,
+        *,
+        signal_id: str = "",
+        symbol: str = "",
+        direction: str = "",
+        result: Optional[Dict] = None,
+        order: Optional[Dict] = None,
+        reason: str = "protection_incomplete",
+        auto_cancel: bool = False,
+    ) -> Dict:
+        result = result if isinstance(result, dict) else {}
+        order = order if isinstance(order, dict) else {}
+        order_ids = [
+            str(item or "").strip()
+            for item in (result.get("order_ids") or [])
+            if str(item or "").strip()
+        ]
+        missing_order_ids = [
+            str(item or "").strip()
+            for item in (result.get("missing_order_ids") or [])
+            if str(item or "").strip()
+        ]
+        missing_protection_roles = [
+            str(item or "").strip()
+            for item in (result.get("missing_protection_roles") or [])
+            if str(item or "").strip()
+        ]
+        diagnostic = {
+            "status": "protection_incomplete",
+            "reason": str(reason or "protection_incomplete"),
+            "signal_id": str(signal_id or result.get("signal_id") or order.get("signal_id") or "").strip(),
+            "symbol": str(symbol or order.get("ticker") or order.get("symbol") or "").strip().upper(),
+            "direction": str(direction or result.get("direction") or "").strip().lower(),
+            "protection_complete": False,
+            "missing_order_ids": missing_order_ids,
+            "submitted_order_ids": order_ids,
+            "missing_protection_roles": missing_protection_roles,
+            "protection_order_statuses": dict(result.get("protection_order_statuses") or {}),
+            "protection_orders_checked": int(result.get("protection_orders_checked") or 0),
+            "entry_order_id": str(
+                order.get("orderId")
+                or order.get("order_id")
+                or (order_ids[0] if order_ids else "")
+                or ""
+            ).strip(),
+            "bracket_group": str(result.get("bracket_group") or "").strip(),
+            "auto_cancel_requested": bool(auto_cancel),
+            "auto_cancel_executed": False,
+            "safe_action": "diagnostic_only_no_broker_call",
+            "recommended_action": "review_and_cancel_or_repair_unprotected_entry",
+            "cancel_recommended": True,
+        }
+        logger.error(
+            "Bracket protection incomplete: signal_id=%s symbol=%s missing_order_ids=%s action=%s",
+            diagnostic["signal_id"] or "-",
+            diagnostic["symbol"] or "-",
+            ",".join(missing_order_ids) or "-",
+            diagnostic["safe_action"],
+        )
+        return diagnostic
+
     @property
     def is_sl_circuit_breaker(self) -> bool:
         return self._daily_sl_count >= 3

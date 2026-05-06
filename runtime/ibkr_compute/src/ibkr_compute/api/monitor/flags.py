@@ -381,6 +381,26 @@ def _build_monitor_flags(runtime_status: dict, api_utilization: dict, host_snaps
             f"当前还有 {pending_subscription_count} 个待完成订阅。",
         )
 
+    if bool(market_universe.get("no_active_targets")):
+        inactive_total = int(market_universe.get("inactive_trade_symbols_total", 0) or 0)
+        sample_symbols = [
+            str(symbol or "").strip().upper()
+            for symbol in (market_universe.get("inactive_trade_symbols_sample") or [])
+            if str(symbol or "").strip()
+        ]
+        sample_suffix = f" 示例: {', '.join(sample_symbols[:8])}。" if sample_symbols else ""
+        _append_monitor_flag(
+            flags,
+            "warning",
+            "no_active_targets",
+            "No active trade targets",
+            (
+                "watchlist 中存在交易标的，但当前 active target 数为 0，"
+                "实时信号生成没有可交易目标。"
+                f"未激活交易标的数 {inactive_total}。{sample_suffix}"
+            ),
+        )
+
     last_trace_retry_count = int(api_utilization.get("last_trace_retry_count", 0) or 0)
     last_trace_throttle_count = int(api_utilization.get("last_trace_throttle_count", 0) or 0)
     last_trace_error = str(api_utilization.get("last_trace_error") or "").strip()
