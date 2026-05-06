@@ -58,6 +58,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
         let chartFocusMarkerSyncRaf = 0;
         let mobileGestureHintSeen = false;
         let suppressNextChartClick = false;
+        let chartSelectionMode = false;
+        let chartSelectionSession = null;
         let chartTouchSession = {
             timer: 0,
             startX: 0,
@@ -2028,6 +2030,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 zoomOut: '−',
                 zoomIn: '+',
                 reset: 'Reset',
+                select: 'Select',
             } : {
                 prevBar: '◀ Bar',
                 nextBar: 'Bar ▶',
@@ -2041,6 +2044,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 zoomOut: '− Zoom',
                 zoomIn: '＋ Zoom',
                 reset: 'Reset',
+                select: 'Select',
             };
             const focusText = focus?.bar?.us_time || '等待数据';
             const statusChips = [
@@ -2063,6 +2067,9 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 { label: labels.zoomOut, action: 'zoomOutChartView()' },
                 { label: labels.zoomIn, action: 'zoomInChartView()' },
                 { label: labels.reset, action: 'resetChartView()' },
+                ...(!compact ? [
+                    { label: labels.select, action: 'toggleChartSelectionMode()', className: chartSelectionMode ? 'active' : '' },
+                ] : []),
                 { label: labels.tools, action: 'openMobileQuickPanel()' },
                 { label: labels.inspect, action: 'toggleInspectorDrawer()', className: inspectorDrawerOpen ? 'accent' : '' },
                 { label: labels.trace, action: 'toggleChartTracePanel()', className: chartTracePanelOpen ? 'accent' : '' },
@@ -2343,6 +2350,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             }
             canvas.removeEventListener('wheel', handleChartWheelGesture, { capture: true });
             canvas.addEventListener('wheel', handleChartWheelGesture, { passive: false, capture: true });
+            registerChartSelectionInteractions();
             canvas.ontouchstart = null;
             canvas.ontouchmove = null;
             canvas.ontouchend = null;
@@ -2941,6 +2949,213 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             if (!Number.isInteger(index)) return -1;
             const bars = Array.isArray(getChartDisplayPayload()?.bars) ? getChartDisplayPayload().bars : [];
             return bars.length ? clampIndex(index, bars.length) : -1;
+        }
+
+        function getChartSelectionOverlay() {
+            const shell = document.querySelector('.chart-stage-shell');
+            if (!shell) return null;
+            let overlay = shell.querySelector('.chart-selection-box');
+            if (!overlay) {
+                overlay = document.createElement('div');
+                overlay.className = 'chart-selection-box';
+                overlay.setAttribute('aria-hidden', 'true');
+                shell.appendChild(overlay);
+            }
+            return overlay;
+        }
+
+        function hideChartSelectionOverlay() {
+            const overlay = document.querySelector('.chart-selection-box');
+            if (!overlay) return;
+            overlay.classList.remove('show');
+            overlay.style.left = '';
+            overlay.style.top = '';
+            overlay.style.width = '';
+            overlay.style.height = '';
+        }
+
+        function renderChartSelectionOverlay(startClientX, currentClientX) {
+            const canvas = document.getElementById('chartCanvas');
+            const shell = document.querySelector('.chart-stage-shell');
+            const overlay = getChartSelectionOverlay();
+            if (!canvas || !shell || !overlay) return;
+            const canvasRect = canvas.getBoundingClientRect();
+            const shellRect = shell.getBoundingClientRect();
+            const startX = clampNumber(Number(startClientX) - canvasRect.left, 0, canvasRect.width);
+            const currentX = clampNumber(Number(currentClientX) - canvasRect.left, 0, canvasRect.width);
+            const left = Math.min(startX, currentX) + canvasRect.left - shellRect.left;
+            const width = Math.max(1, Math.abs(currentX - startX));
+            overlay.style.left = `${left}px`;
+            overlay.style.top = `${canvasRect.top - shellRect.top}px`;
+            overlay.style.width = `${width}px`;
+            overlay.style.height = `${canvasRect.height}px`;
+            overlay.classList.add('show');
+        }
+
+        function resetChartSelectionSession() {
+            chartSelectionSession = null;
+            hideChartSelectionOverlay();
+        }
+
+        function cancelChartSelectionMode({ render = true } = {}) {
+            chartSelectionMode = false;
+            resetChartSelectionSession();
+            if (render) renderChartToolbar(getChartDisplayPayload());
+        }
+
+        function setChartSelectionMode(enabled) {
+            chartSelectionMode = Boolean(enabled) && !isCompactViewport();
+            resetChartSelectionSession();
+            renderChartToolbar(getChartDisplayPayload());
+        }
+
+        function toggleChartSelectionMode() {
+            setChartSelectionMode(!chartSelectionMode);
+        }
+
+        function getSelectionIndexFromClientX(clientX) {
+            const canvas = document.getElementById('chartCanvas');
+            const payload = getChartDisplayPayload();
+            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            if (!chartInstance || !canvas || !bars.length) return -1;
+            const rect = canvas.getBoundingClientRect();
+            const x = clampNumber(Number(clientX) - rect.left, 0, rect.width);
+            const point = [x, Math.max(0, Math.min(rect.height, rect.height * 0.35))];
+            const resolveIndex = (finder) => {
+                try {
+                    const converted = chartInstance.convertFromPixel(finder, point);
+                    const rawIndex = Array.isArray(converted) ? converted[0] : converted;
+                    const index = Math.round(Number(rawIndex));
+                    return Number.isInteger(index) ? clampIndex(index, bars.length) : -1;
+                } catch (_) {
+                    return -1;
+                }
+            };
+            const finders = [
+                { xAxisIndex: 0, yAxisIndex: 0 },
+                { gridIndex: 0 },
+                { seriesIndex: 0 },
+                { xAxisIndex: 0 },
+            ];
+            for (const finder of finders) {
+                const index = resolveIndex(finder);
+                if (index >= 0) return index;
+            }
+            return -1;
+        }
+
+        function applyChartTimeSelection(startClientX, endClientX) {
+            const payload = getChartDisplayPayload();
+            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            if (!chartInstance || !bars.length) return false;
+            const startIndex = getSelectionIndexFromClientX(startClientX);
+            const endIndex = getSelectionIndexFromClientX(endClientX);
+            if (startIndex < 0 || endIndex < 0) return false;
+            const leftIndex = Math.min(startIndex, endIndex);
+            const rightIndex = Math.max(startIndex, endIndex);
+            if (rightIndex - leftIndex < 1) {
+                showToast('圈选范围太窄');
+                return false;
+            }
+            clearTraceManualPage();
+            chartPointerLocked = false;
+            selectedSignalId = '';
+            setChartZoomWindow({
+                start: indexToPercent(leftIndex, bars.length),
+                end: indexToPercent(rightIndex, bars.length),
+            }, payload);
+            focusBarIndex(rightIndex, '');
+            hoverBarIndex = rightIndex;
+            syncChartTooltip(rightIndex);
+            renderCursorStrip(payload);
+            return true;
+        }
+
+        function shouldStartChartSelection(event) {
+            if (!event || isCompactViewport()) return false;
+            if (event.pointerType === 'touch') return false;
+            if (event.button !== 0) return false;
+            if (!chartSelectionMode && !event.shiftKey) return false;
+            const payload = getChartDisplayPayload();
+            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            if (!chartInstance || !bars.length) return false;
+            const canvas = document.getElementById('chartCanvas');
+            if (!canvas || !canvas.contains(event.target)) return false;
+            const rect = canvas.getBoundingClientRect();
+            const x = Number(event.clientX) - rect.left;
+            const y = Number(event.clientY) - rect.top;
+            return x >= 0 && y >= 0 && x <= rect.width && y <= rect.height;
+        }
+
+        function handleChartSelectionPointerDown(event) {
+            if (!shouldStartChartSelection(event)) return;
+            const canvas = document.getElementById('chartCanvas');
+            chartSelectionSession = {
+                pointerId: event.pointerId,
+                startX: Number(event.clientX),
+                currentX: Number(event.clientX),
+                moved: false,
+            };
+            suppressNextChartClick = true;
+            hideChartTooltip();
+            renderChartSelectionOverlay(chartSelectionSession.startX, chartSelectionSession.currentX);
+            try {
+                canvas?.setPointerCapture?.(event.pointerId);
+            } catch (_) {}
+            event.preventDefault();
+            event.stopPropagation();
+        }
+
+        function handleChartSelectionPointerMove(event) {
+            if (!chartSelectionSession || event.pointerId !== chartSelectionSession.pointerId) return;
+            chartSelectionSession.currentX = Number(event.clientX);
+            if (Math.abs(chartSelectionSession.currentX - chartSelectionSession.startX) >= 8) {
+                chartSelectionSession.moved = true;
+            }
+            renderChartSelectionOverlay(chartSelectionSession.startX, chartSelectionSession.currentX);
+            event.preventDefault();
+            event.stopPropagation();
+        }
+
+        function handleChartSelectionPointerUp(event) {
+            if (!chartSelectionSession || event.pointerId !== chartSelectionSession.pointerId) return;
+            const session = chartSelectionSession;
+            const endX = Number(event.clientX);
+            const shouldApply = session.moved && Math.abs(endX - session.startX) >= 12;
+            resetChartSelectionSession();
+            if (chartSelectionMode) chartSelectionMode = false;
+            if (shouldApply) {
+                applyChartTimeSelection(session.startX, endX);
+            }
+            window.setTimeout(() => {
+                suppressNextChartClick = false;
+            }, 80);
+            renderChartToolbar(getChartDisplayPayload());
+            event.preventDefault();
+            event.stopPropagation();
+        }
+
+        function handleChartSelectionPointerCancel(event) {
+            if (chartSelectionSession && event?.pointerId === chartSelectionSession.pointerId) {
+                resetChartSelectionSession();
+                if (chartSelectionMode) {
+                    chartSelectionMode = false;
+                    renderChartToolbar(getChartDisplayPayload());
+                }
+            }
+        }
+
+        function registerChartSelectionInteractions() {
+            const canvas = document.getElementById('chartCanvas');
+            if (!canvas) return;
+            canvas.removeEventListener('pointerdown', handleChartSelectionPointerDown, true);
+            canvas.removeEventListener('pointermove', handleChartSelectionPointerMove, true);
+            canvas.removeEventListener('pointerup', handleChartSelectionPointerUp, true);
+            canvas.removeEventListener('pointercancel', handleChartSelectionPointerCancel, true);
+            canvas.addEventListener('pointerdown', handleChartSelectionPointerDown, true);
+            canvas.addEventListener('pointermove', handleChartSelectionPointerMove, true);
+            canvas.addEventListener('pointerup', handleChartSelectionPointerUp, true);
+            canvas.addEventListener('pointercancel', handleChartSelectionPointerCancel, true);
         }
 
         function lockChartPointerAtIndex(index, signalId = '') {
@@ -5264,6 +5479,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             selectedBarIndex = -1;
             selectedSignalId = '';
             hoverBarIndex = -1;
+            cancelChartSelectionMode({ render: false });
             resetChartZoomState();
             closeMobileQuickPanel();
             await loadChartWorkspace();
@@ -5284,6 +5500,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             selectedBarIndex = -1;
             selectedSignalId = '';
             hoverBarIndex = -1;
+            cancelChartSelectionMode({ render: false });
             resetChartZoomState();
             closeMobileQuickPanel();
             await loadChartWorkspace();
@@ -5311,6 +5528,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             selectedBarIndex = -1;
             selectedSignalId = '';
             hoverBarIndex = -1;
+            cancelChartSelectionMode({ render: false });
             resetChartZoomState();
             closeMobileQuickPanel();
             await loadChartWorkspace();
@@ -5356,6 +5574,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             selectedBarIndex = -1;
             selectedSignalId = '';
             hoverBarIndex = -1;
+            cancelChartSelectionMode({ render: false });
             resetChartZoomState();
             closeMobileQuickPanel();
             await loadChartWorkspace();
@@ -5482,6 +5701,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const isTyping = ['input', 'textarea', 'select'].includes(targetTag) || Boolean(event?.target?.isContentEditable);
             if (isTyping) {
                 if (event.key === 'Escape') {
+                    cancelChartSelectionMode();
                     closeInspectorDrawer();
                     closeMobileQuickPanel();
                     closeSignalDrawer();
@@ -5491,6 +5711,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             const displayPayload = getChartDisplayPayload();
             if (!displayPayload || !Array.isArray(displayPayload.bars) || !displayPayload.bars.length) {
                 if (event.key === 'Escape') {
+                    cancelChartSelectionMode();
                     closeInspectorDrawer();
                     closeMobileQuickPanel();
                     closeSignalDrawer();
@@ -5499,6 +5720,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             }
             if (event.metaKey || event.ctrlKey || event.altKey) {
                 if (event.key === 'Escape') {
+                    cancelChartSelectionMode();
                     closeInspectorDrawer();
                     closeMobileQuickPanel();
                     closeSignalDrawer();
@@ -5506,6 +5728,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
                 return;
             }
             if (event.key === 'Escape') {
+                cancelChartSelectionMode();
                 closeInspectorDrawer();
                 closeMobileQuickPanel();
                 closeSignalDrawer();
@@ -5588,6 +5811,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             selectedSignalId = '';
             hoverBarIndex = -1;
             activeDrawerSignalId = '';
+            cancelChartSelectionMode({ render: false });
             resetChartZoomState();
             closeMobileQuickPanel();
             await resolveInitialContext();

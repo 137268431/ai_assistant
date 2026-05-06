@@ -66,10 +66,18 @@ async function withPage(browser, token, mobile, runner) {
 }
 
 async function inspectChartSurface(page, url) {
-  await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await page.waitForTimeout(2500);
+  await page.waitForFunction(() => {
+    const dom = document.getElementById('chartCanvas');
+    return dom && window.echarts && window.echarts.getInstanceByDom(dom);
+  }, { timeout: 30000 }).catch(() => {});
   const compareButtonCount = await page.locator('#compareBtn').count().catch(() => 0);
   const compareButtonDisabled = await page.locator('#compareBtn').isDisabled().catch(() => true);
+  const selectionResult = await inspectChartSelection(page).catch((error) => ({
+    ok: false,
+    reason: error?.message || String(error),
+  }));
   let compareButtonText = '';
   let compareRailCount = 0;
   let compareCursorCount = 0;
@@ -109,12 +117,86 @@ async function inspectChartSurface(page, url) {
     compare_item_count: compareItemCount,
     first_compare_item_title: firstCompareItemTitle,
     first_compare_item_meta: firstCompareItemMeta,
+    selection_result: selectionResult,
     clear_compare_button_count: await page.locator('#clearCompareBtn').count().catch(() => 0),
     layer_count: await page.locator('#layerStrip .layer-btn').count().catch(() => 0),
     active_layer_count: await page.locator('#layerStrip .layer-btn.active').count().catch(() => 0),
     cursor_count: await page.locator('#cursorStrip .cursor-card').count().catch(() => 0),
     rail_count: await page.locator('#infoRail .rail-card').count().catch(() => 0),
     tf_count: await page.locator('.tf-btn').count().catch(() => 0),
+  };
+}
+
+async function readPrimaryChartZoom(page) {
+  return page.evaluate(() => {
+    const dom = document.getElementById('chartCanvas');
+    const inst = window.echarts?.getInstanceByDom?.(dom);
+    const zoom = inst?.getOption?.().dataZoom?.[0] || {};
+    return {
+      start: Number(zoom.start),
+      end: Number(zoom.end),
+      span: Number(zoom.end) - Number(zoom.start),
+    };
+  });
+}
+
+async function dragChartWindow(page, box, startRatio, endRatio, modifiers = []) {
+  const y = box.y + Math.min(box.height * 0.34, 260);
+  const startX = box.x + box.width * startRatio;
+  const endX = box.x + box.width * endRatio;
+  for (const key of modifiers) await page.keyboard.down(key);
+  await page.mouse.move(startX, y);
+  await page.mouse.down();
+  await page.mouse.move(endX, y, { steps: 10 });
+  await page.mouse.up();
+  for (const key of modifiers.slice().reverse()) await page.keyboard.up(key);
+  await page.waitForTimeout(350);
+}
+
+async function inspectChartSelection(page) {
+  const selectButton = page.locator('#chartToolbar .tv-tool-btn').filter({ hasText: /^Select$/ }).first();
+  const selectButtonCount = await selectButton.count().catch(() => 0);
+  const canvas = page.locator('#chartCanvas');
+  await canvas.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(250);
+  const box = await canvas.boundingBox();
+  if (!box) throw new Error('chart_canvas_box_missing');
+  const before = await readPrimaryChartZoom(page);
+  if (!selectButtonCount) {
+    const compactViewport = await page.evaluate(() => Number(window.innerWidth || 0) <= 768).catch(() => false);
+    return { ok: Boolean(compactViewport), skipped: Boolean(compactViewport), reason: 'select_button_missing', before };
+  }
+  await selectButton.click();
+  await page.waitForTimeout(120);
+  await dragChartWindow(page, box, 0.28, 0.68);
+  const afterButtonDrag = await readPrimaryChartZoom(page);
+  await page.locator('#chartToolbar .tv-tool-btn').filter({ hasText: /^Reset$/ }).first().click().catch(() => {});
+  await page.waitForTimeout(300);
+  const afterReset = await readPrimaryChartZoom(page);
+  await dragChartWindow(page, box, 0.32, 0.58, ['Shift']);
+  const afterShiftDrag = await readPrimaryChartZoom(page);
+  const buttonChanged = Number.isFinite(before.span)
+    && Number.isFinite(afterButtonDrag.span)
+    && afterButtonDrag.span < before.span
+    && (before.start !== afterButtonDrag.start || before.end !== afterButtonDrag.end);
+  const resetRestored = Number.isFinite(afterReset.span)
+    && afterReset.span >= afterButtonDrag.span
+    && Math.abs(afterReset.start - before.start) < 0.8
+    && Math.abs(afterReset.end - before.end) < 0.8;
+  const shiftChanged = Number.isFinite(afterReset.span)
+    && Number.isFinite(afterShiftDrag.span)
+    && afterShiftDrag.span < afterReset.span
+    && (afterReset.start !== afterShiftDrag.start || afterReset.end !== afterShiftDrag.end);
+  return {
+    ok: buttonChanged && resetRestored && shiftChanged,
+    select_button_count: selectButtonCount,
+    before,
+    after_button_drag: afterButtonDrag,
+    after_reset: afterReset,
+    after_shift_drag: afterShiftDrag,
+    button_changed: buttonChanged,
+    reset_restored: resetRestored,
+    shift_changed: shiftChanged,
   };
 }
 
