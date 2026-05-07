@@ -1538,8 +1538,8 @@
 
 .panel-grid,
 .table-grid {
-    grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 420px));
-    justify-content: start;
+    grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+    justify-content: stretch;
 }
 
 @media (min-width: 721px) and (max-width: 1180px) {
