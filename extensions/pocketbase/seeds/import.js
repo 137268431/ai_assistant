@@ -45,6 +45,13 @@ const configData = [
   cfg('signal_poll_interval_sec', '120', '120', '信号轮询秒数', '信号与反转', 210, 'IBKR Compute 拉取 pending 信号并处理反转请求的轮询间隔秒数'),
   cfg('signal_validity_minutes', '30', '30', '信号有效期', '信号与反转', 220, '超过此时间的 pending / awaiting_confirm 信号将被自动标记为 expired'),
   cfg('signal_window_max_bars', '12', '12', '信号窗口最大K线数', '信号与反转', 222, 'SD 窗口开启后最多保留多少根 5m K线；过期后清空组件，避免陈旧信号'),
+  cfg('ibkr_market_sentiment_enabled', 'TRUE', 'TRUE', '市场情绪标注', '信号与反转', 224, '开启后，compute 信号会基于 VIX/SPY/QQQ 写入市场情绪和顺逆势标注；默认只标注，不拦截信号'),
+  cfg('ibkr_market_sentiment_mode', 'annotate', 'annotate', '市场情绪模式', '信号与反转', 224.1, 'annotate=只写入 market_sentiment/market_relation；off=关闭。未来可扩展为 filter'),
+  cfg('ibkr_market_sentiment_symbols', 'VIX,SPY,QQQ', 'VIX,SPY,QQQ', '市场情绪标的', '信号与反转', 224.2, '市场情绪判断使用的指数/ETF，默认 VIX 作为恐慌主指标，SPY/QQQ 作为方向确认'),
+  cfg('ibkr_market_sentiment_stale_min', '20', '20', '市场情绪过期分钟', '信号与反转', 224.3, 'VIX/SPY/QQQ 快照早于信号 bar 超过该分钟数时标记 stale，并回落为 unknown/neutral'),
+  cfg('ibkr_market_sentiment_vix_calm_max', '20', '20', 'VIX平稳阈值', '信号与反转', 224.4, 'VIX 低于该值且 SPY/QQQ 偏强时标记 risk_on'),
+  cfg('ibkr_market_sentiment_vix_risk_off', '25', '25', 'VIX风险阈值', '信号与反转', 224.5, 'VIX 高于该值时标记 risk_off，除非恐慌正在退潮'),
+  cfg('ibkr_market_sentiment_vix_panic', '30', '30', 'VIX恐慌阈值', '信号与反转', 224.6, 'VIX 高于该值时标记 panic；不会直接当作看涨信号'),
   cfg('reverse_signal_threshold', '6', '6', '反转通知阈值', '信号与反转', 230, '仅当反转评分达到该阈值时发送反转卡片通知'),
   cfg('reverse_flip_enabled', 'FALSE', 'FALSE', '反向信号反手', '信号与反转', 235, '默认关闭；反向信号只用于取消/平仓/风控，不立即开反向新仓'),
 

@@ -12,6 +12,7 @@ from ibkr_compute.api.route_runtime import (
     get_service_status,
     require_ibkr_service,
 )
+from ibkr_compute.api.market.storage_quotes import fetch_storage_quote_snapshots, merge_quote_with_storage
 from ibkr_compute.market.timeframe_utils import bucket_start_ms, format_us_time
 
 
@@ -24,6 +25,29 @@ def build_ibkr_quotes_response():
     runtime_status = get_service_status(service)
     symbols = app_mod._normalize_symbol_list(get_query_arg_csv("symbols"))
     items = service.realtime_quote_book.get_quotes(symbols=symbols)
+    if symbols:
+        by_symbol = {str(item.get("symbol") or "").strip().upper(): dict(item) for item in items if isinstance(item, dict)}
+        fallback_symbols = []
+        for symbol in symbols:
+            item = by_symbol.get(symbol) or {}
+            if item.get("last_price") is None or item.get("day_change_pct") is None:
+                fallback_symbols.append(symbol)
+        if fallback_symbols:
+            canonical = runtime_status.get("canonical_5m") or {}
+            try:
+                fallback_map = fetch_storage_quote_snapshots(
+                    api_app=app_mod,
+                    environment=requested_environment,
+                    symbols=fallback_symbols,
+                    safe_upper_ms=int(canonical.get("last_completed_bucket_ms", 0) or 0),
+                    interval="5m",
+                )
+            except Exception:
+                fallback_map = {}
+            for symbol, snapshot in (fallback_map or {}).items():
+                by_symbol[str(symbol or "").strip().upper()] = merge_quote_with_storage(by_symbol.get(symbol), snapshot)
+            if fallback_map:
+                items = [by_symbol[symbol] for symbol in symbols if symbol in by_symbol]
     return jsonify(
         {
             "ok": True,

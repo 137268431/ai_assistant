@@ -69,6 +69,7 @@ class RealtimeQuoteBook:
         last_price = self._extract_first_numeric(tick_data, ("31", "last_price", "last"))
         bid_price = self._extract_first_numeric(tick_data, ("84", "bid", "bid_price"))
         ask_price = self._extract_first_numeric(tick_data, ("86", "ask", "ask_price"))
+        tick_prev_close = self._extract_first_numeric(tick_data, ("prev_close", "previous_close", "9"))
         last_size = self._extract_first_numeric(tick_data, ("7059", "last_size", "lastSize", "size"))
         volume = self._extract_first_numeric(tick_data, ("87", "volume", "vol"))
         updated_at = self._extract_updated_at(tick_data)
@@ -106,6 +107,9 @@ class RealtimeQuoteBook:
                 quote["volume"] = volume
 
             prev_close = quote.get("prev_close")
+            if tick_prev_close is not None and tick_prev_close > 0:
+                prev_close = float(tick_prev_close)
+                quote["prev_close"] = prev_close
             if (prev_close is None or prev_close <= 0) and self.prev_close_provider:
                 try:
                     resolved = self.prev_close_provider(normalized_symbol)

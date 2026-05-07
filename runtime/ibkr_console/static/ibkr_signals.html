@@ -1217,8 +1217,10 @@
 
             const marketRelation = signalExtra.market_relation || 'neutral';
             const marketRelationText = signalExtra.market_relation_text || '';
+            const marketSentiment = signalExtra.market_sentiment || '';
+            const marketSentimentText = signalExtra.market_sentiment_text || '';
 
-            if (!marketIndexes || marketIndexes.length === 0) {
+            if ((!marketIndexes || marketIndexes.length === 0) && !marketSentimentText) {
                 return '';
             }
 
@@ -1226,16 +1228,35 @@
 
             // 顺势/逆势标签
             if (marketRelation === 'with_trend') {
-                badges.push('<span class="indicator-badge badge-change-up">✅ 顺势</span>');
+                badges.push(`<span class="indicator-badge badge-change-up" title="${escapeHtml(marketRelationText)}">✅ 顺势</span>`);
             } else if (marketRelation === 'against_trend') {
-                badges.push('<span class="indicator-badge badge-change-down">⚠️ 逆势</span>');
+                badges.push(`<span class="indicator-badge badge-change-down" title="${escapeHtml(marketRelationText)}">⚠️ 逆势</span>`);
+            }
+
+            if (marketSentiment) {
+                const sentimentLabels = {
+                    risk_on: 'Risk-On',
+                    risk_off: 'Risk-Off',
+                    panic: '恐慌',
+                    panic_reversal_watch: '恐慌退潮',
+                    cautious: '谨慎',
+                    neutral: '中性',
+                    unknown: '未知'
+                };
+                const sentimentClass = ['risk_on', 'panic_reversal_watch'].includes(marketSentiment)
+                    ? 'badge-change-up'
+                    : (['risk_off', 'panic'].includes(marketSentiment) ? 'badge-change-down' : 'badge-div');
+                badges.push(`<span class="indicator-badge ${sentimentClass}" title="${escapeHtml(marketSentimentText)}">${sentimentLabels[marketSentiment] || marketSentiment}</span>`);
             }
 
             // 显示大盘涨跌幅
-            marketIndexes.forEach(mi => {
+            (marketIndexes || []).forEach(mi => {
                 if (mi && mi.symbol) {
-                    const colorClass = mi.change_pct > 0 ? 'badge-change-up' : (mi.change_pct < 0 ? 'badge-change-down' : 'badge-div');
-                    badges.push(`<span class="indicator-badge ${colorClass}">${mi.symbol} ${mi.change_pct > 0 ? '+' : ''}${Number(mi.change_pct).toFixed(2)}%</span>`);
+                    const pct = Number(mi.change_pct);
+                    const hasPct = Number.isFinite(pct);
+                    const colorClass = hasPct && pct > 0 ? 'badge-change-up' : (hasPct && pct < 0 ? 'badge-change-down' : 'badge-div');
+                    const pctText = hasPct ? `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%` : (mi.stale ? '延迟' : '--');
+                    badges.push(`<span class="indicator-badge ${colorClass}" title="${escapeHtml(mi.source || '')}">${mi.symbol} ${pctText}</span>`);
                 }
             });
 

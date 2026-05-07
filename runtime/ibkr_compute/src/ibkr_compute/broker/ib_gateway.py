@@ -35,6 +35,7 @@ from ibkr_compute.broker.ib_gateway_support import (
     TICK_ASK_SIZE,
     TICK_BID_PRICE,
     TICK_BID_SIZE,
+    TICK_CLOSE_PRICE,
     TICK_LAST_PRICE,
     TICK_LAST_SIZE,
     TICK_LAST_TIMESTAMP,
@@ -323,6 +324,8 @@ class _IBGatewayApp(EWrapper, EClient):
             payload["84"] = float(price)
         elif field == TICK_ASK_PRICE:
             payload["86"] = float(price)
+        elif field == TICK_CLOSE_PRICE:
+            payload["prev_close"] = float(price)
         self._emit_tick(int(tickerId))
 
     def tickSize(self, tickerId: int, field: int, size: int):  # noqa: N802
@@ -1489,6 +1492,10 @@ class BrokerAdapter:
         }
         self.client._ticker_payloads[ticker_id] = dict(self.client._ticker_meta[ticker_id])
         self.client._conid_to_ticker[int(ib_contract.conId)] = ticker_id
+        try:
+            self.client.reqMarketDataType(1)
+        except Exception:
+            logger.debug("reqMarketDataType(1) failed before subscribing conid=%s", ib_contract.conId, exc_info=True)
         self.client.reqMktData(ticker_id, ib_contract, "233", False, False, [])
         return ticker_id
 

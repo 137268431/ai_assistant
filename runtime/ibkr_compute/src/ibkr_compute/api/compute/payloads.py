@@ -11,6 +11,7 @@ from ibkr_compute.api.compute.runtime_state.caches import (
     get_daily_change_fields,
     refresh_symbol_metadata,
 )
+from ibkr_compute.api.compute.market_sentiment import build_market_sentiment_extra
 from ibkr_compute.api.compute.runtime_state.runtime import _api_app
 
 
@@ -57,8 +58,16 @@ def build_signal_payload(environment: str, symbol: str, interval: str, bar: dict
     signal_type = str(signal.get("signal", "") or "")
     initial_status, initial_status_reason = api_app.resolve_initial_signal_state(environment, bar_ms)
     signal_extra = dict(signal.get("extra") or {})
+    market_sentiment_extra = build_market_sentiment_extra(
+        api_app=api_app,
+        environment=environment,
+        signal_direction=signal.get("direction", ""),
+        signal_bar_time_ms=bar_ms,
+        interval=interval,
+    )
     signal_extra.update({
         "industry": symbol_meta.get("industry", ""),
+        **market_sentiment_extra,
         **get_daily_change_fields(environment, symbol, float(bar.get("close", 0) or 0), bar_ms),
         "script_tag": api_app.IBKR_SCRIPT_TAG,
         "chart_tf": chart_tf,

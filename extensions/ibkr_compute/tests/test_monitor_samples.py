@@ -69,9 +69,28 @@ class MonitorSamplesVisibilityTest(unittest.TestCase):
                 "written_symbols": ["VIX"],
             },
             "realtime_quotes": {"quotes": {}},
+            "environment": "live",
         }
 
-        payload = self.samples._build_monitor_samples(service, runtime_status)
+        original_fetch = self.samples._fetch_monitor_storage_snapshots
+        self.samples._fetch_monitor_storage_snapshots = lambda **_kwargs: {
+            "VIX": {
+                "symbol": "VIX",
+                "last_price": 17.4,
+                "day_change_pct": -2.25,
+                "source": "canonical_5m",
+                "day_change_pct_source": "indicator",
+                "bar_time_ms": 1776792300000,
+                "bar_close_time_ms": 1776792600000,
+                "us_time": "2026-04-21 13:25:00",
+                "data_age_s": 12.0,
+                "tick_count": 0,
+            }
+        }
+        try:
+            payload = self.samples._build_monitor_samples(service, runtime_status)
+        finally:
+            self.samples._fetch_monitor_storage_snapshots = original_fetch
         self.assertEqual(payload["stale_symbols"], [])
         self.assertEqual(len(payload["active_subscriptions"]), 1)
         vix = payload["active_subscriptions"][0]
@@ -79,6 +98,11 @@ class MonitorSamplesVisibilityTest(unittest.TestCase):
         self.assertTrue(vix["visible"])
         self.assertFalse(vix["stale"])
         self.assertIn("canonical_5m", vix["visibility_sources"])
+        self.assertEqual(vix["last_price"], 17.4)
+        self.assertEqual(vix["day_change_pct"], -2.25)
+        self.assertEqual(vix["last_price_source"], "canonical_5m")
+        self.assertEqual(vix["day_change_pct_source"], "indicator")
+        self.assertEqual(vix["last_update_age_s"], 12.0)
 
     def test_market_ws_symbol_is_monitor_even_without_warmup_monitor_symbols(self):
         service = SimpleNamespace(_active_subscription_map={"VIX": 13455763})

@@ -4,6 +4,29 @@ from ibkr_compute.api.monitor.host import _api_app, _copy_active_subscription_ma
 from ibkr_compute.api.compute.runtime_state.universe import get_market_monitor_symbols
 
 
+def _fetch_monitor_storage_snapshots(
+    *,
+    api_app,
+    environment: str,
+    symbols: list[str],
+    safe_upper_ms: int,
+) -> dict[str, dict]:
+    try:
+        from ibkr_compute.api.market.storage_quotes import fetch_storage_quote_snapshots
+    except Exception:
+        return {}
+    try:
+        return fetch_storage_quote_snapshots(
+            api_app=api_app,
+            environment=environment,
+            symbols=symbols,
+            safe_upper_ms=safe_upper_ms,
+            interval="5m",
+        )
+    except Exception:
+        return {}
+
+
 def _build_warmup_symbol_status_map(warmup: dict) -> dict[str, dict]:
     payload = {}
     for item in warmup.get("symbol_status") or []:
@@ -87,6 +110,33 @@ def _build_monitor_samples(service, runtime_status: dict) -> dict:
     warmup_status_map = _build_warmup_symbol_status_map(warmup)
     latest_completed_bucket_ms = int(canonical_5m.get("last_completed_bucket_ms", 0) or 0)
     canonical_written_symbols = set(_normalize_symbol_list(canonical_5m.get("written_symbols") or []))
+    runtime_environment = "live"
+    if isinstance(runtime_status, dict) and runtime_status.get("environment"):
+        runtime_environment = str(runtime_status.get("environment") or "live").strip().lower() or "live"
+    elif hasattr(api_app, "_ibkr_service_environment"):
+        try:
+            runtime_environment = str(api_app._ibkr_service_environment(service) or "live").strip().lower() or "live"
+        except Exception:
+            runtime_environment = "live"
+
+    normalized_subscription_symbols = _normalize_symbol_list(subscription_map.keys())
+    storage_candidate_symbols = []
+    for symbol in normalized_subscription_symbols:
+        quote_info = quote_map.get(symbol) or {}
+        quote_price = api_app._coerce_float(quote_info.get("last_price")) if isinstance(quote_info, dict) else None
+        quote_change_pct = api_app._coerce_float(quote_info.get("day_change_pct")) if isinstance(quote_info, dict) else None
+        if symbol in canonical_written_symbols and (quote_price is None or quote_change_pct is None):
+            storage_candidate_symbols.append(symbol)
+    storage_snapshots = (
+        _fetch_monitor_storage_snapshots(
+            api_app=api_app,
+            environment=runtime_environment,
+            symbols=storage_candidate_symbols,
+            safe_upper_ms=latest_completed_bucket_ms,
+        )
+        if storage_candidate_symbols and latest_completed_bucket_ms > 0
+        else {}
+    )
 
     active_subscriptions = []
     for symbol in sorted(subscription_map.keys()):
@@ -94,6 +144,9 @@ def _build_monitor_samples(service, runtime_status: dict) -> dict:
         normalized_symbol = str(symbol or "").strip().upper()
         bar_info = active_bars.get(symbol) or active_bars.get(normalized_symbol) or {}
         quote_info = quote_map.get(symbol) or quote_map.get(normalized_symbol) or {}
+        storage_info = storage_snapshots.get(normalized_symbol) if isinstance(storage_snapshots, dict) else {}
+        if not isinstance(storage_info, dict):
+            storage_info = {}
         warmup_status = warmup_status_map.get(normalized_symbol) or {}
         bar_visible = normalized_symbol in active_bar_symbols
         quote_visible = normalized_symbol in quote_symbols
@@ -114,6 +167,34 @@ def _build_monitor_samples(service, runtime_status: dict) -> dict:
             if isinstance(quote_info, dict) and quote_info.get("quote_age_s") is not None
             else None
         )
+        bar_age_s = (
+            round(float(bar_info.get("last_update_age_s")), 1)
+            if isinstance(bar_info, dict) and bar_info.get("last_update_age_s") is not None
+            else None
+        )
+        storage_age_s = (
+            round(float(storage_info.get("data_age_s")), 1)
+            if storage_info.get("data_age_s") is not None
+            else None
+        )
+        quote_last_price = api_app._coerce_float(quote_info.get("last_price")) if isinstance(quote_info, dict) else None
+        storage_last_price = api_app._coerce_float(storage_info.get("last_price")) if storage_info else None
+        last_price = quote_last_price if quote_last_price is not None else storage_last_price
+        quote_day_change_pct = api_app._coerce_float(quote_info.get("day_change_pct")) if isinstance(quote_info, dict) else None
+        storage_day_change_pct = api_app._coerce_float(storage_info.get("day_change_pct")) if storage_info else None
+        day_change_pct = quote_day_change_pct if quote_day_change_pct is not None else storage_day_change_pct
+        last_price_source = "quote" if quote_last_price is not None else (storage_info.get("source") if storage_last_price is not None else "missing")
+        day_change_pct_source = (
+            "quote"
+            if quote_day_change_pct is not None
+            else (storage_info.get("day_change_pct_source") or storage_info.get("source") or "missing")
+            if storage_day_change_pct is not None
+            else "missing"
+        )
+        tick_count = int(bar_info.get("tick_count", 0) or 0) if isinstance(bar_info, dict) else 0
+        if tick_count <= 0 and storage_info.get("tick_count") is not None:
+            tick_count = int(storage_info.get("tick_count", 0) or 0)
+        volume_updates = int(bar_info.get("volume_updates", 0) or 0) if isinstance(bar_info, dict) else 0
         role = (
             api_app.WATCHLIST_SYMBOL_ROLE_TRADE
             if normalized_symbol in trade_symbols
@@ -134,15 +215,20 @@ def _build_monitor_samples(service, runtime_status: dict) -> dict:
                     else None
                 ),
                 "quote_age_s": quote_age_s,
-                "last_update_age_s": (
-                    round(float(bar_info.get("last_update_age_s")), 1)
-                    if isinstance(bar_info, dict) and bar_info.get("last_update_age_s") is not None
-                    else None
-                ),
-                "last_price": api_app._coerce_float(quote_info.get("last_price")),
-                "day_change_pct": api_app._coerce_float(quote_info.get("day_change_pct")),
-                "tick_count": int(bar_info.get("tick_count", 0) or 0) if isinstance(bar_info, dict) else 0,
-                "volume_updates": int(bar_info.get("volume_updates", 0) or 0) if isinstance(bar_info, dict) else 0,
+                "last_update_age_s": bar_age_s if bar_age_s is not None else storage_age_s,
+                "last_update_source": "bar" if bar_age_s is not None else (storage_info.get("source") or "missing"),
+                "data_age_s": quote_age_s if quote_age_s is not None else (bar_age_s if bar_age_s is not None else storage_age_s),
+                "last_price": last_price,
+                "day_change_pct": day_change_pct,
+                "last_price_source": last_price_source,
+                "day_change_pct_source": day_change_pct_source,
+                "canonical_bar_time_ms": storage_info.get("bar_time_ms"),
+                "canonical_bar_close_time_ms": storage_info.get("bar_close_time_ms"),
+                "canonical_us_time": storage_info.get("us_time") or "",
+                "canonical_data_age_s": storage_age_s,
+                "tick_count": tick_count,
+                "tick_count_source": "bar" if isinstance(bar_info, dict) and int(bar_info.get("tick_count", 0) or 0) > 0 else (storage_info.get("source") or "missing"),
+                "volume_updates": volume_updates,
             }
         )
 

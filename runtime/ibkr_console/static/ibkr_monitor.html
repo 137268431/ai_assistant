@@ -1175,6 +1175,9 @@
                 const changePct = getFiniteNumber(item?.day_change_pct);
                 const quoteAge = getFiniteNumber(item?.quote_age_s);
                 const tickAge = getFiniteNumber(item?.last_update_age_s);
+                const updateSource = String(item?.last_update_source || '').toLowerCase();
+                const updateLabel = updateSource && updateSource !== 'bar' ? 'Data' : 'Tick';
+                const priceSource = String(item?.last_price_source || '').replace(/_/g, ' ');
                 const trendClass = item?.stale
                     ? 'is-stale'
                     : (changePct > 0.01 ? 'is-up' : (changePct < -0.01 ? 'is-down' : 'is-flat'));
@@ -1200,7 +1203,7 @@
                                 <strong>${escapeHtml(formatSeconds(quoteAge))}</strong>
                             </div>
                             <div>
-                                <span>Tick</span>
+                                <span>${escapeHtml(updateLabel)}</span>
                                 <strong>${escapeHtml(formatSeconds(tickAge))}</strong>
                             </div>
                             <div>
@@ -1213,7 +1216,7 @@
                             </div>
                         </div>
                         <div class="market-card-foot">
-                            <span>${escapeHtml(formatSourceList(item.visibility_sources))}</span>
+                            <span>${escapeHtml(formatSourceList(item.visibility_sources))}${priceSource && priceSource !== 'quote' ? ` · ${escapeHtml(priceSource)}` : ''}</span>
                             <a class="mini-link" href="${buildChartUrl(item.symbol)}">Chart</a>
                         </div>
                     </article>
