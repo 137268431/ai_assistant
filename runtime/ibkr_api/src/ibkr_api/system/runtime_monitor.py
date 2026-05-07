@@ -64,6 +64,7 @@ def build_system_summary_payload(*, globals_dict: dict[str, Any], support: Calla
             load_recent_system_events=globals_dict["_load_recent_system_events"],
             time_strings=globals_dict["_time_strings"],
             load_today_counts=globals_dict["_load_today_counts"],
+            collect_storage_health=globals_dict.get("_collect_storage_health"),
         )
 
     return _build_system_summary_payload

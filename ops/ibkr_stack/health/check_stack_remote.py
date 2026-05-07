@@ -439,6 +439,7 @@ local_http = {
     "api_health": http_json(f"{API}/health"),
     "api_status": http_json(f"{API}/status"),
     "api_system_cronz": http_json(f"{API}/api/custom/system/cronz?environment={ENVIRONMENT}"),
+    "api_storage_health": http_json(f"{API}/api/custom/system/storagez?environment={ENVIRONMENT}"),
     "api_runtime_config": http_json(f"{API}/api/custom/ibkr/runtime/config?environment={ENVIRONMENT}"),
     "scheduler_health": http_json(f"{SCHEDULER}/health"),
     "scheduler_status": http_json(f"{SCHEDULER}/status"),
@@ -499,6 +500,9 @@ for name in (
     if not local_http[name].get("ok"):
         failures.append(f"local_http:{name}")
 
+if not local_http.get("api_storage_health", {}).get("ok"):
+    warnings.append("local_http:api_storage_health")
+
 if latest_bar_5m is None and data_freshness_window.get("required"):
     failures.append("db:latest_bar_5m_missing")
 elif (
@@ -529,6 +533,7 @@ api_status_payload = local_http.get("api_status", {}).get("json") or {}
 scheduler_status_payload = local_http.get("scheduler_status", {}).get("json") or {}
 compute_status_payload = local_http.get("compute_status", {}).get("json") or {}
 compute_health_payload = local_http.get("compute_health", {}).get("json") or {}
+storage_health_payload = local_http.get("api_storage_health", {}).get("json") or {}
 gateway = runtime_payload.get("gateway") or {}
 session = runtime_payload.get("session") or {}
 websocket = runtime_payload.get("websocket") or {}
@@ -558,6 +563,11 @@ compute_startup_preload_sla = evaluate_compute_startup_preload_sla(
     PRELOAD_WARN_SEC,
     PRELOAD_FAIL_SEC,
 )
+storage_status = str(storage_health_payload.get("status") or "").strip().lower()
+if storage_status in {"error", "unavailable", "offline"}:
+    failures.append(f"db:storage_health:{storage_status}")
+elif storage_status in {"warning", "degraded", "partial"}:
+    warnings.append(f"db:storage_health:{storage_status}")
 
 canonical_pending_total = int(canonical_5m.get("pending_symbols_total") or bar_freshness.get("pending_symbols_total") or 0)
 canonical_due_ms = int(canonical_5m.get("last_due_bucket_ms") or 0)
@@ -682,6 +692,7 @@ report = {
             "indicator_missing_grace": indicator_missing_grace,
             "bars_by_interval": bars_by_interval,
             "indicators_by_interval": indicators_by_interval,
+            "storage_health": storage_health_payload,
         },
         "runtime_summary": {
             "service_profile": runtime_service_profile,

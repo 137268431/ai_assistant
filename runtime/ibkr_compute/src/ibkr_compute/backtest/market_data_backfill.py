@@ -3,6 +3,9 @@ from __future__ import annotations
 from .runtime_support import *
 
 
+BACKFILL_SQLITE_WRITE_LOCK = threading.Lock()
+
+
 class BacktestMarketDataBackfillMixin:
     def _preflight_backfill_symbols(
         self,
@@ -279,6 +282,54 @@ class BacktestMarketDataBackfillMixin:
         # IB API's dash format is interpreted as UTC; keep the anchor instant exact.
         return datetime.fromtimestamp(int(anchor_ms) / 1000, timezone.utc).strftime("%Y%m%d-%H:%M:%S")
 
+    def _backfill_symbol_exchange(self, symbol: str, source_environment: str) -> str:
+        normalized_symbol = str(symbol or "").strip().upper()
+        if not normalized_symbol:
+            return ""
+        cache = getattr(self, "_backfill_exchange_cache", None)
+        if cache is None:
+            cache = {}
+            self._backfill_exchange_cache = cache
+        if normalized_symbol in cache:
+            return str(cache.get(normalized_symbol) or "").upper()
+        exchange = ""
+        try:
+            with open_pb_sqlite(readonly=True, timeout=30.0) as conn:
+                row = conn.execute(
+                    """
+                    SELECT exchange
+                    FROM watchlist
+                    WHERE upper(symbol) = ?
+                      AND (environment = ? OR environment = 'global' OR environment = '')
+                      AND coalesce(exchange, '') != ''
+                    ORDER BY CASE WHEN environment = ? THEN 0 WHEN environment = 'global' THEN 1 ELSE 2 END
+                    LIMIT 1
+                    """,
+                    (normalized_symbol, str(source_environment or "live").strip().lower() or "live", str(source_environment or "live").strip().lower() or "live"),
+                ).fetchone()
+                if row and row[0]:
+                    exchange = str(row[0] or "").strip().upper()
+                if not exchange:
+                    row = conn.execute(
+                        """
+                        SELECT exchange, count(*) AS c
+                        FROM ibkr_bars
+                        WHERE upper(symbol) = ?
+                          AND environment = ?
+                          AND coalesce(exchange, '') != ''
+                        GROUP BY exchange
+                        ORDER BY c DESC
+                        LIMIT 1
+                        """,
+                        (normalized_symbol, str(source_environment or "live").strip().lower() or "live"),
+                    ).fetchone()
+                    if row and row[0]:
+                        exchange = str(row[0] or "").strip().upper()
+        except Exception:
+            exchange = ""
+        cache[normalized_symbol] = exchange
+        return exchange
+
     def _backfill_symbol_history(
         self,
         symbol: str,
@@ -314,6 +365,7 @@ class BacktestMarketDataBackfillMixin:
         if conid <= 0:
             return {"ok": False, "reason": "conid_unresolved"}
 
+        exchange = self._backfill_symbol_exchange(symbol, source_environment)
         interval_ms = interval_to_ms(normalized_interval)
         period = "4d"
         bar_size = "5min"
@@ -418,7 +470,7 @@ class BacktestMarketDataBackfillMixin:
                 fetched_rows.append({
                     "symbol": symbol,
                     "environment": source_environment,
-                    "exchange": "",
+                    "exchange": exchange,
                     "interval": normalized_interval,
                     "open": float(bar.get("o", 0) or 0),
                     "high": float(bar.get("h", 0) or 0),
@@ -492,9 +544,10 @@ class BacktestMarketDataBackfillMixin:
         if not rows:
             return 0
         try:
-            with open_pb_sqlite(readonly=False, timeout=30.0) as conn:
-                with conn:
-                    return upsert_bars(conn, rows)
+            with BACKFILL_SQLITE_WRITE_LOCK:
+                with open_pb_sqlite(readonly=False, timeout=30.0) as conn:
+                    with conn:
+                        return upsert_bars(conn, rows)
         except Exception:
             traceback.print_exc()
 
@@ -553,12 +606,14 @@ class BacktestMarketDataBackfillMixin:
                         derived["extra"] = derived_extra
                         pending.append(derived)
                         if len(pending) >= 400:
-                            with conn:
-                                written += upsert_bars(conn, pending)
+                            with BACKFILL_SQLITE_WRITE_LOCK:
+                                with conn:
+                                    written += upsert_bars(conn, pending)
                             pending = []
                 if pending:
-                    with conn:
-                        written += upsert_bars(conn, pending)
+                    with BACKFILL_SQLITE_WRITE_LOCK:
+                        with conn:
+                            written += upsert_bars(conn, pending)
                 return written
         except Exception:
             traceback.print_exc()

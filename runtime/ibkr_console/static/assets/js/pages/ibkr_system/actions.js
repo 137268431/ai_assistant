@@ -79,6 +79,7 @@ async function loadSystemData(showToastOnSuccess = false) {
         renderConfig(summaryLite || {}, cronDefinitions);
         renderSchedulerOverview(cronResp || {}, summaryLite || {});
         renderServiceTopology(computeStatus?.service_topology || summaryLite?.service_topology || {});
+        renderStorageHealth(summaryLite?.storage_health || computeStatus?.storage_health || {});
 
         if (isInitialLoad) {
             hasLoadedSystemData = true;
@@ -159,6 +160,7 @@ async function loadSystemData(showToastOnSuccess = false) {
         renderConfig(summaryLite || {}, cronDefinitions);
         renderSchedulerOverview(cronResp || {}, summaryLite || {});
         renderServiceTopology(computeStatus?.service_topology || summaryLite?.service_topology || {});
+        renderStorageHealth(summaryLite?.storage_health || computeStatus?.storage_health || {});
         renderBacktests(
             Array.isArray(backtestBatchResp?.items) ? backtestBatchResp.items : [],
             Array.isArray(backtestRunsResp?.items) ? backtestRunsResp.items : []

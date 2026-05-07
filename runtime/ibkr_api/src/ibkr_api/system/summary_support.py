@@ -5,14 +5,15 @@ from typing import Any, Callable
 from ibkr_api.system.service_state import build_service_monitor_from_topology
 
 NormalizeEnvironment = Callable[[Any, str], str]
-LoadEffectiveConfigMap = Callable[[str, tuple[str, ...] | list[str] | set[str] | None], dict[str, str]]
+LoadEffectiveConfigMap = Callable[..., dict[str, str]]
 IsEnabledText = Callable[[Any], bool]
 FetchPayload = Callable[[str], dict[str, Any]]
 AsDict = Callable[[Any], dict[str, Any]]
 MergeServiceTopology = Callable[..., dict[str, Any]]
 LoadRecentSystemEvents = Callable[[str, int], list[dict[str, Any]]]
-TimeStrings = Callable[[float | None], dict[str, str]]
+TimeStrings = Callable[..., dict[str, str]]
 LoadTodayCounts = Callable[[str, str], dict[str, Any]]
+CollectStorageHealth = Callable[[str, Any], dict[str, Any]]
 
 
 def _to_int(value: Any, default: int = 0) -> int:
@@ -60,6 +61,7 @@ def build_system_summary_payload(
     load_recent_system_events: LoadRecentSystemEvents,
     time_strings: TimeStrings,
     load_today_counts: LoadTodayCounts,
+    collect_storage_health: CollectStorageHealth | None = None,
 ) -> dict[str, Any]:
     runtime_environment = normalize_environment(environment, "live")
     times = time_strings()
@@ -126,6 +128,27 @@ def build_system_summary_payload(
     except Exception as exc:
         today_counts = _empty_today_counts()
         today_errors = {"_summary": str(exc)}
+    storage_health: dict[str, Any] = {}
+    if collect_storage_health is not None:
+        try:
+            storage_health = collect_storage_health(runtime_environment, config_map)
+        except TypeError:
+            storage_health = collect_storage_health(runtime_environment, None)
+        except Exception as exc:
+            storage_health = {
+                "ok": False,
+                "status": "unavailable",
+                "environment": runtime_environment,
+                "source": "ibkr-api",
+                "flags": [
+                    {
+                        "severity": "error",
+                        "code": "storage_health_failed",
+                        "title": "Storage health failed",
+                        "detail": str(exc),
+                    }
+                ],
+            }
     ok = bool(compute_summary.get("ok")) and (bool(runtime_summary.get("ok")) or not runtime_payload)
     degraded = bool(compute_summary.get("ok")) or bool(runtime_summary.get("ok")) or bool(runtime_payload)
     payload = {
@@ -145,6 +168,7 @@ def build_system_summary_payload(
         "ibkr_runtime": runtime_summary,
         "service_topology": merged_topology,
         "service_monitor": service_monitor,
+        "storage_health": storage_health,
         "recent_events": load_recent_system_events(runtime_environment, 20),
         "data_freshness": [],
         "lite_mode": bool(lite_mode),

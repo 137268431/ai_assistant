@@ -25,12 +25,27 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     build_statusz_compute_payload = deps["build_statusz_compute_payload"]
     build_statusz_live_readiness = deps["build_statusz_live_readiness"]
     build_statusz_runtime_payload = deps["build_statusz_runtime_payload"]
+    collect_storage_health = deps.get("collect_storage_health")
     get_state_payload = deps["get_state_payload"]
     normalize_two_factor_state_with_runtime = deps["normalize_two_factor_state_with_runtime"]
     ibkr_2fa_state_key = deps["ibkr_2fa_state_key"]
     ibkr_2fa_state_date = deps["ibkr_2fa_state_date"]
     compute_base_url = deps["compute_base_url"]
     exports: dict[str, Any] = {}
+
+    def safe_storage_health(environment: str) -> dict[str, Any]:
+        if collect_storage_health is None:
+            return {}
+        try:
+            return collect_storage_health(environment, None)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "unavailable",
+                "environment": environment,
+                "source": "ibkr-api",
+                "error": str(exc),
+            }
 
     @app.route("/api/custom/ibkr/runtime/config", methods=["GET"])
     def custom_ibkr_runtime_config() -> Response:
@@ -71,6 +86,7 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             }.items()
             if value
         }
+        storage_health = safe_storage_health(environment)
         return jsonify(
             {
                 "ok": ok,
@@ -82,6 +98,7 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
                 "runtime": runtime_payload,
                 "service_topology": service_topology,
                 "service_monitor": service_monitor,
+                "storage_health": storage_health,
                 "source": "ibkr-api",
                 "proxy_upstream_compute": f"{compute_base_url}/health",
                 "proxy_upstream_runtime": runtime_result.get("upstream") or "",
@@ -135,6 +152,7 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             }.items()
             if value
         }
+        storage_health = safe_storage_health(environment)
         ok = not errors and compute_data.get("ok") is not False and (runtime_data.get("ok") is not False or not runtime_data)
         degraded = bool(compute_result.get("ok")) or bool(runtime_result.get("ok")) or bool(compute_data) or bool(runtime_payload)
         response = dict(compute_data)
@@ -146,6 +164,7 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
                 "runtime": runtime_data,
                 "service_topology": service_topology,
                 "service_monitor": service_monitor,
+                "storage_health": storage_health,
                 "warmup_details_included": bool(include_warmup_details),
                 "requested_environment": environment,
                 "actual_runtime_environment": actual_runtime_environment,

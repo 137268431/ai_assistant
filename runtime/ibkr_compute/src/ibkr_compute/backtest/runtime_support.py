@@ -30,6 +30,7 @@ from ibkr_compute.market.bar_coverage_daily import (
     build_range_daily_coverage,
     load_daily_coverage_rows,
     market_date_from_ms,
+    session_mode_for_bar_time,
     summarize_symbol_daily_coverage,
     trading_date_strings_from_ms,
 )

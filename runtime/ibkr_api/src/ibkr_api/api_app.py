@@ -123,6 +123,7 @@ from ibkr_api.system.pocketbase_disk import (
     merge_monitor_flags as _merge_monitor_flags,
     merge_monitor_status as _merge_monitor_status,
 )
+from ibkr_api.system.storage_health import collect_storage_health as _collect_storage_health_support
 from ibkr_api.system.monitor_support import (
     build_system_monitor_payload as _build_system_monitor_payload_support,
     derive_monitor_service_map as _derive_monitor_service_map_support,
@@ -647,6 +648,10 @@ def _fetch_runtime_health(environment: str) -> dict[str, Any]:
 
 def _merge_service_topology(*payloads: Any) -> dict[str, Any]:
     return _merge_service_topology_support(*payloads, build_service_topology=build_service_topology)
+
+
+def _collect_storage_health(environment: str, config_map: dict[str, Any] | None = None) -> dict[str, Any]:
+    return _collect_storage_health_support(environment, config_map=config_map)
 
 
 def _normalize_two_factor_state_with_runtime(state_data: dict[str, Any], runtime_status: dict[str, Any]) -> dict[str, Any]:

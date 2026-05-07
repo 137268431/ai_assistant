@@ -108,6 +108,10 @@ def build_platform_route_deps(
             environment,
             lite_mode=lite_mode,
         ),
+        "collect_storage_health": lambda environment, config_map=None: globals_dict["_collect_storage_health"](
+            environment,
+            config_map,
+        ),
         "build_signal_expiry_response": lambda *args, **kwargs: globals_dict["build_signal_expiry_response"](*args, **kwargs),
         "build_order_detail_integrity_response": lambda *args, **kwargs: globals_dict["build_order_detail_integrity_response"](
             *args,

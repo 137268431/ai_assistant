@@ -189,7 +189,7 @@ class BacktestMarketDataLoadingMixin:
                 continue
             seen.add(bar_ms)
             session_type = str(row.get("session_type", "") or classify_session(bar_time_ms=bar_ms))
-            if session_mode == "regular" and session_type != "regular":
+            if session_mode == "regular" and session_mode_for_bar_time(bar_ms) != "regular":
                 continue
             normalized.append(
                 {
@@ -259,7 +259,7 @@ class BacktestMarketDataLoadingMixin:
                 continue
             seen.add(bar_ms)
             session_type = str(row.get("session_type", "") or classify_session(bar_time_ms=bar_ms))
-            if session_mode == "regular" and session_type != "regular":
+            if session_mode == "regular" and session_mode_for_bar_time(bar_ms) != "regular":
                 continue
             normalized.append(
                 {

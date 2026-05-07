@@ -21,6 +21,7 @@ def register_system_read_routes(app, *, deps: SystemDeps, exports: dict[str, Any
     augment_scheduler_summary = deps["augment_scheduler_summary"]
     build_system_monitor_payload = deps["build_system_monitor_payload"]
     build_system_summary_payload = deps["build_system_summary_payload"]
+    collect_storage_health = deps.get("collect_storage_health")
     build_service_topology = deps["build_service_topology"]
     request_json_request = deps["request_json_request"]
     scheduler_base_url = deps["scheduler_base_url"]
@@ -110,6 +111,50 @@ def register_system_read_routes(app, *, deps: SystemDeps, exports: dict[str, Any
         return jsonify(build_system_summary_payload(environment, lite_mode=lite_mode))
 
     exports["custom_system_summaryz"] = custom_system_summaryz
+
+    @app.route("/api/custom/system/storagez", methods=["GET"])
+    def custom_system_storagez() -> Response:
+        environment = normalize_environment(request.args.get("environment"), "live")
+        if collect_storage_health is None:
+            return jsonify(
+                {
+                    "ok": False,
+                    "status": "unavailable",
+                    "environment": environment,
+                    "source": "ibkr-api",
+                    "error": "storage_health_unavailable",
+                    "service_topology": build_service_topology(),
+                }
+            )
+        config_map = {}
+        try:
+            config.refresh()
+            if hasattr(config, "get_for_environment"):
+                config_map["ibkr_history_retention_days"] = config.get_for_environment(
+                    "ibkr_history_retention_days",
+                    environment,
+                    "365",
+                )
+        except Exception:
+            config_map = {}
+        try:
+            payload = collect_storage_health(environment, config_map)
+        except Exception as exc:
+            payload = {
+                "ok": False,
+                "status": "unavailable",
+                "environment": environment,
+                "source": "ibkr-api",
+                "error": str(exc),
+            }
+        return jsonify(
+            {
+                **payload,
+                "service_topology": build_service_topology(),
+            }
+        )
+
+    exports["custom_system_storagez"] = custom_system_storagez
 
     @app.route("/api/custom/system/monitorz", methods=["GET"])
     def custom_system_monitorz() -> Response:

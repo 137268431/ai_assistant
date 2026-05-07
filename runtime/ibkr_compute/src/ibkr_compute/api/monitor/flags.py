@@ -84,6 +84,14 @@ def _append_monitor_flag(flags: list[dict], severity: str, code: str, title: str
     )
 
 
+def _should_warn_no_active_targets(runtime_status: dict) -> bool:
+    market_session = runtime_status.get("market_session") or {}
+    market_session_kind = str(market_session.get("kind") or "").strip().lower()
+    if not market_session_kind:
+        return True
+    return market_session_kind == "regular"
+
+
 def _normalize_ws_silence_thresholds(
     warn_seconds,
     critical_seconds,
@@ -381,7 +389,7 @@ def _build_monitor_flags(runtime_status: dict, api_utilization: dict, host_snaps
             f"当前还有 {pending_subscription_count} 个待完成订阅。",
         )
 
-    if bool(market_universe.get("no_active_targets")):
+    if bool(market_universe.get("no_active_targets")) and _should_warn_no_active_targets(runtime_status):
         inactive_total = int(market_universe.get("inactive_trade_symbols_total", 0) or 0)
         sample_symbols = [
             str(symbol or "").strip().upper()

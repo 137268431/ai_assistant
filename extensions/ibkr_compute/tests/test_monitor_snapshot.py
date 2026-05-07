@@ -387,6 +387,7 @@ class MonitorSnapshotTest(unittest.TestCase):
                 "gateway": {"running": True, "reachable": True},
                 "session": {"authenticated": True},
                 "websocket": {"connected": True, "ready": True},
+                "market_session": {"kind": "regular"},
                 "market_universe": {
                     "watchlist_trade_count": 2,
                     "active_target_count": 0,
@@ -408,6 +409,34 @@ class MonitorSnapshotTest(unittest.TestCase):
         warning = next(item for item in flags if item["code"] == "no_active_targets")
         self.assertEqual(warning["severity"], "warning")
         self.assertIn("AAPL", warning["detail"])
+
+    def test_no_active_targets_suppressed_outside_regular_session(self):
+        flags = server._build_monitor_flags(
+            {
+                "gateway": {"running": True, "reachable": True},
+                "session": {"authenticated": True},
+                "websocket": {"connected": True, "ready": True},
+                "market_session": {"kind": "closed"},
+                "market_universe": {
+                    "watchlist_trade_count": 2,
+                    "active_target_count": 0,
+                    "no_active_targets": True,
+                    "inactive_trade_symbols_total": 2,
+                    "inactive_trade_symbols_sample": ["AAPL", "MSFT"],
+                },
+            },
+            {
+                "subscription_limit": 70,
+                "active_subscription_count": 0,
+                "utilization_pct": 0.0,
+                "pending_subscription_count": 0,
+            },
+            {},
+            {},
+        )
+
+        flag_codes = {item["code"] for item in flags}
+        self.assertNotIn("no_active_targets", flag_codes)
 
     def test_subscription_utilization_warns_at_limit(self):
         flags = server._build_monitor_flags(

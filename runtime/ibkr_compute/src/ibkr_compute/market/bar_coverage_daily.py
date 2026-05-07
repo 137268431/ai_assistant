@@ -17,6 +17,7 @@ EARLY_CLOSE_MINUTE = 13 * 60
 EXTENDED_OPEN_MINUTE = 4 * 60
 EXTENDED_CLOSE_MINUTE = 20 * 60
 DAILY_COVERAGE_OK_STATUSES = {"ok", "repaired"}
+ZERO_VOLUME_ALLOWED_SYMBOLS = {"VIX"}
 
 
 def _normalize_symbol(value: Any) -> str:
@@ -225,7 +226,7 @@ def _mask_hex(indexes: Iterable[int], width_bits: int) -> str:
     return format(value, f"0{width}x")
 
 
-def _missing_windows(missing_times: Sequence[int], interval_ms: int) -> list[dict[str, Any]]:
+def _missing_windows(missing_times: Sequence[int], interval_ms: int, *, reason: str = "missing_expected_bar") -> list[dict[str, Any]]:
     times = sorted({int(item) for item in missing_times if int(item or 0) > 0})
     if not times:
         return []
@@ -245,7 +246,7 @@ def _missing_windows(missing_times: Sequence[int], interval_ms: int) -> list[dic
                 "start_us": format_us_time(start_ms),
                 "end_us": format_us_time(previous_ms),
                 "missing_count": count,
-                "reason": "missing_expected_bar",
+                "reason": reason,
             }
         )
         start_ms = value
@@ -258,7 +259,7 @@ def _missing_windows(missing_times: Sequence[int], interval_ms: int) -> list[dic
             "start_us": format_us_time(start_ms),
             "end_us": format_us_time(previous_ms),
             "missing_count": count,
-            "reason": "missing_expected_bar",
+            "reason": reason,
         }
     )
     return windows
@@ -281,6 +282,23 @@ def _bad_ohlc(row: dict[str, Any]) -> bool:
         or close_value < low_value
         or close_value > high_value
     )
+
+
+def _safe_float(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _bad_bar_reason(row: dict[str, Any], *, session_mode: str, symbol: str) -> str:
+    if _bad_ohlc(row):
+        return "bad_ohlc"
+    if str(session_mode or "").strip().lower() == "regular" and _normalize_symbol(symbol) not in ZERO_VOLUME_ALLOWED_SYMBOLS:
+        volume = _safe_float(row.get("volume"))
+        if volume <= 0:
+            return "zero_volume"
+    return ""
 
 
 def build_daily_coverage_row(
@@ -312,8 +330,27 @@ def build_daily_coverage_row(
     actual_indexes = sorted(expected_index[value] for value in actual_set if value in expected_index)
     missing_times = [value for value in expected_times if value not in actual_set]
     duplicate_count = max(0, len(actual_times) - len(actual_set))
-    bad_rows = [row for row in actual_rows if _bad_ohlc(row)]
+    bad_rows = []
+    bad_times = []
+    bad_examples = []
+    for row in actual_rows:
+        bad_reason = _bad_bar_reason(row, session_mode=normalized_session, symbol=normalized_symbol)
+        if not bad_reason:
+            continue
+        bad_rows.append(row)
+        bar_ms = int(row.get("bar_time_ms", 0) or 0)
+        if bar_ms <= 0:
+            continue
+        bad_times.append(bar_ms)
+        if len(bad_examples) < 5:
+            bad_examples.append({
+                "bar_time_ms": bar_ms,
+                "us_time": format_us_time(bar_ms),
+                "reason": bad_reason,
+                "volume": _safe_float(row.get("volume")),
+            })
     windows = _missing_windows(missing_times, interval_ms)
+    bad_windows = _missing_windows(bad_times, interval_ms, reason="bad_bar")
     missing_count = len(missing_times)
     expected_count = len(expected_times)
     issue_count = missing_count + duplicate_count + len(bad_rows)
@@ -355,7 +392,7 @@ def build_daily_coverage_row(
         "last_repair_at": "",
         "missing_windows": windows,
         "missing_examples": windows[:5],
-        "repair_windows": list(windows),
+        "repair_windows": [*windows, *bad_windows],
         "expected_mask_hex": _mask_hex(range(expected_count), expected_count),
         "actual_mask_hex": _mask_hex(actual_indexes, expected_count),
         "missing_mask_hex": _mask_hex((expected_index[value] for value in missing_times), expected_count),
@@ -365,13 +402,8 @@ def build_daily_coverage_row(
             "early_close": is_nyse_early_close_day(day),
             "expected_scope": "regular_session" if normalized_session == "regular" else "extended_hours_only",
             "actual_aligned_count": len(actual_indexes),
-            "bad_ohlc_examples": [
-                {
-                    "bar_time_ms": int(row.get("bar_time_ms", 0) or 0),
-                    "us_time": format_us_time(int(row.get("bar_time_ms", 0) or 0)) if int(row.get("bar_time_ms", 0) or 0) > 0 else "",
-                }
-                for row in bad_rows[:5]
-            ],
+            "bad_bar_examples": bad_examples,
+            "bad_ohlc_examples": bad_examples,
         },
     }
 
@@ -398,7 +430,7 @@ def fetch_bar_rows_grouped(
     normalized_interval = normalize_interval(interval)
     rows = conn.execute(
         f"""
-        SELECT symbol, environment, interval, bar_time_ms, open, high, low, close
+        SELECT symbol, environment, interval, bar_time_ms, open, high, low, close, volume, exchange
         FROM ibkr_bars
         WHERE symbol IN ({_symbol_placeholders(normalized_symbols)})
           AND environment = ?
@@ -596,7 +628,7 @@ def summarize_symbol_daily_coverage(
     if duplicate_count > 0:
         reasons.append("duplicates")
     if bad_ohlc_count > 0:
-        reasons.append("bad_ohlc")
+        reasons.append("bad_bar")
     return {
         "symbol": normalized_symbol,
         "needs_backfill": needs_backfill,
@@ -627,6 +659,7 @@ def summarize_symbol_daily_coverage(
 
 __all__ = [
     "DAILY_COVERAGE_OK_STATUSES",
+    "ZERO_VOLUME_ALLOWED_SYMBOLS",
     "build_daily_coverage_row",
     "build_range_daily_coverage",
     "clip_windows_to_range",

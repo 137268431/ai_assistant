@@ -259,6 +259,183 @@ function renderFreshness(data) {
     el.innerHTML = `<div class="freshness-grid">${cards.join('')}</div>`;
 }
 
+function formatStorageBytes(value) {
+    const numeric = Number(value || 0);
+    if (!Number.isFinite(numeric) || numeric < 0) return '--';
+    if (numeric === 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let next = numeric;
+    let index = 0;
+    while (next >= 1024 && index < units.length - 1) {
+        next /= 1024;
+        index += 1;
+    }
+    const precision = next >= 100 ? 0 : (next >= 10 ? 1 : 2);
+    return `${next.toFixed(precision)} ${units[index]}`;
+}
+
+function formatStorageRows(value, source = '') {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return '--';
+    const label = numeric >= 1000000
+        ? `${(numeric / 1000000).toFixed(numeric >= 10000000 ? 1 : 2)}M`
+        : numeric >= 1000
+            ? `${(numeric / 1000).toFixed(numeric >= 100000 ? 0 : 1)}K`
+            : String(numeric);
+    return source === 'estimated' ? `~${label}` : label;
+}
+
+function getStorageTone(status) {
+    const normalized = String(status || '').trim().toLowerCase();
+    if (['error', 'unhealthy', 'offline', 'unavailable'].includes(normalized)) return 'danger';
+    if (['warning', 'warn', 'degraded', 'partial'].includes(normalized)) return 'warn';
+    if (['ok', 'healthy', 'running'].includes(normalized)) return 'ok';
+    return 'neutral';
+}
+
+function getStorageStatusLabel(status) {
+    const normalized = String(status || '').trim().toLowerCase();
+    if (normalized === 'ok') return 'OK';
+    if (normalized === 'warning') return 'WARN';
+    if (normalized === 'error') return 'ERROR';
+    if (normalized === 'unavailable') return 'N/A';
+    return normalized ? normalized.toUpperCase() : '--';
+}
+
+function renderStorageHealth(payload = {}) {
+    const el = document.getElementById('storageHealthArea');
+    const metaEl = document.getElementById('storageHealthMeta');
+    if (!el) return;
+    const health = payload && typeof payload === 'object' ? payload : {};
+    const status = String(health.status || '').trim().toLowerCase();
+    if (!status) {
+        el.innerHTML = '<div class="loading-text">暂无 Storage health 数据</div>';
+        if (metaEl) metaEl.textContent = '--';
+        return;
+    }
+
+    const db = health.db_files && typeof health.db_files === 'object' ? health.db_files : {};
+    const summary = health.summary && typeof health.summary === 'object' ? health.summary : {};
+    const flags = Array.isArray(health.flags) ? health.flags : [];
+    const tables = Array.isArray(health.tables) ? health.tables : [];
+    const groups = health.groups && typeof health.groups === 'object' ? health.groups : {};
+    const tone = getStorageTone(status);
+    const statusCounts = summary.table_status_counts && typeof summary.table_status_counts === 'object'
+        ? summary.table_status_counts
+        : {};
+    const existingTables = Number(summary.existing_tables || 0) || tables.filter((item) => item?.exists).length;
+    const monitoredTables = Number(summary.monitored_tables || 0) || tables.length;
+    const estimatedRows = Number(summary.estimated_rows || 0) || 0;
+    const diskFreePct = Number(db.disk_free_pct);
+    const walPct = Number(db.wal_to_db_pct || 0) || 0;
+
+    if (metaEl) {
+        const collected = String(health.collected_at || '').replace('T', ' ').replace('Z', '');
+        metaEl.textContent = `${getStorageStatusLabel(status)} · ${collected || '--'}${health.cached ? ' · cached' : ''}`;
+    }
+
+    const summaryCards = [
+        {
+            label: 'DB',
+            value: db.db_size_label || formatStorageBytes(db.db_size_bytes),
+            copy: `pb_data ${db.data_size_label || formatStorageBytes(db.data_size_bytes)}`,
+            tone: 'neutral',
+        },
+        {
+            label: 'WAL',
+            value: db.wal_size_label || formatStorageBytes(db.wal_size_bytes),
+            copy: `${Number.isFinite(walPct) ? walPct.toFixed(1) : '--'}% of DB`,
+            tone: walPct >= 30 ? 'warn' : 'ok',
+        },
+        {
+            label: 'Disk Free',
+            value: Number.isFinite(diskFreePct) ? `${diskFreePct.toFixed(1)}%` : '--',
+            copy: db.disk_free_label || formatStorageBytes(db.disk_free_bytes),
+            tone: Number.isFinite(diskFreePct) && diskFreePct < 8 ? 'danger' : (Number.isFinite(diskFreePct) && diskFreePct < 15 ? 'warn' : 'ok'),
+        },
+        {
+            label: 'Tables',
+            value: `${existingTables}/${monitoredTables}`,
+            copy: `${formatStorageRows(estimatedRows, 'estimated')} rows · warn ${Number(statusCounts.warning || 0)} · error ${Number(statusCounts.error || 0)}`,
+            tone,
+        },
+    ];
+
+    const tablesByGroup = tables.reduce((acc, table) => {
+        const group = String(table?.group || 'other');
+        if (!acc[group]) acc[group] = [];
+        acc[group].push(table);
+        return acc;
+    }, {});
+    const groupOrder = ['market', 'trading', 'quality', 'runtime', 'backtest', 'compat'];
+    const groupMarkup = groupOrder
+        .filter((group) => Array.isArray(tablesByGroup[group]) && tablesByGroup[group].length)
+        .map((group) => {
+            const items = tablesByGroup[group] || [];
+            const issueCount = items.filter((item) => getStorageTone(item?.status) !== 'ok').length;
+            return `
+                <div class="storage-group-card">
+                    <div class="storage-group-head">
+                        <span>${escapeHtml(groups[group] || group)}</span>
+                        <span class="storage-group-meta">${items.length} tables${issueCount ? ` · ${issueCount} issue` : ''}</span>
+                    </div>
+                    <div class="storage-table-list">
+                        ${items.map((table) => {
+                            const tableTone = getStorageTone(table?.status);
+                            const latest = table?.latest_us || table?.latest_text || '--';
+                            const rows = formatStorageRows(table?.row_count, table?.row_count_source);
+                            return `
+                                <div class="storage-table-row tone-${escapeHtml(tableTone)}">
+                                    <div class="storage-table-main">
+                                        <span class="storage-table-name">${escapeHtml(table?.name || '--')}</span>
+                                        <span class="storage-table-time">${escapeHtml(latest)}</span>
+                                    </div>
+                                    <div class="storage-table-side">
+                                        <span class="storage-table-rows">${escapeHtml(rows)}</span>
+                                        <span class="storage-state-chip tone-${escapeHtml(tableTone)}">${escapeHtml(getStorageStatusLabel(table?.status))}</span>
+                                    </div>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                </div>
+            `;
+        })
+        .join('');
+
+    const flagMarkup = flags.length
+        ? `
+            <div class="storage-flags">
+                ${flags.slice(0, 6).map((flag) => {
+                    const flagTone = getStorageTone(flag?.severity === 'error' ? 'error' : (flag?.severity === 'warning' ? 'warning' : 'ok'));
+                    return `
+                        <div class="storage-flag tone-${escapeHtml(flagTone)}">
+                            <span class="storage-flag-title">${escapeHtml(flag?.title || flag?.code || 'Storage flag')}</span>
+                            <span class="storage-flag-detail">${escapeHtml(flag?.detail || '--')}</span>
+                        </div>
+                    `;
+                }).join('')}
+            </div>
+        `
+        : '<div class="storage-empty-note">未发现严重存储异常；普通容量变化只展示不告警。</div>';
+
+    el.innerHTML = `
+        <div class="storage-health-shell tone-${escapeHtml(tone)}">
+            <div class="storage-summary-grid">
+                ${summaryCards.map((card) => `
+                    <div class="storage-summary-card tone-${escapeHtml(card.tone)}">
+                        <div class="storage-summary-label">${escapeHtml(card.label)}</div>
+                        <div class="storage-summary-value">${escapeHtml(card.value || '--')}</div>
+                        <div class="storage-summary-copy">${escapeHtml(card.copy || '--')}</div>
+                    </div>
+                `).join('')}
+            </div>
+            ${flagMarkup}
+            <div class="storage-group-grid">${groupMarkup || '<div class="loading-text">暂无重点表快照</div>'}</div>
+        </div>
+    `;
+}
+
 function renderEngines(computeData) {
     const el = document.getElementById('engineArea');
     const countEl = document.getElementById('engineCount');
