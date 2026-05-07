@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 
 BAR_INTERVAL_MS = 5 * 60 * 1000
@@ -10,6 +11,7 @@ INDICATOR_LAG_ALERT_MS = 10 * 60 * 1000
 GAP_ALERT_COOLDOWN_MS = 30 * 60 * 1000
 GAP_MONITOR_STATE_KEY = "system_gap_monitor"
 GAP_ALERT_EXCLUDED_SYMBOLS = {"VIX"}
+ET = ZoneInfo("America/New_York")
 
 NormalizeEnvironment = Callable[[Any, str], str]
 TimeStrings = Callable[[], dict[str, str]]
@@ -75,18 +77,43 @@ def _load_target_symbols(pb: Any, environment: str, date_token: str) -> list[str
     return _unique_sorted([row.get("symbol") for row in rows or [] if isinstance(row, dict)])
 
 
-def _load_recent_rows_by_symbol(pb: Any, collection: str, environment: str, interval: str, today_start: str, limit: int) -> dict[str, Any]:
-    rows = pb.get_records(
-        collection,
-        filter=(
-            f'environment = "{environment}" && '
-            f'interval = "{interval}" && '
-            f'us_time >= "{today_start}"'
-        ),
-        sort="-bar_time_ms",
-        per_page=max(1, limit),
-        page=1,
-    )
+def _today_bounds_ms(today_start: str) -> tuple[int, int]:
+    token = _to_text(today_start)
+    if len(token) >= 10:
+        token = token[:10]
+    dt = datetime.strptime(token, "%Y-%m-%d").replace(tzinfo=ET, hour=0, minute=0, second=0, microsecond=0)
+    return int(dt.timestamp() * 1000), int((dt + timedelta(days=1)).timestamp() * 1000)
+
+
+def _load_recent_rows_by_symbol_sqlite(collection: str, environment: str, interval: str, today_start: str, limit: int) -> dict[str, Any] | None:
+    if collection not in {"ibkr_bars", "ibkr_indicators"}:
+        return None
+    try:
+        from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite
+
+        start_ms, end_ms = _today_bounds_ms(today_start)
+        session_expr = "session_type" if collection == "ibkr_bars" else "'' AS session_type"
+        index_hint = "INDEXED BY idx_ibkr_indicators_bartimems" if collection == "ibkr_indicators" else ""
+        with open_pb_sqlite(readonly=True, timeout=2.0) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT symbol, bar_time_ms, us_time, {session_expr}
+                FROM {collection} {index_hint}
+                WHERE environment = ?
+                  AND interval = ?
+                  AND bar_time_ms >= ?
+                  AND bar_time_ms < ?
+                ORDER BY bar_time_ms DESC
+                LIMIT ?
+                """,
+                (str(environment or "live"), str(interval or ""), start_ms, end_ms, max(1, int(limit or 1))),
+            ).fetchall()
+        return _rows_by_symbol_payload([dict(row) for row in rows])
+    except Exception:
+        return None
+
+
+def _rows_by_symbol_payload(rows: list[dict[str, Any]]) -> dict[str, Any]:
     latest_by_symbol: dict[str, dict[str, Any]] = {}
     series_by_symbol: dict[str, list[dict[str, Any]]] = {}
     for row in rows or []:
@@ -111,6 +138,24 @@ def _load_recent_rows_by_symbol(pb: Any, collection: str, environment: str, inte
                 }
             )
     return {"latest_by_symbol": latest_by_symbol, "series_by_symbol": series_by_symbol}
+
+
+def _load_recent_rows_by_symbol(pb: Any, collection: str, environment: str, interval: str, today_start: str, limit: int) -> dict[str, Any]:
+    sqlite_payload = _load_recent_rows_by_symbol_sqlite(collection, environment, interval, today_start, limit)
+    if sqlite_payload is not None:
+        return sqlite_payload
+    rows = pb.get_records(
+        collection,
+        filter=(
+            f'environment = "{environment}" && '
+            f'interval = "{interval}" && '
+            f'us_time >= "{today_start}"'
+        ),
+        sort="-bar_time_ms",
+        per_page=max(1, limit),
+        page=1,
+    )
+    return _rows_by_symbol_payload(list(rows or []))
 
 
 def _build_gap_fingerprint(summary: dict[str, Any]) -> str:

@@ -13,6 +13,7 @@ from ibkr_compute.market.bar_freshness import (
     _escape_pb_filter,
     extract_conid_from_bar_row,
 )
+from ibkr_compute.market.pocketbase_sqlite import fetch_latest_bar, open_pb_sqlite
 from ibkr_compute.market.timeframe_utils import format_us_time, normalize_interval
 
 STATE_KEY = "ibkr_bar_repair_queue"
@@ -58,6 +59,18 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _is_broker_blocked_error(error: Any) -> bool:
+    text = str(error or "").strip().lower()
+    if not text:
+        return False
+    return (
+        ("client id" in text and "in use" in text)
+        or "last_error_code=326" in text
+        or "code=326" in text
+        or "broker_not_ready" in text
+    )
+
+
 @dataclass(order=True)
 class _RepairQueueItem:
     sort_key: tuple[int, int] = field(compare=True)
@@ -100,12 +113,45 @@ class BarRepairCoordinator:
         self._workers: list[threading.Thread] = []
         self._stop = False
         self._last_request_at = 0.0
+        self._broker_cooldown_until = 0.0
+        self._broker_cooldown_reason = ""
 
     def _max_workers(self) -> int:
         return max(1, min(2, _config_int(self.config, "ibkr_bar_repair_max_concurrency", self.environment, 2)))
 
     def _request_spacing(self) -> float:
         return max(0.0, _config_float(self.config, "ibkr_bar_repair_request_spacing", self.environment, 1.0))
+
+    def _broker_cooldown_seconds(self, environment: str | None = None) -> float:
+        return max(
+            0.0,
+            _config_float(
+                self.config,
+                "ibkr_bar_repair_broker_cooldown_s",
+                str(environment or self.environment or "live").strip().lower() or "live",
+                300.0,
+            ),
+        )
+
+    def _broker_cooldown_remaining_locked(self) -> float:
+        return max(0.0, float(self._broker_cooldown_until or 0.0) - time.monotonic())
+
+    def _set_broker_cooldown(self, environment: str, reason: Any) -> float:
+        cooldown_s = self._broker_cooldown_seconds(environment)
+        if cooldown_s <= 0:
+            return 0.0
+        with self._lock:
+            self._broker_cooldown_until = max(self._broker_cooldown_until, time.monotonic() + cooldown_s)
+            self._broker_cooldown_reason = str(reason or "")[:500]
+            return self._broker_cooldown_remaining_locked()
+
+    def _wait_for_broker_cooldown(self) -> None:
+        while True:
+            with self._lock:
+                remaining = self._broker_cooldown_remaining_locked()
+            if remaining <= 0:
+                return
+            time.sleep(min(30.0, remaining))
 
     def _period_for_interval(self, environment: str, interval: str) -> str:
         normalized = normalize_interval(interval)
@@ -220,6 +266,36 @@ class BarRepairCoordinator:
         return queued
 
     def _resolve_conid(self, environment: str, symbol: str) -> int:
+        if self.pb is not None and hasattr(self.pb, "get_all_records"):
+            try:
+                filter_text = f'symbol = "{_escape_pb_filter(symbol)}"'
+                if hasattr(self.pb, "get_first_record"):
+                    row = self.pb.get_first_record("ibkr_conid_cache", filter=filter_text) or {}
+                    conid = int((row or {}).get("conid") or 0)
+                    if conid > 0:
+                        return conid
+                else:
+                    rows = self.pb.get_all_records("ibkr_conid_cache", filter=filter_text, max_pages=1) or []
+                    for row in rows:
+                        conid = int((row or {}).get("conid") or 0)
+                        if conid > 0:
+                            return conid
+            except Exception:
+                pass
+            try:
+                with open_pb_sqlite(readonly=True, timeout=2.0) as conn:
+                    row = fetch_latest_bar(
+                        conn,
+                        symbol,
+                        "5m",
+                        environment,
+                        include_legacy_empty=True,
+                    )
+                conid = extract_conid_from_bar_row(row)
+                if conid > 0:
+                    return conid
+            except Exception:
+                pass
         if self.conid_resolver is not None and hasattr(self.conid_resolver, "resolve_bulk"):
             try:
                 resolved = self.conid_resolver.resolve_bulk([symbol]) or {}
@@ -230,21 +306,15 @@ class BarRepairCoordinator:
                 pass
         if self.pb is not None and hasattr(self.pb, "get_all_records"):
             try:
-                rows = self.pb.get_all_records("ibkr_conid_cache", max_pages=20) or []
-                for row in rows:
-                    if str((row or {}).get("symbol") or "").strip().upper() == symbol:
-                        conid = int((row or {}).get("conid") or 0)
-                        if conid > 0:
-                            return conid
-            except Exception:
-                pass
-            try:
-                rows = self.pb.get_all_records(
-                    "ibkr_bars",
-                    filter=f'symbol = "{_escape_pb_filter(symbol)}" && environment = "{_escape_pb_filter(environment)}"',
-                    sort="-bar_time_ms",
-                    max_pages=3,
-                ) or []
+                filter_text = (
+                    f'symbol = "{_escape_pb_filter(symbol)}" && '
+                    'interval = "5m" && '
+                    f'environment = "{_escape_pb_filter(environment)}"'
+                )
+                if hasattr(self.pb, "get_first_record"):
+                    rows = [self.pb.get_first_record("ibkr_bars", filter=filter_text, sort="-bar_time_ms") or {}]
+                else:
+                    rows = self.pb.get_all_records("ibkr_bars", filter=filter_text, sort="-bar_time_ms", max_pages=1) or []
                 for row in rows:
                     conid = extract_conid_from_bar_row(row)
                     if conid > 0:
@@ -355,6 +425,8 @@ class BarRepairCoordinator:
                     )
                     self._publish_state_locked()
         except Exception as exc:
+            broker_blocked = _is_broker_blocked_error(exc)
+            cooldown_remaining = self._set_broker_cooldown(environment, exc) if broker_blocked else 0.0
             with self._condition:
                 current = self._jobs.get(job_key)
                 if current:
@@ -362,6 +434,8 @@ class BarRepairCoordinator:
                     attempts = int(current.get("attempts", 0) or 0)
                     current["last_error"] = str(exc)
                     current["updated_at_ms"] = _now_ms()
+                    if broker_blocked:
+                        current["broker_cooldown_remaining_s"] = round(cooldown_remaining, 1)
                     if attempts < max_retries:
                         current["status"] = "queued"
                         self._seq += 1
@@ -384,6 +458,7 @@ class BarRepairCoordinator:
                 job = self._jobs.get(item.job_key)
                 if not job or str(job.get("status") or "") != "queued":
                     continue
+            self._wait_for_broker_cooldown()
             self._run_job(item.job_key)
 
     def status(self, *, include_jobs: bool = False) -> dict:
@@ -405,6 +480,8 @@ class BarRepairCoordinator:
                 "worker_count": len([worker for worker in self._workers if worker.is_alive()]),
                 "max_concurrency": self._max_workers(),
                 "request_spacing_s": self._request_spacing(),
+                "broker_cooldown_remaining_s": round(self._broker_cooldown_remaining_locked(), 1),
+                "broker_cooldown_reason": self._broker_cooldown_reason,
                 "recent_failures": [dict(job) for job in recent if str(job.get("status") or "") == "failed"][:6],
                 "recent_jobs": [dict(job) for job in recent],
             }

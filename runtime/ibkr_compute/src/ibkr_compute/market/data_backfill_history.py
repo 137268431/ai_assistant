@@ -46,6 +46,17 @@ class DataBackfillHistoryMixin:
         )
         return any(marker in text for marker in terminal_markers)
 
+    def _is_broker_blocked_history_error(self, error: Exception | str | None) -> bool:
+        text = str(error or "").strip().lower()
+        if not text:
+            return False
+        return (
+            ("client id" in text and "in use" in text)
+            or "last_error_code=326" in text
+            or "code=326" in text
+            or "broker_not_ready" in text
+        )
+
     def _wait_for_request_slot(self) -> float:
         request_spacing = self._request_spacing()
         if request_spacing <= 0:
@@ -134,6 +145,10 @@ class DataBackfillHistoryMixin:
                 if self._is_terminal_history_error(exc):
                     raise RuntimeError(
                         f"history_fetch_terminal:{symbol}:{interval}:{conid}:{exc}"
+                    ) from exc
+                if self._is_broker_blocked_history_error(exc):
+                    raise RuntimeError(
+                        f"history_fetch_broker_blocked:{symbol}:{interval}:{conid}:{exc}"
                     ) from exc
                 if attempt >= max_retries:
                     raise RuntimeError(

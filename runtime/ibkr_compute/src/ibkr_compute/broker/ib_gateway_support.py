@@ -12,12 +12,33 @@ from ibkr_compute.core.time_utils import ET
 
 DEFAULT_HOST = os.environ.get("IBGW_HOST", "127.0.0.1").strip() or "127.0.0.1"
 DEFAULT_PORT = int(os.environ.get("IBGW_PORT", "4001"))
-DEFAULT_CLIENT_ID = int(os.environ.get("IBGW_CLIENT_ID", "31"))
 DEFAULT_CONNECT_TIMEOUT_SECONDS = max(3, int(os.environ.get("IBGW_CONNECT_TIMEOUT_SEC", "10")))
 DEFAULT_LOGIN_TIMEOUT_SECONDS = max(30, int(os.environ.get("IBKR_LOGIN_TIMEOUT", "180")))
 DEFAULT_LOGIN_POLL_INTERVAL_SECONDS = max(1, int(os.environ.get("IBKR_LOGIN_POLL_INTERVAL_SEC", "5")))
 DEFAULT_SERVICE_NAME = os.environ.get("IBKR_GATEWAY_SYSTEMD_SERVICE", "ibkr-gateway").strip() or "ibkr-gateway"
 DEFAULT_ENVIRONMENT = os.environ.get("IBKR_ENVIRONMENT", "live").strip().lower() or "live"
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(str(os.environ.get(name, "") or default).strip())
+    except Exception:
+        return int(default)
+
+
+def _default_client_id() -> int:
+    base_client_id = _env_int("IBGW_CLIENT_ID", 31)
+    service_profile = str(os.environ.get("IBKR_SERVICE_PROFILE") or "").strip().lower()
+    if service_profile:
+        profile_key = f"IBGW_{service_profile.upper()}_CLIENT_ID"
+        if str(os.environ.get(profile_key, "") or "").strip():
+            return _env_int(profile_key, base_client_id)
+    if service_profile in {"compute", "api", "scheduler"}:
+        return base_client_id + {"compute": 20, "api": 30, "scheduler": 40}[service_profile]
+    return base_client_id
+
+
+DEFAULT_CLIENT_ID = _default_client_id()
 
 TICK_LAST_PRICE = 4
 TICK_BID_PRICE = 1

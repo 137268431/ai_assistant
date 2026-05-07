@@ -294,6 +294,43 @@ def _pb_load_records_for_count(collection: str, filter_expr: str, *, max_pages: 
     return rows
 
 
+def _market_date_bounds_ms(market_date: str) -> tuple[int, int]:
+    start_dt = datetime.strptime(str(market_date or "").strip(), "%Y-%m-%d").replace(
+        tzinfo=ET,
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    end_dt = start_dt + timedelta(days=1)
+    return int(start_dt.timestamp() * 1000), int(end_dt.timestamp() * 1000)
+
+
+def _sqlite_today_market_count(collection: str, environment: str, market_date: str) -> int | None:
+    if collection not in {"ibkr_bars", "ibkr_indicators"}:
+        return None
+    try:
+        from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite
+
+        start_ms, end_ms = _market_date_bounds_ms(market_date)
+        interval = "5m" if collection == "ibkr_bars" else "5"
+        with open_pb_sqlite(readonly=True, timeout=2.0) as conn:
+            row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS total
+                FROM {collection}
+                WHERE environment = ?
+                  AND interval = ?
+                  AND bar_time_ms >= ?
+                  AND bar_time_ms < ?
+                """,
+                (str(environment or "live"), interval, start_ms, end_ms),
+            ).fetchone()
+        return int((row["total"] if row else 0) or 0)
+    except Exception:
+        return None
+
+
 PROTECTIVE_ORDER_ROLES = {"take_profit", "stop_loss", "repair_tp", "repair_sl", "tp", "sl"}
 ENTRY_ORDER_TYPES = {"entry", "entryorder"}
 
@@ -369,7 +406,8 @@ def _load_today_counts(environment: str, market_date: str) -> dict[str, Any]:
     errors: dict[str, str] = {}
     for key, (collection, filter_expr) in specs.items():
         try:
-            counts[key] = _pb_count_records(collection, filter_expr)
+            sqlite_count = _sqlite_today_market_count(collection, runtime_environment, date_token)
+            counts[key] = sqlite_count if sqlite_count is not None else _pb_count_records(collection, filter_expr)
         except Exception as exc:
             counts[key] = 0
             errors[key] = str(exc)
