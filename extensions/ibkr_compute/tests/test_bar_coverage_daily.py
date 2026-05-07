@@ -14,6 +14,7 @@ from ibkr_compute.backtest.runtime_service import BacktestService
 from ibkr_compute.core.time_utils import ET
 from ibkr_compute.market.bar_coverage_daily import (
     build_daily_coverage_row,
+    build_range_daily_coverage,
     expected_bar_times_for_date,
 )
 
@@ -111,6 +112,78 @@ class BarCoverageDailyTests(unittest.TestCase):
         self.assertEqual(row["status"], "ok")
         self.assertEqual(row["bad_ohlc_count"], 0)
         self.assertFalse(row["needs_repair"])
+
+    def test_history_start_ignores_pre_listing_expected_bars(self):
+        expected = expected_bar_times_for_date("2025-12-17", "5m", "regular")
+        history_start_ms = int(datetime(2025, 12, 17, 12, 50, tzinfo=ET).timestamp() * 1000)
+        row = build_daily_coverage_row(
+            symbol="MDLN",
+            environment="live",
+            market_date="2025-12-17",
+            interval="5m",
+            session_mode="regular",
+            bars=[_bar("MDLN", value) for value in expected if value >= history_start_ms],
+            source="backtest_preflight",
+            history_start_ms=history_start_ms,
+        )
+
+        self.assertEqual(row["status"], "ok")
+        self.assertFalse(row["needs_repair"])
+        self.assertEqual(row["missing_count"], 0)
+        self.assertGreater(row["extra"]["expected_before_history_start_count"], 0)
+        self.assertEqual(row["extra"]["coverage_exception"], "no_history_before_listing")
+
+    def test_watchlist_note_history_start_marks_prior_days_ok(self):
+        with tempfile.NamedTemporaryFile(suffix=".db") as tmp:
+            with sqlite3.connect(tmp.name) as conn:
+                conn.row_factory = sqlite3.Row
+                conn.execute(
+                    """
+                    CREATE TABLE watchlist (
+                        symbol TEXT,
+                        environment TEXT,
+                        note TEXT,
+                        us_time TEXT,
+                        bar_time_ms INTEGER
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE ibkr_bars (
+                        symbol TEXT,
+                        environment TEXT,
+                        interval TEXT,
+                        bar_time_ms INTEGER,
+                        open REAL,
+                        high REAL,
+                        low REAL,
+                        close REAL,
+                        volume REAL,
+                        exchange TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    "INSERT INTO watchlist(symbol, environment, note, us_time, bar_time_ms) VALUES (?, ?, ?, ?, ?)",
+                    ("MDLN", "global", "no_history_before_us=2025-12-17 12:50:00", "", 0),
+                )
+                rows = build_range_daily_coverage(
+                    conn,
+                    symbols=["MDLN"],
+                    environment="live",
+                    date_from="2025-12-16",
+                    date_to="2025-12-16",
+                    interval="5m",
+                    session_modes=("regular",),
+                    source="test",
+                )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "ok")
+        self.assertFalse(rows[0]["needs_repair"])
+        self.assertEqual(rows[0]["missing_count"], 0)
+        self.assertEqual(rows[0]["extra"]["coverage_exception"], "no_history_before_listing")
 
     def test_backtest_regular_loader_excludes_early_close_afterhours(self):
         regular_bar = int(datetime(2025, 7, 3, 12, 55, tzinfo=ET).timestamp() * 1000)

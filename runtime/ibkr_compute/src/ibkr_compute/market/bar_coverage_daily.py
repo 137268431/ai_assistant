@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 import json
+import re
 import sqlite3
 from typing import Any, Iterable, Sequence
 
@@ -18,6 +19,11 @@ EXTENDED_OPEN_MINUTE = 4 * 60
 EXTENDED_CLOSE_MINUTE = 20 * 60
 DAILY_COVERAGE_OK_STATUSES = {"ok", "repaired"}
 ZERO_VOLUME_ALLOWED_SYMBOLS = {"VIX"}
+HISTORY_START_NOTE_PATTERN = re.compile(
+    r"\b(?:history_start_us|history_start|listed_us|listing_start_us|no_history_before_us)\s*[:=]\s*"
+    r"([0-9]{4}-[0-9]{2}-[0-9]{2}(?:[ T][0-9]{2}:[0-9]{2}(?::[0-9]{2})?)?)",
+    re.IGNORECASE,
+)
 
 
 def _normalize_symbol(value: Any) -> str:
@@ -54,6 +60,33 @@ def _json_dict(value: Any) -> dict[str, Any]:
 
 def _parse_date(value: Any) -> date:
     return datetime.strptime(_normalize_date(value), "%Y-%m-%d").date()
+
+
+def _parse_us_time_ms(value: Any) -> int:
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    normalized = text.replace("T", " ")
+    formats = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d")
+    for fmt in formats:
+        try:
+            dt = datetime.strptime(normalized[: len(fmt.replace("%Y", "0000").replace("%m", "00").replace("%d", "00").replace("%H", "00").replace("%M", "00").replace("%S", "00"))], fmt)
+        except ValueError:
+            continue
+        if fmt == "%Y-%m-%d":
+            dt = datetime(dt.year, dt.month, dt.day)
+        return int(dt.replace(tzinfo=ET).timestamp() * 1000)
+    return 0
+
+
+def _history_start_ms_from_note(value: Any) -> int:
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    match = HISTORY_START_NOTE_PATTERN.search(text)
+    if not match:
+        return 0
+    return _parse_us_time_ms(match.group(1))
 
 
 def _nth_weekday(year: int, month: int, weekday: int, nth: int) -> date:
@@ -312,6 +345,7 @@ def build_daily_coverage_row(
     source: str = "manual_scan",
     checked_at: str = "",
     active_trade_symbols: Iterable[str] | None = None,
+    history_start_ms: int = 0,
 ) -> dict[str, Any]:
     normalized_symbol = _normalize_symbol(symbol)
     normalized_environment = str(environment or "live").strip().lower() or "live"
@@ -322,7 +356,14 @@ def build_daily_coverage_row(
         normalized_session = "regular"
     day = _parse_date(normalized_date)
     interval_ms = interval_to_ms(normalized_interval)
-    expected_times = expected_bar_times_for_date(normalized_date, normalized_interval, normalized_session)
+    raw_expected_times = expected_bar_times_for_date(normalized_date, normalized_interval, normalized_session)
+    normalized_history_start_ms = max(0, int(history_start_ms or 0))
+    expected_times = (
+        [value for value in raw_expected_times if value >= normalized_history_start_ms]
+        if normalized_history_start_ms > 0
+        else raw_expected_times
+    )
+    expected_before_history_start_count = max(0, len(raw_expected_times) - len(expected_times))
     expected_index = {value: index for index, value in enumerate(expected_times)}
     actual_rows = [dict(row or {}) for row in (bars or [])]
     actual_times = [int(row.get("bar_time_ms", 0) or 0) for row in actual_rows if int(row.get("bar_time_ms", 0) or 0) > 0]
@@ -402,6 +443,10 @@ def build_daily_coverage_row(
             "early_close": is_nyse_early_close_day(day),
             "expected_scope": "regular_session" if normalized_session == "regular" else "extended_hours_only",
             "actual_aligned_count": len(actual_indexes),
+            "history_start_ms": normalized_history_start_ms,
+            "history_start_us": format_us_time(normalized_history_start_ms) if normalized_history_start_ms > 0 else "",
+            "expected_before_history_start_count": expected_before_history_start_count,
+            "coverage_exception": "no_history_before_listing" if expected_before_history_start_count > 0 else "",
             "bad_bar_examples": bad_examples,
             "bad_ohlc_examples": bad_examples,
         },
@@ -456,6 +501,45 @@ def fetch_bar_rows_grouped(
     return grouped
 
 
+def load_history_start_ms_by_symbol(
+    conn: sqlite3.Connection,
+    *,
+    symbols: Sequence[str],
+    environment: str,
+) -> dict[str, int]:
+    normalized_symbols = sorted({_normalize_symbol(item) for item in symbols or [] if _normalize_symbol(item)})
+    if not normalized_symbols:
+        return {}
+    normalized_environment = str(environment or "live").strip().lower() or "live"
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT symbol, environment, note, us_time, bar_time_ms
+            FROM watchlist
+            WHERE upper(symbol) IN ({_symbol_placeholders(normalized_symbols)})
+              AND (environment = ? OR environment = 'global' OR environment = '')
+            ORDER BY CASE WHEN environment = ? THEN 0 WHEN environment = 'global' THEN 1 ELSE 2 END
+            """,
+            (*normalized_symbols, normalized_environment, normalized_environment),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    starts: dict[str, int] = {}
+    for row in rows or []:
+        item = dict(row)
+        symbol = _normalize_symbol(item.get("symbol"))
+        if not symbol or symbol in starts:
+            continue
+        start_ms = _history_start_ms_from_note(item.get("note"))
+        if start_ms <= 0:
+            start_ms = _parse_us_time_ms(item.get("us_time"))
+        if start_ms <= 0:
+            start_ms = int(item.get("bar_time_ms") or 0)
+        if start_ms > 0:
+            starts[symbol] = start_ms
+    return starts
+
+
 def build_range_daily_coverage(
     conn: sqlite3.Connection,
     *,
@@ -488,6 +572,7 @@ def build_range_daily_coverage(
         date_from=min(all_dates),
         date_to=max(all_dates),
     )
+    history_starts = load_history_start_ms_by_symbol(conn, symbols=normalized_symbols, environment=environment)
     checked_at = datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S%z")
     rows: list[dict[str, Any]] = []
     for symbol in normalized_symbols:
@@ -504,6 +589,7 @@ def build_range_daily_coverage(
                         source=source,
                         checked_at=checked_at,
                         active_trade_symbols=active_trade_symbols,
+                        history_start_ms=history_starts.get(symbol, 0),
                     )
                 )
     return rows
@@ -668,6 +754,7 @@ __all__ = [
     "expected_bar_times_for_date",
     "is_nyse_early_close_day",
     "is_nyse_trading_day",
+    "load_history_start_ms_by_symbol",
     "load_daily_coverage_rows",
     "market_date_from_ms",
     "nyse_holidays",
