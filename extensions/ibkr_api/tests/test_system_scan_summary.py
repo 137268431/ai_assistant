@@ -179,24 +179,32 @@ class SystemScanSummaryTest(unittest.TestCase):
                     {
                         "symbol": "AAPL",
                         "direction_bias": "long",
+                        "is_operable": True,
+                        "technical_state": "ready",
                         "has_signal_today": True,
                         "latest_signal_status": "expired",
                     },
                     {
                         "symbol": "INTC",
                         "direction_bias": "short",
+                        "is_operable": True,
+                        "technical_state": "ready",
                         "has_signal_today": True,
                         "latest_signal_status": "awaiting_confirm",
                     },
                     {
                         "symbol": "NVDA",
                         "direction_bias": "long",
+                        "is_operable": True,
+                        "technical_state": "watch",
                         "has_signal_today": False,
                         "latest_signal_status": "",
                     },
                     {
                         "symbol": "TSLA",
                         "direction_bias": "short",
+                        "is_operable": False,
+                        "technical_state": "stale",
                         "has_signal_today": False,
                         "latest_signal_status": "",
                     },
@@ -281,6 +289,12 @@ class SystemScanSummaryTest(unittest.TestCase):
         self.assertIn("INTC(空,待确认)", detail["今日交易标的"])
         self.assertIn("AAPL(多,已过期)", detail["已过期标的"])
         self.assertIn("NVDA(多)", detail["未出信号标的"])
+        self.assertIn("可操作待信号 1", detail["标的链路"])
+        self.assertIn("NVDA(多,watch)", detail["标的链路"])
+        self.assertIn("技术就绪待信号 0", detail["标的链路"])
+        self.assertIn("已触发信号 2", detail["标的链路"])
+        self.assertIn("AAPL(多,已过期)", detail["标的链路"])
+        self.assertIn("INTC(空,待确认)", detail["标的链路"])
         self.assertIn("valid 2", detail["窗口统计"])
         self.assertIn("AAPL(上窗口,4 bars)", detail["窗口已激活"])
         self.assertIn("INTC(下窗口,1 bars)", detail["窗口已激活"])

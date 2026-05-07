@@ -463,12 +463,36 @@ def _target_label(item: dict[str, Any], *, include_signal_status: bool = False) 
     return f"{symbol}({','.join(parts)})" if parts else symbol
 
 
+def _target_chain_label(item: dict[str, Any], *, include_signal_status: bool = False) -> str:
+    symbol = _to_text(item.get("symbol")).upper()
+    if not symbol:
+        return ""
+    parts: list[str] = []
+    direction = _direction_label(item.get("direction_bias"))
+    if direction:
+        parts.append(direction)
+    if include_signal_status:
+        parts.append(_signal_status_label(item.get("latest_signal_status")) or "已触发")
+    else:
+        parts.append(_to_text(item.get("technical_state")) or "unknown")
+    return f"{symbol}({','.join(parts)})" if parts else symbol
+
+
 def _target_signal_summary(targets_payload: dict[str, Any]) -> dict[str, str]:
     summary = _as_dict(targets_payload.get("summary"))
     items = [_as_dict(item) for item in targets_payload.get("items") or [] if isinstance(item, dict)]
     trading_items = [item for item in items if _to_text(item.get("symbol"))]
     expired_items = [item for item in items if _to_text(item.get("latest_signal_status")).lower() == "expired"]
     no_signal_items = [item for item in items if not bool(item.get("has_signal_today"))]
+    operable_waiting_items = [
+        item for item in trading_items if bool(item.get("is_operable")) and not bool(item.get("has_signal_today"))
+    ]
+    ready_waiting_items = [
+        item
+        for item in trading_items
+        if _to_text(item.get("technical_state")).lower() == "ready" and not bool(item.get("has_signal_today"))
+    ]
+    signaled_items = [item for item in trading_items if bool(item.get("has_signal_today"))]
     return {
         "今日标的": (
             f"total {_to_int(summary.get('total'), len(trading_items))} | "
@@ -488,6 +512,14 @@ def _target_signal_summary(targets_payload: dict[str, Any]) -> dict[str, str]:
         "今日交易标的": _join_limited([_target_label(item, include_signal_status=True) for item in trading_items]),
         "已过期标的": _join_limited([_target_label(item, include_signal_status=True) for item in expired_items]),
         "未出信号标的": _join_limited([_target_label(item) for item in no_signal_items]),
+        "标的链路": (
+            f"可操作待信号 {len(operable_waiting_items)}: "
+            f"{_join_limited([_target_chain_label(item) for item in operable_waiting_items])} | "
+            f"技术就绪待信号 {len(ready_waiting_items)}: "
+            f"{_join_limited([_target_chain_label(item) for item in ready_waiting_items])} | "
+            f"已触发信号 {len(signaled_items)}: "
+            f"{_join_limited([_target_chain_label(item, include_signal_status=True) for item in signaled_items])}"
+        ),
     }
 
 
