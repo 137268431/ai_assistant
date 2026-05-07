@@ -129,8 +129,12 @@ async function loadSystemData(showToastOnSuccess = false) {
         const freshnessResponses = restResponses.slice(0, freshnessIntervals.length);
         const backtestBatchResp = restResponses[freshnessIntervals.length] || {};
         const backtestRunsResp = restResponses[freshnessIntervals.length + 1] || {};
+        const summaryToday = summaryLite?.today && typeof summaryLite.today === 'object' ? summaryLite.today : {};
+        const mainOrderCount = summaryToday.main_orders == null
+            ? (summaryToday.order_groups == null ? orderCount : Number(summaryToday.order_groups || 0))
+            : Number(summaryToday.main_orders || 0);
         const todayStats = {
-            orders: orderCount,
+            orders: mainOrderCount,
             ibkr_bars: barCount,
             ibkr_indicators: indicatorCount,
             ibkr_signals: signalCount,

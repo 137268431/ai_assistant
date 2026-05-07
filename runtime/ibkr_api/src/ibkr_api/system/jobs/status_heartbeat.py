@@ -70,6 +70,14 @@ def _truthy(value: Any, *, default: bool = False) -> bool:
     return text in TRUTHY_TEXT
 
 
+def _today_order_count(today: dict[str, Any]) -> int:
+    if "main_orders" in today:
+        return _to_int(today.get("main_orders"), 0)
+    if "order_groups" in today:
+        return _to_int(today.get("order_groups"), 0)
+    return _to_int(today.get("orders"), 0)
+
+
 def _normalized_status(value: Any) -> str:
     return _to_text(value).lower() or "unknown"
 
@@ -401,7 +409,7 @@ def _heartbeat_detail(snapshot: dict[str, Any], *, timestamp_us: str) -> dict[st
         "数据": (
             f"bars {_to_int(today.get('ibkr_bars'), 0)} | "
             f"signals {_to_int(today.get('ibkr_signals'), 0)} | "
-            f"orders {_to_int(today.get('orders'), 0)} | "
+            f"orders {_today_order_count(today)} | "
             f"日筛 {_to_text(daily_scan.get('status')) or 'unknown'}"
         ),
     }

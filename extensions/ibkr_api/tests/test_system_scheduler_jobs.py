@@ -1054,6 +1054,8 @@ class SystemSchedulerJobsTest(unittest.TestCase):
                 "ibkr_indicators": 8494,
                 "ibkr_signals": 0,
                 "orders": 0,
+                "main_orders": 0,
+                "order_groups": 0,
                 "events": 98,
                 "ibkr_targets": 9,
             },
@@ -1062,6 +1064,8 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(payload["today_market_date"], "2026-05-01")
         self.assertEqual(payload["today"]["ibkr_bars"], 22134)
         self.assertEqual(payload["today"]["ibkr_indicators"], 8494)
+        self.assertEqual(payload["today"]["main_orders"], 0)
+        self.assertEqual(payload["today"]["order_groups"], 0)
         self.assertEqual(payload["today"]["events"], 98)
         self.assertEqual(payload["today"]["ibkr_targets"], 9)
         self.assertNotIn("today_errors", payload)

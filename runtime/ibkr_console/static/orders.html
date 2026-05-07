@@ -656,24 +656,85 @@
             return String(left.unique_id || '').localeCompare(String(right.unique_id || ''));
         }
 
+        function isProtectiveOrder(order) {
+            const role = String(order?.role || '').trim().toLowerCase();
+            const orderType = String(order?.order_type || '').trim().toLowerCase();
+            return ['take_profit', 'stop_loss', 'repair_tp', 'repair_sl', 'tp', 'sl'].includes(role)
+                || ['takeprofit', 'stoploss'].includes(orderType);
+        }
+
+        function isMainOrder(order) {
+            if (!order || isProtectiveOrder(order)) return false;
+            const role = String(order.role || '').trim().toLowerCase();
+            const orderType = String(order.order_type || '').trim().toLowerCase();
+            return role === 'entry' || ['entry', 'entryorder'].includes(orderType);
+        }
+
         function pickPrimaryOrder(orders) {
-            return orders.find((order) => order.role === 'entry')
-                || orders.find((order) => order.unique_id === order.entry_order_unique_id)
-                || [...orders].sort((a, b) => a.time_key - b.time_key)[0]
-                || orders[0];
+            return orders.find(isMainOrder)
+                || orders.find((order) => order.role === 'entry')
+                || orders.find((order) => order.unique_id === order.entry_order_unique_id);
+        }
+
+        function mainGroupKey(order) {
+            return order.trade_group_id || order.entry_order_unique_id || order.signal_id || order.unique_id || order.id;
+        }
+
+        function addMainOrderAliases(aliasMap, order, groupKey) {
+            [
+                order.signal_id,
+                order.trade_group_id,
+                order.entry_order_unique_id,
+                order.unique_id,
+                order.id,
+                order.broker_order_id,
+                order.order_id
+            ].forEach((value) => {
+                const alias = String(value || '').trim();
+                if (alias && !aliasMap.has(alias)) aliasMap.set(alias, groupKey);
+            });
+        }
+
+        function resolveMainGroupKey(order, aliasMap) {
+            const candidates = [
+                order.signal_id,
+                order.entry_order_unique_id,
+                order.parent_order_unique_id,
+                order.trade_group_id,
+                order.sibling_order_unique_id,
+                order.unique_id,
+                order.id
+            ];
+            for (const value of candidates) {
+                const key = aliasMap.get(String(value || '').trim());
+                if (key) return key;
+            }
+            return '';
         }
 
         function buildTradeGroups(orders) {
             const grouped = new Map();
-            orders.forEach((order) => {
-                const key = order.trade_group_id || order.entry_order_unique_id || order.unique_id || order.id;
+            const aliasMap = new Map();
+            const mainOrders = orders.filter(isMainOrder);
+
+            mainOrders.forEach((order) => {
+                const key = mainGroupKey(order);
+                if (!key) return;
                 if (!grouped.has(key)) grouped.set(key, []);
+                grouped.get(key).push(order);
+                addMainOrderAliases(aliasMap, order, key);
+            });
+
+            orders.filter((order) => !isMainOrder(order)).forEach((order) => {
+                const key = resolveMainGroupKey(order, aliasMap);
+                if (!key || !grouped.has(key)) return;
                 grouped.get(key).push(order);
             });
 
             return Array.from(grouped.entries()).map(([groupId, ordersInGroup]) => {
                 const ordersSorted = [...ordersInGroup].sort(sortOrdersInGroup);
                 const primaryOrder = pickPrimaryOrder(ordersSorted);
+                if (!primaryOrder) return null;
                 const latestEvent = [...ordersInGroup].sort((a, b) => b.time_key - a.time_key)[0];
                 const exitOrder = ordersSorted.find((order) => order.role !== 'entry' && order.status === 'Filled') || null;
                 const relationAlert = ordersSorted.find((order) => order.relation_status === 'orphaned') || null;
@@ -693,7 +754,7 @@
                     activeChildCount: ordersInGroup.filter((order) => order.role !== 'entry' && order.relation_status === 'active').length,
                     plannedChildCount: ordersInGroup.filter((order) => order.role !== 'entry' && order.relation_status === 'planned').length
                 };
-            }).sort((left, right) => right.latest_time - left.latest_time);
+            }).filter(Boolean).sort((left, right) => right.latest_time - left.latest_time);
         }
 
         function matchesSearch(group, keyword) {
@@ -761,9 +822,10 @@
             const filtered = filterGroups(allGroups);
             const summary = document.getElementById('summaryBar');
             const openGroups = filtered.filter((group) => !group.exitOrder && group.status !== 'Canceled' && group.status !== 'Closed').length;
+            const mainOrderCount = filtered.reduce((sum, group) => sum + group.orders.filter(isMainOrder).length, 0);
             summary.innerHTML = `
                 <div class="summary-card"><div class="summary-label">TRADE GROUPS</div><div class="summary-value">${formatCountValue(filtered.length)}</div></div>
-                <div class="summary-card"><div class="summary-label">ORDERS</div><div class="summary-value">${formatCountValue(filtered.reduce((sum, group) => sum + group.orders.length, 0))}</div></div>
+                <div class="summary-card"><div class="summary-label">ORDERS</div><div class="summary-value">${formatCountValue(mainOrderCount)}</div></div>
                 <div class="summary-card"><div class="summary-label">OPEN GROUPS</div><div class="summary-value">${formatCountValue(openGroups)}</div></div>
                 ${currentOrdersSource === 'ibkr_order_details' ? '<div class="summary-hint">当前使用 ibkr_order_details 最新快照回退展示，可查看图表与交易组明细，但不提供撤单/平仓操作。</div>' : ''}
                 ${isOrdersDatasetPartial ? '<div class="summary-hint">首屏已加载，剩余订单后台补齐中</div>' : ''}
@@ -867,6 +929,7 @@
 
         function renderGroupCard(group) {
             const primary = group.primaryOrder;
+            const visibleOrders = group.orders.filter(isMainOrder);
             const tpOrder = group.orders.find((order) => order.role === 'take_profit' || order.role === 'repair_tp');
             const slOrder = group.orders.find((order) => order.role === 'stop_loss' || order.role === 'repair_sl');
             const isReadOnlySnapshot = currentOrdersSource === 'ibkr_order_details';
@@ -922,9 +985,9 @@
 
                     ${renderRelationshipStrip(group)}
 
-                    <div class="section-title">Orders In Group</div>
+                    <div class="section-title">主单</div>
                     <div class="order-list">
-                        ${group.orders.map((order) => renderOrderCard(order, order.unique_id === primary?.unique_id)).join('')}
+                        ${visibleOrders.map((order) => renderOrderCard(order, order.unique_id === primary?.unique_id)).join('')}
                     </div>
 
                     <div class="action-panel">

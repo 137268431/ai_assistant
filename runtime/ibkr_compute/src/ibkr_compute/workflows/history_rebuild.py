@@ -6,7 +6,7 @@ import threading
 import time
 import traceback
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from ibkr_compute.core.config import Config
@@ -31,7 +31,6 @@ from ibkr_compute.market.timeframe_utils import (
     format_cn_time,
     format_us_time,
     interval_to_ms,
-    ms_to_et,
 )
 from ibkr_compute.market.conid_resolver import ConidResolver
 
@@ -483,7 +482,7 @@ class HistoryRebuildManager:
             raise RuntimeError(f"conid_unresolved:{symbol}")
 
         interval_ms = interval_to_ms(FETCH_INTERVAL)
-        anchor_ms = int(end_ms)
+        anchor_ms = int(end_ms) + interval_ms
         earliest_needed_ms = int(start_ms)
         seen_bar_ms = set()
         written_rows = 0
@@ -491,7 +490,7 @@ class HistoryRebuildManager:
         max_batches = max(8, math.ceil(max(1, end_ms - start_ms) / (4 * 24 * 60 * 60 * 1000)) + 8)
 
         while anchor_ms >= earliest_needed_ms and batches < max_batches:
-            request_start_time = ms_to_et(anchor_ms).strftime("%Y%m%d-%H:%M:%S")
+            request_start_time = datetime.fromtimestamp(int(anchor_ms) / 1000, timezone.utc).strftime("%Y%m%d-%H:%M:%S")
             payload = data_backfill._request_history_json(
                 conid,
                 symbol,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 from typing import Dict, List, Optional, Sequence
 
@@ -120,7 +120,8 @@ def _period_from_days(days: int) -> str:
 def _format_ib_end_datetime(bar_time_ms: int) -> str:
     if int(bar_time_ms or 0) <= 0:
         return ""
-    return datetime.fromtimestamp(int(bar_time_ms) / 1000, ET).strftime("%Y%m%d %H:%M:%S US/Eastern")
+    # IB API's dash format is UTC; using UTC prevents ET afternoon bars being cut off.
+    return datetime.fromtimestamp(int(bar_time_ms) / 1000, timezone.utc).strftime("%Y%m%d-%H:%M:%S")
 
 
 def _to_ib_bar_size(value: str) -> str:

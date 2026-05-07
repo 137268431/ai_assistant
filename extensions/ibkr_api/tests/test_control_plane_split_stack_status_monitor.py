@@ -5,6 +5,39 @@ class ControlPlaneSplitStackStatusMonitorTest(unittest.TestCase):
     def test_api_pb_client_reads_runtime_config_directly_from_pocketbase(self):
         self.assertFalse(api_app_mod.pb.prefer_runtime_config_api)
 
+    def test_today_counts_exposes_grouped_order_count(self):
+        rows = [
+            {"id": "entry-1", "trade_group_id": "tg-1", "role": "entry"},
+            {"id": "tp-1", "trade_group_id": "tg-1", "role": "take_profit"},
+            {"id": "sl-1", "trade_group_id": "tg-1", "role": "stop_loss"},
+        ]
+
+        def fake_count(collection, filter_expr):
+            return 3 if collection == "orders" else 0
+
+        with mock.patch.object(api_app_mod, "_pb_count_records", side_effect=fake_count):
+            with mock.patch.object(api_app_mod, "_pb_load_records_for_count", return_value=rows):
+                payload = api_app_mod._load_today_counts("live", "2026-05-06")
+
+        self.assertEqual(payload["orders"], 3)
+        self.assertEqual(payload["main_orders"], 1)
+        self.assertEqual(payload["order_groups"], 1)
+
+    def test_today_counts_ignores_protective_rows_with_split_group_aliases(self):
+        rows = [
+            {"id": "entry-1", "trade_group_id": "sig-1_entry", "signal_id": "sig-1", "role": "entry"},
+            {"id": "tp-1", "trade_group_id": "tp_sig-1", "signal_id": "sig-1", "role": "take_profit"},
+            {"id": "sl-1", "trade_group_id": "sl_sig-1", "signal_id": "sig-1", "role": "stop_loss"},
+        ]
+
+        with mock.patch.object(api_app_mod, "_pb_count_records", side_effect=lambda collection, _filter: 3 if collection == "orders" else 0):
+            with mock.patch.object(api_app_mod, "_pb_load_records_for_count", return_value=rows):
+                payload = api_app_mod._load_today_counts("live", "2026-05-06")
+
+        self.assertEqual(payload["orders"], 3)
+        self.assertEqual(payload["main_orders"], 1)
+        self.assertEqual(payload["order_groups"], 1)
+
     def test_runtime_config_route_returns_effective_environment_values(self):
         rows = [
             {"key": "alpha", "value": "global", "environment": "global", "updated": "2026-04-22 00:00:00"},

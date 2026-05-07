@@ -323,9 +323,12 @@ def build_daily_coverage_row(
     if expected_count == 0 and not is_nyse_trading_day(day):
         status = "ok"
     active_symbols = {_normalize_symbol(item) for item in (active_trade_symbols or []) if _normalize_symbol(item)}
-    hard_gate = bool(normalized_session == "regular" and status == "hard_gap")
-    if active_symbols:
-        hard_gate = hard_gate and normalized_symbol in active_symbols
+    hard_gate = bool(
+        normalized_session == "regular"
+        and status == "hard_gap"
+        and active_symbols
+        and normalized_symbol in active_symbols
+    )
     first_bar_ms = min(actual_times) if actual_times else 0
     last_bar_ms = max(actual_times) if actual_times else 0
     checked_text = str(checked_at or datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S%z"))

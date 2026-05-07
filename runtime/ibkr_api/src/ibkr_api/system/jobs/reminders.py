@@ -42,6 +42,14 @@ def _truthy(value: Any) -> bool:
     return _to_text(value).lower() not in {"", "0", "false", "no", "off"}
 
 
+def _today_order_count(today: dict[str, Any]) -> int:
+    if "main_orders" in today:
+        return _to_int(today.get("main_orders"), 0)
+    if "order_groups" in today:
+        return _to_int(today.get("order_groups"), 0)
+    return _to_int(today.get("orders"), 0)
+
+
 def _matches_time_window(current_us: str, target_et: str, *, window_minutes: int = 1) -> bool:
     current = _to_text(current_us)
     target = _to_text(target_et)
@@ -99,7 +107,7 @@ def _summary_detail(summary: dict[str, Any], monitor: dict[str, Any], *, phase: 
         "DispatchLag": f"{float(scheduler.get('dispatch_lag_min') or 0):.2f}m" if scheduler.get("latest_ingested_bar_time_ms") else "awaiting bars",
         "今日bars": str(_to_int(today.get("ibkr_bars"), 0)),
         "今日signals": str(_to_int(today.get("ibkr_signals"), 0)),
-        "今日orders": str(_to_int(today.get("orders"), 0)),
+        "今日orders": str(_today_order_count(today)),
         "今日events": str(_to_int(today.get("events"), 0)),
         "日筛状态": _to_text(daily_scan.get("status")) or "unknown",
         "日筛日期": _to_text(daily_scan.get("market_date")) or "",
@@ -322,7 +330,7 @@ def _build_close_report_card(
             "content": (
                 f"**今日结果**: bars {_to_int(today.get('ibkr_bars'), 0)} | "
                 f"signals {_to_int(today.get('ibkr_signals'), 0)} | "
-                f"orders {_to_int(today.get('orders'), 0)} | "
+                f"orders {_today_order_count(today)} | "
                 f"events {_to_int(today.get('events'), 0)}\n"
                 f"**今日标的**: {_target_summary_line(targets_payload)}\n"
                 f"**日筛**: {_to_text(daily_scan.get('status')) or 'unknown'}"
@@ -394,7 +402,7 @@ def _close_event_detail(
         "今日结果": (
             f"bars {_to_int(today.get('ibkr_bars'), 0)} | "
             f"signals {_to_int(today.get('ibkr_signals'), 0)} | "
-            f"orders {_to_int(today.get('orders'), 0)} | "
+            f"orders {_today_order_count(today)} | "
             f"events {_to_int(today.get('events'), 0)}"
         ),
         "今日标的": _target_summary_line(targets_payload),

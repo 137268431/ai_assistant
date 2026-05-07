@@ -249,7 +249,7 @@ class SystemScanSummaryTest(unittest.TestCase):
             time_strings=lambda: {"us": "2026-04-28 10:00:01", "cn": "2026-04-28 22:00:01", "date": "2026-04-28"},
             build_system_summary_payload=lambda environment, lite_mode=False: {
                 "status": "running",
-                "today": {"ibkr_bars": 10, "ibkr_signals": 2, "orders": 0},
+                "today": {"ibkr_bars": 10, "ibkr_signals": 2, "orders": 3, "main_orders": 1, "order_groups": 1},
                 "ibkr_compute": {"status": "running"},
                 "ibkr_runtime": {"status": "running"},
                 "daily_scan": {"status": "completed"},
@@ -273,6 +273,8 @@ class SystemScanSummaryTest(unittest.TestCase):
         self.assertEqual(status_code, 200)
         self.assertTrue(payload["ok"])
         detail = emitted[0]["detail"]
+        self.assertIn("orders 1", detail["数据"])
+        self.assertNotIn("orders 3", detail["数据"])
         self.assertIn("expired 1", detail["今日标的"])
         self.assertIn("no_signal 2", detail["今日标的"])
         self.assertIn("AAPL(多,已过期)", detail["今日交易标的"])

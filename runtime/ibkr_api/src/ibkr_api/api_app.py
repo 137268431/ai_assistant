@@ -280,6 +280,52 @@ def _pb_count_records(collection: str, filter_expr: str) -> int:
     return int((response.json() or {}).get("totalItems") or 0)
 
 
+def _pb_load_records_for_count(collection: str, filter_expr: str, *, max_pages: int = 100) -> list[dict[str, Any]]:
+    get_all_records = getattr(pb, "get_all_records", None)
+    if callable(get_all_records):
+        return list(get_all_records(collection, filter=filter_expr, max_pages=max_pages) or [])
+    rows: list[dict[str, Any]] = []
+    for page in range(1, max_pages + 1):
+        batch = list(pb.get_records(collection, filter=filter_expr, per_page=200, page=page) or [])
+        rows.extend(batch)
+        if len(batch) < 200:
+            break
+    return rows
+
+
+PROTECTIVE_ORDER_ROLES = {"take_profit", "stop_loss", "repair_tp", "repair_sl", "tp", "sl"}
+ENTRY_ORDER_TYPES = {"entry", "entryorder"}
+
+
+def _order_field(row: dict[str, Any], field: str) -> str:
+    extra = row.get("extra") if isinstance(row.get("extra"), dict) else {}
+    return str(row.get(field) or extra.get(field) or "").strip()
+
+
+def _order_group_count_key(row: dict[str, Any], index: int) -> str:
+    for field in ("trade_group_id", "entry_order_unique_id", "signal_id"):
+        value = _order_field(row, field)
+        if value:
+            return value
+    return str(row.get("id") or row.get("unique_id") or f"row-{index}").strip() or f"row-{index}"
+
+
+def _count_order_groups(rows: list[dict[str, Any]]) -> int:
+    return len({_order_group_count_key(row, index) for index, row in enumerate(rows or []) if isinstance(row, dict)})
+
+
+def _is_main_order_row(row: dict[str, Any]) -> bool:
+    role = _order_field(row, "role").lower()
+    order_type = _order_field(row, "order_type").lower()
+    if role in PROTECTIVE_ORDER_ROLES or order_type in {"takeprofit", "stoploss"}:
+        return False
+    return role == "entry" or order_type in ENTRY_ORDER_TYPES
+
+
+def _count_main_order_rows(rows: list[dict[str, Any]]) -> int:
+    return sum(1 for row in rows or [] if isinstance(row, dict) and _is_main_order_row(row))
+
+
 def _load_today_counts(environment: str, market_date: str) -> dict[str, Any]:
     runtime_environment = _normalize_environment(environment, "live")
     date_token = str(market_date or _time_strings()["date"]).strip() or _time_strings()["date"]
@@ -326,6 +372,16 @@ def _load_today_counts(environment: str, market_date: str) -> dict[str, Any]:
         except Exception as exc:
             counts[key] = 0
             errors[key] = str(exc)
+    try:
+        order_rows = _pb_load_records_for_count("orders", specs["orders"][1])
+        main_orders = _count_main_order_rows(order_rows)
+        counts["main_orders"] = main_orders
+        counts["order_groups"] = main_orders
+    except Exception as exc:
+        fallback_orders = int(counts.get("orders") or 0)
+        counts["main_orders"] = fallback_orders
+        counts["order_groups"] = fallback_orders
+        errors["order_groups"] = str(exc)
     if errors:
         counts["errors"] = errors
     return counts

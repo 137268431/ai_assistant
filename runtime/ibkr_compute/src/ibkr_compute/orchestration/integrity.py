@@ -37,7 +37,12 @@ class TradingServiceIntegrityMixin:
         target_from = str(date_from or market_date or self._bar_integrity_market_date()).strip()
         target_to = str(date_to or market_date or target_from).strip()
         requested_sessions = session_modes if session_modes is not None else ("regular", "extended")
-        active_trade_symbols = set(getattr(self, "_active_trade_symbols", set()) or set())
+        current_market_date = str(self._bar_integrity_market_date() or "").strip()
+        active_trade_symbols = (
+            set(getattr(self, "_active_trade_symbols", set()) or set())
+            if target_from == target_to == current_market_date
+            else set()
+        )
         rows = []
         try:
             with open_pb_sqlite(readonly=True, timeout=10.0) as conn:

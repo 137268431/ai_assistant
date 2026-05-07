@@ -803,6 +803,60 @@
             return totalPnL;
         }
 
+        function orderField(order, fieldName) {
+            if (!order || typeof order !== 'object') return '';
+            const direct = order[fieldName];
+            if (direct !== undefined && direct !== null && direct !== '') return direct;
+            const extra = order.extra && typeof order.extra === 'object' ? order.extra : {};
+            return extra[fieldName] ?? '';
+        }
+
+        function orderGroupKey(order, index) {
+            const fields = ['trade_group_id', 'entry_order_unique_id', 'signal_id'];
+            for (const fieldName of fields) {
+                const value = String(orderField(order, fieldName) || '').trim();
+                if (value) return value;
+            }
+            return String(orderField(order, 'id') || orderField(order, 'unique_id') || `row-${index}`).trim() || `row-${index}`;
+        }
+
+        function normalizeOrderDirection(value) {
+            const text = String(value || '').trim().toLowerCase();
+            if (text === 'long' || text === 'buy') return 'long';
+            if (text === 'short' || text === 'sell') return 'short';
+            return '';
+        }
+
+        function orderRole(order) {
+            return String(orderField(order, 'role') || orderField(order, 'order_type') || '').trim().toLowerCase();
+        }
+
+        function orderType(order) {
+            return String(orderField(order, 'order_type') || '').trim().toLowerCase();
+        }
+
+        function isMainOrder(order) {
+            const role = orderRole(order);
+            const type = orderType(order);
+            if (['take_profit', 'stop_loss', 'repair_tp', 'repair_sl', 'tp', 'sl'].includes(role)) return false;
+            if (['takeprofit', 'stoploss'].includes(type)) return false;
+            return role === 'entry' || ['entry', 'entryorder'].includes(type);
+        }
+
+        function mainOrderDirection(order) {
+            return normalizeOrderDirection(orderField(order, 'position_side') || orderField(order, 'direction'));
+        }
+
+        function summarizeMainOrdersByDirection(orders) {
+            const summary = { long: 0, short: 0 };
+            (orders || []).filter(isMainOrder).forEach((order) => {
+                const direction = mainOrderDirection(order);
+                if (direction === 'long') summary.long += 1;
+                if (direction === 'short') summary.short += 1;
+            });
+            return summary;
+        }
+
         function buildActivityUrl(activity) {
             const marketDate = getUsDateFromTime(activity.time);
             const params = {
@@ -829,13 +883,13 @@
                     symbol: signal.symbol,
                     direction: signal.direction || 'neutral'
                 })),
-                ...orders.slice(0, 4).map((order) => ({
+                ...orders.filter(isMainOrder).slice(0, 4).map((order) => ({
                     type: 'order',
-                    icon: order.order_type === 'Entry' ? '📋' : (order.order_type === 'TakeProfit' ? '✅' : '🛑'),
-                    title: `${order.symbol} ${order.order_type === 'Entry' ? '入场' : (order.order_type === 'TakeProfit' ? '止盈' : '止损')}`,
+                    icon: '📋',
+                    title: `${order.symbol} 入场`,
                     time: order.created,
                     symbol: order.symbol,
-                    direction: order.direction || 'neutral'
+                    direction: mainOrderDirection(order) || 'neutral'
                 }))
             ].sort((a, b) => new Date(b.time) - new Date(a.time)).slice(0, 6);
 
@@ -901,8 +955,9 @@
                 const longSignals = ibkrSignals.filter((item) => item.direction === 'long').length;
                 const shortSignals = ibkrSignals.filter((item) => item.direction === 'short').length;
                 const pendingReverseSignals = reverseSignals.filter((item) => !item.processed).length;
-                const longOrders = orders.filter((item) => item.direction === 'long').length;
-                const shortOrders = orders.filter((item) => item.direction === 'short').length;
+                const orderSummary = summarizeMainOrdersByDirection(orders);
+                const longOrders = orderSummary.long;
+                const shortOrders = orderSummary.short;
                 const longPositions = activePositions.filter((item) => item.direction === 'long').length;
                 const shortPositions = activePositions.filter((item) => item.direction === 'short').length;
                 const pnl = calculatePnL(orders);

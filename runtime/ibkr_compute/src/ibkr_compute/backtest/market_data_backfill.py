@@ -276,7 +276,8 @@ class BacktestMarketDataBackfillMixin:
         }
 
     def _format_backfill_start_time(self, anchor_ms: int) -> str:
-        return ms_to_et(anchor_ms).strftime("%Y%m%d-%H:%M:%S")
+        # IB API's dash format is interpreted as UTC; keep the anchor instant exact.
+        return datetime.fromtimestamp(int(anchor_ms) / 1000, timezone.utc).strftime("%Y%m%d-%H:%M:%S")
 
     def _backfill_symbol_history(
         self,
@@ -316,12 +317,18 @@ class BacktestMarketDataBackfillMixin:
         interval_ms = interval_to_ms(normalized_interval)
         period = "4d"
         bar_size = "5min"
-        anchor_ms = int(end_ms)
+        # Historical requests use an exclusive end boundary, so ask one bar past
+        # the final missing bar and then filter back to the requested window.
+        anchor_ms = int(end_ms) + interval_ms
         earliest_needed_ms = int(start_ms)
         batches = 0
         fetched_rows = []
         seen_bar_ms = set()
         started_at = time.monotonic()
+        raw_points = 0
+        raw_first_ms = 0
+        raw_last_ms = 0
+        request_start_times: list[str] = []
         batch_limit = min(
             MAX_BACKTEST_BACKFILL_MAX_BATCHES,
             max(1, int(max_batches or DEFAULT_BACKTEST_BACKFILL_MAX_BATCHES)),
@@ -362,6 +369,7 @@ class BacktestMarketDataBackfillMixin:
                 stop_reason = "symbol_timeout"
                 break
             start_time = self._format_backfill_start_time(anchor_ms)
+            request_start_times.append(start_time)
             try:
                 payload = self.data_backfill._request_history_json(
                     conid,
@@ -389,12 +397,17 @@ class BacktestMarketDataBackfillMixin:
                 break
 
             batches += 1
+            raw_points += len(bars)
             oldest_batch_ms = 0
             for bar in bars:
                 raw_bar_time = int(bar.get("t", 0) or 0)
                 bar_time_ms = raw_bar_time if raw_bar_time > 1_000_000_000_000 else raw_bar_time * 1000
                 if bar_time_ms <= 0:
                     continue
+                if raw_first_ms <= 0 or bar_time_ms < raw_first_ms:
+                    raw_first_ms = bar_time_ms
+                if raw_last_ms <= 0 or bar_time_ms > raw_last_ms:
+                    raw_last_ms = bar_time_ms
                 if oldest_batch_ms <= 0 or bar_time_ms < oldest_batch_ms:
                     oldest_batch_ms = bar_time_ms
                 if bar_time_ms in seen_bar_ms:
@@ -446,6 +459,10 @@ class BacktestMarketDataBackfillMixin:
             "ok": bool(fetched_rows),
             "reason": stop_reason or ("ok" if fetched_rows else "no_rows_fetched"),
             "fetched_rows": len(fetched_rows),
+            "raw_points": raw_points,
+            "raw_first_us": format_us_time(raw_first_ms) if raw_first_ms > 0 else "",
+            "raw_last_us": format_us_time(raw_last_ms) if raw_last_ms > 0 else "",
+            "request_start_times": request_start_times[:10],
             "batches": batches,
             "rows": fetched_rows,
             "elapsed_s": round(time.monotonic() - started_at, 3),

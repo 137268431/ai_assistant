@@ -27,6 +27,8 @@ def _empty_today_counts() -> dict[str, int]:
         "ibkr_signals": 0,
         "ibkr_indicators": 0,
         "orders": 0,
+        "main_orders": 0,
+        "order_groups": 0,
         "ibkr_bars": 0,
         "ibkr_targets": 0,
         "events": 0,
