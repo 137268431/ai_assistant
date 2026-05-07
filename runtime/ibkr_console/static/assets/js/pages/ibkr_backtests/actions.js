@@ -6,8 +6,10 @@
                     loadBatches(true),
                     loadRuns(true),
                 ]);
-                await refreshSelectedBatch(false);
-                await refreshSelectedRun(false);
+                await Promise.all([
+                    refreshSelectedBatch(false),
+                    refreshSelectedRun(false),
+                ]);
                 setPageContextMeta([
                     { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
                     { label: '批次', value: selectedBatchId || '未选择' },
@@ -225,6 +227,9 @@
             backtestTextExpandedState.batchVariants = false;
             renderBatches();
             renderBatchDetail();
+            await hydrateSelectedBatch(batchId);
+            renderBatches();
+            renderBatchDetail();
         }
 
         async function openRunFromBatch(runId) {
@@ -237,13 +242,20 @@
             selectedRunId = runId;
             selectedRun = runList.find((run) => run.id === runId) || null;
             selectedTargets = [];
-            selectedTargetsLoading = Boolean(selectedRun);
+            selectedTargetsLoading = Boolean(runId);
             backtestTextExpandedState.strategyParams = false;
             backtestTextExpandedState.runtimeExtra = false;
             renderRuns();
             renderMetrics();
             renderRunDetail();
+            const hydratePromise = hydrateSelectedRun(runId).then(() => {
+                if (selectedRunId !== runId) return;
+                renderRuns();
+                renderMetrics();
+                renderRunDetail();
+            });
             await Promise.all([
+                hydratePromise,
                 loadRunTrades(runId),
                 loadRunTargets(runId, { showToastOnError: true }),
             ]);

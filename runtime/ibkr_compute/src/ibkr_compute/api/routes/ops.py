@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from ibkr_compute.api.ops.views import (
     build_backtest_cancel_response,
+    build_backtest_batch_detail_response,
+    build_backtest_batches_response,
     build_backtest_cleanup_response,
     build_backtest_replay_response,
+    build_backtest_run_detail_response,
     build_backtest_run_response,
+    build_backtest_runs_response,
     build_backtest_status_response,
     build_bar_repair_status_response,
     build_history_rebuild_start_response,
@@ -41,6 +45,22 @@ def register_ops_routes(app):
     @app.route("/backtest/status", methods=["GET"])
     def backtest_status():
         return build_backtest_status_response()
+
+    @app.route("/backtest/runs", methods=["GET"])
+    def backtest_runs():
+        return build_backtest_runs_response()
+
+    @app.route("/backtest/run", methods=["GET"])
+    def backtest_run_detail():
+        return build_backtest_run_detail_response()
+
+    @app.route("/backtest/batches", methods=["GET"])
+    def backtest_batches():
+        return build_backtest_batches_response()
+
+    @app.route("/backtest/batch", methods=["GET"])
+    def backtest_batch_detail():
+        return build_backtest_batch_detail_response()
 
     @app.route("/backtest/cancel", methods=["POST"])
     def backtest_cancel():

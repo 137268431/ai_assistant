@@ -24,10 +24,193 @@ from ibkr_compute.api.route_runtime import (
 )
 from ibkr_compute.api.shared.service_status import get_service_status_snapshot
 from ibkr_compute.market.data_retention import DataRetention
+from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite
+
+
+BACKTEST_RUN_LIST_COLUMNS = [
+    "id",
+    "name",
+    "status",
+    "source_environment",
+    "environment",
+    "date_from",
+    "date_to",
+    "symbols",
+    "symbol_source",
+    "session_mode",
+    "created",
+    "updated",
+    "started_at",
+    "finished_at",
+    "duration_s",
+    "initial_capital",
+    "trade_count",
+    "net_pnl",
+    "total_return_pct",
+    "sharpe",
+    "max_drawdown_pct",
+    "win_rate",
+    "progress",
+    "error",
+    "benchmark_symbol",
+    "commission_per_share",
+    "slippage_bps",
+]
+BACKTEST_RUN_DETAIL_COLUMNS = [
+    "benchmark_symbol",
+    "commission_per_share",
+    "created",
+    "date_from",
+    "date_to",
+    "duration_s",
+    "environment",
+    "error",
+    "extra",
+    "finished_at",
+    "id",
+    "initial_capital",
+    "max_drawdown_pct",
+    "metrics",
+    "name",
+    "net_pnl",
+    "params",
+    "progress",
+    "session_mode",
+    "sharpe",
+    "slippage_bps",
+    "source_environment",
+    "started_at",
+    "status",
+    "symbol_source",
+    "symbols",
+    "total_return_pct",
+    "trade_count",
+    "updated",
+    "win_rate",
+]
+BACKTEST_BATCH_LIST_COLUMNS = [
+    "id",
+    "name",
+    "status",
+    "source_environment",
+    "environment",
+    "date_from",
+    "date_to",
+    "symbols",
+    "symbol_source",
+    "session_mode",
+    "created",
+    "updated",
+    "started_at",
+    "finished_at",
+    "variant_count",
+    "completed_count",
+    "best_run_id",
+    "best_variant_label",
+    "best_total_return_pct",
+    "best_sharpe",
+    "benchmark_symbol",
+    "error",
+]
+BACKTEST_BATCH_DETAIL_COLUMNS = [
+    "benchmark_symbol",
+    "best_run_id",
+    "best_sharpe",
+    "best_total_return_pct",
+    "best_variant_label",
+    "completed_count",
+    "created",
+    "date_from",
+    "date_to",
+    "environment",
+    "error",
+    "extra",
+    "finished_at",
+    "id",
+    "leaderboard",
+    "name",
+    "params",
+    "session_mode",
+    "source_environment",
+    "started_at",
+    "status",
+    "symbol_source",
+    "symbols",
+    "updated",
+    "variant_count",
+]
 
 
 def _status_code_for_result(result: dict, *, error_status: int = 409, ok_status: int = 200) -> int:
     return ok_status if result.get("ok") else error_status
+
+
+def _row_to_dict(row) -> dict:
+    if not row:
+        return {}
+    return {key: row[key] for key in row.keys()}
+
+
+def _select_columns(columns: list[str]) -> str:
+    return ", ".join(columns)
+
+
+def _query_backtest_collection(
+    *,
+    table: str,
+    columns: list[str],
+    environment: str,
+    limit: int,
+    order_column: str,
+) -> dict:
+    normalized_environment = str(environment or "live").strip().lower() or "live"
+    page_limit = max(1, min(100, int(limit or 40)))
+    order = "updated" if order_column == "updated" else "created"
+    with open_pb_sqlite(readonly=True, timeout=5.0) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT {_select_columns(columns)}
+            FROM {table}
+            WHERE source_environment = ?
+            ORDER BY {order} DESC
+            LIMIT ?
+            """,
+            (normalized_environment, page_limit),
+        ).fetchall()
+        total_row = conn.execute(
+            f"SELECT COUNT(*) AS total FROM {table} WHERE source_environment = ?",
+            (normalized_environment,),
+        ).fetchone()
+    items = [_row_to_dict(row) for row in rows]
+    return {
+        "ok": True,
+        "source": "sqlite",
+        "environment": normalized_environment,
+        "items": items,
+        "page": 1,
+        "perPage": page_limit,
+        "totalItems": int((total_row or {}).get("total", 0) if hasattr(total_row, "get") else total_row["total"] if total_row else 0),
+        "totalPages": 1,
+    }
+
+
+def _query_backtest_record(*, table: str, columns: list[str], record_id: str, id_label: str) -> tuple[dict, int]:
+    normalized_id = str(record_id or "").strip()
+    if not normalized_id:
+        return {"ok": False, "error": f"missing_{id_label}"}, 400
+    with open_pb_sqlite(readonly=True, timeout=5.0) as conn:
+        row = conn.execute(
+            f"""
+            SELECT {_select_columns(columns)}
+            FROM {table}
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (normalized_id,),
+        ).fetchone()
+    if not row:
+        return {"ok": False, "error": f"{id_label}_not_found", id_label: normalized_id}, 404
+    return {"ok": True, "source": "sqlite", "item": _row_to_dict(row)}, 200
 
 
 def build_history_rebuild_start_response():
@@ -95,6 +278,56 @@ def build_backtest_run_response():
 def build_backtest_status_response():
     app_mod = get_app_module()
     return jsonify(app_mod.backtest_service.status())
+
+
+def build_backtest_runs_response():
+    environment = get_requested_environment("live")
+    limit = get_query_arg_int("limit", 40, minimum=1, maximum=100)
+    order = get_query_arg_text("order", "created", lower=True)
+    return jsonify(
+        _query_backtest_collection(
+            table="ibkr_backtest_runs",
+            columns=BACKTEST_RUN_LIST_COLUMNS,
+            environment=environment,
+            limit=limit,
+            order_column=order,
+        )
+    )
+
+
+def build_backtest_run_detail_response():
+    payload, status_code = _query_backtest_record(
+        table="ibkr_backtest_runs",
+        columns=BACKTEST_RUN_DETAIL_COLUMNS,
+        record_id=get_query_arg_text("run_id") or get_query_arg_text("id"),
+        id_label="run_id",
+    )
+    return jsonify(payload), status_code
+
+
+def build_backtest_batches_response():
+    environment = get_requested_environment("live")
+    limit = get_query_arg_int("limit", 30, minimum=1, maximum=100)
+    order = get_query_arg_text("order", "created", lower=True)
+    return jsonify(
+        _query_backtest_collection(
+            table="ibkr_backtest_batches",
+            columns=BACKTEST_BATCH_LIST_COLUMNS,
+            environment=environment,
+            limit=limit,
+            order_column=order,
+        )
+    )
+
+
+def build_backtest_batch_detail_response():
+    payload, status_code = _query_backtest_record(
+        table="ibkr_backtest_batches",
+        columns=BACKTEST_BATCH_DETAIL_COLUMNS,
+        record_id=get_query_arg_text("batch_id") or get_query_arg_text("id"),
+        id_label="batch_id",
+    )
+    return jsonify(payload), status_code
 
 
 def build_backtest_cancel_response():

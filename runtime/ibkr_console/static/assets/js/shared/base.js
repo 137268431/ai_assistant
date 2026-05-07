@@ -367,6 +367,8 @@ async function apiFetch(collection, params = {}) {
   if (params.sort) queryParams.append('sort', params.sort);
   if (params.perPage) queryParams.append('perPage', params.perPage);
   if (params.page) queryParams.append('page', params.page);
+  if (params.fields) queryParams.append('fields', params.fields);
+  if (params.skipTotal != null) queryParams.append('skipTotal', params.skipTotal);
 
   const queryString = queryParams.toString();
   if (queryString) url += `?${queryString}`;

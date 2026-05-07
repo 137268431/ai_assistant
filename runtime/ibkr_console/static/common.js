@@ -1,15 +1,16 @@
 // Shared compatibility entrypoint.
 // Source-of-truth browser modules now live under /assets/js/shared and /assets/css.
 (function loadSharedCommonBundle() {
+  const sharedBundleVersion = '20260507-backtest-fastlist2';
   const sharedScriptPaths = [
-    '/assets/js/shared/runtime-config.js',
-    '/assets/js/shared/base.js',
-    '/assets/js/shared/ui-toast-nav.js',
-    '/assets/js/shared/ui-time-indicator.js',
-    '/assets/js/shared/ui-page.js',
-    '/assets/js/shared/ui-bridges.js',
-    '/assets/js/shared/ui-legacy.js',
-    '/assets/js/shared/ui.js'
+    `/assets/js/shared/runtime-config.js?v=${sharedBundleVersion}`,
+    `/assets/js/shared/base.js?v=${sharedBundleVersion}`,
+    `/assets/js/shared/ui-toast-nav.js?v=${sharedBundleVersion}`,
+    `/assets/js/shared/ui-time-indicator.js?v=${sharedBundleVersion}`,
+    `/assets/js/shared/ui-page.js?v=${sharedBundleVersion}`,
+    `/assets/js/shared/ui-bridges.js?v=${sharedBundleVersion}`,
+    `/assets/js/shared/ui-legacy.js?v=${sharedBundleVersion}`,
+    `/assets/js/shared/ui.js?v=${sharedBundleVersion}`
   ];
   const scriptTags = sharedScriptPaths.map((src) => `<script src="${src}"></script>`);
 
