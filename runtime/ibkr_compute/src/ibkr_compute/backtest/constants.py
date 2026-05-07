@@ -54,6 +54,12 @@ __all__ = [
     "DEFAULT_BACKTEST_BACKFILL_HISTORY_MAX_RETRIES",
     "MAX_BACKTEST_BACKFILL_HISTORY_MAX_RETRIES",
     "BACKTEST_PREFLIGHT_HEARTBEAT_SECONDS",
+    "DEFAULT_BACKTEST_RESOURCE_GUARD_ENABLED",
+    "DEFAULT_BACKTEST_RESOURCE_GUARD_MAX_LOAD",
+    "DEFAULT_BACKTEST_RESOURCE_GUARD_MIN_AVAILABLE_MB",
+    "DEFAULT_BACKTEST_RESOURCE_GUARD_MAX_RSS_MB",
+    "DEFAULT_BACKTEST_RESOURCE_GUARD_SLEEP_SECONDS",
+    "DEFAULT_BACKTEST_RESOURCE_GUARD_CHECK_STEPS",
     "SCAN_INTERVALS",
     "BACKTEST_IMPROVEMENT_NOTIFY_THRESHOLD",
     "BACKTEST_IMPROVEMENT_SHARPE_THRESHOLD",
@@ -98,6 +104,26 @@ def _env_int(name: str, default: int, *, minimum: int = 1, maximum: int = 500) -
     return max(int(minimum), min(int(maximum), value))
 
 
+def _env_float(name: str, default: float, *, minimum: float = 0.0, maximum: float = 1000000.0) -> float:
+    try:
+        value = float(os.environ.get(name, default))
+    except Exception:
+        value = float(default)
+    return max(float(minimum), min(float(maximum), value))
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return bool(default)
+    text = str(raw_value or "").strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return bool(default)
+
+
 def _env_symbol_tuple(name: str, default: str) -> tuple[str, ...]:
     items = []
     for chunk in str(os.environ.get(name, default) or "").replace("\n", ",").split(","):
@@ -136,6 +162,32 @@ MAX_BACKTEST_BACKFILL_HISTORY_TIMEOUT_SECONDS = 60
 DEFAULT_BACKTEST_BACKFILL_HISTORY_MAX_RETRIES = 1
 MAX_BACKTEST_BACKFILL_HISTORY_MAX_RETRIES = 5
 BACKTEST_PREFLIGHT_HEARTBEAT_SECONDS = 15
+DEFAULT_BACKTEST_RESOURCE_GUARD_ENABLED = _env_bool("BACKTEST_RESOURCE_GUARD_ENABLED", True)
+DEFAULT_BACKTEST_RESOURCE_GUARD_MAX_LOAD = _env_float("BACKTEST_RESOURCE_GUARD_MAX_LOAD", 4.0, minimum=0.0, maximum=128.0)
+DEFAULT_BACKTEST_RESOURCE_GUARD_MIN_AVAILABLE_MB = _env_int(
+    "BACKTEST_RESOURCE_GUARD_MIN_AVAILABLE_MB",
+    3500,
+    minimum=0,
+    maximum=65536,
+)
+DEFAULT_BACKTEST_RESOURCE_GUARD_MAX_RSS_MB = _env_int(
+    "BACKTEST_RESOURCE_GUARD_MAX_RSS_MB",
+    2500,
+    minimum=0,
+    maximum=65536,
+)
+DEFAULT_BACKTEST_RESOURCE_GUARD_SLEEP_SECONDS = _env_float(
+    "BACKTEST_RESOURCE_GUARD_SLEEP_SECONDS",
+    0.5,
+    minimum=0.0,
+    maximum=30.0,
+)
+DEFAULT_BACKTEST_RESOURCE_GUARD_CHECK_STEPS = _env_int(
+    "BACKTEST_RESOURCE_GUARD_CHECK_STEPS",
+    50,
+    minimum=1,
+    maximum=10000,
+)
 SCAN_INTERVALS = tuple(COMPUTE_INTERVALS)
 BACKTEST_IMPROVEMENT_NOTIFY_THRESHOLD = 0.05
 BACKTEST_IMPROVEMENT_SHARPE_THRESHOLD = 0.1

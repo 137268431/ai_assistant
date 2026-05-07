@@ -323,6 +323,40 @@ def normalize_request(payload: dict) -> dict:
         minimum=0,
         maximum=constants.MAX_BACKTEST_BACKFILL_HISTORY_MAX_RETRIES,
     )
+    resource_guard_enabled = normalize_bool(
+        payload.get("resource_guard_enabled"),
+        constants.DEFAULT_BACKTEST_RESOURCE_GUARD_ENABLED,
+    )
+    resource_guard_max_load = normalize_positive_float(
+        payload.get("resource_guard_max_load"),
+        constants.DEFAULT_BACKTEST_RESOURCE_GUARD_MAX_LOAD,
+        minimum=0.0,
+        maximum=128.0,
+    )
+    resource_guard_min_available_mb = normalize_positive_int(
+        payload.get("resource_guard_min_available_mb"),
+        default=constants.DEFAULT_BACKTEST_RESOURCE_GUARD_MIN_AVAILABLE_MB,
+        minimum=0,
+        maximum=65536,
+    )
+    resource_guard_max_rss_mb = normalize_positive_int(
+        payload.get("resource_guard_max_rss_mb"),
+        default=constants.DEFAULT_BACKTEST_RESOURCE_GUARD_MAX_RSS_MB,
+        minimum=0,
+        maximum=65536,
+    )
+    resource_guard_sleep_s = normalize_positive_float(
+        payload.get("resource_guard_sleep_s") or payload.get("resource_guard_sleep_seconds"),
+        constants.DEFAULT_BACKTEST_RESOURCE_GUARD_SLEEP_SECONDS,
+        minimum=0.0,
+        maximum=30.0,
+    )
+    resource_guard_check_steps = normalize_positive_int(
+        payload.get("resource_guard_check_steps"),
+        default=constants.DEFAULT_BACKTEST_RESOURCE_GUARD_CHECK_STEPS,
+        minimum=1,
+        maximum=10000,
+    )
     raw_params = payload.get("strategy_params") or payload.get("params") or {}
     strategy_params = normalize_strategy_params(raw_params)
     if payload.get("signal_window_max_bars") not in (None, ""):
@@ -388,6 +422,12 @@ def normalize_request(payload: dict) -> dict:
         "backfill_max_batches": backfill_max_batches,
         "backfill_history_timeout_s": backfill_history_timeout_s,
         "backfill_history_max_retries": backfill_history_max_retries,
+        "resource_guard_enabled": resource_guard_enabled,
+        "resource_guard_max_load": resource_guard_max_load,
+        "resource_guard_min_available_mb": resource_guard_min_available_mb,
+        "resource_guard_max_rss_mb": resource_guard_max_rss_mb,
+        "resource_guard_sleep_s": resource_guard_sleep_s,
+        "resource_guard_check_steps": resource_guard_check_steps,
         "params": {
             "strategy_params": strategy_params,
             "strategy_tag": strategy_tag,
@@ -403,6 +443,12 @@ def normalize_request(payload: dict) -> dict:
             "backfill_max_batches": backfill_max_batches,
             "backfill_history_timeout_s": backfill_history_timeout_s,
             "backfill_history_max_retries": backfill_history_max_retries,
+            "resource_guard_enabled": resource_guard_enabled,
+            "resource_guard_max_load": resource_guard_max_load,
+            "resource_guard_min_available_mb": resource_guard_min_available_mb,
+            "resource_guard_max_rss_mb": resource_guard_max_rss_mb,
+            "resource_guard_sleep_s": resource_guard_sleep_s,
+            "resource_guard_check_steps": resource_guard_check_steps,
             "requested_symbol_source": symbol_source,
             "historical_targets_replay": historical_targets_replay,
             "exclude_symbols": exclude_symbols,

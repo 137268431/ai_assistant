@@ -37,6 +37,120 @@ class BacktestPortfolioMixin:
         end = self._parse_hhmm_tuple(request.get("order_window_end_time"), DEFAULT_PORTFOLIO_ORDER_WINDOW_END)
         return start <= current <= end
 
+    def _read_backtest_resource_snapshot(self) -> dict:
+        load1 = 0.0
+        try:
+            load1 = float(os.getloadavg()[0])
+        except Exception:
+            load1 = 0.0
+
+        rss_mb = 0.0
+        try:
+            with open("/proc/self/status", "r", encoding="utf-8") as handle:
+                for line in handle:
+                    if line.startswith("VmRSS:"):
+                        rss_mb = float(line.split()[1]) / 1024.0
+                        break
+        except Exception:
+            rss_mb = 0.0
+
+        available_mb = 0.0
+        try:
+            with open("/proc/meminfo", "r", encoding="utf-8") as handle:
+                for line in handle:
+                    if line.startswith("MemAvailable:"):
+                        available_mb = float(line.split()[1]) / 1024.0
+                        break
+        except Exception:
+            available_mb = 0.0
+
+        return {
+            "load1": round(load1, 2),
+            "rss_mb": round(rss_mb, 1),
+            "available_mb": round(available_mb, 1),
+        }
+
+    def _resource_guard_reasons(self, request: dict, snapshot: dict) -> list[str]:
+        reasons: list[str] = []
+        max_load = self._coerce_float_value(
+            request.get("resource_guard_max_load"),
+            DEFAULT_BACKTEST_RESOURCE_GUARD_MAX_LOAD,
+        )
+        min_available = self._coerce_float_value(
+            request.get("resource_guard_min_available_mb"),
+            float(DEFAULT_BACKTEST_RESOURCE_GUARD_MIN_AVAILABLE_MB),
+        )
+        max_rss = self._coerce_float_value(
+            request.get("resource_guard_max_rss_mb"),
+            float(DEFAULT_BACKTEST_RESOURCE_GUARD_MAX_RSS_MB),
+        )
+        load1 = float(snapshot.get("load1", 0) or 0)
+        available_mb = float(snapshot.get("available_mb", 0) or 0)
+        rss_mb = float(snapshot.get("rss_mb", 0) or 0)
+        if max_load > 0 and load1 > max_load:
+            reasons.append(f"load1={load1:.2f}>{max_load:.2f}")
+        if min_available > 0 and available_mb > 0 and available_mb < min_available:
+            reasons.append(f"mem_available={available_mb:.0f}MB<{min_available:.0f}MB")
+        if max_rss > 0 and rss_mb > max_rss:
+            reasons.append(f"rss={rss_mb:.0f}MB>{max_rss:.0f}MB")
+        return reasons
+
+    def _maybe_throttle_backtest_resources(
+        self,
+        request: dict,
+        *,
+        step_index: int,
+        total_steps: int,
+        progress_context: dict | None = None,
+    ) -> bool:
+        if not self._normalize_bool(
+            request.get("resource_guard_enabled"),
+            DEFAULT_BACKTEST_RESOURCE_GUARD_ENABLED,
+        ):
+            return False
+        check_steps = max(1, int(request.get("resource_guard_check_steps") or DEFAULT_BACKTEST_RESOURCE_GUARD_CHECK_STEPS))
+        if int(step_index or 0) % check_steps != 0:
+            return False
+
+        snapshot = self._read_backtest_resource_snapshot()
+        reasons = self._resource_guard_reasons(request, snapshot)
+        if not reasons:
+            return False
+
+        gc.collect()
+        base_sleep_s = self._coerce_float_value(
+            request.get("resource_guard_sleep_s"),
+            DEFAULT_BACKTEST_RESOURCE_GUARD_SLEEP_SECONDS,
+        )
+        sleep_s = max(0.1, min(30.0, base_sleep_s))
+        max_load = self._coerce_float_value(request.get("resource_guard_max_load"), DEFAULT_BACKTEST_RESOURCE_GUARD_MAX_LOAD)
+        min_available = self._coerce_float_value(
+            request.get("resource_guard_min_available_mb"),
+            float(DEFAULT_BACKTEST_RESOURCE_GUARD_MIN_AVAILABLE_MB),
+        )
+        max_rss = self._coerce_float_value(request.get("resource_guard_max_rss_mb"), float(DEFAULT_BACKTEST_RESOURCE_GUARD_MAX_RSS_MB))
+        if (
+            (max_load > 0 and float(snapshot.get("load1", 0) or 0) > max_load * 1.5)
+            or (min_available > 0 and 0 < float(snapshot.get("available_mb", 0) or 0) < min_available * 0.75)
+            or (max_rss > 0 and float(snapshot.get("rss_mb", 0) or 0) > max_rss * 1.25)
+        ):
+            sleep_s = min(30.0, sleep_s * 3)
+
+        progress_value = 25 + int((max(0, int(step_index or 0)) / max(1, int(total_steps or 1))) * 60)
+        self._set_progress_context(
+            "running",
+            "streaming",
+            f"throttling portfolio backtest: {', '.join(reasons)}",
+            progress_value,
+            progress_context,
+        )
+        deadline = time.monotonic() + sleep_s
+        while time.monotonic() < deadline:
+            if self._cancel_event.is_set():
+                return True
+            time.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
+        return True
+
     def _portfolio_signal_expired(self, signal: dict, bar_or_ms: dict | int, request: dict) -> bool:
         if isinstance(bar_or_ms, dict):
             bar_ms = int(bar_or_ms.get("bar_time_ms", 0) or 0)
@@ -564,6 +678,7 @@ class BacktestPortfolioMixin:
         total_symbols = max(1, len(symbols))
         for completed_symbols, symbol in enumerate(symbols):
             if self._cancel_event.is_set():
+                self._clear_portfolio_working_sets(states, bars_by_time, signal_index, target_lookup)
                 raise BacktestCancelled()
             progress_value = 16 + int((completed_symbols / total_symbols) * 8)
             self._set_progress_context("running", "loading", f"loading {symbol}", progress_value, progress_context)
@@ -591,11 +706,26 @@ class BacktestPortfolioMixin:
                 bars.clear()
                 continue
             states[symbol] = state
-            for index, bar in enumerate(state["bars"]):
+            symbol_bars = state.get("bars") or []
+            bar_count = len(symbol_bars)
+            state["bar_count"] = bar_count
+            state["first_bar_us"] = symbol_bars[0].get("us_time", "") if symbol_bars else ""
+            state["last_bar_us"] = symbol_bars[-1].get("us_time", "") if symbol_bars else ""
+            state["last_bar"] = symbol_bars[-1] if symbol_bars else None
+            for index, bar in enumerate(symbol_bars):
                 bar_ms = int(bar.get("bar_time_ms", 0) or 0)
                 if bar_ms <= 0:
                     continue
+                bar["_backtest_is_last_bar"] = index >= bar_count - 1
+                bar["_backtest_next_day"] = (
+                    str(symbol_bars[index + 1].get("us_time", "") or "")[:10]
+                    if index < bar_count - 1
+                    else ""
+                )
                 bars_by_time.setdefault(bar_ms, []).append((symbol, index, bar))
+            if hasattr(symbol_bars, "clear"):
+                symbol_bars.clear()
+            state["bars"] = []
 
         if not states:
             result = {
@@ -643,8 +773,36 @@ class BacktestPortfolioMixin:
 
         for step_index, bar_ms in enumerate(bar_times):
             if self._cancel_event.is_set():
+                self._clear_portfolio_working_sets(states, bars_by_time, signal_index, target_lookup)
+                self._clear_backtest_row_buffers(
+                    all_trades,
+                    all_indicator_rows,
+                    all_signal_rows,
+                    all_reverse_rows,
+                    tv_symbol_reports,
+                    data_quality,
+                    skipped_symbols,
+                )
                 raise BacktestCancelled()
-            if step_index % 50 == 0 or step_index == total_steps - 1:
+            throttled = self._maybe_throttle_backtest_resources(
+                request,
+                step_index=step_index,
+                total_steps=total_steps,
+                progress_context=progress_context,
+            )
+            if self._cancel_event.is_set():
+                self._clear_portfolio_working_sets(states, bars_by_time, signal_index, target_lookup)
+                self._clear_backtest_row_buffers(
+                    all_trades,
+                    all_indicator_rows,
+                    all_signal_rows,
+                    all_reverse_rows,
+                    tv_symbol_reports,
+                    data_quality,
+                    skipped_symbols,
+                )
+                raise BacktestCancelled()
+            if not throttled and (step_index % 50 == 0 or step_index == total_steps - 1):
                 progress_value = 25 + int((step_index / total_steps) * 60)
                 self._set_progress_context("running", "streaming", f"streaming portfolio {step_index + 1}/{total_steps}", progress_value, progress_context)
             entries = sorted(bars_by_time.pop(bar_ms, []) or [], key=lambda item: item[0])
@@ -800,7 +958,8 @@ class BacktestPortfolioMixin:
                         active_state = "pending_entry" if preexisting_pending_signal else ("filled_position" if preexisting_open_position else "")
                         active_direction = str((active_target or {}).get("direction", "") or "").strip().lower()
                         new_direction = str(signal_payload.get("direction", "") or "").strip().lower()
-                        if active_target or index >= len(state["bars"]) - 1:
+                        is_last_bar = bool(bar.get("_backtest_is_last_bar"))
+                        if active_target or is_last_bar:
                             if active_target and active_direction and new_direction and new_direction != active_direction:
                                 reverse_row = self._build_backtest_reverse_signal_row(
                                     request,
@@ -851,11 +1010,11 @@ class BacktestPortfolioMixin:
                                 if active_direction and new_direction and new_direction != active_direction:
                                     drop_reason = "signal_conflict_active_target"
                                 self._mark_backtest_signal_status(signal_index, signal_id, "dropped", drop_reason)
-                            elif index >= len(state["bars"]) - 1:
+                            elif is_last_bar:
                                 self._mark_backtest_signal_status(signal_index, signal_id, "dropped", "last_bar_no_entry")
                         else:
-                            if force_flat_eod and index < len(state["bars"]) - 1:
-                                next_day = str(state["bars"][index + 1].get("us_time", "") or "")[:10]
+                            if force_flat_eod and not is_last_bar:
+                                next_day = str(bar.get("_backtest_next_day", "") or "")[:10]
                                 if next_day != current_symbol_day:
                                     self._mark_backtest_signal_status(signal_index, signal_id, "dropped", "force_flat_eod")
                                 else:
@@ -960,7 +1119,7 @@ class BacktestPortfolioMixin:
         for symbol in sorted(states.keys()):
             state = states[symbol]
             if state.get("open_position"):
-                last_bar = state["bars"][-1]
+                last_bar = state.get("last_bar") or state.get("previous_bar") or {}
                 trade = self._close_position(
                     state["open_position"],
                     last_bar,
@@ -977,11 +1136,11 @@ class BacktestPortfolioMixin:
 
             quality = {
                 "symbol": symbol,
-                "bar_count": len(state["bars"]),
+                "bar_count": int(state.get("bar_count", 0) or 0),
                 "gap_count": int(state.get("gap_count", 0) or 0),
                 "status": "ok",
-                "first_bar_us": state["bars"][0].get("us_time", "") if state["bars"] else "",
-                "last_bar_us": state["bars"][-1].get("us_time", "") if state["bars"] else "",
+                "first_bar_us": str(state.get("first_bar_us", "") or ""),
+                "last_bar_us": str(state.get("last_bar_us", "") or ""),
                 "market_bars": int(state.get("market_bars", 0) or 0),
                 "selected_trade_day_count": len(state.get("allowed_trade_days") or []),
             }

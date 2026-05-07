@@ -38,6 +38,7 @@ class BacktestSymbolRowsRowBuildersMixin:
                 collect=False,
             )
             state.pop("previous_bar", None)
+            state.pop("last_bar", None)
             state.pop("open_position", None)
             state.pop("pending_signal", None)
         self._clear_backtest_row_buffers(states, bars_by_time, signal_index, target_lookup)
