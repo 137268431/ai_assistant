@@ -31,6 +31,8 @@ __all__ = [
     "SIGNAL_PRIORITY_VALUES",
     "MANUAL_CONFIRM_MODE_VALUES",
     "DEFAULT_MAX_SYMBOLS",
+    "DEFAULT_WATCHLIST_MAX_SYMBOLS",
+    "MAX_BACKTEST_SYMBOLS",
     "DEFAULT_MAX_PAGES",
     "MAX_REPLAY_ROWS",
     "MAX_BATCH_VARIANTS",
@@ -65,6 +67,8 @@ __all__ = [
     "TV_SIGNAL_CORE_FIELDS",
     "TV_SIGNAL_EXTRA_FIELDS",
     "WATCHLIST_SYMBOL_ROLE_TRADE",
+    "WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR",
+    "DEFAULT_MARKET_MONITOR_SYMBOLS",
 ]
 
 BACKTEST_ENVIRONMENT = "backtest"
@@ -84,7 +88,33 @@ EXECUTION_MODEL_VALUES = {"symbol_independent", "portfolio_stream"}
 BORROW_LIMIT_MODE_VALUES = {"none", "fixed", "account_buying_power"}
 SIGNAL_PRIORITY_VALUES = {"daily_target_rank", "signal_quality", "liquidity"}
 MANUAL_CONFIRM_MODE_VALUES = {"auto", "delayed", "strict"}
+
+
+def _env_int(name: str, default: int, *, minimum: int = 1, maximum: int = 500) -> int:
+    try:
+        value = int(os.environ.get(name, default))
+    except Exception:
+        value = int(default)
+    return max(int(minimum), min(int(maximum), value))
+
+
+def _env_symbol_tuple(name: str, default: str) -> tuple[str, ...]:
+    items = []
+    for chunk in str(os.environ.get(name, default) or "").replace("\n", ",").split(","):
+        symbol = str(chunk or "").strip().upper()
+        if symbol and symbol not in items:
+            items.append(symbol)
+    return tuple(items)
+
+
 DEFAULT_MAX_SYMBOLS = 20
+MAX_BACKTEST_SYMBOLS = _env_int("BACKTEST_MAX_SYMBOLS", 200, minimum=1, maximum=500)
+DEFAULT_WATCHLIST_MAX_SYMBOLS = _env_int(
+    "BACKTEST_DEFAULT_WATCHLIST_MAX_SYMBOLS",
+    MAX_BACKTEST_SYMBOLS,
+    minimum=1,
+    maximum=MAX_BACKTEST_SYMBOLS,
+)
 DEFAULT_MAX_PAGES = 1200
 MAX_REPLAY_ROWS = 240
 MAX_BATCH_VARIANTS = 16
@@ -220,4 +250,5 @@ TV_SIGNAL_EXTRA_FIELDS = (
 
 
 WATCHLIST_SYMBOL_ROLE_TRADE = "trade"
-
+WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR = "market_monitor"
+DEFAULT_MARKET_MONITOR_SYMBOLS = _env_symbol_tuple("BACKTEST_MARKET_MONITOR_SYMBOLS", "QQQ,SPY,VIX")

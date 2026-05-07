@@ -8,14 +8,31 @@ from ibkr_compute.core.indicator_engine import DEFAULT_PARAMS
 from ibkr_compute.backtest import constants
 
 
-def parse_symbols(raw_symbols: str) -> list[str]:
+def parse_symbols(raw_symbols: Any) -> list[str]:
     items = []
-    for chunk in str(raw_symbols or "").replace("\n", ",").split(","):
-        symbol = str(chunk or "").strip().upper()
-        if not symbol or symbol in items:
-            continue
-        items.append(symbol)
+
+    def consume(value: Any) -> None:
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                consume(item)
+            return
+        for chunk in str(value or "").replace("\n", ",").split(","):
+            symbol = str(chunk or "").strip().upper()
+            if not symbol or symbol in items:
+                continue
+            items.append(symbol)
+
+    consume(raw_symbols)
     return items
+
+
+def merge_symbols(*symbol_groups: Any) -> list[str]:
+    merged = []
+    for group in symbol_groups:
+        for symbol in parse_symbols(group):
+            if symbol not in merged:
+                merged.append(symbol)
+    return merged
 
 
 def normalize_bool(raw_value: Any, default: bool = False) -> bool:
@@ -154,8 +171,19 @@ def normalize_request(payload: dict) -> dict:
     if symbol_source not in constants.SYMBOL_SOURCE_VALUES:
         symbol_source = "manual"
 
-    symbols = parse_symbols(payload.get("symbols") or payload.get("symbols_text") or "")
     benchmark_symbol = str(payload.get("benchmark_symbol") or "SPY").strip().upper() or "SPY"
+    exclude_market_monitors = not normalize_bool(payload.get("include_market_monitors"), False) and normalize_bool(
+        payload.get("exclude_market_monitors"),
+        True,
+    )
+    default_excludes = constants.DEFAULT_MARKET_MONITOR_SYMBOLS if exclude_market_monitors else ()
+    exclude_symbols = merge_symbols(default_excludes, payload.get("exclude_symbols"), payload.get("exclude_symbols_text"))
+    exclude_set = set(exclude_symbols)
+    symbols = [
+        symbol
+        for symbol in parse_symbols(payload.get("symbols") or payload.get("symbols_text") or "")
+        if symbol not in exclude_set
+    ]
     date_from = str(payload.get("date_from") or latest_complete_date).strip()
     date_to = str(payload.get("date_to") or date_from).strip()
     clamped_date_to = False
@@ -176,7 +204,18 @@ def normalize_request(payload: dict) -> dict:
     commission_per_share = max(0.0, float(payload.get("commission_per_share") or 0.005))
     slippage_bps = max(0.0, float(payload.get("slippage_bps") or 2.0))
     force_flat_eod = True
-    max_symbols = max(1, min(constants.DEFAULT_MAX_SYMBOLS, int(payload.get("max_symbols") or constants.DEFAULT_MAX_SYMBOLS)))
+    if effective_symbol_source == "watchlist" and not symbols:
+        default_max_symbols = constants.DEFAULT_WATCHLIST_MAX_SYMBOLS
+    elif symbols:
+        default_max_symbols = min(constants.MAX_BACKTEST_SYMBOLS, max(constants.DEFAULT_MAX_SYMBOLS, len(symbols)))
+    else:
+        default_max_symbols = constants.DEFAULT_MAX_SYMBOLS
+    max_symbols = normalize_positive_int(
+        payload.get("max_symbols"),
+        default=default_max_symbols,
+        minimum=1,
+        maximum=constants.MAX_BACKTEST_SYMBOLS,
+    )
     execution_model = str(payload.get("execution_model") or "portfolio_stream").strip().lower() or "portfolio_stream"
     if execution_model not in constants.EXECUTION_MODEL_VALUES:
         execution_model = "portfolio_stream"
@@ -304,6 +343,9 @@ def normalize_request(payload: dict) -> dict:
         "historical_targets_replay": historical_targets_replay,
         "symbols": symbols,
         "symbols_text": ",".join(symbols),
+        "exclude_symbols": exclude_symbols,
+        "exclude_symbols_text": ",".join(exclude_symbols),
+        "exclude_market_monitors": exclude_market_monitors,
         "benchmark_symbol": benchmark_symbol,
         "date_from": date_from,
         "date_to": date_to,
@@ -363,6 +405,8 @@ def normalize_request(payload: dict) -> dict:
             "backfill_history_max_retries": backfill_history_max_retries,
             "requested_symbol_source": symbol_source,
             "historical_targets_replay": historical_targets_replay,
+            "exclude_symbols": exclude_symbols,
+            "exclude_market_monitors": exclude_market_monitors,
             "execution_model": execution_model,
             "latest_complete_date": latest_complete_date,
             "date_to_clamped": clamped_date_to,

@@ -37,6 +37,7 @@
             const source = document.getElementById('symbolSource').value;
             const symbolsInput = document.getElementById('symbolsText');
             const help = document.getElementById('symbolsHelp');
+            const maxSymbolsInput = document.getElementById('maxSymbols');
             const supportsManualUniverse = source === 'manual' || source === 'daily_scan_replay';
             symbolsInput.disabled = !supportsManualUniverse;
             if (source === 'manual') {
@@ -49,8 +50,24 @@
                 help.textContent = '可选：填写后会作为历史盘前选股的底池；留空则按 watchlist 快照逐日回放。';
                 symbolsInput.placeholder = '可选：限制历史盘前扫描底池';
             } else {
-                help.textContent = '会读取 watchlist 股票池，并按 max_symbols 截断。';
+                help.textContent = '会读取 trade watchlist 股票池；QQQ/SPY/VIX 等 market_monitor 会自动排除。';
                 symbolsInput.placeholder = 'watchlist 模式会自动解析';
+            }
+            if (maxSymbolsInput) {
+                const sourceDefaults = {
+                    manual: 20,
+                    targets: 20,
+                    daily_scan_replay: 20,
+                    watchlist: 200,
+                };
+                const nextDefault = sourceDefaults[source] || 20;
+                const previousDefault = Number(maxSymbolsInput.dataset.defaultValue || 20);
+                const currentValue = Number(maxSymbolsInput.value || 0);
+                maxSymbolsInput.max = '200';
+                if (!currentValue || currentValue === previousDefault) {
+                    maxSymbolsInput.value = String(nextDefault);
+                }
+                maxSymbolsInput.dataset.defaultValue = String(nextDefault);
             }
         }
 

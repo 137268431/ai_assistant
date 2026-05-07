@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from .runtime_support import *
+from .watchlist_universe import merge_trade_watchlist_rows, request_excluded_symbols
 
 
 class BacktestMarketDataLoadingMixin:
     def _resolve_symbols(self, request: dict) -> list[str]:
-        symbols = list(request.get("symbols") or [])
+        excluded = request_excluded_symbols(request)
+        symbols = [str(symbol or "").strip().upper() for symbol in list(request.get("symbols") or [])]
+        symbols = [symbol for symbol in symbols if symbol and symbol not in excluded]
         if symbols:
             return symbols[: request["max_symbols"]]
 
@@ -21,7 +24,7 @@ class BacktestMarketDataLoadingMixin:
             seen = set()
             for row in rows:
                 symbol = str(row.get("symbol", "")).upper()
-                if not symbol or symbol in seen:
+                if not symbol or symbol in seen or symbol in excluded:
                     continue
                 seen.add(symbol)
                 resolved.append(symbol)
@@ -32,12 +35,11 @@ class BacktestMarketDataLoadingMixin:
         if source == "watchlist":
             rows = self.pb.get_all_records(
                 "watchlist",
-                filter=f'symbol_role = "{WATCHLIST_SYMBOL_ROLE_TRADE}" || symbol_role = ""',
                 sort="symbol",
-                max_pages=20,
+                max_pages=50,
             )
             resolved = []
-            for row in rows:
+            for row in merge_trade_watchlist_rows(rows, request):
                 symbol = str(row.get("symbol", "")).upper()
                 if not symbol or symbol in resolved:
                     continue

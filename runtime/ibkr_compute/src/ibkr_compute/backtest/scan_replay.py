@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .runtime_support import *
+from .watchlist_universe import merge_trade_watchlist_rows, request_excluded_symbols
 
 
 class BacktestScanReplayMixin:
@@ -18,40 +19,21 @@ class BacktestScanReplayMixin:
         return parsed.astimezone(ET)
 
     def _load_scan_universe(self, request: dict, as_of_date: str = "") -> list[dict]:
+        excluded = request_excluded_symbols(request)
         requested_symbols = list(request.get("symbols") or [])
         if requested_symbols:
-            return [{"symbol": symbol, "exchange": "", "environment": request.get("source_environment", "live")} for symbol in requested_symbols]
+            return [
+                {"symbol": symbol, "exchange": "", "environment": request.get("source_environment", "live")}
+                for symbol in requested_symbols
+                if str(symbol or "").strip().upper() not in excluded
+            ]
 
-        source_environment = str(request.get("source_environment") or "live").strip().lower() or "live"
         rows = self.pb.get_all_records(
             "watchlist",
-            filter=f'symbol_role = "{WATCHLIST_SYMBOL_ROLE_TRADE}" || symbol_role = ""',
             sort="symbol",
-            max_pages=20,
+            max_pages=50,
         )
-        merged = {}
-        priority = {"": 0, "global": 1, source_environment: 2}
-        applied = {}
-        as_of_end = None
-        if as_of_date:
-            as_of_end = datetime.strptime(as_of_date, "%Y-%m-%d").replace(tzinfo=ET) + timedelta(days=1) - timedelta(milliseconds=1)
-        for row in rows:
-            symbol = str(row.get("symbol", "") or "").strip().upper()
-            if not symbol:
-                continue
-            env = str(row.get("environment", "") or "").strip().lower()
-            rank = priority.get(env, -1)
-            if rank < 0:
-                continue
-            if as_of_end is not None:
-                created_at = self._parse_pb_datetime(row.get("created")) or self._parse_pb_datetime(row.get("created_us"))
-                if created_at and created_at > as_of_end:
-                    continue
-            if symbol in applied and applied[symbol] > rank:
-                continue
-            applied[symbol] = rank
-            merged[symbol] = row
-        return list(merged.values())
+        return merge_trade_watchlist_rows(rows, request, as_of_date=as_of_date)
 
     def _load_trading_dates(self, request: dict) -> list[str]:
         start_ms, end_ms = self._date_to_ms_range(request["date_from"], request["date_to"])
