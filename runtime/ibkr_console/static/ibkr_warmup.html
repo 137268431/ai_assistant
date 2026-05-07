@@ -15,19 +15,22 @@
     <div class="page-shell">
         <div id="pageBridge"></div>
         <section class="hero">
-            <div class="hero-head">
-                <div>
+            <div class="hero-layout">
+                <div class="hero-main">
                     <div class="hero-kicker">Startup Snapshot</div>
                     <div class="hero-title">当前启动与预热状态</div>
                     <div class="hero-copy" id="heroCopy">加载 warmup 状态中...</div>
+                    <div class="hero-chips" id="heroChips"></div>
                 </div>
-                <div class="hero-meta">
+                <aside class="hero-control" aria-label="Warmup controls">
                     <button class="refresh-btn page-refresh-trigger is-compact" id="warmupRefreshBtn" type="button" onclick="reloadWarmupPage()">↻ 手动刷新</button>
-                    <div class="hero-meta-line" id="refreshInfo">等待首次加载</div>
-                    <div class="hero-meta-line" id="sourceInfo">来源 /api/custom/ibkr/statusz?warmup=1</div>
-                </div>
+                    <div class="hero-control-meta">
+                        <div class="hero-meta-line" id="refreshInfo">等待首次加载</div>
+                        <div class="hero-meta-line hero-source" id="sourceInfo">来源 /api/custom/ibkr/statusz?warmup=1</div>
+                    </div>
+                </aside>
             </div>
-            <div class="hero-chips" id="heroChips"></div>
+            <div class="hero-readiness" id="heroReadiness" aria-live="polite"></div>
         </section>
         <div class="error-banner is-hidden" id="errorBanner"></div>
         <section class="metric-grid" id="metricGrid"></section>
@@ -245,6 +248,15 @@
         }
         function renderChip(label, tone) {
             return `<span class="hero-chip tone-${tone}"><span class="dot"></span>${escapeHtml(label)}</span>`;
+        }
+        function renderHeroReadinessCard(card) {
+            return `
+                <div class="hero-readiness-card ${escapeHtml(card.tone)}">
+                    <div class="hero-readiness-label">${escapeHtml(card.label)}</div>
+                    <div class="hero-readiness-value">${escapeHtml(card.value)}</div>
+                    <div class="hero-readiness-copy">${escapeHtml(card.copy)}</div>
+                </div>
+            `;
         }
         function normalizeSymbolList(values) {
             const source = Array.isArray(values) ? values : [values];
@@ -514,6 +526,7 @@
             const liveTradeLabel = live.available
                 ? `${live.ready_trade_symbols}/${live.trade_symbols_total}`
                 : (live.engine_snapshot_available ? 'WAITING' : 'N/A');
+            const snapshotTradeLabel = `${warmup.ready_trade_symbols}/${warmup.trade_symbols_total}`;
             const monitorLabel = live.available
                 ? `${live.ready_monitor_symbols}/${live.monitor_symbols_total}`
                 : `${warmup.ready_monitor_symbols}/${warmup.monitor_symbols_total}`;
@@ -529,6 +542,38 @@
                 renderChip(`Gate ${gateOpen ? 'OPEN' : 'CLOSED'}`, gateTone),
                 renderChip(`Env ${String(currentEnvironment).toUpperCase()}`, 'muted')
             ].join('');
+            document.getElementById('heroReadiness').innerHTML = [
+                {
+                    label: live.available ? 'Live Trade' : 'Snapshot Trade',
+                    value: live.available ? liveTradeLabel : snapshotTradeLabel,
+                    copy: live.available
+                        ? `phase ${String(live.phase || 'idle').toUpperCase()} · blocking ${live.blocking_pending_symbols_total}`
+                        : `snapshot ${String(warmup.phase || 'idle').toUpperCase()} · target ${warmup.target_date}`,
+                    tone: live.available ? liveTone : warmupTone
+                },
+                {
+                    label: 'Trading Gate',
+                    value: gateOpen ? 'OPEN' : 'CLOSED',
+                    copy: gateExpectedClosed ? 'no trade symbols · closed is expected' : gateReason,
+                    tone: gateTone
+                },
+                {
+                    label: live.available ? 'Live Monitor' : 'Snapshot Monitor',
+                    value: monitorLabel,
+                    copy: live.available
+                        ? `pending ${live.monitor_pending_symbols_total} · not gating`
+                        : `pending ${warmup.monitor_pending_symbols_total} · not gating`,
+                    tone: monitorTone
+                },
+                {
+                    label: 'Startup Snapshot',
+                    value: String(warmup.phase || 'idle').toUpperCase(),
+                    copy: live.available
+                        ? (live.snapshot_differs ? 'differs from live readiness' : 'matches live readiness')
+                        : `source ${describeLiveReadinessSource(live)}`,
+                    tone: live.available && live.snapshot_differs ? 'warn' : warmupTone
+                }
+            ].map(renderHeroReadinessCard).join('');
             if (live.available && live.snapshot_differs) {
                 document.getElementById('heroCopy').textContent =
                     `当前 live 与 startup snapshot 存在差异：trade ${live.ready_trade_symbols}/${live.trade_symbols_total} vs ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total}，monitor ${live.ready_monitor_symbols}/${live.monitor_symbols_total} vs ${warmup.ready_monitor_symbols}/${warmup.monitor_symbols_total}。Monitor 单独展示，不参与交易门判定。`;
