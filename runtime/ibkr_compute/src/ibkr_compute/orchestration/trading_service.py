@@ -359,6 +359,7 @@ class IBKRTradingService(
         self._last_session_authenticated = False
         self._quote_prev_close_cache = {}
         self._quote_prev_close_cache_date = ""
+        self._quote_resubscribe_at = {}
         self._warmup_signature = ()
         self._warmup_state = self._initial_warmup_state()
         self._daily_scan_state = self._load_daily_scan_state(self._market_date())

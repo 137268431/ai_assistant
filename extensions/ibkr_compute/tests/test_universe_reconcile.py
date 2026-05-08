@@ -1,5 +1,6 @@
 import sqlite3
 import sys
+import threading
 import unittest
 from pathlib import Path
 
@@ -28,6 +29,70 @@ class DummyUniverse(TradingServiceMarketUniverseMixin):
 
     def _now_iso(self) -> str:
         return "2026-04-16T10:05:00-04:00"
+
+
+class DummyConfig:
+    def __init__(self, values=None):
+        self.values = dict(values or {})
+
+    def get_int_for_environment(self, key, _environment, fallback):
+        return int(self.values.get(key, fallback))
+
+
+class DummyQuoteBook:
+    def __init__(self, stale_quotes):
+        self.stale_quotes = list(stale_quotes)
+        self.calls = []
+
+    def get_stale_quotes(self, symbols=None, max_age_s=600):
+        symbol_set = {str(symbol or "").strip().upper() for symbol in (symbols or [])}
+        self.calls.append({"symbols": sorted(symbol_set), "max_age_s": max_age_s})
+        return [
+            dict(item)
+            for item in self.stale_quotes
+            if not symbol_set or str(item.get("symbol") or "").strip().upper() in symbol_set
+        ]
+
+
+class DummyWsClient:
+    def __init__(self):
+        self.resubscribed = []
+
+    def resubscribe(self, conid):
+        self.resubscribed.append(int(conid))
+
+
+class DummyResubscribeUniverse(TradingServiceMarketUniverseMixin):
+    def __init__(self, stale_quotes=None):
+        self.config = DummyConfig(
+            {
+                "ibkr_realtime_quote_stale_resubscribe_sec": 600,
+                "ibkr_realtime_quote_resubscribe_cooldown_sec": 300,
+                "ibkr_ws_resubscribe_batch_size": 8,
+                "ibkr_ws_resubscribe_gap_ms": 0,
+            }
+        )
+        self.realtime_quote_book = DummyQuoteBook(stale_quotes or [])
+        self.ws_client = DummyWsClient()
+        self._quote_resubscribe_at = {}
+        self._subscription_lock = threading.Lock()
+        self._active_subscription_map = {
+            "SPY": 756733,
+            "AAPL": 265598,
+        }
+
+    def _market_ws_symbols(self):
+        return ["SPY", "QQQ", "VIX"]
+
+    def _normalize_symbol_list(self, values):
+        normalized = []
+        seen = set()
+        for value in values or []:
+            symbol = str(value or "").strip().upper()
+            if symbol and symbol not in seen:
+                seen.add(symbol)
+                normalized.append(symbol)
+        return normalized
 
 
 class UniversePrimeSignalSelectionTest(unittest.TestCase):
@@ -79,6 +144,46 @@ class UniversePrimeSignalSelectionTest(unittest.TestCase):
         self.assertEqual(result["evaluated"][0]["signal_id"], "AAPL_INVALID")
         self.assertFalse(result["evaluated"][0]["valid"])
         self.assertTrue(result["selected_signals"][0]["extra"]["universe_prime"])
+
+
+class UniverseRealtimeQuoteResubscribeTest(unittest.TestCase):
+    def test_repairs_only_stale_market_monitor_quotes_and_respects_cooldown(self):
+        universe = DummyResubscribeUniverse(
+            stale_quotes=[
+                {"symbol": "SPY", "quote_age_s": 701.0},
+                {"symbol": "AAPL", "quote_age_s": 900.0},
+            ]
+        )
+
+        repaired = universe._repair_stale_realtime_quote_subscriptions(
+            {
+                "SPY": 756733,
+                "AAPL": 265598,
+            },
+            monitor_symbols=universe._market_ws_symbols(),
+            reason="test",
+        )
+        repaired_again = universe._repair_stale_realtime_quote_subscriptions(
+            {
+                "SPY": 756733,
+                "AAPL": 265598,
+            },
+            monitor_symbols=universe._market_ws_symbols(),
+            reason="test",
+        )
+
+        self.assertEqual(["SPY"], repaired)
+        self.assertEqual([], repaired_again)
+        self.assertEqual([756733], universe.ws_client.resubscribed)
+        self.assertEqual(["QQQ", "SPY", "VIX"], universe.realtime_quote_book.calls[0]["symbols"])
+
+    def test_session_restore_force_resubscribes_active_market_data(self):
+        universe = DummyResubscribeUniverse()
+
+        repaired = universe._force_resubscribe_active_market_data(reason="session_restored")
+
+        self.assertEqual(["SPY", "AAPL"], repaired)
+        self.assertEqual([756733, 265598], universe.ws_client.resubscribed)
 
 
 class DeleteSymbolRuntimeDataTest(unittest.TestCase):

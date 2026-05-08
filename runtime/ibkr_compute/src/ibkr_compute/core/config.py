@@ -15,6 +15,8 @@ class Config:
         "ibkr_target_subscription_limit": "80",
         "ibkr_total_subscription_limit": "80",
         "ibkr_target_refresh_sec": "60",
+        "ibkr_realtime_quote_stale_resubscribe_sec": "600",
+        "ibkr_realtime_quote_resubscribe_cooldown_sec": "300",
         "ibkr_live_warmup_days": "14",
         "ibkr_warmup_indicator_intervals": "5m,15m,30m,1h,4h,1d",
         "ibkr_warmup_indicator_buffer_days": "5",

@@ -522,6 +522,147 @@ class TradingServiceMarketUniverseTargetsMixin:
                 run_id=run_id,
             )
 
+    def _quote_stale_resubscribe_threshold_sec(self) -> int:
+        service_mod = _service_mod()
+        return max(
+            60,
+            self.config.get_int_for_environment(
+                "ibkr_realtime_quote_stale_resubscribe_sec",
+                service_mod.ENVIRONMENT,
+                600,
+            ),
+        )
+
+    def _quote_resubscribe_cooldown_sec(self) -> int:
+        service_mod = _service_mod()
+        return max(
+            30,
+            self.config.get_int_for_environment(
+                "ibkr_realtime_quote_resubscribe_cooldown_sec",
+                service_mod.ENVIRONMENT,
+                300,
+            ),
+        )
+
+    def _resubscribe_realtime_conids(
+        self,
+        conid_map: dict,
+        *,
+        symbols=None,
+        reason: str = "manual",
+        force: bool = False,
+    ) -> list[str]:
+        service_mod = _service_mod()
+        normalized_symbols = self._normalize_symbol_list(symbols or list((conid_map or {}).keys()))
+        if not normalized_symbols:
+            return []
+
+        now = time.time()
+        cooldown_sec = 0 if force else self._quote_resubscribe_cooldown_sec()
+        resubscribe_at = getattr(self, "_quote_resubscribe_at", None)
+        if not isinstance(resubscribe_at, dict):
+            resubscribe_at = {}
+            self._quote_resubscribe_at = resubscribe_at
+
+        batch_size = max(
+            1,
+            self.config.get_int_for_environment("ibkr_ws_resubscribe_batch_size", service_mod.ENVIRONMENT, 8),
+        )
+        gap_ms = max(
+            0,
+            self.config.get_int_for_environment("ibkr_ws_resubscribe_gap_ms", service_mod.ENVIRONMENT, 150),
+        )
+        resubscribed = []
+        skipped_cooldown = []
+        for symbol in normalized_symbols:
+            try:
+                conid = int((conid_map or {}).get(symbol) or 0)
+            except (TypeError, ValueError):
+                conid = 0
+            if conid <= 0:
+                continue
+            previous_at = float(resubscribe_at.get(symbol) or 0.0)
+            if not force and previous_at > 0 and (now - previous_at) < cooldown_sec:
+                skipped_cooldown.append(symbol)
+                continue
+            try:
+                self.ws_client.resubscribe(conid)
+            except Exception:
+                service_mod.logger.warning(
+                    "Realtime quote resubscribe failed: symbol=%s conid=%s reason=%s",
+                    symbol,
+                    conid,
+                    reason,
+                    exc_info=True,
+                )
+                continue
+            resubscribe_at[symbol] = now
+            resubscribed.append(symbol)
+            if gap_ms > 0 and len(resubscribed) % batch_size == 0:
+                time.sleep(gap_ms / 1000.0)
+
+        if resubscribed:
+            service_mod.logger.warning(
+                "Realtime market data resubscribed: reason=%s force=%s symbols=%s skipped_cooldown=%s",
+                reason or "manual",
+                force,
+                ",".join(resubscribed),
+                ",".join(skipped_cooldown),
+            )
+        return resubscribed
+
+    def _force_resubscribe_active_market_data(self, reason: str = "session_restored", symbols=None) -> list[str]:
+        with self._subscription_lock:
+            active_map = dict(self._active_subscription_map)
+        normalized_symbols = self._normalize_symbol_list(symbols or list(active_map.keys()))
+        return self._resubscribe_realtime_conids(
+            active_map,
+            symbols=normalized_symbols,
+            reason=reason or "force",
+            force=True,
+        )
+
+    def _repair_stale_realtime_quote_subscriptions(
+        self,
+        conid_map: dict,
+        *,
+        monitor_symbols=None,
+        reason: str = "poll",
+    ) -> list[str]:
+        threshold_sec = self._quote_stale_resubscribe_threshold_sec()
+        symbols = self._normalize_symbol_list(monitor_symbols or list((conid_map or {}).keys()))
+        stale_quotes = self.realtime_quote_book.get_stale_quotes(symbols=symbols, max_age_s=threshold_sec)
+        stale_symbols = self._normalize_symbol_list([item.get("symbol") for item in stale_quotes])
+        if not stale_symbols:
+            return []
+        now = time.time()
+        cooldown_sec = self._quote_resubscribe_cooldown_sec()
+        resubscribe_at = getattr(self, "_quote_resubscribe_at", {})
+        eligible_symbols = [
+            symbol
+            for symbol in stale_symbols
+            if (now - float((resubscribe_at or {}).get(symbol) or 0.0)) >= cooldown_sec
+        ]
+        if not eligible_symbols:
+            return []
+        eligible_set = set(eligible_symbols)
+        _service_mod().logger.warning(
+            "Realtime quote stale; requesting resubscribe: threshold_s=%s reason=%s stale=%s",
+            threshold_sec,
+            reason or "poll",
+            ",".join(
+                f"{str(item.get('symbol') or '').upper()}:{item.get('quote_age_s')}s"
+                for item in stale_quotes
+                if str(item.get("symbol") or "").strip().upper() in eligible_set
+            ),
+        )
+        return self._resubscribe_realtime_conids(
+            conid_map,
+            symbols=eligible_symbols,
+            reason=f"stale_quote:{reason or 'poll'}",
+            force=False,
+        )
+
     def _apply_live_subscriptions(self, target_date: str, conid_map: dict, reason: str = "", trade_symbols: list[str] | None = None):
         service_mod = _service_mod()
         with self._subscription_lock:
@@ -587,6 +728,11 @@ class TradingServiceMarketUniverseTargetsMixin:
             len(conid_map),
             len(added_symbols),
             len(removed_conids),
+        )
+        self._repair_stale_realtime_quote_subscriptions(
+            conid_map,
+            monitor_symbols=self._market_ws_symbols(),
+            reason=reason or "refresh",
         )
         if subscriptions_changed or reason in {"startup", "session_restored"}:
             self._schedule_warmup(reason=reason or "subscriptions_changed", force=reason in {"startup", "session_restored"})

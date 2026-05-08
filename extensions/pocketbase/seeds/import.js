@@ -81,6 +81,8 @@ const configData = [
   cfg('ibkr_daily_scan_min_abs_day_change_pct', '1.0', '1.0', '日筛最小日涨跌%', '标的订阅', 619, '自动日筛硬门槛：当日涨跌幅绝对值至少达到该值'),
   cfg('ibkr_target_subscription_limit', '80', '80', 'Trade 订阅上限', '标的订阅', 620, 'trade 标的单独上限；实际 trade 可用预算会再与总订阅上限扣除 monitor 预留后的余额取更小值'),
   cfg('ibkr_total_subscription_limit', '80', '80', '总订阅上限', '标的订阅', 625, 'WS 总订阅上限，包含 trade targets 与 market monitor 订阅'),
+  cfg('ibkr_realtime_quote_stale_resubscribe_sec', '600', '600', 'Quote 自动重订阅阈值', '标的订阅', 627, '实时 quote 超过该秒数未更新时，运行态会强制 unsubscribe/subscribe 修复僵尸订阅'),
+  cfg('ibkr_realtime_quote_resubscribe_cooldown_sec', '300', '300', 'Quote 重订阅冷却秒数', '标的订阅', 628, '同一标的自动重订阅后的最小冷却秒数，避免 IBKR streaming 频繁抖动'),
   cfg('ibkr_market_ws_symbols', 'SPY,QQQ,VIX', 'SPY,QQQ,VIX', '市场监控标的', '标的订阅', 626, '系统级 WS 市场监控默认订阅标的；用于 monitor / runtime 状态页和行情链路基准观测'),
 
   cfg('ibkr_bar_publish_enabled', 'TRUE', 'TRUE', 'K线发布开关', '行情链路', 700, '控制实时 / 回补 bars 是否写入 PocketBase；关闭后页面与指标链路不会收到新 OHLCV'),

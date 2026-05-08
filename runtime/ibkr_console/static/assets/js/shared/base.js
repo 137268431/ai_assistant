@@ -404,6 +404,7 @@ async function apiFetch(collection, params = {}) {
 
 let realtimeQuoteCache = {};
 let realtimeQuoteCacheUpdatedAt = 0;
+const DEFAULT_REALTIME_QUOTE_MAX_AGE_S = 600;
 
 function normalizeRealtimeQuoteRecord(record) {
   if (!record || typeof record !== 'object') return null;
@@ -446,6 +447,16 @@ function getRealtimeQuote(symbol) {
   const normalized = String(symbol || '').trim().toUpperCase();
   if (!normalized) return null;
   return realtimeQuoteCache[normalized] || null;
+}
+
+function isFreshRealtimeQuote(quote, maxAgeS = DEFAULT_REALTIME_QUOTE_MAX_AGE_S) {
+  if (!quote || typeof quote !== 'object') return false;
+  if (quote.quote_fallback === true) return false;
+  const price = Number(quote.last_price);
+  if (!Number.isFinite(price) || price <= 0) return false;
+  const age = Number(quote.quote_age_s);
+  const boundedMaxAge = Math.max(0, Number(maxAgeS) || 0);
+  return Number.isFinite(age) && age <= boundedMaxAge;
 }
 
 function getRealtimeQuoteCacheAgeMs() {
@@ -524,7 +535,7 @@ function mergeIndicatorWithRealtimeQuote(indicator, realtimeQuoteOverride = null
   if (!indicator) return null;
   const merged = { ...indicator };
   const quote = realtimeQuoteOverride || getRealtimeQuote(merged.symbol);
-  if (!quote) {
+  if (!isFreshRealtimeQuote(quote)) {
     merged.display_close = merged.close;
     merged.display_day_change_pct = merged.day_change_pct;
     merged.display_prev_close_change_pct = merged.prev_close_change_pct;

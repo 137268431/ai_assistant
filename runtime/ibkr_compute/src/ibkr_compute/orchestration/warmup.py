@@ -631,6 +631,10 @@ class TradingServiceWarmupMixin:
             _service_mod().logger.info("IBKR session restored; scheduling warmup refresh")
             self._notify_session_recovered(previous_kind)
             self._schedule_warmup(reason="session_restored", force=True)
+            try:
+                self._force_resubscribe_active_market_data(reason="session_restored")
+            except Exception:
+                _service_mod().logger.warning("Session restore market data resubscribe failed", exc_info=True)
         elif not authenticated and self._last_session_authenticated:
             self._last_session_authenticated = False
             self._close_warmup_gate("session_unauthenticated")

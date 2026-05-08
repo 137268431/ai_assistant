@@ -22,6 +22,16 @@ class RealtimeQuoteBookTest(unittest.TestCase):
         self.assertEqual(quote["day_change"], 0.05)
         self.assertAlmostEqual(quote["day_change_pct"], 0.2875, places=4)
 
+    def test_get_stale_quotes_returns_only_requested_old_quotes(self):
+        book = RealtimeQuoteBook(conid_to_symbol={756733: "SPY", 265598: "AAPL"})
+        book.on_tick({"conid": 756733, "31": 733.33, "_updated": 1000})
+        book.on_tick({"conid": 265598, "31": 292.66, "_updated": 4000})
+
+        stale = book.get_stale_quotes(["SPY", "AAPL"], max_age_s=2, now_ts=5)
+
+        self.assertEqual([item["symbol"] for item in stale], ["SPY"])
+        self.assertEqual(stale[0]["quote_age_s"], 4.0)
+
 
 if __name__ == "__main__":
     unittest.main()

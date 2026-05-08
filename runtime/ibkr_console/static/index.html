@@ -1077,7 +1077,11 @@
 
         function selectMarketPriceSource({ quote, indicator, bar, dailyBars }) {
             const quotePrice = toNumericOrNull(quote?.last_price);
-            if (quotePrice != null && quotePrice > 0) {
+            const quoteAge = toNumericOrNull(quote?.quote_age_s);
+            const quoteIsFresh = typeof isFreshRealtimeQuote === 'function'
+                ? isFreshRealtimeQuote(quote)
+                : (quotePrice != null && quotePrice > 0 && quoteAge != null && quoteAge <= 600 && quote?.quote_fallback !== true);
+            if (quotePrice != null && quotePrice > 0 && quoteIsFresh) {
                 return {
                     kind: 'quote',
                     price: quotePrice,

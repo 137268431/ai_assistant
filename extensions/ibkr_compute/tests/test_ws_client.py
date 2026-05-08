@@ -72,6 +72,21 @@ class IBKRWebSocketClientTest(unittest.TestCase):
         self.assertEqual([], status["pending_conids"])
         self.assertEqual([], broker.subscribed_conids)
 
+    def test_resubscribe_refreshes_already_subscribed_conid(self):
+        broker = FakeBroker()
+        client = IBKRWebSocketClient(broker=broker)
+        client.start()
+        client.subscribe(756733)
+        broker.subscribed_conids.clear()
+
+        client.resubscribe(756733)
+
+        status = client.status()
+        self.assertEqual([756733], broker.unsubscribed_conids)
+        self.assertEqual([756733], broker.subscribed_conids)
+        self.assertEqual([756733], status["subscribed_conids"])
+        self.assertEqual(0, status["pending_count"])
+
 
 if __name__ == "__main__":
     unittest.main()

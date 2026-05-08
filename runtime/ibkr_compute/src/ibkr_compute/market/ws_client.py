@@ -118,6 +118,23 @@ class IBKRWebSocketClient:
         except Exception:
             logger.exception("Failed to unsubscribe %s", normalized)
 
+    def resubscribe(self, conid: int):
+        try:
+            normalized = int(conid)
+        except (TypeError, ValueError):
+            return
+        with self._state_lock:
+            self._pending_subscriptions.discard(normalized)
+            self._subscribed_conids.discard(normalized)
+        try:
+            self.broker.unsubscribe_market_data(normalized)
+        except Exception:
+            logger.exception("Failed to unsubscribe before resubscribe %s", normalized)
+        with self._state_lock:
+            self._pending_subscriptions.add(normalized)
+        if self._running:
+            self._send_subscription(normalized)
+
     def _send_subscription(self, conid: int):
         with self._state_lock:
             if conid in self._subscribed_conids:

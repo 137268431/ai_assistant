@@ -157,6 +157,28 @@ class RealtimeQuoteBook:
             ]
         return [self._build_public_quote(item) for item in items]
 
+    def get_stale_quotes(self, symbols=None, max_age_s: float = 600.0, now_ts: Optional[float] = None) -> list[dict]:
+        normalized_symbols = {
+            str(symbol or "").strip().upper()
+            for symbol in (symbols or [])
+            if str(symbol or "").strip()
+        }
+        current_ts = float(now_ts or time.time())
+        max_age = max(0.0, float(max_age_s or 0.0))
+        with self._lock:
+            items = [
+                dict(quote)
+                for symbol, quote in sorted(self._quotes.items())
+                if not normalized_symbols or symbol in normalized_symbols
+            ]
+        stale = []
+        for item in items:
+            public_quote = self._build_public_quote(item, now_ts=current_ts)
+            age_s = public_quote.get("quote_age_s")
+            if age_s is not None and age_s > max_age:
+                stale.append(public_quote)
+        return stale
+
     def status(self) -> dict:
         now_ts = time.time()
         with self._lock:
@@ -164,16 +186,19 @@ class RealtimeQuoteBook:
             tick_count = self._tick_count
             update_count = self._update_count
         stale_quotes = 0
+        stale_quote_symbols = []
         active_quotes = {}
         for quote in items:
             public_quote = self._build_public_quote(quote, now_ts=now_ts)
             age_s = public_quote.get("quote_age_s")
             if age_s is not None and age_s > 600:
                 stale_quotes += 1
+                stale_quote_symbols.append(str(public_quote.get("symbol") or "").upper())
             active_quotes[str(public_quote.get("symbol") or "").upper()] = public_quote
         return {
             "total_quotes": len(items),
             "stale_quotes": stale_quotes,
+            "stale_quote_symbols": sorted(symbol for symbol in stale_quote_symbols if symbol),
             "tick_count": tick_count,
             "update_count": update_count,
             "quotes": active_quotes,
