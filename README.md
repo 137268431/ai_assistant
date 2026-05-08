@@ -13,7 +13,10 @@ This repo is split by responsibility instead of by product history.
 - `ibkr_runtime`
   - Owns broker session, gateway launch, live bar ingest, runtime-control execution, and runtime-owned service boot under `runtime/ibkr_runtime/src/ibkr_runtime`.
 - `ibkr_compute`
-  - Owns compute, recompute, scan, backtest, history rebuild, and shared compute libraries under `runtime/ibkr_compute/src/ibkr_compute`.
+  - Owns compute, recompute, scan, history rebuild, data-quality jobs, and shared compute libraries under `runtime/ibkr_compute/src/ibkr_compute`.
+- `ibkr_backtest`
+  - Owns backtest run/replay/cleanup execution as the independent `ibkr-backtest` service.
+  - Reuses the shared compute source tree under `runtime/ibkr_compute/src/ibkr_compute`, but deploys and restarts separately from normal `ibkr-compute` and `ibkr-runtime`.
 - `pocketbase`
   - Owns collections, auth, admin, the minimal `pb_public` landing surface, and the empty `pb_hooks` placeholder directory; it no longer owns cron, business APIs, or runtime control.
 
@@ -46,6 +49,9 @@ This repo is split by responsibility instead of by product history.
   - Feature slices that now also split large builders into smaller service-local modules such as `snapshot_live_orders.py`, `snapshot_relations.py`, `today_targets_shared.py`, and `today_targets_workflow.py`.
 - `runtime/ibkr_api/src/ibkr_api/app_core`
   - Shared API composition helpers for config selection, request/response wrappers, value normalization, registrar assembly, presentation helpers, proxy forwarding, and state access so `api_app.py` can stay focused on assembly.
+- `ibkr-api` backtest compatibility routes
+  - `/api/custom/ibkr/backtest/*` routes are compatibility proxies to `IBKR_BACKTEST_INTERNAL_URL` (default `http://127.0.0.1:5105`), not to `IBKR_COMPUTE_INTERNAL_URL`.
+  - Non-backtest compute routes such as compute, scan, recompute, chart, history rebuild, and data-quality repair continue to target `IBKR_COMPUTE_INTERNAL_URL`.
 - Legacy root import paths like `ibkr_api.order_upsert` now resolve through `runtime/ibkr_api/src/ibkr_api/compat`, so the repo tree can stay folderized without keeping duplicate root files.
 
 ## Directories
@@ -65,6 +71,7 @@ This repo is split by responsibility instead of by product history.
   - `runtime/ibkr_scheduler/systemd/ibkr-scheduler.service`
   - `runtime/ibkr_runtime/systemd/ibkr-runtime.service`
   - `runtime/ibkr_compute/systemd/ibkr-compute.service`
+  - `runtime/ibkr_compute/systemd/ibkr-backtest.service`
   - `runtime/ib_gateway/systemd/ibkr-gateway.service`
 - `runtime/ibkr_console`
   - Standalone static console service and source-owned page bundle.
@@ -116,6 +123,10 @@ This repo is split by responsibility instead of by product history.
   - `runtime/ibkr_compute/src` -> `/opt/ibkr_compute/src`
   - `runtime/ibkr_compute/requirements.txt` -> `/opt/ibkr_compute/requirements.txt`
   - `runtime/ibkr_compute/systemd/ibkr-compute.service` -> `/etc/systemd/system/ibkr-compute.service`
+- IBKR Backtest runtime:
+  - Uses the same source package as `ibkr_compute` so backtest code stays shared.
+  - Deploy with `ops/deploy/deploy_ibkr_backtest_runtime.sh` when only backtest code or the backtest service unit changes.
+  - The deploy entrypoint restarts `ibkr-backtest` only; it must not restart normal `ibkr-compute` or `ibkr-runtime`.
 - IBKR API runtime:
   - `runtime/ibkr_api/src` -> `/opt/ibkr_api/src`
   - `runtime/ibkr_api/systemd/ibkr-api.service` -> `/etc/systemd/system/ibkr-api.service`
@@ -140,12 +151,14 @@ From the parent directory of this repo:
 ```bash
 bash ai_assistant/ops/deploy/deploy_pocketbase_runtime.sh
 bash ai_assistant/ops/deploy/deploy_ibkr_compute_runtime.sh
+bash ai_assistant/ops/deploy/deploy_ibkr_backtest_runtime.sh
 bash ai_assistant/ops/deploy/deploy_ibkr_stack.sh
 ```
 
 - `deploy_ibkr_stack.sh` is the clearer split-stack entrypoint; `deploy_runtime_all.sh` remains as a compatibility alias target used by older commands.
+- `deploy_ibkr_backtest_runtime.sh` is the backtest-only entrypoint: it publishes the shared compute source needed by backtests and restarts `ibkr-backtest` without bouncing normal compute or runtime.
 - `deploy_runtime_all.sh` / `deploy_ibkr_stack.sh` deploys `ibkr_compute` before `ibkr_runtime` on fresh hosts because the runtime bootstrap still imports shared modules from `/opt/ibkr_compute/src` during the compatibility phase.
-- With no `--file` / `--diff`, the default `scope` publish can touch the full split stack: `ibkr-compute`, `ibkr-api`, `ibkr-scheduler`, `ibkr-runtime`, `ibkr-gateway`, `ibkr-display`, `pocketbase`, `ibkr-console`, and the public proxy.
+- With no `--file` / `--diff`, the default `scope` publish can touch the full split stack: `ibkr-compute`, `ibkr-backtest`, `ibkr-api`, `ibkr-scheduler`, `ibkr-runtime`, `ibkr-gateway`, `ibkr-display`, `pocketbase`, `ibkr-console`, and the public proxy.
 - Use `--plan-only` first when unsure; it prints the exact files and systemd services that will be restarted.
 
 Deploy modes:
@@ -167,6 +180,7 @@ Small change, file-level publish:
 ```bash
 bash ai_assistant/ops/deploy/deploy_ibkr_compute_runtime.sh --mode files --file runtime/ibkr_api/src/ibkr_api/signals/ingest.py
 bash ai_assistant/ops/deploy/deploy_ibkr_compute_runtime.sh --mode files --file runtime/ibkr_compute/src/ibkr_compute/api/app.py
+bash ai_assistant/ops/deploy/deploy_ibkr_backtest_runtime.sh --mode files --file runtime/ibkr_compute/src/ibkr_compute/backtest/service.py
 bash ai_assistant/ops/deploy/deploy_ibkr_compute_runtime.sh --mode files --file runtime/ibkr_api/src/ibkr_api/api_app.py
 bash ai_assistant/ops/deploy/deploy_ibkr_compute_runtime.sh --mode files --file runtime/ibkr_scheduler/src/ibkr_scheduler/scheduler_app.py
 bash ai_assistant/ops/deploy/deploy_ibkr_runtime_service.sh --mode files --file runtime/ibkr_runtime/src/ibkr_runtime/server.py
@@ -232,7 +246,8 @@ python3 ai_assistant/ops/ibkr_console/validate/check_console_static_sync.py
 - PocketBase runtime business logic and cron ownership stay out of `pb_hooks`; the repo copy now only keeps an empty placeholder directory.
 - `runtime/pocketbase/pb_hooks` remains a bundled placeholder payload in normal PocketBase deploys, but `--hooks-only` is no longer advertised as a meaningful operational mode.
 - `runtime/ibkr_api/src`, `runtime/ibkr_scheduler/src`, and `runtime/ibkr_runtime/src` are the source-of-truth service-owned split-stack entrypoints.
-- `runtime/ibkr_compute/src` now holds shared compute/runtime libraries plus compatibility wrappers for legacy imports.
+- `runtime/ibkr_compute/src` now holds shared compute/backtest libraries plus compatibility wrappers for legacy imports.
+- `ibkr-backtest` deploys from the shared compute source tree, but it is an independent service boundary; backtest-only deploys restart `ibkr-backtest`, not `ibkr-compute` or `ibkr-runtime`.
 - `extensions/ibkr_api/tests`, `extensions/ibkr_scheduler/tests`, and `extensions/ibkr_runtime/tests` are the source-of-truth split-stack test homes; legacy `extensions/ibkr_compute/tests/*` wrappers stay only for compatibility.
 - `ops/ibkr_stack/*`, `ops/ibkr_console/*`, and `ops/ib_gateway/*` are the source-of-truth service/function-specific ops homes; legacy `ops/health`, `ops/ui`, `ops/validate`, and `ops/ibkr_compute/install` entrypoints stay only as wrappers.
 - Gateway binaries are not stored in this repo. Only the service contract is stored here.

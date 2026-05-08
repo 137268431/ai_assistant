@@ -16,6 +16,7 @@ Environment=PORT=5102
 Environment=IBKR_SERVICE_PROFILE=api
 Environment=IBKR_RUNTIME_MODE=remote
 Environment=IBKR_COMPUTE_INTERNAL_URL=http://127.0.0.1:5100
+Environment=IBKR_BACKTEST_INTERNAL_URL=http://127.0.0.1:5105
 Environment=IBKR_RUNTIME_INTERNAL_URL=http://127.0.0.1:5101
 Environment=IBKR_SCHEDULER_INTERNAL_URL=http://127.0.0.1:5103
 Restart=on-failure

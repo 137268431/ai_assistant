@@ -232,6 +232,30 @@ def normalize_request(payload: dict) -> dict:
         minimum=1,
         maximum=100,
     )
+    portfolio_require_target_direction_alignment = normalize_bool(
+        payload.get("portfolio_require_target_direction_alignment"),
+        False,
+    )
+    portfolio_max_target_rank = normalize_positive_int(
+        payload.get("portfolio_max_target_rank"),
+        default=0,
+        minimum=0,
+        maximum=constants.MAX_BACKTEST_SYMBOLS,
+    )
+    portfolio_min_target_score = normalize_positive_float(
+        payload.get("portfolio_min_target_score"),
+        default=0.0,
+        minimum=0.0,
+        maximum=1000000.0,
+    )
+    portfolio_block_mr_overextended_state = normalize_bool(
+        payload.get("portfolio_block_mr_overextended_state"),
+        False,
+    )
+    portfolio_block_early_trend_without_ema_touch = normalize_bool(
+        payload.get("portfolio_block_early_trend_without_ema_touch"),
+        False,
+    )
     signal_validity_minutes = normalize_positive_int(
         payload.get("signal_validity_minutes"),
         default=constants.DEFAULT_PORTFOLIO_SIGNAL_VALIDITY_MINUTES,
@@ -448,6 +472,11 @@ def normalize_request(payload: dict) -> dict:
         "borrow_limit_mode": borrow_limit_mode,
         "max_borrow_amount": max_borrow_amount,
         "position_limit_max": position_limit_max,
+        "portfolio_require_target_direction_alignment": portfolio_require_target_direction_alignment,
+        "portfolio_max_target_rank": portfolio_max_target_rank,
+        "portfolio_min_target_score": portfolio_min_target_score,
+        "portfolio_block_mr_overextended_state": portfolio_block_mr_overextended_state,
+        "portfolio_block_early_trend_without_ema_touch": portfolio_block_early_trend_without_ema_touch,
         "signal_validity_minutes": signal_validity_minutes,
         "cooldown_bars_after_sl": cooldown_bars_after_sl,
         "cooldown_bars_after_reverse": cooldown_bars_after_reverse,
@@ -544,6 +573,11 @@ def normalize_request(payload: dict) -> dict:
             "atr_stop_deviation_threshold": atr_stop_deviation_threshold,
             "atr_stop_min_change": atr_stop_min_change,
             "position_limit_max": position_limit_max,
+            "portfolio_require_target_direction_alignment": portfolio_require_target_direction_alignment,
+            "portfolio_max_target_rank": portfolio_max_target_rank,
+            "portfolio_min_target_score": portfolio_min_target_score,
+            "portfolio_block_mr_overextended_state": portfolio_block_mr_overextended_state,
+            "portfolio_block_early_trend_without_ema_touch": portfolio_block_early_trend_without_ema_touch,
             "signal_validity_minutes": signal_validity_minutes,
             "trade_window_start_time": trade_window_start_time,
             "trade_window_end_time": trade_window_end_time,

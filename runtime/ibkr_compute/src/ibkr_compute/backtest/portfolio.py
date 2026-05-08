@@ -395,6 +395,7 @@ class BacktestPortfolioMixin:
                 "reason": str(reason or ""),
                 "target_rank": int(candidate.get("target_rank", 999999) or 999999),
                 "target_score": round(float(candidate.get("target_score", 0) or 0), 4),
+                "target_direction_bias": str(candidate.get("target_direction_bias", "") or ""),
                 "signal_quality": round(float(candidate.get("signal_quality", 0) or 0), 4),
                 "requested_exposure": round(float(candidate.get("requested_exposure", 0) or 0), 4),
                 **(details or {}),
@@ -435,6 +436,7 @@ class BacktestPortfolioMixin:
             "current_day": current_day,
             "target_rank": int(target_meta.get("rank", 999999) or 999999),
             "target_score": float(target_meta.get("score", 0) or 0),
+            "target_direction_bias": str(target_meta.get("direction_bias", "") or "").strip().lower(),
             "signal_quality": signal_quality,
             "requested_exposure": requested_exposure,
         }
@@ -514,6 +516,96 @@ class BacktestPortfolioMixin:
         return trade
 
     def _accept_portfolio_candidate(self, ledger: dict, candidate: dict, signal_index: dict, request: dict) -> bool:
+        max_target_rank = int(request.get("portfolio_max_target_rank", 0) or 0)
+        target_rank = int(candidate.get("target_rank", 999999) or 999999)
+        if max_target_rank > 0 and target_rank > max_target_rank:
+            reason = "target_rank_over_limit"
+            details = {"portfolio_max_target_rank": max_target_rank, "portfolio_target_rank": target_rank}
+            self._mark_backtest_signal_status(signal_index, candidate.get("signal_id"), "skipped", reason, details)
+            self._portfolio_record_rejection(ledger, reason)
+            self._portfolio_record_candidate_sample(ledger, candidate, "skipped", reason, details)
+            return False
+
+        min_target_score = float(request.get("portfolio_min_target_score", 0) or 0)
+        target_score = float(candidate.get("target_score", 0) or 0)
+        if min_target_score > 0 and target_score < min_target_score:
+            reason = "target_score_below_min"
+            details = {
+                "portfolio_min_target_score": round(min_target_score, 4),
+                "portfolio_target_score": round(target_score, 4),
+            }
+            self._mark_backtest_signal_status(signal_index, candidate.get("signal_id"), "skipped", reason, details)
+            self._portfolio_record_rejection(ledger, reason)
+            self._portfolio_record_candidate_sample(ledger, candidate, "skipped", reason, details)
+            return False
+
+        if self._normalize_bool(request.get("portfolio_require_target_direction_alignment"), False):
+            target_direction = str(candidate.get("target_direction_bias", "") or "").strip().lower()
+            signal_payload = candidate.get("signal_payload") or {}
+            signal_direction = str(signal_payload.get("direction", "") or "").strip().lower()
+            if target_direction not in {"long", "short"}:
+                reason = "target_direction_missing"
+                details = {"portfolio_target_direction_bias": target_direction}
+                self._mark_backtest_signal_status(signal_index, candidate.get("signal_id"), "skipped", reason, details)
+                self._portfolio_record_rejection(ledger, reason)
+                self._portfolio_record_candidate_sample(ledger, candidate, "skipped", reason, details)
+                return False
+            if signal_direction != target_direction:
+                reason = "target_direction_mismatch"
+                details = {
+                    "portfolio_target_direction_bias": target_direction,
+                    "signal_direction": signal_direction,
+                }
+                self._mark_backtest_signal_status(signal_index, candidate.get("signal_id"), "skipped", reason, details)
+                self._portfolio_record_rejection(ledger, reason)
+                self._portfolio_record_candidate_sample(ledger, candidate, "skipped", reason, details)
+                return False
+
+        if self._normalize_bool(request.get("portfolio_block_mr_overextended_state"), False):
+            signal_payload = candidate.get("signal_payload") or {}
+            extra = self._parse_object(signal_payload.get("extra"))
+            signal_mode = str(extra.get("signal_mode") or "").strip().lower()
+            signal_name = str(signal_payload.get("signal") or "").strip().lower()
+            signal_direction = str(signal_payload.get("direction", "") or "").strip().lower()
+            if signal_mode == "mr" or signal_name.startswith("mr_") or signal_name.startswith("mr"):
+                crsi_state = str(extra.get("crsi_state") or "").strip().lower()
+                sd_zone = str(extra.get("sd_zone") or "").strip().lower()
+                states = {crsi_state, sd_zone}
+                if signal_direction == "long" and "overbought" in states:
+                    reason = "mr_long_overextended_state"
+                    details = {"signal_mode": signal_mode or "mr", "crsi_state": crsi_state, "sd_zone": sd_zone}
+                    self._mark_backtest_signal_status(signal_index, candidate.get("signal_id"), "skipped", reason, details)
+                    self._portfolio_record_rejection(ledger, reason)
+                    self._portfolio_record_candidate_sample(ledger, candidate, "skipped", reason, details)
+                    return False
+                if signal_direction == "short" and "oversold" in states:
+                    reason = "mr_short_overextended_state"
+                    details = {"signal_mode": signal_mode or "mr", "crsi_state": crsi_state, "sd_zone": sd_zone}
+                    self._mark_backtest_signal_status(signal_index, candidate.get("signal_id"), "skipped", reason, details)
+                    self._portfolio_record_rejection(ledger, reason)
+                    self._portfolio_record_candidate_sample(ledger, candidate, "skipped", reason, details)
+                    return False
+
+        if self._normalize_bool(request.get("portfolio_block_early_trend_without_ema_touch"), False):
+            signal_payload = candidate.get("signal_payload") or {}
+            extra = self._parse_object(signal_payload.get("extra"))
+            signal_mode = str(extra.get("signal_mode") or "").strip().lower()
+            signal_name = str(signal_payload.get("signal") or "").strip().lower()
+            if signal_mode == "trend" or signal_name.startswith("trend"):
+                dtp_phase = str(extra.get("dtp_phase") or "").strip().lower()
+                ema_touch_line = str(extra.get("ema_touch_line") or "").strip().lower()
+                if dtp_phase == "early" and ema_touch_line in {"", "none"}:
+                    reason = "trend_early_without_ema_touch"
+                    details = {
+                        "signal_mode": signal_mode or "trend",
+                        "dtp_phase": dtp_phase,
+                        "ema_touch_line": ema_touch_line,
+                    }
+                    self._mark_backtest_signal_status(signal_index, candidate.get("signal_id"), "skipped", reason, details)
+                    self._portfolio_record_rejection(ledger, reason)
+                    self._portfolio_record_candidate_sample(ledger, candidate, "skipped", reason, details)
+                    return False
+
         if str(request.get("manual_confirm_mode") or "auto") == "strict":
             reason = "manual_confirmation_required"
             self._mark_backtest_signal_status(signal_index, candidate.get("signal_id"), "skipped", reason)
@@ -1435,6 +1527,20 @@ class BacktestPortfolioMixin:
             "portfolio_risk": {
                 **risk_limits,
                 "position_limit_max": int(request.get("position_limit_max", DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX) or DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX),
+                "portfolio_require_target_direction_alignment": self._normalize_bool(
+                    request.get("portfolio_require_target_direction_alignment"),
+                    False,
+                ),
+                "portfolio_max_target_rank": int(request.get("portfolio_max_target_rank", 0) or 0),
+                "portfolio_min_target_score": self._coerce_float_value(request.get("portfolio_min_target_score"), 0.0),
+                "portfolio_block_mr_overextended_state": self._normalize_bool(
+                    request.get("portfolio_block_mr_overextended_state"),
+                    False,
+                ),
+                "portfolio_block_early_trend_without_ema_touch": self._normalize_bool(
+                    request.get("portfolio_block_early_trend_without_ema_touch"),
+                    False,
+                ),
                 "signal_validity_minutes": int(request.get("signal_validity_minutes", DEFAULT_PORTFOLIO_SIGNAL_VALIDITY_MINUTES) or DEFAULT_PORTFOLIO_SIGNAL_VALIDITY_MINUTES),
                 "trade_window_start_time": str(request.get("trade_window_start_time") or DEFAULT_PORTFOLIO_TRADE_WINDOW_START),
                 "trade_window_end_time": str(request.get("trade_window_end_time") or DEFAULT_PORTFOLIO_TRADE_WINDOW_END),

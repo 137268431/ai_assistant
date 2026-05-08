@@ -244,6 +244,195 @@ class BacktestPortfolioStreamTests(unittest.TestCase):
         self.assertEqual(profile["trade_dates"], 2)
         self.assertEqual(profile["selected_symbol_days"], 2)
 
+    def test_portfolio_target_filters_skip_low_rank_score_and_direction_mismatch(self):
+        start = datetime(2026, 4, 1, 9, 35, tzinfo=ET)
+        start_ms = int(start.timestamp() * 1000)
+        signal_ms = start_ms + 5 * 60 * 1000
+        symbols = ["AAPL", "NVDA", "MSFT", "TSLA"]
+        bars_by_symbol = {symbol: build_bars(symbol, start_ms) for symbol in symbols}
+        base_signal = {
+            "direction": "long",
+            "signal": "mr_L",
+            "entry": 100.0,
+            "stop_loss": 95.0,
+            "take_profit": 110.0,
+            "shares": 10,
+            "reason": "unit-test",
+            "extra": {},
+        }
+        FakeSignalGenerator.signals_by_symbol_ms = {
+            ("AAPL", signal_ms): {**base_signal, "rr": 1.5},
+            ("NVDA", signal_ms): {**base_signal, "rr": 1.5},
+            ("MSFT", signal_ms): {**base_signal, "rr": 1.5},
+            ("TSLA", signal_ms): {**base_signal, "direction": "short", "signal": "mr_U", "rr": 1.5},
+        }
+        self.service._load_symbol_bars = lambda symbol, *args, **kwargs: list(bars_by_symbol[symbol])
+        self.service._load_symbol_warmup_bars = lambda *args, **kwargs: []
+        self.service._load_daily_close_lookup = lambda *args, **kwargs: []
+        request = self._request(
+            symbols="AAPL,NVDA,MSFT,TSLA",
+            initial_capital=50000,
+            portfolio_require_target_direction_alignment=True,
+            portfolio_max_target_rank=1,
+            portfolio_min_target_score=5,
+        )
+        target_rows = [
+            {"symbol": "AAPL", "date": "2026-04-01", "rank": 1, "score": 9.0, "direction_bias": "long"},
+            {"symbol": "NVDA", "date": "2026-04-01", "rank": 2, "score": 9.0, "direction_bias": "long"},
+            {"symbol": "MSFT", "date": "2026-04-01", "rank": 1, "score": 4.0, "direction_bias": "long"},
+            {"symbol": "TSLA", "date": "2026-04-01", "rank": 1, "score": 8.0, "direction_bias": "long"},
+        ]
+
+        result = self.service._run_portfolio_stream_backtest(
+            symbols,
+            request,
+            allowed_trade_days_by_symbol={symbol: {"2026-04-01"} for symbol in symbols},
+            target_rows=target_rows,
+        )
+
+        signals = {row["symbol"]: row for row in result["signal_rows"]}
+        self.assertEqual(signals["AAPL"]["status"], "executed")
+        self.assertEqual(signals["NVDA"]["status"], "skipped")
+        self.assertEqual(signals["NVDA"]["extra"]["signal_status_reason"], "target_rank_over_limit")
+        self.assertEqual(signals["MSFT"]["status"], "skipped")
+        self.assertEqual(signals["MSFT"]["extra"]["signal_status_reason"], "target_score_below_min")
+        self.assertEqual(signals["TSLA"]["status"], "skipped")
+        self.assertEqual(signals["TSLA"]["extra"]["signal_status_reason"], "target_direction_mismatch")
+        self.assertEqual(result["portfolio_metrics"]["portfolio_rejection_counts"]["target_rank_over_limit"], 1)
+        self.assertEqual(result["portfolio_metrics"]["portfolio_rejection_counts"]["target_score_below_min"], 1)
+        self.assertEqual(result["portfolio_metrics"]["portfolio_rejection_counts"]["target_direction_mismatch"], 1)
+
+    def test_portfolio_blocks_overextended_mean_reversion_when_enabled(self):
+        start = datetime(2026, 4, 1, 9, 35, tzinfo=ET)
+        start_ms = int(start.timestamp() * 1000)
+        signal_ms = start_ms + 5 * 60 * 1000
+        symbols = ["AAPL", "NVDA", "MSFT"]
+        bars_by_symbol = {symbol: build_bars(symbol, start_ms) for symbol in symbols}
+        base_signal = {
+            "entry": 100.0,
+            "stop_loss": 95.0,
+            "take_profit": 110.0,
+            "shares": 10,
+            "reason": "unit-test",
+            "rr": 1.5,
+        }
+        FakeSignalGenerator.signals_by_symbol_ms = {
+            (
+                "AAPL",
+                signal_ms,
+            ): {
+                **base_signal,
+                "direction": "long",
+                "signal": "mr_sdLower",
+                "extra": {"signal_mode": "mr", "crsi_state": "overbought", "sd_zone": "normal"},
+            },
+            (
+                "NVDA",
+                signal_ms,
+            ): {
+                **base_signal,
+                "direction": "short",
+                "signal": "mr_sdUpper",
+                "extra": {"signal_mode": "mr", "crsi_state": "normal", "sd_zone": "oversold"},
+            },
+            (
+                "MSFT",
+                signal_ms,
+            ): {
+                **base_signal,
+                "direction": "long",
+                "signal": "mr_sdLower",
+                "extra": {"signal_mode": "mr", "crsi_state": "normal", "sd_zone": "normal"},
+            },
+        }
+        self.service._load_symbol_bars = lambda symbol, *args, **kwargs: list(bars_by_symbol[symbol])
+        self.service._load_symbol_warmup_bars = lambda *args, **kwargs: []
+        self.service._load_daily_close_lookup = lambda *args, **kwargs: []
+        request = self._request(
+            symbols="AAPL,NVDA,MSFT",
+            initial_capital=50000,
+            portfolio_block_mr_overextended_state=True,
+        )
+        target_rows = [
+            {"symbol": "AAPL", "date": "2026-04-01", "rank": 1, "score": 9.0, "direction_bias": "long"},
+            {"symbol": "NVDA", "date": "2026-04-01", "rank": 2, "score": 9.0, "direction_bias": "short"},
+            {"symbol": "MSFT", "date": "2026-04-01", "rank": 3, "score": 9.0, "direction_bias": "long"},
+        ]
+
+        result = self.service._run_portfolio_stream_backtest(
+            symbols,
+            request,
+            allowed_trade_days_by_symbol={symbol: {"2026-04-01"} for symbol in symbols},
+            target_rows=target_rows,
+        )
+
+        signals = {row["symbol"]: row for row in result["signal_rows"]}
+        self.assertEqual(signals["AAPL"]["status"], "skipped")
+        self.assertEqual(signals["AAPL"]["extra"]["signal_status_reason"], "mr_long_overextended_state")
+        self.assertEqual(signals["NVDA"]["status"], "skipped")
+        self.assertEqual(signals["NVDA"]["extra"]["signal_status_reason"], "mr_short_overextended_state")
+        self.assertEqual(signals["MSFT"]["status"], "executed")
+        self.assertEqual(result["portfolio_metrics"]["portfolio_rejection_counts"]["mr_long_overextended_state"], 1)
+        self.assertEqual(result["portfolio_metrics"]["portfolio_rejection_counts"]["mr_short_overextended_state"], 1)
+
+    def test_portfolio_blocks_early_trend_without_ema_touch_when_enabled(self):
+        start = datetime(2026, 4, 1, 9, 35, tzinfo=ET)
+        start_ms = int(start.timestamp() * 1000)
+        signal_ms = start_ms + 5 * 60 * 1000
+        symbols = ["AAPL", "MSFT"]
+        bars_by_symbol = {symbol: build_bars(symbol, start_ms) for symbol in symbols}
+        base_signal = {
+            "direction": "long",
+            "signal": "trend_sdUpper",
+            "entry": 100.0,
+            "stop_loss": 95.0,
+            "take_profit": 110.0,
+            "shares": 10,
+            "reason": "unit-test",
+            "rr": 1.5,
+        }
+        FakeSignalGenerator.signals_by_symbol_ms = {
+            (
+                "AAPL",
+                signal_ms,
+            ): {
+                **base_signal,
+                "extra": {"signal_mode": "trend", "dtp_phase": "early", "ema_touch_line": "none"},
+            },
+            (
+                "MSFT",
+                signal_ms,
+            ): {
+                **base_signal,
+                "extra": {"signal_mode": "trend", "dtp_phase": "confirmed", "ema_touch_line": "none"},
+            },
+        }
+        self.service._load_symbol_bars = lambda symbol, *args, **kwargs: list(bars_by_symbol[symbol])
+        self.service._load_symbol_warmup_bars = lambda *args, **kwargs: []
+        self.service._load_daily_close_lookup = lambda *args, **kwargs: []
+        request = self._request(
+            symbols="AAPL,MSFT",
+            initial_capital=50000,
+            portfolio_block_early_trend_without_ema_touch=True,
+        )
+        target_rows = [
+            {"symbol": "AAPL", "date": "2026-04-01", "rank": 1, "score": 9.0, "direction_bias": "long"},
+            {"symbol": "MSFT", "date": "2026-04-01", "rank": 2, "score": 9.0, "direction_bias": "long"},
+        ]
+
+        result = self.service._run_portfolio_stream_backtest(
+            symbols,
+            request,
+            allowed_trade_days_by_symbol={symbol: {"2026-04-01"} for symbol in symbols},
+            target_rows=target_rows,
+        )
+
+        signals = {row["symbol"]: row for row in result["signal_rows"]}
+        self.assertEqual(signals["AAPL"]["status"], "skipped")
+        self.assertEqual(signals["AAPL"]["extra"]["signal_status_reason"], "trend_early_without_ema_touch")
+        self.assertEqual(signals["MSFT"]["status"], "executed")
+        self.assertEqual(result["portfolio_metrics"]["portfolio_rejection_counts"]["trend_early_without_ema_touch"], 1)
+
     def test_account_buying_power_sets_borrow_limit_from_snapshot(self):
         service = BacktestService(
             None,

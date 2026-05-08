@@ -2,7 +2,9 @@
 
 ## Split Control Plane 边界
 
-- `ibkr_compute/api` 现在只负责 compute、scan、recompute、backtest、history rebuild 和共享兼容能力。
+- `ibkr_compute/api` 现在只负责 compute、scan、recompute、history rebuild、data-quality 和共享兼容能力。
+- backtest 代码仍复用 `runtime/ibkr_compute/src/ibkr_compute/backtest` 及共享 compute 源码，但运行边界是独立的 `ibkr-backtest` 服务；backtest-only 部署应走 `ops/deploy/deploy_ibkr_backtest_runtime.sh`，只重启 `ibkr-backtest`，不重启正常 `ibkr-compute` / `ibkr-runtime`。
+- `ibkr-api` 兼容代理中的 `/api/custom/ibkr/backtest/*` 应转发到 `IBKR_BACKTEST_INTERNAL_URL`（默认 `http://127.0.0.1:5105`）；非 backtest 的 compute / scan / recompute / chart / history rebuild / data-quality 路由继续走 `IBKR_COMPUTE_INTERNAL_URL`。
 - 控制面路由、webhook 落地页、signal/order/reverse 动作、system summary / monitor / scheduler 可见性、startup progress、Feishu-facing callback 现在归 `runtime/ibkr_api/src/ibkr_api`。
 - 新的控制面需求优先落到 `ibkr_api/system`、`ibkr_api/startup`、`ibkr_api/integrations`、`ibkr_api/callbacks`、`ibkr_api/tradingview`，以及 root `signal_*` / `order_*` / `reverse_*` 模块，而不是回堆到 `ibkr_compute/api`。
 

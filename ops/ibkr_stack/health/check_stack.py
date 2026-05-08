@@ -17,6 +17,7 @@ DEFAULT_REMOTE_PYTHON = os.environ.get("IBKR_REMOTE_PYTHON", f"{DEFAULT_IBKR_REM
 DEFAULT_DB_PATH = os.environ.get("PB_DB_PATH", f"{DEFAULT_PB_REMOTE_ROOT}/pb_data/data.db")
 DEFAULT_PB_LOCAL_URL = os.environ.get("PB_LOCAL_URL", "http://127.0.0.1:8090")
 DEFAULT_COMPUTE_LOCAL_URL = os.environ.get("IBKR_COMPUTE_LOCAL_URL", "http://127.0.0.1:5100")
+DEFAULT_BACKTEST_LOCAL_URL = os.environ.get("IBKR_BACKTEST_LOCAL_URL", "http://127.0.0.1:5105")
 DEFAULT_RUNTIME_LOCAL_URL = os.environ.get("IBKR_RUNTIME_LOCAL_URL", "http://127.0.0.1:5101")
 DEFAULT_API_LOCAL_URL = os.environ.get("IBKR_API_LOCAL_URL", "http://127.0.0.1:5102")
 DEFAULT_SCHEDULER_LOCAL_URL = os.environ.get("IBKR_SCHEDULER_LOCAL_URL", "http://127.0.0.1:5103")
@@ -119,6 +120,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--db-path", default=DEFAULT_DB_PATH)
     parser.add_argument("--pb-local-url", default=DEFAULT_PB_LOCAL_URL)
     parser.add_argument("--compute-local-url", default=DEFAULT_COMPUTE_LOCAL_URL)
+    parser.add_argument("--backtest-local-url", default=DEFAULT_BACKTEST_LOCAL_URL)
     parser.add_argument("--runtime-local-url", default=DEFAULT_RUNTIME_LOCAL_URL)
     parser.add_argument("--api-local-url", default=DEFAULT_API_LOCAL_URL)
     parser.add_argument("--scheduler-local-url", default=DEFAULT_SCHEDULER_LOCAL_URL)
@@ -164,6 +166,7 @@ def run_remote(args: argparse.Namespace) -> dict:
         "db_path": args.db_path,
         "pb_local_url": args.pb_local_url,
         "compute_local_url": args.compute_local_url,
+        "backtest_local_url": args.backtest_local_url,
         "runtime_local_url": args.runtime_local_url,
         "api_local_url": args.api_local_url,
         "scheduler_local_url": args.scheduler_local_url,
@@ -419,6 +422,8 @@ def add_public_checks(payload: dict, args: argparse.Namespace) -> dict:
         failures.append("public:topology:ibkr_runtime_missing")
     if "ibkr-compute" not in services:
         failures.append("public:topology:ibkr_compute_missing")
+    if "ibkr-backtest" not in services:
+        failures.append("public:topology:ibkr_backtest_missing")
     if "ibkr-api" not in services:
         failures.append("public:topology:ibkr_api_missing")
     if "ibkr-scheduler" not in services:

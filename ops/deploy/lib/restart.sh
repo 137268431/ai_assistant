@@ -11,6 +11,9 @@ service_wait_timeout_seconds() {
     ibkr-compute)
       printf '%s\n' "${DEPLOY_WAIT_TIMEOUT_IBKR_COMPUTE:-180}"
       ;;
+    ibkr-backtest)
+      printf '%s\n' "${DEPLOY_WAIT_TIMEOUT_IBKR_BACKTEST:-180}"
+      ;;
     ibkr-api)
       printf '%s\n' "${DEPLOY_WAIT_TIMEOUT_IBKR_API:-120}"
       ;;
@@ -39,6 +42,9 @@ service_healthcheck_url() {
       ;;
     ibkr-compute)
       printf '%s\n' "${DEPLOY_WAIT_URL_IBKR_COMPUTE:-http://127.0.0.1:5100/health}"
+      ;;
+    ibkr-backtest)
+      printf '%s\n' "${DEPLOY_WAIT_URL_IBKR_BACKTEST:-http://127.0.0.1:5105/health}"
       ;;
     ibkr-api)
       printf '%s\n' "${DEPLOY_WAIT_URL_IBKR_API:-http://127.0.0.1:5102/health}"
@@ -341,6 +347,78 @@ PY
   "
 }
 
+prepare_backtest_root_if_needed() {
+  local units=( "$@" )
+  local unit
+  local needs_backtest_root=0
+  local backtest_root="${IBKR_BACKTEST_REMOTE_ROOT:-/opt/ibkr_backtest}"
+  local compute_env_root="${IBKR_BACKTEST_ENV_SEED_ROOT:-${IBKR_DEPLOY_IBKR_ROOT:-/opt/ibkr_compute}}"
+  local backtest_client_id="${IBGW_BACKTEST_CLIENT_ID:-71}"
+
+  for unit in "${units[@]-}"; do
+    case "$unit" in
+      ibkr_backtest_src|ibkr_backtest_requirements|ibkr_backtest_systemd)
+        needs_backtest_root=1
+        break
+        ;;
+    esac
+  done
+
+  [[ "$needs_backtest_root" -eq 1 ]] || return 0
+
+  ssh_run "
+    set -e
+    mkdir -p '$backtest_root' '$backtest_root/src'
+    if [ ! -f '$backtest_root/.env' ] && [ -f '$compute_env_root/.env' ]; then
+      cp '$compute_env_root/.env' '$backtest_root/.env'
+    fi
+    if [ ! -f '$backtest_root/.env' ]; then
+      : > '$backtest_root/.env'
+    fi
+    python3 - '$backtest_root/.env' '$backtest_client_id' <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+backtest_client_id = str(sys.argv[2] or '71').strip() or '71'
+text = path.read_text(encoding='utf-8', errors='ignore') if path.exists() else ''
+updates = {
+    'PORT': '5105',
+    'IBKR_BACKTEST_PORT': '5105',
+    'IBKR_SERVICE_PROFILE': 'backtest',
+    'IBKR_RUNTIME_MODE': 'remote',
+    'IBKR_BACKTEST_INTERNAL_URL': 'http://127.0.0.1:5105',
+    'IBKR_COMPUTE_INTERNAL_URL': 'http://127.0.0.1:5100',
+    'IBKR_RUNTIME_INTERNAL_URL': 'http://127.0.0.1:5101',
+    'IBKR_API_INTERNAL_URL': 'http://127.0.0.1:5102',
+    'IBGW_BACKTEST_CLIENT_ID': backtest_client_id,
+}
+
+output_lines = []
+seen = set()
+for raw_line in text.splitlines():
+    line = raw_line.rstrip('\\n')
+    stripped = line.strip()
+    if not stripped or stripped.startswith('#') or '=' not in line:
+        output_lines.append(line)
+        continue
+    key, _ = line.split('=', 1)
+    key = key.strip()
+    if key in updates:
+        output_lines.append(f'{key}={updates[key]}')
+        seen.add(key)
+    else:
+        output_lines.append(line)
+
+for key, value in updates.items():
+    if key not in seen:
+        output_lines.append(f'{key}={value}')
+
+path.write_text('\\n'.join(output_lines).rstrip() + '\\n', encoding='utf-8')
+PY
+  "
+}
+
 prepare_api_root_if_needed() {
   local units=( "$@" )
   local unit
@@ -540,6 +618,7 @@ perform_post_actions_for_units() {
   local wait_groups=()
   prepare_pocketbase_root_if_needed "${units[@]}"
   prepare_runtime_root_if_needed "${units[@]}"
+  prepare_backtest_root_if_needed "${units[@]}"
   prepare_api_root_if_needed "${units[@]}"
   prepare_scheduler_root_if_needed "${units[@]}"
   prepare_console_root_if_needed "${units[@]}"

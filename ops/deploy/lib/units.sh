@@ -12,6 +12,9 @@ list_all_units_for_target() {
     ibkr|ibkr_compute)
       printf '%s\n' ibkr_src ibkr_requirements ibkr_systemd ibkr_api_src ibkr_api_systemd ibkr_scheduler_src ibkr_scheduler_systemd gateway_display_systemd gateway_systemd
       ;;
+    backtest|ibkr_backtest)
+      printf '%s\n' ibkr_backtest_src ibkr_backtest_requirements ibkr_backtest_systemd
+      ;;
     runtime|ibkr_runtime)
       printf '%s\n' ibkr_runtime_src ibkr_runtime_requirements ibkr_runtime_systemd gateway_display_systemd gateway_systemd
       ;;
@@ -19,6 +22,7 @@ list_all_units_for_target() {
       list_all_units_for_target pocketbase
       list_all_units_for_target ibkr_console
       list_all_units_for_target ibkr_compute
+      list_all_units_for_target ibkr_backtest
       list_all_units_for_target ibkr_runtime
       ;;
     *)
@@ -62,6 +66,14 @@ list_selected_units_for_target() {
       fi
       return 0
       ;;
+    backtest|ibkr_backtest)
+      printf '%s\n' ibkr_backtest_src
+      printf '%s\n' ibkr_backtest_requirements
+      if [[ "${SKIP_SYSTEMD:-0}" -eq 0 ]]; then
+        printf '%s\n' ibkr_backtest_systemd
+      fi
+      return 0
+      ;;
     runtime|ibkr_runtime)
       printf '%s\n' ibkr_runtime_src
       printf '%s\n' ibkr_runtime_requirements
@@ -78,6 +90,7 @@ list_selected_units_for_target() {
       list_selected_units_for_target pocketbase
       list_selected_units_for_target ibkr_console
       list_selected_units_for_target ibkr_compute
+      list_selected_units_for_target ibkr_backtest
       list_selected_units_for_target ibkr_runtime
       return 0
       ;;
@@ -98,6 +111,9 @@ unit_local_rel() {
     ibkr_src) printf '%s\n' runtime/ibkr_compute/src ;;
     ibkr_requirements) printf '%s\n' runtime/ibkr_compute/requirements.txt ;;
     ibkr_systemd) printf '%s\n' runtime/ibkr_compute/systemd/ibkr-compute.service ;;
+    ibkr_backtest_src) printf '%s\n' runtime/ibkr_compute/src ;;
+    ibkr_backtest_requirements) printf '%s\n' runtime/ibkr_compute/requirements.txt ;;
+    ibkr_backtest_systemd) printf '%s\n' runtime/ibkr_compute/systemd/ibkr-backtest.service ;;
     ibkr_api_src) printf '%s\n' runtime/ibkr_api/src ;;
     ibkr_api_systemd) printf '%s\n' runtime/ibkr_api/systemd/ibkr-api.service ;;
     ibkr_scheduler_src) printf '%s\n' runtime/ibkr_scheduler/src ;;
@@ -124,6 +140,9 @@ unit_remote_path() {
     ibkr_src) printf '%s\n' "$IBKR_REMOTE_ROOT/src" ;;
     ibkr_requirements) printf '%s\n' "$IBKR_REMOTE_ROOT/requirements.txt" ;;
     ibkr_systemd) printf '%s\n' "$SYSTEMD_DIR/ibkr-compute.service" ;;
+    ibkr_backtest_src) printf '%s\n' "${IBKR_BACKTEST_REMOTE_ROOT:-/opt/ibkr_backtest}/src" ;;
+    ibkr_backtest_requirements) printf '%s\n' "${IBKR_BACKTEST_REMOTE_ROOT:-/opt/ibkr_backtest}/requirements.txt" ;;
+    ibkr_backtest_systemd) printf '%s\n' "$SYSTEMD_DIR/ibkr-backtest.service" ;;
     ibkr_api_src) printf '%s\n' "${IBKR_API_REMOTE_ROOT:-/opt/ibkr_api}/src" ;;
     ibkr_api_systemd) printf '%s\n' "$SYSTEMD_DIR/ibkr-api.service" ;;
     ibkr_scheduler_src) printf '%s\n' "${IBKR_SCHEDULER_REMOTE_ROOT:-/opt/ibkr_scheduler}/src" ;;
@@ -141,10 +160,10 @@ unit_remote_path() {
 
 unit_type() {
   case "$1" in
-    pb_public|pb_hooks|pb_migrations|ibkr_console_static|ibkr_src|ibkr_api_src|ibkr_scheduler_src|ibkr_runtime_src)
+    pb_public|pb_hooks|pb_migrations|ibkr_console_static|ibkr_src|ibkr_backtest_src|ibkr_api_src|ibkr_scheduler_src|ibkr_runtime_src)
       printf '%s\n' dir
       ;;
-    pb_systemd|ibkr_requirements|ibkr_systemd|ibkr_api_systemd|ibkr_scheduler_systemd|ibkr_runtime_requirements|ibkr_runtime_systemd|ibkr_console_systemd|gateway_display_systemd|gateway_systemd)
+    pb_systemd|ibkr_requirements|ibkr_systemd|ibkr_backtest_requirements|ibkr_backtest_systemd|ibkr_api_systemd|ibkr_scheduler_systemd|ibkr_runtime_requirements|ibkr_runtime_systemd|ibkr_console_systemd|gateway_display_systemd|gateway_systemd)
       printf '%s\n' file
       ;;
     *)
@@ -158,10 +177,10 @@ unit_validator() {
     pb_public|pb_hooks|pb_migrations|ibkr_console_static)
       printf '%s\n' js_tree
       ;;
-    ibkr_src|ibkr_api_src|ibkr_scheduler_src|ibkr_runtime_src)
+    ibkr_src|ibkr_backtest_src|ibkr_api_src|ibkr_scheduler_src|ibkr_runtime_src)
       printf '%s\n' python_tree
       ;;
-    pb_systemd|ibkr_requirements|ibkr_systemd|ibkr_api_systemd|ibkr_scheduler_systemd|ibkr_runtime_requirements|ibkr_runtime_systemd|ibkr_console_systemd|gateway_display_systemd|gateway_systemd)
+    pb_systemd|ibkr_requirements|ibkr_systemd|ibkr_backtest_requirements|ibkr_backtest_systemd|ibkr_api_systemd|ibkr_scheduler_systemd|ibkr_runtime_requirements|ibkr_runtime_systemd|ibkr_console_systemd|gateway_display_systemd|gateway_systemd)
       printf '%s\n' none
       ;;
     *)
@@ -181,6 +200,9 @@ unit_family() {
     ibkr_src|ibkr_requirements|ibkr_systemd)
       printf '%s\n' ibkr_compute
       ;;
+    ibkr_backtest_src|ibkr_backtest_requirements|ibkr_backtest_systemd)
+      printf '%s\n' ibkr_backtest
+      ;;
     ibkr_api_src|ibkr_api_systemd)
       printf '%s\n' ibkr_api
       ;;
@@ -198,10 +220,10 @@ unit_family() {
 
 unit_category() {
   case "$1" in
-    pb_public|pb_hooks|ibkr_console_static|ibkr_src|ibkr_requirements|ibkr_api_src|ibkr_scheduler_src|ibkr_runtime_src|ibkr_runtime_requirements)
+    pb_public|pb_hooks|ibkr_console_static|ibkr_src|ibkr_requirements|ibkr_backtest_src|ibkr_backtest_requirements|ibkr_api_src|ibkr_scheduler_src|ibkr_runtime_src|ibkr_runtime_requirements)
       printf '%s\n' runtime
       ;;
-    pb_systemd|ibkr_systemd|ibkr_api_systemd|ibkr_scheduler_systemd|ibkr_runtime_systemd|ibkr_console_systemd|gateway_display_systemd|gateway_systemd)
+    pb_systemd|ibkr_systemd|ibkr_backtest_systemd|ibkr_api_systemd|ibkr_scheduler_systemd|ibkr_runtime_systemd|ibkr_console_systemd|gateway_display_systemd|gateway_systemd)
       printf '%s\n' systemd
       ;;
     pb_migrations)
@@ -220,6 +242,9 @@ unit_restart_group() {
       ;;
     ibkr_src|ibkr_requirements|ibkr_systemd)
       printf '%s\n' ibkr-compute
+      ;;
+    ibkr_backtest_src|ibkr_backtest_requirements|ibkr_backtest_systemd)
+      printf '%s\n' ibkr-backtest
       ;;
     ibkr_api_src|ibkr_api_systemd)
       printf '%s\n' ibkr-api
@@ -256,6 +281,9 @@ unit_enable_service() {
     ibkr_systemd)
       printf '%s\n' ibkr-compute
       ;;
+    ibkr_backtest_systemd)
+      printf '%s\n' ibkr-backtest
+      ;;
     ibkr_api_systemd)
       printf '%s\n' ibkr-api
       ;;
@@ -281,13 +309,13 @@ unit_enable_service() {
 }
 
 unit_needs_pip_install() {
-  [[ "$1" == "ibkr_requirements" || "$1" == "ibkr_runtime_requirements" ]] && return 0
+  [[ "$1" == "ibkr_requirements" || "$1" == "ibkr_backtest_requirements" || "$1" == "ibkr_runtime_requirements" ]] && return 0
   return 1
 }
 
 unit_needs_daemon_reload() {
   case "$1" in
-    pb_systemd|ibkr_systemd|ibkr_runtime_systemd|gateway_display_systemd|gateway_systemd)
+    pb_systemd|ibkr_systemd|ibkr_backtest_systemd|ibkr_runtime_systemd|gateway_display_systemd|gateway_systemd)
       return 0
       ;;
     ibkr_api_systemd|ibkr_scheduler_systemd|ibkr_console_systemd)
@@ -313,11 +341,25 @@ unit_optional_flag() {
   esac
 }
 
+is_backtest_owned_path() {
+  case "$1" in
+    runtime/ibkr_compute/src/ibkr_compute/backtest/*|runtime/ibkr_compute/src/ibkr_compute/api/backtest_app.py)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 unit_matches_path() {
   local unit="$1"
   local rel_path="$2"
   local local_rel
   local_rel="$(unit_local_rel "$unit")"
+  if [[ "$unit" == "ibkr_src" ]] && is_backtest_owned_path "$rel_path"; then
+    return 1
+  fi
   if [[ "$(unit_type "$unit")" == "dir" ]]; then
     case "$rel_path" in
       "$local_rel"/*)

@@ -203,10 +203,10 @@ auto_mode_for_target() {
   for unit in "${CANDIDATE_UNITS[@]}"; do
     append_unique families "$(unit_family "$unit")"
     case "$unit" in
-      ibkr_requirements|ibkr_runtime_requirements)
+      ibkr_requirements|ibkr_backtest_requirements|ibkr_runtime_requirements)
         append_unique AUTO_REASONS "requirements changed"
         ;;
-      ibkr_systemd|ibkr_runtime_systemd|gateway_display_systemd|gateway_systemd)
+      ibkr_systemd|ibkr_backtest_systemd|ibkr_runtime_systemd|gateway_display_systemd|gateway_systemd)
         append_unique AUTO_REASONS "systemd changed"
         ;;
       pb_migrations)
@@ -262,6 +262,11 @@ expand_implicit_package_units() {
   if is_unit_selected_for_target "$target" "ibkr_requirements"; then
     if array_contains "ibkr_src" "${PLAN_UNITS[@]-}" || array_contains "ibkr_systemd" "${PLAN_UNITS[@]-}" || array_contains "ibkr_api_src" "${PLAN_UNITS[@]-}" || array_contains "ibkr_api_systemd" "${PLAN_UNITS[@]-}" || array_contains "ibkr_scheduler_src" "${PLAN_UNITS[@]-}" || array_contains "ibkr_scheduler_systemd" "${PLAN_UNITS[@]-}"; then
       append_unique PLAN_UNITS "ibkr_requirements"
+    fi
+  fi
+  if is_unit_selected_for_target "$target" "ibkr_backtest_requirements"; then
+    if array_contains "ibkr_backtest_src" "${PLAN_UNITS[@]-}" || array_contains "ibkr_backtest_systemd" "${PLAN_UNITS[@]-}"; then
+      append_unique PLAN_UNITS "ibkr_backtest_requirements"
     fi
   fi
   if is_unit_selected_for_target "$target" "ibkr_runtime_requirements"; then

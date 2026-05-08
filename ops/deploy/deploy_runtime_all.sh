@@ -6,6 +6,7 @@ AI_ASSISTANT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 LIB_ROOT="$SCRIPT_DIR/lib"
 POCKETBASE_SCRIPT="$SCRIPT_DIR/deploy_pocketbase_runtime.sh"
 COMPUTE_SCRIPT="$SCRIPT_DIR/deploy_ibkr_compute_runtime.sh"
+BACKTEST_SCRIPT="$SCRIPT_DIR/deploy_ibkr_backtest_runtime.sh"
 RUNTIME_SCRIPT="$SCRIPT_DIR/deploy_ibkr_runtime_service.sh"
 CONSOLE_SCRIPT="$SCRIPT_DIR/deploy_ibkr_console.sh"
 PUBLIC_PROXY_SCRIPT="$SCRIPT_DIR/deploy_ibkr_public_proxy.sh"
@@ -32,6 +33,7 @@ SKIP_SYSTEMD=0
 SKIP_REQUIREMENTS=0
 PB_REMOTE_ROOT="${PB_REMOTE_ROOT:-${IBKR_DEPLOY_PB_ROOT:-/opt/pocketbase}}"
 IBKR_REMOTE_ROOT="${IBKR_REMOTE_ROOT:-${IBKR_DEPLOY_IBKR_ROOT:-/opt/ibkr_compute}}"
+IBKR_BACKTEST_REMOTE_ROOT="${IBKR_BACKTEST_REMOTE_ROOT:-${IBKR_DEPLOY_BACKTEST_ROOT:-/opt/ibkr_backtest}}"
 IBKR_RUNTIME_REMOTE_ROOT="${IBKR_RUNTIME_REMOTE_ROOT:-${IBKR_DEPLOY_RUNTIME_ROOT:-/opt/ibkr_runtime}}"
 IBKR_CONSOLE_REMOTE_ROOT="${IBKR_CONSOLE_REMOTE_ROOT:-${IBKR_DEPLOY_CONSOLE_ROOT:-/opt/ibkr_console}}"
 SYSTEMD_DIR="/etc/systemd/system"
@@ -57,8 +59,9 @@ Usage: deploy_runtime_all.sh [options]
 
 Compatibility name: this is the split IBKR stack deploy orchestrator. Prefer
 deploy_ibkr_stack.sh for new usage. Without --file/--diff, the default scope
-deploy can publish/restart compute, api, scheduler, runtime, PocketBase runtime,
-console, and public proxy. Gateway units are opt-in to avoid forcing IBKR 2FA.
+deploy can publish/restart compute, backtest, api, scheduler, runtime,
+PocketBase runtime, console, and public proxy. Gateway units are opt-in to
+avoid forcing IBKR 2FA.
 
 Options:
   --host <host>       Override SSH target
@@ -74,11 +77,12 @@ Options:
   --dry-run           Show rsync changes without mutating the remote host
   --skip-checks       Skip remote syntax validation
   --no-restart        Skip service restarts
-  --status-only       Show pocketbase / ibkr-console / ibkr-api / ibkr-scheduler / ibkr-runtime / ibkr-compute / ibkr-display / ibkr-gateway status and exit
+  --status-only       Show pocketbase / ibkr-console / ibkr-api / ibkr-scheduler / ibkr-runtime / ibkr-compute / ibkr-backtest / ibkr-display / ibkr-gateway status and exit
   -h, --help          Show this help
 
 Main deploy ownership:
   ibkr-compute     runtime/ibkr_compute/src + ibkr-compute.service
+  ibkr-backtest    runtime/ibkr_compute/src + ibkr-backtest.service
   ibkr-api         runtime/ibkr_api/src + ibkr-api.service
   ibkr-scheduler   runtime/ibkr_scheduler/src + ibkr-scheduler.service
   ibkr-runtime     runtime/ibkr_runtime/src + ibkr-runtime.service
@@ -177,20 +181,21 @@ fi
 
 declare -a pb_args=()
 declare -a compute_args=()
+declare -a backtest_args=()
 declare -a runtime_args=()
 declare -a console_args=()
 declare -a proxy_args=()
 
-[[ -n "$REMOTE_HOST" ]] && pb_args+=(--host "$REMOTE_HOST") && compute_args+=(--host "$REMOTE_HOST") && runtime_args+=(--host "$REMOTE_HOST") && console_args+=(--host "$REMOTE_HOST")
+[[ -n "$REMOTE_HOST" ]] && pb_args+=(--host "$REMOTE_HOST") && compute_args+=(--host "$REMOTE_HOST") && backtest_args+=(--host "$REMOTE_HOST") && runtime_args+=(--host "$REMOTE_HOST") && console_args+=(--host "$REMOTE_HOST")
 [[ "$WITH_MIGRATIONS" -eq 1 ]] && pb_args+=(--migrations)
 [[ "$WITH_OPS_TOOLS" -eq 1 ]] && compute_args+=(--ops-tools)
 [[ "$WITH_GATEWAY_SERVICE" -eq 1 ]] && runtime_args+=(--gateway-service)
 [[ -n "$REMOTE_HOST" ]] && proxy_args+=(--host "$REMOTE_HOST")
-[[ "$DRY_RUN" -eq 1 ]] && pb_args+=(--dry-run) && compute_args+=(--dry-run) && runtime_args+=(--dry-run) && console_args+=(--dry-run) && proxy_args+=(--dry-run)
-[[ "$SKIP_CHECKS" -eq 1 ]] && pb_args+=(--skip-checks) && compute_args+=(--skip-checks) && runtime_args+=(--skip-checks) && console_args+=(--skip-checks) && proxy_args+=(--skip-checks)
-[[ "$NO_RESTART" -eq 1 ]] && pb_args+=(--no-restart) && compute_args+=(--no-restart) && runtime_args+=(--no-restart) && console_args+=(--no-restart)
-[[ "$PLAN_ONLY" -eq 1 ]] && pb_args+=(--plan-only) && compute_args+=(--plan-only) && runtime_args+=(--plan-only) && console_args+=(--plan-only) && proxy_args+=(--plan-only)
-[[ -n "$PACKAGE_NAME" ]] && pb_args+=(--package-name "$PACKAGE_NAME") && compute_args+=(--package-name "$PACKAGE_NAME") && runtime_args+=(--package-name "$PACKAGE_NAME") && console_args+=(--package-name "$PACKAGE_NAME")
+[[ "$DRY_RUN" -eq 1 ]] && pb_args+=(--dry-run) && compute_args+=(--dry-run) && backtest_args+=(--dry-run) && runtime_args+=(--dry-run) && console_args+=(--dry-run) && proxy_args+=(--dry-run)
+[[ "$SKIP_CHECKS" -eq 1 ]] && pb_args+=(--skip-checks) && compute_args+=(--skip-checks) && backtest_args+=(--skip-checks) && runtime_args+=(--skip-checks) && console_args+=(--skip-checks) && proxy_args+=(--skip-checks)
+[[ "$NO_RESTART" -eq 1 ]] && pb_args+=(--no-restart) && compute_args+=(--no-restart) && backtest_args+=(--no-restart) && runtime_args+=(--no-restart) && console_args+=(--no-restart)
+[[ "$PLAN_ONLY" -eq 1 ]] && pb_args+=(--plan-only) && compute_args+=(--plan-only) && backtest_args+=(--plan-only) && runtime_args+=(--plan-only) && console_args+=(--plan-only) && proxy_args+=(--plan-only)
+[[ -n "$PACKAGE_NAME" ]] && pb_args+=(--package-name "$PACKAGE_NAME") && compute_args+=(--package-name "$PACKAGE_NAME") && backtest_args+=(--package-name "$PACKAGE_NAME") && runtime_args+=(--package-name "$PACKAGE_NAME") && console_args+=(--package-name "$PACKAGE_NAME")
 
 if [[ "$NO_RESTART" -eq 1 ]]; then
   proxy_args+=(--skip-reload)
@@ -209,6 +214,14 @@ run_compute() {
     bash "$COMPUTE_SCRIPT" "${compute_args[@]}" "$@"
   else
     bash "$COMPUTE_SCRIPT" "$@"
+  fi
+}
+
+run_backtest() {
+  if [[ ${#backtest_args[@]} -gt 0 ]]; then
+    bash "$BACKTEST_SCRIPT" "${backtest_args[@]}" "$@"
+  else
+    bash "$BACKTEST_SCRIPT" "$@"
   fi
 }
 
@@ -347,6 +360,7 @@ if [[ "$STATUS_ONLY" -eq 1 ]]; then
   run_console --status-only
   run_runtime --status-only
   run_compute --status-only
+  run_backtest --status-only
   run_public_proxy --status-only
   exit 0
 fi
@@ -370,15 +384,18 @@ if [[ "$REQUESTED_MODE" != "scope" || "$HAS_CHANGE_SOURCE" -eq 1 ]]; then
   target_pb_file_args=()
   target_console_file_args=()
   target_compute_file_args=()
+  target_backtest_file_args=()
   target_runtime_file_args=()
   collect_target_file_args target_pb_file_args pocketbase "$local_file_source"
   collect_target_file_args target_console_file_args ibkr_console "$local_file_source"
   collect_target_file_args target_compute_file_args ibkr_compute "$local_file_source"
+  collect_target_file_args target_backtest_file_args ibkr_backtest "$local_file_source"
   collect_target_file_args target_runtime_file_args ibkr_runtime "$local_file_source"
 
   pb_args+=(--mode "$FINAL_MODE")
   console_args+=(--mode "$FINAL_MODE")
   compute_args+=(--mode "$FINAL_MODE")
+  backtest_args+=(--mode "$FINAL_MODE")
   runtime_args+=(--mode "$FINAL_MODE")
   if [[ ${#target_pb_file_args[@]} -gt 0 ]]; then
     pb_args+=( "${target_pb_file_args[@]}" )
@@ -388,6 +405,9 @@ if [[ "$REQUESTED_MODE" != "scope" || "$HAS_CHANGE_SOURCE" -eq 1 ]]; then
   fi
   if [[ ${#target_compute_file_args[@]} -gt 0 ]]; then
     compute_args+=( "${target_compute_file_args[@]}" )
+  fi
+  if [[ ${#target_backtest_file_args[@]} -gt 0 ]]; then
+    backtest_args+=( "${target_backtest_file_args[@]}" )
   fi
   if [[ ${#target_runtime_file_args[@]} -gt 0 ]]; then
     runtime_args+=( "${target_runtime_file_args[@]}" )
@@ -403,6 +423,7 @@ if [[ "$REQUESTED_MODE" == "scope" && "$HAS_CHANGE_SOURCE" -eq 0 ]]; then
   run_compute
   run_runtime
   run_pb
+  run_backtest
   run_console
   run_public_proxy
   wait_for_full_stack_health
@@ -417,6 +438,9 @@ if array_contains "ibkr_runtime" "${families[@]}"; then
 fi
 if array_contains "pocketbase" "${families[@]}"; then
   DEPLOY_IGNORE_UNMANAGED=1 run_pb
+fi
+if array_contains "ibkr_backtest" "${families[@]}"; then
+  DEPLOY_IGNORE_UNMANAGED=1 run_backtest
 fi
 if array_contains "ibkr_console" "${families[@]}"; then
   DEPLOY_IGNORE_UNMANAGED=1 run_console

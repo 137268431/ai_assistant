@@ -14,6 +14,7 @@ cfg = json.loads(base64.b64decode(os.environ["HEALTH_CHECK_CONFIG_B64"]).decode(
 DB = cfg["db_path"]
 PB = cfg["pb_local_url"].rstrip("/")
 COMPUTE = cfg["compute_local_url"].rstrip("/")
+BACKTEST = cfg.get("backtest_local_url", "http://127.0.0.1:5105").rstrip("/")
 RUNTIME = cfg["runtime_local_url"].rstrip("/")
 API = cfg["api_local_url"].rstrip("/")
 SCHEDULER = cfg["scheduler_local_url"].rstrip("/")
@@ -428,12 +429,22 @@ def latest_indicator_missing_grace(latest_bar_5m: dict | None, latest_indicator_
 
 services = {
     name: systemd_status(name)
-    for name in ("ibkr-runtime", "ibkr-gateway", "ibkr-compute", "ibkr-api", "ibkr-scheduler", "ibkr-console", "pocketbase")
+    for name in (
+        "ibkr-runtime",
+        "ibkr-gateway",
+        "ibkr-compute",
+        "ibkr-backtest",
+        "ibkr-api",
+        "ibkr-scheduler",
+        "ibkr-console",
+        "pocketbase",
+    )
 }
 local_http = {
     "compute_health": http_json(f"{COMPUTE}/health"),
     "compute_status": http_json(f"{COMPUTE}/status"),
     "compute_ibkr_status": http_json(f"{COMPUTE}/ibkr/status"),
+    "backtest_health": http_json(f"{BACKTEST}/health"),
     "runtime_health": http_json(f"{RUNTIME}/health"),
     "runtime_status": http_json(f"{RUNTIME}/ibkr/status"),
     "api_health": http_json(f"{API}/health"),
@@ -486,6 +497,7 @@ for name in (
     "compute_health",
     "compute_status",
     "compute_ibkr_status",
+    "backtest_health",
     "runtime_health",
     "runtime_status",
     "api_health",
@@ -606,6 +618,8 @@ if "ibkr-runtime" not in runtime_topology_services:
     failures.append("topology:ibkr_runtime_missing")
 if "ibkr-compute" not in runtime_topology_services:
     failures.append("topology:ibkr_compute_missing")
+if "ibkr-backtest" not in runtime_topology_services:
+    failures.append("topology:ibkr_backtest_missing")
 if "ibkr-api" not in runtime_topology_services:
     failures.append("topology:ibkr_api_missing")
 if "ibkr-scheduler" not in runtime_topology_services:

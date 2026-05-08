@@ -1,0 +1,30 @@
+[Unit]
+Description=IBKR Backtest Service
+After=network-online.target pocketbase.service ibkr-runtime.service
+Wants=network-online.target pocketbase.service ibkr-runtime.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ibkr_backtest
+ExecStartPre=/bin/sh -lc 'for i in $(seq 1 ${IBKR_WAIT_PB_ATTEMPTS:-90}); do /usr/bin/curl -fsS --max-time 5 http://127.0.0.1:8090/api/health >/dev/null 2>&1 && exit 0; sleep 2; done; echo "PocketBase health endpoint not ready" >&2; exit 1'
+ExecStartPre=/bin/sh -lc 'for i in $(seq 1 ${IBKR_WAIT_RUNTIME_ATTEMPTS:-90}); do /usr/bin/nc -z 127.0.0.1 5101 >/dev/null 2>&1 && exit 0; sleep 2; done; echo "Runtime port not ready" >&2; exit 1'
+ExecStart=/opt/ibkr_backtest/venv/bin/python -m ibkr_compute.api.backtest_app
+EnvironmentFile=-/opt/ibkr_backtest/.env
+Environment=PYTHONPATH=/opt/ibkr_backtest/src
+Environment=FLASK_SKIP_DOTENV=1
+Environment=PORT=5105
+Environment=IBKR_BACKTEST_PORT=5105
+Environment=IBKR_SERVICE_PROFILE=backtest
+Environment=IBKR_RUNTIME_MODE=remote
+Environment=IBKR_BACKTEST_INTERNAL_URL=http://127.0.0.1:5105
+Environment=IBKR_COMPUTE_INTERNAL_URL=http://127.0.0.1:5100
+Environment=IBKR_RUNTIME_INTERNAL_URL=http://127.0.0.1:5101
+Environment=IBKR_API_INTERNAL_URL=http://127.0.0.1:5102
+Environment=IBGW_BACKTEST_CLIENT_ID=71
+Restart=on-failure
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

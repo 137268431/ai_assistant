@@ -160,6 +160,7 @@ from ibkr_api.signals.api import build_signals_ack_response, build_signals_pendi
 REQUEST_TIMEOUT_SECONDS = max(1.0, float(os.environ.get("IBKR_API_PROXY_TIMEOUT_SEC", "60")))
 PB_BASE_URL = str(os.environ.get("PB_BASE_URL") or "http://127.0.0.1:8090").rstrip("/")
 COMPUTE_BASE_URL = str(os.environ.get("IBKR_COMPUTE_INTERNAL_URL") or "http://127.0.0.1:5100").rstrip("/")
+BACKTEST_BASE_URL = str(os.environ.get("IBKR_BACKTEST_INTERNAL_URL") or "http://127.0.0.1:5105").rstrip("/")
 RUNTIME_BASE_URL = str(os.environ.get("IBKR_RUNTIME_INTERNAL_URL") or "http://127.0.0.1:5101").rstrip("/")
 SCHEDULER_BASE_URL = str(os.environ.get("IBKR_SCHEDULER_INTERNAL_URL") or "http://127.0.0.1:5103").rstrip("/")
 ET = ZoneInfo("America/New_York")
@@ -867,6 +868,7 @@ _compat_route_handlers = register_compat_proxy_routes(
     deps=build_compat_proxy_deps(
         pb_base_url=PB_BASE_URL,
         compute_base_url=COMPUTE_BASE_URL,
+        backtest_base_url=BACKTEST_BASE_URL,
         runtime_base_url=RUNTIME_BASE_URL,
         scheduler_base_url=SCHEDULER_BASE_URL,
         build_service_topology=build_service_topology,

@@ -10,6 +10,7 @@ from ibkr_compute.api.runtime_status_client import (
 from ibkr_compute.api.shared.service_status import get_service_status_snapshot
 
 DEFAULT_COMPUTE_INTERNAL_URL = "http://127.0.0.1:5100"
+DEFAULT_BACKTEST_INTERNAL_URL = "http://127.0.0.1:5105"
 DEFAULT_RUNTIME_INTERNAL_URL = "http://127.0.0.1:5101"
 DEFAULT_API_INTERNAL_URL = "http://127.0.0.1:5102"
 DEFAULT_SCHEDULER_INTERNAL_URL = "http://127.0.0.1:5103"
@@ -48,6 +49,13 @@ def get_compute_internal_url(default: str | None = None) -> str:
     return _normalize_base_url(
         os.environ.get("IBKR_COMPUTE_INTERNAL_URL"),
         default or DEFAULT_COMPUTE_INTERNAL_URL,
+    )
+
+
+def get_backtest_internal_url(default: str | None = None) -> str:
+    return _normalize_base_url(
+        os.environ.get("IBKR_BACKTEST_INTERNAL_URL"),
+        default or DEFAULT_BACKTEST_INTERNAL_URL,
     )
 
 
@@ -130,6 +138,7 @@ def build_service_topology(service=None, service_status: dict | None = None) -> 
     runtime_mode = get_runtime_mode()
     service_profile = get_service_profile()
     compute_internal_url = get_compute_internal_url()
+    backtest_internal_url = get_backtest_internal_url()
     runtime_internal_url = get_runtime_internal_url()
     api_internal_url = get_api_internal_url()
     scheduler_internal_url = get_scheduler_internal_url()
@@ -204,8 +213,19 @@ def build_service_topology(service=None, service_status: dict | None = None) -> 
                 "upstream": runtime_internal_url if runtime_mode == "remote" else "",
                 "runtime_mode": runtime_mode,
                 "runtime_owner": runtime_owner,
-                "responsibility": "indicators + signals + backtests",
+                "responsibility": "indicators + signals + scans + history/data quality",
                 "restart_independent": runtime_mode == "remote",
+            },
+            "ibkr-backtest": {
+                "service_name": "ibkr-backtest",
+                "kind": "backtest_plane",
+                "fault_domain": "backtest_plane",
+                "owner": "ibkr-backtest",
+                "status": _owned_service_status(service_profile, "backtest"),
+                "internal_url": backtest_internal_url,
+                "upstream": pocketbase_base_url,
+                "responsibility": "backtest runs + replay + backtest cleanup",
+                "restart_independent": True,
             },
             "ibkr-runtime": {
                 "service_name": "ibkr-runtime",
