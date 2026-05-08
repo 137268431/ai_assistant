@@ -527,6 +527,35 @@ class BacktestDailyScanReplayTests(unittest.TestCase):
         self.assertEqual(plan["summary"]["daily_selection_cache"]["stale_days"], 2)
         self.assertEqual(plan["target_rows"][0]["score"], 9)
 
+    def test_daily_selection_cache_trust_existing_ignores_input_hash_drift(self):
+        self._install_cache_scan_fakes(self.service)
+        self.service._evaluate_historical_scan_symbol = lambda symbol, trade_date, request, settings=None: {
+            "symbol": symbol,
+            "score": 8,
+            "direction_bias": "long",
+            "quality_gate_passed": True,
+            "reason": "quality ok",
+            "extra": {"scan_cutoff_ms": self.service._build_scan_cutoff_ms(trade_date, "09:25")},
+        }
+        request = self._cache_request()
+        self.service._build_daily_scan_replay_plan(request)
+        self.service._build_daily_selection_input_fingerprint = lambda trade_date, universe_rows, request: {
+            "usable": True,
+            "hash": f"changed-{trade_date}",
+            "reason": "bars_aggregate",
+            "row_count": len(universe_rows),
+        }
+        self.service._evaluate_historical_scan_symbol = lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("trusted cache hit should skip historical scan")
+        )
+
+        plan = self.service._build_daily_scan_replay_plan({**request, "daily_selection_cache_trust_existing": True})
+
+        cache = plan["summary"]["daily_selection_cache"]
+        self.assertEqual(cache["hit_days"], 2)
+        self.assertEqual(cache["rebuilt_days"], 0)
+        self.assertEqual(plan["symbols"], ["NVDA"])
+
     def test_daily_selection_cache_requires_usable_input_fingerprint(self):
         self._install_cache_scan_fakes(self.service)
         self.service._evaluate_historical_scan_symbol = lambda symbol, trade_date, request, settings=None: {

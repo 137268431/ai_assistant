@@ -454,7 +454,10 @@ class BacktestScanReplayMixin:
             return False, "force_rebuild"
         if str(record.get("status") or "").strip().lower() != "valid":
             return False, "stale_status"
-        for field in ("cache_key", "request_hash", "universe_hash", "input_data_hash", "scan_settings_hash", "strategy_hash"):
+        fields = ["cache_key", "request_hash", "universe_hash", "input_data_hash", "scan_settings_hash", "strategy_hash"]
+        if bool(fingerprints.get("ignore_input_data_hash")):
+            fields.remove("input_data_hash")
+        for field in fields:
             expected = str(fingerprints.get(field) or "")
             actual = str(record.get(field) or "")
             if expected and actual != expected:
@@ -1170,6 +1173,7 @@ class BacktestScanReplayMixin:
                 "universe_hash": universe_hash,
                 "input_data_hash": str(input_fingerprint.get("hash") or ""),
                 "force_rebuild": bool(request.get("daily_selection_cache_force_rebuild")),
+                "ignore_input_data_hash": bool(request.get("daily_selection_cache_trust_existing")),
             }
             if cache_summary.get("enabled"):
                 if not bool(input_fingerprint.get("usable")):

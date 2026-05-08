@@ -717,6 +717,7 @@ class BacktestRuntimeRecordsMixin:
             "daily_selection_cache_enabled": bool(request.get("daily_selection_cache_enabled", False)),
             "daily_selection_cache_mode": str(request.get("daily_selection_cache_mode") or "use_or_build"),
             "daily_selection_cache_force_rebuild": bool(request.get("daily_selection_cache_force_rebuild", False)),
+            "daily_selection_cache_trust_existing": bool(request.get("daily_selection_cache_trust_existing", False)),
             "premarket_cutoff_time": str(request.get("premarket_cutoff_time") or DEFAULT_SCAN_CUTOFF_TIME),
             "scan_session_mode": str(request.get("scan_session_mode") or "extended"),
             "retention_limit": int(request.get("retention_limit", DEFAULT_BACKTEST_RETENTION_LIMIT) or DEFAULT_BACKTEST_RETENTION_LIMIT),

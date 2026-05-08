@@ -305,6 +305,7 @@ def normalize_request(payload: dict) -> dict:
     if daily_selection_cache_mode not in {"use_or_build", "read_only", "bypass"}:
         daily_selection_cache_mode = "use_or_build"
     daily_selection_cache_force_rebuild = normalize_bool(payload.get("daily_selection_cache_force_rebuild"), False)
+    daily_selection_cache_trust_existing = normalize_bool(payload.get("daily_selection_cache_trust_existing"), False)
     premarket_cutoff_time = normalize_hhmm(payload.get("premarket_cutoff_time") or payload.get("scan_cutoff_time"))
     scan_session_mode = str(payload.get("scan_session_mode") or "extended").strip().lower() or "extended"
     if scan_session_mode not in constants.SESSION_MODE_VALUES:
@@ -445,6 +446,7 @@ def normalize_request(payload: dict) -> dict:
         "daily_selection_cache_enabled": daily_selection_cache_enabled,
         "daily_selection_cache_mode": daily_selection_cache_mode,
         "daily_selection_cache_force_rebuild": daily_selection_cache_force_rebuild,
+        "daily_selection_cache_trust_existing": daily_selection_cache_trust_existing,
         "premarket_cutoff_time": premarket_cutoff_time,
         "retention_limit": retention_limit,
         "preflight_backfill": preflight_backfill,
@@ -476,6 +478,7 @@ def normalize_request(payload: dict) -> dict:
             "daily_selection_cache_enabled": daily_selection_cache_enabled,
             "daily_selection_cache_mode": daily_selection_cache_mode,
             "daily_selection_cache_force_rebuild": daily_selection_cache_force_rebuild,
+            "daily_selection_cache_trust_existing": daily_selection_cache_trust_existing,
             "preflight_backfill": preflight_backfill,
             "backfill_concurrency": backfill_concurrency,
             "backfill_symbol_timeout_s": backfill_symbol_timeout_s,
