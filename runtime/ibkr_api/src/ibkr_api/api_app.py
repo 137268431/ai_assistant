@@ -99,6 +99,8 @@ from ibkr_api.runtime.status_support import (
     build_statusz_compute_payload as _build_statusz_compute_payload_support,
     build_statusz_live_readiness as _build_statusz_live_readiness_support,
     build_statusz_runtime_payload as _build_statusz_runtime_payload_support,
+    fetch_backtest_health as _fetch_backtest_health_support,
+    fetch_backtest_status as _fetch_backtest_status_support,
     fetch_compute_health as _fetch_compute_health_support,
     fetch_compute_monitor as _fetch_compute_monitor_support,
     fetch_compute_status as _fetch_compute_status_support,
@@ -666,6 +668,24 @@ def _fetch_compute_health(environment: str) -> dict[str, Any]:
     )
 
 
+def _fetch_backtest_health(environment: str) -> dict[str, Any]:
+    return _fetch_backtest_health_support(
+        environment,
+        request_json=_request_json,
+        backtest_base_url=BACKTEST_BASE_URL,
+        as_dict=_as_dict,
+    )
+
+
+def _fetch_backtest_status(environment: str) -> dict[str, Any]:
+    return _fetch_backtest_status_support(
+        environment,
+        request_json=_request_json,
+        backtest_base_url=BACKTEST_BASE_URL,
+        as_dict=_as_dict,
+    )
+
+
 def _fetch_runtime_status(environment: str) -> dict[str, Any]:
     return _fetch_runtime_status_support(
         environment,
@@ -801,6 +821,7 @@ _platform_route_handlers = register_platform_routes(
         config=config,
         build_service_topology=build_service_topology,
         compute_base_url=COMPUTE_BASE_URL,
+        backtest_base_url=BACKTEST_BASE_URL,
         runtime_base_url=RUNTIME_BASE_URL,
         scheduler_base_url=SCHEDULER_BASE_URL,
         ibkr_2fa_state_key=IBKR_2FA_STATE_KEY,

@@ -4,7 +4,7 @@ from typing import Any
 
 from flask import Response, jsonify, request
 
-from ibkr_api.system.service_state import build_service_monitor_from_topology
+from ibkr_api.system.service_state import canonicalize_topology
 
 
 def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
@@ -16,6 +16,8 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     serialize_config_rows = deps["serialize_config_rows"]
     merge_service_topology = deps["merge_service_topology"]
     fetch_compute_health = deps["fetch_compute_health"]
+    fetch_backtest_health = deps["fetch_backtest_health"]
+    fetch_backtest_status = deps["fetch_backtest_status"]
     fetch_compute_status = deps["fetch_compute_status"]
     fetch_runtime_health = deps["fetch_runtime_health"]
     fetch_runtime_status = deps["fetch_runtime_status"]
@@ -31,6 +33,7 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     ibkr_2fa_state_key = deps["ibkr_2fa_state_key"]
     ibkr_2fa_state_date = deps["ibkr_2fa_state_date"]
     compute_base_url = deps["compute_base_url"]
+    backtest_base_url = deps["backtest_base_url"]
     exports: dict[str, Any] = {}
 
     def safe_storage_health(environment: str) -> dict[str, Any]:
@@ -70,14 +73,31 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     def custom_ibkr_healthz() -> Response:
         environment = normalize_environment(request.args.get("environment"), "live")
         compute_result = fetch_compute_health(environment)
+        backtest_result = fetch_backtest_health(environment)
         runtime_result = fetch_runtime_health(environment)
         compute_payload = as_dict(compute_result.get("payload"))
+        backtest_payload = as_dict(backtest_result.get("payload"))
+        backtest_service_payload = {
+            **backtest_result,
+            "payload": backtest_payload,
+        }
         runtime_payload = as_dict(runtime_result.get("payload"))
-        service_topology = merge_service_topology(compute_payload, runtime_payload)
-        service_monitor = build_service_monitor_from_topology(environment, service_topology)
+        service_topology = merge_service_topology(compute_payload, runtime_payload, backtest_payload)
+        service_topology, service_monitor = canonicalize_topology(
+            environment,
+            service_topology,
+            compute_payload,
+            runtime_payload,
+            backtest_service_payload,
+        )
         runtime_expected = str(service_topology.get("runtime_mode") or "").strip().lower() == "remote"
         ok = bool(compute_result.get("ok")) and (not runtime_expected or bool(runtime_result.get("ok")))
-        degraded = bool(compute_result.get("ok")) or bool(runtime_result.get("ok")) or bool(compute_payload) or bool(runtime_payload)
+        degraded = (
+            bool(compute_result.get("ok"))
+            or bool(runtime_result.get("ok"))
+            or bool(compute_payload)
+            or bool(runtime_payload)
+        )
         errors = {
             key: value
             for key, value in {
@@ -95,12 +115,16 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
                 "requested_environment": environment,
                 "actual_runtime_environment": normalize_environment(runtime_payload.get("environment") or environment, environment),
                 "compute": compute_payload,
+                "backtest_service": backtest_service_payload,
+                "backtest": as_dict(backtest_payload.get("backtest")),
                 "runtime": runtime_payload,
                 "service_topology": service_topology,
                 "service_monitor": service_monitor,
                 "storage_health": storage_health,
                 "source": "ibkr-api",
                 "proxy_upstream_compute": f"{compute_base_url}/health",
+                "proxy_upstream_backtest": backtest_result.get("upstream") or f"{backtest_base_url}/health",
+                "backtest_error": str(backtest_result.get("error") or ""),
                 "proxy_upstream_runtime": runtime_result.get("upstream") or "",
                 "error": "; ".join(f"{key}: {value}" for key, value in errors.items()),
                 "errors": errors,
@@ -119,8 +143,16 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
         )
 
         compute_result = fetch_compute_status(environment, include_engines=include_engines)
+        backtest_health_result = fetch_backtest_health(environment)
+        backtest_status_result = fetch_backtest_status(environment)
         runtime_result = fetch_runtime_status(environment)
         compute_payload = as_dict(compute_result.get("payload"))
+        backtest_health_payload = as_dict(backtest_health_result.get("payload"))
+        backtest_status_payload = as_dict(backtest_status_result.get("payload"))
+        backtest_service_payload = {
+            **backtest_health_result,
+            "payload": backtest_health_payload,
+        }
         runtime_payload = as_dict(runtime_result.get("payload"))
         persisted_daily_scan = load_daily_scan_state(environment)
         fallback_active_target_date = str(persisted_daily_scan.get("market_date") or "").strip()
@@ -138,8 +170,15 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
                 "active_target_count": fallback_active_target_count,
             },
         )
-        service_topology = merge_service_topology(compute_data, runtime_data)
-        service_monitor = build_service_monitor_from_topology(environment, service_topology)
+        service_topology = merge_service_topology(compute_data, runtime_data, backtest_health_payload)
+        service_topology, service_monitor = canonicalize_topology(
+            environment,
+            service_topology,
+            compute_data,
+            runtime_data,
+            backtest_service_payload,
+            backtest_status_payload,
+        )
         actual_runtime_environment = normalize_environment(
             runtime_data.get("environment") or compute_data.get("environment") or environment,
             environment,
@@ -153,14 +192,25 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             if value
         }
         storage_health = safe_storage_health(environment)
-        ok = not errors and compute_data.get("ok") is not False and (runtime_data.get("ok") is not False or not runtime_data)
-        degraded = bool(compute_result.get("ok")) or bool(runtime_result.get("ok")) or bool(compute_data) or bool(runtime_payload)
+        ok = (
+            not errors
+            and compute_data.get("ok") is not False
+            and (runtime_data.get("ok") is not False or not runtime_data)
+        )
+        degraded = (
+            bool(compute_result.get("ok"))
+            or bool(runtime_result.get("ok"))
+            or bool(compute_data)
+            or bool(runtime_payload)
+        )
         response = dict(compute_data)
         if runtime_data.get("ok") is not False:
             response.update(runtime_data)
         response.update(
             {
                 "compute": compute_data,
+                "backtest_service": backtest_service_payload,
+                "backtest": backtest_status_payload or as_dict(backtest_health_payload.get("backtest")),
                 "runtime": runtime_data,
                 "service_topology": service_topology,
                 "service_monitor": service_monitor,
@@ -173,6 +223,9 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
                 "status": "running" if ok else ("degraded" if degraded else "offline"),
                 "source": "ibkr-api",
                 "proxy_upstream_compute": f"{compute_base_url}/status",
+                "proxy_upstream_backtest": backtest_health_result.get("upstream") or f"{backtest_base_url}/health",
+                "proxy_upstream_backtest_status": backtest_status_result.get("upstream") or f"{backtest_base_url}/backtest/status",
+                "backtest_error": str(backtest_health_result.get("error") or backtest_status_result.get("error") or ""),
                 "proxy_upstream_runtime": runtime_result.get("selected_upstream") or "",
                 "proxy_upstream_runtime_proxy": runtime_result.get("proxy_upstream") or "",
                 "proxy_upstream_runtime_direct": runtime_result.get("direct_upstream") or "",

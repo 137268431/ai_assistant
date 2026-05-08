@@ -11,6 +11,7 @@ def register_compat_proxy_routes(app, deps: dict[str, Any]) -> dict[str, Any]:
         deps={
             "pb_base_url": deps["pb_base_url"],
             "compute_base_url": deps["compute_base_url"],
+            "backtest_base_url": deps["backtest_base_url"],
             "runtime_base_url": deps["runtime_base_url"],
             "scheduler_base_url": deps["scheduler_base_url"],
             "direct_proxy_map": deps["direct_proxy_map"],

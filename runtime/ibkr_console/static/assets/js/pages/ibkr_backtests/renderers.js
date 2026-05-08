@@ -1,5 +1,20 @@
+        function getBacktestServiceState() {
+            const serviceName = String(activeStatus?.service || 'ibkr-backtest').trim() || 'ibkr-backtest';
+            const serviceStatus = String(
+                activeStatus?.service_status
+                || activeStatus?.service_state?.status
+                || (activeStatus?.ok === false ? 'degraded' : (activeStatus?.service ? 'running' : 'unknown'))
+            ).trim().toLowerCase() || 'unknown';
+            const workerStatus = activeStatus?.running
+                ? String(activeStatus?.stage || activeStatus?.status || 'running').trim().toLowerCase()
+                : 'idle';
+            const clientId = Number(activeStatus?.ib_gateway_client_id || activeStatus?.broker_client_id || 0) || 0;
+            return { serviceName, serviceStatus, workerStatus, clientId };
+        }
+
         function buildHeroNotes() {
             const running = Boolean(activeStatus?.running);
+            const serviceState = getBacktestServiceState();
             const activeRun = runList.find((item) => item.id === activeStatus?.run_id) || selectedRun;
             const activeBatch = batchList.find((item) => item.id === activeStatus?.batch_id) || selectedBatch;
             const notes = [
@@ -12,7 +27,11 @@
                     value: '只写 backtest collections；运行时重新计算指标与信号，不回写实盘链路。',
                 },
                 {
-                    label: 'Active Worker',
+                    label: 'Backtest Service',
+                    value: `${serviceState.serviceName} ${serviceState.serviceStatus.toUpperCase()} · worker ${serviceState.workerStatus.toUpperCase()}${serviceState.clientId ? ` · IB client ${serviceState.clientId}` : ''}`,
+                },
+                {
+                    label: 'Worker Job',
                     value: running
                         ? `${activeStatus.stage || 'running'} · ${activeStatus.message || 'backtest in progress'}`
                         : '当前没有运行中的 backtest job',
@@ -40,6 +59,7 @@
 
         function renderStatusPanel() {
             const running = Boolean(activeStatus?.running);
+            const serviceState = getBacktestServiceState();
             const lastStatus = activeStatus?.status || 'idle';
             const status = running ? lastStatus : 'idle';
             const progress = running ? Number(activeStatus?.progress || 0) : 0;
@@ -49,6 +69,8 @@
                 ? (activeStatus?.message || 'backtest running')
                 : '当前没有运行中的 backtest job';
             document.getElementById('statusMeta').innerHTML = `
+                <div>Service: <span class="mono">${escapeHtml(`${serviceState.serviceName} ${serviceState.serviceStatus}`)}</span></div>
+                <div>IB Client ID: <span class="mono">${escapeHtml(serviceState.clientId || '--')}</span></div>
                 <div>Stage: <span class="mono">${escapeHtml(running ? (activeStatus?.stage || 'running') : 'idle')}</span></div>
                 <div>Progress: <span class="mono">${progress}%</span></div>
                 <div>Run ID: <span class="mono">${escapeHtml(running ? (activeStatus?.run_id || '--') : '--')}</span></div>

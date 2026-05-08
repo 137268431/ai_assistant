@@ -44,6 +44,30 @@ async function inspectMonitor(browser, deviceName = null) {
   const navTexts = await page.locator("#nav .nav-item").allTextContents().catch(() => []);
   const bridgeTexts = await page.locator("#pageBridge .page-bridge-label").allTextContents().catch(() => []);
   const opsRouteTexts = await page.locator(".ops-route-card .ops-route-name").allTextContents().catch(() => []);
+  const systemServiceCount = await page.locator("#systemMonitorGrid .metric-card").count().catch(() => 0);
+  const systemMonitorText = await page.locator("#systemMonitorGrid").innerText().catch(() => "");
+  const systemMonitorMeta = await page.locator("#systemMonitorMeta").innerText().catch(() => "");
+  const systemServiceNames = await page.locator("#systemMonitorGrid .metric-card .metric-label span:first-child").allTextContents().catch(() => []);
+  const backtestCard = page.locator("#systemMonitorGrid .metric-card").filter({ hasText: "ibkr-backtest" }).first();
+  const backtestCardText = await backtestCard.innerText().catch(() => "");
+  const backtestCardClass = await backtestCard.getAttribute("class").catch(() => "");
+  const statusCountTotal = Array.from(systemMonitorMeta.matchAll(/\b[A-Z_]+\s+(\d+)/g))
+    .reduce((sum, match) => sum + Number(match[1] || 0), 0);
+
+  if (systemServiceCount < 8) errors.push(`system_service_count:${systemServiceCount}`);
+  if (!systemMonitorText.includes("ibkr-backtest")) errors.push("system_service_missing_ibkr_backtest");
+  if (statusCountTotal && statusCountTotal !== systemServiceCount) {
+    errors.push(`system_service_status_count_mismatch:${statusCountTotal}/${systemServiceCount}`);
+  }
+  if (/\bIDLE\b/.test(backtestCardText) && /\bis-warn\b/.test(backtestCardClass || "")) {
+    errors.push("system_service_backtest_idle_warn");
+  }
+  const expectedServiceOrder = ["ibkr-console", "ibkr-api", "ibkr-scheduler", "ibkr-compute", "ibkr-backtest", "ibkr-runtime", "ibkr-gateway", "pocketbase"];
+  const observedExpectedOrder = systemServiceNames.filter((name) => expectedServiceOrder.includes(name));
+  const sortedObservedOrder = [...observedExpectedOrder].sort((left, right) => expectedServiceOrder.indexOf(left) - expectedServiceOrder.indexOf(right));
+  if (JSON.stringify(observedExpectedOrder) !== JSON.stringify(sortedObservedOrder)) {
+    errors.push(`system_service_order:${observedExpectedOrder.join(">")}`);
+  }
 
   const summary = {
     url: target,
@@ -58,7 +82,7 @@ async function inspectMonitor(browser, deviceName = null) {
     hasSystemOpsBridge: bridgeTexts.includes("运维") && bridgeTexts.includes("监控大盘"),
     hasOpsRouteGuide: ["监控大盘", "预热", "数据质量", "历史重建"].every((label) => opsRouteTexts.includes(label)),
     hasApiSection: sectionTitles.includes("IBKR API 利用率"),
-    hasMarketOverviewSection: sectionTitles.includes("大盘行情雷达"),
+    hasMarketOverviewSection: sectionTitles.includes("其它市场监控") || sectionTitles.includes("大盘行情雷达"),
     hasCriticalMetricsSection: sectionTitles.includes("关键监控指标带"),
     hasSystemSection: sectionTitles.includes("Split-Stack 系统状态"),
     hasSubscriptionSection: sectionTitles.includes("订阅视图"),
@@ -68,6 +92,10 @@ async function inspectMonitor(browser, deviceName = null) {
     hasRefreshButton: await page.locator("#refreshBtn").count().catch(() => 0),
     hasMarketMounts: await page.locator("#marketOverviewGrid, #marketMonitorCards").count().catch(() => 0),
     hasCriticalMount: await page.locator("#criticalMetricsGrid").count().catch(() => 0),
+    systemServiceCount,
+    systemMonitorMeta,
+    systemServiceNames,
+    hasBacktestService: systemMonitorText.includes("ibkr-backtest"),
     errors,
   };
 

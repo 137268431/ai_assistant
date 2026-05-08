@@ -353,7 +353,7 @@ prepare_backtest_root_if_needed() {
   local needs_backtest_root=0
   local backtest_root="${IBKR_BACKTEST_REMOTE_ROOT:-/opt/ibkr_backtest}"
   local compute_env_root="${IBKR_BACKTEST_ENV_SEED_ROOT:-${IBKR_DEPLOY_IBKR_ROOT:-/opt/ibkr_compute}}"
-  local backtest_client_id="${IBGW_BACKTEST_CLIENT_ID:-71}"
+  local backtest_client_id="${IBGW_BACKTEST_CLIENT_ID:-81}"
 
   for unit in "${units[@]-}"; do
     case "$unit" in
@@ -380,7 +380,7 @@ from pathlib import Path
 import sys
 
 path = Path(sys.argv[1])
-backtest_client_id = str(sys.argv[2] or '71').strip() or '71'
+backtest_client_id = str(sys.argv[2] or '81').strip() or '81'
 text = path.read_text(encoding='utf-8', errors='ignore') if path.exists() else ''
 updates = {
     'PORT': '5105',

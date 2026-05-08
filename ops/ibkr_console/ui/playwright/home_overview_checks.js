@@ -1,4 +1,4 @@
-const HOME_STACK_REQUIRED_ROWS = ['Runtime', 'Compute', 'API', 'Scheduler', 'PocketBase'];
+const HOME_STACK_REQUIRED_ROWS = ['Runtime', 'Compute', 'Backtest', 'API', 'Scheduler', 'PocketBase'];
 
 async function waitForHomeOverviewReady(page, timeoutMs) {
   await page.waitForFunction(() => {
@@ -18,7 +18,7 @@ async function waitForHomeOverviewReady(page, timeoutMs) {
       document.querySelectorAll('#homeOverview .home-stat-card').length >= 6 &&
       document.querySelectorAll('#homeQuickLinks .home-quick-link').length >= 6 &&
       document.querySelectorAll('#homeQuickLinks .home-tool-chip').length >= 5 &&
-      document.querySelectorAll('#overviewServiceRows .home-stack-service').length >= 5
+      document.querySelectorAll('#overviewServiceRows .home-stack-service').length >= 6
     );
   }, { timeout: timeoutMs });
 }
@@ -73,16 +73,16 @@ async function collectHomeOverviewIssues(page, mobile = false) {
     if (stackLink && !/\/ibkr_system\.html/.test(stackLinkHref)) issues.push(`overview_stack_link_href:${stackLinkHref || 'empty'}`);
     if (configLink && !/\/ibkr_config\.html/.test(configLinkHref)) issues.push(`action_config_link_href:${configLinkHref || 'empty'}`);
     if (!toolChipTexts.some((text) => text.includes('配置'))) issues.push('missing_config_tool_chip');
-    if (stackSummary && !stackSummaryText.includes('Runtime / Compute / API / Scheduler 已拆分')) {
+    if (stackSummary && !stackSummaryText.includes('Runtime / Compute / Backtest / API / Scheduler 已拆分')) {
       issues.push(`overview_stack_summary_text:${stackSummaryText || 'empty'}`);
     }
-    if (stackRows.length < 5) issues.push(`overview_stack_row_count:${stackRows.length}`);
+    if (stackRows.length < 6) issues.push(`overview_stack_row_count:${stackRows.length}`);
     requiredRows.forEach((label) => {
       if (!stackRowNames.includes(label)) {
         issues.push(`overview_stack_missing_row:${label}`);
       }
     });
-    if (stackRowStatuses.length < 5) issues.push(`overview_stack_status_count:${stackRowStatuses.length}`);
+    if (stackRowStatuses.length < 6) issues.push(`overview_stack_status_count:${stackRowStatuses.length}`);
     if (!marketSection) issues.push('missing_market_section');
     if (!marketSummary) issues.push('missing_market_summary');
     if (marketReady && marketCards.length && !/实时\s+\d+/.test(marketSummaryText)) {

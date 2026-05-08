@@ -76,6 +76,7 @@ function buildUiSandbox() {
   vm.createContext(sandbox);
   vm.runInContext(readStatic('assets/js/shared/base.js'), sandbox, { filename: 'base.js' });
   vm.runInContext(readStatic('assets/js/shared/ui.js'), sandbox, { filename: 'ui.js' });
+  vm.runInContext(readStatic('assets/js/shared/ibkr-page-config.js'), sandbox, { filename: 'ibkr-page-config.js' });
   return sandbox;
 }
 
@@ -87,6 +88,7 @@ try {
   assert(JSON.stringify(navLabels) === JSON.stringify(['首页', '执行', '标的', '研究', '回测', '系统']), `nav_labels:${navLabels.join('/')}`);
   assert(!navLabels.includes('运维'), 'legacy_ops_bottom_nav_label');
   assert(/nav-item active/.test(navHtml) && navHtml.includes('系统'), 'system_nav_not_active_for_ops_page');
+  assert(ui.getIbkrServiceHealthTone('idle') === 'neutral', 'shared_service_tone_idle_not_neutral');
 
   const systemBridge = ui.renderSystemBridge('/ibkr_config.html');
   assert(includesAll(systemBridge, ['总览', '运维', '控制台', '配置']), 'system_bridge_missing_expected_labels');
@@ -103,11 +105,17 @@ assert(commonCss.includes('var(--nav-count, 6)'), 'common_css_missing_nav_defaul
 const indexHtml = readStatic('index.html');
 assert(indexHtml.includes('id="actionConfigLink"'), 'home_missing_config_entry');
 assert(indexHtml.includes('/ibkr_config.html'), 'home_config_entry_missing_href');
+assert(includesAll(indexHtml, ["services['ibkr-backtest']", "name: 'Backtest'"]), 'home_stack_missing_backtest_service_row');
 
 const systemHtml = readStatic('ibkr_system.html');
-const systemJs = readStatic('assets/js/pages/ibkr_system/page.js');
+const systemJs = readPageScriptBundle(
+  'ibkr_system.html',
+  'assets/js/pages/ibkr_system/',
+  'assets/js/pages/ibkr_system/page.js',
+);
 assert(systemHtml.includes('运维摘要'), 'system_missing_ops_summary_section');
 assert(systemJs.includes('ops-summary-link') && systemJs.includes('/ibkr_monitor.html'), 'system_summary_missing_monitor_link');
+assert(includesAll(systemJs, ["'ibkr-backtest'", 'Backtest Service', 'backtestIdle', 'IB client']), 'system_summary_missing_backtest_idle_or_client_copy');
 
 const runtimeHtml = readStatic('ibkr_runtime.html');
 const runtimeJs = readPageScriptBundle(
@@ -120,7 +128,8 @@ assert(runtimeJs.includes('runtime-link-action') && runtimeJs.includes('/ibkr_mo
 assert(includesAll(runtimeJs, ['History Fetch', 'Watchlist Topup', 'Canonical Trace', 'History Active Requests']), 'runtime_missing_history_watchlist_monitoring');
 assert(runtimeHtml.includes('核心模块控制') && runtimeHtml.includes('id="serviceControlGrid"'), 'runtime_missing_service_control_panel');
 assert(runtimeJs.includes('/api/custom/ibkr/services/action'), 'runtime_missing_service_action_api');
-assert(includesAll(runtimeJs, ['ibkr-runtime', 'ibkr-gateway', 'ibkr-compute', 'ibkr-scheduler']), 'runtime_service_control_missing_core_services');
+assert(includesAll(runtimeJs, ['ibkr-runtime', 'ibkr-gateway', 'ibkr-compute', 'ibkr-backtest', 'ibkr-scheduler']), 'runtime_service_control_missing_core_services');
+assert(includesAll(runtimeJs, ["service: 'ibkr-backtest'", 'Backtest Service']), 'runtime_service_control_missing_backtest_card');
 assert(includesAll(runtimeJs, ['shouldShowServiceStopAction', '停止服务', "'stop'"]), 'runtime_service_control_missing_stop_action');
 assert(includesAll(runtimeHtml, ['runtimeFlowToggleButton', '全部急停', '恢复运行开关', 'runtime-control-danger']), 'runtime_trimmed_controls_missing');
 assert(runtimeJs.includes('recover_all') && runtimeJs.includes('/api/custom/ibkr/recover'), 'runtime_missing_recover_action');
@@ -137,8 +146,9 @@ assert(runtimeUnexpectedStaticActions.length === 0, `runtime_unexpected_static_a
 const monitorHtml = readStatic('ibkr_monitor.html');
 assert(monitorHtml.includes('ops-route-panel'), 'monitor_missing_ops_route_panel');
 assert(includesAll(monitorHtml, ['监控大盘', '预热', '数据质量', '历史重建']), 'monitor_ops_route_missing_labels');
-assert(includesAll(monitorHtml, ['大盘行情雷达', '关键监控指标带', 'marketOverviewGrid', 'criticalMetricsGrid']), 'monitor_missing_market_or_critical_metrics');
+assert(includesAll(monitorHtml, ['其它市场监控', '关键监控指标带', 'marketOverviewGrid', 'criticalMetricsGrid']), 'monitor_missing_market_or_critical_metrics');
 assert(includesAll(monitorHtml, ['History Fetch', 'Watchlist Topup', 'Backfill Trace', 'Watchlist Load']), 'monitor_missing_history_watchlist_cards');
+assert(monitorHtml.includes("'ibkr-backtest'"), 'monitor_service_order_missing_backtest');
 
 const warmupHtml = readStatic('ibkr_warmup.html');
 assert(warmupHtml.includes('warmup-guide-section'), 'warmup_missing_guide_section');
@@ -160,4 +170,4 @@ if (issues.length) {
   process.exit(1);
 }
 
-console.log(JSON.stringify({ ok: true, checks: 38, staticRoot }, null, 2));
+console.log(JSON.stringify({ ok: true, checks: 42, staticRoot }, null, 2));

@@ -423,6 +423,54 @@ class ControlPlaneSplitStackSchedulerJobsTest(unittest.TestCase):
         self.assertTrue(events)
         self.assertIn("ibkr-scheduler degraded", events[0]["detail"]["原因"])
 
+    def test_system_status_reminder_includes_backtest_service_semantics(self):
+        events = []
+
+        payload, status_code = build_system_status_reminder_response(
+            payload={"environment": "live"},
+            normalize_environment=lambda value, default="live": str(value or default),
+            time_strings=lambda: {"us": "2026-04-23 12:12:00", "cn": "2026-04-24 00:12:00", "date": "2026-04-23"},
+            build_system_summary_payload=lambda environment, lite_mode=False: {
+                "status": "running",
+                "ibkr_compute": {"status": "running"},
+                "ibkr_runtime": {"status": "running"},
+                "today": {"ibkr_bars": 1, "ibkr_signals": 0, "orders": 0},
+            },
+            build_system_monitor_payload=lambda environment: {
+                "status": "ok",
+                "runtime": {
+                    "status": "running",
+                    "session": {"authenticated": True},
+                    "websocket": {"connected": True, "ready": True},
+                    "gateway": {"running": True, "reachable": True},
+                },
+                "compute": {"status": "running"},
+                "scheduler": {"status": "running", "latest_ingested_bar_time_ms": 1, "dispatch_lag_min": 0.0},
+                "service_monitor": {
+                    "status_counts": {"running": 8},
+                    "services": {
+                        "ibkr-backtest": {
+                            "status": "running",
+                            "worker_status": "idle",
+                            "ib_gateway_client_id": 81,
+                        },
+                    },
+                },
+                "flags": [],
+            },
+            emit_system_event=lambda **kwargs: events.append(kwargs) or {"ok": True, "notified": True},
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["job_id"], "system_status_reminder")
+        self.assertTrue(events)
+        detail = events[0]["detail"]
+        self.assertIn("Backtest running", detail["系统服务"])
+        self.assertIn("worker idle", detail["Backtest"])
+        self.assertIn("client 81", detail["Backtest"])
+        self.assertIn("non-blocking", detail["Backtest"])
+        self.assertIn("running:8", detail["服务统计"])
+
     def test_system_monitor_alert_job_emits_on_warning_flags(self):
         states = {}
         events = []
@@ -447,7 +495,16 @@ class ControlPlaneSplitStackSchedulerJobsTest(unittest.TestCase):
                 "flags": [{"code": "websocket_not_ready", "severity": "warning", "title": "WS", "detail": "offline"}],
                 "runtime": {"session": {"authenticated": False}, "websocket": {"connected": False}},
                 "scheduler": {"latest_ingested_bar_time_ms": 1, "dispatch_lag_min": 4.0},
-                "service_monitor": {"status_counts": {"running": 5, "degraded": 1}},
+                "service_monitor": {
+                    "status_counts": {"running": 7, "degraded": 1},
+                    "services": {
+                        "ibkr-backtest": {
+                            "status": "running",
+                            "worker_status": "idle",
+                            "ib_gateway_client_id": 81,
+                        },
+                    },
+                },
                 "pocketbase": {"disk": {"filesystem": {"used_pct": 10}}},
             },
             emit_system_event=emit_system_event,
@@ -459,5 +516,6 @@ class ControlPlaneSplitStackSchedulerJobsTest(unittest.TestCase):
         self.assertTrue(payload["triggered"])
         self.assertEqual(payload["job_id"], "system_monitor_alert_guard")
         self.assertEqual(events[0]["title"], "IBKR Monitor 告警（1项）")
+        self.assertIn("client 81", events[0]["detail"]["Backtest"])
+        self.assertIn("running:7", events[0]["detail"]["服务统计"])
         self.assertIn(("system_monitor_alert", "live"), states)
-

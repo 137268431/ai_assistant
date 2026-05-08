@@ -145,6 +145,39 @@ def _format_service_items(items: list[dict[str, str]], *, limit: int = 3) -> str
     return "；".join(parts)
 
 
+def _service_counts_line(service_monitor: dict[str, Any]) -> str:
+    services = _as_dict(service_monitor.get("services"))
+    counts = _as_dict(service_monitor.get("status_counts"))
+    parts = []
+    if services:
+        parts.append(f"total {len(services)}")
+    parts.extend(
+        f"{_to_text(status).lower()}:{_to_int(count, 0)}"
+        for status, count in sorted(counts.items())
+        if _to_int(count, 0) > 0
+    )
+    return " | ".join(parts) or "n/a"
+
+
+def _backtest_service_line(services: dict[str, Any]) -> str:
+    service = _as_dict(services.get("ibkr-backtest"))
+    if not service:
+        return ""
+    status = _to_text(service.get("status")) or "unknown"
+    worker = _to_text(service.get("worker_status") or service.get("readiness_phase"))
+    client_id = _to_int(service.get("ib_gateway_client_id"), 0)
+    active_runs = _to_int(service.get("active_runs"), 0)
+    queue_depth = _to_int(service.get("queue_depth"), 0)
+    parts = [f"Backtest {status}"]
+    if worker and worker.lower() != status.lower():
+        parts.append(f"worker {worker}")
+    if client_id:
+        parts.append(f"client {client_id}")
+    if active_runs or queue_depth:
+        parts.append(f"active {active_runs} / queue {queue_depth}")
+    return " | ".join(parts)
+
+
 def _actionable_degraded_services(
     degraded_services: list[dict[str, str]],
     *,
@@ -279,16 +312,19 @@ def _status_overview(snapshot: dict[str, Any]) -> tuple[str, str]:
     runtime = _as_dict(snapshot.get("runtime"))
     compute = _as_dict(snapshot.get("compute"))
     scheduler = _as_dict(snapshot.get("scheduler"))
+    services = _as_dict(snapshot.get("services"))
     session = _as_dict(snapshot.get("session"))
     websocket = _as_dict(snapshot.get("websocket"))
     gateway = _as_dict(snapshot.get("gateway"))
-    service_line = " | ".join(
-        [
-            f"Compute {_to_text(compute.get('status')) or 'unknown'}",
-            f"Runtime {_to_text(runtime.get('status')) or 'unknown'}",
-            f"Scheduler {_to_text(scheduler.get('status')) or 'unknown'}",
-        ]
-    )
+    service_parts = [
+        f"Compute {_to_text(compute.get('status')) or 'unknown'}",
+        f"Runtime {_to_text(runtime.get('status')) or 'unknown'}",
+        f"Scheduler {_to_text(scheduler.get('status')) or 'unknown'}",
+    ]
+    backtest_line = _backtest_service_line(services)
+    if backtest_line:
+        service_parts.append(backtest_line)
+    service_line = " | ".join(service_parts)
     connection_line = " | ".join(
         [
             f"Gateway {'running' if gateway.get('running') or gateway.get('reachable') else 'offline'}",
@@ -390,8 +426,11 @@ def _heartbeat_detail(snapshot: dict[str, Any], *, timestamp_us: str) -> dict[st
     scheduler = _as_dict(snapshot.get("scheduler"))
     daily_scan = _as_dict(snapshot.get("daily_scan"))
     today = _as_dict(snapshot.get("today"))
+    service_monitor = _as_dict(snapshot.get("service_monitor"))
+    services = _as_dict(snapshot.get("services"))
     human = _human_issue_detail(snapshot)
     services_line, connection_line = _status_overview(snapshot)
+    backtest_line = _backtest_service_line(services)
     detail = {
         "检查时间": timestamp_us,
         "结论": human["结论"],
@@ -399,6 +438,7 @@ def _heartbeat_detail(snapshot: dict[str, Any], *, timestamp_us: str) -> dict[st
         "原因": human["原因"],
         "建议": human["建议"],
         "系统服务": services_line,
+        "服务统计": _service_counts_line(service_monitor),
         "IBKR链路": connection_line,
         "状态": _to_text(snapshot.get("monitor_status") or snapshot.get("summary_status")) or "unknown",
         "DispatchLag": (
@@ -413,6 +453,8 @@ def _heartbeat_detail(snapshot: dict[str, Any], *, timestamp_us: str) -> dict[st
             f"日筛 {_to_text(daily_scan.get('status')) or 'unknown'}"
         ),
     }
+    if backtest_line:
+        detail["Backtest"] = f"{backtest_line} | independent non-blocking"
     if snapshot.get("unhealthy"):
         offline_text = _format_service_items([_as_dict(item) for item in snapshot.get("offline_services") or []])
         degraded_text = _format_service_items([_as_dict(item) for item in snapshot.get("actionable_degraded_services") or []])

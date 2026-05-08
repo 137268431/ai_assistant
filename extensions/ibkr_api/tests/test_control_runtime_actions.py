@@ -220,6 +220,52 @@ class ControlRuntimeActionsTest(unittest.TestCase):
         self.assertEqual("systemctl", run_mock.call_args_list[1].args[0][0])
         self.assertEqual("show", run_mock.call_args_list[1].args[0][1])
 
+    def test_service_action_controls_backtest_with_whitelisted_systemctl(self):
+        cases = [
+            ("start", "active", "running", 5105),
+            ("stop", "inactive", "dead", 0),
+            ("restart", "active", "running", 5106),
+        ]
+
+        for action, active_state, sub_state, main_pid in cases:
+            with self.subTest(action=action):
+                run_results = [
+                    mock.Mock(returncode=0, stdout="", stderr=""),
+                    mock.Mock(
+                        returncode=0,
+                        stdout=(
+                            "Id=ibkr-backtest.service\n"
+                            f"ActiveState={active_state}\n"
+                            f"SubState={sub_state}\n"
+                            f"MainPID={main_pid}\n"
+                            "UnitFileState=enabled\n"
+                            "ExecMainStatus=0\n"
+                            "Result=success\n"
+                        ),
+                        stderr="",
+                    ),
+                ]
+
+                with mock.patch.object(
+                    api_app_mod.request,
+                    "get_json",
+                    return_value={"environment": "live", "service": "ibkr-backtest", "action": action, "source": "runtime_page"},
+                ):
+                    with mock.patch("ibkr_api.control.actions.subprocess.run", side_effect=run_results) as run_mock:
+                        with mock.patch.object(api_app_mod, "_deliver_system_event_notification", return_value={"success": True, "message_id": "evt-backtest"}):
+                            with mock.patch.object(api_app_mod, "_write_system_event_record", return_value=True):
+                                payload = api_app_mod.custom_ibkr_service_action()
+
+                self.assertTrue(payload["ok"])
+                self.assertEqual("ibkr-backtest", payload["service"])
+                self.assertEqual("ibkr-backtest", payload["unit"])
+                self.assertEqual(action, payload["action"])
+                self.assertEqual(active_state, payload["service_state"]["active_state"])
+                self.assertEqual(main_pid, payload["service_state"]["main_pid"])
+                self.assertEqual(["systemctl", action, "ibkr-backtest"], run_mock.call_args_list[0].args[0])
+                self.assertEqual("systemctl", run_mock.call_args_list[1].args[0][0])
+                self.assertEqual("show", run_mock.call_args_list[1].args[0][1])
+
     def test_service_action_rejects_non_whitelisted_service_without_systemctl(self):
         with mock.patch.object(
             api_app_mod.request,

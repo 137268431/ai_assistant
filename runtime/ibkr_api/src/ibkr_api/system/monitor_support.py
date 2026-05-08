@@ -7,6 +7,7 @@ import requests
 
 from ibkr_api.system.service_state import (
     apply_service_monitor_to_topology,
+    derive_backtest_state,
     derive_compute_state,
     derive_gateway_state,
     derive_runtime_state,
@@ -178,6 +179,7 @@ def derive_monitor_service_map(
     *,
     console_probe: dict[str, Any],
     pb_health: dict[str, Any],
+    backtest_health: dict[str, Any] | None = None,
     build_service_topology: BuildServiceTopology,
 ) -> dict[str, Any]:
     topology = base_payload.get("service_topology") if isinstance(base_payload.get("service_topology"), dict) else build_service_topology()
@@ -241,6 +243,26 @@ def derive_monitor_service_map(
         return False
 
     observed_at = utc_timestamp()
+    backtest_probe = backtest_health if isinstance(backtest_health, dict) else {}
+    if not backtest_probe:
+        backtest_probe = base_payload.get("backtest_service") if isinstance(base_payload.get("backtest_service"), dict) else {}
+    if not backtest_probe:
+        backtest_probe = base_payload.get("backtest") if isinstance(base_payload.get("backtest"), dict) else {}
+    backtest_meta = _topology_meta("ibkr-backtest")
+    backtest_state = (
+        derive_backtest_state(backtest_probe, observed_at=observed_at)
+        if backtest_probe
+        else {
+            "service_name": "ibkr-backtest",
+            "status": str(backtest_meta.get("status") or "unknown").strip().lower() or "unknown",
+            "ready": False,
+            "readiness_phase": "unknown",
+            "status_source": "topology",
+            "last_observed_at": observed_at,
+            "stale": False,
+            "detail": str(backtest_meta.get("responsibility") or "backtest health not probed").strip(),
+        }
+    )
     console_meta = _topology_meta("ibkr-console")
     console_running = bool(console_probe.get("ok"))
     pb_meta = _topology_meta("pocketbase")
@@ -332,6 +354,10 @@ def derive_monitor_service_map(
                 f"tracked {int(compute.get('tracked_cursors') or 0)}",
             ),
         },
+        "ibkr-backtest": {
+            **backtest_meta,
+            **backtest_state,
+        },
         "ibkr-runtime": {
             **_topology_meta("ibkr-runtime"),
             "status": runtime_status,
@@ -399,6 +425,7 @@ def build_system_monitor_payload(
     request_json: RequestJson,
     pb_base_url: str,
     console_base_url: str,
+    backtest_base_url: str = "",
     probe_console_status: ProbeConsoleStatus,
     load_effective_config_map: LoadEffectiveConfigMap,
     monitor_config_keys: tuple[str, ...],
@@ -451,6 +478,26 @@ def build_system_monitor_payload(
             "error": str(exc),
             "target_url": f"{str(pb_base_url or '').rstrip('/')}/api/health",
         }
+    if str(backtest_base_url or "").strip():
+        try:
+            backtest_health = request_json(backtest_base_url, "/health", params=[("environment", runtime_environment)], timeout=5)
+        except Exception as exc:
+            builder_errors.append(_monitor_builder_error("backtest_health", exc))
+            backtest_health = {
+                "ok": False,
+                "status_code": 0,
+                "payload": {},
+                "error": str(exc),
+                "target_url": f"{str(backtest_base_url or '').rstrip('/')}/health",
+            }
+    else:
+        backtest_health = {
+            "ok": False,
+            "status_code": 0,
+            "payload": {},
+            "error": "backtest_base_url_missing",
+            "target_url": "",
+        }
     try:
         console_probe_payload = _call_console_probe(probe_console_status, console_base_url)
     except Exception as exc:
@@ -492,6 +539,12 @@ def build_system_monitor_payload(
         "error": base_monitor_result.get("error") or "",
     }
     merged_payload["scheduler"] = scheduler_summary
+    merged_payload["backtest_service"] = {
+        **backtest_health,
+        "payload": as_dict(backtest_health.get("payload")),
+    }
+    if as_dict(merged_payload["backtest_service"].get("payload")).get("backtest"):
+        merged_payload["backtest"] = as_dict(as_dict(merged_payload["backtest_service"].get("payload")).get("backtest"))
     merged_payload["control_plane"] = {
         "api": {
             "ok": True,
@@ -501,7 +554,11 @@ def build_system_monitor_payload(
         "scheduler": scheduler_summary,
     }
     try:
-        merged_payload["service_topology"] = merge_service_topology(merged_payload, build_service_topology())
+        merged_payload["service_topology"] = merge_service_topology(
+            merged_payload,
+            as_dict(merged_payload["backtest_service"].get("payload")),
+            build_service_topology(),
+        )
     except Exception as exc:
         builder_errors.append(_monitor_builder_error("service_topology", exc))
         merged_payload["service_topology"] = build_service_topology()
@@ -516,6 +573,7 @@ def build_system_monitor_payload(
             scheduler_summary,
             console_probe=console_probe_payload,
             pb_health=pb_health,
+            backtest_health=merged_payload["backtest_service"],
             build_service_topology=build_service_topology,
         )
     except Exception as exc:

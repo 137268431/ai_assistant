@@ -33,8 +33,8 @@ def _default_client_id() -> int:
         profile_key = f"IBGW_{service_profile.upper()}_CLIENT_ID"
         if str(os.environ.get(profile_key, "") or "").strip():
             return _env_int(profile_key, base_client_id)
-    if service_profile in {"compute", "api", "scheduler"}:
-        return base_client_id + {"compute": 20, "api": 30, "scheduler": 40}[service_profile]
+    if service_profile in {"compute", "api", "scheduler", "backtest"}:
+        return base_client_id + {"compute": 20, "api": 30, "scheduler": 40, "backtest": 50}[service_profile]
     return base_client_id
 
 

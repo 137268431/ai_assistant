@@ -199,6 +199,18 @@ class ControlPlaneSplitStackStatusMonitorTest(unittest.TestCase):
         request_results = [
             {"ok": True, "status_code": 200, "payload": base_monitor_payload, "target_url": "http://compute/ibkr/monitor", "error": ""},
             {"ok": True, "status_code": 200, "payload": {"code": 200, "message": "OK"}, "target_url": "http://pb/api/health", "error": ""},
+            {
+                "ok": True,
+                "status_code": 200,
+                "payload": {
+                    "ok": True,
+                    "status": "running",
+                    "service": "ibkr-backtest",
+                    "backtest": {"ok": True, "status": "idle", "ib_gateway_client_id": 81},
+                },
+                "target_url": "http://backtest/health",
+                "error": "",
+            },
         ]
 
         with mock.patch.object(api_app_mod.config, "refresh", return_value=None):
@@ -253,6 +265,18 @@ class ControlPlaneSplitStackStatusMonitorTest(unittest.TestCase):
         request_results = [
             {"ok": False, "status_code": 200, "payload": base_monitor_payload, "target_url": "http://compute/ibkr/monitor", "error": ""},
             {"ok": True, "status_code": 200, "payload": {"code": 200, "message": "OK"}, "target_url": "http://pb/api/health", "error": ""},
+            {
+                "ok": True,
+                "status_code": 200,
+                "payload": {
+                    "ok": True,
+                    "status": "running",
+                    "service": "ibkr-backtest",
+                    "backtest": {"ok": True, "status": "idle", "ib_gateway_client_id": 81},
+                },
+                "target_url": "http://backtest/health",
+                "error": "",
+            },
         ]
 
         with mock.patch.object(api_app_mod.config, "refresh", return_value=None):

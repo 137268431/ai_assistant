@@ -85,6 +85,7 @@ def build_derive_monitor_service_map(*, globals_dict: dict[str, Any], support: C
         *,
         console_probe: dict[str, Any],
         pb_health: dict[str, Any],
+        backtest_health: dict[str, Any] | None = None,
         build_service_topology_fn=None,
         build_service_topology: Any = None,
     ) -> dict[str, Any]:
@@ -95,6 +96,7 @@ def build_derive_monitor_service_map(*, globals_dict: dict[str, Any], support: C
             scheduler_summary,
             console_probe=console_probe,
             pb_health=pb_health,
+            backtest_health=backtest_health,
             build_service_topology=topology_builder,
         )
 
@@ -126,6 +128,7 @@ def build_system_monitor_payload(
             request_json=globals_dict["_request_json"],
             pb_base_url=pb_base_url,
             console_base_url=globals_dict["_console_base_url"](),
+            backtest_base_url=str(globals_dict.get("BACKTEST_BASE_URL") or "http://127.0.0.1:5105").rstrip("/"),
             probe_console_status=globals_dict["_probe_console_status"],
             load_effective_config_map=globals_dict["_load_effective_config_map"],
             monitor_config_keys=monitor_config_keys,

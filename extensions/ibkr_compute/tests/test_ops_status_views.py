@@ -115,6 +115,23 @@ def _build_fake_app():
     return app
 
 
+def _build_service_topology_stub():
+    return {
+        "service_profile": "compute",
+        "runtime_mode": "remote",
+        "services": {
+            "ibkr-backtest": {
+                "service_name": "ibkr-backtest",
+                "kind": "backtest_plane",
+                "fault_domain": "backtest_plane",
+                "owner": "ibkr-backtest",
+                "status": "peer",
+                "restart_independent": True,
+            }
+        },
+    }
+
+
 class OpsStatusViewsTest(unittest.TestCase):
     def test_snapshot_engine_items_uses_compute_lock(self):
         fake_app = _build_fake_app()
@@ -126,13 +143,14 @@ class OpsStatusViewsTest(unittest.TestCase):
 
     def test_build_status_response_defaults_to_lite_snapshot(self):
         fake_app = _build_fake_app()
+        topology = _build_service_topology_stub()
 
         with mock.patch("ibkr_compute.api.ops.status_views.get_app_module", return_value=fake_app):
             with mock.patch("ibkr_compute.api.ops.status_views.get_requested_environment", return_value="live"):
                 with mock.patch("ibkr_compute.api.ops.status_views.get_service_profile", return_value="compute"):
                     with mock.patch("ibkr_compute.api.ops.status_views.get_runtime_mode", return_value="remote"):
                         with mock.patch("ibkr_compute.api.ops.status_views.get_compute_startup_preload_state", return_value={"status": "idle"}):
-                            with mock.patch("ibkr_compute.api.ops.status_views._build_topology_payload", return_value={"services": {}}):
+                            with mock.patch("ibkr_compute.api.ops.status_views._build_topology_payload", return_value=topology):
                                 with mock.patch("ibkr_compute.api.ops.status_views.request", SimpleNamespace(args={})):
                                     with mock.patch("ibkr_compute.api.ops.status_views.jsonify", side_effect=lambda payload: payload):
                                         payload = build_status_response()
@@ -143,6 +161,9 @@ class OpsStatusViewsTest(unittest.TestCase):
         self.assertFalse(payload["engines_included"])
         self.assertEqual(payload["status_mode"], "lite")
         self.assertEqual(payload["engines"], {})
+        self.assertEqual({"status": "idle"}, payload["backtest"])
+        self.assertIn("ibkr-backtest", payload["service_topology"]["services"])
+        self.assertEqual("backtest_plane", payload["service_topology"]["services"]["ibkr-backtest"]["fault_domain"])
 
     def test_build_status_response_includes_engines_when_full_requested(self):
         fake_app = _build_fake_app()

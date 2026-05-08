@@ -649,10 +649,18 @@ async function collectPageExpectationIssues(page, url, mobile) {
         const summaryText = String(document.getElementById('serviceTopologyArea')?.textContent || '');
         const summaryLink = document.querySelector('#serviceTopologyArea .ops-summary-link');
         const summaryLinkHref = String(summaryLink?.getAttribute('href') || '');
+        const serviceSummaryCards = Array.from(document.querySelectorAll('#serviceTopologyArea .ops-summary-card'));
+        const servicesCard = serviceSummaryCards.find((card) => {
+          const label = String(card.querySelector('.ops-summary-label')?.textContent || '').trim();
+          return label === 'Services';
+        });
+        const serviceCount = Number(String(servicesCard?.querySelector('.ops-summary-value')?.textContent || '0').trim());
         if (!summaryText.includes('运维大盘')) issues.push('missing_system_ops_summary_copy');
         if (!summaryLink || !/\/ibkr_monitor\.html/.test(summaryLinkHref)) {
           issues.push(`missing_system_ops_summary_link:${summaryLinkHref || 'empty'}`);
         }
+        if (!servicesCard) issues.push('missing_system_services_count_card');
+        if (Number.isFinite(serviceCount) && serviceCount < 8) issues.push(`system_services_count:${serviceCount}`);
       }
       if (expected.warmupSummary) {
         const summaryText = String(document.getElementById('serviceTopologyBody')?.textContent || '');
@@ -676,6 +684,10 @@ async function collectPageExpectationIssues(page, url, mobile) {
         ['监控大盘', '预热', '数据质量', '历史重建'].forEach((label) => {
           if (!routeLabels.includes(label)) issues.push(`missing_monitor_ops_route:${label}`);
         });
+        const systemServiceCount = document.querySelectorAll('#systemMonitorGrid .metric-card').length;
+        const systemMonitorText = String(document.getElementById('systemMonitorGrid')?.textContent || '');
+        if (systemServiceCount < 8) issues.push(`monitor_service_card_count:${systemServiceCount}`);
+        if (!systemMonitorText.includes('ibkr-backtest')) issues.push('monitor_service_missing_ibkr_backtest');
       }
       if (expected.qualityRoute) {
         const routeText = String(document.querySelector('.quality-route-panel')?.textContent || '');
@@ -697,10 +709,14 @@ async function collectPageExpectationIssues(page, url, mobile) {
         const summaryText = String(document.getElementById('serviceTopologyArea')?.textContent || '');
         const summaryLink = document.querySelector('#serviceTopologyArea .runtime-link-action');
         const summaryLinkHref = String(summaryLink?.getAttribute('href') || '');
+        const serviceControlCount = document.querySelectorAll('#serviceControlGrid .service-control-card').length;
+        const serviceControlText = String(document.getElementById('serviceControlGrid')?.textContent || '');
         if (!summaryText.includes('运维大盘')) issues.push('missing_runtime_ops_summary_copy');
         if (!summaryLink || !/\/ibkr_monitor\.html/.test(summaryLinkHref)) {
           issues.push(`missing_runtime_ops_summary_link:${summaryLinkHref || 'empty'}`);
         }
+        if (serviceControlCount < 5) issues.push(`runtime_service_control_count:${serviceControlCount}`);
+        if (!serviceControlText.includes('ibkr-backtest')) issues.push('runtime_service_control_missing_ibkr_backtest');
       }
       return issues;
     }, expectedSystemPage);

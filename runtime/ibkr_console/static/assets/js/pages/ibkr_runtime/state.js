@@ -53,7 +53,14 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 service: 'ibkr-compute',
                 title: 'Compute Service',
                 kicker: 'COMPUTE',
-                copy: 'indicators / signals / backtests',
+                copy: 'indicators / signals / data quality',
+                highRiskRestart: false,
+            },
+            {
+                service: 'ibkr-backtest',
+                title: 'Backtest Service',
+                kicker: 'BACKTEST',
+                copy: 'replay / backtest worker / cleanup',
                 highRiskRestart: false,
             },
             {
@@ -64,4 +71,3 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 highRiskRestart: false,
             },
         ];
-

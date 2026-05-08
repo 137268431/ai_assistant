@@ -37,6 +37,14 @@ async function inspectPage(browser, url, deviceName = null) {
   const bridgeTexts = await page.locator("#pageBridge .page-bridge-link").allTextContents();
   const contextText = await page.locator("#contextBar").innerText().catch(() => "");
   const bodyText = await page.locator("body").innerText();
+  const serviceControlText = await page.locator("#serviceControlGrid").innerText().catch(() => "");
+  const serviceControlCount = await page.locator("#serviceControlGrid .service-control-card").count().catch(() => 0);
+  const path = new URL(url).pathname;
+
+  if (path === "/ibkr_runtime.html") {
+    if (serviceControlCount < 5) errors.push(`runtime_service_control_count:${serviceControlCount}`);
+    if (!serviceControlText.includes("ibkr-backtest")) errors.push("runtime_service_control_missing_ibkr_backtest");
+  }
 
   const summary = {
     url,
@@ -49,6 +57,8 @@ async function inspectPage(browser, url, deviceName = null) {
     contextText,
     hasGatewayActive: /Gateway\s+ACTIVE|Gateway\s+RUNNING/.test(bodyText),
     hasChallengeHint: bodyText.includes("仅在手机上点确认不会完成验证") || bodyText.includes("Challenge/Response"),
+    serviceControlCount,
+    hasBacktestServiceControl: serviceControlText.includes("ibkr-backtest"),
     errors,
   };
 

@@ -362,14 +362,7 @@ class BacktestOrchestrationMixin:
 
     def _build_history_broker(self) -> BrokerAdapter:
         base_client_id = self._get_env_int("IBGW_CLIENT_ID", 31)
-        profile = str(os.environ.get("IBKR_SERVICE_PROFILE") or "").strip().lower()
-        offset_by_profile = {
-            "compute": 20,
-            "runtime": 21,
-            "scheduler": 22,
-            "api": 23,
-        }
-        client_id = self._get_env_int("IBGW_BACKTEST_CLIENT_ID", base_client_id + offset_by_profile.get(profile, 20))
+        client_id = self._get_env_int("IBGW_BACKTEST_CLIENT_ID", base_client_id + 50)
         return BrokerAdapter(client_id=client_id)
 
     @staticmethod

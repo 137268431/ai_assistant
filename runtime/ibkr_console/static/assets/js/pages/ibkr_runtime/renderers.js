@@ -161,7 +161,7 @@
             const topologyServices = getOrderedTopologyServices(status?.service_topology || {});
             const topologyReadyCount = topologyServices.filter((service) => {
                 const serviceStatus = String(service?.status || '').trim().toLowerCase();
-                return ['running', 'peer', 'external', 'online'].includes(serviceStatus);
+                return ['running', 'peer', 'external', 'online', 'idle'].includes(serviceStatus);
             }).length;
             const topologyCard = {
                 tone: topologyServices.length && topologyReadyCount >= topologyServices.length ? 'ok' : 'info',
@@ -171,7 +171,7 @@
                     : 'runtime topology pending',
                 copy: topologyServices.length
                     ? '控制台只保留操作前摘要；服务拓扑、主机健康和 PB 磁盘统一在运维大盘排查。'
-                    : '等待 service_topology 返回 runtime / compute / gateway / pocketbase。',
+                    : '等待 service_topology 返回 runtime / compute / backtest / gateway / pocketbase。',
                 links: [
                     { label: '打开运维大盘', path: '/ibkr_monitor.html' },
                 ],
@@ -200,7 +200,7 @@
                 : {};
             const ordered = [];
             const seen = new Set();
-            ['ibkr-runtime', 'ibkr-compute', 'ibkr-gateway', 'pocketbase'].forEach((name) => {
+            ['ibkr-runtime', 'ibkr-compute', 'ibkr-backtest', 'ibkr-gateway', 'pocketbase'].forEach((name) => {
                 if (!topology[name]) return;
                 ordered.push({
                     ...topology[name],
@@ -408,8 +408,9 @@
             };
             const cards = [
                 summarizeService('ibkr-runtime', 'Runtime', `mode ${runtimeMode}`),
+                summarizeService('ibkr-compute', 'Compute', 'indicators / signals / data quality'),
+                summarizeService('ibkr-backtest', 'Backtest', 'replay / backtest worker · independent'),
                 summarizeService('ibkr-gateway', 'Gateway', 'IBC + IB Gateway session path'),
-                summarizeService('ibkr-compute', 'Compute', 'compute engines / manual actions'),
                 summarizeService('pocketbase', 'PocketBase', 'state / config / event store'),
             ];
 
@@ -493,8 +494,12 @@
                 || summary?.config?.ibkr_compute_internal_url
                 || status?.service_topology?.services?.['ibkr-compute']?.internal_url
                 || 'http://127.0.0.1:5100';
+            const backtestBase = runtimeConfig.find((item) => item.key === 'ibkr_backtest_internal_url')?.value
+                || summary?.config?.ibkr_backtest_internal_url
+                || status?.service_topology?.services?.['ibkr-backtest']?.internal_url
+                || 'http://127.0.0.1:5105';
             const runtimeService = status?.service_topology?.services?.['ibkr-runtime'] || {};
-            document.getElementById('computeBaseInfo').textContent = `compute base: ${computeBase} · runtime ${String(runtimeService.runtime_mode || '--')} · ${String(runtimeService.internal_url || '--')}`;
+            document.getElementById('computeBaseInfo').textContent = `compute base: ${computeBase} · backtest base: ${backtestBase} · runtime ${String(runtimeService.runtime_mode || '--')} · ${String(runtimeService.internal_url || '--')}`;
             const effectiveReasonLabel = getManualAuthReasonLabel(getEffectiveManualAuthReason(status, twoFactorState, startup));
             const twoFactorMode = String(twoFactorState?.mode || '').trim().toLowerCase();
             const recoveryPhase = String(twoFactorState?.recovery_phase || '').trim().toLowerCase();
@@ -551,6 +556,7 @@
             const sessionAuthenticated = Boolean(status?.session?.authenticated);
             const runtimeService = status?.service_topology?.services?.['ibkr-runtime'] || {};
             const computeService = status?.service_topology?.services?.['ibkr-compute'] || {};
+            const backtestService = status?.service_topology?.services?.['ibkr-backtest'] || {};
             const latestBarWrite = latestBar ? String(getComputedTimeLabel(latestBar)).slice(0, 19) : '--';
             const latestIndicatorCalc = latestIndicator ? String(getComputedTimeLabel(latestIndicator)).slice(0, 19) : '--';
             const latestSignalTime = latestSignal ? String((latestSignal.us_time || latestSignal.created || '--')).slice(0, 19) : '--';
@@ -560,6 +566,10 @@
                 ['Runtime Mode', String(runtimeService.runtime_mode || '--').toUpperCase()],
                 ['Runtime Internal URL', String(runtimeService.internal_url || '--')],
                 ['Compute Upstream', String(computeService.upstream || '--')],
+                ['Backtest Service', String(backtestService.status || '--').toUpperCase()],
+                ['Backtest Worker', String(backtestService.worker_status || backtestService.readiness_phase || '--').toUpperCase()],
+                ['Backtest Internal URL', String(backtestService.internal_url || '--')],
+                ['Backtest Detail', String(backtestService.detail || backtestService.responsibility || 'replay / backtest worker')],
                 ['Restart Independent', runtimeService.restart_independent ? 'YES' : 'NO'],
                 ['Gateway', status?.gateway?.running || status?.gateway?.reachable ? 'ACTIVE' : 'OFFLINE'],
                 ['Gateway Reachable', status?.gateway?.reachable ? 'YES' : 'NO'],
@@ -997,4 +1007,3 @@
                 </div>
             `;
         }
-

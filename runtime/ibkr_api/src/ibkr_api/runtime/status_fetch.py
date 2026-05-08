@@ -131,6 +131,42 @@ def fetch_compute_health(environment: str, *, request_json: RequestJson, compute
     )
 
 
+def fetch_backtest_health(environment: str, *, request_json: RequestJson, backtest_base_url: str, as_dict: AsDict) -> dict[str, Any]:
+    result = _request_environment_payload(
+        backtest_base_url,
+        "/health",
+        environment,
+        request_json=request_json,
+    )
+    return {
+        "payload": as_dict(result.get("payload")),
+        "ok": bool(result.get("ok")),
+        "error": str(result.get("error") or ""),
+        "upstream": f"{backtest_base_url}/health",
+        "status_code": int(result.get("status_code") or 0),
+        "target_url": str(result.get("target_url") or ""),
+        "stale": bool(result.get("stale", False)),
+    }
+
+
+def fetch_backtest_status(environment: str, *, request_json: RequestJson, backtest_base_url: str, as_dict: AsDict) -> dict[str, Any]:
+    result = _request_environment_payload(
+        backtest_base_url,
+        "/backtest/status",
+        environment,
+        request_json=request_json,
+    )
+    return {
+        "payload": as_dict(result.get("payload")),
+        "ok": bool(result.get("ok")),
+        "error": str(result.get("error") or ""),
+        "upstream": f"{backtest_base_url}/backtest/status",
+        "status_code": int(result.get("status_code") or 0),
+        "target_url": str(result.get("target_url") or ""),
+        "stale": bool(result.get("stale", False)),
+    }
+
+
 def fetch_runtime_status(
     environment: str,
     *,
@@ -235,6 +271,8 @@ def merge_service_topology(*payloads: Any, build_service_topology: BuildServiceT
 
 
 __all__ = [
+    "fetch_backtest_health",
+    "fetch_backtest_status",
     "fetch_compute_health",
     "fetch_compute_monitor",
     "fetch_compute_status",

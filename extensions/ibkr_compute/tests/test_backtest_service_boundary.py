@@ -108,6 +108,51 @@ class IbkrApiBacktestProxyBoundaryTest(unittest.TestCase):
 
 
 class IbkrBacktestTopologyBoundaryTest(unittest.TestCase):
+    def test_compute_profile_topology_includes_backtest_peer_boundary(self):
+        env = {
+            "IBKR_SERVICE_PROFILE": "compute",
+            "IBKR_RUNTIME_MODE": "remote",
+            "IBKR_COMPUTE_INTERNAL_URL": f"{COMPUTE_URL}/",
+            "IBKR_BACKTEST_INTERNAL_URL": f"{BACKTEST_URL}/",
+            "IBKR_RUNTIME_INTERNAL_URL": f"{RUNTIME_URL}/",
+            "IBKR_API_INTERNAL_URL": "http://api.internal:5102/",
+            "IBKR_SCHEDULER_INTERNAL_URL": f"{SCHEDULER_URL}/",
+            "PB_BASE_URL": f"{PB_URL}/",
+        }
+        runtime_status = {
+            "service_profile": "runtime",
+            "session": {"authenticated": True},
+            "gateway": {"running": True, "managed_by": "ibkr-runtime", "pid": 42},
+        }
+
+        with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.object(service_topology, "get_remote_runtime_status", side_effect=AssertionError("no live network")):
+                payload = service_topology.build_service_topology(service_status=runtime_status)
+
+        services = payload["services"]
+        expected_core_services = {
+            "pocketbase",
+            "ibkr-console",
+            "ibkr-api",
+            "ibkr-scheduler",
+            "ibkr-compute",
+            "ibkr-backtest",
+            "ibkr-runtime",
+            "ibkr-gateway",
+        }
+        self.assertEqual(expected_core_services, set(services))
+        self.assertEqual(8, len(services))
+
+        backtest = services["ibkr-backtest"]
+        self.assertEqual("compute", payload["service_profile"])
+        self.assertEqual("remote", payload["runtime_mode"])
+        self.assertTrue(payload["restart_independent"])
+        self.assertEqual("peer", backtest["status"])
+        self.assertEqual("backtest_plane", backtest["fault_domain"])
+        self.assertTrue(backtest["restart_independent"])
+        self.assertEqual(BACKTEST_URL, backtest["internal_url"])
+        self.assertEqual("running", services["ibkr-compute"]["status"])
+
     def test_topology_exposes_backtest_as_independent_service(self):
         env = {
             "IBKR_SERVICE_PROFILE": "backtest",

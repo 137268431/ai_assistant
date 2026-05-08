@@ -21,7 +21,7 @@
                 <div>
                     <div class="hero-kicker">IBKR Monitor Dashboard</div>
                     <div class="hero-title">请求、订阅与<span class="accent">主机健康</span>放到同一层</div>
-                    <div class="hero-copy" id="heroCopy">同步 runtime、API 与主机健康。</div>
+                    <div class="hero-copy" id="heroCopy">同步 runtime、API、Backtest 与主机健康。</div>
                 </div>
                 <div class="hero-actions">
                     <button class="refresh-btn page-refresh-trigger" id="refreshBtn" type="button" onclick="loadMonitorData(true)">↻ 手动刷新</button>
@@ -1195,7 +1195,8 @@
         function getSystemServiceTone(status) {
             const text = String(status || '').trim().toLowerCase();
             if (['running', 'ok', 'online', 'ready', 'success'].includes(text)) return 'is-ok';
-            if (['warning', 'warn', 'pending', 'degraded', 'idle', 'disabled', 'embedded', 'expected_remote', 'peer', 'external'].includes(text)) return 'is-warn';
+            if (text === 'idle') return 'is-neutral';
+            if (['warning', 'warn', 'pending', 'degraded', 'disabled', 'embedded', 'expected_remote', 'peer', 'external'].includes(text)) return 'is-warn';
             if (['error', 'offline', 'failed'].includes(text)) return 'is-error';
             return 'is-neutral';
         }
@@ -1207,16 +1208,43 @@
             return 'info';
         }
 
+        function getSystemServiceChipTone(status) {
+            const tone = getSystemServiceTone(status);
+            if (tone === 'is-error') return 'chip-error';
+            if (tone === 'is-warn') return 'chip-warn';
+            if (tone === 'is-neutral') return 'chip-muted';
+            return 'chip-ok';
+        }
+
+        function getMonitorService(payload, serviceName) {
+            const name = String(serviceName || '').trim();
+            const monitorServices = payload?.service_monitor?.services && typeof payload.service_monitor.services === 'object'
+                ? payload.service_monitor.services
+                : {};
+            const topologyServices = payload?.service_topology?.services && typeof payload.service_topology.services === 'object'
+                ? payload.service_topology.services
+                : {};
+            return {
+                ...(topologyServices[name] && typeof topologyServices[name] === 'object' ? topologyServices[name] : {}),
+                ...(monitorServices[name] && typeof monitorServices[name] === 'object' ? monitorServices[name] : {}),
+                service_name: name,
+            };
+        }
+
         function renderSystemMonitor(payload) {
             const metaEl = document.getElementById('systemMonitorMeta');
             const gridEl = document.getElementById('systemMonitorGrid');
             if (!metaEl || !gridEl) return;
 
             const serviceMonitor = payload?.service_monitor || {};
-            const services = serviceMonitor?.services && typeof serviceMonitor.services === 'object'
+            const monitorServices = serviceMonitor?.services && typeof serviceMonitor.services === 'object'
                 ? serviceMonitor.services
                 : {};
-            const orderedNames = ['ibkr-console', 'ibkr-api', 'ibkr-scheduler', 'ibkr-compute', 'ibkr-runtime', 'ibkr-gateway', 'pocketbase'];
+            const topologyServices = payload?.service_topology?.services && typeof payload.service_topology.services === 'object'
+                ? payload.service_topology.services
+                : {};
+            const services = { ...topologyServices, ...monitorServices };
+            const orderedNames = ['ibkr-console', 'ibkr-api', 'ibkr-scheduler', 'ibkr-compute', 'ibkr-backtest', 'ibkr-runtime', 'ibkr-gateway', 'pocketbase'];
             const items = [];
             orderedNames.forEach((name) => {
                 if (!services[name]) return;
@@ -1227,12 +1255,16 @@
                 items.push({ key: name, ...(services[name] || {}) });
             });
 
-            const counts = serviceMonitor?.status_counts && typeof serviceMonitor.status_counts === 'object'
-                ? Object.entries(serviceMonitor.status_counts)
-                    .filter(([, count]) => Number(count || 0) > 0)
-                    .map(([status, count]) => `${String(status).toUpperCase()} ${Number(count || 0)}`)
-                    .join(' · ')
-                : '';
+            const statusCounts = items.reduce((acc, service) => {
+                const status = String(service.status || service.readiness_phase || 'unknown').trim().toLowerCase() || 'unknown';
+                acc[status] = (acc[status] || 0) + 1;
+                return acc;
+            }, {});
+            const counts = Object.entries(statusCounts)
+                .filter(([, count]) => Number(count || 0) > 0)
+                .sort(([left], [right]) => left.localeCompare(right))
+                .map(([status, count]) => `${String(status).toUpperCase()} ${Number(count || 0)}`)
+                .join(' · ');
             metaEl.textContent = [
                 `services ${items.length}`,
                 counts,
@@ -1251,6 +1283,7 @@
                 const endpoint = String(service.internal_url || service.public_url || service.upstream || '').trim();
                 const footer = [
                     service.fault_domain ? `fault ${service.fault_domain}` : '',
+                    service.ib_gateway_client_id ? `client ${service.ib_gateway_client_id}` : '',
                     endpoint ? endpoint : '',
                     responsibility ? responsibility : '',
                 ].filter(Boolean).join(' · ');
@@ -1644,6 +1677,18 @@
             const apiServiceStatus = String((monitorServices['ibkr-api'] || {}).status || 'running').trim().toUpperCase() || 'RUNNING';
             const schedulerServiceStatus = String((monitorServices['ibkr-scheduler'] || {}).status || (payload?.scheduler?.status || '--')).trim().toUpperCase() || '--';
             const consoleServiceStatus = String((monitorServices['ibkr-console'] || {}).status || '--').trim().toUpperCase() || '--';
+            const backtestService = getMonitorService(payload, 'ibkr-backtest');
+            const backtestServiceStatus = String(backtestService.status || '--').trim().toUpperCase() || '--';
+            const backtestWorkerStatus = String(backtestService.worker_status || backtestService.readiness_phase || '').trim().toUpperCase();
+            const backtestChipLabel = backtestWorkerStatus && backtestWorkerStatus !== backtestServiceStatus
+                ? `${backtestServiceStatus}/${backtestWorkerStatus}`
+                : backtestServiceStatus;
+            const backtestCopy = [
+                `backtest ${backtestServiceStatus}`,
+                backtestWorkerStatus ? `worker ${backtestWorkerStatus}` : '',
+                backtestService.active_runs != null ? `active ${formatInteger(backtestService.active_runs)}` : '',
+                backtestService.queue_depth != null ? `queue ${formatInteger(backtestService.queue_depth)}` : '',
+            ].filter(Boolean).join(' · ');
             const schedulerLagLabel = payload?.scheduler?.dispatch_lag_min != null
                 ? formatSeconds(Number(payload.scheduler.dispatch_lag_min || 0) * 60)
                 : '--';
@@ -1686,10 +1731,11 @@
                 { label: `History ${historyStatus.label}`, tone: historyStatus.tone },
                 { label: `Watchlist ${watchlistStatus.label}`, tone: watchlistStatus.tone },
                 { label: `Compute ${computeStatus.label}`, tone: computeStatus.tone },
+                { label: `Backtest ${backtestChipLabel}`, tone: getSystemServiceChipTone(backtestService.status) },
                 { label: `Gate ${tradingGateStatus.label}`, tone: tradingGateStatus.tone },
-                { label: `API ${apiServiceStatus}`, tone: getSystemServiceTone(apiServiceStatus) === 'is-error' ? 'chip-error' : 'chip-ok' },
-                { label: `Scheduler ${schedulerServiceStatus}`, tone: getSystemServiceTone(schedulerServiceStatus) === 'is-error' ? 'chip-error' : (getSystemServiceTone(schedulerServiceStatus) === 'is-warn' ? 'chip-warn' : 'chip-ok') },
-                { label: `Console ${consoleServiceStatus}`, tone: getSystemServiceTone(consoleServiceStatus) === 'is-error' ? 'chip-error' : (getSystemServiceTone(consoleServiceStatus) === 'is-warn' ? 'chip-warn' : 'chip-ok') },
+                { label: `API ${apiServiceStatus}`, tone: getSystemServiceChipTone(apiServiceStatus) },
+                { label: `Scheduler ${schedulerServiceStatus}`, tone: getSystemServiceChipTone(schedulerServiceStatus) },
+                { label: `Console ${consoleServiceStatus}`, tone: getSystemServiceChipTone(consoleServiceStatus) },
                 { label: `Host ${hostStatus.label}`, tone: hostStatus.tone },
                 { label: `PB ${pocketbaseStatus.label}`, tone: pocketbaseStatus.tone },
                 { label: `Env ${String(payload?.requested_environment || currentEnvironment).toUpperCase()}`, tone: 'chip-muted' }
@@ -1712,6 +1758,7 @@
                 historyStatus.summary,
                 watchlistStatus.summary,
                 computeStatus.summary,
+                backtestCopy,
                 tradingGateStatus.summary,
                 `pb_data ${formatBytes(payload?.pocketbase?.disk?.data_size_bytes)}`,
                 `host ${host.hostname || '--'}`,

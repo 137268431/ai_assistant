@@ -32,7 +32,7 @@
                                 <div class="home-stack-title">Split Stack</div>
                                 <a id="overviewStackLink" href="/ibkr_system.html" class="home-stack-link">系统总览</a>
                             </div>
-                            <div class="home-stack-summary" id="overviewStackSummary">正在读取 runtime / compute / pocketbase 拆分状态...</div>
+                            <div class="home-stack-summary" id="overviewStackSummary">正在读取 runtime / compute / backtest / pocketbase 拆分状态...</div>
                             <div class="home-stack-services" id="overviewServiceRows">
                                 <div class="home-stack-service" data-tone="neutral">
                                     <div class="home-stack-service-top">
@@ -469,10 +469,11 @@
             const services = topology?.services || {};
             const hasRuntime = Boolean(services['ibkr-runtime']);
             const hasCompute = Boolean(services['ibkr-compute']);
+            const hasBacktest = Boolean(services['ibkr-backtest']);
             const hasApi = Boolean(services['ibkr-api']);
             const hasScheduler = Boolean(services['ibkr-scheduler']);
-            const splitActive = hasRuntime && hasCompute && hasApi && hasScheduler;
-            const parts = [splitActive ? 'Runtime / Compute / API / Scheduler 已拆分' : 'Split stack 信息不完整'];
+            const splitActive = hasRuntime && hasCompute && hasBacktest && hasApi && hasScheduler;
+            const parts = [splitActive ? 'Runtime / Compute / Backtest / API / Scheduler 已拆分' : 'Split stack 信息不完整'];
             const readyEngines = Number(computeSummary?.ready_engines || 0) || 0;
             const totalEngines = Number(computeSummary?.total_engines || 0) || 0;
             if (totalEngines > 0) {
@@ -502,6 +503,7 @@
             const services = topology?.services || {};
             const runtimeService = services['ibkr-runtime'] || {};
             const computeService = services['ibkr-compute'] || {};
+            const backtestService = services['ibkr-backtest'] || {};
             const apiService = services['ibkr-api'] || {};
             const schedulerService = services['ibkr-scheduler'] || {};
             const gatewayService = services['ibkr-gateway'] || {};
@@ -541,6 +543,16 @@
                     tone: preloadState.status === 'failed'
                         ? 'warning'
                         : (computeWarming ? 'warning' : getHomeServiceTone(computeService.status || computeSummary.status || 'unknown'))
+                },
+                {
+                    name: 'Backtest',
+                    status: backtestService.status || 'unknown',
+                    label: (() => {
+                        const workerStatus = String(backtestService.worker_status || backtestService.readiness_phase || '').trim().toUpperCase();
+                        if (workerStatus && workerStatus !== 'READY' && workerStatus !== 'UNKNOWN') return workerStatus;
+                        return getHomeServiceLabel(backtestService.status || 'unknown');
+                    })(),
+                    tone: getHomeServiceTone(backtestService.status || 'unknown')
                 },
                 {
                     name: 'API',
@@ -600,8 +612,8 @@
             } catch (error) {
                 console.error('加载 split stack 摘要失败:', error);
                 cardEl.dataset.ready = 'ready';
-                summaryEl.textContent = 'Runtime / Compute / API / Scheduler 已拆分状态不可用，进入系统总览查看。';
-                rowsEl.innerHTML = ['Runtime', 'Compute', 'API', 'Scheduler', 'PocketBase'].map((name) => `
+                summaryEl.textContent = 'Runtime / Compute / Backtest / API / Scheduler 已拆分状态不可用，进入系统总览查看。';
+                rowsEl.innerHTML = ['Runtime', 'Compute', 'Backtest', 'API', 'Scheduler', 'PocketBase'].map((name) => `
                     <div class="home-stack-service" data-tone="warning">
                         <div class="home-stack-service-top">
                             <span class="home-stack-service-name">${name}</span>

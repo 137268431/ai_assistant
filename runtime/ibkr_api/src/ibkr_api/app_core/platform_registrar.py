@@ -72,6 +72,8 @@ def register_platform_routes(app, deps: dict[str, Any]) -> dict[str, Any]:
                 "serialize_config_rows": deps["serialize_config_rows"],
                 "merge_service_topology": deps["merge_service_topology"],
                 "fetch_compute_health": deps["fetch_compute_health"],
+                "fetch_backtest_health": deps["fetch_backtest_health"],
+                "fetch_backtest_status": deps["fetch_backtest_status"],
                 "fetch_compute_status": deps["fetch_compute_status"],
                 "fetch_runtime_health": deps["fetch_runtime_health"],
                 "fetch_runtime_status": deps["fetch_runtime_status"],
@@ -87,6 +89,7 @@ def register_platform_routes(app, deps: dict[str, Any]) -> dict[str, Any]:
                 "ibkr_2fa_state_key": deps["ibkr_2fa_state_key"],
                 "ibkr_2fa_state_date": deps["ibkr_2fa_state_date"],
                 "compute_base_url": deps["compute_base_url"],
+                "backtest_base_url": deps["backtest_base_url"],
             },
         )
     )

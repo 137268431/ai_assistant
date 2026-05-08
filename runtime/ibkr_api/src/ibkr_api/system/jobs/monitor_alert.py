@@ -30,6 +30,36 @@ def _as_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+def _service_counts_line(service_monitor: dict[str, Any]) -> str:
+    services = _as_dict(service_monitor.get("services"))
+    counts = _as_dict(service_monitor.get("status_counts"))
+    parts = []
+    if services:
+        parts.append(f"total {len(services)}")
+    parts.extend(
+        f"{_to_text(status).lower()}:{_to_int(count, 0)}"
+        for status, count in sorted(counts.items())
+        if _to_int(count, 0) > 0
+    )
+    return " | ".join(parts) or "n/a"
+
+
+def _backtest_service_line(service_monitor: dict[str, Any]) -> str:
+    services = _as_dict(service_monitor.get("services"))
+    service = _as_dict(services.get("ibkr-backtest"))
+    if not service:
+        return "n/a"
+    status = _to_text(service.get("status")) or "unknown"
+    worker = _to_text(service.get("worker_status") or service.get("readiness_phase"))
+    client_id = _to_int(service.get("ib_gateway_client_id"), 0)
+    parts = [f"{status}"]
+    if worker and worker.lower() != status.lower():
+        parts.append(f"worker {worker}")
+    if client_id:
+        parts.append(f"client {client_id}")
+    return " | ".join(parts)
+
+
 def _alert_flags(monitor_payload: dict[str, Any]) -> list[dict[str, Any]]:
     flags: list[dict[str, Any]] = []
     for item in monitor_payload.get("flags") or []:
@@ -68,7 +98,8 @@ def _detail(monitor_payload: dict[str, Any], flags: list[dict[str, Any]], *, tim
             f"{_to_text(item.get('title') or item.get('code'))}: {_to_text(item.get('detail'))}"
             for item in flags[:4]
         ) or "none",
-        "服务统计": ", ".join(f"{key}:{value}" for key, value in sorted(counts.items())) if counts else "n/a",
+        "服务统计": _service_counts_line(service_monitor),
+        "Backtest": _backtest_service_line(service_monitor),
         "Session": "authenticated" if session.get("authenticated") else "pending",
         "WebSocket": "connected" if websocket.get("connected") or websocket.get("ready") else "offline",
         "DispatchLag": (

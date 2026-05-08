@@ -9,11 +9,14 @@ class BacktestRuntimeRecordsMixin:
 
     def status(self) -> dict:
         with self._lock:
+            client_id = int(getattr(self._history_broker, "client_id", 0) or 0)
             return {
                 "ok": True,
                 "running": self.is_running(),
                 "run_id": self._active_run_id,
                 "batch_id": self._active_batch_id,
+                "ib_gateway_client_id": client_id,
+                "broker_client_id": client_id,
                 **self._progress,
             }
 

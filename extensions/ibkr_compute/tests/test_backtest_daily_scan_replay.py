@@ -13,6 +13,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from ibkr_compute.backtest.runtime_service import BacktestService
 from ibkr_compute.backtest.constants import BACKTEST_WARMUP_BARS
+from ibkr_compute.broker.ib_gateway_support import _default_client_id
 from ibkr_compute.core.indicator_engine import indicator_ready_bar_count
 from ibkr_compute.market.timeframe_utils import ET
 
@@ -145,14 +146,41 @@ class BacktestDailyScanReplayTests(unittest.TestCase):
     def test_backtest_history_broker_uses_dedicated_client_id(self):
         with mock.patch.dict(
             os.environ,
-            {"IBGW_CLIENT_ID": "31", "IBGW_BACKTEST_CLIENT_ID": "71"},
+            {
+                "IBKR_SERVICE_PROFILE": "compute",
+                "IBGW_CLIENT_ID": "31",
+                "IBGW_COMPUTE_CLIENT_ID": "51",
+                "IBGW_BACKTEST_CLIENT_ID": "81",
+            },
             clear=False,
         ):
+            compute_client_id = _default_client_id()
             service = BacktestService(object())
 
-        self.assertEqual(service._history_broker.client_id, 71)
+        self.assertEqual(compute_client_id, 51)
+        self.assertEqual(service._history_broker.client_id, 81)
+        self.assertEqual(service.status()["ib_gateway_client_id"], 81)
+        self.assertNotEqual(compute_client_id, service._history_broker.client_id)
         self.assertIs(service.data_backfill.broker, service._history_broker)
         self.assertIs(service.conid_resolver.broker, service._history_broker)
+
+    def test_backtest_history_broker_fallback_stays_separate_under_compute_profile(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "IBKR_SERVICE_PROFILE": "compute",
+                "IBGW_CLIENT_ID": "31",
+                "IBGW_COMPUTE_CLIENT_ID": "51",
+            },
+            clear=False,
+        ):
+            with mock.patch.dict(os.environ, {"IBGW_BACKTEST_CLIENT_ID": ""}, clear=False):
+                compute_client_id = _default_client_id()
+                service = BacktestService(object())
+
+        self.assertEqual(compute_client_id, 51)
+        self.assertEqual(service._history_broker.client_id, 81)
+        self.assertNotEqual(compute_client_id, service._history_broker.client_id)
 
     def test_backfill_history_failure_returns_repair_summary_without_raising(self):
         service = BacktestService(None)

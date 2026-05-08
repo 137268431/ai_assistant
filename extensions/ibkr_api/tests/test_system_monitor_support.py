@@ -16,6 +16,42 @@ def _raise(message):
     raise RuntimeError(message)
 
 
+def _backtest_topology(status="peer"):
+    return {
+        "services": {
+            "ibkr-backtest": {
+                "service_name": "ibkr-backtest",
+                "kind": "backtest_plane",
+                "fault_domain": "backtest_plane",
+                "owner": "ibkr-backtest",
+                "status": status,
+                "internal_url": "http://backtest.internal:5105",
+                "restart_independent": True,
+            }
+        }
+    }
+
+
+def _healthy_split_stack_payload(backtest_status):
+    return {
+        "status": "ok",
+        "runtime": {
+            "status": "running",
+            "runtime_phase": "running",
+            "gateway": {"running": True, "reachable": True, "managed_by": "ibkr-runtime", "pid": 42},
+            "session": {"authenticated": True},
+            "websocket": {"connected": True, "ready": True},
+        },
+        "compute": {
+            "status": "running",
+            "total_engines": 10,
+            "ready_engines": 10,
+        },
+        "backtest": backtest_status,
+        "service_topology": _backtest_topology(),
+    }
+
+
 class SystemMonitorSupportTest(unittest.TestCase):
     def test_compute_partial_optional_engines_still_reports_running(self):
         state = derive_compute_state(
@@ -26,6 +62,59 @@ class SystemMonitorSupportTest(unittest.TestCase):
         self.assertEqual(state["status"], "running")
         self.assertTrue(state["ready"])
         self.assertEqual(state["readiness_phase"], "ready")
+
+    def test_monitor_includes_backtest_and_treats_idle_worker_as_running(self):
+        service_monitor = derive_monitor_service_map(
+            "live",
+            _healthy_split_stack_payload(
+                {
+                    "ok": True,
+                    "status": "idle",
+                    "worker_status": "idle",
+                    "worker": {"status": "idle"},
+                    "ib_gateway_client_id": 81,
+                    "active_runs": 0,
+                    "queued_runs": 0,
+                    "error": "",
+                }
+            ),
+            {"status": "running", "loop_interval_seconds": 30, "job_count": 12, "jobs": {}},
+            console_probe={"ok": True, "status_code": 200, "target_url": "https://quant.lzw-glory.top/index.html"},
+            pb_health={"ok": True, "status_code": 200},
+            build_service_topology=lambda: _backtest_topology(),
+        )
+
+        backtest = service_monitor["services"]["ibkr-backtest"]
+        self.assertEqual(backtest["service_name"], "ibkr-backtest")
+        self.assertEqual(backtest["status"], "running")
+        self.assertTrue(backtest["ready"])
+        self.assertEqual(backtest["readiness_phase"], "ready")
+        self.assertEqual(backtest["ib_gateway_client_id"], 81)
+        self.assertIn("client 81", backtest["detail"])
+        self.assertEqual(0, service_monitor["status_counts"].get("degraded", 0))
+
+    def test_monitor_marks_backtest_failure_offline(self):
+        service_monitor = derive_monitor_service_map(
+            "live",
+            _healthy_split_stack_payload(
+                {
+                    "ok": False,
+                    "status": "failed",
+                    "worker_status": "failed",
+                    "worker": {"status": "failed"},
+                    "error": "backtest worker crashed",
+                }
+            ),
+            {"status": "running", "loop_interval_seconds": 30, "job_count": 12, "jobs": {}},
+            console_probe={"ok": True, "status_code": 200, "target_url": "https://quant.lzw-glory.top/index.html"},
+            pb_health={"ok": True, "status_code": 200},
+            build_service_topology=lambda: _backtest_topology(),
+        )
+
+        backtest = service_monitor["services"]["ibkr-backtest"]
+        self.assertEqual(backtest["status"], "degraded")
+        self.assertFalse(backtest["ready"])
+        self.assertEqual(backtest["readiness_phase"], "failed")
 
     def test_scheduler_lag_is_not_degraded_while_compute_preload_active(self):
         service_monitor = derive_monitor_service_map(

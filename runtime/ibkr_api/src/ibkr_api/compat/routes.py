@@ -118,6 +118,7 @@ def _build_unmatched_route_response(*, route_family: str, subpath: str):
 def register_compat_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     pb_base_url = deps["pb_base_url"]
     compute_base_url = deps["compute_base_url"]
+    backtest_base_url = deps["backtest_base_url"]
     runtime_base_url = deps["runtime_base_url"]
     scheduler_base_url = deps["scheduler_base_url"]
     direct_proxy_map = deps["direct_proxy_map"]
@@ -151,6 +152,7 @@ def register_compat_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
                 "upstreams": {
                     "pocketbase": pb_base_url,
                     "compute": compute_base_url,
+                    "backtest": backtest_base_url,
                     "runtime": runtime_base_url,
                     "scheduler": scheduler_base_url,
                 },

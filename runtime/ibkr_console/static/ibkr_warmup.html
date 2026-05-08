@@ -37,13 +37,13 @@
         <section class="section service-topology-section">
             <div class="section-head">
                 <div class="section-title">链路摘要</div>
-                <div class="section-copy">runtime / compute / gateway / PB readiness · 完整拓扑进运维大盘</div>
+                <div class="section-copy">runtime / compute / backtest / gateway / PB readiness；Backtest 为 non-blocking，不参与 gate · 完整拓扑进运维大盘</div>
             </div>
             <div class="section-body" id="serviceTopologyBody">
                 <div class="warmup-link-summary">
                     <div class="warmup-link-copy">
                         <div class="warmup-link-title">链路摘要加载中</div>
-                        <div class="warmup-link-sub">预热页只保留启动 readiness 所需链路；完整 split-stack 服务拓扑请进运维大盘。</div>
+                        <div class="warmup-link-sub">预热页只保留启动 readiness 所需链路；Backtest 仅展示 non-blocking worker 状态，不参与 trading gate。</div>
                     </div>
                     <a class="warmup-link-action" href="/ibkr_monitor.html">打开运维大盘 →</a>
                 </div>
@@ -404,7 +404,7 @@
                 : {};
             const ordered = [];
             const seen = new Set();
-            ['ibkr-runtime', 'ibkr-compute', 'ibkr-gateway', 'pocketbase'].forEach((name) => {
+            ['ibkr-runtime', 'ibkr-compute', 'ibkr-backtest', 'ibkr-gateway', 'pocketbase'].forEach((name) => {
                 if (!topology[name]) return;
                 ordered.push({
                     ...topology[name],
@@ -438,7 +438,7 @@
                     <div class="warmup-link-summary">
                         <div class="warmup-link-copy">
                             <div class="warmup-link-title">链路摘要暂不可用</div>
-                            <div class="warmup-link-sub">预热页只保留启动 readiness 所需链路；完整 split-stack 服务拓扑请进运维大盘。</div>
+                            <div class="warmup-link-sub">预热页只保留启动 readiness 所需链路；Backtest 仅展示 non-blocking worker 状态，不参与 trading gate。</div>
                         </div>
                         <a class="warmup-link-action" href="${monitorHref}">打开运维大盘 →</a>
                     </div>
@@ -464,6 +464,7 @@
             const cards = [
                 summarizeService('ibkr-runtime', 'Runtime', `mode ${runtimeMode}`),
                 summarizeService('ibkr-compute', 'Compute', 'compute engines / warmup snapshot'),
+                summarizeService('ibkr-backtest', 'Backtest', 'replay / backtest worker · non-blocking'),
                 summarizeService('ibkr-gateway', 'Gateway', 'IBC + IB Gateway session path'),
                 summarizeService('pocketbase', 'PocketBase', 'state / data store dependency'),
             ];
@@ -472,7 +473,7 @@
                     <div class="warmup-link-summary">
                         <div class="warmup-link-copy">
                             <div class="warmup-link-title">预热链路只保留关键依赖</div>
-                            <div class="warmup-link-sub">当前 ${escapeHtml(runtimeMode)} / ${escapeHtml(serviceProfile)} · restart independent ${escapeHtml(restartIndependent)}。完整服务拓扑、主机和 PB 细节请进运维大盘。</div>
+                            <div class="warmup-link-sub">当前 ${escapeHtml(runtimeMode)} / ${escapeHtml(serviceProfile)} · restart independent ${escapeHtml(restartIndependent)}。Backtest 为 non-blocking，不参与 warmup gate；完整服务拓扑、主机和 PB 细节请进运维大盘。</div>
                         </div>
                         <a class="warmup-link-action" href="${monitorHref}">打开运维大盘 →</a>
                     </div>

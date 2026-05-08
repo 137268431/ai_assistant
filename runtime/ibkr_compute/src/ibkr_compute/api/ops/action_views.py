@@ -22,6 +22,7 @@ from ibkr_compute.api.route_runtime import (
     get_requested_environment,
     require_ibkr_service,
 )
+from ibkr_compute.api.service_topology import build_service_topology, get_service_profile, get_runtime_mode
 from ibkr_compute.api.shared.service_status import get_service_status_snapshot
 from ibkr_compute.market.data_retention import DataRetention
 from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite
@@ -277,7 +278,14 @@ def build_backtest_run_response():
 
 def build_backtest_status_response():
     app_mod = get_app_module()
-    return jsonify(app_mod.backtest_service.status())
+    status = app_mod.backtest_service.status()
+    payload = dict(status) if isinstance(status, dict) else {"status": "unknown"}
+    payload.setdefault("ok", bool(payload.get("status") != "error"))
+    payload.setdefault("service", "ibkr-backtest")
+    payload.setdefault("service_profile", get_service_profile())
+    payload.setdefault("runtime_mode", get_runtime_mode())
+    payload.setdefault("service_topology", build_service_topology())
+    return jsonify(payload)
 
 
 def build_backtest_runs_response():

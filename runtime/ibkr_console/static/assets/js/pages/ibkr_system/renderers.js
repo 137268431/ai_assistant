@@ -72,13 +72,13 @@ function renderServiceTopology(topologyPayload = {}) {
     const topology = topologyPayload?.services && typeof topologyPayload.services === 'object'
         ? topologyPayload.services
         : {};
-    const services = Object.values(topology);
+    const serviceEntries = Object.entries(topology);
     const monitorHref = buildPageUrl('/ibkr_monitor.html', {}, { environment: currentEnvironment });
     const screenerHref = buildPageUrl('/ibkr_screener.html', {
         tab: 'screener',
         view: 'current',
     }, { environment: currentEnvironment });
-    if (!services.length) {
+    if (!serviceEntries.length) {
         el.innerHTML = `
             <div class="ops-summary-shell tone-neutral">
                 <div class="ops-summary-lead">
@@ -104,21 +104,58 @@ function renderServiceTopology(topologyPayload = {}) {
         return;
     }
 
-    const normalizedServices = services.map((service) => {
+    const serviceOrder = ['ibkr-console', 'ibkr-api', 'ibkr-scheduler', 'ibkr-compute', 'ibkr-backtest', 'ibkr-runtime', 'ibkr-gateway', 'pocketbase'];
+    const serviceSemantics = {
+        'ibkr-console': 'console UI',
+        'ibkr-api': 'API / control plane',
+        'ibkr-scheduler': 'cron dispatch',
+        'ibkr-compute': 'indicators / signals / data quality',
+        'ibkr-backtest': 'replay / backtest worker',
+        'ibkr-runtime': 'broker session / live bars',
+        'ibkr-gateway': 'IB Gateway session',
+        pocketbase: 'state / config store',
+    };
+    const orderedEntries = serviceEntries.sort(([left], [right]) => {
+        const leftIndex = serviceOrder.indexOf(left);
+        const rightIndex = serviceOrder.indexOf(right);
+        const leftWeight = leftIndex >= 0 ? leftIndex : 999;
+        const rightWeight = rightIndex >= 0 ? rightIndex : 999;
+        if (leftWeight !== rightWeight) return leftWeight - rightWeight;
+        return left.localeCompare(right);
+    });
+    const normalizedServices = orderedEntries.map(([key, service]) => {
         const rawStatus = String(service?.status || 'unknown').trim().toLowerCase() || 'unknown';
-        const status = ['ok', 'ready', 'healthy', 'online', 'peer', 'external'].includes(rawStatus) ? 'running' : rawStatus;
+        const workerStatus = String(service?.worker_status || service?.readiness_phase || '').trim().toLowerCase();
+        const backtestIdle = key === 'ibkr-backtest'
+            && !['degraded', 'warning', 'warn', 'error', 'offline', 'failed', 'stopped'].includes(rawStatus)
+            && (rawStatus === 'idle' || workerStatus === 'idle');
+        const status = ['ok', 'ready', 'healthy', 'online', 'peer', 'external'].includes(rawStatus)
+            ? 'running'
+            : (backtestIdle ? 'idle' : rawStatus);
+        const semantic = serviceSemantics[key] || String(service?.kind || service?.fault_domain || 'service').trim();
+        const detail = String(service?.detail || service?.responsibility || semantic || '').trim();
+        const operational = status === 'running' || backtestIdle;
+        const tone = backtestIdle ? 'neutral' : (operational ? 'ok' : (['offline', 'failed', 'error'].includes(status) ? 'danger' : (status === 'unknown' ? 'neutral' : 'warn')));
         return {
+            key,
             status,
-            title: String(service?.service_name || service?.kind || '--').trim() || '--',
+            workerStatus,
+            readinessPhase: String(service?.readiness_phase || '').trim().toLowerCase(),
+            clientId: Number(service?.ib_gateway_client_id || 0) || 0,
+            semantic,
+            detail,
+            operational,
+            tone,
+            title: String(service?.service_name || key || service?.kind || '--').trim() || '--',
         };
     });
     const counts = normalizedServices.reduce((acc, service) => {
         acc[service.status] = (acc[service.status] || 0) + 1;
         return acc;
     }, {});
-    const issueServices = normalizedServices.filter((service) => !['running', 'unknown'].includes(service.status));
+    const issueServices = normalizedServices.filter((service) => !service.operational && service.status !== 'unknown');
     const unknownCount = counts.unknown || 0;
-    const runningCount = counts.running || 0;
+    const operationalCount = normalizedServices.filter((service) => service.operational).length;
     const degradedCount = (counts.degraded || 0) + (counts.warning || 0) + (counts.warn || 0);
     const offlineCount = (counts.offline || 0) + (counts.failed || 0) + (counts.error || 0);
     const attentionCount = issueServices.length + unknownCount;
@@ -139,10 +176,10 @@ function renderServiceTopology(topologyPayload = {}) {
             tone: overallTone,
         },
         {
-            label: 'Running',
-            value: String(runningCount),
+            label: 'Operational',
+            value: String(operationalCount),
             copy: '完整服务拓扑请进运维大盘',
-            tone: runningCount === normalizedServices.length ? 'ok' : 'neutral',
+            tone: operationalCount === normalizedServices.length ? 'ok' : 'neutral',
         },
         {
             label: 'Needs Attention',
@@ -151,6 +188,22 @@ function renderServiceTopology(topologyPayload = {}) {
             tone: attentionCount ? 'warn' : 'ok',
         },
     ];
+    const backtestService = normalizedServices.find((service) => service.key === 'ibkr-backtest');
+    if (backtestService) {
+        const workerLabel = String(backtestService.workerStatus || backtestService.readinessPhase || backtestService.status || '--').toUpperCase();
+        const backtestCopy = [
+            backtestService.semantic,
+            backtestService.clientId ? `IB client ${backtestService.clientId}` : '',
+            backtestService.detail || '仅表示服务/worker 状态',
+            '不等同最近回测统计',
+        ].filter(Boolean).join(' · ');
+        cards.push({
+            label: 'Backtest Service',
+            value: workerLabel,
+            copy: backtestCopy,
+            tone: backtestService.tone,
+        });
+    }
 
     el.innerHTML = `
         <div class="ops-summary-shell tone-${escapeHtml(overallTone)}">

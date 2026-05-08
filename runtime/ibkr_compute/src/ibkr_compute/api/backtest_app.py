@@ -20,9 +20,9 @@ from ibkr_compute.api.ops.action_views import (
     build_backtest_status_response,
 )
 from ibkr_compute.api.service_topology import (
-    get_api_internal_url,
+    build_service_topology,
+    get_backtest_internal_url,
     get_console_base_url,
-    get_runtime_internal_url,
     get_runtime_mode,
 )
 from ibkr_compute.api.shared.route_runtime import register_app_module_context
@@ -108,58 +108,27 @@ register_app_module_context(app, _register_canonical_module_alias() or sys.modul
 
 
 def _build_backtest_topology() -> dict:
-    runtime_mode = get_runtime_mode()
     service_profile = _service_profile()
-    return {
-        "service_profile": service_profile,
-        "runtime_mode": runtime_mode,
-        "split_stack": True,
+    topology = build_service_topology()
+    services = topology.get("services") if isinstance(topology.get("services"), dict) else {}
+    backtest = dict(services.get(SERVICE_NAME) if isinstance(services.get(SERVICE_NAME), dict) else {})
+    services[SERVICE_NAME] = {
+        **backtest,
+        "service_name": SERVICE_NAME,
+        "kind": "backtest_plane",
+        "fault_domain": "backtest_plane",
+        "owner": SERVICE_NAME,
+        "status": "running",
+        "internal_url": get_backtest_internal_url(f"http://127.0.0.1:{PORT}"),
+        "upstream": PB_BASE_URL.rstrip("/"),
+        "responsibility": "backtest jobs + replay",
         "restart_independent": True,
-        "services": {
-            SERVICE_NAME: {
-                "service_name": SERVICE_NAME,
-                "kind": "backtest_plane",
-                "fault_domain": "backtest_plane",
-                "owner": SERVICE_NAME,
-                "status": "running",
-                "internal_url": f"http://127.0.0.1:{PORT}",
-                "upstream": PB_BASE_URL.rstrip("/"),
-                "responsibility": "backtest jobs + replay",
-                "restart_independent": True,
-            },
-            "pocketbase": {
-                "service_name": "pocketbase",
-                "kind": "storage_auth",
-                "fault_domain": "storage_auth",
-                "owner": "pocketbase",
-                "status": "external",
-                "public_url": PB_BASE_URL.rstrip("/"),
-                "responsibility": "auth + collections",
-                "restart_independent": True,
-            },
-            "ibkr-runtime": {
-                "service_name": "ibkr-runtime",
-                "kind": "data_plane",
-                "fault_domain": "data_plane",
-                "owner": "ibkr-runtime" if runtime_mode == "remote" else "ibkr-compute",
-                "status": "peer",
-                "internal_url": get_runtime_internal_url(),
-                "runtime_mode": runtime_mode,
-                "responsibility": "gateway + bars + live trading state",
-                "restart_independent": runtime_mode == "remote",
-            },
-            "ibkr-api": {
-                "service_name": "ibkr-api",
-                "kind": "control_plane",
-                "fault_domain": "control_plane",
-                "owner": "ibkr-api",
-                "status": "peer",
-                "internal_url": get_api_internal_url(),
-                "responsibility": "compatibility routes + control APIs",
-                "restart_independent": True,
-            },
-        },
     }
+    topology["service_profile"] = service_profile
+    topology["split_stack"] = True
+    topology["restart_independent"] = True
+    topology["services"] = services
+    return topology
 
 
 def build_health_response():

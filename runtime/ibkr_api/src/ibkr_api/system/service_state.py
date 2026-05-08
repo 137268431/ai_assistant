@@ -9,6 +9,7 @@ SERVICE_NAMES = (
     "ibkr-api",
     "ibkr-scheduler",
     "ibkr-compute",
+    "ibkr-backtest",
     "ibkr-runtime",
     "ibkr-gateway",
     "pocketbase",
@@ -41,6 +42,13 @@ def normalize_service_status(value: Any, *, fallback_running: bool = False) -> s
     if text in {"peer", "expected_remote", "unknown"}:
         return "unknown"
     return "running" if fallback_running else "unknown"
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(str(value or "").strip())
+    except Exception:
+        return int(default)
 
 
 def _phase_for_status(status: str) -> str:
@@ -254,6 +262,56 @@ def derive_gateway_state(runtime: dict[str, Any], *, observed_at: str) -> dict[s
     }
 
 
+def derive_backtest_state(backtest_health: dict[str, Any], *, observed_at: str) -> dict[str, Any]:
+    payload = as_dict(backtest_health)
+    body = as_dict(payload.get("payload"))
+    is_envelope = "payload" in payload or "status_code" in payload
+    nested = body if is_envelope else payload
+    worker = as_dict(nested.get("backtest"))
+    service_ok = bool(payload.get("ok", nested.get("ok", False)))
+    http_status = int(payload.get("status_code") or 0)
+    worker_status = str(worker.get("status") or nested.get("worker_status") or nested.get("status") or "").strip().lower()
+    client_id = _safe_int(
+        nested.get("ib_gateway_client_id")
+        or nested.get("broker_client_id")
+        or worker.get("ib_gateway_client_id")
+        or worker.get("broker_client_id")
+    )
+    if service_ok:
+        status = "running"
+        ready = True
+        phase = "ready" if worker_status in {"", "idle", "running"} else worker_status
+        detail = "backtest worker " + (worker_status or "ready")
+    elif nested or http_status:
+        status = "degraded"
+        ready = False
+        phase = worker_status or "degraded"
+        detail = str(nested.get("error") or payload.get("error") or f"http {http_status}").strip()
+    else:
+        status = "offline"
+        ready = False
+        phase = "offline"
+        detail = str(payload.get("error") or "backtest health unavailable").strip()
+    if client_id:
+        detail = f"{detail} · client {client_id}" if detail else f"client {client_id}"
+    if http_status:
+        detail = f"{detail} · http {http_status}" if detail else f"http {http_status}"
+    return {
+        "service_name": "ibkr-backtest",
+        "status": status,
+        "ready": ready,
+        "readiness_phase": phase,
+        "status_source": "backtest",
+        "last_observed_at": observed_at,
+        "stale": bool(payload.get("stale", False) or nested.get("stale", False)),
+        "detail": detail,
+        "worker_status": worker_status or "",
+        "active_runs": int(worker.get("active_runs") or worker.get("running_count") or 0),
+        "queue_depth": int(worker.get("queue_depth") or worker.get("pending") or 0),
+        "ib_gateway_client_id": client_id,
+    }
+
+
 def _extract_compute_payload(payloads: tuple[Any, ...]) -> dict[str, Any]:
     for payload in payloads:
         item = as_dict(payload)
@@ -272,6 +330,19 @@ def _extract_runtime_payload(payloads: tuple[Any, ...]) -> dict[str, Any]:
         if runtime:
             return runtime
         if any(key in item for key in ("session", "gateway", "websocket", "auth_recovery", "runtime_phase")):
+            return item
+    return {}
+
+
+def _extract_backtest_payload(payloads: tuple[Any, ...]) -> dict[str, Any]:
+    for payload in payloads:
+        item = as_dict(payload)
+        if str(item.get("service") or "").strip().lower() == "ibkr-backtest":
+            return item
+        backtest = as_dict(item.get("backtest_service"))
+        if backtest:
+            return backtest
+        if str(item.get("status_source") or "").strip().lower() == "backtest":
             return item
     return {}
 
@@ -343,6 +414,7 @@ def canonicalize_topology(
     services = {name: dict(item) for name, item in as_dict(monitor.get("services")).items()}
     compute_payload = _extract_compute_payload(payloads)
     runtime_payload = _extract_runtime_payload(payloads)
+    backtest_payload = _extract_backtest_payload(payloads)
 
     services["ibkr-api"] = {
         **services.get("ibkr-api", {}),
@@ -359,6 +431,11 @@ def canonicalize_topology(
     if runtime_payload:
         services["ibkr-runtime"] = {**services.get("ibkr-runtime", {}), **derive_runtime_state(runtime_payload, observed_at=timestamp)}
         services["ibkr-gateway"] = {**services.get("ibkr-gateway", {}), **derive_gateway_state(runtime_payload, observed_at=timestamp)}
+    if backtest_payload:
+        services["ibkr-backtest"] = {
+            **services.get("ibkr-backtest", {}),
+            **derive_backtest_state(backtest_payload, observed_at=timestamp),
+        }
 
     monitor = rebuild_service_monitor(environment, services)
     topology = apply_service_monitor_to_topology(topology, monitor)
@@ -371,6 +448,7 @@ __all__ = [
     "as_dict",
     "build_service_monitor_from_topology",
     "canonicalize_topology",
+    "derive_backtest_state",
     "derive_compute_state",
     "derive_gateway_state",
     "derive_runtime_state",

@@ -2,6 +2,7 @@
 
 const IBKR_CONFIG_DETAIL_KEYS = [
     'ibkr_compute_internal_url',
+    'ibkr_backtest_internal_url',
     'ibkr_runtime_internal_url',
     'ibkr_api_internal_url',
     'ibkr_scheduler_internal_url',
@@ -144,6 +145,9 @@ function getIbkrSystemSecondaryConfigItems(configMap = {}) {
     if (configMap.ibkr_compute_internal_url) {
         items.push({ label: 'COMPUTE INTERNAL', value: configMap.ibkr_compute_internal_url });
     }
+    if (configMap.ibkr_backtest_internal_url) {
+        items.push({ label: 'BACKTEST INTERNAL', value: configMap.ibkr_backtest_internal_url });
+    }
     if (configMap.ibkr_runtime_internal_url) {
         items.push({ label: 'RUNTIME INTERNAL', value: configMap.ibkr_runtime_internal_url });
     }
@@ -157,6 +161,7 @@ function getIbkrSystemSecondaryConfigItems(configMap = {}) {
     getOrderedIbkrConfigEntries(configMap).forEach(({ key, value }) => {
         if (
             key === 'ibkr_compute_internal_url'
+            || key === 'ibkr_backtest_internal_url'
             || key === 'ibkr_runtime_internal_url'
             || key === 'ibkr_api_internal_url'
             || key === 'ibkr_scheduler_internal_url'
@@ -198,7 +203,8 @@ function getIbkrServiceHealthTone(status, fallback = 'neutral') {
     const text = String(status || '').trim().toLowerCase();
     if (!text) return fallback;
     if (['running', 'ok', 'online', 'ready', 'success', 'peer', 'external'].includes(text)) return 'ok';
-    if (['warning', 'warn', 'pending', 'degraded', 'idle', 'disabled', 'embedded', 'expected_remote'].includes(text)) return 'warn';
+    if (['idle'].includes(text)) return 'neutral';
+    if (['warning', 'warn', 'pending', 'degraded', 'disabled', 'embedded', 'expected_remote'].includes(text)) return 'warn';
     if (['error', 'offline', 'failed'].includes(text)) return 'error';
     return fallback;
 }

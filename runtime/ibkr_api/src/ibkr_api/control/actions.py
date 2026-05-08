@@ -75,6 +75,11 @@ _SERVICE_CONTROL_TARGETS = {
         "label": "IBKR Compute",
         "delegated_gateway": False,
     },
+    "ibkr-backtest": {
+        "unit": "ibkr-backtest",
+        "label": "IBKR Backtest",
+        "delegated_gateway": False,
+    },
     "ibkr-scheduler": {
         "unit": "ibkr-scheduler",
         "label": "IBKR Scheduler",
