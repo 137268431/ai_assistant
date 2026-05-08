@@ -714,6 +714,9 @@ class BacktestRuntimeRecordsMixin:
             "daily_selection_require_sd_trigger": bool(request.get("daily_selection_require_sd_trigger", False)),
             "daily_selection_reuse_live_admission": bool(request.get("daily_selection_reuse_live_admission", False)),
             "daily_selection_candidate_limit": int(request.get("daily_selection_candidate_limit", 0) or 0),
+            "daily_selection_cache_enabled": bool(request.get("daily_selection_cache_enabled", False)),
+            "daily_selection_cache_mode": str(request.get("daily_selection_cache_mode") or "use_or_build"),
+            "daily_selection_cache_force_rebuild": bool(request.get("daily_selection_cache_force_rebuild", False)),
             "premarket_cutoff_time": str(request.get("premarket_cutoff_time") or DEFAULT_SCAN_CUTOFF_TIME),
             "scan_session_mode": str(request.get("scan_session_mode") or "extended"),
             "retention_limit": int(request.get("retention_limit", DEFAULT_BACKTEST_RETENTION_LIMIT) or DEFAULT_BACKTEST_RETENTION_LIMIT),
@@ -762,6 +765,7 @@ class BacktestRuntimeRecordsMixin:
             extra["portfolio_risk"] = metrics.get("portfolio_risk") or {}
             extra["portfolio_rejection_counts"] = metrics.get("portfolio_rejection_counts") or {}
             extra["daily_scan_match_diagnostics"] = metrics.get("daily_scan_match_diagnostics") or {}
+            extra["daily_selection_cache"] = metrics.get("daily_selection_cache") or {}
         if daily_equity is not None:
             extra["equity_curve"] = daily_equity
         if benchmark_points is not None:

@@ -60,6 +60,7 @@ class StorageHealthTest(unittest.TestCase):
                 "ibkr_backtest_signals",
                 "ibkr_backtest_reverse_signals",
                 "ibkr_backtest_targets",
+                "ibkr_backtest_daily_selection_cache",
                 "ibkr_backtest_indicators",
                 "tv_signals",
                 "tv_indicators",
@@ -89,7 +90,7 @@ class StorageHealthTest(unittest.TestCase):
 
         self.assertEqual(payload["environment"], "live")
         self.assertIn(payload["status"], {"warning", "error"})
-        self.assertEqual(payload["summary"]["monitored_tables"], 23)
+        self.assertEqual(payload["summary"]["monitored_tables"], 24)
         self.assertTrue(any(table["name"] == "ibkr_bars" for table in payload["tables"]))
         self.assertTrue(any(flag["code"] == "ibkr_bars_retention_lag" for flag in payload["flags"]))
         orders = next(table for table in payload["tables"] if table["name"] == "orders")

@@ -66,13 +66,16 @@
                 symbolSource: 'daily_scan_replay',
                 executionModel: 'portfolio_stream',
                 maxSymbols: { manual: 12, targets: 12, daily_scan_replay: 12, watchlist: 12 },
-                warmupBars: 160,
+                warmupBars: 320,
                 sessionMode: 'extended',
                 dailySelection: {
                     daily_selected_only: true,
                     daily_selection_require_sd_trigger: true,
                     daily_selection_reuse_live_admission: true,
                     daily_selection_candidate_limit: 80,
+                    daily_selection_cache_enabled: true,
+                    daily_selection_cache_mode: 'use_or_build',
+                    daily_selection_cache_force_rebuild: false,
                 },
                 resourceGuard: {
                     resource_guard_enabled: true,
@@ -146,9 +149,14 @@
                     daily_selected_only: false,
                     daily_selection_require_sd_trigger: false,
                     daily_selection_reuse_live_admission: false,
+                    daily_selection_cache_enabled: false,
+                    daily_selection_cache_force_rebuild: false,
                 };
             }
-            return { ...preset.dailySelection };
+            return {
+                ...preset.dailySelection,
+                daily_selection_cache_force_rebuild: Boolean(document.getElementById('dailySelectionCacheForceRebuild')?.checked),
+            };
         }
 
         function getBacktestDateSpanDays(dateFrom, dateTo) {

@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+
 from .runtime_support import *
 from .watchlist_universe import merge_trade_watchlist_rows, request_excluded_symbols
+
+
+DAILY_SELECTION_CACHE_ALGORITHM_VERSION = "daily_scan_replay_live_sd_v3"
 
 
 class BacktestScanReplayMixin:
@@ -94,6 +99,471 @@ class BacktestScanReplayMixin:
         except Exception:
             return int(DEFAULT_PARAMS.get("signal_window_max_bars", 12) or 12)
 
+    def _effective_indicator_warmup_bars(self, request: dict, key: str = "warmup_bars") -> int:
+        params = dict((request.get("params") or {}).get("strategy_params") or DEFAULT_PARAMS)
+        requested = int(request.get(key, request.get("warmup_bars", BACKTEST_WARMUP_BARS)) or BACKTEST_WARMUP_BARS)
+        signal_window_extra = max(20, self._historical_sd_window_max_bars(request) + 8)
+        return max(
+            BACKTEST_WARMUP_BARS,
+            requested,
+            int(indicator_ready_bar_count(params) or 0) + signal_window_extra,
+        )
+
+    def _daily_selection_cache_mode(self, request: dict) -> str:
+        mode = str(request.get("daily_selection_cache_mode") or "use_or_build").strip().lower()
+        return mode if mode in {"use_or_build", "read_only", "bypass"} else "use_or_build"
+
+    def _daily_selection_cache_enabled(self, request: dict) -> bool:
+        if not self.pb or self._daily_selection_cache_mode(request) == "bypass":
+            return False
+        default_enabled = bool(
+            request.get("symbol_source") == "daily_scan_replay"
+            and request.get("execution_model") == "portfolio_stream"
+            and request.get("daily_selected_only")
+        )
+        return request_utils.normalize_bool(request.get("daily_selection_cache_enabled"), default_enabled)
+
+    def _normalize_daily_selection_cache_payload(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {str(key): self._normalize_daily_selection_cache_payload(value[key]) for key in sorted(value.keys())}
+        if isinstance(value, (list, tuple, set)):
+            return [self._normalize_daily_selection_cache_payload(item) for item in list(value)]
+        if isinstance(value, float):
+            return round(value, 10)
+        return value
+
+    def _hash_daily_selection_cache_payload(self, payload: Any, prefix: str = "") -> str:
+        normalized = self._normalize_daily_selection_cache_payload(payload)
+        encoded = json.dumps(normalized, sort_keys=True, separators=(",", ":"), default=str)
+        digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        return f"{prefix}{digest[:32]}" if prefix else digest
+
+    def _build_daily_selection_cache_base_fingerprint(self, request: dict, scan_settings: dict) -> dict:
+        strategy_params = dict((request.get("params") or {}).get("strategy_params") or DEFAULT_PARAMS)
+        strategy_payload = {
+            "strategy_tag": str(request.get("strategy_tag") or (request.get("params") or {}).get("strategy_tag") or ""),
+            "strategy_params": strategy_params,
+        }
+        scan_settings_payload = dict(scan_settings or {})
+        request_payload = {
+            "algorithm_version": DAILY_SELECTION_CACHE_ALGORITHM_VERSION,
+            "source_environment": str(request.get("source_environment") or "live"),
+            "symbol_source": str(request.get("symbol_source") or ""),
+            "symbols": sorted({str(symbol or "").strip().upper() for symbol in list(request.get("symbols") or []) if str(symbol or "").strip()}),
+            "exclude_symbols": sorted(request_excluded_symbols(request)),
+            "exclude_market_monitors": bool(request.get("exclude_market_monitors", True)),
+            "session_mode": str(request.get("session_mode") or "extended"),
+            "scan_session_mode": str(request.get("scan_session_mode") or "extended"),
+            "premarket_cutoff_time": str(request.get("premarket_cutoff_time") or DEFAULT_SCAN_CUTOFF_TIME),
+            "warmup_bars": int(request.get("warmup_bars", BACKTEST_WARMUP_BARS) or BACKTEST_WARMUP_BARS),
+            "effective_warmup_bars": self._effective_indicator_warmup_bars(request, "warmup_bars"),
+            "scan_warmup_bars": int(request.get("scan_warmup_bars", BACKTEST_WARMUP_BARS) or BACKTEST_WARMUP_BARS),
+            "effective_scan_warmup_bars": self._effective_indicator_warmup_bars(request, "scan_warmup_bars"),
+            "max_symbols": int(request.get("max_symbols", DEFAULT_MAX_SYMBOLS) or DEFAULT_MAX_SYMBOLS),
+            "daily_selected_only": bool(request.get("daily_selected_only")),
+            "daily_selection_require_sd_trigger": bool(request.get("daily_selection_require_sd_trigger")),
+            "daily_selection_reuse_live_admission": bool(request.get("daily_selection_reuse_live_admission")),
+            "daily_selection_candidate_limit": int(request.get("daily_selection_candidate_limit", 0) or 0),
+            "trade_window_start_time": str(request.get("trade_window_start_time") or DEFAULT_PORTFOLIO_TRADE_WINDOW_START),
+            "trade_window_end_time": str(request.get("trade_window_end_time") or DEFAULT_PORTFOLIO_TRADE_WINDOW_END),
+            "scan_intervals": list(SCAN_INTERVALS),
+            "strategy": strategy_payload,
+            "scan_settings": scan_settings_payload,
+        }
+        strategy_hash = self._hash_daily_selection_cache_payload(strategy_payload)
+        scan_settings_hash = self._hash_daily_selection_cache_payload(scan_settings_payload)
+        request_hash = self._hash_daily_selection_cache_payload(request_payload)
+        return {
+            "algorithm_version": DAILY_SELECTION_CACHE_ALGORITHM_VERSION,
+            "cache_key": self._hash_daily_selection_cache_payload(request_payload, prefix="ds_"),
+            "request_hash": request_hash,
+            "scan_settings_hash": scan_settings_hash,
+            "strategy_hash": strategy_hash,
+            "fingerprint_extra": request_payload,
+        }
+
+    def _build_daily_selection_universe_hash(self, universe_rows: list[dict]) -> str:
+        universe_payload = []
+        for row in universe_rows or []:
+            symbol = str((row or {}).get("symbol", "") or "").strip().upper()
+            if not symbol:
+                continue
+            universe_payload.append(
+                {
+                    "symbol": symbol,
+                    "exchange": str((row or {}).get("exchange", "") or "").strip().upper(),
+                    "environment": str((row or {}).get("environment", "") or "").strip().lower(),
+                    "symbol_role": str((row or {}).get("symbol_role", "") or "").strip().lower(),
+                    "manual_member": bool((row or {}).get("manual_member", False)),
+                }
+            )
+        universe_payload.sort(key=lambda item: (item["symbol"], item["environment"], item["exchange"]))
+        return self._hash_daily_selection_cache_payload(universe_payload)
+
+    def _build_daily_selection_input_fingerprint(
+        self,
+        trade_date: str,
+        universe_rows: list[dict],
+        request: dict,
+    ) -> dict:
+        symbols = sorted(
+            {
+                str((row or {}).get("symbol", "") or "").strip().upper()
+                for row in universe_rows or []
+                if str((row or {}).get("symbol", "") or "").strip()
+            }
+        )
+        if not symbols:
+            return {"usable": True, "hash": self._hash_daily_selection_cache_payload({"symbols": []}), "reason": "empty_universe", "row_count": 0}
+        db_path = str(runtime_backtest_sqlite_path() or "").strip()
+        if not db_path or not os.path.exists(db_path):
+            return {"usable": False, "hash": "", "reason": "sqlite_unavailable", "row_count": 0}
+        session_mode = str(request.get("scan_session_mode") or request.get("session_mode") or "extended").strip().lower() or "extended"
+        try:
+            with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=10) as conn:
+                conn.row_factory = sqlite3.Row
+                coverage_rows = load_daily_coverage_rows(
+                    conn,
+                    symbols=symbols,
+                    environment=str(request.get("source_environment") or "live"),
+                    date_from=trade_date,
+                    date_to=trade_date,
+                    interval="5m",
+                    session_mode=session_mode,
+                )
+        except Exception as exc:
+            return {"usable": False, "hash": "", "reason": f"coverage_query_failed:{str(exc)[:120]}", "row_count": 0}
+
+        by_symbol = {str(row.get("symbol") or "").strip().upper(): dict(row) for row in coverage_rows or []}
+        missing_symbols = [symbol for symbol in symbols if symbol not in by_symbol]
+        if missing_symbols:
+            fallback = self._build_daily_selection_bars_input_fingerprint(trade_date, symbols, request)
+            fallback.update(
+                {
+                    "coverage_reason": "missing_daily_coverage",
+                    "coverage_row_count": len(coverage_rows or []),
+                    "missing_symbols": missing_symbols[:20],
+                    "missing_symbol_count": len(missing_symbols),
+                }
+            )
+            if bool(fallback.get("usable")):
+                fallback["reason"] = "bars_aggregate_fallback"
+            return fallback
+
+        bad_rows = []
+        hash_rows = []
+        for symbol in symbols:
+            row = dict(by_symbol.get(symbol) or {})
+            status = str(row.get("status") or "").strip().lower()
+            needs_repair = bool(row.get("needs_repair"))
+            hard_gate = bool(row.get("hard_gate"))
+            missing_count = int(row.get("missing_count", 0) or 0)
+            gap_count = int(row.get("gap_count", 0) or 0)
+            duplicate_count = int(row.get("duplicate_count", 0) or 0)
+            bad_ohlc_count = int(row.get("bad_ohlc_count", 0) or 0)
+            if (
+                status not in DAILY_COVERAGE_OK_STATUSES
+                or needs_repair
+                or hard_gate
+                or missing_count > 0
+                or gap_count > 0
+                or duplicate_count > 0
+                or bad_ohlc_count > 0
+            ):
+                bad_rows.append({"symbol": symbol, "status": status, "needs_repair": needs_repair, "hard_gate": hard_gate})
+            hash_rows.append(
+                {
+                    "symbol": symbol,
+                    "status": status,
+                    "expected_count": int(row.get("expected_count", 0) or 0),
+                    "actual_count": int(row.get("actual_count", 0) or 0),
+                    "missing_count": missing_count,
+                    "gap_count": gap_count,
+                    "duplicate_count": duplicate_count,
+                    "bad_ohlc_count": bad_ohlc_count,
+                    "expected_start_ms": int(row.get("expected_start_ms", 0) or 0),
+                    "expected_end_ms": int(row.get("expected_end_ms", 0) or 0),
+                    "first_bar_ms": int(row.get("first_bar_ms", 0) or 0),
+                    "last_bar_ms": int(row.get("last_bar_ms", 0) or 0),
+                    "expected_mask_hex": str(row.get("expected_mask_hex") or ""),
+                    "actual_mask_hex": str(row.get("actual_mask_hex") or ""),
+                    "missing_mask_hex": str(row.get("missing_mask_hex") or ""),
+                    "last_repair_at": str(row.get("last_repair_at") or ""),
+                }
+            )
+        if bad_rows:
+            return {
+                "usable": False,
+                "hash": "",
+                "reason": "daily_coverage_not_clean",
+                "row_count": len(coverage_rows or []),
+                "bad_rows": bad_rows[:20],
+                "bad_row_count": len(bad_rows),
+            }
+        return {
+            "usable": True,
+            "hash": self._hash_daily_selection_cache_payload(
+                {
+                    "trade_date": trade_date,
+                    "environment": str(request.get("source_environment") or "live"),
+                    "session_mode": session_mode,
+                    "coverage": hash_rows,
+                }
+            ),
+            "reason": "coverage_clean",
+            "row_count": len(hash_rows),
+        }
+
+    def _build_daily_selection_bars_input_fingerprint(
+        self,
+        trade_date: str,
+        symbols: list[str],
+        request: dict,
+    ) -> dict:
+        normalized_symbols = sorted({str(symbol or "").strip().upper() for symbol in symbols or [] if str(symbol or "").strip()})
+        if not normalized_symbols:
+            return {"usable": True, "hash": self._hash_daily_selection_cache_payload({"symbols": []}), "reason": "empty_universe", "row_count": 0}
+        db_path = str(runtime_backtest_sqlite_path() or "").strip()
+        if not db_path or not os.path.exists(db_path):
+            return {"usable": False, "hash": "", "reason": "sqlite_unavailable", "row_count": 0}
+        cutoff_ms = self._build_scan_cutoff_ms(trade_date, request.get("premarket_cutoff_time") or DEFAULT_SCAN_CUTOFF_TIME)
+        day_start_ms = int(datetime.strptime(trade_date, "%Y-%m-%d").replace(tzinfo=ET).timestamp() * 1000)
+        day_end_ms = int(
+            datetime.strptime(trade_date, "%Y-%m-%d")
+            .replace(tzinfo=ET, hour=23, minute=59, second=59, microsecond=999000)
+            .timestamp()
+            * 1000
+        )
+        warmup_limit = max(
+            self._effective_indicator_warmup_bars(request, "scan_warmup_bars"),
+            self._effective_indicator_warmup_bars(request, "warmup_bars"),
+            40,
+        )
+        symbol_placeholders = ",".join(["?"] * len(normalized_symbols))
+        environment = str(request.get("source_environment") or "live").strip().lower() or "live"
+        grouped_rows = []
+        try:
+            with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=20) as conn:
+                conn.row_factory = sqlite3.Row
+                for interval in SCAN_INTERVALS:
+                    normalized_interval = normalize_interval(interval)
+                    interval_ms = interval_to_ms(normalized_interval)
+                    lookback_start_ms = max(0, cutoff_ms - interval_ms * (warmup_limit + 30))
+                    start_ms = min(lookback_start_ms, day_start_ms)
+                    end_ms = day_end_ms if normalized_interval == "5m" else cutoff_ms
+                    rows = conn.execute(
+                        f"""
+                        SELECT
+                          symbol,
+                          interval,
+                          COUNT(*) AS bar_count,
+                          MIN(bar_time_ms) AS first_bar_ms,
+                          MAX(bar_time_ms) AS last_bar_ms,
+                          ROUND(SUM(open), 6) AS sum_open,
+                          ROUND(SUM(high), 6) AS sum_high,
+                          ROUND(SUM(low), 6) AS sum_low,
+                          ROUND(SUM(close), 6) AS sum_close,
+                          ROUND(SUM(volume), 6) AS sum_volume
+                        FROM ibkr_bars
+                        WHERE environment = ?
+                          AND interval = ?
+                          AND symbol IN ({symbol_placeholders})
+                          AND bar_time_ms >= ?
+                          AND bar_time_ms <= ?
+                        GROUP BY symbol, interval
+                        ORDER BY symbol ASC, interval ASC
+                        """,
+                        (environment, normalized_interval, *normalized_symbols, int(start_ms), int(end_ms)),
+                    ).fetchall()
+                    for row in rows or []:
+                        grouped_rows.append(
+                            {
+                                "symbol": str(row["symbol"] or "").strip().upper(),
+                                "interval": str(row["interval"] or "").strip().lower(),
+                                "bar_count": int(row["bar_count"] or 0),
+                                "first_bar_ms": int(row["first_bar_ms"] or 0),
+                                "last_bar_ms": int(row["last_bar_ms"] or 0),
+                                "sum_open": float(row["sum_open"] or 0),
+                                "sum_high": float(row["sum_high"] or 0),
+                                "sum_low": float(row["sum_low"] or 0),
+                                "sum_close": float(row["sum_close"] or 0),
+                                "sum_volume": float(row["sum_volume"] or 0),
+                            }
+                        )
+        except Exception as exc:
+            return {"usable": False, "hash": "", "reason": f"bars_aggregate_query_failed:{str(exc)[:120]}", "row_count": 0}
+
+        if not grouped_rows:
+            return {"usable": False, "hash": "", "reason": "bars_aggregate_empty", "row_count": 0}
+        payload = {
+            "trade_date": trade_date,
+            "environment": environment,
+            "session_mode": str(request.get("scan_session_mode") or request.get("session_mode") or "extended"),
+            "cutoff_ms": cutoff_ms,
+            "day_start_ms": day_start_ms,
+            "day_end_ms": day_end_ms,
+            "warmup_limit": warmup_limit,
+            "symbols": normalized_symbols,
+            "rows": grouped_rows,
+        }
+        return {
+            "usable": True,
+            "hash": self._hash_daily_selection_cache_payload(payload),
+            "reason": "bars_aggregate",
+            "row_count": len(grouped_rows),
+            "source": "ibkr_bars_aggregate",
+        }
+
+    def _pb_filter_escape(self, value: Any) -> str:
+        escaper = getattr(self.pb, "_escape_filter_string", None)
+        if callable(escaper):
+            return str(escaper(value))
+        return str(value or "").replace("\\", "\\\\").replace('"', '\\"')
+
+    def _parse_daily_selection_cache_json(self, value: Any) -> Any:
+        if isinstance(value, (dict, list)):
+            return value
+        if isinstance(value, str) and value.strip():
+            try:
+                return json.loads(value)
+            except Exception:
+                return None
+        return None
+
+    def _load_daily_selection_cache_record(self, cache_key: str, trade_date: str) -> dict | None:
+        if not self.pb or not cache_key or not trade_date:
+            return None
+        filter_expr = (
+            f'cache_key = "{self._pb_filter_escape(cache_key)}" '
+            f'&& market_date = "{self._pb_filter_escape(trade_date)}"'
+        )
+        try:
+            getter = getattr(self.pb, "get_first_record", None)
+            if callable(getter):
+                row = getter(BACKTEST_DAILY_SELECTION_CACHE_COLLECTION, filter=filter_expr)
+                return dict(row) if row else None
+            rows = self.pb.get_records(BACKTEST_DAILY_SELECTION_CACHE_COLLECTION, filter=filter_expr, per_page=1, page=1)
+            return dict(rows[0]) if rows else None
+        except Exception:
+            return None
+
+    def _daily_selection_cache_record_is_valid(self, record: dict | None, fingerprints: dict) -> tuple[bool, str]:
+        if not record:
+            return False, "miss"
+        if bool(fingerprints.get("force_rebuild")):
+            return False, "force_rebuild"
+        if str(record.get("status") or "").strip().lower() != "valid":
+            return False, "stale_status"
+        for field in ("cache_key", "request_hash", "universe_hash", "input_data_hash", "scan_settings_hash", "strategy_hash"):
+            expected = str(fingerprints.get(field) or "")
+            actual = str(record.get(field) or "")
+            if expected and actual != expected:
+                return False, f"{field}_mismatch"
+        target_rows = self._parse_daily_selection_cache_json(record.get("target_rows"))
+        if not isinstance(target_rows, list):
+            return False, "target_rows_invalid"
+        selection_plan = self._parse_daily_selection_cache_json(record.get("selection_plan"))
+        if not isinstance(selection_plan, dict):
+            return False, "selection_plan_invalid"
+        selected_count = int(record.get("selected_count", 0) or 0)
+        if selected_count > 0 and not target_rows:
+            return False, "target_rows_empty"
+        return True, "hit"
+
+    def _prepare_cached_daily_selection(
+        self,
+        record: dict,
+        trade_date: str,
+        cache_key: str,
+    ) -> tuple[list[dict], list[str], dict]:
+        raw_target_rows = self._parse_daily_selection_cache_json(record.get("target_rows"))
+        target_rows = list(raw_target_rows or []) if isinstance(raw_target_rows, list) else []
+        prepared_rows = []
+        symbols = []
+        for row in target_rows:
+            if not isinstance(row, dict):
+                continue
+            item = dict(row)
+            symbol = str(item.get("symbol", "") or "").strip().upper()
+            if symbol and symbol not in symbols:
+                symbols.append(symbol)
+            item["symbol"] = symbol
+            item["date"] = str(item.get("date") or trade_date)[:10]
+            extra = self._parse_object(item.get("extra"))
+            extra.update(
+                {
+                    "daily_selection_cache_hit": True,
+                    "daily_selection_cache_key": cache_key,
+                    "daily_selection_cache_record_id": str(record.get("id") or ""),
+                }
+            )
+            item["extra"] = extra
+            prepared_rows.append(item)
+        raw_plan = self._parse_daily_selection_cache_json(record.get("selection_plan"))
+        if isinstance(raw_plan, dict):
+            for symbol in list(raw_plan.get(trade_date) or []):
+                normalized = str(symbol or "").strip().upper()
+                if normalized and normalized not in symbols:
+                    symbols.append(normalized)
+        raw_summary = self._parse_daily_selection_cache_json(record.get("daily_summary"))
+        daily_summary = dict(raw_summary or {}) if isinstance(raw_summary, dict) else {"date": trade_date}
+        daily_summary.update(
+            {
+                "date": trade_date,
+                "cache_hit": True,
+                "cache_status": "hit",
+                "cache_key": cache_key,
+                "cache_record_id": str(record.get("id") or ""),
+            }
+        )
+        return prepared_rows, symbols, daily_summary
+
+    def _upsert_daily_selection_cache_record(self, payload: dict) -> dict:
+        if not self.pb or not payload:
+            return {"ok": False, "error": "pb_unavailable", "created": 0, "updated": 0}
+        try:
+            upserter = getattr(self.pb, "upsert_backtest_daily_selection_cache_items", None)
+            if callable(upserter):
+                return dict(upserter([payload]) or {})
+            batch_upsert = getattr(self.pb, "_batch_upsert_records", None)
+            if callable(batch_upsert):
+                return dict(batch_upsert(BACKTEST_DAILY_SELECTION_CACHE_COLLECTION, [payload], ["cache_key", "market_date"], timeout=30) or {})
+            existing = self._load_daily_selection_cache_record(str(payload.get("cache_key") or ""), str(payload.get("market_date") or ""))
+            if existing and existing.get("id"):
+                self.pb.update_record(BACKTEST_DAILY_SELECTION_CACHE_COLLECTION, existing["id"], payload)
+                return {"ok": True, "created": 0, "updated": 1}
+            self.pb.create_record(BACKTEST_DAILY_SELECTION_CACHE_COLLECTION, payload)
+            return {"ok": True, "created": 1, "updated": 0}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)[:300], "created": 0, "updated": 0}
+
+    def _empty_daily_selection_cache_summary(self, request: dict, fingerprint: dict | None = None) -> dict:
+        mode = self._daily_selection_cache_mode(request)
+        enabled = self._daily_selection_cache_enabled(request)
+        return {
+            "enabled": bool(enabled),
+            "mode": mode,
+            "force_rebuild": bool(request.get("daily_selection_cache_force_rebuild")),
+            "collection": BACKTEST_DAILY_SELECTION_CACHE_COLLECTION,
+            "cache_key": str((fingerprint or {}).get("cache_key") or ""),
+            "algorithm_version": DAILY_SELECTION_CACHE_ALGORITHM_VERSION,
+            "hit_days": 0,
+            "miss_days": 0,
+            "stale_days": 0,
+            "rebuilt_days": 0,
+            "written_days": 0,
+            "write_error_days": 0,
+            "input_unusable_days": 0,
+            "reason_counts": {},
+            "duration_s": 0.0,
+        }
+
+    def _increment_daily_selection_cache_reason(self, summary: dict, reason: str) -> None:
+        reasons = summary.setdefault("reason_counts", {})
+        key = str(reason or "unknown").strip() or "unknown"
+        reasons[key] = int(reasons.get(key, 0) or 0) + 1
+
+
     def _build_historical_sd_admission(
         self,
         symbol: str,
@@ -125,7 +595,7 @@ class BacktestScanReplayMixin:
         signal_window_max_bars = self._historical_sd_window_max_bars(request)
         engine = runtime_indicator_engine()(symbol, "5m", params=params)
         signal_gen = runtime_signal_generator()(symbol, "5m", params=params)
-        warmup_limit = int(request.get("warmup_bars", BACKTEST_WARMUP_BARS) or BACKTEST_WARMUP_BARS)
+        warmup_limit = self._effective_indicator_warmup_bars(request, "warmup_bars")
         warmup_bars = self._load_symbol_warmup_bars(
             symbol,
             request["source_environment"],
@@ -561,7 +1031,7 @@ class BacktestScanReplayMixin:
         params = dict((request.get("params") or {}).get("strategy_params") or DEFAULT_PARAMS)
         environment = request["source_environment"]
         session_mode = request.get("scan_session_mode") or "extended"
-        lookback_limit = int(request.get("scan_warmup_bars", BACKTEST_WARMUP_BARS) or BACKTEST_WARMUP_BARS)
+        lookback_limit = self._effective_indicator_warmup_bars(request, "scan_warmup_bars")
         repair_summary = self._ensure_scan_history_available(symbol, request, cutoff_ms)
         engines = {}
         details = {
@@ -652,6 +1122,7 @@ class BacktestScanReplayMixin:
                 "scan_cutoff_ms": cutoff_ms,
                 "scan_session_mode": request.get("scan_session_mode") or "extended",
                 "scan_warmup_bars": int(request.get("scan_warmup_bars", BACKTEST_WARMUP_BARS) or BACKTEST_WARMUP_BARS),
+                "effective_scan_warmup_bars": self._effective_indicator_warmup_bars(request, "scan_warmup_bars"),
                 "ready_timeframes": list(details.get("ready_timeframes") or []),
                 "bars_loaded": details.get("bars_loaded") or {},
                 "last_bar_time_ms_by_interval": details.get("last_bar_time_ms_by_interval") or {},
@@ -670,6 +1141,11 @@ class BacktestScanReplayMixin:
         daily_summaries = []
         total_days = max(1, len(trading_dates))
         universe_mode = "manual_symbols" if request.get("symbols") else "watchlist_snapshot"
+        scan_settings = self._load_historical_scan_settings(request["source_environment"])
+        cache_started_at = time.time()
+        cache_fingerprint = self._build_daily_selection_cache_base_fingerprint(request, scan_settings)
+        cache_summary = self._empty_daily_selection_cache_summary(request, cache_fingerprint)
+        cache_write_enabled = bool(cache_summary.get("enabled")) and self._daily_selection_cache_mode(request) == "use_or_build"
 
         for day_index, trade_date in enumerate(trading_dates, start=1):
             if self._cancel_event.is_set():
@@ -687,12 +1163,48 @@ class BacktestScanReplayMixin:
             if not universe_rows and trade_date and not request.get("symbols"):
                 universe_rows = self._load_scan_universe(request, as_of_date="")
                 universe_snapshot_fallback = bool(universe_rows)
+            universe_hash = self._build_daily_selection_universe_hash(universe_rows)
+            input_fingerprint = self._build_daily_selection_input_fingerprint(trade_date, universe_rows, request) if cache_summary.get("enabled") else {"usable": False, "hash": "", "reason": "cache_disabled"}
+            day_cache_fingerprint = {
+                **cache_fingerprint,
+                "universe_hash": universe_hash,
+                "input_data_hash": str(input_fingerprint.get("hash") or ""),
+                "force_rebuild": bool(request.get("daily_selection_cache_force_rebuild")),
+            }
+            if cache_summary.get("enabled"):
+                if not bool(input_fingerprint.get("usable")):
+                    cache_summary["input_unusable_days"] = int(cache_summary.get("input_unusable_days", 0) or 0) + 1
+                    cache_summary["miss_days"] = int(cache_summary.get("miss_days", 0) or 0) + 1
+                    self._increment_daily_selection_cache_reason(cache_summary, str(input_fingerprint.get("reason") or "input_unusable"))
+                else:
+                    cache_record = self._load_daily_selection_cache_record(cache_fingerprint["cache_key"], trade_date)
+                    cache_valid, cache_reason = self._daily_selection_cache_record_is_valid(cache_record, day_cache_fingerprint)
+                    if cache_valid and cache_record:
+                        cached_rows, cached_symbols, cached_summary = self._prepare_cached_daily_selection(
+                            cache_record,
+                            trade_date,
+                            cache_fingerprint["cache_key"],
+                        )
+                        for symbol in cached_symbols:
+                            if symbol not in selected_lookup:
+                                selected_lookup.add(symbol)
+                                selected_symbols.append(symbol)
+                        target_rows.extend(cached_rows)
+                        selection_plan[trade_date] = list(cached_symbols)
+                        daily_summaries.append(cached_summary)
+                        cache_summary["hit_days"] = int(cache_summary.get("hit_days", 0) or 0) + 1
+                        self._increment_daily_selection_cache_reason(cache_summary, "hit")
+                        continue
+                    if cache_reason == "miss":
+                        cache_summary["miss_days"] = int(cache_summary.get("miss_days", 0) or 0) + 1
+                    else:
+                        cache_summary["stale_days"] = int(cache_summary.get("stale_days", 0) or 0) + 1
+                    self._increment_daily_selection_cache_reason(cache_summary, cache_reason)
             day_candidates = []
             scanned_count = 0
             ready_count = 0
             quality_rejected_count = 0
             rejection_summary: dict[str, int] = {}
-            scan_settings = self._load_historical_scan_settings(request["source_environment"])
             for item in universe_rows:
                 if self._cancel_event.is_set():
                     raise BacktestCancelled()
@@ -744,13 +1256,14 @@ class BacktestScanReplayMixin:
             )
             selected_rows = day_candidates[: request["max_symbols"]]
             selection_plan[trade_date] = [item["symbol"] for item in selected_rows]
+            day_target_rows = []
             for rank, candidate in enumerate(selected_rows, start=1):
                 symbol = candidate["symbol"]
                 if symbol not in selected_lookup:
                     selected_lookup.add(symbol)
                     selected_symbols.append(symbol)
                 cutoff_ms = int((candidate.get("extra") or {}).get("scan_cutoff_ms", 0) or 0)
-                target_rows.append(
+                day_target_rows.append(
                     {
                         "symbol": symbol,
                         "exchange": candidate.get("exchange", ""),
@@ -775,22 +1288,66 @@ class BacktestScanReplayMixin:
                         },
                     }
                 )
-            daily_summaries.append(
-                {
-                    "date": trade_date,
-                    "universe_size": scanned_count,
-                    "universe_snapshot_fallback": universe_snapshot_fallback,
-                    "ready_symbol_count": ready_count,
-                    "quality_rejected_count": quality_rejected_count,
-                    "rejection_summary": rejection_summary,
-                    "candidate_count": pre_sd_candidate_count,
-                    "post_sd_candidate_count": len(day_candidates),
-                    **sd_summary,
-                    "selected_count": len(selected_rows),
-                    "selected_symbols": [item["symbol"] for item in selected_rows],
-                }
-            )
+            target_rows.extend(day_target_rows)
+            daily_summary = {
+                "date": trade_date,
+                "universe_size": scanned_count,
+                "universe_snapshot_fallback": universe_snapshot_fallback,
+                "ready_symbol_count": ready_count,
+                "quality_rejected_count": quality_rejected_count,
+                "rejection_summary": rejection_summary,
+                "candidate_count": pre_sd_candidate_count,
+                "post_sd_candidate_count": len(day_candidates),
+                **sd_summary,
+                "selected_count": len(selected_rows),
+                "selected_symbols": [item["symbol"] for item in selected_rows],
+                "cache_hit": False,
+                "cache_status": "rebuilt" if cache_summary.get("enabled") else "disabled",
+            }
+            daily_summaries.append(daily_summary)
+            if cache_summary.get("enabled"):
+                cache_summary["rebuilt_days"] = int(cache_summary.get("rebuilt_days", 0) or 0) + 1
+                if cache_write_enabled and bool(input_fingerprint.get("usable")):
+                    cache_payload = {
+                        "cache_key": cache_fingerprint["cache_key"],
+                        "market_date": trade_date,
+                        "source_environment": str(request.get("source_environment") or "live"),
+                        "algorithm_version": DAILY_SELECTION_CACHE_ALGORITHM_VERSION,
+                        "request_hash": cache_fingerprint["request_hash"],
+                        "universe_hash": universe_hash,
+                        "input_data_hash": str(input_fingerprint.get("hash") or ""),
+                        "scan_settings_hash": cache_fingerprint["scan_settings_hash"],
+                        "strategy_hash": cache_fingerprint["strategy_hash"],
+                        "status": "valid",
+                        "selected_count": len(selected_rows),
+                        "target_rows": day_target_rows,
+                        "selection_plan": {trade_date: [item["symbol"] for item in selected_rows]},
+                        "daily_summary": daily_summary,
+                        "fingerprint_extra": {
+                            **dict(cache_fingerprint.get("fingerprint_extra") or {}),
+                            "universe_hash": universe_hash,
+                            "input_data": {
+                                key: value
+                                for key, value in dict(input_fingerprint or {}).items()
+                                if key in {"usable", "hash", "reason", "row_count", "missing_symbol_count", "bad_row_count"}
+                            },
+                        },
+                        "error": "",
+                        "last_built_at": datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S"),
+                    }
+                    write_result = self._upsert_daily_selection_cache_record(cache_payload)
+                    if bool(write_result.get("ok", True)) and not write_result.get("error"):
+                        cache_summary["written_days"] = int(cache_summary.get("written_days", 0) or 0) + 1
+                    else:
+                        cache_summary["write_error_days"] = int(cache_summary.get("write_error_days", 0) or 0) + 1
+                        self._increment_daily_selection_cache_reason(cache_summary, f"write_error:{write_result.get('error', 'unknown')}")
 
+        cache_summary["duration_s"] = round(time.time() - cache_started_at, 3)
+        cache_summary["total_days"] = len(trading_dates)
+        cache_summary["hit_rate"] = round(
+            float(cache_summary.get("hit_days", 0) or 0) / max(1, len(trading_dates)) * 100.0,
+            4,
+        )
         return {
             "symbols": selected_symbols,
             "selection_plan": selection_plan,
@@ -803,12 +1360,14 @@ class BacktestScanReplayMixin:
                 "premarket_cutoff_time": request.get("premarket_cutoff_time") or DEFAULT_SCAN_CUTOFF_TIME,
                 "scan_session_mode": request.get("scan_session_mode") or "extended",
                 "scan_warmup_bars": int(request.get("scan_warmup_bars", BACKTEST_WARMUP_BARS) or BACKTEST_WARMUP_BARS),
+                "effective_scan_warmup_bars": self._effective_indicator_warmup_bars(request, "scan_warmup_bars"),
                 "universe_mode": universe_mode,
                 "daily_selected_only": bool(request.get("daily_selected_only")),
                 "daily_selection_require_sd_trigger": bool(request.get("daily_selection_require_sd_trigger")),
                 "daily_selection_reuse_live_admission": bool(request.get("daily_selection_reuse_live_admission")),
                 "daily_selection_candidate_limit": int(request.get("daily_selection_candidate_limit", 0) or 0),
                 "shared_admission_helper": "ibkr_compute.core.active_window_admission.is_active_window_admitted",
+                "daily_selection_cache": cache_summary,
                 "daily": daily_summaries,
             },
         }

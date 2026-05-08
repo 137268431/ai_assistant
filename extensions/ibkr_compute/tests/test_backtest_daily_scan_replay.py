@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import unittest
 from datetime import datetime, timedelta
@@ -11,6 +12,8 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from ibkr_compute.backtest.runtime_service import BacktestService
+from ibkr_compute.backtest.constants import BACKTEST_WARMUP_BARS
+from ibkr_compute.core.indicator_engine import indicator_ready_bar_count
 from ibkr_compute.market.timeframe_utils import ET
 
 
@@ -25,6 +28,42 @@ class FakeEngine:
         return dict(self.snapshot)
 
 
+class FakeDailySelectionCachePB:
+    def __init__(self):
+        self.rows = {}
+        self.counter = 0
+
+    @staticmethod
+    def _filter_value(filter_text: str, field: str) -> str:
+        match = re.search(rf'{field}\s*=\s*"([^"]*)"', filter_text or "")
+        return match.group(1) if match else ""
+
+    def get_first_record(self, collection, filter=None, sort=None):
+        if collection != "ibkr_backtest_daily_selection_cache":
+            return None
+        key = self._filter_value(filter or "", "cache_key")
+        date = self._filter_value(filter or "", "market_date")
+        row = self.rows.get((key, date))
+        return dict(row) if row else None
+
+    def create_record(self, collection, data):
+        if collection != "ibkr_backtest_daily_selection_cache":
+            raise AssertionError(collection)
+        self.counter += 1
+        row = dict(data)
+        row["id"] = f"cache_{self.counter}"
+        self.rows[(row["cache_key"], row["market_date"])] = row
+        return dict(row)
+
+    def update_record(self, collection, record_id, data):
+        if collection != "ibkr_backtest_daily_selection_cache":
+            raise AssertionError(collection)
+        row = dict(data)
+        row["id"] = record_id
+        self.rows[(row["cache_key"], row["market_date"])] = row
+        return dict(row)
+
+
 class BacktestDailyScanReplayTests(unittest.TestCase):
     def setUp(self):
         self.service = BacktestService(None)
@@ -36,6 +75,45 @@ class BacktestDailyScanReplayTests(unittest.TestCase):
             "scan_session_mode": "extended",
             "scan_warmup_bars": 320,
         }
+
+    def _cache_request(self):
+        return {
+            **self.request,
+            "symbol_source": "daily_scan_replay",
+            "execution_model": "portfolio_stream",
+            "daily_selected_only": True,
+            "daily_selection_cache_enabled": True,
+            "daily_selection_cache_mode": "use_or_build",
+            "daily_selection_cache_force_rebuild": False,
+            "daily_selection_require_sd_trigger": False,
+            "daily_selection_reuse_live_admission": False,
+            "daily_selection_candidate_limit": 20,
+            "session_mode": "extended",
+            "trade_window_start_time": "09:35",
+            "trade_window_end_time": "15:30",
+            "strategy_tag": "TEST",
+            "params": {"strategy_params": {}},
+        }
+
+    def _install_cache_scan_fakes(self, service, dates=None):
+        dates = dates or ["2026-04-22", "2026-04-23"]
+        service.pb = FakeDailySelectionCachePB()
+        service._load_trading_dates = lambda request: list(dates)
+        service._load_scan_universe = lambda request, as_of_date="": [{"symbol": "NVDA", "exchange": "SMART"}]
+        service._load_historical_scan_settings = lambda environment: {
+            "scan_time_et": "09:25",
+            "min_avg_10d_volume": 100000,
+            "min_premarket_volume": 5000,
+            "min_atr_pct": 0.15,
+            "min_abs_day_change_pct": 1.0,
+        }
+        service._build_daily_selection_input_fingerprint = lambda trade_date, universe_rows, request: {
+            "usable": True,
+            "hash": f"clean-{trade_date}",
+            "reason": "coverage_clean",
+            "row_count": len(universe_rows),
+        }
+        return service.pb
 
     def test_scan_replay_falls_back_to_current_watchlist_snapshot_for_missing_history(self):
         self.service._load_trading_dates = lambda request: ["2026-04-22", "2026-04-23"]
@@ -372,6 +450,189 @@ class BacktestDailyScanReplayTests(unittest.TestCase):
         self.assertIn("avg_10d_volume_below_threshold", buckets)
         self.assertIn("premarket_volume_below_threshold", buckets)
         self.assertIn("day_change_below_threshold", buckets)
+
+    def test_daily_selection_cache_reuses_prebuilt_targets_for_same_request(self):
+        pb = self._install_cache_scan_fakes(self.service)
+        calls = []
+
+        def evaluate(symbol, trade_date, request, settings=None):
+            calls.append((trade_date, symbol))
+            return {
+                "symbol": symbol,
+                "score": 8,
+                "direction_bias": "long",
+                "quality_gate_passed": True,
+                "reason": "quality ok",
+                "extra": {"scan_cutoff_ms": self.service._build_scan_cutoff_ms(trade_date, "09:25")},
+            }
+
+        self.service._evaluate_historical_scan_symbol = evaluate
+        request = self._cache_request()
+
+        first = self.service._build_daily_scan_replay_plan(request)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(pb.rows), 2)
+        self.assertEqual(first["summary"]["daily_selection_cache"]["rebuilt_days"], 2)
+        self.assertEqual(first["summary"]["daily_selection_cache"]["written_days"], 2)
+
+        calls.clear()
+        self.service._evaluate_historical_scan_symbol = lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("cache hit should skip historical scan")
+        )
+
+        second = self.service._build_daily_scan_replay_plan(request)
+
+        self.assertEqual(calls, [])
+        self.assertEqual(second["symbols"], ["NVDA"])
+        self.assertEqual(second["selection_plan"]["2026-04-22"], ["NVDA"])
+        self.assertEqual(len(second["target_rows"]), 2)
+        cache = second["summary"]["daily_selection_cache"]
+        self.assertEqual(cache["hit_days"], 2)
+        self.assertEqual(cache["rebuilt_days"], 0)
+        self.assertEqual(cache["hit_rate"], 100.0)
+        self.assertTrue(all(day["cache_hit"] for day in second["summary"]["daily"]))
+        self.assertTrue(all(row["extra"]["daily_selection_cache_hit"] for row in second["target_rows"]))
+
+    def test_daily_selection_cache_force_rebuild_ignores_existing_rows(self):
+        self._install_cache_scan_fakes(self.service)
+        calls = []
+        self.service._evaluate_historical_scan_symbol = lambda symbol, trade_date, request, settings=None: {
+            "symbol": symbol,
+            "score": 8,
+            "direction_bias": "long",
+            "quality_gate_passed": True,
+            "reason": "quality ok",
+            "extra": {"scan_cutoff_ms": self.service._build_scan_cutoff_ms(trade_date, "09:25")},
+        }
+        request = self._cache_request()
+        self.service._build_daily_scan_replay_plan(request)
+
+        def evaluate(symbol, trade_date, request, settings=None):
+            calls.append((trade_date, symbol))
+            return {
+                "symbol": symbol,
+                "score": 9,
+                "direction_bias": "long",
+                "quality_gate_passed": True,
+                "reason": "rebuilt",
+                "extra": {"scan_cutoff_ms": self.service._build_scan_cutoff_ms(trade_date, "09:25")},
+            }
+
+        self.service._evaluate_historical_scan_symbol = evaluate
+        rebuilt_request = {**request, "daily_selection_cache_force_rebuild": True}
+        plan = self.service._build_daily_scan_replay_plan(rebuilt_request)
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(plan["summary"]["daily_selection_cache"]["rebuilt_days"], 2)
+        self.assertEqual(plan["summary"]["daily_selection_cache"]["stale_days"], 2)
+        self.assertEqual(plan["target_rows"][0]["score"], 9)
+
+    def test_daily_selection_cache_requires_usable_input_fingerprint(self):
+        self._install_cache_scan_fakes(self.service)
+        self.service._evaluate_historical_scan_symbol = lambda symbol, trade_date, request, settings=None: {
+            "symbol": symbol,
+            "score": 8,
+            "direction_bias": "long",
+            "quality_gate_passed": True,
+            "reason": "quality ok",
+            "extra": {"scan_cutoff_ms": self.service._build_scan_cutoff_ms(trade_date, "09:25")},
+        }
+        request = self._cache_request()
+        self.service._build_daily_scan_replay_plan(request)
+
+        calls = []
+        self.service._build_daily_selection_input_fingerprint = lambda trade_date, universe_rows, request: {
+            "usable": False,
+            "hash": "",
+            "reason": "missing_daily_coverage",
+            "row_count": 0,
+        }
+
+        def evaluate(symbol, trade_date, request, settings=None):
+            calls.append((trade_date, symbol))
+            return {
+                "symbol": symbol,
+                "score": 7,
+                "direction_bias": "long",
+                "quality_gate_passed": True,
+                "reason": "recomputed",
+                "extra": {"scan_cutoff_ms": self.service._build_scan_cutoff_ms(trade_date, "09:25")},
+            }
+
+        self.service._evaluate_historical_scan_symbol = evaluate
+        plan = self.service._build_daily_scan_replay_plan(request)
+
+        self.assertEqual(len(calls), 2)
+        cache = plan["summary"]["daily_selection_cache"]
+        self.assertEqual(cache["hit_days"], 0)
+        self.assertEqual(cache["input_unusable_days"], 2)
+        self.assertEqual(cache["reason_counts"]["missing_daily_coverage"], 2)
+        self.assertEqual(plan["target_rows"][0]["score"], 7)
+
+    def test_daily_selection_cache_read_only_does_not_write_rows(self):
+        pb = self._install_cache_scan_fakes(self.service)
+        calls = []
+
+        def evaluate(symbol, trade_date, request, settings=None):
+            calls.append((trade_date, symbol))
+            return {
+                "symbol": symbol,
+                "score": 8,
+                "direction_bias": "long",
+                "quality_gate_passed": True,
+                "reason": "quality ok",
+                "extra": {"scan_cutoff_ms": self.service._build_scan_cutoff_ms(trade_date, "09:25")},
+            }
+
+        self.service._evaluate_historical_scan_symbol = evaluate
+        request = {**self._cache_request(), "daily_selection_cache_mode": "read_only"}
+        plan = self.service._build_daily_scan_replay_plan(request)
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(pb.rows, {})
+        cache = plan["summary"]["daily_selection_cache"]
+        self.assertEqual(cache["mode"], "read_only")
+        self.assertEqual(cache["rebuilt_days"], 2)
+        self.assertEqual(cache["written_days"], 0)
+
+    def test_daily_selection_cache_key_changes_when_rules_change(self):
+        service = BacktestService(None)
+        base = self._cache_request()
+        settings = {
+            "scan_time_et": "09:25",
+            "min_avg_10d_volume": 100000,
+            "min_premarket_volume": 5000,
+            "min_atr_pct": 0.15,
+            "min_abs_day_change_pct": 1.0,
+        }
+
+        first = service._build_daily_selection_cache_base_fingerprint(base, settings)
+        changed_cutoff = service._build_daily_selection_cache_base_fingerprint(
+            {**base, "premarket_cutoff_time": "09:15"},
+            settings,
+        )
+        changed_strategy = service._build_daily_selection_cache_base_fingerprint(
+            {**base, "params": {"strategy_params": {"signal_window_max_bars": 20}}},
+            settings,
+        )
+
+        self.assertNotEqual(first["cache_key"], changed_cutoff["cache_key"])
+        self.assertNotEqual(first["cache_key"], changed_strategy["cache_key"])
+
+    def test_effective_warmup_covers_indicator_and_signal_window(self):
+        service = BacktestService(None)
+        request = {
+            **self._cache_request(),
+            "warmup_bars": 160,
+            "scan_warmup_bars": 160,
+            "params": {"strategy_params": {"signal_window_max_bars": 36}},
+        }
+
+        expected_floor = indicator_ready_bar_count(request["params"]["strategy_params"]) + 44
+
+        self.assertGreaterEqual(service._effective_indicator_warmup_bars(request, "warmup_bars"), BACKTEST_WARMUP_BARS)
+        self.assertGreaterEqual(service._effective_indicator_warmup_bars(request, "warmup_bars"), expected_floor)
+        self.assertGreaterEqual(service._effective_indicator_warmup_bars(request, "scan_warmup_bars"), expected_floor)
 
 
 if __name__ == "__main__":

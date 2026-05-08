@@ -204,6 +204,7 @@ class BacktestOrchestrationMixin:
         metrics["backtest_reverse_status_breakdown"] = self._count_values(all_reverse_rows, "status")
         metrics["backtest_reverse_samples"] = self._build_backtest_reverse_samples(all_reverse_rows)
         metrics["historical_targeting"] = historical_targeting
+        metrics["daily_selection_cache"] = dict(historical_targeting.get("daily_selection_cache") or {})
         avg_loss = float(metrics.get("avg_loss", 0) or 0)
         metrics["win_loss_ratio"] = round((float(metrics.get("avg_win", 0) or 0) / abs(avg_loss)), 4) if avg_loss < 0 else 0.0
         analysis_report = self._build_run_analysis_report(

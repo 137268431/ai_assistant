@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>回测工坊 - Trading Flight</title>
     <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
-    <script src="common.js?v=20260508-backtest-daily-sd"></script>
+    <script src="common.js?v=20260508-backtest-warmup-signal-v3"></script>
     <script>document.write(getCommonStyles());</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
@@ -170,6 +170,13 @@
                             <div class="field">
                                 <label for="premarketCutoff">Premarket Cutoff</label>
                                 <input id="premarketCutoff" type="text" value="09:20" placeholder="09:20">
+                            </div>
+                            <div class="field span-2">
+                                <label class="checkline" for="dailySelectionCacheForceRebuild">
+                                    <input id="dailySelectionCacheForceRebuild" type="checkbox">
+                                    <span>强制覆盖每日选股缓存</span>
+                                </label>
+                                <small>仅 daily_scan_replay 生效；怀疑 bars 或筛选结果不准时开启，会忽略旧的 ibkr_backtest_daily_selection_cache 并重算覆盖。</small>
                             </div>
                             <div class="field span-2">
                                 <label class="checkline" for="persistBacktestIndicators">
@@ -378,16 +385,16 @@
         <div id="nav"></div>
     </div>
 
-    <script src="/assets/js/pages/ibkr_backtests/state.js?v=20260508-backtest-daily-sd"></script>
-    <script src="/assets/js/pages/ibkr_backtests/utils.js?v=20260508-backtest-daily-sd"></script>
-    <script src="/assets/js/pages/ibkr_backtests/cards.js?v=20260508-backtest-daily-sd"></script>
-    <script src="/assets/js/pages/ibkr_backtests/ui.js?v=20260508-backtest-daily-sd"></script>
-    <script src="/assets/js/pages/ibkr_backtests/renderers.js?v=20260508-backtest-daily-sd"></script>
-    <script src="/assets/js/pages/ibkr_backtests/charts.js?v=20260508-backtest-daily-sd"></script>
-    <script src="/assets/js/pages/ibkr_backtests/details.js?v=20260508-backtest-daily-sd"></script>
-    <script src="/assets/js/pages/ibkr_backtests/replay.js?v=20260508-backtest-daily-sd"></script>
-    <script src="/assets/js/pages/ibkr_backtests/api.js?v=20260508-backtest-daily-sd"></script>
-    <script src="/assets/js/pages/ibkr_backtests/actions.js?v=20260508-backtest-daily-sd"></script>
-    <script src="/assets/js/pages/ibkr_backtests/page.js?v=20260508-backtest-daily-sd"></script>
+    <script src="/assets/js/pages/ibkr_backtests/state.js?v=20260508-backtest-warmup-signal-v3"></script>
+    <script src="/assets/js/pages/ibkr_backtests/utils.js?v=20260508-backtest-warmup-signal-v3"></script>
+    <script src="/assets/js/pages/ibkr_backtests/cards.js?v=20260508-backtest-warmup-signal-v3"></script>
+    <script src="/assets/js/pages/ibkr_backtests/ui.js?v=20260508-backtest-warmup-signal-v3"></script>
+    <script src="/assets/js/pages/ibkr_backtests/renderers.js?v=20260508-backtest-warmup-signal-v3"></script>
+    <script src="/assets/js/pages/ibkr_backtests/charts.js?v=20260508-backtest-warmup-signal-v3"></script>
+    <script src="/assets/js/pages/ibkr_backtests/details.js?v=20260508-backtest-warmup-signal-v3"></script>
+    <script src="/assets/js/pages/ibkr_backtests/replay.js?v=20260508-backtest-warmup-signal-v3"></script>
+    <script src="/assets/js/pages/ibkr_backtests/api.js?v=20260508-backtest-warmup-signal-v3"></script>
+    <script src="/assets/js/pages/ibkr_backtests/actions.js?v=20260508-backtest-warmup-signal-v3"></script>
+    <script src="/assets/js/pages/ibkr_backtests/page.js?v=20260508-backtest-warmup-signal-v3"></script>
 </body>
 </html>

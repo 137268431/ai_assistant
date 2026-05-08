@@ -32,7 +32,7 @@ class BacktestMarketDataBackfillMixin:
                 request["source_environment"],
                 request["date_from"],
                 request["date_to"],
-                warmup_bars=int(request.get("warmup_bars", BACKTEST_WARMUP_BARS) or BACKTEST_WARMUP_BARS),
+                warmup_bars=self._effective_indicator_warmup_bars(request, "warmup_bars"),
             )
             for symbol in symbols
         ]
@@ -51,7 +51,7 @@ class BacktestMarketDataBackfillMixin:
         warmup_lookback_ms = interval_to_ms("5m") * (
             max(
                 BACKTEST_WARMUP_BARS,
-                int(request.get("warmup_bars", BACKTEST_WARMUP_BARS) or BACKTEST_WARMUP_BARS),
+                self._effective_indicator_warmup_bars(request, "warmup_bars"),
             )
             + 20
         )
@@ -258,7 +258,7 @@ class BacktestMarketDataBackfillMixin:
                 request["source_environment"],
                 request["date_from"],
                 request["date_to"],
-                warmup_bars=int(request.get("warmup_bars", BACKTEST_WARMUP_BARS) or BACKTEST_WARMUP_BARS),
+                warmup_bars=self._effective_indicator_warmup_bars(request, "warmup_bars"),
             )
             for symbol in symbols
         ]
@@ -621,7 +621,7 @@ class BacktestMarketDataBackfillMixin:
 
     def _ensure_scan_history_available(self, symbol: str, request: dict, cutoff_ms: int) -> dict:
         environment = request["source_environment"]
-        lookback_limit = int(request.get("scan_warmup_bars", BACKTEST_WARMUP_BARS) or BACKTEST_WARMUP_BARS)
+        lookback_limit = self._effective_indicator_warmup_bars(request, "scan_warmup_bars")
         coverage_bars = max(BACKTEST_WARMUP_BARS + 20, lookback_limit + 20)
         coverage_start_ms = max(0, cutoff_ms - (interval_to_ms("5m") * coverage_bars))
         rows = self._load_bar_rows_from_sqlite(

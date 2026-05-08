@@ -292,6 +292,19 @@ def normalize_request(payload: dict) -> dict:
         minimum=1,
         maximum=constants.MAX_BACKTEST_SYMBOLS,
     )
+    default_daily_selection_cache = bool(
+        effective_symbol_source == "daily_scan_replay"
+        and execution_model == "portfolio_stream"
+        and daily_selected_only
+    )
+    daily_selection_cache_enabled = normalize_bool(
+        payload.get("daily_selection_cache_enabled"),
+        default_daily_selection_cache,
+    )
+    daily_selection_cache_mode = str(payload.get("daily_selection_cache_mode") or "use_or_build").strip().lower() or "use_or_build"
+    if daily_selection_cache_mode not in {"use_or_build", "read_only", "bypass"}:
+        daily_selection_cache_mode = "use_or_build"
+    daily_selection_cache_force_rebuild = normalize_bool(payload.get("daily_selection_cache_force_rebuild"), False)
     premarket_cutoff_time = normalize_hhmm(payload.get("premarket_cutoff_time") or payload.get("scan_cutoff_time"))
     scan_session_mode = str(payload.get("scan_session_mode") or "extended").strip().lower() or "extended"
     if scan_session_mode not in constants.SESSION_MODE_VALUES:
@@ -429,6 +442,9 @@ def normalize_request(payload: dict) -> dict:
         "daily_selection_require_sd_trigger": daily_selection_require_sd_trigger,
         "daily_selection_reuse_live_admission": daily_selection_reuse_live_admission,
         "daily_selection_candidate_limit": daily_selection_candidate_limit,
+        "daily_selection_cache_enabled": daily_selection_cache_enabled,
+        "daily_selection_cache_mode": daily_selection_cache_mode,
+        "daily_selection_cache_force_rebuild": daily_selection_cache_force_rebuild,
         "premarket_cutoff_time": premarket_cutoff_time,
         "retention_limit": retention_limit,
         "preflight_backfill": preflight_backfill,
@@ -457,6 +473,9 @@ def normalize_request(payload: dict) -> dict:
             "daily_selection_require_sd_trigger": daily_selection_require_sd_trigger,
             "daily_selection_reuse_live_admission": daily_selection_reuse_live_admission,
             "daily_selection_candidate_limit": daily_selection_candidate_limit,
+            "daily_selection_cache_enabled": daily_selection_cache_enabled,
+            "daily_selection_cache_mode": daily_selection_cache_mode,
+            "daily_selection_cache_force_rebuild": daily_selection_cache_force_rebuild,
             "preflight_backfill": preflight_backfill,
             "backfill_concurrency": backfill_concurrency,
             "backfill_symbol_timeout_s": backfill_symbol_timeout_s,

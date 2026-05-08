@@ -634,7 +634,7 @@ class BacktestPortfolioMixin:
             request["source_environment"],
             int(bars[0].get("bar_time_ms", 0) or 0),
             request["session_mode"],
-            limit=int(request.get("warmup_bars", BACKTEST_WARMUP_BARS) or BACKTEST_WARMUP_BARS),
+            limit=self._effective_indicator_warmup_bars(request, "warmup_bars"),
         )
         previous_day = self._bootstrap_backtest_state(engine, signal_gen, warmup_bars) if warmup_bars else ""
         compare_with_tv = self._should_compare_with_tv(request)

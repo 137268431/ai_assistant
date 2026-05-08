@@ -66,6 +66,7 @@ MONITORED_TABLES: tuple[dict[str, Any], ...] = (
     {"name": "ibkr_backtest_signals", "group": "backtest", "critical": False},
     {"name": "ibkr_backtest_reverse_signals", "group": "backtest", "critical": False},
     {"name": "ibkr_backtest_targets", "group": "backtest", "critical": False},
+    {"name": "ibkr_backtest_daily_selection_cache", "group": "backtest", "critical": False, "date_field": "market_date"},
     {"name": "ibkr_backtest_indicators", "group": "backtest", "critical": False},
     {"name": "tv_signals", "group": "compat", "critical": False},
     {"name": "tv_indicators", "group": "compat", "critical": False},

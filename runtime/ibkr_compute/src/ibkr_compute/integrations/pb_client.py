@@ -382,6 +382,14 @@ class PBClient:
             timeout=30,
         )
 
+    def upsert_backtest_daily_selection_cache_items(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        return self._batch_upsert_records(
+            "ibkr_backtest_daily_selection_cache",
+            items,
+            ["cache_key", "market_date"],
+            timeout=30,
+        )
+
     def rescan_bar_integrity(self, data: Dict[str, Any]) -> Dict[str, Any]:
         return self.call_custom_api("ibkr/data_quality/rescan", method="POST", data=data, timeout=30)
 

@@ -131,6 +131,7 @@
                         backtest_target_capture: extra.backtest_target_capture || {},
                         backtest_reverse_capture: extra.backtest_reverse_capture || {},
                         historical_targeting: extra.historical_targeting || {},
+                        daily_selection_cache: metrics.daily_selection_cache || extra.daily_selection_cache || extra.historical_targeting?.daily_selection_cache || {},
                         daily_selected_profile: metrics.daily_selected_profile || metrics.portfolio_profile || {},
                         daily_scan_match_diagnostics: metrics.daily_scan_match_diagnostics || extra.daily_scan_match_diagnostics || {},
                         portfolio_risk: metrics.portfolio_risk || extra.portfolio_risk || {},

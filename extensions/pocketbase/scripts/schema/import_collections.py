@@ -69,6 +69,7 @@ SCHEMA_BUNDLES = {
         "schema_ibkr_backtest_indicators.json",
         "schema_ibkr_backtest_signals.json",
         "schema_ibkr_backtest_targets.json",
+        "schema_ibkr_backtest_daily_selection_cache.json",
         "schema_ibkr_backtest_reverse_signals.json",
     ),
 }
