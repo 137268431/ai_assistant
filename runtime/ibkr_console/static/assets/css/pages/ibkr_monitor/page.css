@@ -333,6 +333,274 @@
             color: var(--muted);
         }
 
+        .sentiment-panel-section {
+            border-color: rgba(246, 173, 85, 0.2);
+            background:
+                radial-gradient(circle at 12% 0%, rgba(246, 173, 85, 0.16), transparent 32%),
+                radial-gradient(circle at 86% 8%, rgba(72, 187, 120, 0.12), transparent 34%),
+                linear-gradient(180deg, rgba(16, 22, 32, 0.98), rgba(8, 12, 20, 0.98));
+        }
+        .sentiment-panel {
+            display: grid;
+            gap: 12px;
+        }
+        .sentiment-hero-card {
+            --sentiment-accent: #8BA4C4;
+            --sentiment-wash: rgba(139, 164, 196, 0.12);
+            position: relative;
+            overflow: hidden;
+            display: grid;
+            gap: 12px;
+            padding: 16px;
+            border-radius: 18px;
+            border: 1px solid rgba(255,255,255,0.09);
+            background:
+                radial-gradient(circle at top right, var(--sentiment-wash), transparent 42%),
+                linear-gradient(145deg, rgba(255,255,255,0.065), rgba(255,255,255,0.025));
+        }
+        .sentiment-hero-card::before {
+            content: '';
+            position: absolute;
+            inset: 0 auto 0 0;
+            width: 5px;
+            background: var(--sentiment-accent);
+            box-shadow: 0 0 24px var(--sentiment-accent);
+        }
+        .sentiment-hero-card.is-ok {
+            --sentiment-accent: #48BB78;
+            --sentiment-wash: rgba(72, 187, 120, 0.16);
+        }
+        .sentiment-hero-card.is-warn {
+            --sentiment-accent: #F6AD55;
+            --sentiment-wash: rgba(246, 173, 85, 0.16);
+        }
+        .sentiment-hero-card.is-error {
+            --sentiment-accent: #FC8181;
+            --sentiment-wash: rgba(252, 129, 129, 0.16);
+        }
+        .sentiment-hero-card.is-neutral {
+            --sentiment-accent: #63B3ED;
+            --sentiment-wash: rgba(99, 179, 237, 0.14);
+        }
+        .sentiment-state-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 14px;
+            min-width: 0;
+        }
+        .sentiment-kicker {
+            margin-bottom: 5px;
+            color: var(--sentiment-accent);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px;
+            font-weight: 800;
+            letter-spacing: 1.1px;
+            text-transform: uppercase;
+        }
+        .sentiment-state {
+            font-size: clamp(28px, 4vw, 44px);
+            line-height: 0.95;
+            font-weight: 800;
+            letter-spacing: -1.2px;
+        }
+        .sentiment-freshness {
+            padding: 6px 9px;
+            border-radius: 999px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.05);
+            color: var(--muted);
+            font-size: 10px;
+            white-space: nowrap;
+        }
+        .sentiment-copy {
+            max-width: 980px;
+            color: var(--muted);
+            font-size: 13px;
+            line-height: 1.7;
+        }
+        .sentiment-kpis {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 8px;
+        }
+        .sentiment-kpis > div {
+            min-width: 0;
+            padding: 10px;
+            border-radius: 13px;
+            border: 1px solid rgba(255,255,255,0.07);
+            background: rgba(255,255,255,0.04);
+        }
+        .sentiment-kpis span,
+        .sentiment-rule-row span,
+        .sentiment-symbol-detail-grid span {
+            color: var(--muted);
+            font-size: 9px;
+            font-family: 'JetBrains Mono', monospace;
+            text-transform: uppercase;
+            letter-spacing: 0.55px;
+        }
+        .sentiment-kpis strong {
+            display: block;
+            margin-top: 5px;
+            font-size: 20px;
+            line-height: 1;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .sentiment-kpis em {
+            display: block;
+            margin-top: 4px;
+            color: var(--sentiment-accent);
+            font-style: normal;
+            font-size: 12px;
+            font-weight: 800;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .sentiment-rule-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 7px;
+        }
+        .sentiment-rule-row span {
+            padding: 5px 8px;
+            border-radius: 999px;
+            border: 1px solid rgba(255,255,255,0.07);
+            background: rgba(255,255,255,0.04);
+            text-transform: none;
+            letter-spacing: 0;
+        }
+        .sentiment-symbol-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px;
+        }
+        .sentiment-symbol-card {
+            position: relative;
+            overflow: hidden;
+            min-width: 0;
+            display: grid;
+            gap: 9px;
+            padding: 12px 12px 12px 14px;
+            border-radius: 15px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background:
+                radial-gradient(circle at top right, rgba(99, 179, 237, 0.10), transparent 40%),
+                linear-gradient(180deg, rgba(255,255,255,0.055), rgba(255,255,255,0.025));
+        }
+        .sentiment-symbol-card::before {
+            content: '';
+            position: absolute;
+            inset: 0 auto 0 0;
+            width: 4px;
+            background: #8BA4C4;
+        }
+        .sentiment-symbol-card.is-up::before {
+            background: #48BB78;
+            box-shadow: 0 0 18px rgba(72, 187, 120, 0.5);
+        }
+        .sentiment-symbol-card.is-down::before,
+        .sentiment-symbol-card.is-stale::before {
+            background: #FC8181;
+            box-shadow: 0 0 18px rgba(252, 129, 129, 0.5);
+        }
+        .sentiment-symbol-card.is-flat::before {
+            background: #F6AD55;
+        }
+        .sentiment-symbol-card.is-stale {
+            border-color: rgba(252, 129, 129, 0.22);
+            background:
+                radial-gradient(circle at top right, rgba(252, 129, 129, 0.12), transparent 40%),
+                linear-gradient(180deg, rgba(255,255,255,0.052), rgba(255,255,255,0.024));
+        }
+        .sentiment-symbol-head,
+        .sentiment-symbol-price-row,
+        .sentiment-symbol-foot {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 8px;
+            min-width: 0;
+        }
+        .sentiment-symbol-name {
+            color: var(--text);
+            text-decoration: none;
+            font-size: 18px;
+            line-height: 1;
+            font-weight: 800;
+        }
+        .sentiment-symbol-name:hover {
+            color: var(--accent);
+        }
+        .sentiment-symbol-meta {
+            margin-top: 4px;
+            color: var(--muted);
+            font-size: 9px;
+        }
+        .sentiment-symbol-trend {
+            padding: 4px 7px;
+            border-radius: 999px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.05);
+            color: var(--muted);
+            font-size: 9px;
+            font-weight: 800;
+            font-family: 'JetBrains Mono', monospace;
+            white-space: nowrap;
+        }
+        .sentiment-symbol-card.is-up .sentiment-symbol-trend,
+        .sentiment-symbol-card.is-up .sentiment-symbol-change {
+            color: #48BB78;
+        }
+        .sentiment-symbol-card.is-down .sentiment-symbol-trend,
+        .sentiment-symbol-card.is-down .sentiment-symbol-change,
+        .sentiment-symbol-card.is-stale .sentiment-symbol-trend {
+            color: #FC8181;
+        }
+        .sentiment-symbol-card.is-flat .sentiment-symbol-trend,
+        .sentiment-symbol-card.is-flat .sentiment-symbol-change {
+            color: #F6AD55;
+        }
+        .sentiment-symbol-price {
+            font-size: 22px;
+            line-height: 1;
+            font-weight: 800;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .sentiment-symbol-change {
+            font-size: 13px;
+            line-height: 1.2;
+            font-weight: 800;
+            font-family: 'JetBrains Mono', monospace;
+            text-align: right;
+        }
+        .sentiment-symbol-detail-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 6px;
+        }
+        .sentiment-symbol-detail-grid > div {
+            min-width: 0;
+            padding: 7px;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.06);
+            background: rgba(255,255,255,0.035);
+        }
+        .sentiment-symbol-detail-grid span {
+            display: block;
+            margin-bottom: 3px;
+        }
+        .sentiment-symbol-detail-grid strong {
+            font-size: 12px;
+            line-height: 1.2;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .sentiment-symbol-foot {
+            align-items: center;
+            color: var(--muted);
+            font-size: 10px;
+            line-height: 1.5;
+        }
+
         .market-overview-section {
             min-height: 0;
             border-color: rgba(79, 209, 197, 0.16);
@@ -960,6 +1228,33 @@
     gap: 9px;
 }
 
+.sentiment-panel {
+    gap: 10px;
+}
+
+.sentiment-hero-card {
+    padding: 14px;
+    gap: 10px;
+}
+
+.sentiment-symbol-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 9px;
+}
+
+.sentiment-symbol-card {
+    padding: 10px 10px 10px 12px;
+    gap: 7px;
+}
+
+.sentiment-symbol-name {
+    font-size: 16px;
+}
+
+.sentiment-symbol-price {
+    font-size: 19px;
+}
+
 .market-card {
     min-width: 0;
     padding: 9px 10px 9px 12px;
@@ -1117,6 +1412,20 @@
 }
 
 @media (max-width: 720px) {
+    .sentiment-state-row {
+        flex-direction: column;
+    }
+
+    .sentiment-freshness {
+        white-space: normal;
+        text-align: left;
+    }
+
+    .sentiment-kpis,
+    .sentiment-symbol-grid {
+        grid-template-columns: 1fr;
+    }
+
     .market-overview-grid,
     .market-monitor-cards,
     .critical-metric-strip,

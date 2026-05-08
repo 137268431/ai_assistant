@@ -8,7 +8,7 @@
     <script src="common.js"></script>
     <script>document.write(getCommonStyles());</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-    <link rel="stylesheet" href="/assets/css/pages/ibkr_monitor/page.css?v=20260430-market-compact">
+    <link rel="stylesheet" href="/assets/css/pages/ibkr_monitor/page.css?v=20260508-sentiment-panel">
 </head>
 <body>
     <div id="nav"></div>
@@ -76,11 +76,24 @@
             </div>
         </section>
 
+        <section class="section sentiment-panel-section">
+            <div class="section-header">
+                <div>
+                    <div class="section-title">市场情绪面板</div>
+                    <div class="section-copy">只看 VIX / SPY / QQQ，独立判断 risk-on / risk-off，不和普通交易标的混在一起。</div>
+                </div>
+                <div class="section-meta" id="marketSentimentMeta">sentiment --</div>
+            </div>
+            <div class="section-body">
+                <div class="sentiment-panel" id="marketSentimentPanel"></div>
+            </div>
+        </section>
+
         <section class="section market-overview-section">
             <div class="section-header">
                 <div>
-                    <div class="section-title">大盘行情雷达</div>
-                    <div class="section-copy">聚合 market_monitor 的实时价格、涨跌、quote / tick 新鲜度和图表入口。</div>
+                    <div class="section-title">其它市场监控</div>
+                    <div class="section-copy">除 VIX / SPY / QQQ 外的 market_monitor 标的在这里展示，避免和情绪指数重复。</div>
                 </div>
                 <div class="section-meta" id="marketOverviewMeta">market --</div>
             </div>
@@ -228,6 +241,7 @@
             'order_update_count',
         ];
         const MARKET_MONITOR_PRIORITY = ['SPY', 'QQQ', 'DIA', 'IWM', 'VIX', 'UVXY', 'TLT', 'GLD', 'USO'];
+        const SENTIMENT_SYMBOLS = ['VIX', 'SPY', 'QQQ'];
 
         function initMonitorAuth() {
             const token = getToken();
@@ -389,6 +403,14 @@
             const num = Number(value);
             if (!Number.isFinite(num) || num <= 0) return '--';
             return `$${num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        }
+
+        function formatMarketPrice(symbol, value) {
+            const num = Number(value);
+            if (!Number.isFinite(num) || num <= 0) return '--';
+            const normalized = String(symbol || '').trim().toUpperCase();
+            const formatted = num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            return normalized === 'VIX' ? formatted : `$${formatted}`;
         }
 
         function formatSeconds(value) {
@@ -679,6 +701,136 @@
                     if (leftWeight !== rightWeight) return leftWeight - rightWeight;
                     return left.symbol.localeCompare(right.symbol);
                 });
+        }
+
+        function isSentimentSymbol(symbol) {
+            return SENTIMENT_SYMBOLS.includes(String(symbol || '').trim().toUpperCase());
+        }
+
+        function getSentimentRows(payload) {
+            const bySymbol = new Map();
+            getMarketMonitorRows(payload).forEach((item) => {
+                if (isSentimentSymbol(item.symbol)) {
+                    bySymbol.set(item.symbol, item);
+                }
+            });
+            return SENTIMENT_SYMBOLS.map((symbol) => bySymbol.get(symbol) || {
+                symbol,
+                role: 'market_sentiment',
+                visible: false,
+                stale: true,
+                visibility_sources: [],
+            });
+        }
+
+        function getOtherMarketMonitorRows(payload) {
+            return getMarketMonitorRows(payload).filter((item) => !isSentimentSymbol(item.symbol));
+        }
+
+        function getFreshnessAge(item) {
+            const ages = [item?.quote_age_s, item?.last_update_age_s, item?.canonical_data_age_s]
+                .map(getFiniteNumber)
+                .filter((value) => value != null);
+            return ages.length ? Math.min(...ages) : null;
+        }
+
+        function equityBiasLabel(spyPct, qqqPct) {
+            const values = [spyPct, qqqPct].filter((value) => value != null);
+            if (!values.length) return 'SPY/QQQ 数据不足';
+            const positives = values.filter((value) => value > 0.01).length;
+            const negatives = values.filter((value) => value < -0.01).length;
+            if (positives === values.length) return 'SPY/QQQ 同步偏强';
+            if (negatives === values.length) return 'SPY/QQQ 同步偏弱';
+            if (positives > negatives) return 'SPY/QQQ 分歧偏强';
+            if (negatives > positives) return 'SPY/QQQ 分歧偏弱';
+            return 'SPY/QQQ 中性分歧';
+        }
+
+        function deriveMarketSentiment(rows, payload) {
+            const rowMap = new Map(rows.map((item) => [String(item?.symbol || '').toUpperCase(), item]));
+            const vix = rowMap.get('VIX') || {};
+            const spy = rowMap.get('SPY') || {};
+            const qqq = rowMap.get('QQQ') || {};
+            const vixValue = getFiniteNumber(vix.last_price);
+            const vixPct = getFiniteNumber(vix.day_change_pct);
+            const spyPct = getFiniteNumber(spy.day_change_pct);
+            const qqqPct = getFiniteNumber(qqq.day_change_pct);
+            const maxFreshness = getMaxFinite(rows.map(getFreshnessAge));
+            const marketSession = payload?.runtime?.market_session || {};
+            const isOpen = marketSession?.is_open !== false && !['closed', 'overnight'].includes(String(marketSession?.kind || '').toLowerCase());
+            const biasText = equityBiasLabel(spyPct, qqqPct);
+            const equityValues = [spyPct, qqqPct].filter((value) => value != null);
+            const equityWeak = equityValues.length > 0 && equityValues.every((value) => value < -0.01);
+            const equitySupport = equityValues.some((value) => value > 0.01);
+            const vixFalling = vixPct != null && vixPct < -0.05;
+            let state = 'UNKNOWN';
+            let toneClass = 'is-neutral';
+            let copy = 'VIX / SPY / QQQ 数据不足，暂不判断市场情绪。';
+            if (vixValue != null) {
+                if (vixValue >= 30) {
+                    if (vixFalling && equitySupport) {
+                        state = 'REVERSAL WATCH';
+                        toneClass = 'is-warn';
+                        copy = `VIX 高位但回落，${biasText}，只观察恐慌退潮，不直接追多。`;
+                    } else {
+                        state = 'PANIC';
+                        toneClass = 'is-error';
+                        copy = `VIX ${formatMarketPrice('VIX', vixValue)} 已进入极度恐慌区，先控制风险。`;
+                    }
+                } else if (vixValue >= 25) {
+                    state = vixFalling && equitySupport ? 'REPAIR WATCH' : 'RISK OFF';
+                    toneClass = vixFalling && equitySupport ? 'is-warn' : 'is-error';
+                    copy = vixFalling && equitySupport
+                        ? `VIX 风险区回落，${biasText}，关注修复但不要当作必涨。`
+                        : `VIX 处于风险区，${biasText}，多头信号需要更谨慎。`;
+                } else if (vixValue >= 20) {
+                    state = equityWeak ? 'RISK OFF' : 'CAUTIOUS';
+                    toneClass = equityWeak ? 'is-warn' : 'is-neutral';
+                    copy = `VIX 中性偏高，${biasText}，适合降权而不是单独反向交易。`;
+                } else {
+                    state = equityWeak ? 'CAUTIOUS' : (equitySupport ? 'RISK ON' : 'NEUTRAL');
+                    toneClass = equityWeak ? 'is-warn' : (equitySupport ? 'is-ok' : 'is-neutral');
+                    copy = `VIX 低于 20，${biasText}，市场情绪相对稳定。`;
+                }
+            }
+            const freshnessCopy = maxFreshness == null
+                ? 'freshness --'
+                : `${isOpen ? 'live' : 'off-hours'} ${formatSeconds(maxFreshness)}`;
+            return {
+                state,
+                toneClass,
+                copy,
+                biasText,
+                freshnessCopy,
+                vixValue,
+                vixPct,
+                spyPct,
+                qqqPct,
+                isOpen,
+            };
+        }
+
+        function getSentimentSymbolTone(item, isOpen = true) {
+            const symbol = String(item?.symbol || '').trim().toUpperCase();
+            const changePct = getFiniteNumber(item?.day_change_pct);
+            const hasPrice = getFiniteNumber(item?.last_price) != null;
+            if (!hasPrice && item?.visible === false) {
+                return { className: 'is-stale', label: 'MISSING' };
+            }
+            if (item?.stale) {
+                if (!isOpen && hasPrice) {
+                    return { className: 'is-flat', label: 'CLOSED' };
+                }
+                return { className: 'is-stale', label: 'STALE' };
+            }
+            if (changePct == null || Math.abs(changePct) <= 0.01) {
+                return { className: 'is-flat', label: 'FLAT' };
+            }
+            const isVix = symbol === 'VIX';
+            if (changePct > 0.01) {
+                return { className: isVix ? 'is-down' : 'is-up', label: isVix ? 'FEAR UP' : 'UP' };
+            }
+            return { className: isVix ? 'is-up' : 'is-down', label: isVix ? 'FEAR DOWN' : 'DOWN' };
         }
 
         function summarizeMarketMonitors(rows) {
@@ -1116,13 +1268,122 @@
             }).join('');
         }
 
+        function renderMarketSentiment(payload) {
+            const metaEl = document.getElementById('marketSentimentMeta');
+            const panelEl = document.getElementById('marketSentimentPanel');
+            if (!metaEl || !panelEl) return;
+
+            const rows = getSentimentRows(payload);
+            const rowMap = new Map(rows.map((item) => [String(item?.symbol || '').toUpperCase(), item]));
+            const sentiment = deriveMarketSentiment(rows, payload);
+            const readyCount = rows.filter((item) => getFiniteNumber(item?.last_price) != null || getFiniteNumber(item?.day_change_pct) != null || item?.visible).length;
+            const staleCount = rows.filter((item) => item?.stale && (sentiment.isOpen || getFiniteNumber(item?.last_price) == null)).length;
+            metaEl.textContent = [
+                `state ${sentiment.state}`,
+                `ready ${readyCount}/${SENTIMENT_SYMBOLS.length}`,
+                `stale ${staleCount}`,
+                sentiment.freshnessCopy,
+            ].join(' · ');
+
+            const renderKpi = (symbol, label) => {
+                const item = rowMap.get(symbol) || {};
+                return `
+                    <div>
+                        <span>${escapeHtml(label)}</span>
+                        <strong>${escapeHtml(formatMarketPrice(symbol, item.last_price))}</strong>
+                        <em>${escapeHtml(formatSignedPercent(item.day_change_pct))}</em>
+                    </div>
+                `;
+            };
+
+            const renderSymbolCard = (item) => {
+                const symbol = String(item?.symbol || '').trim().toUpperCase() || '--';
+                const tone = getSentimentSymbolTone(item, sentiment.isOpen);
+                const quoteAge = getFiniteNumber(item?.quote_age_s);
+                const tickAge = getFiniteNumber(item?.last_update_age_s);
+                const canonicalAge = getFiniteNumber(item?.canonical_data_age_s);
+                const freshnessAge = getFreshnessAge(item);
+                const priceSource = String(item?.last_price_source || '').replace(/_/g, ' ');
+                const updateSource = String(item?.last_update_source || '').replace(/_/g, ' ');
+                const sourceCopy = [
+                    formatSourceList(item?.visibility_sources),
+                    priceSource && priceSource !== 'quote' ? priceSource : '',
+                    updateSource && updateSource !== 'bar' ? updateSource : '',
+                ].filter((value) => value && value !== '--').join(' · ') || '--';
+                return `
+                    <article class="sentiment-symbol-card ${escapeHtml(tone.className)}">
+                        <div class="sentiment-symbol-head">
+                            <div>
+                                <a class="sentiment-symbol-name" href="${buildChartUrl(symbol)}">${escapeHtml(symbol)}</a>
+                                <div class="sentiment-symbol-meta mono">${item?.conid ? `conid ${escapeHtml(String(item.conid))}` : (item?.visible === false ? 'missing subscription' : 'conid --')}</div>
+                            </div>
+                            <span class="sentiment-symbol-trend">${escapeHtml(tone.label)}</span>
+                        </div>
+                        <div class="sentiment-symbol-price-row">
+                            <div class="sentiment-symbol-price">${escapeHtml(formatMarketPrice(symbol, item?.last_price))}</div>
+                            <div class="sentiment-symbol-change">${escapeHtml(formatSignedPercent(item?.day_change_pct))}</div>
+                        </div>
+                        <div class="sentiment-symbol-detail-grid">
+                            <div>
+                                <span>Quote</span>
+                                <strong>${escapeHtml(formatSeconds(quoteAge))}</strong>
+                            </div>
+                            <div>
+                                <span>Tick</span>
+                                <strong>${escapeHtml(formatSeconds(tickAge))}</strong>
+                            </div>
+                            <div>
+                                <span>5m</span>
+                                <strong>${escapeHtml(formatSeconds(canonicalAge))}</strong>
+                            </div>
+                            <div>
+                                <span>Fresh</span>
+                                <strong>${escapeHtml(formatSeconds(freshnessAge))}</strong>
+                            </div>
+                        </div>
+                        <div class="sentiment-symbol-foot">
+                            <span>${escapeHtml(sourceCopy)}</span>
+                            <a class="mini-link" href="${buildChartUrl(symbol)}">Chart</a>
+                        </div>
+                    </article>
+                `;
+            };
+
+            panelEl.innerHTML = `
+                <article class="sentiment-hero-card ${escapeHtml(sentiment.toneClass)}">
+                    <div class="sentiment-state-row">
+                        <div>
+                            <div class="sentiment-kicker">Market Sentiment</div>
+                            <div class="sentiment-state">${escapeHtml(sentiment.state)}</div>
+                        </div>
+                        <div class="sentiment-freshness mono">${escapeHtml(sentiment.freshnessCopy)}</div>
+                    </div>
+                    <div class="sentiment-copy">${escapeHtml(sentiment.copy)}</div>
+                    <div class="sentiment-kpis">
+                        ${renderKpi('VIX', 'VIX fear gauge')}
+                        ${renderKpi('SPY', 'S&P 500 proxy')}
+                        ${renderKpi('QQQ', 'Nasdaq proxy')}
+                    </div>
+                    <div class="sentiment-rule-row">
+                        <span>VIX &lt; 20 稳定</span>
+                        <span>20-25 谨慎</span>
+                        <span>25-30 风险</span>
+                        <span>≥ 30 恐慌</span>
+                    </div>
+                </article>
+                <div class="sentiment-symbol-grid">
+                    ${rows.map(renderSymbolCard).join('')}
+                </div>
+            `;
+        }
+
         function renderMarketOverview(payload) {
             const metaEl = document.getElementById('marketOverviewMeta');
             const summaryEl = document.getElementById('marketOverviewGrid');
             const cardsEl = document.getElementById('marketMonitorCards');
             if (!metaEl || !summaryEl || !cardsEl) return;
 
-            const rows = getMarketMonitorRows(payload);
+            const rows = getOtherMarketMonitorRows(payload);
             const summary = summarizeMarketMonitors(rows);
             metaEl.textContent = [
                 `monitor ${summary.total}`,
@@ -1163,9 +1424,9 @@
             if (!rows.length) {
                 cardsEl.innerHTML = `
                     <div class="empty-state">
-                        当前没有 market_monitor 订阅。可到
+                        当前没有其它 market_monitor 订阅。VIX / SPY / QQQ 已移到上方情绪面板；其它标的可到
                         <a class="inline-link" href="${buildMarketMonitorUrl()}">市场监控池</a>
-                        维护 SPY / QQQ / IWM / VIX 等大盘上下文标的。
+                        维护 DIA / IWM / TLT / GLD 等大盘上下文标的。
                     </div>
                 `;
                 return;
@@ -1922,6 +2183,7 @@
                 if (loadId !== latestMonitorLoadId) return;
                 const deltas = deriveRefreshDelta(payload?.api_utilization || {});
                 renderHero(payload);
+                renderMarketSentiment(payload);
                 renderMarketOverview(payload);
                 renderCriticalMetrics(payload);
                 renderSystemMonitor(payload);
@@ -1939,12 +2201,14 @@
                 if (loadId !== latestMonitorLoadId) return;
                 document.getElementById('heroCopy').textContent = `监控数据加载失败：${error.message || error}`;
                 document.getElementById('heroCallout').innerHTML = `<div class="callout error">${escapeHtml(error.message || String(error))}</div>`;
-                ['marketOverviewGrid', 'marketMonitorCards', 'criticalMetricsGrid', 'systemMonitorGrid', 'utilGrid', 'subscriptionSamples', 'subscriptionTableWrap', 'serviceGrid', 'hostGrid', 'pocketbaseGrid', 'flagList', 'eventList'].forEach((id) => {
+                ['marketSentimentPanel', 'marketOverviewGrid', 'marketMonitorCards', 'criticalMetricsGrid', 'systemMonitorGrid', 'utilGrid', 'subscriptionSamples', 'subscriptionTableWrap', 'serviceGrid', 'hostGrid', 'pocketbaseGrid', 'flagList', 'eventList'].forEach((id) => {
                     const el = document.getElementById(id);
                     if (el) el.innerHTML = '<div class="empty-state">监控聚合失败，请检查 ibkr-api /api/custom/system/monitorz 及其 compute / scheduler / PocketBase upstream。</div>';
                 });
                 const systemMeta = document.getElementById('systemMonitorMeta');
                 if (systemMeta) systemMeta.textContent = 'services --';
+                const sentimentMeta = document.getElementById('marketSentimentMeta');
+                if (sentimentMeta) sentimentMeta.textContent = 'sentiment --';
                 const marketMeta = document.getElementById('marketOverviewMeta');
                 if (marketMeta) marketMeta.textContent = 'market --';
                 const criticalMeta = document.getElementById('criticalMetricsMeta');
