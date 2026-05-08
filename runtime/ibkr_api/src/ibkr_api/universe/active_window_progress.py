@@ -113,11 +113,11 @@ def build_active_window_items_for_symbols(
         trace = dict(trace_result.get("trace") or {})
         trace_error = to_text(trace_result.get("error"))
         latest_row = trace_result.get("latest_row") if isinstance(trace_result.get("latest_row"), dict) else {}
-        window_flags = dict(trace.get("window_flags") or {})
-        component_flags = dict(trace.get("component_flags") or {})
-        signal_state = dict(trace.get("signal_state") or {})
-        component_groups = _component_groups(component_flags, window_flags)
-        component_rollup = _component_rollup(component_groups, window_flags)
+        admission_item = build_active_window_admission_item(trace, signal_window_max_bars=window_max_bars)
+        window_flags = dict(admission_item.get("window_flags") or {})
+        signal_state = dict(admission_item.get("signal_state") or {})
+        component_groups = dict(admission_item.get("component_groups") or {})
+        components = dict(admission_item.get("components") or {})
         indicator_extra = indicator_snapshot(latest_indicator_by_symbol.get(symbol))
         latest_signal = latest_signal_by_symbol.get(symbol) or {}
         latest_bar_time_ms = to_int(first_defined(latest_row.get("bar_time_ms"), latest_bar.get("bar_time_ms")), 0)
@@ -149,13 +149,8 @@ def build_active_window_items_for_symbols(
                 (candidate_signal or {}).get("direction"),
             ))
         )
-        bars_remaining = _bars_remaining(window_flags, window_max_bars)
-        status = _window_status(
-            signal_state=signal_state,
-            window_flags=window_flags,
-            bars_remaining=bars_remaining,
-            blocked_reason=blocked_reason,
-        )
+        bars_remaining = to_int(admission_item.get("bars_remaining"), 0)
+        status = to_text(admission_item.get("window_status")) or "no_window"
         chart_trace_url = _build_chart_trace_url(
             environment=runtime_environment,
             symbol=symbol,
@@ -179,32 +174,27 @@ def build_active_window_items_for_symbols(
             "freshness_min": freshness_min,
             "price": round(price, 4) if price > 0 else 0.0,
             "atr_pct": round(to_float(first_defined(latest_row.get("atr_pct"), indicator_extra.get("atr_pct"), target_extra.get("atr_pct"))) or 0.0, 2),
-            "window_state": _window_state(window_flags),
+            "window_state": to_text(admission_item.get("window_state")),
             "window_max_bars": window_max_bars,
             "window_flags": window_flags,
             "signal_state": signal_state,
-            "sd_upper_active": bool(window_flags.get("sd_upper_active")),
-            "sd_upper_valid": bool(window_flags.get("sd_upper_valid")),
-            "sd_upper_used": bool(window_flags.get("sd_upper_used")),
-            "sd_upper_age_bars": to_int(window_flags.get("sd_upper_age_bars"), 0),
-            "sd_lower_active": bool(window_flags.get("sd_lower_active")),
-            "sd_lower_valid": bool(window_flags.get("sd_lower_valid")),
-            "sd_lower_used": bool(window_flags.get("sd_lower_used")),
-            "sd_lower_age_bars": to_int(window_flags.get("sd_lower_age_bars"), 0),
-            "upper_window": _side_window("upper", window_flags, window_max_bars),
-            "lower_window": _side_window("lower", window_flags, window_max_bars),
+            "sd_upper_active": bool(admission_item.get("sd_upper_active")),
+            "sd_upper_valid": bool(admission_item.get("sd_upper_valid")),
+            "sd_upper_used": bool(admission_item.get("sd_upper_used")),
+            "sd_upper_age_bars": to_int(admission_item.get("sd_upper_age_bars"), 0),
+            "sd_lower_active": bool(admission_item.get("sd_lower_active")),
+            "sd_lower_valid": bool(admission_item.get("sd_lower_valid")),
+            "sd_lower_used": bool(admission_item.get("sd_lower_used")),
+            "sd_lower_age_bars": to_int(admission_item.get("sd_lower_age_bars"), 0),
+            "upper_window": admission_item.get("upper_window") if isinstance(admission_item.get("upper_window"), dict) else {},
+            "lower_window": admission_item.get("lower_window") if isinstance(admission_item.get("lower_window"), dict) else {},
             "bars_remaining": bars_remaining,
-            "component_progress": component_rollup["progress"],
+            "component_progress": admission_item.get("component_progress"),
             "component_detail": component_groups,
             "component_groups": component_groups,
-            "components": {
-                "collected": component_rollup["collected"],
-                "missing": component_rollup["missing"],
-                "best_group": component_rollup["best_group"],
-                "ready_groups": component_rollup["ready_groups"],
-            },
-            "collected_components": component_rollup["collected"],
-            "missing_components": component_rollup["missing"],
+            "components": components,
+            "collected_components": admission_item.get("collected_components") or [],
+            "missing_components": admission_item.get("missing_components") or [],
             "candidate_signal": candidate_signal,
             "candidate_signal_label": candidate_signal_label,
             "blocked_reason": blocked_reason,

@@ -61,6 +61,29 @@
                 },
                 help: '全量档：适合非开盘时段或分段回测；4核8G 上近一年会更慢。',
             },
+            daily_selected_fast: {
+                label: 'Daily selected fast + live SD',
+                symbolSource: 'daily_scan_replay',
+                executionModel: 'portfolio_stream',
+                maxSymbols: { manual: 12, targets: 12, daily_scan_replay: 12, watchlist: 12 },
+                warmupBars: 160,
+                sessionMode: 'extended',
+                dailySelection: {
+                    daily_selected_only: true,
+                    daily_selection_require_sd_trigger: true,
+                    daily_selection_reuse_live_admission: true,
+                    daily_selection_candidate_limit: 80,
+                },
+                resourceGuard: {
+                    resource_guard_enabled: true,
+                    resource_guard_max_load: 3.5,
+                    resource_guard_min_available_mb: 1800,
+                    resource_guard_max_rss_mb: 4200,
+                    resource_guard_sleep_s: 0.25,
+                    resource_guard_check_steps: 100,
+                },
+                help: '证明实盘链路用：逐日日筛 + 复用实盘 SD 窗口准入，只计算每日通过准入的标的。',
+            },
         });
 
         function getBacktestMachinePresetKey() {
@@ -74,7 +97,11 @@
 
         function syncBacktestPresetUI(force = false) {
             const preset = getBacktestMachinePreset();
-            const source = String(document.getElementById('symbolSource')?.value || 'manual').trim() || 'manual';
+            const sourceInput = document.getElementById('symbolSource');
+            const executionInput = document.getElementById('executionModel');
+            if (force && preset.symbolSource && sourceInput) sourceInput.value = preset.symbolSource;
+            if (force && preset.executionModel && executionInput) executionInput.value = preset.executionModel;
+            const source = String(sourceInput?.value || 'manual').trim() || 'manual';
             const maxSymbolsInput = document.getElementById('maxSymbols');
             const warmupInput = document.getElementById('warmupBars');
             const sessionInput = document.getElementById('sessionMode');
@@ -104,10 +131,24 @@
                 sessionInput.dataset.presetValue = sessionInput.value;
             }
             if (help) help.textContent = preset.help;
+            if (force && preset.symbolSource) syncSymbolSourceUI();
         }
 
         function getBacktestResourceGuardPayload() {
             return { ...getBacktestMachinePreset().resourceGuard };
+        }
+
+        function getBacktestDailySelectionPayload(symbolSource) {
+            const preset = getBacktestMachinePreset();
+            const enabled = String(symbolSource || '').trim() === 'daily_scan_replay' && preset.dailySelection;
+            if (!enabled) {
+                return {
+                    daily_selected_only: false,
+                    daily_selection_require_sd_trigger: false,
+                    daily_selection_reuse_live_admission: false,
+                };
+            }
+            return { ...preset.dailySelection };
         }
 
         function getBacktestDateSpanDays(dateFrom, dateTo) {

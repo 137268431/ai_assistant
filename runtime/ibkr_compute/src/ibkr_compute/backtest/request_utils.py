@@ -283,6 +283,15 @@ def normalize_request(payload: dict) -> dict:
         minimum=0,
         maximum=constants.MAX_BACKTEST_WARMUP_BARS,
     )
+    daily_selected_only = normalize_bool(payload.get("daily_selected_only"), False)
+    daily_selection_require_sd_trigger = normalize_bool(payload.get("daily_selection_require_sd_trigger"), False)
+    daily_selection_reuse_live_admission = normalize_bool(payload.get("daily_selection_reuse_live_admission"), daily_selection_require_sd_trigger)
+    daily_selection_candidate_limit = normalize_positive_int(
+        payload.get("daily_selection_candidate_limit"),
+        default=max(20, max_symbols * 5),
+        minimum=1,
+        maximum=constants.MAX_BACKTEST_SYMBOLS,
+    )
     premarket_cutoff_time = normalize_hhmm(payload.get("premarket_cutoff_time") or payload.get("scan_cutoff_time"))
     scan_session_mode = str(payload.get("scan_session_mode") or "extended").strip().lower() or "extended"
     if scan_session_mode not in constants.SESSION_MODE_VALUES:
@@ -416,6 +425,10 @@ def normalize_request(payload: dict) -> dict:
         "persist_backtest_indicators": persist_backtest_indicators,
         "warmup_bars": warmup_bars,
         "scan_warmup_bars": scan_warmup_bars,
+        "daily_selected_only": daily_selected_only,
+        "daily_selection_require_sd_trigger": daily_selection_require_sd_trigger,
+        "daily_selection_reuse_live_admission": daily_selection_reuse_live_admission,
+        "daily_selection_candidate_limit": daily_selection_candidate_limit,
         "premarket_cutoff_time": premarket_cutoff_time,
         "retention_limit": retention_limit,
         "preflight_backfill": preflight_backfill,
@@ -440,6 +453,10 @@ def normalize_request(payload: dict) -> dict:
             "scan_warmup_bars": scan_warmup_bars,
             "premarket_cutoff_time": premarket_cutoff_time,
             "persist_backtest_indicators": persist_backtest_indicators,
+            "daily_selected_only": daily_selected_only,
+            "daily_selection_require_sd_trigger": daily_selection_require_sd_trigger,
+            "daily_selection_reuse_live_admission": daily_selection_reuse_live_admission,
+            "daily_selection_candidate_limit": daily_selection_candidate_limit,
             "preflight_backfill": preflight_backfill,
             "backfill_concurrency": backfill_concurrency,
             "backfill_symbol_timeout_s": backfill_symbol_timeout_s,

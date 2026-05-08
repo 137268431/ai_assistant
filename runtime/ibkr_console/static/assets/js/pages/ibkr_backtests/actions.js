@@ -72,6 +72,7 @@
                 }
             }
             const resourceGuardPayload = getBacktestResourceGuardPayload();
+            const dailySelectionPayload = getBacktestDailySelectionPayload(symbolSource);
             const payload = {
                 environment: currentEnvironment,
                 name: String(document.getElementById('runName').value || '').trim(),
@@ -109,6 +110,7 @@
                 strategy_params: strategyParams,
                 variants,
                 ...resourceGuardPayload,
+                ...dailySelectionPayload,
             };
             if (shouldConfirmHeavyBacktest(payload)) {
                 const spanDays = getBacktestDateSpanDays(dateFrom, dateTo);

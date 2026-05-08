@@ -34,6 +34,7 @@ from ibkr_compute.api.market.screener.scoring import (
     TRADABILITY_OPERABLE_MIN_SCORE,
     build_tradability_assessment,
 )
+from ibkr_compute.core.active_window_admission import is_active_window_admitted
 from ibkr_compute.market.timeframe_utils import normalize_interval
 
 
@@ -229,11 +230,7 @@ def _trade_budget(config_value: ConfigValue, environment: str, monitor_count: in
 
 
 def _window_is_valid(item: dict[str, Any]) -> bool:
-    if to_text(item.get("window_status")).lower() == "blocked":
-        return False
-    if to_text(item.get("trace_stage")).lower() == "blocked":
-        return False
-    return bool(item.get("sd_upper_valid") or item.get("sd_lower_valid"))
+    return is_active_window_admitted(item)
 
 
 def _infer_direction_bias(item: dict[str, Any], indicator_extra: dict[str, Any]) -> str:

@@ -21,12 +21,14 @@ class BacktestOrchestrationMixin:
         backtest_target_capture = self._empty_capture_summary(BACKTEST_TARGET_COLLECTION, run_id, "disabled")
         historical_targeting = {}
         allowed_trade_days_by_symbol = {}
+        selection_plan = {}
         if request.get("symbol_source") == "daily_scan_replay":
             scan_replay = self._build_daily_scan_replay_plan(request, progress_context=progress_context)
             symbols = list(scan_replay.get("symbols") or [])
             backtest_target_rows = list(scan_replay.get("target_rows") or [])
             historical_targeting = dict(scan_replay.get("summary") or {})
-            allowed_trade_days_by_symbol = self._invert_selection_plan(scan_replay.get("selection_plan") or {})
+            selection_plan = dict(scan_replay.get("selection_plan") or {})
+            allowed_trade_days_by_symbol = self._invert_selection_plan(selection_plan)
             self._set_progress_context("running", "persist_targets", "saving historical target replay", 14, progress_context)
             backtest_target_capture = self._persist_backtest_targets(run_id, backtest_target_rows)
             historical_targeting["capture"] = backtest_target_capture
@@ -64,13 +66,22 @@ class BacktestOrchestrationMixin:
         initial_capital = float(request["initial_capital"])
         portfolio_metrics = {}
         if str(request.get("execution_model") or "symbol_independent") == "portfolio_stream":
-            portfolio_result = self._run_portfolio_stream_backtest(
-                symbols,
-                request,
-                allowed_trade_days_by_symbol=allowed_trade_days_by_symbol,
-                target_rows=backtest_target_rows,
-                progress_context=progress_context,
-            )
+            if bool(request.get("daily_selected_only")) and request.get("symbol_source") == "daily_scan_replay":
+                portfolio_result = self._run_portfolio_daily_selected_backtest(
+                    symbols,
+                    request,
+                    selection_plan,
+                    target_rows=backtest_target_rows,
+                    progress_context=progress_context,
+                )
+            else:
+                portfolio_result = self._run_portfolio_stream_backtest(
+                    symbols,
+                    request,
+                    allowed_trade_days_by_symbol=allowed_trade_days_by_symbol,
+                    target_rows=backtest_target_rows,
+                    progress_context=progress_context,
+                )
             all_trades = list(portfolio_result.get("trades") or [])
             all_indicator_rows = list(portfolio_result.get("indicator_rows") or [])
             backtest_indicator_generated_count = int(portfolio_result.get("indicator_count", len(all_indicator_rows)) or 0)

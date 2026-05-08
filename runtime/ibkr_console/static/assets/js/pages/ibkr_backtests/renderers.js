@@ -199,6 +199,7 @@
             }
             const metrics = selectedRun.metrics || {};
             const scanDiagnostics = metrics.daily_scan_match_diagnostics || selectedRun.extra?.daily_scan_match_diagnostics || {};
+            const dailySelectedProfile = metrics.daily_selected_profile || metrics.portfolio_profile || selectedRun.extra?.daily_selected_profile || {};
             const primaryCards = [
                 ['Net PnL', formatMoney(selectedRun.net_pnl), classForValue(selectedRun.net_pnl), `${selectedRun.trade_count} trades`],
                 ['Total Return', formatPct(selectedRun.total_return_pct), classForValue(selectedRun.total_return_pct), `ending ${formatMoney(metrics.ending_equity || 0)}`],
@@ -217,6 +218,14 @@
                 ['Signal → Entry', formatPct(metrics.signal_to_entry_rate || 0), classForValue((metrics.signal_to_entry_rate || 0) - 50), `${metrics.funnel_executed_signal_count ?? metrics.executed_signal_count ?? 0}/${metrics.funnel_signal_count ?? metrics.signal_count ?? 0} executed`],
                 ['Reverse Actions', String(metrics.backtest_reverse_signal_count || 0), '', formatBreakdown(metrics.backtest_reverse_action_breakdown || {})],
             ];
+            if (dailySelectedProfile.enabled || dailySelectedProfile.mode === 'daily_selected_live_sd') {
+                secondaryCards.splice(6, 0, [
+                    'Daily Selected',
+                    String(dailySelectedProfile.selected_symbol_days || 0),
+                    '',
+                    `${dailySelectedProfile.trade_dates || 0} days · bars ${dailySelectedProfile.bars_loaded || 0}`,
+                ]);
+            }
             if (scanDiagnostics.enabled) {
                 secondaryCards.splice(6, 0, [
                     'Scan Match',

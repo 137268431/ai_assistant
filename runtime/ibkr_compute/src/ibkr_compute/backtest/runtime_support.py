@@ -19,6 +19,7 @@ from ibkr_compute.backtest import request_utils
 from ibkr_compute.backtest.constants import *
 from ibkr_compute.backtest.exceptions import BacktestCancelled
 from ibkr_compute.core.indicator_engine import DEFAULT_PARAMS, IndicatorEngine
+from ibkr_compute.core.active_window_admission import build_active_window_admission_item
 from ibkr_compute.core.risk_management import compute_atr_tightened_stop
 from ibkr_compute.core.signal_generator import SignalGenerator
 from ibkr_compute.core.timeline_builder import build_runtime_timeline

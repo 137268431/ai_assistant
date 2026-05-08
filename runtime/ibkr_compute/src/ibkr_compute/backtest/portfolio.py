@@ -600,6 +600,7 @@ class BacktestPortfolioMixin:
         bars: list[dict],
         request: dict,
         allowed_trade_days: set[str] | None,
+        admitted_after_ms_by_day: dict[str, int] | None = None,
     ) -> tuple[dict | None, dict | None]:
         if len(bars) < 40:
             return None, {
@@ -663,6 +664,7 @@ class BacktestPortfolioMixin:
             ),
             "symbol_tv_parity": symbol_tv_parity,
             "allowed_trade_days": allowed_trade_days,
+            "admitted_after_ms_by_day": dict(admitted_after_ms_by_day or {}),
             "previous_ms": 0,
             "previous_day": previous_day,
             "previous_bar": None,
@@ -675,12 +677,220 @@ class BacktestPortfolioMixin:
             "reverse_index": set(),
         }, None
 
+    def _build_daily_admission_lookup(self, target_rows: list[dict]) -> dict[str, dict[str, int]]:
+        lookup: dict[str, dict[str, int]] = {}
+        for row in target_rows or []:
+            symbol = str(row.get("symbol", "") or "").strip().upper()
+            trade_date = str(row.get("date", "") or "")[:10]
+            if not symbol or not trade_date:
+                continue
+            extra = self._parse_object(row.get("extra"))
+            admitted_ms = int(extra.get("sd_admitted_at_ms", 0) or 0)
+            if admitted_ms > 0:
+                lookup.setdefault(symbol, {})[trade_date] = admitted_ms
+        return lookup
+
+    def _run_portfolio_daily_selected_backtest(
+        self,
+        symbols: list[str],
+        request: dict,
+        selection_plan: dict[str, list[str]],
+        target_rows: list[dict] | None = None,
+        progress_context: dict | None = None,
+    ) -> dict:
+        started_at = time.time()
+        target_rows = list(target_rows or [])
+        target_rows_by_day: dict[str, list[dict]] = {}
+        for row in target_rows:
+            trade_date = str(row.get("date", "") or "")[:10]
+            if trade_date:
+                target_rows_by_day.setdefault(trade_date, []).append(row)
+        if not selection_plan:
+            for row in target_rows:
+                trade_date = str(row.get("date", "") or "")[:10]
+                symbol = str(row.get("symbol", "") or "").strip().upper()
+                if trade_date and symbol:
+                    selection_plan.setdefault(trade_date, []).append(symbol)
+
+        admitted_lookup = self._build_daily_admission_lookup(target_rows)
+        all_dates = sorted(str(date or "")[:10] for date in selection_plan.keys() if str(date or "")[:10])
+        all_trades: list[dict] = []
+        all_indicator_rows: list[dict] = []
+        all_signal_rows: list[dict] = []
+        all_reverse_rows: list[dict] = []
+        all_data_quality: list[dict] = []
+        all_skipped_symbols: list[str] = []
+        tv_symbol_reports: list[dict] = []
+        indicator_count = 0
+        cumulative_realized_pnl = 0.0
+        rejection_counts: dict[str, int] = {}
+        candidate_samples: list[dict] = []
+        daily_profiles: list[dict] = []
+        portfolio_risk: dict = {}
+        max_gross_exposure = 0.0
+        max_borrowed_amount = 0.0
+        final_open_exposure = 0.0
+        final_reserved_exposure = 0.0
+        total_loaded_bars = 0
+        total_bar_times = 0
+
+        total_days = max(1, len(all_dates))
+        base_initial_capital = float(request.get("initial_capital", 0) or 0)
+        for day_index, trade_date in enumerate(all_dates, start=1):
+            if self._cancel_event.is_set():
+                raise BacktestCancelled()
+            day_symbols = [
+                str(symbol or "").strip().upper()
+                for symbol in list(selection_plan.get(trade_date) or [])
+                if str(symbol or "").strip()
+            ]
+            day_symbols = [symbol for index, symbol in enumerate(day_symbols) if symbol and symbol not in day_symbols[:index]]
+            progress_value = 16 + int(((day_index - 1) / total_days) * 69)
+            self._set_progress_context(
+                "running",
+                "daily_selected_stream",
+                f"streaming selected day {trade_date} {day_index}/{total_days}",
+                progress_value,
+                progress_context,
+            )
+            if not day_symbols:
+                daily_profiles.append(
+                    {
+                        "date": trade_date,
+                        "selected_count": 0,
+                        "symbols": [],
+                        "trades": 0,
+                        "signals": 0,
+                        "bars_loaded": 0,
+                        "duration_s": 0.0,
+                    }
+                )
+                continue
+
+            day_request = deepcopy(request)
+            day_request["date_from"] = trade_date
+            day_request["date_to"] = trade_date
+            day_request["symbols"] = day_symbols
+            day_request["symbols_text"] = ",".join(day_symbols)
+            day_request["max_symbols"] = len(day_symbols)
+            if cumulative_realized_pnl:
+                day_request["initial_capital"] = max(1000.0, base_initial_capital + cumulative_realized_pnl)
+            day_target_rows = list(target_rows_by_day.get(trade_date) or [])
+            day_allowed = {symbol: {trade_date} for symbol in day_symbols}
+            day_admitted = {
+                symbol: {trade_date: int((admitted_lookup.get(symbol) or {}).get(trade_date, 0) or 0)}
+                for symbol in day_symbols
+                if int((admitted_lookup.get(symbol) or {}).get(trade_date, 0) or 0) > 0
+            }
+            day_started_at = time.time()
+            day_result = self._run_portfolio_stream_backtest(
+                day_symbols,
+                day_request,
+                allowed_trade_days_by_symbol=day_allowed,
+                target_rows=day_target_rows,
+                admitted_after_ms_by_symbol_day=day_admitted,
+                progress_context=progress_context,
+            )
+            day_metrics = dict(day_result.get("portfolio_metrics") or {})
+            day_profile = dict(day_metrics.get("portfolio_profile") or {})
+            day_rejections = dict(day_metrics.get("portfolio_rejection_counts") or {})
+            for key, value in day_rejections.items():
+                rejection_counts[key] = int(rejection_counts.get(key, 0) or 0) + int(value or 0)
+            if not portfolio_risk:
+                portfolio_risk = dict(day_metrics.get("portfolio_risk") or {})
+            candidate_samples.extend(list(day_metrics.get("portfolio_candidate_samples") or [])[: max(0, 20 - len(candidate_samples))])
+            day_trades = list(day_result.get("trades") or [])
+            day_signals = list(day_result.get("signal_rows") or [])
+            day_reverse_rows = list(day_result.get("reverse_rows") or [])
+            all_trades.extend(day_trades)
+            all_indicator_rows.extend(list(day_result.get("indicator_rows") or []))
+            all_signal_rows.extend(day_signals)
+            all_reverse_rows.extend(day_reverse_rows)
+            tv_symbol_reports.extend(list(day_result.get("tv_symbol_reports") or []))
+            indicator_count += int(day_result.get("indicator_count", 0) or 0)
+            cumulative_realized_pnl += float(day_metrics.get("portfolio_realized_pnl", 0) or 0)
+            max_gross_exposure = max(max_gross_exposure, float(day_metrics.get("portfolio_max_gross_exposure", 0) or 0))
+            max_borrowed_amount = max(max_borrowed_amount, float(day_metrics.get("portfolio_max_borrowed_amount", 0) or 0))
+            final_open_exposure = float(day_metrics.get("portfolio_final_open_exposure", 0) or 0)
+            final_reserved_exposure = float(day_metrics.get("portfolio_final_reserved_exposure", 0) or 0)
+            total_loaded_bars += int(day_profile.get("bars_loaded", 0) or 0)
+            total_bar_times += int(day_profile.get("bar_times", 0) or 0)
+            for row in list(day_result.get("data_quality") or []):
+                quality_row = dict(row)
+                quality_row.setdefault("date", trade_date)
+                all_data_quality.append(quality_row)
+            for symbol in list(day_result.get("skipped_symbols") or []):
+                all_skipped_symbols.append(f"{trade_date}:{symbol}")
+            daily_profiles.append(
+                {
+                    "date": trade_date,
+                    "selected_count": len(day_symbols),
+                    "symbols": day_symbols,
+                    "trades": len(day_trades),
+                    "signals": len(day_signals),
+                    "reverse_rows": len(day_reverse_rows),
+                    "bars_loaded": int(day_profile.get("bars_loaded", 0) or 0),
+                    "bar_times": int(day_profile.get("bar_times", 0) or 0),
+                    "duration_s": round(time.time() - day_started_at, 3),
+                    "rejection_counts": day_rejections,
+                }
+            )
+
+        all_trades.sort(key=lambda item: (int(item.get("exit_bar_ms", 0) or 0), item.get("symbol", "")))
+        all_signal_rows.sort(key=lambda item: (int(item.get("bar_time_ms", 0) or 0), item.get("symbol", "")))
+        all_reverse_rows.sort(key=lambda item: (int(item.get("bar_time_ms", 0) or 0), item.get("symbol", ""), item.get("action_type", "")))
+        selected_symbol_days = sum(len(selection_plan.get(date) or []) for date in all_dates)
+        daily_selected_profile = {
+            "enabled": True,
+            "mode": "daily_selected_live_sd",
+            "trade_dates": len(all_dates),
+            "unique_symbols": len(set(symbols or [])),
+            "selected_symbol_days": selected_symbol_days,
+            "avg_selected_per_day": round(selected_symbol_days / max(1, len(all_dates)), 4),
+            "max_selected_per_day": max([len(selection_plan.get(date) or []) for date in all_dates] or [0]),
+            "bars_loaded": total_loaded_bars,
+            "bar_times": total_bar_times,
+            "indicator_count": indicator_count,
+            "duration_s": round(time.time() - started_at, 3),
+            "resource_snapshot": self._read_backtest_resource_snapshot(),
+            "shared_admission_helper": "ibkr_compute.core.active_window_admission.is_active_window_admitted",
+            "daily": daily_profiles,
+        }
+        gross_now = final_open_exposure + final_reserved_exposure
+        portfolio_metrics = {
+            "execution_model": "portfolio_stream",
+            "daily_selected_only": True,
+            "portfolio_profile": daily_selected_profile,
+            "daily_selected_profile": daily_selected_profile,
+            "portfolio_risk": portfolio_risk or self._resolve_portfolio_risk_limits(request),
+            "portfolio_rejection_counts": rejection_counts,
+            "portfolio_candidate_samples": candidate_samples,
+            "portfolio_max_gross_exposure": round(max_gross_exposure, 4),
+            "portfolio_max_borrowed_amount": round(max_borrowed_amount, 4),
+            "portfolio_final_open_exposure": round(final_open_exposure, 4),
+            "portfolio_final_reserved_exposure": round(final_reserved_exposure, 4),
+            "portfolio_final_gross_exposure": round(gross_now, 4),
+            "portfolio_realized_pnl": round(cumulative_realized_pnl, 4),
+        }
+        return {
+            "trades": all_trades,
+            "indicator_rows": all_indicator_rows,
+            "indicator_count": indicator_count,
+            "signal_rows": all_signal_rows,
+            "reverse_rows": all_reverse_rows,
+            "data_quality": all_data_quality,
+            "skipped_symbols": all_skipped_symbols,
+            "tv_symbol_reports": tv_symbol_reports,
+            "portfolio_metrics": portfolio_metrics,
+        }
+
     def _run_portfolio_stream_backtest(
         self,
         symbols: list[str],
         request: dict,
         allowed_trade_days_by_symbol: dict[str, set[str]] | None = None,
         target_rows: list[dict] | None = None,
+        admitted_after_ms_by_symbol_day: dict[str, dict[str, int]] | None = None,
         progress_context: dict | None = None,
     ) -> dict:
         risk_limits = self._resolve_portfolio_risk_limits(request)
@@ -731,6 +941,7 @@ class BacktestPortfolioMixin:
                 bars,
                 request,
                 (allowed_trade_days_by_symbol or {}).get(symbol),
+                (admitted_after_ms_by_symbol_day or {}).get(symbol),
             )
             if quality:
                 data_quality.append(quality)
@@ -964,6 +1175,8 @@ class BacktestPortfolioMixin:
 
                 signal = state["signal_gen"].update(snapshot)
                 trading_day_enabled = state.get("allowed_trade_days") is None or current_symbol_day in state.get("allowed_trade_days")
+                admitted_after_ms = int((state.get("admitted_after_ms_by_day") or {}).get(current_symbol_day, 0) or 0)
+                sd_admitted_for_bar = admitted_after_ms <= 0 or int(bar.get("bar_time_ms", 0) or 0) >= admitted_after_ms
                 preexisting_pending_signal = state.get("pending_signal") if state.get("pending_signal") and state.get("open_position") is None else None
                 preexisting_open_position = state.get("open_position")
                 signal_conflict_emitted = False
@@ -988,6 +1201,15 @@ class BacktestPortfolioMixin:
 
                     if not trading_day_enabled:
                         self._mark_backtest_signal_status(signal_index, signal_id, "skipped", "symbol_not_selected_for_day")
+                    elif not sd_admitted_for_bar:
+                        self._mark_backtest_signal_status(
+                            signal_index,
+                            signal_id,
+                            "skipped",
+                            "before_sd_admission",
+                            {"sd_admitted_at_ms": admitted_after_ms},
+                        )
+                        self._portfolio_record_rejection(ledger, "before_sd_admission")
                     elif not self._portfolio_bar_in_trade_window(bar, request):
                         self._mark_backtest_signal_status(signal_index, signal_id, "skipped", "outside_trade_window")
                         self._portfolio_record_rejection(ledger, "outside_trade_window")

@@ -125,6 +125,52 @@ class BacktestDailyScanReplayTests(unittest.TestCase):
         self.assertEqual(daily["selected_count"], 0)
         self.assertEqual(daily["rejection_summary"]["premarket_volume_below_threshold"], 1)
 
+    def test_scan_replay_reuses_sd_admission_as_hard_gate_when_enabled(self):
+        self.service._load_trading_dates = lambda request: ["2026-04-22"]
+        self.service._load_scan_universe = lambda request, as_of_date="": [
+            {"symbol": "AAPL", "exchange": "SMART"},
+            {"symbol": "NVDA", "exchange": "SMART"},
+        ]
+
+        def evaluate(symbol, trade_date, request, settings=None):
+            return {
+                "symbol": symbol,
+                "score": 10 if symbol == "AAPL" else 9,
+                "direction_bias": "long",
+                "quality_gate_passed": True,
+                "reason": "quality ok",
+                "extra": {"scan_cutoff_ms": self.service._build_scan_cutoff_ms(trade_date, "09:25")},
+            }
+
+        self.service._evaluate_historical_scan_symbol = evaluate
+        self.service._build_historical_sd_admission = lambda symbol, trade_date, request, candidate=None: {
+            "passed": symbol == "NVDA",
+            "reason": "sd_window_admitted" if symbol == "NVDA" else "no_window",
+            "sd_admitted_at_ms": self.service._build_scan_cutoff_ms(trade_date, "10:00") if symbol == "NVDA" else 0,
+            "sd_window_status": "lower_active" if symbol == "NVDA" else "no_window",
+            "sd_lower_valid": symbol == "NVDA",
+            "sd_upper_valid": False,
+        }
+        request = {
+            **self.request,
+            "daily_selection_require_sd_trigger": True,
+            "daily_selection_reuse_live_admission": True,
+            "daily_selection_candidate_limit": 10,
+        }
+
+        plan = self.service._build_daily_scan_replay_plan(request)
+
+        self.assertEqual(plan["symbols"], ["NVDA"])
+        self.assertEqual(plan["selection_plan"]["2026-04-22"], ["NVDA"])
+        target_extra = plan["target_rows"][0]["extra"]
+        self.assertTrue(target_extra["sd_selection_passed"])
+        self.assertEqual(target_extra["sd_window_status"], "lower_active")
+        daily = plan["summary"]["daily"][0]
+        self.assertEqual(daily["candidate_count"], 2)
+        self.assertEqual(daily["sd_scanned_count"], 2)
+        self.assertEqual(daily["sd_admitted_count"], 1)
+        self.assertEqual(daily["sd_rejected_count"], 1)
+
     def test_daily_scan_match_diagnostics_counts_selected_day_hits_and_misses(self):
         target_rows = [
             {"symbol": "NVDA", "date": "2026-04-22"},

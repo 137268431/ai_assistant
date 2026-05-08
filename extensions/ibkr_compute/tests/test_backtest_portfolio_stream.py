@@ -197,6 +197,53 @@ class BacktestPortfolioStreamTests(unittest.TestCase):
         self.assertEqual(len(result["indicator_rows"]), 90)
         self.assertEqual(result["indicator_count"], 90)
 
+    def test_daily_selected_backtest_loads_only_selected_symbol_days(self):
+        day1 = datetime(2026, 4, 1, 9, 35, tzinfo=ET)
+        day2 = datetime(2026, 4, 2, 9, 35, tzinfo=ET)
+        day1_ms = int(day1.timestamp() * 1000)
+        day2_ms = int(day2.timestamp() * 1000)
+        bars_by_key = {
+            ("AAPL", "2026-04-01"): build_bars("AAPL", day1_ms),
+            ("NVDA", "2026-04-02"): build_bars("NVDA", day2_ms),
+        }
+        load_calls = []
+
+        def load_symbol_bars(symbol, environment, date_from, date_to, session_mode, allow_backfill=True):
+            load_calls.append((symbol, date_from, date_to))
+            return list(bars_by_key[(symbol, date_from)])
+
+        self.service._load_symbol_bars = load_symbol_bars
+        self.service._load_symbol_warmup_bars = lambda *args, **kwargs: []
+        self.service._load_daily_close_lookup = lambda *args, **kwargs: []
+        request = self._request(
+            symbol_source="daily_scan_replay",
+            symbols="",
+            date_from="2026-04-01",
+            date_to="2026-04-02",
+            daily_selected_only=True,
+        )
+        selection_plan = {
+            "2026-04-01": ["AAPL"],
+            "2026-04-02": ["NVDA"],
+        }
+
+        result = self.service._run_portfolio_daily_selected_backtest(
+            ["AAPL", "NVDA"],
+            request,
+            selection_plan,
+            target_rows=[
+                {"symbol": "AAPL", "date": "2026-04-01", "rank": 1, "score": 9.0, "extra": {}},
+                {"symbol": "NVDA", "date": "2026-04-02", "rank": 1, "score": 8.0, "extra": {}},
+            ],
+        )
+
+        self.assertEqual(load_calls, [("AAPL", "2026-04-01", "2026-04-01"), ("NVDA", "2026-04-02", "2026-04-02")])
+        self.assertEqual(result["indicator_count"], 90)
+        profile = result["portfolio_metrics"]["daily_selected_profile"]
+        self.assertTrue(profile["enabled"])
+        self.assertEqual(profile["trade_dates"], 2)
+        self.assertEqual(profile["selected_symbol_days"], 2)
+
     def test_account_buying_power_sets_borrow_limit_from_snapshot(self):
         service = BacktestService(
             None,

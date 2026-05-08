@@ -84,6 +84,211 @@ class BacktestScanReplayMixin:
         )
         return int(cutoff_dt.timestamp() * 1000)
 
+    def _build_trade_date_time_ms(self, date_text: str, time_text: str, default_time: str) -> int:
+        return self._build_scan_cutoff_ms(date_text, request_utils.normalize_hhmm(time_text, default_time))
+
+    def _historical_sd_window_max_bars(self, request: dict) -> int:
+        params = dict((request.get("params") or {}).get("strategy_params") or DEFAULT_PARAMS)
+        try:
+            return max(0, int(params.get("signal_window_max_bars", DEFAULT_PARAMS.get("signal_window_max_bars", 12)) or 0))
+        except Exception:
+            return int(DEFAULT_PARAMS.get("signal_window_max_bars", 12) or 12)
+
+    def _build_historical_sd_admission(
+        self,
+        symbol: str,
+        trade_date: str,
+        request: dict,
+        candidate: dict | None = None,
+    ) -> dict:
+        session_mode = str(request.get("session_mode") or request.get("scan_session_mode") or "extended").strip().lower() or "extended"
+        if session_mode not in SESSION_MODE_VALUES:
+            session_mode = "extended"
+        bars = self._load_symbol_bars(
+            symbol,
+            request["source_environment"],
+            trade_date,
+            trade_date,
+            session_mode,
+            allow_backfill=False,
+        )
+        if not bars:
+            return {
+                "passed": False,
+                "reason": "sd_no_day_bars",
+                "sd_scanned_bars": 0,
+                "sd_admitted_at_ms": 0,
+                "sd_window_status": "no_bars",
+            }
+
+        params = dict((request.get("params") or {}).get("strategy_params") or DEFAULT_PARAMS)
+        signal_window_max_bars = self._historical_sd_window_max_bars(request)
+        engine = runtime_indicator_engine()(symbol, "5m", params=params)
+        signal_gen = runtime_signal_generator()(symbol, "5m", params=params)
+        warmup_limit = int(request.get("warmup_bars", BACKTEST_WARMUP_BARS) or BACKTEST_WARMUP_BARS)
+        warmup_bars = self._load_symbol_warmup_bars(
+            symbol,
+            request["source_environment"],
+            int(bars[0].get("bar_time_ms", 0) or 0),
+            session_mode,
+            limit=warmup_limit,
+        )
+        previous_day = self._bootstrap_backtest_state(engine, signal_gen, warmup_bars) if warmup_bars else ""
+        cutoff_ms = int(((candidate or {}).get("extra") or {}).get("scan_cutoff_ms", 0) or 0)
+        if cutoff_ms <= 0:
+            cutoff_ms = self._build_scan_cutoff_ms(trade_date, request.get("premarket_cutoff_time") or DEFAULT_SCAN_CUTOFF_TIME)
+        admission_start_ms = max(
+            cutoff_ms,
+            self._build_trade_date_time_ms(
+                trade_date,
+                request.get("daily_selection_admission_start_time") or request.get("trade_window_start_time"),
+                DEFAULT_PORTFOLIO_TRADE_WINDOW_START,
+            ),
+        )
+        admission_end_ms = self._build_trade_date_time_ms(
+            trade_date,
+            request.get("daily_selection_admission_end_time") or request.get("trade_window_end_time"),
+            DEFAULT_PORTFOLIO_TRADE_WINDOW_END,
+        )
+        last_item: dict = {}
+        scanned_bars = 0
+        ready_bars = 0
+        for bar in bars:
+            if self._cancel_event.is_set():
+                raise BacktestCancelled()
+            bar_ms = int(bar.get("bar_time_ms", 0) or 0)
+            if bar_ms <= 0:
+                continue
+            current_day = str(bar.get("us_time", "") or "")[:10] or ms_to_et(bar_ms).strftime("%Y-%m-%d")
+            if previous_day and current_day != previous_day:
+                signal_gen.daily_reset()
+            previous_day = current_day
+            snapshot = engine.update(bar)
+            scanned_bars += 1
+            if not snapshot or not engine.is_ready():
+                continue
+            ready_bars += 1
+            signal_gen.update(snapshot)
+            if bar_ms < admission_start_ms or bar_ms > admission_end_ms:
+                continue
+            trace = signal_gen.get_trace_snapshot()
+            admission_item = build_active_window_admission_item(
+                trace,
+                signal_window_max_bars=signal_window_max_bars,
+            )
+            last_item = admission_item
+            if bool(admission_item.get("admitted")):
+                return {
+                    "passed": True,
+                    "reason": "sd_window_admitted",
+                    "sd_scanned_bars": scanned_bars,
+                    "sd_ready_bars": ready_bars,
+                    "sd_admitted_at_ms": bar_ms,
+                    "sd_admitted_us_time": str(bar.get("us_time", "") or format_us_time(bar_ms)),
+                    "sd_admitted_cn_time": str(bar.get("cn_time", "") or format_cn_time(bar_ms)),
+                    "sd_window_status": str(admission_item.get("window_status") or ""),
+                    "sd_trace_stage": str(admission_item.get("trace_stage") or ""),
+                    "sd_upper_valid": bool(admission_item.get("sd_upper_valid")),
+                    "sd_lower_valid": bool(admission_item.get("sd_lower_valid")),
+                    "sd_upper_active": bool(admission_item.get("sd_upper_active")),
+                    "sd_lower_active": bool(admission_item.get("sd_lower_active")),
+                    "sd_upper_age_bars": int(admission_item.get("sd_upper_age_bars", 0) or 0),
+                    "sd_lower_age_bars": int(admission_item.get("sd_lower_age_bars", 0) or 0),
+                    "bars_remaining": int(admission_item.get("bars_remaining", 0) or 0),
+                    "component_progress": float(admission_item.get("component_progress", 0) or 0),
+                    "components": admission_item.get("components") if isinstance(admission_item.get("components"), dict) else {},
+                    "admission_start_ms": admission_start_ms,
+                    "admission_end_ms": admission_end_ms,
+                    "shared_admission_helper": "ibkr_compute.core.active_window_admission.is_active_window_admitted",
+                }
+
+        return {
+            "passed": False,
+            "reason": str(last_item.get("window_status") or "sd_no_valid_window"),
+            "sd_scanned_bars": scanned_bars,
+            "sd_ready_bars": ready_bars,
+            "sd_admitted_at_ms": 0,
+            "sd_window_status": str(last_item.get("window_status") or "no_window"),
+            "sd_trace_stage": str(last_item.get("trace_stage") or ""),
+            "sd_upper_valid": bool(last_item.get("sd_upper_valid")),
+            "sd_lower_valid": bool(last_item.get("sd_lower_valid")),
+            "sd_upper_active": bool(last_item.get("sd_upper_active")),
+            "sd_lower_active": bool(last_item.get("sd_lower_active")),
+            "sd_upper_age_bars": int(last_item.get("sd_upper_age_bars", 0) or 0),
+            "sd_lower_age_bars": int(last_item.get("sd_lower_age_bars", 0) or 0),
+            "bars_remaining": int(last_item.get("bars_remaining", 0) or 0),
+            "component_progress": float(last_item.get("component_progress", 0) or 0),
+            "admission_start_ms": admission_start_ms,
+            "admission_end_ms": admission_end_ms,
+            "shared_admission_helper": "ibkr_compute.core.active_window_admission.is_active_window_admitted",
+        }
+
+    def _apply_historical_sd_admission_to_candidates(
+        self,
+        trade_date: str,
+        day_candidates: list[dict],
+        request: dict,
+        progress_context: dict | None = None,
+    ) -> tuple[list[dict], dict]:
+        if not bool(request.get("daily_selection_require_sd_trigger")) and not bool(request.get("daily_selection_reuse_live_admission")):
+            return day_candidates, {
+                "enabled": False,
+                "sd_scanned_count": 0,
+                "sd_admitted_count": 0,
+                "sd_rejected_count": 0,
+                "sd_scan_budget_deferred_count": 0,
+            }
+
+        candidate_limit = int(request.get("daily_selection_candidate_limit", 0) or 0)
+        if candidate_limit <= 0:
+            candidate_limit = max(int(request.get("max_symbols", DEFAULT_MAX_SYMBOLS) or DEFAULT_MAX_SYMBOLS) * 5, 20)
+        scan_candidates = list(day_candidates[:candidate_limit])
+        deferred = max(0, len(day_candidates) - len(scan_candidates))
+        admitted: list[dict] = []
+        rejected_count = 0
+        rejection_summary: dict[str, int] = {}
+        total = max(1, len(scan_candidates))
+        for index, candidate in enumerate(scan_candidates, start=1):
+            symbol = str(candidate.get("symbol", "") or "").strip().upper()
+            if not symbol:
+                continue
+            if index == 1 or index % 10 == 0 or index == total:
+                self._set_progress_context(
+                    "running",
+                    "sd_admission_replay",
+                    f"replaying SD admission {trade_date} {index}/{total}",
+                    12,
+                    progress_context,
+                )
+            admission = self._build_historical_sd_admission(symbol, trade_date, request, candidate)
+            enriched = dict(candidate)
+            extra = dict(enriched.get("extra") or {})
+            extra.update(
+                {
+                    "sd_selection_enabled": True,
+                    "sd_selection_passed": bool(admission.get("passed")),
+                    "sd_selection_reason": str(admission.get("reason") or ""),
+                    **admission,
+                }
+            )
+            enriched["extra"] = extra
+            if bool(admission.get("passed")):
+                admitted.append(enriched)
+            else:
+                rejected_count += 1
+                reason = str(admission.get("reason") or "sd_rejected").strip() or "sd_rejected"
+                rejection_summary[reason] = int(rejection_summary.get(reason, 0) or 0) + 1
+
+        return admitted, {
+            "enabled": True,
+            "sd_scanned_count": len(scan_candidates),
+            "sd_admitted_count": len(admitted),
+            "sd_rejected_count": rejected_count,
+            "sd_scan_budget_deferred_count": deferred,
+            "sd_rejection_summary": rejection_summary,
+            "shared_admission_helper": "ibkr_compute.core.active_window_admission.is_active_window_admitted",
+        }
+
     def _load_interval_bars_before(
         self,
         symbol: str,
@@ -522,6 +727,21 @@ class BacktestScanReplayMixin:
                 )
 
             day_candidates.sort(key=lambda item: (-float(item.get("score", 0) or 0), item.get("symbol", "")))
+            pre_sd_candidate_count = len(day_candidates)
+            sd_summary = {
+                "enabled": False,
+                "sd_scanned_count": 0,
+                "sd_admitted_count": 0,
+                "sd_rejected_count": 0,
+                "sd_scan_budget_deferred_count": 0,
+                "sd_rejection_summary": {},
+            }
+            day_candidates, sd_summary = self._apply_historical_sd_admission_to_candidates(
+                trade_date,
+                day_candidates,
+                request,
+                progress_context=progress_context,
+            )
             selected_rows = day_candidates[: request["max_symbols"]]
             selection_plan[trade_date] = [item["symbol"] for item in selected_rows]
             for rank, candidate in enumerate(selected_rows, start=1):
@@ -563,7 +783,9 @@ class BacktestScanReplayMixin:
                     "ready_symbol_count": ready_count,
                     "quality_rejected_count": quality_rejected_count,
                     "rejection_summary": rejection_summary,
-                    "candidate_count": len(day_candidates),
+                    "candidate_count": pre_sd_candidate_count,
+                    "post_sd_candidate_count": len(day_candidates),
+                    **sd_summary,
                     "selected_count": len(selected_rows),
                     "selected_symbols": [item["symbol"] for item in selected_rows],
                 }
@@ -582,6 +804,11 @@ class BacktestScanReplayMixin:
                 "scan_session_mode": request.get("scan_session_mode") or "extended",
                 "scan_warmup_bars": int(request.get("scan_warmup_bars", BACKTEST_WARMUP_BARS) or BACKTEST_WARMUP_BARS),
                 "universe_mode": universe_mode,
+                "daily_selected_only": bool(request.get("daily_selected_only")),
+                "daily_selection_require_sd_trigger": bool(request.get("daily_selection_require_sd_trigger")),
+                "daily_selection_reuse_live_admission": bool(request.get("daily_selection_reuse_live_admission")),
+                "daily_selection_candidate_limit": int(request.get("daily_selection_candidate_limit", 0) or 0),
+                "shared_admission_helper": "ibkr_compute.core.active_window_admission.is_active_window_admitted",
                 "daily": daily_summaries,
             },
         }
