@@ -623,22 +623,55 @@ class BacktestMarketDataBackfillMixin:
         environment = request["source_environment"]
         lookback_limit = self._effective_indicator_warmup_bars(request, "scan_warmup_bars")
         coverage_bars = max(BACKTEST_WARMUP_BARS + 20, lookback_limit + 20)
-        coverage_start_ms = max(0, cutoff_ms - (interval_to_ms("5m") * coverage_bars))
         rows = self._load_bar_rows_from_sqlite(
             symbol,
             environment,
-            start_ms=coverage_start_ms,
             end_ms=cutoff_ms,
-            descending=False,
+            descending=True,
+            limit=coverage_bars,
         )
+        rows = sorted(rows or [], key=lambda item: int((item or {}).get("bar_time_ms", 0) or 0))
+        last_bar_ms = int(rows[-1].get("bar_time_ms", 0) or 0) if rows else 0
+        fresh_grace_ms = interval_to_ms("5m") * 6
+        gap_count = self._count_internal_5m_gaps(rows) if rows else 0
         need_backfill = (
             not rows
-            or int(rows[0].get("bar_time_ms", 0) or 0) > coverage_start_ms
-            or int(rows[-1].get("bar_time_ms", 0) or 0) < max(0, cutoff_ms - interval_to_ms("5m"))
-            or self._count_internal_5m_gaps(rows) > 0
+            or len(rows) < lookback_limit
+            or last_bar_ms < max(0, cutoff_ms - fresh_grace_ms)
+            or gap_count > 0
         )
         if not need_backfill:
-            return {"ok": True, "needed": False, "persisted_rows": 0, "rolled_rows": 0}
+            return {
+                "ok": True,
+                "needed": False,
+                "persisted_rows": 0,
+                "rolled_rows": 0,
+                "row_count": len(rows),
+                "last_bar_us": format_us_time(last_bar_ms) if last_bar_ms > 0 else "",
+            }
+
+        reason = "no_rows"
+        if rows and len(rows) < lookback_limit:
+            reason = "insufficient_warmup_rows"
+        if rows and last_bar_ms < max(0, cutoff_ms - fresh_grace_ms):
+            reason = "stale_latest_bar"
+        if gap_count > 0:
+            reason = "internal_5m_gap"
+
+        if not bool(request.get("preflight_backfill", True)):
+            return {
+                "ok": False,
+                "needed": True,
+                "reason": reason,
+                "backfill_skipped": True,
+                "persisted_rows": 0,
+                "rolled_rows": 0,
+                "row_count": len(rows),
+                "last_bar_us": format_us_time(last_bar_ms) if last_bar_ms > 0 else "",
+            }
+
+        warmup_lookback_ms = interval_to_ms("5m") * coverage_bars
+        coverage_start_ms = max(0, cutoff_ms - warmup_lookback_ms)
 
         repair = self._backfill_symbol_history(
             symbol,
@@ -649,13 +682,24 @@ class BacktestMarketDataBackfillMixin:
         )
         repair_rows = list((repair or {}).get("rows") or [])
         if not repair_rows:
-            return {"ok": False, "needed": True, "persisted_rows": 0, "rolled_rows": 0}
+            return {
+                "ok": False,
+                "needed": True,
+                "reason": reason,
+                "persisted_rows": 0,
+                "rolled_rows": 0,
+                "row_count": len(rows),
+                "last_bar_us": format_us_time(last_bar_ms) if last_bar_ms > 0 else "",
+            }
 
         persisted_rows = self._persist_backfill_rows(repair_rows)
         rolled_rows = self._rollup_symbol_history(symbol, environment) if persisted_rows > 0 else 0
         return {
             "ok": persisted_rows > 0,
             "needed": True,
+            "reason": reason,
             "persisted_rows": persisted_rows,
             "rolled_rows": rolled_rows,
+            "row_count": len(rows),
+            "last_bar_us": format_us_time(last_bar_ms) if last_bar_ms > 0 else "",
         }

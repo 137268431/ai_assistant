@@ -663,6 +663,101 @@ class BacktestDailyScanReplayTests(unittest.TestCase):
         self.assertGreaterEqual(service._effective_indicator_warmup_bars(request, "warmup_bars"), expected_floor)
         self.assertGreaterEqual(service._effective_indicator_warmup_bars(request, "scan_warmup_bars"), expected_floor)
 
+    def test_backtest_scan_setting_overrides_are_request_scoped(self):
+        settings = self.service._apply_historical_scan_setting_overrides(
+            {
+                "min_avg_10d_volume": 100000,
+                "min_premarket_volume": 5000,
+                "min_atr_pct": 0.15,
+                "min_abs_day_change_pct": 1.0,
+            },
+            {
+                "daily_scan_min_avg_10d_volume": 50000,
+                "daily_scan_min_premarket_volume": 2000,
+                "daily_scan_min_abs_day_change_pct": 0.5,
+            },
+        )
+
+        self.assertEqual(settings["min_avg_10d_volume"], 50000)
+        self.assertEqual(settings["min_premarket_volume"], 2000)
+        self.assertEqual(settings["min_abs_day_change_pct"], 0.5)
+        self.assertEqual(settings["min_atr_pct"], 0.15)
+        self.assertEqual(settings["override_source"], "backtest_request")
+
+    def test_daily_selection_sd_rank_keeps_rejected_candidates(self):
+        self.service._build_historical_sd_admission = lambda symbol, trade_date, request, candidate=None: {
+            "passed": symbol == "NVDA",
+            "reason": "sd_window_admitted" if symbol == "NVDA" else "no_window",
+            "sd_admitted_at_ms": 123 if symbol == "NVDA" else 0,
+        }
+        candidates = [
+            {"symbol": "AMD", "score": 10, "extra": {}},
+            {"symbol": "NVDA", "score": 9, "extra": {}},
+        ]
+        request = {
+            **self._cache_request(),
+            "daily_selection_reuse_live_admission": True,
+            "daily_selection_sd_mode": "rank",
+            "daily_selection_candidate_limit": 20,
+        }
+
+        ranked, summary = self.service._apply_historical_sd_admission_to_candidates("2026-04-22", candidates, request)
+
+        self.assertEqual([item["symbol"] for item in ranked], ["NVDA", "AMD"])
+        self.assertEqual(summary["mode"], "rank")
+        self.assertEqual(summary["sd_admitted_count"], 1)
+        self.assertEqual(summary["sd_rejected_count"], 1)
+
+    def test_scan_history_check_uses_recent_bar_count_not_calendar_window(self):
+        service = BacktestService(None)
+        cutoff_ms = service._build_scan_cutoff_ms("2025-05-12", "09:20")
+        interval_ms = 5 * 60 * 1000
+        rows = [
+            {
+                "bar_time_ms": cutoff_ms - interval_ms * (index + 1),
+                "us_time": datetime.fromtimestamp((cutoff_ms - interval_ms * (index + 1)) / 1000, ET).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                ),
+            }
+            for index in range(BACKTEST_WARMUP_BARS + 30)
+        ]
+
+        def fake_load(symbol, environment, **kwargs):
+            self.assertTrue(kwargs.get("descending"))
+            self.assertGreaterEqual(int(kwargs.get("limit") or 0), BACKTEST_WARMUP_BARS)
+            return list(rows)
+
+        service._load_bar_rows_from_sqlite = fake_load
+        service._backfill_symbol_history = mock.Mock(side_effect=AssertionError("unexpected backfill"))
+
+        summary = service._ensure_scan_history_available(
+            "NVDA",
+            {"source_environment": "live", "scan_warmup_bars": BACKTEST_WARMUP_BARS, "preflight_backfill": True},
+            cutoff_ms,
+        )
+
+        self.assertTrue(summary["ok"])
+        self.assertFalse(summary["needed"])
+        service._backfill_symbol_history.assert_not_called()
+
+    def test_scan_history_check_honors_preflight_backfill_false(self):
+        service = BacktestService(None)
+        cutoff_ms = service._build_scan_cutoff_ms("2025-05-12", "09:20")
+        service._load_bar_rows_from_sqlite = lambda *args, **kwargs: []
+        service._backfill_symbol_history = mock.Mock(side_effect=AssertionError("unexpected backfill"))
+
+        summary = service._ensure_scan_history_available(
+            "NVDA",
+            {"source_environment": "live", "scan_warmup_bars": BACKTEST_WARMUP_BARS, "preflight_backfill": False},
+            cutoff_ms,
+        )
+
+        self.assertFalse(summary["ok"])
+        self.assertTrue(summary["needed"])
+        self.assertTrue(summary["backfill_skipped"])
+        self.assertEqual(summary["reason"], "no_rows")
+        service._backfill_symbol_history.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -286,6 +286,9 @@ def normalize_request(payload: dict) -> dict:
     daily_selected_only = normalize_bool(payload.get("daily_selected_only"), False)
     daily_selection_require_sd_trigger = normalize_bool(payload.get("daily_selection_require_sd_trigger"), False)
     daily_selection_reuse_live_admission = normalize_bool(payload.get("daily_selection_reuse_live_admission"), daily_selection_require_sd_trigger)
+    daily_selection_sd_mode = str(payload.get("daily_selection_sd_mode") or "hard").strip().lower() or "hard"
+    if daily_selection_sd_mode not in {"hard", "rank", "off"}:
+        daily_selection_sd_mode = "hard"
     daily_selection_candidate_limit = normalize_positive_int(
         payload.get("daily_selection_candidate_limit"),
         default=max(20, max_symbols * 5),
@@ -306,6 +309,30 @@ def normalize_request(payload: dict) -> dict:
         daily_selection_cache_mode = "use_or_build"
     daily_selection_cache_force_rebuild = normalize_bool(payload.get("daily_selection_cache_force_rebuild"), False)
     daily_selection_cache_trust_existing = normalize_bool(payload.get("daily_selection_cache_trust_existing"), False)
+    daily_scan_min_avg_10d_volume = normalize_positive_float(
+        payload.get("daily_scan_min_avg_10d_volume"),
+        0.0,
+        minimum=0.0,
+        maximum=1000000000.0,
+    )
+    daily_scan_min_premarket_volume = normalize_positive_float(
+        payload.get("daily_scan_min_premarket_volume"),
+        0.0,
+        minimum=0.0,
+        maximum=1000000000.0,
+    )
+    daily_scan_min_atr_pct = normalize_positive_float(
+        payload.get("daily_scan_min_atr_pct"),
+        0.0,
+        minimum=0.0,
+        maximum=100.0,
+    )
+    daily_scan_min_abs_day_change_pct = normalize_positive_float(
+        payload.get("daily_scan_min_abs_day_change_pct"),
+        0.0,
+        minimum=0.0,
+        maximum=100.0,
+    )
     premarket_cutoff_time = normalize_hhmm(payload.get("premarket_cutoff_time") or payload.get("scan_cutoff_time"))
     scan_session_mode = str(payload.get("scan_session_mode") or "extended").strip().lower() or "extended"
     if scan_session_mode not in constants.SESSION_MODE_VALUES:
@@ -442,11 +469,16 @@ def normalize_request(payload: dict) -> dict:
         "daily_selected_only": daily_selected_only,
         "daily_selection_require_sd_trigger": daily_selection_require_sd_trigger,
         "daily_selection_reuse_live_admission": daily_selection_reuse_live_admission,
+        "daily_selection_sd_mode": daily_selection_sd_mode,
         "daily_selection_candidate_limit": daily_selection_candidate_limit,
         "daily_selection_cache_enabled": daily_selection_cache_enabled,
         "daily_selection_cache_mode": daily_selection_cache_mode,
         "daily_selection_cache_force_rebuild": daily_selection_cache_force_rebuild,
         "daily_selection_cache_trust_existing": daily_selection_cache_trust_existing,
+        "daily_scan_min_avg_10d_volume": daily_scan_min_avg_10d_volume,
+        "daily_scan_min_premarket_volume": daily_scan_min_premarket_volume,
+        "daily_scan_min_atr_pct": daily_scan_min_atr_pct,
+        "daily_scan_min_abs_day_change_pct": daily_scan_min_abs_day_change_pct,
         "premarket_cutoff_time": premarket_cutoff_time,
         "retention_limit": retention_limit,
         "preflight_backfill": preflight_backfill,
@@ -474,11 +506,16 @@ def normalize_request(payload: dict) -> dict:
             "daily_selected_only": daily_selected_only,
             "daily_selection_require_sd_trigger": daily_selection_require_sd_trigger,
             "daily_selection_reuse_live_admission": daily_selection_reuse_live_admission,
+            "daily_selection_sd_mode": daily_selection_sd_mode,
             "daily_selection_candidate_limit": daily_selection_candidate_limit,
             "daily_selection_cache_enabled": daily_selection_cache_enabled,
             "daily_selection_cache_mode": daily_selection_cache_mode,
             "daily_selection_cache_force_rebuild": daily_selection_cache_force_rebuild,
             "daily_selection_cache_trust_existing": daily_selection_cache_trust_existing,
+            "daily_scan_min_avg_10d_volume": daily_scan_min_avg_10d_volume,
+            "daily_scan_min_premarket_volume": daily_scan_min_premarket_volume,
+            "daily_scan_min_atr_pct": daily_scan_min_atr_pct,
+            "daily_scan_min_abs_day_change_pct": daily_scan_min_abs_day_change_pct,
             "preflight_backfill": preflight_backfill,
             "backfill_concurrency": backfill_concurrency,
             "backfill_symbol_timeout_s": backfill_symbol_timeout_s,

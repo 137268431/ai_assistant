@@ -123,6 +123,10 @@ class BacktestScanReplayMixin:
         )
         return request_utils.normalize_bool(request.get("daily_selection_cache_enabled"), default_enabled)
 
+    def _daily_selection_sd_mode(self, request: dict) -> str:
+        mode = str(request.get("daily_selection_sd_mode") or "hard").strip().lower()
+        return mode if mode in {"hard", "rank", "off"} else "hard"
+
     def _normalize_daily_selection_cache_payload(self, value: Any) -> Any:
         if isinstance(value, dict):
             return {str(key): self._normalize_daily_selection_cache_payload(value[key]) for key in sorted(value.keys())}
@@ -163,6 +167,7 @@ class BacktestScanReplayMixin:
             "daily_selected_only": bool(request.get("daily_selected_only")),
             "daily_selection_require_sd_trigger": bool(request.get("daily_selection_require_sd_trigger")),
             "daily_selection_reuse_live_admission": bool(request.get("daily_selection_reuse_live_admission")),
+            "daily_selection_sd_mode": self._daily_selection_sd_mode(request),
             "daily_selection_candidate_limit": int(request.get("daily_selection_candidate_limit", 0) or 0),
             "trade_window_start_time": str(request.get("trade_window_start_time") or DEFAULT_PORTFOLIO_TRADE_WINDOW_START),
             "trade_window_end_time": str(request.get("trade_window_end_time") or DEFAULT_PORTFOLIO_TRADE_WINDOW_END),
@@ -703,9 +708,14 @@ class BacktestScanReplayMixin:
         request: dict,
         progress_context: dict | None = None,
     ) -> tuple[list[dict], dict]:
-        if not bool(request.get("daily_selection_require_sd_trigger")) and not bool(request.get("daily_selection_reuse_live_admission")):
+        sd_mode = self._daily_selection_sd_mode(request)
+        if sd_mode == "off" or (
+            not bool(request.get("daily_selection_require_sd_trigger"))
+            and not bool(request.get("daily_selection_reuse_live_admission"))
+        ):
             return day_candidates, {
                 "enabled": False,
+                "mode": sd_mode,
                 "sd_scanned_count": 0,
                 "sd_admitted_count": 0,
                 "sd_rejected_count": 0,
@@ -718,6 +728,7 @@ class BacktestScanReplayMixin:
         scan_candidates = list(day_candidates[:candidate_limit])
         deferred = max(0, len(day_candidates) - len(scan_candidates))
         admitted: list[dict] = []
+        rejected: list[dict] = []
         rejected_count = 0
         rejection_summary: dict[str, int] = {}
         total = max(1, len(scan_candidates))
@@ -748,12 +759,19 @@ class BacktestScanReplayMixin:
             if bool(admission.get("passed")):
                 admitted.append(enriched)
             else:
+                rejected.append(enriched)
                 rejected_count += 1
                 reason = str(admission.get("reason") or "sd_rejected").strip() or "sd_rejected"
                 rejection_summary[reason] = int(rejection_summary.get(reason, 0) or 0) + 1
 
-        return admitted, {
+        if sd_mode == "rank":
+            ranked_candidates = admitted + rejected + list(day_candidates[candidate_limit:])
+        else:
+            ranked_candidates = admitted
+
+        return ranked_candidates, {
             "enabled": True,
+            "mode": sd_mode,
             "sd_scanned_count": len(scan_candidates),
             "sd_admitted_count": len(admitted),
             "sd_rejected_count": rejected_count,
@@ -1014,11 +1032,38 @@ class BacktestScanReplayMixin:
             )
         return examples
 
-    def _load_historical_scan_settings(self, source_environment: str) -> dict:
+    def _apply_historical_scan_setting_overrides(self, settings: dict, request: dict | None = None) -> dict:
+        merged = dict(settings or {})
+        applied: dict[str, float] = {}
+        for request_key, settings_key in (
+            ("daily_scan_min_avg_10d_volume", "min_avg_10d_volume"),
+            ("daily_scan_min_premarket_volume", "min_premarket_volume"),
+            ("daily_scan_min_atr_pct", "min_atr_pct"),
+            ("daily_scan_min_abs_day_change_pct", "min_abs_day_change_pct"),
+        ):
+            raw_value = (request or {}).get(request_key)
+            if raw_value in (None, ""):
+                continue
+            try:
+                value = max(0.0, float(raw_value))
+            except Exception:
+                continue
+            if value <= 0:
+                continue
+            merged[settings_key] = value
+            applied[settings_key] = value
+        if applied:
+            merged["override_source"] = "backtest_request"
+            merged["overrides"] = applied
+        return merged
+
+    def _load_historical_scan_settings(self, source_environment: str | dict) -> dict:
+        request = source_environment if isinstance(source_environment, dict) else {}
+        environment = str((request or {}).get("source_environment") or source_environment or "live")
         try:
-            return _load_scan_settings(source_environment)
+            settings = _load_scan_settings(environment)
         except Exception:
-            return {
+            settings = {
                 "scan_time_et": DEFAULT_SCAN_CUTOFF_TIME,
                 "min_avg_10d_volume": 100000,
                 "min_premarket_volume": 5000,
@@ -1029,6 +1074,7 @@ class BacktestScanReplayMixin:
                 "total_subscription_limit": 80,
                 "trade_subscription_budget": 80,
             }
+        return self._apply_historical_scan_setting_overrides(settings, request)
 
     def _build_historical_scan_engines(self, symbol: str, request: dict, cutoff_ms: int) -> tuple[dict, dict]:
         params = dict((request.get("params") or {}).get("strategy_params") or DEFAULT_PARAMS)
@@ -1076,7 +1122,7 @@ class BacktestScanReplayMixin:
     ) -> dict | None:
         cutoff_ms = self._build_scan_cutoff_ms(trade_date, request.get("premarket_cutoff_time") or DEFAULT_SCAN_CUTOFF_TIME)
         metric_row = self._build_historical_scan_metric_row(symbol, trade_date, request, cutoff_ms, None)
-        scan_settings = settings or self._load_historical_scan_settings(request["source_environment"])
+        scan_settings = settings or self._load_historical_scan_settings(request)
         prefilter_rejections = self._build_historical_scan_metric_rejections(
             symbol,
             metric_row,
@@ -1144,7 +1190,7 @@ class BacktestScanReplayMixin:
         daily_summaries = []
         total_days = max(1, len(trading_dates))
         universe_mode = "manual_symbols" if request.get("symbols") else "watchlist_snapshot"
-        scan_settings = self._load_historical_scan_settings(request["source_environment"])
+        scan_settings = self._load_historical_scan_settings(request)
         cache_started_at = time.time()
         cache_fingerprint = self._build_daily_selection_cache_base_fingerprint(request, scan_settings)
         cache_summary = self._empty_daily_selection_cache_summary(request, cache_fingerprint)
@@ -1369,6 +1415,7 @@ class BacktestScanReplayMixin:
                 "daily_selected_only": bool(request.get("daily_selected_only")),
                 "daily_selection_require_sd_trigger": bool(request.get("daily_selection_require_sd_trigger")),
                 "daily_selection_reuse_live_admission": bool(request.get("daily_selection_reuse_live_admission")),
+                "daily_selection_sd_mode": self._daily_selection_sd_mode(request),
                 "daily_selection_candidate_limit": int(request.get("daily_selection_candidate_limit", 0) or 0),
                 "shared_admission_helper": "ibkr_compute.core.active_window_admission.is_active_window_admitted",
                 "daily_selection_cache": cache_summary,
