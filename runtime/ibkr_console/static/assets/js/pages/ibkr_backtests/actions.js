@@ -71,9 +71,11 @@
                     return;
                 }
             }
+            const resourceGuardPayload = getBacktestResourceGuardPayload();
             const payload = {
                 environment: currentEnvironment,
                 name: String(document.getElementById('runName').value || '').trim(),
+                machine_profile: getBacktestMachinePresetKey(),
                 symbol_source: symbolSource,
                 symbols: symbolsText,
                 date_from: dateFrom,
@@ -106,7 +108,14 @@
                 source_environment: currentEnvironment,
                 strategy_params: strategyParams,
                 variants,
+                ...resourceGuardPayload,
             };
+            if (shouldConfirmHeavyBacktest(payload)) {
+                const spanDays = getBacktestDateSpanDays(dateFrom, dateTo);
+                if (!window.confirm(`当前是 full watchlist + ${spanDays} 天 + extended，大概率会占用 4核8G 机器较多内存。建议分段或 safe 档；确认仍要启动吗？`)) {
+                    return;
+                }
+            }
             setActionState(true);
             try {
                 const result = await requestBacktestJson('/api/custom/ibkr/backtest/run', {

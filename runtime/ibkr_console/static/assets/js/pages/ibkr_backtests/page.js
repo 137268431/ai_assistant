@@ -27,6 +27,7 @@ function applyDefaultDates() {
         window.replayTarget = replayTarget;
         window.syncSymbolSourceUI = syncSymbolSourceUI;
         window.syncTvCompareUI = syncTvCompareUI;
+        window.syncBacktestPresetUI = syncBacktestPresetUI;
         window.onEnvironmentChange = function(environment) {
             currentEnvironment = environment;
             window.location.href = buildPageUrl('/ibkr_backtests.html', {}, { environment: currentEnvironment });
@@ -43,6 +44,8 @@ function applyDefaultDates() {
             applyDefaultDates();
             document.getElementById('dateFrom')?.addEventListener('change', syncBacktestDateLimits);
             document.getElementById('dateTo')?.addEventListener('change', syncBacktestDateLimits);
+            document.getElementById('backtestMachinePreset')?.addEventListener('change', () => syncBacktestPresetUI(true));
+            syncBacktestPresetUI(true);
             syncSymbolSourceUI();
             syncTvCompareUI();
             setBacktestTab(activeBacktestTab);

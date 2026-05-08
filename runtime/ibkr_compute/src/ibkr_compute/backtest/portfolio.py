@@ -4,6 +4,40 @@ from .runtime_support import *
 
 
 class BacktestPortfolioMixin:
+    def _compact_portfolio_bar(self, bar: dict, *, is_last_bar: bool, next_day: str) -> tuple:
+        bar_ms = int(bar.get("bar_time_ms", 0) or 0)
+        return (
+            bar_ms,
+            float(bar.get("open", 0) or 0),
+            float(bar.get("high", 0) or 0),
+            float(bar.get("low", 0) or 0),
+            float(bar.get("close", 0) or 0),
+            float(bar.get("volume", 0) or 0),
+            str(bar.get("session_type", "") or classify_session(bar_time_ms=bar_ms)),
+            str(bar.get("exchange", "") or "").upper(),
+            bool(is_last_bar),
+            str(next_day or "")[:10],
+        )
+
+    def _inflate_portfolio_bar(self, symbol: str, compact_bar: tuple) -> dict:
+        bar_ms = int(compact_bar[0] or 0)
+        return {
+            "symbol": symbol,
+            "exchange": str(compact_bar[7] or "").upper(),
+            "interval": "5m",
+            "open": float(compact_bar[1] or 0),
+            "high": float(compact_bar[2] or 0),
+            "low": float(compact_bar[3] or 0),
+            "close": float(compact_bar[4] or 0),
+            "volume": float(compact_bar[5] or 0),
+            "session_type": str(compact_bar[6] or ""),
+            "us_time": format_us_time(bar_ms),
+            "cn_time": format_cn_time(bar_ms),
+            "bar_time_ms": bar_ms,
+            "_backtest_is_last_bar": bool(compact_bar[8]),
+            "_backtest_next_day": str(compact_bar[9] or "")[:10],
+        }
+
     def _parse_hhmm_tuple(self, raw_value: Any, default: str) -> tuple[int, int]:
         text = str(raw_value or default or "00:00").strip()
         try:
@@ -674,6 +708,8 @@ class BacktestPortfolioMixin:
         tv_symbol_reports = []
         signal_index = {}
         target_lookup = self._build_daily_target_lookup(target_rows or [], symbols)
+        load_started_at = time.time()
+        total_loaded_bars = 0
 
         total_symbols = max(1, len(symbols))
         for completed_symbols, symbol in enumerate(symbols):
@@ -709,20 +745,26 @@ class BacktestPortfolioMixin:
             symbol_bars = state.get("bars") or []
             bar_count = len(symbol_bars)
             state["bar_count"] = bar_count
+            total_loaded_bars += bar_count
             state["first_bar_us"] = symbol_bars[0].get("us_time", "") if symbol_bars else ""
             state["last_bar_us"] = symbol_bars[-1].get("us_time", "") if symbol_bars else ""
-            state["last_bar"] = symbol_bars[-1] if symbol_bars else None
+            last_compact_bar = None
             for index, bar in enumerate(symbol_bars):
                 bar_ms = int(bar.get("bar_time_ms", 0) or 0)
                 if bar_ms <= 0:
                     continue
-                bar["_backtest_is_last_bar"] = index >= bar_count - 1
-                bar["_backtest_next_day"] = (
-                    str(symbol_bars[index + 1].get("us_time", "") or "")[:10]
-                    if index < bar_count - 1
-                    else ""
+                compact_bar = self._compact_portfolio_bar(
+                    bar,
+                    is_last_bar=index >= bar_count - 1,
+                    next_day=(
+                        str(symbol_bars[index + 1].get("us_time", "") or "")[:10]
+                        if index < bar_count - 1
+                        else ""
+                    ),
                 )
-                bars_by_time.setdefault(bar_ms, []).append((symbol, index, bar))
+                last_compact_bar = compact_bar
+                bars_by_time.setdefault(bar_ms, []).append((symbol, index, compact_bar))
+            state["last_bar"] = self._inflate_portfolio_bar(symbol, last_compact_bar) if last_compact_bar else None
             if hasattr(symbol_bars, "clear"):
                 symbol_bars.clear()
             state["bars"] = []
@@ -748,6 +790,8 @@ class BacktestPortfolioMixin:
             return result
 
         bar_times = sorted(bars_by_time.keys())
+        load_duration_s = round(time.time() - load_started_at, 3)
+        stream_started_at = time.time()
         total_steps = max(1, len(bar_times))
         commission_per_share = float(request["commission_per_share"])
         slippage_bps = float(request["slippage_bps"])
@@ -812,7 +856,8 @@ class BacktestPortfolioMixin:
             ledger["current_day"] = current_day
 
             candidates = []
-            for symbol, index, bar in entries:
+            for symbol, index, compact_bar in entries:
+                bar = self._inflate_portfolio_bar(symbol, compact_bar)
                 state = states[symbol]
                 state["market_bars"] = int(state.get("market_bars", 0) or 0) + 1
                 current_symbol_day = str(bar.get("us_time", "") or "")[:10]
@@ -1152,8 +1197,19 @@ class BacktestPortfolioMixin:
         all_trades.sort(key=lambda item: (int(item.get("exit_bar_ms", 0) or 0), item.get("symbol", "")))
         all_reverse_rows.sort(key=lambda item: (int(item.get("bar_time_ms", 0) or 0), item.get("symbol", ""), item.get("action_type", "")))
         gross_now = float(ledger.get("open_exposure", 0) or 0) + float(ledger.get("reserved_exposure", 0) or 0)
+        resource_snapshot = self._read_backtest_resource_snapshot()
         portfolio_metrics = {
             "execution_model": "portfolio_stream",
+            "portfolio_profile": {
+                "symbols_requested": len(symbols),
+                "symbols_loaded": len(states),
+                "bars_loaded": total_loaded_bars,
+                "bar_times": len(bar_times),
+                "load_duration_s": load_duration_s,
+                "stream_duration_s": round(time.time() - stream_started_at, 3),
+                "compact_bar_storage": True,
+                "resource_snapshot": resource_snapshot,
+            },
             "portfolio_risk": {
                 **risk_limits,
                 "position_limit_max": int(request.get("position_limit_max", DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX) or DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX),

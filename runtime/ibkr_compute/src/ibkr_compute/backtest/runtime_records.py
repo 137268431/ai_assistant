@@ -703,6 +703,7 @@ class BacktestRuntimeRecordsMixin:
             "requested_symbols": request["symbols"],
             "resolved_symbols": symbols,
             "max_symbols": request["max_symbols"],
+            "machine_profile": str(request.get("machine_profile") or ""),
             "strategy_tag": request["strategy_tag"],
             "compare_with_tv": bool(request.get("compare_with_tv", True)),
             "compare_tv_signals": bool(request.get("compare_tv_signals", False)),
@@ -731,6 +732,14 @@ class BacktestRuntimeRecordsMixin:
                 if request.get("backfill_history_max_retries") is not None
                 else DEFAULT_BACKTEST_BACKFILL_HISTORY_MAX_RETRIES
             ),
+            "resource_guard": {
+                "enabled": bool(request.get("resource_guard_enabled", DEFAULT_BACKTEST_RESOURCE_GUARD_ENABLED)),
+                "max_load": float(request.get("resource_guard_max_load", DEFAULT_BACKTEST_RESOURCE_GUARD_MAX_LOAD) or 0),
+                "min_available_mb": int(request.get("resource_guard_min_available_mb", DEFAULT_BACKTEST_RESOURCE_GUARD_MIN_AVAILABLE_MB) or 0),
+                "max_rss_mb": int(request.get("resource_guard_max_rss_mb", DEFAULT_BACKTEST_RESOURCE_GUARD_MAX_RSS_MB) or 0),
+                "sleep_s": float(request.get("resource_guard_sleep_s", DEFAULT_BACKTEST_RESOURCE_GUARD_SLEEP_SECONDS) or 0),
+                "check_steps": int(request.get("resource_guard_check_steps", DEFAULT_BACKTEST_RESOURCE_GUARD_CHECK_STEPS) or 0),
+            },
             **self._build_execution_extra(request),
             **build_runtime_timestamps(),
         }

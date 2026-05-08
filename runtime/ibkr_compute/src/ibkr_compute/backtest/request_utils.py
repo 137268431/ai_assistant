@@ -167,6 +167,7 @@ def normalize_request(payload: dict) -> dict:
     latest_complete_date = (now.date() - timedelta(days=1)).strftime("%Y-%m-%d")
     name = str(payload.get("name") or "").strip() or f"Backtest {now.strftime('%Y-%m-%d %H:%M')}"
     source_environment = str(payload.get("source_environment") or "live").strip().lower() or "live"
+    machine_profile = str(payload.get("machine_profile") or payload.get("resource_profile") or "").strip().lower()
     symbol_source = str(payload.get("symbol_source") or "manual").strip().lower() or "manual"
     if symbol_source not in constants.SYMBOL_SOURCE_VALUES:
         symbol_source = "manual"
@@ -372,6 +373,7 @@ def normalize_request(payload: dict) -> dict:
     return {
         "name": name,
         "source_environment": source_environment,
+        "machine_profile": machine_profile,
         "symbol_source": effective_symbol_source,
         "requested_symbol_source": symbol_source,
         "historical_targets_replay": historical_targets_replay,
@@ -432,6 +434,7 @@ def normalize_request(payload: dict) -> dict:
             "strategy_params": strategy_params,
             "strategy_tag": strategy_tag,
             "source_environment": source_environment,
+            "machine_profile": machine_profile,
             "session_mode": session_mode,
             "warmup_bars": warmup_bars,
             "scan_warmup_bars": scan_warmup_bars,

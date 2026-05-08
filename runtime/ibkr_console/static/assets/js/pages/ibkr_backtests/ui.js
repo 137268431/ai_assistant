@@ -15,6 +15,117 @@
             });
         }
 
+        const BACKTEST_MACHINE_PRESETS = Object.freeze({
+            safe_4c8g: {
+                label: '4C8G safe',
+                maxSymbols: { manual: 20, targets: 20, daily_scan_replay: 20, watchlist: 80 },
+                warmupBars: 160,
+                sessionMode: 'extended',
+                resourceGuard: {
+                    resource_guard_enabled: true,
+                    resource_guard_max_load: 3.5,
+                    resource_guard_min_available_mb: 1800,
+                    resource_guard_max_rss_mb: 4200,
+                    resource_guard_sleep_s: 0.35,
+                    resource_guard_check_steps: 80,
+                },
+                help: '4核8G 安全档：先限制 watchlist 标的数和 warmup，保护实盘同机资源。',
+            },
+            fast_sample: {
+                label: 'fast sample',
+                maxSymbols: { manual: 10, targets: 10, daily_scan_replay: 10, watchlist: 30 },
+                warmupBars: 120,
+                sessionMode: 'regular',
+                resourceGuard: {
+                    resource_guard_enabled: true,
+                    resource_guard_max_load: 3.2,
+                    resource_guard_min_available_mb: 2200,
+                    resource_guard_max_rss_mb: 3200,
+                    resource_guard_sleep_s: 0.25,
+                    resource_guard_check_steps: 100,
+                },
+                help: '快速抽样档：regular + 小标的池，适合快速验证参数方向。',
+            },
+            full_watchlist: {
+                label: 'full watchlist',
+                maxSymbols: { manual: 200, targets: 200, daily_scan_replay: 80, watchlist: 200 },
+                warmupBars: 320,
+                sessionMode: 'extended',
+                resourceGuard: {
+                    resource_guard_enabled: true,
+                    resource_guard_max_load: 3.8,
+                    resource_guard_min_available_mb: 1400,
+                    resource_guard_max_rss_mb: 5200,
+                    resource_guard_sleep_s: 0.2,
+                    resource_guard_check_steps: 120,
+                },
+                help: '全量档：适合非开盘时段或分段回测；4核8G 上近一年会更慢。',
+            },
+        });
+
+        function getBacktestMachinePresetKey() {
+            const value = String(document.getElementById('backtestMachinePreset')?.value || 'safe_4c8g').trim();
+            return BACKTEST_MACHINE_PRESETS[value] ? value : 'safe_4c8g';
+        }
+
+        function getBacktestMachinePreset() {
+            return BACKTEST_MACHINE_PRESETS[getBacktestMachinePresetKey()];
+        }
+
+        function syncBacktestPresetUI(force = false) {
+            const preset = getBacktestMachinePreset();
+            const source = String(document.getElementById('symbolSource')?.value || 'manual').trim() || 'manual';
+            const maxSymbolsInput = document.getElementById('maxSymbols');
+            const warmupInput = document.getElementById('warmupBars');
+            const sessionInput = document.getElementById('sessionMode');
+            const help = document.getElementById('backtestPresetHelp');
+            const nextMaxSymbols = Number(preset.maxSymbols[source] || preset.maxSymbols.manual || 20);
+            if (maxSymbolsInput) {
+                const previousPresetValue = Number(maxSymbolsInput.dataset.presetValue || 0);
+                const currentValue = Number(maxSymbolsInput.value || 0);
+                if (force || !currentValue || currentValue === previousPresetValue) {
+                    maxSymbolsInput.value = String(nextMaxSymbols);
+                }
+                maxSymbolsInput.dataset.presetValue = String(nextMaxSymbols);
+                maxSymbolsInput.dataset.defaultValue = String(nextMaxSymbols);
+            }
+            if (warmupInput) {
+                const previousPresetValue = Number(warmupInput.dataset.presetValue || 0);
+                const currentValue = Number(warmupInput.value || 0);
+                if (force || !currentValue || currentValue === previousPresetValue) {
+                    warmupInput.value = String(preset.warmupBars);
+                }
+                warmupInput.dataset.presetValue = String(preset.warmupBars);
+            }
+            if (sessionInput && (force || sessionInput.value === sessionInput.dataset.presetValue)) {
+                sessionInput.value = preset.sessionMode;
+                sessionInput.dataset.presetValue = preset.sessionMode;
+            } else if (sessionInput && !sessionInput.dataset.presetValue) {
+                sessionInput.dataset.presetValue = sessionInput.value;
+            }
+            if (help) help.textContent = preset.help;
+        }
+
+        function getBacktestResourceGuardPayload() {
+            return { ...getBacktestMachinePreset().resourceGuard };
+        }
+
+        function getBacktestDateSpanDays(dateFrom, dateTo) {
+            if (!dateFrom || !dateTo) return 0;
+            const start = new Date(`${dateFrom}T00:00:00Z`);
+            const end = new Date(`${dateTo}T00:00:00Z`);
+            return Math.max(1, Math.round((end - start) / 86400000) + 1);
+        }
+
+        function shouldConfirmHeavyBacktest(payload) {
+            const presetKey = getBacktestMachinePresetKey();
+            const spanDays = getBacktestDateSpanDays(payload.date_from, payload.date_to);
+            return presetKey === 'full_watchlist'
+                && payload.symbol_source === 'watchlist'
+                && Number(payload.max_symbols || 0) >= 150
+                && spanDays >= 180;
+        }
+
         function setBacktestTab(tabKey) {
             const panels = Array.from(document.querySelectorAll('[data-backtest-tab-panel]'));
             if (!panels.length) return;
@@ -54,13 +165,8 @@
                 symbolsInput.placeholder = 'watchlist 模式会自动解析';
             }
             if (maxSymbolsInput) {
-                const sourceDefaults = {
-                    manual: 20,
-                    targets: 20,
-                    daily_scan_replay: 20,
-                    watchlist: 200,
-                };
-                const nextDefault = sourceDefaults[source] || 20;
+                const preset = getBacktestMachinePreset();
+                const nextDefault = Number(preset.maxSymbols[source] || preset.maxSymbols.manual || 20);
                 const previousDefault = Number(maxSymbolsInput.dataset.defaultValue || 20);
                 const currentValue = Number(maxSymbolsInput.value || 0);
                 maxSymbolsInput.max = '200';
@@ -68,6 +174,7 @@
                     maxSymbolsInput.value = String(nextDefault);
                 }
                 maxSymbolsInput.dataset.defaultValue = String(nextDefault);
+                maxSymbolsInput.dataset.presetValue = String(nextDefault);
             }
         }
 

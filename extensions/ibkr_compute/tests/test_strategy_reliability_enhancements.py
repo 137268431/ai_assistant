@@ -125,6 +125,47 @@ class StrategyReliabilityEnhancementTests(unittest.TestCase):
         self.assertEqual(request["backfill_history_max_retries"], 5)
         self.assertEqual(request["params"]["backfill_max_batches"], 240)
 
+    def test_backtest_machine_profile_is_recorded(self):
+        request = request_utils.normalize_request(
+            {
+                "name": "4c8g safe",
+                "symbol_source": "manual",
+                "symbols": "AAPL",
+                "date_from": "2026-05-01",
+                "date_to": "2026-05-01",
+                "machine_profile": "safe_4c8g",
+            }
+        )
+
+        self.assertEqual(request["machine_profile"], "safe_4c8g")
+        self.assertEqual(request["params"]["machine_profile"], "safe_4c8g")
+
+    def test_portfolio_bar_compaction_round_trips_required_fields(self):
+        service = BacktestService(None)
+        bar = {
+            "symbol": "AAPL",
+            "exchange": "NASDAQ",
+            "open": 10,
+            "high": 11,
+            "low": 9,
+            "close": 10.5,
+            "volume": 1234,
+            "session_type": "regular",
+            "bar_time_ms": 1778155800000,
+        }
+
+        compact = service._compact_portfolio_bar(bar, is_last_bar=True, next_day="2026-05-06")
+        inflated = service._inflate_portfolio_bar("AAPL", compact)
+
+        self.assertIsInstance(compact, tuple)
+        self.assertEqual(inflated["symbol"], "AAPL")
+        self.assertEqual(inflated["exchange"], "NASDAQ")
+        self.assertEqual(inflated["close"], 10.5)
+        self.assertEqual(inflated["volume"], 1234.0)
+        self.assertEqual(inflated["bar_time_ms"], 1778155800000)
+        self.assertTrue(inflated["_backtest_is_last_bar"])
+        self.assertEqual(inflated["_backtest_next_day"], "2026-05-06")
+
     def test_backtest_repair_windows_scope_to_missing_segments(self):
         service = BacktestService(None)
         interval_ms = 5 * 60 * 1000
