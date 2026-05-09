@@ -12,7 +12,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from ibkr_compute.backtest import request_utils, runtime_service
 from ibkr_compute.backtest.runtime_service import BacktestService
-from ibkr_compute.core.exit_policy import normalize_exit_policy_profile, resolve_exit_policy
+from ibkr_compute.core.exit_policy import apply_exit_policy_to_position, normalize_exit_policy_profile, resolve_exit_policy
 from ibkr_compute.core.risk_management import (
     compute_atr_tightened_stop,
     compute_exit_policy_stop_update,
@@ -361,6 +361,36 @@ class StrategyReliabilityEnhancementTests(unittest.TestCase):
         self.assertEqual(mr_policy["tp_rr"], 1.5)
         self.assertEqual(trend_policy["name"], "chandelier_runner")
         self.assertEqual(trend_policy["tp_rr"], 2.0)
+
+    def test_fixed_atr_rr_defaults_to_hard_target(self):
+        policy = resolve_exit_policy(
+            {"exit_policy_profile": "fixed_atr_rr", "sl_atr_mult": 2.0, "rr_ratio": 0.75},
+            setup="mr_sdLower",
+            signal_mode="mr",
+        )
+
+        self.assertEqual(policy["target_mode"], "hard_rr")
+        self.assertTrue(policy["target_is_hard"])
+
+        position, metadata = apply_exit_policy_to_position(
+            {
+                "entry": 100.0,
+                "stop_loss": 98.0,
+                "take_profit": 101.5,
+                "shares": 10,
+            },
+            direction="long",
+            close=100.0,
+            atr=1.0,
+            params={"exit_policy_profile": "fixed_atr_rr", "sl_atr_mult": 2.0, "rr_ratio": 0.75},
+            setup="mr_sdLower",
+            signal_mode="mr",
+        )
+
+        self.assertEqual(position["take_profit"], 101.5)
+        self.assertEqual(metadata["exit_policy_settings"]["target_mode"], "hard_rr")
+        self.assertTrue(metadata["exit_policy_settings"]["target_is_hard"])
+        self.assertTrue(metadata["target_state"]["target_is_hard"])
 
     def test_signal_mode_adaptive_v2_resolves_stateful_target_modes(self):
         self.assertEqual(

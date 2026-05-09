@@ -46,6 +46,37 @@ class BacktestWatchlistUniverseTests(unittest.TestCase):
 
         self.assertEqual(request["max_symbols"], constants.DEFAULT_WATCHLIST_MAX_SYMBOLS)
 
+    def test_daily_scan_portfolio_defaults_to_daily_selected_execution(self):
+        request = request_utils.normalize_request(
+            {
+                "symbol_source": "daily_scan_replay",
+                "execution_model": "portfolio_stream",
+                "daily_selected_only": False,
+                "date_from": "2026-04-01",
+                "date_to": "2026-04-01",
+            }
+        )
+
+        self.assertTrue(request["daily_selected_only"])
+        self.assertTrue(request["params"]["daily_selected_only"])
+        self.assertTrue(request["daily_selection_cache_enabled"])
+        self.assertTrue(request["params"]["daily_selection_cache_enabled"])
+        self.assertEqual(request["daily_selection_cache_mode"], "use_or_build")
+
+    def test_non_daily_scan_sources_keep_daily_selected_disabled(self):
+        request = request_utils.normalize_request(
+            {
+                "symbol_source": "manual",
+                "symbols": "AAPL,NVDA",
+                "execution_model": "portfolio_stream",
+                "date_from": "2026-04-01",
+                "date_to": "2026-04-01",
+            }
+        )
+
+        self.assertFalse(request["daily_selected_only"])
+        self.assertFalse(request["daily_selection_cache_enabled"])
+
     def test_watchlist_resolution_excludes_market_monitor_and_wrong_environment(self):
         service = BacktestService(None)
         service.pb = FakePB(

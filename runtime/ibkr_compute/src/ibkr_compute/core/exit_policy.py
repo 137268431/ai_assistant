@@ -251,6 +251,8 @@ def resolve_exit_policy(params: dict | None, setup: str = "", signal_mode: str =
             "policy_type": policy_type,
             "sl_atr_mult": _safe_float(params.get("sl_atr_mult"), 2.0),
             "tp_rr": _safe_float(params.get("rr_ratio"), 1.5),
+            "target_mode": "hard_rr",
+            "target_is_hard": True,
             "trail_type": "atr_tighten",
             "trail_activation_r": _safe_float(params.get("atr_stop_min_profit_r"), 0.3),
             "time_stop_bars": 0,

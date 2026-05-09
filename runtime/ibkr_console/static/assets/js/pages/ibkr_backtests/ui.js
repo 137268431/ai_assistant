@@ -143,8 +143,8 @@
 
         function getBacktestDailySelectionPayload(symbolSource) {
             const preset = getBacktestMachinePreset();
-            const enabled = String(symbolSource || '').trim() === 'daily_scan_replay' && preset.dailySelection;
-            if (!enabled) {
+            const isDailyScanReplay = String(symbolSource || '').trim() === 'daily_scan_replay';
+            if (!isDailyScanReplay) {
                 return {
                     daily_selected_only: false,
                     daily_selection_require_sd_trigger: false,
@@ -154,7 +154,13 @@
                 };
             }
             return {
-                ...preset.dailySelection,
+                daily_selected_only: true,
+                daily_selection_require_sd_trigger: false,
+                daily_selection_reuse_live_admission: false,
+                daily_selection_cache_enabled: true,
+                daily_selection_cache_mode: 'use_or_build',
+                daily_selection_cache_force_rebuild: false,
+                ...(preset.dailySelection || {}),
                 daily_selection_cache_force_rebuild: Boolean(document.getElementById('dailySelectionCacheForceRebuild')?.checked),
             };
         }
@@ -207,7 +213,7 @@
                 help.textContent = '当日回测会读取当前 active ibkr_targets；历史日期会自动回放 daily_scan_replay。';
                 symbolsInput.placeholder = 'targets 模式会自动解析';
             } else if (source === 'daily_scan_replay') {
-                help.textContent = '可选：填写后会作为历史盘前选股的底池；留空则按 watchlist 快照逐日回放。';
+                help.textContent = '可选：填写后作为历史盘前选股底池；组合回测只加载每天入选标的。';
                 symbolsInput.placeholder = '可选：限制历史盘前扫描底池';
             } else {
                 help.textContent = '会读取 trade watchlist 股票池；QQQ/SPY/VIX 等 market_monitor 会自动排除。';

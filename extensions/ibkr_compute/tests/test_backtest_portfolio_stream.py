@@ -244,6 +244,73 @@ class BacktestPortfolioStreamTests(unittest.TestCase):
         self.assertEqual(profile["trade_dates"], 2)
         self.assertEqual(profile["selected_symbol_days"], 2)
 
+    def test_daily_scan_replay_execute_uses_daily_selected_runner(self):
+        request = self._request(
+            symbol_source="daily_scan_replay",
+            symbols="",
+            date_from="2026-04-01",
+            date_to="2026-04-02",
+            daily_selected_only=False,
+        )
+        request["daily_selected_only"] = False
+        request["params"]["daily_selected_only"] = False
+        selection_plan = {"2026-04-01": ["AAPL"], "2026-04-02": ["NVDA"]}
+        target_rows = [
+            {"symbol": "AAPL", "date": "2026-04-01", "rank": 1, "score": 9.0, "extra": {}},
+            {"symbol": "NVDA", "date": "2026-04-02", "rank": 1, "score": 8.0, "extra": {}},
+        ]
+        calls = []
+        updates = []
+
+        self.service._prepare_backtest_account_model = lambda *_args, **_kwargs: {}
+        self.service._update_run = lambda run_id, patch: updates.append((run_id, patch))
+        self.service._build_daily_scan_replay_plan = lambda *_args, **_kwargs: {
+            "symbols": ["AAPL", "NVDA"],
+            "target_rows": target_rows,
+            "summary": {"mode": "daily_scan_replay"},
+            "selection_plan": selection_plan,
+        }
+        self.service._persist_backtest_targets = lambda run_id, rows: {
+            "collection": "ibkr_backtest_targets",
+            "run_id": run_id,
+            "attempted_count": len(rows),
+            "saved_count": len(rows),
+            "error_count": 0,
+            "status": "ok",
+            "errors": [],
+        }
+        self.service._preflight_backfill_symbols = lambda *_args, **_kwargs: {"enabled": False, "symbols": ["AAPL", "NVDA"]}
+        self.service._build_benchmark_curve = lambda *_args, **_kwargs: []
+        self.service._persist_backtest_signals = lambda run_id, rows: self.service._empty_capture_summary("ibkr_backtest_signals", run_id)
+        self.service._persist_backtest_reverse_signals = lambda run_id, rows: self.service._empty_capture_summary("ibkr_backtest_reverse_signals", run_id)
+        self.service._persist_trades = lambda *_args, **_kwargs: None
+
+        def daily_selected_runner(symbols, runner_request, runner_selection_plan, **_kwargs):
+            calls.append((symbols, runner_request["daily_selected_only"], runner_selection_plan))
+            return {
+                "trades": [],
+                "indicator_rows": [],
+                "indicator_count": 0,
+                "signal_rows": [],
+                "reverse_rows": [],
+                "skipped_symbols": [],
+                "data_quality": [],
+                "tv_symbol_reports": [],
+                "portfolio_metrics": {"execution_model": "portfolio_stream"},
+            }
+
+        self.service._run_portfolio_daily_selected_backtest = daily_selected_runner
+        self.service._run_portfolio_stream_backtest = lambda *_args, **_kwargs: self.fail(
+            "daily_scan_replay should not run the full-union portfolio stream"
+        )
+
+        result = self.service._execute_run("daily_selected_route", request)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls, [(["AAPL", "NVDA"], True, selection_plan)])
+        self.assertTrue(request["daily_selected_only"])
+        self.assertTrue(any(patch.get("status") == "completed" for _run_id, patch in updates))
+
     def test_portfolio_target_filters_skip_low_rank_score_and_direction_mismatch(self):
         start = datetime(2026, 4, 1, 9, 35, tzinfo=ET)
         start_ms = int(start.timestamp() * 1000)

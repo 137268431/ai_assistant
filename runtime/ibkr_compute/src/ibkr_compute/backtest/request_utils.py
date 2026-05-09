@@ -333,7 +333,15 @@ def normalize_request(payload: dict) -> dict:
         minimum=0,
         maximum=constants.MAX_BACKTEST_WARMUP_BARS,
     )
-    daily_selected_only = normalize_bool(payload.get("daily_selected_only"), False)
+    force_daily_selected_only = bool(
+        effective_symbol_source == "daily_scan_replay"
+        and execution_model == "portfolio_stream"
+    )
+    daily_selected_only = (
+        True
+        if force_daily_selected_only
+        else normalize_bool(payload.get("daily_selected_only"), False)
+    )
     daily_selection_require_sd_trigger = normalize_bool(payload.get("daily_selection_require_sd_trigger"), False)
     daily_selection_reuse_live_admission = normalize_bool(payload.get("daily_selection_reuse_live_admission"), daily_selection_require_sd_trigger)
     daily_selection_sd_mode = str(payload.get("daily_selection_sd_mode") or "hard").strip().lower() or "hard"

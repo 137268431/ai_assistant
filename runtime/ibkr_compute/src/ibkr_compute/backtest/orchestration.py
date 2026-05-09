@@ -69,7 +69,8 @@ class BacktestOrchestrationMixin:
         execution_profile = build_execution_cost_profile(request)
         portfolio_metrics = {}
         if str(request.get("execution_model") or "symbol_independent") == "portfolio_stream":
-            if bool(request.get("daily_selected_only")) and request.get("symbol_source") == "daily_scan_replay":
+            if request.get("symbol_source") == "daily_scan_replay":
+                request["daily_selected_only"] = True
                 portfolio_result = self._run_portfolio_daily_selected_backtest(
                     symbols,
                     request,
