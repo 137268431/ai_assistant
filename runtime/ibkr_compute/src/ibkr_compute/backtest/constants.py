@@ -21,6 +21,7 @@ __all__ = [
     "BACKTEST_SIGNAL_COLLECTION",
     "BACKTEST_TARGET_COLLECTION",
     "BACKTEST_DAILY_SELECTION_CACHE_COLLECTION",
+    "EXECUTION_FILL_COLLECTION",
     "BACKTEST_REVERSE_SIGNAL_COLLECTION",
     "TV_INDICATOR_COLLECTION",
     "TV_SIGNAL_COLLECTION",
@@ -29,8 +30,16 @@ __all__ = [
     "SYMBOL_SOURCE_VALUES",
     "EXECUTION_MODEL_VALUES",
     "BORROW_LIMIT_MODE_VALUES",
+    "ACCOUNT_MODEL_MODE_VALUES",
+    "FEE_MODEL_VALUES",
+    "SLIPPAGE_MODEL_VALUES",
     "SIGNAL_PRIORITY_VALUES",
     "MANUAL_CONFIRM_MODE_VALUES",
+    "DEFAULT_ACCOUNT_MODEL_MODE",
+    "DEFAULT_FEE_MODEL",
+    "DEFAULT_SLIPPAGE_MODEL",
+    "DEFAULT_COMMISSION_PER_SHARE",
+    "DEFAULT_SLIPPAGE_BPS",
     "DEFAULT_MAX_SYMBOLS",
     "DEFAULT_WATCHLIST_MAX_SYMBOLS",
     "MAX_BACKTEST_SYMBOLS",
@@ -86,6 +95,7 @@ BACKTEST_INDICATOR_COLLECTION = "ibkr_backtest_indicators"
 BACKTEST_SIGNAL_COLLECTION = "ibkr_backtest_signals"
 BACKTEST_TARGET_COLLECTION = "ibkr_backtest_targets"
 BACKTEST_DAILY_SELECTION_CACHE_COLLECTION = "ibkr_backtest_daily_selection_cache"
+EXECUTION_FILL_COLLECTION = "ibkr_execution_fills"
 BACKTEST_REVERSE_SIGNAL_COLLECTION = "ibkr_backtest_reverse_signals"
 TV_INDICATOR_COLLECTION = "tv_indicators"
 TV_SIGNAL_COLLECTION = "tv_signals"
@@ -94,8 +104,16 @@ SESSION_MODE_VALUES = {"extended", "regular"}
 SYMBOL_SOURCE_VALUES = {"manual", "targets", "watchlist", "daily_scan_replay"}
 EXECUTION_MODEL_VALUES = {"symbol_independent", "portfolio_stream"}
 BORROW_LIMIT_MODE_VALUES = {"none", "fixed", "account_buying_power"}
+ACCOUNT_MODEL_MODE_VALUES = {"fixed_capital", "current_snapshot"}
+FEE_MODEL_VALUES = {"legacy_flat_per_share_v1", "ibkr_us_equity_fixed_v1", "calibrated_v1"}
+SLIPPAGE_MODEL_VALUES = {"fixed_bps_v1", "bar_capped_bps_v1", "volume_share_v1"}
 SIGNAL_PRIORITY_VALUES = {"daily_target_rank", "signal_quality", "liquidity"}
 MANUAL_CONFIRM_MODE_VALUES = {"auto", "delayed", "strict"}
+DEFAULT_ACCOUNT_MODEL_MODE = "fixed_capital"
+DEFAULT_FEE_MODEL = "legacy_flat_per_share_v1"
+DEFAULT_SLIPPAGE_MODEL = "fixed_bps_v1"
+DEFAULT_COMMISSION_PER_SHARE = 0.005
+DEFAULT_SLIPPAGE_BPS = 2.0
 
 
 def _env_int(name: str, default: int, *, minimum: int = 1, maximum: int = 500) -> int:

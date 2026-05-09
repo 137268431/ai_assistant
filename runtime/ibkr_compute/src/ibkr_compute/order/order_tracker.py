@@ -170,14 +170,17 @@ class OrderTracker:
                 "remainingQuantity": 0.0,
                 "avgPrice": 0.0,
                 "price": 0.0,
+                "commission": 0.0,
                 "submittedTime": self._normalize_text(fill.get("time")),
                 "lastExecutionTime": self._normalize_text(fill.get("time")),
                 "_fill_value": 0.0,
             })
             shares = self._to_float(fill.get("shares"), 0.0)
             price = self._to_float(fill.get("price"), 0.0)
+            commission = self._to_float(fill.get("commission"), 0.0)
             bucket["filledQuantity"] += shares
             bucket["_fill_value"] += shares * price
+            bucket["commission"] += commission
             if price > 0:
                 bucket["price"] = price
             if self._normalize_text(fill.get("time")):

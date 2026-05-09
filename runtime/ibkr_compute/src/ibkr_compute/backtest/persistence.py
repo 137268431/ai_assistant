@@ -128,6 +128,56 @@ class BacktestPersistenceMixin:
                 raise BacktestCancelled()
             self.pb.create_record(collection, payload)
 
+    def _execution_profile_or_legacy(
+        self,
+        execution_profile: dict | None,
+        commission_per_share: float,
+        slippage_bps: float,
+    ) -> dict:
+        if execution_profile:
+            return dict(execution_profile)
+        return build_execution_cost_profile(
+            {
+                "commission_per_share": commission_per_share,
+                "slippage_bps": slippage_bps,
+            }
+        )
+
+    def _build_execution_trade_extra(
+        self,
+        position: dict,
+        exit_result: dict,
+        exit_commission_detail: dict,
+        *,
+        gross_pnl: float,
+        net_pnl: float,
+    ) -> dict:
+        entry_commission = float(position.get("entry_commission", 0) or 0)
+        exit_commission = float(exit_commission_detail.get("commission", 0) or 0)
+        return {
+            "fee_model": str(position.get("fee_model") or exit_commission_detail.get("fee_model") or DEFAULT_FEE_MODEL),
+            "slippage_model": str(position.get("slippage_model") or exit_result.get("slippage_model") or DEFAULT_SLIPPAGE_MODEL),
+            "entry_reference_price": round(float(position.get("entry_reference_price", position.get("entry_price", 0)) or 0), 4),
+            "exit_reference_price": round(float(exit_result.get("raw_reference_price", 0) or 0), 4),
+            "entry_slippage_bps": round(float(position.get("entry_slippage_bps", 0) or 0), 4),
+            "exit_slippage_bps": round(float(exit_result.get("slippage_bps_applied", 0) or 0), 4),
+            "entry_slippage_cost": round(float(position.get("entry_slippage_cost", 0) or 0), 4),
+            "exit_slippage_cost": round(float(exit_result.get("slippage_cost", 0) or 0), 4),
+            "estimated_slippage_cost": round(
+                float(position.get("entry_slippage_cost", 0) or 0) + float(exit_result.get("slippage_cost", 0) or 0),
+                4,
+            ),
+            "entry_commission": round(entry_commission, 4),
+            "exit_commission": round(exit_commission, 4),
+            "total_commission": round(entry_commission + exit_commission, 4),
+            "entry_commission_detail": position.get("entry_commission_detail") or {},
+            "exit_commission_detail": exit_commission_detail,
+            "gross_pnl": round(float(gross_pnl or 0), 4),
+            "net_pnl": round(float(net_pnl or 0), 4),
+            "bar_cap_applied": bool(position.get("entry_bar_cap_applied")) or bool(exit_result.get("bar_cap_applied")),
+            "limit_cap_applied": bool(position.get("entry_limit_cap_applied")) or bool(exit_result.get("limit_cap_applied")),
+        }
+
     def _open_position(
         self,
         symbol: str,
@@ -136,13 +186,33 @@ class BacktestPersistenceMixin:
         commission_per_share: float,
         slippage_bps: float,
         raw_fill_price: float | None = None,
+        execution_profile: dict | None = None,
     ) -> dict:
         direction = str(signal.get("direction", "") or "")
         shares = max(0, int(signal.get("shares", 0) or 0))
         entry_reference = float(raw_fill_price if raw_fill_price is not None else bar.get("open", 0) or 0)
-        fill_price = self._apply_slippage(entry_reference, direction, is_entry=True, bps=slippage_bps)
         raw_extra = signal.get("extra") or {}
         signal_extra = dict(raw_extra) if isinstance(raw_extra, dict) else {}
+        entry_order_type = str(signal.get("entry_order_type", signal_extra.get("entry_order_type", "limit")) or "limit")
+        entry_limit_price = float(signal.get("entry_price", signal.get("entry", 0)) or 0)
+        profile = self._execution_profile_or_legacy(execution_profile, commission_per_share, slippage_bps)
+        entry_result = apply_execution_slippage(
+            price=entry_reference,
+            direction=direction,
+            is_entry=True,
+            profile=profile,
+            bar=bar,
+            shares=shares,
+            limit_price=entry_limit_price,
+            order_type=entry_order_type,
+        )
+        fill_price = float(entry_result.get("fill_price", 0) or 0)
+        entry_commission_detail = calculate_execution_commission(
+            shares=shares,
+            price=fill_price,
+            side=execution_side(direction, True),
+            profile=profile,
+        )
         risk_r = float(signal.get("risk_r", signal_extra.get("risk_r", 0)) or 0)
         initial_stop_loss = float(
             signal.get("initial_stop_loss", signal_extra.get("initial_stop_loss", signal.get("stop_price", signal.get("stop_loss", 0)))) or 0
@@ -160,7 +230,8 @@ class BacktestPersistenceMixin:
             "entry_us_time": str(bar.get("us_time", "") or ""),
             "entry_cn_time": str(bar.get("cn_time", "") or ""),
             "entry_price": round(fill_price, 4),
-            "entry_limit_price": float(signal.get("entry_price", signal.get("entry", 0)) or 0),
+            "entry_reference_price": round(float(entry_result.get("raw_reference_price", entry_reference) or 0), 4),
+            "entry_limit_price": entry_limit_price,
             "target_price": float(signal.get("target_price", signal.get("take_profit", 0)) or 0),
             "stop_price": float(signal.get("stop_price", signal.get("stop_loss", 0)) or 0),
             "original_stop_loss": float(signal.get("stop_price", signal.get("stop_loss", 0)) or 0),
@@ -181,15 +252,29 @@ class BacktestPersistenceMixin:
             "mae": 0.0,
             "shares": shares,
             "bars_held": 0,
-            "entry_commission": round(shares * commission_per_share, 4),
+            "entry_commission": round(float(entry_commission_detail.get("commission", 0) or 0), 4),
+            "entry_commission_detail": entry_commission_detail,
+            "entry_slippage_bps": round(float(entry_result.get("slippage_bps_applied", 0) or 0), 4),
+            "entry_slippage_cost": round(float(entry_result.get("slippage_cost", 0) or 0), 4),
+            "entry_bar_cap_applied": bool(entry_result.get("bar_cap_applied")),
+            "entry_limit_cap_applied": bool(entry_result.get("limit_cap_applied")),
+            "fee_model": str(profile.get("fee_model") or DEFAULT_FEE_MODEL),
+            "slippage_model": str(profile.get("slippage_model") or DEFAULT_SLIPPAGE_MODEL),
             "signal_bar_ms": int(signal.get("signal_bar_ms", 0) or 0),
             "signal_us_time": str(signal.get("signal_us_time", "") or ""),
             "signal_close": float(signal.get("signal_close", 0) or 0),
-            "entry_order_type": str(signal.get("entry_order_type", "limit") or "limit"),
+            "entry_order_type": entry_order_type,
             "setup": str(signal.get("setup", "") or ""),
         }
 
-    def _check_exit(self, position: dict, bar: dict, commission_per_share: float, slippage_bps: float) -> Optional[dict]:
+    def _check_exit(
+        self,
+        position: dict,
+        bar: dict,
+        commission_per_share: float,
+        slippage_bps: float,
+        execution_profile: dict | None = None,
+    ) -> Optional[dict]:
         direction = str(position.get("direction", "") or "")
         stop_price = float(position.get("stop_price", 0) or 0)
         target_price = float(position.get("target_price", 0) or 0)
@@ -230,12 +315,42 @@ class BacktestPersistenceMixin:
         if not exit_reason:
             return None
 
-        exit_price = self._apply_slippage(raw_exit_price, direction, is_entry=False, bps=slippage_bps)
-        exit_commission = round(shares * commission_per_share, 4)
-        pnl = self._calc_pnl(direction, float(position["entry_price"]), exit_price, shares) - float(position["entry_commission"]) - exit_commission
+        profile = self._execution_profile_or_legacy(execution_profile, commission_per_share, slippage_bps)
+        raw_exit_price = maybe_stop_gap_reference(
+            raw_exit_price=raw_exit_price,
+            direction=direction,
+            exit_reason=exit_reason,
+            bar=bar,
+            profile=profile,
+        )
+        exit_result = apply_execution_slippage(
+            price=raw_exit_price,
+            direction=direction,
+            is_entry=False,
+            profile=profile,
+            bar=bar,
+            shares=shares,
+        )
+        exit_price = float(exit_result.get("fill_price", 0) or 0)
+        exit_commission_detail = calculate_execution_commission(
+            shares=shares,
+            price=exit_price,
+            side=execution_side(direction, False),
+            profile=profile,
+        )
+        exit_commission = round(float(exit_commission_detail.get("commission", 0) or 0), 4)
+        gross_pnl = self._calc_pnl(direction, float(position["entry_price"]), exit_price, shares)
+        pnl = gross_pnl - float(position["entry_commission"]) - exit_commission
         pnl_pct = 0.0
         position_cost = max(0.01, float(position["entry_price"]) * shares)
         pnl_pct = (pnl / position_cost) * 100.0
+        execution_extra = self._build_execution_trade_extra(
+            position,
+            exit_result,
+            exit_commission_detail,
+            gross_pnl=gross_pnl,
+            net_pnl=pnl,
+        )
         return {
             "symbol": position["symbol"],
             "direction": direction,
@@ -277,11 +392,20 @@ class BacktestPersistenceMixin:
                 "signal_bar_ms": int(position.get("signal_bar_ms", 0) or 0),
                 "signal_us_time": position.get("signal_us_time", ""),
                 "signal_close": float(position.get("signal_close", 0) or 0),
+                **execution_extra,
                 **build_runtime_timestamps(),
             },
         }
 
-    def _close_position(self, position: dict, bar: dict, commission_per_share: float, slippage_bps: float, reason: str) -> dict:
+    def _close_position(
+        self,
+        position: dict,
+        bar: dict,
+        commission_per_share: float,
+        slippage_bps: float,
+        reason: str,
+        execution_profile: dict | None = None,
+    ) -> dict:
         direction = str(position.get("direction", "") or "")
         shares = int(position.get("shares", 0) or 0)
         raw_exit_price = float(bar.get("close", 0) or 0)
@@ -291,11 +415,34 @@ class BacktestPersistenceMixin:
             adverse = max(0.0, entry_price - raw_exit_price) if direction == "long" else max(0.0, raw_exit_price - entry_price)
             position["mfe"] = max(float(position.get("mfe", 0) or 0), favorable)
             position["mae"] = max(float(position.get("mae", 0) or 0), adverse)
-        exit_price = self._apply_slippage(raw_exit_price, direction, is_entry=False, bps=slippage_bps)
-        exit_commission = round(shares * commission_per_share, 4)
-        pnl = self._calc_pnl(direction, float(position["entry_price"]), exit_price, shares) - float(position["entry_commission"]) - exit_commission
+        profile = self._execution_profile_or_legacy(execution_profile, commission_per_share, slippage_bps)
+        exit_result = apply_execution_slippage(
+            price=raw_exit_price,
+            direction=direction,
+            is_entry=False,
+            profile=profile,
+            bar=bar,
+            shares=shares,
+        )
+        exit_price = float(exit_result.get("fill_price", 0) or 0)
+        exit_commission_detail = calculate_execution_commission(
+            shares=shares,
+            price=exit_price,
+            side=execution_side(direction, False),
+            profile=profile,
+        )
+        exit_commission = round(float(exit_commission_detail.get("commission", 0) or 0), 4)
+        gross_pnl = self._calc_pnl(direction, float(position["entry_price"]), exit_price, shares)
+        pnl = gross_pnl - float(position["entry_commission"]) - exit_commission
         position_cost = max(0.01, float(position["entry_price"]) * shares)
         pnl_pct = (pnl / position_cost) * 100.0
+        execution_extra = self._build_execution_trade_extra(
+            position,
+            exit_result,
+            exit_commission_detail,
+            gross_pnl=gross_pnl,
+            net_pnl=pnl,
+        )
         return {
             "symbol": position["symbol"],
             "direction": direction,
@@ -337,6 +484,7 @@ class BacktestPersistenceMixin:
                 "signal_bar_ms": int(position.get("signal_bar_ms", 0) or 0),
                 "signal_us_time": position.get("signal_us_time", ""),
                 "signal_close": float(position.get("signal_close", 0) or 0),
+                **execution_extra,
                 **build_runtime_timestamps(),
             },
         }

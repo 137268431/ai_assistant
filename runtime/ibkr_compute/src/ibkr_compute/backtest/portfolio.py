@@ -289,6 +289,7 @@ class BacktestPortfolioMixin:
         bar: dict,
         commission_per_share: float,
         slippage_bps: float,
+        execution_profile: dict | None = None,
     ) -> dict | None:
         if not position or not is_signal_mode_adaptive_exit_profile(position.get("exit_policy_profile")):
             return None
@@ -301,6 +302,7 @@ class BacktestPortfolioMixin:
             commission_per_share,
             slippage_bps,
             str(result.get("reason") or "exit_policy_time_stop"),
+            execution_profile,
         )
         extra = self._parse_object(trade.get("extra"))
         extra["exit_policy_time_stop"] = result
@@ -350,20 +352,67 @@ class BacktestPortfolioMixin:
             "buying_power": buying_power,
         }
 
+    def _prepare_backtest_account_model(self, request: dict) -> dict:
+        mode = str(request.get("account_model_mode") or DEFAULT_ACCOUNT_MODEL_MODE).strip().lower()
+        if mode != "current_snapshot":
+            request["account_model_status"] = {"mode": mode, "ok": True, "reason": "fixed_capital"}
+            return request
+        if request.get("_account_model_prepared"):
+            return request
+
+        resolved = self._resolve_account_buying_power_snapshot(request.get("source_environment") or "live")
+        snapshot = resolved.get("snapshot") if isinstance(resolved.get("snapshot"), dict) else {}
+        summary = snapshot.get("summary") if isinstance(snapshot.get("summary"), dict) else {}
+        net_liquidation = self._coerce_float_value(summary.get("net_liquidation"), 0.0)
+        total_cash = self._coerce_float_value(summary.get("total_cash_value"), 0.0)
+        available_funds = self._coerce_float_value(summary.get("available_funds"), 0.0)
+        effective_capital = net_liquidation or total_cash or available_funds
+        status = {
+            "mode": mode,
+            "ok": bool(resolved.get("ok") or effective_capital > 0),
+            "reason": str(resolved.get("reason") or ""),
+            "requested_initial_capital": round(float(request.get("initial_capital", 0) or 0), 4),
+        }
+        if effective_capital > 0:
+            request["initial_capital"] = max(1000.0, effective_capital)
+            status["effective_initial_capital"] = round(float(request["initial_capital"]), 4)
+        elif not status["reason"]:
+            status["reason"] = "account_equity_unavailable"
+
+        compact_summary = {
+            "account_code": str(summary.get("account_code") or ""),
+            "buying_power": self._coerce_float_value(summary.get("buying_power"), 0.0),
+            "available_funds": available_funds,
+            "net_liquidation": net_liquidation,
+            "total_cash_value": total_cash,
+            "gross_position_value": self._coerce_float_value(summary.get("gross_position_value"), 0.0),
+        }
+        request["_account_model_snapshot"] = snapshot
+        request["account_model_summary"] = compact_summary
+        request["account_model_status"] = status
+        request["_account_model_prepared"] = True
+        return request
+
     def _resolve_portfolio_risk_limits(self, request: dict) -> dict:
         initial_capital = float(request.get("initial_capital", 0) or 0)
+        account_model_mode = str(request.get("account_model_mode") or DEFAULT_ACCOUNT_MODEL_MODE).strip().lower()
         mode = str(request.get("borrow_limit_mode") or "none").strip().lower()
-        account_snapshot = {}
-        account_summary = {}
-        account_snapshot_ok = False
-        account_snapshot_reason = ""
+        account_snapshot = request.get("_account_model_snapshot") if isinstance(request.get("_account_model_snapshot"), dict) else {}
+        account_summary = account_snapshot.get("summary") if isinstance(account_snapshot.get("summary"), dict) else {}
+        if not account_summary and isinstance(request.get("account_model_summary"), dict):
+            account_summary = dict(request.get("account_model_summary") or {})
+        account_snapshot_ok = bool((request.get("account_model_status") or {}).get("ok"))
+        account_snapshot_reason = str((request.get("account_model_status") or {}).get("reason") or "")
         if mode == "account_buying_power":
-            resolved = self._resolve_account_buying_power_snapshot(request.get("source_environment") or "live")
-            account_snapshot = resolved.get("snapshot") or {}
-            account_summary = account_snapshot.get("summary") if isinstance(account_snapshot.get("summary"), dict) else {}
-            account_snapshot_ok = bool(resolved.get("ok"))
-            account_snapshot_reason = str(resolved.get("reason") or "")
-            buying_power = float(resolved.get("buying_power", 0) or 0)
+            if account_snapshot:
+                buying_power = self._coerce_float_value(account_summary.get("buying_power"), 0.0)
+            else:
+                resolved = self._resolve_account_buying_power_snapshot(request.get("source_environment") or "live")
+                account_snapshot = resolved.get("snapshot") or {}
+                account_summary = account_snapshot.get("summary") if isinstance(account_snapshot.get("summary"), dict) else {}
+                account_snapshot_ok = bool(resolved.get("ok"))
+                account_snapshot_reason = str(resolved.get("reason") or "")
+                buying_power = float(resolved.get("buying_power", 0) or 0)
             if buying_power <= 0:
                 raise ValueError(f"account_buying_power_unavailable: {account_snapshot_reason or 'missing buying_power'}")
             total_exposure_limit = buying_power
@@ -377,6 +426,7 @@ class BacktestPortfolioMixin:
             total_exposure_limit = initial_capital
         return {
             "initial_capital": round(initial_capital, 4),
+            "account_model_mode": account_model_mode,
             "borrow_limit_mode": mode,
             "max_borrow_amount": round(max_borrow_amount, 4),
             "total_exposure_limit": round(max(0.0, total_exposure_limit), 4),
@@ -393,10 +443,30 @@ class BacktestPortfolioMixin:
             },
         }
 
-    def _portfolio_signal_exposure(self, signal: dict) -> float:
+    def _estimate_portfolio_entry_commission(self, signal: dict, execution_profile: dict | None = None) -> float:
         shares = max(0, int(signal.get("shares", 0) or 0))
         entry_price = float(signal.get("entry_price", signal.get("entry", 0)) or 0)
-        return max(0.0, shares * entry_price)
+        direction = str(signal.get("direction", "") or "").strip().lower()
+        if shares <= 0 or entry_price <= 0:
+            return 0.0
+        detail = calculate_execution_commission(
+            shares=shares,
+            price=entry_price,
+            side=execution_side(direction, True),
+            profile=execution_profile,
+        )
+        return max(0.0, float(detail.get("commission", 0) or 0))
+
+    def _portfolio_signal_exposure(self, signal: dict, execution_profile: dict | None = None) -> float:
+        explicit = self._coerce_float_value(signal.get("reserved_exposure"), -1.0)
+        if explicit >= 0:
+            return explicit
+        shares = max(0, int(signal.get("shares", 0) or 0))
+        entry_price = float(signal.get("entry_price", signal.get("entry", 0)) or 0)
+        exposure = max(0.0, shares * entry_price)
+        if execution_profile and str(execution_profile.get("fee_model") or DEFAULT_FEE_MODEL) != DEFAULT_FEE_MODEL:
+            exposure += self._estimate_portfolio_entry_commission(signal, execution_profile)
+        return max(0.0, exposure)
 
     def _portfolio_position_exposure(self, position: dict) -> float:
         explicit = self._coerce_float_value(position.get("entry_exposure"), -1.0)
@@ -462,6 +532,7 @@ class BacktestPortfolioMixin:
                 "target_direction_bias": str(candidate.get("target_direction_bias", "") or ""),
                 "signal_quality": round(float(candidate.get("signal_quality", 0) or 0), 4),
                 "requested_exposure": round(float(candidate.get("requested_exposure", 0) or 0), 4),
+                "estimated_entry_commission": round(float(candidate.get("estimated_entry_commission", 0) or 0), 4),
                 **(details or {}),
             }
         )
@@ -476,6 +547,7 @@ class BacktestPortfolioMixin:
         signal_row: dict,
         current_day: str,
         target_lookup: dict[tuple[str, str], dict],
+        execution_profile: dict | None = None,
     ) -> dict:
         symbol = str(state.get("symbol", signal_payload.get("symbol", "")) or "").strip().upper()
         target_meta = target_lookup.get((current_day, symbol)) or target_lookup.get(("", symbol)) or {}
@@ -487,7 +559,8 @@ class BacktestPortfolioMixin:
             self._coerce_float_value(extra.get("score"), 0.0),
             self._coerce_float_value(extra.get("sl_atr_ratio"), 0.0),
         )
-        requested_exposure = self._portfolio_signal_exposure(signal_payload)
+        estimated_entry_commission = self._estimate_portfolio_entry_commission(signal_payload, execution_profile)
+        requested_exposure = self._portfolio_signal_exposure(signal_payload, execution_profile)
         return {
             "state": state,
             "symbol": symbol,
@@ -503,6 +576,7 @@ class BacktestPortfolioMixin:
             "target_direction_bias": str(target_meta.get("direction_bias", "") or "").strip().lower(),
             "signal_quality": signal_quality,
             "requested_exposure": requested_exposure,
+            "estimated_entry_commission": estimated_entry_commission,
         }
 
     def _sort_portfolio_candidates(self, candidates: list[dict], request: dict) -> list[dict]:
@@ -541,6 +615,7 @@ class BacktestPortfolioMixin:
         pending_signal: dict,
         commission_per_share: float,
         slippage_bps: float,
+        execution_profile: dict | None = None,
     ) -> dict | None:
         position = self._check_pending_entry_fill(
             symbol,
@@ -548,6 +623,7 @@ class BacktestPortfolioMixin:
             pending_signal,
             commission_per_share,
             slippage_bps,
+            execution_profile,
         )
         if not position:
             return None
@@ -1018,6 +1094,7 @@ class BacktestPortfolioMixin:
         portfolio_metrics = {
             "execution_model": "portfolio_stream",
             "daily_selected_only": True,
+            "execution_cost_profile": compact_execution_cost_profile(build_execution_cost_profile(request)),
             "portfolio_profile": daily_selected_profile,
             "daily_selected_profile": daily_selected_profile,
             "portfolio_risk": portfolio_risk or self._resolve_portfolio_risk_limits(request),
@@ -1151,6 +1228,7 @@ class BacktestPortfolioMixin:
                 "portfolio_metrics": {
                     "execution_model": "portfolio_stream",
                     "portfolio_risk": risk_limits,
+                    "execution_cost_profile": compact_execution_cost_profile(build_execution_cost_profile(request)),
                     "portfolio_rejection_counts": {},
                     "portfolio_candidate_samples": [],
                 },
@@ -1164,6 +1242,11 @@ class BacktestPortfolioMixin:
         total_steps = max(1, len(bar_times))
         commission_per_share = float(request["commission_per_share"])
         slippage_bps = float(request["slippage_bps"])
+        execution_profile = build_execution_cost_profile(
+            request,
+            commission_per_share=commission_per_share,
+            slippage_bps=slippage_bps,
+        )
         force_flat_eod = bool(request["force_flat_eod"])
         compare_tv_signals = self._should_compare_tv_signals(request)
         capture_indicator_rows = self._should_persist_backtest_indicators(request)
@@ -1247,6 +1330,7 @@ class BacktestPortfolioMixin:
                             commission_per_share,
                             slippage_bps,
                             "eod",
+                            execution_profile,
                         )
                         append_trade(state["open_position"], trade)
                         state["open_position"] = None
@@ -1271,6 +1355,7 @@ class BacktestPortfolioMixin:
                             pending_signal,
                             commission_per_share,
                             slippage_bps,
+                            execution_profile,
                         )
                         if filled_position:
                             state["open_position"] = filled_position
@@ -1292,7 +1377,7 @@ class BacktestPortfolioMixin:
                             state["pending_signal"] = None
 
                 if state.get("open_position"):
-                    closed = self._check_exit(state["open_position"], bar, commission_per_share, slippage_bps)
+                    closed = self._check_exit(state["open_position"], bar, commission_per_share, slippage_bps, execution_profile)
                     if closed:
                         append_trade(state["open_position"], closed)
                         state["open_position"] = None
@@ -1422,6 +1507,7 @@ class BacktestPortfolioMixin:
                                             bar,
                                             commission_per_share,
                                             slippage_bps,
+                                            execution_profile,
                                         )
                                         if reverse_trade:
                                             append_trade(original_position, reverse_trade)
@@ -1454,6 +1540,7 @@ class BacktestPortfolioMixin:
                                             signal_row,
                                             current_symbol_day,
                                             target_lookup,
+                                            execution_profile,
                                         )
                                     )
                             else:
@@ -1467,6 +1554,7 @@ class BacktestPortfolioMixin:
                                         signal_row,
                                         current_symbol_day,
                                         target_lookup,
+                                        execution_profile,
                                     )
                                 )
 
@@ -1520,6 +1608,7 @@ class BacktestPortfolioMixin:
                             bar,
                             commission_per_share,
                             slippage_bps,
+                            execution_profile,
                         )
                         if reverse_trade:
                             append_trade(original_position, reverse_trade)
@@ -1541,6 +1630,7 @@ class BacktestPortfolioMixin:
                         bar,
                         commission_per_share,
                         slippage_bps,
+                        execution_profile,
                     )
                     if time_stop_trade:
                         append_trade(state["open_position"], time_stop_trade)
@@ -1561,6 +1651,7 @@ class BacktestPortfolioMixin:
                     commission_per_share,
                     slippage_bps,
                     "last_bar",
+                    execution_profile,
                 )
                 append_trade(state["open_position"], trade)
                 state["open_position"] = None
@@ -1590,6 +1681,7 @@ class BacktestPortfolioMixin:
         resource_snapshot = self._read_backtest_resource_snapshot()
         portfolio_metrics = {
             "execution_model": "portfolio_stream",
+            "execution_cost_profile": compact_execution_cost_profile(execution_profile),
             "portfolio_profile": {
                 "symbols_requested": len(symbols),
                 "symbols_loaded": len(states),
@@ -1602,6 +1694,7 @@ class BacktestPortfolioMixin:
             },
             "portfolio_risk": {
                 **risk_limits,
+                "execution_cost_profile": compact_execution_cost_profile(execution_profile),
                 "position_limit_max": int(request.get("position_limit_max", DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX) or DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX),
                 "portfolio_require_target_direction_alignment": self._normalize_bool(
                     request.get("portfolio_require_target_direction_alignment"),

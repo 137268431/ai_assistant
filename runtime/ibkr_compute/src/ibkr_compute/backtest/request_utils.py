@@ -158,6 +158,18 @@ def build_variant_request(base_request: dict, variant: dict, variant_index: int)
         "source_environment": base_request["source_environment"],
         "session_mode": base_request["session_mode"],
     }
+    for key in (
+        "account_model_mode",
+        "fee_model",
+        "slippage_model",
+        "execution_cost_profile",
+        "include_regulatory_fees",
+        "slippage_cap_to_bar",
+        "limit_price_protection",
+        "stop_gap_to_open",
+    ):
+        if key in base_request.get("params", {}):
+            request["params"][key] = deepcopy(base_request["params"][key])
     request["name"] = f'{base_request["name"]} · {request["variant_label"]}'
     return request
 
@@ -202,8 +214,22 @@ def normalize_request(payload: dict) -> dict:
         session_mode = "extended"
 
     initial_capital = max(1000.0, float(payload.get("initial_capital") or 10000))
-    commission_per_share = max(0.0, float(payload.get("commission_per_share") or 0.005))
-    slippage_bps = max(0.0, float(payload.get("slippage_bps") or 2.0))
+    commission_per_share = max(0.0, float(payload.get("commission_per_share") if payload.get("commission_per_share") not in (None, "") else constants.DEFAULT_COMMISSION_PER_SHARE))
+    slippage_bps = max(0.0, float(payload.get("slippage_bps") if payload.get("slippage_bps") not in (None, "") else constants.DEFAULT_SLIPPAGE_BPS))
+    account_model_mode = str(payload.get("account_model_mode") or constants.DEFAULT_ACCOUNT_MODEL_MODE).strip().lower()
+    if account_model_mode not in constants.ACCOUNT_MODEL_MODE_VALUES:
+        account_model_mode = constants.DEFAULT_ACCOUNT_MODEL_MODE
+    fee_model = str(payload.get("fee_model") or constants.DEFAULT_FEE_MODEL).strip().lower()
+    if fee_model not in constants.FEE_MODEL_VALUES:
+        fee_model = constants.DEFAULT_FEE_MODEL
+    slippage_model = str(payload.get("slippage_model") or constants.DEFAULT_SLIPPAGE_MODEL).strip().lower()
+    if slippage_model not in constants.SLIPPAGE_MODEL_VALUES:
+        slippage_model = constants.DEFAULT_SLIPPAGE_MODEL
+    execution_cost_profile = payload.get("execution_cost_profile") if payload.get("execution_cost_profile") is not None else {}
+    include_regulatory_fees = normalize_bool(payload.get("include_regulatory_fees"), False)
+    slippage_cap_to_bar = normalize_bool(payload.get("slippage_cap_to_bar"), slippage_model in {"bar_capped_bps_v1", "volume_share_v1"})
+    limit_price_protection = normalize_bool(payload.get("limit_price_protection"), slippage_model in {"bar_capped_bps_v1", "volume_share_v1"})
+    stop_gap_to_open = normalize_bool(payload.get("stop_gap_to_open"), slippage_model in {"bar_capped_bps_v1", "volume_share_v1"})
     force_flat_eod = True
     if effective_symbol_source == "watchlist" and not symbols:
         default_max_symbols = constants.DEFAULT_WATCHLIST_MAX_SYMBOLS
@@ -466,6 +492,14 @@ def normalize_request(payload: dict) -> dict:
         "initial_capital": initial_capital,
         "commission_per_share": commission_per_share,
         "slippage_bps": slippage_bps,
+        "account_model_mode": account_model_mode,
+        "fee_model": fee_model,
+        "slippage_model": slippage_model,
+        "execution_cost_profile": execution_cost_profile,
+        "include_regulatory_fees": include_regulatory_fees,
+        "slippage_cap_to_bar": slippage_cap_to_bar,
+        "limit_price_protection": limit_price_protection,
+        "stop_gap_to_open": stop_gap_to_open,
         "force_flat_eod": force_flat_eod,
         "max_symbols": max_symbols,
         "execution_model": execution_model,
@@ -528,6 +562,14 @@ def normalize_request(payload: dict) -> dict:
             "source_environment": source_environment,
             "machine_profile": machine_profile,
             "session_mode": session_mode,
+            "account_model_mode": account_model_mode,
+            "fee_model": fee_model,
+            "slippage_model": slippage_model,
+            "execution_cost_profile": execution_cost_profile,
+            "include_regulatory_fees": include_regulatory_fees,
+            "slippage_cap_to_bar": slippage_cap_to_bar,
+            "limit_price_protection": limit_price_protection,
+            "stop_gap_to_open": stop_gap_to_open,
             "warmup_bars": warmup_bars,
             "scan_warmup_bars": scan_warmup_bars,
             "premarket_cutoff_time": premarket_cutoff_time,

@@ -16,6 +16,7 @@ class BacktestOrchestrationMixin:
                 "error": "",
             },
         )
+        self._prepare_backtest_account_model(request)
 
         backtest_target_rows = []
         backtest_target_capture = self._empty_capture_summary(BACKTEST_TARGET_COLLECTION, run_id, "disabled")
@@ -43,6 +44,7 @@ class BacktestOrchestrationMixin:
             run_id,
             {
                 "symbols": request["symbols_text"],
+                "initial_capital": float(request["initial_capital"]),
                 "extra": self._build_run_extra(
                     request,
                     symbols,
@@ -64,6 +66,7 @@ class BacktestOrchestrationMixin:
         tv_symbol_reports = []
         realized_pnl = 0.0
         initial_capital = float(request["initial_capital"])
+        execution_profile = build_execution_cost_profile(request)
         portfolio_metrics = {}
         if str(request.get("execution_model") or "symbol_independent") == "portfolio_stream":
             if bool(request.get("daily_selected_only")) and request.get("symbol_source") == "daily_scan_replay":
@@ -166,6 +169,7 @@ class BacktestOrchestrationMixin:
         )
         metrics = self._compute_metrics(initial_capital, all_trades, daily_equity)
         metrics.update(portfolio_metrics)
+        metrics["execution_cost_summary"] = summarize_execution_costs(all_trades, execution_profile)
         metrics["benchmark"] = benchmark_points
         metrics["skipped_symbols"] = skipped_symbols
         metrics["data_quality"] = data_quality
@@ -248,6 +252,7 @@ class BacktestOrchestrationMixin:
             {
                 "status": "completed",
                 "progress": 100,
+                "initial_capital": initial_capital,
                 "trade_count": int(metrics["trade_count"]),
                 "net_pnl": float(metrics["net_pnl"]),
                 "total_return_pct": float(metrics["total_return_pct"]),

@@ -5,6 +5,10 @@ from ibkr_compute.api.ops.views import (
     build_backtest_batch_detail_response,
     build_backtest_batches_response,
     build_backtest_cleanup_response,
+    build_backtest_execution_cost_fills_response,
+    build_backtest_execution_cost_import_recent_fills_response,
+    build_backtest_execution_cost_import_response,
+    build_backtest_execution_cost_profile_response,
     build_backtest_replay_response,
     build_backtest_run_detail_response,
     build_backtest_run_response,
@@ -79,6 +83,22 @@ def register_ops_routes(app):
     @app.route("/backtest/cleanup", methods=["POST"])
     def backtest_cleanup():
         return build_backtest_cleanup_response()
+
+    @app.route("/backtest/execution-cost/import", methods=["POST"])
+    def backtest_execution_cost_import():
+        return build_backtest_execution_cost_import_response()
+
+    @app.route("/backtest/execution-cost/import-recent-fills", methods=["POST"])
+    def backtest_execution_cost_import_recent_fills():
+        return build_backtest_execution_cost_import_recent_fills_response()
+
+    @app.route("/backtest/execution-cost/fills", methods=["GET", "POST"])
+    def backtest_execution_cost_fills():
+        return build_backtest_execution_cost_fills_response()
+
+    @app.route("/backtest/execution-cost/profile", methods=["GET", "POST"])
+    def backtest_execution_cost_profile():
+        return build_backtest_execution_cost_profile_response()
 
     @app.route("/health", methods=["GET"])
     def health():

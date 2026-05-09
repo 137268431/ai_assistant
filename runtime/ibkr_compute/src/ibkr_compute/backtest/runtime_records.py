@@ -308,8 +308,15 @@ class BacktestRuntimeRecordsMixin:
         return request_utils.build_variant_request(base_request, variant, variant_index)
 
     def _build_execution_extra(self, request: dict) -> dict:
+        execution_profile = compact_execution_cost_profile(build_execution_cost_profile(request))
         return {
             "execution_model": request.get("execution_model", "portfolio_stream"),
+            "account_model_mode": request.get("account_model_mode", DEFAULT_ACCOUNT_MODEL_MODE),
+            "fee_model": request.get("fee_model", DEFAULT_FEE_MODEL),
+            "slippage_model": request.get("slippage_model", DEFAULT_SLIPPAGE_MODEL),
+            "execution_cost_profile": execution_profile,
+            "account_model_summary": request.get("account_model_summary") or {},
+            "account_model_status": request.get("account_model_status") or {},
             "borrow_limit_mode": request.get("borrow_limit_mode", "none"),
             "max_borrow_amount": float(request.get("max_borrow_amount", 0) or 0),
             "position_limit_max": int(request.get("position_limit_max", DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX) or DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX),
@@ -773,6 +780,7 @@ class BacktestRuntimeRecordsMixin:
             extra["monthly_returns"] = metrics.get("monthly_returns") or []
             extra["portfolio_risk"] = metrics.get("portfolio_risk") or {}
             extra["portfolio_rejection_counts"] = metrics.get("portfolio_rejection_counts") or {}
+            extra["execution_cost_summary"] = metrics.get("execution_cost_summary") or {}
             extra["daily_scan_match_diagnostics"] = metrics.get("daily_scan_match_diagnostics") or {}
             extra["daily_selection_cache"] = metrics.get("daily_selection_cache") or {}
         if daily_equity is not None:

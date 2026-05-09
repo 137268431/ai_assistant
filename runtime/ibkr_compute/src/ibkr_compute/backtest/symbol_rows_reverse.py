@@ -146,6 +146,7 @@ class BacktestSymbolRowsReverseMixin:
         pending_signal: dict,
         commission_per_share: float,
         slippage_bps: float,
+        execution_profile: dict | None = None,
     ) -> Optional[dict]:
         direction = str(pending_signal.get("direction", "") or "").strip().lower()
         entry_price = float(
@@ -179,6 +180,7 @@ class BacktestSymbolRowsReverseMixin:
             commission_per_share,
             slippage_bps,
             raw_fill_price=raw_fill_price,
+            execution_profile=execution_profile,
         )
         if position:
             position["entry_order_type"] = entry_order_type
@@ -332,6 +334,7 @@ class BacktestSymbolRowsReverseMixin:
         bar: dict,
         commission_per_share: float,
         slippage_bps: float,
+        execution_profile: dict | None = None,
     ) -> tuple[dict | None, dict | None]:
         if not position or not reverse_row:
             return position, None
@@ -339,7 +342,7 @@ class BacktestSymbolRowsReverseMixin:
         extra = self._parse_object(reverse_row.get("extra"))
         reverse_kind = str(reverse_row.get("reverse_kind", "") or "").strip().lower()
         if action_type == "close":
-            trade = self._close_position(position, bar, commission_per_share, slippage_bps, f"reverse_{reverse_kind}_close")
+            trade = self._close_position(position, bar, commission_per_share, slippage_bps, f"reverse_{reverse_kind}_close", execution_profile)
             trade_extra = self._parse_object(trade.get("extra"))
             trade_extra.update(
                 {

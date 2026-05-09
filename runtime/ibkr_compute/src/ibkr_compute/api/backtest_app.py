@@ -13,6 +13,10 @@ from ibkr_compute.api.ops.action_views import (
     build_backtest_batches_response,
     build_backtest_cancel_response,
     build_backtest_cleanup_response,
+    build_backtest_execution_cost_fills_response,
+    build_backtest_execution_cost_import_recent_fills_response,
+    build_backtest_execution_cost_import_response,
+    build_backtest_execution_cost_profile_response,
     build_backtest_replay_response,
     build_backtest_run_detail_response,
     build_backtest_run_response,
@@ -213,6 +217,30 @@ def register_backtest_routes(flask_app: Flask) -> None:
         endpoint="backtest_cleanup",
         view_func=build_backtest_cleanup_response,
         methods=["POST"],
+    )
+    flask_app.add_url_rule(
+        "/backtest/execution-cost/import",
+        endpoint="backtest_execution_cost_import",
+        view_func=build_backtest_execution_cost_import_response,
+        methods=["POST"],
+    )
+    flask_app.add_url_rule(
+        "/backtest/execution-cost/import-recent-fills",
+        endpoint="backtest_execution_cost_import_recent_fills",
+        view_func=build_backtest_execution_cost_import_recent_fills_response,
+        methods=["POST"],
+    )
+    flask_app.add_url_rule(
+        "/backtest/execution-cost/fills",
+        endpoint="backtest_execution_cost_fills",
+        view_func=build_backtest_execution_cost_fills_response,
+        methods=["GET", "POST"],
+    )
+    flask_app.add_url_rule(
+        "/backtest/execution-cost/profile",
+        endpoint="backtest_execution_cost_profile",
+        view_func=build_backtest_execution_cost_profile_response,
+        methods=["GET", "POST"],
     )
     flask_app.add_url_rule(
         "/health",

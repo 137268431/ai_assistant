@@ -17,6 +17,15 @@ from typing import Any, Callable, Dict, List, Optional
 
 from ibkr_compute.backtest import request_utils
 from ibkr_compute.backtest.constants import *
+from ibkr_compute.backtest.execution_cost import (
+    apply_execution_slippage,
+    build_execution_cost_profile,
+    calculate_execution_commission,
+    compact_execution_cost_profile,
+    execution_side,
+    maybe_stop_gap_reference,
+    summarize_execution_costs,
+)
 from ibkr_compute.backtest.exceptions import BacktestCancelled
 from ibkr_compute.core.indicator_engine import DEFAULT_PARAMS, IndicatorEngine, indicator_ready_bar_count
 from ibkr_compute.core.active_window_admission import build_active_window_admission_item

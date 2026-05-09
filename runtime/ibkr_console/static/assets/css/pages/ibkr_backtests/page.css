@@ -495,6 +495,12 @@ body {
             font-size: 11px;
             line-height: 1.5;
         }
+        .inline-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 8px;
+        }
         .progress-shell {
             position: relative;
             z-index: 1;

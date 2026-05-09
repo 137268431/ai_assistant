@@ -220,6 +220,7 @@
                 return;
             }
             const metrics = selectedRun.metrics || {};
+            const executionCost = metrics.execution_cost_summary || selectedRun.extra?.execution_cost_summary || {};
             const scanDiagnostics = metrics.daily_scan_match_diagnostics || selectedRun.extra?.daily_scan_match_diagnostics || {};
             const dailySelectedProfile = metrics.daily_selected_profile || metrics.portfolio_profile || selectedRun.extra?.daily_selected_profile || {};
             const dailySelectionCache = metrics.daily_selection_cache || selectedRun.extra?.daily_selection_cache || selectedRun.extra?.historical_targeting?.daily_selection_cache || {};
@@ -234,6 +235,7 @@
                 ['Avg Win / Loss', `${formatMoney(metrics.avg_win || 0)} / ${formatMoney(metrics.avg_loss || 0)}`, '', `盈亏比 ${formatNumber(metrics.win_loss_ratio || 0, 2)}`],
                 ['Signal Fill', formatPct(metrics.signal_fill_rate || 0), classForValue((metrics.signal_fill_rate || 0) - 50), `${metrics.executed_signal_count || 0}/${metrics.signal_count || 0} executed`],
                 ['Portfolio Exposure', formatMoney(metrics.portfolio_max_gross_exposure || 0), '', `borrow max ${formatMoney(metrics.portfolio_max_borrowed_amount || 0)}`],
+                ['Execution Costs', formatMoney((executionCost.total_commission || 0) + (executionCost.estimated_slippage_cost || 0)), '', `${executionCost.fee_model || '--'} / ${executionCost.slippage_model || '--'}`],
                 ['Signal Rejects', String(Object.values(metrics.portfolio_rejection_counts || {}).reduce((sum, value) => sum + Number(value || 0), 0)), '', formatBreakdown(metrics.portfolio_rejection_counts || {})],
                 ['Replay Targets', String(metrics.backtest_target_count || 0), '', `${metrics.historical_targeting?.target_date_count || 0} trade dates`],
                 ['Daily Opens', String(sumDailyOpenCounts(metrics.daily_open_counts || [])), '', formatDailyCounts(metrics.daily_open_counts || [])],

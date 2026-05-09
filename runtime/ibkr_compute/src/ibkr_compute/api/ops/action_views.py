@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import requests
 from flask import jsonify, request
 
 from ibkr_compute.api.ops.bar_truth_compare import build_bar_truth_compare_payload
@@ -13,6 +14,8 @@ from ibkr_compute.api.ops.data_quality_truth import (
 from ibkr_compute.api.route_request import (
     coerce_request_bool,
     coerce_request_int,
+    get_query_arg_bool,
+    get_query_arg_csv,
     get_json_payload,
     get_query_arg_int,
     get_query_arg_text,
@@ -22,8 +25,22 @@ from ibkr_compute.api.route_runtime import (
     get_requested_environment,
     require_ibkr_service,
 )
-from ibkr_compute.api.service_topology import build_service_topology, get_service_profile, get_runtime_mode
+from ibkr_compute.api.service_topology import (
+    build_service_topology,
+    get_runtime_internal_url,
+    get_service_profile,
+    get_runtime_mode,
+)
 from ibkr_compute.api.shared.service_status import get_service_status_snapshot
+from ibkr_compute.backtest.execution_fills import (
+    DEFAULT_PROFILE_STATE_KEY,
+    build_calibrated_execution_cost_profile,
+    fetch_execution_fills,
+    normalize_execution_fills,
+    parse_date_range_ms,
+    parse_flex_xml_fills,
+    summarize_execution_fills,
+)
 from ibkr_compute.market.data_retention import DataRetention
 from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite
 from ibkr_compute.market.storage_cleanup import DEFAULT_PROFILE as STORAGE_CLEANUP_DEFAULT_PROFILE
@@ -424,6 +441,320 @@ def build_backtest_cleanup_response():
     batch_id = str(payload.get("batch_id") or "").strip()
     result = app_mod.backtest_service.cleanup(run_id=run_id, batch_id=batch_id)
     return jsonify(result), _status_code_for_result(result)
+
+
+def _execution_payload_environment(payload: dict) -> str:
+    text = str((payload or {}).get("environment") or "").strip().lower()
+    if text in {"live", "paper", "backtest"}:
+        return text
+    return get_requested_environment("live")
+
+
+def _execution_payload_symbols(payload: dict) -> list[str]:
+    raw = (payload or {}).get("symbols") or (payload or {}).get("symbols_text")
+    if raw is None:
+        return [str(item or "").strip().upper() for item in get_query_arg_csv("symbols") if str(item or "").strip()]
+    values = raw if isinstance(raw, list) else str(raw or "").replace("\n", ",").split(",")
+    symbols = []
+    for value in values:
+        symbol = str(value or "").strip().upper()
+        if symbol and symbol not in symbols:
+            symbols.append(symbol)
+    return symbols
+
+
+def _extract_uploaded_xml(payload: dict) -> str:
+    for key in ("flex_xml", "xml", "content"):
+        text = str((payload or {}).get(key) or "").strip()
+        if text:
+            return text
+    files = getattr(request, "files", None)
+    if not files:
+        return ""
+    for key in ("flex_xml_file", "file", "xml"):
+        uploaded = files.get(key) if hasattr(files, "get") else None
+        if not uploaded:
+            continue
+        data = uploaded.read()
+        if isinstance(data, bytes):
+            return data.decode("utf-8", errors="replace")
+        return str(data or "")
+    return ""
+
+
+def _extract_recent_fill_items(payload: dict) -> list[dict]:
+    raw = payload.get("raw") if isinstance(payload.get("raw"), dict) else {}
+    candidates = raw.get("orders") if isinstance(raw.get("orders"), list) else None
+    if candidates is None:
+        candidates = payload.get("orders") if isinstance(payload.get("orders"), list) else None
+    if candidates is None:
+        candidates = payload.get("items") if isinstance(payload.get("items"), list) else []
+    items = []
+    for item in candidates or []:
+        if not isinstance(item, dict):
+            continue
+        raw_item = item.get("raw") if isinstance(item.get("raw"), dict) else None
+        if raw_item:
+            merged = dict(raw_item)
+            for key in ("commission", "symbol", "ticker", "filled_qty", "fill_price", "fill_time", "order_id"):
+                if key in item and key not in merged:
+                    merged[key] = item.get(key)
+            items.append(merged)
+        else:
+            items.append(dict(item))
+    return items
+
+
+def _upsert_execution_fills(app_mod, fills: list[dict], *, dry_run: bool) -> dict:
+    if dry_run:
+        return {"ok": True, "created": 0, "updated": 0, "skipped": 0, "total": len(fills), "dry_run": True}
+    pb = getattr(app_mod, "pb", None)
+    if pb is None:
+        raise RuntimeError("pocketbase_client_unavailable")
+    if hasattr(pb, "upsert_execution_fills"):
+        return pb.upsert_execution_fills(fills)
+    return pb._batch_upsert_records(
+        "ibkr_execution_fills",
+        fills,
+        ["environment", "account", "exec_id"],
+        timeout=30,
+    )
+
+
+def build_backtest_execution_cost_import_response():
+    app_mod = get_app_module()
+    payload = get_json_payload()
+    environment = _execution_payload_environment(payload)
+    account = str(payload.get("account") or get_query_arg_text("account") or "").strip()
+    source = str(payload.get("source") or get_query_arg_text("source") or "").strip().lower()
+    dry_run = coerce_request_bool(payload.get("dry_run"), get_query_arg_bool("dry_run", False))
+    xml_text = _extract_uploaded_xml(payload)
+    try:
+        if xml_text:
+            fills = parse_flex_xml_fills(
+                xml_text,
+                environment=environment,
+                account=account,
+                source=source or "flex",
+            )
+            import_source = source or "flex"
+        else:
+            raw_items = payload.get("fills") if isinstance(payload.get("fills"), list) else payload.get("items")
+            if not isinstance(raw_items, list):
+                return jsonify({"ok": False, "error": "missing_fills_or_flex_xml"}), 400
+            import_source = source or "manual"
+            fills = normalize_execution_fills(
+                raw_items,
+                environment=environment,
+                account=account,
+                source=import_source,
+            )
+        result = _upsert_execution_fills(app_mod, fills, dry_run=dry_run)
+        return jsonify(
+            {
+                "ok": True,
+                "source": import_source,
+                "environment": environment,
+                "account": account,
+                "dry_run": dry_run,
+                "imported": len(fills),
+                "summary": summarize_execution_fills(fills),
+                "upsert": result,
+            }
+        )
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "environment": environment, "account": account}), 500
+
+
+def _fetch_recent_fills_from_runtime(environment: str, days: int) -> dict:
+    response = requests.get(
+        f"{get_runtime_internal_url().rstrip('/')}/ibkr/orders/history",
+        params={"environment": environment, "days": max(1, int(days or 1))},
+        timeout=30,
+    )
+    payload = response.json() if response.content else {}
+    if not response.ok:
+        return {
+            "ok": False,
+            "error": str((payload or {}).get("error") or f"runtime_history_status_{response.status_code}"),
+            "payload": payload if isinstance(payload, dict) else {},
+        }
+    return payload if isinstance(payload, dict) else {"ok": False, "error": "invalid_runtime_history_payload"}
+
+
+def build_backtest_execution_cost_import_recent_fills_response():
+    app_mod = get_app_module()
+    payload = get_json_payload()
+    environment = _execution_payload_environment(payload)
+    account = str(payload.get("account") or get_query_arg_text("account") or "").strip()
+    days = coerce_request_int(payload.get("days"), get_query_arg_int("days", 1, minimum=1), minimum=1, maximum=30)
+    dry_run = coerce_request_bool(payload.get("dry_run"), get_query_arg_bool("dry_run", False))
+    broker_payload = {}
+    broker_source = "runtime_order_history"
+    try:
+        service_getter = getattr(app_mod, "get_ibkr_service", None)
+        service = service_getter() if callable(service_getter) else None
+        tracker = getattr(service, "order_tracker", None) if service is not None else None
+        if tracker is not None and hasattr(tracker, "get_broker_order_history"):
+            broker_payload = tracker.get_broker_order_history(days=days, force=True)
+            broker_source = "local_order_tracker"
+        else:
+            broker_payload = _fetch_recent_fills_from_runtime(environment, days)
+        if not broker_payload.get("ok", True):
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": broker_payload.get("error") or "recent_fills_unavailable",
+                    "source": broker_source,
+                    "environment": environment,
+                }
+            ), 502
+        raw_items = _extract_recent_fill_items(broker_payload)
+        fills = normalize_execution_fills(
+            raw_items,
+            environment=environment,
+            account=account,
+            source="recent_fills",
+        )
+        result = _upsert_execution_fills(app_mod, fills, dry_run=dry_run)
+        return jsonify(
+            {
+                "ok": True,
+                "source": broker_source,
+                "environment": environment,
+                "account": account,
+                "days": days,
+                "dry_run": dry_run,
+                "raw_count": len(raw_items),
+                "imported": len(fills),
+                "summary": summarize_execution_fills(fills),
+                "upsert": result,
+                "limitations": broker_payload.get("limitations") or [],
+            }
+        )
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "source": broker_source, "environment": environment}), 500
+
+
+def _execution_query_window(payload: dict) -> tuple[int, int]:
+    start_ms = coerce_request_int(payload.get("start_ms"), get_query_arg_int("start_ms", 0, minimum=0), minimum=0)
+    end_ms = coerce_request_int(payload.get("end_ms"), get_query_arg_int("end_ms", 0, minimum=0), minimum=0)
+    if start_ms or end_ms:
+        return start_ms, end_ms
+    return parse_date_range_ms(
+        payload.get("date_from") or get_query_arg_text("date_from"),
+        payload.get("date_to") or get_query_arg_text("date_to"),
+    )
+
+
+def build_backtest_execution_cost_fills_response():
+    payload = get_json_payload()
+    environment = _execution_payload_environment(payload)
+    account = str(payload.get("account") or get_query_arg_text("account") or "").strip()
+    source = str(payload.get("source") or get_query_arg_text("source") or "").strip().lower()
+    start_ms, end_ms = _execution_query_window(payload)
+    limit = coerce_request_int(payload.get("limit"), get_query_arg_int("limit", 200, minimum=1, maximum=20000), minimum=1, maximum=20000)
+    result = fetch_execution_fills(
+        environment=environment,
+        symbols=_execution_payload_symbols(payload),
+        account=account,
+        source=source,
+        start_ms=start_ms,
+        end_ms=end_ms,
+        limit=limit,
+    )
+    result.update({"environment": environment, "account": account, "source_filter": source, "limit": limit})
+    return jsonify(result)
+
+
+def build_backtest_execution_cost_profile_response():
+    app_mod = get_app_module()
+    payload = get_json_payload()
+    environment = _execution_payload_environment(payload)
+    account = str(payload.get("account") or get_query_arg_text("account") or "").strip()
+    source = str(payload.get("source") or get_query_arg_text("source") or "").strip().lower()
+    start_ms, end_ms = _execution_query_window(payload)
+    limit = coerce_request_int(payload.get("limit"), get_query_arg_int("limit", 5000, minimum=1, maximum=20000), minimum=1, maximum=20000)
+    persist_state = coerce_request_bool(payload.get("persist_state"), get_query_arg_bool("persist_state", False))
+    base_request = payload.get("base_request") if isinstance(payload.get("base_request"), dict) else payload
+
+    try:
+        xml_text = _extract_uploaded_xml(payload)
+        if xml_text:
+            fills = parse_flex_xml_fills(xml_text, environment=environment, account=account, source=source or "flex")
+            fill_source = source or "flex_payload"
+            query_payload = {"ok": True, "available": True, "summary": summarize_execution_fills(fills)}
+        elif isinstance(payload.get("fills"), list) or isinstance(payload.get("items"), list):
+            raw_items = payload.get("fills") if isinstance(payload.get("fills"), list) else payload.get("items")
+            fills = normalize_execution_fills(raw_items, environment=environment, account=account, source=source or "manual")
+            fill_source = source or "request_payload"
+            query_payload = {"ok": True, "available": True, "summary": summarize_execution_fills(fills)}
+        else:
+            query_payload = fetch_execution_fills(
+                environment=environment,
+                symbols=_execution_payload_symbols(payload),
+                account=account,
+                source=source,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                limit=limit,
+            )
+            fills = query_payload.get("items") or []
+            fill_source = "ibkr_execution_fills"
+        profile_payload = build_calibrated_execution_cost_profile(
+            fills,
+            base_request=base_request,
+            environment=environment,
+            account=account,
+            source=fill_source,
+        )
+        state_result = {}
+        if persist_state and profile_payload.get("profile_available"):
+            state_date = str(payload.get("state_date") or account or "global").strip() or "global"
+            state_key = str(payload.get("state_key") or DEFAULT_PROFILE_STATE_KEY).strip() or DEFAULT_PROFILE_STATE_KEY
+            state_result = app_mod.pb.upsert_state(
+                state_key,
+                environment,
+                {
+                    "profile": profile_payload.get("profile") or {},
+                    "execution_cost_profile": profile_payload.get("execution_cost_profile") or {},
+                    "backtest_payload_patch": profile_payload.get("backtest_payload_patch") or {},
+                    "sample": profile_payload.get("sample") or {},
+                    "query": {
+                        "account": account,
+                        "source": source,
+                        "symbols": _execution_payload_symbols(payload),
+                        "start_ms": start_ms,
+                        "end_ms": end_ms,
+                        "limit": limit,
+                    },
+                },
+                date=state_date,
+            )
+        return jsonify(
+            {
+                **profile_payload,
+                "environment": environment,
+                "account": account,
+                "source_filter": source,
+                "fill_source": fill_source,
+                "fill_query": {
+                    "available": query_payload.get("available", True),
+                    "summary": query_payload.get("summary") or summarize_execution_fills(fills),
+                    "start_ms": start_ms,
+                    "end_ms": end_ms,
+                    "limit": limit,
+                },
+                "persist_state": persist_state,
+                "state": {
+                    "saved": bool(state_result),
+                    "id": str((state_result or {}).get("id") or ""),
+                    "state_key": str((state_result or {}).get("state_key") or DEFAULT_PROFILE_STATE_KEY if state_result else ""),
+                },
+            }
+        )
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "environment": environment, "account": account}), 500
 
 
 def _build_data_quality_coverage(symbols: list[str], rows: list[dict]) -> dict:

@@ -9,7 +9,7 @@
     <script>document.write(getCommonStyles());</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    <link rel="stylesheet" href="/assets/css/pages/ibkr_backtests/page.css">
+    <link rel="stylesheet" href="/assets/css/pages/ibkr_backtests/page.css?v=20260509-exec-cost-calibration-v1">
 </head>
 <body>
     <div class="page-shell">
@@ -162,6 +162,46 @@
                             <div class="field">
                                 <label for="slippageBps">Slippage (bps)</label>
                                 <input id="slippageBps" type="number" min="0" step="0.5" value="2">
+                            </div>
+                            <div class="field">
+                                <label for="accountModelMode">Account Model</label>
+                                <select id="accountModelMode">
+                                    <option value="fixed_capital" selected>fixed_capital</option>
+                                    <option value="current_snapshot">current_snapshot</option>
+                                </select>
+                                <small>current_snapshot 会用当前账户净值/购买力作为起始约束。</small>
+                            </div>
+                            <div class="field">
+                                <label for="feeModel">Fee Model</label>
+                                <select id="feeModel">
+                                    <option value="legacy_flat_per_share_v1" selected>legacy flat/share</option>
+                                    <option value="ibkr_us_equity_fixed_v1">IBKR US equity fixed</option>
+                                    <option value="calibrated_v1">calibrated</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label for="slippageModel">Slippage Model</label>
+                                <select id="slippageModel">
+                                    <option value="fixed_bps_v1" selected>fixed bps</option>
+                                    <option value="bar_capped_bps_v1">bar capped bps</option>
+                                    <option value="volume_share_v1">volume share</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label class="checkline" for="slippageCapToBar">
+                                    <input id="slippageCapToBar" type="checkbox">
+                                    <span>Cap slippage to bar</span>
+                                </label>
+                                <small>推荐和 bar_capped / volume_share 一起使用。</small>
+                            </div>
+                            <div class="field span-2">
+                                <label for="executionCostProfile">Execution Cost Profile JSON</label>
+                                <textarea id="executionCostProfile" placeholder='{"calibrated_per_share":0.005,"calibrated_min_commission":1}'></textarea>
+                                <small>先导入 Flex / recent fills 后可一键生成；启动回测时会随 fee/slippage model 一起提交。</small>
+                                <div class="inline-actions">
+                                    <button class="btn ghost" type="button" onclick="loadExecutionCostProfile()">加载最新校准 Profile</button>
+                                    <button class="btn ghost" type="button" onclick="importRecentExecutionFills()">导入最近成交</button>
+                                </div>
                             </div>
                             <div class="field">
                                 <label for="warmupBars">Warmup Bars</label>
@@ -394,7 +434,7 @@
     <script src="/assets/js/pages/ibkr_backtests/details.js?v=20260508-backtest-warmup-signal-v3"></script>
     <script src="/assets/js/pages/ibkr_backtests/replay.js?v=20260508-backtest-warmup-signal-v3"></script>
     <script src="/assets/js/pages/ibkr_backtests/api.js?v=20260508-backtest-warmup-signal-v3"></script>
-    <script src="/assets/js/pages/ibkr_backtests/actions.js?v=20260508-backtest-warmup-signal-v3"></script>
+    <script src="/assets/js/pages/ibkr_backtests/actions.js?v=20260509-exec-cost-calibration-v1"></script>
     <script src="/assets/js/pages/ibkr_backtests/page.js?v=20260508-backtest-warmup-signal-v3"></script>
 </body>
 </html>

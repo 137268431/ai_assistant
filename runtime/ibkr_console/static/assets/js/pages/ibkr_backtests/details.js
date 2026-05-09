@@ -8,6 +8,7 @@
             const metrics = selectedRun.metrics || {};
             const extra = selectedRun.extra || {};
             const portfolioRisk = metrics.portfolio_risk || extra.portfolio_risk || {};
+            const executionCost = metrics.execution_cost_summary || extra.execution_cost_summary || {};
             const monthlyReturns = Array.isArray(metrics.monthly_returns) ? metrics.monthly_returns : [];
             const dailyFunnel = Array.isArray(metrics.daily_funnel) ? metrics.daily_funnel : [];
             const qualityRows = Array.isArray(metrics.data_quality) ? metrics.data_quality : [];
@@ -27,6 +28,10 @@
                         <div class="detail-item"><div class="detail-item-label">Scan Cutoff</div><div class="detail-item-value">${escapeHtml(extra.premarket_cutoff_time || '--')}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Capital</div><div class="detail-item-value">${escapeHtml(formatMoney(selectedRun.initial_capital || 0))}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Execution</div><div class="detail-item-value">${escapeHtml(extra.execution_model || metrics.execution_model || '--')}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Account Model</div><div class="detail-item-value">${escapeHtml(extra.account_model_mode || portfolioRisk.account_model_mode || '--')}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Fee Model</div><div class="detail-item-value">${escapeHtml(extra.fee_model || executionCost.fee_model || '--')}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Slippage Model</div><div class="detail-item-value">${escapeHtml(extra.slippage_model || executionCost.slippage_model || '--')}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Total Costs</div><div class="detail-item-value">${escapeHtml(formatMoney((executionCost.total_commission || 0) + (executionCost.estimated_slippage_cost || 0)))}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Borrow Mode</div><div class="detail-item-value">${escapeHtml(portfolioRisk.borrow_limit_mode || extra.borrow_limit_mode || '--')}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Borrow Limit</div><div class="detail-item-value">${escapeHtml(formatMoney(portfolioRisk.max_borrow_amount || extra.max_borrow_amount || 0))}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Buying Power</div><div class="detail-item-value">${escapeHtml(formatMoney(portfolioRisk.total_exposure_limit || 0))}</div></div>
@@ -135,6 +140,7 @@
                         daily_selected_profile: metrics.daily_selected_profile || metrics.portfolio_profile || {},
                         daily_scan_match_diagnostics: metrics.daily_scan_match_diagnostics || extra.daily_scan_match_diagnostics || {},
                         portfolio_risk: metrics.portfolio_risk || extra.portfolio_risk || {},
+                        execution_cost_summary: metrics.execution_cost_summary || extra.execution_cost_summary || {},
                         portfolio_rejection_counts: metrics.portfolio_rejection_counts || extra.portfolio_rejection_counts || {},
                         portfolio_candidate_samples: metrics.portfolio_candidate_samples || [],
                         analysis_report: extra.analysis_report || {},
@@ -187,8 +193,9 @@
                                 <th>Symbol</th>
                                 <th>Direction</th>
                                 <th>Entry</th>
-                                <th>Exit</th>
-                                <th>PnL</th>
+	                                <th>Exit</th>
+	                                <th>Costs</th>
+	                                <th>PnL</th>
                                 <th>Bars</th>
                                 <th>Reason</th>
                                 <th>Replay</th>
@@ -200,9 +207,10 @@
                                     <td class="mono">${trade.trade_index}</td>
                                     <td>${escapeHtml(trade.symbol || '--')}</td>
                                     <td><span class="tag ${trade.direction === 'short' ? 'short' : 'long'}">${escapeHtml((trade.direction || '--').toUpperCase())}</span></td>
-                                    <td class="mono">${escapeHtml((trade.entry_us_time || '--').slice(0, 16))}<br>${escapeHtml(formatMoney(trade.entry_price))}</td>
-                                    <td class="mono">${escapeHtml((trade.exit_us_time || '--').slice(0, 16))}<br>${escapeHtml(formatMoney(trade.exit_price))}</td>
-                                    <td class="${classForValue(trade.pnl)}">${escapeHtml(formatMoney(trade.pnl))}<br>${escapeHtml(formatPct(trade.pnl_pct))}</td>
+	                                    <td class="mono">${escapeHtml((trade.entry_us_time || '--').slice(0, 16))}<br>${escapeHtml(formatMoney(trade.entry_price))}</td>
+	                                    <td class="mono">${escapeHtml((trade.exit_us_time || '--').slice(0, 16))}<br>${escapeHtml(formatMoney(trade.exit_price))}</td>
+	                                    <td class="mono">${escapeHtml(formatMoney(((trade.extra || {}).total_commission || 0) + ((trade.extra || {}).estimated_slippage_cost || 0)))}</td>
+	                                    <td class="${classForValue(trade.pnl)}">${escapeHtml(formatMoney(trade.pnl))}<br>${escapeHtml(formatPct(trade.pnl_pct))}</td>
                                     <td>${escapeHtml(String(trade.bars_held || 0))}</td>
                                     <td>${escapeHtml(trade.exit_reason || '--')}</td>
                                     <td>

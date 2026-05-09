@@ -14,6 +14,11 @@ class BacktestSymbolRowsRunnerMixin:
         params = dict((request.get("params") or {}).get("strategy_params") or DEFAULT_PARAMS)
         slippage_bps = float(request["slippage_bps"])
         commission_per_share = float(request["commission_per_share"])
+        execution_profile = build_execution_cost_profile(
+            request,
+            commission_per_share=commission_per_share,
+            slippage_bps=slippage_bps,
+        )
         force_flat_eod = bool(request["force_flat_eod"])
         engine = runtime_indicator_engine()(symbol, "5m", params=params)
         signal_gen = runtime_signal_generator()(symbol, "5m", params=params)
@@ -92,7 +97,7 @@ class BacktestSymbolRowsRunnerMixin:
                 cooldown_state["cooldown_until_ms"] = 0
                 cooldown_state["cooldown_reason"] = ""
                 if open_position and force_flat_eod:
-                    exit_trade = self._close_position(open_position, bars[index - 1], commission_per_share, slippage_bps, "eod")
+                    exit_trade = self._close_position(open_position, bars[index - 1], commission_per_share, slippage_bps, "eod", execution_profile)
                     trades.append(exit_trade)
                     open_position = None
                 if pending_signal:
@@ -107,6 +112,7 @@ class BacktestSymbolRowsRunnerMixin:
                     pending_signal,
                     commission_per_share,
                     slippage_bps,
+                    execution_profile,
                 )
                 if filled_position:
                     open_position = filled_position
@@ -126,7 +132,7 @@ class BacktestSymbolRowsRunnerMixin:
                     pending_signal = None
 
             if open_position:
-                closed = self._check_exit(open_position, bar, commission_per_share, slippage_bps)
+                closed = self._check_exit(open_position, bar, commission_per_share, slippage_bps, execution_profile)
                 if closed:
                     trades.append(closed)
                     if str(closed.get("exit_reason") or "") == "stop_loss":
@@ -237,6 +243,7 @@ class BacktestSymbolRowsRunnerMixin:
                                         bar,
                                         commission_per_share,
                                         slippage_bps,
+                                        execution_profile,
                                     )
                                     if reverse_trade:
                                         trades.append(reverse_trade)
@@ -313,6 +320,7 @@ class BacktestSymbolRowsRunnerMixin:
                         bar,
                         commission_per_share,
                         slippage_bps,
+                        execution_profile,
                     )
                     if reverse_trade:
                         trades.append(reverse_trade)
@@ -330,13 +338,14 @@ class BacktestSymbolRowsRunnerMixin:
                     bar,
                     commission_per_share,
                     slippage_bps,
+                    execution_profile,
                 )
                 if time_stop_trade:
                     trades.append(time_stop_trade)
                     open_position = None
 
         if open_position:
-            trades.append(self._close_position(open_position, bars[-1], commission_per_share, slippage_bps, "last_bar"))
+            trades.append(self._close_position(open_position, bars[-1], commission_per_share, slippage_bps, "last_bar", execution_profile))
         if pending_signal:
             self._mark_backtest_signal_status(signal_index, pending_signal.get("signal_id"), "dropped", "last_bar_no_entry")
 

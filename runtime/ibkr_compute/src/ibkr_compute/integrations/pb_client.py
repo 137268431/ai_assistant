@@ -411,6 +411,25 @@ class PBClient:
             timeout=30,
         )
 
+    def upsert_execution_fills(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        normalized = []
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            payload = dict(item)
+            payload["environment"] = str(payload.get("environment") or os.environ.get("IBKR_ENVIRONMENT", "live")).strip().lower() or "live"
+            payload["account"] = str(payload.get("account") or "").strip()
+            payload["exec_id"] = str(payload.get("exec_id") or "").strip()
+            payload["symbol"] = str(payload.get("symbol") or "").strip().upper()
+            if payload["exec_id"] and payload["symbol"]:
+                normalized.append(payload)
+        return self._batch_upsert_records(
+            "ibkr_execution_fills",
+            normalized,
+            ["environment", "account", "exec_id"],
+            timeout=30,
+        )
+
     def rescan_bar_integrity(self, data: Dict[str, Any]) -> Dict[str, Any]:
         return self.call_custom_api("ibkr/data_quality/rescan", method="POST", data=data, timeout=30)
 

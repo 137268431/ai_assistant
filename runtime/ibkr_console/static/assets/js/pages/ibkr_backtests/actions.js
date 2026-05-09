@@ -32,8 +32,10 @@
             const dateTo = document.getElementById('dateTo').value;
             const strategyParamsText = String(document.getElementById('strategyParams').value || '').trim();
             const variantsText = String(document.getElementById('variantsJson').value || '').trim();
+            const executionCostProfileText = String(document.getElementById('executionCostProfile')?.value || '').trim();
             let strategyParams = {};
             let variants = [];
+            let executionCostProfile = {};
             if (symbolSource === 'manual' && !symbolsText) {
                 showToast('manual 模式需要填写 symbols');
                 return;
@@ -71,6 +73,14 @@
                     return;
                 }
             }
+            if (executionCostProfileText) {
+                try {
+                    executionCostProfile = JSON.parse(executionCostProfileText);
+                } catch (_) {
+                    showToast('Execution Cost Profile JSON 解析失败');
+                    return;
+                }
+            }
             const resourceGuardPayload = getBacktestResourceGuardPayload();
             const dailySelectionPayload = getBacktestDailySelectionPayload(symbolSource);
             const payload = {
@@ -97,6 +107,13 @@
                 confirm_delay_minutes: 0,
                 commission_per_share: Number(document.getElementById('commissionPerShare').value || 0.005),
                 slippage_bps: Number(document.getElementById('slippageBps').value || 2),
+                account_model_mode: document.getElementById('accountModelMode')?.value || 'fixed_capital',
+                fee_model: document.getElementById('feeModel')?.value || 'legacy_flat_per_share_v1',
+                slippage_model: document.getElementById('slippageModel')?.value || 'fixed_bps_v1',
+                execution_cost_profile: executionCostProfile,
+                slippage_cap_to_bar: Boolean(document.getElementById('slippageCapToBar')?.checked || document.getElementById('slippageModel')?.value !== 'fixed_bps_v1'),
+                limit_price_protection: Boolean(document.getElementById('slippageCapToBar')?.checked || document.getElementById('slippageModel')?.value !== 'fixed_bps_v1'),
+                stop_gap_to_open: Boolean(document.getElementById('slippageCapToBar')?.checked || document.getElementById('slippageModel')?.value !== 'fixed_bps_v1'),
                 warmup_bars: Number(document.getElementById('warmupBars').value || 320),
                 scan_warmup_bars: Number(document.getElementById('warmupBars').value || 320),
                 premarket_cutoff_time: String(document.getElementById('premarketCutoff').value || '09:20').trim(),
@@ -134,6 +151,63 @@
                 await refreshDashboard(false);
             } catch (error) {
                 showToast(`启动失败: ${error.message || error}`);
+            } finally {
+                setActionState(false);
+            }
+        }
+
+        async function loadExecutionCostProfile() {
+            if (actionPending) return;
+            if (!initAuth()) return;
+            const symbolsText = String(document.getElementById('symbolsText')?.value || '').trim();
+            const params = new URLSearchParams({
+                environment: currentEnvironment,
+                limit: '5000',
+                persist_state: '1',
+            });
+            if (symbolsText) params.set('symbols', symbolsText);
+            setActionState(true);
+            try {
+                const payload = await requestBacktestJson(`/api/custom/ibkr/backtest/execution-cost/profile?${params.toString()}`);
+                if (!payload.profile_available) {
+                    showToast(`暂无可用成交样本: ${payload.error || 'no fills'}`);
+                    return;
+                }
+                const profile = payload.execution_cost_profile || payload.backtest_payload_patch?.execution_cost_profile || {};
+                document.getElementById('executionCostProfile').value = JSON.stringify(profile, null, 2);
+                document.getElementById('feeModel').value = 'calibrated_v1';
+                if (payload.backtest_payload_patch?.commission_per_share != null) {
+                    document.getElementById('commissionPerShare').value = payload.backtest_payload_patch.commission_per_share;
+                }
+                if (payload.backtest_payload_patch?.slippage_bps != null) {
+                    document.getElementById('slippageBps').value = payload.backtest_payload_patch.slippage_bps;
+                }
+                const count = payload.sample?.fill_count || payload.fill_query?.summary?.fill_count || 0;
+                showToast(`已加载成交校准 Profile，样本 ${count} 笔`);
+            } catch (error) {
+                showToast(`加载校准 Profile 失败: ${error.message || error}`);
+            } finally {
+                setActionState(false);
+            }
+        }
+
+        async function importRecentExecutionFills() {
+            if (actionPending) return;
+            if (!initAuth()) return;
+            setActionState(true);
+            try {
+                const payload = await requestBacktestJson('/api/custom/ibkr/backtest/execution-cost/import-recent-fills', {
+                    method: 'POST',
+                    body: {
+                        environment: currentEnvironment,
+                        days: 1,
+                    },
+                });
+                showToast(`最近成交导入完成: ${payload.imported || 0}/${payload.raw_count || 0}`);
+                setActionState(false);
+                await loadExecutionCostProfile();
+            } catch (error) {
+                showToast(`导入最近成交失败: ${error.message || error}`);
             } finally {
                 setActionState(false);
             }
