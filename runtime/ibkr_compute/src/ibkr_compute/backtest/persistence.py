@@ -171,7 +171,10 @@ class BacktestPersistenceMixin:
             "exit_policy": str(signal_extra.get("exit_policy") or signal.get("exit_policy", "") or ""),
             "exit_policy_type": str(signal_extra.get("exit_policy_type") or signal.get("exit_policy_type", "") or ""),
             "exit_policy_settings": dict(signal_extra.get("exit_policy_settings") or {}),
+            "target_state": dict(signal_extra.get("target_state") or {}),
             "trail_state": dict(signal_extra.get("trail_state") or {}),
+            "target_stop_adjust_count": 0,
+            "last_target_policy_update": {},
             "last_stop_atr": float((signal.get("extra") or {}).get("atr", 0) or 0),
             "atr_stop_adjust_count": 0,
             "mfe": 0.0,
@@ -190,6 +193,7 @@ class BacktestPersistenceMixin:
         direction = str(position.get("direction", "") or "")
         stop_price = float(position.get("stop_price", 0) or 0)
         target_price = float(position.get("target_price", 0) or 0)
+        hard_target = exit_policy_uses_hard_target(position)
         high = float(bar.get("high", 0) or 0)
         low = float(bar.get("low", 0) or 0)
         close = float(bar.get("close", 0) or 0)
@@ -212,14 +216,14 @@ class BacktestPersistenceMixin:
             if stop_price > 0 and low <= stop_price:
                 raw_exit_price = stop_price
                 exit_reason = "stop_loss"
-            elif target_price > 0 and high >= target_price:
+            elif hard_target and target_price > 0 and high >= target_price:
                 raw_exit_price = target_price
                 exit_reason = "take_profit"
         else:
             if stop_price > 0 and high >= stop_price:
                 raw_exit_price = stop_price
                 exit_reason = "stop_loss"
-            elif target_price > 0 and low <= target_price:
+            elif hard_target and target_price > 0 and low <= target_price:
                 raw_exit_price = target_price
                 exit_reason = "take_profit"
 
@@ -259,6 +263,8 @@ class BacktestPersistenceMixin:
                 "mae": round(float(position.get("mae", 0) or 0), 4),
                 "atr_stop_adjust_count": int(position.get("atr_stop_adjust_count", 0) or 0),
                 "last_atr_stop_adjust": position.get("last_atr_stop_adjust") or {},
+                "target_stop_adjust_count": int(position.get("target_stop_adjust_count", 0) or 0),
+                "last_target_policy_update": position.get("last_target_policy_update") or {},
                 "exit_policy_profile": position.get("exit_policy_profile", ""),
                 "exit_policy": position.get("exit_policy", ""),
                 "exit_policy_type": position.get("exit_policy_type", ""),
@@ -266,6 +272,7 @@ class BacktestPersistenceMixin:
                 "initial_stop_loss": float(position.get("initial_stop_loss", 0) or 0),
                 "initial_take_profit": float(position.get("initial_take_profit", 0) or 0),
                 "exit_policy_settings": position.get("exit_policy_settings") or {},
+                "target_state": position.get("target_state") or {},
                 "trail_state": position.get("trail_state") or {},
                 "signal_bar_ms": int(position.get("signal_bar_ms", 0) or 0),
                 "signal_us_time": position.get("signal_us_time", ""),
@@ -316,6 +323,8 @@ class BacktestPersistenceMixin:
                 "mae": round(float(position.get("mae", 0) or 0), 4),
                 "atr_stop_adjust_count": int(position.get("atr_stop_adjust_count", 0) or 0),
                 "last_atr_stop_adjust": position.get("last_atr_stop_adjust") or {},
+                "target_stop_adjust_count": int(position.get("target_stop_adjust_count", 0) or 0),
+                "last_target_policy_update": position.get("last_target_policy_update") or {},
                 "exit_policy_profile": position.get("exit_policy_profile", ""),
                 "exit_policy": position.get("exit_policy", ""),
                 "exit_policy_type": position.get("exit_policy_type", ""),
@@ -323,6 +332,7 @@ class BacktestPersistenceMixin:
                 "initial_stop_loss": float(position.get("initial_stop_loss", 0) or 0),
                 "initial_take_profit": float(position.get("initial_take_profit", 0) or 0),
                 "exit_policy_settings": position.get("exit_policy_settings") or {},
+                "target_state": position.get("target_state") or {},
                 "trail_state": position.get("trail_state") or {},
                 "signal_bar_ms": int(position.get("signal_bar_ms", 0) or 0),
                 "signal_us_time": position.get("signal_us_time", ""),

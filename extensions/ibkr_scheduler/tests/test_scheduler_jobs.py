@@ -194,6 +194,30 @@ class SchedulerJobsTest(unittest.TestCase):
             )
         )
 
+    def test_storage_governor_cron_matches_low_peak_et(self):
+        definition = next(item for item in scheduler_app_mod.CRON_DEFINITIONS if item["id"] == "ibkr_storage_governor")
+
+        self.assertEqual(definition["cron_expr"], "20 3 * * *")
+        self.assertEqual(definition["cron_timezone"], "America/New_York")
+        self.assertEqual(
+            scheduler_app_mod.NATIVE_HTTP_JOB_ENDPOINTS["ibkr_storage_governor"],
+            ("POST", "/storage/cleanup"),
+        )
+        self.assertTrue(
+            cron_matches_minute(
+                definition["cron_expr"],
+                datetime(2026, 4, 20, 7, 20, tzinfo=timezone.utc),
+                definition["cron_timezone"],
+            )
+        )
+        self.assertFalse(
+            cron_matches_minute(
+                definition["cron_expr"],
+                datetime(2026, 4, 20, 7, 10, tzinfo=timezone.utc),
+                definition["cron_timezone"],
+            )
+        )
+
     def test_compute_dispatch_updates_cursor_from_latest_persisted_bars(self):
         pb = _FakePB()
         pb.states[(BAR_INGEST_CURSOR_STATE_KEY, "live", "global")] = {
@@ -411,6 +435,31 @@ class SchedulerJobsTest(unittest.TestCase):
         self.assertEqual(request_payload["scan_scope"], "watchlist_full")
         self.assertTrue(request_payload["persist"])
         self.assertIn("market_date", request_payload)
+
+    def test_storage_governor_dispatches_balanced_profile(self):
+        pb = _FakePB()
+        scheduler = SchedulerService(pb, _FakeConfig())
+
+        with mock.patch(
+            "ibkr_scheduler.jobs.upstream_http.requests.request",
+            return_value=_FakeResponse({"ok": True, "total_deleted": 4}),
+        ) as request_mock:
+            result = scheduler.run_job(
+                "ibkr_storage_governor",
+                "live",
+                trigger_source="api_manual",
+                scheduled_slot="2026-04-23T07:20Z",
+            )
+
+        self.assertTrue(result["ok"])
+        request_mock.assert_called_once()
+        request_payload = request_mock.call_args.kwargs["json"]
+        self.assertEqual(request_mock.call_args.kwargs["url"], "http://127.0.0.1:5100/storage/cleanup")
+        self.assertEqual(request_payload["environment"], "live")
+        self.assertEqual(request_payload["source"], "ibkr_scheduler")
+        self.assertEqual(request_payload["profile"], "balanced_50g")
+        self.assertFalse(request_payload["dry_run"])
+        self.assertFalse(request_payload["force"])
 
     def test_duplicate_slot_is_skipped_without_second_upstream_call(self):
         pb = _FakePB()

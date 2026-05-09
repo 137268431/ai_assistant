@@ -175,6 +175,27 @@ class PBClient:
             return True
         return True
 
+    def delete_records(
+        self,
+        collection: str,
+        record_ids: List[str],
+        *,
+        timeout: int = 30,
+        batch_size: int = 50,
+    ) -> Dict[str, Any]:
+        ids = [str(record_id or "").strip() for record_id in (record_ids or []) if str(record_id or "").strip()]
+        if not ids:
+            return {"ok": True, "deleted": 0, "total": 0}
+        requests_payload = [
+            {
+                "method": "DELETE",
+                "url": f"/api/collections/{collection}/records/{record_id}",
+            }
+            for record_id in ids
+        ]
+        self._execute_batch_requests(requests_payload, timeout=timeout, batch_size=batch_size)
+        return {"ok": True, "deleted": len(ids), "total": len(ids)}
+
     def get_first_record(
         self,
         collection: str,

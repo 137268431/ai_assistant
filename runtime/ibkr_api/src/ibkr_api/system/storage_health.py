@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -263,6 +264,39 @@ def _load_row_estimates(conn: sqlite3.Connection) -> dict[str, int]:
     if error:
         return {}
     return {str(row["tbl"] or ""): _to_int(row["estimated_rows"]) for row in rows}
+
+
+def _load_storage_cleanup_state(conn: sqlite3.Connection, environment: str) -> dict[str, Any]:
+    row, _, error = _fetchone_timed(
+        conn,
+        """
+        select date, data, updated
+        from ibkr_state
+        where state_key = ? and environment = ?
+        order by date desc
+        limit 1
+        """,
+        ("ibkr_storage_cleanup", environment),
+        timeout_ms=300,
+    )
+    if error or row is None:
+        return {"available": False, "error": error} if error else {"available": False}
+    payload: dict[str, Any] = {}
+    raw_data = row["data"]
+    if isinstance(raw_data, str) and raw_data.strip():
+        try:
+            parsed = json.loads(raw_data)
+            payload = parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            payload = {}
+    elif isinstance(raw_data, dict):
+        payload = dict(raw_data)
+    return {
+        "available": True,
+        "date": str(row["date"] or ""),
+        "updated": str(row["updated"] or ""),
+        "data": payload,
+    }
 
 
 def _exact_count_if_small(conn: sqlite3.Connection, table: str, estimated_rows: int | None) -> tuple[int | None, str]:
@@ -658,6 +692,7 @@ def _collect_storage_health_uncached(
             },
         }
 
+    cleanup_state: dict[str, Any] = {"available": False}
     try:
         db_files = _build_db_files(db_path, conn)
         existing_tables = _load_existing_tables(conn)
@@ -672,6 +707,7 @@ def _collect_storage_health_uncached(
             )
             for table_config in MONITORED_TABLES
         ]
+        cleanup_state = _load_storage_cleanup_state(conn, runtime_environment)
         samples = _sample_queries(conn, runtime_environment, existing_tables)
     finally:
         conn.close()
@@ -791,6 +827,7 @@ def _collect_storage_health_uncached(
         "groups": GROUP_LABELS,
         "flags": flags,
         "query_samples": samples,
+        "storage_cleanup": cleanup_state,
         "summary": {
             "monitored_tables": len(MONITORED_TABLES),
             "existing_tables": sum(1 for table in tables if table.get("exists")),

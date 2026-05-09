@@ -21,6 +21,7 @@ from ibkr_compute.api.ops.views import (
     build_health_response,
     build_retention_cleanup_response,
     build_status_response,
+    build_storage_cleanup_response,
 )
 from ibkr_compute.api.runtime_proxy import register_runtime_proxy_route, should_proxy_runtime_requests
 
@@ -37,6 +38,10 @@ def register_ops_routes(app):
     @app.route("/retention/cleanup", methods=["POST"])
     def retention_cleanup():
         return build_retention_cleanup_response()
+
+    @app.route("/storage/cleanup", methods=["POST"])
+    def storage_cleanup():
+        return build_storage_cleanup_response()
 
     @app.route("/backtest/run", methods=["POST"])
     def backtest_run():

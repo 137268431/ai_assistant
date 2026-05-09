@@ -23,7 +23,9 @@ from ibkr_compute.core.active_window_admission import build_active_window_admiss
 from ibkr_compute.core.risk_management import (
     compute_atr_tightened_stop,
     compute_exit_policy_stop_update,
+    compute_exit_policy_target_update,
     compute_exit_policy_time_exit,
+    exit_policy_uses_hard_target,
 )
 from ibkr_compute.core.exit_policy import is_signal_mode_adaptive_exit_profile
 from ibkr_compute.core.signal_generator import SignalGenerator

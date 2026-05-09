@@ -136,7 +136,15 @@ const ACTIVE_CONFIG_KEYS = new Set([
   'ibkr_scheduler_internal_url',
   'ibkr_compute_enabled',
   'ibkr_bar_publish_enabled',
-  'tv_webhook_ingest_enabled'
+  'tv_webhook_ingest_enabled',
+  'storage_cleanup_enabled',
+  'storage_cleanup_profile',
+  'storage_cleanup_backtest_recent_limit',
+  'storage_cleanup_protected_batch_ids',
+  'storage_cleanup_protected_run_ids',
+  'storage_cleanup_vacuum_warn_gb',
+  'storage_cleanup_vacuum_warn_ratio',
+  'storage_cleanup_disk_low_free_pct'
 ])
 
 function meta(displayName, groupName, sortOrder, defaultValue = '', description = '') {
@@ -161,7 +169,7 @@ const CONFIG_META = {
   signal_window_max_bars: meta('信号窗口最大K线数', '信号与反转', 222, '12', 'SD 窗口开启后最多保留多少根 5m K线，过期后清空组件'),
   signal_strategy_profile: meta('信号策略 Profile', '信号与反转', 222.1, 'legacy', 'legacy=原 SD/MR 逻辑；intraday_sd_v1=启用日内 SD squeeze / VWAP trend-pullback 新 setup'),
   ibkr_signal_strategy_profile: meta('IBKR 信号 Profile 覆盖', '信号与反转', 222.2, '', '非空时覆盖 signal_strategy_profile；留空表示沿用通用策略 profile'),
-  exit_policy_profile: meta('退出策略 Profile', '信号与反转', 222.25, 'fixed_atr_rr', 'fixed_atr_rr=固定 ATR/RR 初始 bracket + ATR 收紧；signal_mode_adaptive_v1=按信号模式路由不同 TP/SL 策略'),
+  exit_policy_profile: meta('退出策略 Profile', '信号与反转', 222.25, 'fixed_atr_rr', 'fixed_atr_rr=固定 ATR/RR 初始 bracket + ATR 收紧；signal_mode_adaptive_v1=按信号模式路由不同 TP/SL 策略；signal_mode_adaptive_v2=候选状态化止盈，MR 固定目标、trend/breakout 用 runner/checkpoint'),
   exit_policy_overrides: meta('退出策略覆盖JSON', '信号与反转', 222.26, '', '可选 JSON，例如 {"mr_reversion":{"tp_rr":1.5},"trend_pullback":{"chandelier_atr_mult":2.0}}；留空使用内置信号模式策略映射'),
   intraday_signal_validity_minutes: meta('日内信号有效期', '信号与反转', 222.3, '15', 'intraday_sd_v1 新 setup 的信号级有效期，优先于全局 signal_validity_minutes'),
   intraday_entry_window_start_time: meta('日内入场开始', '信号与反转', 222.4, '09:35', 'intraday_sd_v1 新 setup 允许生成新入场信号的开始时间，ET 时区'),
@@ -222,6 +230,14 @@ const CONFIG_META = {
   ibkr_watchlist_backfill_stale_min: meta('底池回补滞后阈值', '行情链路', 730, '20', '仅当最近 5m bar 超过该阈值未更新时才触发回补'),
   ibkr_watchlist_integrity_enabled: meta('底池完整性巡检', '行情链路', 740, 'TRUE', '启用后按批次巡检非目标标的的 5m bars 完整性，并将结果写入 ibkr_bar_integrity'),
   ibkr_watchlist_integrity_batch_size: meta('底池巡检批次', '行情链路', 750, '8', '每轮底池完整性巡检最多处理多少个非目标标的'),
+  storage_cleanup_enabled: meta('存储治理开关', '存储治理', 780, 'TRUE', '开启后每日低峰清理可重建/可归档数据；不会删除 config / watchlist / bars 核心窗口 / 活跃信号订单'),
+  storage_cleanup_profile: meta('存储治理 Profile', '存储治理', 781, 'balanced_50g', 'balanced_50g=50G 硬盘平衡档：bars 仍由历史留存控制，指标/日志/TV/回测更短留存'),
+  storage_cleanup_backtest_recent_limit: meta('回测保留数量', '存储治理', 782, '30', '除保护的最佳 batch/run 外，保留最近多少个 backtest batch/run'),
+  storage_cleanup_protected_batch_ids: meta('保护回测 Batch IDs', '存储治理', 783, '3gf4ouzj7oyvlao', '逗号分隔，永不自动删除的回测 batch'),
+  storage_cleanup_protected_run_ids: meta('保护回测 Run IDs', '存储治理', 784, 'bm9wl0lagddsd6a', '逗号分隔，永不自动删除的回测 run'),
+  storage_cleanup_vacuum_warn_gb: meta('VACUUM 提醒GB', '存储治理', 785, '1.0', 'SQLite freelist 超过该 GB 时提示周末/手动 VACUUM，不自动压缩'),
+  storage_cleanup_vacuum_warn_ratio: meta('VACUUM 提醒比例', '存储治理', 786, '0.15', 'SQLite freelist 占总页数超过该比例时提示周末/手动 VACUUM'),
+  storage_cleanup_disk_low_free_pct: meta('磁盘低余量提醒%', '存储治理', 787, '15', '磁盘剩余百分比低于该值时 storage cleanup 标记 needs_vacuum'),
   ibkr_restart_overlap_days: meta('重启重叠回补天数', '行情链路', 760, '1', '每次重启时从最近 N 天的 overlap 区间重新拉取 5m history，覆盖修正 recent bars'),
   ibkr_manual_start_restart_gateway: meta('手动启动先重启 IB Gateway', '启动策略', 770, 'TRUE', '开启后，Runtime 页面“启动 Runtime”会先重启 systemd `ibkr-gateway`、清空旧 Session，再创建新的启动轮次；这是 live 默认推荐模式'),
   ibkr_weekly_reauth_restart_gateway: meta('每周重验先重启 IB Gateway', '启动策略', 772, 'TRUE', '开启后，每周重验会先重启 systemd `ibkr-gateway`，再进入新的人工 2FA 轮次'),
@@ -264,6 +280,7 @@ const GROUP_ORDER = [
   '日终规则',
   '标的订阅',
   '行情链路',
+  '存储治理',
   '通知路由',
   '系统通知',
   '服务接入',
@@ -282,7 +299,8 @@ const BOOLEAN_CONFIG_KEYS = new Set([
   'ibkr_compute_enabled',
   'ibkr_bar_publish_enabled',
   'tv_webhook_ingest_enabled',
-  'ibkr_market_ws_enabled'
+  'ibkr_market_ws_enabled',
+  'storage_cleanup_enabled'
 ])
 
 const NUMERIC_CONFIG_RULES = {
@@ -310,7 +328,11 @@ const NUMERIC_CONFIG_RULES = {
   system_monitor_ws_message_age_regular_warn_sec: { min: '15', max: '900', step: '15' },
   system_monitor_ws_message_age_regular_critical_sec: { min: '30', max: '3600', step: '30' },
   system_monitor_ws_message_age_late_session_warn_sec: { min: '60', max: '3600', step: '60' },
-  system_monitor_ws_message_age_late_session_critical_sec: { min: '120', max: '7200', step: '60' }
+  system_monitor_ws_message_age_late_session_critical_sec: { min: '120', max: '7200', step: '60' },
+  storage_cleanup_backtest_recent_limit: { min: '5', max: '200', step: '1' },
+  storage_cleanup_vacuum_warn_gb: { min: '0.1', max: '20', step: '0.1' },
+  storage_cleanup_vacuum_warn_ratio: { min: '0.02', max: '0.80', step: '0.01' },
+  storage_cleanup_disk_low_free_pct: { min: '5', max: '80', step: '1' }
 }
 
 const SELECT_CONFIGS = {
@@ -318,6 +340,9 @@ const SELECT_CONFIGS = {
     { value: 'both', label: 'both (全部)' },
     { value: 'tradingview', label: 'tradingview (仅 TV)' },
     { value: 'ibkr_compute', label: 'ibkr_compute (仅 Compute)' }
+  ],
+  storage_cleanup_profile: [
+    { value: 'balanced_50g', label: 'balanced_50g (50G 平衡档)' }
   ]
 }
 

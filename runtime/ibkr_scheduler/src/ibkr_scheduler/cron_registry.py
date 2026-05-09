@@ -390,12 +390,30 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         hook_file="ibkr_system_monitor.pb.js",
         runner_kind="native_http",
     ),
+    _definition(
+        "ibkr_storage_governor",
+        "pb_cron_ibkr_storage_governor_enabled",
+        "PocketBase 存储治理 Cron",
+        "PocketBase 存储治理",
+        140.5,
+        "20 3 * * *",
+        "每日 America/New_York 03:20",
+        "按 balanced_50g 策略清理可重建指标、旧日志、TV 兼容数据和旧回测产物。",
+        "兼容读取 pb_scheduler_enabled 和 storage_cleanup_enabled；仅删除安全过期数据，不自动 VACUUM。",
+        beijing_cycle_label="北京时间 每日 15:20（美东夏令时）/ 16:20（美东冬令时）",
+        et_cycle_label="美东时间 每日 03:20",
+        window_label="低峰存储治理",
+        hook_file="ibkr_system_monitor.pb.js",
+        runner_kind="native_http",
+        cron_timezone="America/New_York",
+    ),
 ]
 
 
 NATIVE_HTTP_JOB_ENDPOINTS: dict[str, tuple[str, str]] = {
     "ibkr_scan_runtime": ("POST", "/scan"),
     "ibkr_history_retention": ("POST", "/retention/cleanup"),
+    "ibkr_storage_governor": ("POST", "/storage/cleanup"),
     "ibkr_data_quality_open_sweep": ("POST", "/ibkr/data-quality/repair"),
     "ibkr_data_quality_close_sweep": ("POST", "/ibkr/data-quality/repair"),
     "ibkr_data_quality_premarket_truth_audit": ("POST", "/ibkr/data-quality/truth-audit"),

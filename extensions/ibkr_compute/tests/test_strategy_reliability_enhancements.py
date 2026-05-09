@@ -13,7 +13,12 @@ if str(SRC_ROOT) not in sys.path:
 from ibkr_compute.backtest import request_utils, runtime_service
 from ibkr_compute.backtest.runtime_service import BacktestService
 from ibkr_compute.core.exit_policy import normalize_exit_policy_profile, resolve_exit_policy
-from ibkr_compute.core.risk_management import compute_atr_tightened_stop, compute_exit_policy_stop_update
+from ibkr_compute.core.risk_management import (
+    compute_atr_tightened_stop,
+    compute_exit_policy_stop_update,
+    compute_exit_policy_target_update,
+    compute_exit_policy_time_exit,
+)
 from ibkr_compute.core.signal_generator import SignalGenerator
 from ibkr_compute.core.time_utils import ET
 from ibkr_compute.signal.signal_processor import SignalProcessor
@@ -357,6 +362,78 @@ class StrategyReliabilityEnhancementTests(unittest.TestCase):
         self.assertEqual(trend_policy["name"], "chandelier_runner")
         self.assertEqual(trend_policy["tp_rr"], 2.0)
 
+    def test_signal_mode_adaptive_v2_resolves_stateful_target_modes(self):
+        self.assertEqual(
+            normalize_exit_policy_profile({"exit_policy_profile": "signal_mode_adaptive_v2"}),
+            "signal_mode_adaptive_v2",
+        )
+        mr_policy = resolve_exit_policy(
+            {"exit_policy_profile": "signal_mode_adaptive_v2"},
+            setup="mr_sdUpper",
+            signal_mode="mr",
+        )
+        trend_policy = resolve_exit_policy(
+            {"exit_policy_profile": "signal_mode_adaptive_v2"},
+            setup="trend_sdLower",
+            signal_mode="trend",
+        )
+        breakout_policy = resolve_exit_policy(
+            {"exit_policy_profile": "signal_mode_adaptive_v2"},
+            setup="squeeze_breakout_long",
+            signal_mode="breakout",
+        )
+
+        self.assertEqual(mr_policy["target_mode"], "hard_rr")
+        self.assertTrue(mr_policy["target_is_hard"])
+        self.assertEqual(trend_policy["target_mode"], "checkpoint_then_trail")
+        self.assertTrue(trend_policy["target_is_hard"])
+        self.assertEqual(trend_policy["tp_rr"], 3.0)
+        self.assertEqual(breakout_policy["target_mode"], "checkpoint_then_trail")
+        self.assertTrue(breakout_policy["target_is_hard"])
+        self.assertTrue(breakout_policy["failure_exit_enabled"])
+
+    def test_signal_mode_adaptive_v2_signal_metadata_marks_breakout_checkpoint_target(self):
+        gen = SignalGenerator(
+            "AAPL",
+            "5m",
+            {
+                "signal_strategy_profile": "intraday_sd_v1",
+                "exit_policy_profile": "signal_mode_adaptive_v2",
+                "position_amount": 10000,
+                "max_loss_per_trade": 1000,
+            },
+        )
+        snapshot = {
+            "close": 100.0,
+            "open": 99.5,
+            "high": 100.5,
+            "low": 99.4,
+            "atr": 1.0,
+            "atr_pct": 1.0,
+            "sd_squeeze_active": True,
+            "sd_breakout_up": True,
+            "sd_breakout_down": False,
+            "sd_trend_walk_up": False,
+            "sd_trend_walk_down": False,
+            "vwap": 99.0,
+            "vwap_bullish": True,
+            "orb_breakout_down": False,
+            "session_type": "regular",
+            "rvol_20": 1.0,
+            "dtp_dir": 0,
+            "dtp_phase": "neutral",
+            "dtp_phase_bars": 99,
+        }
+
+        signal = gen.update(snapshot)
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal["extra"]["exit_policy_profile"], "signal_mode_adaptive_v2")
+        self.assertEqual(signal["extra"]["exit_policy_type"], "breakout")
+        self.assertEqual(signal["extra"]["exit_policy_settings"]["target_mode"], "checkpoint_then_trail")
+        self.assertTrue(signal["extra"]["exit_policy_settings"]["target_is_hard"])
+        self.assertEqual(signal["extra"]["target_state"]["target_mode"], "checkpoint_then_trail")
+
     def test_signal_mode_policy_trail_uses_chandelier_without_widening(self):
         position = {
             "direction": "long",
@@ -386,6 +463,105 @@ class StrategyReliabilityEnhancementTests(unittest.TestCase):
         self.assertGreater(result["new_sl"], position["stop_price"])
         self.assertLess(result["new_sl"], 104.0)
         self.assertEqual(result["trail_state"]["adjust_count"], 1)
+
+    def test_soft_runner_target_touch_does_not_close_backtest_position(self):
+        service = BacktestService(None)
+        position = {
+            "symbol": "AAPL",
+            "direction": "long",
+            "signal": "trend_sdLower",
+            "signal_id": "trend",
+            "reason": "",
+            "entry_bar_ms": 1,
+            "entry_us_time": "2026-04-08 10:00:00",
+            "entry_cn_time": "",
+            "entry_price": 100.0,
+            "target_price": 104.0,
+            "stop_price": 98.0,
+            "shares": 10,
+            "entry_commission": 0.05,
+            "bars_held": 0,
+            "exit_policy_settings": {"target_mode": "soft_runner", "target_is_hard": False},
+        }
+        bar = {"bar_time_ms": 2, "us_time": "2026-04-08 10:05:00", "high": 105.0, "low": 101.0, "close": 104.5}
+
+        self.assertIsNone(service._check_exit(position, bar, commission_per_share=0.005, slippage_bps=0.0))
+
+        hard_position = dict(position, bars_held=0, exit_policy_settings={"target_mode": "hard_rr", "target_is_hard": True})
+        hard_close = service._check_exit(hard_position, bar, commission_per_share=0.005, slippage_bps=0.0)
+        self.assertIsNotNone(hard_close)
+        self.assertEqual(hard_close["exit_reason"], "take_profit")
+
+    def test_checkpoint_target_tightens_stop_without_widening(self):
+        position = {
+            "direction": "long",
+            "entry_price": 100.0,
+            "stop_price": 98.0,
+            "target_price": 110.0,
+            "risk_r": 2.0,
+            "mfe": 0.0,
+            "exit_policy_settings": {
+                "target_mode": "checkpoint_then_trail",
+                "target_is_hard": True,
+                "checkpoint_r": 1.0,
+                "checkpoint_lock_r": 0.1,
+            },
+            "target_state": {},
+        }
+
+        result = compute_exit_policy_target_update(
+            position,
+            current_price=102.4,
+            bar_high=102.5,
+            bar_low=101.5,
+        )
+
+        self.assertTrue(result["should_update_stop"])
+        self.assertAlmostEqual(result["new_sl"], 100.2)
+        self.assertTrue(result["target_state"]["checkpoint_hit"])
+        self.assertTrue(result["target_state"]["target_is_hard"])
+        self.assertGreater(result["new_sl"], position["stop_price"])
+
+        protected = dict(position, stop_price=101.0)
+        no_widen = compute_exit_policy_target_update(
+            protected,
+            current_price=102.4,
+            bar_high=102.5,
+            bar_low=101.5,
+        )
+        self.assertFalse(no_widen["should_update_stop"])
+        self.assertTrue(no_widen["target_state"]["checkpoint_hit"])
+
+    def test_breakout_failure_time_exit_requires_v2_failure_flag(self):
+        position = {
+            "direction": "long",
+            "entry_price": 100.0,
+            "stop_price": 98.0,
+            "risk_r": 2.0,
+            "mfe": 0.6,
+            "bars_held": 6,
+            "exit_policy_settings": {
+                "failure_exit_enabled": True,
+                "failure_exit_bars": 6,
+                "failure_exit_min_mfe_r": 0.5,
+            },
+        }
+
+        failed = compute_exit_policy_time_exit(position)
+        self.assertTrue(failed["should_exit"])
+        self.assertEqual(failed["reason"], "exit_policy_breakout_failure")
+
+        disabled = compute_exit_policy_time_exit(
+            {
+                **position,
+                "exit_policy_settings": {
+                    "failure_exit_enabled": False,
+                    "failure_exit_bars": 6,
+                    "failure_exit_min_mfe_r": 0.5,
+                },
+            }
+        )
+        self.assertFalse(disabled["should_exit"])
 
     def test_signal_processor_blocks_symbol_during_cooldown_and_active_target(self):
         processor = SignalProcessor(FakeConfig(), environment="live")

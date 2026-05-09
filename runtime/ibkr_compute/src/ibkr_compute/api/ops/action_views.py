@@ -26,6 +26,8 @@ from ibkr_compute.api.service_topology import build_service_topology, get_servic
 from ibkr_compute.api.shared.service_status import get_service_status_snapshot
 from ibkr_compute.market.data_retention import DataRetention
 from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite
+from ibkr_compute.market.storage_cleanup import DEFAULT_PROFILE as STORAGE_CLEANUP_DEFAULT_PROFILE
+from ibkr_compute.market.storage_cleanup import StorageCleanup
 
 
 BACKTEST_RUN_LIST_COLUMNS = [
@@ -263,6 +265,37 @@ def build_retention_cleanup_response():
         {
             "ok": bool(result.get("ok", True)),
             "action": "retention_cleanup",
+            "requested_environments": requested_environments,
+            **result,
+        }
+    )
+
+
+def build_storage_cleanup_response():
+    app_mod = get_app_module()
+    app_mod.cfg.refresh()
+    payload = get_json_payload()
+    requested_environments = app_mod.get_requested_environments(defaults=app_mod.SUPPORTED_COMPUTE_ENVIRONMENTS)
+    dry_run = coerce_request_bool(payload.get("dry_run"), False)
+    force = coerce_request_bool(payload.get("force"), False)
+    source = str(payload.get("source") or "").strip().lower() or "api"
+    profile = str(payload.get("profile") or STORAGE_CLEANUP_DEFAULT_PROFILE).strip() or STORAGE_CLEANUP_DEFAULT_PROFILE
+    cleanup = StorageCleanup(
+        pb_client=app_mod.pb,
+        config=app_mod.cfg,
+        default_environments=requested_environments,
+    )
+    result = cleanup.cleanup(
+        environments=requested_environments,
+        dry_run=dry_run,
+        force=force,
+        source=source,
+        profile=profile,
+    )
+    return jsonify(
+        {
+            "ok": bool(result.get("ok", True)),
+            "action": "storage_cleanup",
             "requested_environments": requested_environments,
             **result,
         }

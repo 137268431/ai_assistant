@@ -10,6 +10,19 @@ def _safe_float(value, default: float = 0.0) -> float:
         return default
 
 
+def _safe_bool(value, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value if value is not None else "").strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off", ""}:
+        return False
+    return default
+
+
 def position_progress_r(position: dict, current_price: float) -> float:
     """Return favorable progress measured in initial risk units."""
     direction = str(position.get("direction") or "").strip().lower()
@@ -138,6 +151,16 @@ def _policy_trail_state(position: dict) -> dict:
     return {}
 
 
+def _policy_target_state(position: dict) -> dict:
+    state = position.get("target_state")
+    if isinstance(state, dict):
+        return dict(state)
+    extra = position.get("extra")
+    if isinstance(extra, dict) and isinstance(extra.get("target_state"), dict):
+        return dict(extra.get("target_state") or {})
+    return {}
+
+
 def _initial_risk(position: dict, entry: float, old_sl: float) -> float:
     raw = _safe_float(position.get("risk_r"), 0.0)
     if raw > 0:
@@ -151,6 +174,121 @@ def _initial_risk(position: dict, entry: float, old_sl: float) -> float:
     if entry > 0 and old_sl > 0:
         return abs(entry - old_sl)
     return 0.0
+
+
+def exit_policy_uses_hard_target(position: dict) -> bool:
+    """Return whether a backtest target touch should close immediately."""
+    settings = _policy_settings(position)
+    if "target_is_hard" in settings:
+        return _safe_bool(settings.get("target_is_hard"), True)
+    target_mode = str(settings.get("target_mode") or "hard_rr").strip().lower()
+    return target_mode not in {"soft_runner", "checkpoint_then_trail"}
+
+
+def compute_exit_policy_target_update(
+    position: dict,
+    *,
+    current_price: float,
+    bar_high: float | None = None,
+    bar_low: float | None = None,
+    min_change: float = 0.01,
+    price_buffer_pct: float = 0.001,
+) -> dict:
+    """Update stateful target checkpoints and optionally tighten the stop.
+
+    This models strategy-specific profit taking without turning every setup
+    into a fixed target close. It never widens risk.
+    """
+    settings = _policy_settings(position)
+    target_mode = str(settings.get("target_mode") or "hard_rr").strip().lower()
+    target_is_hard = exit_policy_uses_hard_target(position)
+    if target_mode == "hard_rr":
+        return {
+            "should_update_stop": False,
+            "reason": "hard_target_policy",
+            "target_is_hard": target_is_hard,
+            "target_mode": target_mode or "hard_rr",
+        }
+
+    direction = str(position.get("direction") or "").strip().lower()
+    entry = _safe_float(position.get("entry_price", position.get("entry", 0)))
+    old_sl = _safe_float(position.get("stop_price", position.get("stop_loss", 0)))
+    target = _safe_float(position.get("target_price", position.get("take_profit", 0)))
+    current = _safe_float(current_price)
+    high = _safe_float(bar_high, current) if bar_high is not None else current
+    low = _safe_float(bar_low, current) if bar_low is not None else current
+    risk = _initial_risk(position, entry, old_sl)
+    min_delta = max(0.0, _safe_float(min_change, 0.01))
+
+    if direction not in {"long", "short"}:
+        return {"should_update_stop": False, "reason": "invalid_direction"}
+    if entry <= 0 or old_sl <= 0 or current <= 0 or risk <= 0:
+        return {"should_update_stop": False, "reason": "invalid_prices"}
+
+    favorable = max(0.0, high - entry) if direction == "long" else max(0.0, entry - low)
+    mfe = max(_safe_float(position.get("mfe"), 0.0), favorable)
+    mfe_r = mfe / risk if risk > 0 else 0.0
+    target_touched = bool(
+        target > 0 and ((direction == "long" and high >= target) or (direction == "short" and low <= target))
+    )
+    checkpoint_r = max(0.0, _safe_float(settings.get("checkpoint_r"), 0.0))
+    checkpoint_hit = checkpoint_r > 0 and mfe_r >= checkpoint_r
+    old_state = _policy_target_state(position)
+    next_state = {
+        **old_state,
+        "target_mode": target_mode or "soft_runner",
+        "target_is_hard": target_is_hard,
+        "highest_mfe_r": round(max(_safe_float(old_state.get("highest_mfe_r"), 0.0), mfe_r), 4),
+        "target_touched": bool(old_state.get("target_touched") or target_touched),
+        "checkpoint_hit": bool(old_state.get("checkpoint_hit") or checkpoint_hit),
+    }
+
+    if not checkpoint_hit:
+        return {
+            "should_update_stop": False,
+            "reason": "checkpoint_not_hit",
+            "mfe_r": round(mfe_r, 4),
+            "target_touched": target_touched,
+            "target_state": next_state,
+        }
+
+    lock_r = max(0.0, _safe_float(settings.get("checkpoint_lock_r"), 0.0))
+    locked_stop = entry + risk * lock_r if direction == "long" else entry - risk * lock_r
+    price_buffer = max(min_delta, current * max(0.0, _safe_float(price_buffer_pct, 0.001)))
+    if direction == "long":
+        candidate = max(old_sl, locked_stop)
+        if target > 0:
+            candidate = min(candidate, target - min_delta)
+        candidate = min(candidate, current - price_buffer)
+        improved = candidate > old_sl + min_delta - 1e-9
+    else:
+        candidate = min(old_sl, locked_stop)
+        if target > 0:
+            candidate = max(candidate, target + min_delta)
+        candidate = max(candidate, current + price_buffer)
+        improved = candidate < old_sl - min_delta + 1e-9
+
+    candidate = round(float(candidate), 4)
+    if not improved or candidate <= 0:
+        return {
+            "should_update_stop": False,
+            "reason": "checkpoint_no_tightening_available",
+            "old_sl": round(old_sl, 4),
+            "candidate_sl": candidate,
+            "mfe_r": round(mfe_r, 4),
+            "target_touched": target_touched,
+            "target_state": next_state,
+        }
+
+    return {
+        "should_update_stop": True,
+        "old_sl": round(old_sl, 4),
+        "new_sl": candidate,
+        "reason": "target_checkpoint_stop",
+        "mfe_r": round(mfe_r, 4),
+        "target_touched": target_touched,
+        "target_state": next_state,
+    }
 
 
 def compute_exit_policy_stop_update(
@@ -281,6 +419,16 @@ def compute_exit_policy_time_exit(position: dict) -> dict:
     min_mfe_r = max(0.0, _safe_float(settings.get("time_stop_min_mfe_r"), 0.0))
     if hard_bars > 0 and bars_held >= hard_bars:
         return {"should_exit": True, "reason": "exit_policy_hard_time_stop", "bars_held": bars_held, "mfe_r": round(mfe_r, 4)}
+    failure_bars = int(_safe_float(settings.get("failure_exit_bars"), 0))
+    failure_enabled = _safe_bool(settings.get("failure_exit_enabled"), False)
+    failure_min_mfe_r = max(0.0, _safe_float(settings.get("failure_exit_min_mfe_r"), 0.0))
+    if failure_enabled and failure_bars > 0 and bars_held >= failure_bars and mfe_r < failure_min_mfe_r:
+        return {
+            "should_exit": True,
+            "reason": "exit_policy_breakout_failure",
+            "bars_held": bars_held,
+            "mfe_r": round(mfe_r, 4),
+        }
     if time_bars > 0 and bars_held >= time_bars and mfe_r < min_mfe_r:
         return {"should_exit": True, "reason": "exit_policy_time_stop", "bars_held": bars_held, "mfe_r": round(mfe_r, 4)}
     return {"should_exit": False, "reason": "", "bars_held": bars_held, "mfe_r": round(mfe_r, 4)}

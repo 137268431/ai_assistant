@@ -181,6 +181,13 @@ class SchedulerService:
                 "persist": True,
                 "market_date": market_date,
             }
+        if job_id == "ibkr_storage_governor":
+            return {
+                "dry_run": False,
+                "force": False,
+                "profile": "balanced_50g",
+                "source": "ibkr_scheduler",
+            }
         return {}
 
     def _run_native_http_job(self, job_id: str, environment: str) -> dict[str, Any]:

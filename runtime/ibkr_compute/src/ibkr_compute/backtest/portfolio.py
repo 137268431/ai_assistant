@@ -242,6 +242,19 @@ class BacktestPortfolioMixin:
         current_price = self._coerce_float_value(snapshot.get("close"), 0.0)
         current_atr = self._coerce_float_value(snapshot.get("atr"), 0.0)
         if is_signal_mode_adaptive_exit_profile(position.get("exit_policy_profile")):
+            target_result = compute_exit_policy_target_update(
+                position,
+                current_price=current_price,
+                bar_high=self._coerce_float_value(snapshot.get("high"), current_price),
+                bar_low=self._coerce_float_value(snapshot.get("low"), current_price),
+                min_change=self._coerce_float_value(request.get("atr_stop_min_change"), 0.01),
+            )
+            if target_result.get("target_state"):
+                position["target_state"] = dict(target_result.get("target_state") or {})
+            if target_result.get("should_update_stop"):
+                position["stop_price"] = float(target_result["new_sl"])
+                position["target_stop_adjust_count"] = int(position.get("target_stop_adjust_count", 0) or 0) + 1
+                position["last_target_policy_update"] = target_result
             result = compute_exit_policy_stop_update(
                 position,
                 current_price=current_price,
