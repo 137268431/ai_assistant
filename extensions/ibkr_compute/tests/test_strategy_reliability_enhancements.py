@@ -387,9 +387,12 @@ class StrategyReliabilityEnhancementTests(unittest.TestCase):
         self.assertTrue(mr_policy["target_is_hard"])
         self.assertEqual(trend_policy["target_mode"], "checkpoint_then_trail")
         self.assertTrue(trend_policy["target_is_hard"])
-        self.assertEqual(trend_policy["tp_rr"], 3.0)
+        self.assertEqual(trend_policy["tp_rr"], 2.0)
+        self.assertEqual(trend_policy["checkpoint_lock_r"], 0.2)
         self.assertEqual(breakout_policy["target_mode"], "checkpoint_then_trail")
         self.assertTrue(breakout_policy["target_is_hard"])
+        self.assertEqual(breakout_policy["tp_rr"], 2.5)
+        self.assertEqual(breakout_policy["checkpoint_lock_r"], 0.2)
         self.assertTrue(breakout_policy["failure_exit_enabled"])
 
     def test_signal_mode_adaptive_v2_signal_metadata_marks_breakout_checkpoint_target(self):

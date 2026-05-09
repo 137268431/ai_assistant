@@ -1,8 +1,10 @@
 import sqlite3
 import sys
 import threading
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "src"
 if str(SRC_ROOT) not in sys.path:
@@ -95,6 +97,70 @@ class DummyResubscribeUniverse(TradingServiceMarketUniverseMixin):
         return normalized
 
 
+class DummyPreloadCoordinator:
+    def __init__(self):
+        self.calls = []
+
+    def enqueue(self, symbols, **kwargs):
+        self.calls.append({"symbols": list(symbols), **kwargs})
+        return {
+            "ok": True,
+            "available": True,
+            "enabled": True,
+            "symbols": list(symbols),
+            "queued": [{"symbol": symbol} for symbol in symbols],
+            "deduped": [],
+        }
+
+
+class DummyConidResolver:
+    def resolve_bulk(self, symbols):
+        return {str(symbol or "").strip().upper(): index + 1 for index, symbol in enumerate(symbols or [])}
+
+
+class DummyDataBackfill:
+    def __init__(self):
+        self.calls = []
+
+    def backfill_all(self, conid_map, symbol_meta=None, intervals=None):
+        self.calls.append({"conid_map": dict(conid_map), "symbol_meta": dict(symbol_meta or {}), "intervals": list(intervals or [])})
+        return {symbol: {"5m": 1} for symbol in conid_map}
+
+
+class DummyDataWriter:
+    def __init__(self):
+        self.flushed = 0
+
+    def flush(self):
+        self.flushed += 1
+
+
+class DummySignalRouter:
+    def forget_processed(self, _signal_ids):
+        return None
+
+
+class DummyPrimeUniverse(TradingServiceMarketUniverseMixin):
+    def __init__(self):
+        self.conid_resolver = DummyConidResolver()
+        self.data_backfill = DummyDataBackfill()
+        self.data_writer = DummyDataWriter()
+        self.backtest_preload_coordinator = DummyPreloadCoordinator()
+        self.signal_processor = DummySignalProcessor()
+        self.signal_router = DummySignalRouter()
+        self._signal_wakeup = threading.Event()
+        self._symbol_meta = {"AAPL": {"exchange": "SMART"}}
+        self._last_backfill_at = 0
+        self._last_backfill_symbols = []
+
+    def _now_iso(self) -> str:
+        return "2026-04-16T10:05:00-04:00"
+
+    def _schedule_interval_prime(self, symbols, source="universe_prime"):
+        self.interval_prime = {"symbols": list(symbols), "source": source}
+        return True
+
+
 class UniversePrimeSignalSelectionTest(unittest.TestCase):
     def test_selects_latest_valid_signal_per_symbol(self):
         universe = DummyUniverse(invalid_signal_ids={"AAPL_INVALID"})
@@ -144,6 +210,28 @@ class UniversePrimeSignalSelectionTest(unittest.TestCase):
         self.assertEqual(result["evaluated"][0]["signal_id"], "AAPL_INVALID")
         self.assertFalse(result["evaluated"][0]["valid"])
         self.assertTrue(result["selected_signals"][0]["extra"]["universe_prime"])
+
+
+class UniversePrimeBacktestPreloadTest(unittest.TestCase):
+    def test_prime_enqueues_default_backtest_preload_without_blocking_compute(self):
+        universe = DummyPrimeUniverse()
+        fake_server = types.SimpleNamespace(
+            compute_lock=threading.RLock(),
+            _run_internal_compute=lambda payload: {"ok": True, "payload": payload, "captured_signals": []},
+        )
+
+        with mock.patch.dict(sys.modules, {"ibkr_compute.api.server": fake_server}):
+            result = universe._prime_universe_symbols(["aapl"], source="target_upsert")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(["AAPL"], result["backtest_preload"]["symbols"])
+        self.assertEqual(1, len(result["backtest_preload"]["queued"]))
+        preload_call = universe.backtest_preload_coordinator.calls[0]
+        self.assertEqual(["AAPL"], preload_call["symbols"])
+        self.assertEqual("live", preload_call["environment"])
+        self.assertEqual("target_upsert", preload_call["trigger"])
+        self.assertEqual("new_universe_symbol_default_backtest_preload", preload_call["reason"])
+        self.assertTrue(result["interval_prime_started"])
 
 
 class UniverseRealtimeQuoteResubscribeTest(unittest.TestCase):

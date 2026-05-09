@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from flask import jsonify
+from flask import jsonify, request
 
 from ibkr_compute.api.ops.bar_truth_compare import build_bar_truth_compare_payload
 from ibkr_compute.api.ops.common import _resolve_data_quality_symbols
@@ -238,6 +238,34 @@ def build_bar_repair_status_response():
         payload = coordinator.status(include_jobs=coerce_request_bool(get_query_arg_text("full", ""), False))
         payload["available"] = True
         return jsonify(payload)
+    except Exception as exc:
+        return jsonify({"ok": False, "available": True, "error": str(exc)}), 500
+
+
+def build_backtest_preload_status_response():
+    app_mod = get_app_module()
+    coordinator = getattr(app_mod, "backtest_preload_coordinator", None)
+    if coordinator is None or not hasattr(coordinator, "status"):
+        return jsonify({"ok": True, "available": False, "pending": 0, "inflight": 0, "failed": 0})
+    try:
+        payload = get_json_payload()
+        symbols = payload.get("symbols") or payload.get("symbols_text") or payload.get("symbol") or ""
+        if request.method == "POST" and symbols:
+            result = coordinator.enqueue(
+                symbols,
+                environment=str(payload.get("environment") or get_requested_environment("live")).strip().lower() or "live",
+                trigger=str(payload.get("trigger") or "api_status_post").strip() or "api_status_post",
+                reason=str(payload.get("reason") or "manual_preload").strip() or "manual_preload",
+                date_from=str(payload.get("date_from") or "").strip() or None,
+                date_to=str(payload.get("date_to") or "").strip() or None,
+                lookback_days=coerce_request_int(payload.get("lookback_days"), 0, minimum=0) or None,
+                warmup_bars=coerce_request_int(payload.get("warmup_bars"), 0, minimum=0) or None,
+                source_payload=payload,
+            )
+            return jsonify(result)
+        status = coordinator.status(include_jobs=coerce_request_bool(get_query_arg_text("full", ""), False))
+        status["available"] = True
+        return jsonify(status)
     except Exception as exc:
         return jsonify({"ok": False, "available": True, "error": str(exc)}), 500
 

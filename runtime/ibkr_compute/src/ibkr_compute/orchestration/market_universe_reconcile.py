@@ -169,6 +169,42 @@ class TradingServiceMarketUniverseReconcileMixin:
                     "error": str(exc),
                 }
 
+        backtest_preload_result = {
+            "ok": True,
+            "available": False,
+            "skipped": True,
+            "reason": "coordinator_unavailable",
+            "symbols": normalized_symbols,
+        }
+        try:
+            coordinator = getattr(self, "backtest_preload_coordinator", None)
+            if coordinator is None:
+                from ibkr_compute.api import server as compute_server
+
+                coordinator = getattr(compute_server, "backtest_preload_coordinator", None)
+            if coordinator is not None and hasattr(coordinator, "enqueue"):
+                backtest_preload_result = coordinator.enqueue(
+                    normalized_symbols,
+                    environment=service_mod.ENVIRONMENT,
+                    trigger=str(source or "universe_prime"),
+                    reason="new_universe_symbol_default_backtest_preload",
+                    source_payload={
+                        "source": str(source or "universe_prime"),
+                        "emit_signals": bool(emit_signals),
+                        "resolved_symbols": sorted(conid_map.keys()),
+                    },
+                )
+            elif coordinator is None:
+                backtest_preload_result["available"] = False
+        except Exception as exc:
+            backtest_preload_result = {
+                "ok": False,
+                "available": True,
+                "skipped": True,
+                "error": str(exc),
+                "symbols": normalized_symbols,
+            }
+
         compute_result = {}
         selected_signal_result = {"symbols": [], "selected_signals": [], "evaluated": []}
         persisted_signal_result = {"persisted": [], "errors": [], "signal_ids": []}
@@ -212,6 +248,7 @@ class TradingServiceMarketUniverseReconcileMixin:
             "symbols": normalized_symbols,
             "emit_signals": bool(emit_signals),
             "backfill": backfill_result,
+            "backtest_preload": backtest_preload_result,
             "compute": compute_result,
             "signal_selection": selected_signal_result,
             "signal_persist": persisted_signal_result,

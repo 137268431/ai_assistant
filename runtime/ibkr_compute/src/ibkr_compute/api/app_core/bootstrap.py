@@ -10,6 +10,7 @@ from ibkr_compute.core.config import Config
 from ibkr_compute.integrations.pb_client import PBClient
 from ibkr_compute.market.bar_freshness import BarFreshnessPlanner
 from ibkr_compute.market.bar_repair import BarRepairCoordinator
+from ibkr_compute.market.backtest_preload import BacktestPreloadCoordinator
 from ibkr_compute.market.timeframe_utils import COMPUTE_INTERVALS
 from ibkr_compute.workflows.history_rebuild import HistoryRebuildManager
 
@@ -94,6 +95,12 @@ def build_service_bundle(
             if str(symbol or "").strip()
         },
     )
+    backtest_preload_coordinator = BacktestPreloadCoordinator(
+        pb_client=pb_client,
+        config=config,
+        environment=os.environ.get("IBKR_ENVIRONMENT", "live"),
+        backtest_service=backtest_service,
+    )
     return {
         "PB_BASE_URL": pb_base_url,
         "CONSOLE_BASE_URL": console_base_url,
@@ -102,6 +109,7 @@ def build_service_bundle(
         "cfg": config,
         "bar_freshness_planner": bar_freshness_planner,
         "bar_repair_coordinator": bar_repair_coordinator,
+        "backtest_preload_coordinator": backtest_preload_coordinator,
         "backtest_service": backtest_service,
         "history_rebuild_manager": history_rebuild_manager,
     }

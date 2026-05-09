@@ -84,6 +84,9 @@ class IbkrApiBacktestProxyBoundaryTest(unittest.TestCase):
             ("POST", "ibkr/history/rebuild/start"): "/ibkr/history/rebuild/start",
             ("POST", "ibkr/data_quality/rescan"): "/ibkr/data-quality/scan",
             ("POST", "ibkr/data_quality/repair"): "/ibkr/data-quality/repair",
+            ("GET", "ibkr/backtest-preload/status"): "/ibkr/backtest-preload/status",
+            ("POST", "ibkr/backtest-preload/status"): "/ibkr/backtest-preload/status",
+            ("GET", "ibkr/backtest_preload/status"): "/ibkr/backtest-preload/status",
             ("GET", "ibkr/bar-repair/status"): "/ibkr/bar-repair/status",
         }
         for route_key, upstream_path in compute_direct_routes.items():
@@ -96,6 +99,8 @@ class IbkrApiBacktestProxyBoundaryTest(unittest.TestCase):
             "recompute": "/recompute",
             "chart/timeline": "/chart/timeline",
             "chart/compare": "/chart/compare",
+            "backtest_preload/status": "/ibkr/backtest-preload/status",
+            "backtest-preload/status": "/ibkr/backtest-preload/status",
             "bar_repair/status": "/ibkr/bar-repair/status",
             "bar-repair/status": "/ibkr/bar-repair/status",
         }
