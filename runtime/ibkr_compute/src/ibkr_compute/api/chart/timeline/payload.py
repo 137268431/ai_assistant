@@ -76,6 +76,74 @@ def _backtest_exit_event_type(exit_reason: str) -> str:
     return f"exit_{reason}" if reason else "exit"
 
 
+def _risk_stats_key(symbol: str, direction: str, signal: str) -> str:
+    return "|".join(
+        [
+            str(symbol or "").strip().upper(),
+            str(direction or "").strip().lower(),
+            str(signal or "").strip(),
+        ]
+    )
+
+
+def load_backtest_risk_stats(run_id: str, symbol: str) -> dict:
+    safe_run_id = str(run_id or "").strip()
+    normalized_symbol = str(symbol or "").strip().upper()
+    if not safe_run_id or not normalized_symbol:
+        return {}
+
+    rows = _load_backtest_records(
+        BACKTEST_TRADE_COLLECTION,
+        safe_run_id,
+        normalized_symbol,
+        0,
+        0,
+        "entry_bar_ms",
+    )
+    buckets: dict[str, dict] = {}
+    for row in rows:
+        row_symbol = str(row.get("symbol", "") or "").strip().upper()
+        direction = str(row.get("direction", "") or "").strip().lower()
+        signal = str(row.get("signal", "") or "").strip()
+        if not row_symbol or not direction or not signal:
+            continue
+        key = _risk_stats_key(row_symbol, direction, signal)
+        bucket = buckets.setdefault(
+            key,
+            {
+                "symbol": row_symbol,
+                "direction": direction,
+                "signal": signal,
+                "sample_count": 0,
+                "wins": 0,
+                "losses": 0,
+                "win_rate": None,
+                "avg_pnl_pct": None,
+                "source_run_id": safe_run_id,
+                "status": "insufficient_sample",
+            },
+        )
+        pnl = round(float(row.get("pnl", 0) or 0), 4)
+        pnl_pct = round(float(row.get("pnl_pct", 0) or 0), 4)
+        bucket["sample_count"] += 1
+        if pnl > 0:
+            bucket["wins"] += 1
+        else:
+            bucket["losses"] += 1
+        bucket.setdefault("_pnl_pct_sum", 0.0)
+        bucket["_pnl_pct_sum"] += pnl_pct
+
+    for bucket in buckets.values():
+        sample_count = int(bucket.get("sample_count", 0) or 0)
+        wins = int(bucket.get("wins", 0) or 0)
+        if sample_count > 0:
+            bucket["win_rate"] = round(wins / sample_count * 100.0, 2)
+            bucket["avg_pnl_pct"] = round(float(bucket.get("_pnl_pct_sum", 0.0)) / sample_count, 4)
+            bucket["status"] = "ok" if sample_count >= 10 else "low_sample"
+        bucket.pop("_pnl_pct_sum", None)
+    return buckets
+
+
 def _build_backtest_trade_events(run_id: str, row: dict) -> list[dict]:
     extra = _parse_extra(row.get("extra"))
     base = {
@@ -282,8 +350,10 @@ def build_chart_timeline_payload_from_source(
         }
         if str(backtest_run_id or "").strip():
             payload["backtest_events"] = []
+            payload["risk_stats"] = {}
             payload["meta"]["backtest_run_id"] = str(backtest_run_id or "").strip()
             payload["meta"]["backtest_event_count"] = 0
+            payload["meta"]["risk_stats_count"] = 0
         return payload
 
     timeline = build_runtime_timeline(
@@ -345,6 +415,10 @@ def build_chart_timeline_payload_from_source(
         start_ms=start_ms,
         end_ms=end_ms,
     ) if str(backtest_run_id or "").strip() else []
+    risk_stats = load_backtest_risk_stats(
+        backtest_run_id,
+        normalized_symbol,
+    ) if str(backtest_run_id or "").strip() and normalized_interval == "5m" else {}
     payload = {
         "ok": True,
         "bars": bars,
@@ -369,8 +443,10 @@ def build_chart_timeline_payload_from_source(
     }
     if str(backtest_run_id or "").strip():
         payload["backtest_events"] = backtest_events
+        payload["risk_stats"] = risk_stats
         payload["meta"]["backtest_run_id"] = str(backtest_run_id or "").strip()
         payload["meta"]["backtest_event_count"] = len(backtest_events)
+        payload["meta"]["risk_stats_count"] = len(risk_stats)
     return payload
 
 

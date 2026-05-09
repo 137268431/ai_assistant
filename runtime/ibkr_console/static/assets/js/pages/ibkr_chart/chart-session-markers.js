@@ -137,6 +137,90 @@
             };
         }
 
+        function buildRiskLevelMarkLineItems(signals, bars, payload, options = {}) {
+            if (!isTradeSignalInterval() || !chartLayerState.riskLevels) return [];
+            if (!Array.isArray(signals) || !signals.length || !Array.isArray(bars) || !bars.length) return [];
+            const indexByMs = new Map(bars.map((bar, index) => [Number(bar?.bar_time_ms || 0), index]));
+            const referencePrice = Number(options.referencePrice || getRiskReferencePrice(payload));
+            const densityTier = String(options.densityTier || chartMarkerDensityTier || '');
+            const showLabels = densityTier !== 'wide';
+            const maxSignals = densityTier === 'wide' ? 3 : densityTier === 'mid' ? 5 : 8;
+            const focusContext = payload ? buildContext(payload, getEffectiveCursorIndex(payload), selectedSignalId) : null;
+            const focusSignalKey = String(focusContext?.activeSignal?.signal_id || focusContext?.activeSignal?.id || '');
+            const plans = signals
+                .map((signal) => {
+                    const barMs = Number(signal?.bar_time_ms || 0);
+                    const index = indexByMs.get(barMs);
+                    if (!Number.isInteger(index)) return null;
+                    const risk = getRiskDistanceState(signal, referencePrice, bars[index]);
+                    if (!risk.valid) return null;
+                    const signalKey = String(signal?.signal_id || signal?.id || '');
+                    return {
+                        signal,
+                        signalKey,
+                        index,
+                        barMs,
+                        risk,
+                        isFocus: Boolean(focusSignalKey && focusSignalKey === signalKey),
+                    };
+                })
+                .filter(Boolean)
+                .sort((a, b) => Number(b.isFocus) - Number(a.isFocus) || b.barMs - a.barMs)
+                .slice(0, maxSignals);
+            const xEnd = bars.length - 1;
+            const labelFontSize = densityTier === 'mid' ? 9 : 10;
+            return plans.flatMap((plan) => {
+                const stats = getSignalRiskStats(payload, plan.signal);
+                const statsText = Number(stats?.sample_count || 0) > 0 ? ` · ${formatRiskWinRate(stats, { compact: true })}` : '';
+                const makeLine = (price, type) => {
+                    const isTarget = type === 'target';
+                    const color = isTarget ? '#38BDF8' : '#F97316';
+                    const distanceText = formatRiskLineDistance(isTarget ? plan.risk.tpRemainingPct : plan.risk.slRemainingPct);
+                    const labelText = isTarget
+                        ? `${plan.risk.targetLabel} ${formatPrice(price)} ${distanceText}${statsText}`
+                        : `SL ${formatPrice(price)} ${distanceText}`;
+                    const lineStyle = {
+                        color,
+                        width: plan.isFocus ? 1.7 : 1.15,
+                        type: isTarget ? 'dashed' : 'dotted',
+                        opacity: plan.isFocus ? 0.92 : 0.58,
+                    };
+                    const endpoint = {
+                        coord: [Math.max(plan.index, xEnd), price],
+                        symbol: 'none',
+                        lineStyle,
+                        label: {
+                            show: showLabels,
+                            formatter: labelText,
+                            position: 'end',
+                            distance: 8,
+                            color,
+                            fontSize: labelFontSize,
+                            fontWeight: 700,
+                            fontFamily: 'JetBrains Mono, monospace',
+                            backgroundColor: 'rgba(7,12,20,0.88)',
+                            borderColor: color,
+                            borderWidth: 1,
+                            borderRadius: 6,
+                            padding: [3, 6],
+                        },
+                    };
+                    return [
+                        {
+                            coord: [plan.index, price],
+                            symbol: 'none',
+                            lineStyle,
+                        },
+                        endpoint,
+                    ];
+                };
+                return [
+                    makeLine(plan.risk.takeProfit, 'target'),
+                    makeLine(plan.risk.stopLoss, 'stop'),
+                ];
+            });
+        }
+
         function buildMarkLineConfig(items) {
             if (!Array.isArray(items) || !items.length) return undefined;
             return {
@@ -172,4 +256,3 @@
                 }],
             };
         }
-

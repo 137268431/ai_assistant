@@ -412,6 +412,15 @@
             const sourceNote = isComputedSignal(signal)
                 ? '当前信号点由 ibkr_bars 实时重算，未必对应历史信号台账。'
                 : '当前信号来自历史台账记录。';
+            const payload = getChartDisplayPayload();
+            const riskState = getRiskDistanceState(signal, getRiskReferencePrice(payload, ctx), bar);
+            const riskStats = getSignalRiskStats(payload, signal);
+            const riskPriceText = riskState.valid
+                ? `${riskState.targetLabel} ${formatPrice(riskState.takeProfit)} / SL ${formatPrice(riskState.stopLoss)}`
+                : 'TP/SL 缺失';
+            const riskDistanceText = riskState.valid
+                ? `${riskState.targetLabel} ${formatRiskDistance(riskState.tpRemainingPct, riskState.tpCrossed)} / SL ${formatRiskDistance(riskState.slRemainingPct, riskState.slCrossed)}`
+                : '无法计算距离';
 
             content.innerHTML = `
                 <div class="drawer-head">
@@ -434,7 +443,11 @@
                     </div>
                     <div class="drawer-metric">
                         <div class="drawer-label">TP / SL</div>
-                        <div class="drawer-value">${escapeHtml(formatPrice(signal.take_profit))}<br>${escapeHtml(formatPrice(signal.stop_loss))}</div>
+                        <div class="drawer-value">${escapeHtml(riskPriceText)}<br>${escapeHtml(riskDistanceText)}</div>
+                    </div>
+                    <div class="drawer-metric">
+                        <div class="drawer-label">Backtest Win Rate</div>
+                        <div class="drawer-value">${escapeHtml(formatRiskWinRate(riskStats))}<br>历史胜率不代表未来</div>
                     </div>
                     <div class="drawer-metric">
                         <div class="drawer-label">Setup / Order</div>
@@ -555,6 +568,11 @@
                 <div class="drawer-block">
                     <div class="drawer-block-title">Components</div>
                     <div class="drawer-token-row">${componentTokens.length ? componentTokens.map((text) => buildTraceToken(text, 'warning')).join('') : buildTraceToken('无组件')}</div>
+                </div>
+
+                <div class="drawer-block">
+                    <div class="drawer-block-title">Event Chain</div>
+                    <div class="drawer-token-row">${eventTokens.length ? eventTokens.map((text) => buildTraceToken(text)).join('') : buildTraceToken('无事件')}</div>
                 </div>
 
                 <div class="drawer-block">
@@ -847,6 +865,16 @@
             const accountUrl = buildPageUrl('/ibkr_account.html', {}, { environment: currentEnvironment });
             const compareRow = getCompareRowByBarTime(focusBar?.bar_time_ms);
             const focusTraceLabel = formatTraceDecisionLabel(focus?.trace, focusSignal || focusTraceSignal);
+            const focusRiskSignal = focusSignal || focusTraceSignal || null;
+            const focusRiskState = focusRiskSignal ? getRiskDistanceState(focusRiskSignal, getRiskReferencePrice(payload, focus), focusBar) : null;
+            const focusRiskStats = focusRiskSignal ? getSignalRiskStats(payload, focusRiskSignal) : null;
+            const focusRiskPriceText = focusRiskState?.valid
+                ? `${focusRiskState.targetLabel} ${formatPrice(focusRiskState.takeProfit)} / SL ${formatPrice(focusRiskState.stopLoss)}`
+                : (focusRiskSignal ? 'TP/SL 缺失' : '--');
+            const focusRiskDistanceText = focusRiskState?.valid
+                ? `${focusRiskState.targetLabel} ${formatRiskDistance(focusRiskState.tpRemainingPct, focusRiskState.tpCrossed)}<br>SL ${formatRiskDistance(focusRiskState.slRemainingPct, focusRiskState.slCrossed)}`
+                : (focusRiskSignal ? '价格顺序异常或数据不足' : '聚焦信号后显示');
+            const focusRiskWinText = focusRiskSignal ? formatRiskWinRate(focusRiskStats) : '--';
 
             if (comparePayload) {
                 const compareSummary = comparePayload?.comparison?.summary || {};
@@ -881,6 +909,8 @@
                             <div class="metric-item"><div class="metric-label">Low / Close</div><div class="metric-value">${focusBar ? `${escapeHtml(formatPrice(focusBar.low))} / ${escapeHtml(formatPrice(focusBar.close))}` : '--'}</div></div>
                             <div class="metric-item"><div class="metric-label">Volume</div><div class="metric-value">${focusBar ? escapeHtml(formatNumber(focusBar.volume || 0, 0)) : '--'}</div></div>
                             <div class="metric-item"><div class="metric-label">Signal</div><div class="metric-value">${escapeHtml(focusTraceLabel || (focusSignalMatches.length ? `${focusSignalMatches.length} hits` : '--'))}</div></div>
+                            <div class="metric-item"><div class="metric-label">TP / SL</div><div class="metric-value">${escapeHtml(focusRiskPriceText)}<br>${focusRiskDistanceText}</div></div>
+                            <div class="metric-item"><div class="metric-label">Win Rate</div><div class="metric-value">${escapeHtml(focusRiskWinText)}<br>历史胜率不代表未来</div></div>
                         </div>
                         <div class="focus-actions">
                             ${focusSignal ? `<button class="mini-link mini-link-btn" type="button" onclick="openFocusedSignalDrawer()">信号详情</button>` : ''}
@@ -972,6 +1002,8 @@
                         <div class="metric-item"><div class="metric-label">VWAP / Band</div><div class="metric-value" style="color:${signedColor(focusIndicator?.vwap_dist)}">${focusIndicator ? `${escapeHtml(formatPercent(focusIndicator.vwap_dist))}<br>±1 ${escapeHtml(formatPrice(focusIndicator.vwap_upper1 ?? focusIndicator.vwap_upper))}/${escapeHtml(formatPrice(focusIndicator.vwap_lower1 ?? focusIndicator.vwap_lower))}` : '--'}</div></div>
                         <div class="metric-item"><div class="metric-label">CRSI / OBV RSI</div><div class="metric-value">${focusIndicator ? `${escapeHtml(formatNumber(focusIndicator.crsi))} / ${escapeHtml(formatNumber(focusIndicator.obv_rsi))}` : '--'}</div></div>
                         <div class="metric-item"><div class="metric-label">Signal</div><div class="metric-value">${focusSignal ? escapeHtml(buildTradeSignalLabel(focusSignal)) : (focusSignalMatches.length ? `${focusSignalMatches.length} hits` : '--')}</div></div>
+                        <div class="metric-item"><div class="metric-label">TP / SL</div><div class="metric-value">${escapeHtml(focusRiskPriceText)}<br>${focusRiskDistanceText}</div></div>
+                        <div class="metric-item"><div class="metric-label">Win Rate</div><div class="metric-value">${escapeHtml(focusRiskWinText)}<br>历史胜率不代表未来</div></div>
                     </div>
                     <div class="focus-actions">
                         ${focusSignal ? `<button class="mini-link mini-link-btn" type="button" onclick="openFocusedSignalDrawer()">信号详情</button>` : ''}
@@ -1041,4 +1073,3 @@
             renderRailNav();
             renderInspectorDrawer(payload);
         }
-

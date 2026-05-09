@@ -456,6 +456,7 @@
                 { key: 'emaTouch', label: 'EMA Touch', shortLabel: 'Touch', disabled: false, swatches: ['#00C853', '#D50000'], description: 'EMA touch 多空提示' },
                 { key: 'divergence', label: 'Divergence', shortLabel: 'Div', disabled: false, swatches: ['#2196F3', '#9C27B0'], description: '背离提示标记' },
                 { key: 'tradeSignals', label: 'Trade Signals', shortLabel: 'Signal', disabled: !isTradeSignalInterval(), swatches: ['#48BB78', '#FC8181'], description: '多空交易信号' },
+                { key: 'riskLevels', label: 'Risk Levels', shortLabel: 'Risk', disabled: !isTradeSignalInterval(), swatches: ['#38BDF8', '#F97316'], description: '生成信号的 TP/Target 与 SL 水平线、距离和历史胜率' },
                 { key: 'lifecycle', label: 'Signal Flow', shortLabel: 'Flow', disabled: !isTradeSignalInterval(), swatches: ['#4ADE80', '#F97316', '#38BDF8'], description: 'SD窗口、组件收集、候选/过滤/确认生命周期' },
                 { key: 'volume', label: 'Volume', shortLabel: 'Vol', disabled: false, swatches: ['#38BDF8'], description: '成交量柱体' },
             ].filter((item) => !item.disabled);
@@ -464,6 +465,179 @@
         function formatPrice(value) {
             const num = Number(value);
             return Number.isFinite(num) ? `$${num.toFixed(2)}` : '--';
+        }
+
+        function coerceFiniteNumber(...values) {
+            for (const value of values) {
+                if (value === null || value === undefined || value === '') continue;
+                const num = Number(value);
+                if (Number.isFinite(num)) return num;
+            }
+            return NaN;
+        }
+
+        function getRiskStatsKey(symbol, direction, signalName) {
+            return [
+                String(symbol || '').trim().toUpperCase(),
+                String(direction || '').trim().toLowerCase(),
+                String(signalName || '').trim(),
+            ].join('|');
+        }
+
+        function getSignalRiskStats(payload, signal) {
+            const statsMap = payload?.riskStats && typeof payload.riskStats === 'object' ? payload.riskStats : {};
+            const key = getRiskStatsKey(signal?.symbol || currentSymbol, signal?.direction, signal?.signal || getSignalField(signal, 'setup', ''));
+            const stats = statsMap[key];
+            if (stats && typeof stats === 'object') return stats;
+            if (payload?.meta?.backtest_run_id) {
+                return {
+                    sample_count: 0,
+                    wins: 0,
+                    losses: 0,
+                    win_rate: null,
+                    source_run_id: payload.meta.backtest_run_id,
+                    status: 'insufficient_sample',
+                };
+            }
+            return {
+                sample_count: 0,
+                wins: 0,
+                losses: 0,
+                win_rate: null,
+                source_run_id: '',
+                status: 'no_backtest_run',
+            };
+        }
+
+        function formatRiskWinRate(stats, { compact = false } = {}) {
+            const sampleCount = Number(stats?.sample_count || 0);
+            if (!stats?.source_run_id) return compact ? '胜率 --' : '需指定回测 run';
+            if (!sampleCount) return compact ? 'n=0' : '样本不足';
+            const rate = Number(stats?.win_rate);
+            const rateText = Number.isFinite(rate) ? `${rate.toFixed(rate % 1 === 0 ? 0 : 1)}%` : '--';
+            const sampleText = `n=${sampleCount}`;
+            const lowSample = sampleCount < 10 ? (compact ? '少' : '样本少') : '';
+            return compact
+                ? `W ${rateText} ${sampleText}${lowSample ? ` ${lowSample}` : ''}`
+                : `历史胜率 ${rateText} · ${sampleText}${lowSample ? ` · ${lowSample}` : ''}`;
+        }
+
+        function getRiskTargetLabel(signal) {
+            const extra = getSignalExtra(signal);
+            const settings = extra.exit_policy_settings && typeof extra.exit_policy_settings === 'object'
+                ? extra.exit_policy_settings
+                : {};
+            const targetState = extra.target_state && typeof extra.target_state === 'object'
+                ? extra.target_state
+                : {};
+            const targetMode = String(settings.target_mode || targetState.target_mode || '').trim().toLowerCase();
+            return targetMode && targetMode !== 'hard_rr' ? 'Target' : 'TP';
+        }
+
+        function getSignalRiskPlan(signal, bar = null) {
+            if (!signal || typeof signal !== 'object') {
+                return { valid: false, reason: 'missing_signal' };
+            }
+            const extra = getSignalExtra(signal);
+            const direction = String(signal.direction || extra.direction || '').trim().toLowerCase();
+            const entry = coerceFiniteNumber(signal.entry, signal.limit_price, extra.entry, extra.entry_price, bar?.close);
+            const takeProfit = coerceFiniteNumber(signal.take_profit, signal.initial_take_profit, extra.take_profit, extra.initial_take_profit);
+            const stopLoss = coerceFiniteNumber(signal.stop_loss, signal.initial_stop_loss, extra.stop_loss, extra.initial_stop_loss);
+            let rr = coerceFiniteNumber(signal.rr, extra.rr);
+            const targetLabel = getRiskTargetLabel(signal);
+            const invalidBase = direction !== 'long' && direction !== 'short';
+            const missingPrices = !Number.isFinite(entry) || !Number.isFinite(takeProfit) || !Number.isFinite(stopLoss)
+                || entry <= 0 || takeProfit <= 0 || stopLoss <= 0;
+            const validOrder = direction === 'short'
+                ? takeProfit < entry && entry < stopLoss
+                : stopLoss < entry && entry < takeProfit;
+            if (!Number.isFinite(rr) && !missingPrices && validOrder) {
+                const risk = Math.abs(entry - stopLoss);
+                const reward = Math.abs(takeProfit - entry);
+                rr = risk > 0 ? reward / risk : NaN;
+            }
+            return {
+                valid: !invalidBase && !missingPrices && validOrder,
+                reason: invalidBase ? 'invalid_direction' : missingPrices ? 'missing_prices' : validOrder ? '' : 'invalid_price_order',
+                direction,
+                entry,
+                takeProfit,
+                stopLoss,
+                rr: Number.isFinite(rr) ? rr : null,
+                targetLabel,
+                targetMode: String(
+                    extra.exit_policy_settings?.target_mode
+                    || extra.target_state?.target_mode
+                    || 'hard_rr'
+                ),
+            };
+        }
+
+        function getRiskReferencePrice(payload = getChartDisplayPayload(), context = null) {
+            const live = coerceFiniteNumber(realtimeQuoteSnapshot?.last_price);
+            if (Number.isFinite(live) && live > 0) return live;
+            const bar = context?.bar || null;
+            if (bar?.preview || bar?.is_preview) {
+                const previewClose = coerceFiniteNumber(bar.close);
+                if (Number.isFinite(previewClose) && previewClose > 0) return previewClose;
+            }
+            const bars = Array.isArray(payload?.bars) ? payload.bars : [];
+            const latestClose = coerceFiniteNumber(bars[bars.length - 1]?.close);
+            return Number.isFinite(latestClose) && latestClose > 0 ? latestClose : NaN;
+        }
+
+        function getRiskDistanceState(signal, referencePrice, bar = null) {
+            const plan = getSignalRiskPlan(signal, bar);
+            const reference = Number(referencePrice);
+            if (!plan.valid || !Number.isFinite(reference) || reference <= 0) {
+                return { ...plan, referencePrice: reference, hasDistances: false };
+            }
+            const tpRemaining = plan.direction === 'short'
+                ? reference - plan.takeProfit
+                : plan.takeProfit - reference;
+            const slRemaining = plan.direction === 'short'
+                ? plan.stopLoss - reference
+                : reference - plan.stopLoss;
+            return {
+                ...plan,
+                referencePrice: reference,
+                hasDistances: true,
+                tpRemaining,
+                slRemaining,
+                tpRemainingPct: tpRemaining / reference * 100,
+                slRemainingPct: slRemaining / reference * 100,
+                tpEntryPct: (plan.direction === 'short' ? plan.entry - plan.takeProfit : plan.takeProfit - plan.entry) / plan.entry * 100,
+                slEntryPct: (plan.direction === 'short' ? plan.stopLoss - plan.entry : plan.entry - plan.stopLoss) / plan.entry * 100,
+                tpCrossed: tpRemaining < 0,
+                slCrossed: slRemaining < 0,
+            };
+        }
+
+        function formatRiskDistance(valuePct, crossed = false) {
+            const num = Number(valuePct);
+            if (!Number.isFinite(num)) return '--';
+            const absText = `${Math.abs(num).toFixed(2)}%`;
+            return crossed || num < 0 ? `已越过 ${absText}` : `还差 ${absText}`;
+        }
+
+        function formatRiskLineDistance(valuePct) {
+            const num = Number(valuePct);
+            if (!Number.isFinite(num)) return '';
+            return `${num >= 0 ? '+' : '-'}${Math.abs(num).toFixed(1)}%`;
+        }
+
+        function buildRiskSummary(signal, payload = getChartDisplayPayload(), context = null, { compact = false } = {}) {
+            const risk = getRiskDistanceState(signal, getRiskReferencePrice(payload, context), context?.bar || null);
+            const stats = getSignalRiskStats(payload, signal);
+            if (!risk.valid) {
+                return compact ? 'TP/SL --' : 'TP/SL 缺失或价格顺序异常';
+            }
+            const rrText = risk.rr !== null ? `RR ${Number(risk.rr).toFixed(2).replace(/\.00$/, '')}` : 'RR --';
+            const priceLine = `${risk.targetLabel} ${formatPrice(risk.takeProfit)} / SL ${formatPrice(risk.stopLoss)}`;
+            if (compact) {
+                return `${priceLine} · ${formatRiskLineDistance(risk.tpRemainingPct)} / ${formatRiskLineDistance(risk.slRemainingPct)} · ${formatRiskWinRate(stats, { compact: true })}`;
+            }
+            return `${priceLine}<br>${rrText} · ${risk.targetLabel} ${formatRiskDistance(risk.tpRemainingPct, risk.tpCrossed)} · SL ${formatRiskDistance(risk.slRemainingPct, risk.slCrossed)}<br>${formatRiskWinRate(stats)} · 历史胜率不代表未来`;
         }
 
         function formatNumber(value, digits = 2) {
@@ -1030,4 +1204,3 @@
             const url = buildPageUrl('/ibkr_chart.html', params, { environment: currentEnvironment });
             window.history.replaceState({}, '', url);
         }
-

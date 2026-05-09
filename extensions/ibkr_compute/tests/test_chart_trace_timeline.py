@@ -228,6 +228,28 @@ class ChartTraceTimelineTest(unittest.TestCase):
                             "extra": {"signal_status_reason": "entry_limit_filled"},
                         }
                     ],
+                    [
+                        {
+                            "id": "trade-1",
+                            "run_id": "run123",
+                            "symbol": "SPY",
+                            "direction": "long",
+                            "signal": "mr_L",
+                            "signal_id": "sig-1",
+                            "entry_bar_ms": 1776691800000,
+                            "exit_bar_ms": 1776692100000,
+                            "entry_us_time": "2026-04-20 09:30:00",
+                            "exit_us_time": "2026-04-20 09:35:00",
+                            "entry_price": 100.0,
+                            "exit_price": 110.0,
+                            "shares": 10,
+                            "pnl": 100.0,
+                            "pnl_pct": 10.0,
+                            "exit_reason": "take_profit",
+                            "trade_index": 1,
+                            "extra": {},
+                        }
+                    ],
                 ]
             )
         )
@@ -291,7 +313,11 @@ class ChartTraceTimelineTest(unittest.TestCase):
             ["entry_filled", "signal_executed", "exit_take_profit"],
         )
         self.assertEqual(result["meta"]["backtest_run_id"], "run123")
-        self.assertEqual(fake_pb.get_all_records.call_count, 3)
+        self.assertEqual(result["risk_stats"]["SPY|long|mr_L"]["sample_count"], 1)
+        self.assertEqual(result["risk_stats"]["SPY|long|mr_L"]["win_rate"], 100.0)
+        self.assertEqual(result["risk_stats"]["SPY|long|mr_L"]["status"], "low_sample")
+        self.assertEqual(result["meta"]["risk_stats_count"], 1)
+        self.assertEqual(fake_pb.get_all_records.call_count, 4)
 
     def test_backtest_events_are_clipped_to_visible_window(self):
         trade_row = {

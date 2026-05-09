@@ -245,6 +245,10 @@
             const previousClose = Number(sortedBars.length > 1 ? sortedBars[sortedBars.length - 2]?.close : latestClose);
             const latestLineColor = latestClose >= previousClose ? '#4ADE80' : '#FB7185';
             const latestPriceLineItem = buildLatestPriceMarkLineItem(latestClose, latestLineColor);
+            const riskLevelLineItems = buildRiskLevelMarkLineItems(signals, sortedBars, displayPayload, {
+                densityTier,
+                referencePrice: latestClose,
+            });
             const gridLeft = isCompactViewport() ? 66 : 78;
             const gridRight = isCompactViewport() ? 96 : 116;
             const compactChart = isCompactViewport();
@@ -293,7 +297,7 @@
             note.textContent = !indicators.length
                 ? '当前窗口的 bars 尚未形成可展示的指标快照；EMA / VWAP / Osc 将暂时不可见。'
                 : currentInterval === '5m'
-                ? `工具条/键盘导航；交易标签${chartLayerState.tradeSignals ? '已开' : '已关'}。`
+                ? `工具条/键盘导航；交易标签${chartLayerState.tradeSignals ? '已开' : '已关'}，TP/SL${chartLayerState.riskLevels ? '已开' : '已关'}。`
                 : '当前为非 5m 周期，主图仍展示 bars 实时重算出的价格结构与技术图层，但不叠加交易标签。';
             if (realtimeQuoteSnapshot?.last_price != null) {
                 note.textContent += ' 价格与日内涨幅来自 WS 实时快照。';
@@ -445,6 +449,7 @@
                     },
                     markLine: buildMarkLineConfig([
                         ...(latestPriceLineItem ? [latestPriceLineItem] : []),
+                        ...riskLevelLineItems,
                         ...sessionDividerItemsMain,
                     ]),
                     markPoint: focusMarkPoint,
@@ -830,4 +835,3 @@
                 }
             }
         }
-

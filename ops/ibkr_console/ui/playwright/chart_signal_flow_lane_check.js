@@ -162,6 +162,26 @@ const bars = BAR_TIMES.map(makeBar);
 const indicatorTimeline = bars.map(makeIndicator);
 const traceTimeline = bars.map(makeTrace);
 const timelineRequests = [];
+const riskSignalBar = bars[12];
+const riskSignal = {
+  signal_id: 'mock-risk-12',
+  symbol: 'MOCK',
+  direction: 'long',
+  signal: 'mr_sdLower',
+  entry: riskSignalBar.close,
+  stop_loss: riskSignalBar.close - 1.6,
+  take_profit: riskSignalBar.close + 2.4,
+  rr: 1.5,
+  shares: 10,
+  bar_time_ms: riskSignalBar.bar_time_ms,
+  us_time: riskSignalBar.us_time,
+  status: 'computed',
+  extra: {
+    signal_window: 'sd_lower',
+    signal_mode: 'mr',
+    exit_policy_settings: { target_mode: 'hard_rr', target_is_hard: true },
+  },
+};
 
 const mockTimelinePayload = {
   ok: true,
@@ -171,8 +191,22 @@ const mockTimelinePayload = {
   bars,
   indicator_timeline: indicatorTimeline,
   latest_indicator: indicatorTimeline[indicatorTimeline.length - 1],
-  signals: [],
+  signals: [riskSignal],
   trace_timeline: traceTimeline,
+  risk_stats: {
+    'MOCK|long|mr_sdLower': {
+      symbol: 'MOCK',
+      direction: 'long',
+      signal: 'mr_sdLower',
+      sample_count: 12,
+      wins: 8,
+      losses: 4,
+      win_rate: 66.67,
+      avg_pnl_pct: 1.2,
+      source_run_id: 'mock-run',
+      status: 'ok',
+    },
+  },
   meta: { trace_mode: 'computed' },
 };
 
@@ -267,6 +301,9 @@ async function main() {
     const blockedSeries = series.find((item) => item.name === 'Flow 已过滤');
     const blockedMain = series.find((item) => item.name === 'Blocked Trace');
     const dtpChangeSeries = series.find((item) => item.name === 'Flow DTP转换');
+    const priceSeries = series.find((item) => item.name === 'Price');
+    const riskMarkLines = (Array.isArray(priceSeries?.markLine?.data) ? priceSeries.markLine.data : [])
+      .filter((item) => Array.isArray(item) && String(item?.[1]?.label?.formatter || '').includes('TP '));
     const markerClusterNames = [
       'SD MR Bull',
       'Fractal Bull',
@@ -314,6 +351,8 @@ async function main() {
       blockedLabel: blockedSeries?.data?.[0]?.labelText || '',
       blockedLabelShow: Boolean(blockedSeries?.label?.show),
       blockedMainCount: Array.isArray(blockedMain?.data) ? blockedMain.data.length : 0,
+      riskMarkLineCount: riskMarkLines.length,
+      firstRiskLabel: riskMarkLines?.[0]?.[1]?.label?.formatter || '',
       markerCluster,
       markerClusterLanes,
       customStartValue: document.getElementById('customRangeStart')?.value || '',
@@ -486,6 +525,9 @@ async function main() {
   if (Number(beforeClick.flowYAxisMin) > -0.1) failures.push(`flow_y_min_${beforeClick.flowYAxisMin}`);
   if (Number(beforeClick.flowYAxisMax) < 4.4) failures.push(`flow_y_max_${beforeClick.flowYAxisMax}`);
   if (!beforeClick.layerText.includes('Signal Flow')) failures.push('missing_signal_flow_layer');
+  if (!beforeClick.layerText.includes('Risk Levels')) failures.push('missing_risk_levels_layer');
+  if (beforeClick.riskMarkLineCount < 1) failures.push(`risk_mark_line_count_${beforeClick.riskMarkLineCount}`);
+  if (!beforeClick.firstRiskLabel.includes('W 66.7% n=12')) failures.push(`risk_label_${beforeClick.firstRiskLabel}`);
   if (!beforeClick.flowNames.includes('Flow 下轨窗口')) failures.push('missing_lower_window_series');
   if (!beforeClick.flowNames.includes('Flow DTP转换')) failures.push('missing_dtp_change_series');
   if (!beforeClick.flowNames.includes('Flow 组件收集')) failures.push('missing_component_flow_series');

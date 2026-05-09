@@ -17,6 +17,8 @@
             const setup = signal ? getSignalField(signal, 'setup', '') : context?.trace?.signal_state?.setup || context?.trace?.setup || '';
             const entryOrderType = signal ? getSignalField(signal, 'entry_order_type', '') : context?.trace?.signal_state?.entry_order_type || context?.trace?.entry_order_type || '';
             const technicalDescription = signal ? getSignalField(signal, 'technical_description', '') : context?.trace?.signal_state?.technical_description || context?.trace?.technical_description || '';
+            const riskSignal = signal || getTraceSignalPayload(context?.trace);
+            const riskSummary = riskSignal ? buildRiskSummary(riskSignal, payload, context, { compact: true }) : '';
             const dtpState = context?.trace ? getTraceDtpState(context.trace) : null;
             const dtpLabel = dtpState && (dtpState.phase || dtpState.dir) ? formatDtpStateLabel(dtpState) : '';
             return `
@@ -35,6 +37,7 @@
                     <div style="color:#8BA4C4;">${isPreviewBar && !indicator ? 'ORB 待收盘确认' : `ORB H/L ${escapeHtml(formatPrice(indicator?.orb_high))}/${escapeHtml(formatPrice(indicator?.orb_low))} · ${escapeHtml(getOrbBreakoutText(indicator))}`}</div>
                     <div style="color:#8BA4C4;">${isPreviewBar && !indicator ? 'Preview bar 仅用于盘中参考' : `Touch ${escapeHtml(getTouchSummary(indicator))} · Div ${escapeHtml(getDivergenceSummary(indicator, 6))}`}</div>
                     ${setup || entryOrderType ? `<div style="margin-top:6px;color:#CBD5E1;">Setup ${escapeHtml(humanizeToken(setup || '--'))} · Order ${escapeHtml(getOrderTypeText(entryOrderType))}</div>` : ''}
+                    ${riskSummary ? `<div style="color:#CBD5E1;">${escapeHtml(riskSummary)}</div>` : ''}
                     ${technicalDescription ? `<div style="color:#CBD5E1;">${escapeHtml(technicalDescription)}</div>` : ''}
                     ${traceText ? `<div style="margin-top:6px;color:${traceStage === 'blocked' ? '#FDBA74' : traceStage === 'confirmed' ? '#86EFAC' : '#FDE68A'};">${escapeHtml(traceText)}</div>` : ''}
                     <div style="margin-top:6px;color:${signal ? signalColor : bar?.preview || bar?.is_preview ? '#7DD3FC' : '#8BA4C4'};">${signalText}</div>
@@ -68,4 +71,3 @@
             const top = Math.min(maxTop, Math.min(topCandidate, signalFlowGuard - Math.min(contentHeight, 220)));
             return [left, top];
         }
-

@@ -286,6 +286,9 @@
             const backtestEvents = Array.isArray(response?.backtest_events)
                 ? response.backtest_events.slice().sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0))
                 : [];
+            const riskStats = response?.risk_stats && typeof response.risk_stats === 'object'
+                ? response.risk_stats
+                : {};
             const latestIndicator = normalizeIndicatorRecord(response?.latest_indicator || null) || (indicators.length ? indicators[indicators.length - 1] : null);
             return {
                 latestIndicator,
@@ -294,6 +297,7 @@
                 signals,
                 traceTimeline,
                 backtestEvents,
+                riskStats,
                 meta: response?.meta && typeof response.meta === 'object' ? response.meta : {}
             };
         }

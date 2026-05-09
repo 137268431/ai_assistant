@@ -78,6 +78,7 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             emaTouch: true,
             divergence: true,
             tradeSignals: true,
+            riskLevels: true,
             lifecycle: true,
             volume: true,
         };
@@ -94,4 +95,3 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             quote: { key: '', at: 0 },
             preview: { key: '', at: 0 },
         };
-
