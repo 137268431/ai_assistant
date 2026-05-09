@@ -21,9 +21,11 @@ from ibkr_compute.api.ops.action_views import (
 )
 from ibkr_compute.api.service_topology import (
     build_service_topology,
+    get_api_internal_url,
     get_backtest_internal_url,
     get_console_base_url,
     get_runtime_mode,
+    get_runtime_internal_url,
 )
 from ibkr_compute.api.shared.route_runtime import register_app_module_context
 from ibkr_compute.api.support.symbols import normalize_symbol_csv, normalize_symbols

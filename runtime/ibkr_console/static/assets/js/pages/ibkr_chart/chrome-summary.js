@@ -132,7 +132,7 @@
         function formatInlineChain(indicator) {
             return {
                 primary: `20 ${formatPrice(indicator?.ema_fast)} · 50 ${formatPrice(indicator?.ema_slow)}`,
-                secondary: `100 ${formatPrice(indicator?.ema_trend)} · VWAP ${formatPrice(indicator?.vwap)}`,
+                secondary: `VWAP ${formatPrice(indicator?.vwap)} · ±1 ${formatPrice(indicator?.vwap_upper1 ?? indicator?.vwap_upper)}/${formatPrice(indicator?.vwap_lower1 ?? indicator?.vwap_lower)}`,
             };
         }
         function formatInlineCompareChain(indicator) {
@@ -289,7 +289,8 @@
                 { text: `EMA ${focusIndicator ? getEmaStructureText(focusIndicator) : '--'}`, title: 'EMA 结构。' },
                 { text: `VWAP ${focusIndicator ? formatPercent(focusIndicator.vwap_dist) : '--'}`, title: 'VWAP 偏离。' },
                 { text: `ATR ${focusIndicator ? formatPercent(focusIndicator.atr_pct) : '--'}`, title: 'ATR 波动。' },
-                { text: `SD ${focusIndicator ? getSdZoneText(focusIndicator.sd_zone) : '--'} / ${focusIndicator ? getSdTrendText(focusIndicator.sd_trend) : '--'}`, title: 'SD 区间与斜率。' },
+                { text: `SD ${focusIndicator ? getSdRegimeText(focusIndicator.sd_regime) : '--'} · Z ${focusIndicator ? formatOptionalNumber(focusIndicator.sd_close_z) : '--'}`, title: 'SD regime 表示压缩/扩张/常态，Z 为收盘价相对 SD 中轴的位置。' },
+                { text: `ORB ${focusIndicator ? getOrbBreakoutText(focusIndicator) : '--'}`, title: '开盘区间高低点及突破方向。' },
                 { text: realtimeState.text, title: realtimeState.title, className: realtimeState.className === 'placeholder' ? 'muted' : '' },
                 { text: previewState.text, title: previewState.title, className: previewState.className === 'placeholder' ? 'muted' : '' },
                 { text: compareState.text, title: compareState.title, className: compareState.className === 'placeholder' ? 'muted' : (compareState.className || '') },
@@ -585,8 +586,8 @@
                 buildCursorCard('Bar Start (ET)', getIbkrBarStartLabel(bar), `Close ${getIbkrBarCloseLabel(bar)} · ${cursorState}`),
                 buildCursorCard('OHLC', ohlc.primary, ohlc.secondary),
                 buildCursorCard('EMA / VWAP', isPreviewBar && !indicator ? '预览 bar 暂无正式均线' : chain.primary, isPreviewBar && !indicator ? '收盘后生成 EMA / VWAP' : chain.secondary),
-                buildCursorCard('SD / Fractal', isPreviewBar && !indicator ? '预览 bar 暂无正式指标' : `Zone ${getSdZoneText(indicator?.sd_zone)} · ${getSdTrendText(indicator?.sd_trend)}`, isPreviewBar && !indicator ? '收盘后计算 SD / Fractal' : `Frac ${getFractalSummary(indicator)}`),
-                buildCursorCard('Touch / Divergence', isPreviewBar && !indicator ? '预览中' : getTouchDetailText(indicator), isPreviewBar && !indicator ? 'Touch / Div 待收盘确认' : getDivergenceDetailText(indicator)),
+                buildCursorCard('SD / ORB', isPreviewBar && !indicator ? '预览 bar 暂无正式指标' : `Regime ${getSdRegimeText(indicator?.sd_regime)} · Z ${formatOptionalNumber(indicator?.sd_close_z)}`, isPreviewBar && !indicator ? '收盘后计算 SD / ORB' : `Width ${formatOptionalNumber(indicator?.sd_width_rank)} · ORB ${getOrbBreakoutText(indicator)}`),
+                buildCursorCard('RVOL / Divergence', isPreviewBar && !indicator ? '预览中' : `RVOL20 ${formatOptionalNumber(indicator?.rvol_20)} · ${getTouchDetailText(indicator)}`, isPreviewBar && !indicator ? 'Touch / Div 待收盘确认' : getDivergenceDetailText(indicator)),
                 buildCursorCard('Signal / Osc', isPreviewBar && !indicator ? '未收盘预览' : signalPrimary, `${traceStage ? `Stage ${traceStage} · ` : ''}${signalSecondary}`),
             ].join('');
             renderChartWorkspaceChrome(payload, { includeTrace });

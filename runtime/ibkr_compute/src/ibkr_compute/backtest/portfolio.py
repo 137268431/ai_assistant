@@ -193,8 +193,23 @@ class BacktestPortfolioMixin:
         signal_ms = int(signal.get("signal_bar_ms", signal.get("bar_time_ms", 0)) or 0)
         if signal_ms <= 0 or bar_ms <= 0:
             return False
-        validity_ms = int(request.get("signal_validity_minutes", DEFAULT_PORTFOLIO_SIGNAL_VALIDITY_MINUTES) or DEFAULT_PORTFOLIO_SIGNAL_VALIDITY_MINUTES) * 60 * 1000
+        validity_ms = self._portfolio_signal_validity_minutes(signal, request) * 60 * 1000
         return bar_ms - signal_ms > validity_ms
+
+    def _portfolio_signal_validity_minutes(self, signal: dict, request: dict) -> int:
+        request_default = int(
+            request.get("signal_validity_minutes", DEFAULT_PORTFOLIO_SIGNAL_VALIDITY_MINUTES)
+            or DEFAULT_PORTFOLIO_SIGNAL_VALIDITY_MINUTES
+        )
+        extra = self._parse_object((signal or {}).get("extra"))
+        raw = extra.get("validity_minutes", (signal or {}).get("validity_minutes"))
+        try:
+            minutes = int(raw)
+            if minutes > 0:
+                return minutes
+        except Exception:
+            pass
+        return request_default
 
     def _cooldown_bars_to_ms(self, bars: int) -> int:
         return max(0, int(bars or 0)) * interval_to_ms("5m")
@@ -624,7 +639,8 @@ class BacktestPortfolioMixin:
         confirm_delay_minutes = int(request.get("confirm_delay_minutes", 0) or 0)
         if str(request.get("manual_confirm_mode") or "auto") != "delayed":
             confirm_delay_minutes = 0
-        validity_minutes = int(request.get("signal_validity_minutes", DEFAULT_PORTFOLIO_SIGNAL_VALIDITY_MINUTES) or DEFAULT_PORTFOLIO_SIGNAL_VALIDITY_MINUTES)
+        signal_payload = candidate.get("signal_payload") or {}
+        validity_minutes = self._portfolio_signal_validity_minutes(signal_payload, request)
         if confirm_delay_minutes > validity_minutes:
             reason = "signal_expired_before_confirm"
             self._mark_backtest_signal_status(signal_index, candidate.get("signal_id"), "skipped", reason)
@@ -650,6 +666,7 @@ class BacktestPortfolioMixin:
         confirm_ready_ms = int(candidate["bar"].get("bar_time_ms", 0) or 0) + confirm_delay_minutes * 60 * 1000
         pending_signal["reserved_exposure"] = exposure
         pending_signal["confirm_ready_bar_ms"] = confirm_ready_ms
+        pending_signal["validity_minutes"] = validity_minutes
         pending_signal["portfolio_target_rank"] = int(candidate.get("target_rank", 999999) or 999999)
         pending_signal["portfolio_target_score"] = float(candidate.get("target_score", 0) or 0)
         state["pending_signal"] = pending_signal
@@ -1265,7 +1282,8 @@ class BacktestPortfolioMixin:
                             )
                         )
 
-                signal = state["signal_gen"].update(snapshot)
+                signal_snapshot = {**snapshot, **daily_fields}
+                signal = state["signal_gen"].update(signal_snapshot)
                 trading_day_enabled = state.get("allowed_trade_days") is None or current_symbol_day in state.get("allowed_trade_days")
                 admitted_after_ms = int((state.get("admitted_after_ms_by_day") or {}).get(current_symbol_day, 0) or 0)
                 sd_admitted_for_bar = admitted_after_ms <= 0 or int(bar.get("bar_time_ms", 0) or 0) >= admitted_after_ms

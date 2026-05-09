@@ -170,7 +170,8 @@ class BacktestSymbolRowsRunnerMixin:
                             indicator_audit,
                         )
                     )
-            signal = signal_gen.update(snapshot)
+            signal_snapshot = {**snapshot, **daily_fields}
+            signal = signal_gen.update(signal_snapshot)
             trading_day_enabled = allowed_trade_days is None or current_day in allowed_trade_days
             preexisting_pending_signal = pending_signal if pending_signal and open_position is None else None
             preexisting_open_position = open_position

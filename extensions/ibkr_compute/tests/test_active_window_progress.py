@@ -60,7 +60,7 @@ class ActiveWindowProgressTest(unittest.TestCase):
 
         self.assertEqual(
             set(trace),
-            {"signal_state", "events", "filters", "window_flags", "component_flags"},
+            {"signal_state", "events", "filters", "window_flags", "component_flags", "setup_state"},
         )
         self.assertGreaterEqual(
             set(trace["signal_state"]),
@@ -75,6 +75,11 @@ class ActiveWindowProgressTest(unittest.TestCase):
                 "signal_mode",
                 "ema_touch_line",
                 "div_source",
+                "setup",
+                "entry_order_type",
+                "technical_description",
+                "trigger_checks",
+                "filter_checks",
                 "signal_payload",
             },
         )

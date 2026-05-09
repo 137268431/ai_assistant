@@ -138,11 +138,11 @@ def build_daily_scan_rule_summary(
             and cfg.get_bool_for_environment(
                 "ibkr_daily_scan_data_completeness_blocking_enabled",
                 runtime_environment,
-                False,
+                True,
             )
         )
     except Exception:
-        completeness_blocking = False
+        completeness_blocking = True
     return {
         "primary_weight": DAILY_SCAN_PRIMARY_WEIGHT,
         "secondary_weight": DAILY_SCAN_SECONDARY_WEIGHT,

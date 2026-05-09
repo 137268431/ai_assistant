@@ -5,6 +5,7 @@ import traceback
 
 from ibkr_compute.api.compute.runtime_state.runtime import _api_app
 from ibkr_compute.api.market.screener import load_effective_watchlist
+from ibkr_compute.core.indicator_engine import DEFAULT_PARAMS
 
 
 MANUAL_TARGET_SOURCES = {
@@ -120,13 +121,28 @@ def get_active_trade_symbols(environment: str, market_date: str | None = None) -
 
 def get_signal_generator_params(environment: str) -> dict:
     api_app = _api_app()
+    runtime_environment = str(environment or "live").strip().lower() or "live"
     market_monitor_symbols = sorted(get_market_monitor_symbols(environment))
     signal_enabled_symbols = sorted(get_active_trade_symbols(environment))
-    return {
+    params = {
         "market_monitor_symbols": ",".join(market_monitor_symbols),
         "signal_enabled_symbols": ",".join(signal_enabled_symbols),
-        "signal_window_max_bars": api_app.cfg.get_int_for_environment("signal_window_max_bars", environment, 12),
     }
+    for key, default in DEFAULT_PARAMS.items():
+        if isinstance(default, bool):
+            getter = getattr(api_app.cfg, "get_bool_for_environment", None)
+            value = getter(key, runtime_environment, default) if getter else default
+        elif isinstance(default, int):
+            getter = getattr(api_app.cfg, "get_int_for_environment", None)
+            value = getter(key, runtime_environment, default) if getter else default
+        elif isinstance(default, float):
+            getter = getattr(api_app.cfg, "get_float_for_environment", None)
+            value = getter(key, runtime_environment, default) if getter else default
+        else:
+            getter = getattr(api_app.cfg, "get_for_environment", None)
+            value = getter(key, runtime_environment, str(default)) if getter else default
+        params[key] = value
+    return params
 
 
 __all__ = [

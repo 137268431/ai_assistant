@@ -21,7 +21,7 @@ def get_or_create_engine(
     signal_params = signal_params or get_signal_generator_params(runtime_environment)
     with api_app.compute_lock:
         if key not in api_app.engines:
-            api_app.engines[key] = IndicatorEngine(normalized_symbol, normalized_interval)
+            api_app.engines[key] = IndicatorEngine(normalized_symbol, normalized_interval, params=signal_params)
             api_app.signal_gens[key] = SignalGenerator(
                 normalized_symbol,
                 normalized_interval,

@@ -129,7 +129,12 @@
                 const active = activeBarMs > 0 && activeBarMs === barTimeMs;
                 const isPreview = Boolean(item?.is_preview);
                 const eventChain = Array.isArray(item?.event_chain) ? item.event_chain.filter(Boolean) : [];
-                const filters = Array.isArray(item?.filters) ? item.filters.filter(Boolean) : [];
+                const signalState = getTraceSignalState(item);
+                const traceSignal = getTraceSignalPayload(item) || {};
+                const filters = normalizeCheckList(signalState.filter_checks || traceSignal.filter_checks || item?.filter_checks).concat(
+                    Array.isArray(item?.filters) ? item.filters.filter(Boolean) : []
+                );
+                const triggers = normalizeCheckList(signalState.trigger_checks || traceSignal.trigger_checks || item?.trigger_checks);
                 const flowTokens = getTraceFlowTokens(item, 8);
                 const hasKeyEvent = Boolean(stage && stage !== 'none') || eventChain.length || filters.length || hasTraceComponentFlags(item?.component_flags);
                 const itemClasses = [
@@ -147,15 +152,23 @@
                 const touchTokens = Array.isArray(item?.structure?.touch_tokens) ? item.structure.touch_tokens : [];
                 const tech = [
                     `VWAP ${formatPercent(item?.position?.vwap_dist)}`,
-                    `SD ${getSdZoneText(item?.position?.sd_zone)}`,
-                    `ATR ${formatPrice(item?.volatility?.atr)}`,
+                    `SD ${getSdRegimeText(item?.position?.sd_regime ?? item?.sd_regime)} · Z ${formatOptionalNumber(item?.position?.sd_close_z ?? item?.sd_close_z)}`,
+                    `WRank ${formatOptionalNumber(item?.position?.sd_width_rank ?? item?.sd_width_rank)}`,
+                    `ORB ${getOrbBreakoutText({ ...(item || {}), ...(item?.position || {}) })}`,
+                    `RVOL20 ${formatOptionalNumber(item?.volume?.rvol_20 ?? item?.rvol_20)}`,
                     `ATR% ${formatPercent(item?.volatility?.atr_pct)}`,
-                    `CRSI ${formatNumber(item?.momentum?.crsi)}`,
-                    `OBV ${formatNumber(item?.momentum?.obv_rsi)}`,
                 ].filter(Boolean);
+                const signalMeta = [
+                    signalState.strategy_profile || traceSignal.strategy_profile ? `Profile ${humanizeToken(signalState.strategy_profile || traceSignal.strategy_profile)}` : '',
+                    signalState.setup || traceSignal.setup ? `Setup ${humanizeToken(signalState.setup || traceSignal.setup)}` : '',
+                    signalState.entry_order_type || traceSignal.entry_order_type ? `Order ${getOrderTypeText(signalState.entry_order_type || traceSignal.entry_order_type)}` : '',
+                    signalState.validity_minutes || traceSignal.validity_minutes ? `Valid ${signalState.validity_minutes || traceSignal.validity_minutes}m` : '',
+                ].filter(Boolean);
+                const technicalDescription = signalState.technical_description || traceSignal.technical_description || item?.technical_description || '';
                 const divergence = Array.isArray(item?.momentum?.divergence_tokens) ? item.momentum.divergence_tokens.slice(0, 4) : [];
                 const eventTokens = eventChain.length ? eventChain.slice(0, embedded ? 2 : 4) : ['无新增事件'];
-                const filterTokens = filters.length ? filters.slice(0, embedded ? 2 : 3) : ['未触发过滤'];
+                const filterTokens = filters.length ? filters.slice(0, embedded ? 2 : 3) : ['过滤检查通过/未提供'];
+                const triggerTokens = triggers.length ? triggers.slice(0, embedded ? 2 : 3) : ['触发检查未提供'];
                 const signalLabel = formatTraceDecisionLabel(item, null);
                 return `
                     <button class="${escapeHtml(itemClasses)}" type="button" data-trace-bar-ms="${barTimeMs}" onclick="focusTraceBar('${barTimeMs}')">
@@ -179,13 +192,14 @@
                                 ...structure,
                                 ...touchTokens.map((text) => ({ text, className: 'warning' })),
                             ]))}
+                            ${buildTraceReviewSection('Setup', buildTraceTokens(signalMeta.length ? signalMeta : ['旧 trace 未提供 setup']))}
                             ${buildTraceReviewSection('Flow', buildTraceTokens(flowTokens.length ? flowTokens : ['无组件'], flowTokens.length ? 'warning' : ''))}
-                            ${buildTraceReviewSection('Events', buildTraceTokens(eventTokens, eventChain.length ? 'warning' : ''))}
+                            ${buildTraceReviewSection('Triggers', buildTraceTokens(triggerTokens, triggers.length ? 'positive' : ''))}
                             ${buildTraceReviewSection('Filters', buildTraceTokens(filterTokens, filters.length ? 'negative' : ''))}
                             ${buildTraceReviewSection('Tech', buildTraceTokens(tech))}
                             ${buildTraceReviewSection('Divergence', buildTraceTokens(divergence.length ? divergence : ['无背离']))}
                         </div>
-                        <div class="trace-review-reason">${escapeHtml(item?.signal_state?.reason || item?.signal_state?.filter_reason || 'bars 实时推演')}</div>
+                        <div class="trace-review-reason">${escapeHtml(technicalDescription || item?.signal_state?.reason || item?.signal_state?.filter_reason || 'bars 实时推演')}</div>
                     </button>
                 `;
             }).join('');
@@ -223,7 +237,7 @@
                 <div class="trace-panel-head">
                     <div>
                         <div class="trace-panel-title">Bar Trace</div>
-                        <div class="trace-panel-copy">按 bar 逐条复盘结构、组件、事件、过滤与信号状态；关键事件优先突出，普通 bar 降低视觉权重。</div>
+                        <div class="trace-panel-copy">按 bar 逐条复盘结构、setup、触发检查、过滤检查与技术描述；关键事件优先突出，普通 bar 降低视觉权重。</div>
                     </div>
                     <div class="trace-panel-actions">
                         <button class="tv-tool-btn" type="button" onclick="toggleChartTracePanel()">隐藏 Trace</button>

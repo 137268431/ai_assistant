@@ -400,6 +400,13 @@
             const accountUrl = buildPageUrl('/ibkr_account.html', {}, { environment: currentEnvironment });
             const extra = getSignalExtra(signal);
             const reason = signal.reason || signal.note || extra.reason || '暂无原因说明';
+            const technicalDescription = getSignalField(signal, 'technical_description', '');
+            const setup = getSignalField(signal, 'setup', '');
+            const strategyProfile = getSignalField(signal, 'strategy_profile', '');
+            const entryOrderType = getSignalField(signal, 'entry_order_type', '');
+            const validityMinutes = getSignalField(signal, 'validity_minutes', '');
+            const triggerChecks = getSignalField(signal, 'trigger_checks', null);
+            const filterChecks = getSignalField(signal, 'filter_checks', null);
             const computedAt = extra.computed_at_us || extra.computed_at_cn || signal.updated || signal.created || '--';
             const statusText = isComputedSignal(signal) ? 'COMPUTED' : String(signal.status || '--').toUpperCase();
             const sourceNote = isComputedSignal(signal)
@@ -430,14 +437,24 @@
                         <div class="drawer-value">${escapeHtml(formatPrice(signal.take_profit))}<br>${escapeHtml(formatPrice(signal.stop_loss))}</div>
                     </div>
                     <div class="drawer-metric">
-                        <div class="drawer-label">Shares / Industry</div>
-                        <div class="drawer-value">${escapeHtml(String(signal.shares || '--'))}<br>${escapeHtml(String(extra.industry || '--'))}</div>
+                        <div class="drawer-label">Setup / Order</div>
+                        <div class="drawer-value">${escapeHtml(humanizeToken(setup || strategyProfile || '--'))}<br>${escapeHtml(getOrderTypeText(entryOrderType))}${validityMinutes ? ` · ${escapeHtml(String(validityMinutes))}m` : ''}</div>
                     </div>
                 </div>
 
                 <div class="drawer-block">
-                    <div class="drawer-block-title">Reason</div>
-                    <div class="drawer-copy">${escapeHtml(reason)}</div>
+                    <div class="drawer-block-title">Technical Description</div>
+                    <div class="drawer-copy">${escapeHtml(technicalDescription || reason)}</div>
+                </div>
+
+                <div class="drawer-block">
+                    <div class="drawer-block-title">Trigger Checks</div>
+                    <div class="drawer-token-row">${buildCheckTokenHtml(triggerChecks, '旧信号未提供触发检查')}</div>
+                </div>
+
+                <div class="drawer-block">
+                    <div class="drawer-block-title">Filter Checks</div>
+                    <div class="drawer-token-row">${buildCheckTokenHtml(filterChecks, '旧信号未提供过滤检查')}</div>
                 </div>
 
                 <div class="drawer-block">
@@ -455,8 +472,12 @@
                         <div class="drawer-value">${indicator ? `${escapeHtml(formatNumber(indicator.crsi))}<br>${escapeHtml(formatNumber(indicator.obv_rsi))}` : '--'}</div>
                     </div>
                     <div class="drawer-metric">
-                        <div class="drawer-label">VWAP Dist / ATR %</div>
-                        <div class="drawer-value">${indicator ? `${escapeHtml(formatPercent(indicator.vwap_dist))}<br>${escapeHtml(formatPercent(indicator.atr_pct))}` : '--'}</div>
+                        <div class="drawer-label">VWAP Band / RVOL</div>
+                        <div class="drawer-value">${indicator ? `${escapeHtml(formatPrice(indicator.vwap_upper1 ?? indicator.vwap_upper))}/${escapeHtml(formatPrice(indicator.vwap_lower1 ?? indicator.vwap_lower))}<br>RVOL20 ${escapeHtml(formatOptionalNumber(indicator.rvol_20))}` : '--'}</div>
+                    </div>
+                    <div class="drawer-metric">
+                        <div class="drawer-label">SD Regime / ORB</div>
+                        <div class="drawer-value">${indicator ? `${escapeHtml(getSdRegimeText(indicator.sd_regime))} · Z ${escapeHtml(formatOptionalNumber(indicator.sd_close_z))}<br>${escapeHtml(getOrbBreakoutText(indicator))}` : '--'}</div>
                     </div>
                     <div class="drawer-metric">
                         <div class="drawer-label">Computed</div>
@@ -486,7 +507,12 @@
             const trace = context.trace || {};
             const componentTokens = getTraceFlowTokens(trace, 8);
             const eventTokens = Array.isArray(trace?.event_chain) ? trace.event_chain : [];
-            const filters = Array.isArray(trace?.filters) && trace.filters.length ? trace.filters : ['未触发过滤'];
+            const signalState = getTraceSignalState(trace);
+            const traceSignal = getTraceSignalPayload(trace) || {};
+            const filters = normalizeCheckList(signalState.filter_checks || traceSignal.filter_checks || trace?.filter_checks).concat(
+                Array.isArray(trace?.filters) ? trace.filters.filter(Boolean) : []
+            );
+            const triggers = normalizeCheckList(signalState.trigger_checks || traceSignal.trigger_checks || trace?.trigger_checks);
             const dtpState = getTraceDtpState(trace);
             const dtpText = dtpState.phase || dtpState.dir ? formatDtpStateLabel(dtpState) : '--';
             const windowFlags = trace?.window_flags && typeof trace.window_flags === 'object' ? trace.window_flags : {};
@@ -495,8 +521,7 @@
                 windowFlags.sd_lower_valid || windowFlags.sd_lower_active ? '下轨窗口' : '',
             ].filter(Boolean).join(' / ') || '无窗口';
             const signalStage = getTraceSignalStageText(trace);
-            const signalState = getTraceSignalState(trace);
-            const traceReason = getTraceFilterReason(trace) || signalState.reason || signalState.filter_reason || 'bars 实时推演';
+            const traceReason = trace?.technical_description || signalState.technical_description || traceSignal.technical_description || getTraceFilterReason(trace) || signalState.reason || signalState.filter_reason || 'bars 实时推演';
             const ohlc = formatInlineOHLC(bar);
             content.innerHTML = `
                 <div class="drawer-head">
@@ -522,8 +547,8 @@
                         <div class="drawer-value"><span style="color:${escapeHtml(getDtpStateColor(dtpState))};">${escapeHtml(dtpText)}</span><br>${escapeHtml(signalStage)}</div>
                     </div>
                     <div class="drawer-metric">
-                        <div class="drawer-label">SD Window</div>
-                        <div class="drawer-value">${escapeHtml(windowText)}<br>${escapeHtml(`SD ${getSdZoneText(trace?.position?.sd_zone ?? indicator?.sd_zone)} · ${getSdTrendText(trace?.position?.sd_trend ?? indicator?.sd_trend)}`)}</div>
+                        <div class="drawer-label">SD / ORB</div>
+                        <div class="drawer-value">${escapeHtml(windowText)}<br>${escapeHtml(`SD ${getSdRegimeText(trace?.position?.sd_regime ?? trace?.sd_regime ?? indicator?.sd_regime)} · Z ${formatOptionalNumber(trace?.position?.sd_close_z ?? trace?.sd_close_z ?? indicator?.sd_close_z)} · ${getOrbBreakoutText({ ...(indicator || {}), ...(trace || {}), ...(trace?.position || {}) })}`)}</div>
                     </div>
                 </div>
 
@@ -533,13 +558,18 @@
                 </div>
 
                 <div class="drawer-block">
-                    <div class="drawer-block-title">Events</div>
-                    <div class="drawer-copy">${escapeHtml(eventTokens.length ? eventTokens.join(' · ') : '无新增事件')}</div>
+                    <div class="drawer-block-title">Setup / Order</div>
+                    <div class="drawer-copy">${escapeHtml([signalState.strategy_profile || traceSignal.strategy_profile, signalState.setup || traceSignal.setup, getOrderTypeText(signalState.entry_order_type || traceSignal.entry_order_type), signalState.validity_minutes || traceSignal.validity_minutes ? `${signalState.validity_minutes || traceSignal.validity_minutes}m有效` : ''].filter(Boolean).join(' · ') || '旧 trace 未提供 setup')}</div>
+                </div>
+
+                <div class="drawer-block">
+                    <div class="drawer-block-title">Trigger Checks</div>
+                    <div class="drawer-token-row">${triggers.length ? triggers.map((text) => buildTraceToken(text, 'positive')).join('') : buildTraceToken('旧 trace 未提供触发检查')}</div>
                 </div>
 
                 <div class="drawer-block">
                     <div class="drawer-block-title">Filters / Reason</div>
-                    <div class="drawer-token-row">${filters.map((text) => buildTraceToken(text, filters[0] === '未触发过滤' ? '' : 'negative')).join('')}</div>
+                    <div class="drawer-token-row">${filters.length ? filters.map((text) => buildTraceToken(text, 'negative')).join('') : buildTraceToken('未触发过滤')}</div>
                     <div class="drawer-copy">${escapeHtml(traceReason)}</div>
                 </div>
             `;
@@ -900,7 +930,7 @@
                             <div class="metric-item"><div class="metric-label">多头信号</div><div class="metric-value">${longCount}</div></div>
                             <div class="metric-item"><div class="metric-label">空头信号</div><div class="metric-value">${shortCount}</div></div>
                             <div class="metric-item"><div class="metric-label">最新信号</div><div class="metric-value">${latestSignal ? escapeHtml(buildTradeSignalLabel(latestSignal)) : '--'}</div></div>
-                            <div class="metric-item"><div class="metric-label">信号时间</div><div class="metric-value">${latestSignal ? escapeHtml(formatSignalTime(latestSignal).slice(5)) : '--'}</div></div>
+                            <div class="metric-item"><div class="metric-label">Setup / Order</div><div class="metric-value">${latestSignal ? `${escapeHtml(humanizeToken(getSignalField(latestSignal, 'setup', '--')))}<br>${escapeHtml(getOrderTypeText(getSignalField(latestSignal, 'entry_order_type', '')))}` : '--'}</div></div>
                         </div>
                         <div class="rail-sub">IBKR 对比不写库。</div>
                     </div>
@@ -915,7 +945,7 @@
                                     <div class="signal-item interactive ${isActive ? 'active' : ''}" onclick="focusSignalBar('${signalMs}', '${encodedSignalKey}')">
                                         <div class="signal-side">
                                             <div class="signal-title">${escapeHtml(buildTradeSignalLabel(signal))}</div>
-                                            <div class="signal-meta">${escapeHtml(formatSignalTime(signal))}</div>
+                                            <div class="signal-meta">${escapeHtml(formatSignalTime(signal))}${getSignalField(signal, 'setup', '') ? ` · ${escapeHtml(humanizeToken(getSignalField(signal, 'setup', '')))}` : ''}</div>
                                         </div>
                                         <span class="signal-badge ${escapeHtml(getSignalBadgeClass(signal))}">${escapeHtml(String(signal.direction || '--').toUpperCase())}</span>
                                     </div>
@@ -939,7 +969,7 @@
                         <div class="metric-item"><div class="metric-label">Open / High</div><div class="metric-value">${focusBar ? `${escapeHtml(formatPrice(focusBar.open))} / ${escapeHtml(formatPrice(focusBar.high))}` : '--'}</div></div>
                         <div class="metric-item"><div class="metric-label">Low / Close</div><div class="metric-value">${focusBar ? `${escapeHtml(formatPrice(focusBar.low))} / ${escapeHtml(formatPrice(focusBar.close))}` : '--'}</div></div>
                         <div class="metric-item"><div class="metric-label">Volume</div><div class="metric-value">${focusBar ? escapeHtml(formatNumber(focusBar.volume || 0, 0)) : '--'}</div></div>
-                        <div class="metric-item"><div class="metric-label">VWAP Dist</div><div class="metric-value" style="color:${signedColor(focusIndicator?.vwap_dist)}">${focusIndicator ? escapeHtml(formatPercent(focusIndicator.vwap_dist)) : '--'}</div></div>
+                        <div class="metric-item"><div class="metric-label">VWAP / Band</div><div class="metric-value" style="color:${signedColor(focusIndicator?.vwap_dist)}">${focusIndicator ? `${escapeHtml(formatPercent(focusIndicator.vwap_dist))}<br>±1 ${escapeHtml(formatPrice(focusIndicator.vwap_upper1 ?? focusIndicator.vwap_upper))}/${escapeHtml(formatPrice(focusIndicator.vwap_lower1 ?? focusIndicator.vwap_lower))}` : '--'}</div></div>
                         <div class="metric-item"><div class="metric-label">CRSI / OBV RSI</div><div class="metric-value">${focusIndicator ? `${escapeHtml(formatNumber(focusIndicator.crsi))} / ${escapeHtml(formatNumber(focusIndicator.obv_rsi))}` : '--'}</div></div>
                         <div class="metric-item"><div class="metric-label">Signal</div><div class="metric-value">${focusSignal ? escapeHtml(buildTradeSignalLabel(focusSignal)) : (focusSignalMatches.length ? `${focusSignalMatches.length} hits` : '--')}</div></div>
                     </div>
@@ -966,10 +996,10 @@
                     <div class="metric-grid">
                         <div class="metric-item"><div class="metric-label">趋势</div><div class="metric-value">${focusIndicator ? escapeHtml(getTrendText(focusIndicator.trend_dir)) : '--'}</div></div>
                         <div class="metric-item"><div class="metric-label">EMA 状态</div><div class="metric-value">${focusIndicator?.ema_bullish ? '📈 多头' : focusIndicator?.ema_bearish ? '📉 空头' : '➡️ 中性'}</div></div>
-                        <div class="metric-item"><div class="metric-label">SD</div><div class="metric-value">${focusIndicator ? `${escapeHtml(getSdZoneText(focusIndicator.sd_zone))}<br>${escapeHtml(getSdTrendText(focusIndicator.sd_trend))}` : '--'}</div></div>
+                        <div class="metric-item"><div class="metric-label">SD Regime</div><div class="metric-value">${focusIndicator ? `${escapeHtml(getSdRegimeText(focusIndicator.sd_regime))}<br>Z ${escapeHtml(formatOptionalNumber(focusIndicator.sd_close_z))} · W ${escapeHtml(formatOptionalNumber(focusIndicator.sd_width_rank))}` : '--'}</div></div>
                         <div class="metric-item"><div class="metric-label">Fractal</div><div class="metric-value">${focusIndicator ? escapeHtml(getFractalStateText(focusIndicator)) : '--'}</div></div>
-                        <div class="metric-item"><div class="metric-label">VWAP 偏离</div><div class="metric-value" style="color:${signedColor(focusIndicator?.vwap_dist)}">${focusIndicator ? escapeHtml(formatPercent(focusIndicator.vwap_dist)) : '--'}</div></div>
-                        <div class="metric-item"><div class="metric-label">ATR %</div><div class="metric-value">${focusIndicator ? escapeHtml(formatPercent(focusIndicator.atr_pct)) : '--'}</div></div>
+                        <div class="metric-item"><div class="metric-label">ORB</div><div class="metric-value">${focusIndicator ? `${escapeHtml(formatPrice(focusIndicator.orb_high))} / ${escapeHtml(formatPrice(focusIndicator.orb_low))}<br>${escapeHtml(getOrbBreakoutText(focusIndicator))}` : '--'}</div></div>
+                        <div class="metric-item"><div class="metric-label">RVOL / ATR</div><div class="metric-value">${focusIndicator ? `${escapeHtml(formatOptionalNumber(focusIndicator.rvol_20))}<br>${escapeHtml(formatPercent(focusIndicator.atr_pct))}` : '--'}</div></div>
                         <div class="metric-item"><div class="metric-label">CRSI</div><div class="metric-value">${focusIndicator ? escapeHtml(formatNumber(focusIndicator.crsi)) : '--'}</div></div>
                         <div class="metric-item"><div class="metric-label">OBV RSI</div><div class="metric-value">${focusIndicator ? escapeHtml(formatNumber(focusIndicator.obv_rsi)) : '--'}</div></div>
                         <div class="metric-item"><div class="metric-label">Touch</div><div class="metric-value">${focusIndicator ? escapeHtml(getTouchSummary(focusIndicator)) : '--'}</div></div>
@@ -999,7 +1029,7 @@
                             <div class="signal-item interactive ${isActive ? 'active' : ''}" onclick="focusSignalBar('${signalMs}', '${encodedSignalKey}')">
                                 <div class="signal-side">
                                     <div class="signal-title">${escapeHtml(buildTradeSignalLabel(signal))}</div>
-                                    <div class="signal-meta">${escapeHtml(formatSignalTime(signal))}</div>
+                                    <div class="signal-meta">${escapeHtml(formatSignalTime(signal))}${getSignalField(signal, 'setup', '') ? ` · ${escapeHtml(humanizeToken(getSignalField(signal, 'setup', '')))}` : ''}</div>
                                 </div>
                                 <span class="signal-badge ${String(signal.direction || '').toLowerCase() === 'short' ? 'short' : 'long'}">${escapeHtml(String(signal.direction || '--').toUpperCase())}</span>
                             </div>

@@ -165,6 +165,8 @@ class BacktestPersistenceMixin:
             "signal_bar_ms": int(signal.get("signal_bar_ms", 0) or 0),
             "signal_us_time": str(signal.get("signal_us_time", "") or ""),
             "signal_close": float(signal.get("signal_close", 0) or 0),
+            "entry_order_type": str(signal.get("entry_order_type", "limit") or "limit"),
+            "setup": str(signal.get("setup", "") or ""),
         }
 
     def _check_exit(self, position: dict, bar: dict, commission_per_share: float, slippage_bps: float) -> Optional[dict]:

@@ -462,6 +462,49 @@ class BacktestPortfolioStreamTests(unittest.TestCase):
         self.assertFalse(self.service._portfolio_signal_expired(signal, signal_bar_ms + 30 * 60 * 1000, request))
         self.assertTrue(self.service._portfolio_signal_expired(signal, signal_bar_ms + 31 * 60 * 1000, request))
 
+    def test_signal_expiry_uses_per_signal_validity_override(self):
+        request = self._request(signal_validity_minutes=30)
+        signal_bar_ms = int(datetime(2026, 4, 1, 9, 35, tzinfo=ET).timestamp() * 1000)
+        signal = {"signal_bar_ms": signal_bar_ms, "extra": {"validity_minutes": 5}}
+
+        self.assertFalse(self.service._portfolio_signal_expired(signal, signal_bar_ms + 5 * 60 * 1000, request))
+        self.assertTrue(self.service._portfolio_signal_expired(signal, signal_bar_ms + 6 * 60 * 1000, request))
+
+    def test_marketable_limit_pending_fill_uses_signal_entry_price(self):
+        signal_bar_ms = int(datetime(2026, 4, 1, 10, 0, tzinfo=ET).timestamp() * 1000)
+        pending = {
+            "symbol": "AAPL",
+            "direction": "long",
+            "signal": "intraday_sd_v1",
+            "signal_id": "sig-market-limit",
+            "entry_price": 102.0,
+            "take_profit": 108.0,
+            "stop_loss": 98.0,
+            "shares": 10,
+            "signal_bar_ms": signal_bar_ms,
+            "extra": {"entry_order_type": "marketable_limit", "setup": "orb_vwap"},
+            "entry_order_type": "marketable_limit",
+            "setup": "orb_vwap",
+        }
+        bar = {
+            "bar_time_ms": signal_bar_ms + 5 * 60 * 1000,
+            "us_time": "2026-04-01 10:05:00",
+            "cn_time": "",
+            "open": 101.0,
+            "high": 103.0,
+            "low": 100.0,
+            "close": 102.0,
+            "session_type": "regular",
+        }
+
+        position = self.service._check_pending_entry_fill("AAPL", bar, pending, 0.0, 0.0)
+
+        self.assertIsNotNone(position)
+        self.assertEqual(position["entry_limit_price"], 102.0)
+        self.assertEqual(position["entry_price"], 101.0)
+        self.assertEqual(position["entry_order_type"], "marketable_limit")
+        self.assertEqual(position["setup"], "orb_vwap")
+
     def test_order_window_rejects_late_new_signals(self):
         request = self._request(order_window_end_time="15:00")
         before_cutoff = int(datetime(2026, 4, 1, 15, 0, tzinfo=ET).timestamp() * 1000)

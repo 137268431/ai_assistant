@@ -34,7 +34,19 @@
             const emaSlow = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.ema_slow));
             const emaTrend = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.ema_trend));
             const vwap = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.vwap));
+            const vwapUpper1 = sortedBars.map((bar) => {
+                const indicator = indicatorMap.get(Number(bar.bar_time_ms || 0));
+                return toChartValue(indicator?.vwap_upper1 ?? indicator?.vwap_upper);
+            });
+            const vwapLower1 = sortedBars.map((bar) => {
+                const indicator = indicatorMap.get(Number(bar.bar_time_ms || 0));
+                return toChartValue(indicator?.vwap_lower1 ?? indicator?.vwap_lower);
+            });
+            const vwapUpper2 = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.vwap_upper2));
+            const vwapLower2 = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.vwap_lower2));
             const sdReg = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.sd_reg));
+            const orbHigh = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.orb_high));
+            const orbLow = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.orb_low));
             const sdSignalUpper = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.sd_signal_upper));
             const sdSignalLower = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.sd_signal_lower));
             const sdFilterUpper = sortedBars.map((bar) => toChartValue(indicatorMap.get(Number(bar.bar_time_ms || 0))?.sd_filter_upper));
@@ -165,6 +177,20 @@
                 (indicator) => Boolean(indicator?.sd_upper),
                 (indicator, bar) => Number(bar.high || 0) + markerOffset(indicator, bar, 0.8),
                 () => 'SD↓'
+            );
+            const orbBreakoutUpMarkers = buildIndicatorMarkerPoints(
+                sortedBars,
+                indicatorMap,
+                (indicator) => Boolean(indicator?.orb_breakout_up),
+                (indicator, bar) => Number(bar.high || 0) + markerOffset(indicator, bar, 1.05),
+                () => 'ORB↑'
+            );
+            const orbBreakoutDownMarkers = buildIndicatorMarkerPoints(
+                sortedBars,
+                indicatorMap,
+                (indicator) => Boolean(indicator?.orb_breakout_down),
+                (indicator, bar) => Number(bar.low || 0) - markerOffset(indicator, bar, 1.05),
+                () => 'ORB↓'
             );
             const bullTouchFastMarkers = buildIndicatorMarkerPoints(
                 sortedBars,
@@ -351,8 +377,12 @@
                     { name: 'SD Signal Lower', type: 'line', data: sdSignalLower, symbol: 'none', connectNulls: true, smooth: false, z: 5, lineStyle: { width: 1.55, color: 'rgba(74,222,128,0.84)' } },
                     { name: 'SD Filter Upper', type: 'line', data: sdFilterUpper, symbol: 'none', connectNulls: true, smooth: false, z: 4, lineStyle: { width: 1.15, color: 'rgba(248,113,113,0.46)', type: 'dashed' } },
                     { name: 'SD Filter Lower', type: 'line', data: sdFilterLower, symbol: 'none', connectNulls: true, smooth: false, z: 4, lineStyle: { width: 1.15, color: 'rgba(74,222,128,0.46)', type: 'dashed' } },
+                    { name: 'ORB High', type: 'line', data: orbHigh, symbol: 'none', connectNulls: true, smooth: false, z: 3, lineStyle: { width: 1.05, color: 'rgba(251,191,36,0.62)', type: 'dotted' } },
+                    { name: 'ORB Low', type: 'line', data: orbLow, symbol: 'none', connectNulls: true, smooth: false, z: 3, lineStyle: { width: 1.05, color: 'rgba(251,191,36,0.62)', type: 'dotted' } },
                     buildMarkerScatterSeries('SD MR Bull', sdLowerMarkers, withMainLabelLanes({ color: '#4CAF50', symbol: 'triangle', symbolSize: 13, showLabel: showMarkerLabels, labelPosition: 'bottom', shadowBlur: 10, shadowColor: 'rgba(76,175,80,0.24)' })),
                     buildMarkerScatterSeries('SD MR Bear', sdUpperMarkers, withMainLabelLanes({ color: '#FF8A00', symbol: 'triangle', symbolRotate: 180, symbolSize: 13, showLabel: showMarkerLabels, labelPosition: 'top', shadowBlur: 10, shadowColor: 'rgba(255,138,0,0.24)' })),
+                    buildMarkerScatterSeries('ORB Breakout Up', orbBreakoutUpMarkers, withMainLabelLanes({ color: '#FBBF24', symbol: 'arrow', symbolSize: 12, showLabel: showMarkerLabels, labelPosition: 'top', shadowBlur: 10, shadowColor: 'rgba(251,191,36,0.24)' })),
+                    buildMarkerScatterSeries('ORB Breakout Down', orbBreakoutDownMarkers, withMainLabelLanes({ color: '#FBBF24', symbol: 'arrow', symbolRotate: 180, symbolSize: 12, showLabel: showMarkerLabels, labelPosition: 'bottom', shadowBlur: 10, shadowColor: 'rgba(251,191,36,0.24)' })),
                 ] : []),
                 ...(chartLayerState.fractal ? [
                     buildMarkerScatterSeries('Fractal Bull', fractalBullMarkers, withMainLabelLanes({ color: '#14B8A6', symbol: 'triangle', symbolSize: 11, showLabel: showMarkerLabels, labelPosition: 'bottom' })),
@@ -426,6 +456,10 @@
                 ] : []),
                 ...(chartLayerState.vwap ? [
                     { name: 'VWAP', type: 'line', data: vwap, symbol: 'none', connectNulls: true, smooth: true, lineStyle: { width: 1.15, color: '#34D399' } },
+                    { name: 'VWAP Upper 1', type: 'line', data: vwapUpper1, symbol: 'none', connectNulls: true, smooth: true, lineStyle: { width: 0.95, color: 'rgba(52,211,153,0.58)', type: 'dashed' } },
+                    { name: 'VWAP Lower 1', type: 'line', data: vwapLower1, symbol: 'none', connectNulls: true, smooth: true, lineStyle: { width: 0.95, color: 'rgba(52,211,153,0.58)', type: 'dashed' } },
+                    { name: 'VWAP Upper 2', type: 'line', data: vwapUpper2, symbol: 'none', connectNulls: true, smooth: true, lineStyle: { width: 0.85, color: 'rgba(167,243,208,0.42)', type: 'dotted' } },
+                    { name: 'VWAP Lower 2', type: 'line', data: vwapLower2, symbol: 'none', connectNulls: true, smooth: true, lineStyle: { width: 0.85, color: 'rgba(167,243,208,0.42)', type: 'dotted' } },
                 ] : []),
                 ...overlaySeries,
                 ...(isTradeSignalInterval() && chartLayerState.lifecycle ? lifecycleSeries : []),

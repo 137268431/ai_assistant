@@ -450,8 +450,8 @@
         function getChartLayerDefs() {
             return [
                 { key: 'ema', label: 'EMA', shortLabel: 'EMA', disabled: false, swatches: ['#38BDF8', '#F59E0B', '#A78BFA'], description: 'EMA20 / EMA50 / EMA100' },
-                { key: 'vwap', label: 'VWAP', shortLabel: 'VWAP', disabled: false, swatches: ['#34D399'], description: 'VWAP 主线' },
-                { key: 'sdChannel', label: 'SD Channel', shortLabel: 'SD', disabled: false, swatches: ['#7DD3FC', '#F87171', '#4ADE80'], description: '标准差回归线与上下轨' },
+                { key: 'vwap', label: 'VWAP', shortLabel: 'VWAP', disabled: false, swatches: ['#34D399', '#6EE7B7', '#A7F3D0'], description: 'VWAP 主线与 1/2 标准差带' },
+                { key: 'sdChannel', label: 'SD Channel', shortLabel: 'SD', disabled: false, swatches: ['#7DD3FC', '#F87171', '#4ADE80', '#FBBF24'], description: '标准差回归线、上下轨、压缩状态与 ORB 突破' },
                 { key: 'fractal', label: 'Fractal', shortLabel: 'Frac', disabled: false, swatches: ['#14B8A6', '#F44336'], description: '上下分形标记' },
                 { key: 'emaTouch', label: 'EMA Touch', shortLabel: 'Touch', disabled: false, swatches: ['#00C853', '#D50000'], description: 'EMA touch 多空提示' },
                 { key: 'divergence', label: 'Divergence', shortLabel: 'Div', disabled: false, swatches: ['#2196F3', '#9C27B0'], description: '背离提示标记' },
@@ -526,6 +526,86 @@
             if (num > 0) return '上升';
             if (num < 0) return '下降';
             return '平坦';
+        }
+
+        function humanizeToken(value) {
+            return String(value ?? '')
+                .trim()
+                .replace(/_/g, ' ')
+                .replace(/\s+/g, ' ');
+        }
+
+        function formatOptionalNumber(value, digits = 2, prefix = '') {
+            const num = Number(value);
+            return Number.isFinite(num) ? `${prefix}${num.toFixed(digits)}` : '--';
+        }
+
+        function getSdRegimeText(value) {
+            const key = String(value ?? '').trim().toLowerCase();
+            const map = {
+                squeeze: '压缩',
+                compressed: '压缩',
+                compression: '压缩',
+                expansion: '扩张',
+                expanded: '扩张',
+                trend: '趋势扩张',
+                normal: '常态',
+                neutral: '常态',
+                wide: '宽轨',
+                narrow: '窄轨',
+            };
+            return map[key] || (key ? humanizeToken(value) : '--');
+        }
+
+        function getOrderTypeText(value) {
+            const key = String(value ?? '').trim().toLowerCase();
+            const map = {
+                market: '市价',
+                limit: '限价',
+                stop: '停止单',
+                stop_limit: '停止限价',
+                bracket: 'Bracket',
+            };
+            return map[key] || (key ? humanizeToken(value) : '--');
+        }
+
+        function getSignalField(signal, key, fallback = '') {
+            if (!signal || typeof signal !== 'object') return fallback;
+            const extra = getSignalExtra(signal);
+            const value = signal[key] ?? extra[key];
+            return value === undefined || value === null || value === '' ? fallback : value;
+        }
+
+        function normalizeCheckList(value) {
+            if (!value) return [];
+            if (Array.isArray(value)) return value.filter((item) => item !== null && item !== undefined && String(item).trim());
+            if (typeof value === 'object') {
+                return Object.entries(value).map(([key, item]) => {
+                    if (item && typeof item === 'object') {
+                        const passed = item.passed ?? item.ok ?? item.value;
+                        const text = item.label || item.name || item.reason || key;
+                        return `${humanizeToken(text)} ${passed === undefined ? '' : passed ? '✓' : '×'}`.trim();
+                    }
+                    if (typeof item === 'boolean') return `${humanizeToken(key)} ${item ? '✓' : '×'}`;
+                    return `${humanizeToken(key)}: ${String(item)}`;
+                }).filter((text) => text.trim());
+            }
+            return String(value).split(/[;；\n]/).map((item) => item.trim()).filter(Boolean);
+        }
+
+        function buildCheckTokenHtml(value, emptyText = '未提供') {
+            const checks = normalizeCheckList(value);
+            return checks.length ? checks.map((text) => buildTraceToken(text, /×|fail|block|reject|过滤/i.test(text) ? 'negative' : 'positive')).join('') : buildTraceToken(emptyText);
+        }
+
+        function getOrbBreakoutText(indicator) {
+            if (!indicator) return '--';
+            const up = Boolean(indicator.orb_breakout_up);
+            const down = Boolean(indicator.orb_breakout_down);
+            if (up && down) return '上下均触发';
+            if (up) return '向上突破';
+            if (down) return '向下突破';
+            return '未突破';
         }
 
         function getFractalSummary(indicator) {
@@ -616,6 +696,14 @@
             if (!signal || typeof signal !== 'object') return 'Signal';
             const extra = getSignalExtra(signal);
             const direction = String(signal.direction || '').trim().toLowerCase();
+            const rawSignal = String(signal.signal || extra.signal || extra.setup || '').trim().toLowerCase();
+            const labelMap = {
+                sd_squeeze_breakout_long: 'SD压缩突破多',
+                sd_squeeze_breakout_short: 'SD压缩突破空',
+                vwap_trend_pullback_long: 'VWAP顺势回踩多',
+                vwap_trend_pullback_short: 'VWAP顺势回踩空',
+            };
+            if (labelMap[rawSignal]) return labelMap[rawSignal];
             const signalWindow = String(extra.signal_window || '').trim().toLowerCase();
             const signalMode = String(extra.signal_mode || '').trim().toLowerCase();
             const touchLine = String(extra.ema_touch_line || '').trim().toLowerCase();

@@ -7,6 +7,7 @@ import traceback
 from flask import jsonify
 
 from ibkr_compute.api.compute.request import build_compute_disabled_payload, build_compute_execution_plan
+from ibkr_compute.api.compute.runtime_state.caches import get_daily_change_fields
 
 COMPUTE_LOCK_TIMEOUT_SECONDS = max(
     0.1,
@@ -237,7 +238,16 @@ def build_compute_response(payload=None):
                             if interval != "5m" or not signal_generator or symbol not in signal_enabled_symbols:
                                 continue
 
-                            signal = signal_generator.update(snapshot)
+                            signal_snapshot = {
+                                **snapshot,
+                                **get_daily_change_fields(
+                                    environment,
+                                    symbol,
+                                    float(snapshot.get("close", 0) or 0),
+                                    bar_ms,
+                                ),
+                            }
+                            signal = signal_generator.update(signal_snapshot)
                             if signal and api_app.is_recent_signal_bar(bar_ms, interval):
                                 signal_payload = api_app.build_signal_payload(environment, symbol, interval, bar, engine, signal)
                                 if plan["capture_signals"]:

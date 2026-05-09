@@ -25,6 +25,7 @@ from .daily_scanner_constants import (
     REJECTION_BUCKET_VOTE_TIE,
 )
 from .daily_scanner_support import (
+    _build_stocks_in_play_bonus,
     _daily_scan_matches_any,
     _format_metric_value,
     _format_threshold,
@@ -210,8 +211,14 @@ class DailyScannerEvaluateMixin:
                     "note": "日内涨跌幅不足",
                 }
             )
-        final_score = technical_score + _metric_rank_bonus(metric_row)
-        reason_items = list(dict.fromkeys(technical_reasons[:4] + gate_reasons))
+        stocks_in_play_bonus, stocks_in_play_reasons, stocks_in_play_details = _build_stocks_in_play_bonus(
+            metric_row,
+            snapshots,
+            direction_bias,
+        )
+        rank_bonus = _metric_rank_bonus(metric_row)
+        final_score = technical_score + rank_bonus + stocks_in_play_bonus
+        reason_items = list(dict.fromkeys(technical_reasons[:4] + stocks_in_play_reasons + gate_reasons))
         reason_text = ", ".join(reason_items[:8]).strip()
         if not reason_text:
             reason_text = (
@@ -237,5 +244,7 @@ class DailyScannerEvaluateMixin:
                 "timeframes_ready": sorted(snapshots.keys()),
                 "long_votes": long_votes,
                 "short_votes": short_votes,
+                "rank_bonus": rank_bonus,
+                **stocks_in_play_details,
             },
         }

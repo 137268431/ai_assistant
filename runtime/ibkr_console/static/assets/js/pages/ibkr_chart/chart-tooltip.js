@@ -14,6 +14,9 @@
                 : 'No signal on this bar';
             const traceStage = getTraceStage(context?.trace);
             const traceText = traceStage ? formatTraceDecisionLabel(context?.trace, signal) : '';
+            const setup = signal ? getSignalField(signal, 'setup', '') : context?.trace?.signal_state?.setup || context?.trace?.setup || '';
+            const entryOrderType = signal ? getSignalField(signal, 'entry_order_type', '') : context?.trace?.signal_state?.entry_order_type || context?.trace?.entry_order_type || '';
+            const technicalDescription = signal ? getSignalField(signal, 'technical_description', '') : context?.trace?.signal_state?.technical_description || context?.trace?.technical_description || '';
             const dtpState = context?.trace ? getTraceDtpState(context.trace) : null;
             const dtpLabel = dtpState && (dtpState.phase || dtpState.dir) ? formatDtpStateLabel(dtpState) : '';
             return `
@@ -24,10 +27,15 @@
                     <div>Vol ${escapeHtml(formatNumber(bar.volume || 0, 0))}</div>
                     <div style="margin-top:6px;color:#8BA4C4;">${isPreviewBar && !indicator ? 'EMA / VWAP 待收盘' : `EMA20 ${escapeHtml(formatPrice(indicator?.ema_fast))} · EMA50 ${escapeHtml(formatPrice(indicator?.ema_slow))}`}</div>
                     <div style="color:#8BA4C4;">${isPreviewBar && !indicator ? '指标待收盘确认' : `EMA100 ${escapeHtml(formatPrice(indicator?.ema_trend))} · VWAP ${escapeHtml(formatPrice(indicator?.vwap))}`}</div>
+                    <div style="color:#8BA4C4;">${isPreviewBar && !indicator ? 'VWAP 标准差带待收盘确认' : `VWAP±1 ${escapeHtml(formatPrice(indicator?.vwap_upper1 ?? indicator?.vwap_upper))}/${escapeHtml(formatPrice(indicator?.vwap_lower1 ?? indicator?.vwap_lower))} · ±2 ${escapeHtml(formatPrice(indicator?.vwap_upper2))}/${escapeHtml(formatPrice(indicator?.vwap_lower2))}`}</div>
                     <div style="color:#8BA4C4;">${isPreviewBar && !indicator ? '预览 bar 仅 OHLC / Volume' : `CRSI ${escapeHtml(formatNumber(indicator?.crsi))} · OBV ${escapeHtml(formatNumber(indicator?.obv_rsi))} · ATR ${escapeHtml(formatPercent(indicator?.atr_pct))}`}</div>
                     ${dtpLabel ? `<div style="margin-top:6px;color:${escapeHtml(getDtpStateColor(dtpState))};">${escapeHtml(dtpLabel)}</div>` : ''}
-                    <div style="margin-top:6px;color:#8BA4C4;">${isPreviewBar && !indicator ? '收盘入库后补齐指标' : `SD ${escapeHtml(getSdZoneText(indicator?.sd_zone))} · ${escapeHtml(getSdTrendText(indicator?.sd_trend))} · Fractal ${escapeHtml(getFractalSummary(indicator))}`}</div>
+                    <div style="margin-top:6px;color:#8BA4C4;">${isPreviewBar && !indicator ? '收盘入库后补齐指标' : `SD ${escapeHtml(getSdZoneText(indicator?.sd_zone))} · ${escapeHtml(getSdTrendText(indicator?.sd_trend))} · Regime ${escapeHtml(getSdRegimeText(indicator?.sd_regime))}`}</div>
+                    <div style="color:#8BA4C4;">${isPreviewBar && !indicator ? 'SD 压缩与 Z 分数待收盘确认' : `WidthRank ${escapeHtml(formatOptionalNumber(indicator?.sd_width_rank))} · CloseZ ${escapeHtml(formatOptionalNumber(indicator?.sd_close_z))} · RVOL20 ${escapeHtml(formatOptionalNumber(indicator?.rvol_20))}`}</div>
+                    <div style="color:#8BA4C4;">${isPreviewBar && !indicator ? 'ORB 待收盘确认' : `ORB H/L ${escapeHtml(formatPrice(indicator?.orb_high))}/${escapeHtml(formatPrice(indicator?.orb_low))} · ${escapeHtml(getOrbBreakoutText(indicator))}`}</div>
                     <div style="color:#8BA4C4;">${isPreviewBar && !indicator ? 'Preview bar 仅用于盘中参考' : `Touch ${escapeHtml(getTouchSummary(indicator))} · Div ${escapeHtml(getDivergenceSummary(indicator, 6))}`}</div>
+                    ${setup || entryOrderType ? `<div style="margin-top:6px;color:#CBD5E1;">Setup ${escapeHtml(humanizeToken(setup || '--'))} · Order ${escapeHtml(getOrderTypeText(entryOrderType))}</div>` : ''}
+                    ${technicalDescription ? `<div style="color:#CBD5E1;">${escapeHtml(technicalDescription)}</div>` : ''}
                     ${traceText ? `<div style="margin-top:6px;color:${traceStage === 'blocked' ? '#FDBA74' : traceStage === 'confirmed' ? '#86EFAC' : '#FDE68A'};">${escapeHtml(traceText)}</div>` : ''}
                     <div style="margin-top:6px;color:${signal ? signalColor : bar?.preview || bar?.is_preview ? '#7DD3FC' : '#8BA4C4'};">${signalText}</div>
                 </div>

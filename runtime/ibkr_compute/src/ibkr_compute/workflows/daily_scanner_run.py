@@ -222,6 +222,7 @@ class DailyScannerRunMixin:
 
         eligible.sort(
             key=lambda item: (
+                -_safe_float(item.get("score")),
                 -_safe_float(item.get("technical_score")),
                 -abs(_safe_float(item.get("day_change_pct"))),
                 -_safe_float(item.get("premarket_volume")),

@@ -105,10 +105,17 @@ class BacktestSymbolRowsReverseMixin:
         signal_payload: dict,
     ) -> dict:
         signal_id = signal_payload.get("signal_id", build_signal_id(symbol, int(bar["bar_time_ms"]), str(signal.get("signal", ""))))
+        extra = self._parse_object(signal_payload.get("extra"))
+        entry_order_type = str(
+            extra.get("entry_order_type") or signal_payload.get("entry_order_type") or signal.get("entry_order_type") or "limit"
+        ).strip().lower()
+        if entry_order_type not in {"limit", "marketable_limit"}:
+            entry_order_type = "limit"
         return {
             **signal,
             "symbol": symbol,
             "signal_id": signal_id,
+            "extra": extra,
             "signal_bar_ms": int(bar.get("bar_time_ms", 0) or 0),
             "signal_us_time": str(bar.get("us_time", "") or ""),
             "signal_cn_time": str(bar.get("cn_time", "") or ""),
@@ -118,6 +125,8 @@ class BacktestSymbolRowsReverseMixin:
             "entry_price": float(signal.get("entry", 0) or 0),
             "target_price": float(signal.get("take_profit", 0) or 0),
             "stop_price": float(signal.get("stop_loss", 0) or 0),
+            "entry_order_type": entry_order_type,
+            "setup": str(extra.get("setup") or signal_payload.get("setup") or signal.get("setup") or signal.get("signal", "") or "").strip(),
             "pending_since_bar_ms": int(bar.get("bar_time_ms", 0) or 0),
             "pending_since_us_time": str(bar.get("us_time", "") or ""),
         }
@@ -141,6 +150,7 @@ class BacktestSymbolRowsReverseMixin:
         bar_high = float(bar.get("high", 0) or 0)
         bar_low = float(bar.get("low", 0) or 0)
         raw_fill_price = 0.0
+        entry_order_type = str(pending_signal.get("entry_order_type") or "limit").strip().lower()
         if direction == "long":
             if bar_open > 0 and bar_open <= entry_price:
                 raw_fill_price = bar_open
@@ -154,7 +164,7 @@ class BacktestSymbolRowsReverseMixin:
 
         if raw_fill_price <= 0:
             return None
-        return self._open_position(
+        position = self._open_position(
             symbol,
             bar,
             pending_signal,
@@ -162,6 +172,10 @@ class BacktestSymbolRowsReverseMixin:
             slippage_bps,
             raw_fill_price=raw_fill_price,
         )
+        if position:
+            position["entry_order_type"] = entry_order_type
+            position["setup"] = str(pending_signal.get("setup") or "")
+        return position
 
     def _calculate_position_progress(self, target: dict, current_price: float) -> dict:
         direction = str(target.get("direction", "") or "").strip().lower()

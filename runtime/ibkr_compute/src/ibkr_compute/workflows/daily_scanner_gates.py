@@ -23,17 +23,17 @@ class DailyScannerDataCompletenessMixin:
     def _data_completeness_blocking_enabled(self, environment: str) -> bool:
         cfg = getattr(self.api_app, "cfg", None)
         if cfg is None or not hasattr(cfg, "get_bool_for_environment"):
-            return False
+            return True
         try:
             return bool(
                 cfg.get_bool_for_environment(
                     "ibkr_daily_scan_data_completeness_blocking_enabled",
                     environment,
-                    False,
+                    True,
                 )
             )
         except Exception:
-            return False
+            return True
 
     def _data_completeness_intervals(self, environment: str) -> list[str]:
         cfg = getattr(self.api_app, "cfg", None)

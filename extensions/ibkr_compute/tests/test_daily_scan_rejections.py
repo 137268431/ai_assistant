@@ -233,6 +233,47 @@ class DailyScanRejectionSummaryTest(unittest.TestCase):
         self.assertEqual(result["new_active"], 0)
         self.assertEqual(result["new_candidates"], 1)
 
+    def test_evaluate_symbol_adds_stocks_in_play_bonus_fields(self):
+        pb_client = DummyPBClient(watchlist=[])
+        engines = {
+            (
+                "live",
+                "NVDA",
+                "5m",
+            ): FakeEngine(
+                {
+                    "ema_bullish": True,
+                    "sd_regime": "breakout_up",
+                    "orb_breakout_up": True,
+                    "vwap_alignment": "above",
+                    "rvol_20": 2.0,
+                    "dollar_volume": 15_000_000,
+                }
+            ),
+        }
+        scanner = DailyScanner(pb_client=pb_client, engines=engines)
+
+        result = scanner.evaluate_symbol(
+            "NVDA",
+            "2026-04-21",
+            "live",
+            metrics={
+                "avg_10d_volume": 3500000,
+                "premarket_volume": 25000,
+                "atr_pct": 0.8,
+                "day_change_pct": 2.5,
+                "data_quality": {"needs_repair": False, "status": "ready"},
+            },
+            settings=dict(self.settings),
+        )
+
+        self.assertTrue(result["quality_gate_passed"])
+        self.assertIn("sd_regime=breakout_up", result["reason"])
+        self.assertIn("orb_breakout=up", result["reason"])
+        self.assertEqual(result["extra"]["stocks_in_play_score"], 13)
+        self.assertEqual(result["extra"]["sd_regime"], "breakout_up")
+        self.assertEqual(result["extra"]["data_quality"]["status"], "ready")
+
 
 if __name__ == "__main__":
     unittest.main()
