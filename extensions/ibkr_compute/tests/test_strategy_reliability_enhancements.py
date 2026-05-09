@@ -12,7 +12,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from ibkr_compute.backtest import request_utils, runtime_service
 from ibkr_compute.backtest.runtime_service import BacktestService
-from ibkr_compute.core.risk_management import compute_atr_tightened_stop
+from ibkr_compute.core.risk_management import compute_atr_tightened_stop, compute_exit_policy_stop_update
 from ibkr_compute.core.signal_generator import SignalGenerator
 from ibkr_compute.core.time_utils import ET
 from ibkr_compute.signal.signal_processor import SignalProcessor
@@ -289,6 +289,78 @@ class StrategyReliabilityEnhancementTests(unittest.TestCase):
         self.assertTrue(tightened["should_update"])
         self.assertGreater(tightened["new_sl"], position["stop_price"])
         self.assertFalse(widened["should_update"])
+
+    def test_setup_aware_exit_policy_reprices_intraday_breakout(self):
+        gen = SignalGenerator(
+            "AAPL",
+            "5m",
+            {
+                "signal_strategy_profile": "intraday_sd_v1",
+                "exit_policy_profile": "setup_aware_v1",
+                "position_amount": 10000,
+                "max_loss_per_trade": 1000,
+            },
+        )
+        snapshot = {
+            "close": 100.0,
+            "open": 99.5,
+            "high": 100.5,
+            "low": 99.4,
+            "atr": 1.0,
+            "atr_pct": 1.0,
+            "sd_squeeze_active": True,
+            "sd_breakout_up": True,
+            "sd_breakout_down": False,
+            "sd_trend_walk_up": False,
+            "sd_trend_walk_down": False,
+            "vwap": 99.0,
+            "vwap_bullish": True,
+            "orb_breakout_down": False,
+            "session_type": "regular",
+            "rvol_20": 1.0,
+            "dtp_dir": 0,
+            "dtp_phase": "neutral",
+            "dtp_phase_bars": 99,
+        }
+
+        signal = gen.update(snapshot)
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal["extra"]["exit_policy_profile"], "setup_aware_v1")
+        self.assertEqual(signal["extra"]["exit_policy_type"], "breakout")
+        self.assertAlmostEqual(signal["rr"], 2.5)
+        self.assertGreater(signal["risk_r"], 0)
+        self.assertGreater(signal["take_profit"], signal["entry"])
+
+    def test_setup_aware_policy_trail_uses_chandelier_without_widening(self):
+        position = {
+            "direction": "long",
+            "entry_price": 100.0,
+            "stop_price": 98.0,
+            "target_price": 110.0,
+            "original_stop_loss": 98.0,
+            "risk_r": 2.0,
+            "exit_policy_profile": "setup_aware_v1",
+            "exit_policy_settings": {
+                "trail_type": "chandelier",
+                "trail_activation_r": 1.0,
+                "chandelier_atr_mult": 2.0,
+            },
+            "trail_state": {"high_water": 100.0, "max_favorable_r": 0.0, "adjust_count": 0},
+        }
+
+        result = compute_exit_policy_stop_update(
+            position,
+            current_price=104.0,
+            current_atr=1.0,
+            bar_high=104.5,
+            bar_low=103.0,
+        )
+
+        self.assertTrue(result["should_update"])
+        self.assertGreater(result["new_sl"], position["stop_price"])
+        self.assertLess(result["new_sl"], 104.0)
+        self.assertEqual(result["trail_state"]["adjust_count"], 1)
 
     def test_signal_processor_blocks_symbol_during_cooldown_and_active_target(self):
         processor = SignalProcessor(FakeConfig(), environment="live")

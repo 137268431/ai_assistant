@@ -56,6 +56,14 @@ class SignalRouter:
                 continue
             if source_mode == "ibkr_compute" and source != "ibkr_compute":
                 continue
+            extra = row.get("extra", {})
+            if isinstance(extra, str):
+                try:
+                    extra = json.loads(extra)
+                except Exception:
+                    extra = {}
+            if not isinstance(extra, dict):
+                extra = {}
 
             signals.append({
                 "signal_id": signal_id,
@@ -66,6 +74,11 @@ class SignalRouter:
                 "take_profit": float(row.get("take_profit", 0) or 0),
                 "shares": int(row.get("shares", 0) or 0),
                 "rr": row.get("rr", ""),
+                "risk_r": extra.get("risk_r", 0),
+                "exit_policy": extra.get("exit_policy", ""),
+                "exit_policy_profile": extra.get("exit_policy_profile", ""),
+                "exit_policy_type": extra.get("exit_policy_type", ""),
+                "extra": extra,
                 "source": source,
                 "signal_time": row.get("us_time", row.get("created", "")),
                 "raw": row,

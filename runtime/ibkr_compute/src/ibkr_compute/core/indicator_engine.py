@@ -39,6 +39,7 @@ DEFAULT_PARAMS = {
     "div_type": "both",
     "position_amount": 10000, "max_loss_per_trade": 150,
     "entry_atr_mult": 1.0, "sl_atr_mult": 2.0, "rr_ratio": 1.5,
+    "exit_policy_profile": "legacy", "exit_policy_overrides": "",
     "marketable_limit_bps": 10.0,
     "signal_window_max_bars": 12,
     "enable_advanced_filter": True,

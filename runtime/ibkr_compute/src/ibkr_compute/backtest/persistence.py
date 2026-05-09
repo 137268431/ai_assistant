@@ -141,6 +141,15 @@ class BacktestPersistenceMixin:
         shares = max(0, int(signal.get("shares", 0) or 0))
         entry_reference = float(raw_fill_price if raw_fill_price is not None else bar.get("open", 0) or 0)
         fill_price = self._apply_slippage(entry_reference, direction, is_entry=True, bps=slippage_bps)
+        raw_extra = signal.get("extra") or {}
+        signal_extra = dict(raw_extra) if isinstance(raw_extra, dict) else {}
+        risk_r = float(signal.get("risk_r", signal_extra.get("risk_r", 0)) or 0)
+        initial_stop_loss = float(
+            signal.get("initial_stop_loss", signal_extra.get("initial_stop_loss", signal.get("stop_price", signal.get("stop_loss", 0)))) or 0
+        )
+        initial_take_profit = float(
+            signal.get("initial_take_profit", signal_extra.get("initial_take_profit", signal.get("target_price", signal.get("take_profit", 0)))) or 0
+        )
         return {
             "symbol": symbol,
             "direction": direction,
@@ -155,6 +164,14 @@ class BacktestPersistenceMixin:
             "target_price": float(signal.get("target_price", signal.get("take_profit", 0)) or 0),
             "stop_price": float(signal.get("stop_price", signal.get("stop_loss", 0)) or 0),
             "original_stop_loss": float(signal.get("stop_price", signal.get("stop_loss", 0)) or 0),
+            "initial_stop_loss": initial_stop_loss,
+            "initial_take_profit": initial_take_profit,
+            "risk_r": risk_r,
+            "exit_policy_profile": str(signal_extra.get("exit_policy_profile") or signal.get("exit_policy_profile", "") or ""),
+            "exit_policy": str(signal_extra.get("exit_policy") or signal.get("exit_policy", "") or ""),
+            "exit_policy_type": str(signal_extra.get("exit_policy_type") or signal.get("exit_policy_type", "") or ""),
+            "exit_policy_settings": dict(signal_extra.get("exit_policy_settings") or {}),
+            "trail_state": dict(signal_extra.get("trail_state") or {}),
             "last_stop_atr": float((signal.get("extra") or {}).get("atr", 0) or 0),
             "atr_stop_adjust_count": 0,
             "mfe": 0.0,
@@ -242,6 +259,14 @@ class BacktestPersistenceMixin:
                 "mae": round(float(position.get("mae", 0) or 0), 4),
                 "atr_stop_adjust_count": int(position.get("atr_stop_adjust_count", 0) or 0),
                 "last_atr_stop_adjust": position.get("last_atr_stop_adjust") or {},
+                "exit_policy_profile": position.get("exit_policy_profile", ""),
+                "exit_policy": position.get("exit_policy", ""),
+                "exit_policy_type": position.get("exit_policy_type", ""),
+                "risk_r": float(position.get("risk_r", 0) or 0),
+                "initial_stop_loss": float(position.get("initial_stop_loss", 0) or 0),
+                "initial_take_profit": float(position.get("initial_take_profit", 0) or 0),
+                "exit_policy_settings": position.get("exit_policy_settings") or {},
+                "trail_state": position.get("trail_state") or {},
                 "signal_bar_ms": int(position.get("signal_bar_ms", 0) or 0),
                 "signal_us_time": position.get("signal_us_time", ""),
                 "signal_close": float(position.get("signal_close", 0) or 0),
@@ -291,6 +316,14 @@ class BacktestPersistenceMixin:
                 "mae": round(float(position.get("mae", 0) or 0), 4),
                 "atr_stop_adjust_count": int(position.get("atr_stop_adjust_count", 0) or 0),
                 "last_atr_stop_adjust": position.get("last_atr_stop_adjust") or {},
+                "exit_policy_profile": position.get("exit_policy_profile", ""),
+                "exit_policy": position.get("exit_policy", ""),
+                "exit_policy_type": position.get("exit_policy_type", ""),
+                "risk_r": float(position.get("risk_r", 0) or 0),
+                "initial_stop_loss": float(position.get("initial_stop_loss", 0) or 0),
+                "initial_take_profit": float(position.get("initial_take_profit", 0) or 0),
+                "exit_policy_settings": position.get("exit_policy_settings") or {},
+                "trail_state": position.get("trail_state") or {},
                 "signal_bar_ms": int(position.get("signal_bar_ms", 0) or 0),
                 "signal_us_time": position.get("signal_us_time", ""),
                 "signal_close": float(position.get("signal_close", 0) or 0),

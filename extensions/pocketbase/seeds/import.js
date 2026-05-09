@@ -46,6 +46,8 @@ const configData = [
   cfg('signal_validity_minutes', '30', '30', '信号有效期', '信号与反转', 220, '超过此时间的 pending / awaiting_confirm 信号将被自动标记为 expired'),
   cfg('signal_window_max_bars', '12', '12', '信号窗口最大K线数', '信号与反转', 222, 'SD 窗口开启后最多保留多少根 5m K线；过期后清空组件，避免陈旧信号'),
   cfg('signal_strategy_profile', 'legacy', 'legacy', '信号策略配置', '信号与反转', 222.2, 'legacy=原 SD 均值回归/顺势信号；intraday_sd_v1=额外启用 SD 压缩突破与 VWAP 顺势回踩。默认 legacy，避免未经确认直接改变实盘开仓'),
+  cfg('exit_policy_profile', 'legacy', 'legacy', '退出策略 Profile', '信号与反转', 222.25, 'legacy=保持固定 ATR/RR 现状；setup_aware_v1=按均值回归/趋势回踩/突破分别计算 TP、SL 与追踪规则'),
+  cfg('exit_policy_overrides', '', '', '退出策略覆盖JSON', '信号与反转', 222.26, '可选 JSON，例如 {"mr_reversion":{"tp_rr":1.3},"breakout":{"chandelier_atr_mult":3.0}}；留空使用内置 setup_aware_v1 默认值'),
   cfg('intraday_signal_validity_minutes', '15', '15', '日内信号有效分钟', '信号与反转', 222.4, 'intraday_sd_v1 新 setup 的 pending/awaiting_confirm 有效期；比普通信号更短，避免突破信号滞后成交'),
   cfg('marketable_limit_bps', '10', '10', 'Marketable Limit 偏移bp', '信号与反转', 222.6, 'intraday_sd_v1 突破/回踩 setup 使用 LimitOrder，但入场价向可成交方向偏移该 bp；多头高于现价、空头低于现价'),
   cfg('intraday_min_rvol_20', '0', '0', '日内最小 RVOL20', '信号与反转', 222.65, 'intraday_sd_v1 可选过滤：rvol_20 低于该值时不生成突破/回踩新 setup；0 表示关闭'),

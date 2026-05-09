@@ -29,6 +29,8 @@ const IBKR_CONFIG_DETAIL_KEYS = [
     'order_window_end_time',
     'signal_validity_minutes',
     'signal_window_max_bars',
+    'exit_policy_profile',
+    'exit_policy_overrides',
     'cooldown_bars_after_sl',
     'cooldown_bars_after_reverse',
     'atr_dynamic_stop_enabled',

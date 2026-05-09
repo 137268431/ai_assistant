@@ -241,15 +241,27 @@ class BacktestPortfolioMixin:
             return position
         current_price = self._coerce_float_value(snapshot.get("close"), 0.0)
         current_atr = self._coerce_float_value(snapshot.get("atr"), 0.0)
-        result = compute_atr_tightened_stop(
-            position,
-            current_price=current_price,
-            current_atr=current_atr,
-            sl_atr_mult=self._coerce_float_value((request.get("params") or {}).get("strategy_params", {}).get("sl_atr_mult"), DEFAULT_PARAMS["sl_atr_mult"]),
-            min_profit_r=self._coerce_float_value(request.get("atr_stop_min_profit_r"), 0.3),
-            deviation_threshold=self._coerce_float_value(request.get("atr_stop_deviation_threshold"), 0.30),
-            min_change=self._coerce_float_value(request.get("atr_stop_min_change"), 0.01),
-        )
+        if str(position.get("exit_policy_profile") or "").strip().lower() == "setup_aware_v1":
+            result = compute_exit_policy_stop_update(
+                position,
+                current_price=current_price,
+                current_atr=current_atr,
+                bar_high=self._coerce_float_value(snapshot.get("high"), current_price),
+                bar_low=self._coerce_float_value(snapshot.get("low"), current_price),
+                min_change=self._coerce_float_value(request.get("atr_stop_min_change"), 0.01),
+            )
+            if result.get("trail_state"):
+                position["trail_state"] = dict(result.get("trail_state") or {})
+        else:
+            result = compute_atr_tightened_stop(
+                position,
+                current_price=current_price,
+                current_atr=current_atr,
+                sl_atr_mult=self._coerce_float_value((request.get("params") or {}).get("strategy_params", {}).get("sl_atr_mult"), DEFAULT_PARAMS["sl_atr_mult"]),
+                min_profit_r=self._coerce_float_value(request.get("atr_stop_min_profit_r"), 0.3),
+                deviation_threshold=self._coerce_float_value(request.get("atr_stop_deviation_threshold"), 0.30),
+                min_change=self._coerce_float_value(request.get("atr_stop_min_change"), 0.01),
+            )
         if not result.get("should_update"):
             return position
         position["stop_price"] = float(result["new_sl"])
@@ -257,6 +269,30 @@ class BacktestPortfolioMixin:
         position["atr_stop_adjust_count"] = int(position.get("atr_stop_adjust_count", 0) or 0) + 1
         position["last_atr_stop_adjust"] = result
         return position
+
+    def _maybe_close_backtest_exit_policy_time_stop(
+        self,
+        position: dict | None,
+        bar: dict,
+        commission_per_share: float,
+        slippage_bps: float,
+    ) -> dict | None:
+        if not position or str(position.get("exit_policy_profile") or "").strip().lower() != "setup_aware_v1":
+            return None
+        result = compute_exit_policy_time_exit(position)
+        if not result.get("should_exit"):
+            return None
+        trade = self._close_position(
+            position,
+            bar,
+            commission_per_share,
+            slippage_bps,
+            str(result.get("reason") or "exit_policy_time_stop"),
+        )
+        extra = self._parse_object(trade.get("extra"))
+        extra["exit_policy_time_stop"] = result
+        trade["extra"] = extra
+        return trade
 
     def _coerce_float_value(self, value: Any, default: float = 0.0) -> float:
         if value is None or isinstance(value, bool):
@@ -1487,6 +1523,15 @@ class BacktestPortfolioMixin:
                         snapshot,
                         request,
                     )
+                    time_stop_trade = self._maybe_close_backtest_exit_policy_time_stop(
+                        state["open_position"],
+                        bar,
+                        commission_per_share,
+                        slippage_bps,
+                    )
+                    if time_stop_trade:
+                        append_trade(state["open_position"], time_stop_trade)
+                        state["open_position"] = None
 
                 state["previous_bar"] = bar
 

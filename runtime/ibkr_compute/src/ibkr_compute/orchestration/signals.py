@@ -440,6 +440,29 @@ class TradingServiceSignalsMixin:
         bar_time_ms = int(raw.get("bar_time_ms") or 0)
         us_time = raw.get("us_time") or sig.get("signal_time") or ""
         cn_time = raw.get("cn_time") or ""
+        signal_extra = sig.get("extra") if isinstance(sig.get("extra"), dict) else {}
+        if not signal_extra:
+            raw_extra = raw.get("extra") if isinstance(raw, dict) else {}
+            if isinstance(raw_extra, str):
+                try:
+                    raw_extra = json.loads(raw_extra)
+                except Exception:
+                    raw_extra = {}
+            signal_extra = raw_extra if isinstance(raw_extra, dict) else {}
+        exit_policy_fields = {
+            key: signal_extra.get(key)
+            for key in (
+                "exit_policy_profile",
+                "exit_policy",
+                "exit_policy_type",
+                "risk_r",
+                "initial_stop_loss",
+                "initial_take_profit",
+                "exit_policy_settings",
+                "trail_state",
+            )
+            if signal_extra.get(key) not in (None, "")
+        }
         protection_complete = bool(result.get("protection_complete"))
         protection_incomplete = not protection_complete
         diagnostic = (
@@ -473,6 +496,7 @@ class TradingServiceSignalsMixin:
                         "bracket_group": trade_group_id,
                         "oca_group": oca_group,
                         "order_family_type": order_family_type,
+                        **exit_policy_fields,
                     },
                 }
             )
@@ -493,6 +517,7 @@ class TradingServiceSignalsMixin:
                         "bracket_group": trade_group_id,
                         "oca_group": oca_group,
                         "order_family_type": order_family_type,
+                        **exit_policy_fields,
                     },
                 }
             )
@@ -534,6 +559,7 @@ class TradingServiceSignalsMixin:
                 else "bracket_protection_incomplete",
                 "protection_incomplete_diagnostic": diagnostic,
                 "safety_cancel_recommended": bool(diagnostic.get("cancel_recommended")) if diagnostic else False,
+                **exit_policy_fields,
             },
         }
 

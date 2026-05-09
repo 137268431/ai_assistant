@@ -131,6 +131,8 @@ class Config:
         "signal_window_max_bars": "12",
         "signal_strategy_profile": "legacy",
         "ibkr_signal_strategy_profile": "",
+        "exit_policy_profile": "legacy",
+        "exit_policy_overrides": "",
         "intraday_signal_validity_minutes": "15",
         "intraday_entry_window_start_time": "09:35",
         "intraday_entry_window_end_time": "10:30",

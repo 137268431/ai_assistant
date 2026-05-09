@@ -103,6 +103,8 @@ def build_signal_payload(environment: str, symbol: str, interval: str, bar: dict
         "take_profit": signal.get("take_profit", 0),
         "rr": rr_text,
         "shares": signal.get("shares", 0),
+        "risk_r": signal.get("risk_r", signal_extra.get("risk_r", 0)),
+        "exit_policy": signal.get("exit_policy", signal_extra.get("exit_policy", "")),
         "exchange": str(bar.get("exchange", "") or symbol_meta.get("exchange", "")).upper(),
         "interval": chart_tf,
         "reason": signal.get("reason", ""),

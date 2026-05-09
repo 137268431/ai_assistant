@@ -14,6 +14,7 @@ import logging
 from copy import deepcopy
 from datetime import datetime
 
+from .exit_policy import apply_exit_policy_to_position
 from .position_sizing import calc_long_position, calc_marketable_limit_position, calc_short_position
 from .time_utils import ET
 
@@ -661,6 +662,16 @@ class SignalGenerator:
         atr = snapshot.get("atr", 0)
         pos = calc_marketable_limit_position(close, atr, self.params, direction)
         setup = str(candidate.get("setup") or "")
+        signal_mode = str(candidate.get("signal_mode") or "")
+        pos, exit_meta = apply_exit_policy_to_position(
+            pos,
+            direction=direction,
+            close=close,
+            atr=atr,
+            params=self.params,
+            setup=setup,
+            signal_mode=signal_mode,
+        )
         reason = str(candidate.get("technical_description") or setup)
         return {
             "symbol": self.symbol,
@@ -671,6 +682,10 @@ class SignalGenerator:
             "take_profit": round(pos["take_profit"], 2),
             "shares": pos["shares"],
             "rr": pos["rr"],
+            "risk_r": pos.get("risk_r", 0),
+            "initial_stop_loss": round(pos.get("initial_stop_loss", pos["stop_loss"]), 2),
+            "initial_take_profit": round(pos.get("initial_take_profit", pos["take_profit"]), 2),
+            "exit_policy": pos.get("exit_policy", ""),
             "reason": reason,
             "interval": self.interval,
             "extra": {
@@ -687,7 +702,7 @@ class SignalGenerator:
                 "sd_zone": self._zone_str(snapshot),
                 "sd_trend": self._trend_str(snapshot.get("sd_trend", 0)),
                 "signal_window": "intraday",
-                "signal_mode": candidate.get("signal_mode", ""),
+                "signal_mode": signal_mode,
                 "atr": snapshot.get("atr", 0),
                 "atr_raw": snapshot.get("atr_raw", 0),
                 "atr_pct": snapshot.get("atr_pct", 0),
@@ -697,6 +712,7 @@ class SignalGenerator:
                 "rvol_20": snapshot.get("rvol_20"),
                 "dollar_volume": snapshot.get("dollar_volume"),
                 "source": "ibkr_compute",
+                **exit_meta,
             },
         }
 
@@ -878,6 +894,16 @@ class SignalGenerator:
         if div_source:
             reason = reason.replace("div↑", f"div↑[{div_source}]").replace("div↓", f"div↓[{div_source}]")
 
+        pos, exit_meta = apply_exit_policy_to_position(
+            pos,
+            direction=direction,
+            close=close,
+            atr=atr,
+            params=self.params,
+            setup=signal_type,
+            signal_mode=signal_mode,
+        )
+
         extra = {
             "sd_zone": self._zone_str(snapshot),
             "sd_trend": self._trend_str(snapshot.get("sd_trend", 0)),
@@ -895,6 +921,7 @@ class SignalGenerator:
             "sl_atr_ratio": pos.get("sl_atr_ratio", 0),
             "window_age_bars": self._window_age_bars("upper" if signal_window == "sd_upper" else "lower"),
             "source": "ibkr_compute",
+            **exit_meta,
         }
         if self._is_intraday_sd_v1():
             extra.update({
@@ -920,6 +947,10 @@ class SignalGenerator:
             "take_profit": round(pos["take_profit"], 2),
             "shares": pos["shares"],
             "rr": pos["rr"],
+            "risk_r": pos.get("risk_r", 0),
+            "initial_stop_loss": round(pos.get("initial_stop_loss", pos["stop_loss"]), 2),
+            "initial_take_profit": round(pos.get("initial_take_profit", pos["take_profit"]), 2),
+            "exit_policy": pos.get("exit_policy", ""),
             "reason": reason,
             "interval": self.interval,
             "extra": extra,

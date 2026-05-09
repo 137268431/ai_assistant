@@ -141,6 +141,12 @@ def build_signal_record_payload(payload: dict[str, Any], environment: str) -> tu
                     source_meta.get("signal_source_detail"),
                 )
             ),
+            "risk_r": first_defined(incoming_extra.get("risk_r"), payload.get("risk_r")),
+            "exit_policy": to_text(first_defined(incoming_extra.get("exit_policy"), payload.get("exit_policy"))),
+            "exit_policy_profile": to_text(
+                first_defined(incoming_extra.get("exit_policy_profile"), payload.get("exit_policy_profile"))
+            ),
+            "exit_policy_type": to_text(first_defined(incoming_extra.get("exit_policy_type"), payload.get("exit_policy_type"))),
             "environment": environment,
         },
         "status": to_text(payload.get("status") or "pending").lower() or "pending",
