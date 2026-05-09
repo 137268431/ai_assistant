@@ -49,6 +49,32 @@ def intraday_breakout_snapshot(**overrides):
     return snapshot
 
 
+def legacy_mr_long_snapshot(**overrides):
+    snapshot = intraday_breakout_snapshot(
+        sd_lower=True,
+        sd_upper=False,
+        sd_zone=-1,
+        sd_regime="flat",
+        sd_squeeze_active=False,
+        sd_breakout_up=False,
+        sd_breakout_down=False,
+        sd_trend_walk_up=False,
+        sd_trend_walk_down=False,
+        fractal_bull=True,
+        fractal_bear=False,
+        crsi_bull_div=True,
+        crsi_bear_div=False,
+        obv_bull_div=False,
+        obv_bear_div=False,
+        block_mr_long=False,
+        block_mr_short=False,
+        block_ema_trend=False,
+        block_all_signals=False,
+    )
+    snapshot.update(overrides)
+    return snapshot
+
+
 class IntradaySdV1CoreTest(unittest.TestCase):
     def test_sd_channel_outputs_derived_fields(self):
         indicator = SDChannel(
@@ -140,6 +166,33 @@ class IntradaySdV1CoreTest(unittest.TestCase):
         self.assertEqual(trace["signal_state"]["stage"], "blocked")
         self.assertEqual(trace["signal_state"]["setup"], "sd_squeeze_breakout_long")
         self.assertIn("intraday_entry_window", trace["signal_state"]["filter_reason"])
+
+    def test_intraday_sd_v1_suppresses_legacy_mr_signals_by_default(self):
+        gen = SignalGenerator("SPY", "5m", {"signal_strategy_profile": "intraday_sd_v1"})
+
+        signal = gen.update(legacy_mr_long_snapshot())
+
+        self.assertIsNone(signal)
+        trace = gen.get_trace_snapshot()
+        self.assertFalse(trace["component_flags"]["legacy_signals_enabled"])
+        self.assertTrue(trace["component_flags"]["buy_raw"])
+        self.assertEqual(trace["signal_state"]["stage"], "none")
+
+    def test_intraday_sd_v1_can_temporarily_include_legacy_mr_signals(self):
+        gen = SignalGenerator(
+            "SPY",
+            "5m",
+            {
+                "signal_strategy_profile": "intraday_sd_v1",
+                "intraday_include_legacy_signals": True,
+            },
+        )
+
+        signal = gen.update(legacy_mr_long_snapshot())
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal["signal"], "mr_sdLower")
+        self.assertEqual(signal["extra"]["entry_order_type"], "pullback_limit")
 
     def test_intraday_entry_window_can_be_extended_by_params(self):
         gen = SignalGenerator(
@@ -370,6 +423,8 @@ class IntradaySdV1CoreTest(unittest.TestCase):
                     return False
                 if key == "intraday_vwap_pullback_long_require_trend_walk":
                     return True
+                if key == "intraday_include_legacy_signals":
+                    return False
                 return default
 
         fake_app = SimpleNamespace(
@@ -406,6 +461,7 @@ class IntradaySdV1CoreTest(unittest.TestCase):
         self.assertEqual(params["intraday_max_directional_day_change_pct"], 3.0)
         self.assertEqual(params["intraday_trend_mismatch_max_abs_day_change_pct"], 2.0)
         self.assertTrue(params["intraday_vwap_pullback_long_require_trend_walk"])
+        self.assertFalse(params["intraday_include_legacy_signals"])
         self.assertEqual(params["market_monitor_symbols"], "SPY")
         self.assertEqual(params["signal_enabled_symbols"], "AAPL")
 

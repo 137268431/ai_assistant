@@ -25,6 +25,7 @@ from ibkr_compute.core.risk_management import (
     compute_exit_policy_stop_update,
     compute_exit_policy_time_exit,
 )
+from ibkr_compute.core.exit_policy import is_signal_mode_adaptive_exit_profile
 from ibkr_compute.core.signal_generator import SignalGenerator
 from ibkr_compute.core.timeline_builder import build_runtime_timeline
 from ibkr_compute.broker import BrokerAdapter

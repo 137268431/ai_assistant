@@ -163,7 +163,7 @@ def compute_exit_policy_stop_update(
     min_change: float = 0.01,
     price_buffer_pct: float = 0.001,
 ) -> dict:
-    """Compute a setup-aware trailing stop update without widening risk."""
+    """Compute a signal-mode policy trailing stop update without widening risk."""
     direction = str(position.get("direction") or "").strip().lower()
     entry = _safe_float(position.get("entry_price", position.get("entry", 0)))
     old_sl = _safe_float(position.get("stop_price", position.get("stop_loss", 0)))
@@ -266,7 +266,7 @@ def compute_exit_policy_stop_update(
 
 
 def compute_exit_policy_time_exit(position: dict) -> dict:
-    """Return whether a setup-aware time exit should close the position."""
+    """Return whether a signal-mode policy time exit should close the position."""
     settings = _policy_settings(position)
     bars_held = int(_safe_float(position.get("bars_held"), 0))
     hard_bars = int(_safe_float(settings.get("hard_time_stop_bars"), 0))

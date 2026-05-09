@@ -107,6 +107,11 @@ class SignalGenerator:
     def _is_intraday_sd_v1(self) -> bool:
         return self.strategy_profile == "intraday_sd_v1"
 
+    def _legacy_signals_enabled(self) -> bool:
+        if not self._is_intraday_sd_v1():
+            return True
+        return self._intraday_param_bool("intraday_include_legacy_signals", False)
+
     def update(self, snapshot: dict) -> dict:
         """根据最新指标快照更新 MR 窗口状态, 检测信号。
         返回 None (无信号) 或 signal dict。
@@ -246,9 +251,11 @@ class SignalGenerator:
             block_mr_short, block_ema_trend, block_all,
         )
 
+        legacy_signals_enabled = self._legacy_signals_enabled()
+
         # 去重: buy_once / sell_once
-        buy_once = buy_raw and not self._prev_buy_signal and not should_filter_buy
-        sell_once = sell_raw and not self._prev_sell_signal and not should_filter_sell
+        buy_once = legacy_signals_enabled and buy_raw and not self._prev_buy_signal and not should_filter_buy
+        sell_once = legacy_signals_enabled and sell_raw and not self._prev_sell_signal and not should_filter_sell
         self._prev_buy_signal = buy_raw
         self._prev_sell_signal = sell_raw
 
@@ -296,10 +303,10 @@ class SignalGenerator:
             preview_signal = signal
             stage = "confirmed"
             events.append(f"确认 {intraday_candidate.get('setup')} setup")
-        elif buy_raw:
+        elif legacy_signals_enabled and buy_raw:
             preview_signal = self._build_signal("long", snapshot, sd_upper_valid, sd_lower_valid)
             stage = "blocked" if should_filter_buy else "candidate"
-        elif sell_raw:
+        elif legacy_signals_enabled and sell_raw:
             preview_signal = self._build_signal("short", snapshot, sd_upper_valid, sd_lower_valid)
             stage = "blocked" if should_filter_sell else "candidate"
         elif intraday_preview_signal:
@@ -319,6 +326,7 @@ class SignalGenerator:
             "bear_obv_div_seen": self.bear_obv_div_seen,
             "buy_raw": buy_raw,
             "sell_raw": sell_raw,
+            "legacy_signals_enabled": legacy_signals_enabled,
         }
 
         # ── 7. 窗口消费 ──
@@ -334,10 +342,10 @@ class SignalGenerator:
                 self.sd_lower_mr_used = True
 
         # ── 8. 组件清除 ──
-        if buy_raw and should_filter_buy:
+        if legacy_signals_enabled and buy_raw and should_filter_buy:
             self._clear_bull_components()
             events.append(f"多头候选被过滤: {filter_reason_buy or '未知原因'}")
-        if sell_raw and should_filter_sell:
+        if legacy_signals_enabled and sell_raw and should_filter_sell:
             self._clear_bear_components()
             events.append(f"空头候选被过滤: {filter_reason_sell or '未知原因'}")
         if buy_once:

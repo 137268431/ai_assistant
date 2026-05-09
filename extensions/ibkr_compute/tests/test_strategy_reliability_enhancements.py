@@ -12,6 +12,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from ibkr_compute.backtest import request_utils, runtime_service
 from ibkr_compute.backtest.runtime_service import BacktestService
+from ibkr_compute.core.exit_policy import normalize_exit_policy_profile, resolve_exit_policy
 from ibkr_compute.core.risk_management import compute_atr_tightened_stop, compute_exit_policy_stop_update
 from ibkr_compute.core.signal_generator import SignalGenerator
 from ibkr_compute.core.time_utils import ET
@@ -290,13 +291,13 @@ class StrategyReliabilityEnhancementTests(unittest.TestCase):
         self.assertGreater(tightened["new_sl"], position["stop_price"])
         self.assertFalse(widened["should_update"])
 
-    def test_setup_aware_exit_policy_reprices_intraday_breakout(self):
+    def test_signal_mode_exit_policy_reprices_intraday_breakout(self):
         gen = SignalGenerator(
             "AAPL",
             "5m",
             {
                 "signal_strategy_profile": "intraday_sd_v1",
-                "exit_policy_profile": "setup_aware_v1",
+                "exit_policy_profile": "signal_mode_adaptive_v1",
                 "position_amount": 10000,
                 "max_loss_per_trade": 1000,
             },
@@ -326,13 +327,37 @@ class StrategyReliabilityEnhancementTests(unittest.TestCase):
         signal = gen.update(snapshot)
 
         self.assertIsNotNone(signal)
-        self.assertEqual(signal["extra"]["exit_policy_profile"], "setup_aware_v1")
+        self.assertEqual(signal["extra"]["exit_policy_profile"], "signal_mode_adaptive_v1")
         self.assertEqual(signal["extra"]["exit_policy_type"], "breakout")
+        self.assertEqual(signal["extra"]["exit_policy"], "breakout_runner")
         self.assertAlmostEqual(signal["rr"], 2.5)
         self.assertGreater(signal["risk_r"], 0)
         self.assertGreater(signal["take_profit"], signal["entry"])
 
-    def test_setup_aware_policy_trail_uses_chandelier_without_widening(self):
+    def test_exit_policy_aliases_normalize_to_strategy_names(self):
+        self.assertEqual(normalize_exit_policy_profile({"exit_policy_profile": "legacy"}), "fixed_atr_rr")
+        self.assertEqual(
+            normalize_exit_policy_profile({"exit_policy_profile": "setup_aware_v1"}),
+            "signal_mode_adaptive_v1",
+        )
+
+        mr_policy = resolve_exit_policy(
+            {"exit_policy_profile": "signal_mode_adaptive_v1"},
+            setup="mr_sdUpper",
+            signal_mode="mr",
+        )
+        trend_policy = resolve_exit_policy(
+            {"exit_policy_profile": "signal_mode_adaptive_v1"},
+            setup="trend_sdLower",
+            signal_mode="trend",
+        )
+
+        self.assertEqual(mr_policy["name"], "fixed_atr_rr")
+        self.assertEqual(mr_policy["tp_rr"], 1.5)
+        self.assertEqual(trend_policy["name"], "chandelier_runner")
+        self.assertEqual(trend_policy["tp_rr"], 2.0)
+
+    def test_signal_mode_policy_trail_uses_chandelier_without_widening(self):
         position = {
             "direction": "long",
             "entry_price": 100.0,
@@ -340,7 +365,7 @@ class StrategyReliabilityEnhancementTests(unittest.TestCase):
             "target_price": 110.0,
             "original_stop_loss": 98.0,
             "risk_r": 2.0,
-            "exit_policy_profile": "setup_aware_v1",
+            "exit_policy_profile": "signal_mode_adaptive_v1",
             "exit_policy_settings": {
                 "trail_type": "chandelier",
                 "trail_activation_r": 1.0,

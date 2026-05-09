@@ -241,7 +241,7 @@ class BacktestPortfolioMixin:
             return position
         current_price = self._coerce_float_value(snapshot.get("close"), 0.0)
         current_atr = self._coerce_float_value(snapshot.get("atr"), 0.0)
-        if str(position.get("exit_policy_profile") or "").strip().lower() == "setup_aware_v1":
+        if is_signal_mode_adaptive_exit_profile(position.get("exit_policy_profile")):
             result = compute_exit_policy_stop_update(
                 position,
                 current_price=current_price,
@@ -277,7 +277,7 @@ class BacktestPortfolioMixin:
         commission_per_share: float,
         slippage_bps: float,
     ) -> dict | None:
-        if not position or str(position.get("exit_policy_profile") or "").strip().lower() != "setup_aware_v1":
+        if not position or not is_signal_mode_adaptive_exit_profile(position.get("exit_policy_profile")):
             return None
         result = compute_exit_policy_time_exit(position)
         if not result.get("should_exit"):
