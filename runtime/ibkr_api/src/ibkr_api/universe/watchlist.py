@@ -6,6 +6,7 @@ from typing import Any, Callable
 from ibkr_api.orders.values import parse_boolean, to_int, to_text
 from ibkr_api.universe.maintenance import (
     WATCHLIST_ROLE_MARKET_MONITOR,
+    WATCHLIST_ROLE_TRADE,
     call_universe_reconcile,
     find_record_by_id_or_filter,
     get_runtime_market_date,
@@ -16,6 +17,7 @@ from ibkr_api.universe.maintenance import (
     remove_auto_watchlist_record_if_eligible,
     upsert_record,
 )
+from ibkr_api.universe.watchlist_eligibility import build_watchlist_eligibility_response
 
 RequestJsonRequest = Callable[..., dict[str, Any]]
 TimeStrings = Callable[[], dict[str, str]]
@@ -69,6 +71,33 @@ def build_watchlist_upsert_response(
     source = to_text(payload.get("source") or "manual_page").lower() or "manual_page"
     symbol_role = normalize_watchlist_role(payload.get("symbol_role") or payload.get("role") or existing_row.get("symbol_role"))
     manual_member = parse_boolean(payload.get("manual_member"), existing_row.get("manual_member") if existing_row else True)
+    force_trade_add = parse_boolean(payload.get("force_trade_add"), False)
+    should_check_by_default = symbol_role == WATCHLIST_ROLE_TRADE and source in {"manual_page", "manual_page_add", "manual_page_edit"}
+    check_trade_eligibility = parse_boolean(payload.get("check_trade_eligibility"), should_check_by_default)
+    eligibility_payload: dict[str, Any] = {}
+    eligibility_warning = to_text(payload.get("eligibility_warning"))
+
+    if symbol_role == WATCHLIST_ROLE_TRADE and check_trade_eligibility and not force_trade_add:
+        try:
+            eligibility_result, _ = build_watchlist_eligibility_response(
+                pb,
+                payload={
+                    "environment": runtime_environment,
+                    "symbols": [symbol],
+                    "window_trading_days": payload.get("window_trading_days"),
+                },
+                normalize_environment=normalize_environment,
+                escape_filter_string=escape_filter_string,
+                request_json_request=request_json_request,
+                compute_base_url=compute_base_url,
+            )
+            eligibility_items = eligibility_result.get("items") or []
+            eligibility_payload = dict(eligibility_items[0]) if eligibility_items else {}
+            if eligibility_payload and eligibility_payload.get("status") != "pass":
+                eligibility_warning = to_text(eligibility_payload.get("message"))
+        except Exception as exc:
+            eligibility_payload = {"status": "check_failed", "error": str(exc)}
+            eligibility_warning = f"{symbol} 日内交易适配性校验失败，请谨慎加入 trade。"
 
     compare_data = {
         "symbol": symbol,
@@ -131,6 +160,9 @@ def build_watchlist_upsert_response(
             "environment": record_environment,
             "symbol_role": symbol_role,
             "manual_member": manual_member,
+            "force_trade_add": force_trade_add,
+            "eligibility": eligibility_payload,
+            "warning": eligibility_warning,
             "runtime_reconcile": runtime_reconcile,
             "source": "ibkr-api",
         },
@@ -255,6 +287,7 @@ def build_watchlist_remove_response(
 
 
 __all__ = [
+    "build_watchlist_eligibility_response",
     "build_watchlist_remove_response",
     "build_watchlist_upsert_response",
 ]

@@ -35,6 +35,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
     const watchlistState = {
       items: [],
       searchResults: [],
+      eligibilityBySymbol: {},
       loaded: false,
       lastRefresh: '尚未加载',
       loadedRole: '',
@@ -85,4 +86,3 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
     let activeReadyTipTrigger = null;
     let activeReadyTipHoverRoot = null;
     let readyTipCloseTimer = 0;
-

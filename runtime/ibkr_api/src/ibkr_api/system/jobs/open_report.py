@@ -4,6 +4,8 @@ from datetime import datetime, timedelta
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
+from ibkr_api.system.jobs.market_calendar import is_nyse_non_trading_day
+
 
 OPEN_REPORT_STATE_KEY = "system_notify_daily"
 DEFAULT_OPEN_REPORT_TIME_ET = "09:30"
@@ -558,6 +560,41 @@ def build_system_open_report_response(
             "job_id": "system_open_report",
             "skipped": True,
             "reason": "already_sent",
+            "source": "ibkr-api",
+        }, 200
+
+    market_date = _to_text(times.get("date"))
+    if is_nyse_non_trading_day(market_date):
+        next_state = {
+            **state,
+            "open_title": "IBKR 09:30 开盘交易摘要",
+            "open_status": "skipped",
+            "open_last_attempt_at": times["us"],
+            "open_notified": False,
+            "open_persisted": False,
+            "open_message_id": "",
+            "open_skipped": True,
+            "open_suppressed": False,
+            "open_reason": "non_trading_day",
+            "open_error": "",
+            "open_report_market_date": market_date,
+            "open_target_total": 0,
+            "open_daily_scan_status": "non_trading_day",
+            "open_sent_at": times["us"],
+        }
+        upsert_state(OPEN_REPORT_STATE_KEY, environment, next_state, times["date"])
+        return {
+            "ok": True,
+            "environment": environment,
+            "job_id": "system_open_report",
+            "skipped": True,
+            "reason": "non_trading_day",
+            "trading_day": False,
+            "market_date": market_date,
+            "notified": False,
+            "persisted": False,
+            "message_id": "",
+            "state": next_state,
             "source": "ibkr-api",
         }, 200
 

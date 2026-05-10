@@ -3,7 +3,7 @@ import json
 import os
 import sqlite3
 import subprocess
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import requests
@@ -42,6 +42,81 @@ def format_us(ms):
     if not ms:
         return None
     return datetime.fromtimestamp(int(ms) / 1000.0, ET).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
+    cursor = date(year, month, 1)
+    while cursor.weekday() != weekday:
+        cursor += timedelta(days=1)
+    return cursor + timedelta(days=7 * (n - 1))
+
+
+def _last_weekday(year: int, month: int, weekday: int) -> date:
+    if month == 12:
+        cursor = date(year + 1, 1, 1) - timedelta(days=1)
+    else:
+        cursor = date(year, month + 1, 1) - timedelta(days=1)
+    while cursor.weekday() != weekday:
+        cursor -= timedelta(days=1)
+    return cursor
+
+
+def _observed_fixed_holiday(year: int, month: int, day: int) -> date:
+    actual = date(year, month, day)
+    if actual.weekday() == 5:
+        return actual - timedelta(days=1)
+    if actual.weekday() == 6:
+        return actual + timedelta(days=1)
+    return actual
+
+
+def _easter_date(year: int) -> date:
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return date(year, month, day)
+
+
+def nyse_holidays(year: int) -> set[date]:
+    holidays: set[date] = set()
+    for observed in (
+        _observed_fixed_holiday(year, 1, 1),
+        _observed_fixed_holiday(year + 1, 1, 1),
+    ):
+        if observed.year == year:
+            holidays.add(observed)
+    holidays.update(
+        {
+            _nth_weekday(year, 1, 0, 3),
+            _nth_weekday(year, 2, 0, 3),
+            _easter_date(year) - timedelta(days=2),
+            _last_weekday(year, 5, 0),
+            _observed_fixed_holiday(year, 7, 4),
+            _nth_weekday(year, 9, 0, 1),
+            _nth_weekday(year, 11, 3, 4),
+            _observed_fixed_holiday(year, 12, 25),
+        }
+    )
+    if year >= 2022:
+        observed_juneteenth = _observed_fixed_holiday(year, 6, 19)
+        if observed_juneteenth.year == year:
+            holidays.add(observed_juneteenth)
+    return holidays
+
+
+def is_nyse_trading_day(day: date) -> bool:
+    return day.weekday() < 5 and day not in nyse_holidays(day.year)
 
 
 def parse_iso_ms(text):
@@ -652,9 +727,12 @@ if queue_size > 10:
             if backlog_age_min >= 10:
                 failures.append(f"runtime:compute_stalled:lagging:{backlog_age_min}")
 
+current_et_day = datetime.now(ET).date()
+current_nyse_trading_day = is_nyse_trading_day(current_et_day)
+
 if targets.get("total_count", 0) == 0:
     warnings.append("db:targets_missing")
-elif targets.get("eligible_count", 0) == 0:
+elif targets.get("eligible_count", 0) == 0 and current_nyse_trading_day:
     warnings.append("db:targets_no_eligible_rows")
 
 preload_reason = str(compute_startup_preload_sla.get("reason") or "").strip().lower()
@@ -691,6 +769,10 @@ report = {
         "indicator_missing_grace_sec": INDICATOR_MISSING_GRACE_SEC,
         "preload_warn_sec": PRELOAD_WARN_SEC,
         "preload_fail_sec": PRELOAD_FAIL_SEC,
+    },
+    "market_calendar": {
+        "current_et_date": current_et_day.isoformat(),
+        "nyse_trading_day": current_nyse_trading_day,
     },
     "failures": failures,
     "warnings": warnings,

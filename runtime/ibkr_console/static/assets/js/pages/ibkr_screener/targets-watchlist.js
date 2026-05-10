@@ -77,6 +77,151 @@
       };
     }
 
+    const WATCHLIST_ELIGIBILITY_WINDOW_DAYS = 10;
+    const SIMILAR_SYMBOL_GROUPS = [
+      ['GOOG', 'GOOGL']
+    ];
+    const CANONICAL_SYMBOL_BY_GROUP = {
+      'GOOG,GOOGL': 'GOOGL'
+    };
+
+    function normalizeSymbol(value) {
+      return String(value || '').trim().toUpperCase();
+    }
+
+    function findSimilarSymbolGroup(symbol) {
+      const normalized = normalizeSymbol(symbol);
+      return SIMILAR_SYMBOL_GROUPS.find((group) => group.includes(normalized)) || [];
+    }
+
+    function getDuplicateTradeWarning(symbol, targetRole = getWatchlistRoleForTab()) {
+      if (targetRole !== 'trade') return null;
+      const normalized = normalizeSymbol(symbol);
+      const group = findSimilarSymbolGroup(normalized);
+      if (!group.length) return null;
+      const existing = watchlistState.items
+        .filter((item) => normalizeWatchlistRole(item.symbol_role) === 'trade')
+        .map((item) => normalizeSymbol(item.symbol))
+        .filter((itemSymbol) => itemSymbol && itemSymbol !== normalized && group.includes(itemSymbol));
+      if (!existing.length) return null;
+      const canonical = CANONICAL_SYMBOL_BY_GROUP[group.join(',')] || group[0];
+      return {
+        duplicate: true,
+        existing,
+        canonical,
+        message: `${normalized} 与已存在 trade 标的 ${existing.join(', ')} 属于同一组，建议只保留 ${canonical}。`
+      };
+    }
+
+    function getEligibilityForSymbol(symbol) {
+      return watchlistState.eligibilityBySymbol[normalizeSymbol(symbol)] || null;
+    }
+
+    function getEligibilityChip(symbol) {
+      if (getWatchlistRoleForTab() !== 'trade') return '';
+      const duplicate = getDuplicateTradeWarning(symbol, 'trade');
+      const eligibility = getEligibilityForSymbol(symbol);
+      if (duplicate) return statusChip('重复暴露', 'stale');
+      if (!eligibility) return statusChip('待校验', 'neutral');
+      if (eligibility.status === 'pass') return statusChip(`适合日内 ${eligibility.pass_days || 0}/${eligibility.evaluated_days || 0}`, 'active');
+      if (eligibility.status === 'insufficient_data') return statusChip('数据不足', 'candidate');
+      return statusChip(`流动性弱 ${eligibility.pass_days || 0}/${eligibility.evaluated_days || 0}`, 'stale');
+    }
+
+    function summarizeEligibilityFailures(eligibility) {
+      const reasons = Array.isArray(eligibility?.fail_reasons) ? eligibility.fail_reasons : [];
+      if (!reasons.length) return '无明确失败项';
+      return reasons.slice(0, 4).map((item) => `${item.note || item.bucket || '不达标'} ${item.count || 0}天`).join('；');
+    }
+
+    function buildEligibilityWarningMessage(symbol, eligibility, duplicateWarning, errorText = '') {
+      const parts = [];
+      if (errorText) {
+        parts.push(`${symbol} 日内交易适配性校验失败：${errorText}`);
+      } else if (!eligibility) {
+        parts.push(`${symbol} 暂无日内交易适配性校验结果。`);
+      } else {
+        parts.push(eligibility.message || `${symbol} 不建议直接加入每日交易池。`);
+        parts.push(`窗口：近 ${eligibility.window_trading_days || WATCHLIST_ELIGIBILITY_WINDOW_DAYS} 个完整交易日，通过 ${eligibility.pass_days || 0}/${eligibility.evaluated_days || 0} 天。`);
+        if (eligibility.status !== 'pass') parts.push(`主要原因：${summarizeEligibilityFailures(eligibility)}`);
+      }
+      if (duplicateWarning?.message) parts.push(duplicateWarning.message);
+      parts.push('建议：先加入市场监控/观察池；如仍要加入 trade，请确认。');
+      return parts.filter(Boolean).join('\n');
+    }
+
+    async function fetchWatchlistEligibility(symbols) {
+      const normalizedSymbols = parseSymbolList(Array.isArray(symbols) ? symbols.join(',') : symbols);
+      if (!normalizedSymbols.length) return {};
+      const payload = await requestJson('/api/custom/ibkr/watchlist/eligibility', {
+        method: 'POST',
+        body: {
+          environment: currentEnvironment,
+          symbols: normalizedSymbols,
+          window_trading_days: WATCHLIST_ELIGIBILITY_WINDOW_DAYS
+        }
+      });
+      const nextMap = { ...watchlistState.eligibilityBySymbol };
+      (Array.isArray(payload.items) ? payload.items : []).forEach((item) => {
+        const symbol = normalizeSymbol(item.symbol);
+        if (symbol) nextMap[symbol] = item;
+      });
+      watchlistState.eligibilityBySymbol = nextMap;
+      return nextMap;
+    }
+
+    async function preloadSearchEligibility() {
+      if (getWatchlistRoleForTab() !== 'trade' || !watchlistState.searchResults.length) return;
+      const symbols = watchlistState.searchResults.map((item) => item.symbol).filter(Boolean);
+      if (!symbols.length) return;
+      document.getElementById('searchMeta').textContent = `正在校验 ${symbols.length} 个候选的日内交易适配性...`;
+      try {
+        await fetchWatchlistEligibility(symbols);
+        document.getElementById('searchMeta').textContent = `IBKR 返回 ${watchlistState.searchResults.length} 个候选 · 已完成日内适配性校验`;
+      } catch (error) {
+        document.getElementById('searchMeta').textContent = `IBKR 返回 ${watchlistState.searchResults.length} 个候选 · 适配性校验失败: ${error.message || error}`;
+      }
+      renderSearchResults();
+    }
+
+    async function confirmTradeEligibilityIfNeeded(item, targetRole = getWatchlistRoleForTab()) {
+      if (targetRole !== 'trade') {
+        return { allowed: true, forceTradeAdd: false, warning: '' };
+      }
+      const symbol = normalizeSymbol(item?.symbol);
+      if (!symbol) return { allowed: false, forceTradeAdd: false, warning: 'missing_symbol' };
+      const duplicateWarning = getDuplicateTradeWarning(symbol, 'trade');
+      let eligibility = getEligibilityForSymbol(symbol);
+      let errorText = '';
+      if (!eligibility) {
+        try {
+          const eligibilityMap = await fetchWatchlistEligibility([symbol]);
+          eligibility = eligibilityMap[symbol] || null;
+        } catch (error) {
+          errorText = String(error.message || error);
+        }
+      }
+      const needsConfirm = errorText || duplicateWarning || !eligibility || eligibility.status !== 'pass';
+      if (!needsConfirm) {
+        return { allowed: true, forceTradeAdd: false, warning: '' };
+      }
+      const warning = buildEligibilityWarningMessage(symbol, eligibility, duplicateWarning, errorText);
+      if (!window.confirm(warning)) {
+        return { allowed: false, forceTradeAdd: false, warning };
+      }
+      return { allowed: true, forceTradeAdd: true, warning };
+    }
+
+    function applyTradeEligibilityDecision(body, decision, targetRole = getWatchlistRoleForTab()) {
+      const payload = { ...body };
+      if (targetRole === 'trade') {
+        payload.check_trade_eligibility = false;
+        if (decision?.forceTradeAdd) payload.force_trade_add = true;
+        if (decision?.warning) payload.eligibility_warning = decision.warning;
+      }
+      return payload;
+    }
+
     function findExistingDailyTarget(symbol) {
       const normalized = String(symbol || '').trim().toUpperCase();
       return dailyTargetsState.items.find((item) => String(item.symbol || '').trim().toUpperCase() === normalized) || null;
@@ -510,6 +655,7 @@
             <div class="pill-row">
               <span class="status-chip">conid ${escapeHtml(item.conid || '--')}</span>
               <span class="status-chip">score ${escapeHtml(item.score || 0)}</span>
+              ${getEligibilityChip(item.symbol || '')}
               ${(secTypes.length ? secTypes : [item.asset_class || 'UNKNOWN']).map((type) => `<span class="pool-pill">${escapeHtml(type)}</span>`).join('')}
             </div>
             <div class="card-bottom">
@@ -672,6 +818,7 @@
         watchlistState.searchResults = Array.isArray(payload.items) ? payload.items : [];
         document.getElementById('searchMeta').textContent = `IBKR 返回 ${watchlistState.searchResults.length} 个候选`;
         renderSearchResults();
+        await preloadSearchEligibility();
       } catch (error) {
         watchlistState.searchResults = [];
         document.getElementById('searchMeta').textContent = `搜索失败: ${error.message || error}`;
@@ -718,12 +865,18 @@
       if (!item) return;
       const scope = document.getElementById('targetScope').value || currentEnvironment;
       const note = String(document.getElementById('noteInput').value || '').trim();
+      const eligibilityDecision = await confirmTradeEligibilityIfNeeded(item);
+      if (!eligibilityDecision.allowed) {
+        showToast(`${item.symbol} 已取消加入 trade`);
+        return;
+      }
       try {
         const payload = await requestJson('/api/custom/ibkr/watchlist/upsert', {
           method: 'POST',
-          body: buildWatchlistBody(item, scope, note)
+          body: applyTradeEligibilityDecision(buildWatchlistBody(item, scope, note), eligibilityDecision)
         });
         showToast(`${item.symbol} 已写入 ${scope === 'global' ? 'GLOBAL' : getEnvironmentLabel(scope)} ${getWatchlistRoleLabel()}`);
+        if (payload.warning) showToast(`准入提示: ${payload.warning}`);
         const warning = getRuntimeWarning(payload);
         if (warning) showToast(`预热提示: ${warning}`);
         await loadWatchlist(false);
@@ -768,21 +921,28 @@
         showToast('symbol_role 仅支持 trade 或 market_monitor');
         return;
       }
+      const normalizedNextRole = String(nextRole || '').trim();
+      const eligibilityDecision = await confirmTradeEligibilityIfNeeded(item, normalizedNextRole);
+      if (!eligibilityDecision.allowed) {
+        showToast(`${item.symbol} 已取消改为 trade`);
+        return;
+      }
 
       try {
+        const body = applyTradeEligibilityDecision({
+          environment: currentEnvironment,
+          source: 'manual_page_edit',
+          scope: nextScope,
+          manual_member: true,
+          symbol_role: normalizedNextRole,
+          symbol: item.symbol,
+          exchange: String(nextExchange || '').trim().toUpperCase(),
+          industry: String(nextIndustry || '').trim(),
+          note: String(nextNote || '').trim()
+        }, eligibilityDecision, normalizedNextRole);
         const payload = await requestJson('/api/custom/ibkr/watchlist/upsert', {
           method: 'POST',
-          body: {
-            environment: currentEnvironment,
-            source: 'manual_page_edit',
-            scope: nextScope,
-            manual_member: true,
-            symbol_role: String(nextRole || '').trim(),
-            symbol: item.symbol,
-            exchange: String(nextExchange || '').trim().toUpperCase(),
-            industry: String(nextIndustry || '').trim(),
-            note: String(nextNote || '').trim()
-          }
+          body
         });
         if ((nextScope !== originalScope || !rawScope) && recordId) {
           await requestJson('/api/custom/ibkr/watchlist/remove', {
@@ -797,6 +957,7 @@
           });
         }
         showToast(`${item.symbol} 已更新`);
+        if (payload.warning) showToast(`准入提示: ${payload.warning}`);
         const warning = getRuntimeWarning(payload);
         if (warning) showToast(`预热提示: ${warning}`);
         await loadWatchlist(false);
@@ -844,15 +1005,75 @@
 
       let success = 0;
       let failed = 0;
+      const candidates = [];
       for (let index = 0; index < symbols.length; index += 1) {
         const symbol = symbols[index];
-        document.getElementById('batchMeta').textContent = `处理中 ${index + 1}/${symbols.length}: ${symbol}`;
+        document.getElementById('batchMeta').textContent = `搜索候选 ${index + 1}/${symbols.length}: ${symbol}`;
         try {
           const candidate = await searchBestContract(symbol);
           if (!candidate) throw new Error('IBKR 未返回候选');
+          candidates.push(candidate);
+        } catch (_) {
+          failed += 1;
+        }
+      }
+
+      let forceSymbols = new Set();
+      let skipSymbols = new Set();
+      if (getWatchlistRoleForTab() === 'trade' && candidates.length) {
+        try {
+          await fetchWatchlistEligibility(candidates.map((item) => item.symbol));
+        } catch (error) {
+          showToast(`批量准入校验失败: ${error.message || error}`);
+        }
+        const warningItems = candidates
+          .map((item) => {
+            const symbol = normalizeSymbol(item.symbol);
+            const eligibility = getEligibilityForSymbol(symbol);
+            const duplicateWarning = getDuplicateTradeWarning(symbol);
+            if (!duplicateWarning && eligibility?.status === 'pass') return null;
+            return {
+              symbol,
+              text: buildEligibilityWarningMessage(symbol, eligibility, duplicateWarning)
+            };
+          })
+          .filter(Boolean);
+        if (warningItems.length) {
+          const preview = warningItems.slice(0, 8).map((item) => `- ${item.symbol}: ${item.text.split('\n')[0]}`).join('\n');
+          const confirmText = [
+            `${warningItems.length} 个标的不建议直接加入 trade。`,
+            preview,
+            warningItems.length > 8 ? `... 还有 ${warningItems.length - 8} 个` : '',
+            '确认后将强制加入；取消则跳过这些标的。'
+          ].filter(Boolean).join('\n');
+          if (window.confirm(confirmText)) {
+            forceSymbols = new Set(warningItems.map((item) => item.symbol));
+          } else {
+            skipSymbols = new Set(warningItems.map((item) => item.symbol));
+          }
+        }
+      }
+
+      for (let index = 0; index < candidates.length; index += 1) {
+        const candidate = candidates[index];
+        const symbol = normalizeSymbol(candidate.symbol);
+        if (skipSymbols.has(symbol)) {
+          failed += 1;
+          continue;
+        }
+        document.getElementById('batchMeta').textContent = `写入 ${index + 1}/${candidates.length}: ${symbol}`;
+        try {
+          const duplicateWarning = getDuplicateTradeWarning(symbol);
+          const eligibility = getEligibilityForSymbol(symbol);
+          const warning = forceSymbols.has(symbol)
+            ? buildEligibilityWarningMessage(symbol, eligibility, duplicateWarning)
+            : '';
           await requestJson('/api/custom/ibkr/watchlist/upsert', {
             method: 'POST',
-            body: buildWatchlistBody(candidate, scope, note)
+            body: applyTradeEligibilityDecision(
+              buildWatchlistBody(candidate, scope, note),
+              { allowed: true, forceTradeAdd: forceSymbols.has(symbol), warning }
+            )
           });
           success += 1;
         } catch (_) {
@@ -932,4 +1153,3 @@
       });
       document.getElementById('targetScope').addEventListener('change', renderSearchResults);
     }
-

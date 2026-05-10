@@ -7,6 +7,21 @@ BACKFILL_SQLITE_WRITE_LOCK = threading.Lock()
 
 
 class BacktestMarketDataBackfillMixin:
+    def _is_bad_bar_only_preflight_item(self, item: dict) -> bool:
+        windows = list((item or {}).get("repair_windows") or [])
+        if not windows:
+            return False
+        allowed_reasons = {"bad_bar", "bad_ohlc"}
+        for window in windows:
+            reasons = {
+                str(reason or "").strip().lower()
+                for reason in str((window or {}).get("reason") or "").split(",")
+                if str(reason or "").strip()
+            }
+            if not reasons or any(reason not in allowed_reasons for reason in reasons):
+                return False
+        return True
+
     def _preflight_backfill_symbols(
         self,
         symbols: list[str],
@@ -36,12 +51,29 @@ class BacktestMarketDataBackfillMixin:
             )
             for symbol in symbols
         ]
-        needed_symbols = [item["symbol"] for item in initial if item.get("needs_backfill")]
+        skip_bad_bar_only = bool(
+            request.get("symbol_source") == "daily_scan_replay"
+            and request.get("daily_selected_only")
+        )
+        skipped_bad_bar_symbols = []
+        skipped_bad_bar_windows: dict[str, list[dict]] = {}
+        needed_symbols = []
+        for item in initial:
+            if not item.get("needs_backfill"):
+                continue
+            symbol = str(item.get("symbol") or "").upper()
+            if skip_bad_bar_only and self._is_bad_bar_only_preflight_item(item):
+                skipped_bad_bar_symbols.append(symbol)
+                skipped_bad_bar_windows[symbol] = list(item.get("repair_windows") or [])
+                continue
+            needed_symbols.append(item["symbol"])
         if not needed_symbols:
             return {
                 "enabled": True,
                 "symbols": list(symbols),
                 "needed_symbols": [],
+                "skipped_bad_bar_symbols": skipped_bad_bar_symbols,
+                "skipped_bad_bar_windows": skipped_bad_bar_windows,
                 "initial": initial,
                 "results": {},
                 "final": initial,
@@ -251,6 +283,11 @@ class BacktestMarketDataBackfillMixin:
                         progress_context,
                     )
 
+        refreshed_symbols = {
+            str(symbol or "").upper()
+            for symbol, result in results.items()
+            if int((result or {}).get("persisted_rows", 0) or 0) > 0
+        }
         self._set_progress_context("running", "preflight", "rechecking bar coverage", 15, progress_context)
         final = [
             self._symbol_range_coverage_summary(
@@ -259,6 +296,7 @@ class BacktestMarketDataBackfillMixin:
                 request["date_from"],
                 request["date_to"],
                 warmup_bars=self._effective_indicator_warmup_bars(request, "warmup_bars"),
+                refresh_daily_coverage=str(symbol or "").upper() in refreshed_symbols,
             )
             for symbol in symbols
         ]
@@ -266,6 +304,8 @@ class BacktestMarketDataBackfillMixin:
             "enabled": True,
             "symbols": list(symbols),
             "needed_symbols": needed_symbols,
+            "skipped_bad_bar_symbols": skipped_bad_bar_symbols,
+            "skipped_bad_bar_windows": skipped_bad_bar_windows,
             "initial": initial,
             "results": results,
             "final": final,

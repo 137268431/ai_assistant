@@ -13,6 +13,7 @@ from ibkr_api.universe.targets import (
     build_target_upsert_response,
 )
 from ibkr_api.universe.watchlist import (
+    build_watchlist_eligibility_response,
     build_watchlist_remove_response,
     build_watchlist_upsert_response,
 )
@@ -42,6 +43,21 @@ def register_universe_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
         return response if status_code == 200 else (response, status_code)
 
     exports["custom_ibkr_watchlist_upsert"] = custom_ibkr_watchlist_upsert
+
+    @app.route("/api/custom/ibkr/watchlist/eligibility", methods=["POST"])
+    def custom_ibkr_watchlist_eligibility() -> Response:
+        payload, status_code = build_watchlist_eligibility_response(
+            pb,
+            payload=request.get_json(silent=True) or {},
+            normalize_environment=normalize_environment,
+            escape_filter_string=escape_filter_string,
+            request_json_request=request_json_request,
+            compute_base_url=compute_base_url,
+        )
+        response = jsonify(payload)
+        return response if status_code == 200 else (response, status_code)
+
+    exports["custom_ibkr_watchlist_eligibility"] = custom_ibkr_watchlist_eligibility
 
     @app.route("/api/custom/ibkr/watchlist/remove", methods=["POST"])
     def custom_ibkr_watchlist_remove() -> Response:

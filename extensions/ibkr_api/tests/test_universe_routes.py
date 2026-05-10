@@ -16,7 +16,7 @@ from ibkr_api.orders.cancel_sync import build_order_cancel_sync_response
 from ibkr_api.universe.screener import build_screener_proxy_response
 from ibkr_api.universe.today_targets import build_today_targets_response
 from ibkr_api.universe.targets import build_screener_targets_upsert_response, build_target_upsert_response
-from ibkr_api.universe.watchlist import build_watchlist_upsert_response
+from ibkr_api.universe.watchlist import build_watchlist_eligibility_response, build_watchlist_upsert_response
 from ibkr_compute.market.timeframe_utils import ET
 
 
@@ -95,6 +95,84 @@ class UniverseRoutesTest(unittest.TestCase):
         self.assertEqual("AAPL", payload["symbol"])
         self.assertEqual("AAPL", payload["runtime_reconcile"]["queued"][0])
         self.assertEqual("NASDAQ", pb.created[0][1]["exchange"])
+
+    def test_watchlist_eligibility_warns_for_duplicate_and_weak_metrics(self):
+        pb = _MinimalPB()
+        pb._records["watchlist"] = [
+            {"symbol": "GOOGL", "environment": "global", "symbol_role": "trade"},
+        ]
+
+        screener_rows = {
+            "2026-05-08": {
+                "items": [
+                    {
+                        "symbol": "GOOG",
+                        "has_live_bar": True,
+                        "price": 120,
+                        "avg_10d_volume": 80_000,
+                        "premarket_volume": 200,
+                        "atr_pct": 0.2,
+                        "day_change_pct": 2.0,
+                    }
+                ]
+            },
+            "2026-05-07": {
+                "items": [
+                    {
+                        "symbol": "GOOG",
+                        "has_live_bar": True,
+                        "price": 119,
+                        "avg_10d_volume": 90_000,
+                        "premarket_volume": 100,
+                        "atr_pct": 0.1,
+                        "day_change_pct": 0.2,
+                    }
+                ]
+            },
+            "2026-05-06": {
+                "items": [
+                    {
+                        "symbol": "GOOG",
+                        "has_live_bar": True,
+                        "price": 118,
+                        "avg_10d_volume": 95_000,
+                        "premarket_volume": 150,
+                        "atr_pct": 0.1,
+                        "day_change_pct": 0.3,
+                    }
+                ]
+            },
+        }
+
+        def fake_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            market_date = dict(params or {}).get("market_date")
+            return {
+                "status_code": 200,
+                "payload": {"ok": True, **screener_rows.get(market_date, {"items": []})},
+                "target_url": f"{base_url.rstrip('/')}{path}",
+            }
+
+        payload, status_code = build_watchlist_eligibility_response(
+            pb,
+            payload={
+                "environment": "live",
+                "symbols": ["GOOG"],
+                "window_trading_days": 3,
+                "market_dates": ["2026-05-08", "2026-05-07", "2026-05-06"],
+            },
+            normalize_environment=lambda value, default="live": str(value or default).strip().lower() or default,
+            escape_filter_string=lambda value: str(value or "").replace('"', '\\"'),
+            request_json_request=fake_request,
+            compute_base_url="http://127.0.0.1:5100",
+        )
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        item = payload["items"][0]
+        self.assertEqual("warn", item["status"])
+        self.assertEqual("market_monitor", item["recommendation"])
+        self.assertTrue(item["duplicate"]["duplicate"])
+        self.assertEqual("GOOGL", item["duplicate"]["canonical_symbol"])
+        self.assertEqual(0, item["pass_days"])
 
     def test_target_upsert_rejects_manual_non_current_market_date(self):
         pb = _MinimalPB()

@@ -885,16 +885,21 @@ class BacktestPortfolioMixin:
             tv_reference,
             compare_tv_signals=compare_tv_signals,
         ) if compare_with_tv else None
+        daily_close_lookup_cache = request.get("_daily_close_lookup_cache") if isinstance(request.get("_daily_close_lookup_cache"), dict) else {}
         return {
             "symbol": symbol,
             "bars": bars,
             "engine": engine,
             "signal_gen": signal_gen,
-            "daily_close_lookup": self._load_daily_close_lookup(
-                symbol,
-                request["source_environment"],
-                request["date_from"],
-                request["date_to"],
+            "daily_close_lookup": list(
+                daily_close_lookup_cache.get(symbol)
+                if symbol in daily_close_lookup_cache
+                else self._load_daily_close_lookup(
+                    symbol,
+                    request["source_environment"],
+                    request["date_from"],
+                    request["date_to"],
+                )
             ),
             "symbol_tv_parity": symbol_tv_parity,
             "allowed_trade_days": allowed_trade_days,
@@ -970,6 +975,28 @@ class BacktestPortfolioMixin:
 
         total_days = max(1, len(all_dates))
         base_initial_capital = float(request.get("initial_capital", 0) or 0)
+        selected_symbol_set = {
+            str(item or "").strip().upper()
+            for date in all_dates
+            for item in list(selection_plan.get(date) or [])
+            if str(item or "").strip()
+        }
+        selected_symbols = [symbol for symbol in symbols if symbol in selected_symbol_set]
+        selected_symbols_seen = set(selected_symbols)
+        selected_symbols.extend(sorted(symbol for symbol in selected_symbol_set if symbol not in selected_symbols_seen))
+        close_lookup_started_at = time.time()
+        daily_close_lookup_cache = self._build_daily_close_lookup_cache(
+            selected_symbols,
+            request["source_environment"],
+            request["date_from"],
+            request["date_to"],
+        )
+        close_lookup_cache_profile = {
+            "enabled": True,
+            "symbols": len(daily_close_lookup_cache),
+            "rows": sum(len(rows or []) for rows in daily_close_lookup_cache.values()),
+            "duration_s": round(time.time() - close_lookup_started_at, 3),
+        }
         for day_index, trade_date in enumerate(all_dates, start=1):
             if self._cancel_event.is_set():
                 raise BacktestCancelled()
@@ -980,6 +1007,7 @@ class BacktestPortfolioMixin:
             ]
             day_symbols = [symbol for index, symbol in enumerate(day_symbols) if symbol and symbol not in day_symbols[:index]]
             progress_value = 16 + int(((day_index - 1) / total_days) * 69)
+            next_progress_value = 16 + int((day_index / total_days) * 69)
             self._set_progress_context(
                 "running",
                 "daily_selected_stream",
@@ -1007,6 +1035,7 @@ class BacktestPortfolioMixin:
             day_request["symbols"] = day_symbols
             day_request["symbols_text"] = ",".join(day_symbols)
             day_request["max_symbols"] = len(day_symbols)
+            day_request["_daily_close_lookup_cache"] = daily_close_lookup_cache
             if cumulative_realized_pnl:
                 day_request["initial_capital"] = max(1000.0, base_initial_capital + cumulative_realized_pnl)
             day_target_rows = list(target_rows_by_day.get(trade_date) or [])
@@ -1017,13 +1046,21 @@ class BacktestPortfolioMixin:
                 if int((admitted_lookup.get(symbol) or {}).get(trade_date, 0) or 0) > 0
             }
             day_started_at = time.time()
+            day_progress_context = {
+                "start": self._map_progress(progress_value, progress_context),
+                "end": max(
+                    self._map_progress(progress_value, progress_context),
+                    self._map_progress(next_progress_value, progress_context),
+                ),
+                "prefix": str((progress_context or {}).get("prefix") or ""),
+            }
             day_result = self._run_portfolio_stream_backtest(
                 day_symbols,
                 day_request,
                 allowed_trade_days_by_symbol=day_allowed,
                 target_rows=day_target_rows,
                 admitted_after_ms_by_symbol_day=day_admitted,
-                progress_context=progress_context,
+                progress_context=day_progress_context,
             )
             day_metrics = dict(day_result.get("portfolio_metrics") or {})
             day_profile = dict(day_metrics.get("portfolio_profile") or {})
@@ -1086,6 +1123,7 @@ class BacktestPortfolioMixin:
             "bar_times": total_bar_times,
             "indicator_count": indicator_count,
             "duration_s": round(time.time() - started_at, 3),
+            "daily_close_lookup_cache": close_lookup_cache_profile,
             "resource_snapshot": self._read_backtest_resource_snapshot(),
             "shared_admission_helper": "ibkr_compute.core.active_window_admission.is_active_window_admitted",
             "daily": daily_profiles,

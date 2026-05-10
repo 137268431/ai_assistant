@@ -669,12 +669,21 @@ class BacktestRuntimeRecordsMixin:
 
     def _set_progress(self, status: str, stage: str, message: str, progress: int):
         with self._lock:
+            progress_value = max(0, min(100, int(progress)))
+            previous = dict(self._progress or {})
+            if (
+                status == "running"
+                and str(previous.get("run_id") or "") == str(self._active_run_id or "")
+                and str(previous.get("batch_id") or "") == str(self._active_batch_id or "")
+                and str(previous.get("status") or "") in {"queued", "running"}
+            ):
+                progress_value = max(progress_value, int(previous.get("progress", 0) or 0))
             self._progress = {
                 "status": status,
                 "run_id": self._active_run_id,
                 "batch_id": self._active_batch_id,
                 "mode": "batch" if self._active_batch_id else "single",
-                "progress": max(0, min(100, int(progress))),
+                "progress": progress_value,
                 "stage": stage,
                 "message": message,
                 "updated_at_ms": int(time.time() * 1000),

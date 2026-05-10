@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ibkr_api.system.jobs.market_calendar import is_nyse_non_trading_day
+
 
 DAILY_REMINDER_STATE_KEY = "system_notify_daily"
 DEFAULT_MARKET_OPEN_REMINDER_TIME_ET = "09:30"
@@ -448,6 +450,38 @@ def build_system_market_open_reminder_response(
     current_state = _as_dict(get_state_payload(DAILY_REMINDER_STATE_KEY, environment).get("data"))
     if _to_text(current_state.get("open_sent_at")):
         return {"ok": True, "environment": environment, "skipped": True, "reason": "already_sent", "source": "ibkr-api", "job_id": "system_market_open_reminder"}, 200
+    market_date = _to_text(times.get("date"))
+    if is_nyse_non_trading_day(market_date):
+        next_state = {
+            **current_state,
+            "open_title": "IBKR 09:30 开盘系统检查",
+            "open_status": "skipped",
+            "open_last_attempt_at": times["us"],
+            "open_notified": False,
+            "open_persisted": False,
+            "open_message_id": "",
+            "open_skipped": True,
+            "open_suppressed": False,
+            "open_reason": "non_trading_day",
+            "open_error": "",
+            "open_sent_at": times["us"],
+        }
+        upsert_state(DAILY_REMINDER_STATE_KEY, environment, next_state, times["date"])
+        return {
+            "ok": True,
+            "environment": environment,
+            "notified": False,
+            "persisted": False,
+            "message_id": "",
+            "skipped": True,
+            "reason": "non_trading_day",
+            "trading_day": False,
+            "market_date": market_date,
+            "error": "",
+            "state": next_state,
+            "source": "ibkr-api",
+            "job_id": "system_market_open_reminder",
+        }, 200
     summary = build_system_summary_payload(environment)
     monitor = build_system_monitor_payload(environment)
     level = "warning" if _to_text(summary.get("status")).lower() not in {"running", "ok"} else "info"
@@ -526,6 +560,43 @@ def build_system_daily_report_response(
     current_state = _as_dict(get_state_payload(DAILY_REMINDER_STATE_KEY, environment).get("data"))
     if _to_text(current_state.get("close_sent_at")):
         return {"ok": True, "environment": environment, "skipped": True, "reason": "already_sent", "source": "ibkr-api", "job_id": "system_daily_report"}, 200
+
+    market_date = _to_text(times.get("date"))
+    if is_nyse_non_trading_day(market_date):
+        next_state = {
+            **current_state,
+            "close_title": "IBKR 16:05 收盘汇总",
+            "close_status": "skipped",
+            "close_last_attempt_at": times["us"],
+            "close_notified": False,
+            "close_persisted": False,
+            "close_message_id": "",
+            "close_skipped": True,
+            "close_suppressed": False,
+            "close_reason": "non_trading_day",
+            "close_error": "",
+            "close_report_market_date": market_date,
+            "close_target_total": 0,
+            "close_daily_scan_status": "non_trading_day",
+            "close_sent_at": times["us"],
+        }
+        upsert_state(DAILY_REMINDER_STATE_KEY, environment, next_state, times["date"])
+        return {
+            "ok": True,
+            "environment": environment,
+            "notified": False,
+            "persisted": False,
+            "message_id": "",
+            "skipped": True,
+            "suppressed": False,
+            "reason": "non_trading_day",
+            "trading_day": False,
+            "market_date": market_date,
+            "error": "",
+            "state": next_state,
+            "source": "ibkr-api",
+            "job_id": "system_daily_report",
+        }, 200
 
     if not _truthy(config_value("daily_summary_notify_enabled", "TRUE", environment)):
         next_state = {

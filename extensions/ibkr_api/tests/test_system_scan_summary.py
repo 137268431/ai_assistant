@@ -12,7 +12,7 @@ for src_root in SRC_ROOTS:
 
 from ibkr_api.system.jobs.scan_summary import build_system_scan_summary_response
 from ibkr_api.system.jobs.status_heartbeat import build_system_status_reminder_response
-from ibkr_api.system.jobs.open_report import matches_open_report_time_window
+from ibkr_api.system.jobs.open_report import build_system_open_report_response, matches_open_report_time_window
 
 
 class SystemScanSummaryTest(unittest.TestCase):
@@ -21,6 +21,82 @@ class SystemScanSummaryTest(unittest.TestCase):
         self.assertTrue(matches_open_report_time_window("2026-04-28 09:30:00"))
         self.assertTrue(matches_open_report_time_window("2026-04-28 09:35:00"))
         self.assertFalse(matches_open_report_time_window("2026-04-28 09:40:00"))
+
+    def test_scan_summary_skips_weekend_without_sending_open_report(self):
+        sent = []
+        states = {}
+        events = []
+        target_calls = []
+
+        def build_today_targets_response(*, payload):
+            target_calls.append(payload)
+            raise AssertionError("targets should not load on non-trading days")
+
+        payload, status_code = build_system_scan_summary_response(
+            payload={"environment": "live"},
+            normalize_environment=lambda value, default: str(value or default).strip().lower(),
+            time_strings=lambda: {"us": "2026-05-09 09:30:00", "cn": "2026-05-09 21:30:00", "date": "2026-05-09"},
+            build_today_targets_response=build_today_targets_response,
+            build_system_summary_payload=lambda environment, lite_mode=False: (_ for _ in ()).throw(AssertionError("summary should not load")),
+            build_system_monitor_payload=lambda environment: (_ for _ in ()).throw(AssertionError("monitor should not load")),
+            feishu_send_interactive=lambda card, chat_id, environment: sent.append(card) or {"success": True},
+            write_system_event_record=lambda *args, **kwargs: events.append(args) or {},
+            get_state_payload=lambda state_key, environment: {"data": states.get((state_key, environment), {})},
+            upsert_state=lambda key, environment, data, date: states.update({(key, environment): data}) or data,
+            config_value=lambda key, default, environment: (_ for _ in ()).throw(AssertionError("config should not load")),
+            console_base_url=lambda: "https://quant.lzw-glory.top",
+            signal_chat_id=lambda environment: f"signal-chat-{environment}",
+            startup_chat_id=lambda environment: f"startup-chat-{environment}",
+            load_market_snapshots=lambda environment, symbols, market_date, computed_at_ms: sent.append(symbols) or [],
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["skipped"])
+        self.assertEqual(payload["reason"], "non_trading_day")
+        self.assertFalse(payload["trading_day"])
+        self.assertEqual(payload["market_date"], "2026-05-09")
+        self.assertEqual(payload["job_id"], "system_scan_summary")
+        self.assertEqual(sent, [])
+        self.assertEqual(events, [])
+        self.assertEqual(target_calls, [])
+        state = states[("system_notify_daily", "live")]
+        self.assertEqual(state["open_sent_at"], "2026-05-09 09:30:00")
+        self.assertEqual(state["open_reason"], "non_trading_day")
+        self.assertFalse(state["open_notified"])
+
+    def test_open_report_skips_nyse_holiday_without_sending_card(self):
+        sent = []
+        states = {}
+        events = []
+
+        payload, status_code = build_system_open_report_response(
+            payload={"environment": "live"},
+            normalize_environment=lambda value, default: str(value or default).strip().lower(),
+            time_strings=lambda: {"us": "2026-07-03 09:30:00", "cn": "2026-07-03 21:30:00", "date": "2026-07-03"},
+            build_today_targets_response=lambda *, payload: (_ for _ in ()).throw(AssertionError("targets should not load")),
+            build_system_summary_payload=lambda environment, lite_mode=False: (_ for _ in ()).throw(AssertionError("summary should not load")),
+            build_system_monitor_payload=lambda environment: (_ for _ in ()).throw(AssertionError("monitor should not load")),
+            feishu_send_interactive=lambda card, chat_id, environment: sent.append(card) or {"success": True},
+            write_system_event_record=lambda *args, **kwargs: events.append(args) or {},
+            get_state_payload=lambda state_key, environment: {"data": states.get((state_key, environment), {})},
+            upsert_state=lambda key, environment, data, date: states.update({(key, environment): data}) or data,
+            config_value=lambda key, default, environment: (_ for _ in ()).throw(AssertionError("config should not load")),
+            console_base_url=lambda: "https://quant.lzw-glory.top",
+            startup_chat_id=lambda environment: f"startup-chat-{environment}",
+            load_market_snapshots=lambda environment, symbols, market_date, computed_at_ms: sent.append(symbols) or [],
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["skipped"])
+        self.assertEqual(payload["reason"], "non_trading_day")
+        self.assertEqual(payload["market_date"], "2026-07-03")
+        self.assertEqual(sent, [])
+        self.assertEqual(events, [])
+        state = states[("system_notify_daily", "live")]
+        self.assertEqual(state["open_sent_at"], "2026-07-03 09:30:00")
+        self.assertEqual(state["open_daily_scan_status"], "non_trading_day")
 
     def test_scan_summary_delivers_open_report_to_status_chat(self):
         sent = []

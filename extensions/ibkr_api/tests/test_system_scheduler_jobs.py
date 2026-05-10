@@ -701,6 +701,27 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(len(sent), 0)
         self.assertEqual(pb.states, {})
 
+    def test_market_open_reminder_skips_non_trading_day(self):
+        pb = _ReminderPB()
+        sent = []
+
+        payload, status_code = build_system_market_open_reminder_response(
+            payload={"environment": "live"},
+            **self._reminder_deps(pb, sent, now_us="2026-05-09 09:30:00", date="2026-05-09"),
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["skipped"])
+        self.assertEqual(payload["reason"], "non_trading_day")
+        self.assertFalse(payload["trading_day"])
+        self.assertEqual(payload["market_date"], "2026-05-09")
+        self.assertEqual(len(sent), 0)
+        state = pb.states[("system_notify_daily", "live", "2026-05-09")]["data"]
+        self.assertEqual(state["open_sent_at"], "2026-05-09 09:30:00")
+        self.assertEqual(state["open_reason"], "non_trading_day")
+        self.assertFalse(state["open_notified"])
+
     def test_market_open_reminder_retries_when_delivery_fails(self):
         pb = _ReminderPB()
         sent = []
@@ -935,6 +956,28 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(payload["target_time_et"], "16:05")
         self.assertEqual(len(sent), 0)
         self.assertEqual(pb.states, {})
+
+    def test_daily_report_skips_non_trading_day_without_feishu(self):
+        pb = _ReminderPB()
+        sent = []
+
+        payload, status_code = build_system_daily_report_response(
+            payload={"environment": "live"},
+            **self._reminder_deps(pb, sent, now_us="2026-05-09 16:05:00", date="2026-05-09", daily=True),
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["skipped"])
+        self.assertEqual(payload["reason"], "non_trading_day")
+        self.assertFalse(payload["trading_day"])
+        self.assertEqual(payload["market_date"], "2026-05-09")
+        self.assertEqual(len(sent), 0)
+        state = pb.states[("system_notify_daily", "live", "2026-05-09")]["data"]
+        self.assertEqual(state["close_sent_at"], "2026-05-09 16:05:00")
+        self.assertEqual(state["close_reason"], "non_trading_day")
+        self.assertEqual(state["close_daily_scan_status"], "non_trading_day")
+        self.assertFalse(state["close_notified"])
 
     def test_daily_report_is_idempotent_per_day_at_close_time(self):
         pb = _ReminderPB()

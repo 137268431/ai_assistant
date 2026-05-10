@@ -311,6 +311,167 @@ class BacktestPortfolioStreamTests(unittest.TestCase):
         self.assertTrue(request["daily_selected_only"])
         self.assertTrue(any(patch.get("status") == "completed" for _run_id, patch in updates))
 
+    def test_preflight_refreshes_daily_coverage_after_repair(self):
+        request = self._request(
+            symbol_source="manual",
+            symbols="AAPL,NVDA",
+            date_from="2026-04-01",
+            date_to="2026-04-01",
+            backfill_concurrency=1,
+        )
+        start_ms, _end_ms = self.service._date_to_ms_range("2026-04-01", "2026-04-01")
+        calls = []
+
+        def fake_coverage(symbol, *_args, refresh_daily_coverage=False, **_kwargs):
+            calls.append((symbol, refresh_daily_coverage))
+            if len(calls) <= 2:
+                if symbol == "AAPL":
+                    return {
+                        "symbol": symbol,
+                        "needs_backfill": True,
+                        "repair_windows": [
+                            {
+                                "start_ms": start_ms,
+                                "end_ms": start_ms + 5 * 60 * 1000,
+                                "reason": "bad_bar",
+                            }
+                        ],
+                    }
+                return {"symbol": symbol, "needs_backfill": False, "repair_windows": []}
+            return {"symbol": symbol, "needs_backfill": False, "repair_windows": []}
+
+        self.service._symbol_range_coverage_summary = fake_coverage
+        self.service._backfill_symbol_history = lambda *_args, **_kwargs: {
+            "ok": True,
+            "reason": "ok",
+            "batches": 1,
+            "rows": [{"symbol": "AAPL", "bar_time_ms": start_ms}],
+        }
+        self.service._dedupe_backfill_rows = lambda rows: list(rows)
+        self.service._persist_backfill_rows = lambda rows: len(rows)
+        self.service._rollup_symbol_history = lambda *_args, **_kwargs: 1
+
+        summary = self.service._preflight_backfill_symbols(["AAPL", "NVDA"], request)
+
+        self.assertEqual(summary["needed_symbols"], ["AAPL"])
+        self.assertEqual(summary["results"]["AAPL"]["persisted_rows"], 1)
+        self.assertIn(("AAPL", True), calls)
+        self.assertIn(("NVDA", False), calls)
+        self.assertNotIn(("NVDA", True), calls)
+
+    def test_daily_selected_preflight_skips_bad_bar_only_repairs(self):
+        request = self._request(
+            symbol_source="daily_scan_replay",
+            symbols="AAPL,NVDA",
+            date_from="2026-04-01",
+            date_to="2026-04-02",
+            daily_selected_only=True,
+        )
+        request["daily_selected_only"] = True
+        request["params"]["daily_selected_only"] = True
+        request["symbol_source"] = "daily_scan_replay"
+        start_ms, _end_ms = self.service._date_to_ms_range("2026-04-01", "2026-04-01")
+
+        def fake_coverage(symbol, *_args, **_kwargs):
+            if symbol == "AAPL":
+                return {
+                    "symbol": symbol,
+                    "needs_backfill": True,
+                    "repair_windows": [
+                        {
+                            "start_ms": start_ms,
+                            "end_ms": start_ms + 5 * 60 * 1000,
+                            "reason": "bad_bar",
+                        }
+                    ],
+                }
+            return {"symbol": symbol, "needs_backfill": False, "repair_windows": []}
+
+        self.service._symbol_range_coverage_summary = fake_coverage
+        self.service._backfill_symbol_history = lambda *_args, **_kwargs: self.fail("bad_bar-only windows should not be backfilled")
+
+        summary = self.service._preflight_backfill_symbols(["AAPL", "NVDA"], request)
+
+        self.assertEqual(summary["needed_symbols"], [])
+        self.assertEqual(summary["skipped_bad_bar_symbols"], ["AAPL"])
+        self.assertIn("AAPL", summary["skipped_bad_bar_windows"])
+        self.assertEqual(summary["results"], {})
+
+    def test_daily_selected_reuses_daily_close_lookup_cache(self):
+        request = self._request(
+            symbol_source="daily_scan_replay",
+            symbols="AAPL",
+            date_from="2026-04-01",
+            date_to="2026-04-02",
+            daily_selected_only=True,
+        )
+        selection_plan = {"2026-04-01": ["AAPL"], "2026-04-02": ["AAPL"]}
+        lookup_calls = []
+        seen_cache_ids = []
+        progress_windows = []
+
+        def load_lookup(symbol, *_args, **_kwargs):
+            lookup_calls.append(symbol)
+            return [{"date": "2026-03-31", "close": 100.0, "bar_time_ms": 1}]
+
+        def daily_runner(symbols, runner_request, *_args, **kwargs):
+            self.assertEqual(symbols, ["AAPL"])
+            cache = runner_request.get("_daily_close_lookup_cache")
+            self.assertIn("AAPL", cache)
+            seen_cache_ids.append(id(cache))
+            progress_windows.append(kwargs.get("progress_context") or {})
+            return {
+                "trades": [],
+                "indicator_rows": [],
+                "indicator_count": 0,
+                "signal_rows": [],
+                "reverse_rows": [],
+                "skipped_symbols": [],
+                "data_quality": [],
+                "tv_symbol_reports": [],
+                "portfolio_metrics": {
+                    "portfolio_profile": {"bars_loaded": 0, "bar_times": 0},
+                    "portfolio_rejection_counts": {},
+                    "portfolio_realized_pnl": 0,
+                },
+            }
+
+        self.service._load_daily_close_lookup = load_lookup
+        self.service._run_portfolio_stream_backtest = daily_runner
+
+        result = self.service._run_portfolio_daily_selected_backtest(["AAPL"], request, selection_plan)
+
+        self.assertEqual(lookup_calls, ["AAPL"])
+        self.assertEqual(len(set(seen_cache_ids)), 1)
+        self.assertEqual([(item.get("start"), item.get("end")) for item in progress_windows], [(16, 50), (50, 85)])
+        profile = result["portfolio_metrics"]["daily_selected_profile"]
+        self.assertEqual(profile["daily_close_lookup_cache"]["symbols"], 1)
+        self.assertEqual(profile["daily_close_lookup_cache"]["rows"], 1)
+
+    def test_running_progress_does_not_regress_for_same_run(self):
+        self.service._active_run_id = "run_1"
+        self.service._active_batch_id = ""
+        self.service._progress = {
+            "status": "queued",
+            "run_id": "run_1",
+            "batch_id": "",
+            "mode": "single",
+            "progress": 0,
+            "stage": "queued",
+            "message": "",
+            "updated_at_ms": 0,
+        }
+
+        self.service._set_progress("running", "daily_selected_stream", "day 10", 70)
+        self.service._set_progress("running", "loading", "loading nested day", 20)
+
+        self.assertEqual(self.service._progress["progress"], 70)
+        self.assertEqual(self.service._progress["stage"], "loading")
+
+        self.service._active_run_id = "run_2"
+        self.service._set_progress("running", "bootstrap", "new run", 5)
+        self.assertEqual(self.service._progress["progress"], 5)
+
     def test_portfolio_target_filters_skip_low_rank_score_and_direction_mismatch(self):
         start = datetime(2026, 4, 1, 9, 35, tzinfo=ET)
         start_ms = int(start.timestamp() * 1000)

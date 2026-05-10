@@ -56,19 +56,30 @@ class BacktestSymbolRowsRowBuildersMixin:
         return {}
 
     def _load_daily_close_lookup(self, symbol: str, source_environment: str, date_from: str, date_to: str) -> list[dict]:
-        if not self.pb:
-            return []
         start_ms, end_ms = self._date_to_ms_range(date_from, date_to)
         lookback_start_ms = max(0, start_ms - (interval_to_ms("1d") * 40))
-        rows = self.pb.get_all_records(
-            "ibkr_bars",
-            filter=(
-                f'symbol = "{symbol}" && interval = "1d" && environment = "{source_environment}" '
-                f"&& bar_time_ms >= {lookback_start_ms} && bar_time_ms <= {end_ms}"
-            ),
-            sort="bar_time_ms",
-            max_pages=120,
-        )
+        rows = []
+        try:
+            rows = self._load_bar_rows_from_sqlite(
+                symbol,
+                source_environment,
+                interval="1d",
+                start_ms=lookback_start_ms,
+                end_ms=end_ms,
+                descending=False,
+            )
+        except Exception:
+            rows = []
+        if not rows and self.pb:
+            rows = self.pb.get_all_records(
+                "ibkr_bars",
+                filter=(
+                    f'symbol = "{symbol}" && interval = "1d" && environment = "{source_environment}" '
+                    f"&& bar_time_ms >= {lookback_start_ms} && bar_time_ms <= {end_ms}"
+                ),
+                sort="bar_time_ms",
+                max_pages=120,
+            )
         lookup = []
         for row in rows:
             bar_ms = int(row.get("bar_time_ms", 0) or 0)
@@ -83,6 +94,26 @@ class BacktestSymbolRowsRowBuildersMixin:
                 }
             )
         return lookup
+
+    def _build_daily_close_lookup_cache(
+        self,
+        symbols: list[str],
+        source_environment: str,
+        date_from: str,
+        date_to: str,
+    ) -> dict[str, list[dict]]:
+        cache: dict[str, list[dict]] = {}
+        for symbol in symbols or []:
+            normalized_symbol = str(symbol or "").strip().upper()
+            if not normalized_symbol or normalized_symbol in cache:
+                continue
+            cache[normalized_symbol] = self._load_daily_close_lookup(
+                normalized_symbol,
+                source_environment,
+                date_from,
+                date_to,
+            )
+        return cache
 
     def _get_daily_change_fields_from_lookup(self, lookup: list[dict], current_close: float, bar_time_ms: int) -> dict:
         current_date = ms_to_et(bar_time_ms).strftime("%Y-%m-%d")

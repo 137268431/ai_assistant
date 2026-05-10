@@ -61,6 +61,7 @@ NATIVE_CUSTOM_ROUTES = [
     "ibkr/startup/status",
     "ibkr/statusz",
     "ibkr/today-targets",
+    "ibkr/watchlist/eligibility",
     "ibkr/targets/remove",
     "ibkr/targets/upsert",
     "ibkr/watchlist/remove",
