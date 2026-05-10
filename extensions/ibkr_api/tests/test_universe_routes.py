@@ -13,6 +13,7 @@ for src_root in SERVICE_SRC_ROOTS:
         sys.path.insert(0, str(src_root))
 
 from ibkr_api.orders.cancel_sync import build_order_cancel_sync_response
+from ibkr_api.universe.fundamentals import build_fundamentals_list_response, build_fundamentals_refresh_response
 from ibkr_api.universe.screener import build_screener_proxy_response
 from ibkr_api.universe.today_targets import build_today_targets_response
 from ibkr_api.universe.targets import build_screener_targets_upsert_response, build_target_upsert_response
@@ -173,6 +174,138 @@ class UniverseRoutesTest(unittest.TestCase):
         self.assertTrue(item["duplicate"]["duplicate"])
         self.assertEqual("GOOGL", item["duplicate"]["canonical_symbol"])
         self.assertEqual(0, item["pass_days"])
+        gate_reasons = item.get("failed_gates") or item["fail_reasons"]
+        gate_buckets = {reason["bucket"] for reason in gate_reasons}
+        self.assertIn("avg_10d_volume_below_threshold", gate_buckets)
+        self.assertIn("premarket_volume_below_threshold", gate_buckets)
+        self.assertIn("atr_pct_below_threshold", gate_buckets)
+        self.assertIn("day_change_pct_below_threshold", gate_buckets)
+        self.assertEqual(100000, item["thresholds"]["avg_10d_volume_gte"])
+        self.assertEqual(5000, item["thresholds"]["premarket_volume_gte"])
+        self.assertEqual("2026-05-08", item["latest_metrics"]["market_date"])
+        self.assertEqual(80_000, item["latest_metrics"]["avg_10d_volume"])
+        self.assertEqual(1, payload["summary"]["warn"])
+
+    def test_watchlist_upsert_returns_trade_eligibility_warning_payload(self):
+        pb = _MinimalPB()
+        pb._records["ibkr_bars"] = [
+            {"symbol": "MSFT", "environment": "live", "interval": "5m", "us_time": "2026-05-08 16:00:00", "bar_time_ms": 3},
+            {"symbol": "MSFT", "environment": "live", "interval": "5m", "us_time": "2026-05-07 16:00:00", "bar_time_ms": 2},
+            {"symbol": "MSFT", "environment": "live", "interval": "5m", "us_time": "2026-05-06 16:00:00", "bar_time_ms": 1},
+        ]
+
+        def fake_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            if path == "/screener":
+                market_date = dict(params or {}).get("market_date")
+                return {
+                    "status_code": 200,
+                    "payload": {
+                        "ok": True,
+                        "items": [
+                            {
+                                "symbol": "MSFT",
+                                "has_live_bar": True,
+                                "price": 18,
+                                "avg_10d_volume": 10_000,
+                                "premarket_volume": 200,
+                                "atr_pct": 0.05,
+                                "day_change_pct": 0.1,
+                                "market_date": market_date,
+                            }
+                        ],
+                    },
+                    "target_url": f"{base_url.rstrip('/')}{path}",
+                }
+            return {
+                "status_code": 200,
+                "payload": {"ok": True, "queued": ["MSFT"]},
+                "target_url": f"{base_url.rstrip('/')}{path}",
+            }
+
+        payload, status_code = build_watchlist_upsert_response(
+            pb,
+            payload={
+                "symbol": "msft",
+                "environment": "live",
+                "source": "manual_page_add",
+                "symbol_role": "trade",
+                "exchange": "nasdaq",
+                "window_trading_days": 3,
+            },
+            normalize_environment=lambda value, default="live": str(value or default).strip().lower() or default,
+            escape_filter_string=lambda value: str(value or "").replace('"', '\\"'),
+            time_strings=lambda: {"us": "2026-05-08 09:30:00", "cn": "2026-05-08 21:30:00", "date": "2026-05-08"},
+            request_json_request=fake_request,
+            compute_base_url="http://127.0.0.1:5100",
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertEqual("MSFT", payload["symbol"])
+        self.assertEqual("warn", payload["eligibility"]["status"])
+        self.assertEqual("market_monitor", payload["eligibility"]["recommendation"])
+        self.assertIn("不建议", payload["warning"])
+        eligibility_gates = payload["eligibility"].get("failed_gates") or payload["eligibility"]["fail_reasons"]
+        self.assertIn("avg_10d_volume_below_threshold", {reason["bucket"] for reason in eligibility_gates})
+        self.assertEqual("MSFT", pb.created[0][1]["symbol"])
+
+    def test_fundamentals_refresh_requires_finnhub_api_key(self):
+        pb = _MinimalPB()
+        payload, status_code = build_fundamentals_refresh_response(
+            pb,
+            payload={"symbols": ["AMZN"]},
+            escape_filter_string=lambda value: str(value or "").replace('"', '\\"'),
+            environ={},
+        )
+        self.assertEqual(503, status_code)
+        self.assertFalse(payload["ok"])
+        self.assertEqual("finnhub_api_key_missing", payload["error"])
+        self.assertEqual([], pb.created)
+
+    def test_fundamentals_refresh_caches_redacted_finnhub_profile(self):
+        pb = _MinimalPB()
+
+        class FakeResponse:
+            status_code = 200
+            content = True
+
+            def json(self):
+                return {
+                    "ticker": "AMZN",
+                    "name": "Amazon.com Inc",
+                    "exchange": "NASDAQ",
+                    "finnhubIndustry": "Internet Retail",
+                    "currency": "USD",
+                    "marketCapitalization": 2_300_000,
+                    "shareOutstanding": 10_300,
+                    "token": "should-not-leak",
+                }
+
+        payload, status_code = build_fundamentals_refresh_response(
+            pb,
+            payload={"symbols": ["AMZN"], "include_raw": True},
+            escape_filter_string=lambda value: str(value or "").replace('"', '\\"'),
+            http_get=lambda *args, **kwargs: FakeResponse(),
+            environ={"FINNHUB_API_KEY": "test-key"},
+        )
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(1, payload["refreshed"])
+        item = payload["items"][0]
+        self.assertEqual("AMZN", item["symbol"])
+        self.assertEqual("mega_cap", item["profile"])
+        self.assertEqual("***", item["raw_profile"]["token"])
+        self.assertNotIn("test-key", str(payload))
+
+        pb._records["ibkr_fundamentals"] = [pb.created[0][1]]
+        list_payload, list_status = build_fundamentals_list_response(
+            pb,
+            payload={"symbols": ["AMZN"]},
+            escape_filter_string=lambda value: str(value or "").replace('"', '\\"'),
+        )
+        self.assertEqual(200, list_status)
+        self.assertEqual(1, list_payload["count"])
+        self.assertNotIn("raw_profile", list_payload["items"][0])
 
     def test_target_upsert_rejects_manual_non_current_market_date(self):
         pb = _MinimalPB()

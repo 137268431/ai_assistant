@@ -239,6 +239,22 @@ class BacktestScanReplayMixin:
         except Exception as exc:
             return {"usable": False, "hash": "", "reason": f"coverage_query_failed:{str(exc)[:120]}", "row_count": 0}
 
+        return self._build_daily_selection_input_fingerprint_from_coverage(
+            trade_date,
+            symbols,
+            coverage_rows,
+            request,
+            session_mode,
+        )
+
+    def _build_daily_selection_input_fingerprint_from_coverage(
+        self,
+        trade_date: str,
+        symbols: list[str],
+        coverage_rows: list[dict],
+        request: dict,
+        session_mode: str,
+    ) -> dict:
         by_symbol = {str(row.get("symbol") or "").strip().upper(): dict(row) for row in coverage_rows or []}
         missing_symbols = [symbol for symbol in symbols if symbol not in by_symbol]
         if missing_symbols:
@@ -318,6 +334,79 @@ class BacktestScanReplayMixin:
             "reason": "coverage_clean",
             "row_count": len(hash_rows),
         }
+
+    def _preload_daily_selection_input_fingerprints(self, request: dict, trading_dates: list[str]) -> tuple[dict[str, dict], dict]:
+        started_at = time.time()
+        meta = {
+            "source": "skipped",
+            "requested_days": len(trading_dates or []),
+            "fingerprint_days": 0,
+            "duration_s": 0.0,
+            "error": "",
+        }
+        requested_symbols = sorted(
+            {
+                str(symbol or "").strip().upper()
+                for symbol in list(request.get("symbols") or [])
+                if str(symbol or "").strip().upper() not in request_excluded_symbols(request)
+            }
+        )
+        dates = [str(date or "")[:10] for date in trading_dates or [] if str(date or "")[:10]]
+        if not requested_symbols or not dates:
+            meta["duration_s"] = round(time.time() - started_at, 3)
+            return {}, meta
+        db_path = str(runtime_backtest_sqlite_path() or "").strip()
+        if not db_path or not os.path.exists(db_path):
+            meta.update({"source": "unavailable", "duration_s": round(time.time() - started_at, 3), "error": "sqlite_unavailable"})
+            return {}, meta
+
+        session_mode = str(request.get("scan_session_mode") or request.get("session_mode") or "extended").strip().lower() or "extended"
+        try:
+            with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=20) as conn:
+                conn.row_factory = sqlite3.Row
+                coverage_rows = load_daily_coverage_rows(
+                    conn,
+                    symbols=requested_symbols,
+                    environment=str(request.get("source_environment") or "live"),
+                    date_from=min(dates),
+                    date_to=max(dates),
+                    interval="5m",
+                    session_mode=session_mode,
+                )
+        except Exception as exc:
+            meta.update(
+                {
+                    "source": "error",
+                    "duration_s": round(time.time() - started_at, 3),
+                    "error": f"coverage_query_failed:{str(exc)[:120]}",
+                }
+            )
+            return {}, meta
+
+        rows_by_date: dict[str, list[dict]] = {}
+        for row in coverage_rows or []:
+            market_date = str(row.get("market_date") or "")[:10]
+            if market_date:
+                rows_by_date.setdefault(market_date, []).append(dict(row))
+        fingerprints = {
+            trade_date: self._build_daily_selection_input_fingerprint_from_coverage(
+                trade_date,
+                requested_symbols,
+                rows_by_date.get(trade_date) or [],
+                request,
+                session_mode,
+            )
+            for trade_date in dates
+        }
+        meta.update(
+            {
+                "source": "sqlite",
+                "fingerprint_days": len(fingerprints),
+                "coverage_rows": len(coverage_rows or []),
+                "duration_s": round(time.time() - started_at, 3),
+            }
+        )
+        return fingerprints, meta
 
     def _build_daily_selection_bars_input_fingerprint(
         self,
@@ -452,6 +541,111 @@ class BacktestScanReplayMixin:
         except Exception:
             return None
 
+    def _load_daily_selection_cache_records(self, cache_key: str, trade_dates: list[str]) -> tuple[dict[str, dict], dict]:
+        started_at = time.time()
+        dates = []
+        seen = set()
+        for trade_date in trade_dates or []:
+            date_text = str(trade_date or "")[:10]
+            if not date_text or date_text in seen:
+                continue
+            seen.add(date_text)
+            dates.append(date_text)
+
+        meta = {
+            "source": "skipped",
+            "requested": len(dates),
+            "found": 0,
+            "duration_s": 0.0,
+            "error": "",
+            "fallback_reason": "",
+        }
+        if not cache_key or not dates:
+            meta["duration_s"] = round(time.time() - started_at, 3)
+            return {}, meta
+
+        db_path = str(runtime_backtest_sqlite_path() or "").strip()
+        sqlite_error = ""
+        if db_path and os.path.exists(db_path):
+            try:
+                records: dict[str, dict] = {}
+                with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=10) as conn:
+                    conn.row_factory = sqlite3.Row
+                    for offset in range(0, len(dates), 800):
+                        chunk = dates[offset : offset + 800]
+                        placeholders = ",".join(["?"] * len(chunk))
+                        rows = conn.execute(
+                            f"""
+                            SELECT
+                              id,
+                              cache_key,
+                              market_date,
+                              source_environment,
+                              algorithm_version,
+                              request_hash,
+                              universe_hash,
+                              input_data_hash,
+                              scan_settings_hash,
+                              strategy_hash,
+                              status,
+                              selected_count,
+                              target_rows,
+                              selection_plan,
+                              daily_summary,
+                              fingerprint_extra,
+                              error,
+                              last_built_at,
+                              created,
+                              updated
+                            FROM {BACKTEST_DAILY_SELECTION_CACHE_COLLECTION}
+                            WHERE cache_key = ?
+                              AND market_date IN ({placeholders})
+                            """,
+                            (cache_key, *chunk),
+                        ).fetchall()
+                        for row in rows or []:
+                            record = dict(row)
+                            market_date = str(record.get("market_date") or "")[:10]
+                            if market_date:
+                                records[market_date] = record
+                meta.update(
+                    {
+                        "source": "sqlite",
+                        "found": len(records),
+                        "duration_s": round(time.time() - started_at, 3),
+                    }
+                )
+                if records or isinstance(self.pb, PBClient) or not self.pb:
+                    return records, meta
+                sqlite_error = "sqlite_empty_for_non_pb_client"
+            except Exception as exc:
+                sqlite_error = str(exc)[:240]
+
+        records = {}
+        if self.pb:
+            for trade_date in dates:
+                record = self._load_daily_selection_cache_record(cache_key, trade_date)
+                if record:
+                    records[trade_date] = record
+            meta.update(
+                {
+                    "source": "pb",
+                    "found": len(records),
+                    "duration_s": round(time.time() - started_at, 3),
+                    "fallback_reason": sqlite_error,
+                }
+            )
+            return records, meta
+
+        meta.update(
+            {
+                "source": "unavailable",
+                "duration_s": round(time.time() - started_at, 3),
+                "error": sqlite_error or "sqlite_unavailable",
+            }
+        )
+        return {}, meta
+
     def _daily_selection_cache_record_is_valid(self, record: dict | None, fingerprints: dict) -> tuple[bool, str]:
         if not record:
             return False, "miss"
@@ -562,6 +756,17 @@ class BacktestScanReplayMixin:
             "written_days": 0,
             "write_error_days": 0,
             "input_unusable_days": 0,
+            "preload_source": "disabled" if not enabled else "",
+            "preload_requested_days": 0,
+            "preload_found_days": 0,
+            "preload_duration_s": 0.0,
+            "preload_error": "",
+            "preload_fallback_reason": "",
+            "input_fingerprint_preload_source": "disabled" if not enabled else "",
+            "input_fingerprint_preload_days": 0,
+            "input_fingerprint_preload_duration_s": 0.0,
+            "input_fingerprint_preload_error": "",
+            "cached_input_hash_days": 0,
             "reason_counts": {},
             "duration_s": 0.0,
         }
@@ -1195,6 +1400,42 @@ class BacktestScanReplayMixin:
         cache_fingerprint = self._build_daily_selection_cache_base_fingerprint(request, scan_settings)
         cache_summary = self._empty_daily_selection_cache_summary(request, cache_fingerprint)
         cache_write_enabled = bool(cache_summary.get("enabled")) and self._daily_selection_cache_mode(request) == "use_or_build"
+        preloaded_cache_records: dict[str, dict] = {}
+        preloaded_input_fingerprints: dict[str, dict] = {}
+        if cache_summary.get("enabled"):
+            preloaded_cache_records, preload_meta = self._load_daily_selection_cache_records(
+                cache_fingerprint["cache_key"],
+                trading_dates,
+            )
+            should_preload_input_fingerprints = bool(request.get("daily_selection_cache_force_rebuild")) or bool(
+                request.get("daily_selection_cache_revalidate_input_hash")
+            ) or len(preloaded_cache_records) < len(set(trading_dates))
+            if should_preload_input_fingerprints:
+                preloaded_input_fingerprints, input_preload_meta = self._preload_daily_selection_input_fingerprints(
+                    request,
+                    trading_dates,
+                )
+            else:
+                input_preload_meta = {
+                    "source": "cached_record",
+                    "fingerprint_days": 0,
+                    "duration_s": 0.0,
+                    "error": "",
+                }
+            cache_summary.update(
+                {
+                    "preload_source": str(preload_meta.get("source") or ""),
+                    "preload_requested_days": int(preload_meta.get("requested", 0) or 0),
+                    "preload_found_days": int(preload_meta.get("found", 0) or 0),
+                    "preload_duration_s": float(preload_meta.get("duration_s", 0.0) or 0.0),
+                    "preload_error": str(preload_meta.get("error") or ""),
+                    "preload_fallback_reason": str(preload_meta.get("fallback_reason") or ""),
+                    "input_fingerprint_preload_source": str(input_preload_meta.get("source") or ""),
+                    "input_fingerprint_preload_days": int(input_preload_meta.get("fingerprint_days", 0) or 0),
+                    "input_fingerprint_preload_duration_s": float(input_preload_meta.get("duration_s", 0.0) or 0.0),
+                    "input_fingerprint_preload_error": str(input_preload_meta.get("error") or ""),
+                }
+            )
 
         for day_index, trade_date in enumerate(trading_dates, start=1):
             if self._cancel_event.is_set():
@@ -1213,7 +1454,28 @@ class BacktestScanReplayMixin:
                 universe_rows = self._load_scan_universe(request, as_of_date="")
                 universe_snapshot_fallback = bool(universe_rows)
             universe_hash = self._build_daily_selection_universe_hash(universe_rows)
-            input_fingerprint = self._build_daily_selection_input_fingerprint(trade_date, universe_rows, request) if cache_summary.get("enabled") else {"usable": False, "hash": "", "reason": "cache_disabled"}
+            cache_record = preloaded_cache_records.get(trade_date) if cache_summary.get("enabled") else None
+            if cache_summary.get("enabled"):
+                if (
+                    cache_record
+                    and not bool(request.get("daily_selection_cache_force_rebuild"))
+                    and not bool(request.get("daily_selection_cache_revalidate_input_hash"))
+                ):
+                    input_fingerprint = {
+                        "usable": True,
+                        "hash": str(cache_record.get("input_data_hash") or ""),
+                        "reason": "cached_input_hash",
+                        "source": "daily_selection_cache_record",
+                    }
+                    cache_summary["cached_input_hash_days"] = int(cache_summary.get("cached_input_hash_days", 0) or 0) + 1
+                else:
+                    input_fingerprint = preloaded_input_fingerprints.get(trade_date) or self._build_daily_selection_input_fingerprint(
+                        trade_date,
+                        universe_rows,
+                        request,
+                    )
+            else:
+                input_fingerprint = {"usable": False, "hash": "", "reason": "cache_disabled"}
             day_cache_fingerprint = {
                 **cache_fingerprint,
                 "universe_hash": universe_hash,
@@ -1227,7 +1489,6 @@ class BacktestScanReplayMixin:
                     cache_summary["miss_days"] = int(cache_summary.get("miss_days", 0) or 0) + 1
                     self._increment_daily_selection_cache_reason(cache_summary, str(input_fingerprint.get("reason") or "input_unusable"))
                 else:
-                    cache_record = self._load_daily_selection_cache_record(cache_fingerprint["cache_key"], trade_date)
                     cache_valid, cache_reason = self._daily_selection_cache_record_is_valid(cache_record, day_cache_fingerprint)
                     if cache_valid and cache_record:
                         cached_rows, cached_symbols, cached_summary = self._prepare_cached_daily_selection(

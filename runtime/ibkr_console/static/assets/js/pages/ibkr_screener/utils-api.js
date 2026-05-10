@@ -132,7 +132,333 @@
       return `${formatNumber(num / 60, 1)} h`;
     }
 
+    function isPlainObject(value) {
+      return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+    }
+
+    function parseMaybeObject(value) {
+      if (isPlainObject(value)) return value;
+      if (typeof value !== 'string') return {};
+      const text = value.trim();
+      if (!text || text[0] !== '{') return {};
+      try {
+        const parsed = JSON.parse(text);
+        return isPlainObject(parsed) ? parsed : {};
+      } catch (_) {
+        return {};
+      }
+    }
+
+    function isDisplayValue(value) {
+      if (value === undefined || value === null) return false;
+      if (typeof value === 'string' && !value.trim()) return false;
+      if (Array.isArray(value) && value.length === 0) return false;
+      if (isPlainObject(value) && Object.keys(value).length === 0) return false;
+      return true;
+    }
+
+    function firstDisplayValue(values) {
+      for (const value of values || []) {
+        if (isDisplayValue(value)) return value;
+      }
+      return undefined;
+    }
+
+    function normalizeTruth(value) {
+      if (value === true || value === 1) return true;
+      if (value === false || value === 0) return false;
+      const text = String(value ?? '').trim().toLowerCase();
+      if (['true', 'yes', 'y', '1', 'on', 'needed', 'needs_backfill', 'backfill_needed', 'stale', 'repair'].includes(text)) return true;
+      if (['false', 'no', 'n', '0', 'off', 'ok', 'ready', 'clean'].includes(text)) return false;
+      return Boolean(text);
+    }
+
+    function getRowExtra(row) {
+      return parseMaybeObject(row?.extra);
+    }
+
+    function getRowScreenerSnapshot(row) {
+      const extra = getRowExtra(row);
+      return parseMaybeObject(extra.screener_snapshot);
+    }
+
+    function getRowAdmissionPayload(row) {
+      const extra = getRowExtra(row);
+      const direct = parseMaybeObject(row?.admission);
+      return isDisplayValue(direct) ? direct : parseMaybeObject(extra.intraday_window_admission);
+    }
+
+    function getSymbolProfile(row) {
+      const extra = getRowExtra(row);
+      const snapshot = getRowScreenerSnapshot(row);
+      const admission = parseMaybeObject(extra.intraday_window_admission);
+      const eligibility = parseMaybeObject(row?.eligibility);
+      return firstDisplayValue([
+        row?.symbol_profile,
+        row?.fundamentals_profile,
+        row?.fundamentals,
+        row?.profile,
+        eligibility.symbol_profile,
+        eligibility.fundamentals_profile,
+        snapshot.symbol_profile,
+        snapshot.fundamentals_profile,
+        snapshot.fundamentals,
+        extra.symbol_profile,
+        extra.fundamentals_profile,
+        extra.fundamentals,
+        admission.symbol_profile,
+      ]);
+    }
+
+    function formatCompactCount(value, prefix = '') {
+      const num = Number(value);
+      if (!Number.isFinite(num)) return escapeHtml(value ?? '--');
+      const abs = Math.abs(num);
+      if (abs >= 1000000000000) return `${prefix}${formatNumber(num / 1000000000000, 2)}T`;
+      if (abs >= 1000000000) return `${prefix}${formatNumber(num / 1000000000, 2)}B`;
+      if (abs >= 1000000) return `${prefix}${formatNumber(num / 1000000, 2)}M`;
+      if (abs >= 1000) return `${prefix}${formatNumber(num / 1000, 1)}K`;
+      return `${prefix}${formatNumber(num, 0)}`;
+    }
+
+    function formatProfileValue(key, value) {
+      const normalizedKey = String(key || '').trim().toLowerCase();
+      if (value === undefined || value === null || value === '') return '--';
+      if (typeof value === 'boolean') return value ? 'yes' : 'no';
+      if (normalizedKey.includes('market_cap')) return formatCompactCount(value, '$');
+      if (normalizedKey.includes('float') || normalizedKey.includes('volume') || normalizedKey.includes('shares')) {
+        return formatCompactCount(value);
+      }
+      if (normalizedKey === 'beta') {
+        const beta = Number(value);
+        return Number.isFinite(beta) ? formatNumber(beta, 2) : String(value);
+      }
+      if (typeof value === 'number') return formatNumber(value, Number.isInteger(value) ? 0 : 2);
+      return String(value);
+    }
+
+    function renderSymbolProfileSummary(row, { maxItems = 5, emptyText = '' } = {}) {
+      const profile = getSymbolProfile(row);
+      if (!isDisplayValue(profile)) return emptyText ? `<span class="muted">${escapeHtml(emptyText)}</span>` : '';
+      if (typeof profile === 'string') {
+        return `<div class="reason-wrap"><span class="reason-pill">profile: ${escapeHtml(profile)}</span></div>`;
+      }
+      const parsed = parseMaybeObject(profile);
+      if (!isDisplayValue(parsed)) return emptyText ? `<span class="muted">${escapeHtml(emptyText)}</span>` : '';
+      const title = firstDisplayValue([
+        parsed.profile,
+        parsed.symbol_profile,
+        parsed.category,
+        parsed.type,
+        parsed.segment,
+        parsed.name,
+      ]);
+      const profileKeys = [
+        ['sector', 'sector'],
+        ['industry', 'industry'],
+        ['asset_class', 'asset'],
+        ['market_cap', 'cap'],
+        ['market_cap_usd', 'cap'],
+        ['float_shares', 'float'],
+        ['shares_float', 'float'],
+        ['avg_volume', 'avg vol'],
+        ['avg_10d_volume', '10d vol'],
+        ['country', 'country'],
+        ['beta', 'beta'],
+      ];
+      const chips = [];
+      if (title) chips.push(`profile: ${title}`);
+      profileKeys.forEach(([key, label]) => {
+        if (chips.length >= maxItems + (title ? 1 : 0)) return;
+        const value = parsed[key];
+        if (!isDisplayValue(value)) return;
+        chips.push(`${label}: ${formatProfileValue(key, value)}`);
+      });
+      if (!chips.length) {
+        Object.entries(parsed).slice(0, maxItems).forEach(([key, value]) => {
+          if (isDisplayValue(value) && !isPlainObject(value) && !Array.isArray(value)) {
+            chips.push(`${key}: ${formatProfileValue(key, value)}`);
+          }
+        });
+      }
+      return chips.length
+        ? `<div class="reason-wrap">${chips.slice(0, maxItems).map((item) => `<span class="reason-pill">${escapeHtml(item)}</span>`).join('')}</div>`
+        : (emptyText ? `<span class="muted">${escapeHtml(emptyText)}</span>` : '');
+    }
+
+    function getNeedsBackfillState(row) {
+      const extra = getRowExtra(row);
+      const snapshot = getRowScreenerSnapshot(row);
+      const quality = parseMaybeObject(row?.data_quality);
+      const coverage = parseMaybeObject(row?.coverage);
+      const backfill = parseMaybeObject(row?.backfill);
+      const value = firstDisplayValue([
+        row?.needs_backfill,
+        row?.backfill_needed,
+        quality.needs_backfill,
+        quality.needs_repair,
+        quality.backfill_needed,
+        coverage.needs_backfill,
+        backfill.needs_backfill,
+        snapshot.needs_backfill,
+        extra.needs_backfill,
+      ]);
+      const detail = firstDisplayValue([
+        row?.backfill_reason,
+        quality.reason,
+        quality.status,
+        coverage.reason,
+        backfill.reason,
+        snapshot.backfill_reason,
+        extra.backfill_reason,
+      ]);
+      return {
+        explicit: value !== undefined,
+        needsBackfill: value !== undefined ? normalizeTruth(value) : false,
+        detail: detail ? String(detail) : '',
+      };
+    }
+
+    function renderNeedsBackfillChip(row) {
+      const state = getNeedsBackfillState(row);
+      if (!state.explicit) return '';
+      const label = state.needsBackfill ? 'needs_backfill' : 'backfill ok';
+      return statusChip(label, state.needsBackfill ? 'stale' : 'active');
+    }
+
+    function getAdmissionScore(row) {
+      const extra = getRowExtra(row);
+      const snapshot = getRowScreenerSnapshot(row);
+      const admission = parseMaybeObject(extra.intraday_window_admission);
+      const eligibility = parseMaybeObject(row?.eligibility);
+      const value = firstDisplayValue([
+        row?.admission_score,
+        parseMaybeObject(row?.admission).score,
+        parseMaybeObject(row?.admission).admission_score,
+        eligibility.admission_score,
+        eligibility.score,
+        admission.admission_score,
+        admission.score,
+        snapshot.admission_score,
+        extra.admission_score,
+      ]);
+      const score = Number(value);
+      return Number.isFinite(score) ? score : null;
+    }
+
+    function renderAdmissionScoreChip(row) {
+      const score = getAdmissionScore(row);
+      if (score === null) return '';
+      const tone = score >= 70 ? 'active' : (score >= 45 ? 'candidate' : 'stale');
+      return statusChip(`admission ${formatNumber(score, 1)}`, tone);
+    }
+
+    function formatGateLabel(item) {
+      if (!isPlainObject(item)) return String(item || '').trim();
+      const label = firstDisplayValue([
+        item.label,
+        item.note,
+        item.reason,
+        item.message,
+        item.code,
+        item.gate,
+        item.bucket,
+        item.metric,
+      ]) || 'gate';
+      const parts = [String(label)];
+      if (isDisplayValue(item.count)) parts.push(`${item.count}d`);
+      if (isDisplayValue(item.actual) && isDisplayValue(item.threshold)) {
+        parts.push(`${formatProfileValue(item.metric || '', item.actual)}/${formatProfileValue(item.metric || '', item.threshold)}`);
+      }
+      return parts.join(' ');
+    }
+
+    function normalizeGateList(value) {
+      if (!isDisplayValue(value)) return [];
+      if (Array.isArray(value)) return value.map(formatGateLabel).filter(Boolean);
+      if (isPlainObject(value)) {
+        const nested = firstDisplayValue([
+          value.failed_gates,
+          value.gates,
+          value.fail_reasons,
+          value.reasons,
+        ]);
+        if (nested !== undefined) return normalizeGateList(nested);
+        return [formatGateLabel(value)].filter(Boolean);
+      }
+      const text = String(value || '').trim();
+      if (!text) return [];
+      return text.split(/[;,，；]/).map((item) => item.trim()).filter(Boolean);
+    }
+
+    function getFailedGates(row) {
+      const extra = getRowExtra(row);
+      const snapshot = getRowScreenerSnapshot(row);
+      const admission = parseMaybeObject(extra.intraday_window_admission);
+      const eligibility = parseMaybeObject(row?.eligibility);
+      const values = [
+        row?.failed_gates,
+        row?.failedGates,
+        row?.failed_gate,
+        row?.gate_failures,
+        eligibility.failed_gates,
+        eligibility.fail_reasons,
+        admission.failed_gates,
+        admission.rejected_gates,
+        snapshot.failed_gates,
+        snapshot.fail_reasons,
+        extra.failed_gates,
+      ];
+      const seen = new Set();
+      return values.flatMap(normalizeGateList).filter((item) => {
+        const key = String(item || '').trim();
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    }
+
+    function renderFailedGatesPills(row, emptyText = '') {
+      const gates = getFailedGates(row);
+      if (!gates.length) return emptyText ? `<span class="muted">${escapeHtml(emptyText)}</span>` : '';
+      return `<div class="reason-wrap">${gates.slice(0, 6).map((item) => `<span class="reason-pill">${escapeHtml(item)}</span>`).join('')}</div>`;
+    }
+
+    function renderAdmissionControlRow(row) {
+      const parts = [
+        renderAdmissionScoreChip(row),
+        renderNeedsBackfillChip(row),
+      ].filter(Boolean);
+      return parts.length ? `<div class="pill-row">${parts.join('')}</div>` : '';
+    }
+
+    function renderSymbolProfileBlock(row, label = 'Symbol profile') {
+      const profileHtml = renderSymbolProfileSummary(row);
+      if (!profileHtml) return '';
+      return `
+        <div class="reason-block" style="margin-top:10px;">
+          <div class="reason-label">${escapeHtml(label)}</div>
+          ${profileHtml}
+        </div>
+      `;
+    }
+
+    function renderAdmissionDiagnosticsBlock(row, label = 'Admission / Data Gates') {
+      const controls = renderAdmissionControlRow(row);
+      const failedGates = renderFailedGatesPills(row);
+      if (!controls && !failedGates) return '';
+      return `
+        <div class="reason-block" style="margin-top:10px;">
+          <div class="reason-label">${escapeHtml(label)}</div>
+          ${controls || ''}
+          ${failedGates || '<span class="muted">failed_gates: none</span>'}
+        </div>
+      `;
+    }
+
     function dataQualityChip(row) {
+      const backfillChip = renderNeedsBackfillChip(row);
+      if (backfillChip) return backfillChip;
       const quality = row?.data_quality && typeof row.data_quality === 'object' ? row.data_quality : {};
       const status = String(quality.status || '').trim().toLowerCase();
       if (!status) return '';
@@ -149,4 +475,3 @@
         day: '2-digit'
       }).format(new Date());
     }
-

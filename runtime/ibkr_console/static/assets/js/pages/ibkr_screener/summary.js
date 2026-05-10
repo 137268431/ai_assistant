@@ -111,14 +111,18 @@
         .filter((item) => normalizeWatchlistRole(item.symbol_role) === activeRole)
         .filter((item) => {
           if (!keyword) return true;
+          const displayItem = typeof withEligibilityDisplayFields === 'function' ? withEligibilityDisplayFields(item) : item;
           return [
-            item.symbol,
-            item.exchange,
-            item.industry,
-            item.note,
-            formatWatchlistRole(item.symbol_role),
-            formatRecordEnvironment(item.environment),
-            formatWatchlistMember(item),
+            displayItem.symbol,
+            displayItem.exchange,
+            displayItem.industry,
+            displayItem.note,
+            formatWatchlistRole(displayItem.symbol_role),
+            formatRecordEnvironment(displayItem.environment),
+            formatWatchlistMember(displayItem),
+            renderSymbolProfileSummary(displayItem),
+            getFailedGates(displayItem).join(' '),
+            getAdmissionScore(displayItem),
           ].some((value) => String(value || '').toUpperCase().includes(keyword));
         })
         .sort((left, right) => {
@@ -332,4 +336,3 @@
       setHeroMetaLine('selectionInfo');
       renderScreenerSummary();
     }
-

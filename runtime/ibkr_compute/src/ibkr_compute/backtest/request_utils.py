@@ -367,6 +367,7 @@ def normalize_request(payload: dict) -> dict:
         daily_selection_cache_mode = "use_or_build"
     daily_selection_cache_force_rebuild = normalize_bool(payload.get("daily_selection_cache_force_rebuild"), False)
     daily_selection_cache_trust_existing = normalize_bool(payload.get("daily_selection_cache_trust_existing"), False)
+    daily_selection_cache_revalidate_input_hash = normalize_bool(payload.get("daily_selection_cache_revalidate_input_hash"), False)
     daily_scan_min_avg_10d_volume = normalize_positive_float(
         payload.get("daily_scan_min_avg_10d_volume"),
         0.0,
@@ -546,6 +547,7 @@ def normalize_request(payload: dict) -> dict:
         "daily_selection_cache_mode": daily_selection_cache_mode,
         "daily_selection_cache_force_rebuild": daily_selection_cache_force_rebuild,
         "daily_selection_cache_trust_existing": daily_selection_cache_trust_existing,
+        "daily_selection_cache_revalidate_input_hash": daily_selection_cache_revalidate_input_hash,
         "daily_scan_min_avg_10d_volume": daily_scan_min_avg_10d_volume,
         "daily_scan_min_premarket_volume": daily_scan_min_premarket_volume,
         "daily_scan_min_atr_pct": daily_scan_min_atr_pct,
@@ -591,6 +593,7 @@ def normalize_request(payload: dict) -> dict:
             "daily_selection_cache_mode": daily_selection_cache_mode,
             "daily_selection_cache_force_rebuild": daily_selection_cache_force_rebuild,
             "daily_selection_cache_trust_existing": daily_selection_cache_trust_existing,
+            "daily_selection_cache_revalidate_input_hash": daily_selection_cache_revalidate_input_hash,
             "daily_scan_min_avg_10d_volume": daily_scan_min_avg_10d_volume,
             "daily_scan_min_premarket_volume": daily_scan_min_premarket_volume,
             "daily_scan_min_atr_pct": daily_scan_min_atr_pct,

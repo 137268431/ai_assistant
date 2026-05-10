@@ -1,8 +1,13 @@
 import copy
+import json
+import sqlite3
 import sys
+import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "src"
 if str(SRC_ROOT) not in sys.path:
@@ -468,6 +473,12 @@ class BacktestPortfolioStreamTests(unittest.TestCase):
         self.assertEqual(self.service._progress["progress"], 70)
         self.assertEqual(self.service._progress["stage"], "loading")
 
+        self.service._progress["status"] = "cancelling"
+        self.service._progress["progress"] = 80
+        self.service._set_progress("running", "preflight_backfill", "late worker update", 13)
+        self.assertEqual(self.service._progress["status"], "cancelling")
+        self.assertEqual(self.service._progress["progress"], 80)
+
         self.service._active_run_id = "run_2"
         self.service._set_progress("running", "bootstrap", "new run", 5)
         self.assertEqual(self.service._progress["progress"], 5)
@@ -740,6 +751,57 @@ class BacktestPortfolioStreamTests(unittest.TestCase):
 
         self.assertTrue(self.service._portfolio_bar_in_order_window(before_cutoff, request))
         self.assertFalse(self.service._portfolio_bar_in_order_window(after_cutoff, request))
+
+    def test_backtest_capture_persists_signals_directly_to_sqlite(self):
+        self.service.pb = SimpleNamespace(
+            create_records=lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("sqlite capture should avoid PocketBase batch writes")
+            )
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = str(Path(temp_dir) / "data.db")
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE ibkr_backtest_signals (
+                      id TEXT PRIMARY KEY,
+                      run_id TEXT,
+                      symbol TEXT,
+                      signal_id TEXT,
+                      bar_time_ms INTEGER,
+                      extra TEXT,
+                      created TEXT,
+                      updated TEXT
+                    )
+                    """
+                )
+                conn.commit()
+
+            with mock.patch("ibkr_compute.backtest.runtime_service.BACKTEST_SQLITE_PATH", db_path):
+                summary = self.service._persist_backtest_signals(
+                    "run_sqlite",
+                    [
+                        {
+                            "symbol": "NVDA",
+                            "signal_id": "sig_1",
+                            "bar_time_ms": 123,
+                            "extra": {"source": "unit"},
+                        }
+                    ],
+                )
+
+            with sqlite3.connect(db_path) as conn:
+                row = conn.execute(
+                    "SELECT run_id, symbol, signal_id, extra FROM ibkr_backtest_signals"
+                ).fetchone()
+
+        self.assertEqual(summary["status"], "ok")
+        self.assertEqual(summary["storage_source"], "sqlite")
+        self.assertEqual(summary["saved_count"], 1)
+        self.assertEqual(row[0], "run_sqlite")
+        self.assertEqual(row[1], "NVDA")
+        self.assertEqual(row[2], "sig_1")
+        self.assertEqual(json.loads(row[3])["backtest_run_id"], "run_sqlite")
 
 
 if __name__ == "__main__":

@@ -154,6 +154,7 @@
               ${statusChip(formatCurrentStateLabel(signalStateKey), signalStateKey)}
               ${row.has_live_bar ? statusChip(formatFreshness(row.freshness_min), Number(row.freshness_min) <= 30 ? 'active' : 'candidate') : statusChip('无当日bar', 'stale')}
               ${dataQualityChip(row)}
+              ${renderAdmissionScoreChip(row)}
             </div>
 
             <div class="mobile-data-grid">
@@ -162,10 +163,12 @@
             </div>
 
             ${buildMobileSection('筛选理由', escapeHtml(row.scan_reason || row.note || '--'))}
+            ${renderSymbolProfileSummary(row) ? buildMobileSection('Symbol profile', renderSymbolProfileSummary(row)) : ''}
             ${buildMobileSection('当前阶段', `<strong>${escapeHtml(row.workflow_label || formatCurrentStateLabel(row.workflow_stage || row.attention_state || 'watch'))}</strong> · ${escapeHtml(row.workflow_summary || '--')}`)}
             ${buildMobileSection('阶段阻塞', buildFlagPills(row.workflow_blockers, '当前无明显阻塞'))}
             ${buildMobileSection('下一步', escapeHtml(row.workflow_next_action || '--'))}
             ${buildMobileSection('可操作依据', buildReasonPills(row))}
+            ${(renderAdmissionControlRow(row) || getFailedGates(row).length) ? buildMobileSection('Admission / Gates', `${renderAdmissionControlRow(row)}${renderFailedGatesPills(row, 'failed_gates: none')}`) : ''}
 
             <div class="mobile-data-actions">
               <a class="mini-link" href="${chartUrl}">Chart</a>
@@ -531,6 +534,8 @@
               ${statusChip(formatFreshness(coalesceValue(row, ['freshness_min', 'freshness_minutes'], NaN)), Number(coalesceValue(row, ['freshness_min', 'freshness_minutes'], NaN)) <= 30 ? 'active' : 'candidate')}
               ${statusChip(`progress ${formatWindowComponentProgress(row)}`, 'config')}
               ${statusChip(`left ${formatWindowProgressCount(coalesceValue(row, ['bars_remaining', 'remaining_bars'], NaN))}`, Number(coalesceValue(row, ['bars_remaining', 'remaining_bars'], NaN)) <= 2 ? 'near_expiry' : 'neutral')}
+              ${renderAdmissionScoreChip(row)}
+              ${renderNeedsBackfillChip(row)}
             </div>
 
             <div class="mobile-data-grid">
@@ -542,6 +547,7 @@
             ${buildMobileSection('缺失组件', buildWindowComponentGroupColumn(row, 'missing', missing, '无缺失'))}
             ${buildMobileSection('候选信号', escapeHtml(getWindowCandidateLabel(row)))}
             ${buildMobileSection('过滤原因', buildWindowListPills(filterReasons, '未触发过滤'))}
+            ${getFailedGates(row).length ? buildMobileSection('Failed gates', renderFailedGatesPills(row)) : ''}
 
             <div class="mobile-data-actions">
               <a class="mini-link" href="${traceUrl}">Trace</a>
@@ -605,6 +611,7 @@
               <a class="symbol-link" href="${buildChartUrl(row.symbol || '')}">${escapeHtml(row.symbol || '--')}</a><br>
               ${statusChip(getWindowProgressStatusLabel(status), status)}<br>
               <span class="muted">target ${escapeHtml(formatNumber(coalesceValue(row, ['target_score', 'score'], 0), 1))}</span>
+              ${renderAdmissionControlRow(row)}
             </td>
             <td><span class="mono">${escapeHtml(latestBar || '--')}</span></td>
             <td>${statusChip(formatFreshness(freshness), Number(freshness) <= 30 ? 'active' : 'candidate')}</td>
@@ -617,7 +624,10 @@
             <td>${buildWindowComponentGroupColumn(row, 'present', collected, '暂无')}</td>
             <td>${buildWindowComponentGroupColumn(row, 'missing', missing, '无缺失')}</td>
             <td>${escapeHtml(getWindowCandidateLabel(row))}</td>
-            <td>${buildWindowListPills(filterReasons, '未触发过滤')}</td>
+            <td>
+              ${buildWindowListPills(filterReasons, '未触发过滤')}
+              ${getFailedGates(row).length ? `<div style="margin-top:8px;">${renderFailedGatesPills(row)}</div>` : ''}
+            </td>
             <td>
               <div class="row-actions">
                 <a class="mini-link" href="${traceUrl}">Trace</a>
@@ -662,6 +672,7 @@
               ${statusChip(row.is_operable ? '可操作' : '人工复核', row.is_operable ? 'active' : 'neutral')}
               ${row.has_live_bar ? statusChip(formatFreshness(row.freshness_min), Number(row.freshness_min) <= 30 ? 'active' : 'candidate') : statusChip('无当日bar', 'stale')}
               ${dataQualityChip(row)}
+              ${renderAdmissionScoreChip(row)}
             </div>
 
             <div class="mobile-data-grid">
@@ -670,7 +681,9 @@
             </div>
 
             ${buildMobileSection('筛选理由', escapeHtml(row.scan_reason || row.note || '--'))}
+            ${renderSymbolProfileSummary(row) ? buildMobileSection('Symbol profile', renderSymbolProfileSummary(row)) : ''}
             ${buildMobileSection('可操作依据', buildReasonPills(row))}
+            ${(renderAdmissionControlRow(row) || getFailedGates(row).length) ? buildMobileSection('Admission / Gates', `${renderAdmissionControlRow(row)}${renderFailedGatesPills(row, 'failed_gates: none')}`) : ''}
 
             <div class="mobile-data-actions">
               <a class="mini-link" href="${chartUrl}">Chart</a>
@@ -738,6 +751,8 @@
               <div class="mobile-chip-row">
                 <span class="env-badge ${resolveRecordEnvClass(item.environment)}">${escapeHtml(formatRecordEnvironment(item.environment))}</span>
                 ${configItem ? statusChip('CONFIG', 'config') : statusChip(formatWatchlistRole(item.symbol_role), normalizeWatchlistRole(item.symbol_role))}
+                ${renderAdmissionScoreChip(item)}
+                ${renderNeedsBackfillChip(item)}
               </div>
             </div>
 
@@ -747,6 +762,8 @@
             </div>
 
             ${buildMobileSection('备注', escapeHtml(item.note || '--'))}
+            ${renderSymbolProfileSummary(item) ? buildMobileSection('Symbol profile', renderSymbolProfileSummary(item)) : ''}
+            ${(renderAdmissionControlRow(item) || getFailedGates(item).length) ? buildMobileSection('Admission / Gates', `${renderAdmissionControlRow(item)}${renderFailedGatesPills(item, 'failed_gates: none')}`) : ''}
 
             <div class="mobile-data-actions">
               <a class="mini-link" href="${buildChartUrl(item.symbol || '')}">Chart</a>
@@ -996,6 +1013,7 @@
               <a class="symbol-link" href="${chartUrl}">${escapeHtml(row.symbol || '--')}</a><br>
               <span class="muted mono">${escapeHtml(row.latest_us_time || '--')}</span><br>
               <span class="muted">${escapeHtml(row.exchange || '--')} / ${escapeHtml(row.industry || '--')}</span>
+              ${renderSymbolProfileSummary(row) ? `<div style="margin-top:8px;">${renderSymbolProfileSummary(row)}</div>` : ''}
             </td>
             <td>
               <strong>${escapeHtml(formatPrice(row.display_price ?? row.price))}</strong><br>
@@ -1006,6 +1024,7 @@
               ${statusChip(row.target_status || '--', row.target_status || '')}<br>
               ${statusChip(row.direction_bias || 'neutral', row.direction_bias || 'neutral')}<br>
               <span class="muted">target ${escapeHtml(formatNumber(row.target_score || 0, 1))} · tradability ${escapeHtml(formatNumber(row.tradability_score || 0, 0))}</span>
+              ${renderAdmissionControlRow(row)}
             </td>
             <td>
               ${renderTechnicalStateWithTip(row)}<br>
@@ -1038,6 +1057,7 @@
                 <div class="reason-label">可操作依据</div>
                 ${buildReasonPills(row)}
               </div>
+              ${renderAdmissionDiagnosticsBlock(row)}
               <div class="row-actions" style="margin-top:12px;">
                 <a class="mini-link" href="${chartUrl}">Chart</a>
                 <a class="mini-link" href="${indicatorUrl}">指标</a>
@@ -1146,4 +1166,3 @@
         return windowProgressPayload;
       }
     }
-

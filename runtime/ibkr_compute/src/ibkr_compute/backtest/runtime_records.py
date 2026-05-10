@@ -671,13 +671,14 @@ class BacktestRuntimeRecordsMixin:
         with self._lock:
             progress_value = max(0, min(100, int(progress)))
             previous = dict(self._progress or {})
-            if (
-                status == "running"
-                and str(previous.get("run_id") or "") == str(self._active_run_id or "")
+            same_active = (
+                str(previous.get("run_id") or "") == str(self._active_run_id or "")
                 and str(previous.get("batch_id") or "") == str(self._active_batch_id or "")
-                and str(previous.get("status") or "") in {"queued", "running"}
-            ):
+            )
+            if same_active and status in {"running", "cancelling"} and str(previous.get("status") or "") in {"queued", "running", "cancelling"}:
                 progress_value = max(progress_value, int(previous.get("progress", 0) or 0))
+            if same_active and str(previous.get("status") or "") == "cancelling" and status == "running":
+                status = "cancelling"
             self._progress = {
                 "status": status,
                 "run_id": self._active_run_id,
@@ -738,6 +739,7 @@ class BacktestRuntimeRecordsMixin:
             "daily_selection_cache_mode": str(request.get("daily_selection_cache_mode") or "use_or_build"),
             "daily_selection_cache_force_rebuild": bool(request.get("daily_selection_cache_force_rebuild", False)),
             "daily_selection_cache_trust_existing": bool(request.get("daily_selection_cache_trust_existing", False)),
+            "daily_selection_cache_revalidate_input_hash": bool(request.get("daily_selection_cache_revalidate_input_hash", False)),
             "daily_scan_min_avg_10d_volume": float(request.get("daily_scan_min_avg_10d_volume", 0) or 0),
             "daily_scan_min_premarket_volume": float(request.get("daily_scan_min_premarket_volume", 0) or 0),
             "daily_scan_min_atr_pct": float(request.get("daily_scan_min_atr_pct", 0) or 0),

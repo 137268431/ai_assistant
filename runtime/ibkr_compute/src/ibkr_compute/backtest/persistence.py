@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .runtime_support import *
+from ibkr_compute.market.pocketbase_sqlite import pb_json_dumps, pb_now_text, pb_record_id
 
 
 class BacktestPersistenceMixin:
@@ -34,6 +35,78 @@ class BacktestPersistenceMixin:
         payload["extra"] = extra
         return payload
 
+    def _persist_rows_to_sqlite(
+        self,
+        collection: str,
+        payloads: list[dict],
+        summary: dict,
+        error_fields: tuple[str, ...],
+    ) -> bool:
+        if not payloads:
+            summary["status"] = "ok"
+            summary["storage_source"] = "sqlite"
+            return True
+        table = str(collection or "").strip()
+        if not table or not table.replace("_", "").isalnum():
+            return False
+        db_path = str(runtime_backtest_sqlite_path() or "").strip()
+        if not db_path or not os.path.exists(db_path):
+            return False
+
+        try:
+            with sqlite3.connect(db_path, timeout=30) as conn:
+                conn.row_factory = sqlite3.Row
+                table_rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+                available_columns = [str(row["name"] or "") for row in table_rows if str(row["name"] or "")]
+                if not available_columns:
+                    return False
+                columns = [
+                    column
+                    for column in available_columns
+                    if column in {"id", "created", "updated"}
+                    or any(column in payload and payload.get(column) is not None for payload in payloads)
+                ]
+                if not columns:
+                    return False
+                now_text = pb_now_text()
+                placeholders = ",".join(["?"] * len(columns))
+                column_sql = ",".join(columns)
+                values = []
+                for payload in payloads:
+                    if self._cancel_event.is_set():
+                        raise BacktestCancelled()
+                    row_values = []
+                    for column in columns:
+                        if column == "id":
+                            value = str(payload.get("id") or pb_record_id())
+                        elif column == "created":
+                            value = str(payload.get("created") or now_text)
+                        elif column == "updated":
+                            value = str(payload.get("updated") or now_text)
+                        else:
+                            value = payload.get(column)
+                        if isinstance(value, (dict, list)):
+                            value = pb_json_dumps(value)
+                        row_values.append(value)
+                    values.append(tuple(row_values))
+                conn.executemany(f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders})", values)
+                conn.commit()
+            summary["saved_count"] = len(payloads)
+            summary["status"] = "ok"
+            summary["storage_source"] = "sqlite"
+            return True
+        except BacktestCancelled:
+            raise
+        except Exception as exc:
+            summary["storage_source"] = "sqlite_error"
+            summary["sqlite_error"] = str(exc)[:300]
+            summary["status"] = "pending_pb_fallback"
+            return False
+
+    def _sqlite_persist_error_should_skip_pb_fallback(self, summary: dict) -> bool:
+        error_text = str(summary.get("sqlite_error") or "").lower()
+        return any(token in error_text for token in ("database is locked", "database or disk is full"))
+
     def _persist_backtest_collection_rows(
         self,
         collection: str,
@@ -54,6 +127,23 @@ class BacktestPersistenceMixin:
             if self._cancel_event.is_set():
                 raise BacktestCancelled()
             payloads.append(self._prepare_backtest_capture_payload(run_id, row))
+
+        if self._persist_rows_to_sqlite(collection, payloads, summary, error_fields):
+            return summary
+        if self._sqlite_persist_error_should_skip_pb_fallback(summary):
+            summary["status"] = "skipped_sqlite_error"
+            summary["error_count"] = len(payloads)
+            summary["errors"] = [
+                {
+                    **{field: payload.get(field, "") for field in error_fields},
+                    "error": str(summary.get("sqlite_error") or "")[:300],
+                }
+                for payload in payloads[:TV_COMPARE_SAMPLE_LIMIT]
+            ]
+            return summary
+        summary["status"] = "ok"
+        summary["error_count"] = 0
+        summary["errors"] = []
 
         bulk_create = getattr(self.pb, "create_records", None)
         chunk_size = 50
@@ -689,6 +779,17 @@ class BacktestPersistenceMixin:
                     "extra": trade.get("extra", {}),
                 }
             )
+        trade_summary = self._empty_capture_summary(TRADE_COLLECTION, run_id)
+        trade_summary["attempted_count"] = len(payloads)
+        if self._persist_rows_to_sqlite(
+            TRADE_COLLECTION,
+            payloads,
+            trade_summary,
+            ("symbol", "signal_id", "entry_bar_ms", "exit_bar_ms"),
+        ):
+            return
+        if self._sqlite_persist_error_should_skip_pb_fallback(trade_summary):
+            return
         self._create_records_or_raise(TRADE_COLLECTION, payloads)
 
     def _build_replay_timeline(self, symbol: str, bars: list[dict], params: dict) -> list[dict]:

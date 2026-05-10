@@ -1,6 +1,9 @@
+import json
 import os
 import re
+import sqlite3
 import sys
+import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -518,8 +521,255 @@ class BacktestDailyScanReplayTests(unittest.TestCase):
         self.assertEqual(cache["hit_days"], 2)
         self.assertEqual(cache["rebuilt_days"], 0)
         self.assertEqual(cache["hit_rate"], 100.0)
+        self.assertEqual(cache["input_fingerprint_preload_source"], "cached_record")
+        self.assertEqual(cache["cached_input_hash_days"], 2)
         self.assertTrue(all(day["cache_hit"] for day in second["summary"]["daily"]))
         self.assertTrue(all(row["extra"]["daily_selection_cache_hit"] for row in second["target_rows"]))
+
+    def test_daily_selection_cache_preloads_records_from_sqlite_without_per_day_pb_reads(self):
+        dates = ["2026-04-22", "2026-04-23"]
+        request = self._cache_request()
+        settings = {
+            "scan_time_et": "09:25",
+            "min_avg_10d_volume": 100000,
+            "min_premarket_volume": 5000,
+            "min_atr_pct": 0.15,
+            "min_abs_day_change_pct": 1.0,
+        }
+        universe_rows = [{"symbol": "NVDA", "exchange": "SMART"}]
+        self.service.pb = SimpleNamespace(
+            get_first_record=lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("sqlite preload should avoid per-day PB reads")
+            )
+        )
+        self.service._load_trading_dates = lambda request: list(dates)
+        self.service._load_scan_universe = lambda request, as_of_date="": list(universe_rows)
+        self.service._load_historical_scan_settings = lambda request: dict(settings)
+        self.service._build_daily_selection_input_fingerprint = lambda trade_date, universe_rows, request: {
+            "usable": True,
+            "hash": f"clean-{trade_date}",
+            "reason": "coverage_clean",
+            "row_count": len(universe_rows),
+        }
+        self.service._evaluate_historical_scan_symbol = lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("sqlite cache hit should skip historical scan")
+        )
+        fingerprint = self.service._build_daily_selection_cache_base_fingerprint(request, settings)
+        universe_hash = self.service._build_daily_selection_universe_hash(universe_rows)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = str(Path(temp_dir) / "data.db")
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE ibkr_backtest_daily_selection_cache (
+                      id TEXT PRIMARY KEY,
+                      cache_key TEXT,
+                      market_date TEXT,
+                      source_environment TEXT,
+                      algorithm_version TEXT,
+                      request_hash TEXT,
+                      universe_hash TEXT,
+                      input_data_hash TEXT,
+                      scan_settings_hash TEXT,
+                      strategy_hash TEXT,
+                      status TEXT,
+                      selected_count INTEGER,
+                      target_rows TEXT,
+                      selection_plan TEXT,
+                      daily_summary TEXT,
+                      fingerprint_extra TEXT,
+                      error TEXT,
+                      last_built_at TEXT,
+                      created TEXT,
+                      updated TEXT
+                    )
+                    """
+                )
+                for index, trade_date in enumerate(dates, start=1):
+                    target_rows = [
+                        {
+                            "symbol": "NVDA",
+                            "exchange": "SMART",
+                            "date": trade_date,
+                            "direction_bias": "long",
+                            "score": 8,
+                            "rank": 1,
+                            "extra": {},
+                        }
+                    ]
+                    conn.execute(
+                        """
+                        INSERT INTO ibkr_backtest_daily_selection_cache (
+                          id,
+                          cache_key,
+                          market_date,
+                          source_environment,
+                          algorithm_version,
+                          request_hash,
+                          universe_hash,
+                          input_data_hash,
+                          scan_settings_hash,
+                          strategy_hash,
+                          status,
+                          selected_count,
+                          target_rows,
+                          selection_plan,
+                          daily_summary,
+                          fingerprint_extra,
+                          error,
+                          last_built_at,
+                          created,
+                          updated
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            f"cache_{index}",
+                            fingerprint["cache_key"],
+                            trade_date,
+                            "live",
+                            fingerprint["algorithm_version"],
+                            fingerprint["request_hash"],
+                            universe_hash,
+                            f"clean-{trade_date}",
+                            fingerprint["scan_settings_hash"],
+                            fingerprint["strategy_hash"],
+                            "valid",
+                            1,
+                            json.dumps(target_rows),
+                            json.dumps({trade_date: ["NVDA"]}),
+                            json.dumps({"date": trade_date, "selected_count": 1}),
+                            json.dumps({}),
+                            "",
+                            "2026-04-23 09:25:00",
+                            "2026-04-23 09:25:00",
+                            "2026-04-23 09:25:00",
+                        ),
+                    )
+                conn.commit()
+
+            with mock.patch("ibkr_compute.backtest.runtime_service.BACKTEST_SQLITE_PATH", db_path):
+                plan = self.service._build_daily_scan_replay_plan(request)
+
+        cache = plan["summary"]["daily_selection_cache"]
+        self.assertEqual(cache["preload_source"], "sqlite")
+        self.assertEqual(cache["preload_requested_days"], 2)
+        self.assertEqual(cache["preload_found_days"], 2)
+        self.assertEqual(cache["hit_days"], 2)
+        self.assertEqual(cache["rebuilt_days"], 0)
+        self.assertEqual(plan["symbols"], ["NVDA"])
+        self.assertTrue(all(day["cache_hit"] for day in plan["summary"]["daily"]))
+
+    def test_daily_selection_input_fingerprints_preload_daily_coverage_once(self):
+        request = {**self._cache_request(), "symbols": ["NVDA"]}
+        dates = ["2026-04-22", "2026-04-23"]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = str(Path(temp_dir) / "data.db")
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE ibkr_bar_coverage_daily (
+                      symbol TEXT,
+                      environment TEXT,
+                      interval TEXT,
+                      session_mode TEXT,
+                      market_date TEXT,
+                      status TEXT,
+                      needs_repair INTEGER,
+                      hard_gate INTEGER,
+                      expected_count INTEGER,
+                      actual_count INTEGER,
+                      missing_count INTEGER,
+                      gap_count INTEGER,
+                      duplicate_count INTEGER,
+                      bad_ohlc_count INTEGER,
+                      expected_start_ms INTEGER,
+                      expected_end_ms INTEGER,
+                      first_bar_ms INTEGER,
+                      last_bar_ms INTEGER,
+                      expected_mask_hex TEXT,
+                      actual_mask_hex TEXT,
+                      missing_mask_hex TEXT,
+                      last_repair_at TEXT,
+                      missing_windows TEXT,
+                      missing_examples TEXT,
+                      repair_windows TEXT,
+                      extra TEXT
+                    )
+                    """
+                )
+                for trade_date in dates:
+                    conn.execute(
+                        """
+                        INSERT INTO ibkr_bar_coverage_daily (
+                          symbol,
+                          environment,
+                          interval,
+                          session_mode,
+                          market_date,
+                          status,
+                          needs_repair,
+                          hard_gate,
+                          expected_count,
+                          actual_count,
+                          missing_count,
+                          gap_count,
+                          duplicate_count,
+                          bad_ohlc_count,
+                          expected_start_ms,
+                          expected_end_ms,
+                          first_bar_ms,
+                          last_bar_ms,
+                          expected_mask_hex,
+                          actual_mask_hex,
+                          missing_mask_hex,
+                          last_repair_at,
+                          missing_windows,
+                          missing_examples,
+                          repair_windows,
+                          extra
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "NVDA",
+                            "live",
+                            "5m",
+                            "extended",
+                            trade_date,
+                            "ok",
+                            0,
+                            0,
+                            192,
+                            192,
+                            0,
+                            0,
+                            0,
+                            0,
+                            1,
+                            2,
+                            1,
+                            2,
+                            "ff",
+                            "ff",
+                            "",
+                            "",
+                            "[]",
+                            "[]",
+                            "[]",
+                            "{}",
+                        ),
+                    )
+                conn.commit()
+
+            with mock.patch("ibkr_compute.backtest.runtime_service.BACKTEST_SQLITE_PATH", db_path):
+                fingerprints, meta = self.service._preload_daily_selection_input_fingerprints(request, dates)
+
+        self.assertEqual(meta["source"], "sqlite")
+        self.assertEqual(meta["fingerprint_days"], 2)
+        self.assertEqual(meta["coverage_rows"], 2)
+        self.assertEqual(set(fingerprints), set(dates))
+        self.assertTrue(all(item["usable"] for item in fingerprints.values()))
+        self.assertTrue(all(item["reason"] == "coverage_clean" for item in fingerprints.values()))
 
     def test_daily_selection_cache_force_rebuild_ignores_existing_rows(self):
         self._install_cache_scan_fakes(self.service)
@@ -617,7 +867,9 @@ class BacktestDailyScanReplayTests(unittest.TestCase):
             }
 
         self.service._evaluate_historical_scan_symbol = evaluate
-        plan = self.service._build_daily_scan_replay_plan(request)
+        plan = self.service._build_daily_scan_replay_plan(
+            {**request, "daily_selection_cache_revalidate_input_hash": True}
+        )
 
         self.assertEqual(len(calls), 2)
         cache = plan["summary"]["daily_selection_cache"]

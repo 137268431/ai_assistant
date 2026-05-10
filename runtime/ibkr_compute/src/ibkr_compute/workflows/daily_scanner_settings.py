@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from ibkr_compute.api.compute.runtime_state.universe import get_market_monitor_symbols
 from ibkr_compute.api.market.screener.runtime import get_api_app
+from ibkr_compute.universe.dynamic_admission import (
+    DEFAULT_DYNAMIC_ADMISSION_MIN_SCORE,
+    normalize_admission_bool,
+)
 
 from .daily_scanner_constants import (
     DAILY_SCAN_LONG_PRIMARY_RULES,
@@ -21,6 +25,36 @@ from .daily_scanner_constants import (
     DEFAULT_SCAN_TIME_ET,
 )
 from .daily_scanner_support import _safe_float, _safe_int
+
+
+def _cfg_bool(api_app, key: str, environment: str, default: bool) -> bool:
+    cfg = getattr(api_app, "cfg", None)
+    if cfg is not None and hasattr(cfg, "get_bool_for_environment"):
+        try:
+            return bool(cfg.get_bool_for_environment(key, environment, default))
+        except Exception:
+            return default
+    if cfg is not None and hasattr(cfg, "get_for_environment"):
+        try:
+            return normalize_admission_bool(cfg.get_for_environment(key, environment, default), default)
+        except Exception:
+            return default
+    return default
+
+
+def _cfg_float(api_app, key: str, environment: str, default: float) -> float:
+    cfg = getattr(api_app, "cfg", None)
+    if cfg is not None and hasattr(cfg, "get_float_for_environment"):
+        try:
+            return float(cfg.get_float_for_environment(key, environment, default))
+        except Exception:
+            return float(default)
+    if cfg is not None and hasattr(cfg, "get_for_environment"):
+        try:
+            return _safe_float(cfg.get_for_environment(key, environment, str(default)), default)
+        except Exception:
+            return float(default)
+    return float(default)
 
 
 def _load_scan_settings(
@@ -109,6 +143,21 @@ def _load_scan_settings(
         "target_subscription_limit": target_limit,
         "total_subscription_limit": total_limit,
         "trade_subscription_budget": trade_budget,
+        "dynamic_admission_enabled": _cfg_bool(
+            api_app,
+            "ibkr_dynamic_admission_enabled",
+            runtime_environment,
+            True,
+        ),
+        "dynamic_admission_min_score": max(
+            0.0,
+            _cfg_float(
+                api_app,
+                "ibkr_dynamic_admission_min_score",
+                runtime_environment,
+                DEFAULT_DYNAMIC_ADMISSION_MIN_SCORE,
+            ),
+        ),
     }
 
 
@@ -156,6 +205,11 @@ def build_daily_scan_rule_summary(
         "reason_fields": [label for _, label in DAILY_SCAN_REASON_RULES],
         "scan_time_et": settings["scan_time_et"],
         "quality_gates": {
+            "dynamic_admission_enabled": bool(settings.get("dynamic_admission_enabled", False)),
+            "dynamic_admission_score_gte": settings.get(
+                "dynamic_admission_min_score",
+                DEFAULT_DYNAMIC_ADMISSION_MIN_SCORE,
+            ),
             "avg_10d_volume_gte": settings["min_avg_10d_volume"],
             "atr_pct_gte": settings["min_atr_pct"],
             "abs_day_change_pct_gte": settings["min_abs_day_change_pct"],

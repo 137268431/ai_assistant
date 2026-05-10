@@ -133,6 +133,7 @@
             <td>
               <a class="symbol-link" href="${buildPageUrl('/ibkr_chart.html', { symbol: row.symbol, interval: '5m' }, { environment: currentEnvironment })}">${escapeHtml(row.symbol)}</a><br>
               <span class="muted mono">${escapeHtml(row.display_price_source || row.price_source || '--')}</span>
+              ${renderSymbolProfileSummary(row) ? `<div style="margin-top:8px;">${renderSymbolProfileSummary(row)}</div>` : ''}
             </td>
             <td>
               ${escapeHtml(row.exchange || '--')}<br>
@@ -157,6 +158,7 @@
               ${statusChip(row.target_status || 'none', row.target_status || '')}<br>
               ${statusChip(row.direction_bias || 'neutral', row.direction_bias || 'neutral')}<br>
               <span class="muted">score ${escapeHtml(formatNumber(row.target_score || 0, 1))}</span>
+              ${renderAdmissionControlRow(row)}
             </td>
             <td>
               ${buildScorePill(row)}<br>
@@ -171,6 +173,7 @@
                 <div class="reason-label">可操作依据</div>
                 ${buildReasonPills(row)}
               </div>
+              ${renderAdmissionDiagnosticsBlock(row)}
               <div style="margin-top:10px;">
                 <a class="mini-link" href="${buildPageUrl('/ibkr_chart.html', { symbol: row.symbol, interval: '5m' }, { environment: currentEnvironment })}">Chart</a>
               </div>
@@ -583,4 +586,3 @@
       syncCurrentAdvancedFilters();
       syncManualDailyScanButton();
     }
-

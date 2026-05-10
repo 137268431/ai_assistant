@@ -223,6 +223,7 @@ class DailyScannerRunMixin:
         eligible.sort(
             key=lambda item: (
                 -_safe_float(item.get("score")),
+                -_safe_float(item.get("admission_score")),
                 -_safe_float(item.get("technical_score")),
                 -abs(_safe_float(item.get("day_change_pct"))),
                 -_safe_float(item.get("premarket_volume")),
@@ -289,6 +290,7 @@ class DailyScannerRunMixin:
                 "scan_stage": scan_stage,
                 "topup_round_time_et": datetime.now(ET).strftime("%H:%M") if scan_mode == DAILY_SCAN_MODE_TOPUP else "",
                 "technical_score": round(_safe_float(result.get("technical_score")), 3),
+                "admission_score": round(_safe_float(result.get("admission_score")), 3),
                 "avg_10d_volume": round(_safe_float(result.get("avg_10d_volume")), 2),
                 "premarket_volume": round(_safe_float(result.get("premarket_volume")), 2),
                 "atr_pct": round(_safe_float(result.get("atr_pct")), 4),
@@ -318,6 +320,7 @@ class DailyScannerRunMixin:
                     "status": status,
                     "direction_bias": result.get("direction_bias", "neutral"),
                     "score": round(_safe_float(result.get("score")), 3),
+                    "admission_score": round(_safe_float(result.get("admission_score")), 3),
                     "scan_reason": result.get("reason", ""),
                     "scan_stage": scan_stage,
                 }
@@ -393,4 +396,66 @@ class DailyScannerRunMixin:
             if not symbol:
                 continue
             rows[symbol] = dict(item)
+        fundamentals_by_symbol = self._load_fundamentals_by_symbol(symbols)
+        for symbol, fundamentals in fundamentals_by_symbol.items():
+            row = rows.get(symbol)
+            if row is None:
+                continue
+            row["fundamentals"] = dict(fundamentals)
+            row["symbol_fundamentals"] = dict(fundamentals)
         return rows
+
+    def _load_fundamentals_by_symbol(self, symbols: list[str]) -> dict[str, dict]:
+        normalized_symbols = sorted(
+            {
+                str(symbol or "").strip().upper()
+                for symbol in symbols
+                if str(symbol or "").strip()
+            }
+        )
+        if not normalized_symbols:
+            return {}
+        pb = getattr(self, "pb_client", None)
+        if pb is None:
+            return {}
+
+        def escape(value: str) -> str:
+            return str(value or "").replace("\\", "\\\\").replace('"', '\\"')
+
+        symbol_filter = "(" + " || ".join(f'symbol = "{escape(symbol)}"' for symbol in normalized_symbols) + ")"
+        filter_expr = f'{symbol_filter} && provider = "finnhub"'
+        try:
+            if hasattr(pb, "get_all_records"):
+                records = pb.get_all_records("ibkr_fundamentals", filter=filter_expr, sort="-updated", max_pages=2)
+            else:
+                records = pb.get_records("ibkr_fundamentals", filter=filter_expr, sort="-updated", per_page=500, page=1)
+        except Exception:
+            return {}
+
+        result: dict[str, dict] = {}
+        for raw_record in records or []:
+            record = dict(raw_record or {})
+            symbol = str(record.get("symbol", "")).strip().upper()
+            if not symbol or symbol in result:
+                continue
+            status = str(record.get("status") or "").strip().lower()
+            if status == "failed":
+                continue
+            market_cap_usd = _safe_float(record.get("market_cap_usd"))
+            market_cap_millions = _safe_float(record.get("market_cap_millions"))
+            if market_cap_usd <= 0 and market_cap_millions > 0:
+                market_cap_usd = market_cap_millions * 1_000_000.0
+            share_outstanding_millions = _safe_float(record.get("share_outstanding_millions"))
+            normalized = {
+                **record,
+                "market_cap": market_cap_usd,
+                "market_cap_usd": market_cap_usd,
+                "shares_outstanding": share_outstanding_millions * 1_000_000.0
+                if share_outstanding_millions > 0
+                else _safe_float(record.get("shares_outstanding")),
+                "industry": str(record.get("industry") or "").strip(),
+                "exchange": str(record.get("exchange") or "").strip().upper(),
+                "provider": str(record.get("provider") or "finnhub").strip().lower(),
+            }
+            result[symbol] = normalized
+        return result

@@ -78,6 +78,7 @@
     }
 
     const WATCHLIST_ELIGIBILITY_WINDOW_DAYS = 10;
+    const WATCHLIST_ELIGIBILITY_PENDING_SYMBOLS = new Set();
     const SIMILAR_SYMBOL_GROUPS = [
       ['GOOG', 'GOOGL']
     ];
@@ -115,6 +116,21 @@
 
     function getEligibilityForSymbol(symbol) {
       return watchlistState.eligibilityBySymbol[normalizeSymbol(symbol)] || null;
+    }
+
+    function withEligibilityDisplayFields(item) {
+      const eligibility = getEligibilityForSymbol(item?.symbol);
+      if (!eligibility) return item || {};
+      return {
+        ...eligibility,
+        ...(item || {}),
+        eligibility,
+        symbol_profile: firstDisplayValue([item?.symbol_profile, eligibility.symbol_profile, eligibility.fundamentals_profile]),
+        fundamentals_profile: firstDisplayValue([item?.fundamentals_profile, eligibility.fundamentals_profile]),
+        needs_backfill: firstDisplayValue([item?.needs_backfill, eligibility.needs_backfill]),
+        admission_score: firstDisplayValue([item?.admission_score, eligibility.admission_score, eligibility.score]),
+        failed_gates: firstDisplayValue([item?.failed_gates, eligibility.failed_gates, eligibility.fail_reasons]),
+      };
     }
 
     function getEligibilityChip(symbol) {
@@ -168,6 +184,25 @@
       });
       watchlistState.eligibilityBySymbol = nextMap;
       return nextMap;
+    }
+
+    async function ensureWatchlistPageEligibility(items) {
+      if (getWatchlistRoleForTab() !== 'trade') return;
+      const symbols = parseSymbolList((Array.isArray(items) ? items : [])
+        .filter((item) => !isConfigMonitorItem(item))
+        .map((item) => item.symbol)
+        .join(','))
+        .filter((symbol) => !getEligibilityForSymbol(symbol) && !WATCHLIST_ELIGIBILITY_PENDING_SYMBOLS.has(symbol));
+      if (!symbols.length) return;
+      symbols.forEach((symbol) => WATCHLIST_ELIGIBILITY_PENDING_SYMBOLS.add(symbol));
+      try {
+        await fetchWatchlistEligibility(symbols);
+        if (isWatchlistRoleTab() && getWatchlistRoleForTab() === 'trade') renderWatchlistRows();
+      } catch (error) {
+        console.warn('加载 watchlist 当前页准入信息失败:', error);
+      } finally {
+        symbols.forEach((symbol) => WATCHLIST_ELIGIBILITY_PENDING_SYMBOLS.delete(symbol));
+      }
     }
 
     async function preloadSearchEligibility() {
@@ -636,6 +671,7 @@
       }
 
       mount.innerHTML = watchlistState.searchResults.map((item, index) => {
+        const displayItem = withEligibilityDisplayFields(item);
         const secTypes = Array.isArray(item.sec_types) ? item.sec_types : [];
         const description = item.description || item.company_name || '无描述';
         const existing = findExistingBySymbol(item.symbol);
@@ -656,8 +692,12 @@
               <span class="status-chip">conid ${escapeHtml(item.conid || '--')}</span>
               <span class="status-chip">score ${escapeHtml(item.score || 0)}</span>
               ${getEligibilityChip(item.symbol || '')}
+              ${renderAdmissionScoreChip(displayItem)}
+              ${renderNeedsBackfillChip(displayItem)}
               ${(secTypes.length ? secTypes : [item.asset_class || 'UNKNOWN']).map((type) => `<span class="pool-pill">${escapeHtml(type)}</span>`).join('')}
             </div>
+            ${renderSymbolProfileSummary(displayItem) ? `<div class="card-copy" style="margin-top:8px;">${renderSymbolProfileSummary(displayItem)}</div>` : ''}
+            ${(renderAdmissionControlRow(displayItem) || getFailedGates(displayItem).length) ? `<div class="card-copy" style="margin-top:8px;">${renderFailedGatesPills(displayItem, 'failed_gates: none')}</div>` : ''}
             <div class="card-bottom">
               <button class="btn primary" type="button" onclick="addCandidate(${index})">加入 ${escapeHtml(scopeLabel)} ${escapeHtml(roleLabel)}</button>
               <a class="mini-link" href="${buildPageUrl('/ibkr_chart.html', { symbol: item.symbol || '', interval: '5m' }, { environment: currentEnvironment })}">查看图表</a>
@@ -753,7 +793,8 @@
         renderWatchlistPagination(items, []);
       } else {
         const pageItems = getWatchlistPageItems(items);
-        table.innerHTML = pageItems.map((item) => {
+        const displayPageItems = pageItems.map(withEligibilityDisplayFields);
+        table.innerHTML = displayPageItems.map((item) => {
           const configItem = isConfigMonitorItem(item);
           return `
             <tr>
@@ -762,13 +803,17 @@
                   <div class="table-symbol">${escapeHtml(item.symbol || '--')}</div>
                   <small>${escapeHtml(configItem ? 'ibkr_market_ws_symbols' : (item.id || ''))}</small>
                 </div>
+                ${renderSymbolProfileSummary(item) ? `<div style="margin-top:8px;">${renderSymbolProfileSummary(item)}</div>` : ''}
               </td>
               <td>${escapeHtml(item.exchange || '--')}</td>
               <td>${escapeHtml(item.industry || '--')}</td>
               <td><span class="env-badge ${resolveRecordEnvClass(item.environment)}">${escapeHtml(formatRecordEnvironment(item.environment))}</span></td>
               <td>${configItem ? statusChip('CONFIG', 'config') : escapeHtml(formatWatchlistRole(item.symbol_role || 'trade'))}</td>
               <td>${escapeHtml(formatWatchlistMember(item))}</td>
-              <td>${escapeHtml(item.note || '--')}</td>
+              <td>
+                ${escapeHtml(item.note || '--')}
+                ${renderAdmissionDiagnosticsBlock(item)}
+              </td>
               <td>
                 <div class="meta-stack">
                   <span>${escapeHtml(item.updated_us || item.us_time || '--')}</span>
@@ -788,8 +833,9 @@
             </tr>
           `;
         }).join('');
-        renderWatchlistCards(pageItems);
+        renderWatchlistCards(displayPageItems);
         renderWatchlistPagination(items, pageItems);
+        void ensureWatchlistPageEligibility(pageItems);
       }
 
       const configSuffix = watchlistState.configLoadError ? ` · 配置读取失败: ${watchlistState.configLoadError}` : '';

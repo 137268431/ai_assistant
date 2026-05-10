@@ -9,6 +9,7 @@ from ibkr_api.system.jobs import (
     build_auth_pending_guard_response,
     build_data_gap_guard_response,
     build_early_expansion_topup_response,
+    build_fundamentals_refresh_job_response,
     build_intraday_window_admission_response,
     build_order_expiry_response,
     build_system_daily_report_response,
@@ -317,6 +318,21 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
         return response if status_code == 200 else (response, status_code)
 
     exports["custom_system_job_early_expansion_topup"] = custom_system_job_early_expansion_topup
+
+    @app.route("/api/custom/system/jobs/fundamentals_refresh", methods=["POST"])
+    def custom_system_job_fundamentals_refresh() -> Response:
+        payload, status_code = build_fundamentals_refresh_job_response(
+            pb,
+            payload=request.get_json(silent=True) or {},
+            normalize_environment=normalize_environment,
+            escape_filter_string=escape_filter_string,
+            config_value=config_value,
+            write_system_event_record=write_system_event_record,
+        )
+        response = jsonify(payload)
+        return response if status_code == 200 else (response, status_code)
+
+    exports["custom_system_job_fundamentals_refresh"] = custom_system_job_fundamentals_refresh
 
     @app.route("/api/custom/system/jobs/intraday_window_admission", methods=["POST"])
     def custom_system_job_intraday_window_admission() -> Response:

@@ -6,6 +6,12 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from ibkr_api.orders.values import ensure_object, to_int, to_text
+from ibkr_api.universe.dynamic_admission import (
+    build_admission_profile,
+    build_dynamic_thresholds,
+    evaluate_dynamic_admission_gates,
+)
+from ibkr_api.universe.fundamentals import load_fundamentals_cache_by_symbol
 
 
 RequestJsonRequest = Callable[..., dict[str, Any]]
@@ -19,11 +25,6 @@ MIN_EVALUATED_DAYS = 3
 MIN_PASS_DAYS = 2
 MIN_PASS_RATE = 0.6
 MAX_WINDOW_TRADING_DAYS = 20
-
-MIN_AVG_10D_VOLUME = 100_000
-MIN_PREMARKET_VOLUME = 5_000
-MIN_ATR_PCT = 0.15
-MIN_ABS_DAY_CHANGE_PCT = 1.0
 
 SIMILAR_SYMBOL_GROUPS: tuple[tuple[str, ...], ...] = (
     ("GOOG", "GOOGL"),
@@ -51,22 +52,6 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except Exception:
         return float(default)
-
-
-def _metric_value(row: dict[str, Any], key: str) -> float:
-    if key == "atr_pct":
-        return abs(_safe_float(row.get(key)))
-    if key == "day_change_pct":
-        return abs(_safe_float(row.get(key)))
-    return _safe_float(row.get(key))
-
-
-def _format_count(value: float) -> str:
-    if value >= 1_000_000:
-        return f"{value / 1_000_000:.2f}M"
-    if value >= 1_000:
-        return f"{value / 1_000:.1f}K"
-    return str(round(value, 2))
 
 
 def _build_environment_filter(environment: str, *, include_legacy_empty: bool = True) -> str:
@@ -181,27 +166,8 @@ def _load_screener_rows(
     return rows_by_symbol, errors
 
 
-def _daily_failures(row: dict[str, Any]) -> list[dict[str, Any]]:
-    checks = (
-        ("avg_10d_volume", MIN_AVG_10D_VOLUME, "10 日均量不足"),
-        ("premarket_volume", MIN_PREMARKET_VOLUME, "盘前量不足"),
-        ("atr_pct", MIN_ATR_PCT, "ATR 不足"),
-        ("day_change_pct", MIN_ABS_DAY_CHANGE_PCT, "日内涨跌幅不足"),
-    )
-    failures = []
-    for key, threshold, note in checks:
-        actual = _metric_value(row, key)
-        if actual < threshold:
-            failures.append(
-                {
-                    "bucket": f"{key}_below_threshold",
-                    "metric": key,
-                    "actual": round(actual, 4),
-                    "threshold": threshold,
-                    "note": note,
-                }
-            )
-    return failures
+def _daily_failures(row: dict[str, Any], thresholds: dict[str, Any], *, market_date: str) -> list[dict[str, Any]]:
+    return evaluate_dynamic_admission_gates(row, thresholds, market_date=market_date)
 
 
 def _row_has_usable_data(row: dict[str, Any]) -> bool:
@@ -274,24 +240,77 @@ def _build_duplicate_warning(symbol: str, existing_by_symbol: dict[str, dict[str
 def _summarize_failures(daily_failures: list[dict[str, Any]]) -> list[dict[str, Any]]:
     buckets: dict[str, dict[str, Any]] = {}
     for failure in daily_failures:
-        bucket = to_text(failure.get("bucket"))
+        bucket = to_text(failure.get("bucket") or failure.get("gate"))
         if not bucket:
             continue
         item = buckets.setdefault(
             bucket,
             {
                 "bucket": bucket,
+                "gate": to_text(failure.get("gate") or bucket),
                 "metric": failure.get("metric"),
                 "count": 0,
+                "days_failed": 0,
+                "op": failure.get("op") or "gte",
                 "threshold": failure.get("threshold"),
+                "severity": failure.get("severity") or "hard",
                 "note": failure.get("note"),
                 "examples": [],
             },
         )
         item["count"] = int(item.get("count") or 0) + 1
+        item["days_failed"] = int(item.get("days_failed") or 0) + 1
         if len(item["examples"]) < 3:
-            item["examples"].append(failure.get("actual"))
+            example: dict[str, Any] = {"actual": failure.get("actual")}
+            if failure.get("market_date"):
+                example["market_date"] = failure.get("market_date")
+            item["examples"].append(example)
     return sorted(buckets.values(), key=lambda item: (-int(item.get("count") or 0), to_text(item.get("bucket"))))
+
+
+def _aggregate_failed_gates(
+    *,
+    evaluated_days: int,
+    pass_days: int,
+    required_pass_days: int,
+    min_evaluated_days: int,
+    min_pass_rate: float,
+) -> list[dict[str, Any]]:
+    failures: list[dict[str, Any]] = []
+    if evaluated_days < min_evaluated_days:
+        failures.append(
+            {
+                "gate": "min_evaluated_days",
+                "bucket": "min_evaluated_days",
+                "metric": "evaluated_days",
+                "op": "gte",
+                "actual": evaluated_days,
+                "threshold": min_evaluated_days,
+                "severity": "hard",
+                "note": "Not enough recent market days had usable screener data.",
+                "count": 1,
+                "days_failed": 1,
+                "examples": [{"actual": evaluated_days}],
+            }
+        )
+    if evaluated_days >= min_evaluated_days and pass_days < required_pass_days:
+        failures.append(
+            {
+                "gate": "min_pass_days",
+                "bucket": "min_pass_days",
+                "metric": "pass_days",
+                "op": "gte",
+                "actual": pass_days,
+                "threshold": required_pass_days,
+                "severity": "hard",
+                "note": "Recent pass-days are below the dynamic admission requirement.",
+                "count": 1,
+                "days_failed": max(0, required_pass_days - pass_days),
+                "min_pass_rate": min_pass_rate,
+                "examples": [{"actual": pass_days}],
+            }
+        )
+    return failures
 
 
 def _build_symbol_result(
@@ -299,6 +318,7 @@ def _build_symbol_result(
     symbol: str,
     market_dates: list[str],
     rows_by_date: dict[str, dict[str, Any]],
+    fundamentals: dict[str, Any],
     duplicate_warning: dict[str, Any],
     window_trading_days: int,
 ) -> dict[str, Any]:
@@ -307,6 +327,20 @@ def _build_symbol_result(
     all_failures: list[dict[str, Any]] = []
     daily_results: list[dict[str, Any]] = []
     latest_metrics: dict[str, Any] = {}
+    latest_row: dict[str, Any] = {}
+
+    for market_date in market_dates:
+        row = rows_by_date.get(market_date) or {}
+        if row and _row_has_usable_data(row):
+            latest_row = dict(row)
+            break
+
+    admission_profile = build_admission_profile(
+        symbol=symbol,
+        fundamentals=fundamentals,
+        latest_row=latest_row,
+    )
+    thresholds = build_dynamic_thresholds(admission_profile)
 
     for market_date in market_dates:
         row = rows_by_date.get(market_date) or {}
@@ -314,7 +348,7 @@ def _build_symbol_result(
             daily_results.append({"market_date": market_date, "status": "missing"})
             continue
         evaluated_days += 1
-        failures = _daily_failures(row)
+        failures = _daily_failures(row, thresholds, market_date=market_date)
         passed = not failures
         if passed:
             pass_days += 1
@@ -355,11 +389,30 @@ def _build_symbol_result(
             f"低于 {required_pass_days} 天精品准入线，建议加入观察池，不建议进入每日交易池。"
         )
 
+    failed_gates = [
+        *_summarize_failures(all_failures),
+        *_aggregate_failed_gates(
+            evaluated_days=evaluated_days,
+            pass_days=pass_days,
+            required_pass_days=required_pass_days,
+            min_evaluated_days=MIN_EVALUATED_DAYS,
+            min_pass_rate=MIN_PASS_RATE,
+        ),
+    ]
+
     duplicate = dict(duplicate_warning or {})
     if duplicate.get("duplicate"):
         status = "warn" if status == "pass" else status
         recommendation = "market_monitor" if duplicate.get("non_canonical") else recommendation
         message = f"{message} {duplicate.get('message')}"
+
+    pass_rate = (pass_days / evaluated_days) if evaluated_days > 0 else 0.0
+    admission_score = round(max(0.0, min(100.0, pass_rate * 100.0)), 3)
+    if status == "insufficient_data" and latest_metrics:
+        admission_score = max(admission_score, 25.0)
+    if duplicate.get("non_canonical"):
+        admission_score = min(admission_score, 55.0)
+    needs_backfill = evaluated_days < MIN_EVALUATED_DAYS or not latest_metrics
 
     return {
         "symbol": symbol,
@@ -371,13 +424,22 @@ def _build_symbol_result(
         "pass_days": pass_days,
         "min_pass_days": required_pass_days,
         "min_pass_rate": MIN_PASS_RATE,
+        "profile": admission_profile,
+        "symbol_profile": admission_profile,
+        "fundamentals_profile": admission_profile,
         "thresholds": {
-            "avg_10d_volume_gte": MIN_AVG_10D_VOLUME,
-            "premarket_volume_gte": MIN_PREMARKET_VOLUME,
-            "atr_pct_gte": MIN_ATR_PCT,
-            "abs_day_change_pct_gte": MIN_ABS_DAY_CHANGE_PCT,
+            **thresholds,
+            "min_evaluated_days_gte": MIN_EVALUATED_DAYS,
+            "pass_days_gte": required_pass_days,
+            "pass_rate_gte": MIN_PASS_RATE,
         },
-        "fail_reasons": _summarize_failures(all_failures),
+        "dynamic_thresholds": thresholds,
+        "admission_score": admission_score,
+        "score": admission_score,
+        "pass_rate": round(pass_rate, 4),
+        "needs_backfill": needs_backfill,
+        "failed_gates": failed_gates,
+        "fail_reasons": failed_gates,
         "latest_metrics": latest_metrics,
         "duplicate": duplicate,
         "daily_results": daily_results,
@@ -423,6 +485,12 @@ def build_watchlist_eligibility_response(
         symbols=symbols,
         escape_filter_string=escape_filter_string,
     )
+    fundamentals_by_symbol = load_fundamentals_cache_by_symbol(
+        pb,
+        symbols,
+        provider=payload.get("fundamentals_provider") or "finnhub",
+        escape_filter_string=escape_filter_string,
+    )
 
     rows_by_symbol, errors = ({symbol: {} for symbol in symbols}, [])
     if market_dates:
@@ -439,6 +507,7 @@ def build_watchlist_eligibility_response(
             symbol=symbol,
             market_dates=market_dates,
             rows_by_date=rows_by_symbol.get(symbol) or {},
+            fundamentals=fundamentals_by_symbol.get(symbol) or {},
             duplicate_warning=_build_duplicate_warning(symbol, duplicate_context),
             window_trading_days=window_trading_days,
         )
@@ -454,6 +523,7 @@ def build_watchlist_eligibility_response(
         "ok": True,
         "environment": environment,
         "window_trading_days": window_trading_days,
+        "fundamentals_provider": to_text(payload.get("fundamentals_provider") or "finnhub").lower(),
         "market_dates": market_dates,
         "items": items,
         "summary": {

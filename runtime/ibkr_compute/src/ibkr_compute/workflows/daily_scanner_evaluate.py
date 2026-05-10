@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from ibkr_compute.market.timeframe_utils import normalize_interval
+from ibkr_compute.universe.dynamic_admission import (
+    evaluate_dynamic_admission,
+    normalize_admission_bool,
+)
 
 from .daily_scanner_constants import (
     DAILY_SCAN_LONG_PRIMARY_RULES,
@@ -69,6 +73,15 @@ class DailyScannerEvaluateMixin:
                 "direction_bias": "neutral",
                 "reason": "no_snapshot",
                 "quality_gate_passed": False,
+                "admission_score": 0.0,
+                "symbol_profile": {},
+                "dynamic_thresholds": {},
+                "failed_gates": [],
+                "strategy_policy": {
+                    "risk_profile": "avoid",
+                    "setup_type": "no_snapshot",
+                    "avoid_new_entries": True,
+                },
                 "rejection_examples": [
                     {
                         "bucket": REJECTION_BUCKET_NO_SNAPSHOT,
@@ -128,6 +141,15 @@ class DailyScannerEvaluateMixin:
                 "direction_bias": direction_bias,
                 "reason": "vote_tie",
                 "quality_gate_passed": False,
+                "admission_score": 0.0,
+                "symbol_profile": {},
+                "dynamic_thresholds": {},
+                "failed_gates": [],
+                "strategy_policy": {
+                    "risk_profile": "avoid",
+                    "setup_type": "vote_tie",
+                    "avoid_new_entries": True,
+                },
                 "rejection_examples": [
                     {
                         "bucket": REJECTION_BUCKET_VOTE_TIE,
@@ -151,73 +173,128 @@ class DailyScannerEvaluateMixin:
         premarket_volume = _safe_float(metric_row.get("premarket_volume"))
         atr_pct = abs(_safe_float(metric_row.get("atr_pct")))
         day_change_pct = _safe_float(metric_row.get("day_change_pct"))
-        quality_gate_passed = (
-            avg_10d_volume >= _safe_float(settings.get("min_avg_10d_volume"), DEFAULT_MIN_AVG_10D_VOLUME)
-            and premarket_volume >= _safe_float(settings.get("min_premarket_volume"), DEFAULT_MIN_PREMARKET_VOLUME)
-            and atr_pct >= _safe_float(settings.get("min_atr_pct"), DEFAULT_MIN_ATR_PCT)
-            and abs(day_change_pct) >= _safe_float(
+
+        dynamic_enabled = normalize_admission_bool(settings.get("dynamic_admission_enabled"), False)
+        admission_score = 0.0
+        admission_score_components = {}
+        symbol_profile = {}
+        dynamic_thresholds = {
+            "mode": "legacy",
+            "avg_10d_volume_gte": _safe_float(settings.get("min_avg_10d_volume"), DEFAULT_MIN_AVG_10D_VOLUME),
+            "premarket_volume_gte": _safe_float(settings.get("min_premarket_volume"), DEFAULT_MIN_PREMARKET_VOLUME),
+            "atr_pct_gte": _safe_float(settings.get("min_atr_pct"), DEFAULT_MIN_ATR_PCT),
+            "abs_day_change_pct_gte": _safe_float(
+                settings.get("min_abs_day_change_pct"),
+                DEFAULT_MIN_ABS_DAY_CHANGE_PCT,
+            ),
+        }
+        strategy_policy = {
+            "risk_profile": "legacy",
+            "setup_type": "fixed_quality_gates",
+            "allowed_sides": [direction_bias],
+            "signal_confirmation": "standard",
+            "position_size_multiplier": 1.0,
+            "avoid_new_entries": False,
+        }
+        failed_gates = []
+        rejection_examples = []
+        if dynamic_enabled:
+            admission = evaluate_dynamic_admission(
+                symbol,
+                metrics=metric_row,
+                settings=settings,
+                direction_bias=direction_bias,
+            )
+            quality_gate_passed = bool(admission.get("quality_gate_passed"))
+            admission_score = _safe_float(admission.get("admission_score"))
+            admission_score_components = dict(admission.get("admission_score_components") or {})
+            symbol_profile = dict(admission.get("symbol_profile") or {})
+            dynamic_thresholds = dict(admission.get("dynamic_thresholds") or {})
+            strategy_policy = dict(admission.get("strategy_policy") or {})
+            failed_gates = list(admission.get("failed_gates") or [])
+            rejection_examples = failed_gates
+            gate_reasons = list(admission.get("reason_tags") or [])
+        else:
+            min_avg_10d_volume = _safe_float(settings.get("min_avg_10d_volume"), DEFAULT_MIN_AVG_10D_VOLUME)
+            min_premarket_volume = _safe_float(settings.get("min_premarket_volume"), DEFAULT_MIN_PREMARKET_VOLUME)
+            min_atr_pct = _safe_float(settings.get("min_atr_pct"), DEFAULT_MIN_ATR_PCT)
+            min_abs_day_change_pct = _safe_float(
                 settings.get("min_abs_day_change_pct"),
                 DEFAULT_MIN_ABS_DAY_CHANGE_PCT,
             )
-        )
+            quality_gate_passed = (
+                avg_10d_volume >= min_avg_10d_volume
+                and premarket_volume >= min_premarket_volume
+                and atr_pct >= min_atr_pct
+                and abs(day_change_pct) >= min_abs_day_change_pct
+            )
 
-        gate_reasons = [
-            f"10d>={_format_threshold(settings['min_avg_10d_volume'])}",
-            f"pre>={_format_threshold(settings['min_premarket_volume'])}",
-            f"atr>={_format_threshold(settings['min_atr_pct'])}",
-            f"|day|>={_format_threshold(settings['min_abs_day_change_pct'])}",
-        ]
-        rejection_examples = []
-        if avg_10d_volume < _safe_float(settings.get("min_avg_10d_volume"), DEFAULT_MIN_AVG_10D_VOLUME):
-            rejection_examples.append(
-                {
-                    "bucket": REJECTION_BUCKET_AVG_10D,
-                    "symbol": symbol,
-                    "actual": _format_metric_value(avg_10d_volume),
-                    "threshold": _format_threshold(settings["min_avg_10d_volume"]),
-                    "note": "10 日均量不足",
-                }
-            )
-        if premarket_volume < _safe_float(settings.get("min_premarket_volume"), DEFAULT_MIN_PREMARKET_VOLUME):
-            rejection_examples.append(
-                {
-                    "bucket": REJECTION_BUCKET_PREMARKET,
-                    "symbol": symbol,
-                    "actual": _format_metric_value(premarket_volume),
-                    "threshold": _format_threshold(settings["min_premarket_volume"]),
-                    "note": "盘前量不足",
-                }
-            )
-        if atr_pct < _safe_float(settings.get("min_atr_pct"), DEFAULT_MIN_ATR_PCT):
-            rejection_examples.append(
-                {
-                    "bucket": REJECTION_BUCKET_ATR,
-                    "symbol": symbol,
-                    "actual": _format_metric_value(atr_pct),
-                    "threshold": _format_threshold(settings["min_atr_pct"]),
-                    "note": "ATR 不足",
-                }
-            )
-        if abs(day_change_pct) < _safe_float(
-            settings.get("min_abs_day_change_pct"),
-            DEFAULT_MIN_ABS_DAY_CHANGE_PCT,
-        ):
-            rejection_examples.append(
-                {
-                    "bucket": REJECTION_BUCKET_DAY_CHANGE,
-                    "symbol": symbol,
-                    "actual": _format_metric_value(abs(day_change_pct)),
-                    "threshold": _format_threshold(settings["min_abs_day_change_pct"]),
-                    "note": "日内涨跌幅不足",
-                }
-            )
+            gate_reasons = [
+                f"10d>={_format_threshold(min_avg_10d_volume)}",
+                f"pre>={_format_threshold(min_premarket_volume)}",
+                f"atr>={_format_threshold(min_atr_pct)}",
+                f"|day|>={_format_threshold(min_abs_day_change_pct)}",
+            ]
+            if avg_10d_volume < min_avg_10d_volume:
+                rejection_examples.append(
+                    {
+                        "bucket": REJECTION_BUCKET_AVG_10D,
+                        "symbol": symbol,
+                        "actual": _format_metric_value(avg_10d_volume),
+                        "threshold": _format_threshold(min_avg_10d_volume),
+                        "note": "10 日均量不足",
+                    }
+                )
+            if premarket_volume < min_premarket_volume:
+                rejection_examples.append(
+                    {
+                        "bucket": REJECTION_BUCKET_PREMARKET,
+                        "symbol": symbol,
+                        "actual": _format_metric_value(premarket_volume),
+                        "threshold": _format_threshold(min_premarket_volume),
+                        "note": "盘前量不足",
+                    }
+                )
+            if atr_pct < min_atr_pct:
+                rejection_examples.append(
+                    {
+                        "bucket": REJECTION_BUCKET_ATR,
+                        "symbol": symbol,
+                        "actual": _format_metric_value(atr_pct),
+                        "threshold": _format_threshold(min_atr_pct),
+                        "note": "ATR 不足",
+                    }
+                )
+            if abs(day_change_pct) < min_abs_day_change_pct:
+                rejection_examples.append(
+                    {
+                        "bucket": REJECTION_BUCKET_DAY_CHANGE,
+                        "symbol": symbol,
+                        "actual": _format_metric_value(abs(day_change_pct)),
+                        "threshold": _format_threshold(min_abs_day_change_pct),
+                        "note": "日内涨跌幅不足",
+                    }
+                )
+            failed_gates = list(rejection_examples)
+            admission_score = 100.0 if quality_gate_passed else 0.0
+            symbol_profile = {
+                "symbol": symbol,
+                "exchange": str(metric_row.get("exchange", "") or "").strip().upper(),
+                "avg_10d_volume": round(avg_10d_volume, 2),
+                "premarket_volume": round(premarket_volume, 2),
+                "atr_pct": round(atr_pct, 4),
+                "day_change_pct": round(day_change_pct, 2),
+            }
+            strategy_policy["avoid_new_entries"] = not quality_gate_passed
+
         stocks_in_play_bonus, stocks_in_play_reasons, stocks_in_play_details = _build_stocks_in_play_bonus(
             metric_row,
             snapshots,
             direction_bias,
         )
         rank_bonus = _metric_rank_bonus(metric_row)
-        final_score = technical_score + rank_bonus + stocks_in_play_bonus
+        admission_bonus = (admission_score / 10.0) if dynamic_enabled else 0.0
+        final_score = technical_score + rank_bonus + stocks_in_play_bonus + admission_bonus
         reason_items = list(dict.fromkeys(technical_reasons[:4] + stocks_in_play_reasons + gate_reasons))
         reason_text = ", ".join(reason_items[:8]).strip()
         if not reason_text:
@@ -234,6 +311,11 @@ class DailyScannerEvaluateMixin:
             "reason": reason_text,
             "quality_gate_passed": quality_gate_passed,
             "rejection_examples": rejection_examples,
+            "failed_gates": failed_gates,
+            "admission_score": round(admission_score, 3),
+            "symbol_profile": symbol_profile,
+            "dynamic_thresholds": dynamic_thresholds,
+            "strategy_policy": strategy_policy,
             "exchange": str(metric_row.get("exchange", "") or "").strip().upper(),
             "avg_10d_volume": round(avg_10d_volume, 2),
             "premarket_volume": round(premarket_volume, 2),
@@ -245,6 +327,14 @@ class DailyScannerEvaluateMixin:
                 "long_votes": long_votes,
                 "short_votes": short_votes,
                 "rank_bonus": rank_bonus,
+                "dynamic_admission_enabled": dynamic_enabled,
+                "admission_score": round(admission_score, 3),
+                "admission_score_components": admission_score_components,
+                "admission_bonus": round(admission_bonus, 3),
+                "symbol_profile": symbol_profile,
+                "dynamic_thresholds": dynamic_thresholds,
+                "failed_gates": failed_gates,
+                "strategy_policy": strategy_policy,
                 **stocks_in_play_details,
             },
         }

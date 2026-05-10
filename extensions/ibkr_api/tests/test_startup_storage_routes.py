@@ -155,6 +155,7 @@ class StartupStorageRoutesTest(unittest.TestCase):
                 "custom_ibkr_indicators",
                 "custom_ibkr_scan",
                 "custom_ibkr_data_quality_upsert",
+                "custom_ibkr_data_quality_daily_upsert",
                 "custom_ibkr_data_quality_truth_upsert",
             },
         )

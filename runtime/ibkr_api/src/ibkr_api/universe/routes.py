@@ -5,6 +5,7 @@ from typing import Any
 from flask import Response, jsonify, request
 
 from ibkr_api.universe.active_window_progress import build_active_window_progress_response
+from ibkr_api.universe.fundamentals import build_fundamentals_list_response, build_fundamentals_refresh_response
 from ibkr_api.universe.screener import build_screener_proxy_response
 from ibkr_api.universe.today_targets import build_today_targets_response
 from ibkr_api.universe.targets import (
@@ -151,6 +152,31 @@ def register_universe_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
         return response if status_code == 200 else (response, status_code)
 
     exports["custom_ibkr_active_window_progress"] = custom_ibkr_active_window_progress
+
+    @app.route("/api/custom/ibkr/fundamentals/refresh", methods=["POST"])
+    def custom_ibkr_fundamentals_refresh() -> Response:
+        payload, status_code = build_fundamentals_refresh_response(
+            pb,
+            payload=request.get_json(silent=True) or {},
+            escape_filter_string=escape_filter_string,
+        )
+        response = jsonify(payload)
+        return response if status_code == 200 else (response, status_code)
+
+    exports["custom_ibkr_fundamentals_refresh"] = custom_ibkr_fundamentals_refresh
+
+    @app.route("/api/custom/ibkr/fundamentals/list", methods=["GET"])
+    @app.route("/api/custom/ibkr/fundamentals", methods=["GET"])
+    def custom_ibkr_fundamentals_list() -> Response:
+        payload, status_code = build_fundamentals_list_response(
+            pb,
+            payload=request.args.to_dict(flat=True),
+            escape_filter_string=escape_filter_string,
+        )
+        response = jsonify(payload)
+        return response if status_code == 200 else (response, status_code)
+
+    exports["custom_ibkr_fundamentals_list"] = custom_ibkr_fundamentals_list
 
     @app.route("/api/custom/ibkr/screener/targets", methods=["POST"])
     def custom_ibkr_screener_targets() -> Response:

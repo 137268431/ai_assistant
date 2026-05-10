@@ -316,6 +316,86 @@ def http_json(url: str, timeout: int = 8) -> dict:
         return {"ok": False, "url": url, "error": str(exc)}
 
 
+def compact_service_topology(payload):
+    source = payload if isinstance(payload, dict) else {}
+    services = source.get("services") if isinstance(source.get("services"), dict) else {}
+    compact_services = {}
+    for name, item in services.items():
+        if not isinstance(item, dict):
+            continue
+        compact_services[str(name)] = {
+            key: item.get(key)
+            for key in ("status", "active_state", "service_profile", "url", "port")
+            if item.get(key) not in (None, "")
+        }
+    return {"services": compact_services}
+
+
+def compact_status_block(payload, keys):
+    source = payload if isinstance(payload, dict) else {}
+    return {key: source.get(key) for key in keys if source.get(key) not in (None, "", [], {})}
+
+
+def compact_http_result_for_report(result):
+    source = result if isinstance(result, dict) else {}
+    compact = {
+        key: source.get(key)
+        for key in ("ok", "status_code", "url", "error", "text_snippet")
+        if source.get(key) not in (None, "")
+    }
+    payload = source.get("json")
+    if isinstance(payload, dict):
+        summary = compact_status_block(
+            payload,
+            (
+                "ok",
+                "status",
+                "service",
+                "service_profile",
+                "environment",
+                "mode",
+                "running",
+                "ready",
+            ),
+        )
+        preload = extract_compute_startup_preload(payload)
+        if preload:
+            summary["compute_startup_preload"] = compact_compute_startup_preload(preload)
+        if isinstance(payload.get("service_topology"), dict):
+            summary["service_topology"] = compact_service_topology(payload.get("service_topology"))
+        if isinstance(payload.get("gateway"), dict):
+            summary["gateway"] = compact_status_block(payload.get("gateway"), ("running", "reachable", "status"))
+        if isinstance(payload.get("session"), dict):
+            summary["session"] = compact_status_block(payload.get("session"), ("authenticated", "connected", "status"))
+        if isinstance(payload.get("websocket"), dict):
+            summary["websocket"] = compact_status_block(payload.get("websocket"), ("connected", "ready", "status"))
+        if isinstance(payload.get("canonical_5m"), dict):
+            summary["canonical_5m"] = compact_status_block(
+                payload.get("canonical_5m"),
+                ("status", "pending_symbols_total", "last_due_bucket_ms", "last_completed_bucket_ms", "lag_s"),
+            )
+        market_universe = payload.get("market_universe")
+        if isinstance(market_universe, dict):
+            summary["market_universe"] = compact_status_block(
+                market_universe,
+                ("active_target_count", "pending_symbols_total", "subscription_count", "status"),
+            )
+            if isinstance(market_universe.get("bar_freshness"), dict):
+                summary["market_universe"]["bar_freshness"] = compact_status_block(
+                    market_universe.get("bar_freshness"),
+                    ("status", "pending_symbols_total", "lag_s"),
+                )
+        if isinstance(payload.get("realtime_compute"), dict):
+            summary["realtime_compute"] = compact_status_block(
+                payload.get("realtime_compute"),
+                ("queue_size", "stalled", "stall_reason", "last_run", "last_bar_close"),
+            )
+        if not summary:
+            summary["keys"] = sorted(str(key) for key in payload.keys())[:30]
+        compact["json"] = summary
+    return compact
+
+
 def row_dict(row):
     return dict(row) if row is not None else None
 
@@ -778,7 +858,7 @@ report = {
     "warnings": warnings,
     "remote": {
         "services": services,
-        "local_http": local_http,
+        "local_http": {name: compact_http_result_for_report(item) for name, item in local_http.items()},
         "db": {
             "latest_bar_5m": latest_bar_5m,
             "latest_indicator_5m": latest_indicator_5m,
@@ -792,15 +872,24 @@ report = {
         },
         "runtime_summary": {
             "service_profile": runtime_service_profile,
-            "service_topology": runtime_topology,
+            "service_topology": compact_service_topology(runtime_topology),
             "compute_startup_preload": compute_startup_preload,
             "compute_startup_preload_sla": compute_startup_preload_sla,
-            "gateway": gateway,
-            "session": session,
-            "websocket": websocket,
-            "canonical_5m": canonical_5m,
-            "realtime_compute": realtime,
-            "market_universe": market_universe,
+            "gateway": compact_status_block(gateway, ("running", "reachable", "status")),
+            "session": compact_status_block(session, ("authenticated", "connected", "status")),
+            "websocket": compact_status_block(websocket, ("connected", "ready", "status")),
+            "canonical_5m": compact_status_block(
+                canonical_5m,
+                ("status", "pending_symbols_total", "last_due_bucket_ms", "last_completed_bucket_ms", "lag_s"),
+            ),
+            "realtime_compute": compact_status_block(
+                realtime,
+                ("queue_size", "stalled", "stall_reason", "last_run", "last_bar_close"),
+            ),
+            "market_universe": compact_status_block(
+                market_universe,
+                ("active_target_count", "pending_symbols_total", "subscription_count", "status"),
+            ),
         },
     },
 }
