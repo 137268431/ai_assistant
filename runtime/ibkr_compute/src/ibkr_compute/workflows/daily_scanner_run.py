@@ -441,21 +441,57 @@ class DailyScannerRunMixin:
             status = str(record.get("status") or "").strip().lower()
             if status == "failed":
                 continue
-            market_cap_usd = _safe_float(record.get("market_cap_usd"))
-            market_cap_millions = _safe_float(record.get("market_cap_millions"))
+            extra = _as_dict(record.get("extra"))
+            market_cap_usd = _safe_float(_fundamental_value(record, extra, "market_cap_usd", "market_cap", "marketCap"))
+            market_cap_millions = _safe_float(
+                _fundamental_value(record, extra, "market_cap_millions", "marketCapitalization")
+            )
             if market_cap_usd <= 0 and market_cap_millions > 0:
                 market_cap_usd = market_cap_millions * 1_000_000.0
-            share_outstanding_millions = _safe_float(record.get("share_outstanding_millions"))
+            share_outstanding_millions = _safe_float(
+                _fundamental_value(record, extra, "share_outstanding_millions", "shares_outstanding_millions")
+            )
+            if share_outstanding_millions > 0:
+                shares_outstanding = share_outstanding_millions * 1_000_000.0
+            else:
+                shares_outstanding = _safe_float(
+                    _fundamental_value(record, extra, "shares_outstanding", "sharesOutstanding", "share_outstanding")
+                )
             normalized = {
                 **record,
                 "market_cap": market_cap_usd,
                 "market_cap_usd": market_cap_usd,
-                "shares_outstanding": share_outstanding_millions * 1_000_000.0
-                if share_outstanding_millions > 0
-                else _safe_float(record.get("shares_outstanding")),
-                "industry": str(record.get("industry") or "").strip(),
-                "exchange": str(record.get("exchange") or "").strip().upper(),
+                "shares_outstanding": shares_outstanding,
+                "shares_float": _fundamental_value(record, extra, "shares_float", "float_shares"),
+                "float_shares": _fundamental_value(record, extra, "float_shares", "shares_float"),
+                "short_float_pct": _fundamental_value(record, extra, "short_float_pct"),
+                "sector": str(_fundamental_value(record, extra, "sector") or "").strip(),
+                "country": str(_fundamental_value(record, extra, "country") or "").strip().upper(),
+                "beta": _fundamental_value(record, extra, "beta"),
+                "avg_volume_10d_provider": _fundamental_value(
+                    record, extra, "avg_volume_10d_provider", "avg_10d_volume"
+                ),
+                "industry": str(_fundamental_value(record, extra, "industry") or "").strip(),
+                "exchange": str(_fundamental_value(record, extra, "exchange") or "").strip().upper(),
                 "provider": str(record.get("provider") or "finnhub").strip().lower(),
             }
             result[symbol] = normalized
         return result
+
+
+def _as_dict(value):
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _first_present(*values):
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        return value
+    return None
+
+
+def _fundamental_value(row, extra, *keys):
+    return _first_present(*(row.get(key) for key in keys), *(extra.get(key) for key in keys))

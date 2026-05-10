@@ -113,8 +113,17 @@ def evaluate_dynamic_admission(
 
 
 def _build_symbol_profile(symbol: str, *, fundamentals: dict, metrics: dict) -> dict:
-    price = _safe_float(_first_present(metrics.get("price"), fundamentals.get("price")))
-    avg_10d_volume = _safe_float(metrics.get("avg_10d_volume"))
+    fundamentals_extra = _as_dict(fundamentals.get("extra"))
+    price = _safe_float(
+        _first_present(metrics.get("price"), _fundamental_value(fundamentals, fundamentals_extra, "price"))
+    )
+    avg_10d_volume = _safe_float(
+        _first_present(
+            metrics.get("avg_10d_volume"),
+            metrics.get("avg_volume_10d"),
+            _fundamental_value(fundamentals, fundamentals_extra, "avg_10d_volume", "avg_volume_10d_provider"),
+        )
+    )
     premarket_volume = _safe_float(metrics.get("premarket_volume"))
     today_volume = _safe_float(metrics.get("today_volume"))
     atr_pct = abs(_safe_float(metrics.get("atr_pct")))
@@ -135,48 +144,63 @@ def _build_symbol_profile(symbol: str, *, fundamentals: dict, metrics: dict) -> 
 
     market_cap = _safe_float(
         _first_present(
-            fundamentals.get("market_cap"),
-            fundamentals.get("marketCap"),
-            fundamentals.get("mkt_cap"),
-            fundamentals.get("market_cap_usd"),
             metrics.get("market_cap"),
             metrics.get("marketCap"),
+            _fundamental_value(
+                fundamentals,
+                fundamentals_extra,
+                "market_cap",
+                "marketCap",
+                "mkt_cap",
+                "market_cap_usd",
+            ),
         )
     )
     if market_cap <= 0:
         market_cap_millions = _safe_float(
             _first_present(
-                fundamentals.get("market_cap_millions"),
-                fundamentals.get("marketCapitalization"),
                 metrics.get("market_cap_millions"),
+                _fundamental_value(fundamentals, fundamentals_extra, "market_cap_millions", "marketCapitalization"),
             )
         )
         if market_cap_millions > 0:
             market_cap = market_cap_millions * 1_000_000.0
     shares_float = _safe_float(
         _first_present(
-            fundamentals.get("shares_float"),
-            fundamentals.get("float_shares"),
-            fundamentals.get("float"),
-            fundamentals.get("public_float"),
             metrics.get("shares_float"),
             metrics.get("float_shares"),
+            _fundamental_value(
+                fundamentals,
+                fundamentals_extra,
+                "shares_float",
+                "float_shares",
+                "float",
+                "public_float",
+            ),
         )
     )
     shares_outstanding = _safe_float(
         _first_present(
-            fundamentals.get("shares_outstanding"),
-            fundamentals.get("sharesOutstanding"),
-            fundamentals.get("share_outstanding"),
             metrics.get("shares_outstanding"),
+            _fundamental_value(
+                fundamentals,
+                fundamentals_extra,
+                "shares_outstanding",
+                "sharesOutstanding",
+                "share_outstanding",
+            ),
         )
     )
     if shares_outstanding <= 0:
         share_outstanding_millions = _safe_float(
             _first_present(
-                fundamentals.get("share_outstanding_millions"),
-                fundamentals.get("shares_outstanding_millions"),
                 metrics.get("share_outstanding_millions"),
+                _fundamental_value(
+                    fundamentals,
+                    fundamentals_extra,
+                    "share_outstanding_millions",
+                    "shares_outstanding_millions",
+                ),
             )
         )
         if share_outstanding_millions > 0:
@@ -184,9 +208,8 @@ def _build_symbol_profile(symbol: str, *, fundamentals: dict, metrics: dict) -> 
     short_float_pct = abs(
         _safe_float(
             _first_present(
-                fundamentals.get("short_float_pct"),
-                fundamentals.get("shortPercentOfFloat"),
                 metrics.get("short_float_pct"),
+                _fundamental_value(fundamentals, fundamentals_extra, "short_float_pct", "shortPercentOfFloat"),
             )
         )
     )
@@ -200,15 +223,29 @@ def _build_symbol_profile(symbol: str, *, fundamentals: dict, metrics: dict) -> 
     if not has_live_bar:
         has_live_bar = _safe_float(metrics.get("latest_intraday_bar_time_ms")) > 0
 
-    exchange = str(_first_present(metrics.get("exchange"), fundamentals.get("exchange")) or "").strip().upper()
-    sector = str(_first_present(fundamentals.get("sector"), metrics.get("sector")) or "").strip()
-    industry = str(_first_present(fundamentals.get("industry"), metrics.get("industry")) or "").strip()
+    exchange = str(
+        _first_present(metrics.get("exchange"), _fundamental_value(fundamentals, fundamentals_extra, "exchange")) or ""
+    ).strip().upper()
+    sector = str(
+        _first_present(metrics.get("sector"), _fundamental_value(fundamentals, fundamentals_extra, "sector")) or ""
+    ).strip()
+    industry = str(
+        _first_present(metrics.get("industry"), _fundamental_value(fundamentals, fundamentals_extra, "industry")) or ""
+    ).strip()
+    country = str(
+        _first_present(metrics.get("country"), _fundamental_value(fundamentals, fundamentals_extra, "country")) or ""
+    ).strip().upper()
+    beta = _safe_float(
+        _first_present(metrics.get("beta"), _fundamental_value(fundamentals, fundamentals_extra, "beta"))
+    )
 
     return {
         "symbol": symbol,
         "exchange": exchange,
         "sector": sector,
         "industry": industry,
+        "country": country,
+        "beta": round(beta, 4) if beta > 0 else 0.0,
         "price": round(price, 4) if price > 0 else 0.0,
         "price_band": _price_band(price),
         "avg_10d_volume": round(avg_10d_volume, 2),
@@ -789,6 +826,10 @@ def _short_interest_profile(short_float_pct: float) -> str:
 
 def _as_dict(value: Any) -> dict:
     return dict(value) if isinstance(value, dict) else {}
+
+
+def _fundamental_value(row: dict, extra: dict, *keys: str) -> Any:
+    return _first_present(*(row.get(key) for key in keys), *(extra.get(key) for key in keys))
 
 
 def _first_present(*values: Any) -> Any:

@@ -109,6 +109,29 @@ def classify_market_data_profile(row: dict[str, Any] | None) -> str:
     return "unknown"
 
 
+def _as_dict(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _first_present(*values: Any) -> Any:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        return value
+    return None
+
+
+def _fundamental_value(row: dict[str, Any], extra: dict[str, Any], *keys: str) -> Any:
+    return _first_present(*(row.get(key) for key in keys), *(extra.get(key) for key in keys))
+
+
+def _positive_or_none(value: Any) -> float | None:
+    parsed = safe_float(value)
+    return round(parsed, 4) if parsed > 0 else None
+
+
 def build_admission_profile(
     *,
     symbol: str,
@@ -116,21 +139,45 @@ def build_admission_profile(
     latest_row: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     fundamental_row = fundamentals or {}
+    extra = _as_dict(fundamental_row.get("extra"))
     market_cap_usd = normalize_market_cap_usd(
-        fundamental_row.get("market_cap_usd"),
-        market_cap_millions=fundamental_row.get("market_cap_millions"),
+        _fundamental_value(fundamental_row, extra, "market_cap_usd", "market_cap", "marketCap"),
+        market_cap_millions=_fundamental_value(
+            fundamental_row,
+            extra,
+            "market_cap_millions",
+            "marketCapitalization",
+        ),
     )
-    share_outstanding_millions = safe_float(fundamental_row.get("share_outstanding_millions"))
+    share_outstanding_millions = safe_float(
+        _fundamental_value(fundamental_row, extra, "share_outstanding_millions", "shares_outstanding_millions")
+    )
     provider = to_text(fundamental_row.get("provider"))
-    cached_profile = to_text(fundamental_row.get("profile")).lower()
+    cached_profile = to_text(_fundamental_value(fundamental_row, extra, "profile")).lower()
     if market_cap_usd > 0 or cached_profile in PROFILE_ADMISSION_THRESHOLDS:
-        name = cached_profile if cached_profile in PROFILE_ADMISSION_THRESHOLDS else classify_fundamental_profile(market_cap_usd)
+        name = (
+            cached_profile
+            if cached_profile in PROFILE_ADMISSION_THRESHOLDS
+            else classify_fundamental_profile(market_cap_usd)
+        )
         return {
             "name": name,
             "source": "fundamentals_cache",
             "provider": provider,
             "market_cap_usd": round(market_cap_usd, 2) if market_cap_usd > 0 else None,
-            "share_outstanding_millions": round(share_outstanding_millions, 4) if share_outstanding_millions > 0 else None,
+            "share_outstanding_millions": (
+                round(share_outstanding_millions, 4) if share_outstanding_millions > 0 else None
+            ),
+            "sector": to_text(_fundamental_value(fundamental_row, extra, "sector")),
+            "country": to_text(_fundamental_value(fundamental_row, extra, "country")),
+            "shares_float": _positive_or_none(
+                _fundamental_value(fundamental_row, extra, "shares_float", "float_shares")
+            ),
+            "short_float_pct": _positive_or_none(_fundamental_value(fundamental_row, extra, "short_float_pct")),
+            "beta": _positive_or_none(_fundamental_value(fundamental_row, extra, "beta")),
+            "avg_volume_10d_provider": _positive_or_none(
+                _fundamental_value(fundamental_row, extra, "avg_volume_10d_provider", "avg_10d_volume")
+            ),
             "reason": "market_cap_profile" if market_cap_usd > 0 else "cached_profile",
         }
 
@@ -141,6 +188,16 @@ def build_admission_profile(
         "provider": "",
         "market_cap_usd": None,
         "share_outstanding_millions": None,
+        "sector": to_text(_fundamental_value(fundamental_row, extra, "sector")),
+        "country": to_text(_fundamental_value(fundamental_row, extra, "country")),
+        "shares_float": _positive_or_none(
+            _fundamental_value(fundamental_row, extra, "shares_float", "float_shares")
+        ),
+        "short_float_pct": _positive_or_none(_fundamental_value(fundamental_row, extra, "short_float_pct")),
+        "beta": _positive_or_none(_fundamental_value(fundamental_row, extra, "beta")),
+        "avg_volume_10d_provider": _positive_or_none(
+            _fundamental_value(fundamental_row, extra, "avg_volume_10d_provider", "avg_10d_volume")
+        ),
         "reason": "liquidity_proxy" if market_profile != "unknown" else "fundamentals_missing",
     }
 

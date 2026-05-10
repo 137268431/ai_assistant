@@ -225,6 +225,16 @@
         "type": "json"
       },
       {
+        "hidden": false,
+        "id": "if_extra",
+        "maxSize": 2097152,
+        "name": "extra",
+        "presentable": false,
+        "required": false,
+        "system": false,
+        "type": "json"
+      },
+      {
         "autogeneratePattern": "",
         "hidden": false,
         "id": "if_error",

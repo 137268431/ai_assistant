@@ -294,10 +294,14 @@ class UniverseRoutesTest(unittest.TestCase):
         item = payload["items"][0]
         self.assertEqual("AMZN", item["symbol"])
         self.assertEqual("mega_cap", item["profile"])
+        self.assertEqual("finnhub", item["extra"]["provider"])
+        self.assertEqual("stock/profile2", item["extra"]["source"])
+        self.assertEqual("marketCapitalization_millions", item["extra"]["market_cap_source"])
         self.assertEqual("***", item["raw_profile"]["token"])
         self.assertNotIn("test-key", str(payload))
+        self.assertEqual("finnhub_profile2_v1", pb.created[0][1]["extra"]["provider_payload_version"])
 
-        pb._records["ibkr_fundamentals"] = [pb.created[0][1]]
+        pb._records["ibkr_fundamentals"] = [{**pb.created[0][1], "extra": "legacy-extra"}]
         list_payload, list_status = build_fundamentals_list_response(
             pb,
             payload={"symbols": ["AMZN"]},
@@ -305,6 +309,7 @@ class UniverseRoutesTest(unittest.TestCase):
         )
         self.assertEqual(200, list_status)
         self.assertEqual(1, list_payload["count"])
+        self.assertEqual({}, list_payload["items"][0]["extra"])
         self.assertNotIn("raw_profile", list_payload["items"][0])
 
     def test_target_upsert_rejects_manual_non_current_market_date(self):

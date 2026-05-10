@@ -138,12 +138,33 @@ def _record_is_fresh(record: dict[str, Any], *, now: datetime) -> bool:
     return bool(expires_at and expires_at > now)
 
 
+def _compact_extra(data: dict[str, Any]) -> dict[str, Any]:
+    extra: dict[str, Any] = {}
+    for raw_key, raw_value in data.items():
+        key = to_text(raw_key)
+        if not key or raw_value in (None, "", {}, []):
+            continue
+        extra[key] = raw_value
+    return extra
+
+
 def _extract_finnhub_profile(raw_payload: dict[str, Any], symbol: str) -> dict[str, Any]:
     raw = ensure_object(raw_payload)
     market_cap_millions = safe_float(raw.get("marketCapitalization"))
     market_cap_usd = normalize_market_cap_usd(None, market_cap_millions=market_cap_millions)
     share_outstanding_millions = safe_float(raw.get("shareOutstanding"))
     profile = classify_fundamental_profile(market_cap_usd)
+    extra = _compact_extra(
+        {
+            "provider": DEFAULT_PROVIDER,
+            "source": "stock/profile2",
+            "provider_payload_version": "finnhub_profile2_v1",
+            "country": to_text(raw.get("country")).upper(),
+            "phone": to_text(raw.get("phone")),
+            "market_cap_source": "marketCapitalization_millions" if market_cap_millions > 0 else "",
+            "share_outstanding_source": "shareOutstanding_millions" if share_outstanding_millions > 0 else "",
+        }
+    )
     return {
         "symbol": to_text(raw.get("ticker") or symbol).upper(),
         "company_name": to_text(raw.get("name")),
@@ -158,6 +179,7 @@ def _extract_finnhub_profile(raw_payload: dict[str, Any], symbol: str) -> dict[s
         "share_outstanding_millions": round(share_outstanding_millions, 6) if share_outstanding_millions > 0 else None,
         "profile": profile,
         "raw_profile": _redact_sensitive(raw),
+        "extra": extra,
     }
 
 
@@ -221,6 +243,7 @@ def _build_cache_record(
         "share_outstanding_millions": profile.get("share_outstanding_millions"),
         "profile": to_text(profile.get("profile")),
         "raw_profile": profile.get("raw_profile") or {},
+        "extra": ensure_object(profile.get("extra")),
         "error": to_text(error)[:500],
         "fetched_at": fetched_at,
         "expires_at": expires_at,
@@ -270,6 +293,7 @@ def serialize_fundamentals_record(record: dict[str, Any], *, include_raw: bool =
         "expires_at": to_text(row.get("expires_at")),
         "error": to_text(row.get("error")),
         "updated": to_text(row.get("updated")),
+        "extra": ensure_object(row.get("extra")),
     }
     if include_raw:
         item["raw_profile"] = _redact_sensitive(row.get("raw_profile") or {})
