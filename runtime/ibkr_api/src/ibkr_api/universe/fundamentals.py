@@ -19,6 +19,7 @@ SUPPORTED_PROVIDERS = {DEFAULT_PROVIDER}
 DEFAULT_CACHE_TTL_HOURS = 168
 MAX_REFRESH_SYMBOLS = 50
 FINNHUB_PROFILE_URL = "https://finnhub.io/api/v1/stock/profile2"
+FINNHUB_METRIC_URL = "https://finnhub.io/api/v1/stock/metric"
 SENSITIVE_KEY_PARTS = ("api_key", "apikey", "token", "secret")
 
 
@@ -183,6 +184,69 @@ def _extract_finnhub_profile(raw_payload: dict[str, Any], symbol: str) -> dict[s
     }
 
 
+def _first_positive_float(source: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        value = safe_float(source.get(key))
+        if value > 0:
+            return value
+    return None
+
+
+def _first_float(source: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        raw_value = source.get(key)
+        if raw_value is None or raw_value == "":
+            continue
+        return safe_float(raw_value)
+    return None
+
+
+def _extract_finnhub_metrics(raw_payload: dict[str, Any]) -> dict[str, Any]:
+    raw = ensure_object(raw_payload)
+    metric = ensure_object(raw.get("metric"))
+    if not metric:
+        return {
+            "metrics_source": "stock/metric",
+            "metrics_provider_payload_version": "finnhub_basic_financials_metric_all_v1",
+            "metric_field_count": 0,
+            "metric_status": "no_metric_payload",
+        }
+
+    normalized = _compact_extra(
+        {
+            "metrics_source": "stock/metric",
+            "metrics_provider_payload_version": "finnhub_basic_financials_metric_all_v1",
+            "metric_field_count": len(metric),
+            "metric_keys_sample": sorted(str(key) for key in metric.keys())[:20],
+            "beta": _first_float(metric, ("beta",)),
+            "avg_volume_10d_provider": _first_positive_float(
+                metric,
+                ("10DayAverageTradingVolume", "10DayAvgVolume", "avgVolume10Day", "averageVolume10D"),
+            ),
+            "avg_volume_3m_provider": _first_positive_float(
+                metric,
+                ("3MonthAverageTradingVolume", "3MonthAvgVolume", "avgVolume3Month", "averageVolume3M"),
+            ),
+            "fifty_two_week_high": _first_positive_float(metric, ("52WeekHigh", "52WeekHighPrice")),
+            "fifty_two_week_low": _first_positive_float(metric, ("52WeekLow", "52WeekLowPrice")),
+            "float_shares_provider": _first_positive_float(
+                metric,
+                ("floatShares", "float", "shareFloat", "publicFloat", "floatSharesOutstanding"),
+            ),
+            "short_interest_provider": _first_positive_float(
+                metric,
+                ("shortInterest", "sharesShort", "shortInterestShares"),
+            ),
+            "short_ratio_provider": _first_positive_float(metric, ("shortRatio", "shortInterestRatio")),
+            "short_percent_float_provider": _first_positive_float(
+                metric,
+                ("shortPercentOfFloat", "shortPercentFloat", "shortFloatPercent"),
+            ),
+        }
+    )
+    return normalized or {"metric_status": "empty_metric_payload"}
+
+
 def _fetch_finnhub_profile(
     symbol: str,
     *,
@@ -213,6 +277,37 @@ def _fetch_finnhub_profile(
         return {"ok": False, "error": "finnhub_request_failed", "status_code": status_code}, 502
     if not payload or not to_text(payload.get("ticker") or symbol):
         return {"ok": False, "error": "finnhub_profile_not_found", "status_code": status_code}, 404
+    return {"ok": True, "payload": payload, "status_code": status_code}, 200
+
+
+def _fetch_finnhub_metrics(
+    symbol: str,
+    *,
+    api_key: str,
+    http_get: HttpGet,
+    timeout: float,
+) -> tuple[dict[str, Any], int]:
+    if not api_key:
+        return {"ok": False, "error": "finnhub_api_key_missing"}, 503
+    try:
+        response = http_get(
+            FINNHUB_METRIC_URL,
+            params={"symbol": symbol, "metric": "all", "token": api_key},
+            timeout=max(1.0, float(timeout or 0)),
+        )
+    except Exception:
+        # Do not echo request exceptions: requests may include the tokenized URL.
+        return {"ok": False, "error": "finnhub_metric_request_failed"}, 502
+
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    try:
+        payload = response.json() if getattr(response, "content", True) else {}
+    except Exception:
+        payload = {}
+    if status_code == 429:
+        return {"ok": False, "error": "finnhub_metric_rate_limited", "status_code": status_code}, 429
+    if status_code >= 400 or not isinstance(payload, dict):
+        return {"ok": False, "error": "finnhub_metric_request_failed", "status_code": status_code}, 502
     return {"ok": True, "payload": payload, "status_code": status_code}, 200
 
 
@@ -364,6 +459,19 @@ def build_fundamentals_refresh_response(
             continue
 
         normalized = _extract_finnhub_profile(ensure_object(fetch_result.get("payload")), symbol)
+        metric_result, metric_status = _fetch_finnhub_metrics(symbol, api_key=api_key, http_get=getter, timeout=timeout)
+        extra = ensure_object(normalized.get("extra"))
+        if metric_result.get("ok"):
+            metric_extra = _extract_finnhub_metrics(ensure_object(metric_result.get("payload")))
+            extra.update(metric_extra)
+            if not extra.get("metric_status"):
+                extra["metric_status"] = "ok"
+        else:
+            extra["metric_status"] = "failed"
+            extra["metrics_error"] = to_text(metric_result.get("error") or "finnhub_metric_failed")[:80]
+            if metric_status:
+                extra["metric_status_code"] = metric_status
+        normalized["extra"] = _compact_extra(extra)
         record_data = _build_cache_record(
             symbol=symbol,
             provider=provider,

@@ -26,11 +26,39 @@ MIN_PASS_DAYS = 2
 MIN_PASS_RATE = 0.6
 MAX_WINDOW_TRADING_DAYS = 20
 
+
+def _normalize_similarity_symbol(value: Any) -> str:
+    symbol = to_text(value).upper().replace("/", ".")
+    if symbol in {"BRK-A", "BRK-B", "BF-A", "BF-B"}:
+        symbol = symbol.replace("-", ".")
+    return symbol
+
+
+def _similar_group_key(group: tuple[str, ...]) -> str:
+    return ",".join(sorted(_normalize_similarity_symbol(symbol) for symbol in group))
+
+
+def _symbol_lookup_variants(symbol: str) -> set[str]:
+    normalized = _normalize_similarity_symbol(symbol)
+    variants = {normalized}
+    if "." in normalized:
+        variants.add(normalized.replace(".", "-"))
+    return variants
+
+
 SIMILAR_SYMBOL_GROUPS: tuple[tuple[str, ...], ...] = (
     ("GOOG", "GOOGL"),
+    ("FOX", "FOXA"),
+    ("BRK.A", "BRK.B"),
+    ("BF.A", "BF.B"),
+    ("SQ", "XYZ"),
 )
 CANONICAL_SYMBOL_BY_GROUP = {
-    "GOOG,GOOGL": "GOOGL",
+    _similar_group_key(("GOOG", "GOOGL")): "GOOGL",
+    _similar_group_key(("FOX", "FOXA")): "FOXA",
+    _similar_group_key(("BRK.A", "BRK.B")): "BRK.B",
+    _similar_group_key(("BF.A", "BF.B")): "BF.B",
+    _similar_group_key(("SQ", "XYZ")): "XYZ",
 }
 
 
@@ -181,8 +209,9 @@ def _row_has_usable_data(row: dict[str, Any]) -> bool:
 
 
 def _find_similar_group(symbol: str) -> tuple[str, ...]:
+    normalized_symbol = _normalize_similarity_symbol(symbol)
     for group in SIMILAR_SYMBOL_GROUPS:
-        if symbol in group:
+        if normalized_symbol in {_normalize_similarity_symbol(member) for member in group}:
             return group
     return ()
 
@@ -194,7 +223,14 @@ def _load_duplicate_context(
     symbols: list[str],
     escape_filter_string: EscapeFilterString,
 ) -> dict[str, dict[str, Any]]:
-    group_symbols = sorted({member for symbol in symbols for member in _find_similar_group(symbol)})
+    group_symbols = sorted(
+        {
+            variant
+            for symbol in symbols
+            for member in _find_similar_group(symbol)
+            for variant in _symbol_lookup_variants(member)
+        }
+    )
     if not group_symbols:
         return {}
     symbol_filter = "(" + " || ".join(f'symbol = "{escape_filter_string(symbol)}"' for symbol in group_symbols) + ")"
@@ -207,22 +243,38 @@ def _load_duplicate_context(
         rows = pb.get_records("watchlist", filter=filter_expr, sort="-updated", per_page=100, page=1)
     except Exception:
         rows = []
-    return {to_text((row or {}).get("symbol")).upper(): dict(row or {}) for row in rows if to_text((row or {}).get("symbol"))}
+    return {
+        _normalize_similarity_symbol((row or {}).get("symbol")): dict(row or {})
+        for row in rows
+        if to_text((row or {}).get("symbol"))
+    }
 
 
 def _build_duplicate_warning(symbol: str, existing_by_symbol: dict[str, dict[str, Any]]) -> dict[str, Any]:
     group = _find_similar_group(symbol)
     if not group:
         return {"duplicate": False}
-    group_key = ",".join(group)
+    normalized_symbol = _normalize_similarity_symbol(symbol)
+    group_key = _similar_group_key(group)
     canonical = CANONICAL_SYMBOL_BY_GROUP.get(group_key, group[0])
-    existing = [member for member in group if member != symbol and member in existing_by_symbol]
+    normalized_canonical = _normalize_similarity_symbol(canonical)
+    existing = [
+        to_text(existing_by_symbol.get(_normalize_similarity_symbol(member), {}).get("symbol") or member).upper()
+        for member in group
+        if _normalize_similarity_symbol(member) != normalized_symbol
+        and _normalize_similarity_symbol(member) in existing_by_symbol
+    ]
+    non_canonical = normalized_symbol != normalized_canonical
     if not existing:
-        return {
+        result = {
             "duplicate": False,
             "group": list(group),
             "canonical_symbol": canonical,
+            "non_canonical": non_canonical,
         }
+        if non_canonical:
+            result["message"] = f"{symbol} 属于相似标的组；建议使用 canonical {canonical}，避免后续重复暴露。"
+        return result
     message = (
         f"{symbol} 与现有 trade 标的 {', '.join(existing)} 属于同一组；"
         f"建议只保留 {canonical}，避免重复暴露和重复回测。"
@@ -233,7 +285,7 @@ def _build_duplicate_warning(symbol: str, existing_by_symbol: dict[str, dict[str
         "canonical_symbol": canonical,
         "existing_trade_symbols": existing,
         "message": message,
-        "non_canonical": symbol != canonical,
+        "non_canonical": non_canonical,
     }
 
 
@@ -401,10 +453,11 @@ def _build_symbol_result(
     ]
 
     duplicate = dict(duplicate_warning or {})
-    if duplicate.get("duplicate"):
+    if duplicate.get("duplicate") or duplicate.get("non_canonical"):
         status = "warn" if status == "pass" else status
         recommendation = "market_monitor" if duplicate.get("non_canonical") else recommendation
-        message = f"{message} {duplicate.get('message')}"
+        if duplicate.get("message"):
+            message = f"{message} {duplicate.get('message')}"
 
     pass_rate = (pass_days / evaluated_days) if evaluated_days > 0 else 0.0
     admission_score = round(max(0.0, min(100.0, pass_rate * 100.0)), 3)

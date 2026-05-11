@@ -188,6 +188,32 @@
       return isDisplayValue(direct) ? direct : parseMaybeObject(extra.intraday_window_admission);
     }
 
+    const FUNDAMENTALS_PROFILE_HINT = '基础面扩展待补全';
+    const SAFE_PROFILE_KEYS = [
+      'profile',
+      'name',
+      'source',
+      'provider',
+      'sector',
+      'industry',
+      'country',
+      'beta',
+      'market_cap',
+      'market_cap_usd',
+      'market_cap_tier',
+      'shares_float',
+      'float_shares',
+      'shares_outstanding',
+      'share_outstanding_millions',
+      'short_float_pct',
+      'avg_volume_10d_provider',
+      'avg_10d_volume',
+      'liquidity_tier',
+      'activity_profile',
+      'float_profile',
+      'short_interest_profile',
+    ];
+
     function getSymbolProfile(row) {
       const extra = getRowExtra(row);
       const snapshot = getRowScreenerSnapshot(row);
@@ -197,6 +223,7 @@
         row?.symbol_profile,
         row?.fundamentals_profile,
         row?.fundamentals,
+        row?.symbol_fundamentals,
         row?.profile,
         eligibility.symbol_profile,
         eligibility.fundamentals_profile,
@@ -207,7 +234,45 @@
         extra.fundamentals_profile,
         extra.fundamentals,
         admission.symbol_profile,
+        admission.profile,
       ]);
+    }
+
+    function getSafeSymbolProfile(row) {
+      const extra = getRowExtra(row);
+      const snapshot = getRowScreenerSnapshot(row);
+      const admission = parseMaybeObject(extra.intraday_window_admission);
+      const eligibility = parseMaybeObject(row?.eligibility);
+      const candidates = [
+        row?.fundamentals,
+        row?.symbol_fundamentals,
+        row?.symbol_profile,
+        row?.fundamentals_profile,
+        eligibility.symbol_profile,
+        eligibility.fundamentals_profile,
+        snapshot.symbol_profile,
+        snapshot.fundamentals_profile,
+        snapshot.fundamentals,
+        extra.symbol_profile,
+        extra.fundamentals_profile,
+        extra.fundamentals,
+        admission.profile,
+        admission.symbol_profile,
+      ];
+      const safe = {};
+      candidates.forEach((candidate) => {
+        const parsed = parseMaybeObject(candidate);
+        if (!isDisplayValue(parsed)) return;
+        const nestedExtra = parseMaybeObject(parsed.extra);
+        const combined = { ...nestedExtra, ...parsed };
+        SAFE_PROFILE_KEYS.forEach((key) => {
+          if (safe[key] !== undefined) return;
+          if (isDisplayValue(combined[key]) && !isPlainObject(combined[key]) && !Array.isArray(combined[key])) {
+            safe[key] = combined[key];
+          }
+        });
+      });
+      return safe;
     }
 
     function formatCompactCount(value, prefix = '') {
@@ -226,7 +291,11 @@
       if (value === undefined || value === null || value === '') return '--';
       if (typeof value === 'boolean') return value ? 'yes' : 'no';
       if (normalizedKey.includes('market_cap')) return formatCompactCount(value, '$');
-      if (normalizedKey.includes('float') || normalizedKey.includes('volume') || normalizedKey.includes('shares')) {
+      if (normalizedKey === 'short_float_pct') {
+        const pct = Number(value);
+        return Number.isFinite(pct) ? `${formatNumber(pct, 2)}%` : String(value);
+      }
+      if (normalizedKey.includes('volume') || normalizedKey.includes('shares') || normalizedKey === 'float_shares') {
         return formatCompactCount(value);
       }
       if (normalizedKey === 'beta') {
@@ -237,53 +306,47 @@
       return String(value);
     }
 
-    function renderSymbolProfileSummary(row, { maxItems = 5, emptyText = '' } = {}) {
-      const profile = getSymbolProfile(row);
-      if (!isDisplayValue(profile)) return emptyText ? `<span class="muted">${escapeHtml(emptyText)}</span>` : '';
-      if (typeof profile === 'string') {
-        return `<div class="reason-wrap"><span class="reason-pill">profile: ${escapeHtml(profile)}</span></div>`;
-      }
+    function renderSymbolProfileSummary(row, { maxItems = 7, emptyText = FUNDAMENTALS_PROFILE_HINT } = {}) {
+      const profile = getSafeSymbolProfile(row);
+      const hint = `<span class="muted" title="等待 ibkr_fundamentals.extra 或动态准入画像补齐">${escapeHtml(emptyText)}</span>`;
+      if (!isDisplayValue(profile)) return emptyText ? hint : '';
       const parsed = parseMaybeObject(profile);
-      if (!isDisplayValue(parsed)) return emptyText ? `<span class="muted">${escapeHtml(emptyText)}</span>` : '';
+      if (!isDisplayValue(parsed)) return emptyText ? hint : '';
       const title = firstDisplayValue([
-        parsed.profile,
-        parsed.symbol_profile,
-        parsed.category,
-        parsed.type,
-        parsed.segment,
         parsed.name,
+        parsed.profile,
+        parsed.market_cap_tier,
+        parsed.liquidity_tier,
       ]);
       const profileKeys = [
+        ['source', 'source'],
+        ['provider', 'provider'],
         ['sector', 'sector'],
-        ['industry', 'industry'],
-        ['asset_class', 'asset'],
-        ['market_cap', 'cap'],
-        ['market_cap_usd', 'cap'],
-        ['float_shares', 'float'],
-        ['shares_float', 'float'],
-        ['avg_volume', 'avg vol'],
-        ['avg_10d_volume', '10d vol'],
         ['country', 'country'],
         ['beta', 'beta'],
+        ['shares_float', 'float'],
+        ['float_shares', 'float'],
+        ['short_float_pct', 'short float'],
+        ['avg_volume_10d_provider', '10d provider vol'],
+        ['avg_10d_volume', '10d vol'],
+        ['market_cap_usd', 'cap'],
+        ['market_cap', 'cap'],
+        ['industry', 'industry'],
+        ['activity_profile', 'activity'],
+        ['float_profile', 'float profile'],
+        ['short_interest_profile', 'short profile'],
       ];
       const chips = [];
       if (title) chips.push(`profile: ${title}`);
       profileKeys.forEach(([key, label]) => {
-        if (chips.length >= maxItems + (title ? 1 : 0)) return;
+        if (chips.length >= maxItems) return;
         const value = parsed[key];
         if (!isDisplayValue(value)) return;
         chips.push(`${label}: ${formatProfileValue(key, value)}`);
       });
-      if (!chips.length) {
-        Object.entries(parsed).slice(0, maxItems).forEach(([key, value]) => {
-          if (isDisplayValue(value) && !isPlainObject(value) && !Array.isArray(value)) {
-            chips.push(`${key}: ${formatProfileValue(key, value)}`);
-          }
-        });
-      }
       return chips.length
-        ? `<div class="reason-wrap">${chips.slice(0, maxItems).map((item) => `<span class="reason-pill">${escapeHtml(item)}</span>`).join('')}</div>`
-        : (emptyText ? `<span class="muted">${escapeHtml(emptyText)}</span>` : '');
+        ? `<div class="reason-wrap">${chips.slice(0, maxItems).map((item) => `<span class="reason-pill" title="ibkr_fundamentals.extra / dynamic admission normalized field">${escapeHtml(item)}</span>`).join('')}</div>`
+        : (emptyText ? hint : '');
     }
 
     function getNeedsBackfillState(row) {

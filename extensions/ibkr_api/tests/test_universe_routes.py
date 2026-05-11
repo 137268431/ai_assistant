@@ -18,6 +18,7 @@ from ibkr_api.universe.screener import build_screener_proxy_response
 from ibkr_api.universe.today_targets import build_today_targets_response
 from ibkr_api.universe.targets import build_screener_targets_upsert_response, build_target_upsert_response
 from ibkr_api.universe.watchlist import build_watchlist_eligibility_response, build_watchlist_upsert_response
+from ibkr_api.universe.watchlist_eligibility import _build_duplicate_warning, _load_duplicate_context
 from ibkr_compute.market.timeframe_utils import ET
 
 
@@ -186,6 +187,48 @@ class UniverseRoutesTest(unittest.TestCase):
         self.assertEqual(80_000, item["latest_metrics"]["avg_10d_volume"])
         self.assertEqual(1, payload["summary"]["warn"])
 
+    def test_watchlist_eligibility_uses_canonical_for_fox_and_xyz_groups(self):
+        fox_duplicate = _build_duplicate_warning("FOX", {"FOXA": {"symbol": "FOXA"}})
+        self.assertTrue(fox_duplicate["duplicate"])
+        self.assertEqual("FOXA", fox_duplicate["canonical_symbol"])
+        self.assertTrue(fox_duplicate["non_canonical"])
+        self.assertEqual(["FOXA"], fox_duplicate["existing_trade_symbols"])
+
+        xyz_duplicate = _build_duplicate_warning("SQ", {})
+        self.assertFalse(xyz_duplicate["duplicate"])
+        self.assertEqual("XYZ", xyz_duplicate["canonical_symbol"])
+        self.assertTrue(xyz_duplicate["non_canonical"])
+        self.assertIn("canonical XYZ", xyz_duplicate["message"])
+
+    def test_watchlist_duplicate_context_normalizes_class_share_separators_only(self):
+        class FilteringPB(_MinimalPB):
+            def get_records(self, collection, filter=None, sort=None, per_page=200, page=1):
+                rows = super().get_records(collection, filter=filter, sort=sort, per_page=per_page, page=page)
+                return [row for row in rows if str(row.get("symbol") or "") in str(filter or "")]
+
+        pb = FilteringPB()
+        pb._records["watchlist"] = [
+            {"symbol": "BRK-B", "environment": "global", "symbol_role": "trade"},
+            {"symbol": "BABA", "environment": "global", "symbol_role": "trade"},
+        ]
+        context = _load_duplicate_context(
+            pb,
+            environment="live",
+            symbols=["BRK.A", "JD"],
+            escape_filter_string=lambda value: str(value or "").replace('"', '\\"'),
+        )
+        self.assertIn("BRK.B", context)
+        self.assertNotIn("BABA", context)
+
+        brk_duplicate = _build_duplicate_warning("BRK.A", context)
+        self.assertTrue(brk_duplicate["duplicate"])
+        self.assertEqual("BRK.B", brk_duplicate["canonical_symbol"])
+        self.assertEqual(["BRK-B"], brk_duplicate["existing_trade_symbols"])
+
+        adr_duplicate = _build_duplicate_warning("JD", context)
+        self.assertFalse(adr_duplicate["duplicate"])
+        self.assertNotIn("group", adr_duplicate)
+
     def test_watchlist_upsert_returns_trade_eligibility_warning_payload(self):
         pb = _MinimalPB()
         pb._records["ibkr_bars"] = [
@@ -311,6 +354,82 @@ class UniverseRoutesTest(unittest.TestCase):
         self.assertEqual(1, list_payload["count"])
         self.assertEqual({}, list_payload["items"][0]["extra"])
         self.assertNotIn("raw_profile", list_payload["items"][0])
+
+    def test_fundamentals_refresh_caches_finnhub_metric_fields(self):
+        pb = _MinimalPB()
+        calls = []
+
+        class FakeResponse:
+            status_code = 200
+            content = True
+
+            def __init__(self, payload):
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        def fake_get(url, params=None, timeout=10.0):
+            calls.append((url, dict(params or {}), timeout))
+            if url.endswith("/stock/profile2"):
+                return FakeResponse(
+                    {
+                        "ticker": "MSFT",
+                        "name": "Microsoft Corp",
+                        "exchange": "NASDAQ",
+                        "finnhubIndustry": "Technology",
+                        "currency": "USD",
+                        "marketCapitalization": 3_100_000,
+                        "shareOutstanding": 7_400,
+                    }
+                )
+            return FakeResponse(
+                {
+                    "symbol": "MSFT",
+                    "metricType": "all",
+                    "metric": {
+                        "beta": 0.91,
+                        "10DayAverageTradingVolume": 31.2,
+                        "3MonthAverageTradingVolume": 24.5,
+                        "52WeekHigh": 468.35,
+                        "52WeekLow": 344.79,
+                        "floatShares": 7_390_000_000,
+                        "shortInterest": 65_000_000,
+                        "shortPercentOfFloat": 0.88,
+                    },
+                }
+            )
+
+        payload, status_code = build_fundamentals_refresh_response(
+            pb,
+            payload={"symbols": ["MSFT"], "timeout_sec": 2},
+            escape_filter_string=lambda value: str(value or "").replace('"', '\\"'),
+            http_get=fake_get,
+            environ={"FINNHUB_API_KEY": "test-key"},
+        )
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(2, len(calls))
+        self.assertEqual(["MSFT", "MSFT"], [call[1]["symbol"] for call in calls])
+        self.assertEqual(["stock/profile2", "stock/metric"], [call[0].rsplit("/api/v1/", 1)[1] for call in calls])
+        self.assertEqual(["test-key", "test-key"], [call[1]["token"] for call in calls])
+
+        extra = payload["items"][0]["extra"]
+        self.assertEqual("stock/profile2", extra["source"])
+        self.assertEqual("stock/metric", extra["metrics_source"])
+        self.assertEqual("finnhub_basic_financials_metric_all_v1", extra["metrics_provider_payload_version"])
+        self.assertEqual("ok", extra["metric_status"])
+        self.assertEqual(0.91, extra["beta"])
+        self.assertEqual(31.2, extra["avg_volume_10d_provider"])
+        self.assertEqual(24.5, extra["avg_volume_3m_provider"])
+        self.assertEqual(468.35, extra["fifty_two_week_high"])
+        self.assertEqual(344.79, extra["fifty_two_week_low"])
+        self.assertEqual(7_390_000_000, extra["float_shares_provider"])
+        self.assertEqual(65_000_000, extra["short_interest_provider"])
+        self.assertEqual(8, extra["metric_field_count"])
+        self.assertIn("beta", extra["metric_keys_sample"])
+        self.assertNotIn("metric", pb.created[0][1]["raw_profile"])
+        self.assertNotIn("test-key", str(payload))
 
     def test_target_upsert_rejects_manual_non_current_market_date(self):
         pb = _MinimalPB()
