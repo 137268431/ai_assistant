@@ -8,6 +8,7 @@ import requests
 
 from ibkr_api.orders.values import ensure_object, parse_boolean, to_int, to_text
 from ibkr_api.universe.dynamic_admission import classify_fundamental_profile, normalize_market_cap_usd, safe_float
+from ibkr_api.universe.maintenance import DEFAULT_MARKET_CONTEXT_SYMBOLS, is_default_market_context_symbol
 
 
 EscapeFilterString = Callable[[Any], str]
@@ -18,6 +19,7 @@ DEFAULT_PROVIDER = "finnhub"
 SUPPORTED_PROVIDERS = {DEFAULT_PROVIDER}
 DEFAULT_CACHE_TTL_HOURS = 168
 MAX_REFRESH_SYMBOLS = 50
+MARKET_CONTEXT_SYMBOLS = set(DEFAULT_MARKET_CONTEXT_SYMBOLS)
 FINNHUB_PROFILE_URL = "https://finnhub.io/api/v1/stock/profile2"
 FINNHUB_METRIC_URL = "https://finnhub.io/api/v1/stock/metric"
 SENSITIVE_KEY_PARTS = ("api_key", "apikey", "token", "secret")
@@ -39,6 +41,21 @@ def normalize_symbols(value: Any) -> list[str]:
 def normalize_provider(value: Any) -> str:
     provider = to_text(value or DEFAULT_PROVIDER).lower() or DEFAULT_PROVIDER
     return provider if provider in SUPPORTED_PROVIDERS else ""
+
+
+def is_market_context_symbol(value: Any) -> bool:
+    return is_default_market_context_symbol(value)
+
+
+def _split_market_context_symbols(symbols: list[str]) -> tuple[list[str], list[str]]:
+    trade_symbols: list[str] = []
+    market_context_symbols: list[str] = []
+    for symbol in symbols:
+        if is_market_context_symbol(symbol):
+            market_context_symbols.append(symbol)
+        else:
+            trade_symbols.append(symbol)
+    return trade_symbols, market_context_symbols
 
 
 def _utc_now() -> datetime:
@@ -406,18 +423,42 @@ def build_fundamentals_refresh_response(
     provider = normalize_provider(payload.get("provider"))
     if not provider:
         return {"ok": False, "error": "unsupported_fundamentals_provider", "source": "ibkr-api"}, 400
-    symbols = normalize_symbols(payload.get("symbols") or payload.get("symbol"))[:MAX_REFRESH_SYMBOLS]
-    if not symbols:
+    requested_symbols = normalize_symbols(payload.get("symbols") or payload.get("symbol"))[:MAX_REFRESH_SYMBOLS]
+    if not requested_symbols:
         return {"ok": False, "error": "missing_symbols", "source": "ibkr-api"}, 400
+
+    include_market_context = parse_boolean(payload.get("include_market_context"), False)
+    symbols, skipped_market_context_symbols = (
+        (requested_symbols, []) if include_market_context else _split_market_context_symbols(requested_symbols)
+    )
+
+    force = parse_boolean(payload.get("force"), False)
+    include_raw = parse_boolean(payload.get("include_raw"), False)
+    ttl_hours = max(1, min(24 * 30, to_int(payload.get("ttl_hours"), DEFAULT_CACHE_TTL_HOURS)))
+    if not symbols:
+        return {
+            "ok": True,
+            "provider": provider,
+            "ttl_hours": ttl_hours,
+            "requested": len(requested_symbols),
+            "eligible_symbols": 0,
+            "refreshed": 0,
+            "cache_hits": 0,
+            "failed": 0,
+            "skipped": len(skipped_market_context_symbols),
+            "skipped_symbols": skipped_market_context_symbols,
+            "skipped_market_context_symbols": skipped_market_context_symbols,
+            "items": [],
+            "errors": [],
+            "reason": "only_market_context_symbols",
+            "source": "ibkr-api",
+        }, 200
 
     env = environ if environ is not None else os.environ
     api_key = to_text(env.get("FINNHUB_API_KEY"))
     if provider == DEFAULT_PROVIDER and not api_key:
         return {"ok": False, "error": "finnhub_api_key_missing", "provider": provider, "source": "ibkr-api"}, 503
 
-    force = parse_boolean(payload.get("force"), False)
-    include_raw = parse_boolean(payload.get("include_raw"), False)
-    ttl_hours = max(1, min(24 * 30, to_int(payload.get("ttl_hours"), DEFAULT_CACHE_TTL_HOURS)))
     timeout = max(1.0, float(safe_float(payload.get("timeout_sec"), 10.0) or 10.0))
     now = _utc_now()
     fetched_at = _format_utc(now)
@@ -500,10 +541,14 @@ def build_fundamentals_refresh_response(
         "ok": ok,
         "provider": provider,
         "ttl_hours": ttl_hours,
-        "requested": len(symbols),
+        "requested": len(requested_symbols),
+        "eligible_symbols": len(symbols),
         "refreshed": refreshed,
         "cache_hits": cache_hits,
         "failed": len(errors),
+        "skipped": len(skipped_market_context_symbols),
+        "skipped_symbols": skipped_market_context_symbols,
+        "skipped_market_context_symbols": skipped_market_context_symbols,
         "items": items,
         "errors": errors,
         "source": "ibkr-api",
@@ -521,13 +566,34 @@ def build_fundamentals_list_response(
         return {"ok": False, "error": "unsupported_fundamentals_provider", "source": "ibkr-api"}, 400
     symbols = normalize_symbols(payload.get("symbols") or payload.get("symbol"))
     include_raw = parse_boolean(payload.get("include_raw"), False)
+    include_market_context = parse_boolean(payload.get("include_market_context"), False)
     page = max(1, to_int(payload.get("page"), 1))
     per_page = max(1, min(200, to_int(payload.get("per_page") or payload.get("page_size"), 100)))
     status = to_text(payload.get("status")).lower()
+    skipped_market_context_symbols: list[str] = []
 
     clauses = [f'provider = "{escape_filter_string(provider)}"']
     if symbols:
-        clauses.append("(" + " || ".join(f'symbol = "{escape_filter_string(symbol)}"' for symbol in symbols) + ")")
+        query_symbols, skipped_market_context_symbols = (
+            (symbols, []) if include_market_context else _split_market_context_symbols(symbols)
+        )
+        if not query_symbols:
+            return {
+                "ok": True,
+                "provider": provider,
+                "page": page,
+                "per_page": per_page,
+                "items": [],
+                "count": 0,
+                "skipped": len(skipped_market_context_symbols),
+                "skipped_symbols": skipped_market_context_symbols,
+                "skipped_market_context_symbols": skipped_market_context_symbols,
+                "source": "ibkr-api",
+            }, 200
+        clauses.append("(" + " || ".join(f'symbol = "{escape_filter_string(symbol)}"' for symbol in query_symbols) + ")")
+    elif not include_market_context:
+        for symbol in sorted(MARKET_CONTEXT_SYMBOLS):
+            clauses.append(f'symbol != "{escape_filter_string(symbol)}"')
     if status:
         clauses.append(f'status = "{escape_filter_string(status)}"')
     filter_expr = " && ".join(clauses)
@@ -555,14 +621,19 @@ def build_fundamentals_list_response(
         "per_page": per_page,
         "items": items,
         "count": len(items),
+        "skipped": len(skipped_market_context_symbols),
+        "skipped_symbols": skipped_market_context_symbols,
+        "skipped_market_context_symbols": skipped_market_context_symbols,
         "source": "ibkr-api",
     }, 200
 
 
 __all__ = [
     "FUNDAMENTALS_COLLECTION",
+    "MARKET_CONTEXT_SYMBOLS",
     "build_fundamentals_list_response",
     "build_fundamentals_refresh_response",
+    "is_market_context_symbol",
     "load_fundamentals_cache_by_symbol",
     "normalize_symbols",
     "serialize_fundamentals_record",

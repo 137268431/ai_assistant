@@ -80,6 +80,7 @@ def get_active_trade_symbols(environment: str, market_date: str | None = None) -
     api_app = _api_app()
     runtime_environment = str(environment or "live").strip().lower() or "live"
     target_date = str(market_date or api_app.current_market_date()).strip() or api_app.current_market_date()
+    market_monitor_symbols = get_market_monitor_symbols(runtime_environment)
     try:
         rows = api_app.pb.get_all_records(
             "ibkr_targets",
@@ -98,7 +99,7 @@ def get_active_trade_symbols(environment: str, market_date: str | None = None) -
     active_rows = [
         row
         for row in rows
-        if str(row.get("symbol", "")).strip()
+        if str(row.get("symbol", "")).strip().upper() not in market_monitor_symbols
     ]
     prioritized_rows = [
         row for row in active_rows if _target_row_is_manual(row)

@@ -133,16 +133,21 @@
             const target = overrideTarget || getRuntimeActionMap()[action];
             if (!target) return;
 
+            actionPendingLabel = formatRuntimePendingLabel(action, target?.body?.reason || '');
             setActionState(true);
-            const pendingMessage = `执行中：${action} ...`;
+            const pendingMessage = actionPendingLabel;
             document.getElementById('lastAction').textContent = pendingMessage;
             setAuthActionFeedback(pendingMessage, 'info');
             try {
-                const payload = await requestIbkrEnvironmentJson(target.path, currentEnvironment, {
-                    method: 'POST',
-                    body: target.body,
-                    retryAttempts: 3
-                });
+                const payload = await withTimeout(
+                    requestIbkrEnvironmentJson(target.path, currentEnvironment, {
+                        method: 'POST',
+                        body: target.body,
+                        retryAttempts: 1
+                    }),
+                    25000,
+                    `动作 ${action}`
+                );
                 const message = summarizeAction(action, payload);
                 document.getElementById('lastAction').textContent = `最近动作：${message}`;
                 setAuthActionFeedback(`最近动作：${message}`, payload?.ok === false ? 'error' : 'ok');
@@ -150,12 +155,23 @@
                 if (payload?.accepted === true || Number(payload?.status_code || 0) === 202 || ['start', 'gateway_restart', 'reauth', 'reauth_force_new', 'probe', 'panic_reset_2fa'].includes(action)) {
                     boostRuntimeRefresh();
                 }
+                // The action is complete once the POST returns; don't keep buttons locked while a follow-up refresh waits on slow status APIs.
+                setActionState(false);
                 await loadRuntimeData(false);
             } catch (error) {
-                const message = `动作失败：${action} · ${error.message || error}`;
+                const rawMessage = String(error?.message || error || '');
+                const timedOut = rawMessage.includes('timed out');
+                const likelySubmitted = ['start', 'gateway_restart', 'reauth', 'reauth_force_new', 'probe', 'panic_reset_2fa'].includes(action);
+                const message = timedOut && likelySubmitted
+                    ? `动作响应超时：${action} · 已解除按钮锁并继续刷新；请先观察最新状态，避免重复触发。`
+                    : `动作失败：${action} · ${rawMessage}`;
                 document.getElementById('lastAction').textContent = message;
-                setAuthActionFeedback(message, 'error');
+                setAuthActionFeedback(message, timedOut && likelySubmitted ? 'warn' : 'error');
                 showToast(message);
+                if (timedOut && likelySubmitted) {
+                    boostRuntimeRefresh();
+                    void loadRuntimeData(false);
+                }
             } finally {
                 setActionState(false);
             }
@@ -234,8 +250,9 @@
             if (!await confirmServiceAction(moduleDef.service, normalizedAction)) return;
             if (!ensureIbkrPageAuth()) return;
 
+            actionPendingLabel = `执行中：${moduleDef.service} ${label}`;
             setActionState(true);
-            const pendingMessage = `执行中：${moduleDef.service} ${normalizedAction} ...`;
+            const pendingMessage = actionPendingLabel;
             document.getElementById('lastAction').textContent = pendingMessage;
             setAuthActionFeedback(pendingMessage, 'info');
             try {

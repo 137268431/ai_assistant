@@ -7,15 +7,19 @@ from ibkr_api.orders.values import ensure_object, parse_boolean, to_float, to_in
 from ibkr_api.universe.maintenance import (
     call_universe_reconcile,
     ensure_target_watchlist_record,
+    find_effective_watchlist_record,
     find_record_by_id_or_filter,
     get_runtime_market_date,
     has_effective_watchlist_member,
+    is_default_market_context_symbol,
     list_active_today_targets,
     normalize_direction_bias,
     normalize_target_status,
+    normalize_watchlist_role,
     parse_json_object,
     remove_auto_watchlist_record_if_eligible,
     upsert_record,
+    WATCHLIST_ROLE_MARKET_MONITOR,
 )
 
 RequestJsonRequest = Callable[..., dict[str, Any]]
@@ -83,6 +87,30 @@ def build_target_upsert_response(
     scan_reason = to_text(payload.get("scan_reason"))
     status = normalize_target_status(payload.get("status"), default="candidate")
     extra = _normalize_extra(payload.get("extra"))
+    effective_watchlist_record = find_effective_watchlist_record(
+        pb,
+        symbol,
+        environment,
+        escape_filter_string=escape_filter_string,
+    )
+    effective_role = normalize_watchlist_role((effective_watchlist_record or {}).get("symbol_role"))
+    is_market_context = is_default_market_context_symbol(symbol) or effective_role == WATCHLIST_ROLE_MARKET_MONITOR
+    force_market_context_target = parse_boolean(payload.get("force_monitor_target") or payload.get("force_market_context_target"), False)
+    if status in {"candidate", "active"} and is_market_context and not (force_market_context_target and environment != "live"):
+        return (
+            {
+                "ok": False,
+                "error": "market_context_symbol_not_trade_target",
+                "symbol": symbol,
+                "symbol_role": WATCHLIST_ROLE_MARKET_MONITOR,
+                "requested_status": status,
+                "environment": environment,
+                "current_market_date": current_market_date,
+                "message": "QQQ/SPY/VIX and market_monitor symbols are market context only and cannot be active trade targets.",
+                "source": "ibkr-api",
+            },
+            400,
+        )
     requested_bar_time_ms = to_int(payload.get("bar_time_ms"), 0)
     bar_time_ms = requested_bar_time_ms if requested_bar_time_ms > 0 else int(time.time() * 1000)
     us_time = to_text(payload.get("us_time") or times.get("us"))

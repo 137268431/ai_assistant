@@ -17,7 +17,20 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         let runtimeRecentDataLoading = false;
         let runtimePageClosing = false;
         let authActionFeedback = null;
+        let actionPendingLabel = '';
         const CHALLENGE_RESET_RECOMMEND_MS = 120 * 1000;
+        const RUNTIME_ACTION_LABELS = {
+            start: '启动 Runtime 线程',
+            stop: '停止 Runtime 线程',
+            gateway_restart: '重启 IB Gateway',
+            reauth: '刷新飞书卡片（不触发手机）',
+            reauth_force_new: '开始 2FA（触发手机）',
+            probe: '立即探测认证状态',
+            panic_reset_2fa: '重开 2FA',
+            compute: '运行 Compute',
+            emergency_all: '全部急停',
+            recover_all: '恢复运行开关',
+        };
         const MANUAL_AUTH_REASON_LABELS = {
             weekly_reauth: '每周重登提醒',
             manual_start: '启动验证',

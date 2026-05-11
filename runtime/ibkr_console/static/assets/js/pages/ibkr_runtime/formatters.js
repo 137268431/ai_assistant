@@ -20,6 +20,15 @@
             return MANUAL_AUTH_REASON_LABELS[normalizeManualAuthReason(reason)] || '手动验证';
         }
 
+        function getRuntimeActionLabel(action, fallback = '') {
+            const key = String(action || '').trim().toLowerCase();
+            return RUNTIME_ACTION_LABELS[key] || String(fallback || key || '操作').trim();
+        }
+
+        function formatRuntimePendingLabel(action, fallback = '') {
+            return `执行中：${getRuntimeActionLabel(action, fallback)}`;
+        }
+
         function statusClass(value) {
             const text = String(value || '').trim().toLowerCase();
             if (!text) return 'pill-neutral';
@@ -249,4 +258,3 @@
         function renderEmpty(message) {
             return `<div class="table-empty">${escapeHtml(message)}</div>`;
         }
-

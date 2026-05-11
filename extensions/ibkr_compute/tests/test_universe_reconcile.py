@@ -140,6 +140,45 @@ class DummySignalRouter:
         return None
 
 
+class DummyTargetPlanPB:
+    def __init__(self, rows):
+        self.rows = [dict(row) for row in rows]
+        self.updated = []
+
+    def get_all_records(self, collection, **_kwargs):
+        return [dict(row) for row in self.rows] if collection == "ibkr_targets" else []
+
+    def update_record(self, collection, record_id, data):
+        self.updated.append((collection, record_id, dict(data)))
+        for row in self.rows:
+            if row.get("id") == record_id:
+                row.update(dict(data))
+                return dict(row)
+        return {"id": record_id, **dict(data)}
+
+
+class DummyTargetPlanUniverse(TradingServiceMarketUniverseMixin):
+    def __init__(self, rows):
+        self.config = DummyConfig(
+            {
+                "ibkr_target_subscription_limit": 10,
+                "ibkr_total_subscription_limit": 10,
+            }
+        )
+        self.pb = DummyTargetPlanPB(rows)
+        self._watchlist_records = {
+            "AAPL": {"symbol": "AAPL", "exchange": "NASDAQ", "industry": "Technology", "symbol_role": "trade"},
+            "SPY": {"symbol": "SPY", "exchange": "ARCA", "industry": "ETF", "symbol_role": "market_monitor"},
+        }
+        self._symbol_meta = {
+            "AAPL": {"exchange": "NASDAQ", "industry": "Technology"},
+            "SPY": {"exchange": "ARCA", "industry": "ETF"},
+        }
+
+    def _market_ws_symbols(self):
+        return ["SPY", "QQQ", "VIX"]
+
+
 class DummyPrimeUniverse(TradingServiceMarketUniverseMixin):
     def __init__(self):
         self.conid_resolver = DummyConidResolver()
@@ -232,6 +271,27 @@ class UniversePrimeBacktestPreloadTest(unittest.TestCase):
         self.assertEqual("target_upsert", preload_call["trigger"])
         self.assertEqual("new_universe_symbol_default_backtest_preload", preload_call["reason"])
         self.assertTrue(result["interval_prime_started"])
+
+
+class UniverseTargetSubscriptionPlanTest(unittest.TestCase):
+    def test_market_context_active_targets_are_not_selected_as_trade_rows(self):
+        universe = DummyTargetPlanUniverse(
+            [
+                {"id": "target-spy", "symbol": "SPY", "status": "active", "score": 99, "extra": {"source": "manual_page_add"}},
+                {"id": "target-aapl", "symbol": "AAPL", "status": "active", "score": 80, "extra": {"source": "daily_scan"}},
+            ]
+        )
+
+        target_date, symbols, _meta, selected_rows = universe._build_target_subscription_plan()
+        universe._mark_target_statuses(target_date, selected_rows)
+
+        self.assertIn("AAPL", symbols)
+        self.assertIn("SPY", symbols)  # still subscribed as market context data
+        self.assertEqual(["AAPL"], [row["symbol"] for row in selected_rows])
+        spy_updates = [data for collection, record_id, data in universe.pb.updated if record_id == "target-spy"]
+        self.assertTrue(spy_updates)
+        self.assertEqual("candidate", spy_updates[-1]["status"])
+        self.assertTrue(spy_updates[-1]["extra"]["blocked_from_trading"])
 
 
 class UniverseRealtimeQuoteResubscribeTest(unittest.TestCase):

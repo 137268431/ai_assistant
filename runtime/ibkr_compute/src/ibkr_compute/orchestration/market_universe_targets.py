@@ -152,8 +152,10 @@ class TradingServiceMarketUniverseTargetsMixin:
         return today, rows
 
     def _build_target_subscription_plan(self):
+        service_mod = _service_mod()
         target_date, rows = self._today_target_rows()
         trade_budget = self._get_trade_subscription_budget()
+        monitor_symbols = set(self._market_ws_symbols())
         selected_symbols = []
         selected_meta = {}
         selected_rows = []
@@ -173,6 +175,12 @@ class TradingServiceMarketUniverseTargetsMixin:
         for row in prioritized_rows:
             symbol = str(row.get("symbol", "")).upper()
             if not symbol or symbol in seen:
+                continue
+            if symbol in monitor_symbols:
+                service_mod.logger.warning(
+                    "Skipping market context symbol %s from active trade target plan",
+                    symbol,
+                )
                 continue
             if trade_budget is not None and len(selected_rows) >= trade_budget:
                 break
@@ -214,6 +222,7 @@ class TradingServiceMarketUniverseTargetsMixin:
     def _mark_target_statuses(self, target_date: str, selected_rows):
         service_mod = _service_mod()
         safe_env = str(service_mod.ENVIRONMENT or "live").strip().lower().replace('"', '\\"')
+        monitor_symbols = set(self._market_ws_symbols())
         try:
             existing = self.pb.get_all_records(
                 "ibkr_targets",
@@ -232,6 +241,24 @@ class TradingServiceMarketUniverseTargetsMixin:
         for row in existing:
             record_id = str(row.get("id") or "")
             if not record_id:
+                continue
+            symbol = str(row.get("symbol", "") or "").strip().upper()
+            if symbol in monitor_symbols:
+                current = str(row.get("status", "") or "").strip().lower()
+                extra = _safe_extra(row)
+                extra.update(
+                    {
+                        "blocked_from_trading": True,
+                        "block_reason": "market_context_symbol",
+                    }
+                )
+                update_data = {"extra": extra}
+                if current != "candidate":
+                    update_data["status"] = "candidate"
+                try:
+                    self.pb.update_record("ibkr_targets", record_id, update_data)
+                except Exception as exc:
+                    service_mod.logger.warning("Failed to block market context target %s: %s", record_id, exc)
                 continue
             if _target_row_is_manual(row):
                 continue

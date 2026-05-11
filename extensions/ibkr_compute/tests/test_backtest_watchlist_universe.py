@@ -35,6 +35,22 @@ class BacktestWatchlistUniverseTests(unittest.TestCase):
         self.assertTrue(request["exclude_market_monitors"])
         self.assertTrue({"QQQ", "SPY", "VIX"}.issubset(set(request["exclude_symbols"])))
 
+    def test_include_market_monitors_does_not_enable_trade_symbols_without_explicit_context_override(self):
+        request = request_utils.normalize_request(
+            {
+                "symbol_source": "manual",
+                "symbols": "AAPL,QQQ,SPY,VIX,NVDA",
+                "include_market_monitors": True,
+                "date_from": "2026-04-01",
+                "date_to": "2026-04-01",
+                "max_symbols": 99,
+            }
+        )
+
+        self.assertEqual(request["symbols"], ["AAPL", "NVDA"])
+        self.assertTrue(request["exclude_market_monitors"])
+        self.assertFalse(request["allow_market_context_symbols"])
+
     def test_watchlist_default_max_symbols_uses_full_trade_pool_limit(self):
         request = request_utils.normalize_request(
             {

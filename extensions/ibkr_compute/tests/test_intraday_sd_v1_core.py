@@ -431,7 +431,8 @@ class IntradaySdV1CoreTest(unittest.TestCase):
             WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR="market_monitor",
             pb=SimpleNamespace(
                 get_all_records=lambda collection, **kwargs: [
-                    {"symbol": "AAPL", "status": "active", "extra": {}}
+                    {"symbol": "AAPL", "status": "active", "extra": {}},
+                    {"symbol": "SPY", "status": "active", "extra": {}},
                 ]
                 if collection == "ibkr_targets"
                 else []
@@ -464,6 +465,25 @@ class IntradaySdV1CoreTest(unittest.TestCase):
         self.assertFalse(params["intraday_include_legacy_signals"])
         self.assertEqual(params["market_monitor_symbols"], "SPY")
         self.assertEqual(params["signal_enabled_symbols"], "AAPL")
+
+    def test_market_monitor_symbols_do_not_generate_signals_even_if_active(self):
+        gen = SignalGenerator(
+            "SPY",
+            "5m",
+            {"market_monitor_symbols": "SPY,QQQ,VIX", "signal_enabled_symbols": "SPY"},
+        )
+        self.assertTrue(gen.symbol_is_market_monitor)
+
+        diagnostic_gen = SignalGenerator(
+            "SPY",
+            "5m",
+            {
+                "market_monitor_symbols": "SPY,QQQ,VIX",
+                "signal_enabled_symbols": "SPY",
+                "allow_market_monitor_signals": True,
+            },
+        )
+        self.assertFalse(diagnostic_gen.symbol_is_market_monitor)
 
 
 if __name__ == "__main__":

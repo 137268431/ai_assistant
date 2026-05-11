@@ -305,6 +305,74 @@ class UniverseRoutesTest(unittest.TestCase):
         self.assertEqual("finnhub_api_key_missing", payload["error"])
         self.assertEqual([], pb.created)
 
+    def test_fundamentals_refresh_skips_market_context_without_api_key(self):
+        pb = _MinimalPB()
+        calls = []
+        payload, status_code = build_fundamentals_refresh_response(
+            pb,
+            payload={"symbols": ["QQQ", "SPY", "VIX"]},
+            escape_filter_string=lambda value: str(value or "").replace('"', '\\"'),
+            http_get=lambda *args, **kwargs: calls.append((args, kwargs)),
+            environ={},
+        )
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertEqual("only_market_context_symbols", payload["reason"])
+        self.assertEqual(3, payload["requested"])
+        self.assertEqual(0, payload["eligible_symbols"])
+        self.assertEqual(3, payload["skipped"])
+        self.assertEqual(["QQQ", "SPY", "VIX"], payload["skipped_market_context_symbols"])
+        self.assertEqual([], calls)
+        self.assertEqual([], pb.created)
+
+    def test_fundamentals_refresh_fetches_only_trade_symbols_by_default(self):
+        pb = _MinimalPB()
+        calls = []
+
+        class FakeResponse:
+            status_code = 200
+            content = True
+
+            def __init__(self, payload):
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        def fake_get(url, params=None, timeout=10.0):
+            calls.append((url, dict(params or {}), timeout))
+            self.assertEqual("AAPL", dict(params or {}).get("symbol"))
+            if url.endswith("/stock/profile2"):
+                return FakeResponse(
+                    {
+                        "ticker": "AAPL",
+                        "name": "Apple Inc",
+                        "exchange": "NASDAQ",
+                        "finnhubIndustry": "Technology",
+                        "currency": "USD",
+                        "marketCapitalization": 2_900_000,
+                        "shareOutstanding": 15_000,
+                    }
+                )
+            return FakeResponse({"symbol": "AAPL", "metricType": "all", "metric": {"beta": 1.2}})
+
+        payload, status_code = build_fundamentals_refresh_response(
+            pb,
+            payload={"symbols": ["AAPL", "SPY", "VIX"]},
+            escape_filter_string=lambda value: str(value or "").replace('"', '\\"'),
+            http_get=fake_get,
+            environ={"FINNHUB_API_KEY": "test-key"},
+        )
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(3, payload["requested"])
+        self.assertEqual(1, payload["eligible_symbols"])
+        self.assertEqual(2, payload["skipped"])
+        self.assertEqual(["SPY", "VIX"], payload["skipped_market_context_symbols"])
+        self.assertEqual(["AAPL", "AAPL"], [call[1]["symbol"] for call in calls])
+        self.assertEqual(1, len(pb.created))
+        self.assertEqual("AAPL", pb.created[0][1]["symbol"])
+
     def test_fundamentals_refresh_caches_redacted_finnhub_profile(self):
         pb = _MinimalPB()
 
@@ -450,6 +518,36 @@ class UniverseRoutesTest(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertEqual("manual_target_only_current_market_date", payload["error"])
         self.assertEqual("2026-04-23", payload["current_market_date"])
+
+    def test_target_upsert_rejects_market_context_symbol_as_trade_target(self):
+        pb = _MinimalPB()
+        pb._records["watchlist"] = [
+            {"symbol": "SPY", "environment": "global", "symbol_role": "market_monitor"},
+        ]
+        reconcile_calls = []
+
+        payload, status_code = build_target_upsert_response(
+            pb,
+            payload={"symbol": "SPY", "date": "2026-04-23", "environment": "live", "status": "active"},
+            normalize_environment=lambda value, default="live": str(value or default).strip().lower() or default,
+            escape_filter_string=lambda value: str(value or "").replace('"', '\\"'),
+            time_strings=lambda: {"us": "2026-04-23 09:30:00", "cn": "2026-04-23 21:30:00", "date": "2026-04-23"},
+            request_json_request=lambda *args, **kwargs: reconcile_calls.append((args, kwargs))
+            or {
+                "status_code": 200,
+                "payload": {"market_date": "2026-04-23"},
+                "target_url": "http://127.0.0.1:5100/ibkr/status",
+            },
+            compute_base_url="http://127.0.0.1:5100",
+        )
+
+        self.assertEqual(400, status_code)
+        self.assertFalse(payload["ok"])
+        self.assertEqual("market_context_symbol_not_trade_target", payload["error"])
+        self.assertEqual("market_monitor", payload["symbol_role"])
+        self.assertEqual([], pb.created)
+        self.assertEqual([], pb.updated)
+        self.assertEqual(1, len(reconcile_calls))
 
     def test_screener_targets_upsert_counts_created_records(self):
         pb = _MinimalPB()

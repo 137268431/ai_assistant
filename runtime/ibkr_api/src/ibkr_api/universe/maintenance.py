@@ -9,6 +9,7 @@ from ibkr_api.orders.values import ensure_object, first_defined, parse_boolean, 
 WATCHLIST_ROLE_TRADE = "trade"
 WATCHLIST_ROLE_MARKET_MONITOR = "market_monitor"
 VALID_WATCHLIST_ROLES = {WATCHLIST_ROLE_TRADE, WATCHLIST_ROLE_MARKET_MONITOR}
+DEFAULT_MARKET_CONTEXT_SYMBOLS = {"QQQ", "SPY", "VIX"}
 
 RequestJsonRequest = Callable[..., dict[str, Any]]
 TimeStrings = Callable[[], dict[str, str]]
@@ -36,6 +37,10 @@ def normalize_watchlist_role(value: Any, *, default: str = WATCHLIST_ROLE_TRADE)
     if normalized in VALID_WATCHLIST_ROLES:
         return normalized
     return default
+
+
+def is_default_market_context_symbol(value: Any) -> bool:
+    return to_text(value).upper() in DEFAULT_MARKET_CONTEXT_SYMBOLS
 
 
 def normalize_record_environment(value: Any, *, runtime_environment: str) -> str:
@@ -220,6 +225,43 @@ def find_watchlist_record_for_symbol(
         return None
 
 
+def find_effective_watchlist_record(
+    pb: Any,
+    symbol: str,
+    environment: str,
+    *,
+    escape_filter_string: EscapeFilterString,
+) -> dict[str, Any] | None:
+    normalized_symbol = to_text(symbol).upper()
+    normalized_environment = to_text(environment).lower() or "live"
+    if not normalized_symbol:
+        return None
+    filter_expr = (
+        f'symbol = "{escape_filter_string(normalized_symbol)}" && '
+        f'(environment = "{escape_filter_string(normalized_environment)}" || environment = "global" || environment = "")'
+    )
+    try:
+        rows = pb.get_records("watchlist", filter=filter_expr, sort="-updated", per_page=20, page=1)
+    except Exception:
+        return None
+    priority = {"": 0, "global": 1, normalized_environment: 2}
+    selected: dict[str, Any] | None = None
+    selected_rank = -1
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        row_symbol = to_text(row.get("symbol")).upper()
+        if row_symbol != normalized_symbol:
+            continue
+        row_env = to_text(row.get("environment")).lower()
+        rank = priority.get(row_env, -1)
+        if rank < 0 or rank <= selected_rank:
+            continue
+        selected = dict(row)
+        selected_rank = rank
+    return selected
+
+
 def list_active_today_targets(
     pb: Any,
     symbol: str,
@@ -358,14 +400,17 @@ def remove_auto_watchlist_record_if_eligible(
 
 
 __all__ = [
+    "DEFAULT_MARKET_CONTEXT_SYMBOLS",
     "WATCHLIST_ROLE_MARKET_MONITOR",
     "WATCHLIST_ROLE_TRADE",
     "call_universe_reconcile",
     "ensure_target_watchlist_record",
+    "find_effective_watchlist_record",
     "find_record_by_id_or_filter",
     "find_watchlist_record_for_symbol",
     "get_runtime_market_date",
     "has_effective_watchlist_member",
+    "is_default_market_context_symbol",
     "list_active_today_targets",
     "normalize_direction_bias",
     "normalize_record_environment",

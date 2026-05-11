@@ -56,6 +56,7 @@
 
         function setActionState(isPending) {
             actionPending = isPending;
+            if (!actionPending) actionPendingLabel = '';
             renderRuntimeFlowPrimaryAction(latestRuntimeStatus, latestTwoFactorState);
             syncActionLocks();
             renderServiceControlPanel(latestRuntimeStatus, latestServiceMonitorPayload);
@@ -187,4 +188,3 @@
                 });
             });
         }
-

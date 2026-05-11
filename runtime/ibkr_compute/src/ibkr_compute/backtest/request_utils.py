@@ -185,7 +185,11 @@ def normalize_request(payload: dict) -> dict:
         symbol_source = "manual"
 
     benchmark_symbol = str(payload.get("benchmark_symbol") or "SPY").strip().upper() or "SPY"
-    exclude_market_monitors = not normalize_bool(payload.get("include_market_monitors"), False) and normalize_bool(
+    allow_market_context_symbols = normalize_bool(
+        payload.get("allow_market_context_symbols") or payload.get("allow_market_context_trading"),
+        False,
+    )
+    exclude_market_monitors = not allow_market_context_symbols and normalize_bool(
         payload.get("exclude_market_monitors"),
         True,
     )
@@ -491,6 +495,7 @@ def normalize_request(payload: dict) -> dict:
         "exclude_symbols": exclude_symbols,
         "exclude_symbols_text": ",".join(exclude_symbols),
         "exclude_market_monitors": exclude_market_monitors,
+        "allow_market_context_symbols": allow_market_context_symbols,
         "benchmark_symbol": benchmark_symbol,
         "date_from": date_from,
         "date_to": date_to,
@@ -614,6 +619,7 @@ def normalize_request(payload: dict) -> dict:
             "historical_targets_replay": historical_targets_replay,
             "exclude_symbols": exclude_symbols,
             "exclude_market_monitors": exclude_market_monitors,
+            "allow_market_context_symbols": allow_market_context_symbols,
             "execution_model": execution_model,
             "latest_complete_date": latest_complete_date,
             "date_to_clamped": clamped_date_to,

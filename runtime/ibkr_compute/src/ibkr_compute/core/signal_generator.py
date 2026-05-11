@@ -22,6 +22,14 @@ logger = logging.getLogger(__name__)
 DEFAULT_MARKET_MONITOR_SYMBOLS = ""
 
 
+def _param_bool(value, default: bool = False) -> bool:
+    if value is None or value == "":
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 class SignalGenerator:
     def __init__(self, symbol: str, interval: str, params: dict = None):
         self.symbol = symbol
@@ -94,10 +102,8 @@ class SignalGenerator:
             if str(item or "").strip()
         }
         symbol_text = str(self.symbol or "").strip().upper()
-        self.symbol_is_market_monitor = (
-            symbol_text in self.market_monitor_symbols
-            and symbol_text not in self.signal_enabled_symbols
-        )
+        allow_market_monitor_signals = _param_bool(self.params.get("allow_market_monitor_signals"), False)
+        self.symbol_is_market_monitor = symbol_text in self.market_monitor_symbols and not allow_market_monitor_signals
         self.strategy_profile = str(
             self.params.get("ibkr_signal_strategy_profile")
             or self.params.get("signal_strategy_profile")

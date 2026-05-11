@@ -478,7 +478,9 @@
             const feedbackHtml = authActionFeedback?.text
                 ? `<div class="auth-banner-feedback ${escapeHtml(authActionFeedback.tone || 'info')}">${escapeHtml(authActionFeedback.text)}</div>`
                 : '';
-            const primaryLabel = actionPending && model.buttonLabel ? '执行中...' : model.buttonLabel;
+            const primaryLabel = actionPending && model.buttonLabel
+                ? (actionPendingLabel || `执行中：${model.buttonLabel}`)
+                : model.buttonLabel;
             const buttonHtml = model.buttonLabel
                 ? `<button class="auth-banner-btn" onclick="runPrimaryAuthAction()" ${actionPending ? 'disabled' : ''}>${escapeHtml(primaryLabel)}</button>`
                 : '';
@@ -643,4 +645,3 @@
                 button.title = actionPending ? '动作执行中，请稍候。' : '';
             });
         }
-
