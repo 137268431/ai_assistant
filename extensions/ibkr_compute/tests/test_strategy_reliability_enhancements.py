@@ -45,6 +45,13 @@ class FakeConfig:
         return values.get(key, default)
 
 
+class AlignmentEnabledConfig(FakeConfig):
+    def get_bool_for_environment(self, key, environment, default=False):
+        if key == "ibkr_require_target_direction_alignment":
+            return True
+        return super().get_bool_for_environment(key, environment, default)
+
+
 class StrategyReliabilityEnhancementTests(unittest.TestCase):
     def test_backtest_default_scan_cutoff_matches_live_scan_time(self):
         request = request_utils.normalize_request(
@@ -634,7 +641,7 @@ class StrategyReliabilityEnhancementTests(unittest.TestCase):
             "take_profit": 90.0,
         }
         processor = SignalProcessor(
-            FakeConfig(),
+            AlignmentEnabledConfig(),
             environment="live",
             target_direction_provider=lambda: {"AAPL": "long"},
         )
@@ -648,13 +655,22 @@ class StrategyReliabilityEnhancementTests(unittest.TestCase):
         self.assertEqual(reason, "target_direction_mismatch")
 
         missing_processor = SignalProcessor(
-            FakeConfig(),
+            AlignmentEnabledConfig(),
             environment="live",
             target_direction_provider=lambda: {"AAPL": "neutral"},
         )
         valid, reason = missing_processor.validate_signal(long_signal)
         self.assertFalse(valid)
         self.assertEqual(reason, "target_direction_missing")
+
+        default_processor = SignalProcessor(
+            FakeConfig(),
+            environment="live",
+            target_direction_provider=lambda: {"AAPL": "short"},
+        )
+        valid, reason = default_processor.validate_signal(long_signal)
+        self.assertTrue(valid)
+        self.assertEqual(reason, "ok")
 
     def test_backtest_opposite_signal_conflict_closes_instead_of_adjusting(self):
         service = BacktestService(None)
