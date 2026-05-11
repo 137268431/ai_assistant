@@ -237,6 +237,16 @@ class BacktestSymbolRowsRowBuildersMixin:
 
     def _build_backtest_signal_row(self, request: dict, bar: dict, signal_payload: dict) -> dict:
         signal_extra = dict(signal_payload.get("extra") or {})
+        bar_time_ms = int(signal_payload.get("bar_time_ms", 0) or 0)
+        signal_extra["status_history"] = [
+            {
+                "status": "generated",
+                "reason": "signal_generated",
+                "bar_time_ms": bar_time_ms,
+                "us_time": str(signal_payload.get("us_time", "") or ""),
+                "cn_time": str(signal_payload.get("cn_time", "") or ""),
+            }
+        ]
         signal_extra.update(
             {
                 "backtest_source_environment": request.get("source_environment") or "",
@@ -262,7 +272,7 @@ class BacktestSymbolRowsRowBuildersMixin:
             "us_time": signal_payload.get("us_time", ""),
             "cn_time": signal_payload.get("cn_time", ""),
             "date": str(signal_payload.get("us_time", "") or "")[:10],
-            "bar_time_ms": int(signal_payload.get("bar_time_ms", 0) or 0),
+            "bar_time_ms": bar_time_ms,
             "bar_index": int(signal_extra.get("bar_index", 0) or 0),
             "script_tag": str(request.get("strategy_tag") or ""),
             "status": "generated",
@@ -286,7 +296,54 @@ class BacktestSymbolRowsRowBuildersMixin:
             return
         row["status"] = status
         extra = self._parse_object(row.get("extra"))
+        history = extra.get("status_history")
+        if not isinstance(history, list):
+            history = []
+        patch = dict(extra_patch or {})
+        event_ms = int(
+            patch.get("event_bar_ms")
+            or patch.get("entry_bar_ms")
+            or patch.get("bar_time_ms")
+            or row.get("bar_time_ms", 0)
+            or 0
+        )
+        event_us_time = str(
+            patch.get("event_us_time")
+            or patch.get("entry_us_time")
+            or row.get("us_time", "")
+            or ""
+        )
+        event_cn_time = str(
+            patch.get("event_cn_time")
+            or patch.get("entry_cn_time")
+            or row.get("cn_time", "")
+            or ""
+        )
+        if event_ms > 0 and not event_us_time:
+            event_us_time = format_us_time(event_ms)
+        if event_ms > 0 and not event_cn_time:
+            event_cn_time = format_cn_time(event_ms)
+        event = {
+            "status": status,
+            "reason": reason,
+            "bar_time_ms": event_ms,
+            "us_time": event_us_time,
+            "cn_time": event_cn_time,
+        }
+        for key in (
+            "entry_price",
+            "entry_limit_price",
+            "confirm_ready_bar_ms",
+            "portfolio_open_exposure",
+            "portfolio_reserved_exposure",
+            "reverse_action_type",
+            "reverse_kind",
+        ):
+            if key in patch:
+                event[key] = patch[key]
+        history.append(event)
         extra["signal_status_reason"] = reason
+        extra["status_history"] = history[-20:]
         if extra_patch:
             extra.update(extra_patch)
         row["extra"] = extra

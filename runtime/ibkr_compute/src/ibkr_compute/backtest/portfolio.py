@@ -252,9 +252,26 @@ class BacktestPortfolioMixin:
             if target_result.get("target_state"):
                 position["target_state"] = dict(target_result.get("target_state") or {})
             if target_result.get("should_update_stop"):
+                old_sl = float(position.get("stop_price", 0) or 0)
                 position["stop_price"] = float(target_result["new_sl"])
                 position["target_stop_adjust_count"] = int(position.get("target_stop_adjust_count", 0) or 0) + 1
                 position["last_target_policy_update"] = target_result
+                self._append_backtest_risk_adjustment(
+                    position,
+                    {
+                        "event_type": "target_policy_stop_adjust",
+                        "source": "exit_policy",
+                        "bar_time_ms": int(snapshot.get("bar_time_ms", 0) or 0),
+                        "us_time": str(snapshot.get("us_time", "") or ""),
+                        "cn_time": str(snapshot.get("cn_time", "") or ""),
+                        "old_sl": round(old_sl, 4),
+                        "new_sl": round(float(target_result.get("new_sl", 0) or 0), 4),
+                        "current_price": round(current_price, 4),
+                        "current_atr": round(current_atr, 4),
+                        "reason": str(target_result.get("reason", "") or "target_policy_stop_adjust"),
+                        "mfe_r": round(float(target_result.get("mfe_r", 0) or 0), 4),
+                    },
+                )
             result = compute_exit_policy_stop_update(
                 position,
                 current_price=current_price,
@@ -277,10 +294,28 @@ class BacktestPortfolioMixin:
             )
         if not result.get("should_update"):
             return position
+        old_sl = float(position.get("stop_price", 0) or 0)
         position["stop_price"] = float(result["new_sl"])
         position["last_stop_atr"] = float(result.get("current_atr", current_atr) or current_atr)
         position["atr_stop_adjust_count"] = int(position.get("atr_stop_adjust_count", 0) or 0) + 1
         position["last_atr_stop_adjust"] = result
+        self._append_backtest_risk_adjustment(
+            position,
+            {
+                "event_type": "exit_policy_stop_adjust" if is_signal_mode_adaptive_exit_profile(position.get("exit_policy_profile")) else "atr_stop_adjust",
+                "source": "atr_dynamic_stop",
+                "bar_time_ms": int(snapshot.get("bar_time_ms", 0) or 0),
+                "us_time": str(snapshot.get("us_time", "") or ""),
+                "cn_time": str(snapshot.get("cn_time", "") or ""),
+                "old_sl": round(old_sl, 4),
+                "new_sl": round(float(result.get("new_sl", 0) or 0), 4),
+                "current_price": round(current_price, 4),
+                "current_atr": round(current_atr, 4),
+                "reason": str(result.get("reason", "") or "atr_tighten_stop"),
+                "progress_r": round(float(result.get("progress_r", 0) or 0), 4),
+                "atr_deviation": round(float(result.get("atr_deviation", 0) or 0), 4),
+            },
+        )
         return position
 
     def _maybe_close_backtest_exit_policy_time_stop(
@@ -1445,7 +1480,17 @@ class BacktestPortfolioMixin:
                         append_trade(state["open_position"], trade)
                         state["open_position"] = None
                     if state.get("pending_signal"):
-                        self._mark_backtest_signal_status(signal_index, state["pending_signal"].get("signal_id"), "dropped", "new_day_reset")
+                        self._mark_backtest_signal_status(
+                            signal_index,
+                            state["pending_signal"].get("signal_id"),
+                            "dropped",
+                            "new_day_reset",
+                            {
+                                "event_bar_ms": int(bar.get("bar_time_ms", 0) or 0),
+                                "event_us_time": str(bar.get("us_time", "") or ""),
+                                "event_cn_time": str(bar.get("cn_time", "") or ""),
+                            },
+                        )
                         self._release_portfolio_pending(ledger, state["pending_signal"])
                     state["pending_signal"] = None
                 state["previous_day"] = current_symbol_day
@@ -1453,7 +1498,17 @@ class BacktestPortfolioMixin:
                 pending_signal = state.get("pending_signal")
                 if pending_signal and state.get("open_position") is None:
                     if self._portfolio_signal_expired(pending_signal, bar, request):
-                        self._mark_backtest_signal_status(signal_index, pending_signal.get("signal_id"), "dropped", "signal_expired")
+                        self._mark_backtest_signal_status(
+                            signal_index,
+                            pending_signal.get("signal_id"),
+                            "dropped",
+                            "signal_expired",
+                            {
+                                "event_bar_ms": int(bar.get("bar_time_ms", 0) or 0),
+                                "event_us_time": str(bar.get("us_time", "") or ""),
+                                "event_cn_time": str(bar.get("cn_time", "") or ""),
+                            },
+                        )
                         self._portfolio_record_rejection(ledger, "signal_expired")
                         self._release_portfolio_pending(ledger, pending_signal)
                         state["pending_signal"] = None
@@ -1766,7 +1821,18 @@ class BacktestPortfolioMixin:
                 append_trade(state["open_position"], trade)
                 state["open_position"] = None
             if state.get("pending_signal"):
-                self._mark_backtest_signal_status(signal_index, state["pending_signal"].get("signal_id"), "dropped", "last_bar_no_entry")
+                last_bar = state.get("last_bar") or state.get("previous_bar") or {}
+                self._mark_backtest_signal_status(
+                    signal_index,
+                    state["pending_signal"].get("signal_id"),
+                    "dropped",
+                    "last_bar_no_entry",
+                    {
+                        "event_bar_ms": int(last_bar.get("bar_time_ms", 0) or 0),
+                        "event_us_time": str(last_bar.get("us_time", "") or ""),
+                        "event_cn_time": str(last_bar.get("cn_time", "") or ""),
+                    },
+                )
                 self._release_portfolio_pending(ledger, state["pending_signal"])
                 state["pending_signal"] = None
 

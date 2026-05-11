@@ -156,6 +156,36 @@
             }
         }
 
+        function clearSelectedTrackingRows() {
+            selectedTrades = [];
+            selectedTargets = [];
+            selectedSignals = [];
+            selectedReverseSignals = [];
+            selectedTrackingModel = null;
+            selectedTargetsLoading = false;
+            trackingLoading = false;
+            trackingFilterRunId = '';
+            trackingFilters.date = '';
+            trackingFilters.symbol = '';
+            trackingFilters.eventType = '';
+            backtestTableExpandedState.trades = false;
+            backtestTableExpandedState.trackingTimeline = false;
+            backtestTableExpandedState.trackingFlows = false;
+            if (typeof renderTracking === 'function') renderTracking();
+        }
+
+        function refreshTrackingModel() {
+            selectedTrackingModel = buildBacktestTrackingModel(
+                selectedRun,
+                selectedTargets,
+                selectedSignals,
+                selectedTrades,
+                selectedReverseSignals,
+            );
+            trackingLoading = false;
+            if (typeof renderTracking === 'function') renderTracking();
+        }
+
         async function refreshSelectedBatch(showToastOnSuccess = false) {
             if (!selectedBatchId) {
                 selectedBatch = null;
@@ -172,11 +202,12 @@
             }
         }
 
-        async function loadRunTrades(runId) {
+        async function loadRunTrades(runId, { renderPanel = true } = {}) {
             if (!runId) {
                 selectedTrades = [];
                 backtestTableExpandedState.trades = false;
-                renderTrades();
+                refreshTrackingModel();
+                if (renderPanel) renderTrades();
                 return;
             }
             const activeRunId = runId;
@@ -192,21 +223,25 @@
             }
             selectedTrades = items.map(normalizeTradeRecord);
             backtestTableExpandedState.trades = false;
-            renderTrades();
+            refreshTrackingModel();
+            if (renderPanel) renderTrades();
         }
 
-        async function loadRunTargets(runId, { showToastOnError = false } = {}) {
+        async function loadRunTargets(runId, { showToastOnError = false, preserveExisting = false, renderDetail = true } = {}) {
             if (!runId) {
                 selectedTargets = [];
                 selectedTargetsLoading = false;
                 buildReplaySymbolOptions();
-                renderRunDetail();
+                refreshTrackingModel();
+                if (renderDetail) renderRunDetail();
                 return;
             }
             const activeRunId = runId;
-            selectedTargets = [];
-            selectedTargetsLoading = true;
-            renderRunDetail();
+            if (!preserveExisting) {
+                selectedTargets = [];
+            }
+            selectedTargetsLoading = !preserveExisting || !selectedTargets.length;
+            if (renderDetail) renderRunDetail();
             try {
                 const filter = `run_id = "${escapeFilterValue(runId)}"`;
                 const items = await apiFetchAll('ibkr_backtest_targets', {
@@ -231,7 +266,76 @@
                 if (selectedRunId === activeRunId) {
                     selectedTargetsLoading = false;
                     buildReplaySymbolOptions();
-                    renderRunDetail();
+                    refreshTrackingModel();
+                    if (renderDetail) renderRunDetail();
+                }
+            }
+        }
+
+        async function loadRunSignals(runId, { showToastOnError = false, preserveExisting = false } = {}) {
+            if (!runId) {
+                selectedSignals = [];
+                refreshTrackingModel();
+                return;
+            }
+            const activeRunId = runId;
+            if (!preserveExisting && !selectedTrackingModel) {
+                trackingLoading = true;
+                if (typeof renderTracking === 'function') renderTracking();
+            }
+            try {
+                const filter = `run_id = "${escapeFilterValue(runId)}"`;
+                const items = await apiFetchAll('ibkr_backtest_signals', {
+                    filter,
+                    sort: 'bar_time_ms,symbol',
+                    perPage: 200,
+                    maxPages: 50,
+                });
+                if (selectedRunId !== activeRunId) return;
+                selectedSignals = items.map(normalizeBacktestSignalRecord);
+            } catch (error) {
+                console.error('loadRunSignals failed:', error);
+                if (selectedRunId === activeRunId) {
+                    selectedSignals = [];
+                    if (showToastOnError) showToast(`读取回测 signals 失败: ${error.message || error}`);
+                }
+            } finally {
+                if (selectedRunId === activeRunId) {
+                    refreshTrackingModel();
+                }
+            }
+        }
+
+        async function loadRunReverseSignals(runId, { showToastOnError = false, preserveExisting = false } = {}) {
+            if (!runId) {
+                selectedReverseSignals = [];
+                refreshTrackingModel();
+                return;
+            }
+            const activeRunId = runId;
+            if (!preserveExisting && !selectedTrackingModel) {
+                trackingLoading = true;
+                if (typeof renderTracking === 'function') renderTracking();
+            }
+            try {
+                const filter = `run_id = "${escapeFilterValue(runId)}"`;
+                const items = await apiFetchAll('ibkr_backtest_reverse_signals', {
+                    filter,
+                    sort: 'bar_time_ms,symbol',
+                    perPage: 200,
+                    maxPages: 50,
+                });
+                if (selectedRunId !== activeRunId) return;
+                selectedReverseSignals = items.map(normalizeBacktestReverseRecord);
+            } catch (error) {
+                console.error('loadRunReverseSignals failed:', error);
+                if (selectedRunId === activeRunId) {
+                    selectedReverseSignals = [];
+                    if (showToastOnError) showToast(`读取回测 reverse rows 失败: ${error.message || error}`);
+                }
+            } finally {
+                if (selectedRunId === activeRunId) {
+                    refreshTrackingModel();
                 }
             }
         }
@@ -239,32 +343,49 @@
         async function refreshSelectedRun(showToastOnSuccess = false) {
             if (!selectedRunId) {
                 selectedRun = null;
-                selectedTrades = [];
-                selectedTargets = [];
-                selectedTargetsLoading = false;
+                clearSelectedTrackingRows();
                 renderMetrics();
                 renderRunDetail();
                 renderTrades();
                 renderReplay([]);
                 return;
             }
-            const found = runList.find((run) => run.id === selectedRunId);
-            selectedRun = found || null;
-            selectedTargets = [];
-            selectedTargetsLoading = Boolean(selectedRunId);
-            renderMetrics();
-            renderRunDetail();
             const activeRunId = selectedRunId;
+            const hadSelectedRun = selectedRun?.id === activeRunId;
+            const found = runList.find((run) => run.id === activeRunId);
+            selectedRun = found || selectedRun || null;
+            const renderDetailDuringRefresh = showToastOnSuccess || !hadSelectedRun || isBacktestRunMutable(selectedRun);
+            const preserveRows = hadSelectedRun && !showToastOnSuccess;
+            if (!preserveRows) {
+                selectedTargets = [];
+                selectedSignals = [];
+                selectedReverseSignals = [];
+                selectedTrackingModel = null;
+                selectedTargetsLoading = Boolean(activeRunId);
+                trackingLoading = Boolean(activeRunId);
+                backtestTableExpandedState.trackingTimeline = false;
+                backtestTableExpandedState.trackingFlows = false;
+            }
+            if (renderDetailDuringRefresh) {
+                renderMetrics();
+                renderRunDetail();
+            }
+            if (!selectedTrackingModel && typeof renderTracking === 'function') renderTracking();
             const hydratePromise = hydrateSelectedRun(activeRunId).then(() => {
                 if (selectedRunId !== activeRunId) return;
                 renderRuns();
-                renderMetrics();
-                renderRunDetail();
+                if (renderDetailDuringRefresh || isBacktestRunMutable(selectedRun)) {
+                    renderMetrics();
+                    renderRunDetail();
+                }
+                refreshTrackingModel();
             });
             await Promise.all([
                 hydratePromise,
-                loadRunTrades(activeRunId),
-                loadRunTargets(activeRunId),
+                loadRunTrades(activeRunId, { renderPanel: renderDetailDuringRefresh || activeBacktestTab === 'trades' }),
+                loadRunTargets(activeRunId, { preserveExisting: preserveRows, renderDetail: renderDetailDuringRefresh }),
+                loadRunSignals(activeRunId, { preserveExisting: preserveRows }),
+                loadRunReverseSignals(activeRunId, { preserveExisting: preserveRows }),
             ]);
             if (showToastOnSuccess && selectedRun) {
                 showToast(`已刷新 ${selectedRun.name || selectedRun.id}`);

@@ -138,6 +138,144 @@
             `;
         }
 
+        function backtestAuditEventLabel(event) {
+            const type = String(event?.event_type || '');
+            const labels = {
+                target_selected: '入选标的',
+                signal_generated: '信号产生',
+                signal_pending: '等待成交',
+                entry_filled: '成交成功',
+                trade_opened: '开仓记录',
+                trade_closed: '平仓/止盈止损',
+                atr_stop_adjust: 'ATR 止损调整',
+                exit_policy_stop_adjust: '策略止损调整',
+                target_policy_stop_adjust: '目标策略止损调整',
+                reverse_adjust_sl: '反转调止损',
+                reverse_adjust_tp: '反转调止盈',
+                reverse_action: '特殊/反转事件',
+                signal_skipped: '信号跳过',
+                signal_dropped: '信号丢弃',
+            };
+            return labels[type] || type || '--';
+        }
+
+        function formatAuditPriceChange(event) {
+            const parts = [];
+            if (Number(event?.entry_price || 0)) parts.push(`entry ${formatMoney(event.entry_price)}`);
+            if (Number(event?.exit_price || 0)) parts.push(`exit ${formatMoney(event.exit_price)}`);
+            if (Number(event?.old_sl || 0) || Number(event?.new_sl || 0)) {
+                parts.push(`SL ${formatMoney(event.old_sl || 0)} → ${formatMoney(event.new_sl || 0)}`);
+            } else if (Number(event?.stop_loss || 0)) {
+                parts.push(`SL ${formatMoney(event.stop_loss)}`);
+            }
+            if (Number(event?.old_tp || 0) || Number(event?.new_tp || 0)) {
+                parts.push(`TP ${formatMoney(event.old_tp || 0)} → ${formatMoney(event.new_tp || 0)}`);
+            } else if (Number(event?.take_profit || 0)) {
+                parts.push(`TP ${formatMoney(event.take_profit)}`);
+            }
+            if (Number(event?.pnl || 0)) parts.push(`PnL ${formatMoney(event.pnl)}`);
+            return parts.join('<br>') || '--';
+        }
+
+        function renderAuditTimelineRows(events) {
+            return events.map((event) => `
+                <tr>
+                    <td class="mono">${escapeHtml((event.us_time || '--').slice(0, 16))}</td>
+                    <td class="mono">${escapeHtml(event.symbol || '--')}</td>
+                    <td>${escapeHtml(backtestAuditEventLabel(event))}<br><span class="mono" style="color: var(--muted);">${escapeHtml(event.stage || '--')}</span></td>
+                    <td>${event.direction ? `<span class="tag ${event.direction === 'short' ? 'short' : 'long'}">${escapeHtml(String(event.direction).toUpperCase())}</span>` : '--'}</td>
+                    <td class="mono">${escapeHtml(event.signal_id || event.signal || '--')}</td>
+                    <td>${escapeHtml(event.status || '--')}<br><span style="color: var(--muted);">${escapeHtml(event.reason || '')}</span></td>
+                    <td class="mono">${formatAuditPriceChange(event)}</td>
+                </tr>
+            `).join('');
+        }
+
+        function buildBacktestAuditCard(run) {
+            const audit = run?.metrics?.backtest_audit || run?.extra?.backtest_audit_summary || {};
+            const focusDay = audit.focus_day || {};
+            const focusTimeline = Array.isArray(focusDay.timeline) ? focusDay.timeline : [];
+            const dailySummary = Array.isArray(audit.daily_summary) ? audit.daily_summary : [];
+            const eventTypeCounts = audit.event_type_counts || {};
+            const focusSymbols = Array.isArray(audit.focus_symbols) ? audit.focus_symbols : [];
+            const timeline = focusTimeline.length
+                ? focusTimeline
+                : (Array.isArray(audit.timeline) ? audit.timeline.filter((item) => String(item?.date || '') === String(audit.focus_date || '')) : []);
+
+            if (!audit.enabled && !dailySummary.length && !timeline.length) {
+                return `
+                    <div class="detail-card">
+                        <div class="subhead">回测审计链路</div>
+                        <div class="empty-state">旧 run 没有审计链路；重新回测后会展示标的、信号、成交、止盈止损和特殊事件时间线。</div>
+                    </div>
+                `;
+            }
+
+            return `
+                <div class="detail-card">
+                    <div class="subhead">回测审计链路</div>
+                    <div class="foot-note">按 run 内实际行串起：今日/焦点日标的 → 信号 → 成交 → 止盈止损 → SL/TP 调整 → 反转等特殊事件。</div>
+                    <div class="detail-list" style="margin-top: 12px;">
+                        <div class="detail-item"><div class="detail-item-label">Focus Date</div><div class="detail-item-value mono">${escapeHtml(audit.focus_date || focusDay.date || '--')}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Focus Symbols</div><div class="detail-item-value">${escapeHtml(focusSymbols.join(', ') || '--')}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Events</div><div class="detail-item-value">${escapeHtml(String(audit.event_count || timeline.length || 0))}${audit.timeline_truncated ? ' truncated' : ''}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Event Types</div><div class="detail-item-value">${escapeHtml(formatBreakdown(eventTypeCounts))}</div></div>
+                    </div>
+                    ${dailySummary.length ? `
+                        <div class="subhead" style="margin-top: 18px;">Daily Summary</div>
+                        <div class="table-wrap" style="margin-top: 10px;">
+                            <table class="data-table" style="min-width: 880px;">
+                                <thead>
+                                    <tr>
+                                        <th>Date</th>
+                                        <th>Targets</th>
+                                        <th>Signals</th>
+                                        <th>Executed</th>
+                                        <th>Trades</th>
+                                        <th>TP / SL</th>
+                                        <th>Risk / Special</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${dailySummary.map((item) => `
+                                        <tr>
+                                            <td class="mono">${escapeHtml(item.date || '--')}</td>
+                                            <td>${escapeHtml(String(item.target_count || 0))}<br><span class="mono" style="color: var(--muted);">${escapeHtml((item.target_symbols || []).join(', '))}</span></td>
+                                            <td>${escapeHtml(String(item.signal_count || 0))}</td>
+                                            <td>${escapeHtml(String(item.executed_signal_count || 0))}</td>
+                                            <td>${escapeHtml(String(item.trade_count || 0))}</td>
+                                            <td>${escapeHtml(String(item.take_profit_count || 0))} / ${escapeHtml(String(item.stop_loss_count || 0))}</td>
+                                            <td>${escapeHtml(String(item.risk_adjustment_count || 0))} / ${escapeHtml(String(item.special_event_count || 0))}</td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    ` : ''}
+                    <div class="subhead" style="margin-top: 18px;">Focus Timeline</div>
+                    ${timeline.length ? `
+                        ${focusDay.timeline_truncated ? '<div class="foot-note">焦点日事件过多，下面只显示前 240 条；完整数据在 Runtime Extra / metrics.backtest_audit 中。</div>' : ''}
+                        <div class="table-wrap" style="margin-top: 10px;">
+                            <table class="data-table" style="min-width: 1080px;">
+                                <thead>
+                                    <tr>
+                                        <th>Time</th>
+                                        <th>Symbol</th>
+                                        <th>Event</th>
+                                        <th>Side</th>
+                                        <th>Signal</th>
+                                        <th>Status / Reason</th>
+                                        <th>Prices</th>
+                                    </tr>
+                                </thead>
+                                <tbody>${renderAuditTimelineRows(timeline)}</tbody>
+                            </table>
+                        </div>
+                    ` : '<div class="empty-state" style="margin-top: 14px;">焦点日暂无审计事件。</div>'}
+                </div>
+            `;
+        }
+
         function buildBacktestIndicatorCaptureCard(run) {
             const capture = run?.extra?.backtest_indicator_capture || run?.metrics?.backtest_indicator_capture || {};
             const status = String(capture.status || 'empty').toLowerCase();

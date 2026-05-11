@@ -679,6 +679,15 @@ body {
             grid-template-columns: repeat(2, minmax(0, 1fr));
             gap: 9px;
         }
+        .compact-detail-list {
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        }
+        .run-meta-more {
+            margin-top: 10px;
+        }
+        .run-meta-more .detail-list {
+            padding: 10px;
+        }
         .detail-item {
             display: grid;
             gap: 4px;
@@ -763,6 +772,157 @@ body {
         .tag.long { color: var(--long); }
         .tag.short { color: var(--short); }
         .tag.signal { color: #F6AD55; }
+        .tracking-workbench {
+            display: grid;
+            gap: 10px;
+        }
+        .tracking-control-panel {
+            background:
+                radial-gradient(circle at top right, rgba(246, 173, 85, 0.10), transparent 30%),
+                linear-gradient(160deg, rgba(14, 20, 32, 0.97), rgba(9, 15, 24, 0.98));
+        }
+        .tracking-filter-bar {
+            position: relative;
+            z-index: 1;
+            display: grid;
+            grid-template-columns: minmax(140px, 0.8fr) minmax(160px, 0.8fr) minmax(180px, 1fr) auto;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+        .tracking-filter-action {
+            min-width: 116px;
+        }
+        .tracking-mode-banner {
+            position: relative;
+            z-index: 1;
+            margin-bottom: 10px;
+            padding: 9px 11px;
+            border-radius: 14px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.035);
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.6;
+        }
+        .tracking-mode-banner.native {
+            border-color: rgba(72, 187, 120, 0.24);
+            background: rgba(72, 187, 120, 0.07);
+        }
+        .tracking-mode-banner.derived {
+            border-color: rgba(246, 173, 85, 0.24);
+            background: rgba(246, 173, 85, 0.07);
+        }
+        .tracking-summary-grid {
+            position: relative;
+            z-index: 1;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
+            gap: 8px;
+        }
+        .tracking-summary-card {
+            padding: 10px 11px;
+            border-radius: 14px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.04);
+        }
+        .tracking-grid {
+            display: grid;
+            grid-template-columns: minmax(320px, 0.84fr) minmax(0, 1.16fr);
+            gap: 10px;
+            align-items: start;
+        }
+        .tracking-flow-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+            gap: 9px;
+        }
+        .tracking-flow-card {
+            padding: 10px;
+            border-radius: 15px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.03);
+        }
+        .tracking-flow-card.targeted {
+            border-color: rgba(246, 173, 85, 0.22);
+            background: linear-gradient(180deg, rgba(246, 173, 85, 0.08), rgba(255,255,255,0.03));
+        }
+        .tracking-flow-top {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+        .tracking-flow-title {
+            font-size: 14px;
+            font-weight: 700;
+        }
+        .tracking-flow-copy {
+            margin-top: 4px;
+            color: var(--muted);
+            font-size: 11px;
+        }
+        .tracking-flow-stats {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-bottom: 8px;
+        }
+        .tracking-flow-stats span {
+            padding: 4px 7px;
+            border-radius: 999px;
+            border: 1px solid rgba(255,255,255,0.07);
+            background: rgba(255,255,255,0.04);
+            color: var(--muted);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .tracking-flow-chain {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-bottom: 9px;
+        }
+        .tracking-chip {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 7px;
+            border-radius: 999px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.045);
+            color: var(--muted);
+            font-size: 10px;
+            line-height: 1.2;
+        }
+        .tracking-chip.target { color: #F6AD55; }
+        .tracking-chip.signal { color: #90CDF4; }
+        .tracking-chip.execution { color: var(--long); }
+        .tracking-chip.risk { color: #FBD38D; }
+        .tracking-chip.special { color: #B794F4; }
+        .tracking-chip.exit { color: var(--short); }
+        .tracking-chip.muted { color: var(--muted); }
+        .tracking-flow-actions {
+            display: flex;
+            gap: 7px;
+            flex-wrap: wrap;
+        }
+        .tracking-table-wrap {
+            max-height: none;
+        }
+        .tracking-table {
+            min-width: 1080px;
+        }
+        .tracking-event-row.target td { box-shadow: inset 3px 0 0 rgba(246, 173, 85, 0.32); }
+        .tracking-event-row.signal td { box-shadow: inset 3px 0 0 rgba(99, 179, 237, 0.32); }
+        .tracking-event-row.execution td { box-shadow: inset 3px 0 0 rgba(72, 187, 120, 0.32); }
+        .tracking-event-row.risk td { box-shadow: inset 3px 0 0 rgba(251, 211, 141, 0.32); }
+        .tracking-event-row.special td { box-shadow: inset 3px 0 0 rgba(183, 148, 244, 0.32); }
+        .tracking-event-row.exit td { box-shadow: inset 3px 0 0 rgba(252, 129, 129, 0.32); }
+        .tracking-stage,
+        .tracking-details {
+            color: var(--muted);
+            font-size: 10px;
+        }
         .empty-state {
             position: relative;
             z-index: 1;
@@ -895,6 +1055,8 @@ body {
             .form-grid,
             .advanced-grid,
             .detail-list,
+            .tracking-filter-bar,
+            .tracking-grid,
             .replay-controls {
                 grid-template-columns: 1fr;
             }

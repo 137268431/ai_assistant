@@ -5,11 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>回测工坊 - Trading Flight</title>
     <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
-    <script src="common.js?v=20260508-backtest-warmup-signal-v3"></script>
+    <script src="common.js?v=20260511-backtest-tracking-v1"></script>
     <script>document.write(getCommonStyles());</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    <link rel="stylesheet" href="/assets/css/pages/ibkr_backtests/page.css?v=20260509-exec-cost-calibration-v1">
+    <link rel="stylesheet" href="/assets/css/pages/ibkr_backtests/page.css?v=20260511-backtest-tracking-v1">
 </head>
 <body>
     <div class="page-shell">
@@ -302,11 +302,12 @@
             <div class="panel-header workbench-header">
                 <div>
                     <div class="panel-title">回测工作台</div>
-                    <div class="panel-copy">Experiments、Runs、Trades 与 Replay 合并成 tabs，减少页面纵向长度。</div>
+                    <div class="panel-copy">Experiments、Runs、Tracking、Trades 与 Replay 合并成 tabs，减少页面纵向长度。</div>
                 </div>
                 <div class="workbench-tabs" role="tablist" aria-label="回测工作台">
                     <button class="tab-btn" type="button" data-backtest-tab="experiments" role="tab" aria-selected="false" onclick="setBacktestTab('experiments')">Experiments</button>
                     <button class="tab-btn is-active" type="button" data-backtest-tab="runs" role="tab" aria-selected="true" onclick="setBacktestTab('runs')">Runs</button>
+                    <button class="tab-btn" type="button" data-backtest-tab="tracking" role="tab" aria-selected="false" onclick="setBacktestTab('tracking')">Tracking</button>
                     <button class="tab-btn" type="button" data-backtest-tab="trades" role="tab" aria-selected="false" onclick="setBacktestTab('trades')">Trades / Replay</button>
                 </div>
             </div>
@@ -370,6 +371,71 @@
                 </div>
             </div>
 
+            <div class="workbench-tab-panel" data-backtest-tab-panel="tracking" role="tabpanel" hidden>
+                <div class="tracking-workbench">
+                    <div class="panel tracking-control-panel">
+                        <div class="panel-header">
+                            <div>
+                                <div class="panel-title">Tracking Timeline / 回测追踪</div>
+                                <div class="panel-copy">按 run 串起：今天/焦点日标的、信号产生、成交成功、止盈止损、SL/TP 变化和特殊事件。</div>
+                            </div>
+                            <div class="panel-tools">
+                                <span class="pill pill-muted"><span class="dot"></span><span id="trackingRunLabel">No run</span></span>
+                                <button class="btn ghost" type="button" onclick="refreshSelectedRun(true)">刷新追踪</button>
+                            </div>
+                        </div>
+                        <div class="tracking-filter-bar">
+                            <div class="field">
+                                <label for="trackingDateFilter">Date</label>
+                                <select id="trackingDateFilter" onchange="onTrackingFilterChange()"></select>
+                            </div>
+                            <div class="field">
+                                <label for="trackingSymbolFilter">Symbol</label>
+                                <select id="trackingSymbolFilter" onchange="onTrackingFilterChange()"></select>
+                            </div>
+                            <div class="field">
+                                <label for="trackingEventTypeFilter">Event Type</label>
+                                <select id="trackingEventTypeFilter" onchange="onTrackingFilterChange()"></select>
+                            </div>
+                            <div class="field tracking-filter-action">
+                                <label>&nbsp;</label>
+                                <button class="btn ghost" type="button" onclick="resetTrackingFilters()">重置过滤</button>
+                            </div>
+                        </div>
+                        <div id="trackingModeBanner"></div>
+                        <div class="tracking-summary-grid" id="trackingSummaryGrid"></div>
+                    </div>
+
+                    <div class="tracking-grid">
+                        <div class="panel">
+                            <div class="panel-header">
+                                <div>
+                                    <div class="panel-title">Symbol Day Flows</div>
+                                    <div class="panel-copy">每个交易日每个标的的完整链路，优先看是否从 target 进入 signal / fill / exit。</div>
+                                </div>
+                                <div class="panel-tools">
+                                    <span class="pill pill-muted"><span class="dot"></span><span id="trackingFlowCountLabel">0 flows</span></span>
+                                </div>
+                            </div>
+                            <div class="section-scroll-body backtest-scroll-region" id="trackingFlowsPanel"></div>
+                        </div>
+
+                        <div class="panel">
+                            <div class="panel-header">
+                                <div>
+                                    <div class="panel-title">Event Timeline</div>
+                                    <div class="panel-copy">逐条追踪信号何时产生、何时成交、何时止盈止损、价格和风控线如何变化。</div>
+                                </div>
+                                <div class="panel-tools">
+                                    <span class="pill pill-muted"><span class="dot"></span><span id="trackingEventCountLabel">0 events</span></span>
+                                </div>
+                            </div>
+                            <div class="section-scroll-body backtest-scroll-region" id="trackingTimelinePanel"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div class="workbench-tab-panel" data-backtest-tab-panel="trades" role="tabpanel" hidden>
                 <div class="dual-grid workbench-grid">
                     <div class="panel">
@@ -425,16 +491,17 @@
         <div id="nav"></div>
     </div>
 
-    <script src="/assets/js/pages/ibkr_backtests/state.js?v=20260508-backtest-warmup-signal-v3"></script>
-    <script src="/assets/js/pages/ibkr_backtests/utils.js?v=20260508-backtest-warmup-signal-v3"></script>
-    <script src="/assets/js/pages/ibkr_backtests/cards.js?v=20260508-backtest-warmup-signal-v3"></script>
-    <script src="/assets/js/pages/ibkr_backtests/ui.js?v=20260508-backtest-warmup-signal-v3"></script>
-    <script src="/assets/js/pages/ibkr_backtests/renderers.js?v=20260508-backtest-warmup-signal-v3"></script>
-    <script src="/assets/js/pages/ibkr_backtests/charts.js?v=20260508-backtest-warmup-signal-v3"></script>
-    <script src="/assets/js/pages/ibkr_backtests/details.js?v=20260508-backtest-warmup-signal-v3"></script>
-    <script src="/assets/js/pages/ibkr_backtests/replay.js?v=20260508-backtest-warmup-signal-v3"></script>
-    <script src="/assets/js/pages/ibkr_backtests/api.js?v=20260508-backtest-warmup-signal-v3"></script>
-    <script src="/assets/js/pages/ibkr_backtests/actions.js?v=20260509-exec-cost-calibration-v1"></script>
-    <script src="/assets/js/pages/ibkr_backtests/page.js?v=20260508-backtest-warmup-signal-v3"></script>
+    <script src="/assets/js/pages/ibkr_backtests/state.js?v=20260511-backtest-tracking-v1"></script>
+    <script src="/assets/js/pages/ibkr_backtests/utils.js?v=20260511-backtest-tracking-v1"></script>
+    <script src="/assets/js/pages/ibkr_backtests/cards.js?v=20260511-backtest-tracking-v1"></script>
+    <script src="/assets/js/pages/ibkr_backtests/ui.js?v=20260511-backtest-tracking-v1"></script>
+    <script src="/assets/js/pages/ibkr_backtests/renderers.js?v=20260511-backtest-tracking-v1"></script>
+    <script src="/assets/js/pages/ibkr_backtests/charts.js?v=20260511-backtest-tracking-v1"></script>
+    <script src="/assets/js/pages/ibkr_backtests/details.js?v=20260511-backtest-tracking-v1"></script>
+    <script src="/assets/js/pages/ibkr_backtests/tracking.js?v=20260511-backtest-tracking-v1"></script>
+    <script src="/assets/js/pages/ibkr_backtests/replay.js?v=20260511-backtest-tracking-v1"></script>
+    <script src="/assets/js/pages/ibkr_backtests/api.js?v=20260511-backtest-tracking-v1"></script>
+    <script src="/assets/js/pages/ibkr_backtests/actions.js?v=20260511-backtest-tracking-v1"></script>
+    <script src="/assets/js/pages/ibkr_backtests/page.js?v=20260511-backtest-tracking-v1"></script>
 </body>
 </html>

@@ -8,6 +8,14 @@ function applyDefaultDates() {
             syncBacktestDateLimits();
         }
 
+        function scheduleBacktestRefresh() {
+            if (refreshTimer) clearTimeout(refreshTimer);
+            const intervalMs = activeStatus?.running
+                ? BACKTEST_REFRESH_INTERVAL_RUNNING_MS
+                : BACKTEST_REFRESH_INTERVAL_IDLE_MS;
+            refreshTimer = setTimeout(() => refreshDashboard(false), intervalMs);
+        }
+
         window.handleStartBacktest = handleStartBacktest;
         window.cancelActiveRun = cancelActiveRun;
         window.cleanupSelectedRun = cleanupSelectedRun;
@@ -25,6 +33,9 @@ function applyDefaultDates() {
         window.replayTrade = replayTrade;
         window.openTradeChart = openTradeChart;
         window.replayTarget = replayTarget;
+        window.onTrackingFilterChange = onTrackingFilterChange;
+        window.resetTrackingFilters = resetTrackingFilters;
+        window.replayTrackingEvent = replayTrackingEvent;
         window.syncSymbolSourceUI = syncSymbolSourceUI;
         window.syncTvCompareUI = syncTvCompareUI;
         window.syncBacktestPresetUI = syncBacktestPresetUI;
@@ -49,6 +60,7 @@ function applyDefaultDates() {
             syncSymbolSourceUI();
             syncTvCompareUI();
             setBacktestTab(activeBacktestTab);
+            renderTracking();
             renderReplay([]);
             await withPageLoading(
                 () => refreshDashboard(false),
@@ -57,5 +69,4 @@ function applyDefaultDates() {
                     copy: '正在同步回测数据。',
                 }
             );
-            refreshTimer = setInterval(() => refreshDashboard(false), 10000);
         });

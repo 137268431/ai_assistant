@@ -16,6 +16,7 @@
                     { label: 'Run', value: selectedRunId || '未选择' },
                 ]);
                 setPageRefreshTime();
+                scheduleBacktestRefresh();
                 if (showToastOnSuccess) showToast('回测面板已刷新');
             } catch (error) {
                 console.error('refreshDashboard failed:', error);
@@ -257,9 +258,7 @@
                 showToast('回测结果已清理');
                 selectedRunId = '';
                 selectedRun = null;
-                selectedTrades = [];
-                selectedTargets = [];
-                selectedTargetsLoading = false;
+                clearSelectedTrackingRows();
                 renderReplay([]);
                 await refreshDashboard(false);
             } catch (error) {
@@ -289,9 +288,7 @@
                 if (selectedRun?.extra?.batch_id === selectedBatchId) {
                     selectedRunId = '';
                     selectedRun = null;
-                    selectedTrades = [];
-                    selectedTargets = [];
-                    selectedTargetsLoading = false;
+                    clearSelectedTrackingRows();
                     renderReplay([]);
                 }
                 selectedBatchId = '';
@@ -327,22 +324,37 @@
             selectedRunId = runId;
             selectedRun = runList.find((run) => run.id === runId) || null;
             selectedTargets = [];
+            selectedTrades = [];
+            selectedSignals = [];
+            selectedReverseSignals = [];
+            selectedTrackingModel = null;
             selectedTargetsLoading = Boolean(runId);
+            trackingLoading = Boolean(runId);
+            trackingFilterRunId = '';
+            trackingFilters.date = '';
+            trackingFilters.symbol = '';
+            trackingFilters.eventType = '';
             backtestTextExpandedState.strategyParams = false;
             backtestTextExpandedState.runtimeExtra = false;
+            backtestTableExpandedState.trackingTimeline = false;
+            backtestTableExpandedState.trackingFlows = false;
             renderRuns();
             renderMetrics();
             renderRunDetail();
+            if (typeof renderTracking === 'function') renderTracking();
             const hydratePromise = hydrateSelectedRun(runId).then(() => {
                 if (selectedRunId !== runId) return;
                 renderRuns();
                 renderMetrics();
                 renderRunDetail();
+                refreshTrackingModel();
             });
             await Promise.all([
                 hydratePromise,
                 loadRunTrades(runId),
                 loadRunTargets(runId, { showToastOnError: true }),
+                loadRunSignals(runId, { showToastOnError: true }),
+                loadRunReverseSignals(runId, { showToastOnError: true }),
             ]);
             renderReplay([]);
             document.getElementById('replayCenterBar').value = '';
@@ -391,6 +403,10 @@
             }
             if (key === 'replay') {
                 renderReplay(selectedReplayRows);
+                return;
+            }
+            if (key === 'trackingTimeline' || key === 'trackingFlows') {
+                renderTracking();
             }
         }
 

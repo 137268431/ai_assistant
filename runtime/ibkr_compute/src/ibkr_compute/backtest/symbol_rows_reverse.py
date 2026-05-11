@@ -322,6 +322,9 @@ class BacktestSymbolRowsReverseMixin:
                 {
                     "reverse_action_type": action_type,
                     "reverse_kind": reverse_kind,
+                    "event_bar_ms": int(reverse_row.get("bar_time_ms", 0) or 0),
+                    "event_us_time": str(reverse_row.get("us_time", "") or ""),
+                    "event_cn_time": str(reverse_row.get("cn_time", "") or ""),
                 },
             )
             return None
@@ -356,11 +359,47 @@ class BacktestSymbolRowsReverseMixin:
         if action_type == "adjust_sl":
             new_sl = float(extra.get("new_sl", 0) or 0)
             if new_sl > 0:
+                old_sl = float(position.get("stop_price", 0) or 0)
                 position["stop_price"] = new_sl
+                self._append_backtest_risk_adjustment(
+                    position,
+                    {
+                        "event_type": "reverse_adjust_sl",
+                        "source": "reverse_signal",
+                        "reverse_kind": reverse_kind,
+                        "action_type": action_type,
+                        "bar_time_ms": int(reverse_row.get("bar_time_ms", 0) or 0),
+                        "us_time": str(reverse_row.get("us_time", "") or ""),
+                        "cn_time": str(reverse_row.get("cn_time", "") or ""),
+                        "old_sl": round(old_sl, 4),
+                        "new_sl": round(new_sl, 4),
+                        "reason": str(reverse_row.get("reason", "") or ""),
+                        "signal_id": str(position.get("signal_id", "") or ""),
+                        "origin_signal_id": str(reverse_row.get("origin_signal_id", "") or ""),
+                    },
+                )
         elif action_type == "adjust_tp":
             new_tp = float(extra.get("new_tp", 0) or 0)
             if new_tp > 0:
+                old_tp = float(position.get("target_price", 0) or 0)
                 position["target_price"] = new_tp
+                self._append_backtest_risk_adjustment(
+                    position,
+                    {
+                        "event_type": "reverse_adjust_tp",
+                        "source": "reverse_signal",
+                        "reverse_kind": reverse_kind,
+                        "action_type": action_type,
+                        "bar_time_ms": int(reverse_row.get("bar_time_ms", 0) or 0),
+                        "us_time": str(reverse_row.get("us_time", "") or ""),
+                        "cn_time": str(reverse_row.get("cn_time", "") or ""),
+                        "old_tp": round(old_tp, 4),
+                        "new_tp": round(new_tp, 4),
+                        "reason": str(reverse_row.get("reason", "") or ""),
+                        "signal_id": str(position.get("signal_id", "") or ""),
+                        "origin_signal_id": str(reverse_row.get("origin_signal_id", "") or ""),
+                    },
+                )
         return position, None
 
     def _build_backtest_reverse_signal_row(

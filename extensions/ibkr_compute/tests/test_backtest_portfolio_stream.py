@@ -752,6 +752,99 @@ class BacktestPortfolioStreamTests(unittest.TestCase):
         self.assertTrue(self.service._portfolio_bar_in_order_window(before_cutoff, request))
         self.assertFalse(self.service._portfolio_bar_in_order_window(after_cutoff, request))
 
+    def test_audit_trail_links_target_signal_fill_and_exit(self):
+        start = datetime(2026, 4, 1, 9, 35, tzinfo=ET)
+        start_ms = int(start.timestamp() * 1000)
+        signal_ms = start_ms + 5 * 60 * 1000
+        bars_by_symbol = {"AAPL": build_bars("AAPL", start_ms)}
+        FakeSignalGenerator.signals_by_symbol_ms = {
+            ("AAPL", signal_ms): {
+                "direction": "long",
+                "signal": "mr_L",
+                "entry": 100.0,
+                "stop_loss": 95.0,
+                "take_profit": 102.0,
+                "shares": 10,
+                "reason": "unit-test",
+                "rr": 1.5,
+                "extra": {},
+            }
+        }
+        self.service._load_symbol_bars = lambda symbol, *args, **kwargs: list(bars_by_symbol[symbol])
+        self.service._load_symbol_warmup_bars = lambda *args, **kwargs: []
+        self.service._load_daily_close_lookup = lambda *args, **kwargs: []
+        request = self._request(symbols="AAPL", initial_capital=50000)
+        target_rows = [
+            {"symbol": "AAPL", "date": "2026-04-01", "rank": 1, "score": 9.0, "direction_bias": "long"},
+        ]
+
+        result = self.service._run_portfolio_stream_backtest(
+            ["AAPL"],
+            request,
+            allowed_trade_days_by_symbol={"AAPL": {"2026-04-01"}},
+            target_rows=target_rows,
+        )
+        audit = self.service._build_backtest_audit_trail(
+            request,
+            target_rows,
+            result["signal_rows"],
+            result["trades"],
+            result["reverse_rows"],
+        )
+
+        signal_history = result["signal_rows"][0]["extra"]["status_history"]
+        self.assertEqual([item["status"] for item in signal_history], ["generated", "pending", "executed"])
+        self.assertEqual(audit["focus_date"], "2026-04-01")
+        self.assertEqual(audit["focus_symbols"], ["AAPL"])
+        for event_type in ("target_selected", "signal_generated", "signal_pending", "entry_filled", "trade_opened", "trade_closed"):
+            self.assertGreaterEqual(audit["event_type_counts"].get(event_type, 0), 1)
+        closed_events = [item for item in audit["focus_day"]["timeline"] if item["event_type"] == "trade_closed"]
+        self.assertEqual(closed_events[0]["status"], "take_profit")
+        self.assertEqual(closed_events[0]["take_profit"], 102.0)
+
+    def test_audit_trail_records_stop_price_adjustments(self):
+        start = datetime(2026, 4, 1, 9, 35, tzinfo=ET)
+        start_ms = int(start.timestamp() * 1000)
+        signal_ms = start_ms + 5 * 60 * 1000
+        bars_by_symbol = {"AAPL": build_bars("AAPL", start_ms)}
+        FakeSignalGenerator.signals_by_symbol_ms = {
+            ("AAPL", signal_ms): {
+                "direction": "long",
+                "signal": "mr_L",
+                "entry": 100.0,
+                "stop_loss": 95.0,
+                "take_profit": 110.0,
+                "shares": 10,
+                "reason": "unit-test",
+                "rr": 2.0,
+                "extra": {},
+            }
+        }
+        self.service._load_symbol_bars = lambda symbol, *args, **kwargs: list(bars_by_symbol[symbol])
+        self.service._load_symbol_warmup_bars = lambda *args, **kwargs: []
+        self.service._load_daily_close_lookup = lambda *args, **kwargs: []
+        request = self._request(symbols="AAPL", initial_capital=50000, atr_stop_min_profit_r=0.0)
+        request["params"]["strategy_params"]["sl_atr_mult"] = 1.0
+
+        result = self.service._run_portfolio_stream_backtest(["AAPL"], request)
+        audit = self.service._build_backtest_audit_trail(
+            request,
+            [],
+            result["signal_rows"],
+            result["trades"],
+            result["reverse_rows"],
+        )
+
+        adjustments = result["trades"][0]["extra"]["risk_adjustments"]
+        self.assertGreaterEqual(len(adjustments), 1)
+        self.assertEqual(adjustments[0]["event_type"], "atr_stop_adjust")
+        self.assertEqual(adjustments[0]["old_sl"], 95.0)
+        self.assertGreater(adjustments[0]["new_sl"], 95.0)
+        risk_events = [item for item in audit["timeline"] if item["event_type"] == "atr_stop_adjust"]
+        self.assertEqual(len(risk_events), 1)
+        self.assertEqual(risk_events[0]["old_sl"], 95.0)
+        self.assertGreater(risk_events[0]["new_sl"], 95.0)
+
     def test_backtest_capture_persists_signals_directly_to_sqlite(self):
         self.service.pb = SimpleNamespace(
             create_records=lambda *args, **kwargs: (_ for _ in ()).throw(

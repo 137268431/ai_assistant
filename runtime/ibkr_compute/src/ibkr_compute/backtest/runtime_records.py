@@ -794,6 +794,17 @@ class BacktestRuntimeRecordsMixin:
             extra["execution_cost_summary"] = metrics.get("execution_cost_summary") or {}
             extra["daily_scan_match_diagnostics"] = metrics.get("daily_scan_match_diagnostics") or {}
             extra["daily_selection_cache"] = metrics.get("daily_selection_cache") or {}
+            audit = metrics.get("backtest_audit") or {}
+            if audit:
+                extra["backtest_audit_summary"] = {
+                    "focus_date": audit.get("focus_date") or "",
+                    "focus_symbols": audit.get("focus_symbols") or [],
+                    "event_count": audit.get("event_count") or 0,
+                    "event_type_counts": audit.get("event_type_counts") or {},
+                    "stage_counts": audit.get("stage_counts") or {},
+                    "timeline_truncated": bool(audit.get("timeline_truncated")),
+                    "daily_summary": audit.get("daily_summary") or [],
+                }
         if daily_equity is not None:
             extra["equity_curve"] = daily_equity
         if benchmark_points is not None:

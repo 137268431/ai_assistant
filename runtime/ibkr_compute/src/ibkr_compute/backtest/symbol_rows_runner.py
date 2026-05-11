@@ -101,7 +101,17 @@ class BacktestSymbolRowsRunnerMixin:
                     trades.append(exit_trade)
                     open_position = None
                 if pending_signal:
-                    self._mark_backtest_signal_status(signal_index, pending_signal.get("signal_id"), "dropped", "new_day_reset")
+                    self._mark_backtest_signal_status(
+                        signal_index,
+                        pending_signal.get("signal_id"),
+                        "dropped",
+                        "new_day_reset",
+                        {
+                            "event_bar_ms": int(bar.get("bar_time_ms", 0) or 0),
+                            "event_us_time": str(bar.get("us_time", "") or ""),
+                            "event_cn_time": str(bar.get("cn_time", "") or ""),
+                        },
+                    )
                 pending_signal = None
             previous_day = current_day
 
@@ -267,6 +277,16 @@ class BacktestSymbolRowsRunnerMixin:
                             signal,
                             signal_payload,
                         )
+                        self._mark_backtest_signal_status(
+                            signal_index,
+                            pending_signal.get("signal_id"),
+                            "pending",
+                            "accepted_pending_entry",
+                            {
+                                "confirm_ready_bar_ms": int(pending_signal.get("signal_bar_ms", 0) or 0),
+                                "validity_minutes": self._portfolio_signal_validity_minutes(pending_signal, request),
+                            },
+                        )
 
                         if force_flat_eod and index < len(bars) - 1:
                             next_day = str(bars[index + 1].get("us_time", "") or "")[:10]
@@ -347,7 +367,18 @@ class BacktestSymbolRowsRunnerMixin:
         if open_position:
             trades.append(self._close_position(open_position, bars[-1], commission_per_share, slippage_bps, "last_bar", execution_profile))
         if pending_signal:
-            self._mark_backtest_signal_status(signal_index, pending_signal.get("signal_id"), "dropped", "last_bar_no_entry")
+            last_bar = bars[-1] if bars else {}
+            self._mark_backtest_signal_status(
+                signal_index,
+                pending_signal.get("signal_id"),
+                "dropped",
+                "last_bar_no_entry",
+                {
+                    "event_bar_ms": int(last_bar.get("bar_time_ms", 0) or 0),
+                    "event_us_time": str(last_bar.get("us_time", "") or ""),
+                    "event_cn_time": str(last_bar.get("cn_time", "") or ""),
+                },
+            )
 
         quality = {
             "symbol": symbol,

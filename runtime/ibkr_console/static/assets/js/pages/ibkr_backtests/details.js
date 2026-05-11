@@ -13,34 +13,40 @@
             const dailyFunnel = Array.isArray(metrics.daily_funnel) ? metrics.daily_funnel : [];
             const qualityRows = Array.isArray(metrics.data_quality) ? metrics.data_quality : [];
             const skipped = Array.isArray(metrics.skipped_symbols) ? metrics.skipped_symbols : [];
+            const symbolCount = countRunSymbols(selectedRun);
+            const symbolSummary = summarizeRunSymbols(selectedRun);
             const detailHtml = `
                 <div class="detail-card">
                     <div class="subhead">Meta</div>
-                    <div class="detail-list">
+                    <div class="detail-list compact-detail-list">
                         <div class="detail-item"><div class="detail-item-label">Name</div><div class="detail-item-value">${escapeHtml(selectedRun.name || '--')}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Run ID</div><div class="detail-item-value mono">${escapeHtml(selectedRun.id || '--')}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Date Range</div><div class="detail-item-value">${escapeHtml(formatRunDate(selectedRun))}</div></div>
-                        <div class="detail-item"><div class="detail-item-label">Symbols</div><div class="detail-item-value">${escapeHtml(selectedRun.symbols || '--')}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Symbol Source</div><div class="detail-item-value">${escapeHtml(selectedRun.symbol_source || '--')}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Source Environment</div><div class="detail-item-value">${escapeHtml((selectedRun.source_environment || '--').toUpperCase())}</div></div>
-                        <div class="detail-item"><div class="detail-item-label">Session</div><div class="detail-item-value">${escapeHtml(selectedRun.session_mode || '--')}</div></div>
-                        <div class="detail-item"><div class="detail-item-label">Warmup</div><div class="detail-item-value">${escapeHtml(String(extra.warmup_bars || metrics.warmup_bars || '--'))}</div></div>
-                        <div class="detail-item"><div class="detail-item-label">Scan Cutoff</div><div class="detail-item-value">${escapeHtml(extra.premarket_cutoff_time || '--')}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Symbols</div><div class="detail-item-value">${escapeHtml(symbolSummary || '--')}${symbolCount ? ` <span class="mini-chip">${escapeHtml(String(symbolCount))} total</span>` : ''}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Capital</div><div class="detail-item-value">${escapeHtml(formatMoney(selectedRun.initial_capital || 0))}</div></div>
-                        <div class="detail-item"><div class="detail-item-label">Execution</div><div class="detail-item-value">${escapeHtml(extra.execution_model || metrics.execution_model || '--')}</div></div>
-                        <div class="detail-item"><div class="detail-item-label">Account Model</div><div class="detail-item-value">${escapeHtml(extra.account_model_mode || portfolioRisk.account_model_mode || '--')}</div></div>
-                        <div class="detail-item"><div class="detail-item-label">Fee Model</div><div class="detail-item-value">${escapeHtml(extra.fee_model || executionCost.fee_model || '--')}</div></div>
-                        <div class="detail-item"><div class="detail-item-label">Slippage Model</div><div class="detail-item-value">${escapeHtml(extra.slippage_model || executionCost.slippage_model || '--')}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Total Costs</div><div class="detail-item-value">${escapeHtml(formatMoney((executionCost.total_commission || 0) + (executionCost.estimated_slippage_cost || 0)))}</div></div>
-                        <div class="detail-item"><div class="detail-item-label">Borrow Mode</div><div class="detail-item-value">${escapeHtml(portfolioRisk.borrow_limit_mode || extra.borrow_limit_mode || '--')}</div></div>
-                        <div class="detail-item"><div class="detail-item-label">Borrow Limit</div><div class="detail-item-value">${escapeHtml(formatMoney(portfolioRisk.max_borrow_amount || extra.max_borrow_amount || 0))}</div></div>
-                        <div class="detail-item"><div class="detail-item-label">Buying Power</div><div class="detail-item-value">${escapeHtml(formatMoney(portfolioRisk.total_exposure_limit || 0))}</div></div>
-                        <div class="detail-item"><div class="detail-item-label">Signal Validity</div><div class="detail-item-value">${escapeHtml(String(portfolioRisk.signal_validity_minutes || extra.signal_validity_minutes || '--'))}m</div></div>
-                        <div class="detail-item"><div class="detail-item-label">Order Cut</div><div class="detail-item-value">${escapeHtml(portfolioRisk.order_window_end_time || extra.order_window_end_time || '--')}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Runtime</div><div class="detail-item-value">${escapeHtml(String(selectedRun.duration_s || 0))}s</div></div>
-                        <div class="detail-item"><div class="detail-item-label">Started</div><div class="detail-item-value mono">${escapeHtml(selectedRun.started_at || '--')}</div></div>
-                        <div class="detail-item"><div class="detail-item-label">Finished</div><div class="detail-item-value mono">${escapeHtml(selectedRun.finished_at || '--')}</div></div>
                     </div>
+                    <details class="compact-details run-meta-more">
+                        <summary class="compact-summary">执行 / 风控参数</summary>
+                        <div class="detail-list">
+                            <div class="detail-item"><div class="detail-item-label">Session</div><div class="detail-item-value">${escapeHtml(selectedRun.session_mode || '--')}</div></div>
+                            <div class="detail-item"><div class="detail-item-label">Warmup</div><div class="detail-item-value">${escapeHtml(String(extra.warmup_bars || metrics.warmup_bars || '--'))}</div></div>
+                            <div class="detail-item"><div class="detail-item-label">Scan Cutoff</div><div class="detail-item-value">${escapeHtml(extra.premarket_cutoff_time || '--')}</div></div>
+                            <div class="detail-item"><div class="detail-item-label">Execution</div><div class="detail-item-value">${escapeHtml(extra.execution_model || metrics.execution_model || '--')}</div></div>
+                            <div class="detail-item"><div class="detail-item-label">Account Model</div><div class="detail-item-value">${escapeHtml(extra.account_model_mode || portfolioRisk.account_model_mode || '--')}</div></div>
+                            <div class="detail-item"><div class="detail-item-label">Fee / Slippage</div><div class="detail-item-value">${escapeHtml(extra.fee_model || executionCost.fee_model || '--')} / ${escapeHtml(extra.slippage_model || executionCost.slippage_model || '--')}</div></div>
+                            <div class="detail-item"><div class="detail-item-label">Borrow Mode</div><div class="detail-item-value">${escapeHtml(portfolioRisk.borrow_limit_mode || extra.borrow_limit_mode || '--')}</div></div>
+                            <div class="detail-item"><div class="detail-item-label">Borrow Limit</div><div class="detail-item-value">${escapeHtml(formatMoney(portfolioRisk.max_borrow_amount || extra.max_borrow_amount || 0))}</div></div>
+                            <div class="detail-item"><div class="detail-item-label">Buying Power</div><div class="detail-item-value">${escapeHtml(formatMoney(portfolioRisk.total_exposure_limit || 0))}</div></div>
+                            <div class="detail-item"><div class="detail-item-label">Signal Validity</div><div class="detail-item-value">${escapeHtml(String(portfolioRisk.signal_validity_minutes || extra.signal_validity_minutes || '--'))}m</div></div>
+                            <div class="detail-item"><div class="detail-item-label">Order Cut</div><div class="detail-item-value">${escapeHtml(portfolioRisk.order_window_end_time || extra.order_window_end_time || '--')}</div></div>
+                            <div class="detail-item"><div class="detail-item-label">Started</div><div class="detail-item-value mono">${escapeHtml(selectedRun.started_at || '--')}</div></div>
+                            <div class="detail-item"><div class="detail-item-label">Finished</div><div class="detail-item-value mono">${escapeHtml(selectedRun.finished_at || '--')}</div></div>
+                        </div>
+                    </details>
                 </div>
                 <div class="detail-card">
                     <div class="subhead">Strategy Params</div>
@@ -121,6 +127,7 @@
                     <div class="note-box">${escapeHtml(selectedRun.error || 'No error. This run completed without runtime exceptions.')}</div>
                 </div>
                 ${buildRunAnalysisCard(selectedRun)}
+                ${buildBacktestAuditCard(selectedRun)}
                 ${buildBacktestIndicatorCaptureCard(selectedRun)}
                 ${buildBacktestTargetReplayCard(selectedRun)}
                 ${buildBacktestReverseCaptureCard(selectedRun)}
@@ -143,6 +150,13 @@
                         execution_cost_summary: metrics.execution_cost_summary || extra.execution_cost_summary || {},
                         portfolio_rejection_counts: metrics.portfolio_rejection_counts || extra.portfolio_rejection_counts || {},
                         portfolio_candidate_samples: metrics.portfolio_candidate_samples || [],
+                        backtest_audit_summary: extra.backtest_audit_summary || {
+                            focus_date: metrics.backtest_audit?.focus_date || '',
+                            focus_symbols: metrics.backtest_audit?.focus_symbols || [],
+                            event_count: metrics.backtest_audit?.event_count || 0,
+                            event_type_counts: metrics.backtest_audit?.event_type_counts || {},
+                            timeline_truncated: metrics.backtest_audit?.timeline_truncated || false,
+                        },
                         analysis_report: extra.analysis_report || {},
                     }, null, 2), 'runDetail')}
                 </div>
@@ -160,6 +174,12 @@
                 if (trade.symbol) symbols.add(String(trade.symbol).trim().toUpperCase());
             });
             selectedTargets.forEach((item) => {
+                if (item.symbol) symbols.add(String(item.symbol).trim().toUpperCase());
+            });
+            selectedSignals.forEach((item) => {
+                if (item.symbol) symbols.add(String(item.symbol).trim().toUpperCase());
+            });
+            selectedReverseSignals.forEach((item) => {
                 if (item.symbol) symbols.add(String(item.symbol).trim().toUpperCase());
             });
             const items = Array.from(symbols).sort();

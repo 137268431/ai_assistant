@@ -199,6 +199,13 @@ class BacktestOrchestrationMixin:
                 all_trades,
             )
         )
+        metrics["backtest_audit"] = self._build_backtest_audit_trail(
+            request,
+            backtest_target_rows,
+            all_signal_rows,
+            all_trades,
+            all_reverse_rows,
+        )
         metrics["signal_fill_rate"] = (
             round((metrics["executed_signal_count"] / metrics["signal_count"]) * 100.0, 4)
             if metrics["signal_count"] else 0.0
