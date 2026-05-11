@@ -24,6 +24,109 @@ class _Scanner(DailyScannerRunMixin):
 
 
 class DynamicAdmissionExtraTest(unittest.TestCase):
+    def test_high_price_mega_cap_can_qualify_by_dollar_volume(self):
+        admission = evaluate_dynamic_admission(
+            "AMZN",
+            metrics={
+                "price": 185,
+                "avg_10d_volume": 60_000,
+                "premarket_volume": 8_000,
+                "today_volume": 100_000,
+                "atr_pct": 0.5,
+                "day_change_pct": 1.2,
+                "market_cap": 2_000_000_000_000,
+            },
+        )
+
+        thresholds = admission["dynamic_thresholds"]
+        gate_buckets = {gate["bucket"] for gate in admission["failed_gates"]}
+        self.assertTrue(admission["quality_gate_passed"])
+        self.assertEqual("mega_core", thresholds["threshold_profile"])
+        self.assertLess(thresholds["avg_10d_volume_gte"], 100_000)
+        self.assertGreaterEqual(thresholds["avg_dollar_volume_gte"], 10_000_000)
+        self.assertNotIn("avg_10d_volume_below_threshold", gate_buckets)
+        self.assertIn("threshold_profile=mega_core", admission["reason_tags"])
+
+    def test_active_growth_symbol_uses_dynamic_dollar_volume_and_activity(self):
+        admission = evaluate_dynamic_admission(
+            "APP",
+            metrics={
+                "price": 80,
+                "avg_10d_volume": 80_000,
+                "premarket_volume": 3_000,
+                "today_volume": 50_000,
+                "rvol_20": 2.0,
+                "atr_pct": 2.5,
+                "day_change_pct": 3.0,
+                "market_cap": 30_000_000_000,
+                "beta": 1.6,
+            },
+        )
+
+        thresholds = admission["dynamic_thresholds"]
+        self.assertTrue(admission["quality_gate_passed"])
+        self.assertEqual("mid_active", thresholds["threshold_profile"])
+        self.assertGreater(thresholds["avg_10d_volume_gte"], 80_000)
+        self.assertLessEqual(thresholds["activity_any_of"]["premarket_volume_gte"], 3_000)
+        self.assertNotIn("avg_10d_volume_below_threshold", {gate["bucket"] for gate in admission["failed_gates"]})
+
+    def test_low_float_hot_symbol_is_allowed_but_gets_strict_policy(self):
+        admission = evaluate_dynamic_admission(
+            "LOWF",
+            metrics={
+                "price": 10,
+                "avg_10d_volume": 45_000,
+                "premarket_volume": 3_500,
+                "today_volume": 50_000,
+                "rvol_20": 3.0,
+                "atr_pct": 4.0,
+                "day_change_pct": 5.0,
+                "market_cap": 600_000_000,
+                "shares_float": 10_000_000,
+            },
+        )
+
+        self.assertTrue(admission["quality_gate_passed"])
+        self.assertEqual("low_float_hot", admission["dynamic_thresholds"]["threshold_profile"])
+        self.assertGreater(admission["dynamic_thresholds"]["admission_score_gte"], 58)
+        self.assertEqual("aggressive", admission["strategy_policy"]["risk_profile"])
+        self.assertEqual("strict", admission["strategy_policy"]["signal_confirmation"])
+
+    def test_inactive_thin_or_penny_symbol_stays_blocked(self):
+        admission = evaluate_dynamic_admission(
+            "BAD",
+            metrics={
+                "price": 0.75,
+                "avg_10d_volume": 15_000,
+                "premarket_volume": 100,
+                "today_volume": 200,
+                "atr_pct": 0.02,
+                "day_change_pct": 0.05,
+                "market_cap": 50_000_000,
+            },
+        )
+
+        self.assertFalse(admission["quality_gate_passed"])
+        self.assertEqual("thin_or_penny", admission["dynamic_thresholds"]["threshold_profile"])
+        self.assertIn("admission_score_below_threshold", {gate["bucket"] for gate in admission["failed_gates"]})
+
+    def test_zero_price_is_a_blocking_quality_failure(self):
+        admission = evaluate_dynamic_admission(
+            "NOPX",
+            metrics={
+                "price": 0,
+                "avg_10d_volume": 2_000_000,
+                "premarket_volume": 50_000,
+                "today_volume": 200_000,
+                "atr_pct": 1.5,
+                "day_change_pct": 2.0,
+            },
+        )
+
+        price_gates = [gate for gate in admission["failed_gates"] if gate["bucket"] == "price_unusable"]
+        self.assertFalse(admission["quality_gate_passed"])
+        self.assertEqual("blocking", price_gates[0]["severity"])
+
     def test_extra_is_used_only_after_metrics_and_top_level_fundamentals(self):
         admission = evaluate_dynamic_admission(
             "XYZ",

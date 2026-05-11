@@ -618,6 +618,44 @@ class StrategyReliabilityEnhancementTests(unittest.TestCase):
         self.assertFalse(valid)
         self.assertEqual(reason, "cooldown_after_reverse_close")
 
+    def test_signal_processor_requires_active_target_direction_alignment(self):
+        long_signal = {
+            "symbol": "AAPL",
+            "direction": "long",
+            "entry": 100.0,
+            "stop_loss": 95.0,
+            "take_profit": 110.0,
+            "shares": 10,
+        }
+        short_signal = {
+            **long_signal,
+            "direction": "short",
+            "stop_loss": 105.0,
+            "take_profit": 90.0,
+        }
+        processor = SignalProcessor(
+            FakeConfig(),
+            environment="live",
+            target_direction_provider=lambda: {"AAPL": "long"},
+        )
+
+        valid, reason = processor.validate_signal(long_signal)
+        self.assertTrue(valid)
+        self.assertEqual(reason, "ok")
+
+        valid, reason = processor.validate_signal(short_signal)
+        self.assertFalse(valid)
+        self.assertEqual(reason, "target_direction_mismatch")
+
+        missing_processor = SignalProcessor(
+            FakeConfig(),
+            environment="live",
+            target_direction_provider=lambda: {"AAPL": "neutral"},
+        )
+        valid, reason = missing_processor.validate_signal(long_signal)
+        self.assertFalse(valid)
+        self.assertEqual(reason, "target_direction_missing")
+
     def test_backtest_opposite_signal_conflict_closes_instead_of_adjusting(self):
         service = BacktestService(None)
         reverse_row = service._build_backtest_reverse_signal_row(

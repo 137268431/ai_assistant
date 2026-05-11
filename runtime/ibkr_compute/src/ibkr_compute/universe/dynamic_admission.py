@@ -72,8 +72,8 @@ def evaluate_dynamic_admission(
     admission_score, score_components = _build_admission_score(profile, thresholds)
 
     min_score = _safe_float(
-        settings_row.get("dynamic_admission_min_score"),
-        DEFAULT_DYNAMIC_ADMISSION_MIN_SCORE,
+        thresholds.get("admission_score_gte"),
+        _safe_float(settings_row.get("dynamic_admission_min_score"), DEFAULT_DYNAMIC_ADMISSION_MIN_SCORE),
     )
     min_score = max(0.0, min(ADMISSION_SCORE_CAP, min_score))
     if admission_score < min_score:
@@ -307,7 +307,39 @@ def _build_dynamic_thresholds(profile: dict, settings: dict) -> dict:
     abs_day_change_pct = _safe_float(profile.get("abs_day_change_pct"))
     rvol_20 = _safe_float(profile.get("rvol_20"))
 
+    threshold_profile, profile_reasons = _select_threshold_profile(profile)
     avg_multiplier = 1.0
+    pre_multiplier_profile = 1.0
+    min_score_adjustment = 0.0
+    dollar_threshold_profile = 2_000_000.0
+
+    if threshold_profile == "mega_core":
+        avg_multiplier *= 0.55
+        pre_multiplier_profile *= 0.95
+        dollar_threshold_profile = 10_000_000.0
+        min_score_adjustment -= 2.0
+    elif threshold_profile == "large_liquid":
+        avg_multiplier *= 0.65
+        dollar_threshold_profile = 8_000_000.0
+        min_score_adjustment -= 1.0
+    elif threshold_profile == "high_price_liquid":
+        avg_multiplier *= 0.60
+        dollar_threshold_profile = 5_000_000.0
+    elif threshold_profile == "mid_active":
+        avg_multiplier *= 0.85
+        pre_multiplier_profile *= 0.85
+        dollar_threshold_profile = 4_000_000.0
+    elif threshold_profile == "low_float_hot":
+        avg_multiplier *= 0.60
+        pre_multiplier_profile *= 0.65
+        dollar_threshold_profile = 1_500_000.0
+        min_score_adjustment += 4.0
+    elif threshold_profile == "thin_or_penny":
+        avg_multiplier *= 1.45
+        pre_multiplier_profile *= 1.25
+        dollar_threshold_profile = 1_000_000.0 if price_band in {"penny", "low"} else 2_500_000.0
+        min_score_adjustment += 6.0
+
     if price_band in {"high", "extended"}:
         avg_multiplier *= 0.75
     if avg_dollar_volume >= 25_000_000:
@@ -325,11 +357,11 @@ def _build_dynamic_thresholds(profile: dict, settings: dict) -> dict:
     avg_dollar_threshold = 0.0
     if base_avg > 0:
         if price_band in {"penny", "low"}:
-            avg_dollar_threshold = 750_000.0
+            avg_dollar_threshold = min(dollar_threshold_profile, 750_000.0)
         elif price_band in {"regular", "extended", "high"}:
-            avg_dollar_threshold = 2_000_000.0
+            avg_dollar_threshold = dollar_threshold_profile
 
-    activity_multiplier = 1.0
+    activity_multiplier = pre_multiplier_profile
     if rvol_20 >= 3.0 or abs_day_change_pct >= base_day * 2.0:
         activity_multiplier *= 0.55
     elif rvol_20 >= 1.5 or abs_day_change_pct >= base_day * 1.25:
@@ -345,6 +377,10 @@ def _build_dynamic_thresholds(profile: dict, settings: dict) -> dict:
         rvol_threshold = 1.20
     if float_profile == "low_float":
         rvol_threshold = 1.00
+    if threshold_profile == "thin_or_penny":
+        rvol_threshold = max(rvol_threshold, 1.35)
+    elif threshold_profile in {"mega_core", "large_liquid"} and activity_profile in {"warming", "cold"}:
+        rvol_threshold = max(1.05, rvol_threshold - 0.05)
 
     atr_multiplier = 1.0
     day_multiplier = 1.0
@@ -361,6 +397,12 @@ def _build_dynamic_thresholds(profile: dict, settings: dict) -> dict:
         day_multiplier *= 1.20
     if market_cap_tier in {"mega", "large"} and atr_pct > 0:
         atr_multiplier *= 0.90
+    if threshold_profile == "low_float_hot":
+        atr_multiplier *= 1.05
+        day_multiplier *= 1.10
+    elif threshold_profile == "thin_or_penny":
+        atr_multiplier *= 1.20
+        day_multiplier *= 1.25
     atr_threshold = _bounded(base_atr * atr_multiplier, base_atr * 0.60, base_atr * 1.40)
     day_threshold = _bounded(base_day * day_multiplier, base_day * 0.60, base_day * 1.40)
 
@@ -371,9 +413,16 @@ def _build_dynamic_thresholds(profile: dict, settings: dict) -> dict:
             _safe_float(settings.get("dynamic_admission_min_score"), DEFAULT_DYNAMIC_ADMISSION_MIN_SCORE),
         ),
     )
+    min_score = max(0.0, min(ADMISSION_SCORE_CAP, min_score + min_score_adjustment))
 
     return {
         "mode": "dynamic",
+        "threshold_profile": threshold_profile,
+        "threshold_profile_reasons": profile_reasons,
+        "market_cap_tier": market_cap_tier,
+        "liquidity_tier": liquidity_tier,
+        "float_profile": float_profile,
+        "activity_profile": activity_profile,
         "avg_10d_volume_gte": round(avg_threshold, 2),
         "avg_dollar_volume_gte": round(avg_dollar_threshold, 2),
         "activity_any_of": {
@@ -388,6 +437,9 @@ def _build_dynamic_thresholds(profile: dict, settings: dict) -> dict:
         "admission_score_gte": round(min_score, 3),
         "blocking_floors": {
             "avg_10d_volume_gte": round(max(10_000.0, base_avg * 0.20), 2),
+            "avg_dollar_volume_gte": round(max(500_000.0, avg_dollar_threshold * 0.20), 2)
+            if avg_dollar_threshold > 0
+            else 0.0,
             "activity_volume_gte": round(max(500.0, base_pre * 0.10), 2),
             "price_gt": 0.0,
         },
@@ -400,6 +452,52 @@ def _build_dynamic_thresholds(profile: dict, settings: dict) -> dict:
     }
 
 
+def _select_threshold_profile(profile: dict) -> tuple[str, list[str]]:
+    price_band = str(profile.get("price_band") or "")
+    liquidity_tier = str(profile.get("liquidity_tier") or "")
+    activity_profile = str(profile.get("activity_profile") or "")
+    float_profile = str(profile.get("float_profile") or "")
+    market_cap_tier = str(profile.get("market_cap_tier") or "")
+    avg_dollar_volume = _safe_float(profile.get("avg_dollar_volume"))
+    avg_volume = _safe_float(profile.get("avg_10d_volume"))
+    beta = _safe_float(profile.get("beta"))
+    rvol_20 = _safe_float(profile.get("rvol_20"))
+    reasons = [
+        f"cap={market_cap_tier or 'unknown'}",
+        f"liq={liquidity_tier or 'unknown'}",
+        f"activity={activity_profile or 'unknown'}",
+        f"float={float_profile or 'unknown'}",
+    ]
+
+    if price_band == "penny" or (
+        liquidity_tier == "thin" and activity_profile in {"cold", "warming"} and avg_volume < 100_000
+    ):
+        reasons.append("thin/penny names need stricter activity and volatility confirmation")
+        return "thin_or_penny", reasons
+    if float_profile == "low_float" and activity_profile in {"in_play", "hot"}:
+        reasons.append("low float is tradable only when current activity is present")
+        return "low_float_hot", reasons
+    if market_cap_tier == "mega" and (
+        liquidity_tier in {"institutional", "liquid"} or avg_dollar_volume >= 8_000_000
+    ):
+        reasons.append("mega-cap liquidity can qualify by dollar volume instead of raw shares")
+        return "mega_core", reasons
+    if market_cap_tier in {"mega", "large"} and (
+        avg_dollar_volume >= 25_000_000 or liquidity_tier in {"institutional", "liquid"}
+    ):
+        reasons.append("large liquid name: lower raw-share hurdle but require strong dollar volume")
+        return "large_liquid", reasons
+    if price_band in {"high", "extended"} and avg_dollar_volume >= 8_000_000:
+        reasons.append("high-price stock: raw volume is normalized by dollar volume")
+        return "high_price_liquid", reasons
+    if market_cap_tier in {"large", "mid", "small"} and (
+        activity_profile in {"in_play", "hot"} or rvol_20 >= 1.5 or beta >= 1.3
+    ):
+        reasons.append("active growth stock: accept dynamic activity/catalyst evidence")
+        return "mid_active", reasons
+    return "default_dynamic", reasons
+
+
 def _build_failed_gates(symbol: str, profile: dict, thresholds: dict) -> list[dict]:
     failed_gates: list[dict] = []
 
@@ -407,11 +505,16 @@ def _build_failed_gates(symbol: str, profile: dict, thresholds: dict) -> list[di
     avg_dollar_volume = _safe_float(profile.get("avg_dollar_volume"))
     avg_threshold = _safe_float(thresholds.get("avg_10d_volume_gte"))
     avg_dollar_threshold = _safe_float(thresholds.get("avg_dollar_volume_gte"))
-    floor_avg = _safe_float((thresholds.get("blocking_floors") or {}).get("avg_10d_volume_gte"))
+    floors = thresholds.get("blocking_floors") or {}
+    floor_avg = _safe_float(floors.get("avg_10d_volume_gte"))
+    floor_dollar = _safe_float(floors.get("avg_dollar_volume_gte"))
     liquidity_passed = avg_volume >= avg_threshold
     if avg_dollar_threshold > 0:
         liquidity_passed = liquidity_passed or avg_dollar_volume >= avg_dollar_threshold
     if not liquidity_passed:
+        hard_liquidity_miss = avg_volume < floor_avg and (
+            avg_dollar_threshold <= 0 or avg_dollar_volume < floor_dollar
+        )
         failed_gates.append(
             _failed_gate(
                 symbol=symbol,
@@ -423,7 +526,7 @@ def _build_failed_gates(symbol: str, profile: dict, thresholds: dict) -> list[di
                     + (f" or dollar>={_format_number(avg_dollar_threshold)}" if avg_dollar_threshold > 0 else "")
                 ),
                 note="Liquidity is below the dynamic threshold.",
-                severity="blocking" if avg_volume < floor_avg and avg_dollar_volume <= 0 else "soft",
+                severity="blocking" if hard_liquidity_miss else "soft",
             )
         )
 
@@ -495,7 +598,7 @@ def _build_failed_gates(symbol: str, profile: dict, thresholds: dict) -> list[di
         )
 
     price = _safe_float(profile.get("price"))
-    if price < 0:
+    if price <= 0:
         failed_gates.append(
             _failed_gate(
                 symbol=symbol,
@@ -630,6 +733,14 @@ def _build_strategy_policy(
     if risk_profile == "avoid":
         size_multiplier = 0.0
 
+    exit_policy = _policy_exit_profile(
+        risk_profile=risk_profile,
+        setup_type=setup_type,
+        volatility_profile=volatility_profile,
+        liquidity_tier=liquidity_tier,
+        float_profile=float_profile,
+    )
+
     return {
         "risk_profile": risk_profile,
         "setup_type": setup_type,
@@ -637,7 +748,53 @@ def _build_strategy_policy(
         "signal_confirmation": confirmation,
         "entry_style": "wait_for_confirmation" if confirmation in {"strict", "blocked"} else "momentum_or_pullback",
         "position_size_multiplier": round(max(0.0, min(1.25, size_multiplier)), 3),
+        "recommended_signal_profile": "intraday_sd_v1",
+        "recommended_exit_policy": exit_policy,
         "avoid_new_entries": risk_profile == "avoid",
+    }
+
+
+def _policy_exit_profile(
+    *,
+    risk_profile: str,
+    setup_type: str,
+    volatility_profile: str,
+    liquidity_tier: str,
+    float_profile: str,
+) -> dict:
+    if risk_profile == "avoid":
+        return {
+            "exit_policy_profile": "fixed_atr_rr",
+            "policy_type": "reject",
+            "sl_atr_mult": 0.0,
+            "tp_rr": 0.0,
+        }
+    if setup_type == "momentum_breakout":
+        return {
+            "exit_policy_profile": "signal_mode_adaptive_v1",
+            "policy_type": "breakout",
+            "sl_atr_mult": 1.8 if volatility_profile != "extreme" else 1.6,
+            "tp_rr": 2.5,
+        }
+    if setup_type == "stocks_in_play":
+        return {
+            "exit_policy_profile": "signal_mode_adaptive_v1",
+            "policy_type": "trend_pullback",
+            "sl_atr_mult": 2.0,
+            "tp_rr": 2.0,
+        }
+    if liquidity_tier == "thin" or float_profile == "low_float":
+        return {
+            "exit_policy_profile": "fixed_atr_rr",
+            "policy_type": "strict_liquidity",
+            "sl_atr_mult": 1.6,
+            "tp_rr": 1.6,
+        }
+    return {
+        "exit_policy_profile": "fixed_atr_rr",
+        "policy_type": "liquidity_qualified",
+        "sl_atr_mult": 2.0,
+        "tp_rr": 1.8,
     }
 
 
@@ -650,6 +807,7 @@ def _build_reason_tags(
 ) -> list[str]:
     return [
         f"admission={_format_number(admission_score)}>={_format_number(min_score)}",
+        f"threshold_profile={thresholds.get('threshold_profile')}",
         f"profile={profile.get('liquidity_tier')}/{profile.get('activity_profile')}/{profile.get('volatility_profile')}",
         f"policy={strategy_policy.get('setup_type')}",
         f"dyn_avg>={_format_number(thresholds.get('avg_10d_volume_gte'))}",

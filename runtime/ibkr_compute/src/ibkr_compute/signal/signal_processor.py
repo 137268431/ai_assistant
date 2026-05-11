@@ -24,11 +24,19 @@ DEFAULT_COOLDOWN_BAR_MINUTES = 5
 
 
 class SignalProcessor:
-    def __init__(self, config, order_lifecycle=None, environment: str = "live", readiness_provider: Callable | None = None):
+    def __init__(
+        self,
+        config,
+        order_lifecycle=None,
+        environment: str = "live",
+        readiness_provider: Callable | None = None,
+        target_direction_provider: Callable | None = None,
+    ):
         self.config = config
         self.order_lifecycle = order_lifecycle
         self.environment = environment
         self.readiness_provider = readiness_provider
+        self.target_direction_provider = target_direction_provider
         self._active_positions: Dict[str, dict] = {}
         self._cooldowns: Dict[str, dict] = {}
 
@@ -67,6 +75,10 @@ class SignalProcessor:
         if self._has_conflicting_position(symbol, direction):
             return False, "direction_conflict"
 
+        aligned, alignment_reason = self._target_direction_alignment_status(symbol, direction)
+        if not aligned:
+            return False, alignment_reason
+
         if not self._validate_prices(signal):
             return False, "invalid_prices"
 
@@ -92,6 +104,35 @@ class SignalProcessor:
             return False, str(payload.get("reason") or "warmup_incomplete")
 
         return (True, "ok") if payload else (False, "warmup_incomplete")
+
+    def _target_direction_alignment_enabled(self) -> bool:
+        getter = getattr(self.config, "get_bool_for_environment", None)
+        if not callable(getter):
+            return True
+        return bool(getter("ibkr_require_target_direction_alignment", self.environment, True))
+
+    def _target_direction_alignment_status(self, symbol: str, direction: str) -> Tuple[bool, str]:
+        if not self._target_direction_alignment_enabled():
+            return True, "ok"
+        if not callable(self.target_direction_provider):
+            return True, "ok"
+        normalized_symbol = str(symbol or "").strip().upper()
+        normalized_direction = str(direction or "").strip().lower()
+        if not normalized_symbol or normalized_direction not in {"long", "short"}:
+            return False, "target_direction_missing"
+        try:
+            payload = self.target_direction_provider()
+        except Exception as exc:
+            logger.warning("Target direction provider failed: %s", exc)
+            return False, "target_direction_provider_error"
+        if not isinstance(payload, dict):
+            return False, "target_direction_provider_error"
+        target_direction = str(payload.get(normalized_symbol, "") or "").strip().lower()
+        if target_direction not in {"long", "short"}:
+            return False, "target_direction_missing"
+        if normalized_direction != target_direction:
+            return False, "target_direction_mismatch"
+        return True, "ok"
 
     def _get_time_window(self, key: str, default: Tuple[int, int]) -> Tuple[int, int]:
         raw_value = str(
@@ -254,6 +295,7 @@ class SignalProcessor:
             "ibkr_trading_enabled": self._is_trading_enabled(),
             "trading_gate_open": trade_ready,
             "trading_gate_reason": trade_ready_reason,
+            "target_direction_alignment_required": self._target_direction_alignment_enabled(),
             "trade_window_start_time": f"{self._trade_window_start()[0]:02d}:{self._trade_window_start()[1]:02d}",
             "trade_window_end_time": f"{self._trade_window_end()[0]:02d}:{self._trade_window_end()[1]:02d}",
             "order_window_end_time": f"{self._order_window_end()[0]:02d}:{self._order_window_end()[1]:02d}",

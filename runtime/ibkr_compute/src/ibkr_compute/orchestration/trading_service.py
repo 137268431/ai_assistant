@@ -12,6 +12,7 @@ import signal
 import logging
 import threading
 import queue
+import json
 from datetime import datetime
 from ibkr_compute.core.time_utils import ET
 
@@ -289,6 +290,7 @@ class IBKRTradingService(
             config=self.config, order_lifecycle=self.order_lifecycle,
             environment=ENVIRONMENT,
             readiness_provider=self._trade_readiness_snapshot,
+            target_direction_provider=self._active_target_direction_biases,
         )
         self.reverse_handler = ReverseSignalHandler(
             pb_client=self.pb, order_placer=self.order_placer,
@@ -408,6 +410,71 @@ class IBKRTradingService(
             "last_source": "",
         }
         self._refresh_runtime_settings()
+
+    def _active_target_direction_biases(self) -> dict[str, str]:
+        market_date = self._market_date()
+        try:
+            rows = self.pb.get_all_records(
+                "ibkr_targets",
+                filter=(
+                    f'date = "{market_date}" && '
+                    f'environment = "{ENVIRONMENT}" && '
+                    'status = "active"'
+                ),
+                sort="-score,-updated",
+                max_pages=10,
+            )
+        except Exception as exc:
+            logger.warning("Failed to load active target direction biases: %s", exc)
+            return {}
+
+        configured_monitors = [
+            item.strip().upper()
+            for item in str(self.config.get_for_environment("ibkr_market_ws_symbols", ENVIRONMENT, "SPY,QQQ,VIX") or "").split(",")
+            if item.strip()
+        ]
+        market_monitors = {
+            str(symbol or "").strip().upper()
+            for symbol in (list(self._watchlist_monitor_symbols or []) + configured_monitors)
+            if str(symbol or "").strip()
+        }
+        target_limit = max(0, int(self.config.get_int_for_environment("ibkr_target_subscription_limit", ENVIRONMENT, 80) or 0))
+        total_limit = max(0, int(self.config.get_int_for_environment("ibkr_total_subscription_limit", ENVIRONMENT, 80) or 0))
+        trade_budget = target_limit if target_limit > 0 else None
+        if total_limit > 0:
+            remaining = max(0, total_limit - len(market_monitors))
+            trade_budget = remaining if trade_budget is None else min(trade_budget, remaining)
+
+        def is_manual(row: dict) -> bool:
+            extra = row.get("extra") if isinstance(row, dict) else {}
+            if isinstance(extra, str):
+                try:
+                    extra = json.loads(extra)
+                except Exception:
+                    extra = {}
+            source = str((extra if isinstance(extra, dict) else {}).get("source") or "").strip().lower()
+            return source.startswith("manual_") or source in {
+                "ibkr_screener",
+                "manual_page",
+                "manual_page_add",
+                "manual_page_edit",
+                "manual_page_remove",
+                "screener_targets_tab",
+            }
+
+        active_rows = [
+            row for row in rows if str(row.get("symbol", "")).strip().upper() not in market_monitors
+        ]
+        prioritized_rows = [row for row in active_rows if is_manual(row)] + [row for row in active_rows if not is_manual(row)]
+        biases: dict[str, str] = {}
+        for row in prioritized_rows:
+            symbol = str(row.get("symbol", "")).strip().upper()
+            if not symbol or symbol in biases:
+                continue
+            if trade_budget is not None and len(biases) >= trade_budget:
+                break
+            biases[symbol] = str(row.get("direction_bias", "") or "").strip().lower()
+        return biases
 
 
 _service = None

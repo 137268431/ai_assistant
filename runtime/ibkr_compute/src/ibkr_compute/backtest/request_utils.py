@@ -266,6 +266,10 @@ def normalize_request(payload: dict) -> dict:
         payload.get("portfolio_require_target_direction_alignment"),
         False,
     )
+    portfolio_use_target_strategy_policy = normalize_bool(
+        payload.get("portfolio_use_target_strategy_policy"),
+        False,
+    )
     portfolio_max_target_rank = normalize_positive_int(
         payload.get("portfolio_max_target_rank"),
         default=0,
@@ -521,6 +525,7 @@ def normalize_request(payload: dict) -> dict:
         "max_borrow_amount": max_borrow_amount,
         "position_limit_max": position_limit_max,
         "portfolio_require_target_direction_alignment": portfolio_require_target_direction_alignment,
+        "portfolio_use_target_strategy_policy": portfolio_use_target_strategy_policy,
         "portfolio_max_target_rank": portfolio_max_target_rank,
         "portfolio_min_target_score": portfolio_min_target_score,
         "portfolio_block_mr_overextended_state": portfolio_block_mr_overextended_state,
@@ -633,6 +638,7 @@ def normalize_request(payload: dict) -> dict:
             "atr_stop_min_change": atr_stop_min_change,
             "position_limit_max": position_limit_max,
             "portfolio_require_target_direction_alignment": portfolio_require_target_direction_alignment,
+            "portfolio_use_target_strategy_policy": portfolio_use_target_strategy_policy,
             "portfolio_max_target_rank": portfolio_max_target_rank,
             "portfolio_min_target_score": portfolio_min_target_score,
             "portfolio_block_mr_overextended_state": portfolio_block_mr_overextended_state,

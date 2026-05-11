@@ -482,6 +482,75 @@ class BacktestDailyScanReplayTests(unittest.TestCase):
         self.assertIn("premarket_volume_below_threshold", buckets)
         self.assertIn("day_change_below_threshold", buckets)
 
+    def test_metric_prefilter_uses_dynamic_dollar_volume_when_enabled(self):
+        rejections = self.service._build_historical_scan_metric_rejections(
+            "AMZN",
+            {
+                "symbol": "AMZN",
+                "price": 185,
+                "avg_10d_volume": 60_000,
+                "premarket_volume": 8_000,
+                "today_volume": 100_000,
+                "atr_pct": 0.5,
+                "day_change_pct": 1.2,
+                "market_cap": 2_000_000_000_000,
+            },
+            {
+                "dynamic_admission_enabled": True,
+                "dynamic_admission_min_score": 58,
+                "min_avg_10d_volume": 100000,
+                "min_premarket_volume": 5000,
+                "min_atr_pct": 0.15,
+                "min_abs_day_change_pct": 1.0,
+            },
+        )
+
+        self.assertEqual([], rejections)
+
+    def test_target_strategy_policy_overlays_symbol_strategy_params(self):
+        target_rows = [
+            {
+                "symbol": "APP",
+                "date": "2026-04-24",
+                "rank": 1,
+                "score": 12,
+                "direction_bias": "long",
+                "extra": {
+                    "strategy_policy": {
+                        "recommended_signal_profile": "intraday_sd_v1",
+                        "recommended_exit_policy": {
+                            "exit_policy_profile": "signal_mode_adaptive_v1",
+                            "sl_atr_mult": 1.8,
+                            "tp_rr": 2.5,
+                        },
+                    },
+                    "symbol_profile": {"threshold_profile": "large_liquid"},
+                },
+            }
+        ]
+        lookup = self.service._build_daily_target_lookup(target_rows, ["APP"])
+
+        self.assertEqual(lookup[("2026-04-24", "APP")]["recommended_exit_policy"]["tp_rr"], 2.5)
+        request = {
+            "portfolio_use_target_strategy_policy": True,
+            "params": {
+                "strategy_params": {
+                    "exit_policy_profile": "fixed_atr_rr",
+                    "sl_atr_mult": 2.0,
+                    "rr_ratio": 1.5,
+                    "signal_strategy_profile": "legacy",
+                }
+            },
+        }
+        symbol_request = self.service._request_with_target_strategy_policy(request, lookup, "APP")
+        params = symbol_request["params"]["strategy_params"]
+
+        self.assertEqual(params["exit_policy_profile"], "signal_mode_adaptive_v1")
+        self.assertEqual(params["sl_atr_mult"], 1.8)
+        self.assertEqual(params["rr_ratio"], 2.5)
+        self.assertEqual(params["signal_strategy_profile"], "intraday_sd_v1")
+        self.assertEqual(params["target_symbol_profile"]["threshold_profile"], "large_liquid")
+
     def test_daily_selection_cache_reuses_prebuilt_targets_for_same_request(self):
         pb = self._install_cache_scan_fakes(self.service)
         calls = []

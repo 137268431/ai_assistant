@@ -687,6 +687,36 @@ class SignalGenerator:
             signal_mode=signal_mode,
         )
         reason = str(candidate.get("technical_description") or setup)
+        extra = {
+            "strategy_profile": self.strategy_profile,
+            "setup": setup,
+            "sd_regime": snapshot.get("sd_regime", ""),
+            "entry_order_type": "marketable_limit",
+            "validity_minutes": self._intraday_validity_minutes(),
+            "entry_window_start_time": self._intraday_entry_window_start_time(),
+            "entry_window_end_time": self._intraday_entry_window_end_time(),
+            "trigger_checks": dict(candidate.get("trigger_checks") or {}),
+            "filter_checks": dict(candidate.get("filter_checks") or {}),
+            "technical_description": reason,
+            "sd_zone": self._zone_str(snapshot),
+            "sd_trend": self._trend_str(snapshot.get("sd_trend", 0)),
+            "signal_window": "intraday",
+            "signal_mode": signal_mode,
+            "atr": snapshot.get("atr", 0),
+            "atr_raw": snapshot.get("atr_raw", 0),
+            "atr_pct": snapshot.get("atr_pct", 0),
+            "sl_dist_pct": pos.get("sl_dist_pct", 0),
+            "sl_atr_ratio": pos.get("sl_atr_ratio", 0),
+            "vwap": snapshot.get("vwap"),
+            "rvol_20": snapshot.get("rvol_20"),
+            "dollar_volume": snapshot.get("dollar_volume"),
+            "source": "ibkr_compute",
+            **exit_meta,
+        }
+        if isinstance(self.params.get("target_strategy_policy"), dict):
+            extra["target_strategy_policy"] = dict(self.params.get("target_strategy_policy") or {})
+        if isinstance(self.params.get("target_symbol_profile"), dict):
+            extra["target_symbol_profile"] = dict(self.params.get("target_symbol_profile") or {})
         return {
             "symbol": self.symbol,
             "direction": direction,
@@ -702,32 +732,7 @@ class SignalGenerator:
             "exit_policy": pos.get("exit_policy", ""),
             "reason": reason,
             "interval": self.interval,
-            "extra": {
-                "strategy_profile": self.strategy_profile,
-                "setup": setup,
-                "sd_regime": snapshot.get("sd_regime", ""),
-                "entry_order_type": "marketable_limit",
-                "validity_minutes": self._intraday_validity_minutes(),
-                "entry_window_start_time": self._intraday_entry_window_start_time(),
-                "entry_window_end_time": self._intraday_entry_window_end_time(),
-                "trigger_checks": dict(candidate.get("trigger_checks") or {}),
-                "filter_checks": dict(candidate.get("filter_checks") or {}),
-                "technical_description": reason,
-                "sd_zone": self._zone_str(snapshot),
-                "sd_trend": self._trend_str(snapshot.get("sd_trend", 0)),
-                "signal_window": "intraday",
-                "signal_mode": signal_mode,
-                "atr": snapshot.get("atr", 0),
-                "atr_raw": snapshot.get("atr_raw", 0),
-                "atr_pct": snapshot.get("atr_pct", 0),
-                "sl_dist_pct": pos.get("sl_dist_pct", 0),
-                "sl_atr_ratio": pos.get("sl_atr_ratio", 0),
-                "vwap": snapshot.get("vwap"),
-                "rvol_20": snapshot.get("rvol_20"),
-                "dollar_volume": snapshot.get("dollar_volume"),
-                "source": "ibkr_compute",
-                **exit_meta,
-            },
+            "extra": extra,
         }
 
     def _intraday_validity_minutes(self) -> int:
@@ -951,6 +956,10 @@ class SignalGenerator:
                 "filter_checks": {"legacy_filters_pass": True},
                 "technical_description": reason,
             })
+        if isinstance(self.params.get("target_strategy_policy"), dict):
+            extra["target_strategy_policy"] = dict(self.params.get("target_strategy_policy") or {})
+        if isinstance(self.params.get("target_symbol_profile"), dict):
+            extra["target_symbol_profile"] = dict(self.params.get("target_symbol_profile") or {})
 
         return {
             "symbol": self.symbol,

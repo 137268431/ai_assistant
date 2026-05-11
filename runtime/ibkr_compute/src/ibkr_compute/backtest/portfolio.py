@@ -579,6 +579,77 @@ class BacktestPortfolioMixin:
             "estimated_entry_commission": estimated_entry_commission,
         }
 
+    def _target_strategy_meta_for_symbol(self, target_lookup: dict[tuple[str, str], dict], symbol: str) -> dict:
+        normalized_symbol = str(symbol or "").strip().upper()
+        if not normalized_symbol:
+            return {}
+        exact_rows = [
+            dict(meta or {})
+            for (date_text, row_symbol), meta in (target_lookup or {}).items()
+            if str(row_symbol or "").strip().upper() == normalized_symbol and str(date_text or "").strip()
+        ]
+        if len(exact_rows) == 1:
+            return exact_rows[0]
+        return dict((target_lookup or {}).get(("", normalized_symbol)) or {})
+
+    def _request_with_target_strategy_policy(
+        self,
+        request: dict,
+        target_lookup: dict[tuple[str, str], dict],
+        symbol: str,
+    ) -> dict:
+        if not self._normalize_bool(request.get("portfolio_use_target_strategy_policy"), False):
+            return request
+        target_meta = self._target_strategy_meta_for_symbol(target_lookup, symbol)
+        strategy_policy = target_meta.get("strategy_policy") if isinstance(target_meta.get("strategy_policy"), dict) else {}
+        exit_policy = target_meta.get("recommended_exit_policy") if isinstance(target_meta.get("recommended_exit_policy"), dict) else {}
+        if not exit_policy and isinstance(strategy_policy.get("recommended_exit_policy"), dict):
+            exit_policy = strategy_policy.get("recommended_exit_policy") or {}
+        if not strategy_policy and not exit_policy:
+            return request
+
+        base_params = dict((request.get("params") or {}).get("strategy_params") or DEFAULT_PARAMS)
+        effective_params = dict(base_params)
+        applied: dict[str, Any] = {}
+
+        profile = str(exit_policy.get("exit_policy_profile") or exit_policy.get("profile") or "").strip()
+        if profile:
+            effective_params["exit_policy_profile"] = profile
+            applied["exit_policy_profile"] = profile
+
+        sl_mult = self._coerce_float_value(exit_policy.get("sl_atr_mult"), 0.0)
+        if sl_mult > 0:
+            effective_params["sl_atr_mult"] = sl_mult
+            applied["sl_atr_mult"] = sl_mult
+
+        tp_rr = self._coerce_float_value(exit_policy.get("tp_rr") or exit_policy.get("rr_ratio"), 0.0)
+        if tp_rr > 0:
+            effective_params["rr_ratio"] = tp_rr
+            applied["rr_ratio"] = tp_rr
+
+        signal_profile = str(strategy_policy.get("recommended_signal_profile") or "").strip()
+        if signal_profile:
+            effective_params["signal_strategy_profile"] = signal_profile
+            effective_params["ibkr_signal_strategy_profile"] = signal_profile
+            applied["signal_strategy_profile"] = signal_profile
+
+        if not applied:
+            return request
+
+        effective_params["target_strategy_policy"] = dict(strategy_policy or {})
+        effective_params["target_symbol_profile"] = dict(target_meta.get("symbol_profile") or {})
+        symbol_request = dict(request)
+        params = dict(request.get("params") or {})
+        params["strategy_params"] = effective_params
+        symbol_request["params"] = params
+        symbol_request["_target_strategy_policy_applied"] = {
+            "symbol": str(symbol or "").strip().upper(),
+            "applied": applied,
+            "strategy_policy": dict(strategy_policy or {}),
+            "symbol_profile": dict(target_meta.get("symbol_profile") or {}),
+        }
+        return symbol_request
+
     def _sort_portfolio_candidates(self, candidates: list[dict], request: dict) -> list[dict]:
         priority = str(request.get("simultaneous_signal_priority") or "daily_target_rank").strip().lower()
 
@@ -1209,10 +1280,11 @@ class BacktestPortfolioMixin:
                 request["session_mode"],
                 allow_backfill=False,
             )
+            symbol_request = self._request_with_target_strategy_policy(request, target_lookup, symbol)
             state, quality = self._prepare_portfolio_symbol_state(
                 symbol,
                 bars,
-                request,
+                symbol_request,
                 (allowed_trade_days_by_symbol or {}).get(symbol),
                 (admitted_after_ms_by_symbol_day or {}).get(symbol),
             )
@@ -1736,6 +1808,10 @@ class BacktestPortfolioMixin:
                 "position_limit_max": int(request.get("position_limit_max", DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX) or DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX),
                 "portfolio_require_target_direction_alignment": self._normalize_bool(
                     request.get("portfolio_require_target_direction_alignment"),
+                    False,
+                ),
+                "portfolio_use_target_strategy_policy": self._normalize_bool(
+                    request.get("portfolio_use_target_strategy_policy"),
                     False,
                 ),
                 "portfolio_max_target_rank": int(request.get("portfolio_max_target_rank", 0) or 0),

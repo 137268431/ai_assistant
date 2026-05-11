@@ -57,6 +57,50 @@ def _get_trade_subscription_budget(api_app, environment: str) -> int | None:
     return trade_budget
 
 
+def _load_selected_active_trade_target_rows(environment: str, market_date: str | None = None) -> list[dict]:
+    api_app = _api_app()
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    target_date = str(market_date or api_app.current_market_date()).strip() or api_app.current_market_date()
+    market_monitor_symbols = get_market_monitor_symbols(runtime_environment)
+    try:
+        rows = api_app.pb.get_all_records(
+            "ibkr_targets",
+            filter=(
+                f'date = "{target_date}" && '
+                f'environment = "{runtime_environment}" && '
+                'status = "active"'
+            ),
+            sort="-score,-updated",
+            max_pages=10,
+        )
+    except Exception:
+        traceback.print_exc()
+        return []
+    trade_budget = _get_trade_subscription_budget(api_app, runtime_environment)
+    active_rows = [
+        row
+        for row in rows
+        if str(row.get("symbol", "")).strip().upper() not in market_monitor_symbols
+    ]
+    prioritized_rows = [
+        row for row in active_rows if _target_row_is_manual(row)
+    ] + [
+        row for row in active_rows if not _target_row_is_manual(row)
+    ]
+
+    selected_rows: list[dict] = []
+    seen = set()
+    for row in prioritized_rows:
+        symbol = str(row.get("symbol", "")).strip().upper()
+        if not symbol or symbol in seen:
+            continue
+        if trade_budget is not None and len(selected_rows) >= trade_budget:
+            break
+        selected_rows.append(row)
+        seen.add(symbol)
+    return selected_rows
+
+
 def get_market_monitor_symbols(environment: str) -> set[str]:
     api_app = _api_app()
     watchlist_map = load_effective_watchlist(environment)
@@ -77,57 +121,60 @@ def get_market_monitor_symbols(environment: str) -> set[str]:
 
 
 def get_active_trade_symbols(environment: str, market_date: str | None = None) -> set[str]:
-    api_app = _api_app()
-    runtime_environment = str(environment or "live").strip().lower() or "live"
-    target_date = str(market_date or api_app.current_market_date()).strip() or api_app.current_market_date()
-    market_monitor_symbols = get_market_monitor_symbols(runtime_environment)
-    try:
-        rows = api_app.pb.get_all_records(
-            "ibkr_targets",
-            filter=(
-                f'date = "{target_date}" && '
-                f'environment = "{runtime_environment}" && '
-                'status = "active"'
-            ),
-            sort="-score,-updated",
-            max_pages=10,
-        )
-    except Exception:
-        traceback.print_exc()
-        return set()
-    trade_budget = _get_trade_subscription_budget(api_app, runtime_environment)
-    active_rows = [
-        row
-        for row in rows
-        if str(row.get("symbol", "")).strip().upper() not in market_monitor_symbols
-    ]
-    prioritized_rows = [
-        row for row in active_rows if _target_row_is_manual(row)
-    ] + [
-        row for row in active_rows if not _target_row_is_manual(row)
-    ]
+    return {
+        str(row.get("symbol", "")).strip().upper()
+        for row in _load_selected_active_trade_target_rows(environment, market_date)
+        if str(row.get("symbol", "")).strip()
+    }
 
-    selected_symbols = []
-    seen = set()
-    for row in prioritized_rows:
+
+def get_active_target_direction_biases(environment: str, market_date: str | None = None) -> dict[str, str]:
+    biases: dict[str, str] = {}
+    for row in _load_selected_active_trade_target_rows(environment, market_date):
         symbol = str(row.get("symbol", "")).strip().upper()
-        if not symbol or symbol in seen:
+        if not symbol:
             continue
-        if trade_budget is not None and len(selected_symbols) >= trade_budget:
-            break
-        selected_symbols.append(symbol)
-        seen.add(symbol)
-    return set(selected_symbols)
+        direction = str(row.get("direction_bias", "") or "").strip().lower()
+        biases[symbol] = direction
+    return biases
 
 
 def get_signal_generator_params(environment: str) -> dict:
     api_app = _api_app()
     runtime_environment = str(environment or "live").strip().lower() or "live"
     market_monitor_symbols = sorted(get_market_monitor_symbols(environment))
-    signal_enabled_symbols = sorted(get_active_trade_symbols(environment))
+    selected_target_rows = _load_selected_active_trade_target_rows(runtime_environment)
+    signal_enabled_symbols = sorted(
+        {
+            str(row.get("symbol", "")).strip().upper()
+            for row in selected_target_rows
+            if str(row.get("symbol", "")).strip()
+        }
+    )
+    target_direction_bias_by_symbol: dict[str, str] = {}
+    target_strategy_policy_by_symbol: dict[str, dict] = {}
+    target_symbol_profile_by_symbol: dict[str, dict] = {}
+    for row in selected_target_rows:
+        symbol = str(row.get("symbol", "")).strip().upper()
+        if not symbol:
+            continue
+        target_direction_bias_by_symbol[symbol] = str(row.get("direction_bias", "") or "").strip().lower()
+        extra = _safe_extra(row)
+        strategy_policy = extra.get("strategy_policy") if isinstance(extra.get("strategy_policy"), dict) else {}
+        symbol_profile = extra.get("symbol_profile") if isinstance(extra.get("symbol_profile"), dict) else {}
+        if strategy_policy:
+            target_strategy_policy_by_symbol[symbol] = dict(strategy_policy)
+        if symbol_profile:
+            target_symbol_profile_by_symbol[symbol] = dict(symbol_profile)
     params = {
         "market_monitor_symbols": ",".join(market_monitor_symbols),
         "signal_enabled_symbols": ",".join(signal_enabled_symbols),
+        "target_strategy_policy_enabled": bool(
+            api_app.cfg.get_bool_for_environment("ibkr_target_strategy_policy_enabled", runtime_environment, False)
+        ),
+        "target_direction_bias_by_symbol": json.dumps(target_direction_bias_by_symbol, ensure_ascii=False),
+        "target_strategy_policy_by_symbol": json.dumps(target_strategy_policy_by_symbol, ensure_ascii=False),
+        "target_symbol_profile_by_symbol": json.dumps(target_symbol_profile_by_symbol, ensure_ascii=False),
     }
     for key, default in DEFAULT_PARAMS.items():
         if isinstance(default, bool):
@@ -147,6 +194,7 @@ def get_signal_generator_params(environment: str) -> dict:
 
 
 __all__ = [
+    "get_active_target_direction_biases",
     "get_active_trade_symbols",
     "get_market_monitor_symbols",
     "get_signal_generator_params",

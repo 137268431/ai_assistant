@@ -298,6 +298,10 @@ class DailyScannerRunMixin:
                 "subscription_rank": len(active_symbols) if status == "active" else 0,
                 "within_subscription_budget": status == "active",
             }
+            dynamic_thresholds = result.get("dynamic_thresholds") or extra.get("dynamic_thresholds") or {}
+            if isinstance(dynamic_thresholds, dict):
+                extra["threshold_profile"] = str(dynamic_thresholds.get("threshold_profile") or "").strip()
+                extra["threshold_profile_reasons"] = list(dynamic_thresholds.get("threshold_profile_reasons") or [])
             self.pb_client.upsert_scan(
                 {
                     "environment": runtime_environment,
@@ -321,6 +325,7 @@ class DailyScannerRunMixin:
                     "direction_bias": result.get("direction_bias", "neutral"),
                     "score": round(_safe_float(result.get("score")), 3),
                     "admission_score": round(_safe_float(result.get("admission_score")), 3),
+                    "threshold_profile": extra.get("threshold_profile", ""),
                     "scan_reason": result.get("reason", ""),
                     "scan_stage": scan_stage,
                 }

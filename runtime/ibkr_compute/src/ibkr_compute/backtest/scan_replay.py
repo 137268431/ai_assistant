@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 
+from ibkr_compute.universe.dynamic_admission import evaluate_dynamic_admission, normalize_admission_bool
+
 from .runtime_support import *
 from .watchlist_universe import merge_trade_watchlist_rows, request_excluded_symbols
 
 
-DAILY_SELECTION_CACHE_ALGORITHM_VERSION = "daily_scan_replay_live_sd_v3"
+DAILY_SELECTION_CACHE_ALGORITHM_VERSION = "daily_scan_replay_live_sd_v4"
 
 
 class BacktestScanReplayMixin:
@@ -1204,6 +1206,35 @@ class BacktestScanReplayMixin:
         *,
         allow_unknown_atr: bool = False,
     ) -> list[dict]:
+        if normalize_admission_bool((settings or {}).get("dynamic_admission_enabled"), False):
+            admission = evaluate_dynamic_admission(symbol, metrics=metric_row, settings=settings)
+            if bool(admission.get("quality_gate_passed")):
+                return []
+            thresholds = admission.get("dynamic_thresholds") or {}
+            examples = []
+            for gate in admission.get("failed_gates") or []:
+                bucket = str((gate or {}).get("bucket") or "")
+                if allow_unknown_atr and bucket == "atr_pct_below_threshold":
+                    try:
+                        if float((gate or {}).get("actual") or 0) <= 0:
+                            continue
+                    except Exception:
+                        pass
+                examples.append(
+                    {
+                        "bucket": bucket,
+                        "symbol": str((gate or {}).get("symbol") or symbol),
+                        "actual": (gate or {}).get("actual"),
+                        "threshold": (gate or {}).get("threshold"),
+                        "note": (gate or {}).get("note") or "Dynamic admission prefilter failed",
+                        "severity": (gate or {}).get("severity", ""),
+                        "metric": (gate or {}).get("metric", ""),
+                        "dynamic_admission": True,
+                        "threshold_profile": thresholds.get("threshold_profile", ""),
+                    }
+                )
+            return examples
+
         examples = []
         checks = (
             ("avg_10d_volume", "min_avg_10d_volume", "avg_10d_volume_below_threshold", "10 日均量不足"),
@@ -1281,6 +1312,31 @@ class BacktestScanReplayMixin:
             }
         return self._apply_historical_scan_setting_overrides(settings, request)
 
+    def _load_historical_scan_fundamentals(self, symbol: str) -> dict:
+        normalized_symbol = str(symbol or "").strip().upper()
+        if not normalized_symbol:
+            return {}
+        cache = getattr(self, "_historical_scan_fundamentals_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            setattr(self, "_historical_scan_fundamentals_cache", cache)
+        if normalized_symbol not in cache:
+            try:
+                scanner = DailyScanner(self.pb, {})
+                loaded = scanner._load_fundamentals_by_symbol([normalized_symbol])
+            except Exception:
+                loaded = {}
+            cache[normalized_symbol] = dict((loaded or {}).get(normalized_symbol) or {})
+        return dict(cache.get(normalized_symbol) or {})
+
+    def _attach_historical_scan_fundamentals(self, symbol: str, metric_row: dict) -> dict:
+        row = dict(metric_row or {})
+        fundamentals = self._load_historical_scan_fundamentals(symbol)
+        if fundamentals:
+            row["fundamentals"] = dict(fundamentals)
+            row["symbol_fundamentals"] = dict(fundamentals)
+        return row
+
     def _build_historical_scan_engines(self, symbol: str, request: dict, cutoff_ms: int) -> tuple[dict, dict]:
         params = dict((request.get("params") or {}).get("strategy_params") or DEFAULT_PARAMS)
         environment = request["source_environment"]
@@ -1326,7 +1382,10 @@ class BacktestScanReplayMixin:
         settings: dict | None = None,
     ) -> dict | None:
         cutoff_ms = self._build_scan_cutoff_ms(trade_date, request.get("premarket_cutoff_time") or DEFAULT_SCAN_CUTOFF_TIME)
-        metric_row = self._build_historical_scan_metric_row(symbol, trade_date, request, cutoff_ms, None)
+        metric_row = self._attach_historical_scan_fundamentals(
+            symbol,
+            self._build_historical_scan_metric_row(symbol, trade_date, request, cutoff_ms, None),
+        )
         scan_settings = settings or self._load_historical_scan_settings(request)
         prefilter_rejections = self._build_historical_scan_metric_rejections(
             symbol,
@@ -1357,7 +1416,10 @@ class BacktestScanReplayMixin:
         engines, details = self._build_historical_scan_engines(symbol, request, cutoff_ms)
         if not engines:
             return None
-        metric_row = self._build_historical_scan_metric_row(symbol, trade_date, request, cutoff_ms, engines)
+        metric_row = self._attach_historical_scan_fundamentals(
+            symbol,
+            self._build_historical_scan_metric_row(symbol, trade_date, request, cutoff_ms, engines),
+        )
         scanner = DailyScanner(self.pb, engines)
         result = scanner.evaluate_symbol(
             symbol,
@@ -1705,11 +1767,31 @@ class BacktestScanReplayMixin:
             extra = self._parse_object(row.get("extra"))
             rank = int(row.get("rank", extra.get("selection_rank", fallback_rank.get(symbol, 999999))) or fallback_rank.get(symbol, 999999))
             score = float(row.get("score", 0) or 0)
+            strategy_policy = extra.get("strategy_policy") if isinstance(extra.get("strategy_policy"), dict) else {}
+            recommended_exit_policy = (
+                (strategy_policy or {}).get("recommended_exit_policy")
+                if isinstance((strategy_policy or {}).get("recommended_exit_policy"), dict)
+                else {}
+            )
+            symbol_profile = extra.get("symbol_profile") if isinstance(extra.get("symbol_profile"), dict) else {}
             lookup[(date_text, symbol)] = {
                 "rank": rank,
                 "score": score,
                 "direction_bias": str(row.get("direction_bias", "") or ""),
+                "strategy_policy": dict(strategy_policy or {}),
+                "recommended_exit_policy": dict(recommended_exit_policy or {}),
+                "symbol_profile": dict(symbol_profile or {}),
             }
         for symbol, rank in fallback_rank.items():
-            lookup.setdefault(("", symbol), {"rank": rank, "score": 0.0, "direction_bias": ""})
+            lookup.setdefault(
+                ("", symbol),
+                {
+                    "rank": rank,
+                    "score": 0.0,
+                    "direction_bias": "",
+                    "strategy_policy": {},
+                    "recommended_exit_policy": {},
+                    "symbol_profile": {},
+                },
+            )
         return lookup

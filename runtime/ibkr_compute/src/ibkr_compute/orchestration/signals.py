@@ -167,6 +167,7 @@ class TradingServiceSignalsMixin:
                         sig.get("direction"),
                         reason,
                     )
+                    self._mark_signal_validation_rejected(sig, reason)
                     self.signal_router.mark_processed(signal_id)
                     finalized = True
                     continue
@@ -272,6 +273,61 @@ class TradingServiceSignalsMixin:
             finally:
                 if not finalized:
                     self.signal_router.release_signal(signal_id)
+
+    def _mark_signal_validation_rejected(self, sig: dict, reason: str):
+        service_mod = _service_mod()
+        if not self.pb:
+            return
+
+        signal_id = str(sig.get("signal_id") or "").strip()
+        if not signal_id:
+            return
+
+        safe_signal_id = signal_id.replace('"', '\\"')
+        safe_environment = str(service_mod.ENVIRONMENT or "live").replace('"', '\\"')
+
+        try:
+            record = self.pb.get_first_record(
+                "ibkr_signals",
+                filter=(
+                    f'signal_id = "{safe_signal_id}" && '
+                    f'environment = "{safe_environment}"'
+                ),
+            )
+            if not record or not record.get("id"):
+                return
+
+            existing_extra = record.get("extra") or {}
+            if isinstance(existing_extra, str):
+                try:
+                    existing_extra = json.loads(existing_extra)
+                except Exception:
+                    existing_extra = {}
+            if not isinstance(existing_extra, dict):
+                existing_extra = {}
+
+            status_reason = str(reason or "validation_rejected").strip() or "validation_rejected"
+            self.pb.update_record(
+                "ibkr_signals",
+                record["id"],
+                {
+                    "status": "rejected",
+                    "note": status_reason,
+                    "extra": {
+                        **existing_extra,
+                        "status_reason": status_reason,
+                        "validation_rejected": True,
+                        "validation_rejected_at": self._now_iso(),
+                    },
+                },
+            )
+        except Exception as exc:
+            service_mod.logger.error(
+                "Failed to mark signal validation-rejected: signal_id=%s reason=%s error=%s",
+                signal_id,
+                reason,
+                exc,
+            )
 
     def _mark_signal_duplicate_open_order(self, sig: dict, broker_order: dict):
         service_mod = _service_mod()

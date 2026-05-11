@@ -1,3 +1,4 @@
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -9,6 +10,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from ibkr_compute.api.compute.runtime_state import universe as universe_mod
+from ibkr_compute.api.compute.runtime_state import engines as engines_mod
 from ibkr_compute.core.indicator_engine import IndicatorEngine
 from ibkr_compute.core.indicators.atr import ATRIndicator
 from ibkr_compute.core.indicators.sd_channel import SDChannel
@@ -431,7 +433,18 @@ class IntradaySdV1CoreTest(unittest.TestCase):
             WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR="market_monitor",
             pb=SimpleNamespace(
                 get_all_records=lambda collection, **kwargs: [
-                    {"symbol": "AAPL", "status": "active", "extra": {}},
+                    {
+                        "symbol": "AAPL",
+                        "status": "active",
+                        "direction_bias": "long",
+                        "extra": {
+                            "strategy_policy": {
+                                "recommended_signal_profile": "intraday_sd_v1",
+                                "recommended_exit_policy": {"sl_atr_mult": 1.8, "tp_rr": 2.5},
+                            },
+                            "symbol_profile": {"threshold_profile": "large_liquid"},
+                        },
+                    },
                     {"symbol": "SPY", "status": "active", "extra": {}},
                 ]
                 if collection == "ibkr_targets"
@@ -465,6 +478,10 @@ class IntradaySdV1CoreTest(unittest.TestCase):
         self.assertFalse(params["intraday_include_legacy_signals"])
         self.assertEqual(params["market_monitor_symbols"], "SPY")
         self.assertEqual(params["signal_enabled_symbols"], "AAPL")
+        strategy_map = json.loads(params["target_strategy_policy_by_symbol"])
+        profile_map = json.loads(params["target_symbol_profile_by_symbol"])
+        self.assertEqual(strategy_map["AAPL"]["recommended_exit_policy"]["tp_rr"], 2.5)
+        self.assertEqual(profile_map["AAPL"]["threshold_profile"], "large_liquid")
 
     def test_market_monitor_symbols_do_not_generate_signals_even_if_active(self):
         gen = SignalGenerator(
@@ -484,6 +501,83 @@ class IntradaySdV1CoreTest(unittest.TestCase):
             },
         )
         self.assertFalse(diagnostic_gen.symbol_is_market_monitor)
+
+    def test_active_target_direction_biases_match_selected_trade_rows(self):
+        class FakeCfg:
+            def get_for_environment(self, key, environment, default=None):
+                if key == "ibkr_market_ws_symbols":
+                    return "SPY,QQQ,VIX"
+                return default
+
+            def get_int_for_environment(self, key, environment, default=0):
+                if key == "ibkr_target_subscription_limit":
+                    return 2
+                if key == "ibkr_total_subscription_limit":
+                    return 5
+                return default
+
+            def get_bool_for_environment(self, key, environment, default=False):
+                return default
+
+        fake_app = SimpleNamespace(
+            WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR="market_monitor",
+            pb=SimpleNamespace(
+                get_all_records=lambda collection, **kwargs: [
+                    {"symbol": "SPY", "status": "active", "direction_bias": "long", "extra": {}},
+                    {"symbol": "APP", "status": "active", "direction_bias": "short", "extra": {}},
+                    {"symbol": "AMZN", "status": "active", "direction_bias": "long", "extra": {"source": "manual_page"}},
+                    {"symbol": "DDOG", "status": "active", "direction_bias": "long", "extra": {}},
+                ]
+                if collection == "ibkr_targets"
+                else []
+            ),
+            cfg=FakeCfg(),
+            current_market_date=lambda: "2026-05-01",
+            normalize_symbol_csv=lambda text: [item.strip().upper() for item in str(text or "").split(",") if item.strip()],
+            normalize_watchlist_symbol_role=lambda role: str(role or "").strip().lower(),
+        )
+
+        with mock.patch.object(universe_mod, "_api_app", return_value=fake_app), mock.patch.object(
+            universe_mod,
+            "load_effective_watchlist",
+            return_value={"SPY": {"symbol": "SPY", "symbol_role": "market_monitor"}},
+        ):
+            biases = universe_mod.get_active_target_direction_biases("live")
+            symbols = universe_mod.get_active_trade_symbols("live")
+
+        self.assertEqual(biases, {"AMZN": "long", "APP": "short"})
+        self.assertEqual(symbols, {"AMZN", "APP"})
+
+    def test_live_signal_params_apply_per_symbol_target_policy(self):
+        params = engines_mod._signal_params_for_symbol(
+            {
+                "exit_policy_profile": "fixed_atr_rr",
+                "sl_atr_mult": 2.0,
+                "rr_ratio": 1.5,
+                "signal_strategy_profile": "legacy",
+                "target_strategy_policy_enabled": True,
+                "target_strategy_policy_by_symbol": json.dumps(
+                    {
+                        "APP": {
+                            "recommended_signal_profile": "intraday_sd_v1",
+                            "recommended_exit_policy": {
+                                "exit_policy_profile": "signal_mode_adaptive_v1",
+                                "sl_atr_mult": 1.8,
+                                "tp_rr": 2.5,
+                            },
+                        }
+                    }
+                ),
+                "target_symbol_profile_by_symbol": json.dumps({"APP": {"threshold_profile": "large_liquid"}}),
+            },
+            "APP",
+        )
+
+        self.assertEqual(params["exit_policy_profile"], "signal_mode_adaptive_v1")
+        self.assertEqual(params["sl_atr_mult"], 1.8)
+        self.assertEqual(params["rr_ratio"], 2.5)
+        self.assertEqual(params["signal_strategy_profile"], "intraday_sd_v1")
+        self.assertEqual(params["target_symbol_profile"]["threshold_profile"], "large_liquid")
 
 
 if __name__ == "__main__":

@@ -198,6 +198,7 @@ class DailyScannerEvaluateMixin:
         }
         failed_gates = []
         rejection_examples = []
+        gate_reasons = []
         if dynamic_enabled:
             admission = evaluate_dynamic_admission(
                 symbol,
@@ -316,6 +317,7 @@ class DailyScannerEvaluateMixin:
             "symbol_profile": symbol_profile,
             "dynamic_thresholds": dynamic_thresholds,
             "strategy_policy": strategy_policy,
+            "reason_tags": gate_reasons,
             "exchange": str(metric_row.get("exchange", "") or "").strip().upper(),
             "avg_10d_volume": round(avg_10d_volume, 2),
             "premarket_volume": round(premarket_volume, 2),
@@ -335,6 +337,7 @@ class DailyScannerEvaluateMixin:
                 "dynamic_thresholds": dynamic_thresholds,
                 "failed_gates": failed_gates,
                 "strategy_policy": strategy_policy,
+                "reason_tags": gate_reasons,
                 **stocks_in_play_details,
             },
         }
