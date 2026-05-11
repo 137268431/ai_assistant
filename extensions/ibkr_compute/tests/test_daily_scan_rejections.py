@@ -59,6 +59,8 @@ class DailyScanRejectionSummaryTest(unittest.TestCase):
             "target_subscription_limit": 80,
             "total_subscription_limit": 80,
             "trade_subscription_budget": 80,
+            "day_gain_trigger_enabled": True,
+            "day_gain_trigger_pct": 4.0,
         }
         self.settings_patch = mock.patch.object(daily_scanner_mod, "_load_scan_settings", return_value=dict(self.settings))
         self.api_app_patch = mock.patch.object(daily_scanner_mod, "get_api_app", return_value=object())
@@ -273,6 +275,79 @@ class DailyScanRejectionSummaryTest(unittest.TestCase):
         self.assertEqual(result["extra"]["stocks_in_play_score"], 13)
         self.assertEqual(result["extra"]["sd_regime"], "breakout_up")
         self.assertEqual(result["extra"]["data_quality"]["status"], "ready")
+
+    def test_day_gain_trigger_does_not_override_technical_direction(self):
+        pb_client = DummyPBClient(watchlist=[])
+        scanner = DailyScanner(pb_client=pb_client, engines={})
+
+        result = scanner.evaluate_symbol(
+            "APP",
+            "2026-04-21",
+            "live",
+            metrics={
+                "avg_10d_volume": 3500000,
+                "premarket_volume": 25000,
+                "atr_pct": 0.8,
+                "day_change_pct": 4.2,
+                "exchange": "NASDAQ",
+            },
+            settings=dict(self.settings),
+            stored_snapshots={"5m": {"ema_bearish": True}},
+        )
+
+        self.assertTrue(result["quality_gate_passed"])
+        self.assertEqual(result["direction_bias"], "short")
+        self.assertIn("day_gain>=4%", result["reason"])
+        self.assertTrue(result["extra"]["day_gain_triggered"])
+        self.assertEqual(result["extra"]["short_votes"], 1)
+
+        result = scanner.evaluate_symbol(
+            "APP",
+            "2026-04-21",
+            "live",
+            metrics={
+                "avg_10d_volume": 3500000,
+                "premarket_volume": 25000,
+                "atr_pct": 0.8,
+                "day_change_pct": 4.2,
+                "exchange": "NASDAQ",
+            },
+            settings={**dict(self.settings), "day_gain_trigger_pct": 4.0},
+            stored_snapshots={"5m": {"ema_bullish": True}},
+        )
+
+        self.assertTrue(result["quality_gate_passed"])
+        self.assertEqual(result["direction_bias"], "long")
+        self.assertIn("day_gain>=4%", result["reason"])
+        self.assertTrue(result["extra"]["day_gain_triggered"])
+        self.assertEqual(result["extra"]["long_votes"], 1)
+
+    def test_day_gain_trigger_can_select_symbol_without_sd_touch(self):
+        pb_client = DummyPBClient(watchlist=[])
+        scanner = DailyScanner(pb_client=pb_client, engines={})
+
+        result = scanner.evaluate_symbol(
+            "APP",
+            "2026-04-21",
+            "live",
+            metrics={
+                "avg_10d_volume": 3500000,
+                "premarket_volume": 25000,
+                "atr_pct": 0.8,
+                "day_change_pct": 4.2,
+                "exchange": "NASDAQ",
+            },
+            settings=dict(self.settings),
+            stored_snapshots={"5m": {}},
+        )
+
+        self.assertTrue(result["quality_gate_passed"])
+        self.assertEqual(result["direction_bias"], "neutral")
+        self.assertIn("day_gain>=4%", result["reason"])
+        self.assertEqual(result["extra"]["selection_triggers"], ["day_gain"])
+        self.assertEqual(result["strategy_policy"]["selection_trigger"], "day_gain")
+        self.assertEqual(result["strategy_policy"]["allowed_sides"], ["long", "short"])
+        self.assertEqual(result["strategy_policy"]["entry_style"], "wait_for_pullback_or_exhaustion")
 
 
 if __name__ == "__main__":

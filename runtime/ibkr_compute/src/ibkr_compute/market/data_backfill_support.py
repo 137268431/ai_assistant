@@ -40,7 +40,7 @@ DEFAULT_BACKFILL_INTERVALS = _parse_intervals(
     os.environ.get("IBKR_BACKFILL_INTERVALS", "5m"),
     fallback=("5m",),
 )
-REQUEST_SPACING_SECONDS = max(0.0, float(os.environ.get("IBKR_HISTORY_REQUEST_SPACING", "0.15")))
+REQUEST_SPACING_SECONDS = max(0.0, float(os.environ.get("IBKR_HISTORY_REQUEST_SPACING", "0.05")))
 INTERVAL_DELAY_SECONDS = max(0.0, float(os.environ.get("IBKR_HISTORY_INTERVAL_DELAY", "0.10")))
 MAX_CONCURRENT_REQUESTS = max(
     1,
@@ -51,7 +51,7 @@ RETRY_BASE_DELAY_SECONDS = max(0.5, float(os.environ.get("IBKR_HISTORY_RETRY_BAS
 RETRYABLE_STATUS_CODES = {429, 502, 503, 504}
 DEFAULT_HISTORY_CLOSE_DELAY_SECONDS = max(
     1,
-    int(os.environ.get("IBKR_OFFICIAL_5M_CLOSE_DELAY_SEC", "8")),
+    int(os.environ.get("IBKR_OFFICIAL_5M_CLOSE_DELAY_SEC", "3")),
 )
 TRACE_RECENT_LIMIT = max(1, int(os.environ.get("IBKR_HISTORY_TRACE_RECENT_LIMIT", "20")))
 TRACE_SLOW_SECONDS = max(0.1, float(os.environ.get("IBKR_HISTORY_TRACE_SLOW_SEC", "2.0")))

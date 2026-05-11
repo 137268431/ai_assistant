@@ -136,7 +136,7 @@ sql = base64.b64decode('$SQL_B64').decode()
 mode = base64.b64decode('$MODE_B64').decode()
 fmt = base64.b64decode('$FORMAT_B64').decode()
 backup = base64.b64decode('$BACKUP_B64').decode()
-auto_backup_keep = max(1, int(os.getenv('PB_SQLITE_AUTO_BACKUP_KEEP', '3') or '3'))
+auto_backup_keep = max(1, int(os.getenv('PB_SQLITE_AUTO_BACKUP_KEEP', '1') or '1'))
 
 AUTO_BACKUP_SIDECARS = ('-journal', '-wal', '-shm')
 

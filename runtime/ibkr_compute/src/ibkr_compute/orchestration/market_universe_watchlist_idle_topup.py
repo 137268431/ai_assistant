@@ -16,7 +16,11 @@ from .market_universe_support import (
     _target_row_is_manual,
 )
 
+from ibkr_compute.market.bar_freshness import DEFAULT_CLOSE_DELAY_SECONDS, latest_expected_extended_5m_ms
+
 from . import market_universe_support as _market_universe_support
+
+WATCHLIST_IDLE_TOPUP_MAX_SYMBOLS_HARD_CAP = 200
 
 
 def _service_mod():
@@ -141,17 +145,17 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             "last_error": "",
             "request_period": "1d",
             "mode": "continuous_until_active_due",
-            "batch_size": 8,
-            "max_symbols_per_cycle": 0,
+            "batch_size": 160,
+            "max_symbols_per_cycle": 160,
             "dynamic_enabled": True,
             "active_first_enabled": True,
-            "estimated_bars_budget": 3000,
+            "estimated_bars_budget": 0,
             "estimated_bars_selected": 0,
             "history_concurrency": 8,
-            "request_spacing_s": 0.35,
+            "request_spacing_s": 0.05,
             "selected_symbol_count": 0,
             "dynamic_reason": "",
-            "loop_interval_sec": 60,
+            "loop_interval_sec": 2,
             "last_batches": [],
             "last_attempted_symbols": [],
             "last_attempted_symbols_total": 0,
@@ -218,19 +222,19 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
         service_mod = _service_mod()
         if self._watchlist_idle_topup_dynamic_enabled():
             return max(
-                5,
+                1,
                 self.config.get_int_for_environment(
                     "ibkr_watchlist_idle_topup_dynamic_loop_interval_sec",
                     service_mod.ENVIRONMENT,
-                    15,
+                    2,
                 ),
             )
         return max(
-            5,
+            1,
             self.config.get_int_for_environment(
                 "ibkr_watchlist_idle_topup_loop_interval_sec",
                 service_mod.ENVIRONMENT,
-                60,
+                2,
             ),
         )
 
@@ -239,11 +243,11 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
         return max(
             1,
             min(
-                50,
+                WATCHLIST_IDLE_TOPUP_MAX_SYMBOLS_HARD_CAP,
                 self.config.get_int_for_environment(
                     "ibkr_watchlist_idle_topup_dynamic_max_symbols_per_cycle",
                     service_mod.ENVIRONMENT,
-                    24,
+                    160,
                 ),
             ),
         )
@@ -255,7 +259,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             self.config.get_int_for_environment(
                 "ibkr_watchlist_idle_topup_max_estimated_bars_per_cycle",
                 service_mod.ENVIRONMENT,
-                3000,
+                0,
             ),
         )
 
@@ -275,11 +279,11 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
         return max(
             1,
             min(
-                50,
+                WATCHLIST_IDLE_TOPUP_MAX_SYMBOLS_HARD_CAP,
                 self.config.get_int_for_environment(
                     "ibkr_watchlist_idle_topup_batch_size",
                     service_mod.ENVIRONMENT,
-                    8,
+                    160,
                 ),
             ),
         )
@@ -317,11 +321,11 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
                 self.config.get_for_environment(
                     "ibkr_history_request_spacing",
                     service_mod.ENVIRONMENT,
-                    "0.35",
+                    "0.05",
                 )
             )
         except Exception:
-            value = 0.35
+            value = 0.05
         return round(max(0.0, value), 3)
 
     def _watchlist_idle_topup_mode(
@@ -350,19 +354,6 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
         return float(max(5, min(45, previous or 20)))
 
     def _watchlist_idle_topup_due_budget_allows_batch(self, admission: dict, estimated_batch_s: float) -> tuple[bool, str]:
-        if not bool(admission.get("active_due_guard_required")):
-            return True, ""
-        active_target_count = _safe_int(admission.get("active_target_count"), 0)
-        if active_target_count <= 0:
-            return True, ""
-        seconds_until_due = admission.get("seconds_until_next_active_5m_due")
-        try:
-            seconds_until_due = float(seconds_until_due)
-        except Exception:
-            seconds_until_due = 0.0
-        guard_sec = _safe_int(admission.get("active_due_guard_sec"), self._watchlist_active_due_guard_sec())
-        if seconds_until_due <= max(0.0, float(guard_sec or 0) + max(0.0, float(estimated_batch_s or 0.0))):
-            return False, "active_5m_due_guard"
         return True, ""
 
     def _watchlist_idle_topup_request_period(self) -> str:
@@ -385,6 +376,39 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             ),
         )
         return stale_minutes * 60 * 1000
+
+    def _watchlist_idle_topup_expected_5m_ms(self, *, now_ms: int | None = None) -> int:
+        service_mod = _service_mod()
+        try:
+            delay_seconds = self._official_5m_close_delay_sec()
+        except Exception:
+            delay_seconds = self.config.get_int_for_environment(
+                "ibkr_official_5m_close_delay_sec",
+                service_mod.ENVIRONMENT,
+                DEFAULT_CLOSE_DELAY_SECONDS,
+            )
+        return int(
+            latest_expected_extended_5m_ms(
+                now_ms=now_ms,
+                delay_seconds=max(0, int(delay_seconds or 0)),
+            )
+            or 0
+        )
+
+    def _watchlist_idle_topup_latest_is_stale(
+        self,
+        latest_ms: int,
+        *,
+        expected_5m_ms: int,
+        now_ms: int,
+    ) -> bool:
+        latest_ms = _safe_int(latest_ms, 0)
+        expected_5m_ms = _safe_int(expected_5m_ms, 0)
+        if latest_ms <= 0:
+            return True
+        if expected_5m_ms > 0:
+            return latest_ms < expected_5m_ms
+        return (int(now_ms or time.time() * 1000) - latest_ms) >= self._watchlist_idle_topup_stale_ms()
 
     def _watchlist_active_due_guard_sec(self) -> int:
         service_mod = _service_mod()
@@ -412,7 +436,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
 
     def _watchlist_idle_topup_completion_snapshot(self, *, now_ms: int | None = None) -> dict:
         current_ms = int(now_ms or time.time() * 1000)
-        stale_ms = self._watchlist_idle_topup_stale_ms()
+        expected_5m_ms = self._watchlist_idle_topup_expected_5m_ms(now_ms=current_ms)
         with self._subscription_lock:
             active_symbols = set(self._active_subscription_symbols)
             total = len([symbol for symbol in self._watchlist_symbols if symbol not in active_symbols])
@@ -433,7 +457,11 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             if latest_ms <= 0:
                 missing += 1
                 continue
-            if (current_ms - latest_ms) >= stale_ms:
+            if self._watchlist_idle_topup_latest_is_stale(
+                latest_ms,
+                expected_5m_ms=expected_5m_ms,
+                now_ms=current_ms,
+            ):
                 stale += 1
             else:
                 fresh += 1
@@ -454,6 +482,8 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             "oldest_symbol": oldest_symbol,
             "oldest_latest_ms": oldest_ms,
             "oldest_latest_us": format_us_time(oldest_ms) if oldest_ms > 0 else "",
+            "expected_latest_5m_ms": expected_5m_ms,
+            "expected_latest_5m_us": format_us_time(expected_5m_ms) if expected_5m_ms > 0 else "",
         }
 
     def _watchlist_idle_topup_status(self) -> dict:
@@ -544,16 +574,8 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             blockers.append({"code": "compute_inflight"})
         if writer_busy:
             blockers.append({"code": "data_writer_busy", **writer_status})
-        if bar_repair_busy:
+        if active_due_guard_required and bar_repair_busy:
             blockers.append({"code": "bar_repair_busy", **bar_repair_status})
-        if active_due_guard_required and due_guard_sec > 0 and seconds_until_due < due_guard_sec:
-            blockers.append(
-                {
-                    "code": "active_5m_due_guard",
-                    "seconds_until_due": seconds_until_due,
-                    "guard_sec": due_guard_sec,
-                }
-            )
         if active_due_guard_required and (completed_bucket_ms <= 0 or lag_s > 90):
             blockers.append(
                 {
@@ -639,18 +661,26 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
         ordered = pool[start:] + pool[:start]
         scanned = ordered if scan_all else ordered[: min(scan_size, len(ordered))]
         self._watchlist_idle_topup_cursor = (start + len(scanned)) % max(len(pool), 1)
-        stale_ms = self._watchlist_idle_topup_stale_ms()
         now_ms = int(time.time() * 1000)
+        expected_5m_ms = self._watchlist_idle_topup_expected_5m_ms(now_ms=now_ms)
         candidates = []
         for symbol in scanned:
             latest_ms = self.data_backfill.get_latest_stored_bar_ms(symbol, "5m")
             self._observe_watchlist_idle_symbol(symbol, latest_ms)
-            if latest_ms <= 0 or (now_ms - latest_ms) >= stale_ms:
+            if self._watchlist_idle_topup_latest_is_stale(
+                latest_ms,
+                expected_5m_ms=expected_5m_ms,
+                now_ms=now_ms,
+            ):
                 candidates.append(
                     {
                         "symbol": symbol,
                         "latest_ms": latest_ms,
                         "missing": latest_ms <= 0,
+                        "expected_latest_5m_ms": expected_5m_ms,
+                        "expected_latest_5m_us": format_us_time(expected_5m_ms) if expected_5m_ms > 0 else "",
+                        "stale_by_s": round(max(0, expected_5m_ms - max(0, latest_ms)) / 1000.0, 1)
+                        if expected_5m_ms > 0 and latest_ms > 0 else None,
                         "stale_age_s": round(max(0, now_ms - max(0, latest_ms)) / 1000.0, 1)
                         if latest_ms > 0 else None,
                     }
@@ -667,10 +697,12 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
     ) -> int:
         interval_ms = interval_to_ms("5m")
         current_ms = int(now_ms or time.time() * 1000)
+        expected_5m_ms = self._watchlist_idle_topup_expected_5m_ms(now_ms=current_ms)
         latest_ms = _safe_int((candidate or {}).get("latest_ms"), 0)
         if latest_ms <= 0:
             return 150
-        missing = int(max(1, (current_ms - latest_ms + interval_ms - 1) // interval_ms))
+        comparison_ms = expected_5m_ms if expected_5m_ms > 0 else current_ms
+        missing = int(max(1, (comparison_ms - latest_ms + interval_ms - 1) // interval_ms))
         return max(1, min(150, missing))
 
     def _watchlist_idle_topup_dynamic_candidates(
@@ -732,11 +764,11 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
         configured_max_symbols = self._watchlist_idle_topup_max_symbols_per_cycle()
         if dynamic_enabled:
             max_symbols = (
-                max(1, min(50, configured_max_symbols))
+                max(1, min(WATCHLIST_IDLE_TOPUP_MAX_SYMBOLS_HARD_CAP, configured_max_symbols))
                 if configured_max_symbols > 0
                 else self._watchlist_idle_topup_dynamic_max_symbols_per_cycle()
             )
-            batch_size = max(1, min(50, max_symbols))
+            batch_size = max(1, min(WATCHLIST_IDLE_TOPUP_MAX_SYMBOLS_HARD_CAP, max_symbols))
             estimated_bars_budget = self._watchlist_idle_topup_max_estimated_bars_per_cycle()
         else:
             batch_size = self._watchlist_idle_topup_batch_size()

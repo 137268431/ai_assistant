@@ -18,6 +18,7 @@ from .daily_scanner_constants import (
     DAILY_SCAN_SECONDARY_WEIGHT,
     DAILY_SCAN_SHORT_PRIMARY_RULES,
     DAILY_SCAN_SHORT_SECONDARY_RULES,
+    DEFAULT_DAY_GAIN_TRIGGER_PCT,
     DEFAULT_MIN_ABS_DAY_CHANGE_PCT,
     DEFAULT_MIN_ATR_PCT,
     DEFAULT_MIN_AVG_10D_VOLUME,
@@ -158,6 +159,21 @@ def _load_scan_settings(
                 DEFAULT_DYNAMIC_ADMISSION_MIN_SCORE,
             ),
         ),
+        "day_gain_trigger_enabled": _cfg_bool(
+            api_app,
+            "ibkr_daily_scan_day_gain_trigger_enabled",
+            runtime_environment,
+            True,
+        ),
+        "day_gain_trigger_pct": max(
+            0.0,
+            _cfg_float(
+                api_app,
+                "ibkr_daily_scan_day_gain_trigger_pct",
+                runtime_environment,
+                DEFAULT_DAY_GAIN_TRIGGER_PCT,
+            ),
+        ),
     }
 
 
@@ -200,6 +216,9 @@ def build_daily_scan_rule_summary(
         "short_primary": [label for _, _, label in DAILY_SCAN_SHORT_PRIMARY_RULES],
         "long_secondary": [label for _, _, label in DAILY_SCAN_LONG_SECONDARY_RULES],
         "short_secondary": [label for _, _, label in DAILY_SCAN_SHORT_SECONDARY_RULES],
+        "metric_secondary": [
+            f"day_change_pct >= {settings.get('day_gain_trigger_pct', DEFAULT_DAY_GAIN_TRIGGER_PCT)}"
+        ] if bool(settings.get("day_gain_trigger_enabled", True)) else [],
         "tie_behavior": "long_votes == short_votes => direction_bias=neutral, score=0",
         "final_bonus": "direction_bias 非 neutral 时额外加上 ready_timeframes_count",
         "reason_fields": [label for _, label in DAILY_SCAN_REASON_RULES],

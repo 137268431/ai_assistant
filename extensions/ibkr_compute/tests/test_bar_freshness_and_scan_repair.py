@@ -90,6 +90,14 @@ class _FakeCfg:
             return self.blocking
         return key == "ibkr_daily_scan_data_completeness_enabled"
 
+    def get_float_for_environment(self, key, environment, default=0.0):
+        return default
+
+    def get_int_for_environment(self, key, environment, default=0):
+        if key == "ibkr_daily_scan_runtime_topup_wait_sec":
+            return 0
+        return default
+
     def get_for_environment(self, key, environment, default=None):
         if key == "ibkr_daily_scan_data_completeness_intervals":
             return "5m,15m"
@@ -97,8 +105,13 @@ class _FakeCfg:
 
 
 class _FakePlanner:
+    def __init__(self, *, stale_once=False):
+        self.stale_once = stale_once
+        self.calls = 0
+
     def plan_symbol(self, symbol, intervals, environment="live", required_bars=0):
-        if symbol == "NVDA":
+        self.calls += 1
+        if symbol == "NVDA" and (not self.stale_once or self.calls <= 2):
             return {
                 "ok": True,
                 "environment": environment,
@@ -126,6 +139,13 @@ class _FakeRepair:
     def enqueue_from_freshness(self, freshness, priority="manual", trigger="manual"):
         self.calls.append((freshness["symbol"], priority, trigger))
         return [{"queued": True, "job": {"symbol": freshness["symbol"], "priority": priority, "trigger": trigger}}]
+
+
+class _FakeWaitCfg(_FakeCfg):
+    def get_int_for_environment(self, key, environment, default=0):
+        if key == "ibkr_daily_scan_runtime_topup_wait_sec":
+            return 20
+        return default
 
 
 class BarFreshnessAndScanRepairTest(unittest.TestCase):
@@ -266,6 +286,120 @@ class BarFreshnessAndScanRepairTest(unittest.TestCase):
         self.assertTrue(result["data_completeness"]["blocking_enabled"])
         self.assertEqual(result["rejection_summary"][REJECTION_BUCKET_DATA_INCOMPLETE], 1)
         self.assertEqual(repair.calls, [("NVDA", "daily_scan", "daily_scan_data_completeness")])
+
+    def test_daily_scan_remote_compute_waits_for_runtime_watchlist_topup_without_enqueueing_repair(self):
+        api_app = SimpleNamespace(
+            cfg=_FakeCfg(blocking=True),
+            bar_freshness_planner=_FakePlanner(),
+            bar_repair_coordinator=None,
+        )
+        pb = _FakePB(
+            watchlist=[
+                {"symbol": "AAPL", "environment": "live", "symbol_role": "trade"},
+                {"symbol": "NVDA", "environment": "live", "symbol_role": "trade"},
+            ]
+        )
+        engines = {
+            ("live", "AAPL", "5m"): _FakeEngine(),
+            ("live", "NVDA", "5m"): _FakeEngine(),
+        }
+        with mock.patch.object(daily_scanner_mod, "get_api_app", return_value=api_app):
+            scanner = DailyScanner(pb_client=pb, engines=engines)
+        scanner.api_app = api_app
+        scanner._build_metric_rows = lambda date, environment, symbols: {
+            symbol: {
+                "avg_10d_volume": 500000,
+                "premarket_volume": 25000,
+                "atr_pct": 0.5,
+                "day_change_pct": 2.0,
+            }
+            for symbol in symbols
+        }
+
+        with mock.patch.object(daily_scanner_mod, "_load_scan_settings", return_value={
+            "scan_time_et": "09:20",
+            "min_avg_10d_volume": 100000,
+            "min_premarket_volume": 5000,
+            "min_atr_pct": 0.15,
+            "min_abs_day_change_pct": 1.0,
+            "monitor_count": 0,
+            "target_subscription_limit": 80,
+            "total_subscription_limit": 80,
+            "trade_subscription_budget": 80,
+        }):
+            result = scanner.run_scan("2026-04-29", environments=["live"])
+
+        self.assertEqual([row["symbol"] for row in pb.upserts], ["AAPL"])
+        self.assertEqual(result["excluded_incomplete_count"], 1)
+        self.assertEqual(result["data_completeness"]["repair_job_count"], 0)
+        self.assertEqual(result["data_completeness"]["repair_strategy"], "runtime_watchlist_idle_topup")
+        example = result["rejection_examples"][0]
+        self.assertEqual(example["bucket"], REJECTION_BUCKET_DATA_INCOMPLETE)
+        self.assertIn("Runtime watchlist 回补", example["note"])
+
+    def test_daily_scan_rechecks_after_runtime_watchlist_topup_becomes_fresh(self):
+        planner = _FakePlanner(stale_once=True)
+        api_app = SimpleNamespace(
+            cfg=_FakeWaitCfg(blocking=True),
+            bar_freshness_planner=planner,
+            bar_repair_coordinator=None,
+        )
+        pb = _FakePB(
+            watchlist=[
+                {"symbol": "AAPL", "environment": "live", "symbol_role": "trade"},
+                {"symbol": "NVDA", "environment": "live", "symbol_role": "trade"},
+            ]
+        )
+        engines = {
+            ("live", "AAPL", "5m"): _FakeEngine(),
+            ("live", "NVDA", "5m"): _FakeEngine(),
+        }
+        with mock.patch.object(daily_scanner_mod, "get_api_app", return_value=api_app):
+            scanner = DailyScanner(pb_client=pb, engines=engines)
+        scanner.api_app = api_app
+        scanner._build_metric_rows = lambda date, environment, symbols: {
+            symbol: {
+                "avg_10d_volume": 500000,
+                "premarket_volume": 25000,
+                "atr_pct": 0.5,
+                "day_change_pct": 2.0,
+            }
+            for symbol in symbols
+        }
+
+        runtime_payload = {
+            "watchlist_idle_topup": {
+                "completion": {
+                    "total": 2,
+                    "fresh": 2,
+                    "stale": 0,
+                    "missing": 0,
+                    "unobserved": 0,
+                    "expected_latest_5m_ms": _ms(2026, 4, 29, 10, 0),
+                    "oldest_latest_ms": _ms(2026, 4, 29, 10, 0),
+                }
+            }
+        }
+        with mock.patch.object(daily_scanner_mod, "_load_scan_settings", return_value={
+            "scan_time_et": "09:20",
+            "min_avg_10d_volume": 100000,
+            "min_premarket_volume": 5000,
+            "min_atr_pct": 0.15,
+            "min_abs_day_change_pct": 1.0,
+            "monitor_count": 0,
+            "target_subscription_limit": 80,
+            "total_subscription_limit": 80,
+            "trade_subscription_budget": 80,
+        }), mock.patch(
+            "ibkr_compute.api.runtime_status_client.get_remote_runtime_status",
+            return_value=runtime_payload,
+        ):
+            result = scanner.run_scan("2026-04-29", environments=["live"])
+
+        self.assertEqual(result["data_completeness"]["status"], "ready")
+        self.assertTrue(result["data_completeness"]["runtime_topup_waited"])
+        self.assertEqual(result["excluded_incomplete_count"], 0)
+        self.assertEqual([row["symbol"] for row in pb.upserts], ["AAPL", "NVDA"])
 
 
 if __name__ == "__main__":

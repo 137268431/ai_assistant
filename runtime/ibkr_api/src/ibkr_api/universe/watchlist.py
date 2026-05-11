@@ -4,6 +4,7 @@ import time
 from typing import Any, Callable
 
 from ibkr_api.orders.values import parse_boolean, to_int, to_text
+from ibkr_api.storage.helpers import normalize_exchange_value
 from ibkr_api.universe.maintenance import (
     WATCHLIST_ROLE_MARKET_MONITOR,
     WATCHLIST_ROLE_TRADE,
@@ -57,7 +58,7 @@ def build_watchlist_upsert_response(
     existing_row = dict(existing or {})
 
     note = to_text(payload.get("note"))
-    exchange = to_text(payload.get("exchange")).upper()
+    exchange = normalize_exchange_value(payload.get("exchange"))
     industry = to_text(
         payload.get("industry")
         or payload.get("asset_class")

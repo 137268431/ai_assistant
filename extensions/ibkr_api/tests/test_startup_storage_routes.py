@@ -198,6 +198,41 @@ class StartupStorageRoutesTest(unittest.TestCase):
         self.assertEqual(payload["reason"], "ibkr_bar_publish_enabled=false")
         self.assertEqual(pb.bar_upserts, [])
 
+    def test_bars_route_normalizes_empty_exchange_values(self):
+        app = _FakeApp()
+        pb = _FakePB()
+        deps = {
+            "pb": pb,
+            "normalize_environment": lambda value, fallback: str(value or fallback).strip().lower() or fallback,
+            "parse_boolean": lambda value, fallback: str(value).strip().lower() not in {"0", "false", "no", "off"},
+            "config_value": lambda key, default, environment: default,
+        }
+        exports = register_storage_routes(app, deps=deps)
+
+        request_stub = types.SimpleNamespace(
+            get_json=lambda silent=True: {
+                "environment": "live",
+                "bars": [
+                    {
+                        "symbol": "AAPL",
+                        "interval": "5m",
+                        "bar_time_ms": 1713927600000,
+                        "exchange": "N/A",
+                        "open": 1,
+                        "high": 1,
+                        "low": 1,
+                        "close": 1,
+                    }
+                ],
+            }
+        )
+        with mock.patch.object(storage_bar_routes, "request", request_stub):
+            with mock.patch.object(storage_bar_routes, "jsonify", side_effect=lambda payload: payload):
+                payload = exports["custom_ibkr_bars"]()
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual("SMART", pb.bar_upserts[0][0]["exchange"])
+
 
 if __name__ == "__main__":
     unittest.main()

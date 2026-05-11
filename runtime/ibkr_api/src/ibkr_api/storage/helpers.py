@@ -62,6 +62,26 @@ def _as_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+EMPTY_EXCHANGE_VALUES = {"", "N/A", "NA", "NONE", "NULL", "UNKNOWN", "-"}
+
+
+def normalize_exchange_value(value: Any, *, default: str = "") -> str:
+    text = str(value or "").strip().upper()
+    if text in EMPTY_EXCHANGE_VALUES:
+        return str(default or "").strip().upper()
+    if "NASDAQ" in text or "NMS" in text:
+        return "NASDAQ"
+    if "ARCA" in text:
+        return "ARCA"
+    if "NEW YORK STOCK EXCHANGE" in text or text == "NYSE" or text.startswith("NYSE "):
+        return "NYSE"
+    if "CBOE" in text:
+        return "CBOE"
+    if "AMEX" in text or "NYSE AMERICAN" in text:
+        return "AMEX"
+    return text
+
+
 def prepare_bar_row(payload: dict[str, Any], default_environment: str) -> tuple[dict[str, Any] | None, str]:
     symbol = str(payload.get("symbol") or "").strip().upper()
     interval = normalize_interval_value(payload.get("interval"))
@@ -75,7 +95,10 @@ def prepare_bar_row(payload: dict[str, Any], default_environment: str) -> tuple[
     return {
         "symbol": symbol,
         "environment": environment,
-        "exchange": str(payload.get("exchange") or "").strip().upper(),
+        "exchange": normalize_exchange_value(
+            payload.get("exchange") or extra.get("exchange"),
+            default="SMART",
+        ),
         "interval": interval,
         "open": float(payload.get("open") or 0),
         "high": float(payload.get("high") or 0),

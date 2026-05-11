@@ -12,6 +12,7 @@ from ibkr_compute.market.bar_freshness import BarFreshnessPlanner
 from ibkr_compute.market.bar_repair import BarRepairCoordinator
 from ibkr_compute.market.backtest_preload import BacktestPreloadCoordinator
 from ibkr_compute.market.timeframe_utils import COMPUTE_INTERVALS
+from ibkr_compute.api.service_topology import get_runtime_mode, get_service_profile
 from ibkr_compute.workflows.history_rebuild import HistoryRebuildManager
 
 
@@ -85,16 +86,18 @@ def build_service_bundle(
         runtime_status_resolver=runtime_status_resolver,
     )
     bar_freshness_planner = BarFreshnessPlanner(pb_client, config, environment=os.environ.get("IBKR_ENVIRONMENT", "live"))
-    bar_repair_coordinator = BarRepairCoordinator(
-        pb_client=pb_client,
-        config=config,
-        environment=os.environ.get("IBKR_ENVIRONMENT", "live"),
-        symbol_meta_provider=lambda symbols: {
-            str(symbol or "").strip().upper(): {}
-            for symbol in (symbols or [])
-            if str(symbol or "").strip()
-        },
-    )
+    bar_repair_coordinator = None
+    if not (get_runtime_mode() == "remote" and get_service_profile() == "compute"):
+        bar_repair_coordinator = BarRepairCoordinator(
+            pb_client=pb_client,
+            config=config,
+            environment=os.environ.get("IBKR_ENVIRONMENT", "live"),
+            symbol_meta_provider=lambda symbols: {
+                str(symbol or "").strip().upper(): {}
+                for symbol in (symbols or [])
+                if str(symbol or "").strip()
+            },
+        )
     backtest_preload_coordinator = BacktestPreloadCoordinator(
         pb_client=pb_client,
         config=config,

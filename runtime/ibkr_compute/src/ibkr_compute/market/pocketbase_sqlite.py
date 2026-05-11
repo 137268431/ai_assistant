@@ -47,6 +47,8 @@ ON CONFLICT(symbol, interval, bar_time_ms, environment) DO UPDATE SET
     updated = excluded.updated
 """
 
+EMPTY_EXCHANGE_VALUES = {"", "N/A", "NA", "NONE", "NULL", "UNKNOWN", "-"}
+
 PB_STATE_UPSERT_SQL = """
 INSERT INTO ibkr_state (
     id,
@@ -165,6 +167,38 @@ def pb_record_id() -> str:
 
 def pb_json_dumps(value: Any) -> str:
     return json.dumps(value if value is not None else {}, separators=(",", ":"), ensure_ascii=False)
+
+
+def normalize_exchange_value(value: Any, *, default: str = "") -> str:
+    text = str(value or "").strip().upper()
+    if text in EMPTY_EXCHANGE_VALUES:
+        return str(default or "").strip().upper()
+    if "NASDAQ" in text or "NMS" in text:
+        return "NASDAQ"
+    if "ARCA" in text:
+        return "ARCA"
+    if "NEW YORK STOCK EXCHANGE" in text or text == "NYSE" or text.startswith("NYSE "):
+        return "NYSE"
+    if "CBOE" in text:
+        return "CBOE"
+    if "AMEX" in text or "NYSE AMERICAN" in text:
+        return "AMEX"
+    return text
+
+
+def _bar_exchange(bar: dict, extra: dict) -> str:
+    for value in (
+        (bar or {}).get("exchange"),
+        (extra or {}).get("exchange"),
+        (bar or {}).get("primary_exchange"),
+        (extra or {}).get("primary_exchange"),
+        (bar or {}).get("listing_exchange"),
+        (extra or {}).get("listing_exchange"),
+    ):
+        normalized = normalize_exchange_value(value)
+        if normalized:
+            return normalized
+    return normalize_exchange_value("", default="SMART")
 
 
 def open_pb_sqlite(*, readonly: bool = False, timeout: float = 30.0) -> sqlite3.Connection:
@@ -682,7 +716,7 @@ def upsert_bars(conn: sqlite3.Connection, bars: Iterable[dict]) -> int:
             (
                 pb_record_id(),
                 str(bar.get("symbol") or "").upper(),
-                str(bar.get("exchange") or "").upper(),
+                _bar_exchange(bar, extra),
                 interval,
                 float(bar.get("open", 0) or 0),
                 float(bar.get("high", 0) or 0),

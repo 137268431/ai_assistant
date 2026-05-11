@@ -572,9 +572,17 @@ def build_resource_governor_snapshot(
             thresholds["watchlist_mem_available_min_pct"],
             "available memory percent is below watchlist admission limit",
         )
-    if disk_free_gb is None:
+    disk_free_gb_low = (
+        disk_free_gb is not None
+        and disk_free_gb <= thresholds["watchlist_disk_free_min_gb"]
+    )
+    disk_free_pct_low = (
+        disk_free_pct is not None
+        and disk_free_pct <= thresholds["watchlist_disk_free_min_pct"]
+    )
+    if disk_free_gb is None and disk_free_pct is None:
         _append_threshold_reason(watchlist_blockers, "disk_free_metric_unavailable", None, None, "disk free metric unavailable")
-    elif disk_free_gb <= thresholds["watchlist_disk_free_min_gb"]:
+    elif disk_free_gb_low and (disk_free_pct is None or disk_free_pct_low):
         _append_threshold_reason(
             watchlist_blockers,
             "watchlist_disk_gb_below_limit",
@@ -582,7 +590,7 @@ def build_resource_governor_snapshot(
             thresholds["watchlist_disk_free_min_gb"],
             "disk free GB is below watchlist admission limit",
         )
-    if disk_free_pct is not None and disk_free_pct <= thresholds["watchlist_disk_free_min_pct"]:
+    if disk_free_pct_low and (disk_free_gb is None or disk_free_gb_low):
         _append_threshold_reason(
             watchlist_blockers,
             "watchlist_disk_pct_below_limit",

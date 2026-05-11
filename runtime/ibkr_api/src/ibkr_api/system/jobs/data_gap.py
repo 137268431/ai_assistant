@@ -4,11 +4,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
+from ibkr_api.orders.values import parse_boolean
+
 
 BAR_INTERVAL_MS = 5 * 60 * 1000
-BAR_LAG_ALERT_MS = 10 * 60 * 1000
-INDICATOR_LAG_ALERT_MS = 10 * 60 * 1000
-GAP_ALERT_COOLDOWN_MS = 30 * 60 * 1000
+DEFAULT_BAR_LAG_ALERT_MIN = 20
+DEFAULT_INDICATOR_LAG_ALERT_MIN = 30
+DEFAULT_GAP_ALERT_COOLDOWN_MIN = 30
+DEFAULT_INDICATOR_REQUIRES_TARGETS = True
 GAP_MONITOR_STATE_KEY = "system_gap_monitor"
 GAP_ALERT_EXCLUDED_SYMBOLS = {"VIX"}
 ET = ZoneInfo("America/New_York")
@@ -16,6 +19,7 @@ ET = ZoneInfo("America/New_York")
 NormalizeEnvironment = Callable[[Any, str], str]
 TimeStrings = Callable[[], dict[str, str]]
 EmitSystemEvent = Callable[..., dict[str, Any]]
+ConfigValue = Callable[[str, str, str], str]
 
 
 def _to_text(value: Any) -> str:
@@ -27,6 +31,29 @@ def _to_int(value: Any, default: int = 0) -> int:
         return int(value)
     except Exception:
         return int(default)
+
+
+def _config_int(
+    config_value: ConfigValue | None,
+    key: str,
+    default: int,
+    environment: str,
+    *,
+    minimum: int = 1,
+) -> int:
+    try:
+        raw = config_value(key, str(default), environment) if config_value else default
+    except Exception:
+        raw = default
+    return max(int(minimum), _to_int(raw, default))
+
+
+def _config_bool(config_value: ConfigValue | None, key: str, default: bool, environment: str) -> bool:
+    try:
+        raw = config_value(key, "TRUE" if default else "FALSE", environment) if config_value else default
+    except Exception:
+        raw = default
+    return parse_boolean(raw, default)
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -169,7 +196,16 @@ def _build_gap_fingerprint(summary: dict[str, Any]) -> str:
     )
 
 
-def load_data_gap_summary(pb: Any, *, environment: str, date_token: str, today_start: str) -> dict[str, Any]:
+def load_data_gap_summary(
+    pb: Any,
+    *,
+    environment: str,
+    date_token: str,
+    today_start: str,
+    bar_lag_alert_min: int = DEFAULT_BAR_LAG_ALERT_MIN,
+    indicator_lag_alert_min: int = DEFAULT_INDICATOR_LAG_ALERT_MIN,
+    indicator_requires_targets: bool = DEFAULT_INDICATOR_REQUIRES_TARGETS,
+) -> dict[str, Any]:
     watchlist_symbols = _load_watchlist_symbols(pb, environment)
     target_symbols = _load_target_symbols(pb, environment, date_token)
     bars = _load_recent_rows_by_symbol(pb, "ibkr_bars", environment, "5m", today_start, 1200)
@@ -185,6 +221,12 @@ def load_data_gap_summary(pb: Any, *, environment: str, date_token: str, today_s
             if _to_text(symbol).upper() in GAP_ALERT_EXCLUDED_SYMBOLS
         ]
     )
+    bar_lag_alert_ms = max(1, int(bar_lag_alert_min or DEFAULT_BAR_LAG_ALERT_MIN)) * 60 * 1000
+    indicator_lag_alert_ms = max(1, int(indicator_lag_alert_min or DEFAULT_INDICATOR_LAG_ALERT_MIN)) * 60 * 1000
+    indicator_symbols = symbols
+    if indicator_requires_targets and not target_symbols:
+        indicator_symbols = []
+    indicator_symbol_set = set(indicator_symbols)
 
     latest_bar_time_ms = 0
     latest_bar_symbol = ""
@@ -211,14 +253,15 @@ def load_data_gap_summary(pb: Any, *, environment: str, date_token: str, today_s
             continue
         if latest_bar_time_ms > 0 and bar_ms > 0:
             lag_ms = latest_bar_time_ms - bar_ms
-            if lag_ms >= BAR_LAG_ALERT_MS:
+            if lag_ms >= bar_lag_alert_ms:
                 bar_lag_symbols.append(symbol)
                 max_bar_lag_ms = max(max_bar_lag_ms, lag_ms)
-        latest_indicator = _as_dict(latest_indicator_by_symbol.get(symbol))
-        indicator_ms = _to_int(latest_indicator.get("bar_time_ms"), 0)
-        if bar_ms > 0 and (bar_ms - indicator_ms) > INDICATOR_LAG_ALERT_MS:
-            indicator_lag_symbols.append(symbol)
-            max_indicator_lag_ms = max(max_indicator_lag_ms, bar_ms - indicator_ms)
+        if symbol in indicator_symbol_set:
+            latest_indicator = _as_dict(latest_indicator_by_symbol.get(symbol))
+            indicator_ms = _to_int(latest_indicator.get("bar_time_ms"), 0)
+            if bar_ms > 0 and (bar_ms - indicator_ms) > indicator_lag_alert_ms:
+                indicator_lag_symbols.append(symbol)
+                max_indicator_lag_ms = max(max_indicator_lag_ms, bar_ms - indicator_ms)
         if len(sequence_gap_examples) >= 6:
             continue
         series = list(_as_dict(bars.get("series_by_symbol")).get(symbol) or [])
@@ -247,9 +290,13 @@ def load_data_gap_summary(pb: Any, *, environment: str, date_token: str, today_s
         "target_count": len(target_symbols),
         "monitored_symbol_count": len(monitored_symbols),
         "alertable_symbol_count": len(symbols),
+        "indicator_monitored_symbol_count": len(indicator_symbols),
         "excluded_gap_symbols": excluded_symbols,
         "ignored_non_regular_symbols": _unique_sorted(ignored_non_regular_symbols),
         "today_bar_symbol_count": len(latest_bar_by_symbol),
+        "bar_lag_alert_min": round(bar_lag_alert_ms / 60000),
+        "indicator_lag_alert_min": round(indicator_lag_alert_ms / 60000),
+        "indicator_requires_targets": bool(indicator_requires_targets),
         "latest_bar_time_ms": latest_bar_time_ms,
         "latest_bar_symbol": latest_bar_symbol,
         "latest_bar_us_time": _to_text(_as_dict(latest_bar_by_symbol.get(latest_bar_symbol)).get("us_time")),
@@ -275,13 +322,47 @@ def build_data_gap_guard_response(
     normalize_environment: NormalizeEnvironment,
     time_strings: TimeStrings,
     emit_system_event: EmitSystemEvent,
+    config_value: ConfigValue | None = None,
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
     environment = normalize_environment(request_payload.get("environment"), "live")
     times = time_strings()
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     today_start = f"{times['date']} 00:00:00"
-    gaps = load_data_gap_summary(pb, environment=environment, date_token=times["date"], today_start=today_start)
+    bar_lag_alert_min = _config_int(
+        config_value,
+        "system_data_gap_bar_lag_alert_min",
+        DEFAULT_BAR_LAG_ALERT_MIN,
+        environment,
+    )
+    indicator_lag_alert_min = _config_int(
+        config_value,
+        "system_data_gap_indicator_lag_alert_min",
+        DEFAULT_INDICATOR_LAG_ALERT_MIN,
+        environment,
+    )
+    alert_cooldown_min = _config_int(
+        config_value,
+        "system_data_gap_alert_cooldown_min",
+        DEFAULT_GAP_ALERT_COOLDOWN_MIN,
+        environment,
+    )
+    indicator_requires_targets = _config_bool(
+        config_value,
+        "system_data_gap_indicator_requires_targets",
+        DEFAULT_INDICATOR_REQUIRES_TARGETS,
+        environment,
+    )
+    gaps = load_data_gap_summary(
+        pb,
+        environment=environment,
+        date_token=times["date"],
+        today_start=today_start,
+        bar_lag_alert_min=bar_lag_alert_min,
+        indicator_lag_alert_min=indicator_lag_alert_min,
+        indicator_requires_targets=indicator_requires_targets,
+    )
+    gaps["alert_cooldown_min"] = alert_cooldown_min
     next_state = {
         "last_gap_scan_at": times["us"],
         "last_gap_fingerprint": gaps.get("fingerprint") or "",
@@ -303,7 +384,11 @@ def build_data_gap_guard_response(
 
     last_alert_hash = _to_text(current_state.get("last_gap_alert_hash"))
     last_alert_ms = _to_int(current_state.get("last_gap_alert_ms"), 0)
-    should_notify = gaps.get("fingerprint") != last_alert_hash or last_alert_ms <= 0 or (now_ms - last_alert_ms) >= GAP_ALERT_COOLDOWN_MS
+    should_notify = (
+        gaps.get("fingerprint") != last_alert_hash
+        or last_alert_ms <= 0
+        or (now_ms - last_alert_ms) >= alert_cooldown_min * 60 * 1000
+    )
     if should_notify:
         detail = {
             "检查时间": times["us"],

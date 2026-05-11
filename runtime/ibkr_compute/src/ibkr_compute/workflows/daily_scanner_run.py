@@ -48,6 +48,8 @@ class DailyScannerRunMixin:
             "excluded_incomplete_count": 0,
             "repairing_count": 0,
             "incomplete_symbols": [],
+            "repair_strategy": "",
+            "runtime_topup_waited": False,
             "repair_jobs": [],
         }
 
@@ -96,6 +98,13 @@ class DailyScannerRunMixin:
                 data_completeness["excluded_incomplete_count"] += int(completeness.get("excluded_incomplete_count", 0) or 0)
                 data_completeness["repairing_count"] += int(completeness.get("repairing_count", 0) or 0)
                 data_completeness["incomplete_symbols"].extend(completeness.get("incomplete_symbols") or [])
+                repair_strategy = str(completeness.get("repair_strategy") or "").strip()
+                if repair_strategy and not str(data_completeness.get("repair_strategy") or "").strip():
+                    data_completeness["repair_strategy"] = repair_strategy
+                data_completeness["runtime_topup_waited"] = (
+                    bool(data_completeness.get("runtime_topup_waited"))
+                    or bool(completeness.get("runtime_topup_waited"))
+                )
                 data_completeness["repair_job_count"] = (
                     int(data_completeness.get("repair_job_count", 0) or 0)
                     + int(completeness.get("repair_job_count", 0) or 0)
@@ -148,6 +157,12 @@ class DailyScannerRunMixin:
         completeness_gate = self._build_data_completeness_gate(runtime_environment, watchlist_symbols)
         incomplete_symbols = set(completeness_gate.get("incomplete_symbols") or [])
         blocking_incomplete_symbols = set(incomplete_symbols) if bool(completeness_gate.get("blocking_enabled")) else set()
+        repair_strategy = str(completeness_gate.get("repair_strategy") or "").strip()
+        incomplete_note = (
+            "数据不完整，blocking 开启，等待 Runtime watchlist 回补后重扫"
+            if repair_strategy == "runtime_watchlist_idle_topup"
+            else "数据不完整，blocking 开启，已排除本轮筛选并进入异步 API 补偿"
+        )
         engine_materialize = self._materialize_scan_engines(runtime_environment, watchlist_symbols)
         stored_indicator_snapshots = self._load_stored_indicator_snapshots(runtime_environment, watchlist_symbols)
         metric_rows = self._build_metric_rows(date, runtime_environment, watchlist_symbols)
@@ -181,7 +196,7 @@ class DailyScannerRunMixin:
                     symbol=symbol,
                     actual=",".join(stale_intervals) or str(freshness.get("status") or "incomplete"),
                     threshold="all required intervals ready",
-                    note="数据不完整，blocking 开启，已排除本轮筛选并进入异步 API 补偿",
+                    note=incomplete_note,
                 )
                 continue
             try:
@@ -378,6 +393,8 @@ class DailyScannerRunMixin:
                 "repairing_count": len(incomplete_symbols),
                 "incomplete_symbol_count": len(incomplete_symbols),
                 "incomplete_symbols": sorted(incomplete_symbols),
+                "repair_strategy": str(completeness_gate.get("repair_strategy") or "").strip(),
+                "runtime_topup_waited": bool(completeness_gate.get("runtime_topup_waited")),
                 "repair_job_count": int(completeness_gate.get("repair_job_count", 0) or 0),
                 "repair_jobs": list(completeness_gate.get("repair_jobs") or []),
             },

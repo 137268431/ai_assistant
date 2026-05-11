@@ -67,6 +67,21 @@ class _FakeConfig:
         return default
 
 
+class _FakePB:
+    def __init__(self):
+        self.states = []
+
+    def upsert_state(self, state_key, environment, data, date="global"):
+        payload = {
+            "state_key": state_key,
+            "environment": environment,
+            "data": dict(data or {}),
+            "date": date,
+        }
+        self.states.append(payload)
+        return payload
+
+
 def _fake_app(scan_time="09:20"):
     return SimpleNamespace(
         SUPPORTED_COMPUTE_ENVIRONMENTS=["live", "paper", "backtest"],
@@ -127,6 +142,7 @@ class ScanRuntimeGateTest(unittest.TestCase):
 
     def test_build_scan_response_force_bypasses_time_gate(self):
         fake_app = _fake_app()
+        fake_app.pb = _FakePB()
         blocked_window = {
             "environment": "live",
             "open": False,
@@ -146,12 +162,21 @@ class ScanRuntimeGateTest(unittest.TestCase):
                 mock.patch.object(runtime_ops.time, "time", return_value=123.0):
             response = runtime_ops.build_scan_response({"environment": "live", "force": True})
 
-        scanner.run_scan.assert_called_once_with("2026-04-28", environments=["live"])
+        scanner.run_scan.assert_called_once_with("2026-04-28", environments=["live"], mode="seed")
         payload = response.get_json()
         self.assertTrue(payload["ok"])
         self.assertTrue(payload["force"])
         self.assertEqual(payload["active"], 1)
         self.assertEqual(fake_app.last_scan_time, 123.0)
+        legacy_states = [
+            item for item in fake_app.pb.states
+            if item["state_key"] == "ibkr_daily_scan_state"
+        ]
+        self.assertEqual(len(legacy_states), 1)
+        self.assertEqual(legacy_states[0]["date"], "global")
+        self.assertEqual(legacy_states[0]["data"]["status"], "completed")
+        self.assertEqual(legacy_states[0]["data"]["market_date"], "2026-04-28")
+        self.assertEqual(legacy_states[0]["data"]["result"]["active"], 1)
 
 
 if __name__ == "__main__":

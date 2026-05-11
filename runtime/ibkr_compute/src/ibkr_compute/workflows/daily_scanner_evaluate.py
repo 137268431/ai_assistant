@@ -17,6 +17,7 @@ from .daily_scanner_constants import (
     DAILY_SCAN_SECONDARY_WEIGHT,
     DAILY_SCAN_SHORT_PRIMARY_RULES,
     DAILY_SCAN_SHORT_SECONDARY_RULES,
+    DEFAULT_DAY_GAIN_TRIGGER_PCT,
     DEFAULT_MIN_ABS_DAY_CHANGE_PCT,
     DEFAULT_MIN_ATR_PCT,
     DEFAULT_MIN_AVG_10D_VOLUME,
@@ -126,6 +127,25 @@ class DailyScannerEvaluateMixin:
                 if snapshot.get(rule_key):
                     technical_reasons.append(f"{tf}:{rule_label}")
 
+        metric_row = dict(metrics or {})
+        day_change_pct = _safe_float(metric_row.get("day_change_pct"))
+        day_gain_trigger_enabled = normalize_admission_bool(
+            settings.get("day_gain_trigger_enabled"),
+            True,
+        )
+        day_gain_trigger_pct = max(
+            0.0,
+            _safe_float(settings.get("day_gain_trigger_pct"), DEFAULT_DAY_GAIN_TRIGGER_PCT),
+        )
+        day_gain_triggered = bool(
+            day_gain_trigger_enabled
+            and day_gain_trigger_pct > 0
+            and day_change_pct >= day_gain_trigger_pct
+        )
+        if day_gain_triggered:
+            technical_score += DAILY_SCAN_SECONDARY_WEIGHT
+            technical_reasons.append(f"day_gain>={_format_threshold(day_gain_trigger_pct)}%")
+
         if long_votes == short_votes:
             direction_bias = "neutral"
         elif long_votes > short_votes:
@@ -133,7 +153,7 @@ class DailyScannerEvaluateMixin:
         else:
             direction_bias = "short"
 
-        if direction_bias == "neutral":
+        if direction_bias == "neutral" and not day_gain_triggered:
             return {
                 "symbol": symbol,
                 "score": 0,
@@ -168,11 +188,9 @@ class DailyScannerEvaluateMixin:
             }
 
         technical_score += len(snapshots) * DAILY_SCAN_READY_TIMEFRAME_BONUS
-        metric_row = dict(metrics or {})
         avg_10d_volume = _safe_float(metric_row.get("avg_10d_volume"))
         premarket_volume = _safe_float(metric_row.get("premarket_volume"))
         atr_pct = abs(_safe_float(metric_row.get("atr_pct")))
-        day_change_pct = _safe_float(metric_row.get("day_change_pct"))
 
         dynamic_enabled = normalize_admission_bool(settings.get("dynamic_admission_enabled"), False)
         admission_score = 0.0
@@ -190,9 +208,10 @@ class DailyScannerEvaluateMixin:
         }
         strategy_policy = {
             "risk_profile": "legacy",
-            "setup_type": "fixed_quality_gates",
-            "allowed_sides": [direction_bias],
+            "setup_type": "day_gain_watch" if day_gain_triggered else "fixed_quality_gates",
+            "allowed_sides": [direction_bias] if direction_bias in {"long", "short"} else ["long", "short"],
             "signal_confirmation": "standard",
+            "entry_style": "wait_for_pullback_or_exhaustion" if day_gain_triggered else "standard",
             "position_size_multiplier": 1.0,
             "avoid_new_entries": False,
         }
@@ -288,6 +307,32 @@ class DailyScannerEvaluateMixin:
             }
             strategy_policy["avoid_new_entries"] = not quality_gate_passed
 
+        if day_gain_triggered:
+            allowed_sides = strategy_policy.get("allowed_sides")
+            if not isinstance(allowed_sides, list) or not allowed_sides:
+                allowed_sides = ["long", "short"]
+            if direction_bias == "neutral":
+                allowed_sides = ["long", "short"]
+            strategy_policy.update(
+                {
+                    "selection_trigger": "day_gain",
+                    "setup_type": (
+                        "day_gain_watch"
+                        if direction_bias == "neutral"
+                        else str(strategy_policy.get("setup_type") or "day_gain_watch")
+                    ),
+                    "allowed_sides": allowed_sides,
+                    "entry_style": "wait_for_pullback_or_exhaustion",
+                    "signal_confirmation": (
+                        str(strategy_policy.get("signal_confirmation") or "standard").strip()
+                        or "standard"
+                    ),
+                    "recommended_signal_profile": str(
+                        strategy_policy.get("recommended_signal_profile") or "intraday_sd_v1"
+                    ).strip() or "intraday_sd_v1",
+                }
+            )
+
         stocks_in_play_bonus, stocks_in_play_reasons, stocks_in_play_details = _build_stocks_in_play_bonus(
             metric_row,
             snapshots,
@@ -328,6 +373,9 @@ class DailyScannerEvaluateMixin:
                 "timeframes_ready": sorted(snapshots.keys()),
                 "long_votes": long_votes,
                 "short_votes": short_votes,
+                "day_gain_triggered": day_gain_triggered,
+                "day_gain_trigger_pct": day_gain_trigger_pct,
+                "selection_triggers": ["day_gain"] if day_gain_triggered else [],
                 "rank_bonus": rank_bonus,
                 "dynamic_admission_enabled": dynamic_enabled,
                 "admission_score": round(admission_score, 3),

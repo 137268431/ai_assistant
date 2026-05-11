@@ -18,6 +18,8 @@ from ibkr_compute.workflows.daily_scanner import DEFAULT_SCAN_TIME_ET, DAILY_SCA
 
 
 SCAN_ATTEMPT_STATE_KEY = "ibkr_daily_scan_attempt_state"
+DAILY_SCAN_STATE_KEY = "ibkr_daily_scan_state"
+DAILY_SCAN_STATE_DATE = "global"
 
 
 def _api_app():
@@ -190,6 +192,39 @@ def _persist_scan_attempt_state(api_app, state: dict) -> None:
         pass
 
 
+def _persist_legacy_daily_scan_state(api_app, state: dict) -> None:
+    pb = getattr(api_app, "pb", None)
+    if pb is None or not hasattr(pb, "upsert_state"):
+        return
+    environment = str(state.get("environment") or "live").strip().lower() or "live"
+    payload = {
+        "market_date": str(state.get("market_date") or state.get("date") or ""),
+        "status": str(state.get("status") or ""),
+        "reason": str(state.get("trigger_source") or state.get("reason") or "manual"),
+        "started_at": state.get("started_at") or "",
+        "finished_at": state.get("finished_at") or "",
+        "last_error": str(state.get("last_error") or ""),
+        "result": state.get("result") if isinstance(state.get("result"), dict) else {},
+        "run_id": str(state.get("run_id") or ""),
+        "attempt_count": 1,
+        "retry_count": 0,
+        "next_retry_at": "",
+        "retry_cutoff_at": "",
+        "retry_block_reason": "",
+        "failure": state.get("failure") if isinstance(state.get("failure"), dict) else {},
+        "diagnostics": state.get("diagnostics") if isinstance(state.get("diagnostics"), dict) else {},
+    }
+    try:
+        pb.upsert_state(
+            DAILY_SCAN_STATE_KEY,
+            environment,
+            compact_json_payload(payload, max_list_items=30, max_dict_items=120, max_string_length=800, max_depth=7),
+            date=DAILY_SCAN_STATE_DATE,
+        )
+    except Exception:
+        pass
+
+
 def _set_scan_attempt_state(api_app, state: dict) -> dict:
     next_state = dict(state or {})
     environment = str(next_state.get("environment") or "live").strip().lower() or "live"
@@ -208,6 +243,8 @@ def _set_scan_attempt_state(api_app, state: dict) -> dict:
         store["by_key"][key] = dict(next_state)
         store["by_run_id"][run_id] = dict(next_state)
     _persist_scan_attempt_state(api_app, next_state)
+    if _scan_terminal_status(str(next_state.get("status") or "")):
+        _persist_legacy_daily_scan_state(api_app, next_state)
     return dict(next_state)
 
 
@@ -430,17 +467,26 @@ def build_scan_response(payload=None):
     scanner = DailyScanner(pb_client=api_app.pb, engines=api_app.engines)
     result = scanner.run_scan(date_str, environments=enabled_environments, mode=scan_mode)
     api_app.last_scan_time = time.time()
-
-    return jsonify({
+    scan_ok = bool(result.get("ok", True))
+    response_payload = {
         "ok": True,
         "date": date_str,
+        "market_date": date_str,
+        "environment": enabled_environments[0] if enabled_environments else "live",
         "requested_environments": requested_environments,
         "environments": enabled_environments,
         "force": force_scan,
         "mode": scan_mode,
         "scan_windows": scan_windows,
+        "status": "completed" if scan_ok else "failed",
+        "finished_at": datetime.now(ET).isoformat(),
+        "last_error": "" if scan_ok else str(result.get("error") or result.get("last_error") or "daily_scan_failed"),
+        "result": result,
         **result,
-    })
+    }
+    _persist_legacy_daily_scan_state(api_app, response_payload)
+
+    return jsonify(response_payload)
 
 
 def build_recompute_response():

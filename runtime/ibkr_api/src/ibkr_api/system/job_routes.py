@@ -155,6 +155,7 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
             normalize_environment=normalize_environment,
             time_strings=time_strings,
             emit_system_event=emit_system_event,
+            config_value=config_value,
         )
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)

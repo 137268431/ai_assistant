@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ibkr_compute.market.pocketbase_sqlite import normalize_exchange_value
+
 from .market_universe_support import *
 from .market_universe_support import (
     _classify_daily_scan_failure,
@@ -40,6 +42,36 @@ class TradingServiceMarketUniverseTargetsMixin:
         service_mod = _service_mod()
         return service_mod.normalize_watchlist_symbol_role((row or {}).get("symbol_role"))
 
+    def _watchlist_metadata_fallbacks(self, symbols) -> dict:
+        symbol_set = {
+            str(symbol or "").strip().upper()
+            for symbol in (symbols or [])
+            if str(symbol or "").strip()
+        }
+        if not symbol_set:
+            return {}
+
+        fallbacks = {}
+        try:
+            rows = self.pb.get_all_records("ibkr_fundamentals", max_pages=30)
+        except Exception as exc:
+            service_mod = _service_mod()
+            service_mod.logger.debug("Failed to load watchlist metadata fallbacks: %s", exc)
+            return {}
+
+        for row in rows or []:
+            symbol = str((row or {}).get("symbol") or "").strip().upper()
+            if not symbol or symbol not in symbol_set or symbol in fallbacks:
+                continue
+            exchange = normalize_exchange_value((row or {}).get("exchange"))
+            industry = str((row or {}).get("industry") or (row or {}).get("profile") or "").strip()
+            if exchange or industry:
+                fallbacks[symbol] = {
+                    "exchange": exchange,
+                    "industry": industry,
+                }
+        return fallbacks
+
     def _refresh_watchlist_pool(self, force: bool = False):
         service_mod = _service_mod()
         refresh_minutes = max(1, self.config.get_int_for_environment("watchlist_interval_min", service_mod.ENVIRONMENT, 5))
@@ -76,14 +108,18 @@ class TradingServiceMarketUniverseTargetsMixin:
             service_mod.logger.error("Failed to refresh watchlist pool: %s", exc)
             return
 
+        fallback_meta = self._watchlist_metadata_fallbacks(merged.keys())
         symbol_meta = {}
         trade_symbols = []
         monitor_symbols = []
         for symbol, row in merged.items():
             symbol_role = self._watchlist_record_role(row)
+            fallback = fallback_meta.get(symbol) or {}
+            exchange = normalize_exchange_value(row.get("exchange"), default=str(fallback.get("exchange") or ""))
+            industry = str(row.get("industry") or fallback.get("industry") or "")
             symbol_meta[symbol] = {
-                "exchange": str(row.get("exchange", "") or "").upper(),
-                "industry": str(row.get("industry", "") or ""),
+                "exchange": exchange,
+                "industry": industry,
                 "symbol_role": symbol_role,
             }
             if symbol_role == service_mod.WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR:

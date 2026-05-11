@@ -11,7 +11,7 @@ import threading
 import time
 from typing import Dict
 
-from .pocketbase_sqlite import open_pb_sqlite, upsert_bars
+from .pocketbase_sqlite import normalize_exchange_value, open_pb_sqlite, upsert_bars
 from .timeframe_utils import (
     build_bar_close_timestamps,
     build_runtime_timestamps,
@@ -459,7 +459,10 @@ class DataWriter:
         return {
             "symbol": str(bar["symbol"]).upper(),
             "environment": str(bar.get("environment") or DEFAULT_ENVIRONMENT).strip().lower() or DEFAULT_ENVIRONMENT,
-            "exchange": str(bar.get("exchange") or "").strip().upper(),
+            "exchange": normalize_exchange_value(
+                bar.get("exchange") or base_extra.get("exchange"),
+                default="SMART",
+            ),
             "interval": normalized_interval,
             "open": float(bar["open"]),
             "high": float(bar["high"]),

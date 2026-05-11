@@ -131,6 +131,20 @@ class ResourceGovernorTests(unittest.TestCase):
         self.assertEqual(snapshot["metrics"]["disk_free_gb"], 15.0)
         self.assertEqual(snapshot["metrics"]["disk_free_pct"], 20.0)
 
+    def test_watchlist_disk_gb_limit_does_not_block_when_free_percent_is_healthy(self):
+        snapshot = build_resource_governor_snapshot(
+            _host_snapshot(
+                disk_free_gb=12.0,
+                disk_total_gb=49.0,
+            )
+        )
+
+        self.assertEqual(snapshot["status"], "green")
+        self.assertTrue(snapshot["admission"]["watchlist_idle_topup"]["admit"])
+        self.assertNotIn("watchlist_disk_gb_below_limit", _watchlist_blocker_codes(snapshot))
+        self.assertEqual(snapshot["metrics"]["disk_free_gb"], 12.0)
+        self.assertEqual(snapshot["metrics"]["disk_free_pct"], 24.49)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -299,6 +299,18 @@ class WatchlistIdleTopupAdmissionTest(unittest.TestCase):
                 self.service.bar_repair_coordinator = coordinator
                 self.assertBlockedBy("repair")
 
+    def test_no_active_targets_allows_topup_when_bar_repair_is_busy(self):
+        self.service._active_trade_symbols = set()
+        self.service._active_subscription_symbols = set()
+        self.service.bar_repair_coordinator = DummyBarRepairCoordinator(pending=10, inflight=2)
+
+        admitted, admission = self.service._watchlist_idle_topup_admission()
+
+        self.assertTrue(admitted, admission)
+        self.assertFalse(admission["active_due_guard_required"])
+        blocker_codes = [item["code"] for item in admission["blockers"]]
+        self.assertNotIn("bar_repair_busy", blocker_codes)
+
     def test_blocks_when_resource_governor_denies_watchlist_admission(self):
         self.service._resource_governor = {
             "status": "warning",
@@ -313,12 +325,17 @@ class WatchlistIdleTopupAdmissionTest(unittest.TestCase):
 
         self.assertBlockedBy("watchlist_cpu_over_limit")
 
-    def test_blocks_when_active_5m_due_window_is_too_close(self):
+    def test_allows_watchlist_topup_when_active_5m_due_window_is_close(self):
         self.service._seconds_until_active_5m_due = 30
         self.service._active_5m_seconds_until_due = 30
         self.service._watchlist_active_due_seconds = 30
 
-        self.assertBlockedBy("due")
+        admitted, admission = self.service._watchlist_idle_topup_admission()
+
+        self.assertTrue(admitted, admission)
+        self.assertTrue(admission["active_due_guard_required"])
+        blocker_codes = [item["code"] for item in admission["blockers"]]
+        self.assertNotIn("active_5m_due_guard", blocker_codes)
 
     def test_closed_session_allows_history_compensation_without_live_ws_or_official_freshness(self):
         self.service.ws_client = DummyWebSocketClient(connected=False, ready=False)
@@ -468,7 +485,7 @@ class WatchlistIdleTopupCycleTest(unittest.TestCase):
         )
         self.assertEqual(self.service.bar_writer.flush_calls, len(self.service.data_backfill.backfill_all_calls))
 
-    def test_active_targets_pause_when_next_due_budget_is_too_close(self):
+    def test_active_targets_continue_when_next_due_budget_is_close(self):
         self.service.config = DummyConfig(
             {
                 "ibkr_watchlist_idle_topup_batch_size": 2,
@@ -479,11 +496,12 @@ class WatchlistIdleTopupCycleTest(unittest.TestCase):
 
         state = self.service._run_watchlist_idle_topup_cycle()
 
-        self.assertEqual(state["status"], "skipped")
-        self.assertEqual(state["skip_reason"], "active_5m_due_guard")
-        self.assertEqual(self.service.data_backfill.backfill_all_calls, [])
+        self.assertEqual(state["status"], "completed")
+        self.assertEqual(state["mode"], "continuous_until_active_due")
+        self.assertGreater(state["last_processed_symbols_total"], 0)
+        self.assertGreater(len(self.service.data_backfill.backfill_all_calls), 0)
 
-    def test_active_targets_pause_between_dynamic_batches_when_due_budget_tightens(self):
+    def test_active_targets_continue_between_dynamic_batches_when_due_budget_tightens(self):
         self.service.config = DummyConfig(
             {
                 "ibkr_watchlist_idle_topup_batch_size": 2,
@@ -501,7 +519,6 @@ class WatchlistIdleTopupCycleTest(unittest.TestCase):
 
         self.assertEqual(state["status"], "completed")
         self.assertEqual(state["mode"], "continuous_until_active_due")
-        self.assertEqual(state["last_stop_reason"], "active_5m_due_guard")
         self.assertEqual(state["last_attempted_symbols"], ["NVDA", "TSLA", "MSFT"])
         self.assertEqual(state["last_processed_symbols"], ["NVDA", "TSLA", "MSFT"])
         self.assertEqual(len(self.service.data_backfill.backfill_all_calls), 1)
@@ -644,7 +661,7 @@ class WatchlistIdleTopupCycleTest(unittest.TestCase):
         self.assertEqual(state["estimated_bars_selected"], 300)
         self.assertEqual(self._called_symbols(), ["NVDA", "META"])
 
-    def test_due_budget_helper_blocks_batch_when_exposed(self):
+    def test_due_budget_helper_allows_watchlist_batches_when_active_due_is_close(self):
         if not hasattr(self.service, "_watchlist_idle_topup_due_budget_allows_batch"):
             self.skipTest("watchlist idle topup due-budget helper is not exposed")
 
@@ -658,8 +675,8 @@ class WatchlistIdleTopupCycleTest(unittest.TestCase):
             20,
         )
 
-        self.assertFalse(allowed)
-        self.assertEqual(reason, "active_5m_due_guard")
+        self.assertTrue(allowed)
+        self.assertEqual(reason, "")
 
     def test_closed_session_full_loads_even_when_active_targets_exist(self):
         self.service.config = DummyConfig(

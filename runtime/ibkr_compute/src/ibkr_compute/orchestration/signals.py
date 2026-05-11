@@ -104,7 +104,7 @@ class TradingServiceSignalsMixin:
                 self._refresh_runtime_settings()
                 self._sync_session_transition()
                 signal_poll_interval = max(
-                    15,
+                    1,
                     self.config.get_int_for_environment(
                         "signal_poll_interval_sec",
                         service_mod.ENVIRONMENT,
