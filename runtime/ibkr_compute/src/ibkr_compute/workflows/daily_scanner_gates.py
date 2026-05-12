@@ -7,6 +7,7 @@ import time
 from ibkr_compute.market.timeframe_utils import COMPUTE_INTERVALS, normalize_interval
 
 from .daily_scanner_constants import (
+    DEFAULT_DATA_COMPLETENESS_BLOCKING_INTERVALS,
     DEFAULT_DATA_COMPLETENESS_INTERVALS,
     MAX_DATA_COMPLETENESS_REPAIR_JOBS_IN_RESULT,
 )
@@ -37,6 +38,14 @@ class DailyScannerDataCompletenessMixin:
         except Exception:
             return True
 
+    def _parse_interval_csv(self, raw: str, fallback: str) -> list[str]:
+        parsed = [normalize_interval(item) for item in str(raw or "").split(",") if str(item or "").strip()]
+        parsed = [item for item in dict.fromkeys(parsed) if item in COMPUTE_INTERVALS]
+        if parsed:
+            return parsed
+        fallback_items = [normalize_interval(item) for item in str(fallback or "").split(",") if str(item or "").strip()]
+        return [item for item in dict.fromkeys(fallback_items) if item in COMPUTE_INTERVALS] or ["5m"]
+
     def _data_completeness_intervals(self, environment: str) -> list[str]:
         cfg = getattr(self.api_app, "cfg", None)
         raw = DEFAULT_DATA_COMPLETENESS_INTERVALS
@@ -45,9 +54,24 @@ class DailyScannerDataCompletenessMixin:
                 raw = str(cfg.get_for_environment("ibkr_daily_scan_data_completeness_intervals", environment, raw) or raw)
             except Exception:
                 raw = DEFAULT_DATA_COMPLETENESS_INTERVALS
-        parsed = [normalize_interval(item) for item in raw.split(",") if str(item or "").strip()]
-        parsed = [item for item in dict.fromkeys(parsed) if item in COMPUTE_INTERVALS]
-        return parsed or [normalize_interval(DEFAULT_DATA_COMPLETENESS_INTERVALS)]
+        return self._parse_interval_csv(raw, DEFAULT_DATA_COMPLETENESS_INTERVALS)
+
+    def _data_completeness_blocking_intervals(self, environment: str) -> list[str]:
+        cfg = getattr(self.api_app, "cfg", None)
+        raw = DEFAULT_DATA_COMPLETENESS_BLOCKING_INTERVALS
+        if cfg is not None and hasattr(cfg, "get_for_environment"):
+            try:
+                raw = str(
+                    cfg.get_for_environment(
+                        "ibkr_daily_scan_data_completeness_blocking_intervals",
+                        environment,
+                        raw,
+                    )
+                    or raw
+                )
+            except Exception:
+                raw = DEFAULT_DATA_COMPLETENESS_BLOCKING_INTERVALS
+        return self._parse_interval_csv(raw, DEFAULT_DATA_COMPLETENESS_BLOCKING_INTERVALS)
 
     def _data_completeness_runtime_topup_wait_sec(self, environment: str) -> int:
         cfg = getattr(self.api_app, "cfg", None)
@@ -163,8 +187,12 @@ class DailyScannerDataCompletenessMixin:
             planner = self._build_bar_freshness_planner(environment)
         intervals = self._data_completeness_intervals(environment)
         blocking_enabled = self._data_completeness_blocking_enabled(environment)
+        blocking_intervals = self._data_completeness_blocking_intervals(environment) if blocking_enabled else []
+        blocking_interval_set = set(blocking_intervals)
         items = {}
         incomplete_symbols = []
+        soft_incomplete_symbols = []
+        blocking_incomplete_symbols = []
         repair_jobs = []
         repair_job_count = 0
         coordinator = getattr(self.api_app, "bar_repair_coordinator", None)
@@ -193,12 +221,26 @@ class DailyScannerDataCompletenessMixin:
                     coordinator=coordinator,
                     enqueue_repairs=False,
                 )
+        for symbol in incomplete_symbols:
+            freshness = items.get(symbol) or {}
+            stale_intervals = {
+                normalize_interval(interval)
+                for interval in list(freshness.get("needs_repair_intervals") or [])
+                if str(interval or "").strip()
+            }
+            if stale_intervals & blocking_interval_set:
+                blocking_incomplete_symbols.append(symbol)
+            else:
+                soft_incomplete_symbols.append(symbol)
         return {
             "enabled": True,
             "blocking_enabled": blocking_enabled,
             "intervals": intervals,
+            "blocking_intervals": blocking_intervals,
             "items": items,
             "incomplete_symbols": incomplete_symbols,
+            "blocking_incomplete_symbols": sorted(blocking_incomplete_symbols),
+            "soft_incomplete_symbols": sorted(soft_incomplete_symbols),
             "repairing_symbols": incomplete_symbols,
             "repair_strategy": repair_strategy,
             "runtime_topup_waited": runtime_topup_waited,

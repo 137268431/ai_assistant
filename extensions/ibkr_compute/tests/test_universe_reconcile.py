@@ -281,7 +281,7 @@ class UniversePrimeBacktestPreloadTest(unittest.TestCase):
 
 
 class UniverseTargetSubscriptionPlanTest(unittest.TestCase):
-    def test_market_context_active_targets_are_not_selected_as_trade_rows(self):
+    def test_old_daily_scan_active_gate_target_is_selected_as_trade_row(self):
         universe = DummyTargetPlanUniverse(
             [
                 {"id": "target-spy", "symbol": "SPY", "status": "active", "score": 99, "extra": {"source": "manual_page_add"}},
@@ -305,6 +305,66 @@ class UniverseTargetSubscriptionPlanTest(unittest.TestCase):
         self.assertTrue(spy_updates)
         self.assertEqual("candidate", spy_updates[-1]["status"])
         self.assertTrue(spy_updates[-1]["extra"]["blocked_from_trading"])
+
+    def test_new_context_active_daily_scan_target_is_selected_as_trade_row(self):
+        universe = DummyTargetPlanUniverse(
+            [
+                {
+                    "id": "target-aapl",
+                    "symbol": "AAPL",
+                    "status": "active",
+                    "score": 80,
+                    "extra": {"source": "daily_scan", "context_active": True},
+                },
+                {
+                    "id": "target-msft",
+                    "symbol": "MSFT",
+                    "status": "active",
+                    "score": 70,
+                    "extra": {"source": "intraday_window_admission", "context_gate_passed": "passed"},
+                },
+            ]
+        )
+
+        _target_date, symbols, _meta, selected_rows = universe._build_target_subscription_plan()
+
+        self.assertIn("AAPL", symbols)
+        self.assertIn("MSFT", symbols)
+        self.assertEqual(["AAPL", "MSFT"], [row["symbol"] for row in selected_rows])
+
+    def test_non_context_active_candidate_is_not_selected_as_trade_row(self):
+        universe = DummyTargetPlanUniverse(
+            [
+                {
+                    "id": "target-aapl",
+                    "symbol": "AAPL",
+                    "status": "active",
+                    "score": 99,
+                    "extra": {"source": "manual_page_add", "context_active": True},
+                },
+                {
+                    "id": "target-msft",
+                    "symbol": "MSFT",
+                    "status": "candidate",
+                    "score": 98,
+                    "extra": {"source": "daily_scan", "context_active": True},
+                },
+                {
+                    "id": "target-tsla",
+                    "symbol": "TSLA",
+                    "status": "active",
+                    "score": 97,
+                    "extra": {"source": "daily_scan"},
+                },
+            ]
+        )
+
+        _target_date, symbols, _meta, selected_rows = universe._build_target_subscription_plan()
+
+        self.assertNotIn("AAPL", symbols)
+        self.assertNotIn("MSFT", symbols)
+        self.assertNotIn("TSLA", symbols)
+        self.assertEqual([], selected_rows)
 
     def test_manual_active_target_is_not_selected_as_trade_row(self):
         universe = DummyTargetPlanUniverse(

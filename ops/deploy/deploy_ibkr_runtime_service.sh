@@ -27,6 +27,7 @@ DEPLOY_PUBLIC=1
 DEPLOY_HOOKS=1
 DEPLOY_MIGRATIONS=0
 DEPLOY_GATEWAY_SERVICE=0
+DEPLOY_RESTART_GATEWAY=0
 DEPLOY_IGNORE_UNMANAGED="${DEPLOY_IGNORE_UNMANAGED:-0}"
 
 source "$LIB_ROOT/common.sh"
@@ -52,8 +53,8 @@ Options:
   --package-name <n>    Override generated package name for package mode
   --skip-requirements   Skip remote pip install -r requirements.txt
   --skip-systemd        Skip systemd unit sync
-  --gateway-service     Opt in to syncing/restarting ibkr-display and ibkr-gateway units
-  --restart-gateway     Alias for --gateway-service
+  --gateway-service     Opt in to syncing ibkr-display and ibkr-gateway unit files without restarting them
+  --restart-gateway     Explicitly sync and restart ibkr-display / ibkr-gateway
   --dry-run             Show rsync changes without mutating the remote host
   --skip-checks         Skip remote python syntax validation
   --no-restart          Skip service restart
@@ -99,6 +100,9 @@ while [[ $# -gt 0 ]]; do
       ;;
     --gateway-service|--restart-gateway)
       DEPLOY_GATEWAY_SERVICE=1
+      if [[ "$1" == "--restart-gateway" ]]; then
+        DEPLOY_RESTART_GATEWAY=1
+      fi
       shift
       ;;
     --dry-run)

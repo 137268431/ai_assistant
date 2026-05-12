@@ -34,7 +34,13 @@ def _truthy_target_value(value) -> bool:
 def _target_row_is_daily_scan_active(row: dict | None) -> bool:
     extra = parse_json_object((row or {}).get("extra"))
     source = str(extra.get("source") or "").strip().lower()
-    return source == "daily_scan" and _truthy_target_value(extra.get("active_gate_passed"))
+    if source not in {"daily_scan", "intraday_window_admission"}:
+        return False
+    return (
+        _truthy_target_value(extra.get("active_gate_passed"))
+        or _truthy_target_value(extra.get("context_active"))
+        or _truthy_target_value(extra.get("context_gate_passed"))
+    )
 
 
 def _effective_target_status(row: dict | None) -> str:

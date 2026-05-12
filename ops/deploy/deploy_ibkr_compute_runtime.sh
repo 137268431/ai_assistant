@@ -12,6 +12,7 @@ OPS_REMOTE_ROOT="$IBKR_REMOTE_ROOT/ops"
 
 DEPLOY_OPS_TOOLS=0
 DEPLOY_GATEWAY_SERVICE=0
+DEPLOY_RESTART_GATEWAY=0
 DRY_RUN=0
 SKIP_CHECKS=0
 SKIP_REQUIREMENTS=0
@@ -58,8 +59,8 @@ Options:
   --plan-only           Print the resolved deployment plan and exit
   --package-name <n>    Override generated package name for package mode
   --ops-tools           Deprecated legacy flag, no longer deploys Client Portal tools
-  --gateway-service     Opt in to syncing/restarting ibkr-display and ibkr-gateway units
-  --restart-gateway     Alias for --gateway-service
+  --gateway-service     Opt in to syncing ibkr-display and ibkr-gateway unit files without restarting them
+  --restart-gateway     Explicitly sync and restart ibkr-display / ibkr-gateway
   --skip-requirements   Skip remote pip install -r requirements.txt
   --skip-systemd        Skip systemd unit sync
   --dry-run             Show rsync changes without mutating the remote host
@@ -108,6 +109,9 @@ while [[ $# -gt 0 ]]; do
       ;;
     --gateway-service|--restart-gateway)
       DEPLOY_GATEWAY_SERVICE=1
+      if [[ "$1" == "--restart-gateway" ]]; then
+        DEPLOY_RESTART_GATEWAY=1
+      fi
       shift
       ;;
     --skip-requirements)

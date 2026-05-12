@@ -23,6 +23,7 @@ MANUAL_TARGET_SOURCES = {
     "manual_page_remove",
     "screener_targets_tab",
 }
+CONTEXT_ACTIVE_TARGET_SOURCES = {"daily_scan", "intraday_window_admission"}
 DAILY_SCAN_RUNNING_STALE_SECONDS = 10 * 60
 DAILY_SCAN_FINAL_STATUSES = {"completed", "failed", "cancelled"}
 
@@ -61,7 +62,13 @@ def _truthy(value) -> bool:
 def _target_row_is_daily_scan_active(row: dict | None) -> bool:
     extra = _safe_extra(row)
     source = str(extra.get("source") or "").strip().lower()
-    return source == "daily_scan" and _truthy(extra.get("active_gate_passed"))
+    if source not in CONTEXT_ACTIVE_TARGET_SOURCES:
+        return False
+    return (
+        _truthy(extra.get("active_gate_passed"))
+        or _truthy(extra.get("context_active"))
+        or _truthy(extra.get("context_gate_passed"))
+    )
 
 
 def _safe_int(value, default: int = 0) -> int:

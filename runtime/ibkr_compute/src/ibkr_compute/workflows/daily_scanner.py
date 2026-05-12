@@ -4,9 +4,9 @@
 当前实现改为 09:20 ET 的日内波动型初筛：
   1. 读取 trade watchlist
   2. 复用 screener 聚合得到量能 / 波动指标
-  3. 保留 multi-TF 技术投票方向
+  3. 使用 1d/4h 定势、1h/30m 看结构、15m/5m 看触发
   4. 叠加 avg_10d_volume / premarket_volume / atr_pct / day_change_pct 的质量门
-  5. 只有达到当日 active 门槛的写成 active，其余通过基础判断的写成 candidate
+  5. 只有形成 multi-timeframe context 的标的写成 active，预算溢出才保留 candidate 兼容
 """
 
 from __future__ import annotations

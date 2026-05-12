@@ -6,6 +6,7 @@
 """
 
 from collections import deque
+import json
 
 from .indicators.ema_trend_matrix import EmaTrendMatrix
 from .indicators.fractal_pivot import FractalPivot
@@ -84,13 +85,67 @@ def indicator_ready_bar_count(params: dict | None = None) -> int:
     )
 
 
+def _normalize_param_interval(value: str) -> str:
+    text = str(value or "").strip().lower()
+    return {
+        "5": "5m",
+        "5m": "5m",
+        "15": "15m",
+        "15m": "15m",
+        "30": "30m",
+        "30m": "30m",
+        "60": "1h",
+        "1h": "1h",
+        "240": "4h",
+        "4h": "4h",
+        "d": "1d",
+        "1d": "1d",
+    }.get(text, text or "5m")
+
+
+def _parse_timeframe_param_profiles(raw) -> dict[str, dict]:
+    if isinstance(raw, dict):
+        parsed = raw
+    elif isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return {}
+    else:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    profiles: dict[str, dict] = {}
+    for interval, profile in parsed.items():
+        if not isinstance(profile, dict):
+            continue
+        profile_params = profile.get("params") if isinstance(profile.get("params"), dict) else profile
+        profiles[_normalize_param_interval(interval)] = dict(profile_params)
+    return profiles
+
+
+def params_for_interval(params: dict | None, interval: str) -> dict:
+    effective = dict(params or {})
+    normalized_interval = _normalize_param_interval(interval)
+    if str(effective.get("_timeframe_profile_applied_interval") or "") == normalized_interval:
+        return effective
+    profile = _parse_timeframe_param_profiles(effective.get("ibkr_timeframe_param_profiles_json")).get(
+        normalized_interval,
+        {},
+    )
+    if profile:
+        effective.update(profile)
+    effective["_timeframe_profile_applied_interval"] = normalized_interval
+    return effective
+
+
 class IndicatorEngine:
     MAX_HISTORY = 300
 
     def __init__(self, symbol: str, interval: str, params: dict = None):
         self.symbol = symbol
         self.interval = interval
-        self.params = {**DEFAULT_PARAMS, **(params or {})}
+        self.params = {**DEFAULT_PARAMS, **params_for_interval(params, interval)}
 
         self.bars = deque(maxlen=self.MAX_HISTORY)
         self.bar_count = 0

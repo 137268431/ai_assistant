@@ -87,7 +87,9 @@ list_selected_units_for_target() {
       return 0
       ;;
     all)
-      list_selected_units_for_target pocketbase
+      if [[ "${DEPLOY_POCKETBASE:-0}" -eq 1 ]]; then
+        list_selected_units_for_target pocketbase
+      fi
       list_selected_units_for_target ibkr_console
       list_selected_units_for_target ibkr_compute
       list_selected_units_for_target ibkr_backtest

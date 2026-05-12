@@ -240,13 +240,25 @@ class Config:
         "pb_cron_ibkr_fundamentals_refresh_enabled": "true",
         "ibkr_daily_scan_data_completeness_enabled": "true",
         "ibkr_daily_scan_data_completeness_blocking_enabled": "true",
-        "ibkr_daily_scan_data_completeness_intervals": "5m",
+        "ibkr_daily_scan_data_completeness_intervals": "5m,15m,30m,1h,4h,1d",
+        "ibkr_daily_scan_data_completeness_blocking_intervals": "5m",
         "ibkr_daily_scan_runtime_topup_wait_sec": "20",
         "ibkr_daily_scan_runtime_topup_poll_sec": "2",
         "ibkr_daily_scan_indicator_snapshot_enabled": "true",
-        "ibkr_daily_scan_indicator_snapshot_intervals": "5m",
-        "ibkr_daily_scan_materialize_enabled": "false",
-        "ibkr_daily_scan_materialize_intervals": "5m",
+        "ibkr_daily_scan_indicator_snapshot_intervals": "5m,15m,30m,1h,4h,1d",
+        "ibkr_daily_scan_rollup_enabled": "true",
+        "ibkr_daily_scan_rollup_incremental": "true",
+        "ibkr_daily_scan_rollup_intervals": "15m,30m,1h,4h,1d",
+        "ibkr_daily_scan_materialize_enabled": "true",
+        "ibkr_daily_scan_materialize_intervals": "5m,15m,30m,1h",
+        "ibkr_timeframe_param_profiles_json": (
+            '{"5m":{"signal_strategy_profile":"intraday_sd_v1"},'
+            '"15m":{"sd_length":96,"dtp_sma_length":80,"dtp_atr_length":160,"crsi_domcycle":24,"signal_window_max_bars":8},'
+            '"30m":{"sd_length":80,"dtp_sma_length":70,"dtp_atr_length":140,"ema_slope_lookback":10},'
+            '"1h":{"sd_length":80,"dtp_sma_length":60,"dtp_atr_length":120,"ema_slope_lookback":8},'
+            '"4h":{"sd_length":60,"dtp_sma_length":50,"dtp_atr_length":100,"ema_slope_lookback":6},'
+            '"1d":{"sd_length":50,"dtp_sma_length":40,"dtp_atr_length":80,"ema_slope_lookback":5}}'
+        ),
         "ibkr_daily_scan_auto_retry_enabled": "true",
         "ibkr_daily_scan_retry_delays_sec": "60,120,240",
         "ibkr_daily_scan_retry_stall_timeout_sec": "480",

@@ -15,6 +15,7 @@ from copy import deepcopy
 from datetime import datetime
 
 from .exit_policy import apply_exit_policy_to_position
+from .indicator_engine import params_for_interval
 from .position_sizing import calc_long_position, calc_marketable_limit_position, calc_short_position
 from .time_utils import ET
 
@@ -85,7 +86,7 @@ class SignalGenerator:
         self.last_trace = self._empty_trace()
 
     def set_params(self, params: dict = None) -> None:
-        self.params = params or {}
+        self.params = params_for_interval(params or {}, self.interval)
         raw_market_monitor_symbols = (
             self.params.get("market_monitor_symbols")
             or DEFAULT_MARKET_MONITOR_SYMBOLS

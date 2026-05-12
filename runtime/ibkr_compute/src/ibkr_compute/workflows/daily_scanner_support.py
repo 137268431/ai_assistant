@@ -15,6 +15,8 @@ from .daily_scanner_constants import (
     MANUAL_TARGET_SOURCES,
 )
 
+CONTEXT_ACTIVE_TARGET_SOURCES = {"daily_scan", "intraday_window_admission"}
+
 def _daily_scan_rule_matches(snapshot: dict, rule: tuple[str, object, str]) -> bool:
     key, expected, _ = rule
     value = snapshot.get(key)
@@ -75,7 +77,13 @@ def _truthy(value: Any) -> bool:
 def _target_row_is_daily_scan_active(row: dict | None) -> bool:
     extra = _safe_extra(row)
     source = str(extra.get("source") or "").strip().lower()
-    return source == "daily_scan" and _truthy(extra.get("active_gate_passed"))
+    if source not in CONTEXT_ACTIVE_TARGET_SOURCES:
+        return False
+    return (
+        _truthy(extra.get("active_gate_passed"))
+        or _truthy(extra.get("context_active"))
+        or _truthy(extra.get("context_gate_passed"))
+    )
 
 
 def _normalize_scan_mode(value: Any) -> str:

@@ -23,6 +23,34 @@ class FakeEngine:
         return dict(self._snapshot)
 
 
+def context_engines(symbol: str, *, environment: str = "live", side: str = "long", hot: bool = False) -> dict:
+    bullish = side == "long"
+    snapshot = (
+        {"ema_bullish": True, "trend_dir": 1}
+        if bullish
+        else {"ema_bearish": True, "trend_dir": -1}
+    )
+    trigger = dict(snapshot)
+    if bullish:
+        trigger["orb_breakout_up"] = True
+        trigger["vwap_alignment"] = "above"
+        if hot:
+            trigger["rvol_20"] = 3.2
+    else:
+        trigger["orb_breakout_down"] = True
+        trigger["vwap_alignment"] = "below"
+        if hot:
+            trigger["rvol_20"] = 3.2
+    return {
+        (environment, symbol, "1d"): FakeEngine(snapshot),
+        (environment, symbol, "4h"): FakeEngine(snapshot),
+        (environment, symbol, "1h"): FakeEngine(snapshot),
+        (environment, symbol, "30m"): FakeEngine(snapshot),
+        (environment, symbol, "15m"): FakeEngine(trigger),
+        (environment, symbol, "5m"): FakeEngine(trigger),
+    }
+
+
 class DummyPBClient:
     def __init__(self, watchlist: list[dict], existing_targets: list[dict] | None = None):
         self.watchlist = list(watchlist)
@@ -84,8 +112,8 @@ class DailyScanRejectionSummaryTest(unittest.TestCase):
         engines = {
             ("live", "MSFT", "5m"): FakeEngine({"ema_bullish": True, "ema_bearish": True}),
             ("live", "TSLA", "5m"): FakeEngine({"ema_bullish": True}),
-            ("live", "NVDA", "5m"): FakeEngine({"ema_bullish": True}),
         }
+        engines.update(context_engines("NVDA"))
         scanner = DailyScanner(pb_client=pb_client, engines=engines)
         scanner._build_metric_rows = lambda date, environment, symbols: {
             "TSLA": {
@@ -173,10 +201,8 @@ class DailyScanRejectionSummaryTest(unittest.TestCase):
             }
         ]
         pb_client = DummyPBClient(watchlist=watchlist, existing_targets=existing_targets)
-        engines = {
-            ("live", "AAPL", "5m"): FakeEngine({"ema_bullish": True}),
-            ("live", "NVDA", "5m"): FakeEngine({"ema_bullish": True}),
-        }
+        engines = {("live", "AAPL", "5m"): FakeEngine({"ema_bullish": True})}
+        engines.update(context_engines("NVDA"))
         scanner = DailyScanner(pb_client=pb_client, engines=engines)
         scanner._build_metric_rows = lambda date, environment, symbols: {
             symbol: {
@@ -222,10 +248,8 @@ class DailyScanRejectionSummaryTest(unittest.TestCase):
             }
         ]
         pb_client = DummyPBClient(watchlist=watchlist, existing_targets=existing_targets)
-        engines = {
-            ("live", "AAPL", "5m"): FakeEngine({"ema_bullish": True}),
-            ("live", "NVDA", "5m"): FakeEngine({"ema_bullish": True}),
-        }
+        engines = {("live", "AAPL", "5m"): FakeEngine({"ema_bullish": True})}
+        engines.update(context_engines("NVDA"))
         scanner = DailyScanner(pb_client=pb_client, engines=engines)
         scanner._build_metric_rows = lambda date, environment, symbols: {
             symbol: {
@@ -245,8 +269,39 @@ class DailyScanRejectionSummaryTest(unittest.TestCase):
         self.assertEqual(result["new_candidates"], 0)
         self.assertEqual(result["rejection_summary"]["topup_active_budget_full"], 1)
 
-    def test_topup_skips_symbol_below_active_score(self):
+    def test_topup_adds_context_active_even_below_active_score(self):
         self.settings["active_min_score"] = 35
+        daily_scanner_mod._load_scan_settings.return_value = dict(self.settings)
+        watchlist = [
+            {"symbol": "AAPL", "environment": "live", "symbol_role": "trade", "exchange": "SMART"},
+        ]
+        pb_client = DummyPBClient(watchlist=watchlist)
+        engines = context_engines("AAPL")
+        scanner = DailyScanner(pb_client=pb_client, engines=engines)
+        scanner._build_metric_rows = lambda date, environment, symbols: {
+            symbol: {
+                "avg_10d_volume": 3500000,
+                "premarket_volume": 25000,
+                "atr_pct": 0.8,
+                "day_change_pct": 2.5,
+                "exchange": "SMART",
+            }
+            for symbol in symbols
+        }
+
+        result = scanner.run_scan("2026-04-21", environments=["live"], mode="topup")
+
+        self.assertEqual(pb_client.upserts[0]["status"], "active")
+        self.assertTrue(pb_client.upserts[0]["extra"]["context_active"])
+        self.assertTrue(pb_client.upserts[0]["extra"]["context_gate_passed"])
+        self.assertEqual(pb_client.upserts[0]["extra"]["setup_family"], "trend_follow")
+        self.assertEqual(pb_client.upserts[0]["extra"]["allowed_sides"], ["long"])
+        self.assertGreater(pb_client.upserts[0]["extra"]["context_score"], 0)
+        self.assertEqual(result["new_active"], 1)
+        self.assertEqual(result["new_candidates"], 0)
+
+    def test_topup_skips_symbol_without_context_gate(self):
+        self.settings["active_min_score"] = 0
         daily_scanner_mod._load_scan_settings.return_value = dict(self.settings)
         watchlist = [
             {"symbol": "AAPL", "environment": "live", "symbol_role": "trade", "exchange": "SMART"},
@@ -272,9 +327,9 @@ class DailyScanRejectionSummaryTest(unittest.TestCase):
         self.assertEqual(pb_client.upserts, [])
         self.assertEqual(result["new_active"], 0)
         self.assertEqual(result["new_candidates"], 0)
-        self.assertEqual(result["rejection_summary"]["topup_active_score_below_threshold"], 1)
+        self.assertEqual(result["rejection_summary"]["topup_context_gate_not_passed"], 1)
 
-    def test_seed_writes_candidate_when_symbol_passes_quality_but_not_active_score(self):
+    def test_seed_skips_symbol_when_quality_passes_but_context_gate_fails(self):
         self.settings["active_target_limit"] = 2
         self.settings["active_min_score"] = 35
         daily_scanner_mod._load_scan_settings.return_value = dict(self.settings)
@@ -285,17 +340,8 @@ class DailyScanRejectionSummaryTest(unittest.TestCase):
         pb_client = DummyPBClient(watchlist=watchlist)
         engines = {
             ("live", "AAPL", "5m"): FakeEngine({"ema_bullish": True}),
-            ("live", "NVDA", "5m"): FakeEngine(
-                {
-                    "ema_bullish": True,
-                    "sd_regime": "breakout_up",
-                    "orb_breakout_up": True,
-                    "vwap_alignment": "above",
-                    "rvol_20": 5.0,
-                    "dollar_volume": 60_000_000,
-                }
-            ),
         }
+        engines.update(context_engines("NVDA", hot=True))
         scanner = DailyScanner(pb_client=pb_client, engines=engines)
         scanner._build_metric_rows = lambda date, environment, symbols: {
             symbol: {
@@ -312,11 +358,13 @@ class DailyScanRejectionSummaryTest(unittest.TestCase):
 
         statuses = {row["symbol"]: row["status"] for row in pb_client.upserts}
         self.assertEqual(statuses["NVDA"], "active")
-        self.assertEqual(statuses["AAPL"], "candidate")
         self.assertEqual(result["new_active"], 1)
-        self.assertEqual(result["new_candidates"], 1)
-        self.assertFalse(
-            next(row for row in pb_client.upserts if row["symbol"] == "AAPL")["extra"]["active_gate_passed"]
+        self.assertEqual(result["new_candidates"], 0)
+        self.assertNotIn("AAPL", statuses)
+        self.assertEqual(result["rejection_summary"]["context_gate_not_passed"], 1)
+        self.assertEqual(
+            next(row for row in pb_client.upserts if row["symbol"] == "NVDA")["extra"]["setup_family"],
+            "hot_momentum",
         )
 
     def test_evaluate_symbol_adds_stocks_in_play_bonus_fields(self):
@@ -432,6 +480,37 @@ class DailyScanRejectionSummaryTest(unittest.TestCase):
         self.assertEqual(result["strategy_policy"]["selection_trigger"], "day_gain")
         self.assertEqual(result["strategy_policy"]["allowed_sides"], ["long", "short"])
         self.assertEqual(result["strategy_policy"]["entry_style"], "wait_for_pullback_or_exhaustion")
+
+    def test_long_cycle_up_can_context_activate_exhaustion_short(self):
+        pb_client = DummyPBClient(watchlist=[])
+        scanner = DailyScanner(pb_client=pb_client, engines={})
+
+        result = scanner.evaluate_symbol(
+            "APP",
+            "2026-04-21",
+            "live",
+            metrics={
+                "avg_10d_volume": 3500000,
+                "premarket_volume": 25000,
+                "atr_pct": 0.8,
+                "day_change_pct": 4.8,
+                "exchange": "NASDAQ",
+            },
+            settings=dict(self.settings),
+            stored_snapshots={
+                "1d": {"ema_bullish": True, "trend_dir": 1},
+                "4h": {"ema_bullish": True, "trend_dir": 1},
+                "1h": {"sd_upper": True, "crsi_ob": True},
+                "30m": {"sd_upper": True, "fractal_bear": True},
+                "15m": {"sd_upper": True, "crsi_ob": True, "orb_breakout_down": True},
+                "5m": {"sd_upper": True, "fractal_bear": True, "vwap_alignment": "below"},
+            },
+        )
+
+        self.assertTrue(result["quality_gate_passed"])
+        self.assertTrue(result["context_gate_passed"])
+        self.assertEqual(result["setup_family"], "exhaustion_reversal")
+        self.assertEqual(result["allowed_sides"], ["short"])
 
 
 if __name__ == "__main__":

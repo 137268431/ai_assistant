@@ -15,6 +15,9 @@ REMOTE_HOST=""
 WITH_MIGRATIONS=0
 WITH_OPS_TOOLS=0
 WITH_GATEWAY_SERVICE=0
+WITH_POCKETBASE=0
+WITH_POCKETBASE_RESTART=0
+WITH_ALLOW_LIVE_MIGRATIONS=0
 DRY_RUN=0
 SKIP_CHECKS=0
 NO_RESTART=0
@@ -29,6 +32,8 @@ DEPLOY_HOOKS=1
 DEPLOY_MIGRATIONS=0
 DEPLOY_OPS_TOOLS=0
 DEPLOY_GATEWAY_SERVICE=0
+DEPLOY_RESTART_GATEWAY=0
+DEPLOY_POCKETBASE=0
 SKIP_SYSTEMD=0
 SKIP_REQUIREMENTS=0
 PB_REMOTE_ROOT="${PB_REMOTE_ROOT:-${IBKR_DEPLOY_PB_ROOT:-/opt/pocketbase}}"
@@ -60,8 +65,8 @@ Usage: deploy_runtime_all.sh [options]
 Compatibility name: this is the split IBKR stack deploy orchestrator. Prefer
 deploy_ibkr_stack.sh for new usage. Without --file/--diff, the default scope
 deploy can publish/restart compute, backtest, api, scheduler, runtime,
-PocketBase runtime, console, and public proxy. Gateway units are opt-in to
-avoid forcing IBKR 2FA.
+console, and public proxy. PocketBase and Gateway units are protected opt-ins
+to avoid unnecessary datastore restarts and IBKR 2FA disruption.
 
 Options:
   --host <host>       Override SSH target
@@ -70,10 +75,15 @@ Options:
   --diff <range>      Git diff range, for example HEAD~1..HEAD
   --plan-only         Print the resolved deployment plan and exit
   --package-name <n>  Override generated package name for package mode
-  --migrations        Deploy PocketBase extension migrations
+  --migrations        Deploy PocketBase extension migrations; implies --pocketbase
+  --allow-live-migrations
+                      Allow PocketBase migrations without stopping/restarting PocketBase
+  --pocketbase        Opt in to PocketBase runtime deploy
+  --restart-pocketbase
+                      Opt in to PocketBase runtime deploy and explicit PocketBase restart
   --ops-tools         Deprecated legacy flag, kept only for CLI compatibility
-  --gateway-service   Opt in to syncing/restarting ibkr-display and ibkr-gateway units
-  --restart-gateway   Alias for --gateway-service
+  --gateway-service   Opt in to syncing ibkr-display and ibkr-gateway unit files without restarting them
+  --restart-gateway   Explicitly sync and restart ibkr-display / ibkr-gateway
   --dry-run           Show rsync changes without mutating the remote host
   --skip-checks       Skip remote syntax validation
   --no-restart        Skip service restarts
@@ -86,10 +96,10 @@ Main deploy ownership:
   ibkr-api         runtime/ibkr_api/src + ibkr-api.service
   ibkr-scheduler   runtime/ibkr_scheduler/src + ibkr-scheduler.service
   ibkr-runtime     runtime/ibkr_runtime/src + ibkr-runtime.service
-  ibkr-gateway     runtime/ib_gateway/systemd/ibkr-gateway.service
-  ibkr-display     runtime/ib_gateway/systemd/ibkr-display.service
+  ibkr-gateway     runtime/ib_gateway/systemd/ibkr-gateway.service (opt-in)
+  ibkr-display     runtime/ib_gateway/systemd/ibkr-display.service (opt-in)
   ibkr-console     runtime/ibkr_console/static + ibkr-console.service
-  pocketbase       runtime/pocketbase/pb_public/pb_hooks + pocketbase.service
+  pocketbase       runtime/pocketbase/pb_public/pb_hooks + pocketbase.service (opt-in)
   public proxy     Caddy config for quant.lzw-glory.top / pb.lzw-glory.top
 
 Tip: always use --plan-only first when unsure; it prints exact files and
@@ -133,6 +143,23 @@ while [[ $# -gt 0 ]]; do
     --migrations)
       WITH_MIGRATIONS=1
       DEPLOY_MIGRATIONS=1
+      WITH_POCKETBASE=1
+      DEPLOY_POCKETBASE=1
+      shift
+      ;;
+    --allow-live-migrations)
+      WITH_ALLOW_LIVE_MIGRATIONS=1
+      shift
+      ;;
+    --pocketbase)
+      WITH_POCKETBASE=1
+      DEPLOY_POCKETBASE=1
+      shift
+      ;;
+    --restart-pocketbase)
+      WITH_POCKETBASE=1
+      WITH_POCKETBASE_RESTART=1
+      DEPLOY_POCKETBASE=1
       shift
       ;;
     --ops-tools)
@@ -143,6 +170,9 @@ while [[ $# -gt 0 ]]; do
     --gateway-service|--restart-gateway)
       WITH_GATEWAY_SERVICE=1
       DEPLOY_GATEWAY_SERVICE=1
+      if [[ "$1" == "--restart-gateway" ]]; then
+        DEPLOY_RESTART_GATEWAY=1
+      fi
       shift
       ;;
     --dry-run)
@@ -188,8 +218,11 @@ declare -a proxy_args=()
 
 [[ -n "$REMOTE_HOST" ]] && pb_args+=(--host "$REMOTE_HOST") && compute_args+=(--host "$REMOTE_HOST") && backtest_args+=(--host "$REMOTE_HOST") && runtime_args+=(--host "$REMOTE_HOST") && console_args+=(--host "$REMOTE_HOST")
 [[ "$WITH_MIGRATIONS" -eq 1 ]] && pb_args+=(--migrations)
+[[ "$WITH_ALLOW_LIVE_MIGRATIONS" -eq 1 ]] && pb_args+=(--allow-live-migrations)
+[[ "$WITH_POCKETBASE_RESTART" -eq 1 && "$NO_RESTART" -eq 0 ]] && pb_args+=(--restart-pocketbase)
 [[ "$WITH_OPS_TOOLS" -eq 1 ]] && compute_args+=(--ops-tools)
 [[ "$WITH_GATEWAY_SERVICE" -eq 1 ]] && runtime_args+=(--gateway-service)
+[[ "$DEPLOY_RESTART_GATEWAY" -eq 1 ]] && runtime_args+=(--restart-gateway)
 [[ -n "$REMOTE_HOST" ]] && proxy_args+=(--host "$REMOTE_HOST")
 [[ "$DRY_RUN" -eq 1 ]] && pb_args+=(--dry-run) && compute_args+=(--dry-run) && backtest_args+=(--dry-run) && runtime_args+=(--dry-run) && console_args+=(--dry-run) && proxy_args+=(--dry-run)
 [[ "$SKIP_CHECKS" -eq 1 ]] && pb_args+=(--skip-checks) && compute_args+=(--skip-checks) && backtest_args+=(--skip-checks) && runtime_args+=(--skip-checks) && console_args+=(--skip-checks) && proxy_args+=(--skip-checks)
@@ -422,7 +455,11 @@ done
 if [[ "$REQUESTED_MODE" == "scope" && "$HAS_CHANGE_SOURCE" -eq 0 ]]; then
   run_compute
   run_runtime
-  run_pb
+  if [[ "$WITH_POCKETBASE" -eq 1 ]]; then
+    run_pb
+  else
+    deploy_log "Skipping PocketBase deploy by default. Use --pocketbase only for explicit PocketBase changes."
+  fi
   run_backtest
   run_console
   run_public_proxy
@@ -437,6 +474,9 @@ if array_contains "ibkr_runtime" "${families[@]}"; then
   DEPLOY_IGNORE_UNMANAGED=1 run_runtime
 fi
 if array_contains "pocketbase" "${families[@]}"; then
+  if [[ "$WITH_POCKETBASE" -ne 1 ]]; then
+    deploy_die "PocketBase changes detected but PocketBase deploy is protected. Re-run with --pocketbase after confirming PocketBase maintenance is acceptable."
+  fi
   DEPLOY_IGNORE_UNMANAGED=1 run_pb
 fi
 if array_contains "ibkr_backtest" "${families[@]}"; then

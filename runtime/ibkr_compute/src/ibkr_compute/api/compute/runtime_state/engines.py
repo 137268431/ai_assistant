@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 
 from ibkr_compute.api.compute.runtime_state.runtime import _api_app
-from ibkr_compute.api.compute.runtime_state.universe import get_signal_generator_params
+from ibkr_compute.api.compute.runtime_state.universe import (
+    get_signal_generator_params,
+    signal_generator_params_for_interval,
+)
 from ibkr_compute.core.indicator_engine import IndicatorEngine
 from ibkr_compute.core.signal_generator import SignalGenerator
 from ibkr_compute.market.timeframe_utils import normalize_interval
@@ -88,7 +91,8 @@ def get_or_create_engine(
     normalized_interval = normalize_interval(interval)
     key = (runtime_environment, normalized_symbol, normalized_interval)
     signal_params = signal_params or get_signal_generator_params(runtime_environment)
-    effective_signal_params = _signal_params_for_symbol(signal_params, normalized_symbol)
+    interval_signal_params = signal_generator_params_for_interval(signal_params, normalized_interval)
+    effective_signal_params = _signal_params_for_symbol(interval_signal_params, normalized_symbol)
     with api_app.compute_lock:
         if key not in api_app.engines:
             api_app.engines[key] = IndicatorEngine(normalized_symbol, normalized_interval, params=effective_signal_params)

@@ -5,7 +5,7 @@ import traceback
 
 from ibkr_compute.api.compute.runtime_state.runtime import _api_app
 from ibkr_compute.api.market.screener import load_effective_watchlist
-from ibkr_compute.core.indicator_engine import DEFAULT_PARAMS
+from ibkr_compute.core.indicator_engine import DEFAULT_PARAMS, params_for_interval
 
 
 MANUAL_TARGET_SOURCES = {
@@ -16,6 +16,7 @@ MANUAL_TARGET_SOURCES = {
     "manual_page_remove",
     "screener_targets_tab",
 }
+CONTEXT_ACTIVE_TARGET_SOURCES = {"daily_scan", "intraday_window_admission"}
 
 
 def _safe_extra(row: dict | None) -> dict:
@@ -52,7 +53,13 @@ def _truthy(value) -> bool:
 def _target_row_is_daily_scan_active(row: dict | None) -> bool:
     extra = _safe_extra(row)
     source = str(extra.get("source") or "").strip().lower()
-    return source == "daily_scan" and _truthy(extra.get("active_gate_passed"))
+    if source not in CONTEXT_ACTIVE_TARGET_SOURCES:
+        return False
+    return (
+        _truthy(extra.get("active_gate_passed"))
+        or _truthy(extra.get("context_active"))
+        or _truthy(extra.get("context_gate_passed"))
+    )
 
 
 def _get_trade_subscription_budget(api_app, environment: str) -> int | None:
@@ -202,7 +209,19 @@ def get_signal_generator_params(environment: str) -> dict:
             getter = getattr(api_app.cfg, "get_for_environment", None)
             value = getter(key, runtime_environment, str(default)) if getter else default
         params[key] = value
+    profiles_getter = getattr(api_app.cfg, "get_for_environment", None)
+    profiles_json = (
+        profiles_getter("ibkr_timeframe_param_profiles_json", runtime_environment, "")
+        if profiles_getter
+        else ""
+    )
+    if profiles_json:
+        params["ibkr_timeframe_param_profiles_json"] = profiles_json
     return params
+
+
+def signal_generator_params_for_interval(signal_params: dict | None, interval: str) -> dict:
+    return params_for_interval(signal_params, interval)
 
 
 __all__ = [
@@ -210,4 +229,5 @@ __all__ = [
     "get_active_trade_symbols",
     "get_market_monitor_symbols",
     "get_signal_generator_params",
+    "signal_generator_params_for_interval",
 ]

@@ -74,16 +74,32 @@ class _FakeCfgWithSqliteRead:
 
 
 class _FakeEngine:
+    def __init__(self, snapshot=None):
+        self.snapshot = dict(snapshot or {"ema_bullish": True})
+
     def is_ready(self):
         return True
 
     def get_snapshot(self):
-        return {"ema_bullish": True}
+        return dict(self.snapshot)
+
+
+def _context_engines(*symbols, environment="live"):
+    engines = {}
+    regime = {"ema_bullish": True, "trend_dir": 1}
+    trigger = {"ema_bullish": True, "trend_dir": 1, "orb_breakout_up": True, "vwap_alignment": "above"}
+    for symbol in symbols:
+        for interval in ("1d", "4h", "1h", "30m"):
+            engines[(environment, symbol, interval)] = _FakeEngine(regime)
+        for interval in ("15m", "5m"):
+            engines[(environment, symbol, interval)] = _FakeEngine(trigger)
+    return engines
 
 
 class _FakeCfg:
     def __init__(self, *, blocking=False):
         self.blocking = blocking
+        self.blocking_intervals = "5m"
 
     def get_bool_for_environment(self, key, environment, default=False):
         if key == "ibkr_daily_scan_data_completeness_blocking_enabled":
@@ -101,6 +117,8 @@ class _FakeCfg:
     def get_for_environment(self, key, environment, default=None):
         if key == "ibkr_daily_scan_data_completeness_intervals":
             return "5m,15m"
+        if key == "ibkr_daily_scan_data_completeness_blocking_intervals":
+            return self.blocking_intervals
         return default
 
 
@@ -200,10 +218,7 @@ class BarFreshnessAndScanRepairTest(unittest.TestCase):
                 {"symbol": "NVDA", "environment": "live", "symbol_role": "trade"},
             ]
         )
-        engines = {
-            ("live", "AAPL", "5m"): _FakeEngine(),
-            ("live", "NVDA", "5m"): _FakeEngine(),
-        }
+        engines = _context_engines("AAPL", "NVDA")
         with mock.patch.object(daily_scanner_mod, "get_api_app", return_value=api_app):
             scanner = DailyScanner(pb_client=pb, engines=engines)
         scanner.api_app = api_app
@@ -238,7 +253,7 @@ class BarFreshnessAndScanRepairTest(unittest.TestCase):
         self.assertNotIn(REJECTION_BUCKET_DATA_INCOMPLETE, result["rejection_summary"])
         self.assertEqual(repair.calls, [("NVDA", "daily_scan", "daily_scan_data_completeness")])
 
-    def test_daily_scan_can_exclude_incomplete_symbol_when_blocking_enabled(self):
+    def test_daily_scan_warns_but_does_not_exclude_soft_incomplete_symbol_when_blocking_enabled(self):
         repair = _FakeRepair()
         api_app = SimpleNamespace(
             cfg=_FakeCfg(blocking=True),
@@ -251,10 +266,7 @@ class BarFreshnessAndScanRepairTest(unittest.TestCase):
                 {"symbol": "NVDA", "environment": "live", "symbol_role": "trade"},
             ]
         )
-        engines = {
-            ("live", "AAPL", "5m"): _FakeEngine(),
-            ("live", "NVDA", "5m"): _FakeEngine(),
-        }
+        engines = _context_engines("AAPL", "NVDA")
         with mock.patch.object(daily_scanner_mod, "get_api_app", return_value=api_app):
             scanner = DailyScanner(pb_client=pb, engines=engines)
         scanner.api_app = api_app
@@ -281,10 +293,11 @@ class BarFreshnessAndScanRepairTest(unittest.TestCase):
         }):
             result = scanner.run_scan("2026-04-29", environments=["live"])
 
-        self.assertEqual([row["symbol"] for row in pb.upserts], ["AAPL"])
-        self.assertEqual(result["excluded_incomplete_count"], 1)
+        self.assertEqual([row["symbol"] for row in pb.upserts], ["AAPL", "NVDA"])
+        self.assertEqual(result["excluded_incomplete_count"], 0)
         self.assertTrue(result["data_completeness"]["blocking_enabled"])
-        self.assertEqual(result["rejection_summary"][REJECTION_BUCKET_DATA_INCOMPLETE], 1)
+        self.assertEqual(result["data_completeness"]["soft_incomplete_count"], 1)
+        self.assertNotIn(REJECTION_BUCKET_DATA_INCOMPLETE, result["rejection_summary"])
         self.assertEqual(repair.calls, [("NVDA", "daily_scan", "daily_scan_data_completeness")])
 
     def test_daily_scan_remote_compute_waits_for_runtime_watchlist_topup_without_enqueueing_repair(self):
@@ -299,10 +312,7 @@ class BarFreshnessAndScanRepairTest(unittest.TestCase):
                 {"symbol": "NVDA", "environment": "live", "symbol_role": "trade"},
             ]
         )
-        engines = {
-            ("live", "AAPL", "5m"): _FakeEngine(),
-            ("live", "NVDA", "5m"): _FakeEngine(),
-        }
+        engines = _context_engines("AAPL", "NVDA")
         with mock.patch.object(daily_scanner_mod, "get_api_app", return_value=api_app):
             scanner = DailyScanner(pb_client=pb, engines=engines)
         scanner.api_app = api_app
@@ -329,13 +339,12 @@ class BarFreshnessAndScanRepairTest(unittest.TestCase):
         }):
             result = scanner.run_scan("2026-04-29", environments=["live"])
 
-        self.assertEqual([row["symbol"] for row in pb.upserts], ["AAPL"])
-        self.assertEqual(result["excluded_incomplete_count"], 1)
+        self.assertEqual([row["symbol"] for row in pb.upserts], ["AAPL", "NVDA"])
+        self.assertEqual(result["excluded_incomplete_count"], 0)
         self.assertEqual(result["data_completeness"]["repair_job_count"], 0)
         self.assertEqual(result["data_completeness"]["repair_strategy"], "runtime_watchlist_idle_topup")
-        example = result["rejection_examples"][0]
-        self.assertEqual(example["bucket"], REJECTION_BUCKET_DATA_INCOMPLETE)
-        self.assertIn("Runtime watchlist 回补", example["note"])
+        self.assertEqual(result["data_completeness"]["soft_incomplete_count"], 1)
+        self.assertEqual(result["rejection_examples"], [])
 
     def test_daily_scan_rechecks_after_runtime_watchlist_topup_becomes_fresh(self):
         planner = _FakePlanner(stale_once=True)
@@ -350,10 +359,7 @@ class BarFreshnessAndScanRepairTest(unittest.TestCase):
                 {"symbol": "NVDA", "environment": "live", "symbol_role": "trade"},
             ]
         )
-        engines = {
-            ("live", "AAPL", "5m"): _FakeEngine(),
-            ("live", "NVDA", "5m"): _FakeEngine(),
-        }
+        engines = _context_engines("AAPL", "NVDA")
         with mock.patch.object(daily_scanner_mod, "get_api_app", return_value=api_app):
             scanner = DailyScanner(pb_client=pb, engines=engines)
         scanner.api_app = api_app

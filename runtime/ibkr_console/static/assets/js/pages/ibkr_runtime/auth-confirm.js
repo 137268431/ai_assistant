@@ -88,6 +88,7 @@
                     </label>
                     <div class="runtime-confirm-actions">
                         <button class="runtime-confirm-btn secondary" type="button" id="runtimeConfirmCancel">取消</button>
+                        <button class="runtime-confirm-btn quick is-hidden" type="button" id="runtimeConfirmQuick">快速确认</button>
                         <button class="runtime-confirm-btn primary" type="button" id="runtimeConfirmOk">确定</button>
                     </div>
                 </div>
@@ -105,6 +106,7 @@
             tone = 'warn',
             inputLabel = '',
             inputValue = '',
+            quickConfirmLabel = '快速确认',
         } = {}) {
             return new Promise((resolve) => {
                 const dialog = ensureRuntimeConfirmDialog();
@@ -116,6 +118,7 @@
                 const inputLabelEl = dialog.querySelector('#runtimeConfirmInputLabel');
                 const inputEl = dialog.querySelector('#runtimeConfirmInput');
                 const cancelButton = dialog.querySelector('#runtimeConfirmCancel');
+                const quickButton = dialog.querySelector('#runtimeConfirmQuick');
                 const okButton = dialog.querySelector('#runtimeConfirmOk');
                 const requiredText = String(confirmText || '').trim();
                 let settled = false;
@@ -127,6 +130,7 @@
                     document.removeEventListener('keydown', onKeydown);
                     inputEl.removeEventListener('input', syncConfirmButton);
                     cancelButton.removeEventListener('click', onCancel);
+                    quickButton.removeEventListener('click', onQuickConfirm);
                     okButton.removeEventListener('click', onConfirm);
                     dialog.removeEventListener('click', onBackdrop);
                     resolve(Boolean(result));
@@ -135,6 +139,14 @@
                     okButton.disabled = Boolean(requiredText) && String(inputEl.value || '').trim() !== requiredText;
                 };
                 const onCancel = () => cleanup(false);
+                const onQuickConfirm = () => {
+                    if (!requiredText) return;
+                    inputEl.value = requiredText;
+                    syncConfirmButton();
+                    quickButton.textContent = '已确认';
+                    quickButton.disabled = true;
+                    okButton.focus();
+                };
                 const onConfirm = () => {
                     if (okButton.disabled) return;
                     cleanup(true);
@@ -159,20 +171,25 @@
                 titleEl.textContent = title;
                 messageEl.textContent = message;
                 cancelButton.textContent = cancelLabel;
+                quickButton.textContent = quickConfirmLabel;
+                quickButton.disabled = false;
                 okButton.textContent = confirmLabel;
                 inputEl.value = '';
                 inputEl.placeholder = inputValue || requiredText;
                 if (requiredText) {
                     inputWrap.classList.remove('is-hidden');
+                    quickButton.classList.remove('is-hidden');
                     inputLabelEl.textContent = inputLabel || `请输入 ${requiredText}`;
                 } else {
                     inputWrap.classList.add('is-hidden');
+                    quickButton.classList.add('is-hidden');
                     inputLabelEl.textContent = '';
                 }
                 syncConfirmButton();
 
                 inputEl.addEventListener('input', syncConfirmButton);
                 cancelButton.addEventListener('click', onCancel);
+                quickButton.addEventListener('click', onQuickConfirm);
                 okButton.addEventListener('click', onConfirm);
                 dialog.addEventListener('click', onBackdrop);
                 document.addEventListener('keydown', onKeydown);

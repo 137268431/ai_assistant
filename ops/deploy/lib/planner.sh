@@ -104,6 +104,10 @@ register_path_for_target() {
     fi
     matched=1
     if ! is_unit_selected_for_target "$target" "$known_unit"; then
+      if [[ "$target" == "all" && "$(unit_family "$known_unit")" == "pocketbase" && "${DEPLOY_POCKETBASE:-0}" -ne 1 ]]; then
+        append_unique disabled_matches "$rel_path -> $known_unit (requires --pocketbase)"
+        continue
+      fi
       flag="$(unit_optional_flag "$known_unit")"
       if [[ -n "$flag" ]]; then
         append_unique disabled_matches "$rel_path -> $known_unit (requires --$flag)"

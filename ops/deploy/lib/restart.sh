@@ -169,6 +169,9 @@ collect_restart_groups() {
   local service
   for unit in "$@"; do
     service="$(unit_restart_group "$unit")"
+    if ! restart_group_allowed "$service"; then
+      continue
+    fi
     [[ -n "$service" ]] && append_unique "$array_name" "$service"
   done
   if array_contains "ibkr_src" "$@"; then
@@ -188,6 +191,25 @@ collect_restart_groups() {
     append_unique "$array_name" "ibkr-api"
   fi
   return 0
+}
+
+restart_group_allowed() {
+  local service="$1"
+  case "$service" in
+    ibkr-display|ibkr-gateway)
+      [[ "${DEPLOY_RESTART_GATEWAY:-0}" -eq 1 ]]
+      return
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
+units_include_gateway_service() {
+  array_contains "gateway_display_systemd" "$@" && return 0
+  array_contains "gateway_systemd" "$@" && return 0
+  return 1
 }
 
 units_need_pip_install() {
@@ -237,6 +259,9 @@ collect_post_action_labels() {
       [[ -n "$restart" ]] || continue
       append_unique "$array_name" "systemctl restart $restart"
     done
+    if units_include_gateway_service "$@" && [[ "${DEPLOY_RESTART_GATEWAY:-0}" -ne 1 ]]; then
+      append_unique "$array_name" "gateway restart skipped"
+    fi
   else
     append_unique "$array_name" "service restart skipped"
   fi

@@ -12,7 +12,8 @@ DEPLOY_PUBLIC=1
 DEPLOY_HOOKS=1
 DEPLOY_MIGRATIONS=0
 DRY_RUN=0
-RESTART_SERVICE=1
+RESTART_SERVICE=0
+ALLOW_LIVE_MIGRATIONS=0
 WAIT_FOR_AUTO_RELOAD=0
 SKIP_CHECKS=0
 STATUS_ONLY=0
@@ -84,6 +85,10 @@ usage() {
   cat <<EOF
 Usage: deploy_pocketbase_runtime.sh [options]
 
+By default this script syncs PocketBase runtime files without restarting the
+PocketBase service. Use --restart-pocketbase only during an explicit
+PocketBase maintenance window.
+
 Options:
   --host <host>       Override SSH target
   --mode <mode>       scope | files | package | auto
@@ -93,9 +98,14 @@ Options:
   --package-name <n>  Override generated package name for package mode
   --public-only       Deploy only the PocketBase landing tree sourced from runtime/pocketbase/pb_public (systemd still deploys unless skipped by a higher-level wrapper)
   --migrations        Deploy extensions/pocketbase/migrations to /opt/pocketbase/extensions/migrations
+  --allow-live-migrations
+                      Apply migrations without stopping/restarting PocketBase; use only when the migration is known safe online
+  --restart-pocketbase
+  --allow-restart
+  --restart           Explicitly allow restarting PocketBase after deploy
   --dry-run           Show rsync changes without mutating the remote host
   --skip-checks       Skip remote node --check validation
-  --no-restart        Skip PocketBase restart
+  --no-restart        Skip PocketBase restart (default)
   --status-only       Show pocketbase service status and exit
   -h, --help          Show this help
 EOF
@@ -143,6 +153,14 @@ while [[ $# -gt 0 ]]; do
       DEPLOY_MIGRATIONS=1
       shift
       ;;
+    --allow-live-migrations)
+      ALLOW_LIVE_MIGRATIONS=1
+      shift
+      ;;
+    --restart-pocketbase|--allow-restart|--restart)
+      RESTART_SERVICE=1
+      shift
+      ;;
     --dry-run)
       DRY_RUN=1
       shift
@@ -171,12 +189,21 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+assert_pocketbase_migration_policy() {
+  [[ "${DEPLOY_MIGRATIONS:-0}" -eq 1 ]] || return 0
+  [[ "${PLAN_ONLY:-0}" -eq 0 && "${DRY_RUN:-0}" -eq 0 ]] || return 0
+  if [[ "${RESTART_SERVICE:-0}" -ne 1 && "${ALLOW_LIVE_MIGRATIONS:-0}" -ne 1 ]]; then
+    deploy_die "PocketBase migrations are protected. Re-run with --restart-pocketbase during a maintenance window, or --allow-live-migrations only after confirming the migration is safe while PocketBase is running."
+  fi
+}
+
 if [[ "$STATUS_ONLY" -eq 1 ]]; then
   show_remote_systemd_statuses pocketbase
   exit 0
 fi
 
 normalize_pocketbase_selection
+assert_pocketbase_migration_policy
 preflight_pocketbase_runtime
 
 if [[ "$DEPLOY_PUBLIC" -eq 0 && "$DEPLOY_HOOKS" -eq 0 && "$DEPLOY_MIGRATIONS" -eq 0 ]]; then

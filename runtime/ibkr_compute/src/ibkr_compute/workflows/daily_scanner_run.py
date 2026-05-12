@@ -22,6 +22,7 @@ from .daily_scanner_constants import (
     DEFAULT_DAY_GAIN_TRIGGER_PCT,
     MAX_DATA_COMPLETENESS_REPAIR_JOBS_IN_RESULT,
     REJECTION_BUCKET_DATA_INCOMPLETE,
+    REJECTION_BUCKET_CONTEXT_GATE,
     REJECTION_BUCKET_TOPUP_ACTIVE_BUDGET,
     REJECTION_BUCKET_TOPUP_ACTIVE_SCORE,
 )
@@ -61,6 +62,9 @@ class DailyScannerRunMixin:
             "excluded_incomplete_count": 0,
             "repairing_count": 0,
             "incomplete_symbols": [],
+            "soft_incomplete_count": 0,
+            "soft_incomplete_symbols": [],
+            "blocking_incomplete_symbols": [],
             "repair_strategy": "",
             "runtime_topup_waited": False,
             "repair_jobs": [],
@@ -111,6 +115,9 @@ class DailyScannerRunMixin:
                 data_completeness["excluded_incomplete_count"] += int(completeness.get("excluded_incomplete_count", 0) or 0)
                 data_completeness["repairing_count"] += int(completeness.get("repairing_count", 0) or 0)
                 data_completeness["incomplete_symbols"].extend(completeness.get("incomplete_symbols") or [])
+                data_completeness["soft_incomplete_count"] += int(completeness.get("soft_incomplete_count", 0) or 0)
+                data_completeness["soft_incomplete_symbols"].extend(completeness.get("soft_incomplete_symbols") or [])
+                data_completeness["blocking_incomplete_symbols"].extend(completeness.get("blocking_incomplete_symbols") or [])
                 repair_strategy = str(completeness.get("repair_strategy") or "").strip()
                 if repair_strategy and not str(data_completeness.get("repair_strategy") or "").strip():
                     data_completeness["repair_strategy"] = repair_strategy
@@ -128,6 +135,9 @@ class DailyScannerRunMixin:
 
         data_completeness["incomplete_symbols"] = sorted(set(data_completeness.get("incomplete_symbols") or []))
         data_completeness["incomplete_symbol_count"] = len(data_completeness["incomplete_symbols"])
+        data_completeness["soft_incomplete_symbols"] = sorted(set(data_completeness.get("soft_incomplete_symbols") or []))
+        data_completeness["soft_incomplete_count"] = len(data_completeness["soft_incomplete_symbols"])
+        data_completeness["blocking_incomplete_symbols"] = sorted(set(data_completeness.get("blocking_incomplete_symbols") or []))
         data_completeness["status"] = "repairing" if data_completeness["incomplete_symbols"] else "ready"
         data_completeness = compact_json_payload(data_completeness, max_list_items=80)
 
@@ -169,13 +179,18 @@ class DailyScannerRunMixin:
         )
         completeness_gate = self._build_data_completeness_gate(runtime_environment, watchlist_symbols)
         incomplete_symbols = set(completeness_gate.get("incomplete_symbols") or [])
-        blocking_incomplete_symbols = set(incomplete_symbols) if bool(completeness_gate.get("blocking_enabled")) else set()
+        blocking_incomplete_symbols = (
+            set(completeness_gate.get("blocking_incomplete_symbols") or [])
+            if bool(completeness_gate.get("blocking_enabled"))
+            else set()
+        )
         repair_strategy = str(completeness_gate.get("repair_strategy") or "").strip()
         incomplete_note = (
-            "数据不完整，blocking 开启，等待 Runtime watchlist 回补后重扫"
+            "5m 基础数据不完整，blocking 开启，等待 Runtime watchlist 回补后重扫"
             if repair_strategy == "runtime_watchlist_idle_topup"
-            else "数据不完整，blocking 开启，已排除本轮筛选并进入异步 API 补偿"
+            else "5m 基础数据不完整，blocking 开启，已排除本轮筛选并进入异步 API 补偿"
         )
+        timeframe_rollup = self._rollup_scan_timeframes(runtime_environment, watchlist_symbols)
         engine_materialize = self._materialize_scan_engines(runtime_environment, watchlist_symbols)
         stored_indicator_snapshots = self._load_stored_indicator_snapshots(runtime_environment, watchlist_symbols)
         metric_rows = self._build_metric_rows(date, runtime_environment, watchlist_symbols)
@@ -197,7 +212,7 @@ class DailyScannerRunMixin:
                     bucket=REJECTION_BUCKET_DATA_INCOMPLETE,
                     symbol=symbol,
                     actual=",".join(stale_intervals) or str(freshness.get("status") or "incomplete"),
-                    threshold="all required intervals ready",
+                    threshold="blocking intervals ready",
                     note=incomplete_note,
                 )
                 continue
@@ -220,6 +235,7 @@ class DailyScannerRunMixin:
                             "scan_blocking": False,
                             "needs_repair_intervals": list(freshness.get("needs_repair_intervals") or []),
                             "status": str(freshness.get("status") or "repairing"),
+                            "severity": "warning",
                         }
                     eligible.append(result)
                 else:
@@ -239,6 +255,7 @@ class DailyScannerRunMixin:
 
         eligible.sort(
             key=lambda item: (
+                -_safe_float(item.get("context_score")),
                 -_safe_float(item.get("score")),
                 -_safe_float(item.get("admission_score")),
                 -_safe_float(item.get("technical_score")),
@@ -291,7 +308,20 @@ class DailyScannerRunMixin:
                 continue
 
             auto_rank += 1
-            qualifies_active = _safe_float(result.get("score")) >= active_min_score
+            legacy_score_gate_passed = _safe_float(result.get("score")) >= active_min_score
+            context_gate_passed = bool(result.get("context_gate_passed"))
+            qualifies_active = context_gate_passed
+            if scan_mode != DAILY_SCAN_MODE_TOPUP and not context_gate_passed:
+                _record_rejection(
+                    rejection_summary,
+                    rejection_examples_by_bucket,
+                    bucket=REJECTION_BUCKET_CONTEXT_GATE,
+                    symbol=symbol,
+                    actual=str(result.get("context_reason") or "context_gate_passed=false"),
+                    threshold="context_gate_passed=true",
+                    note="基础质量通过，但 multi-timeframe context 未形成，seed 不再写入低 context candidate",
+                )
+                continue
             if scan_mode == DAILY_SCAN_MODE_TOPUP:
                 if not qualifies_active:
                     _record_rejection(
@@ -299,9 +329,9 @@ class DailyScannerRunMixin:
                         rejection_examples_by_bucket,
                         bucket=REJECTION_BUCKET_TOPUP_ACTIVE_SCORE,
                         symbol=symbol,
-                        actual=f"{_safe_float(result.get('score')):.3f}",
-                        threshold=f">={active_min_score:.3f}",
-                        note="topup 只新增 active 标的；低分候选保留给 seed 扫描或盘中窗口入池",
+                        actual=str(result.get("context_reason") or f"context_score={_safe_float(result.get('context_score')):.3f}"),
+                        threshold="context_gate_passed=true",
+                        note="topup 只新增 multi-timeframe context active 标的；低 context 不写 candidate",
                     )
                     continue
                 if len(active_symbols) >= active_limit:
@@ -316,6 +346,7 @@ class DailyScannerRunMixin:
                     )
                     continue
             status = "active" if qualifies_active and len(active_symbols) < active_limit else "candidate"
+            context_active = status == "active" and context_gate_passed
             retained_symbols.add(symbol)
             if status == "active":
                 active_symbols.add(symbol)
@@ -342,7 +373,14 @@ class DailyScannerRunMixin:
                 "within_subscription_budget": status == "active",
                 "active_target_limit": active_target_limit,
                 "active_min_score": active_min_score,
-                "active_gate_passed": qualifies_active,
+                "active_gate_passed": context_gate_passed,
+                "legacy_score_gate_passed": legacy_score_gate_passed,
+                "context_active": context_active,
+                "context_gate_passed": context_gate_passed,
+                "setup_family": str(result.get("setup_family") or "none"),
+                "allowed_sides": list(result.get("allowed_sides") or []),
+                "context_score": round(_safe_float(result.get("context_score")), 3),
+                "context_reason": str(result.get("context_reason") or "").strip(),
             }
             dynamic_thresholds = result.get("dynamic_thresholds") or extra.get("dynamic_thresholds") or {}
             if isinstance(dynamic_thresholds, dict):
@@ -431,16 +469,21 @@ class DailyScannerRunMixin:
             "active_min_score": active_min_score,
             "manual_active_count": 0,
             "manual_retained_count": 0,
+            "timeframe_rollup": timeframe_rollup,
             "engine_materialize": engine_materialize,
             "data_completeness": {
                 "enabled": bool(completeness_gate.get("enabled")),
                 "blocking_enabled": bool(completeness_gate.get("blocking_enabled")),
                 "status": str(completeness_gate.get("status") or ("ready" if not incomplete_symbols else "repairing")),
                 "intervals": list(completeness_gate.get("intervals") or []),
+                "blocking_intervals": list(completeness_gate.get("blocking_intervals") or []),
                 "excluded_incomplete_count": len(blocking_incomplete_symbols),
                 "repairing_count": len(incomplete_symbols),
                 "incomplete_symbol_count": len(incomplete_symbols),
                 "incomplete_symbols": sorted(incomplete_symbols),
+                "soft_incomplete_count": len(completeness_gate.get("soft_incomplete_symbols") or []),
+                "soft_incomplete_symbols": list(completeness_gate.get("soft_incomplete_symbols") or []),
+                "blocking_incomplete_symbols": sorted(blocking_incomplete_symbols),
                 "repair_strategy": str(completeness_gate.get("repair_strategy") or "").strip(),
                 "runtime_topup_waited": bool(completeness_gate.get("runtime_topup_waited")),
                 "repair_job_count": int(completeness_gate.get("repair_job_count", 0) or 0),

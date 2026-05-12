@@ -388,6 +388,8 @@ class IntradaySdV1CoreTest(unittest.TestCase):
         self.assertEqual(snapshot["cn_time"], "2026-05-01 21:35:00")
 
     def test_runtime_signal_params_include_strategy_config(self):
+        timeframe_profiles_json = json.dumps({"5m": {"sd_length": 64}, "1d": {"sd_length": 220}})
+
         class FakeCfg:
             def get_for_environment(self, key, environment, default=None):
                 if key == "signal_strategy_profile":
@@ -396,6 +398,8 @@ class IntradaySdV1CoreTest(unittest.TestCase):
                     return "09:40"
                 if key == "intraday_entry_window_end_time":
                     return "10:20"
+                if key == "ibkr_timeframe_param_profiles_json":
+                    return timeframe_profiles_json
                 return default
 
             def get_int_for_environment(self, key, environment, default=0):
@@ -478,6 +482,8 @@ class IntradaySdV1CoreTest(unittest.TestCase):
         self.assertEqual(params["intraday_trend_mismatch_max_abs_day_change_pct"], 2.0)
         self.assertTrue(params["intraday_vwap_pullback_long_require_trend_walk"])
         self.assertFalse(params["intraday_include_legacy_signals"])
+        self.assertEqual(params["ibkr_timeframe_param_profiles_json"], timeframe_profiles_json)
+        self.assertEqual(universe_mod.signal_generator_params_for_interval(params, "5m")["sd_length"], 64)
         self.assertEqual(params["market_monitor_symbols"], "SPY")
         self.assertEqual(params["signal_enabled_symbols"], "AAPL")
         strategy_map = json.loads(params["target_strategy_policy_by_symbol"])
@@ -590,6 +596,150 @@ class IntradaySdV1CoreTest(unittest.TestCase):
         self.assertEqual(params["rr_ratio"], 2.5)
         self.assertEqual(params["signal_strategy_profile"], "intraday_sd_v1")
         self.assertEqual(params["target_symbol_profile"]["threshold_profile"], "large_liquid")
+
+    def test_timeframe_param_profiles_apply_only_to_matching_interval(self):
+        from ibkr_compute.core.indicator_engine import IndicatorEngine
+        from ibkr_compute.core.signal_generator import SignalGenerator
+
+        base_params = {
+            "sd_length": 128,
+            "atr_length": 10,
+            "signal_strategy_profile": "legacy",
+            "ibkr_timeframe_param_profiles_json": json.dumps(
+                {
+                    "5m": {
+                        "sd_length": 64,
+                        "atr_length": 8,
+                        "signal_strategy_profile": "intraday_sd_v1",
+                    },
+                    "1d": {
+                        "sd_length": 220,
+                        "atr_length": 21,
+                        "signal_strategy_profile": "daily_sd_v1",
+                    },
+                }
+            ),
+        }
+
+        five_min_params = universe_mod.signal_generator_params_for_interval(base_params, "5m")
+        daily_params = universe_mod.signal_generator_params_for_interval(base_params, "1d")
+
+        self.assertEqual(five_min_params["sd_length"], 64)
+        self.assertEqual(five_min_params["atr_length"], 8)
+        self.assertEqual(five_min_params["signal_strategy_profile"], "intraday_sd_v1")
+        self.assertEqual(daily_params["sd_length"], 220)
+        self.assertEqual(daily_params["atr_length"], 21)
+        self.assertEqual(daily_params["signal_strategy_profile"], "daily_sd_v1")
+
+        self.assertEqual(IndicatorEngine("APP", "1d", base_params).params["sd_length"], 220)
+        self.assertEqual(SignalGenerator("APP", "5m", base_params).params["sd_length"], 64)
+
+    def test_timeframe_profile_applies_before_symbol_strategy_policy(self):
+        from ibkr_compute.core.signal_generator import SignalGenerator
+
+        base_params = {
+            "exit_policy_profile": "fixed_atr_rr",
+            "sl_atr_mult": 2.0,
+            "rr_ratio": 1.5,
+            "signal_strategy_profile": "legacy",
+            "target_strategy_policy_enabled": True,
+            "target_strategy_policy_by_symbol": json.dumps(
+                {
+                    "APP": {
+                        "recommended_signal_profile": "policy_signal",
+                        "recommended_exit_policy": {
+                            "exit_policy_profile": "policy_exit",
+                            "sl_atr_mult": 1.8,
+                            "tp_rr": 2.5,
+                        },
+                    }
+                }
+            ),
+            "ibkr_timeframe_param_profiles_json": json.dumps(
+                {
+                    "5m": {
+                        "exit_policy_profile": "profile_exit",
+                        "sl_atr_mult": 1.1,
+                        "rr_ratio": 1.2,
+                        "signal_strategy_profile": "profile_signal",
+                    },
+                    "1d": {
+                        "exit_policy_profile": "daily_profile_exit",
+                        "sl_atr_mult": 3.0,
+                        "rr_ratio": 4.0,
+                        "signal_strategy_profile": "daily_profile_signal",
+                    },
+                }
+            ),
+        }
+
+        interval_params = universe_mod.signal_generator_params_for_interval(base_params, "5")
+        effective_params = engines_mod._signal_params_for_symbol(interval_params, "APP")
+        daily_params = universe_mod.signal_generator_params_for_interval(base_params, "D")
+
+        self.assertEqual(effective_params["exit_policy_profile"], "policy_exit")
+        self.assertEqual(effective_params["sl_atr_mult"], 1.8)
+        self.assertEqual(effective_params["rr_ratio"], 2.5)
+        self.assertEqual(effective_params["signal_strategy_profile"], "policy_signal")
+        self.assertEqual(daily_params["exit_policy_profile"], "daily_profile_exit")
+        self.assertEqual(daily_params["sl_atr_mult"], 3.0)
+        self.assertEqual(SignalGenerator("APP", "5m", effective_params).params["signal_strategy_profile"], "policy_signal")
+        self.assertEqual(SignalGenerator("APP", "5m", effective_params).params["sl_atr_mult"], 1.8)
+
+    def test_get_or_create_engine_passes_interval_specific_params(self):
+        created_engines = []
+        created_signal_generators = []
+
+        class FakeIndicatorEngine:
+            def __init__(self, symbol, interval, params=None):
+                self.symbol = symbol
+                self.interval = interval
+                self.params = dict(params or {})
+                created_engines.append(self)
+
+        class FakeSignalGenerator:
+            def __init__(self, symbol, interval, params=None):
+                self.symbol = symbol
+                self.interval = interval
+                self.params = dict(params or {})
+                created_signal_generators.append(self)
+
+            def set_params(self, params):
+                self.params = dict(params or {})
+
+        fake_app = SimpleNamespace(
+            compute_lock=mock.MagicMock(),
+            engines={},
+            signal_gens={},
+        )
+        fake_app.compute_lock.__enter__.return_value = None
+        fake_app.compute_lock.__exit__.return_value = None
+        signal_params = {
+            "sd_length": 128,
+            "atr_length": 10,
+            "target_strategy_policy_enabled": False,
+            "ibkr_timeframe_param_profiles_json": json.dumps(
+                {
+                    "5m": {"sd_length": 64, "atr_length": 8},
+                    "1d": {"sd_length": 220, "atr_length": 21},
+                }
+            ),
+        }
+
+        with mock.patch.object(engines_mod, "_api_app", return_value=fake_app), mock.patch.object(
+            engines_mod,
+            "IndicatorEngine",
+            FakeIndicatorEngine,
+        ), mock.patch.object(engines_mod, "SignalGenerator", FakeSignalGenerator):
+            engines_mod.get_or_create_engine("live", "APP", "5m", signal_params=signal_params)
+            engines_mod.get_or_create_engine("live", "APP", "1d", signal_params=signal_params)
+
+        self.assertEqual(created_engines[0].params["sd_length"], 64)
+        self.assertEqual(created_engines[0].params["atr_length"], 8)
+        self.assertEqual(created_signal_generators[0].params["sd_length"], 64)
+        self.assertEqual(created_engines[1].params["sd_length"], 220)
+        self.assertEqual(created_engines[1].params["atr_length"], 21)
+        self.assertEqual(created_signal_generators[1].params["atr_length"], 21)
 
 
 if __name__ == "__main__":

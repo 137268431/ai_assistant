@@ -32,12 +32,213 @@ from .daily_scanner_constants import (
 from .daily_scanner_support import (
     _build_stocks_in_play_bonus,
     _daily_scan_matches_any,
+    _first_present_value,
     _format_metric_value,
     _format_threshold,
     _metric_rank_bonus,
     _safe_float,
+    _snapshot_best_float,
+    _snapshot_first_text,
+    _truthy_scan_value,
 )
 from .daily_scanner_target_reasons import build_daily_scan_trigger_timeline
+
+
+_LONG_CYCLE_TIMEFRAMES = ("1d", "4h")
+_STRUCTURE_TIMEFRAMES = ("1h", "30m")
+_TRIGGER_TIMEFRAMES = ("15m", "5m")
+
+
+def _snapshot_has_long(snapshot: dict) -> bool:
+    return _daily_scan_matches_any(snapshot, DAILY_SCAN_LONG_PRIMARY_RULES) or _daily_scan_matches_any(
+        snapshot,
+        DAILY_SCAN_LONG_SECONDARY_RULES,
+    )
+
+
+def _snapshot_has_short(snapshot: dict) -> bool:
+    return _daily_scan_matches_any(snapshot, DAILY_SCAN_SHORT_PRIMARY_RULES) or _daily_scan_matches_any(
+        snapshot,
+        DAILY_SCAN_SHORT_SECONDARY_RULES,
+    )
+
+
+def _side_set_from_snapshots(snapshots: dict[str, dict], timeframes: tuple[str, ...]) -> set[str]:
+    sides: set[str] = set()
+    for tf in timeframes:
+        snapshot = snapshots.get(tf)
+        if not isinstance(snapshot, dict):
+            continue
+        if _snapshot_has_long(snapshot):
+            sides.add("long")
+        if _snapshot_has_short(snapshot):
+            sides.add("short")
+    return sides
+
+
+def _trigger_sides(snapshots: dict[str, dict], metric_row: dict) -> set[str]:
+    sides = _side_set_from_snapshots(snapshots, _TRIGGER_TIMEFRAMES)
+    trigger_snapshots = {
+        tf: snapshot
+        for tf, snapshot in snapshots.items()
+        if tf in _TRIGGER_TIMEFRAMES and isinstance(snapshot, dict)
+    }
+    orb_text = str(_first_present_value(metric_row.get("orb_breakout"), "") or "").strip().lower()
+    orb_up = _truthy_scan_value(metric_row.get("orb_breakout_up")) or _truthy_scan_value(
+        _snapshot_first_text(trigger_snapshots, "orb_breakout_up")
+    )
+    orb_down = _truthy_scan_value(metric_row.get("orb_breakout_down")) or _truthy_scan_value(
+        _snapshot_first_text(trigger_snapshots, "orb_breakout_down")
+    )
+    if orb_text in {"up", "long", "breakout_up"}:
+        orb_up = True
+    elif orb_text in {"down", "short", "breakout_down"}:
+        orb_down = True
+    if orb_up:
+        sides.add("long")
+    if orb_down:
+        sides.add("short")
+
+    vwap_alignment = str(
+        _first_present_value(metric_row.get("vwap_alignment"), _snapshot_first_text(trigger_snapshots, "vwap_alignment"))
+        or ""
+    ).strip().lower()
+    if vwap_alignment in {"above", "bullish", "long"}:
+        sides.add("long")
+    elif vwap_alignment in {"below", "bearish", "short"}:
+        sides.add("short")
+    return sides
+
+
+def _sides_with_signal(
+    snapshots: dict[str, dict],
+    timeframes: tuple[str, ...],
+    *,
+    long_keys: tuple[str, ...],
+    short_keys: tuple[str, ...],
+) -> set[str]:
+    sides: set[str] = set()
+    for tf in timeframes:
+        snapshot = snapshots.get(tf)
+        if not isinstance(snapshot, dict):
+            continue
+        if any(bool(snapshot.get(key)) for key in long_keys):
+            sides.add("long")
+        if any(bool(snapshot.get(key)) for key in short_keys):
+            sides.add("short")
+    return sides
+
+
+def _build_context_gate(
+    *,
+    snapshots: dict[str, dict],
+    metric_row: dict,
+    direction_bias: str,
+    quality_gate_passed: bool,
+    day_gain_triggered: bool,
+) -> dict:
+    long_cycle_sides = _side_set_from_snapshots(snapshots, _LONG_CYCLE_TIMEFRAMES)
+    structure_sides = _side_set_from_snapshots(snapshots, _STRUCTURE_TIMEFRAMES)
+    trigger_sides = _trigger_sides(snapshots, metric_row)
+    direction = str(direction_bias or "").strip().lower()
+    direction_sides = {direction} if direction in {"long", "short"} else {"long", "short"}
+    if day_gain_triggered and not trigger_sides:
+        trigger_sides = set(direction_sides)
+    effective_structure_sides = structure_sides or trigger_sides
+    effective_regime_sides = long_cycle_sides or effective_structure_sides
+    trend_sides = effective_regime_sides & effective_structure_sides & trigger_sides & direction_sides
+
+    sd_sides = _sides_with_signal(
+        snapshots,
+        _TRIGGER_TIMEFRAMES + _STRUCTURE_TIMEFRAMES,
+        long_keys=("sd_lower",),
+        short_keys=("sd_upper",),
+    )
+    exhaustion_sides = _sides_with_signal(
+        snapshots,
+        _TRIGGER_TIMEFRAMES + _STRUCTURE_TIMEFRAMES,
+        long_keys=("crsi_os", "crsi_bull_div", "obv_bull_div", "fractal_bull"),
+        short_keys=("crsi_ob", "crsi_bear_div", "obv_bear_div", "fractal_bear"),
+    )
+    reversal_sides: set[str] = set()
+    if "long" in sd_sides and "long" in exhaustion_sides and "short" in long_cycle_sides:
+        reversal_sides.add("long")
+    if "short" in sd_sides and "short" in exhaustion_sides and "long" in long_cycle_sides:
+        reversal_sides.add("short")
+    reversal_sides &= (structure_sides | trigger_sides)
+    reversal_sides &= trigger_sides
+
+    hot_sides = set()
+    rvol_20 = max(_safe_float(metric_row.get("rvol_20")), _snapshot_best_float(snapshots, "rvol_20", 0.0))
+    if day_gain_triggered or rvol_20 >= 3.0:
+        hot_sides = set(trend_sides)
+    if (day_gain_triggered or rvol_20 >= 3.0) and not hot_sides and trigger_sides:
+        hot_sides = set(trigger_sides & direction_sides)
+
+    setup_family = ""
+    family_score = 0.0
+    family_reason = ""
+    allowed_sides: list[str] = []
+    if reversal_sides:
+        allowed_sides = sorted(reversal_sides)
+        setup_family = "exhaustion_reversal"
+        family_score = 16.0
+        family_reason = "quality + long-cycle trend extended into SD/exhaustion reversal"
+    elif hot_sides:
+        allowed_sides = sorted(hot_sides)
+        setup_family = "hot_momentum"
+        family_score = 18.0
+        family_reason = "quality + regime/structure context + 15m/5m hot trigger"
+    elif trend_sides and structure_sides:
+        allowed_sides = sorted(trend_sides)
+        if sd_sides & trend_sides:
+            setup_family = "sd_touch"
+            family_score = 14.0
+            family_reason = "quality + regime/structure context + 15m/5m SD touch"
+        elif day_gain_triggered or rvol_20 >= 3.0:
+            setup_family = "hot_momentum"
+            family_score = 18.0
+            family_reason = "quality + regime/structure context + 15m/5m hot trigger"
+        else:
+            setup_family = "trend_follow"
+            family_score = 12.0
+            family_reason = "quality + regime/structure context + 15m/5m trend trigger"
+
+    soft_missing = []
+    if not long_cycle_sides:
+        soft_missing.append("1d/4h_regime")
+    if not structure_sides:
+        soft_missing.append("1h/30m_structure")
+    if setup_family and soft_missing:
+        family_reason = f"{family_reason}; soft_missing={','.join(soft_missing)}"
+
+    context_gate_passed = bool(quality_gate_passed and allowed_sides and setup_family)
+    missing = []
+    if not quality_gate_passed:
+        missing.append("quality")
+    if not trigger_sides:
+        missing.append("15m/5m_trigger")
+    if not allowed_sides and not missing:
+        missing.append("timeframe_alignment")
+    context_score = family_score + len(long_cycle_sides) * 2.0 + len(structure_sides) * 1.5 + len(trigger_sides)
+    return {
+        "context_gate_passed": context_gate_passed,
+        "setup_family": setup_family or "none",
+        "allowed_sides": allowed_sides,
+        "context_score": round(context_score if context_gate_passed else 0.0, 3),
+        "context_reason": family_reason if context_gate_passed else f"context_missing={','.join(missing)}",
+        "context_tiers": {
+            "long_cycle_timeframes": [tf for tf in _LONG_CYCLE_TIMEFRAMES if tf in snapshots],
+            "structure_timeframes": [tf for tf in _STRUCTURE_TIMEFRAMES if tf in snapshots],
+            "trigger_timeframes": [tf for tf in _TRIGGER_TIMEFRAMES if tf in snapshots],
+            "long_cycle_sides": sorted(long_cycle_sides),
+            "structure_sides": sorted(structure_sides),
+            "trigger_sides": sorted(trigger_sides),
+            "trend_sides": sorted(trend_sides),
+            "reversal_sides": sorted(reversal_sides),
+            "soft_missing": soft_missing,
+        },
+    }
 
 
 class DailyScannerEvaluateMixin:
@@ -355,6 +556,13 @@ class DailyScannerEvaluateMixin:
             day_gain_triggered=day_gain_triggered,
             day_gain_trigger_pct=day_gain_trigger_pct,
         )
+        context_gate = _build_context_gate(
+            snapshots=snapshots,
+            metric_row=metric_row,
+            direction_bias=direction_bias,
+            quality_gate_passed=quality_gate_passed,
+            day_gain_triggered=day_gain_triggered,
+        )
 
         return {
             "symbol": symbol,
@@ -370,6 +578,11 @@ class DailyScannerEvaluateMixin:
             "dynamic_thresholds": dynamic_thresholds,
             "strategy_policy": strategy_policy,
             "reason_tags": gate_reasons,
+            "context_gate_passed": context_gate["context_gate_passed"],
+            "setup_family": context_gate["setup_family"],
+            "allowed_sides": context_gate["allowed_sides"],
+            "context_score": context_gate["context_score"],
+            "context_reason": context_gate["context_reason"],
             "exchange": str(metric_row.get("exchange", "") or "").strip().upper(),
             "avg_10d_volume": round(avg_10d_volume, 2),
             "premarket_volume": round(premarket_volume, 2),
@@ -394,6 +607,7 @@ class DailyScannerEvaluateMixin:
                 "strategy_policy": strategy_policy,
                 "reason_tags": gate_reasons,
                 "trigger_timeline": trigger_timeline,
+                **context_gate,
                 **stocks_in_play_details,
             },
         }
