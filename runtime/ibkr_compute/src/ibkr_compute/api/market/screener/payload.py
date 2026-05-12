@@ -391,6 +391,7 @@ def _build_daily_change_fields(current_close: float, daily_history: list[dict]) 
     )
     change_7d = ((current_close - close_5) / close_5 * 100.0) if close_5 > 0 else 0.0
     return {
+        "prev_close": round(prev_close, 4),
         "day_change_pct": round(day_change_pct, 2),
         "prev_close_change_pct": round(prev_close_change_pct, 2),
         "change_7d": round(change_7d, 2),

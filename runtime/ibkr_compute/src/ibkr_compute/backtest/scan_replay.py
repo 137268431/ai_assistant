@@ -3,12 +3,17 @@ from __future__ import annotations
 import hashlib
 
 from ibkr_compute.universe.dynamic_admission import evaluate_dynamic_admission, normalize_admission_bool
+from ibkr_compute.workflows.daily_scanner_constants import DEFAULT_DAY_GAIN_TRIGGER_PCT
+from ibkr_compute.workflows.daily_scanner_target_reasons import (
+    build_active_reason_payload,
+    build_indicator_trigger_events_from_snapshot,
+)
 
 from .runtime_support import *
 from .watchlist_universe import merge_trade_watchlist_rows, request_excluded_symbols
 
 
-DAILY_SELECTION_CACHE_ALGORITHM_VERSION = "daily_scan_replay_live_sd_v4"
+DAILY_SELECTION_CACHE_ALGORITHM_VERSION = "daily_scan_replay_live_sd_v5"
 
 
 class BacktestScanReplayMixin:
@@ -1055,6 +1060,7 @@ class BacktestScanReplayMixin:
         request: dict,
         cutoff_ms: int,
         engines: dict | None = None,
+        settings: dict | None = None,
     ) -> dict:
         source_environment = str(request.get("source_environment") or "live").strip().lower() or "live"
         day_start_ms = int(datetime.strptime(trade_date, "%Y-%m-%d").replace(tzinfo=ET).timestamp() * 1000)
@@ -1140,6 +1146,32 @@ class BacktestScanReplayMixin:
         if latest_close <= 0:
             latest_close = prev_close
         day_change_pct = ((latest_close - prev_close) / prev_close * 100.0) if prev_close > 0 else 0.0
+        day_gain_triggered_at_ms = 0
+        day_gain_triggered_us_time = ""
+        day_gain_triggered_cn_time = ""
+        day_gain_triggered_price = 0.0
+        day_gain_triggered_pct = 0.0
+        day_gain_trigger_pct = max(
+            0.0,
+            float((settings or {}).get("day_gain_trigger_pct", DEFAULT_DAY_GAIN_TRIGGER_PCT) or DEFAULT_DAY_GAIN_TRIGGER_PCT),
+        )
+        if prev_close > 0 and day_gain_trigger_pct > 0:
+            for row in intraday_rows:
+                bar_ms = int(row.get("bar_time_ms", 0) or 0)
+                if bar_ms <= 0 or bar_ms > cutoff_ms:
+                    continue
+                close = float(row.get("close", 0) or 0)
+                if close <= 0:
+                    continue
+                crossed_pct = (close - prev_close) / prev_close * 100.0
+                if crossed_pct < day_gain_trigger_pct:
+                    continue
+                day_gain_triggered_at_ms = bar_ms
+                day_gain_triggered_us_time = str(row.get("us_time", "") or format_us_time(bar_ms))
+                day_gain_triggered_cn_time = str(row.get("cn_time", "") or format_cn_time(bar_ms))
+                day_gain_triggered_price = close
+                day_gain_triggered_pct = crossed_pct
+                break
 
         atr_pct = 0.0
         engine = (engines or {}).get((source_environment, symbol, "5m"))
@@ -1157,9 +1189,16 @@ class BacktestScanReplayMixin:
             "price": round(float(latest_close or 0), 4),
             "avg_10d_volume": round(float(avg_10d_volume or 0), 2),
             "premarket_volume": round(float(premarket_volume or 0), 2),
+            "prev_close": round(float(prev_close or 0), 4),
             "atr_pct": round(float(atr_pct or 0), 4),
             "day_change_pct": round(float(day_change_pct or 0), 4),
             "latest_bar_time_ms": int(intraday_rows[-1].get("bar_time_ms", 0) or 0) if intraday_rows else 0,
+            "day_gain_triggered_at_ms": day_gain_triggered_at_ms,
+            "day_gain_triggered_us_time": day_gain_triggered_us_time,
+            "day_gain_triggered_cn_time": day_gain_triggered_cn_time,
+            "day_gain_triggered_price": round(float(day_gain_triggered_price or 0), 4),
+            "day_gain_triggered_pct": round(float(day_gain_triggered_pct or 0), 4),
+            "day_gain_trigger_source": "ibkr_bars_5m_close",
         }
 
     def _load_historical_scan_atr_pct(
@@ -1348,8 +1387,10 @@ class BacktestScanReplayMixin:
             "ready_timeframes": [],
             "bars_loaded": {},
             "last_bar_time_ms_by_interval": {},
+            "indicator_trigger_events": [],
             "repair_summary": repair_summary,
         }
+        first_trigger_events: dict[tuple[str, str], dict] = {}
         for interval in SCAN_INTERVALS:
             bars = self._load_interval_bars_before(
                 symbol,
@@ -1366,12 +1407,30 @@ class BacktestScanReplayMixin:
             last_snapshot = None
             for bar in bars:
                 last_snapshot = engine.update(bar)
+                if last_snapshot and engine.is_ready():
+                    bar_ms = int(bar.get("bar_time_ms", 0) or 0)
+                    for event in build_indicator_trigger_events_from_snapshot(
+                        last_snapshot,
+                        timeframe=interval,
+                        bar_time_ms=bar_ms,
+                        us_time=str(bar.get("us_time", "") or ""),
+                        cn_time=str(bar.get("cn_time", "") or ""),
+                        source="historical_indicator_replay",
+                        precision="first_seen",
+                    ):
+                        key = (str(event.get("key") or ""), str(event.get("timeframe") or ""))
+                        if key not in first_trigger_events:
+                            first_trigger_events[key] = event
             if not last_snapshot or not engine.is_ready():
                 continue
             engines[(environment, symbol, interval)] = engine
             details["ready_timeframes"].append(interval)
             details["last_bar_time_ms_by_interval"][interval] = int(bars[-1].get("bar_time_ms", 0) or 0)
         details["ready_timeframes"].sort(key=lambda item: interval_to_ms(item))
+        details["indicator_trigger_events"] = sorted(
+            first_trigger_events.values(),
+            key=lambda item: (int(item.get("triggered_at_ms", 0) or 0), str(item.get("key") or "")),
+        )
         return engines, details
 
     def _evaluate_historical_scan_symbol(
@@ -1382,11 +1441,18 @@ class BacktestScanReplayMixin:
         settings: dict | None = None,
     ) -> dict | None:
         cutoff_ms = self._build_scan_cutoff_ms(trade_date, request.get("premarket_cutoff_time") or DEFAULT_SCAN_CUTOFF_TIME)
+        scan_settings = settings or self._load_historical_scan_settings(request)
         metric_row = self._attach_historical_scan_fundamentals(
             symbol,
-            self._build_historical_scan_metric_row(symbol, trade_date, request, cutoff_ms, None),
+            self._build_historical_scan_metric_row(
+                symbol,
+                trade_date,
+                request,
+                cutoff_ms,
+                None,
+                settings=scan_settings,
+            ),
         )
-        scan_settings = settings or self._load_historical_scan_settings(request)
         prefilter_rejections = self._build_historical_scan_metric_rejections(
             symbol,
             metric_row,
@@ -1418,8 +1484,18 @@ class BacktestScanReplayMixin:
             return None
         metric_row = self._attach_historical_scan_fundamentals(
             symbol,
-            self._build_historical_scan_metric_row(symbol, trade_date, request, cutoff_ms, engines),
+            self._build_historical_scan_metric_row(
+                symbol,
+                trade_date,
+                request,
+                cutoff_ms,
+                engines,
+                settings=scan_settings,
+            ),
         )
+        indicator_trigger_events = list(details.get("indicator_trigger_events") or [])
+        if indicator_trigger_events:
+            metric_row["indicator_trigger_events"] = indicator_trigger_events
         scanner = DailyScanner(self.pb, engines)
         result = scanner.evaluate_symbol(
             symbol,
@@ -1442,6 +1518,7 @@ class BacktestScanReplayMixin:
                 "ready_timeframes": list(details.get("ready_timeframes") or []),
                 "bars_loaded": details.get("bars_loaded") or {},
                 "last_bar_time_ms_by_interval": details.get("last_bar_time_ms_by_interval") or {},
+                "indicator_trigger_events": indicator_trigger_events,
                 "metric_row": metric_row,
             }
         )
@@ -1630,12 +1707,35 @@ class BacktestScanReplayMixin:
             selected_rows = day_candidates[: request["max_symbols"]]
             selection_plan[trade_date] = [item["symbol"] for item in selected_rows]
             day_target_rows = []
+            active_min_score = float(scan_settings.get("active_min_score", 0) or 0)
             for rank, candidate in enumerate(selected_rows, start=1):
                 symbol = candidate["symbol"]
                 if symbol not in selected_lookup:
                     selected_lookup.add(symbol)
                     selected_symbols.append(symbol)
                 cutoff_ms = int((candidate.get("extra") or {}).get("scan_cutoff_ms", 0) or 0)
+                target_extra = {
+                    **(candidate.get("extra") or {}),
+                    "source_environment": request["source_environment"],
+                    "selection_rank": rank,
+                    "universe_mode": universe_mode,
+                    "universe_snapshot_fallback": universe_snapshot_fallback,
+                    "universe_size": scanned_count,
+                    **build_runtime_timestamps(),
+                }
+                target_extra.update(
+                    build_active_reason_payload(
+                        symbol=symbol,
+                        status="active",
+                        direction_bias=str(candidate.get("direction_bias", "neutral") or "neutral"),
+                        score=float(candidate.get("score", 0) or 0),
+                        active_min_score=active_min_score,
+                        rank=rank,
+                        subscription_rank=rank,
+                        scan_reason=str(candidate.get("scan_reason", "") or ""),
+                        extra=target_extra,
+                    )
+                )
                 day_target_rows.append(
                     {
                         "symbol": symbol,
@@ -1650,15 +1750,7 @@ class BacktestScanReplayMixin:
                         "cn_time": format_cn_time(cutoff_ms) if cutoff_ms > 0 else "",
                         "bar_time_ms": cutoff_ms,
                         "environment": BACKTEST_ENVIRONMENT,
-                        "extra": {
-                            **(candidate.get("extra") or {}),
-                            "source_environment": request["source_environment"],
-                            "selection_rank": rank,
-                            "universe_mode": universe_mode,
-                            "universe_snapshot_fallback": universe_snapshot_fallback,
-                            "universe_size": scanned_count,
-                            **build_runtime_timestamps(),
-                        },
+                        "extra": target_extra,
                     }
                 )
             target_rows.extend(day_target_rows)

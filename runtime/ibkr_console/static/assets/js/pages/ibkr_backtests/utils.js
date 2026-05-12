@@ -1107,27 +1107,75 @@
             return targetLookup.get(`${date}|${symbol}`) || [];
         }
 
-        function getBacktestTargetReasonChips(targetRows) {
+        function getBacktestTargetExtra(target) {
+            const extra = target?.extra;
+            return extra && typeof extra === 'object' ? extra : parseMaybeJson(extra, {});
+        }
+
+        function getBacktestTargetEventTime(event) {
+            const usTime = String(event?.us_time || '').trim();
+            const fullMatch = usTime.match(/\b(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})/);
+            if (fullMatch) return `${fullMatch[1]} ${fullMatch[2]} ET`;
+            const match = usTime.match(/\b(\d{2}:\d{2})/);
+            return match ? `${match[1]} ET` : '';
+        }
+
+        function formatBacktestTargetEventChip(event) {
+            const label = String(event?.label || event?.key || '').trim();
+            const timeText = getBacktestTargetEventTime(event);
+            const valueText = String(event?.value_label || '').trim();
+            return [label, timeText, valueText].filter(Boolean).join(' ');
+        }
+
+        function pushUniqueChip(chips, value) {
+            const text = String(value || '').trim();
+            if (text && !chips.includes(text)) chips.push(text);
+        }
+
+        function getBacktestTargetReasonModel(targetRows) {
             const chips = [];
+            let primaryText = '';
+            let hiddenReasons = 0;
+            let totalReasons = 0;
             (Array.isArray(targetRows) ? targetRows : []).forEach((target) => {
-                const status = String(target?.status || '').trim().toLowerCase();
-                const bias = String(target?.direction_bias || '').trim().toLowerCase();
-                const rank = Number(target?.rank || 0) || 0;
-                const score = Number(target?.score || 0) || 0;
-                if (status && !chips.includes(status)) chips.push(status);
-                if (bias && !chips.includes(bias)) chips.push(bias);
-                if (rank > 0) chips.push(`rank ${formatNumber(rank, 0)}`);
-                if (score > 0) chips.push(`score ${formatNumber(score, 1)}`);
-                String(target?.scan_reason || target?.extra?.scan_reason || '')
-                    .split(/[;,，、|]/)
-                    .map((part) => part.trim())
-                    .filter(Boolean)
-                    .slice(0, 4)
-                    .forEach((part) => {
-                        if (!chips.includes(part)) chips.push(part);
-                    });
+                const extra = getBacktestTargetExtra(target);
+                const summary = extra.active_reason_summary && typeof extra.active_reason_summary === 'object'
+                    ? extra.active_reason_summary
+                    : {};
+                const timeline = Array.isArray(extra.trigger_timeline) ? extra.trigger_timeline : [];
+                const status = String(target?.status || summary.status || '').trim().toLowerCase();
+                const bias = String(target?.direction_bias || summary.direction_bias || '').trim().toLowerCase();
+                const rank = Number(target?.rank || summary.rank || extra.selection_rank || 0) || 0;
+                const score = Number(target?.score || summary.score || 0) || 0;
+                const reasonCount = Math.max(Number(summary.reason_count || 0) || 0, timeline.length);
+                totalReasons += reasonCount;
+                if (!primaryText && String(summary.primary_text || '').trim()) {
+                    primaryText = String(summary.primary_text || '').trim();
+                }
+                if (status) {
+                    pushUniqueChip(chips, reasonCount > 1 ? `${status} · ${formatNumber(reasonCount, 0)} reasons` : status);
+                }
+                const visibleEvents = timeline.slice(0, 4);
+                visibleEvents.forEach((event) => pushUniqueChip(chips, formatBacktestTargetEventChip(event)));
+                hiddenReasons += Math.max(0, timeline.length - visibleEvents.length);
+                if (bias) pushUniqueChip(chips, bias);
+                if (rank > 0) pushUniqueChip(chips, `rank ${formatNumber(rank, 0)}`);
+                if (score > 0) pushUniqueChip(chips, `score ${formatNumber(score, 1)}`);
+                if (!timeline.length) {
+                    String(target?.scan_reason || extra.scan_reason || summary.scan_reason || '')
+                        .split(/[;,，、|]/)
+                        .map((part) => part.trim())
+                        .filter(Boolean)
+                        .slice(0, 4)
+                        .forEach((part) => pushUniqueChip(chips, part));
+                }
             });
-            return chips;
+            if (hiddenReasons > 0) pushUniqueChip(chips, `+${formatNumber(hiddenReasons, 0)} reasons`);
+            return {
+                chips,
+                primaryText,
+                totalReasons,
+            };
         }
 
         function getBacktestTablePreview(key, rows) {

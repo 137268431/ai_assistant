@@ -94,12 +94,14 @@
                                 const gapCount = Number(item.gap_count || 0);
                                 const tone = item.status === 'ok' && gapCount === 0 ? 'good' : (item.status === 'insufficient_data' ? 'bad' : 'warn');
                                 const targetRows = getBacktestTargetRowsForQualityRow(item, targetLookup);
-                                const reasonChips = getBacktestTargetReasonChips(targetRows);
+                                const reasonModel = getBacktestTargetReasonModel(targetRows);
+                                const reasonChips = reasonModel.chips || [];
                                 return `
                                     <div class="quality-card ${tone}">
                                         <div class="quality-title">${escapeHtml(item.symbol || '--')} ${item.date ? `<span class="mini-chip">${escapeHtml(item.date)}</span>` : ''}</div>
                                         <div class="quality-copy">status=${escapeHtml(item.status || '--')} · bars=${escapeHtml(String(item.bar_count || 0))} · gaps=${escapeHtml(String(gapCount))}</div>
                                         <div class="quality-copy">${escapeHtml(item.first_bar_us || '--')} → ${escapeHtml(item.last_bar_us || '--')}</div>
+                                        ${reasonModel.primaryText ? `<div class="quality-active-summary">${escapeHtml(reasonModel.primaryText)}</div>` : ''}
                                         <div class="quality-reason-row">
                                             ${reasonChips.length
                                                 ? reasonChips.map((chip) => `<span class="mini-chip">${escapeHtml(chip)}</span>`).join('')

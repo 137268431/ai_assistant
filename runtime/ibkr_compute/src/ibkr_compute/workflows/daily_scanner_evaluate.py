@@ -37,6 +37,7 @@ from .daily_scanner_support import (
     _metric_rank_bonus,
     _safe_float,
 )
+from .daily_scanner_target_reasons import build_daily_scan_trigger_timeline
 
 
 class DailyScannerEvaluateMixin:
@@ -348,6 +349,12 @@ class DailyScannerEvaluateMixin:
                 f"dir={direction_bias}, tech={technical_score}, pre={round(premarket_volume)}, "
                 f"avg10d={round(avg_10d_volume)}, atr={round(atr_pct, 4)}, day={round(day_change_pct, 2)}"
             )
+        trigger_timeline = build_daily_scan_trigger_timeline(
+            metric_row=metric_row,
+            snapshots=snapshots,
+            day_gain_triggered=day_gain_triggered,
+            day_gain_trigger_pct=day_gain_trigger_pct,
+        )
 
         return {
             "symbol": symbol,
@@ -386,6 +393,7 @@ class DailyScannerEvaluateMixin:
                 "failed_gates": failed_gates,
                 "strategy_policy": strategy_policy,
                 "reason_tags": gate_reasons,
+                "trigger_timeline": trigger_timeline,
                 **stocks_in_play_details,
             },
         }

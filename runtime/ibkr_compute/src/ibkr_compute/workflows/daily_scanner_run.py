@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+import json
+from datetime import datetime, timedelta
 
 from ibkr_compute.core.payload_compact import compact_json_payload
 from ibkr_compute.core.time_utils import ET
+from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite
+from ibkr_compute.market.timeframe_utils import format_cn_time, format_us_time, interval_to_chart_tf
+from ibkr_compute.universe.dynamic_admission import normalize_admission_bool
 
 from .daily_scanner_constants import (
     DAILY_SCAN_MODE_SEED,
@@ -15,6 +19,7 @@ from .daily_scanner_constants import (
     DAILY_SCAN_TOPUP_STAGE,
     DEFAULT_ACTIVE_MIN_SCORE,
     DEFAULT_ACTIVE_TARGET_LIMIT,
+    DEFAULT_DAY_GAIN_TRIGGER_PCT,
     MAX_DATA_COMPLETENESS_REPAIR_JOBS_IN_RESULT,
     REJECTION_BUCKET_DATA_INCOMPLETE,
 )
@@ -25,6 +30,10 @@ from .daily_scanner_support import (
     _record_rejection,
     _safe_float,
     _target_row_is_daily_scan_active,
+)
+from .daily_scanner_target_reasons import (
+    build_active_reason_payload,
+    build_indicator_trigger_events_from_snapshot,
 )
 
 
@@ -168,6 +177,7 @@ class DailyScannerRunMixin:
         engine_materialize = self._materialize_scan_engines(runtime_environment, watchlist_symbols)
         stored_indicator_snapshots = self._load_stored_indicator_snapshots(runtime_environment, watchlist_symbols)
         metric_rows = self._build_metric_rows(date, runtime_environment, watchlist_symbols)
+        self._attach_live_trigger_inputs(date, runtime_environment, metric_rows, settings)
         existing_rows = self._load_today_target_rows(date, runtime_environment)
         eligible = []
         errors = 0
@@ -287,6 +297,7 @@ class DailyScannerRunMixin:
                 active_count += 1
             else:
                 candidate_count += 1
+            subscription_rank = len(active_symbols) if status == "active" else 0
 
             extra = {
                 **(result.get("extra") or {}),
@@ -301,7 +312,8 @@ class DailyScannerRunMixin:
                 "premarket_volume": round(_safe_float(result.get("premarket_volume")), 2),
                 "atr_pct": round(_safe_float(result.get("atr_pct")), 4),
                 "day_change_pct": round(_safe_float(result.get("day_change_pct")), 2),
-                "subscription_rank": len(active_symbols) if status == "active" else 0,
+                "selection_rank": auto_rank,
+                "subscription_rank": subscription_rank,
                 "within_subscription_budget": status == "active",
                 "active_target_limit": active_target_limit,
                 "active_min_score": active_min_score,
@@ -311,6 +323,19 @@ class DailyScannerRunMixin:
             if isinstance(dynamic_thresholds, dict):
                 extra["threshold_profile"] = str(dynamic_thresholds.get("threshold_profile") or "").strip()
                 extra["threshold_profile_reasons"] = list(dynamic_thresholds.get("threshold_profile_reasons") or [])
+            extra.update(
+                build_active_reason_payload(
+                    symbol=symbol,
+                    status=status,
+                    direction_bias=str(result.get("direction_bias", "neutral") or "neutral"),
+                    score=_safe_float(result.get("score")),
+                    active_min_score=active_min_score,
+                    rank=auto_rank,
+                    subscription_rank=subscription_rank,
+                    scan_reason=str(result.get("reason", "") or ""),
+                    extra=extra,
+                )
+            )
             self.pb_client.upsert_scan(
                 {
                     "environment": runtime_environment,
@@ -337,6 +362,7 @@ class DailyScannerRunMixin:
                     "threshold_profile": extra.get("threshold_profile", ""),
                     "scan_reason": result.get("reason", ""),
                     "scan_stage": scan_stage,
+                    "active_reason_summary": extra.get("active_reason_summary") or {},
                 }
             )
 
@@ -423,6 +449,169 @@ class DailyScannerRunMixin:
             row["fundamentals"] = dict(fundamentals)
             row["symbol_fundamentals"] = dict(fundamentals)
         return rows
+
+    def _attach_live_trigger_inputs(
+        self,
+        date: str,
+        environment: str,
+        metric_rows: dict[str, dict],
+        settings: dict,
+    ) -> None:
+        if not metric_rows:
+            return
+        try:
+            self._attach_live_day_gain_trigger_times(date, environment, metric_rows, settings)
+        except Exception as exc:
+            print(f"[Scanner] trigger day-gain timing skipped: {exc}")
+        try:
+            indicator_events = self._load_live_indicator_trigger_events(date, environment, sorted(metric_rows.keys()))
+        except Exception as exc:
+            print(f"[Scanner] indicator trigger timing skipped: {exc}")
+            indicator_events = {}
+        for symbol, events in (indicator_events or {}).items():
+            if not events or symbol not in metric_rows:
+                continue
+            metric_rows[symbol]["indicator_trigger_events"] = events
+
+    def _scan_date_bounds_ms(self, date: str) -> tuple[int, int]:
+        start_dt = datetime.strptime(str(date or "").strip(), "%Y-%m-%d").replace(
+            tzinfo=ET,
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        end_dt = start_dt + timedelta(days=1)
+        return int(start_dt.timestamp() * 1000), int(end_dt.timestamp() * 1000)
+
+    def _attach_live_day_gain_trigger_times(
+        self,
+        date: str,
+        environment: str,
+        metric_rows: dict[str, dict],
+        settings: dict,
+    ) -> None:
+        if not normalize_admission_bool((settings or {}).get("day_gain_trigger_enabled"), True):
+            return
+        threshold_pct = max(
+            0.0,
+            _safe_float((settings or {}).get("day_gain_trigger_pct"), DEFAULT_DAY_GAIN_TRIGGER_PCT),
+        )
+        if threshold_pct <= 0:
+            return
+        symbols = [
+            symbol
+            for symbol, row in (metric_rows or {}).items()
+            if _safe_float((row or {}).get("prev_close")) > 0
+            and _safe_float((row or {}).get("day_change_pct")) >= threshold_pct
+        ]
+        if not symbols:
+            return
+        start_ms, end_ms = self._scan_date_bounds_ms(date)
+        placeholders = ", ".join("?" for _ in symbols)
+        runtime_environment = str(environment or "live").strip().lower() or "live"
+        env_clause = "(environment = ? OR environment = '')" if runtime_environment == "live" else "environment = ?"
+        params = [runtime_environment, start_ms, end_ms, *symbols]
+        with open_pb_sqlite(readonly=True, timeout=8.0) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT symbol, close, us_time, cn_time, bar_time_ms
+                FROM ibkr_bars
+                WHERE interval = '5m'
+                  AND {env_clause}
+                  AND bar_time_ms >= ?
+                  AND bar_time_ms < ?
+                  AND symbol IN ({placeholders})
+                ORDER BY symbol ASC, bar_time_ms ASC
+                """,
+                tuple(params),
+            ).fetchall()
+        seen: set[str] = set()
+        for row in rows:
+            symbol = str(row["symbol"] or "").strip().upper()
+            if not symbol or symbol in seen or symbol not in metric_rows:
+                continue
+            metric_row = metric_rows[symbol]
+            prev_close = _safe_float(metric_row.get("prev_close"))
+            close = _safe_float(row["close"])
+            if prev_close <= 0 or close <= 0:
+                continue
+            day_gain_pct = (close - prev_close) / prev_close * 100.0
+            if day_gain_pct < threshold_pct:
+                continue
+            bar_ms = int(row["bar_time_ms"] or 0)
+            metric_row.update(
+                {
+                    "day_gain_triggered_at_ms": bar_ms,
+                    "day_gain_triggered_us_time": str(row["us_time"] or format_us_time(bar_ms)),
+                    "day_gain_triggered_cn_time": str(row["cn_time"] or format_cn_time(bar_ms)),
+                    "day_gain_triggered_price": round(close, 4),
+                    "day_gain_triggered_pct": round(day_gain_pct, 4),
+                    "day_gain_trigger_source": "ibkr_bars_5m_close",
+                }
+            )
+            seen.add(symbol)
+
+    def _load_live_indicator_trigger_events(
+        self,
+        date: str,
+        environment: str,
+        symbols: list[str],
+    ) -> dict[str, list[dict]]:
+        normalized_symbols = sorted({str(symbol or "").strip().upper() for symbol in symbols or [] if str(symbol or "").strip()})
+        if not normalized_symbols:
+            return {}
+        start_ms, end_ms = self._scan_date_bounds_ms(date)
+        placeholders = ", ".join("?" for _ in normalized_symbols)
+        chart_tf = interval_to_chart_tf("5m")
+        interval_values = list(dict.fromkeys([chart_tf, "5m"]))
+        interval_placeholders = ", ".join("?" for _ in interval_values)
+        runtime_environment = str(environment or "live").strip().lower() or "live"
+        params = [runtime_environment, *interval_values, start_ms, end_ms, *normalized_symbols]
+        with open_pb_sqlite(readonly=True, timeout=8.0) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT symbol, interval, us_time, cn_time, bar_time_ms, extra
+                FROM ibkr_indicators
+                WHERE environment = ?
+                  AND interval IN ({interval_placeholders})
+                  AND bar_time_ms >= ?
+                  AND bar_time_ms < ?
+                  AND symbol IN ({placeholders})
+                ORDER BY bar_time_ms ASC
+                """,
+                tuple(params),
+            ).fetchall()
+        events_by_symbol: dict[str, list[dict]] = {}
+        seen: set[tuple[str, str, str]] = set()
+        for row in rows:
+            symbol = str(row["symbol"] or "").strip().upper()
+            if not symbol:
+                continue
+            extra = row["extra"]
+            if isinstance(extra, str):
+                try:
+                    extra = json.loads(extra)
+                except Exception:
+                    extra = {}
+            if not isinstance(extra, dict):
+                extra = {}
+            events = build_indicator_trigger_events_from_snapshot(
+                extra,
+                timeframe="5m",
+                bar_time_ms=int(row["bar_time_ms"] or 0),
+                us_time=str(row["us_time"] or ""),
+                cn_time=str(row["cn_time"] or ""),
+                source="indicator_history",
+                precision="first_seen",
+            )
+            for event in events:
+                key = (symbol, str(event.get("key") or ""), str(event.get("timeframe") or ""))
+                if key in seen:
+                    continue
+                seen.add(key)
+                events_by_symbol.setdefault(symbol, []).append(event)
+        return events_by_symbol
 
     def _load_fundamentals_by_symbol(self, symbols: list[str]) -> dict[str, dict]:
         normalized_symbols = sorted(
