@@ -183,13 +183,44 @@
             `;
         }
 
+        function getFilteredRuns() {
+            const search = String(runFilters.search || '').trim().toLowerCase();
+            const status = String(runFilters.status || 'all').trim().toLowerCase();
+            const source = String(runFilters.source || 'all').trim().toLowerCase();
+            return runList.filter((run) => {
+                if (status !== 'all' && String(run.status || '').toLowerCase() !== status) return false;
+                if (source !== 'all' && String(run.source_environment || '').toLowerCase() !== source) return false;
+                if (!search) return true;
+                const haystack = [
+                    run.id,
+                    run.name,
+                    run.symbols,
+                    run.symbol_source,
+                    run.session_mode,
+                    run.benchmark_symbol,
+                    run.date_from,
+                    run.date_to,
+                    run.status,
+                    run.source_environment,
+                ].map((value) => String(value || '').toLowerCase()).join(' ');
+                return haystack.includes(search);
+            });
+        }
+
         function renderRuns() {
-            document.getElementById('runCountLabel').textContent = `${runList.length} runs`;
+            const filteredRuns = getFilteredRuns();
+            document.getElementById('runCountLabel').textContent = filteredRuns.length === runList.length
+                ? `${runList.length} runs`
+                : `${filteredRuns.length}/${runList.length} runs`;
             if (!runList.length) {
                 document.getElementById('runList').innerHTML = '<div class="empty-state">暂无回测记录。<br>先跑一轮。</div>';
                 return;
             }
-            const runPreview = getBacktestTablePreview('runs', runList);
+            if (!filteredRuns.length) {
+                document.getElementById('runList').innerHTML = '<div class="empty-state">没有匹配当前过滤条件的 run。</div>';
+                return;
+            }
+            const runPreview = getBacktestTablePreview('runs', filteredRuns);
             document.getElementById('runList').innerHTML = `
                 ${renderBacktestTablePreviewBar('runs', runPreview, '个 run')}
                 ${runPreview.rows.map((run) => `

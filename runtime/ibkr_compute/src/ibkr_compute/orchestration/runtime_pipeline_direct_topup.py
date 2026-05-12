@@ -58,6 +58,57 @@ class RuntimePipelineDirectTopupMixin:
                 ),
             )
 
+    def _runtime_direct_topup_parallel_enabled(self) -> bool:
+            service_mod = _service_mod()
+            return self.config.get_bool_for_environment(
+                "ibkr_runtime_direct_topup_parallel_enabled",
+                service_mod.ENVIRONMENT,
+                bool(getattr(service_mod, "DEFAULT_RUNTIME_DIRECT_TOPUP_PARALLEL_ENABLED", True)),
+            )
+
+    def _runtime_direct_topup_interval_priority(self) -> list[str]:
+            service_mod = _service_mod()
+            fallback = tuple(
+                getattr(
+                    service_mod,
+                    "DEFAULT_RUNTIME_DIRECT_TOPUP_INTERVAL_PRIORITY",
+                    ("4h", "1h", "30m", "15m", "1d"),
+                )
+                or ("4h", "1h", "30m", "15m", "1d")
+            )
+            raw_value = str(
+                self.config.get_for_environment(
+                    "ibkr_runtime_direct_topup_interval_priority",
+                    service_mod.ENVIRONMENT,
+                    ",".join(fallback),
+                )
+                or ""
+            )
+            allowed = {normalize_interval(interval) for interval in service_mod.DEFAULT_RUNTIME_DIRECT_TOPUP_INTERVALS}
+            priority = []
+            for item in raw_value.replace(";", ",").split(","):
+                normalized = normalize_interval(item)
+                if normalized in allowed and normalized not in priority:
+                    priority.append(normalized)
+            if priority:
+                return priority
+            return [
+                normalize_interval(interval)
+                for interval in fallback
+                if normalize_interval(interval) in allowed
+            ] or list(service_mod.DEFAULT_RUNTIME_DIRECT_TOPUP_INTERVALS)
+
+    def _runtime_direct_topup_order_intervals(self, intervals: list[str]) -> list[str]:
+            normalized_intervals = []
+            for interval in intervals:
+                normalized = normalize_interval(interval)
+                if normalized and normalized not in normalized_intervals:
+                    normalized_intervals.append(normalized)
+            priority = self._runtime_direct_topup_interval_priority()
+            ordered = [interval for interval in priority if interval in normalized_intervals]
+            ordered.extend(interval for interval in normalized_intervals if interval not in ordered)
+            return ordered
+
     def _runtime_direct_topup_request_period(self, interval: str) -> str:
             service_mod = _service_mod()
             normalized = normalize_interval(interval)
@@ -79,6 +130,15 @@ class RuntimePipelineDirectTopupMixin:
                 "intervals": list(service_mod.DEFAULT_RUNTIME_DIRECT_TOPUP_INTERVALS),
                 "close_delay_sec": service_mod.DEFAULT_RUNTIME_DIRECT_TOPUP_CLOSE_DELAY_SECONDS,
                 "loop_interval_s": service_mod.DEFAULT_RUNTIME_DIRECT_TOPUP_LOOP_INTERVAL_SECONDS,
+                "parallel_enabled": bool(getattr(service_mod, "DEFAULT_RUNTIME_DIRECT_TOPUP_PARALLEL_ENABLED", True)),
+                "interval_priority": list(
+                    getattr(
+                        service_mod,
+                        "DEFAULT_RUNTIME_DIRECT_TOPUP_INTERVAL_PRIORITY",
+                        ("4h", "1h", "30m", "15m", "1d"),
+                    )
+                    or ("4h", "1h", "30m", "15m", "1d")
+                ),
                 "last_run": "",
                 "last_error": "",
                 "total_written_bars": 0,
@@ -356,6 +416,247 @@ class RuntimePipelineDirectTopupMixin:
             )
             return base_update
 
+    def _run_runtime_direct_topup_intervals_batch(
+            self,
+            intervals: list[str],
+            symbols: list[str],
+            conid_map: dict,
+            symbol_meta: dict,
+            state: dict,
+        ) -> tuple[dict, list[str], int, str]:
+            service_mod = _service_mod()
+            interval_states = dict(state.get("intervals_state") or {})
+            runnable_conids = {
+                symbol: int(conid_map.get(symbol) or 0)
+                for symbol in symbols
+                if int(conid_map.get(symbol) or 0) > 0
+            }
+            missing_conid_symbols = [symbol for symbol in symbols if symbol not in runnable_conids]
+            run_specs = []
+            ran_intervals = []
+            errors = []
+
+            for interval in intervals:
+                normalized_interval = normalize_interval(interval)
+                due_bucket_ms = self._runtime_direct_topup_latest_due_ms(normalized_interval)
+                interval_state = dict(interval_states.get(normalized_interval) or {})
+                last_completed_bucket_ms = int(interval_state.get("last_completed_bucket_ms", 0) or 0)
+                request_period = self._runtime_direct_topup_request_period(normalized_interval)
+                base_update = {
+                    **interval_state,
+                    "enabled": True,
+                    "request_period": request_period,
+                    "last_due_bucket_ms": due_bucket_ms,
+                    "last_due_bucket_us": format_us_time(due_bucket_ms) if due_bucket_ms > 0 else "",
+                }
+                if due_bucket_ms <= 0:
+                    base_update["status"] = "waiting"
+                    base_update["reason"] = "no_safe_bucket"
+                    interval_states[normalized_interval] = base_update
+                    continue
+                if due_bucket_ms <= last_completed_bucket_ms:
+                    base_update["status"] = "idle"
+                    base_update["reason"] = "already_completed"
+                    interval_states[normalized_interval] = base_update
+                    continue
+                ran_intervals.append(normalized_interval)
+                if not symbols:
+                    base_update.update(
+                        {
+                            "status": "skipped",
+                            "reason": "no_trade_symbols",
+                            "last_run": self._now_iso(),
+                            "last_completed_bucket_ms": due_bucket_ms,
+                            "last_completed_bucket_us": format_us_time(due_bucket_ms),
+                            "last_written_bars": 0,
+                            "written_symbols": [],
+                            "written_symbols_total": 0,
+                            "pending_symbols": [],
+                            "pending_symbols_total": 0,
+                            "last_error": "",
+                        }
+                    )
+                    interval_states[normalized_interval] = base_update
+                    continue
+                if not runnable_conids:
+                    base_update.update(
+                        {
+                            "status": "pending",
+                            "reason": "missing_conids",
+                            "last_run": self._now_iso(),
+                            "symbol_count": len(symbols),
+                            "missing_conid_symbols": missing_conid_symbols,
+                            "last_written_bars": 0,
+                            "written_symbols": [],
+                            "written_symbols_total": 0,
+                            "pending_symbols": missing_conid_symbols,
+                            "pending_symbols_total": len(missing_conid_symbols),
+                            "last_error": "missing_conids",
+                        }
+                    )
+                    interval_states[normalized_interval] = base_update
+                    errors.append(f"{normalized_interval}:missing_conids")
+                    continue
+
+                base_update.update(
+                    {
+                        "status": "running",
+                        "reason": "",
+                        "last_run": self._now_iso(),
+                        "symbol_count": len(symbols),
+                        "missing_conid_symbols": missing_conid_symbols,
+                        "last_error": "",
+                    }
+                )
+                interval_states[normalized_interval] = base_update
+                run_specs.append(
+                    {
+                        "interval": normalized_interval,
+                        "due_bucket_ms": due_bucket_ms,
+                        "last_completed_bucket_ms": last_completed_bucket_ms,
+                        "last_completed_bucket_us": str(interval_state.get("last_completed_bucket_us") or ""),
+                        "request_period": request_period,
+                    }
+                )
+
+            if not run_specs:
+                return interval_states, ran_intervals, 0, ";".join(errors[:5])
+
+            self._set_direct_topup_state(
+                enabled=self._runtime_direct_topup_enabled(),
+                intervals=list(state.get("intervals") or intervals),
+                close_delay_sec=self._runtime_direct_topup_close_delay_sec(),
+                loop_interval_s=self._runtime_direct_topup_loop_interval_sec(),
+                parallel_enabled=self._runtime_direct_topup_parallel_enabled(),
+                interval_priority=self._runtime_direct_topup_interval_priority(),
+                last_run=self._now_iso(),
+                intervals_state=interval_states,
+            )
+
+            started_at = time.time()
+            interval_list = [spec["interval"] for spec in run_specs]
+            period_by_interval = {spec["interval"]: spec["request_period"] for spec in run_specs}
+            written_by_interval = {interval: 0 for interval in interval_list}
+            written_symbols_by_interval = {interval: [] for interval in interval_list}
+            batch_error = ""
+            flushed = False
+            try:
+                period_overrides = {
+                    symbol: dict(period_by_interval)
+                    for symbol in runnable_conids
+                }
+                results = self.data_backfill.backfill_all(
+                    runnable_conids,
+                    symbol_meta=symbol_meta,
+                    intervals=interval_list,
+                    repair_symbols=[],
+                    period_overrides=period_overrides,
+                )
+                self.data_writer.flush()
+                flushed = True
+                for symbol, payload in (results or {}).items():
+                    for interval in interval_list:
+                        count = int((payload or {}).get(interval, 0) or 0)
+                        if count > 0:
+                            written_symbols_by_interval[interval].append(symbol)
+                            written_by_interval[interval] += count
+                compute_result = self._trigger_realtime_compute(
+                    source="direct_history_topup",
+                    symbols=list(runnable_conids.keys()),
+                    persist_signals=False,
+                    intervals=interval_list,
+                    rollup_intervals=[],
+                )
+                if compute_result.get("ok") is False:
+                    batch_error = str(compute_result.get("error") or "compute_failed")
+            except Exception as exc:
+                service_mod.logger.warning(
+                    "Runtime direct batch top-up failed for %s: %s",
+                    ",".join(interval_list),
+                    exc,
+                )
+                batch_error = str(exc)
+            finally:
+                if not flushed and getattr(self, "data_writer", None) is not None:
+                    try:
+                        self.data_writer.flush()
+                    except Exception as exc:
+                        if not batch_error:
+                            batch_error = str(exc)
+
+            verified_by_interval = {interval: [] for interval in interval_list}
+            pending_by_interval = {interval: [] for interval in interval_list}
+            freshness_by_interval = {interval: {} for interval in interval_list}
+            if not batch_error:
+                planner = getattr(self, "bar_freshness_planner", None)
+                if planner is None:
+                    for interval in interval_list:
+                        verified_by_interval[interval] = list(runnable_conids.keys())
+                        freshness_by_interval[interval] = {
+                            symbol: {"status": "not_checked", "reason": "planner_unavailable"}
+                            for symbol in runnable_conids.keys()
+                        }
+                else:
+                    due_by_interval = {spec["interval"]: int(spec["due_bucket_ms"] or 0) for spec in run_specs}
+                    for symbol in runnable_conids.keys():
+                        try:
+                            freshness = planner.plan_symbol(
+                                symbol,
+                                interval_list,
+                                environment=service_mod.ENVIRONMENT,
+                                required_bars=0,
+                            )
+                            intervals_payload = freshness.get("intervals") or {}
+                        except Exception as exc:
+                            intervals_payload = {
+                                interval: {"status": "verify_failed", "error": str(exc)}
+                                for interval in interval_list
+                            }
+                        for interval in interval_list:
+                            interval_payload = dict(intervals_payload.get(interval) or {})
+                            freshness_by_interval[interval][symbol] = interval_payload
+                            latest_ms = int(interval_payload.get("latest_stored_ms", 0) or 0)
+                            if latest_ms >= due_by_interval[interval]:
+                                verified_by_interval[interval].append(symbol)
+                            else:
+                                pending_by_interval[interval].append(symbol)
+
+            total_written = 0
+            for spec in run_specs:
+                normalized_interval = spec["interval"]
+                interval_error = batch_error
+                pending_freshness_symbols = pending_by_interval.get(normalized_interval) or []
+                if not interval_error and pending_freshness_symbols:
+                    interval_error = "freshness_pending_after_topup"
+                completed = not interval_error
+                pending_symbols = [] if completed else sorted(pending_freshness_symbols or runnable_conids.keys())
+                base_update = dict(interval_states.get(normalized_interval) or {})
+                written_bars = int(written_by_interval.get(normalized_interval, 0) or 0)
+                total_written += written_bars
+                base_update.update(
+                    {
+                        "status": "completed" if completed else ("pending" if pending_freshness_symbols else "failed"),
+                        "reason": "" if completed else str(interval_error or "topup_failed"),
+                        "last_completed_bucket_ms": spec["due_bucket_ms"] if completed else spec["last_completed_bucket_ms"],
+                        "last_completed_bucket_us": format_us_time(spec["due_bucket_ms"]) if completed else spec["last_completed_bucket_us"],
+                        "last_written_bars": written_bars,
+                        "written_symbols": sorted(written_symbols_by_interval.get(normalized_interval) or []),
+                        "written_symbols_total": len(written_symbols_by_interval.get(normalized_interval) or []),
+                        "verified_symbols": sorted(verified_by_interval.get(normalized_interval) or []),
+                        "verified_symbols_total": len(verified_by_interval.get(normalized_interval) or []),
+                        "pending_symbols": pending_symbols,
+                        "pending_symbols_total": len(pending_symbols),
+                        "freshness_by_symbol": freshness_by_interval.get(normalized_interval) or {},
+                        "duration_s": round(max(0.0, time.time() - started_at), 3),
+                        "last_error": interval_error,
+                    }
+                )
+                interval_states[normalized_interval] = base_update
+                if interval_error:
+                    errors.append(f"{normalized_interval}:{interval_error}")
+
+            return interval_states, ran_intervals, total_written, ";".join(errors[:5])
+
     def _run_runtime_direct_topup_cycle(self, intervals_override: list[str] | None = None):
             service_mod = _service_mod()
             enabled = self._runtime_direct_topup_enabled()
@@ -368,11 +669,14 @@ class RuntimePipelineDirectTopupMixin:
             state.update(
                 {
                     "enabled": enabled,
-                    "intervals": intervals,
+                    "intervals": self._runtime_direct_topup_order_intervals(intervals),
                     "close_delay_sec": self._runtime_direct_topup_close_delay_sec(),
                     "loop_interval_s": self._runtime_direct_topup_loop_interval_sec(),
+                    "parallel_enabled": self._runtime_direct_topup_parallel_enabled(),
+                    "interval_priority": self._runtime_direct_topup_interval_priority(),
                 }
             )
+            intervals = list(state["intervals"])
             if not enabled:
                 self._set_direct_topup_state(**state)
                 return
@@ -395,30 +699,42 @@ class RuntimePipelineDirectTopupMixin:
             total_written = int(state.get("total_written_bars", 0) or 0)
             last_error = ""
 
-            # Keep this low priority: run at most one due higher interval per loop tick.
-            for interval in intervals:
-                normalized_interval = normalize_interval(interval)
-                interval_state = self._run_runtime_direct_topup_interval(
-                    normalized_interval,
+            if self._runtime_direct_topup_parallel_enabled():
+                interval_states, ran_intervals, written_delta, last_error = self._run_runtime_direct_topup_intervals_batch(
+                    intervals,
                     symbols,
                     conid_map,
                     symbol_meta,
                     state,
                 )
-                interval_states[normalized_interval] = interval_state
-                if str(interval_state.get("status") or "") in {"completed", "failed", "skipped", "pending"}:
-                    previous_state = (state.get("intervals_state") or {}).get(normalized_interval) or {}
-                    if int(interval_state.get("last_due_bucket_ms", 0) or 0) > int(previous_state.get("last_completed_bucket_ms", 0) or 0):
-                        ran_interval = normalized_interval
-                        total_written += int(interval_state.get("last_written_bars", 0) or 0)
-                        last_error = str(interval_state.get("last_error") or "")
-                        break
+                ran_interval = ",".join(ran_intervals)
+                total_written += written_delta
+            else:
+                for interval in intervals:
+                    normalized_interval = normalize_interval(interval)
+                    interval_state = self._run_runtime_direct_topup_interval(
+                        normalized_interval,
+                        symbols,
+                        conid_map,
+                        symbol_meta,
+                        state,
+                    )
+                    interval_states[normalized_interval] = interval_state
+                    if str(interval_state.get("status") or "") in {"completed", "failed", "skipped", "pending"}:
+                        previous_state = (state.get("intervals_state") or {}).get(normalized_interval) or {}
+                        if int(interval_state.get("last_due_bucket_ms", 0) or 0) > int(previous_state.get("last_completed_bucket_ms", 0) or 0):
+                            ran_interval = normalized_interval
+                            total_written += int(interval_state.get("last_written_bars", 0) or 0)
+                            last_error = str(interval_state.get("last_error") or "")
+                            break
 
             self._set_direct_topup_state(
                 enabled=enabled,
                 intervals=intervals,
                 close_delay_sec=self._runtime_direct_topup_close_delay_sec(),
                 loop_interval_s=self._runtime_direct_topup_loop_interval_sec(),
+                parallel_enabled=self._runtime_direct_topup_parallel_enabled(),
+                interval_priority=self._runtime_direct_topup_interval_priority(),
                 last_run=self._now_iso(),
                 last_error=last_error,
                 total_written_bars=total_written,
@@ -439,6 +755,8 @@ class RuntimePipelineDirectTopupMixin:
                         intervals=self._runtime_direct_topup_intervals(),
                         close_delay_sec=self._runtime_direct_topup_close_delay_sec(),
                         loop_interval_s=self._runtime_direct_topup_loop_interval_sec(),
+                        parallel_enabled=self._runtime_direct_topup_parallel_enabled(),
+                        interval_priority=self._runtime_direct_topup_interval_priority(),
                         last_run=self._now_iso(),
                         last_error=str(exc),
                     )

@@ -29,6 +29,8 @@ function applyDefaultDates() {
         window.refreshSelectedRun = refreshSelectedRun;
         window.refreshSelectedBatch = refreshSelectedBatch;
         window.setBacktestTab = setBacktestTab;
+        window.onRunFilterChange = onRunFilterChange;
+        window.resetRunFilters = resetRunFilters;
         window.loadMoreBacktestRows = loadMoreBacktestRows;
         window.loadAllBacktestRows = loadAllBacktestRows;
         window.ensureBacktestRowsForActiveTab = ensureBacktestRowsForActiveTab;

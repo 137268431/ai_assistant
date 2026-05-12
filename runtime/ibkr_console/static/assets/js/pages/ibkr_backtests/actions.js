@@ -435,6 +435,28 @@
             }
         }
 
+        function onRunFilterChange() {
+            runFilters.search = String(document.getElementById('runSearch')?.value || '').trim();
+            runFilters.status = String(document.getElementById('runStatusFilter')?.value || 'all').trim() || 'all';
+            runFilters.source = String(document.getElementById('runSourceFilter')?.value || 'all').trim() || 'all';
+            backtestTableExpandedState.runs = false;
+            renderRuns();
+        }
+
+        function resetRunFilters() {
+            runFilters.search = '';
+            runFilters.status = 'all';
+            runFilters.source = 'all';
+            const searchInput = document.getElementById('runSearch');
+            const statusInput = document.getElementById('runStatusFilter');
+            const sourceInput = document.getElementById('runSourceFilter');
+            if (searchInput) searchInput.value = '';
+            if (statusInput) statusInput.value = 'all';
+            if (sourceInput) sourceInput.value = 'all';
+            backtestTableExpandedState.runs = false;
+            renderRuns();
+        }
+
         async function replayTrade(symbol, entryBarMs) {
             setBacktestTab('trades');
             document.getElementById('replayCenterBar').value = String(entryBarMs || '');

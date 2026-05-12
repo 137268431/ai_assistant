@@ -327,6 +327,17 @@ body {
             overflow: visible;
             padding-right: 0;
         }
+        .run-filter-bar {
+            position: relative;
+            z-index: 1;
+            display: grid;
+            grid-template-columns: minmax(220px, 1fr) minmax(130px, 0.38fr) minmax(130px, 0.38fr) auto;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+        .run-filter-action {
+            min-width: 82px;
+        }
         .btn {
             border: 1px solid rgba(255,255,255,0.10);
             background: rgba(255,255,255,0.05);
@@ -1118,6 +1129,7 @@ body {
             .form-grid,
             .advanced-grid,
             .detail-list,
+            .run-filter-bar,
             .tracking-filter-bar,
             .tracking-grid,
             .replay-controls {

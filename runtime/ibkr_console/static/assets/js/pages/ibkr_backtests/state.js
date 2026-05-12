@@ -21,6 +21,11 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         let refreshTimer = null;
         let actionPending = false;
         let activeBacktestTab = 'runs';
+        const runFilters = {
+            search: '',
+            status: 'all',
+            source: 'all',
+        };
         const BACKTEST_REFRESH_INTERVAL_RUNNING_MS = 10000;
         const BACKTEST_REFRESH_INTERVAL_IDLE_MS = 60000;
         const BACKTEST_ROW_PAGE_CONFIG = Object.freeze({

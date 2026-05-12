@@ -11,7 +11,7 @@ SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "s
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from ibkr_compute.market.timeframe_utils import format_us_time
+from ibkr_compute.market.timeframe_utils import format_us_time, normalize_interval
 from ibkr_compute.orchestration.runtime_pipeline import TradingServiceRuntimePipelineMixin
 
 
@@ -131,12 +131,16 @@ class _FakeBackfill:
         }
 
     def backfill_all(self, conid_map, symbol_meta=None, intervals=None, repair_symbols=None, period_overrides=None):
-        interval = str((intervals or ["5m"])[0])
+        requested_intervals = []
+        for interval in (intervals or ["5m"]):
+            normalized = normalize_interval(interval)
+            if normalized and normalized not in requested_intervals:
+                requested_intervals.append(normalized)
         self.backfill_all_calls.append(
             {
                 "conid_map": dict(conid_map or {}),
                 "symbol_meta": dict(symbol_meta or {}),
-                "intervals": list(intervals or []),
+                "intervals": list(requested_intervals),
                 "repair_symbols": list(repair_symbols or []),
                 "period_overrides": {
                     symbol: dict(payload or {})
@@ -144,7 +148,7 @@ class _FakeBackfill:
                 },
             }
         )
-        return {symbol: {interval: 1} for symbol in (conid_map or {})}
+        return {symbol: {interval: 1 for interval in requested_intervals} for symbol in (conid_map or {})}
 
 
 class _FakeConfig:
@@ -230,6 +234,8 @@ class _DummyPipeline(TradingServiceRuntimePipelineMixin):
             "intervals": ["15m", "30m", "1h", "4h", "1d"],
             "close_delay_sec": 30,
             "loop_interval_s": 5,
+            "parallel_enabled": True,
+            "interval_priority": ["4h", "1h", "30m", "15m", "1d"],
             "last_run": "",
             "last_error": "",
             "total_written_bars": 0,
@@ -337,6 +343,8 @@ class Official5mCloseFlushTest(unittest.TestCase):
             DEFAULT_RUNTIME_DIRECT_TOPUP_INTERVALS=("15m", "30m", "1h", "4h", "1d"),
             DEFAULT_RUNTIME_DIRECT_TOPUP_CLOSE_DELAY_SECONDS=30,
             DEFAULT_RUNTIME_DIRECT_TOPUP_LOOP_INTERVAL_SECONDS=5.0,
+            DEFAULT_RUNTIME_DIRECT_TOPUP_PARALLEL_ENABLED=True,
+            DEFAULT_RUNTIME_DIRECT_TOPUP_INTERVAL_PRIORITY=("4h", "1h", "30m", "15m", "1d"),
             DEFAULT_RUNTIME_DIRECT_TOPUP_PERIODS={
                 "15m": "2d",
                 "30m": "3d",
@@ -657,6 +665,59 @@ class Official5mCloseFlushTest(unittest.TestCase):
         self.assertEqual(state["intervals_state"]["15m"]["status"], "completed")
         self.assertEqual(state["intervals_state"]["15m"]["last_completed_bucket_ms"], due_15m_ms)
         self.assertEqual(state["intervals_state"]["15m"]["written_symbols"], ["AAPL"])
+        self.assertEqual(writer.flush_calls, 1)
+
+    def test_runtime_direct_topup_batches_all_due_intervals_in_priority_order(self):
+        due_5m_ms = int(datetime(2026, 4, 17, 10, 45, tzinfo=ET).timestamp() * 1000)
+        due_15m_ms = int(datetime(2026, 4, 17, 10, 30, tzinfo=ET).timestamp() * 1000)
+        writer = _FakeWriter()
+        backfill = _FakeBackfill(writer)
+        pipeline = _DummyPipeline(
+            due_bucket_ms=due_5m_ms,
+            last_completed_bucket_ms=due_5m_ms,
+            data_writer=writer,
+            data_backfill=backfill,
+            snapshot={
+                "symbols": ["AAPL", "MSFT"],
+                "trade_symbols": ["AAPL"],
+                "monitor_symbols": ["MSFT"],
+                "conid_map": {"AAPL": 1, "MSFT": 2},
+                "symbol_meta": {
+                    "AAPL": {"exchange": "NASDAQ"},
+                    "MSFT": {"exchange": "NASDAQ"},
+                },
+            },
+        )
+        pipeline._direct_topup_due_ms = due_15m_ms
+
+        with mock.patch("ibkr_compute.orchestration.runtime_pipeline._service_mod", return_value=self._service_mod()):
+            pipeline._run_runtime_direct_topup_cycle(["15m", "30m", "1h", "4h"])
+
+        self.assertEqual(len(backfill.backfill_all_calls), 1)
+        self.assertEqual(backfill.backfill_all_calls[0]["intervals"], ["4h", "1h", "30m", "15m"])
+        self.assertEqual(
+            backfill.backfill_all_calls[0]["period_overrides"],
+            {"AAPL": {"4h": "20d", "1h": "5d", "30m": "3d", "15m": "2d"}},
+        )
+        self.assertEqual(
+            pipeline.compute_triggers,
+            [
+                {
+                    "source": "direct_history_topup",
+                    "symbols": ["AAPL"],
+                    "persist_signals": False,
+                    "intervals": ["4h", "1h", "30m", "15m"],
+                    "rollup_intervals": [],
+                }
+            ],
+        )
+        state = pipeline._copy_direct_topup_state()
+        self.assertEqual(state["last_completed_interval"], "4h,1h,30m,15m")
+        self.assertEqual(state["total_written_bars"], 4)
+        for interval in ["4h", "1h", "30m", "15m"]:
+            self.assertEqual(state["intervals_state"][interval]["status"], "completed")
+            self.assertEqual(state["intervals_state"][interval]["last_completed_bucket_ms"], due_15m_ms)
+            self.assertEqual(state["intervals_state"][interval]["written_symbols"], ["AAPL"])
         self.assertEqual(writer.flush_calls, 1)
 
     def test_runtime_direct_topup_skips_when_canonical_5m_is_not_current(self):
