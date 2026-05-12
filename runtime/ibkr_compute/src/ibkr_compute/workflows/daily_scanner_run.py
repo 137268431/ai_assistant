@@ -22,6 +22,8 @@ from .daily_scanner_constants import (
     DEFAULT_DAY_GAIN_TRIGGER_PCT,
     MAX_DATA_COMPLETENESS_REPAIR_JOBS_IN_RESULT,
     REJECTION_BUCKET_DATA_INCOMPLETE,
+    REJECTION_BUCKET_TOPUP_ACTIVE_BUDGET,
+    REJECTION_BUCKET_TOPUP_ACTIVE_SCORE,
 )
 from .daily_scanner_support import (
     _flatten_rejection_examples,
@@ -290,6 +292,29 @@ class DailyScannerRunMixin:
 
             auto_rank += 1
             qualifies_active = _safe_float(result.get("score")) >= active_min_score
+            if scan_mode == DAILY_SCAN_MODE_TOPUP:
+                if not qualifies_active:
+                    _record_rejection(
+                        rejection_summary,
+                        rejection_examples_by_bucket,
+                        bucket=REJECTION_BUCKET_TOPUP_ACTIVE_SCORE,
+                        symbol=symbol,
+                        actual=f"{_safe_float(result.get('score')):.3f}",
+                        threshold=f">={active_min_score:.3f}",
+                        note="topup 只新增 active 标的；低分候选保留给 seed 扫描或盘中窗口入池",
+                    )
+                    continue
+                if len(active_symbols) >= active_limit:
+                    _record_rejection(
+                        rejection_summary,
+                        rejection_examples_by_bucket,
+                        bucket=REJECTION_BUCKET_TOPUP_ACTIVE_BUDGET,
+                        symbol=symbol,
+                        actual=str(len(active_symbols)),
+                        threshold=str(active_limit),
+                        note="active 订阅预算已满，topup 不再追加 candidate",
+                    )
+                    continue
             status = "active" if qualifies_active and len(active_symbols) < active_limit else "candidate"
             retained_symbols.add(symbol)
             if status == "active":

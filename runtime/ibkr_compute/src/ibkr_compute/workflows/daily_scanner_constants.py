@@ -42,6 +42,8 @@ REJECTION_BUCKET_PREMARKET = "premarket_volume_below_threshold"
 REJECTION_BUCKET_ATR = "atr_pct_below_threshold"
 REJECTION_BUCKET_DAY_CHANGE = "day_change_below_threshold"
 REJECTION_BUCKET_DATA_INCOMPLETE = "data_incomplete_repairing"
+REJECTION_BUCKET_TOPUP_ACTIVE_SCORE = "topup_active_score_below_threshold"
+REJECTION_BUCKET_TOPUP_ACTIVE_BUDGET = "topup_active_budget_full"
 
 DAILY_SCAN_LONG_PRIMARY_RULES = (
     ("trend_dir", 1, "trend_dir=1"),

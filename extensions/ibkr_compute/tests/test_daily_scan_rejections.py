@@ -200,7 +200,7 @@ class DailyScanRejectionSummaryTest(unittest.TestCase):
         self.assertEqual(result["new_targets"][0]["symbol"], "NVDA")
         self.assertEqual(pb_client.updated, [])
 
-    def test_topup_writes_candidate_when_active_budget_is_full(self):
+    def test_topup_skips_new_candidate_when_active_budget_is_full(self):
         self.settings["active_target_limit"] = 1
         daily_scanner_mod._load_scan_settings.return_value = dict(self.settings)
         watchlist = [
@@ -240,10 +240,39 @@ class DailyScanRejectionSummaryTest(unittest.TestCase):
 
         result = scanner.run_scan("2026-04-21", environments=["live"], mode="topup")
 
-        self.assertEqual([row["symbol"] for row in pb_client.upserts], ["NVDA"])
-        self.assertEqual(pb_client.upserts[0]["status"], "candidate")
+        self.assertEqual(pb_client.upserts, [])
         self.assertEqual(result["new_active"], 0)
-        self.assertEqual(result["new_candidates"], 1)
+        self.assertEqual(result["new_candidates"], 0)
+        self.assertEqual(result["rejection_summary"]["topup_active_budget_full"], 1)
+
+    def test_topup_skips_symbol_below_active_score(self):
+        self.settings["active_min_score"] = 35
+        daily_scanner_mod._load_scan_settings.return_value = dict(self.settings)
+        watchlist = [
+            {"symbol": "AAPL", "environment": "live", "symbol_role": "trade", "exchange": "SMART"},
+        ]
+        pb_client = DummyPBClient(watchlist=watchlist)
+        engines = {
+            ("live", "AAPL", "5m"): FakeEngine({"ema_bullish": True}),
+        }
+        scanner = DailyScanner(pb_client=pb_client, engines=engines)
+        scanner._build_metric_rows = lambda date, environment, symbols: {
+            symbol: {
+                "avg_10d_volume": 3500000,
+                "premarket_volume": 25000,
+                "atr_pct": 0.8,
+                "day_change_pct": 2.5,
+                "exchange": "SMART",
+            }
+            for symbol in symbols
+        }
+
+        result = scanner.run_scan("2026-04-21", environments=["live"], mode="topup")
+
+        self.assertEqual(pb_client.upserts, [])
+        self.assertEqual(result["new_active"], 0)
+        self.assertEqual(result["new_candidates"], 0)
+        self.assertEqual(result["rejection_summary"]["topup_active_score_below_threshold"], 1)
 
     def test_seed_writes_candidate_when_symbol_passes_quality_but_not_active_score(self):
         self.settings["active_target_limit"] = 2

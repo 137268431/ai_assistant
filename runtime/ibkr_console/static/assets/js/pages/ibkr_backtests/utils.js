@@ -1120,11 +1120,64 @@
             return match ? `${match[1]} ET` : '';
         }
 
+        function getBacktestTargetDate(target) {
+            const date = String(target?.date || '').trim();
+            if (/^\d{4}-\d{2}-\d{2}$/.test(date)) return date;
+            const usTime = String(target?.us_time || '').trim();
+            const match = usTime.match(/\b(\d{4}-\d{2}-\d{2})\b/);
+            return match ? match[1] : '';
+        }
+
+        function getBacktestTargetEventDate(event) {
+            const usTime = String(event?.us_time || '').trim();
+            const match = usTime.match(/\b(\d{4}-\d{2}-\d{2})\b/);
+            return match ? match[1] : '';
+        }
+
+        function getBacktestTargetDayEvents(timeline, targetDate) {
+            const events = Array.isArray(timeline) ? timeline : [];
+            const day = String(targetDate || '').trim();
+            if (!day) return events;
+            return events.filter((event) => getBacktestTargetEventDate(event) === day);
+        }
+
         function formatBacktestTargetEventChip(event) {
             const label = String(event?.label || event?.key || '').trim();
             const timeText = getBacktestTargetEventTime(event);
             const valueText = String(event?.value_label || '').trim();
             return [label, timeText, valueText].filter(Boolean).join(' ');
+        }
+
+        function formatBacktestTargetReasonNumber(value, digits = 1) {
+            const numeric = Number(value || 0);
+            if (!Number.isFinite(numeric)) return '0';
+            const rounded = Number(numeric.toFixed(digits));
+            return Number.isInteger(rounded) ? String(rounded) : String(rounded);
+        }
+
+        function buildBacktestTargetDayPrimaryText({ status, dayEvents, score, activeMinScore, summary }) {
+            const parts = (Array.isArray(dayEvents) ? dayEvents : [])
+                .slice(0, 3)
+                .map((event) => formatBacktestTargetEventChip(event))
+                .filter(Boolean);
+            const minScore = Number(activeMinScore || summary?.active_min_score || 0) || 0;
+            if (minScore > 0) {
+                const relation = Number(score || 0) >= minScore ? '>=' : '<';
+                parts.push(`score ${formatBacktestTargetReasonNumber(score, 1)}${relation}${formatBacktestTargetReasonNumber(minScore, 1)}`);
+            } else if (Number(score || 0) > 0) {
+                parts.push(`score ${formatBacktestTargetReasonNumber(score, 1)}`);
+            }
+            const admissionScore = Number(summary?.admission_score || 0) || 0;
+            const admissionThreshold = Number(summary?.admission_score_threshold || 0) || 0;
+            if (admissionScore > 0 && admissionThreshold > 0) {
+                parts.push(`admission ${formatBacktestTargetReasonNumber(admissionScore, 1)}>=${formatBacktestTargetReasonNumber(admissionThreshold, 1)}`);
+            } else if (admissionScore > 0) {
+                parts.push(`admission ${formatBacktestTargetReasonNumber(admissionScore, 1)}`);
+            }
+            const longVotes = Number(summary?.long_votes || 0) || 0;
+            const shortVotes = Number(summary?.short_votes || 0) || 0;
+            if (longVotes || shortVotes) parts.push(`votes L${formatNumber(longVotes, 0)}:S${formatNumber(shortVotes, 0)}`);
+            return parts.length ? `入选 ${status || 'active'}: ${parts.join(' · ')}` : '';
         }
 
         function pushUniqueChip(chips, value) {
@@ -1143,25 +1196,34 @@
                     ? extra.active_reason_summary
                     : {};
                 const timeline = Array.isArray(extra.trigger_timeline) ? extra.trigger_timeline : [];
+                const targetDate = getBacktestTargetDate(target);
+                const dayEvents = getBacktestTargetDayEvents(timeline, targetDate);
                 const status = String(target?.status || summary.status || '').trim().toLowerCase();
                 const bias = String(target?.direction_bias || summary.direction_bias || '').trim().toLowerCase();
                 const rank = Number(target?.rank || summary.rank || extra.selection_rank || 0) || 0;
                 const score = Number(target?.score || summary.score || 0) || 0;
-                const reasonCount = Math.max(Number(summary.reason_count || 0) || 0, timeline.length);
+                const activeMinScore = Number(summary.active_min_score || 0) || 0;
+                const reasonCount = dayEvents.length;
                 totalReasons += reasonCount;
-                if (!primaryText && String(summary.primary_text || '').trim()) {
-                    primaryText = String(summary.primary_text || '').trim();
+                if (!primaryText) {
+                    primaryText = buildBacktestTargetDayPrimaryText({
+                        status,
+                        dayEvents,
+                        score,
+                        activeMinScore,
+                        summary,
+                    });
                 }
                 if (status) {
-                    pushUniqueChip(chips, reasonCount > 1 ? `${status} · ${formatNumber(reasonCount, 0)} reasons` : status);
+                    pushUniqueChip(chips, reasonCount > 1 ? `${status} · ${formatNumber(reasonCount, 0)} day reasons` : status);
                 }
-                const visibleEvents = timeline.slice(0, 4);
+                const visibleEvents = dayEvents.slice(0, 4);
                 visibleEvents.forEach((event) => pushUniqueChip(chips, formatBacktestTargetEventChip(event)));
-                hiddenReasons += Math.max(0, timeline.length - visibleEvents.length);
+                hiddenReasons += Math.max(0, dayEvents.length - visibleEvents.length);
                 if (bias) pushUniqueChip(chips, bias);
                 if (rank > 0) pushUniqueChip(chips, `rank ${formatNumber(rank, 0)}`);
                 if (score > 0) pushUniqueChip(chips, `score ${formatNumber(score, 1)}`);
-                if (!timeline.length) {
+                if (!dayEvents.length) {
                     String(target?.scan_reason || extra.scan_reason || summary.scan_reason || '')
                         .split(/[;,，、|]/)
                         .map((part) => part.trim())
@@ -1170,7 +1232,7 @@
                         .forEach((part) => pushUniqueChip(chips, part));
                 }
             });
-            if (hiddenReasons > 0) pushUniqueChip(chips, `+${formatNumber(hiddenReasons, 0)} reasons`);
+            if (hiddenReasons > 0) pushUniqueChip(chips, `+${formatNumber(hiddenReasons, 0)} day reasons`);
             return {
                 chips,
                 primaryText,
