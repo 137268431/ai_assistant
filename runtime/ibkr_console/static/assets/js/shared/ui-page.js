@@ -319,6 +319,122 @@ function renderPageTopSection(options = {}) {
   `;
 }
 
+function coerceClientPaginationInteger(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.floor(number) : fallback;
+}
+
+function normalizeClientPaginationPageSizeOptions(options = [], defaultPageSize = 12) {
+  const values = (Array.isArray(options) && options.length ? options : [defaultPageSize])
+    .map((value) => coerceClientPaginationInteger(value, 0))
+    .filter((value) => value > 0);
+  const uniqueValues = Array.from(new Set(values));
+  return uniqueValues.length ? uniqueValues : [Math.max(1, coerceClientPaginationInteger(defaultPageSize, 12))];
+}
+
+function escapePageUiJsString(value) {
+  return String(value ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n');
+}
+
+function buildClientPaginationCall(handlerName, key, args = []) {
+  const handler = String(handlerName || '').trim();
+  if (!handler) return '';
+  const jsArgs = [];
+  if (key !== undefined && key !== null && String(key) !== '') {
+    jsArgs.push(`'${escapePageUiJsString(key)}'`);
+  }
+  jsArgs.push(...args.map((arg) => String(arg)));
+  return escapePageUiText(`${handler}(${jsArgs.join(', ')})`);
+}
+
+function createClientPaginationModel(rows = [], state = {}, options = {}) {
+  const items = Array.isArray(rows) ? rows : [];
+  const config = options && typeof options === 'object' ? options : {};
+  const currentState = state && typeof state === 'object' ? state : {};
+  const pageSizeOptions = normalizeClientPaginationPageSizeOptions(
+    config.pageSizeOptions,
+    config.pageSize || currentState.pageSize || 12
+  );
+  const requestedPageSize = coerceClientPaginationInteger(currentState.pageSize, 0);
+  const defaultPageSize = coerceClientPaginationInteger(config.pageSize, pageSizeOptions[0] || 12);
+  const pageSize = pageSizeOptions.includes(requestedPageSize)
+    ? requestedPageSize
+    : (pageSizeOptions.includes(defaultPageSize) ? defaultPageSize : pageSizeOptions[0]);
+  const total = items.length;
+  const totalPages = Math.max(1, Math.ceil(total / Math.max(1, pageSize)));
+  const requestedPage = coerceClientPaginationInteger(currentState.page, 1);
+  const page = Math.min(Math.max(1, requestedPage || 1), totalPages);
+  const start = (page - 1) * pageSize;
+  const end = Math.min(total, start + pageSize);
+  return {
+    page,
+    pageSize,
+    total,
+    totalPages,
+    start,
+    end,
+    hasPrev: page > 1,
+    hasNext: page < totalPages,
+    pageRows: items.slice(start, end),
+    pageSizeOptions,
+  };
+}
+
+function renderClientPaginationBar(model, options = {}) {
+  const pageModel = model && typeof model === 'object' ? model : createClientPaginationModel([], {}, {});
+  const config = options && typeof options === 'object' ? options : {};
+  const total = Number(pageModel.total || 0);
+  const pageSize = Math.max(1, Number(pageModel.pageSize || 1));
+  if (config.hideSinglePage !== false && total <= pageSize) return '';
+
+  const label = config.label || 'Records';
+  const key = config.key || '';
+  const pageAction = config.pageAction || config.onPageChange || 'setClientPaginationPage';
+  const pageSizeAction = config.pageSizeAction || config.onPageSizeChange || 'setClientPaginationPageSize';
+  const buttonClass = config.buttonClass || 'btn ghost';
+  const rootClass = config.rootClass || 'client-pagination page-pagination';
+  const shownFrom = total ? Number(pageModel.start || 0) + 1 : 0;
+  const shownTo = Number(pageModel.end || 0);
+  const statusText = config.statusText || `${label} ${shownFrom}-${shownTo} / ${total}`;
+  const pageText = config.pageText || `${pageModel.page} / ${pageModel.totalPages}`;
+  const firstLabel = config.firstLabel || '首页';
+  const prevLabel = config.prevLabel || '上一页';
+  const nextLabel = config.nextLabel || '下一页';
+  const lastLabel = config.lastLabel || '末页';
+  const sizeLabel = config.sizeLabel || '每页';
+  const selectOptions = (Array.isArray(pageModel.pageSizeOptions) ? pageModel.pageSizeOptions : [pageSize])
+    .map((value) => {
+      const selected = Number(value) === pageSize ? ' selected' : '';
+      return `<option value="${escapePageUiText(value)}"${selected}>${escapePageUiText(`${value}/页`)}</option>`;
+    })
+    .join('');
+  const pageCall = (page) => buildClientPaginationCall(pageAction, key, [Number(page || 1)]);
+  const pageSizeCall = buildClientPaginationCall(pageSizeAction, key, ['this.value']);
+
+  return `
+    <div class="${escapePageUiText(rootClass)}">
+      <div class="client-pagination-copy page-pagination-copy">${escapePageUiText(statusText)}</div>
+      <div class="client-pagination-actions page-pagination-actions">
+        <button class="${escapePageUiText(buttonClass)}" type="button" ${pageModel.hasPrev ? '' : 'disabled'} onclick="${pageCall(1)}">${escapePageUiText(firstLabel)}</button>
+        <button class="${escapePageUiText(buttonClass)}" type="button" ${pageModel.hasPrev ? '' : 'disabled'} onclick="${pageCall(Math.max(1, pageModel.page - 1))}">${escapePageUiText(prevLabel)}</button>
+        <span class="client-pagination-page page-pagination-page mono">${escapePageUiText(pageText)}</span>
+        <button class="${escapePageUiText(buttonClass)}" type="button" ${pageModel.hasNext ? '' : 'disabled'} onclick="${pageCall(Math.min(pageModel.totalPages, pageModel.page + 1))}">${escapePageUiText(nextLabel)}</button>
+        <button class="${escapePageUiText(buttonClass)}" type="button" ${pageModel.hasNext ? '' : 'disabled'} onclick="${pageCall(pageModel.totalPages)}">${escapePageUiText(lastLabel)}</button>
+        <label class="client-pagination-size page-pagination-size">
+          <span>${escapePageUiText(sizeLabel)}</span>
+          <select onchange="${pageSizeCall}">
+            ${selectOptions}
+          </select>
+        </label>
+      </div>
+    </div>
+  `;
+}
+
 function renderPageLoadingOverlay(options = {}) {
   const overlay = options && typeof options === 'object' ? options : {};
   const overlayId = overlay.overlayId || 'pageLoading';

@@ -333,6 +333,7 @@
             selectedSignals = [];
             selectedReverseSignals = [];
             resetBacktestRowPagination(runId);
+            resetBacktestClientPagination();
             selectedTrackingModel = null;
             selectedTargetsLoading = Boolean(runId) && shouldLoadBacktestRowsForTab('targets', activeBacktestTab);
             trackingLoading = Boolean(runId) && activeBacktestTab === 'tracking';
@@ -367,6 +368,52 @@
             document.getElementById('replaySymbol').value = symbol || document.getElementById('replaySymbol').value;
             document.getElementById('replayCenterBar').value = String(barTimeMs || '');
             await loadReplayForSelection();
+        }
+
+        function getBacktestClientPaginationRows(key) {
+            if (key === 'dailyFunnel') {
+                return Array.isArray(selectedRun?.metrics?.daily_funnel)
+                    ? selectedRun.metrics.daily_funnel
+                    : [];
+            }
+            return [];
+        }
+
+        function renderBacktestClientPaginationPanel(key) {
+            if (key === 'dailyFunnel') {
+                renderRunDetail();
+            }
+        }
+
+        function setBacktestClientPage(key, page) {
+            if (!Object.prototype.hasOwnProperty.call(BACKTEST_CLIENT_PAGE_CONFIG, key)) return;
+            const current = getBacktestClientPagination(key, getBacktestClientPaginationRows(key));
+            const nextPage = Math.min(
+                Math.max(1, Number(page || 1)),
+                Math.max(1, Number(current.totalPages || 1))
+            );
+            backtestClientPageState[key] = {
+                page: nextPage,
+                pageSize: Number(current.pageSize || BACKTEST_CLIENT_PAGE_CONFIG[key].pageSize || 12),
+            };
+            renderBacktestClientPaginationPanel(key);
+        }
+
+        function setBacktestClientPageSize(key, value) {
+            const config = BACKTEST_CLIENT_PAGE_CONFIG[key];
+            if (!config) return;
+            const pageSizeOptions = Array.isArray(config.pageSizeOptions) && config.pageSizeOptions.length
+                ? config.pageSizeOptions.map((item) => Number(item)).filter((item) => Number.isFinite(item) && item > 0)
+                : [Number(config.pageSize || 12)];
+            const requestedPageSize = Number(value || 0);
+            const nextPageSize = pageSizeOptions.includes(requestedPageSize)
+                ? requestedPageSize
+                : Number(config.pageSize || pageSizeOptions[0] || 12);
+            backtestClientPageState[key] = {
+                page: 1,
+                pageSize: nextPageSize,
+            };
+            renderBacktestClientPaginationPanel(key);
         }
 
         async function loadReplayForSelection() {

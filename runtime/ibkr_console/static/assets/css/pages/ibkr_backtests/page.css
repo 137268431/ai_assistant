@@ -805,6 +805,60 @@ body {
         .tracking-pager-grid .row-pager {
             margin-bottom: 0;
         }
+        .client-pagination,
+        .page-pagination {
+            position: relative;
+            z-index: 1;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 10px;
+            padding: 8px 10px;
+            border-radius: 14px;
+            border: 1px solid rgba(79, 209, 197, 0.16);
+            background: rgba(79, 209, 197, 0.055);
+        }
+        .client-pagination-copy,
+        .page-pagination-copy,
+        .client-pagination-page,
+        .page-pagination-page {
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.6;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .client-pagination-actions,
+        .page-pagination-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .client-pagination-size,
+        .page-pagination-size {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.4;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .client-pagination-size select,
+        .page-pagination-size select {
+            width: auto;
+            min-width: 76px;
+            height: 30px;
+            padding: 0 26px 0 9px;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.10);
+            background-color: rgba(7, 16, 24, 0.88);
+            color: var(--text);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+        }
         .data-table {
             width: 100%;
             border-collapse: collapse;

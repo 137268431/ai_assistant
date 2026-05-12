@@ -1,7 +1,7 @@
 // Shared compatibility entrypoint.
 // Source-of-truth browser modules now live under /assets/js/shared and /assets/css.
 (function loadSharedCommonBundle() {
-  const sharedBundleVersion = '20260508-backtest-4c8g';
+  const sharedBundleVersion = '20260512-shared-pagination';
   const sharedScriptPaths = [
     `/assets/js/shared/runtime-config.js?v=${sharedBundleVersion}`,
     `/assets/js/shared/base.js?v=${sharedBundleVersion}`,
@@ -52,6 +52,8 @@
       formatEtRefreshDateTime: (...args) => pick('formatEtRefreshDateTime')(...args),
       setPageRefreshTime: (...args) => pick('setPageRefreshTime')(...args),
       setPageContextMeta: (...args) => pick('setPageContextMeta')(...args),
+      createClientPaginationModel: (...args) => pick('createClientPaginationModel')(...args),
+      renderClientPaginationBar: (...args) => pick('renderClientPaginationBar')(...args),
       renderPageRefreshControl: (...args) => pick('renderPageRefreshControl')(...args),
       renderPageTopSection: (...args) => pick('renderPageTopSection')(...args),
       renderPageLoadingOverlay: (...args) => pick('renderPageLoadingOverlay')(...args),

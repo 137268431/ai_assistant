@@ -235,6 +235,7 @@
                     <div class="run-stats">
                         <span class="mini-chip">${escapeHtml(run.source_environment.toUpperCase())}</span>
                         <span class="mini-chip">TRADES ${run.trade_count}</span>
+                        <span class="mini-chip">TIME ${escapeHtml(formatBacktestDuration(run.duration_s))}</span>
                         <span class="mini-chip">RET ${formatPct(run.total_return_pct)}</span>
                         <span class="mini-chip">SHARPE ${formatNumber(run.sharpe, 2)}</span>
                     </div>
@@ -271,6 +272,7 @@
                 ['Signal Fill', formatPct(metrics.signal_fill_rate || 0), classForValue((metrics.signal_fill_rate || 0) - 50), `${metrics.executed_signal_count || 0}/${metrics.signal_count || 0} executed`],
                 ['Portfolio Exposure', formatMoney(metrics.portfolio_max_gross_exposure || 0), '', `borrow max ${formatMoney(metrics.portfolio_max_borrowed_amount || 0)}`],
                 ['Execution Costs', formatMoney((executionCost.total_commission || 0) + (executionCost.estimated_slippage_cost || 0)), '', `${executionCost.fee_model || '--'} / ${executionCost.slippage_model || '--'}`],
+                ['Runtime', formatBacktestDuration(selectedRun.duration_s || metrics.duration_s || 0), '', `${formatRunDate(selectedRun)}`],
                 ['Signal Rejects', String(Object.values(metrics.portfolio_rejection_counts || {}).reduce((sum, value) => sum + Number(value || 0), 0)), '', formatBreakdown(metrics.portfolio_rejection_counts || {})],
                 ['Replay Targets', String(metrics.backtest_target_count || 0), '', `${metrics.historical_targeting?.target_date_count || 0} trade dates`],
                 ['Daily Opens', String(sumDailyOpenCounts(metrics.daily_open_counts || [])), '', formatDailyCounts(metrics.daily_open_counts || [])],

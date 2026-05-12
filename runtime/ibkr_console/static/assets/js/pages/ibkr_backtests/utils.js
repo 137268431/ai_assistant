@@ -212,6 +212,7 @@
                 sharpe: Number(record.sharpe || metrics.sharpe || 0),
                 max_drawdown_pct: Number(record.max_drawdown_pct || metrics.max_drawdown_pct || 0),
                 win_rate: Number(record.win_rate || metrics.win_rate || 0),
+                duration_s: Number(record.duration_s || metrics.duration_s || extra.duration_s || 0),
                 progress: Number(record.progress || 0),
             };
         }
@@ -923,6 +924,20 @@
             return Number.isFinite(num) ? num.toFixed(digits) : '--';
         }
 
+        function formatBacktestDuration(value) {
+            const seconds = Number(value || 0);
+            if (!Number.isFinite(seconds) || seconds <= 0) return '--';
+            if (seconds < 1) return `${seconds.toFixed(3)}s`;
+            if (seconds < 10) return `${seconds.toFixed(2)}s`;
+            if (seconds < 60) return `${seconds.toFixed(1)}s`;
+            const totalSeconds = Math.round(seconds);
+            const hours = Math.floor(totalSeconds / 3600);
+            const minutes = Math.floor((totalSeconds % 3600) / 60);
+            const remainingSeconds = totalSeconds % 60;
+            if (hours > 0) return `${hours}h ${String(minutes).padStart(2, '0')}m`;
+            return `${minutes}m ${String(remainingSeconds).padStart(2, '0')}s`;
+        }
+
         function getBacktestTablePreview(key, rows) {
             const items = Array.isArray(rows) ? rows : [];
             const limit = Number(BACKTEST_TABLE_PREVIEW_LIMITS[key] || 0);
@@ -1006,6 +1021,57 @@
                 ${renderBacktestTextPreviewBar(key, preview, section)}
                 <div class="${className}">${escapeHtml(preview.text)}</div>
             `;
+        }
+
+        function resetBacktestClientPagination(key = '') {
+            if (key) {
+                const config = BACKTEST_CLIENT_PAGE_CONFIG[key];
+                if (!config) return;
+                backtestClientPageState[key] = {
+                    page: 1,
+                    pageSize: Number(config.pageSize || 12),
+                };
+                return;
+            }
+            backtestClientPageState = {};
+            Object.entries(BACKTEST_CLIENT_PAGE_CONFIG).forEach(([pageKey, config]) => {
+                backtestClientPageState[pageKey] = {
+                    page: 1,
+                    pageSize: Number(config.pageSize || 12),
+                };
+            });
+        }
+
+        function getBacktestClientPagination(key, rows) {
+            const config = BACKTEST_CLIENT_PAGE_CONFIG[key] || {};
+            if (!backtestClientPageState[key]) {
+                backtestClientPageState[key] = {
+                    page: 1,
+                    pageSize: Number(config.pageSize || 12),
+                };
+            }
+            const pageModel = createClientPaginationModel(rows, backtestClientPageState[key], config);
+            backtestClientPageState[key] = {
+                page: pageModel.page,
+                pageSize: pageModel.pageSize,
+            };
+            return pageModel;
+        }
+
+        function renderBacktestClientPaginationBar(key, rows, options = {}) {
+            const config = BACKTEST_CLIENT_PAGE_CONFIG[key] || {};
+            const pageModel = getBacktestClientPagination(key, rows);
+            const label = options.label || config.label || key;
+            const shownFrom = pageModel.total ? pageModel.start + 1 : 0;
+            const shownTo = pageModel.end;
+            return renderClientPaginationBar(pageModel, {
+                key,
+                label,
+                pageAction: 'setBacktestClientPage',
+                pageSizeAction: 'setBacktestClientPageSize',
+                statusText: `${label} ${formatNumber(shownFrom, 0)}-${formatNumber(shownTo, 0)} / ${formatNumber(pageModel.total, 0)}`,
+                rootClass: 'client-pagination page-pagination backtest-client-pagination',
+            });
         }
 
         function formatRunDate(run) {

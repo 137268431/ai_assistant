@@ -11,6 +11,7 @@
             const executionCost = metrics.execution_cost_summary || extra.execution_cost_summary || {};
             const monthlyReturns = Array.isArray(metrics.monthly_returns) ? metrics.monthly_returns : [];
             const dailyFunnel = Array.isArray(metrics.daily_funnel) ? metrics.daily_funnel : [];
+            const dailyFunnelPage = getBacktestClientPagination('dailyFunnel', dailyFunnel);
             const qualityRows = Array.isArray(metrics.data_quality) ? metrics.data_quality : [];
             const qualityPreview = getBacktestTablePreview('dataQuality', qualityRows);
             const skipped = Array.isArray(metrics.skipped_symbols) ? metrics.skipped_symbols : [];
@@ -28,7 +29,7 @@
                         <div class="detail-item"><div class="detail-item-label">Symbols</div><div class="detail-item-value">${escapeHtml(symbolSummary || '--')}${symbolCount ? ` <span class="mini-chip">${escapeHtml(String(symbolCount))} total</span>` : ''}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Capital</div><div class="detail-item-value">${escapeHtml(formatMoney(selectedRun.initial_capital || 0))}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Total Costs</div><div class="detail-item-value">${escapeHtml(formatMoney((executionCost.total_commission || 0) + (executionCost.estimated_slippage_cost || 0)))}</div></div>
-                        <div class="detail-item"><div class="detail-item-label">Runtime</div><div class="detail-item-value">${escapeHtml(String(selectedRun.duration_s || 0))}s</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Runtime</div><div class="detail-item-value">${escapeHtml(formatBacktestDuration(selectedRun.duration_s || metrics.duration_s || 0))}</div></div>
                     </div>
                     <details class="compact-details run-meta-more">
                         <summary class="compact-summary">执行 / 风控参数</summary>
@@ -76,6 +77,7 @@
                 <div class="detail-card">
                     <div class="subhead">Daily Funnel</div>
                     ${dailyFunnel.length ? `
+                        ${renderBacktestClientPaginationBar('dailyFunnel', dailyFunnel)}
                         <div class="table-wrap">
                             <table class="data-table" style="min-width: 760px;">
                                 <thead>
@@ -90,7 +92,7 @@
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    ${dailyFunnel.map((item) => `
+                                    ${dailyFunnelPage.pageRows.map((item) => `
                                         <tr>
                                             <td class="mono">${escapeHtml(item.date || '--')}</td>
                                             <td>${escapeHtml(String(item.target_count || 0))}</td>

@@ -34,6 +34,8 @@ function applyDefaultDates() {
         window.loadMoreBacktestRows = loadMoreBacktestRows;
         window.loadAllBacktestRows = loadAllBacktestRows;
         window.ensureBacktestRowsForActiveTab = ensureBacktestRowsForActiveTab;
+        window.setBacktestClientPage = setBacktestClientPage;
+        window.setBacktestClientPageSize = setBacktestClientPageSize;
         window.loadReplayForSelection = loadReplayForSelection;
         window.replayTrade = replayTrade;
         window.openTradeChart = openTradeChart;

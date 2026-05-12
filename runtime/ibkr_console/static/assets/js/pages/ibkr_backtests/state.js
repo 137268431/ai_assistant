@@ -12,6 +12,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         let selectedSignals = [];
         let selectedReverseSignals = [];
         let backtestRowPageState = {};
+        let backtestClientPageState = {};
         let selectedTrackingModel = null;
         let trackingLoading = false;
         let trackingFilterRunId = '';
@@ -33,6 +34,14 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             targets: { label: 'Targets', noun: '条 targets', perPage: 200 },
             signals: { label: 'Signals', noun: '条 signals', perPage: 200 },
             reverseSignals: { label: 'Reverse', noun: '条 reverse rows', perPage: 200 },
+        });
+        const BACKTEST_CLIENT_PAGE_CONFIG = Object.freeze({
+            dailyFunnel: {
+                label: 'Daily Funnel',
+                noun: '个交易日',
+                pageSize: 12,
+                pageSizeOptions: [12, 24, 48],
+            },
         });
         const trackingFilters = {
             date: '',

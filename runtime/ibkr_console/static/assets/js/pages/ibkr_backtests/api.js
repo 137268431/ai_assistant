@@ -475,6 +475,7 @@
             if (!selectedRunId) {
                 selectedRun = null;
                 clearSelectedTrackingRows();
+                resetBacktestClientPagination();
                 renderMetrics();
                 renderRunDetail();
                 renderTrades();
@@ -493,6 +494,7 @@
                 selectedReverseSignals = [];
                 selectedTrades = [];
                 resetBacktestRowPagination(activeRunId);
+                resetBacktestClientPagination();
                 selectedTrackingModel = null;
                 selectedTargetsLoading = shouldLoadBacktestRowsForTab('targets', activeBacktestTab);
                 trackingLoading = activeBacktestTab === 'tracking';

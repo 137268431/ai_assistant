@@ -887,6 +887,59 @@ body.rules-detail-open {
     animation-delay: 0.36s;
 }
 
+.page-pagination {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+    padding: 8px 10px;
+    border-radius: 14px;
+    border: 1px solid rgba(79, 209, 197, 0.16);
+    background: rgba(79, 209, 197, 0.055);
+}
+
+.page-pagination-copy,
+.page-pagination-page {
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.6;
+    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+}
+
+.page-pagination-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.page-pagination-size {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.4;
+    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+}
+
+.page-pagination-size select {
+    width: auto;
+    min-width: 76px;
+    height: 30px;
+    padding: 0 26px 0 9px;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    background-color: rgba(7, 16, 24, 0.88);
+    color: var(--text);
+    font-size: 11px;
+    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+}
+
 @media (max-width: 900px) {
     .page-header,
     .hero {
@@ -1009,6 +1062,21 @@ body.rules-detail-open {
     .search-toolbar .interval-filter {
         flex: 1 1 0;
         width: auto;
+    }
+
+    .page-pagination {
+        align-items: stretch;
+    }
+
+    .page-pagination-copy,
+    .page-pagination-actions,
+    .page-pagination-size,
+    .page-pagination-size select {
+        width: 100%;
+    }
+
+    .page-pagination-actions {
+        justify-content: stretch;
     }
 
     .hero-meta,
