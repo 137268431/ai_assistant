@@ -938,6 +938,90 @@
             return `${minutes}m ${String(remainingSeconds).padStart(2, '0')}s`;
         }
 
+        function firstFiniteBacktestNumber(...values) {
+            for (const value of values) {
+                const number = Number(value);
+                if (Number.isFinite(number) && number > 0) return number;
+            }
+            return 0;
+        }
+
+        function getBacktestPhaseRuntimeModel(run) {
+            const metrics = run?.metrics || {};
+            const extra = run?.extra || {};
+            const historicalTargeting = metrics.historical_targeting || extra.historical_targeting || {};
+            const dailySelectionCache = metrics.daily_selection_cache
+                || extra.daily_selection_cache
+                || historicalTargeting.daily_selection_cache
+                || {};
+            const dailySelectedProfile = metrics.daily_selected_profile
+                || metrics.portfolio_profile
+                || extra.daily_selected_profile
+                || extra.portfolio_profile
+                || {};
+            const totalDuration = firstFiniteBacktestNumber(run?.duration_s, metrics.duration_s, extra.duration_s);
+            const selectionDuration = firstFiniteBacktestNumber(
+                dailySelectionCache.duration_s,
+                historicalTargeting.duration_s,
+                metrics.daily_scan_replay_duration_s,
+                extra.daily_scan_replay_duration_s
+            );
+            const executionDuration = firstFiniteBacktestNumber(
+                dailySelectedProfile.duration_s,
+                metrics.portfolio_stream_duration_s,
+                metrics.portfolio_duration_s,
+                extra.portfolio_stream_duration_s,
+                extra.portfolio_duration_s
+            );
+            const otherDuration = totalDuration > 0
+                ? Math.max(0, totalDuration - selectionDuration - executionDuration)
+                : 0;
+            const hitDays = Math.max(0, Number(dailySelectionCache.hit_days || 0) || 0);
+            const totalDays = Math.max(
+                0,
+                Number(dailySelectionCache.total_days || historicalTargeting.target_date_count || 0) || 0
+            );
+            const rawMissDays = Number(dailySelectionCache.miss_days);
+            const missDays = Number.isFinite(rawMissDays)
+                ? Math.max(0, rawMissDays)
+                : Math.max(0, totalDays - hitDays);
+            const rebuiltDays = Math.max(0, Number(dailySelectionCache.rebuilt_days || 0) || 0);
+            const rawHitRate = Number(dailySelectionCache.hit_rate);
+            const hitRate = Number.isFinite(rawHitRate)
+                ? rawHitRate
+                : (totalDays > 0 ? (hitDays / totalDays) * 100 : 0);
+            const barsLoaded = Number(dailySelectedProfile.bars_loaded || 0) || 0;
+            const indicatorCount = Number(dailySelectedProfile.indicator_count || metrics.indicator_count || 0) || 0;
+            const tradeDates = Number(dailySelectedProfile.trade_dates || historicalTargeting.target_date_count || 0) || 0;
+            const selectedSymbolDays = Number(dailySelectedProfile.selected_symbol_days || historicalTargeting.target_row_count || 0) || 0;
+            const cacheEnabled = Boolean(dailySelectionCache.enabled);
+            return {
+                totalDuration,
+                selectionDuration,
+                executionDuration,
+                otherDuration,
+                totalLabel: formatBacktestDuration(totalDuration),
+                selectionLabel: formatBacktestDuration(selectionDuration),
+                executionLabel: formatBacktestDuration(executionDuration),
+                otherLabel: formatBacktestDuration(otherDuration),
+                cacheEnabled,
+                hitDays,
+                missDays,
+                rebuiltDays,
+                totalDays,
+                hitRate,
+                cacheValue: cacheEnabled ? `${formatNumber(hitDays, 0)}/${formatNumber(totalDays, 0)} hit` : 'disabled',
+                cacheSummary: cacheEnabled
+                    ? `miss ${formatNumber(missDays, 0)} · rebuilt ${formatNumber(rebuiltDays, 0)} · ${formatPct(hitRate)} hit`
+                    : 'selection cache disabled',
+                selectionSummary: cacheEnabled
+                    ? `cache ${formatNumber(hitDays, 0)}/${formatNumber(totalDays, 0)} hit · miss ${formatNumber(missDays, 0)}`
+                    : 'historical target rebuild',
+                executionSummary: `${formatNumber(tradeDates, 0)} days · bars ${formatNumber(barsLoaded, 0)} · indicators ${formatNumber(indicatorCount, 0)}`,
+                selectedSummary: `${formatNumber(selectedSymbolDays, 0)} selected symbol-days`,
+            };
+        }
+
         function getBacktestTablePreview(key, rows) {
             const items = Array.isArray(rows) ? rows : [];
             const limit = Number(BACKTEST_TABLE_PREVIEW_LIMITS[key] || 0);
@@ -1016,7 +1100,12 @@
 
         function renderBacktestTextPreviewBox(key, text, section, extraClass = 'mono') {
             const preview = getBacktestTextPreview(key, text);
-            const className = extraClass ? `note-box ${extraClass}` : 'note-box';
+            const className = [
+                'note-box',
+                'text-preview-box',
+                preview.expanded ? 'is-expanded' : 'is-collapsed',
+                extraClass || '',
+            ].filter(Boolean).join(' ');
             return `
                 ${renderBacktestTextPreviewBar(key, preview, section)}
                 <div class="${className}">${escapeHtml(preview.text)}</div>

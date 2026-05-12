@@ -17,6 +17,7 @@
             const skipped = Array.isArray(metrics.skipped_symbols) ? metrics.skipped_symbols : [];
             const symbolCount = countRunSymbols(selectedRun);
             const symbolSummary = summarizeRunSymbols(selectedRun);
+            const phaseRuntime = getBacktestPhaseRuntimeModel(selectedRun);
             const detailHtml = `
                 <div class="detail-card">
                     <div class="subhead">Meta</div>
@@ -29,7 +30,10 @@
                         <div class="detail-item"><div class="detail-item-label">Symbols</div><div class="detail-item-value">${escapeHtml(symbolSummary || '--')}${symbolCount ? ` <span class="mini-chip">${escapeHtml(String(symbolCount))} total</span>` : ''}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Capital</div><div class="detail-item-value">${escapeHtml(formatMoney(selectedRun.initial_capital || 0))}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Total Costs</div><div class="detail-item-value">${escapeHtml(formatMoney((executionCost.total_commission || 0) + (executionCost.estimated_slippage_cost || 0)))}</div></div>
-                        <div class="detail-item"><div class="detail-item-label">Runtime</div><div class="detail-item-value">${escapeHtml(formatBacktestDuration(selectedRun.duration_s || metrics.duration_s || 0))}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Runtime</div><div class="detail-item-value">${escapeHtml(phaseRuntime.totalLabel)}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Selection Replay</div><div class="detail-item-value">${escapeHtml(phaseRuntime.selectionLabel)} <span class="mini-chip">${escapeHtml(phaseRuntime.selectionSummary)}</span></div></div>
+                        <div class="detail-item"><div class="detail-item-label">Execution Stream</div><div class="detail-item-value">${escapeHtml(phaseRuntime.executionLabel)} <span class="mini-chip">${escapeHtml(phaseRuntime.selectedSummary)}</span></div></div>
+                        <div class="detail-item"><div class="detail-item-label">Cache Hit / Miss</div><div class="detail-item-value">${escapeHtml(phaseRuntime.cacheValue)} <span class="mini-chip">${escapeHtml(phaseRuntime.cacheSummary)}</span></div></div>
                     </div>
                     <details class="compact-details run-meta-more">
                         <summary class="compact-summary">执行 / 风控参数</summary>

@@ -34,8 +34,8 @@
             const historicalTargeting = run?.extra?.historical_targeting || run?.metrics?.historical_targeting || {};
             const scanDiagnostics = run?.metrics?.daily_scan_match_diagnostics || run?.extra?.daily_scan_match_diagnostics || {};
             const groups = groupTargetsByDate(selectedTargets, run);
-            const targetPreview = getBacktestTablePreview('targets', selectedTargets);
-            const visibleTargetIds = new Set(targetPreview.rows.map((item) => item.id || `${item.date}:${item.symbol}:${item.rank}`));
+            const targetPage = getBacktestClientPagination('historicalTargets', selectedTargets);
+            const visibleTargetIds = new Set(targetPage.pageRows.map((item) => item.id || `${item.date}:${item.symbol}:${item.rank}`));
             const visibleGroups = groups
                 .map((group) => ({
                     ...group,
@@ -90,7 +90,7 @@
                         ` : ''}
                     </div>
                     <div style="margin-top: 12px;">${renderBacktestRowPager('targets')}</div>
-                    ${renderBacktestTablePreviewBar('targets', targetPreview, '条 target 明细')}
+                    ${renderBacktestClientPaginationBar('historicalTargets', selectedTargets)}
                     ${selectedTargetsLoading ? '<div class="empty-state" style="margin-top: 14px;">读取历史 targets ...</div>' : ''}
                     ${!selectedTargetsLoading && visibleGroups.length ? visibleGroups.map((group) => {
                         const summary = group.summary || {};
@@ -211,6 +211,8 @@
             const timeline = focusTimeline.length
                 ? focusTimeline
                 : (Array.isArray(audit.timeline) ? audit.timeline.filter((item) => String(item?.date || '') === String(audit.focus_date || '')) : []);
+            const dailySummaryPage = getBacktestClientPagination('auditDailySummary', dailySummary);
+            const timelinePage = getBacktestClientPagination('auditFocusTimeline', timeline);
 
             if (!audit.enabled && !dailySummary.length && !timeline.length) {
                 return `
@@ -233,6 +235,7 @@
                     </div>
                     ${dailySummary.length ? `
                         <div class="subhead" style="margin-top: 18px;">Daily Summary</div>
+                        ${renderBacktestClientPaginationBar('auditDailySummary', dailySummary)}
                         <div class="table-wrap" style="margin-top: 10px;">
                             <table class="data-table" style="min-width: 880px;">
                                 <thead>
@@ -247,7 +250,7 @@
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    ${dailySummary.map((item) => `
+                                    ${dailySummaryPage.pageRows.map((item) => `
                                         <tr>
                                             <td class="mono">${escapeHtml(item.date || '--')}</td>
                                             <td>${escapeHtml(String(item.target_count || 0))}<br><span class="mono" style="color: var(--muted);">${escapeHtml((item.target_symbols || []).join(', '))}</span></td>
@@ -264,7 +267,8 @@
                     ` : ''}
                     <div class="subhead" style="margin-top: 18px;">Focus Timeline</div>
                     ${timeline.length ? `
-                        ${focusDay.timeline_truncated ? '<div class="foot-note">焦点日事件过多，下面只显示前 240 条；完整数据在 Runtime Extra / metrics.backtest_audit 中。</div>' : ''}
+                        ${focusDay.timeline_truncated ? '<div class="foot-note">焦点日事件较多，完整数据在 Runtime Extra / metrics.backtest_audit 中；这里按页查看。</div>' : ''}
+                        ${renderBacktestClientPaginationBar('auditFocusTimeline', timeline)}
                         <div class="table-wrap" style="margin-top: 10px;">
                             <table class="data-table" style="min-width: 1080px;">
                                 <thead>
@@ -278,7 +282,7 @@
                                         <th>Prices</th>
                                     </tr>
                                 </thead>
-                                <tbody>${renderAuditTimelineRows(timeline)}</tbody>
+                                <tbody>${renderAuditTimelineRows(timelinePage.pageRows)}</tbody>
                             </table>
                         </div>
                     ` : '<div class="empty-state" style="margin-top: 14px;">焦点日暂无审计事件。</div>'}

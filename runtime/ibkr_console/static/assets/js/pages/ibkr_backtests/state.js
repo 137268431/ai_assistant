@@ -42,6 +42,36 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 pageSize: 12,
                 pageSizeOptions: [12, 24, 48],
             },
+            historicalTargets: {
+                label: 'Historical Targets',
+                noun: '条 target 明细',
+                pageSize: 10,
+                pageSizeOptions: [10, 20, 40],
+            },
+            auditDailySummary: {
+                label: 'Daily Summary',
+                noun: '个交易日',
+                pageSize: 10,
+                pageSizeOptions: [10, 20, 40],
+            },
+            auditFocusTimeline: {
+                label: 'Focus Timeline',
+                noun: '条审计事件',
+                pageSize: 12,
+                pageSizeOptions: [12, 24, 48],
+            },
+            trackingFlows: {
+                label: 'Symbol Day Flows',
+                noun: '条标的链路',
+                pageSize: 12,
+                pageSizeOptions: [12, 24, 48],
+            },
+            trackingTimeline: {
+                label: 'Event Timeline',
+                noun: '条追踪事件',
+                pageSize: 20,
+                pageSizeOptions: [20, 50, 100],
+            },
         });
         const trackingFilters = {
             date: '',
@@ -69,9 +99,9 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             trackingFlows: false,
         };
         const BACKTEST_TEXT_PREVIEW_LIMITS = Object.freeze({
-            batchVariants: 1800,
-            strategyParams: 1800,
-            runtimeExtra: 2200,
+            batchVariants: 900,
+            strategyParams: 700,
+            runtimeExtra: 900,
         });
         const backtestTextExpandedState = {
             batchVariants: false,

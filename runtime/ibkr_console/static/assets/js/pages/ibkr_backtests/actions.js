@@ -376,12 +376,38 @@
                     ? selectedRun.metrics.daily_funnel
                     : [];
             }
+            if (key === 'historicalTargets') {
+                return selectedTargets;
+            }
+            if (key === 'auditDailySummary') {
+                const audit = selectedRun?.metrics?.backtest_audit || selectedRun?.extra?.backtest_audit_summary || {};
+                return Array.isArray(audit.daily_summary) ? audit.daily_summary : [];
+            }
+            if (key === 'auditFocusTimeline') {
+                const audit = selectedRun?.metrics?.backtest_audit || selectedRun?.extra?.backtest_audit_summary || {};
+                const focusDay = audit.focus_day || {};
+                const focusTimeline = Array.isArray(focusDay.timeline) ? focusDay.timeline : [];
+                if (focusTimeline.length) return focusTimeline;
+                return Array.isArray(audit.timeline)
+                    ? audit.timeline.filter((item) => String(item?.date || '') === String(audit.focus_date || ''))
+                    : [];
+            }
+            if (key === 'trackingFlows') {
+                return typeof getFilteredTrackingFlows === 'function' ? getFilteredTrackingFlows(selectedTrackingModel) : [];
+            }
+            if (key === 'trackingTimeline') {
+                return typeof getFilteredTrackingEvents === 'function' ? getFilteredTrackingEvents(selectedTrackingModel) : [];
+            }
             return [];
         }
 
         function renderBacktestClientPaginationPanel(key) {
-            if (key === 'dailyFunnel') {
+            if (key === 'dailyFunnel' || key === 'historicalTargets' || key === 'auditDailySummary' || key === 'auditFocusTimeline') {
                 renderRunDetail();
+                return;
+            }
+            if (key === 'trackingFlows' || key === 'trackingTimeline') {
+                renderTracking();
             }
         }
 

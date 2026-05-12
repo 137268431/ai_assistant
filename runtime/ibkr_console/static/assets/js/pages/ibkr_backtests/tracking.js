@@ -171,11 +171,11 @@
                 setTrackingHtml('trackingFlowsPanel', '<div class="empty-state">当前过滤条件下没有标的链路。</div>');
                 return;
             }
-            const preview = getBacktestTablePreview('trackingFlows', flows);
+            const pageModel = getBacktestClientPagination('trackingFlows', flows);
             const html = `
-                ${renderBacktestTablePreviewBar('trackingFlows', preview, '条标的链路')}
+                ${renderBacktestClientPaginationBar('trackingFlows', flows)}
                 <div class="tracking-flow-grid">
-                    ${preview.rows.map((flow) => {
+                    ${pageModel.pageRows.map((flow) => {
                         const firstEvent = (flow.events || [])[0] || {};
                         const replayMs = getTrackingReplayBarMs(firstEvent);
                         return `
@@ -234,9 +234,9 @@
                 setTrackingHtml('trackingTimelinePanel', `<div class="empty-state">${escapeHtml(copy)}</div>`);
                 return;
             }
-            const preview = getBacktestTablePreview('trackingTimeline', filteredEvents);
+            const pageModel = getBacktestClientPagination('trackingTimeline', filteredEvents);
             const html = `
-                ${renderBacktestTablePreviewBar('trackingTimeline', preview, '条追踪事件')}
+                ${renderBacktestClientPaginationBar('trackingTimeline', filteredEvents)}
                 <div class="table-wrap tracking-table-wrap">
                     <table class="data-table tracking-table">
                         <thead>
@@ -252,7 +252,7 @@
                             </tr>
                         </thead>
                         <tbody>
-                            ${preview.rows.map((event) => {
+                            ${pageModel.pageRows.map((event) => {
                                 const replayMs = getTrackingReplayBarMs(event);
                                 return `
                                     <tr class="tracking-event-row ${trackingStageClass(event.stage)}">
@@ -344,6 +344,8 @@
             trackingFilters.eventType = String(document.getElementById('trackingEventTypeFilter')?.value || '').trim();
             backtestTableExpandedState.trackingTimeline = false;
             backtestTableExpandedState.trackingFlows = false;
+            resetBacktestClientPagination('trackingTimeline');
+            resetBacktestClientPagination('trackingFlows');
             renderTracking();
         }
 
@@ -354,6 +356,8 @@
             trackingFilters.eventType = '';
             backtestTableExpandedState.trackingTimeline = false;
             backtestTableExpandedState.trackingFlows = false;
+            resetBacktestClientPagination('trackingTimeline');
+            resetBacktestClientPagination('trackingFlows');
             renderTracking();
         }
 
