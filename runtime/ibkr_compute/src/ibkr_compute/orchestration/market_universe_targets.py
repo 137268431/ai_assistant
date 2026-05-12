@@ -15,6 +15,7 @@ from .market_universe_support import (
     _safe_float,
     _safe_int,
     _service_mod,
+    _target_row_is_daily_scan_active,
     _target_row_is_manual,
 )
 
@@ -201,12 +202,9 @@ class TradingServiceMarketUniverseTargetsMixin:
             row
             for row in rows
             if str(row.get("status", "") or "").strip().lower() == "active"
+            and _target_row_is_daily_scan_active(row)
         ]
-        prioritized_rows = [
-            row for row in active_rows if _target_row_is_manual(row)
-        ] + [
-            row for row in active_rows if not _target_row_is_manual(row)
-        ]
+        prioritized_rows = list(active_rows)
 
         for row in prioritized_rows:
             symbol = str(row.get("symbol", "")).upper()
@@ -295,8 +293,6 @@ class TradingServiceMarketUniverseTargetsMixin:
                     self.pb.update_record("ibkr_targets", record_id, update_data)
                 except Exception as exc:
                     service_mod.logger.warning("Failed to block market context target %s: %s", record_id, exc)
-                continue
-            if _target_row_is_manual(row):
                 continue
             desired = "active" if record_id in selected_ids else "candidate"
             current = str(row.get("status", "") or "").strip().lower()
@@ -980,6 +976,10 @@ class TradingServiceMarketUniverseTargetsMixin:
         with self._watchlist_idle_topup_lock:
             self._watchlist_idle_observations = {}
             self._watchlist_idle_topup_state = self._initial_watchlist_idle_topup_state()
+        self._watchlist_topup_force_until = 0.0
+        self._watchlist_topup_requested_at = 0.0
+        self._watchlist_topup_request_count = 0
+        self._watchlist_topup_last_consumed_request_count = 0
         self._last_active_repair_at = 0.0
         self._last_active_repair_symbols = []
         self._last_active_repair_reasons = {}

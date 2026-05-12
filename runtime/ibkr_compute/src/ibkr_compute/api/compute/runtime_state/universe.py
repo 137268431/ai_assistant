@@ -40,6 +40,21 @@ def _target_row_is_manual(row: dict | None) -> bool:
     return source in MANUAL_TARGET_SOURCES
 
 
+def _truthy(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "y", "active", "passed", "pass"}
+
+
+def _target_row_is_daily_scan_active(row: dict | None) -> bool:
+    extra = _safe_extra(row)
+    source = str(extra.get("source") or "").strip().lower()
+    return source == "daily_scan" and _truthy(extra.get("active_gate_passed"))
+
+
 def _get_trade_subscription_budget(api_app, environment: str) -> int | None:
     runtime_environment = str(environment or "live").strip().lower() or "live"
     target_limit = max(
@@ -81,12 +96,9 @@ def _load_selected_active_trade_target_rows(environment: str, market_date: str |
         row
         for row in rows
         if str(row.get("symbol", "")).strip().upper() not in market_monitor_symbols
+        and _target_row_is_daily_scan_active(row)
     ]
-    prioritized_rows = [
-        row for row in active_rows if _target_row_is_manual(row)
-    ] + [
-        row for row in active_rows if not _target_row_is_manual(row)
-    ]
+    prioritized_rows = list(active_rows)
 
     selected_rows: list[dict] = []
     seen = set()

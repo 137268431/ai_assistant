@@ -282,7 +282,20 @@
             const truncation = model.timeline_truncated || model.symbol_day_flow_truncated
                 ? ' 当前 run 的原生审计摘要已截断，必要时按标的进入 Replay / 主图继续核对。'
                 : '';
-            return `<div class="tracking-mode-banner ${model.audit_mode === 'native' ? 'native' : 'derived'}">${escapeHtml(modeCopy + truncation)}</div>`;
+            const pagerHtml = model.audit_mode === 'native'
+                ? ''
+                : `
+                    <div class="tracking-pager-grid">
+                        ${renderBacktestRowPager('targets')}
+                        ${renderBacktestRowPager('signals')}
+                        ${renderBacktestRowPager('reverseSignals')}
+                        ${renderBacktestRowPager('trades')}
+                    </div>
+                `;
+            return `
+                <div class="tracking-mode-banner ${model.audit_mode === 'native' ? 'native' : 'derived'}">${escapeHtml(modeCopy + truncation)}</div>
+                ${pagerHtml}
+            `;
         }
 
         function renderTracking() {

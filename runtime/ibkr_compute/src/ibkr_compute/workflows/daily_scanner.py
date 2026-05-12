@@ -6,7 +6,7 @@
   2. 复用 screener 聚合得到量能 / 波动指标
   3. 保留 multi-TF 技术投票方向
   4. 叠加 avg_10d_volume / premarket_volume / atr_pct / day_change_pct 的质量门
-  5. 根据 WS 订阅预算把通过标的写成 active / candidate
+  5. 只有达到当日 active 门槛的写成 active，其余通过基础判断的写成 candidate
 """
 
 from __future__ import annotations

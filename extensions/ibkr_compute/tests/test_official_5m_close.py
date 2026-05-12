@@ -189,6 +189,7 @@ class _DummyPipeline(TradingServiceRuntimePipelineMixin):
         data_backfill: _FakeBackfill,
         pb=None,
         snapshot=None,
+        watchlist_completion=None,
     ):
         self._running = True
         self._starting = False
@@ -220,6 +221,7 @@ class _DummyPipeline(TradingServiceRuntimePipelineMixin):
         self.data_backfill = data_backfill
         self.pb = pb or _FakePB()
         self.snapshot = snapshot
+        self.watchlist_completion = watchlist_completion
         self.config = _FakeConfig()
         self._direct_topup_lock = threading.Lock()
         self._direct_topup_state = {
@@ -237,6 +239,7 @@ class _DummyPipeline(TradingServiceRuntimePipelineMixin):
         self._direct_topup_due_ms = due_bucket_ms
         self.compute_events = []
         self.compute_triggers = []
+        self.watchlist_topup_requests = []
 
     def _official_5m_enabled(self) -> bool:
         return True
@@ -294,6 +297,25 @@ class _DummyPipeline(TradingServiceRuntimePipelineMixin):
     def _runtime_direct_topup_latest_due_ms(self, interval: str) -> int:
         del interval
         return self._direct_topup_due_ms
+
+    def _watchlist_idle_topup_completion_snapshot(self) -> dict:
+        if self.watchlist_completion is None:
+            return {
+                "total": 0,
+                "fresh": 0,
+                "stale": 0,
+                "missing": 0,
+                "unobserved": 0,
+            }
+        return dict(self.watchlist_completion)
+
+    def _request_watchlist_idle_topup_now(self, *, ttl_s: float = 15.0) -> None:
+        self.watchlist_topup_requests.append(
+            {
+                "ttl_s": ttl_s,
+                "official_completed_ms": self._copy_official_5m_state().get("last_completed_bucket_ms"),
+            }
+        )
 
     def _now_iso(self) -> str:
         return "2026-04-17T15:00:00Z"
@@ -518,6 +540,36 @@ class Official5mCloseFlushTest(unittest.TestCase):
         )
         self.assertEqual(sorted(row["symbol"] for row in writer.flushed_rows), ["AAPL", "MSFT"])
 
+    def test_close_cycle_wakes_watchlist_after_completed_state_is_visible(self):
+        due_bucket_ms = int(datetime(2026, 4, 17, 10, 50, tzinfo=ET).timestamp() * 1000)
+        previous_bucket_ms = due_bucket_ms - STEP_MS
+        writer = _FakeWriter()
+        backfill = _FakeBackfill(
+            writer,
+            initial_rows=[_bar("AAPL", previous_bucket_ms)],
+            incremental_rows=[_bar("AAPL", due_bucket_ms)],
+            repair_rows=[],
+        )
+        pipeline = _DummyPipeline(
+            due_bucket_ms=due_bucket_ms,
+            last_completed_bucket_ms=previous_bucket_ms,
+            data_writer=writer,
+            data_backfill=backfill,
+        )
+
+        with mock.patch("ibkr_compute.orchestration.runtime_pipeline._service_mod", return_value=self._service_mod()):
+            pipeline._run_official_5m_close_cycle()
+
+        self.assertEqual(
+            pipeline.watchlist_topup_requests,
+            [
+                {
+                    "ttl_s": 20.0,
+                    "official_completed_ms": due_bucket_ms,
+                }
+            ],
+        )
+
     def test_startup_cycle_fetches_missing_official_bars_instead_of_restoring_only(self):
         session_start_ms = int(datetime(2026, 4, 17, 9, 30, tzinfo=ET).timestamp() * 1000)
         previous_bucket_ms = int(datetime(2026, 4, 17, 10, 30, tzinfo=ET).timestamp() * 1000)
@@ -625,6 +677,34 @@ class Official5mCloseFlushTest(unittest.TestCase):
         self.assertEqual(pipeline.compute_triggers, [])
         state = pipeline._copy_direct_topup_state()
         self.assertEqual(state["last_error"], "canonical_5m_not_current")
+
+    def test_runtime_direct_topup_yields_when_watchlist_5m_is_pending(self):
+        due_5m_ms = int(datetime(2026, 4, 17, 10, 45, tzinfo=ET).timestamp() * 1000)
+        due_15m_ms = int(datetime(2026, 4, 17, 10, 30, tzinfo=ET).timestamp() * 1000)
+        writer = _FakeWriter()
+        backfill = _FakeBackfill(writer)
+        pipeline = _DummyPipeline(
+            due_bucket_ms=due_5m_ms,
+            last_completed_bucket_ms=due_5m_ms,
+            data_writer=writer,
+            data_backfill=backfill,
+            watchlist_completion={
+                "total": 3,
+                "fresh": 2,
+                "stale": 1,
+                "missing": 0,
+                "unobserved": 0,
+            },
+        )
+        pipeline._direct_topup_due_ms = due_15m_ms
+
+        with mock.patch("ibkr_compute.orchestration.runtime_pipeline._service_mod", return_value=self._service_mod()):
+            pipeline._run_runtime_direct_topup_cycle(["15m"])
+
+        self.assertEqual(backfill.backfill_all_calls, [])
+        self.assertEqual(pipeline.compute_triggers, [])
+        state = pipeline._copy_direct_topup_state()
+        self.assertEqual(state["last_error"], "watchlist_5m_pending")
 
 
 if __name__ == "__main__":

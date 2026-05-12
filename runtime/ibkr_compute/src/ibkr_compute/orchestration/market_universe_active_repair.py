@@ -100,18 +100,37 @@ class TradingServiceMarketUniverseActiveRepairMixin:
         service_mod = _service_mod()
         service_mod.logger.info("Watchlist backfill loop started")
         while self._running:
+            state = None
             try:
-                self.config.refresh()
-                self._refresh_runtime_settings()
-                self._run_watchlist_backfill_cycle()
+                now = time.time()
+                refresh_interval = max(1.0, float(self._watchlist_idle_topup_loop_interval_sec()))
+                last_refresh_at = float(getattr(self, "_watchlist_topup_last_config_refresh_at", 0.0) or 0.0)
+                if now - last_refresh_at >= refresh_interval:
+                    self.config.refresh()
+                    self._refresh_runtime_settings()
+                    self._watchlist_topup_last_config_refresh_at = now
+                state = self._run_watchlist_backfill_cycle()
             except Exception as exc:
                 service_mod.logger.error("Watchlist backfill loop error: %s", exc)
 
-            sleep_seconds = self._watchlist_idle_topup_loop_interval_sec()
-            for _ in range(sleep_seconds):
-                if not self._running:
-                    break
-                time.sleep(1)
+            try:
+                sleep_seconds = float(self._watchlist_idle_topup_next_wait_sec(state))
+            except Exception:
+                sleep_seconds = float(self._watchlist_idle_topup_loop_interval_sec())
+            sleep_seconds = max(0.05, sleep_seconds)
+            try:
+                self._set_watchlist_idle_topup_state(next_wait_s=round(sleep_seconds, 3))
+            except Exception:
+                pass
+            wakeup = getattr(self, "_watchlist_topup_wakeup", None)
+            if wakeup is not None and hasattr(wakeup, "wait"):
+                woke = bool(wakeup.wait(timeout=sleep_seconds))
+                if woke and hasattr(wakeup, "clear"):
+                    wakeup.clear()
+                continue
+            deadline = time.monotonic() + sleep_seconds
+            while self._running and time.monotonic() < deadline:
+                time.sleep(min(0.25, max(0.01, deadline - time.monotonic())))
 
     def _run_watchlist_backfill_cycle(self):
         service_mod = _service_mod()
@@ -123,9 +142,25 @@ class TradingServiceMarketUniverseActiveRepairMixin:
                 skip_reason="warmup_active",
                 skipped_count=_safe_int(self._watchlist_idle_topup_state.get("skipped_count"), 0) + 1,
             )
-            return
+            return self._watchlist_idle_topup_state
 
-        self._run_watchlist_idle_topup_cycle()
+        topup_state = self._run_watchlist_idle_topup_cycle()
+        force_pending = bool(
+            getattr(self, "_watchlist_idle_topup_force_request_pending", lambda: False)()
+        )
+        if force_pending:
+            return topup_state
+        try:
+            completion = self._watchlist_idle_topup_completion_snapshot()
+        except Exception:
+            completion = {}
+        watchlist_5m_pending = (
+            _safe_int((completion or {}).get("stale"), 0)
+            + _safe_int((completion or {}).get("missing"), 0)
+            + _safe_int((completion or {}).get("unobserved"), 0)
+        ) > 0
+        if watchlist_5m_pending:
+            return topup_state
 
         deep_interval_sec = max(
             300,
@@ -139,7 +174,7 @@ class TradingServiceMarketUniverseActiveRepairMixin:
         if self._last_watchlist_deep_maintenance_at and (
             now - float(self._last_watchlist_deep_maintenance_at or 0.0)
         ) < deep_interval_sec:
-            return
+            return topup_state
         self._last_watchlist_deep_maintenance_at = now
 
         defer_repairs, defer_snapshot = self._should_defer_background_repairs()
@@ -153,13 +188,13 @@ class TradingServiceMarketUniverseActiveRepairMixin:
                 defer_snapshot.get("websocket_connected"),
                 defer_snapshot.get("authenticated"),
             )
-            return
+            return topup_state
         self._refresh_watchlist_pool()
 
         candidates = self._watchlist_backfill_candidates()
         if not candidates:
             service_mod.logger.info("Watchlist backfill skipped: no non-target symbols in pool")
-            return
+            return topup_state
 
         stale_minutes = max(5, self.config.get_int_for_environment("ibkr_watchlist_backfill_stale_min", service_mod.ENVIRONMENT, 20))
         now_ms = int(time.time() * 1000)
@@ -185,12 +220,12 @@ class TradingServiceMarketUniverseActiveRepairMixin:
                 self._last_backfill_symbols = sorted(conid_map.keys())
 
         if not self.config.get_bool_for_environment("ibkr_watchlist_integrity_enabled", service_mod.ENVIRONMENT, True):
-            return
+            return topup_state
 
         integrity_candidates = self._watchlist_integrity_candidates()
         if not integrity_candidates:
             service_mod.logger.info("Watchlist integrity scan skipped: empty candidate batch")
-            return
+            return topup_state
 
         result = self.scan_bar_integrity(
             integrity_candidates,
@@ -208,3 +243,4 @@ class TradingServiceMarketUniverseActiveRepairMixin:
             or []
         )
         self._persist_watchlist_integrity_cursor()
+        return topup_state

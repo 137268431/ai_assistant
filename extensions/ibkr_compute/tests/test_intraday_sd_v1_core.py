@@ -438,6 +438,8 @@ class IntradaySdV1CoreTest(unittest.TestCase):
                         "status": "active",
                         "direction_bias": "long",
                         "extra": {
+                            "source": "daily_scan",
+                            "active_gate_passed": True,
                             "strategy_policy": {
                                 "recommended_signal_profile": "intraday_sd_v1",
                                 "recommended_exit_policy": {"sl_atr_mult": 1.8, "tp_rr": 2.5},
@@ -524,9 +526,19 @@ class IntradaySdV1CoreTest(unittest.TestCase):
             pb=SimpleNamespace(
                 get_all_records=lambda collection, **kwargs: [
                     {"symbol": "SPY", "status": "active", "direction_bias": "long", "extra": {}},
-                    {"symbol": "APP", "status": "active", "direction_bias": "short", "extra": {}},
+                    {
+                        "symbol": "APP",
+                        "status": "active",
+                        "direction_bias": "short",
+                        "extra": {"source": "daily_scan", "active_gate_passed": True},
+                    },
                     {"symbol": "AMZN", "status": "active", "direction_bias": "long", "extra": {"source": "manual_page"}},
-                    {"symbol": "DDOG", "status": "active", "direction_bias": "long", "extra": {}},
+                    {
+                        "symbol": "DDOG",
+                        "status": "active",
+                        "direction_bias": "long",
+                        "extra": {"source": "daily_scan", "active_gate_passed": True},
+                    },
                 ]
                 if collection == "ibkr_targets"
                 else []
@@ -545,8 +557,8 @@ class IntradaySdV1CoreTest(unittest.TestCase):
             biases = universe_mod.get_active_target_direction_biases("live")
             symbols = universe_mod.get_active_trade_symbols("live")
 
-        self.assertEqual(biases, {"AMZN": "long", "APP": "short"})
-        self.assertEqual(symbols, {"AMZN", "APP"})
+        self.assertEqual(biases, {"APP": "short", "DDOG": "long"})
+        self.assertEqual(symbols, {"APP", "DDOG"})
 
     def test_live_signal_params_apply_per_symbol_target_policy(self):
         params = engines_mod._signal_params_for_symbol(

@@ -891,6 +891,7 @@ class RuntimePipelineOfficial5mMixin:
             next_last_completed_bucket_ms = last_completed_bucket_ms
             if not blocking_pending_symbols:
                 next_last_completed_bucket_ms = max(last_completed_bucket_ms, due_bucket_ms)
+            request_watchlist_topup_now = bool(written_symbols and not blocking_pending_symbols)
 
             symbol_timings = []
             for symbol in symbols:
@@ -932,6 +933,11 @@ class RuntimePipelineOfficial5mMixin:
                 fetch_workers=fetch_workers,
                 slowest_stage=slowest_stage,
             )
+            if request_watchlist_topup_now:
+                try:
+                    self._request_watchlist_idle_topup_now(ttl_s=20.0)
+                except Exception:
+                    pass
             service_mod.logger.info(
                 "Official 5m close cycle finished: trace=%s due=%s total_s=%.3f written=%d symbols=%d pending=%d slowest=%s/%s %.3fs errors=%s",
                 trace_id,

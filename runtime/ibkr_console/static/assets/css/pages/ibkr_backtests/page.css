@@ -309,6 +309,24 @@ body {
         .workbench-grid {
             margin-bottom: 0;
         }
+        .runs-workbench {
+            display: grid;
+            gap: 10px;
+        }
+        .run-picker-panel .run-list {
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            max-height: none;
+            overflow: visible;
+            padding-right: 0;
+        }
+        .run-picker-panel .run-item {
+            min-height: 142px;
+        }
+        .run-detail-panel .detail-grid {
+            max-height: none;
+            overflow: visible;
+            padding-right: 0;
+        }
         .btn {
             border: 1px solid rgba(255,255,255,0.10);
             background: rgba(255,255,255,0.05);
@@ -605,6 +623,10 @@ body {
             -webkit-overflow-scrolling: touch;
             scrollbar-gutter: stable both-edges;
         }
+        .run-list .table-preview-bar {
+            grid-column: 1 / -1;
+            margin-bottom: 0;
+        }
         .run-item {
             padding: 10px 11px;
             border-radius: 14px;
@@ -730,6 +752,47 @@ body {
             font-size: 11px;
             line-height: 1.6;
             font-family: 'JetBrains Mono', monospace;
+        }
+        .row-pager {
+            position: relative;
+            z-index: 1;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 10px;
+            padding: 8px 10px;
+            border-radius: 14px;
+            border: 1px solid rgba(99, 179, 237, 0.16);
+            background: rgba(99, 179, 237, 0.055);
+        }
+        .row-pager.has-error {
+            border-color: rgba(252, 129, 129, 0.28);
+            background: rgba(252, 129, 129, 0.06);
+        }
+        .row-pager-copy {
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.6;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .row-pager.has-error .row-pager-copy {
+            color: var(--short);
+        }
+        .row-pager-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .tracking-pager-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+        .tracking-pager-grid .row-pager {
+            margin-bottom: 0;
         }
         .data-table {
             width: 100%;
@@ -1069,6 +1132,9 @@ body {
                 max-height: none;
                 padding-right: 0;
                 overflow: visible;
+            }
+            .run-picker-panel .run-list {
+                grid-template-columns: 1fr;
             }
             .chart-shell canvas {
                 height: 220px !important;

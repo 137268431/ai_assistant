@@ -61,9 +61,17 @@ class DummyDataBackfill:
     def __init__(self, latest_by_symbol):
         self.latest_by_symbol = latest_by_symbol
         self.backfill_all_calls = []
+        self.latest_map_calls = []
+        self.latest_single_calls = []
 
     def get_latest_stored_bar_ms(self, symbol, interval):
+        self.latest_single_calls.append((str(symbol or "").strip().upper(), interval))
         return int(self.latest_by_symbol.get(str(symbol or "").strip().upper()) or 0)
+
+    def get_latest_stored_bar_ms_map(self, symbols, interval):
+        normalized = [str(symbol or "").strip().upper() for symbol in (symbols or []) if str(symbol or "").strip()]
+        self.latest_map_calls.append((normalized, interval))
+        return {symbol: int(self.latest_by_symbol.get(symbol) or 0) for symbol in normalized}
 
     def backfill_all(self, conid_map, symbol_meta=None, intervals=None, repair_symbols=None, period_overrides=None, trace_source=""):
         self.backfill_all_calls.append(
@@ -146,6 +154,8 @@ class DummyWatchlistIdleTopup(TradingServiceMarketUniverseMixin):
         self._watchlist_idle_topup_cursor = 0
         self._watchlist_idle_topup_lock = threading.RLock()
         self._watchlist_idle_observations = {}
+        self._watchlist_topup_wakeup = threading.Event()
+        self._watchlist_topup_force_until = 0.0
         self._watchlist_idle_topup_state = self._initial_watchlist_idle_topup_state()
         self._latest_5m_bar_ms = {"AAPL": 5000, "MSFT": 3000, "TSLA": 1000}
         self.data_backfill = DummyDataBackfill(self._latest_5m_bar_ms)
@@ -198,6 +208,9 @@ class DummyWatchlistIdleTopup(TradingServiceMarketUniverseMixin):
 
     def _watchlist_latest_5m_bar_map(self, symbols):
         return {symbol: self._latest_stored_5m_bar_ms(symbol) for symbol in symbols}
+
+    def _watchlist_idle_topup_force_catchup_active(self):
+        return self._watchlist_topup_force_until > 1_000.0
 
 
 class WatchlistIdleTopupAdmissionTest(unittest.TestCase):
@@ -266,16 +279,33 @@ class WatchlistIdleTopupAdmissionTest(unittest.TestCase):
 
         self.assertBlockedBy("official")
 
-    def test_blocks_when_compute_queue_has_pending_or_inflight_work(self):
+    def test_allows_when_compute_queue_has_pending_or_inflight_work(self):
         cases = [
-            ("pending", lambda: self.service._compute_queue.put({"symbol": "MSFT"}), "compute"),
-            ("inflight", lambda: setattr(self.service, "_last_realtime_compute_started_at", 2_000.0), "compute"),
+            ("pending", lambda: self.service._compute_queue.put({"symbol": "MSFT"})),
+            ("inflight", lambda: setattr(self.service, "_last_realtime_compute_started_at", 2_000.0)),
         ]
-        for name, arrange, reason in cases:
+        for name, arrange in cases:
             with self.subTest(name=name):
                 self.service = DummyWatchlistIdleTopup()
                 arrange()
-                self.assertBlockedBy(reason)
+                admitted, admission = self.service._watchlist_idle_topup_admission()
+                self.assertTrue(admitted, admission)
+                blocker_codes = [item["code"] for item in admission["blockers"]]
+                self.assertNotIn("compute_queue_busy", blocker_codes)
+                self.assertNotIn("compute_inflight", blocker_codes)
+
+    def test_post_close_catchup_allows_topup_while_compute_is_busy(self):
+        self.service._compute_queue.put({"symbol": "AAPL"})
+        self.service._last_realtime_compute_started_at = 2_000.0
+        self.service._watchlist_topup_force_until = 2_000.0
+
+        admitted, admission = self.service._watchlist_idle_topup_admission()
+
+        self.assertTrue(admitted, admission)
+        self.assertTrue(admission["post_close_catchup"])
+        blocker_codes = [item["code"] for item in admission["blockers"]]
+        self.assertNotIn("compute_queue_busy", blocker_codes)
+        self.assertNotIn("compute_inflight", blocker_codes)
 
     def test_blocks_when_bar_writer_has_pending_or_inflight_work(self):
         for name, writer in (
@@ -387,6 +417,8 @@ class WatchlistIdleTopupCandidateSelectionTest(unittest.TestCase):
         result = self.service._watchlist_idle_topup_candidates()
 
         self.assertEqual(self._candidate_symbols(result), ["NVDA", "TSLA", "MSFT"])
+        self.assertEqual(len(self.service.data_backfill.latest_map_calls), 1)
+        self.assertEqual(self.service.data_backfill.latest_single_calls, [])
 
     def test_dynamic_candidate_scan_limits_active_first_selection(self):
         if not hasattr(self.service, "_watchlist_idle_topup_candidates"):
@@ -437,6 +469,59 @@ class WatchlistIdleTopupCandidateSelectionTest(unittest.TestCase):
 
         self.assertEqual(self._candidate_symbols(result), ["NVDA", "META", "TSLA", "MSFT"])
         self.assertEqual(self.service._watchlist_idle_topup_cursor, 0)
+
+
+class WatchlistIdleTopupSchedulerTest(unittest.TestCase):
+    def setUp(self):
+        self.service = DummyWatchlistIdleTopup()
+        self.service_mod = mock.Mock()
+        self.service_mod.ENVIRONMENT = "live"
+        self.service_mod.logger = mock.Mock()
+        self.service_mod.build_market_session_snapshot.return_value = {"kind": "regular"}
+        self.patcher = mock.patch.object(market_universe_mod, "_service_mod", return_value=self.service_mod)
+        self.patcher.start()
+
+    def tearDown(self):
+        self.patcher.stop()
+
+    def test_next_wait_fast_retries_when_writer_is_temporarily_busy(self):
+        wait_s = self.service._watchlist_idle_topup_next_wait_sec(
+            {
+                "status": "skipped",
+                "last_stop_reason": "data_writer_busy",
+                "last_admission": {"blockers": [{"code": "data_writer_busy"}]},
+            }
+        )
+
+        self.assertLess(wait_s, 1.0)
+
+    def test_next_wait_fast_retries_when_more_watchlist_symbols_remain(self):
+        with mock.patch.object(
+            self.service,
+            "_watchlist_idle_topup_completion_snapshot",
+            return_value={"stale": 1, "missing": 0, "unobserved": 2},
+        ):
+            wait_s = self.service._watchlist_idle_topup_next_wait_sec(
+                {
+                    "status": "completed",
+                    "last_stop_reason": "max_symbols_per_cycle",
+                    "last_written_bars": 3,
+                    "last_admission": {"blockers": []},
+                }
+            )
+
+        self.assertLess(wait_s, 1.0)
+
+    def test_next_wait_uses_normal_loop_for_hard_blockers(self):
+        wait_s = self.service._watchlist_idle_topup_next_wait_sec(
+            {
+                "status": "skipped",
+                "last_stop_reason": "session_unauthenticated",
+                "last_admission": {"blockers": [{"code": "session_unauthenticated"}]},
+            }
+        )
+
+        self.assertEqual(wait_s, 2.0)
 
 
 class WatchlistIdleTopupCycleTest(unittest.TestCase):

@@ -49,6 +49,21 @@ def _target_row_is_manual(row: dict | None) -> bool:
     return source in MANUAL_TARGET_SOURCES
 
 
+def _truthy(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "y", "active", "passed", "pass"}
+
+
+def _target_row_is_daily_scan_active(row: dict | None) -> bool:
+    extra = _safe_extra(row)
+    source = str(extra.get("source") or "").strip().lower()
+    return source == "daily_scan" and _truthy(extra.get("active_gate_passed"))
+
+
 def _safe_int(value, default: int = 0) -> int:
     try:
         return int(value)

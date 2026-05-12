@@ -25,6 +25,7 @@ from ibkr_api.universe.today_targets_shared import (
     parse_et_datetime_ms,
     pick_latest_signal,
     pick_reason_list,
+    effective_target_status,
 )
 from ibkr_api.universe.today_targets_workflow import (
     build_aligned_technical_flags,
@@ -292,7 +293,7 @@ def build_today_targets_response(
             "prev_close_change_pct": 0.0,
             "change_7d": 0.0,
         }
-        target_status = to_text(target.get("status")).lower()
+        target_status = effective_target_status(target)
         direction_bias = to_text(first_defined(target.get("direction_bias"), "neutral")).lower() or "neutral"
         score = round(to_float(target.get("score")) or 0.0, 2)
         scan_reason = to_text(target.get("scan_reason"))

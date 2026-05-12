@@ -11,6 +11,7 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         let selectedTargetsLoading = false;
         let selectedSignals = [];
         let selectedReverseSignals = [];
+        let backtestRowPageState = {};
         let selectedTrackingModel = null;
         let trackingLoading = false;
         let trackingFilterRunId = '';
@@ -22,21 +23,33 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
         let activeBacktestTab = 'runs';
         const BACKTEST_REFRESH_INTERVAL_RUNNING_MS = 10000;
         const BACKTEST_REFRESH_INTERVAL_IDLE_MS = 60000;
+        const BACKTEST_ROW_PAGE_CONFIG = Object.freeze({
+            trades: { label: 'Trades', noun: '笔交易', perPage: 200 },
+            targets: { label: 'Targets', noun: '条 targets', perPage: 200 },
+            signals: { label: 'Signals', noun: '条 signals', perPage: 200 },
+            reverseSignals: { label: 'Reverse', noun: '条 reverse rows', perPage: 200 },
+        });
         const trackingFilters = {
             date: '',
             symbol: '',
             eventType: '',
         };
         const BACKTEST_TABLE_PREVIEW_LIMITS = Object.freeze({
+            runs: 8,
             leaderboard: 50,
             trades: 20,
+            targets: 60,
+            dataQuality: 12,
             replay: 40,
             trackingTimeline: 120,
             trackingFlows: 36,
         });
         const backtestTableExpandedState = {
+            runs: false,
             leaderboard: false,
             trades: false,
+            targets: false,
+            dataQuality: false,
             replay: false,
             trackingTimeline: false,
             trackingFlows: false,

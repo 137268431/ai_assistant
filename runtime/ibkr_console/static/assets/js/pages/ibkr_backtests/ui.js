@@ -197,6 +197,11 @@
                 button.setAttribute('aria-selected', isActive ? 'true' : 'false');
             });
             resizeBacktestCharts();
+            if (typeof ensureBacktestRowsForActiveTab === 'function') {
+                ensureBacktestRowsForActiveTab(targetKey).catch((error) => {
+                    console.warn('ensureBacktestRowsForActiveTab failed:', error);
+                });
+            }
         }
 
         function syncSymbolSourceUI() {

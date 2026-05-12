@@ -259,7 +259,14 @@ class UniversePrimeBacktestPreloadTest(unittest.TestCase):
             _run_internal_compute=lambda payload: {"ok": True, "payload": payload, "captured_signals": []},
         )
 
-        with mock.patch.dict(sys.modules, {"ibkr_compute.api.server": fake_server}):
+        import ibkr_compute.api as compute_api_pkg
+
+        with mock.patch.dict(sys.modules, {"ibkr_compute.api.server": fake_server}), mock.patch.object(
+            compute_api_pkg,
+            "server",
+            fake_server,
+            create=True,
+        ):
             result = universe._prime_universe_symbols(["aapl"], source="target_upsert")
 
         self.assertTrue(result["ok"])
@@ -278,7 +285,13 @@ class UniverseTargetSubscriptionPlanTest(unittest.TestCase):
         universe = DummyTargetPlanUniverse(
             [
                 {"id": "target-spy", "symbol": "SPY", "status": "active", "score": 99, "extra": {"source": "manual_page_add"}},
-                {"id": "target-aapl", "symbol": "AAPL", "status": "active", "score": 80, "extra": {"source": "daily_scan"}},
+                {
+                    "id": "target-aapl",
+                    "symbol": "AAPL",
+                    "status": "active",
+                    "score": 80,
+                    "extra": {"source": "daily_scan", "active_gate_passed": True},
+                },
             ]
         )
 
@@ -292,6 +305,18 @@ class UniverseTargetSubscriptionPlanTest(unittest.TestCase):
         self.assertTrue(spy_updates)
         self.assertEqual("candidate", spy_updates[-1]["status"])
         self.assertTrue(spy_updates[-1]["extra"]["blocked_from_trading"])
+
+    def test_manual_active_target_is_not_selected_as_trade_row(self):
+        universe = DummyTargetPlanUniverse(
+            [
+                {"id": "target-aapl", "symbol": "AAPL", "status": "active", "score": 99, "extra": {"source": "manual_page_add"}},
+            ]
+        )
+
+        _target_date, symbols, _meta, selected_rows = universe._build_target_subscription_plan()
+
+        self.assertNotIn("AAPL", symbols)
+        self.assertEqual([], selected_rows)
 
 
 class UniverseRealtimeQuoteResubscribeTest(unittest.TestCase):

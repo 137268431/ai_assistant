@@ -374,6 +374,40 @@ def fetch_latest_bar(
     return _row_to_dict(row)
 
 
+def fetch_latest_bars_by_symbol(
+    conn: sqlite3.Connection,
+    symbols: Sequence[str],
+    interval: str,
+    environment: str,
+    *,
+    safe_upper_ms: int = 0,
+    include_legacy_empty: bool = True,
+) -> dict[str, dict[str, Any]]:
+    normalized_symbols = sorted(
+        {
+            str(symbol or "").strip().upper()
+            for symbol in (symbols or [])
+            if str(symbol or "").strip()
+        }
+    )
+    if not normalized_symbols:
+        return {}
+
+    rows_by_symbol: dict[str, dict[str, Any]] = {}
+    for symbol in normalized_symbols:
+        row = fetch_latest_bar(
+            conn,
+            symbol,
+            interval,
+            environment,
+            safe_upper_ms=safe_upper_ms,
+            include_legacy_empty=include_legacy_empty,
+        )
+        if row:
+            rows_by_symbol[symbol] = row
+    return rows_by_symbol
+
+
 def fetch_recent_bars(
     conn: sqlite3.Connection,
     symbol: str,

@@ -189,7 +189,10 @@
                 document.getElementById('runList').innerHTML = '<div class="empty-state">暂无回测记录。<br>先跑一轮。</div>';
                 return;
             }
-            document.getElementById('runList').innerHTML = runList.map((run) => `
+            const runPreview = getBacktestTablePreview('runs', runList);
+            document.getElementById('runList').innerHTML = `
+                ${renderBacktestTablePreviewBar('runs', runPreview, '个 run')}
+                ${runPreview.rows.map((run) => `
                 <div class="run-item ${run.id === selectedRunId ? 'active' : ''}" onclick="selectRun('${escapeHtml(run.id)}')">
                     <div class="run-item-top">
                         <div>
@@ -209,7 +212,8 @@
                         <div class="run-item-copy mono">${escapeHtml((run.created || '--').slice(0, 19))}</div>
                     </div>
                 </div>
-            `).join('');
+                `).join('')}
+            `;
         }
 
         function renderMetrics() {

@@ -5,11 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>回测工坊 - Trading Flight</title>
     <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
-    <script src="common.js?v=20260511-backtest-tracking-v1"></script>
+    <script src="common.js?v=20260512-backtest-pagination-v2"></script>
     <script>document.write(getCommonStyles());</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    <link rel="stylesheet" href="/assets/css/pages/ibkr_backtests/page.css?v=20260511-backtest-tracking-v1">
+    <link rel="stylesheet" href="/assets/css/pages/ibkr_backtests/page.css?v=20260512-backtest-pagination-v2">
 </head>
 <body>
     <div class="page-shell">
@@ -344,12 +344,12 @@
             </div>
 
             <div class="workbench-tab-panel is-active" data-backtest-tab-panel="runs" role="tabpanel">
-                <div class="dual-grid workbench-grid">
-                    <div class="panel">
+                <div class="runs-workbench">
+                    <div class="panel run-picker-panel">
                         <div class="panel-header">
                             <div>
                                 <div class="panel-title">最近 Runs</div>
-                                <div class="panel-copy">只列出当前来源环境的回测记录，点击后右侧会加载详情、交易和回放。</div>
+                                <div class="panel-copy">先选 run，再在下方查看该 run 的参数、数据质量、targets 和交易分页数据。</div>
                             </div>
                             <div class="panel-tools">
                                 <span class="pill pill-muted"><span class="dot"></span><span id="runCountLabel">0 runs</span></span>
@@ -358,15 +358,18 @@
                         <div class="run-list" id="runList"></div>
                     </div>
 
-                    <div class="panel">
+                    <div class="panel run-detail-panel">
                         <div class="panel-header">
                             <div>
                                 <div class="panel-title">Run 详情</div>
-                                <div class="panel-copy">参数、数据质量和月度回报都集中在这里，方便排查策略是否只是“结果好看”。</div>
+                                <div class="panel-copy">只展示当前选中的 run；重数据按页追加，避免大回测卡住首屏。</div>
                             </div>
-                            <div class="panel-tools" id="selectedRunPill"></div>
+                            <div class="panel-tools">
+                                <div id="selectedRunPill"></div>
+                                <button class="btn ghost" type="button" onclick="refreshSelectedRun(true)">刷新 Run</button>
+                            </div>
                         </div>
-                        <div class="detail-grid section-scroll-body backtest-scroll-region" id="runDetail"></div>
+                        <div class="detail-grid" id="runDetail"></div>
                     </div>
                 </div>
             </div>
@@ -491,17 +494,17 @@
         <div id="nav"></div>
     </div>
 
-    <script src="/assets/js/pages/ibkr_backtests/state.js?v=20260511-backtest-tracking-v1"></script>
-    <script src="/assets/js/pages/ibkr_backtests/utils.js?v=20260511-backtest-tracking-v1"></script>
-    <script src="/assets/js/pages/ibkr_backtests/cards.js?v=20260511-backtest-tracking-v1"></script>
-    <script src="/assets/js/pages/ibkr_backtests/ui.js?v=20260511-backtest-tracking-v1"></script>
-    <script src="/assets/js/pages/ibkr_backtests/renderers.js?v=20260511-backtest-tracking-v1"></script>
-    <script src="/assets/js/pages/ibkr_backtests/charts.js?v=20260511-backtest-tracking-v1"></script>
-    <script src="/assets/js/pages/ibkr_backtests/details.js?v=20260511-backtest-tracking-v1"></script>
-    <script src="/assets/js/pages/ibkr_backtests/tracking.js?v=20260511-backtest-tracking-v1"></script>
-    <script src="/assets/js/pages/ibkr_backtests/replay.js?v=20260511-backtest-tracking-v1"></script>
-    <script src="/assets/js/pages/ibkr_backtests/api.js?v=20260511-backtest-tracking-v1"></script>
-    <script src="/assets/js/pages/ibkr_backtests/actions.js?v=20260511-backtest-tracking-v1"></script>
-    <script src="/assets/js/pages/ibkr_backtests/page.js?v=20260511-backtest-tracking-v1"></script>
+    <script src="/assets/js/pages/ibkr_backtests/state.js?v=20260512-backtest-pagination-v2"></script>
+    <script src="/assets/js/pages/ibkr_backtests/utils.js?v=20260512-backtest-pagination-v2"></script>
+    <script src="/assets/js/pages/ibkr_backtests/cards.js?v=20260512-backtest-pagination-v2"></script>
+    <script src="/assets/js/pages/ibkr_backtests/ui.js?v=20260512-backtest-pagination-v2"></script>
+    <script src="/assets/js/pages/ibkr_backtests/renderers.js?v=20260512-backtest-pagination-v2"></script>
+    <script src="/assets/js/pages/ibkr_backtests/charts.js?v=20260512-backtest-pagination-v2"></script>
+    <script src="/assets/js/pages/ibkr_backtests/details.js?v=20260512-backtest-pagination-v2"></script>
+    <script src="/assets/js/pages/ibkr_backtests/tracking.js?v=20260512-backtest-pagination-v2"></script>
+    <script src="/assets/js/pages/ibkr_backtests/replay.js?v=20260512-backtest-pagination-v2"></script>
+    <script src="/assets/js/pages/ibkr_backtests/api.js?v=20260512-backtest-pagination-v2"></script>
+    <script src="/assets/js/pages/ibkr_backtests/actions.js?v=20260512-backtest-pagination-v2"></script>
+    <script src="/assets/js/pages/ibkr_backtests/page.js?v=20260512-backtest-pagination-v2"></script>
 </body>
 </html>

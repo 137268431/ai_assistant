@@ -8,7 +8,7 @@
                 ]);
                 await Promise.all([
                     refreshSelectedBatch(false),
-                    refreshSelectedRun(false),
+                    refreshSelectedRun(false, { loadRows: false }),
                 ]);
                 setPageContextMeta([
                     { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
@@ -21,6 +21,11 @@
             } catch (error) {
                 console.error('refreshDashboard failed:', error);
                 showToast(`刷新失败: ${error.message || error}`);
+            } finally {
+                setPageLoading(false, {
+                    title: '回测页加载中',
+                    copy: '正在同步回测数据。',
+                });
             }
         }
 
@@ -327,9 +332,10 @@
             selectedTrades = [];
             selectedSignals = [];
             selectedReverseSignals = [];
+            resetBacktestRowPagination(runId);
             selectedTrackingModel = null;
-            selectedTargetsLoading = Boolean(runId);
-            trackingLoading = Boolean(runId);
+            selectedTargetsLoading = Boolean(runId) && shouldLoadBacktestRowsForTab('targets', activeBacktestTab);
+            trackingLoading = Boolean(runId) && activeBacktestTab === 'tracking';
             trackingFilterRunId = '';
             trackingFilters.date = '';
             trackingFilters.symbol = '';
@@ -349,13 +355,8 @@
                 renderRunDetail();
                 refreshTrackingModel();
             });
-            await Promise.all([
-                hydratePromise,
-                loadRunTrades(runId),
-                loadRunTargets(runId, { showToastOnError: true }),
-                loadRunSignals(runId, { showToastOnError: true }),
-                loadRunReverseSignals(runId, { showToastOnError: true }),
-            ]);
+            await hydratePromise;
+            scheduleBacktestRowsForActiveTab(activeBacktestTab);
             renderReplay([]);
             document.getElementById('replayCenterBar').value = '';
         }
@@ -397,8 +398,20 @@
                 renderBatchDetail();
                 return;
             }
+            if (key === 'runs') {
+                renderRuns();
+                return;
+            }
             if (key === 'trades') {
                 renderTrades();
+                return;
+            }
+            if (key === 'targets') {
+                renderRunDetail();
+                return;
+            }
+            if (key === 'dataQuality') {
+                renderRunDetail();
                 return;
             }
             if (key === 'replay') {

@@ -134,6 +134,29 @@ class RuntimePipelineDirectTopupMixin:
                 return False
             return True
 
+    def _runtime_direct_topup_watchlist_5m_pending(self) -> bool:
+            def _count(value) -> int:
+                try:
+                    return int(value or 0)
+                except Exception:
+                    return 0
+
+            snapshot_getter = getattr(self, "_watchlist_idle_topup_completion_snapshot", None)
+            if not callable(snapshot_getter):
+                return False
+            try:
+                completion = snapshot_getter()
+            except Exception:
+                return False
+            if not isinstance(completion, dict):
+                return False
+            pending_count = (
+                _count(completion.get("stale"))
+                + _count(completion.get("missing"))
+                + _count(completion.get("unobserved"))
+            )
+            return pending_count > 0
+
     def _runtime_direct_topup_symbols(self) -> tuple[list[str], dict, dict]:
             snapshot = self._warmup_snapshot_from_subscriptions()
             snapshot_symbols = list(snapshot.get("symbols") or [])
@@ -359,6 +382,10 @@ class RuntimePipelineDirectTopupMixin:
                 return
             if not self._runtime_direct_topup_5m_is_current():
                 state["last_error"] = "canonical_5m_not_current"
+                self._set_direct_topup_state(**state)
+                return
+            if self._runtime_direct_topup_watchlist_5m_pending():
+                state["last_error"] = "watchlist_5m_pending"
                 self._set_direct_topup_state(**state)
                 return
 

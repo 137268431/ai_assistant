@@ -22,6 +22,28 @@ from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite
 from ibkr_compute.market.timeframe_utils import format_us_time, normalize_interval
 
 
+def _truthy_target_value(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "y", "active", "passed", "pass"}
+
+
+def _target_row_is_daily_scan_active(row: dict | None) -> bool:
+    extra = parse_json_object((row or {}).get("extra"))
+    source = str(extra.get("source") or "").strip().lower()
+    return source == "daily_scan" and _truthy_target_value(extra.get("active_gate_passed"))
+
+
+def _effective_target_status(row: dict | None) -> str:
+    status = str((row or {}).get("status") or "").strip().lower()
+    if status == "active" and not _target_row_is_daily_scan_active(row):
+        return "candidate"
+    return status
+
+
 def parse_market_date_bounds_ms(market_date: str) -> tuple[int, int]:
     start_dt = datetime.strptime(str(market_date or "").strip(), "%Y-%m-%d").replace(
         tzinfo=ET,
@@ -672,7 +694,7 @@ def build_screener_payload(
             "change_7d": 0.0,
         }
 
-        target_status = str((latest_target or {}).get("status") or "").strip().lower()
+        target_status = _effective_target_status(latest_target)
         direction_bias = str((latest_target or {}).get("direction_bias") or "neutral").strip().lower() or "neutral"
         target_score = round(coerce_float((latest_target or {}).get("score")), 2)
         scan_reason = str((latest_target or {}).get("scan_reason") or "").strip()

@@ -59,6 +59,8 @@ class DailyScanRejectionSummaryTest(unittest.TestCase):
             "target_subscription_limit": 80,
             "total_subscription_limit": 80,
             "trade_subscription_budget": 80,
+            "active_target_limit": 24,
+            "active_min_score": 0,
             "day_gain_trigger_enabled": True,
             "day_gain_trigger_pct": 4.0,
         }
@@ -163,7 +165,11 @@ class DailyScanRejectionSummaryTest(unittest.TestCase):
                 "environment": "live",
                 "date": "2026-04-21",
                 "status": "active",
-                "extra": {"source": "daily_scan", "scan_stage": "early_expansion_seed"},
+                "extra": {
+                    "source": "daily_scan",
+                    "scan_stage": "early_expansion_seed",
+                    "active_gate_passed": True,
+                },
             }
         ]
         pb_client = DummyPBClient(watchlist=watchlist, existing_targets=existing_targets)
@@ -195,7 +201,7 @@ class DailyScanRejectionSummaryTest(unittest.TestCase):
         self.assertEqual(pb_client.updated, [])
 
     def test_topup_writes_candidate_when_active_budget_is_full(self):
-        self.settings["trade_subscription_budget"] = 1
+        self.settings["active_target_limit"] = 1
         daily_scanner_mod._load_scan_settings.return_value = dict(self.settings)
         watchlist = [
             {"symbol": "AAPL", "environment": "live", "symbol_role": "trade", "exchange": "SMART"},
@@ -208,7 +214,11 @@ class DailyScanRejectionSummaryTest(unittest.TestCase):
                 "environment": "live",
                 "date": "2026-04-21",
                 "status": "active",
-                "extra": {"source": "daily_scan", "scan_stage": "early_expansion_seed"},
+                "extra": {
+                    "source": "daily_scan",
+                    "scan_stage": "early_expansion_seed",
+                    "active_gate_passed": True,
+                },
             }
         ]
         pb_client = DummyPBClient(watchlist=watchlist, existing_targets=existing_targets)
@@ -234,6 +244,51 @@ class DailyScanRejectionSummaryTest(unittest.TestCase):
         self.assertEqual(pb_client.upserts[0]["status"], "candidate")
         self.assertEqual(result["new_active"], 0)
         self.assertEqual(result["new_candidates"], 1)
+
+    def test_seed_writes_candidate_when_symbol_passes_quality_but_not_active_score(self):
+        self.settings["active_target_limit"] = 2
+        self.settings["active_min_score"] = 35
+        daily_scanner_mod._load_scan_settings.return_value = dict(self.settings)
+        watchlist = [
+            {"symbol": "AAPL", "environment": "live", "symbol_role": "trade", "exchange": "SMART"},
+            {"symbol": "NVDA", "environment": "live", "symbol_role": "trade", "exchange": "SMART"},
+        ]
+        pb_client = DummyPBClient(watchlist=watchlist)
+        engines = {
+            ("live", "AAPL", "5m"): FakeEngine({"ema_bullish": True}),
+            ("live", "NVDA", "5m"): FakeEngine(
+                {
+                    "ema_bullish": True,
+                    "sd_regime": "breakout_up",
+                    "orb_breakout_up": True,
+                    "vwap_alignment": "above",
+                    "rvol_20": 5.0,
+                    "dollar_volume": 60_000_000,
+                }
+            ),
+        }
+        scanner = DailyScanner(pb_client=pb_client, engines=engines)
+        scanner._build_metric_rows = lambda date, environment, symbols: {
+            symbol: {
+                "avg_10d_volume": 3500000,
+                "premarket_volume": 25000,
+                "atr_pct": 0.8,
+                "day_change_pct": 4.5 if symbol == "NVDA" else 2.5,
+                "exchange": "SMART",
+            }
+            for symbol in symbols
+        }
+
+        result = scanner.run_scan("2026-04-21", environments=["live"])
+
+        statuses = {row["symbol"]: row["status"] for row in pb_client.upserts}
+        self.assertEqual(statuses["NVDA"], "active")
+        self.assertEqual(statuses["AAPL"], "candidate")
+        self.assertEqual(result["new_active"], 1)
+        self.assertEqual(result["new_candidates"], 1)
+        self.assertFalse(
+            next(row for row in pb_client.upserts if row["symbol"] == "AAPL")["extra"]["active_gate_passed"]
+        )
 
     def test_evaluate_symbol_adds_stocks_in_play_bonus_fields(self):
         pb_client = DummyPBClient(watchlist=[])

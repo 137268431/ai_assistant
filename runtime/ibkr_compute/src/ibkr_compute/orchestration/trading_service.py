@@ -41,6 +41,7 @@ from ibkr_compute.market.timeframe_utils import (
     classify_market_session_kind,
     interval_to_ms,
 )
+from ibkr_compute.orchestration.market_universe_support import _target_row_is_daily_scan_active
 from ibkr_compute.market.timeframe_builder import TimeframeBarBuilder
 from ibkr_compute.core.indicator_engine import indicator_ready_bar_count
 from ibkr_compute.order.order_placer import OrderPlacer
@@ -339,6 +340,11 @@ class IBKRTradingService(
         self._watchlist_idle_topup_cursor = 0
         self._watchlist_idle_topup_lock = threading.RLock()
         self._watchlist_idle_observations = {}
+        self._watchlist_topup_wakeup = threading.Event()
+        self._watchlist_topup_force_until = 0.0
+        self._watchlist_topup_requested_at = 0.0
+        self._watchlist_topup_request_count = 0
+        self._watchlist_topup_last_consumed_request_count = 0
         self._last_watchlist_deep_maintenance_at = 0.0
         self._watchlist_idle_topup_state = self._initial_watchlist_idle_topup_state()
         self._watchlist_integrity_cursor = 0
@@ -445,27 +451,12 @@ class IBKRTradingService(
             remaining = max(0, total_limit - len(market_monitors))
             trade_budget = remaining if trade_budget is None else min(trade_budget, remaining)
 
-        def is_manual(row: dict) -> bool:
-            extra = row.get("extra") if isinstance(row, dict) else {}
-            if isinstance(extra, str):
-                try:
-                    extra = json.loads(extra)
-                except Exception:
-                    extra = {}
-            source = str((extra if isinstance(extra, dict) else {}).get("source") or "").strip().lower()
-            return source.startswith("manual_") or source in {
-                "ibkr_screener",
-                "manual_page",
-                "manual_page_add",
-                "manual_page_edit",
-                "manual_page_remove",
-                "screener_targets_tab",
-            }
-
         active_rows = [
-            row for row in rows if str(row.get("symbol", "")).strip().upper() not in market_monitors
+            row for row in rows
+            if str(row.get("symbol", "")).strip().upper() not in market_monitors
+            and _target_row_is_daily_scan_active(row)
         ]
-        prioritized_rows = [row for row in active_rows if is_manual(row)] + [row for row in active_rows if not is_manual(row)]
+        prioritized_rows = list(active_rows)
         biases: dict[str, str] = {}
         for row in prioritized_rows:
             symbol = str(row.get("symbol", "")).strip().upper()

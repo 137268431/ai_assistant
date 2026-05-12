@@ -221,6 +221,8 @@ class Config:
         "ibkr_daily_scan_min_premarket_volume": "5000",
         "ibkr_daily_scan_day_gain_trigger_enabled": "true",
         "ibkr_daily_scan_day_gain_trigger_pct": "4.0",
+        "ibkr_daily_scan_active_target_limit": "24",
+        "ibkr_daily_scan_active_min_score": "40",
         "ibkr_dynamic_admission_enabled": "true",
         "ibkr_dynamic_admission_min_score": "58",
         "ibkr_symbol_profile_enabled": "true",

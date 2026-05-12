@@ -21,6 +21,28 @@ TODAY_TARGET_STATUSES = {"active", "candidate"}
 TimeStrings = Callable[[], dict[str, str]]
 
 
+def truthy_target_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = to_text(value).lower()
+    return text in {"1", "true", "yes", "y", "active", "passed", "pass"}
+
+
+def target_row_is_daily_scan_active(row: dict[str, Any] | None) -> bool:
+    extra = parse_json_object((row or {}).get("extra"))
+    source = to_text(extra.get("source")).lower()
+    return source == "daily_scan" and truthy_target_value(extra.get("active_gate_passed"))
+
+
+def effective_target_status(row: dict[str, Any] | None) -> str:
+    status = to_text((row or {}).get("status")).lower()
+    if status == "active" and not target_row_is_daily_scan_active(row):
+        return "candidate"
+    return status
+
+
 def normalize_symbols(value: Any) -> list[str]:
     if isinstance(value, (list, tuple, set)):
         raw_items = list(value)

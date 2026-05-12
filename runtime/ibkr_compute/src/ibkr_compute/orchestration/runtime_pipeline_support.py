@@ -331,6 +331,10 @@ class RuntimePipelineSupportMixin:
                     )
                     if int(result.get("signals", 0) or 0) > 0:
                         self._signal_wakeup.set()
+                    try:
+                        self._request_watchlist_idle_topup_now(ttl_s=5.0)
+                    except Exception:
+                        pass
                 except Exception as exc:
                     service_mod.logger.error("Realtime compute loop error: %s", exc)
                 finally:

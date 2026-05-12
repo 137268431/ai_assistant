@@ -34,6 +34,14 @@
             const historicalTargeting = run?.extra?.historical_targeting || run?.metrics?.historical_targeting || {};
             const scanDiagnostics = run?.metrics?.daily_scan_match_diagnostics || run?.extra?.daily_scan_match_diagnostics || {};
             const groups = groupTargetsByDate(selectedTargets, run);
+            const targetPreview = getBacktestTablePreview('targets', selectedTargets);
+            const visibleTargetIds = new Set(targetPreview.rows.map((item) => item.id || `${item.date}:${item.symbol}:${item.rank}`));
+            const visibleGroups = groups
+                .map((group) => ({
+                    ...group,
+                    items: group.items.filter((item) => visibleTargetIds.has(item.id || `${item.date}:${item.symbol}:${item.rank}`)),
+                }))
+                .filter((group) => group.items.length);
             const selectedSymbolCount = Number(
                 historicalTargeting.selected_symbol_count
                 || new Set(selectedTargets.map((item) => String(item?.symbol || '').trim()).filter(Boolean)).size
@@ -81,8 +89,10 @@
                             <div class="detail-item"><div class="detail-item-label">Not Selected</div><div class="detail-item-value">${escapeHtml(String(scanDiagnostics.not_selected_signal_count || 0))}</div></div>
                         ` : ''}
                     </div>
+                    <div style="margin-top: 12px;">${renderBacktestRowPager('targets')}</div>
+                    ${renderBacktestTablePreviewBar('targets', targetPreview, '条 target 明细')}
                     ${selectedTargetsLoading ? '<div class="empty-state" style="margin-top: 14px;">读取历史 targets ...</div>' : ''}
-                    ${!selectedTargetsLoading && groups.length ? groups.map((group) => {
+                    ${!selectedTargetsLoading && visibleGroups.length ? visibleGroups.map((group) => {
                         const summary = group.summary || {};
                         const first = group.items[0] || {};
                         const universeSize = Number(summary.universe_size || first?.extra?.universe_size || 0);
@@ -133,7 +143,7 @@
                             </div>
                         `;
                     }).join('') : ''}
-                    ${!selectedTargetsLoading && !groups.length ? '<div class="empty-state" style="margin-top: 14px;">暂无历史 target 明细。</div>' : ''}
+                    ${!selectedTargetsLoading && !visibleGroups.length ? '<div class="empty-state" style="margin-top: 14px;">暂无历史 target 明细。</div>' : ''}
                 </div>
             `;
         }

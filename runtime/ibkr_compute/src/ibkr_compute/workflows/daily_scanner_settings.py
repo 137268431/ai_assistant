@@ -18,6 +18,8 @@ from .daily_scanner_constants import (
     DAILY_SCAN_SECONDARY_WEIGHT,
     DAILY_SCAN_SHORT_PRIMARY_RULES,
     DAILY_SCAN_SHORT_SECONDARY_RULES,
+    DEFAULT_ACTIVE_MIN_SCORE,
+    DEFAULT_ACTIVE_TARGET_LIMIT,
     DEFAULT_DAY_GAIN_TRIGGER_PCT,
     DEFAULT_MIN_ABS_DAY_CHANGE_PCT,
     DEFAULT_MIN_ATR_PCT,
@@ -144,6 +146,28 @@ def _load_scan_settings(
         "target_subscription_limit": target_limit,
         "total_subscription_limit": total_limit,
         "trade_subscription_budget": trade_budget,
+        "active_target_limit": max(
+            0,
+            _safe_int(
+                api_app.cfg.get_for_environment(
+                    "ibkr_daily_scan_active_target_limit",
+                    runtime_environment,
+                    str(DEFAULT_ACTIVE_TARGET_LIMIT),
+                ),
+                DEFAULT_ACTIVE_TARGET_LIMIT,
+            ),
+        ),
+        "active_min_score": max(
+            0.0,
+            _safe_float(
+                api_app.cfg.get_for_environment(
+                    "ibkr_daily_scan_active_min_score",
+                    runtime_environment,
+                    str(DEFAULT_ACTIVE_MIN_SCORE),
+                ),
+                DEFAULT_ACTIVE_MIN_SCORE,
+            ),
+        ),
         "dynamic_admission_enabled": _cfg_bool(
             api_app,
             "ibkr_dynamic_admission_enabled",
@@ -195,6 +219,7 @@ def build_daily_scan_rule_summary(
         settings = settings_loader(runtime_environment)
     trade_budget = settings["trade_subscription_budget"]
     budget_label = "unlimited" if trade_budget is None else str(int(trade_budget))
+    active_limit = int(settings.get("active_target_limit", DEFAULT_ACTIVE_TARGET_LIMIT) or 0)
     cfg = getattr((api_app_getter or get_api_app)(), "cfg", None)
     try:
         completeness_blocking = bool(
@@ -237,6 +262,8 @@ def build_daily_scan_rule_summary(
         },
         "subscription_budget": {
             "trade_budget": budget_label,
+            "active_target_limit": active_limit,
+            "active_min_score": settings.get("active_min_score", DEFAULT_ACTIVE_MIN_SCORE),
             "total_limit": int(settings["total_subscription_limit"] or 0),
             "monitor_count": int(settings["monitor_count"] or 0),
         },

@@ -156,6 +156,13 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             "selected_symbol_count": 0,
             "dynamic_reason": "",
             "loop_interval_sec": 2,
+            "scheduler_mode": "idle_driven",
+            "fast_retry_s": 0.25,
+            "next_wait_s": None,
+            "force_request_pending": False,
+            "force_request_count": 0,
+            "last_consumed_force_request_count": 0,
+            "last_force_requested_at": "",
             "last_batches": [],
             "last_attempted_symbols": [],
             "last_attempted_symbols_total": 0,
@@ -237,6 +244,74 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
                 2,
             ),
         )
+
+    def _watchlist_idle_topup_fast_retry_sec(self) -> float:
+        service_mod = _service_mod()
+        try:
+            value = float(
+                self.config.get_for_environment(
+                    "ibkr_watchlist_idle_topup_fast_retry_sec",
+                    service_mod.ENVIRONMENT,
+                    "0.25",
+                )
+            )
+        except Exception:
+            value = 0.25
+        return max(0.05, min(2.0, value))
+
+    def _watchlist_idle_topup_next_wait_sec(self, state: dict | None = None) -> float:
+        payload = state if isinstance(state, dict) else self._watchlist_idle_topup_status()
+        loop_wait_s = float(self._watchlist_idle_topup_loop_interval_sec())
+        fast_retry_s = self._watchlist_idle_topup_fast_retry_sec()
+        status = str((payload or {}).get("status") or "").strip().lower()
+        stop_reason = str((payload or {}).get("last_stop_reason") or "").strip().lower()
+        skip_reason = str((payload or {}).get("skip_reason") or "").strip().lower()
+        reason_text = stop_reason or skip_reason
+        completion = (payload or {}).get("completion") if isinstance((payload or {}).get("completion"), dict) else {}
+        if not completion:
+            try:
+                completion = self._watchlist_idle_topup_completion_snapshot()
+            except Exception:
+                completion = {}
+        remaining = (
+            _safe_int(completion.get("stale"), 0)
+            + _safe_int(completion.get("missing"), 0)
+            + _safe_int(completion.get("unobserved"), 0)
+        )
+        last_written = _safe_int((payload or {}).get("last_written_bars"), 0)
+        admission = (payload or {}).get("last_admission") if isinstance((payload or {}).get("last_admission"), dict) else {}
+        blocker_codes = {
+            str((item or {}).get("code") or "").strip().lower()
+            for item in (admission.get("blockers") or [])
+            if isinstance(item, dict)
+        }
+        short_blockers = {
+            "data_writer_busy",
+            "official_5m_pending",
+            "bar_repair_busy",
+        }
+        hard_blockers = {
+            "disabled",
+            "warmup_active",
+            "session_unauthenticated",
+            "websocket_not_ready",
+            "active_5m_not_fresh",
+            "resource_governor_denied",
+        }
+
+        if self._watchlist_idle_topup_force_catchup_active():
+            return fast_retry_s
+        if status == "running":
+            return fast_retry_s
+        if blocker_codes.intersection(short_blockers):
+            return fast_retry_s
+        if blocker_codes.intersection(hard_blockers):
+            return loop_wait_s
+        if status == "completed" and (last_written > 0 or reason_text == "max_symbols_per_cycle") and remaining > 0:
+            return fast_retry_s
+        if status == "skipped" and reason_text.startswith("admission_blocked:"):
+            return fast_retry_s
+        return loop_wait_s
 
     def _watchlist_idle_topup_dynamic_max_symbols_per_cycle(self) -> int:
         service_mod = _service_mod()
@@ -355,6 +430,51 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
 
     def _watchlist_idle_topup_due_budget_allows_batch(self, admission: dict, estimated_batch_s: float) -> tuple[bool, str]:
         return True, ""
+
+    def _watchlist_idle_topup_force_catchup_active(self) -> bool:
+        return (
+            time.time() < float(getattr(self, "_watchlist_topup_force_until", 0.0) or 0.0)
+            or self._watchlist_idle_topup_force_request_pending()
+        )
+
+    def _watchlist_idle_topup_force_request_pending(self) -> bool:
+        return int(getattr(self, "_watchlist_topup_request_count", 0) or 0) > int(
+            getattr(self, "_watchlist_topup_last_consumed_request_count", 0) or 0
+        )
+
+    def _consume_watchlist_idle_topup_force_request(self) -> None:
+        self._watchlist_topup_last_consumed_request_count = int(
+            getattr(self, "_watchlist_topup_request_count", 0) or 0
+        )
+        try:
+            self._set_watchlist_idle_topup_state(
+                force_request_pending=False,
+                force_request_count=int(getattr(self, "_watchlist_topup_request_count", 0) or 0),
+                last_consumed_force_request_count=int(
+                    getattr(self, "_watchlist_topup_last_consumed_request_count", 0) or 0
+                ),
+            )
+        except Exception:
+            pass
+
+    def _request_watchlist_idle_topup_now(self, *, ttl_s: float = 15.0) -> None:
+        self._watchlist_topup_force_until = max(
+            float(getattr(self, "_watchlist_topup_force_until", 0.0) or 0.0),
+            time.time() + max(1.0, float(ttl_s or 0.0)),
+        )
+        self._watchlist_topup_requested_at = time.time()
+        self._watchlist_topup_request_count = int(getattr(self, "_watchlist_topup_request_count", 0) or 0) + 1
+        try:
+            self._set_watchlist_idle_topup_state(
+                force_request_pending=True,
+                force_request_count=int(getattr(self, "_watchlist_topup_request_count", 0) or 0),
+                last_force_requested_at=self._now_iso(),
+            )
+        except Exception:
+            pass
+        wakeup = getattr(self, "_watchlist_topup_wakeup", None)
+        if wakeup is not None and hasattr(wakeup, "set"):
+            wakeup.set()
 
     def _watchlist_idle_topup_request_period(self) -> str:
         service_mod = _service_mod()
@@ -568,10 +688,14 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             blockers.append({"code": "websocket_not_ready"})
         if active_due_guard_required and pending_symbols:
             blockers.append({"code": "official_5m_pending", "pending_symbols": pending_symbols})
-        if queue_size > 0:
-            blockers.append({"code": "compute_queue_busy", "queue_size": queue_size})
-        if compute_inflight:
-            blockers.append({"code": "compute_inflight"})
+        post_close_catchup = bool(
+            active_due_guard_required
+            and not pending_symbols
+            and completed_bucket_ms > 0
+            and due_bucket_ms > 0
+            and completed_bucket_ms >= due_bucket_ms
+            and self._watchlist_idle_topup_force_catchup_active()
+        )
         if writer_busy:
             blockers.append({"code": "data_writer_busy", **writer_status})
         if active_due_guard_required and bar_repair_busy:
@@ -611,6 +735,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             "active_first_enabled": active_first_enabled,
             "market_session": market_session_kind,
             "resource_governor": resource_governor,
+            "post_close_catchup": post_close_catchup,
         }
         return not blockers, snapshot
 
@@ -663,9 +788,22 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
         self._watchlist_idle_topup_cursor = (start + len(scanned)) % max(len(pool), 1)
         now_ms = int(time.time() * 1000)
         expected_5m_ms = self._watchlist_idle_topup_expected_5m_ms(now_ms=now_ms)
+        latest_map = {}
+        latest_map_getter = getattr(self.data_backfill, "get_latest_stored_bar_ms_map", None)
+        if callable(latest_map_getter):
+            try:
+                latest_map = {
+                    str(symbol or "").strip().upper(): _safe_int(value, 0)
+                    for symbol, value in latest_map_getter(scanned, "5m").items()
+                }
+            except Exception:
+                latest_map = {}
         candidates = []
         for symbol in scanned:
-            latest_ms = self.data_backfill.get_latest_stored_bar_ms(symbol, "5m")
+            if symbol in latest_map:
+                latest_ms = _safe_int(latest_map.get(symbol), 0)
+            else:
+                latest_ms = self.data_backfill.get_latest_stored_bar_ms(symbol, "5m")
             self._observe_watchlist_idle_symbol(symbol, latest_ms)
             if self._watchlist_idle_topup_latest_is_stale(
                 latest_ms,
@@ -776,10 +914,13 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             estimated_bars_budget = 0
         history_concurrency = self._watchlist_idle_topup_history_concurrency()
         request_spacing_s = self._watchlist_idle_topup_history_request_spacing()
+        fast_retry_s = self._watchlist_idle_topup_fast_retry_sec()
         request_period = self._watchlist_idle_topup_request_period()
         self._set_watchlist_idle_topup_state(
             enabled=enabled,
             loop_interval_sec=loop_interval_sec,
+            scheduler_mode="idle_driven",
+            fast_retry_s=fast_retry_s,
             batch_size=batch_size,
             max_symbols_per_cycle=max_symbols,
             dynamic_enabled=dynamic_enabled,
@@ -878,6 +1019,8 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             selected_symbol_count=0,
             dynamic_reason="",
         )
+        if self._watchlist_idle_topup_force_request_pending():
+            self._consume_watchlist_idle_topup_force_request()
 
         try:
             while True:

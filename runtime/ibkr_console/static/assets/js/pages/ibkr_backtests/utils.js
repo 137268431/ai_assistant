@@ -75,6 +75,84 @@
             return Array.isArray(payload?.items) ? payload.items : [];
         }
 
+        function resetBacktestRowPagination(runId = selectedRunId) {
+            backtestRowPageState = {};
+            Object.entries(BACKTEST_ROW_PAGE_CONFIG).forEach(([key, config]) => {
+                backtestRowPageState[key] = {
+                    runId: runId || '',
+                    page: 0,
+                    perPage: Number(config.perPage || 200),
+                    loaded: 0,
+                    total: null,
+                    hasMore: Boolean(runId),
+                    loading: false,
+                    error: '',
+                };
+            });
+        }
+
+        function getBacktestRowPagination(key) {
+            if (!backtestRowPageState[key] || backtestRowPageState[key].runId !== selectedRunId) {
+                resetBacktestRowPagination(selectedRunId);
+            }
+            return backtestRowPageState[key] || {
+                runId: selectedRunId || '',
+                page: 0,
+                perPage: Number(BACKTEST_ROW_PAGE_CONFIG[key]?.perPage || 200),
+                loaded: 0,
+                total: null,
+                hasMore: Boolean(selectedRunId),
+                loading: false,
+                error: '',
+            };
+        }
+
+        function updateBacktestRowPagination(key, patch = {}) {
+            const current = getBacktestRowPagination(key);
+            backtestRowPageState[key] = {
+                ...current,
+                ...patch,
+                runId: selectedRunId || current.runId || '',
+            };
+            return backtestRowPageState[key];
+        }
+
+        function getBacktestRowList(key) {
+            if (key === 'trades') return selectedTrades;
+            if (key === 'targets') return selectedTargets;
+            if (key === 'signals') return selectedSignals;
+            if (key === 'reverseSignals') return selectedReverseSignals;
+            return [];
+        }
+
+        function renderBacktestRowPager(key, options = {}) {
+            const state = getBacktestRowPagination(key);
+            const config = BACKTEST_ROW_PAGE_CONFIG[key] || {};
+            const loaded = Number(state.loaded || getBacktestRowList(key).length || 0);
+            const total = state.total != null ? Number(state.total || 0) : null;
+            const noun = options.noun || config.noun || '条记录';
+            const label = options.label || config.label || key;
+            const moreLabel = state.loading ? '加载中...' : `加载更多 ${label}`;
+            const loadAllLabel = state.loading ? '加载中...' : '补齐全部';
+            const totalCopy = total != null
+                ? `已加载 ${formatNumber(loaded, 0)} / ${formatNumber(total, 0)} ${noun}`
+                : `已加载 ${formatNumber(loaded, 0)} ${noun}`;
+            const stateCopy = state.error
+                ? `读取失败：${state.error}`
+                : (state.hasMore ? `${totalCopy}，还有更多数据。` : `${totalCopy}。`);
+            const errorClass = state.error ? ' has-error' : '';
+            if (!selectedRunId && !loaded) return '';
+            return `
+                <div class="row-pager${errorClass}">
+                    <div class="row-pager-copy">${escapeHtml(stateCopy)}</div>
+                    <div class="row-pager-actions">
+                        ${state.hasMore ? `<button class="btn ghost" type="button" ${state.loading ? 'disabled' : ''} onclick="loadMoreBacktestRows('${escapeHtml(key)}')">${escapeHtml(moreLabel)}</button>` : ''}
+                        ${state.hasMore ? `<button class="btn ghost" type="button" ${state.loading ? 'disabled' : ''} onclick="loadAllBacktestRows('${escapeHtml(key)}')">${escapeHtml(loadAllLabel)}</button>` : ''}
+                    </div>
+                </div>
+            `;
+        }
+
         async function apiFetchAll(collection, params = {}) {
             const allItems = [];
             const perPage = Number(params.perPage || 200);

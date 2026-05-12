@@ -12,6 +12,7 @@
             const monthlyReturns = Array.isArray(metrics.monthly_returns) ? metrics.monthly_returns : [];
             const dailyFunnel = Array.isArray(metrics.daily_funnel) ? metrics.daily_funnel : [];
             const qualityRows = Array.isArray(metrics.data_quality) ? metrics.data_quality : [];
+            const qualityPreview = getBacktestTablePreview('dataQuality', qualityRows);
             const skipped = Array.isArray(metrics.skipped_symbols) ? metrics.skipped_symbols : [];
             const symbolCount = countRunSymbols(selectedRun);
             const symbolSummary = summarizeRunSymbols(selectedRun);
@@ -55,8 +56,9 @@
                 <div class="detail-card">
                     <div class="subhead">Data Quality</div>
                     ${qualityRows.length ? `
+                        ${renderBacktestTablePreviewBar('dataQuality', qualityPreview, '个标的')}
                         <div class="quality-grid">
-                            ${qualityRows.map((item) => {
+                            ${qualityPreview.rows.map((item) => {
                                 const gapCount = Number(item.gap_count || 0);
                                 const tone = item.status === 'ok' && gapCount === 0 ? 'good' : (item.status === 'insufficient_data' ? 'bad' : 'warn');
                                 return `
@@ -199,11 +201,15 @@
                 return;
             }
             if (!selectedTrades.length) {
-                document.getElementById('tradesPanel').innerHTML = '<div class="empty-state">暂无成交记录。</div>';
+                document.getElementById('tradesPanel').innerHTML = `
+                    ${renderBacktestRowPager('trades')}
+                    <div class="empty-state">暂无成交记录。</div>
+                `;
                 return;
             }
             const tradePreview = getBacktestTablePreview('trades', selectedTrades);
             document.getElementById('tradesPanel').innerHTML = `
+                ${renderBacktestRowPager('trades')}
                 ${renderBacktestTablePreviewBar('trades', tradePreview, '笔交易')}
                 <div class="table-wrap">
                     <table class="data-table">

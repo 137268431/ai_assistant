@@ -29,6 +29,9 @@ function applyDefaultDates() {
         window.refreshSelectedRun = refreshSelectedRun;
         window.refreshSelectedBatch = refreshSelectedBatch;
         window.setBacktestTab = setBacktestTab;
+        window.loadMoreBacktestRows = loadMoreBacktestRows;
+        window.loadAllBacktestRows = loadAllBacktestRows;
+        window.ensureBacktestRowsForActiveTab = ensureBacktestRowsForActiveTab;
         window.loadReplayForSelection = loadReplayForSelection;
         window.replayTrade = replayTrade;
         window.openTradeChart = openTradeChart;
@@ -62,11 +65,17 @@ function applyDefaultDates() {
             setBacktestTab(activeBacktestTab);
             renderTracking();
             renderReplay([]);
+            const initialLoadingOptions = {
+                title: '回测页加载中',
+                copy: '正在同步回测数据。',
+            };
+            const initialLoadingGuard = setTimeout(() => {
+                setPageLoading(false, initialLoadingOptions);
+            }, 4500);
             await withPageLoading(
                 () => refreshDashboard(false),
-                {
-                    title: '回测页加载中',
-                    copy: '正在同步回测数据。',
-                }
+                initialLoadingOptions
             );
+            clearTimeout(initialLoadingGuard);
+            setPageLoading(false, initialLoadingOptions);
         });

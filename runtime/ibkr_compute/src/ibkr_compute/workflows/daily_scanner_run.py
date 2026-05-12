@@ -13,6 +13,8 @@ from .daily_scanner_constants import (
     DAILY_SCAN_SOURCE,
     DAILY_SCAN_STAGE,
     DAILY_SCAN_TOPUP_STAGE,
+    DEFAULT_ACTIVE_MIN_SCORE,
+    DEFAULT_ACTIVE_TARGET_LIMIT,
     MAX_DATA_COMPLETENESS_REPAIR_JOBS_IN_RESULT,
     REJECTION_BUCKET_DATA_INCOMPLETE,
 )
@@ -22,7 +24,7 @@ from .daily_scanner_support import (
     _normalize_scan_mode,
     _record_rejection,
     _safe_float,
-    _target_row_is_manual,
+    _target_row_is_daily_scan_active,
 )
 
 
@@ -167,18 +169,6 @@ class DailyScannerRunMixin:
         stored_indicator_snapshots = self._load_stored_indicator_snapshots(runtime_environment, watchlist_symbols)
         metric_rows = self._build_metric_rows(date, runtime_environment, watchlist_symbols)
         existing_rows = self._load_today_target_rows(date, runtime_environment)
-        manual_rows = {
-            str(row.get("symbol", "")).strip().upper(): row
-            for row in existing_rows
-            if _target_row_is_manual(row)
-        }
-        manual_retained_symbols = set(manual_rows.keys())
-        manual_active_count = sum(
-            1
-            for row in manual_rows.values()
-            if str(row.get("status", "")).strip().lower() == "active"
-        )
-
         eligible = []
         errors = 0
         rejection_summary, rejection_examples_by_bucket = _new_rejection_trackers()
@@ -249,31 +239,33 @@ class DailyScannerRunMixin:
         )
 
         trade_budget = settings["trade_subscription_budget"]
-        if trade_budget is None:
-            active_limit = len(existing_rows) + len(eligible)
-        elif scan_mode == DAILY_SCAN_MODE_TOPUP:
-            active_limit = max(0, int(trade_budget))
-        else:
-            active_limit = max(0, int(trade_budget) - manual_active_count)
+        active_target_limit = max(
+            0,
+            int(settings.get("active_target_limit", DEFAULT_ACTIVE_TARGET_LIMIT) or DEFAULT_ACTIVE_TARGET_LIMIT),
+        )
+        active_min_score = max(
+            0.0,
+            _safe_float(settings.get("active_min_score"), DEFAULT_ACTIVE_MIN_SCORE),
+        )
+        active_limit = active_target_limit if active_target_limit > 0 else 0
+        if trade_budget is not None:
+            active_limit = min(active_limit, max(0, int(trade_budget)))
 
         existing_target_symbols = {
             str(row.get("symbol", "")).strip().upper()
             for row in existing_rows
             if str(row.get("symbol", "")).strip()
         }
-        retained_symbols = set(existing_target_symbols if scan_mode == DAILY_SCAN_MODE_TOPUP else manual_retained_symbols)
+        retained_symbols = set(existing_target_symbols if scan_mode == DAILY_SCAN_MODE_TOPUP else [])
         active_symbols = {
             str(row.get("symbol", "")).strip().upper()
             for row in existing_rows
             if str(row.get("status", "")).strip().lower() == "active"
+            and _target_row_is_daily_scan_active(row)
             and str(row.get("symbol", "")).strip()
         }
         if scan_mode != DAILY_SCAN_MODE_TOPUP:
-            active_symbols = {
-                symbol
-                for symbol, row in manual_rows.items()
-                if str(row.get("status", "")).strip().lower() == "active"
-            }
+            active_symbols = set()
         active_count = 0
         candidate_count = 0
         new_targets: list[dict] = []
@@ -285,11 +277,10 @@ class DailyScannerRunMixin:
                 continue
             if scan_mode == DAILY_SCAN_MODE_TOPUP and symbol in existing_target_symbols:
                 continue
-            if scan_mode != DAILY_SCAN_MODE_TOPUP and symbol in manual_retained_symbols:
-                continue
 
             auto_rank += 1
-            status = "active" if len(active_symbols) < active_limit else "candidate"
+            qualifies_active = _safe_float(result.get("score")) >= active_min_score
+            status = "active" if qualifies_active and len(active_symbols) < active_limit else "candidate"
             retained_symbols.add(symbol)
             if status == "active":
                 active_symbols.add(symbol)
@@ -312,6 +303,9 @@ class DailyScannerRunMixin:
                 "day_change_pct": round(_safe_float(result.get("day_change_pct")), 2),
                 "subscription_rank": len(active_symbols) if status == "active" else 0,
                 "within_subscription_budget": status == "active",
+                "active_target_limit": active_target_limit,
+                "active_min_score": active_min_score,
+                "active_gate_passed": qualifies_active,
             }
             dynamic_thresholds = result.get("dynamic_thresholds") or extra.get("dynamic_thresholds") or {}
             if isinstance(dynamic_thresholds, dict):
@@ -363,17 +357,18 @@ class DailyScannerRunMixin:
                 item
                 for item in eligible
                 if str(item.get("symbol", "")).strip().upper()
-                not in (existing_target_symbols if scan_mode == DAILY_SCAN_MODE_TOPUP else manual_retained_symbols)
+                not in (existing_target_symbols if scan_mode == DAILY_SCAN_MODE_TOPUP else set())
             ]),
             "candidates": candidate_count + sum(
                 1
-                for row in (existing_rows if scan_mode == DAILY_SCAN_MODE_TOPUP else manual_rows.values())
+                for row in (existing_rows if scan_mode == DAILY_SCAN_MODE_TOPUP else [])
                 if str(row.get("status", "")).strip().lower() == "candidate"
             ),
             "active": active_count + sum(
                 1
-                for row in (existing_rows if scan_mode == DAILY_SCAN_MODE_TOPUP else manual_rows.values())
+                for row in (existing_rows if scan_mode == DAILY_SCAN_MODE_TOPUP else [])
                 if str(row.get("status", "")).strip().lower() == "active"
+                and _target_row_is_daily_scan_active(row)
             ),
             "removed": removed,
             "errors": errors,
@@ -381,8 +376,10 @@ class DailyScannerRunMixin:
             "new_active": sum(1 for row in new_targets if row.get("status") == "active"),
             "new_candidates": sum(1 for row in new_targets if row.get("status") == "candidate"),
             "trade_subscription_budget": trade_budget,
-            "manual_active_count": manual_active_count,
-            "manual_retained_count": len(manual_retained_symbols),
+            "active_target_limit": active_target_limit,
+            "active_min_score": active_min_score,
+            "manual_active_count": 0,
+            "manual_retained_count": 0,
             "engine_materialize": engine_materialize,
             "data_completeness": {
                 "enabled": bool(completeness_gate.get("enabled")),

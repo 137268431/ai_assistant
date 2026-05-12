@@ -21,6 +21,7 @@ from ibkr_api.universe.today_targets_shared import (
     normalize_signal_record,
     normalize_symbols,
     pick_latest_signal,
+    effective_target_status,
 )
 from ibkr_compute.api.market.screener.payload import parse_market_date_bounds_ms
 from ibkr_compute.core.active_window_admission import (

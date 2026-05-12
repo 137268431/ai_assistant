@@ -16,7 +16,7 @@ from .data_backfill_support import (
     _to_ib_bar_size,
     _to_ib_duration,
 )
-from .pocketbase_sqlite import fetch_latest_bar, open_pb_sqlite
+from .pocketbase_sqlite import fetch_latest_bar, fetch_latest_bars_by_symbol, open_pb_sqlite
 from .timeframe_utils import (
     build_runtime_timestamps,
     classify_session,
@@ -420,6 +420,56 @@ class DataBackfillHistoryMixin:
 
     def get_latest_stored_bar_ms(self, symbol: str, interval: str = "5m") -> int:
         return self._get_latest_stored_bar_ms(symbol, interval)
+
+    def get_latest_stored_bar_ms_map(self, symbols: Sequence[str], interval: str = "5m") -> Dict[str, int]:
+        normalized = normalize_interval(interval)
+        normalized_symbols = sorted(
+            {
+                str(symbol or "").strip().upper()
+                for symbol in (symbols or [])
+                if str(symbol or "").strip()
+            }
+        )
+        if not normalized_symbols:
+            return {}
+        safe_upper_ms = self._safe_history_upper_bound_ms(normalized)
+        if self._direct_sqlite_read_enabled():
+            try:
+                open_sqlite = _facade_attr("open_pb_sqlite", open_pb_sqlite)
+                fetch_latest_map = _facade_attr("fetch_latest_bars_by_symbol", fetch_latest_bars_by_symbol)
+                with open_sqlite(readonly=True, timeout=self._direct_sqlite_read_timeout()) as conn:
+                    rows_by_symbol = fetch_latest_map(
+                        conn,
+                        normalized_symbols,
+                        normalized,
+                        self.environment,
+                        safe_upper_ms=safe_upper_ms,
+                        include_legacy_empty=False,
+                    )
+                return {
+                    symbol: int((rows_by_symbol.get(symbol) or {}).get("bar_time_ms", 0) or 0)
+                    for symbol in normalized_symbols
+                }
+            except Exception as exc:
+                if not self._direct_sqlite_read_fallback_api_enabled():
+                    logger.warning(
+                        "Failed to query latest stored bars via SQLite for %d symbols/%s: %s",
+                        len(normalized_symbols),
+                        normalized,
+                        exc,
+                    )
+                    return {symbol: 0 for symbol in normalized_symbols}
+                logger.debug(
+                    "Direct SQLite latest bars map lookup failed for %d symbols/%s, falling back to per-symbol lookup: %s",
+                    len(normalized_symbols),
+                    normalized,
+                    exc,
+                )
+
+        return {
+            symbol: self._get_latest_stored_bar_ms(symbol, normalized)
+            for symbol in normalized_symbols
+        }
 
     def fetch_history(
         self,

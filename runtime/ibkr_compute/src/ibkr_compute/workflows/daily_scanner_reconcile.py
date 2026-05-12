@@ -29,12 +29,32 @@ class DailyScannerReconcileMixin:
         removed = 0
         for row in rows:
             symbol = str(row.get("symbol", "")).strip().upper()
-            if not symbol or symbol in retained_symbols or _target_row_is_manual(row):
+            if not symbol or symbol in retained_symbols:
                 continue
             record_id = str(row.get("id") or "").strip()
             if not record_id:
                 continue
             extra = _safe_extra(row)
+            if _target_row_is_manual(row):
+                if str(row.get("status", "")).strip().lower() != "active":
+                    continue
+                next_extra = {
+                    **extra,
+                    "manual_active_demoted_reason": "daily_scan_active_requires_today_gate",
+                    "manual_active_demoted_at": int(time.time() * 1000),
+                }
+                try:
+                    self.pb_client.update_record(
+                        "ibkr_targets",
+                        record_id,
+                        {
+                            "status": "candidate",
+                            "extra": next_extra,
+                        },
+                    )
+                except Exception as exc:
+                    print(f"[Scanner] demote manual active error: {environment}/{symbol}: {exc}")
+                continue
             next_extra = {
                 **extra,
                 "source": extra.get("source") or DAILY_SCAN_SOURCE,

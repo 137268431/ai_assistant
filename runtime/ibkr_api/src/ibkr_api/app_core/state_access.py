@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 
@@ -32,6 +33,35 @@ def load_daily_scan_state(
     return data
 
 
+def _as_json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return {}
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "y", "active", "passed", "pass"}
+
+
+def _row_is_effective_daily_scan_active(row: dict[str, Any] | None) -> bool:
+    if str((row or {}).get("status") or "").strip().lower() != "active":
+        return False
+    extra = _as_json_object((row or {}).get("extra"))
+    return str(extra.get("source") or "").strip().lower() == "daily_scan" and _truthy(extra.get("active_gate_passed"))
+
+
 def count_active_today_targets(pb, environment: str, market_date: str, *, normalize_environment, escape_filter_string) -> int:
     normalized_market_date = str(market_date or "").strip()
     if not normalized_market_date:
@@ -46,4 +76,4 @@ def count_active_today_targets(pb, environment: str, market_date: str, *, normal
         rows = pb.get_all_records("ibkr_targets", filter=target_filter, max_pages=25)
     except Exception:
         return 0
-    return len(rows or [])
+    return sum(1 for row in rows or [] if _row_is_effective_daily_scan_active(row if isinstance(row, dict) else {}))

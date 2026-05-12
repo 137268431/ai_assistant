@@ -13,6 +13,7 @@ from .market_universe_support import (
     _safe_float,
     _safe_int,
     _service_mod,
+    _target_row_is_daily_scan_active,
     _target_row_is_manual,
 )
 from .market_universe_active_repair import TradingServiceMarketUniverseActiveRepairMixin
