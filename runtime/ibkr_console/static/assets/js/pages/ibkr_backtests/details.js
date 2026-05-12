@@ -13,8 +13,12 @@
             const dailyFunnel = Array.isArray(metrics.daily_funnel) ? metrics.daily_funnel : [];
             const dailyFunnelPage = getBacktestClientPagination('dailyFunnel', dailyFunnel);
             const qualityRows = Array.isArray(metrics.data_quality) ? metrics.data_quality : [];
-            const qualityPreview = getBacktestTablePreview('dataQuality', qualityRows);
+            const filteredQualityRows = filterBacktestDataQualityRows(qualityRows);
+            const qualityPreview = getBacktestTablePreview('dataQuality', filteredQualityRows);
             const qualitySummary = getBacktestDataQualitySummary(qualityRows);
+            const filteredQualitySummary = getBacktestDataQualitySummary(filteredQualityRows);
+            const qualityDateOptions = getBacktestDataQualityDateOptions(qualityRows);
+            const targetLookup = buildBacktestTargetLookup(selectedTargets);
             const skipped = Array.isArray(metrics.skipped_symbols) ? metrics.skipped_symbols : [];
             const symbolCount = countRunSymbols(selectedRun);
             const symbolSummary = summarizeRunSymbols(selectedRun);
@@ -63,20 +67,48 @@
                     <div class="subhead">Data Quality</div>
                     ${qualityRows.length ? `
                         <div class="foot-note">${escapeHtml(qualitySummary.label)} · ok ${escapeHtml(formatNumber(qualitySummary.okCount, 0))} · gaps ${escapeHtml(formatNumber(qualitySummary.gapCount, 0))}</div>
+                        <div class="quality-filter-bar">
+                            <div class="quality-filter-group">
+                                <button class="filter-chip ${dataQualityFilters.date === 'all' ? 'active' : ''}" type="button" onclick="setDataQualityDateFilter('all')">All <span>${escapeHtml(formatNumber(qualityRows.length, 0))}</span></button>
+                                ${qualityDateOptions.map((item) => `
+                                    <button class="filter-chip ${dataQualityFilters.date === item.date ? 'active' : ''} ${item.issueCount ? 'has-issue' : ''}" type="button" onclick="setDataQualityDateFilter('${escapeHtml(item.date)}')">
+                                        ${escapeHtml(item.date)} <span>${escapeHtml(formatNumber(item.count, 0))}</span>${item.issueCount ? `<span class="issue-dot">${escapeHtml(formatNumber(item.issueCount, 0))}</span>` : ''}
+                                    </button>
+                                `).join('')}
+                            </div>
+                            <div class="quality-filter-group compact">
+                                ${[
+                                    ['all', 'All'],
+                                    ['issues', 'Issues'],
+                                    ['gaps', 'Gaps'],
+                                    ['ok', 'OK'],
+                                ].map(([key, label]) => `
+                                    <button class="filter-chip ${dataQualityFilters.status === key ? 'active' : ''}" type="button" onclick="setDataQualityStatusFilter('${escapeHtml(key)}')">${escapeHtml(label)}</button>
+                                `).join('')}
+                            </div>
+                        </div>
+                        <div class="foot-note">当前筛选：${escapeHtml(filteredQualitySummary.label)} · ok ${escapeHtml(formatNumber(filteredQualitySummary.okCount, 0))} · gaps ${escapeHtml(formatNumber(filteredQualitySummary.gapCount, 0))}</div>
                         ${renderBacktestTablePreviewBar('dataQuality', qualityPreview, '条 symbol-day 记录')}
-                        <div class="quality-grid">
+                        ${filteredQualityRows.length ? `<div class="quality-grid">
                             ${qualityPreview.rows.map((item) => {
                                 const gapCount = Number(item.gap_count || 0);
                                 const tone = item.status === 'ok' && gapCount === 0 ? 'good' : (item.status === 'insufficient_data' ? 'bad' : 'warn');
+                                const targetRows = getBacktestTargetRowsForQualityRow(item, targetLookup);
+                                const reasonChips = getBacktestTargetReasonChips(targetRows);
                                 return `
                                     <div class="quality-card ${tone}">
                                         <div class="quality-title">${escapeHtml(item.symbol || '--')} ${item.date ? `<span class="mini-chip">${escapeHtml(item.date)}</span>` : ''}</div>
                                         <div class="quality-copy">status=${escapeHtml(item.status || '--')} · bars=${escapeHtml(String(item.bar_count || 0))} · gaps=${escapeHtml(String(gapCount))}</div>
                                         <div class="quality-copy">${escapeHtml(item.first_bar_us || '--')} → ${escapeHtml(item.last_bar_us || '--')}</div>
+                                        <div class="quality-reason-row">
+                                            ${reasonChips.length
+                                                ? reasonChips.map((chip) => `<span class="mini-chip">${escapeHtml(chip)}</span>`).join('')
+                                                : `<span class="mini-chip muted">${selectedTargetsLoading ? 'target loading' : 'target reason --'}</span>`}
+                                        </div>
                                     </div>
                                 `;
                             }).join('')}
-                        </div>
+                        </div>` : '<div class="empty-state">当前筛选下没有 Data Quality 记录。</div>'}
                     ` : '<div class="empty-state">暂无数据质量汇总。</div>'}
                     ${skipped.length ? `<div class="foot-note">Skipped: ${escapeHtml(skipped.join(', '))}</div>` : ''}
                 </div>

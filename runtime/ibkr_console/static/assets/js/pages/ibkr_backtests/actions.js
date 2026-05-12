@@ -341,6 +341,8 @@
             trackingFilters.date = '';
             trackingFilters.symbol = '';
             trackingFilters.eventType = '';
+            dataQualityFilters.date = 'all';
+            dataQualityFilters.status = 'all';
             backtestTextExpandedState.strategyParams = false;
             backtestTextExpandedState.runtimeExtra = false;
             backtestTableExpandedState.trackingTimeline = false;
@@ -409,6 +411,18 @@
             if (key === 'trackingFlows' || key === 'trackingTimeline') {
                 renderTracking();
             }
+        }
+
+        function setDataQualityDateFilter(date) {
+            dataQualityFilters.date = String(date || 'all').trim() || 'all';
+            backtestTableExpandedState.dataQuality = false;
+            renderRunDetail();
+        }
+
+        function setDataQualityStatusFilter(status) {
+            dataQualityFilters.status = String(status || 'all').trim() || 'all';
+            backtestTableExpandedState.dataQuality = false;
+            renderRunDetail();
         }
 
         function setBacktestClientPage(key, page) {

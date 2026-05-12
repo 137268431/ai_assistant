@@ -27,6 +27,10 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
             status: 'all',
             source: 'all',
         };
+        const dataQualityFilters = {
+            date: 'all',
+            status: 'all',
+        };
         const BACKTEST_REFRESH_INTERVAL_RUNNING_MS = 10000;
         const BACKTEST_REFRESH_INTERVAL_IDLE_MS = 60000;
         const BACKTEST_ROW_PAGE_CONFIG = Object.freeze({

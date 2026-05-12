@@ -1095,6 +1095,49 @@ body {
         .text-preview-box.is-expanded {
             max-height: min(54vh, 520px);
         }
+        .quality-filter-bar {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 10px;
+            margin: 10px 0;
+            flex-wrap: wrap;
+        }
+        .quality-filter-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            min-width: 0;
+        }
+        .quality-filter-group.compact {
+            flex: 0 0 auto;
+        }
+        .quality-filter-group .filter-chip {
+            border: 1px solid rgba(255,255,255,0.10);
+            background: rgba(255,255,255,0.05);
+            color: var(--muted);
+            border-radius: 999px;
+            padding: 7px 10px;
+            min-height: 32px;
+            font-size: 11px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        .quality-filter-group .filter-chip.active {
+            color: var(--text);
+            border-color: rgba(79, 209, 197, 0.42);
+            background: rgba(79, 209, 197, 0.12);
+        }
+        .quality-filter-group .filter-chip.has-issue {
+            border-color: rgba(246, 173, 85, 0.32);
+        }
+        .quality-filter-group .filter-chip span {
+            margin-left: 4px;
+            color: var(--text);
+        }
+        .quality-filter-group .filter-chip .issue-dot {
+            color: #FBD38D;
+        }
         .quality-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -1122,6 +1165,15 @@ body {
             font-size: 13px;
             font-weight: 700;
             margin-bottom: 6px;
+        }
+        .quality-reason-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 9px;
+        }
+        .quality-reason-row .mini-chip.muted {
+            color: var(--muted);
         }
         .quality-copy {
             color: var(--muted);

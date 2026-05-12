@@ -1047,6 +1047,89 @@
             };
         }
 
+        function getBacktestDataQualityRowDate(item) {
+            return String(item?.date || item?.first_bar_us || '').trim().slice(0, 10);
+        }
+
+        function getBacktestDataQualityTone(item) {
+            const gapCount = Number(item?.gap_count || 0) || 0;
+            const status = String(item?.status || '').trim().toLowerCase();
+            if (status === 'ok' && gapCount === 0) return 'ok';
+            if (gapCount > 0) return 'gaps';
+            return 'issues';
+        }
+
+        function filterBacktestDataQualityRows(rows) {
+            const items = Array.isArray(rows) ? rows : [];
+            const dateFilter = String(dataQualityFilters.date || 'all').trim();
+            const statusFilter = String(dataQualityFilters.status || 'all').trim();
+            return items.filter((item) => {
+                const rowDate = getBacktestDataQualityRowDate(item);
+                if (dateFilter !== 'all' && rowDate !== dateFilter) return false;
+                const tone = getBacktestDataQualityTone(item);
+                if (statusFilter === 'ok') return tone === 'ok';
+                if (statusFilter === 'gaps') return tone === 'gaps';
+                if (statusFilter === 'issues') return tone !== 'ok';
+                return true;
+            });
+        }
+
+        function getBacktestDataQualityDateOptions(rows) {
+            const groups = new Map();
+            (Array.isArray(rows) ? rows : []).forEach((item) => {
+                const date = getBacktestDataQualityRowDate(item);
+                if (!date) return;
+                const current = groups.get(date) || { date, count: 0, issueCount: 0 };
+                current.count += 1;
+                if (getBacktestDataQualityTone(item) !== 'ok') current.issueCount += 1;
+                groups.set(date, current);
+            });
+            return Array.from(groups.values()).sort((a, b) => a.date.localeCompare(b.date));
+        }
+
+        function buildBacktestTargetLookup(rows) {
+            const lookup = new Map();
+            (Array.isArray(rows) ? rows : []).forEach((row) => {
+                const date = String(row?.date || '').trim().slice(0, 10);
+                const symbol = String(row?.symbol || '').trim().toUpperCase();
+                if (!date || !symbol) return;
+                const key = `${date}|${symbol}`;
+                if (!lookup.has(key)) lookup.set(key, []);
+                lookup.get(key).push(row);
+            });
+            return lookup;
+        }
+
+        function getBacktestTargetRowsForQualityRow(item, targetLookup) {
+            const date = getBacktestDataQualityRowDate(item);
+            const symbol = String(item?.symbol || '').trim().toUpperCase();
+            if (!date || !symbol || !targetLookup) return [];
+            return targetLookup.get(`${date}|${symbol}`) || [];
+        }
+
+        function getBacktestTargetReasonChips(targetRows) {
+            const chips = [];
+            (Array.isArray(targetRows) ? targetRows : []).forEach((target) => {
+                const status = String(target?.status || '').trim().toLowerCase();
+                const bias = String(target?.direction_bias || '').trim().toLowerCase();
+                const rank = Number(target?.rank || 0) || 0;
+                const score = Number(target?.score || 0) || 0;
+                if (status && !chips.includes(status)) chips.push(status);
+                if (bias && !chips.includes(bias)) chips.push(bias);
+                if (rank > 0) chips.push(`rank ${formatNumber(rank, 0)}`);
+                if (score > 0) chips.push(`score ${formatNumber(score, 1)}`);
+                String(target?.scan_reason || target?.extra?.scan_reason || '')
+                    .split(/[;,，、|]/)
+                    .map((part) => part.trim())
+                    .filter(Boolean)
+                    .slice(0, 4)
+                    .forEach((part) => {
+                        if (!chips.includes(part)) chips.push(part);
+                    });
+            });
+            return chips;
+        }
+
         function getBacktestTablePreview(key, rows) {
             const items = Array.isArray(rows) ? rows : [];
             const limit = Number(BACKTEST_TABLE_PREVIEW_LIMITS[key] || 0);
