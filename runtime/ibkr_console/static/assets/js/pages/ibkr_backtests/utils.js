@@ -1022,6 +1022,31 @@
             };
         }
 
+        function getBacktestDataQualitySummary(rows) {
+            const items = Array.isArray(rows) ? rows : [];
+            const symbols = new Set();
+            const dates = new Set();
+            let okCount = 0;
+            let gapCount = 0;
+            items.forEach((item) => {
+                const symbol = String(item?.symbol || '').trim().toUpperCase();
+                const date = String(item?.date || item?.first_bar_us || '').trim().slice(0, 10);
+                if (symbol) symbols.add(symbol);
+                if (date) dates.add(date);
+                const rowGaps = Number(item?.gap_count || 0) || 0;
+                gapCount += rowGaps;
+                if (String(item?.status || '').toLowerCase() === 'ok' && rowGaps === 0) okCount += 1;
+            });
+            return {
+                rowCount: items.length,
+                uniqueSymbolCount: symbols.size,
+                tradeDateCount: dates.size,
+                okCount,
+                gapCount,
+                label: `${formatNumber(items.length, 0)} symbol-days · ${formatNumber(symbols.size, 0)} symbols · ${formatNumber(dates.size, 0)} days`,
+            };
+        }
+
         function getBacktestTablePreview(key, rows) {
             const items = Array.isArray(rows) ? rows : [];
             const limit = Number(BACKTEST_TABLE_PREVIEW_LIMITS[key] || 0);

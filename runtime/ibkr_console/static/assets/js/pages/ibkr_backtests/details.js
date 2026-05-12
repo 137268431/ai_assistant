@@ -14,6 +14,7 @@
             const dailyFunnelPage = getBacktestClientPagination('dailyFunnel', dailyFunnel);
             const qualityRows = Array.isArray(metrics.data_quality) ? metrics.data_quality : [];
             const qualityPreview = getBacktestTablePreview('dataQuality', qualityRows);
+            const qualitySummary = getBacktestDataQualitySummary(qualityRows);
             const skipped = Array.isArray(metrics.skipped_symbols) ? metrics.skipped_symbols : [];
             const symbolCount = countRunSymbols(selectedRun);
             const symbolSummary = summarizeRunSymbols(selectedRun);
@@ -61,14 +62,15 @@
                 <div class="detail-card">
                     <div class="subhead">Data Quality</div>
                     ${qualityRows.length ? `
-                        ${renderBacktestTablePreviewBar('dataQuality', qualityPreview, '个标的')}
+                        <div class="foot-note">${escapeHtml(qualitySummary.label)} · ok ${escapeHtml(formatNumber(qualitySummary.okCount, 0))} · gaps ${escapeHtml(formatNumber(qualitySummary.gapCount, 0))}</div>
+                        ${renderBacktestTablePreviewBar('dataQuality', qualityPreview, '条 symbol-day 记录')}
                         <div class="quality-grid">
                             ${qualityPreview.rows.map((item) => {
                                 const gapCount = Number(item.gap_count || 0);
                                 const tone = item.status === 'ok' && gapCount === 0 ? 'good' : (item.status === 'insufficient_data' ? 'bad' : 'warn');
                                 return `
                                     <div class="quality-card ${tone}">
-                                        <div class="quality-title">${escapeHtml(item.symbol || '--')}</div>
+                                        <div class="quality-title">${escapeHtml(item.symbol || '--')} ${item.date ? `<span class="mini-chip">${escapeHtml(item.date)}</span>` : ''}</div>
                                         <div class="quality-copy">status=${escapeHtml(item.status || '--')} · bars=${escapeHtml(String(item.bar_count || 0))} · gaps=${escapeHtml(String(gapCount))}</div>
                                         <div class="quality-copy">${escapeHtml(item.first_bar_us || '--')} → ${escapeHtml(item.last_bar_us || '--')}</div>
                                     </div>
