@@ -125,6 +125,46 @@ class OrderTracker:
             "API_CANCELLED",
         }
 
+    def _has_broker_live_identity(self, order: Dict) -> bool:
+        if not isinstance(order, dict):
+            return False
+        if self._extract_live_symbol(order):
+            return True
+        if self._normalize_text(
+            order.get("cOID")
+            or order.get("coid")
+            or order.get("client_order_id")
+            or order.get("order_ref")
+            or order.get("orderRef")
+        ):
+            return True
+        if self._extract_live_side(order) and self._extract_live_order_type(order):
+            return True
+        quantity = self._to_float(
+            order.get("totalSize")
+            if order.get("totalSize") not in (None, "")
+            else order.get("quantity"),
+            0.0,
+        )
+        return quantity > 0 and bool(self._extract_live_side(order))
+
+    def _should_skip_unidentified_live_order(self, order_id: str, order: Dict, sources: List[str]) -> bool:
+        # PB-seeded orders can be enriched later by account snapshot matching. Tracker-only
+        # status patches without contract/client identity are stale-prone and should not
+        # appear as broker-confirmed live orders.
+        if "pb" in set(sources or []):
+            return False
+        if self._has_broker_live_identity(order):
+            return False
+        logger.debug(
+            "Skipping unidentified live open order: order_id=%s status=%s sources=%s payload_keys=%s",
+            order_id,
+            self._extract_order_status(order),
+            sources,
+            sorted((order or {}).keys()),
+        )
+        return True
+
     def get_live_orders(
         self,
         *,
@@ -278,6 +318,7 @@ class OrderTracker:
                 logger.debug("All-open-orders recovery fallback failed: %s", exc)
         existing_ids = set()
         open_orders: List[Dict[str, Any]] = []
+        skipped_unidentified_order_ids: List[str] = []
 
         for item in bulk_list or []:
             if not isinstance(item, dict):
@@ -289,8 +330,13 @@ class OrderTracker:
             status = self._extract_order_status(merged)
             if not self._is_open_order_status(status):
                 continue
+            sources = list(seed_sources.get(order_id) or [])
+            if self._should_skip_unidentified_live_order(order_id, merged, sources):
+                skipped_unidentified_order_ids.append(order_id)
+                existing_ids.add(order_id)
+                continue
             merged["_recovery_source"] = "bulk"
-            merged["_seed_sources"] = list(seed_sources.get(order_id) or [])
+            merged["_seed_sources"] = sources
             open_orders.append(merged)
             existing_ids.add(order_id)
 
@@ -306,6 +352,10 @@ class OrderTracker:
                 merged = self._merge_order_with_known_state(order_id, payload)
                 status = self._extract_order_status(merged)
                 if status and self._is_open_order_status(status):
+                    if self._should_skip_unidentified_live_order(order_id, merged, list(sources or [])):
+                        skipped_unidentified_order_ids.append(order_id)
+                        existing_ids.add(order_id)
+                        continue
                     merged["_recovery_source"] = "status_recovered"
                     merged["_seed_sources"] = list(sources or [])
                     open_orders.append(merged)
@@ -336,6 +386,7 @@ class OrderTracker:
                 "seed_sources": seed_sources,
                 "recovered_order_ids": recovered_order_ids,
                 "resolved_closed_order_ids": resolved_closed_ids,
+                "skipped_unidentified_order_ids": skipped_unidentified_order_ids,
                 "bulk_order_ids": [
                     self._normalize_text(item.get("orderId") or item.get("order_id") or item.get("id"))
                     for item in bulk_list or []

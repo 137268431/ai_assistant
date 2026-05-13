@@ -28,7 +28,11 @@ class OrderModifier:
         self.broker = broker or BrokerAdapter()
 
     def modify_order(self, order_id: str, updates: Dict[str, Any], acct_id: str = None) -> Dict[str, Any]:
-        result = self.broker.modify_order(str(order_id or "").strip(), dict(updates or {}))
+        result = self.broker.modify_order(
+            str(order_id or "").strip(),
+            dict(updates or {}),
+            account_id=str(acct_id or self.account_id or "").strip(),
+        )
         if not result.get("ok"):
             logger.error("Order modify failed for %s: %s", order_id, result.get("error"))
         return result

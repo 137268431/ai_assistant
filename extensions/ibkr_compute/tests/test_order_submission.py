@@ -91,7 +91,11 @@ class FakeSignalPBClient:
 
 
 class FakeBracketBroker:
+    def __init__(self):
+        self.calls = []
+
     def place_bracket_order(self, **kwargs):
+        self.calls.append(dict(kwargs))
         return {
             "ok": True,
             "entry_coid": "entry_NFLX_short_20260506_101500",
@@ -365,6 +369,7 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
                 entry_price=600.0,
                 take_profit_price=580.0,
                 stop_loss_price=610.0,
+                account_id="U123456",
             )
         finally:
             ib_gateway.Order = original_order
@@ -382,16 +387,55 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
         self.assertFalse(entry_order.transmit)
         self.assertFalse(tp_order.transmit)
         self.assertTrue(sl_order.transmit)
+        self.assertEqual("U123456", entry_order.account)
+        self.assertEqual("U123456", tp_order.account)
+        self.assertEqual("U123456", sl_order.account)
         self.assertEqual(result["oca_group"], tp_order.ocaGroup)
         self.assertEqual(result["oca_group"], sl_order.ocaGroup)
         self.assertEqual(1, tp_order.ocaType)
         self.assertEqual(1, sl_order.ocaType)
 
+    def test_place_market_close_sets_account_id_on_order(self):
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeClient({"ok": True})
+        adapter.resolve_contract = lambda **kwargs: {
+            "conid": 123,
+            "symbol": "NFLX",
+            "sec_type": "STK",
+            "exchange": "SMART",
+            "currency": "USD",
+        }
+
+        original_order = ib_gateway.Order
+        original_contract = ib_gateway.Contract
+        try:
+            ib_gateway.Order = FakeOrder
+            ib_gateway.Contract = FakeContract
+            result = ib_gateway.BrokerAdapter.place_market_close(
+                adapter,
+                conid=123,
+                symbol="NFLX",
+                direction="long",
+                quantity=7,
+                account_id="U123456",
+            )
+        finally:
+            ib_gateway.Order = original_order
+            ib_gateway.Contract = original_contract
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(1, len(adapter.client.placed_orders))
+        close_order = adapter.client.placed_orders[0][1]
+        self.assertEqual("U123456", close_order.account)
+        self.assertEqual("SELL", close_order.action)
+        self.assertEqual("MKT", close_order.orderType)
+
 
 class OrderPlacerBracketMetadataTest(unittest.TestCase):
     def test_pb_upserts_use_canonical_bracket_trade_group_and_oco_metadata(self):
         pb_client = FakeOrderPBClient()
-        placer = OrderPlacer(pb_client=pb_client, broker=FakeBracketBroker(), account_id="DU123")
+        broker = FakeBracketBroker()
+        placer = OrderPlacer(pb_client=pb_client, broker=broker, account_id="DU123")
 
         result = placer.place_bracket_order(
             conid=123,
@@ -405,6 +449,7 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
+        self.assertEqual("DU123", broker.calls[0]["account_id"])
         self.assertEqual("NFLX_short_20260506_101500", result["bracket_group"])
         self.assertEqual("NFLX_short_20260506_101500", result["oca_group"])
         self.assertEqual("bracket_oco", result["order_family_type"])

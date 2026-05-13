@@ -344,6 +344,7 @@ class OrderLifecycle:
                 symbol=symbol,
                 direction=direction,
                 quantity=abs(int(round(position_qty))),
+                account_id=str(acct_id or self.account_id or "").strip(),
             )
             if result.get("ok"):
                 closed += 1

@@ -189,6 +189,59 @@ class AccountSnapshotRoutesTest(unittest.TestCase):
         self.assertEqual(0, enriched["counts"]["cancelable_orders"])
         self.assertEqual(0, enriched["order_reconciliation"]["broker_open_orders"])
 
+    def test_status_only_broker_rows_without_identity_do_not_count_as_live_open(self):
+        pb = _FakePB({"orders": [], "ibkr_signals": []})
+        payload = {
+            "ok": True,
+            "environment": "live",
+            "positions": [],
+            "orders": [],
+            "live_open_orders": [
+                {
+                    "order_id": "12",
+                    "status": "ApiPending",
+                    "remaining_quantity": 25,
+                    "can_cancel": True,
+                    "can_modify": True,
+                    "recovery_source": "bulk",
+                }
+            ],
+            "counts": {"open_orders": 1},
+        }
+
+        enriched = enrich_account_snapshot(pb, payload, "live")
+
+        self.assertEqual([], enriched["live_open_orders"])
+        self.assertEqual(0, enriched["counts"]["open_orders"])
+        self.assertEqual(0, enriched["order_reconciliation"]["broker_open_orders"])
+
+    def test_identified_external_broker_rows_still_count_as_live_open(self):
+        pb = _FakePB({"orders": [], "ibkr_signals": []})
+        payload = {
+            "ok": True,
+            "environment": "live",
+            "positions": [],
+            "orders": [],
+            "live_open_orders": [
+                {
+                    "order_id": "31",
+                    "symbol": "AAPL",
+                    "side": "BUY",
+                    "order_type": "LMT",
+                    "status": "Submitted",
+                    "total_quantity": 10,
+                    "remaining_quantity": 10,
+                }
+            ],
+            "counts": {},
+        }
+
+        enriched = enrich_account_snapshot(pb, payload, "live")
+
+        self.assertEqual(1, len(enriched["live_open_orders"]))
+        self.assertEqual(1, enriched["counts"]["open_orders"])
+        self.assertEqual(1, enriched["order_reconciliation"]["broker_open_orders"])
+
     def test_account_snapshot_response_wraps_runtime_upstream(self):
         pb = _FakePB()
         payload, status_code = build_account_snapshot_response(

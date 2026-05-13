@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from ibkr_api.orders.values import ensure_object, to_int, to_text
+from ibkr_api.orders.values import ensure_object, to_float, to_int, to_text
 from ibkr_api.account.snapshot_live_orders import build_managed_order_context, normalize_live_order
 from ibkr_api.account.snapshot_relations import build_relation_context
 from ibkr_api.account.snapshot_shared import (
@@ -24,6 +24,15 @@ def _is_broker_confirmed_live_order(order: dict[str, Any]) -> bool:
         return False
     source = to_text(item.get("source") or item.get("order_source") or item.get("recovery_source") or item.get("_recovery_source")).lower()
     if source in {"pb", "pocketbase", "pb_stale", "pb_only", "pb_shadow"}:
+        return False
+    symbol = to_text(item.get("symbol") or item.get("ticker") or item.get("contractDesc")).upper()
+    client_order_id = to_text(item.get("client_order_id") or item.get("cOID") or item.get("coid") or item.get("order_ref") or item.get("orderRef"))
+    side = to_text(item.get("side")).upper()
+    order_type = to_text(item.get("order_type") or item.get("orderType")).upper()
+    total_quantity = to_float(item.get("total_quantity") if item.get("total_quantity") not in (None, "") else item.get("totalSize"))
+    if total_quantity is None:
+        total_quantity = to_float(item.get("quantity")) or 0.0
+    if not symbol and not client_order_id and not (side and order_type) and total_quantity <= 0:
         return False
     return True
 

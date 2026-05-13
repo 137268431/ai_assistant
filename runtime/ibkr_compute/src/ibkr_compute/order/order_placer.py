@@ -76,6 +76,7 @@ class OrderPlacer:
             take_profit_price=float(take_profit_price or 0.0),
             stop_loss_price=float(stop_loss_price or 0.0),
             entry_order_type=str(entry_order_type or "LMT").upper(),
+            account_id=acct_id,
         )
         if result.get("ok"):
             self._order_count += 1
@@ -154,6 +155,7 @@ class OrderPlacer:
             symbol=str(symbol or "").upper(),
             direction=str(direction or "").lower(),
             quantity=int(quantity or 0),
+            account_id=acct_id,
         )
 
     def _log_order_to_pb(self, **kwargs):

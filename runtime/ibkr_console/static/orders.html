@@ -31,6 +31,9 @@
         </div>
 
         <div id="filterNote"></div>
+        <div id="brokerLivePanel" class="broker-live-panel">
+            <div class="broker-live-loading">实时挂单加载中...</div>
+        </div>
 
         <div class="status-tabs">
             <button class="status-tab active" data-status="all" onclick="selectStatus('all', this)">全部<span class="tab-count">(<span class="count-value">0</span>)</span></button>
@@ -90,6 +93,10 @@
         let isLoadingOrders = false;
         let isOrdersDatasetPartial = false;
         let currentOrdersSource = 'orders';
+        let brokerLiveSnapshot = null;
+        let brokerLiveLoading = false;
+        let brokerLiveError = '';
+        let brokerLiveFetchedAt = '';
         const CONFIG_CACHE_TTL_MS = 5 * 60 * 1000;
         const ORDERS_FETCH_PAGE_SIZE = 200;
         const ORDERS_FETCH_MAX_PAGES = 40;
@@ -444,6 +451,273 @@
             return 'orders live';
         }
 
+        function getBrokerLiveOrders() {
+            return Array.isArray(brokerLiveSnapshot?.live_open_orders)
+                ? brokerLiveSnapshot.live_open_orders
+                : [];
+        }
+
+        function buildBrokerGroupsFromOrders(orders) {
+            const grouped = new Map();
+            (orders || []).forEach((order) => {
+                const key = firstDefined(
+                    order.trade_group_id,
+                    order.entry_order_unique_id,
+                    order.parent_id,
+                    order.order_id,
+                    order.client_order_id,
+                    `${order.symbol || 'BROKER'}:${order.side || ''}:${order.order_type || ''}`
+                );
+                if (!grouped.has(key)) {
+                    grouped.set(key, {
+                        group_key: key,
+                        symbol: order.symbol || '',
+                        trade_group_id: order.trade_group_id || key,
+                        entry_order_unique_id: order.entry_order_unique_id || order.client_order_id || order.order_id || '',
+                        match_state: order.match_state || order.pb_context?.match_state || 'broker_only',
+                        live_order_count: 0,
+                        matched_live_orders: 0,
+                        broker_only_live_orders: 0,
+                        total_quantity: 0,
+                        filled_quantity: 0,
+                        remaining_quantity: 0,
+                        orders: []
+                    });
+                }
+                const group = grouped.get(key);
+                group.orders.push(order);
+                group.live_order_count += 1;
+                if (String(order.match_state || order.pb_context?.match_state || '').toLowerCase() === 'matched') {
+                    group.matched_live_orders += 1;
+                } else {
+                    group.broker_only_live_orders += 1;
+                }
+                group.total_quantity += Math.abs(Number(order.total_quantity || order.quantity || 0) || 0);
+                group.filled_quantity += Math.abs(Number(order.filled_quantity || order.filled_qty || 0) || 0);
+                group.remaining_quantity += Math.abs(Number(order.remaining_quantity || 0) || 0);
+                if (!group.symbol && order.symbol) group.symbol = order.symbol;
+            });
+            return Array.from(grouped.values());
+        }
+
+        function getBrokerLiveGroups() {
+            if (Array.isArray(brokerLiveSnapshot?.live_order_groups) && brokerLiveSnapshot.live_order_groups.length) {
+                return brokerLiveSnapshot.live_order_groups;
+            }
+            return buildBrokerGroupsFromOrders(getBrokerLiveOrders());
+        }
+
+        function getBrokerLiveCount() {
+            const count = Number(brokerLiveSnapshot?.counts?.open_orders);
+            return Number.isFinite(count) ? count : getBrokerLiveOrders().length;
+        }
+
+        function getBrokerLiveGroupCount() {
+            return getBrokerLiveGroups().length;
+        }
+
+        function getBrokerReconciliation() {
+            return brokerLiveSnapshot?.order_reconciliation || {};
+        }
+
+        function getBrokerCoverageState() {
+            return String(brokerLiveSnapshot?.live_order_coverage?.coverage_state || getBrokerReconciliation().coverage_state || '').trim() || 'unknown';
+        }
+
+        function formatBrokerTime(order) {
+            const text = firstDefined(order.submitted_time, order.last_execution_time, order.updated_at, order.created);
+            if (text) return text;
+            const timeMs = Number(firstDefined(order.updated_ms, order.submitted_time_ms, order.last_execution_time_ms, order.good_till_date_ms));
+            return timeMs > 0 ? `${formatBarTimeMsToET(timeMs)} ET` : '-';
+        }
+
+        function brokerStatusClass(status) {
+            const key = String(status || '').trim().toLowerCase();
+            if (['apipending', 'pending', 'pendingsubmit', 'presubmitted', 'submitted'].includes(key)) return 'status-submitted';
+            if (['filled', 'executed'].includes(key)) return 'status-filled';
+            if (['cancelled', 'canceled', 'inactive', 'rejected', 'expired', 'api_cancelled'].includes(key)) return 'status-canceled';
+            return statusClass(status || 'Submitted');
+        }
+
+        function brokerMatchLabel(value) {
+            const normalized = String(value || '').trim().toLowerCase();
+            if (normalized === 'matched') return 'MATCHED';
+            if (normalized === 'pb_shadow') return 'PB SHADOW';
+            return 'BROKER ONLY';
+        }
+
+        function brokerMatchClass(value) {
+            const normalized = String(value || '').trim().toLowerCase();
+            if (normalized === 'matched') return 'relation-active';
+            if (normalized === 'pb_shadow') return 'relation-orphaned';
+            return 'relation-planned';
+        }
+
+        function renderBrokerLiveOrder(order) {
+            const pbContext = order.pb_context || {};
+            const matchState = order.match_state || pbContext.match_state || 'broker_only';
+            const diagnosticTags = Array.isArray(order.diagnostic_tags) ? order.diagnostic_tags : [];
+            const qty = firstDefined(order.total_quantity, order.quantity, 0);
+            const filled = firstDefined(order.filled_quantity, order.filled_qty, 0);
+            const remaining = firstDefined(order.remaining_quantity, 0);
+            const price = Number(order.price || 0) > 0 ? order.price : order.trigger_price;
+            const note = firstDefined(order.diagnostic_note, pbContext.diagnostic_note);
+
+            return `
+                <div class="broker-live-order">
+                    <div class="broker-live-order-head">
+                        <div>
+                            <div class="broker-live-order-id">broker=${escapeHtml(order.order_id || order.id || '-')}</div>
+                            <div class="broker-live-order-sub">${escapeHtml(order.client_order_id || order.order_ref || 'no client_order_id')}</div>
+                        </div>
+                        <div class="mini-chip-row">
+                            <span class="role-badge ${roleClass(order.role)}">${escapeHtml(getRoleText(order.role, order.order_type) || order.role || '-')}</span>
+                            <span class="status-badge ${brokerStatusClass(order.status || order.status_key)}">${escapeHtml(order.status || order.status_key || '-')}</span>
+                            <span class="relation-badge ${brokerMatchClass(matchState)}">${escapeHtml(brokerMatchLabel(matchState))}</span>
+                        </div>
+                    </div>
+                    <div class="detail-grid">
+                        ${renderDetail('symbol / side', `${escapeHtml(order.symbol || '-')} / ${escapeHtml(order.side || '-')}`)}
+                        ${renderDetail('order_type', escapeHtml(order.order_type || '-'))}
+                        ${renderDetail('qty / filled / rem', `${escapeHtml(formatQty(qty))} / ${escapeHtml(formatQty(filled))} / ${escapeHtml(formatQty(remaining))}`)}
+                        ${renderDetail('price / trigger', `${escapeHtml(formatMoney(price))} / ${escapeHtml(formatMoney(order.trigger_price))}`)}
+                        ${renderDetail('parent', escapeHtml(order.parent_id || '-'))}
+                        ${renderDetail('time', escapeHtml(formatBrokerTime(order)))}
+                    </div>
+                    ${diagnosticTags.length ? `<div class="broker-live-tags">${diagnosticTags.map((tag) => `<span class="chip warn-chip">${escapeHtml(tag)}</span>`).join('')}</div>` : ''}
+                    ${note ? `<div class="broker-live-note">${escapeHtml(note)}</div>` : ''}
+                </div>
+            `;
+        }
+
+        function renderBrokerLiveGroup(group) {
+            const orders = Array.isArray(group.orders) ? group.orders : [];
+            const matchState = group.match_state || (Number(group.matched_live_orders || 0) > 0 ? 'matched' : 'broker_only');
+            const title = group.symbol || orders.find((order) => order.symbol)?.symbol || 'UNKNOWN';
+            const groupKey = group.trade_group_id || group.group_key || group.entry_order_unique_id || orders[0]?.order_id || '-';
+            const latestStatus = group.latest_order_status || orders[0]?.status || '-';
+            const canOpenDetails = String(matchState).toLowerCase() === 'matched' && (group.trade_group_id || groupKey);
+
+            return `
+                <div class="broker-live-card ${String(matchState).toLowerCase() === 'matched' ? 'matched' : 'broker-only'}">
+                    <div class="broker-live-card-head">
+                        <div>
+                            <div class="group-symbol-row">
+                                <span class="group-symbol">${escapeHtml(title)}</span>
+                                <span class="relation-badge ${brokerMatchClass(matchState)}">${escapeHtml(brokerMatchLabel(matchState))}</span>
+                                <span class="status-badge ${brokerStatusClass(latestStatus)}">${escapeHtml(latestStatus)}</span>
+                            </div>
+                            <div class="group-subtitle">group=${escapeHtml(groupKey)} · live=${escapeHtml(String(group.live_order_count || orders.length || 0))}</div>
+                        </div>
+                        ${canOpenDetails ? `<button class="action-btn btn-secondary broker-live-detail-btn" onclick="viewTradeGroup('${encodeURIComponent(group.trade_group_id || groupKey)}', '${encodeURIComponent(group.signal_id || '')}')">明细</button>` : ''}
+                    </div>
+                    <div class="chip-row">
+                        <span class="chip">matched=${escapeHtml(String(group.matched_live_orders || 0))}</span>
+                        <span class="chip">broker_only=${escapeHtml(String(group.broker_only_live_orders || 0))}</span>
+                        <span class="chip">qty=${escapeHtml(formatQty(group.total_quantity))}</span>
+                        <span class="chip">rem=${escapeHtml(formatQty(group.remaining_quantity))}</span>
+                    </div>
+                    <div class="broker-live-orders">
+                        ${orders.map(renderBrokerLiveOrder).join('')}
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderBrokerLivePanel() {
+            const panel = document.getElementById('brokerLivePanel');
+            if (!panel) return;
+
+            if (brokerLiveLoading && !brokerLiveSnapshot) {
+                panel.innerHTML = '<div class="broker-live-loading">实时挂单加载中...</div>';
+                return;
+            }
+
+            if (brokerLiveError) {
+                panel.innerHTML = `
+                    <div class="broker-live-header">
+                        <div>
+                            <div class="section-title">Broker Live Open</div>
+                            <div class="broker-live-copy">实际挂单加载失败：${escapeHtml(brokerLiveError)}</div>
+                        </div>
+                    </div>
+                `;
+                return;
+            }
+
+            const liveOrders = getBrokerLiveOrders();
+            const liveGroups = getBrokerLiveGroups();
+            const reconciliation = getBrokerReconciliation();
+            const coverageState = getBrokerCoverageState();
+            const brokerOnlyOrders = Number(reconciliation.broker_only_open_orders || 0);
+            const matchedOrders = Number(reconciliation.broker_matched_orders || 0);
+            const pbShadowGroups = Number(reconciliation.pb_shadow_groups || reconciliation.pb_only_active_order_groups || 0);
+            const fetchedText = brokerLiveFetchedAt ? ` · fetched ${brokerLiveFetchedAt}` : '';
+
+            if (!brokerLiveSnapshot && !brokerLiveLoading) {
+                panel.innerHTML = '<div class="broker-live-loading">等待实时挂单快照...</div>';
+                return;
+            }
+
+            panel.innerHTML = `
+                <div class="broker-live-header">
+                    <div>
+                        <div class="section-title">Broker Live Open</div>
+                        <div class="broker-live-copy">以 IBKR 实时 open orders 为准；PB 订单链仅作为上下文补全${escapeHtml(fetchedText)}</div>
+                    </div>
+                    <div class="broker-live-metrics">
+                        <span class="status-chip"><span class="dot" style="color:#F6AD55"></span>live ${escapeHtml(String(getBrokerLiveCount()))}</span>
+                        <span class="status-chip"><span class="dot" style="color:#4FD1C5"></span>groups ${escapeHtml(String(getBrokerLiveGroupCount()))}</span>
+                        <span class="status-chip"><span class="dot" style="color:#68D391"></span>matched ${escapeHtml(String(matchedOrders))}</span>
+                        <span class="status-chip"><span class="dot" style="color:#FC8181"></span>broker only ${escapeHtml(String(brokerOnlyOrders))}</span>
+                        <span class="status-chip"><span class="dot" style="color:#ECC94B"></span>coverage ${escapeHtml(coverageState)}</span>
+                    </div>
+                </div>
+                ${pbShadowGroups ? `<div class="broker-live-alert">PB shadow groups=${escapeHtml(String(pbShadowGroups))}：PB 仍活跃但 broker 未确认，需要单独核对。</div>` : ''}
+                ${liveOrders.length
+                    ? `<div class="broker-live-grid">${liveGroups.map(renderBrokerLiveGroup).join('')}</div>`
+                    : '<div class="broker-live-empty">当前没有 broker 已确认仍在挂着的实时订单。</div>'}
+            `;
+        }
+
+        async function loadBrokerLiveSnapshot(requestId) {
+            brokerLiveLoading = true;
+            brokerLiveError = '';
+            renderBrokerLivePanel();
+            try {
+                const response = await fetchWithRetry(
+                    `${BASE_URL}${buildPageUrl('/api/custom/ibkr/account_snapshot', {}, { environment: currentEnvironment })}`,
+                    {
+                        method: 'GET',
+                        headers: getOrderActionHeaders()
+                    },
+                    { attempts: 2, retryDelayMs: 500 }
+                );
+                const payload = await response.json().catch(() => ({}));
+                if (requestId !== currentOrdersRequestId) return;
+                if (response.status === 401 || response.status === 403) {
+                    handleAuthError();
+                    return;
+                }
+                if (!response.ok || payload?.ok === false) {
+                    throw new Error(payload?.error || payload?.message || `account_snapshot ${response.status}`);
+                }
+                brokerLiveSnapshot = payload;
+                brokerLiveFetchedAt = payload.fetched_at || new Date().toISOString();
+            } catch (error) {
+                if (requestId !== currentOrdersRequestId) return;
+                brokerLiveError = error.message || 'unknown error';
+            } finally {
+                if (requestId === currentOrdersRequestId) {
+                    brokerLiveLoading = false;
+                    renderBrokerLivePanel();
+                    renderOrdersTopSection();
+                    updateSummaryBar();
+                    renderFilterNote();
+                }
+            }
+        }
+
         function getVisibleGroups() {
             return filterGroups(allGroups);
         }
@@ -451,6 +725,7 @@
         function renderOrdersTopSection() {
             const visibleGroups = getVisibleGroups();
             const visibleOrderCount = visibleGroups.reduce((sum, group) => sum + group.orders.length, 0);
+            const brokerLiveCount = getBrokerLiveCount();
             const scopeParts = [];
             if (filterSignalId) scopeParts.push(`signal_id=${summarizeHeaderValue(filterSignalId, 18)}`);
             if (filterTradeGroupId) scopeParts.push(`trade_group_id=${summarizeHeaderValue(filterTradeGroupId, 18)}`);
@@ -467,6 +742,7 @@
                 <div class="chip-row">
                     <span class="status-chip"><span class="dot" style="color:#4FD1C5"></span>交易组 ${escapeHtml(formatCountValue(visibleGroups.length))}</span>
                     <span class="status-chip"><span class="dot" style="color:#63B3ED"></span>订单 ${escapeHtml(formatCountValue(visibleOrderCount))}</span>
+                    <span class="status-chip"><span class="dot" style="color:#F6AD55"></span>Broker Live ${escapeHtml(String(brokerLiveCount))}</span>
                     <span class="status-chip"><span class="dot" style="color:#F6AD55"></span>${escapeHtml(getOrdersDirectionLabel())}</span>
                     <span class="status-chip"><span class="dot" style="color:#FC8181"></span>${escapeHtml(getOrdersStatusLabel())}</span>
                 </div>
@@ -486,6 +762,7 @@
             document.getElementById('pageBridge').innerHTML = renderExecutionBridge('/orders.html', executionParams);
             renderOrdersTopSection();
             renderFilterNote();
+            renderBrokerLivePanel();
         }
 
         function resolveLegacySearchContext(orders, keyword) {
@@ -823,9 +1100,12 @@
             const summary = document.getElementById('summaryBar');
             const openGroups = filtered.filter((group) => !group.exitOrder && group.status !== 'Canceled' && group.status !== 'Closed').length;
             const mainOrderCount = filtered.reduce((sum, group) => sum + group.orders.filter(isMainOrder).length, 0);
+            const legOrderCount = filtered.reduce((sum, group) => sum + group.orders.length, 0);
             summary.innerHTML = `
                 <div class="summary-card"><div class="summary-label">TRADE GROUPS</div><div class="summary-value">${formatCountValue(filtered.length)}</div></div>
-                <div class="summary-card"><div class="summary-label">ORDERS</div><div class="summary-value">${formatCountValue(mainOrderCount)}</div></div>
+                <div class="summary-card"><div class="summary-label">MAIN ORDERS</div><div class="summary-value">${formatCountValue(mainOrderCount)}</div></div>
+                <div class="summary-card"><div class="summary-label">ORDER LEGS</div><div class="summary-value">${formatCountValue(legOrderCount)}</div></div>
+                <div class="summary-card"><div class="summary-label">BROKER LIVE</div><div class="summary-value">${escapeHtml(String(getBrokerLiveCount()))}</div></div>
                 <div class="summary-card"><div class="summary-label">OPEN GROUPS</div><div class="summary-value">${formatCountValue(openGroups)}</div></div>
                 ${currentOrdersSource === 'ibkr_order_details' ? '<div class="summary-hint">当前使用 ibkr_order_details 最新快照回退展示，可查看图表与交易组明细，但不提供撤单/平仓操作。</div>' : ''}
                 ${isOrdersDatasetPartial ? '<div class="summary-hint">首屏已加载，剩余订单后台补齐中</div>' : ''}
@@ -866,6 +1146,8 @@
             if (resolvedLegacySearch) notes.push(`resolved_from=${resolvedLegacySearch}`);
             if (currentOrdersSource === 'ibkr_order_details') notes.push('dataset=detail_snapshot');
             if (isOrdersDatasetPartial) notes.push('dataset=首屏快照');
+            if (brokerLiveSnapshot) notes.push(`broker_live=${getBrokerLiveCount()}/${getBrokerCoverageState()}`);
+            if (brokerLiveError) notes.push(`broker_live_error=${brokerLiveError}`);
             document.getElementById('filterNote').innerHTML = notes.length
                 ? `<div class="filter-note">当前过滤: ${escapeHtml(notes.join(' · '))}</div>`
                 : '';
@@ -1076,6 +1358,7 @@
             if (isLoadingOrders) return;
             isLoadingOrders = true;
             const requestId = ++currentOrdersRequestId;
+            loadBrokerLiveSnapshot(requestId);
 
             try {
                 const baseFilter = buildOrdersFilter();

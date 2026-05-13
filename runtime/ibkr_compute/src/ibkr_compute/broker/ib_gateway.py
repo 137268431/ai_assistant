@@ -1550,6 +1550,7 @@ class BrokerAdapter:
         stop_loss_price: float,
         entry_order_type: str = "LMT",
         tif: str = "DAY",
+        account_id: str = "",
     ) -> dict:
         contract_info = self.resolve_contract(symbol=symbol, conid=conid)
         if not contract_info:
@@ -1571,6 +1572,7 @@ class BrokerAdapter:
         entry_ref = f"entry_{group}"
         tp_ref = f"tp_{group}"
         sl_ref = f"sl_{group}"
+        account_id = str(account_id or "").strip()
 
         entry = Order()
         entry.orderId = int(order_ids[0])
@@ -1579,6 +1581,8 @@ class BrokerAdapter:
         entry.totalQuantity = float(quantity)
         entry.tif = str(tif or "DAY")
         entry.orderRef = entry_ref
+        if account_id:
+            entry.account = account_id
         entry.transmit = False
         self._clear_legacy_order_flags(entry)
         if entry.orderType == "LMT":
@@ -1593,6 +1597,8 @@ class BrokerAdapter:
         tp.tif = "GTC"
         tp.parentId = int(order_ids[0])
         tp.orderRef = tp_ref
+        if account_id:
+            tp.account = account_id
         tp.ocaGroup = oca_group
         tp.ocaType = 1
         tp.transmit = False
@@ -1607,6 +1613,8 @@ class BrokerAdapter:
         sl.tif = "GTC"
         sl.parentId = int(order_ids[0])
         sl.orderRef = sl_ref
+        if account_id:
+            sl.account = account_id
         sl.ocaGroup = oca_group
         sl.ocaType = 1
         sl.transmit = True
@@ -1712,7 +1720,15 @@ class BrokerAdapter:
             "protection_complete": True,
         }
 
-    def place_market_close(self, *, conid: int, symbol: str, direction: str, quantity: int) -> dict:
+    def place_market_close(
+        self,
+        *,
+        conid: int,
+        symbol: str,
+        direction: str,
+        quantity: int,
+        account_id: str = "",
+    ) -> dict:
         contract_info = self.resolve_contract(symbol=symbol, conid=conid)
         if not contract_info:
             return {"ok": False, "error": "contract_not_found"}
@@ -1731,6 +1747,9 @@ class BrokerAdapter:
         order.totalQuantity = float(quantity)
         order.tif = "DAY"
         order.orderRef = f"close_{contract.symbol}_{datetime.now(ET).strftime('%Y%m%d_%H%M%S')}"
+        account_id = str(account_id or "").strip()
+        if account_id:
+            order.account = account_id
         self._clear_legacy_order_flags(order)
         try:
             self.client.clear_order_error(str(order_id))
@@ -1758,7 +1777,7 @@ class BrokerAdapter:
             "entry_coid": order.orderRef,
         }
 
-    def modify_order(self, order_id: str, updates: dict) -> dict:
+    def modify_order(self, order_id: str, updates: dict, account_id: str = "") -> dict:
         contract, order = self.client.get_order_objects(order_id)
         if not contract or not order:
             try:
@@ -1779,6 +1798,9 @@ class BrokerAdapter:
             order.totalQuantity = float(updates["quantity"])
         if "tif" in updates and updates["tif"]:
             order.tif = str(updates["tif"])
+        account_id = str(account_id or "").strip()
+        if account_id:
+            order.account = account_id
         self._clear_legacy_order_flags(order)
         try:
             self.client.clear_order_error(str(order_id))

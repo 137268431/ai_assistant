@@ -579,8 +579,9 @@
         }
 
         function getLiveOrders(snapshot) {
-            const liveOrders = Array.isArray(snapshot?.live_open_orders) ? snapshot.live_open_orders.slice().filter(isBrokerConfirmedOrder) : [];
-            if (liveOrders.length) return liveOrders;
+            if (Array.isArray(snapshot?.live_open_orders)) {
+                return snapshot.live_open_orders.slice().filter(isBrokerConfirmedOrder);
+            }
             const orders = Array.isArray(snapshot?.orders) ? snapshot.orders.slice() : [];
             return orders.filter((order) => (order?.is_open || order?.can_cancel) && isBrokerConfirmedOrder(order));
         }

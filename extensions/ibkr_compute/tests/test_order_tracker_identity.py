@@ -180,6 +180,65 @@ class OrderTrackerIdentityTest(unittest.TestCase):
         self.assertEqual("U13281777", order["account"])
         self.assertEqual("entry_XOM_long_20260417_111312", order["cOID"])
 
+    def test_complete_live_open_orders_skips_tracker_only_status_patch_without_identity(self):
+        tracker = OrderTracker(pb_client=FakePBClient(), broker=FakeBroker(), environment="live")
+        tracker._known_orders["12"] = {
+            "orderId": "12",
+            "status": "ApiPending",
+        }
+
+        payload = tracker.get_complete_live_open_orders(
+            bulk_orders=[
+                {
+                    "orderId": "12",
+                    "status": "ApiPending",
+                    "remainingQuantity": 25,
+                }
+            ]
+        )
+
+        self.assertEqual([], payload["orders"])
+        self.assertEqual(["12"], payload["diagnostics"]["skipped_unidentified_order_ids"])
+
+    def test_complete_live_open_orders_keeps_identified_external_order(self):
+        tracker = OrderTracker(pb_client=FakePBClient(), broker=FakeBroker(), environment="live")
+
+        payload = tracker.get_complete_live_open_orders(
+            bulk_orders=[
+                {
+                    "orderId": "31",
+                    "status": "Submitted",
+                    "ticker": "AAPL",
+                    "side": "BUY",
+                    "orderType": "LMT",
+                    "totalSize": 10,
+                    "remainingQuantity": 10,
+                }
+            ]
+        )
+
+        self.assertEqual(1, len(payload["orders"]))
+        self.assertEqual("31", payload["orders"][0]["orderId"])
+        self.assertEqual([], payload["diagnostics"]["skipped_unidentified_order_ids"])
+
+    def test_complete_live_open_orders_keeps_pb_seed_even_when_status_only(self):
+        tracker = OrderTracker(pb_client=FakePBClient(), broker=FakeBroker(), environment="live")
+
+        payload = tracker.get_complete_live_open_orders(
+            pb_seed_ids=["41"],
+            bulk_orders=[
+                {
+                    "orderId": "41",
+                    "status": "ApiPending",
+                    "remainingQuantity": 5,
+                }
+            ]
+        )
+
+        self.assertEqual(1, len(payload["orders"]))
+        self.assertEqual("41", payload["orders"][0]["orderId"])
+        self.assertEqual(["pb"], payload["orders"][0]["_seed_sources"])
+
 
 if __name__ == "__main__":
     unittest.main()
