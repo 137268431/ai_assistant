@@ -391,7 +391,9 @@
                 return;
             }
 
-            const runtimeMode = String(topologyPayload?.runtime_mode || '--').trim().toUpperCase() || '--';
+            const runtimeModeRaw = String(topologyPayload?.runtime_mode || '').trim();
+            const runtimeMode = runtimeModeRaw ? runtimeModeRaw.toUpperCase() : '--';
+            const runtimeModeLabel = formatRuntimeModeLabel(runtimeModeRaw || topologyPayload?.runtime_mode, { compact: true });
             const serviceProfile = String(topologyPayload?.service_profile || '--').trim().toUpperCase() || '--';
             const restartIndependent = topologyPayload?.restart_independent ? 'YES' : 'NO';
             const serviceByName = services.reduce((acc, service) => {
@@ -407,7 +409,7 @@
                 return { label, statusText, tone, copy };
             };
             const cards = [
-                summarizeService('ibkr-runtime', 'Runtime', `mode ${runtimeMode}`),
+                summarizeService('ibkr-runtime', 'Runtime', `运行位置 ${runtimeModeLabel}`),
                 summarizeService('ibkr-compute', 'Compute', 'indicators / signals / data quality'),
                 summarizeService('ibkr-backtest', 'Backtest', 'replay / backtest worker · independent'),
                 summarizeService('ibkr-gateway', 'Gateway', 'IBC + IB Gateway session path'),
@@ -419,7 +421,7 @@
                     <div class="runtime-link-summary">
                         <div class="runtime-link-copy">
                             <div class="runtime-link-title">控制台只看操作前关键依赖</div>
-                            <div class="runtime-link-sub">当前 ${escapeHtml(runtimeMode)} / ${escapeHtml(serviceProfile)} · restart independent ${escapeHtml(restartIndependent)}。完整拓扑、主机健康、请求与 PB 磁盘统一进运维大盘。</div>
+                            <div class="runtime-link-sub">当前运行位置 ${escapeHtml(runtimeModeLabel)} / ${escapeHtml(serviceProfile)} · restart independent ${escapeHtml(restartIndependent)}。完整拓扑、主机健康、请求与 PB 磁盘统一进运维大盘。</div>
                         </div>
                         <a class="runtime-link-action" href="${monitorHref}">打开运维大盘 →</a>
                     </div>
@@ -440,7 +442,7 @@
                         }).join('')}
                     </div>
                     <div class="tag-row">
-                        <span class="mini-tag"><span class="mini-label">Mode</span><span>${escapeHtml(runtimeMode)}</span></span>
+                        <span class="mini-tag"><span class="mini-label">位置</span><span>${escapeHtml(runtimeModeLabel)}</span></span>
                         <span class="mini-tag"><span class="mini-label">Profile</span><span>${escapeHtml(serviceProfile)}</span></span>
                         <span class="mini-tag"><span class="mini-label">Restart</span><span>${escapeHtml(restartIndependent)}</span></span>
                         <span class="mini-tag"><span class="mini-label">Services</span><span>${escapeHtml(String(services.length))}</span></span>
@@ -469,9 +471,7 @@
             const sessionChipLabel = runtimeStatus.snapshotIncomplete
                 ? 'Session AUTHED'
                 : `Session ${sessionAuthenticated ? 'AUTHED' : 'PENDING'}`;
-            const activeEnvironmentTone = String(currentEnvironment || '').trim().toLowerCase() === 'live'
-                ? 'chip-warn'
-                : 'chip-muted';
+            const runtimeMode = status?.service_topology?.runtime_mode;
             const chips = [
                 { label: `Compute ${String(computeStatus).toUpperCase()}`, tone: chipTone(computeStatus) },
                 { label: `Data ${String(dataStatus).toUpperCase()}`, tone: chipTone(dataStatus) },
@@ -483,8 +483,8 @@
                 ...(startup.active ? [{ label: `Flow ${getManualAuthReasonLabel(startup.reason)}`, tone: chipTone(startup.status || 'active') }] : []),
                 { label: `Trading ${summary?.ibkr_trading_enabled ? 'ON' : 'OFF'}`, tone: summary?.ibkr_trading_enabled ? 'chip-ok' : 'chip-error' },
                 { label: `Compute ${summary?.compute_enabled ? 'ON' : 'OFF'}`, tone: summary?.compute_enabled ? 'chip-ok' : 'chip-error' },
-                { label: `Runtime ${String(status?.service_topology?.runtime_mode || '--').toUpperCase()}`, tone: 'chip-muted' },
-                { label: `Active Env ${String(currentEnvironment).toUpperCase()}`, tone: activeEnvironmentTone }
+                { label: `运行位置 ${formatRuntimeModeLabel(runtimeMode, { compact: true })}`, tone: runtimeModeChipTone(runtimeMode) },
+                { label: formatEnvironmentLabel(currentEnvironment), tone: environmentChipTone(currentEnvironment) }
             ];
             document.getElementById('heroBadges').innerHTML = chips.map((chip) => `
                 <span class="status-chip ${chip.tone}"><span class="dot" style="background:currentColor"></span>${escapeHtml(chip.label)}</span>
@@ -499,7 +499,7 @@
                 || status?.service_topology?.services?.['ibkr-backtest']?.internal_url
                 || 'http://127.0.0.1:5105';
             const runtimeService = status?.service_topology?.services?.['ibkr-runtime'] || {};
-            document.getElementById('computeBaseInfo').textContent = `compute base: ${computeBase} · backtest base: ${backtestBase} · runtime ${String(runtimeService.runtime_mode || '--')} · ${String(runtimeService.internal_url || '--')}`;
+            document.getElementById('computeBaseInfo').textContent = `compute base: ${computeBase} · backtest base: ${backtestBase} · 运行位置: ${formatRuntimeModeLabel(runtimeService.runtime_mode, { compact: true })} · runtime: ${String(runtimeService.internal_url || '--')}`;
             const effectiveReasonLabel = getManualAuthReasonLabel(getEffectiveManualAuthReason(status, twoFactorState, startup));
             const twoFactorMode = String(twoFactorState?.mode || '').trim().toLowerCase();
             const recoveryPhase = String(twoFactorState?.recovery_phase || '').trim().toLowerCase();
@@ -527,7 +527,7 @@
             setPageContextMeta([
                 { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
                 { label: 'Market Date', value: String(status?.market_universe?.market_date || '--') },
-                { label: 'Runtime', value: String(status?.service_topology?.runtime_mode || '--').toUpperCase() },
+                { label: '运行位置', value: formatRuntimeModeLabel(status?.service_topology?.runtime_mode, { compact: true }) },
                 { label: 'Session', value: sessionAuthenticated ? 'AUTHED' : 'PENDING', tone: sessionAuthenticated ? 'ok' : 'warn' },
             ]);
             setPageRefreshTime();
@@ -563,7 +563,7 @@
             const rows = [
                 ['Runtime Service', String(runtimeService.status || '--').toUpperCase()],
                 ['Runtime Owner', String(runtimeService.owner || '--')],
-                ['Runtime Mode', String(runtimeService.runtime_mode || '--').toUpperCase()],
+                ['Runtime Mode', formatRuntimeModeLabel(runtimeService.runtime_mode)],
                 ['Runtime Internal URL', String(runtimeService.internal_url || '--')],
                 ['Compute Upstream', String(computeService.upstream || '--')],
                 ['Backtest Service', String(backtestService.status || '--').toUpperCase()],

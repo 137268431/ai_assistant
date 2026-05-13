@@ -40,11 +40,11 @@ DEFAULT_BACKFILL_INTERVALS = _parse_intervals(
     os.environ.get("IBKR_BACKFILL_INTERVALS", "5m"),
     fallback=("5m",),
 )
-REQUEST_SPACING_SECONDS = max(0.0, float(os.environ.get("IBKR_HISTORY_REQUEST_SPACING", "0.05")))
+REQUEST_SPACING_SECONDS = max(0.0, float(os.environ.get("IBKR_HISTORY_REQUEST_SPACING", "0.02")))
 INTERVAL_DELAY_SECONDS = max(0.0, float(os.environ.get("IBKR_HISTORY_INTERVAL_DELAY", "0.10")))
 MAX_CONCURRENT_REQUESTS = max(
     1,
-    min(10, int(os.environ.get("IBKR_HISTORY_MAX_CONCURRENCY", "10"))),
+    min(20, int(os.environ.get("IBKR_HISTORY_MAX_CONCURRENCY", "20"))),
 )
 MAX_RETRIES = max(0, int(os.environ.get("IBKR_HISTORY_MAX_RETRIES", "4")))
 RETRY_BASE_DELAY_SECONDS = max(0.5, float(os.environ.get("IBKR_HISTORY_RETRY_BASE_DELAY", "2.0")))

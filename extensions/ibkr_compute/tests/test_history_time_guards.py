@@ -187,8 +187,8 @@ class BackfillFutureGuardTest(unittest.TestCase):
 
         self.assertEqual([call["duration"] for call in broker.calls], ["4 D", "4 D", "1 D"])
         self.assertEqual(broker.calls[0]["end_datetime"], "")
-        self.assertEqual(broker.calls[1]["end_datetime"], "20200115 09:25:00 US/Eastern")
-        self.assertEqual(broker.calls[2]["end_datetime"], "20200108 09:25:00 US/Eastern")
+        self.assertEqual(broker.calls[1]["end_datetime"], "20200115-14:25:00")
+        self.assertEqual(broker.calls[2]["end_datetime"], "20200108-14:25:00")
         self.assertEqual(
             [row["us_time"] for row in rows],
             [
@@ -232,7 +232,7 @@ class BackfillFutureGuardTest(unittest.TestCase):
         self.assertEqual([call["duration"] for call in broker.calls], ["120 D", "120 D"])
         self.assertEqual(broker.calls[0]["bar_size"], "4 hours")
         self.assertEqual(broker.calls[0]["end_datetime"], "")
-        self.assertEqual(broker.calls[1]["end_datetime"], "20200115 08:00:00 US/Eastern")
+        self.assertEqual(broker.calls[1]["end_datetime"], "20200115-13:00:00")
         self.assertEqual(
             [row["us_time"] for row in rows],
             [
@@ -249,19 +249,21 @@ class BackfillFutureGuardTest(unittest.TestCase):
             broker=_FakeBroker([]),
         )
 
-        self.assertEqual(backfill._max_concurrency(), 10)
-        self.assertEqual(backfill._request_spacing(), 0.15)
+        self.assertEqual(backfill._max_concurrency(), 20)
+        self.assertEqual(backfill._request_spacing(), 0.02)
         self.assertEqual(backfill._interval_delay(), 0.10)
 
         class HighConcurrencyConfig:
             def get_int_for_environment(self, key, environment, fallback):
                 del environment
                 if key == "ibkr_history_max_concurrency":
-                    return 20
+                    return 50
                 return fallback
 
             def get_float_for_environment(self, key, environment, fallback):
-                del key, environment
+                del environment
+                if key == "ibkr_history_request_spacing":
+                    return 0.02
                 return fallback
 
         capped = DataBackfill(
@@ -271,7 +273,8 @@ class BackfillFutureGuardTest(unittest.TestCase):
             broker=_FakeBroker([]),
         )
 
-        self.assertEqual(capped._max_concurrency(), 10)
+        self.assertEqual(capped._max_concurrency(), 20)
+        self.assertEqual(capped._request_spacing(), 0.02)
 
     def test_fetch_history_drops_unsafe_future_5m_bars(self):
         broker = _FakeBroker(

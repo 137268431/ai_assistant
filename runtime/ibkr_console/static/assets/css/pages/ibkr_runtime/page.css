@@ -226,13 +226,17 @@
             text-align: center;
         }
         .status-chip {
+            --chip-color: #9AAEC6;
+            --chip-border-color: rgba(154, 174, 198, 0.18);
+            --chip-bg: rgba(154, 174, 198, 0.07);
             display: inline-flex;
             align-items: center;
             gap: 8px;
             padding: 8px 12px;
             border-radius: 999px;
-            border: 1px solid rgba(255,255,255,0.08);
-            background: rgba(255,255,255,0.04);
+            border: 1px solid var(--chip-border-color);
+            background: var(--chip-bg);
+            color: var(--chip-color);
             font-size: 11px;
             font-weight: 600;
             letter-spacing: 0.3px;
@@ -243,10 +247,42 @@
             border-radius: 50%;
             box-shadow: 0 0 12px currentColor;
         }
-        .chip-ok { color: #48BB78; }
-        .chip-warn { color: #F6AD55; }
-        .chip-error { color: #FC8181; }
-        .chip-muted { color: #8BA4C4; }
+        .chip-ok {
+            --chip-color: #4FD18B;
+            --chip-border-color: rgba(79, 209, 139, 0.26);
+            --chip-bg: rgba(79, 209, 139, 0.10);
+            color: var(--chip-color);
+        }
+        .chip-warn {
+            --chip-color: #F6C85F;
+            --chip-border-color: rgba(246, 200, 95, 0.26);
+            --chip-bg: rgba(246, 200, 95, 0.10);
+            color: var(--chip-color);
+        }
+        .chip-error {
+            --chip-color: #FF7A7A;
+            --chip-border-color: rgba(255, 122, 122, 0.30);
+            --chip-bg: rgba(255, 122, 122, 0.10);
+            color: var(--chip-color);
+        }
+        .chip-muted {
+            --chip-color: #9AAEC6;
+            --chip-border-color: rgba(154, 174, 198, 0.18);
+            --chip-bg: rgba(154, 174, 198, 0.07);
+            color: var(--chip-color);
+        }
+        .chip-context {
+            --chip-color: #74C9E8;
+            --chip-border-color: rgba(116, 201, 232, 0.24);
+            --chip-bg: rgba(22, 131, 166, 0.12);
+            color: var(--chip-color);
+        }
+        .chip-live {
+            --chip-color: #FFB45F;
+            --chip-border-color: rgba(255, 180, 95, 0.34);
+            --chip-bg: linear-gradient(180deg, rgba(255, 180, 95, 0.16), rgba(255, 180, 95, 0.07));
+            color: var(--chip-color);
+        }
 
         .runtime-control-panel {
             display: grid;

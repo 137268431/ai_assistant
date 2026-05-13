@@ -48,7 +48,7 @@ class DataBackfillSettingsMixin:
         return max(0.0, self._get_float_setting("ibkr_history_interval_delay", INTERVAL_DELAY_SECONDS))
 
     def _max_concurrency(self) -> int:
-        return max(1, min(10, self._get_int_setting("ibkr_history_max_concurrency", MAX_CONCURRENT_REQUESTS)))
+        return max(1, min(20, self._get_int_setting("ibkr_history_max_concurrency", MAX_CONCURRENT_REQUESTS)))
 
     def _trace_enabled(self) -> bool:
         return self._get_bool_setting("ibkr_history_trace_enabled", True)

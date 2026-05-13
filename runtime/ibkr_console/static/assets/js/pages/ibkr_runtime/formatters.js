@@ -54,6 +54,46 @@
             return 'chip-muted';
         }
 
+        function formatRuntimeModeLabel(value, options = {}) {
+            const compact = Boolean(options.compact);
+            const key = String(value || '').trim().toLowerCase();
+            const labels = {
+                remote: compact ? '远端服务' : '远端服务 REMOTE',
+                local: compact ? '本机服务' : '本机服务 LOCAL',
+                embedded: compact ? '内置运行' : '内置运行 EMBEDDED',
+                standalone: compact ? '独立服务' : '独立服务 STANDALONE',
+            };
+            if (!key) return '--';
+            return labels[key] || (compact ? key.toUpperCase() : `运行模式 ${key.toUpperCase()}`);
+        }
+
+        function runtimeModeChipTone(value) {
+            const key = String(value || '').trim().toLowerCase();
+            if (key === 'remote' || key === 'standalone') return 'chip-context';
+            return 'chip-muted';
+        }
+
+        function formatEnvironmentLabel(value, options = {}) {
+            const compact = Boolean(options.compact);
+            const key = String(value || '').trim().toLowerCase();
+            const labels = {
+                live: compact ? '实盘' : '实盘环境 LIVE',
+                paper: compact ? '模拟盘' : '模拟盘环境 PAPER',
+                backtest: compact ? '回测' : '回测环境 BACKTEST',
+                dev: compact ? '开发' : '开发环境 DEV',
+                test: compact ? '测试' : '测试环境 TEST',
+            };
+            if (!key) return '--';
+            return labels[key] || (compact ? key.toUpperCase() : `环境 ${key.toUpperCase()}`);
+        }
+
+        function environmentChipTone(value) {
+            const key = String(value || '').trim().toLowerCase();
+            if (key === 'live') return 'chip-live';
+            if (key === 'paper') return 'chip-context';
+            return 'chip-muted';
+        }
+
         function formatRuntimeSignalStatus(value) {
             const key = String(value || '').trim().toLowerCase();
             const labels = {
