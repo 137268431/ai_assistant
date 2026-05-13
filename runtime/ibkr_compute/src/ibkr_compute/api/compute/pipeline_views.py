@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import time
 import traceback
+from collections import defaultdict
+from contextlib import contextmanager
 
 from flask import jsonify
 
@@ -97,6 +99,7 @@ def build_compute_response(payload=None):
             ), 400
 
         start = time.time()
+        perf_start = time.perf_counter()
         processed = 0
         signals_found = 0
         errors = 0
@@ -105,6 +108,17 @@ def build_compute_response(payload=None):
         signal_batch = []
         captured_signals = []
         dirty_cursor_environments = set()
+        stage_timings = defaultdict(float)
+        critical_finished_at = 0.0
+        signal_state_enabled = bool(plan["persist_signals"] or plan["capture_signals"])
+
+        @contextmanager
+        def record_stage(name: str):
+            stage_start = time.perf_counter()
+            try:
+                yield
+            finally:
+                stage_timings[name] += time.perf_counter() - stage_start
 
         def commit_cursor_updates(cursor_updates: dict[tuple[str, str, str], int]):
             for key, bar_ms in (cursor_updates or {}).items():
@@ -118,11 +132,29 @@ def build_compute_response(payload=None):
                 )
                 dirty_cursor_environments.add(environment)
 
+        def newest_first_key(item: dict) -> tuple[int, str, str, str]:
+            return (
+                -int((item or {}).get("bar_time_ms", 0) or 0),
+                str((item or {}).get("environment") or ""),
+                str((item or {}).get("interval") or ""),
+                str((item or {}).get("symbol") or ""),
+            )
+
+        def mark_signal_state_stale(signal_key: tuple[str, str, str]) -> None:
+            signal_bootstrap_checked = getattr(api_app, "signal_bootstrap_checked", None)
+            if isinstance(signal_bootstrap_checked, set):
+                signal_bootstrap_checked.discard(signal_key)
+
         def flush_pending_indicators():
             nonlocal errors, indicator_batch, indicator_cursor_updates
             if not indicator_batch:
                 return
-            result = api_app.flush_indicator_batch(indicator_batch)
+            ordered_batch = sorted(
+                indicator_batch,
+                key=newest_first_key,
+            )
+            with record_stage("indicator_flush"):
+                result = api_app.flush_indicator_batch(ordered_batch)
             errors += int(result.get("errors", 0) or 0)
             if int(result.get("errors", 0) or 0) == 0:
                 commit_cursor_updates(indicator_cursor_updates)
@@ -133,52 +165,69 @@ def build_compute_response(payload=None):
             nonlocal errors, signals_found, signal_batch
             if not signal_batch:
                 return
-            result = api_app.flush_signal_batch(signal_batch)
+            ordered_batch = sorted(
+                signal_batch,
+                key=newest_first_key,
+            )
+            with record_stage("signal_flush"):
+                result = api_app.flush_signal_batch(ordered_batch)
             errors += int(result.get("errors", 0) or 0)
             signals_found += int(result.get("written", 0) or 0)
             signal_batch = []
 
-        api_app.refresh_symbol_metadata()
-        rollup_results = api_app.ensure_higher_timeframe_bars(
-            plan["enabled_environments"],
-            force=plan["force_rollup"],
-            symbols=plan["requested_symbols"] if plan["targeted_rollup"] else None,
-            incremental=plan["incremental_rollup"],
-            intervals=plan["rollup_intervals"],
-        )
+        with record_stage("metadata_refresh"):
+            api_app.refresh_symbol_metadata()
+        with record_stage("rollup"):
+            rollup_results = api_app.ensure_higher_timeframe_bars(
+                plan["enabled_environments"],
+                force=plan["force_rollup"],
+                symbols=plan["requested_symbols"] if plan["targeted_rollup"] else None,
+                incremental=plan["incremental_rollup"],
+                intervals=plan["rollup_intervals"],
+            )
         errors += sum(int(result.get("errors", 0) or 0) for result in rollup_results.values())
-        api_app.refresh_daily_close_cache(plan["enabled_environments"])
+        with record_stage("daily_close_refresh"):
+            api_app.refresh_daily_close_cache(plan["enabled_environments"])
 
         try:
             for environment in plan["enabled_environments"]:
                 if plan["targeted_rebuild"]:
-                    api_app.reset_compute_state_for_symbols(
-                        environment,
-                        plan["requested_symbols"],
-                        intervals=plan["intervals"],
-                    )
+                    with record_stage("reset_state"):
+                        api_app.reset_compute_state_for_symbols(
+                            environment,
+                            plan["requested_symbols"],
+                            intervals=plan["intervals"],
+                        )
                 if not plan["skip_persisted_cursor"]:
-                    api_app.load_persisted_compute_cursors(environment)
-                signal_params = api_app.get_signal_generator_params(environment)
+                    with record_stage("cursor_load"):
+                        api_app.load_persisted_compute_cursors(environment)
+                with record_stage("params_load"):
+                    signal_params = api_app.get_signal_generator_params(environment)
                 signal_enabled_symbols = {
                     str(symbol or "").strip().upper()
                     for symbol in (api_app.normalize_symbol_csv(signal_params.get("signal_enabled_symbols") or ""))
                 }
                 for interval in plan["intervals"]:
-                    interval_bars = api_app.fetch_interval_bars(
-                        environment,
-                        interval,
-                        symbols=plan["requested_symbols"] if plan["requested_symbols"] else None,
-                        full_scan=plan["targeted_rebuild"],
-                    )
+                    with record_stage("fetch"):
+                        interval_bars = api_app.fetch_interval_bars(
+                            environment,
+                            interval,
+                            symbols=plan["requested_symbols"] if plan["requested_symbols"] else None,
+                            full_scan=plan["targeted_rebuild"],
+                        )
                     if not interval_bars:
                         continue
 
                     by_symbol = {}
+                    latest_ms_by_symbol = {}
                     for bar in interval_bars:
                         symbol = str(bar.get("symbol", "")).upper()
                         if symbol:
                             by_symbol.setdefault(symbol, []).append(bar)
+                            latest_ms_by_symbol[symbol] = max(
+                                int(latest_ms_by_symbol.get(symbol, 0) or 0),
+                                int(bar.get("bar_time_ms", 0) or 0),
+                            )
 
                     for symbol, bars in by_symbol.items():
                         bars.sort(key=lambda item: int(item.get("bar_time_ms", 0) or 0))
@@ -193,15 +242,16 @@ def build_compute_response(payload=None):
                             bootstrap_target_ms = int(bars[0].get("bar_time_ms", 0) or 0)
                             bootstrap_inclusive = False
                         if bootstrap_target_ms > 0:
-                            api_app.bootstrap_engine_state(
-                                environment,
-                                symbol,
-                                interval,
-                                bootstrap_target_ms,
-                                inclusive=bootstrap_inclusive,
-                                force_rebuild=force_bootstrap_rebuild,
-                                hydrate_signal_state=plan["persist_signals"],
-                            )
+                            with record_stage("bootstrap"):
+                                api_app.bootstrap_engine_state(
+                                    environment,
+                                    symbol,
+                                    interval,
+                                    bootstrap_target_ms,
+                                    inclusive=bootstrap_inclusive,
+                                    force_rebuild=force_bootstrap_rebuild,
+                                    hydrate_signal_state=signal_state_enabled,
+                                )
                             last_ms = int(api_app.last_processed_ms.get(key, 0) or 0)
 
                         for bar in bars:
@@ -209,53 +259,71 @@ def build_compute_response(payload=None):
                             if bar_ms <= last_ms:
                                 continue
 
-                            snapshot = engine.update({
-                                "open": float(bar.get("open", 0) or 0),
-                                "high": float(bar.get("high", 0) or 0),
-                                "low": float(bar.get("low", 0) or 0),
-                                "close": float(bar.get("close", 0) or 0),
-                                "volume": float(bar.get("volume", 0) or 0),
-                                "bar_time_ms": bar_ms,
-                                "us_time": bar.get("us_time", ""),
-                                "cn_time": bar.get("cn_time", ""),
-                                "session_type": bar.get("session_type", "regular"),
-                            })
+                            with record_stage("indicator_update"):
+                                snapshot = engine.update({
+                                    "open": float(bar.get("open", 0) or 0),
+                                    "high": float(bar.get("high", 0) or 0),
+                                    "low": float(bar.get("low", 0) or 0),
+                                    "close": float(bar.get("close", 0) or 0),
+                                    "volume": float(bar.get("volume", 0) or 0),
+                                    "bar_time_ms": bar_ms,
+                                    "us_time": bar.get("us_time", ""),
+                                    "cn_time": bar.get("cn_time", ""),
+                                    "session_type": bar.get("session_type", "regular"),
+                                })
                             last_ms = bar_ms
                             processed += 1
 
+                            symbol_latest_ms = int(latest_ms_by_symbol.get(symbol, 0) or 0)
+                            is_latest_symbol_bar = symbol_latest_ms > 0 and bar_ms == symbol_latest_ms
                             if not snapshot or not engine.is_ready():
                                 commit_cursor_updates({key: bar_ms})
+                                if is_latest_symbol_bar:
+                                    critical_finished_at = max(critical_finished_at, time.perf_counter())
                                 continue
 
-                            indicator_batch.append(api_app.build_indicator_payload(environment, symbol, interval, bar, engine, snapshot))
+                            with record_stage("indicator_payload"):
+                                indicator_batch.append(api_app.build_indicator_payload(environment, symbol, interval, bar, engine, snapshot))
                             indicator_cursor_updates[key] = max(
                                 int(indicator_cursor_updates.get(key, 0) or 0),
                                 bar_ms,
                             )
-                            if len(indicator_batch) >= api_app.INDICATOR_BATCH_SIZE:
+                            if is_latest_symbol_bar or len(indicator_batch) >= api_app.INDICATOR_BATCH_SIZE:
                                 flush_pending_indicators()
 
-                            if interval != "5m" or not signal_generator or symbol not in signal_enabled_symbols:
+                            if interval != "5m" or not signal_generator:
+                                if is_latest_symbol_bar:
+                                    critical_finished_at = max(critical_finished_at, time.perf_counter())
                                 continue
 
-                            signal_snapshot = {
-                                **snapshot,
-                                **get_daily_change_fields(
-                                    environment,
-                                    symbol,
-                                    float(snapshot.get("close", 0) or 0),
-                                    bar_ms,
-                                ),
-                            }
-                            signal = signal_generator.update(signal_snapshot)
+                            if not signal_state_enabled or symbol not in signal_enabled_symbols:
+                                mark_signal_state_stale(key)
+                                if is_latest_symbol_bar:
+                                    critical_finished_at = max(critical_finished_at, time.perf_counter())
+                                continue
+
+                            with record_stage("signal_update"):
+                                signal_snapshot = {
+                                    **snapshot,
+                                    **get_daily_change_fields(
+                                        environment,
+                                        symbol,
+                                        float(snapshot.get("close", 0) or 0),
+                                        bar_ms,
+                                    ),
+                                }
+                                signal = signal_generator.update(signal_snapshot)
                             if signal and api_app.is_recent_signal_bar(bar_ms, interval):
-                                signal_payload = api_app.build_signal_payload(environment, symbol, interval, bar, engine, signal)
+                                with record_stage("signal_payload"):
+                                    signal_payload = api_app.build_signal_payload(environment, symbol, interval, bar, engine, signal)
                                 if plan["capture_signals"]:
                                     captured_signals.append(signal_payload)
                                 if plan["persist_signals"]:
                                     signal_batch.append(signal_payload)
-                                    if len(signal_batch) >= api_app.SIGNAL_BATCH_SIZE:
+                                    if is_latest_symbol_bar or len(signal_batch) >= api_app.SIGNAL_BATCH_SIZE:
                                         flush_pending_signals()
+                            if is_latest_symbol_bar:
+                                critical_finished_at = max(critical_finished_at, time.perf_counter())
         except Exception:
             errors += 1
             api_app.error_count += 1
@@ -264,8 +332,11 @@ def build_compute_response(payload=None):
             flush_pending_indicators()
             flush_pending_signals()
             for environment in sorted(dirty_cursor_environments):
-                api_app.persist_compute_cursors(environment)
+                with record_stage("cursor_persist"):
+                    api_app.persist_compute_cursors(environment)
 
+        elapsed_s = time.time() - start
+        critical_elapsed = (critical_finished_at - perf_start) if critical_finished_at > 0 else elapsed_s
         api_app.last_compute_time = time.time()
         api_app.compute_count += 1
         return jsonify({
@@ -282,5 +353,11 @@ def build_compute_response(payload=None):
             "errors": errors,
             "rollup": rollup_results,
             "engines": len(api_app.engines),
-            "elapsed_s": round(time.time() - start, 3),
+            "stage_timings": {
+                name: round(duration, 3)
+                for name, duration in sorted(stage_timings.items())
+            },
+            "critical_elapsed_s": round(max(0.0, critical_elapsed), 3),
+            "background_elapsed_s": round(max(0.0, elapsed_s - critical_elapsed), 3),
+            "elapsed_s": round(elapsed_s, 3),
         })

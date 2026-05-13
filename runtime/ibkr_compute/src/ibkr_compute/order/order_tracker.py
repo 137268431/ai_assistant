@@ -869,7 +869,8 @@ class OrderTracker:
                 quantity = order.get("totalSize", order.get("quantity", 0))
                 fill_qty = order.get("filledQuantity", 0)
                 avg_price = order.get("avgPrice", 0)
-                limit_price = order.get("price", 0)
+                limit_price = self._to_float(order.get("price", 0), 0.0)
+                stop_trigger_price = self._to_float(order.get("auxPrice", order.get("stop_price", 0)), 0.0)
                 parent_id = order.get("parentId") or ""
                 order_type = order.get("orderType", "Entry") or "Entry"
                 upper_type = str(order_type).upper()
@@ -879,6 +880,8 @@ class OrderTracker:
                     role = "stop_loss"
                 else:
                     role = "take_profit"
+                if role == "stop_loss" and limit_price <= 0 and stop_trigger_price > 0:
+                    limit_price = stop_trigger_price
                 relation_status = "closed" if str(status).upper() in ("FILLED", "EXECUTED", "CANCELLED", "CANCELED") else "active"
                 mapped_status = {
                     "PRESUBMITTED": "Submitted",
@@ -950,7 +953,7 @@ class OrderTracker:
                     extra["status_inferred"] = True
                     extra["status_inferred_reason"] = str(order.get("_status_inferred_reason") or "")
 
-                self.pb_client.upsert_order({
+                order_payload = {
                     "unique_id": canonical_unique_id,
                     "order_id": order_id,
                     "broker_order_id": order_id,
@@ -972,7 +975,12 @@ class OrderTracker:
                     "us_time": now_str,
                     "bar_time_ms": int(time.time() * 1000),
                     "extra": extra,
-                })
+                }
+                if role == "stop_loss" and limit_price > 0:
+                    order_payload["sl_price"] = limit_price
+                elif role == "take_profit" and limit_price > 0:
+                    order_payload["tp_price"] = limit_price
+                self.pb_client.upsert_order(order_payload)
         except Exception as exc:
             logger.debug("PB order sync failed: %s", exc)
 

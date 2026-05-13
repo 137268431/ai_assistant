@@ -437,6 +437,27 @@
             word-break: break-all;
         }
 
+        .metric-subvalue {
+            display: inline-block;
+            margin-top: 6px;
+            color: var(--muted);
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            line-height: 1.35;
+        }
+
+        .pnl-positive {
+            color: var(--long);
+        }
+
+        .pnl-negative {
+            color: var(--short);
+        }
+
+        .pnl-flat {
+            color: var(--muted);
+        }
+
         .relationship-strip {
             display: flex;
             gap: 8px;

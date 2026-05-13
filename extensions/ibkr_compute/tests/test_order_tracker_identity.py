@@ -111,6 +111,33 @@ class OrderTrackerIdentityTest(unittest.TestCase):
         self.assertEqual("entry_XOM_long_20260417_111312", upsert["trade_group_id"])
         self.assertEqual("Submitted", upsert["status"])
 
+    def test_sync_stop_order_uses_aux_price_for_pb_stop_price(self):
+        pb_client = FakePBClient()
+        tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="live")
+
+        tracker._sync_to_pb(
+            {
+                "orderId": "27",
+                "parentId": "25",
+                "ticker": "SCCO",
+                "side": "BUY",
+                "orderType": "STP",
+                "totalSize": 53,
+                "filledQuantity": 53,
+                "avgPrice": 192.805,
+                "price": 0,
+                "auxPrice": 192.93,
+                "status": "Filled",
+                "cOID": "sl_SCCO_short_20260513_112139",
+            }
+        )
+
+        self.assertEqual(1, len(pb_client.upserts))
+        upsert = pb_client.upserts[0]
+        self.assertEqual("stop_loss", upsert["role"])
+        self.assertEqual(192.93, upsert["limit_price"])
+        self.assertEqual(192.93, upsert["sl_price"])
+
     def test_complete_live_open_orders_restores_tracker_identity_fields(self):
         tracker = OrderTracker(pb_client=FakePBClient(), broker=FakeBroker(), environment="live")
         tracker.register_submitted_orders(

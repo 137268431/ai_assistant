@@ -77,6 +77,48 @@ class _FakeResponse:
         return dict(self._payload)
 
 
+def _normalize_csv(raw):
+    return [
+        str(item or "").strip().upper()
+        for item in str(raw or "").split(",")
+        if str(item or "").strip()
+    ]
+
+
+def _base_compute_plan(**overrides):
+    plan = {
+        "enabled_environments": ["live"],
+        "requested_environments": ["live"],
+        "requested_symbols": ["AAPL"],
+        "persist_signals": False,
+        "capture_signals": False,
+        "force_rollup": False,
+        "targeted_rollup": False,
+        "incremental_rollup": False,
+        "rollup_intervals": [],
+        "skip_persisted_cursor": False,
+        "targeted_rebuild": False,
+        "intervals": ["5m"],
+    }
+    plan.update(overrides)
+    return plan
+
+
+def _base_bar(bar_time_ms=200, symbol="AAPL"):
+    return {
+        "symbol": symbol,
+        "bar_time_ms": bar_time_ms,
+        "open": 1,
+        "high": 2,
+        "low": 1,
+        "close": 2,
+        "volume": 100,
+        "us_time": "2026-04-25 10:00:00",
+        "cn_time": "",
+        "session_type": "regular",
+    }
+
+
 class ComputePipelineGuardTest(unittest.TestCase):
     def test_compute_lock_busy_returns_retryable_error(self):
         lock = threading.Lock()
@@ -242,6 +284,226 @@ class ComputePipelineCursorCommitTest(unittest.TestCase):
         self.assertGreaterEqual(len(bootstrap_calls), 2)
         self.assertFalse(bootstrap_calls[0]["force_rebuild"])
         self.assertTrue(bootstrap_calls[1]["force_rebuild"])
+
+
+class ComputePipelineSignalFastPathTest(unittest.TestCase):
+    def _run_compute(self, fake_app, plan):
+        with mock.patch("ibkr_compute.api.compute.pipeline_views._api_app", return_value=fake_app):
+            with mock.patch("ibkr_compute.api.compute.pipeline_views.build_compute_execution_plan", return_value=plan):
+                with mock.patch(
+                    "ibkr_compute.api.compute.pipeline_views.jsonify",
+                    side_effect=lambda payload: _FakeResponse(payload),
+                ):
+                    return pipeline_views.build_compute_response({}).get_json()
+
+    def _fake_app(self, *, bars, signal_generator=None, signal_params=None, signal_batch_sink=None, indicator_batch_sink=None):
+        symbols = sorted({
+            str((bar or {}).get("symbol") or "").strip().upper()
+            for bar in (bars or [])
+            if str((bar or {}).get("symbol") or "").strip()
+        } or {"AAPL"})
+        engines = {("live", symbol, "5m"): _FakeEngine() for symbol in symbols}
+        key = ("live", "AAPL", "5m")
+        engines.setdefault(key, _FakeEngine())
+        last_processed_ms = {engine_key: 100 for engine_key in engines}
+        persist_calls = []
+        bootstrap_calls = []
+        signal_batches = signal_batch_sink if signal_batch_sink is not None else []
+        indicator_batches = indicator_batch_sink if indicator_batch_sink is not None else []
+
+        def bootstrap_engine_state(
+            environment,
+            symbol,
+            interval,
+            before_bar_time_ms,
+            inclusive=True,
+            force_rebuild=False,
+            hydrate_signal_state=True,
+        ):
+            engine_key = (environment, symbol, interval)
+            engine = engines.setdefault(engine_key, _FakeEngine())
+            last_processed_ms.setdefault(engine_key, 100)
+            bootstrap_calls.append(
+                {
+                    "environment": environment,
+                    "symbol": symbol,
+                    "interval": interval,
+                    "before_bar_time_ms": before_bar_time_ms,
+                    "inclusive": inclusive,
+                    "force_rebuild": force_rebuild,
+                    "hydrate_signal_state": hydrate_signal_state,
+                }
+            )
+            if force_rebuild:
+                engine.reset()
+            return 0
+
+        def get_or_create_engine(environment, symbol, interval, signal_params=None):
+            engine_key = (environment, symbol, interval)
+            last_processed_ms.setdefault(engine_key, 100)
+            return engines.setdefault(engine_key, _FakeEngine())
+
+        app = SimpleNamespace(
+            INDICATOR_BATCH_SIZE=10,
+            SIGNAL_BATCH_SIZE=10,
+            build_indicator_payload=lambda environment, symbol, interval, bar, current_engine, snapshot: {
+                "environment": environment,
+                "symbol": symbol,
+                "interval": interval,
+                "bar_time_ms": int(bar["bar_time_ms"]),
+                "close": snapshot.get("close"),
+            },
+            build_signal_payload=lambda environment, symbol, interval, bar, current_engine, signal: {
+                "environment": environment,
+                "symbol": symbol,
+                "interval": interval,
+                "bar_time_ms": int(bar["bar_time_ms"]),
+                "signal": signal.get("signal", "test"),
+            },
+            cfg=SimpleNamespace(refresh=lambda: None),
+            compute_count=0,
+            compute_lock=threading.Lock(),
+            engines=engines,
+            ensure_higher_timeframe_bars=lambda *args, **kwargs: {},
+            error_count=0,
+            fetch_interval_bars=lambda environment, interval, symbols=None, full_scan=False: list(bars),
+            flush_indicator_batch=lambda batch: indicator_batches.append(list(batch)) or {
+                "ok": True,
+                "written": len(batch),
+                "errors": 0,
+            },
+            flush_signal_batch=lambda batch: signal_batches.append(list(batch)) or {
+                "ok": True,
+                "written": len(batch),
+                "errors": 0,
+            },
+            get_or_create_engine=get_or_create_engine,
+            get_signal_generator_params=lambda environment: dict(signal_params or {"signal_enabled_symbols": "AAPL"}),
+            is_recent_signal_bar=lambda bar_time_ms, interval: True,
+            last_compute_time=0.0,
+            last_processed_ms=last_processed_ms,
+            load_persisted_compute_cursors=lambda environment: 0,
+            normalize_symbol_csv=_normalize_csv,
+            persist_compute_cursors=lambda environment: persist_calls.append(environment),
+            refresh_daily_close_cache=lambda environments: None,
+            refresh_symbol_metadata=lambda: None,
+            reset_compute_state_for_symbols=lambda environment, symbols, intervals=None: None,
+            signal_gens={key: signal_generator} if signal_generator is not None else {},
+            signal_bootstrap_checked=set(),
+            bootstrap_engine_state=bootstrap_engine_state,
+        )
+        app._test_engine = engines[key]
+        app._test_bootstrap_calls = bootstrap_calls
+        app._test_persist_calls = persist_calls
+        app._test_indicator_batches = indicator_batches
+        app._test_signal_batches = signal_batches
+        return app
+
+    def test_suppressed_signal_outputs_skip_signal_generator_update_but_advance_indicator_cursor(self):
+        signal_generator = SimpleNamespace(update=mock.Mock(return_value={"signal": "test"}))
+        fake_app = self._fake_app(
+            bars=[_base_bar(200)],
+            signal_generator=signal_generator,
+        )
+
+        payload = self._run_compute(fake_app, _base_compute_plan(persist_signals=False, capture_signals=False))
+
+        self.assertEqual(payload["errors"], 0)
+        self.assertEqual(payload["signals"], 0)
+        self.assertEqual(fake_app.last_processed_ms[("live", "AAPL", "5m")], 200)
+        self.assertEqual(fake_app._test_persist_calls, ["live"])
+        self.assertEqual(len(fake_app._test_indicator_batches), 1)
+        self.assertEqual(fake_app._test_indicator_batches[0][0]["bar_time_ms"], 200)
+        signal_generator.update.assert_not_called()
+        self.assertEqual(fake_app._test_signal_batches, [])
+        self.assertFalse(fake_app._test_bootstrap_calls[0]["hydrate_signal_state"])
+
+    def test_suppressed_signal_outputs_mark_signal_bootstrap_stale(self):
+        key = ("live", "AAPL", "5m")
+        signal_generator = SimpleNamespace(update=mock.Mock(return_value={"signal": "test"}))
+        fake_app = self._fake_app(
+            bars=[_base_bar(200)],
+            signal_generator=signal_generator,
+        )
+        fake_app.signal_bootstrap_checked.add(key)
+
+        self._run_compute(fake_app, _base_compute_plan(persist_signals=False, capture_signals=False))
+
+        self.assertNotIn(key, fake_app.signal_bootstrap_checked)
+        signal_generator.update.assert_not_called()
+
+    def test_capture_signals_true_updates_signal_generator_without_persisting(self):
+        signal_generator = SimpleNamespace(update=mock.Mock(return_value={"signal": "test"}))
+        fake_app = self._fake_app(
+            bars=[_base_bar(200)],
+            signal_generator=signal_generator,
+        )
+
+        payload = self._run_compute(fake_app, _base_compute_plan(persist_signals=False, capture_signals=True))
+
+        self.assertEqual(payload["captured_signal_count"], 1)
+        self.assertEqual(payload["signals"], 0)
+        signal_generator.update.assert_called_once()
+        self.assertEqual(fake_app._test_signal_batches, [])
+        self.assertTrue(fake_app._test_bootstrap_calls[0]["hydrate_signal_state"])
+
+    def test_persist_signals_true_updates_and_flushes_signal_batch(self):
+        signal_generator = SimpleNamespace(update=mock.Mock(return_value={"signal": "test"}))
+        fake_app = self._fake_app(
+            bars=[_base_bar(200)],
+            signal_generator=signal_generator,
+        )
+
+        payload = self._run_compute(fake_app, _base_compute_plan(persist_signals=True, capture_signals=False))
+
+        self.assertEqual(payload["signals"], 1)
+        signal_generator.update.assert_called_once()
+        self.assertEqual(len(fake_app._test_signal_batches), 1)
+        self.assertEqual(fake_app._test_signal_batches[0][0]["bar_time_ms"], 200)
+
+    def test_indicator_flush_sorts_batch_by_latest_bar_time_first(self):
+        fake_app = self._fake_app(
+            bars=[_base_bar(150), _base_bar(200)],
+            signal_generator=None,
+        )
+
+        payload = self._run_compute(fake_app, _base_compute_plan(persist_signals=False, capture_signals=False))
+
+        self.assertEqual(payload["errors"], 0)
+        self.assertEqual(fake_app.last_processed_ms[("live", "AAPL", "5m")], 200)
+        self.assertEqual(len(fake_app._test_indicator_batches), 1)
+        self.assertEqual([item["bar_time_ms"] for item in fake_app._test_indicator_batches[0]], [200, 150])
+
+    def test_latest_indicator_flush_runs_per_symbol(self):
+        fake_app = self._fake_app(
+            bars=[_base_bar(195, symbol="MSFT"), _base_bar(200, symbol="AAPL")],
+            signal_generator=None,
+        )
+
+        payload = self._run_compute(
+            fake_app,
+            _base_compute_plan(requested_symbols=["AAPL", "MSFT"], persist_signals=False, capture_signals=False),
+        )
+
+        self.assertEqual(payload["errors"], 0)
+        self.assertEqual(len(fake_app._test_indicator_batches), 2)
+        self.assertEqual([item["bar_time_ms"] for item in fake_app._test_indicator_batches[0]], [195])
+        self.assertEqual([item["bar_time_ms"] for item in fake_app._test_indicator_batches[1]], [200])
+
+    def test_signal_flush_sorts_batch_by_latest_bar_time_first(self):
+        signal_generator = SimpleNamespace(
+            update=mock.Mock(side_effect=[{"signal": "older"}, {"signal": "newer"}])
+        )
+        fake_app = self._fake_app(
+            bars=[_base_bar(150), _base_bar(200)],
+            signal_generator=signal_generator,
+        )
+
+        payload = self._run_compute(fake_app, _base_compute_plan(persist_signals=True, capture_signals=False))
+
+        self.assertEqual(payload["signals"], 2)
+        self.assertEqual(len(fake_app._test_signal_batches), 1)
+        self.assertEqual([item["bar_time_ms"] for item in fake_app._test_signal_batches[0]], [200, 150])
 
 
 if __name__ == "__main__":

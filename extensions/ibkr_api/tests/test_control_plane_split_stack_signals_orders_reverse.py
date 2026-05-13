@@ -542,3 +542,74 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
         fake_pb.update_record.assert_not_called()
         fake_pb.create_record.assert_not_called()
 
+    def test_build_order_upsert_keeps_existing_stop_price_when_live_stp_price_is_zero(self):
+        existing_row = {
+            "id": "order-sl-1",
+            "unique_id": "sig-1_sl",
+            "order_type": "STP",
+            "order_id": "27",
+            "broker_order_id": "27",
+            "symbol": "AAPL",
+            "environment": "live",
+            "direction": "long",
+            "quantity": 10,
+            "limit_price": 178.0,
+            "status": "Submitted",
+            "filled_qty": 0,
+            "fill_price": 0,
+            "signal_id": "sig-1",
+            "trade_group_id": "sig-1_entry",
+            "entry_order_unique_id": "sig-1_entry",
+            "parent_order_unique_id": "sig-1_entry",
+            "sibling_order_unique_id": "sig-1_tp",
+            "role": "stop_loss",
+            "relation_status": "active",
+            "position_side": "long",
+            "order_time": "2026-04-22 09:35:00",
+            "fill_time": "",
+            "bar_time_ms": 1713797700000,
+            "us_time": "2026-04-22 09:35:00",
+            "cn_time": "2026-04-22 21:35:00",
+            "extra": {"role": "stop_loss", "limit_price": 178.0},
+        }
+        request_payload = {
+            "environment": "live",
+            "unique_id": "sig-1_sl",
+            "order_type": "STP",
+            "order_id": "27",
+            "broker_order_id": "27",
+            "symbol": "AAPL",
+            "direction": "long",
+            "quantity": 10,
+            "limit_price": 0,
+            "status": "Filled",
+            "filled_qty": 10,
+            "fill_price": 178.2,
+            "trade_group_id": "sig-1_entry",
+            "entry_order_unique_id": "sig-1_entry",
+            "parent_order_unique_id": "sig-1_entry",
+            "sibling_order_unique_id": "sig-1_tp",
+            "role": "stop_loss",
+            "signal_id": "sig-1",
+            "us_time": "2026-04-22 09:36:00",
+            "cn_time": "2026-04-22 21:36:00",
+            "bar_time_ms": 1713797760000,
+        }
+        fake_pb = _FakePB()
+        fake_pb.get_first_record = mock.Mock(return_value=existing_row)
+        fake_pb.get_records = mock.Mock(return_value=[])
+        fake_pb.update_record = mock.Mock(side_effect=lambda collection, record_id, data: {**data, "id": record_id})
+        fake_pb.create_record = mock.Mock(side_effect=lambda collection, data: {**data, "id": f"{collection}-1"})
+
+        payload, status_code = build_order_upsert_response(
+            fake_pb,
+            payload=request_payload,
+            normalize_environment=api_app_mod._normalize_environment,
+            escape_filter_string=api_app_mod._escape_filter_string,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["success"])
+        saved_order = fake_pb.update_record.call_args.args[2]
+        self.assertEqual(178.0, saved_order["limit_price"])
+        self.assertEqual("Filled", saved_order["status"])

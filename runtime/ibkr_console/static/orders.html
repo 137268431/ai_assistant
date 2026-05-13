@@ -200,6 +200,27 @@
             return num === null ? '-' : `$${num.toFixed(2)}`;
         }
 
+        function formatSignedMoney(value) {
+            const num = toNumber(value);
+            if (num === null) return '-';
+            const sign = num > 0 ? '+' : num < 0 ? '-' : '';
+            return `${sign}$${Math.abs(num).toFixed(2)}`;
+        }
+
+        function pnlClass(value) {
+            const num = toNumber(value);
+            if (num === null || Math.abs(num) < 0.005) return 'pnl-flat';
+            return num > 0 ? 'pnl-positive' : 'pnl-negative';
+        }
+
+        function firstPositiveNumber() {
+            for (const value of arguments) {
+                const num = toNumber(value);
+                if (num !== null && num > 0) return num;
+            }
+            return null;
+        }
+
         function formatQty(value) {
             const num = toNumber(value);
             return num === null ? '-' : `${num}`;
@@ -891,6 +912,8 @@
                 fill_price: toNumber(firstDefined(raw.fill_price, extra.fill_price)),
                 tp_price: toNumber(firstDefined(raw.tp_price, extra.tp_price)),
                 sl_price: toNumber(firstDefined(raw.sl_price, extra.sl_price)),
+                pnl: toNumber(firstDefined(raw.pnl, extra.pnl)),
+                commission: toNumber(firstDefined(raw.commission, extra.commission)),
                 signal_id: firstDefined(raw.signal_id, extra.signal_id, ''),
                 bar_time_ms: barTimeMs,
                 time_key: timeKey,
@@ -1180,7 +1203,114 @@
             `;
         }
 
+        function resolveTakeProfitPrice(primary, tpOrder) {
+            return firstPositiveNumber(
+                tpOrder?.limit_price,
+                tpOrder?.tp_price,
+                tpOrder?.extra?.take_profit,
+                tpOrder?.extra?.tp_price,
+                tpOrder?.extra?.initial_take_profit,
+                primary?.tp_price,
+                primary?.extra?.take_profit,
+                primary?.extra?.tp_price,
+                primary?.extra?.initial_take_profit
+            );
+        }
+
+        function resolveStopLossPrice(primary, slOrder) {
+            return firstPositiveNumber(
+                slOrder?.limit_price,
+                slOrder?.sl_price,
+                slOrder?.extra?.stop_loss,
+                slOrder?.extra?.sl_price,
+                slOrder?.extra?.stop_price,
+                slOrder?.extra?.initial_stop_loss,
+                primary?.sl_price,
+                primary?.extra?.stop_loss,
+                primary?.extra?.sl_price,
+                primary?.extra?.stop_price,
+                primary?.extra?.initial_stop_loss
+            );
+        }
+
+        function resolveDisplayPrice(order) {
+            const role = String(order?.role || '').trim();
+            if (role === 'stop_loss' || role === 'repair_sl') return resolveStopLossPrice(order, order);
+            if (role === 'take_profit' || role === 'repair_tp') return resolveTakeProfitPrice(order, order);
+            return firstPositiveNumber(order?.limit_price, order?.extra?.limit_price, order?.fill_price);
+        }
+
+        function resolveEntryFillPrice(primary) {
+            return firstPositiveNumber(
+                primary?.fill_price,
+                primary?.extra?.fill_price,
+                primary?.limit_price,
+                primary?.extra?.limit_price,
+                primary?.extra?.entry_price
+            );
+        }
+
+        function resolveExitFillPrice(exitOrder, fallbackPrice) {
+            return firstPositiveNumber(
+                exitOrder?.fill_price,
+                exitOrder?.extra?.fill_price,
+                exitOrder?.limit_price,
+                exitOrder?.extra?.limit_price,
+                fallbackPrice
+            );
+        }
+
+        function computeDirectionalPnl(direction, entryPrice, exitPrice, quantity) {
+            const entry = toNumber(entryPrice);
+            const exit = toNumber(exitPrice);
+            const qty = toNumber(quantity);
+            if (entry === null || exit === null || qty === null || qty <= 0) return null;
+            const side = String(direction || '').toLowerCase();
+            const perShare = side === 'short' ? entry - exit : exit - entry;
+            return perShare * qty;
+        }
+
+        function sumCommissions(orders) {
+            return (orders || []).reduce((sum, order) => {
+                const commission = toNumber(order?.commission);
+                return sum + (commission === null ? 0 : commission);
+            }, 0);
+        }
+
+        function buildPnlMetric(group, tpPrice, slPrice) {
+            const primary = group.primaryOrder || {};
+            const entryPrice = resolveEntryFillPrice(primary);
+            const quantity = firstPositiveNumber(group.exitOrder?.filled_qty, primary?.filled_qty, primary?.quantity);
+            const direction = group.direction || primary.position_side || primary.direction;
+            const exitFallback = group.exitOrder?.role === 'stop_loss' || group.exitOrder?.role === 'repair_sl' ? slPrice : tpPrice;
+            const exitPrice = group.exitOrder ? resolveExitFillPrice(group.exitOrder, exitFallback) : null;
+            const storedPnl = firstDefined(group.exitOrder?.pnl, primary?.pnl, '');
+            const realizedGross = group.exitOrder
+                ? (toNumber(storedPnl) !== null && Math.abs(toNumber(storedPnl)) > 0
+                    ? toNumber(storedPnl)
+                    : computeDirectionalPnl(direction, entryPrice, exitPrice, quantity))
+                : null;
+            const commission = sumCommissions(group.orders);
+            const realizedNet = realizedGross === null ? null : realizedGross - commission;
+            const tpPotential = computeDirectionalPnl(direction, entryPrice, tpPrice, quantity);
+            const slPotential = computeDirectionalPnl(direction, entryPrice, slPrice, quantity);
+            const realizedText = realizedNet === null
+                ? '<span class="pnl-flat">未退出</span>'
+                : `<span class="${pnlClass(realizedNet)}">${escapeHtml(formatSignedMoney(realizedNet))}</span>`;
+            const exitText = group.exitOrder && exitPrice
+                ? `${getRoleText(group.exitOrder.role, group.exitOrder.order_type)} @ ${formatMoney(exitPrice)}`
+                : '等待成交退出';
+            const planParts = [];
+            if (tpPotential !== null) planParts.push(`TP ${formatSignedMoney(tpPotential)}`);
+            if (slPotential !== null) planParts.push(`SL ${formatSignedMoney(slPotential)}`);
+            if (commission > 0 && realizedGross !== null) planParts.push(`comm ${formatMoney(commission)}`);
+            const planText = planParts.length ? planParts.join(' / ') : '缺少价格或数量';
+            return `${realizedText}<br><span class="metric-subvalue">${escapeHtml(exitText)} · ${escapeHtml(planText)}</span>`;
+        }
+
         function renderOrderCard(order, isPrimary) {
+            const displayPrice = resolveDisplayPrice(order);
+            const priceLabel = order.role === 'stop_loss' || order.role === 'repair_sl' ? '触发价 / 成交价' : '限价 / 成交价';
             return `
                 <div class="order-item-card ${isPrimary ? 'primary' : ''}">
                     <div class="order-item-head">
@@ -1199,7 +1329,7 @@
                         ${renderDetail('order_type', escapeHtml(getOrderTypeText(order.order_type)))}
                         ${renderDetail('signal_id', escapeHtml(order.signal_id || '-'))}
                         ${renderDetail('数量 / 已成交', `${escapeHtml(formatQty(order.quantity))} / ${escapeHtml(formatQty(order.filled_qty))}`)}
-                        ${renderDetail('限价 / 成交价', `${escapeHtml(formatMoney(order.limit_price))} / ${escapeHtml(formatMoney(order.fill_price))}`)}
+                        ${renderDetail(priceLabel, `${escapeHtml(formatMoney(displayPrice))} / ${escapeHtml(formatMoney(order.fill_price))}`)}
                         ${renderDetail('parent_order', escapeHtml(order.parent_order_unique_id || '-'))}
                         ${renderDetail('sibling_order', escapeHtml(order.sibling_order_unique_id || '-'))}
                         ${renderDetail('entry_order', escapeHtml(order.entry_order_unique_id || '-'))}
@@ -1214,6 +1344,8 @@
             const visibleOrders = group.orders.filter(isMainOrder);
             const tpOrder = group.orders.find((order) => order.role === 'take_profit' || order.role === 'repair_tp');
             const slOrder = group.orders.find((order) => order.role === 'stop_loss' || order.role === 'repair_sl');
+            const tpPrice = resolveTakeProfitPrice(primary, tpOrder);
+            const slPrice = resolveStopLossPrice(primary, slOrder);
             const isReadOnlySnapshot = currentOrdersSource === 'ibkr_order_details';
             const exitText = group.exitOrder
                 ? `已由 ${getRoleText(group.exitOrder.role, group.exitOrder.order_type)} 成交退出`
@@ -1229,7 +1361,7 @@
                 && Number(primary?.filled_qty || 0) === 0
                 && group.activeChildCount === 0
                 && !!cancelTargetOrderId;
-            const canClose = primary?.role === 'entry' && primary?.status === 'Filled';
+            const canClose = primary?.role === 'entry' && primary?.status === 'Filled' && !group.exitOrder;
 
             return `
                 <div class="group-card">
@@ -1262,7 +1394,8 @@
                         ${renderMetric('Entry IBKR / Broker', `${escapeHtml(primary?.unique_id || '-')}<br><span style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;">${escapeHtml(primary?.broker_order_id || '-')}</span>`)}
                         ${renderMetric('Qty / Filled', `${escapeHtml(formatQty(primary?.quantity))} / ${escapeHtml(formatQty(primary?.filled_qty))}`)}
                         ${renderMetric('Entry Limit / Fill', `${escapeHtml(formatMoney(primary?.limit_price))} / ${escapeHtml(formatMoney(primary?.fill_price))}`)}
-                        ${renderMetric('TP / SL', `${escapeHtml(formatMoney(tpOrder?.limit_price ?? primary?.tp_price))} / ${escapeHtml(formatMoney(slOrder?.limit_price ?? primary?.sl_price))}`)}
+                        ${renderMetric('TP / SL', `${escapeHtml(formatMoney(tpPrice))} / ${escapeHtml(formatMoney(slPrice))}`)}
+                        ${renderMetric('P/L', buildPnlMetric(group, tpPrice, slPrice))}
                     </div>
 
                     ${renderRelationshipStrip(group)}

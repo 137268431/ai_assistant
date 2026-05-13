@@ -22,7 +22,22 @@ def build_order_record_payload(payload: dict[str, Any], existing_row: dict[str, 
     resolved_order_id = first_defined(payload.get("order_id"), existing.get("order_id"), existing_extra.get("order_id"), "") or ""
     resolved_direction = first_defined(payload.get("direction"), existing.get("direction"), existing_extra.get("direction"), "") or ""
     resolved_quantity = first_defined(payload.get("quantity"), existing.get("quantity"), existing_extra.get("quantity"), 0)
-    resolved_limit_price = first_defined(payload.get("limit_price"), existing.get("limit_price"), existing_extra.get("limit_price"), 0)
+    incoming_limit_price = payload.get("limit_price")
+    incoming_role = to_text(first_defined(payload.get("role"), existing.get("role"), existing_extra.get("role"), ""))
+    incoming_order_type = to_text(first_defined(payload.get("order_type"), existing.get("order_type"), existing_extra.get("order_type"), "")).lower()
+    incoming_stop_trigger = first_defined(
+        payload.get("auxPrice"),
+        payload.get("aux_price"),
+        payload.get("stop_price"),
+        extra.get("auxPrice"),
+        extra.get("aux_price"),
+        extra.get("stop_price"),
+        None,
+    )
+    is_stop_order = incoming_role in {"stop_loss", "repair_sl"} or incoming_order_type in {"stp", "stop", "stoploss"}
+    if is_stop_order and to_float(incoming_limit_price) == 0:
+        incoming_limit_price = incoming_stop_trigger if (to_float(incoming_stop_trigger) or 0) > 0 else None
+    resolved_limit_price = first_defined(incoming_limit_price, existing.get("limit_price"), existing_extra.get("limit_price"), 0)
     resolved_filled_qty = first_defined(
         payload.get("filled_qty"),
         payload.get("quantity") if status == "Filled" else None,

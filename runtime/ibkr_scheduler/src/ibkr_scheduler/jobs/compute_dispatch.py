@@ -52,6 +52,25 @@ def _sources_are_non_compute_only(sources: list[str]) -> bool:
     return bool(sources) and all(source in NON_COMPUTE_DISPATCH_SOURCES for source in sources)
 
 
+def _cursor_symbols(bucket: dict[str, Any], key: str = "latest_compute_ingest_symbols") -> list[str]:
+    raw_symbols = bucket.get(key)
+    if not isinstance(raw_symbols, list):
+        return []
+    symbols = set()
+    for item in raw_symbols:
+        symbol = str(item or "").strip().upper()
+        if symbol:
+            symbols.add(symbol)
+    return sorted(symbols)
+
+
+def _payload_error_count(payload: dict[str, Any]) -> int:
+    try:
+        return int((payload or {}).get("errors", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _resolve_compute_ingest_bar_time_ms(ingest_5m: dict[str, Any], latest_dispatched_bar_time_ms: int) -> tuple[int, str]:
     explicit_latest = int(ingest_5m.get("latest_compute_ingest_bar_time_ms") or 0)
     if explicit_latest > 0:
@@ -142,28 +161,36 @@ def build_compute_dispatch_runner(
                 **detail,
             }
 
-        response = requests.post(
-            f"{compute_base_url}/compute",
-            json={
-                "source": "ibkr_scheduler",
-                "environments": [environment],
-                "intervals": ["5m"],
-                "rollup_intervals": [],
-            },
-            timeout=60,
-        )
-        payload = response.json() if response.content else {}
-        if not response.ok or payload.get("ok") is False:
-            return {
-                "ok": False,
-                "status_code": response.status_code,
-                "error": payload.get("error") or f"http_{response.status_code}",
-                **detail,
-            }
-
+        compute_payload = {
+            "source": "ibkr_scheduler",
+            "environments": [environment],
+            "intervals": ["5m"],
+            "rollup_intervals": [],
+        }
         ingest_cursor = detail.get("ingest_cursor") if isinstance(detail.get("ingest_cursor"), dict) else {}
         ingest_intervals = ingest_cursor.get("intervals") if isinstance(ingest_cursor.get("intervals"), dict) else {}
         latest_5m = dict(ingest_intervals.get("5m") or {})
+        symbols = _cursor_symbols(latest_5m)
+        if symbols:
+            compute_payload["symbols"] = symbols
+
+        response = requests.post(
+            f"{compute_base_url}/compute",
+            json=compute_payload,
+            timeout=60,
+        )
+        payload = response.json() if response.content else {}
+        compute_errors = _payload_error_count(payload)
+        if not response.ok or payload.get("ok") is False or compute_errors > 0:
+            return {
+                "ok": False,
+                "status_code": response.status_code,
+                "error": payload.get("error")
+                or ("compute_errors" if compute_errors > 0 else f"http_{response.status_code}"),
+                "compute_errors": compute_errors,
+                **detail,
+            }
+
         latest_dispatch_ms = int(detail.get("latest_ingested_bar_time_ms") or latest_5m.get("latest_bar_time_ms") or 0)
         latest_5m["latest_bar_time_ms"] = latest_dispatch_ms
         if latest_dispatch_ms == int(latest_5m.get("latest_compute_ingest_bar_time_ms") or 0):
