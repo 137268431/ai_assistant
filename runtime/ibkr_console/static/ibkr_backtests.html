@@ -9,7 +9,7 @@
     <script>document.write(getCommonStyles());</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    <link rel="stylesheet" href="/assets/css/pages/ibkr_backtests/page.css?v=20260512-backtest-data-quality-filter-v1">
+    <link rel="stylesheet" href="/assets/css/pages/ibkr_backtests/page.css?v=20260513-date-range-grid-v1">
 </head>
 <body>
     <div class="page-shell">
@@ -64,13 +64,15 @@
                         <input id="symbolsText" type="text" placeholder="AAPL,NVDA,MSFT">
                         <small id="symbolsHelp">手动模式下必填；其它模式会忽略这个输入。</small>
                     </div>
-                    <div class="field">
-                        <label for="dateFrom">Date From</label>
-                        <input id="dateFrom" type="date">
-                    </div>
-                    <div class="field">
-                        <label for="dateTo">Date To</label>
-                        <input id="dateTo" type="date">
+                    <div class="date-range-grid">
+                        <div class="field">
+                            <label for="dateFrom">Date From</label>
+                            <input id="dateFrom" type="date">
+                        </div>
+                        <div class="field">
+                            <label for="dateTo">Date To</label>
+                            <input id="dateTo" type="date">
+                        </div>
                     </div>
                     <details class="advanced-config full-config-toggle">
                         <summary>
