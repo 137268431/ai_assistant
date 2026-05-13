@@ -245,6 +245,21 @@
         .status-chip.has-tip {
             cursor: help;
         }
+        .chip-tip-icon {
+            display: inline-grid;
+            place-items: center;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            border: 1px solid currentColor;
+            background: color-mix(in srgb, currentColor 14%, transparent);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            font-weight: 800;
+            line-height: 1;
+            margin-left: 2px;
+            box-shadow: 0 0 12px color-mix(in srgb, currentColor 28%, transparent);
+        }
         .status-chip.has-tip::after {
             content: attr(data-tip);
             position: absolute;

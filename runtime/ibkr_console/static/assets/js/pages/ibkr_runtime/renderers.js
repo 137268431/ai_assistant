@@ -42,11 +42,12 @@
         function renderHeroStatusChip(chip) {
             const tip = String(chip.tip || '').trim();
             const tipAttrs = tip
-                ? ` tabindex="0" aria-label="${escapeHtml(`${chip.label}：${tip}`)}" title="${escapeHtml(tip)}" data-tip="${escapeHtml(tip)}"`
+                ? ` tabindex="0" aria-label="${escapeHtml(`${chip.label}：${tip}`)}" data-tip="${escapeHtml(tip)}"`
                 : '';
+            const tipIcon = tip ? '<span class="chip-tip-icon" aria-hidden="true">!</span>' : '';
             return `
                 <span class="status-chip ${escapeHtml(chip.tone || '')}${tip ? ' has-tip' : ''}"${tipAttrs}>
-                    <span class="dot" style="background:currentColor"></span>${escapeHtml(chip.label)}
+                    <span class="dot" style="background:currentColor"></span>${escapeHtml(chip.label)}${tipIcon}
                 </span>
             `;
         }
