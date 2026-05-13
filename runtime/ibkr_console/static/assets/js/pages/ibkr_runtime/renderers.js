@@ -1,3 +1,56 @@
+        function buildDataStatusTip(dataHealth, latestBar, status, runtimeStatus) {
+            const statusKey = String(dataHealth?.status || '').trim().toLowerCase();
+            if (!['offline', 'delayed', 'no_data', 'loading'].includes(statusKey)) return '';
+
+            const onlineMax = typeof IBKR_DATA_ONLINE_MAX_AGE_MIN !== 'undefined' ? IBKR_DATA_ONLINE_MAX_AGE_MIN : 10;
+            const delayedMax = typeof IBKR_DATA_DELAYED_MAX_AGE_MIN !== 'undefined' ? IBKR_DATA_DELAYED_MAX_AGE_MIN : 30;
+            const symbol = dataHealth?.last_symbol || latestBar?.symbol || '--';
+            const interval = formatIbkrIntervalLabel(latestBar?.interval || '5m');
+            const age = Number(dataHealth?.last_bar_age_min);
+            const lines = [];
+
+            if (statusKey === 'loading') {
+                lines.push('判定：最近 bars 正在加载，首屏暂不按断链处理。');
+            } else if (!dataHealth?.last_bar_time_ms) {
+                lines.push('判定：当前环境还没有读取到最近 bars。');
+            } else {
+                const ageText = Number.isFinite(age) ? `${age} 分钟` : '--';
+                lines.push(`判定：最新 ${symbol} ${interval} bar 停在 ${dataHealth.last_bar_label || '--'}，距现在 ${ageText}。`);
+                lines.push(`规则：<=${onlineMax}m 在线，${onlineMax}-${delayedMax}m 延迟，>${delayedMax}m 标记离线。`);
+            }
+
+            const reasons = [];
+            if (String(currentEnvironment || '').trim().toLowerCase() === 'live') {
+                reasons.push('美股已收盘、休市或盘后，live 5m bars 预期不会继续推进。');
+            }
+            if (!runtimeStatus?.gatewayActive) {
+                reasons.push('Gateway 不可达，行情源断开。');
+            } else if (!runtimeStatus?.authenticated) {
+                reasons.push('Gateway 会话未认证，无法拉取实时行情。');
+            }
+            if (!runtimeStatus?.started) {
+                reasons.push('Runtime 业务线程未运行，bars 聚合和写入不会推进。');
+            }
+            reasons.push('行情订阅、IBKR market data farm 或 bar writer 暂停，最新 bars 没写入 PocketBase。');
+
+            lines.push('可能原因：');
+            reasons.slice(0, 4).forEach((reason) => lines.push(`- ${reason}`));
+            lines.push('下一步：先看“最新 Bars / 数据质量”；若在盘中，再查 Gateway、Runtime 和 bar writer。');
+            return lines.join('\n');
+        }
+
+        function renderHeroStatusChip(chip) {
+            const tip = String(chip.tip || '').trim();
+            const tipAttrs = tip
+                ? ` tabindex="0" aria-label="${escapeHtml(`${chip.label}：${tip}`)}" title="${escapeHtml(tip)}" data-tip="${escapeHtml(tip)}"`
+                : '';
+            return `
+                <span class="status-chip ${escapeHtml(chip.tone || '')}${tip ? ' has-tip' : ''}"${tipAttrs}>
+                    <span class="dot" style="background:currentColor"></span>${escapeHtml(chip.label)}
+                </span>
+            `;
+        }
+
         function renderMetricCards(summary, health, status, twoFactorState, latestBar) {
             const today = summary?.today || {};
             const computeHealth = normalizeIbkrComputeHealth(health);
@@ -472,9 +525,10 @@
                 ? 'Session AUTHED'
                 : `Session ${sessionAuthenticated ? 'AUTHED' : 'PENDING'}`;
             const runtimeMode = status?.service_topology?.runtime_mode;
+            const dataTip = buildDataStatusTip(dataHealth, latestBar, status, runtimeStatus);
             const chips = [
                 { label: `Compute ${String(computeStatus).toUpperCase()}`, tone: chipTone(computeStatus) },
-                { label: `Data ${String(dataStatus).toUpperCase()}`, tone: chipTone(dataStatus) },
+                { label: `Data ${String(dataStatus).toUpperCase()}`, tone: chipTone(dataStatus), tip: dataTip },
                 { label: gatewayChipLabel, tone: gatewayRunning ? 'chip-ok' : 'chip-error' },
                 { label: sessionChipLabel, tone: sessionAuthenticated ? 'chip-ok' : 'chip-warn' },
                 { label: `Warmup ${warmup.gate_open ? 'READY' : String(warmup.phase || 'idle').toUpperCase()}`, tone: warmup.gate_open ? 'chip-ok' : chipTone(warmup.phase) },
@@ -486,9 +540,7 @@
                 { label: `运行位置 ${formatRuntimeModeLabel(runtimeMode, { compact: true })}`, tone: runtimeModeChipTone(runtimeMode) },
                 { label: formatEnvironmentLabel(currentEnvironment), tone: environmentChipTone(currentEnvironment) }
             ];
-            document.getElementById('heroBadges').innerHTML = chips.map((chip) => `
-                <span class="status-chip ${chip.tone}"><span class="dot" style="background:currentColor"></span>${escapeHtml(chip.label)}</span>
-            `).join('');
+            document.getElementById('heroBadges').innerHTML = chips.map(renderHeroStatusChip).join('');
 
             const computeBase = runtimeConfig.find((item) => item.key === 'ibkr_compute_internal_url')?.value
                 || summary?.config?.ibkr_compute_internal_url
