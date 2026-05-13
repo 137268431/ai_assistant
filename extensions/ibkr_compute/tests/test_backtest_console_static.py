@@ -21,6 +21,16 @@ class BacktestConsoleStaticTests(unittest.TestCase):
 
         self.assertIn("daily_scan_replay 下表示每日最多入选数", html)
 
+    def test_live_like_defaults_are_selected_in_backtest_form(self):
+        html = BACKTEST_HTML.read_text(encoding="utf-8")
+
+        self.assertIn('<option value="daily_scan_replay" selected>daily_scan_replay</option>', html)
+        self.assertIn('<option value="daily_selected_fast" selected>Daily selected fast + live SD</option>', html)
+        self.assertIn('<input id="positionLimitMax" type="number" min="0" max="100" step="1" value="0">', html)
+        self.assertIn('<option value="current_snapshot" selected>current_snapshot</option>', html)
+        self.assertIn('<option value="ibkr_us_equity_fixed_v1" selected>IBKR US equity fixed</option>', html)
+        self.assertIn('<option value="bar_capped_bps_v1" selected>bar capped bps</option>', html)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -319,7 +319,11 @@ class BacktestRuntimeRecordsMixin:
             "account_model_status": request.get("account_model_status") or {},
             "borrow_limit_mode": request.get("borrow_limit_mode", "none"),
             "max_borrow_amount": float(request.get("max_borrow_amount", 0) or 0),
-            "position_limit_max": int(request.get("position_limit_max", DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX) or DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX),
+            "position_limit_max": int(request.get("position_limit_max", DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX) or 0),
+            "consecutive_stop_loss_limit": int(
+                request.get("consecutive_stop_loss_limit", DEFAULT_PORTFOLIO_CONSECUTIVE_STOP_LOSS_LIMIT)
+                or DEFAULT_PORTFOLIO_CONSECUTIVE_STOP_LOSS_LIMIT
+            ),
             "signal_validity_minutes": int(request.get("signal_validity_minutes", DEFAULT_PORTFOLIO_SIGNAL_VALIDITY_MINUTES) or DEFAULT_PORTFOLIO_SIGNAL_VALIDITY_MINUTES),
             "trade_window_start_time": str(request.get("trade_window_start_time") or DEFAULT_PORTFOLIO_TRADE_WINDOW_START),
             "trade_window_end_time": str(request.get("trade_window_end_time") or DEFAULT_PORTFOLIO_TRADE_WINDOW_END),

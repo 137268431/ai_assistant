@@ -13,6 +13,7 @@ const IBKR_CONFIG_DETAIL_KEYS = [
     'ibkr_signal_source',
     'signal_manual_confirm_enabled',
     'position_limit_max',
+    'consecutive_stop_loss_limit',
     'eod_close_time',
     'eod_keep_symbols',
     'watchlist_interval_min',

@@ -259,8 +259,14 @@ def normalize_request(payload: dict) -> dict:
     position_limit_max = normalize_positive_int(
         payload.get("position_limit_max"),
         default=constants.DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX,
-        minimum=1,
+        minimum=0,
         maximum=100,
+    )
+    consecutive_stop_loss_limit = normalize_positive_int(
+        payload.get("consecutive_stop_loss_limit"),
+        default=constants.DEFAULT_PORTFOLIO_CONSECUTIVE_STOP_LOSS_LIMIT,
+        minimum=1,
+        maximum=20,
     )
     portfolio_require_target_direction_alignment = normalize_bool(
         payload.get("portfolio_require_target_direction_alignment"),
@@ -524,6 +530,7 @@ def normalize_request(payload: dict) -> dict:
         "borrow_limit_mode": borrow_limit_mode,
         "max_borrow_amount": max_borrow_amount,
         "position_limit_max": position_limit_max,
+        "consecutive_stop_loss_limit": consecutive_stop_loss_limit,
         "portfolio_require_target_direction_alignment": portfolio_require_target_direction_alignment,
         "portfolio_use_target_strategy_policy": portfolio_use_target_strategy_policy,
         "portfolio_max_target_rank": portfolio_max_target_rank,
@@ -637,6 +644,7 @@ def normalize_request(payload: dict) -> dict:
             "atr_stop_deviation_threshold": atr_stop_deviation_threshold,
             "atr_stop_min_change": atr_stop_min_change,
             "position_limit_max": position_limit_max,
+            "consecutive_stop_loss_limit": consecutive_stop_loss_limit,
             "portfolio_require_target_direction_alignment": portfolio_require_target_direction_alignment,
             "portfolio_use_target_strategy_policy": portfolio_use_target_strategy_policy,
             "portfolio_max_target_rank": portfolio_max_target_rank,

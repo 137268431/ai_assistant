@@ -85,6 +85,20 @@ class BacktestExecutionCostTests(unittest.TestCase):
         self.assertEqual(request["slippage_model"], "volume_share_v1")
         self.assertTrue(request["slippage_cap_to_bar"])
 
+    def test_request_preserves_unlimited_position_limit_and_consecutive_sl_limit(self):
+        request = request_utils.normalize_request(
+            {
+                "symbols": "AAPL",
+                "date_from": "2026-04-01",
+                "date_to": "2026-04-01",
+                "position_limit_max": 0,
+                "consecutive_stop_loss_limit": 4,
+            }
+        )
+
+        self.assertEqual(request["position_limit_max"], 0)
+        self.assertEqual(request["consecutive_stop_loss_limit"], 4)
+
     def test_trade_extra_contains_gross_net_and_cost_summary(self):
         service = BacktestService(None)
         request = request_utils.normalize_request(
@@ -124,4 +138,3 @@ class BacktestExecutionCostTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

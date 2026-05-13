@@ -59,6 +59,7 @@ const ACTIVE_CONFIG_KEYS = new Set([
   'ibkr_signal_source',
   'signal_manual_confirm_enabled',
   'position_limit_max',
+  'consecutive_stop_loss_limit',
   'eod_close_time',
   'eod_keep_symbols',
   'watchlist_interval_min',
@@ -239,7 +240,8 @@ const CONFIG_META = {
   trade_window_end_time: meta('交易结束时间', '交易窗口', 310, '15:30', '超过该时间后不再接受新交易信号，ET 时区'),
   order_window_end_time: meta('下单截止时间', '交易窗口', 320, '15:00', '超过该时间后新信号不再进入下单环节，ET 时区'),
 
-  position_limit_max: meta('当日持仓上限', '交易风控', 400, '3', '当日成功下单计数达到该上限后，新的交易信号将被拒绝'),
+  position_limit_max: meta('当日交易次数上限', '交易风控', 400, '0', '当日成功下单计数达到该上限后，新的交易信号将被拒绝；0 表示不限制每日交易次数'),
+  consecutive_stop_loss_limit: meta('连续止损停交易', '交易风控', 401, '3', '当天连续触发止损出场达到该次数后停止新开仓；非止损出场会重置连续计数'),
   cooldown_bars_after_sl: meta('止损后冷却K线数', '交易风控', 405, '6', '同标的止损后冷却多少根 5m K线，冷却期间不再开仓'),
   cooldown_bars_after_reverse: meta('反向退出后冷却K线数', '交易风控', 406, '3', '同标的反向平仓后冷却多少根 5m K线'),
   atr_dynamic_stop_enabled: meta('ATR动态止损', '交易风控', 407, 'TRUE', '开启后仅允许按 ATR 收紧止损，不放宽风险，不调整 TP'),
@@ -405,7 +407,8 @@ const BOOLEAN_CONFIG_KEYS = new Set([
 ])
 
 const NUMERIC_CONFIG_RULES = {
-  position_limit_max: { min: '1', max: '20', step: '1' },
+  position_limit_max: { min: '0', max: '20', step: '1' },
+  consecutive_stop_loss_limit: { min: '1', max: '20', step: '1' },
   watchlist_interval_min: { min: '1', max: '60', step: '1' },
   ibkr_target_refresh_sec: { min: '15', max: '300', step: '15' },
   ibkr_daily_scan_min_avg_10d_volume: { min: '0', max: '50000000', step: '1000' },

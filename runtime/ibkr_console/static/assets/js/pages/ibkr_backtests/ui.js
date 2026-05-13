@@ -90,8 +90,8 @@
         });
 
         function getBacktestMachinePresetKey() {
-            const value = String(document.getElementById('backtestMachinePreset')?.value || 'safe_4c8g').trim();
-            return BACKTEST_MACHINE_PRESETS[value] ? value : 'safe_4c8g';
+            const value = String(document.getElementById('backtestMachinePreset')?.value || 'daily_selected_fast').trim();
+            return BACKTEST_MACHINE_PRESETS[value] ? value : 'daily_selected_fast';
         }
 
         function getBacktestMachinePreset() {

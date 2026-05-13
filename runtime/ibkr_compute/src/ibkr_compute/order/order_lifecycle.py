@@ -19,7 +19,8 @@ logger = logging.getLogger(__name__)
 ACCOUNT_ID = os.environ.get("IBKR_ACCOUNT_ID", "")
 
 DEFAULT_EOD_CLOSE_TIME = (15, 55)
-DEFAULT_POSITION_LIMIT_MAX = 3
+DEFAULT_POSITION_LIMIT_MAX = 0
+DEFAULT_CONSECUTIVE_STOP_LOSS_LIMIT = 3
 DEFAULT_KEEP_SYMBOLS = tuple(
     symbol.strip().upper()
     for symbol in os.environ.get("IBKR_EOD_KEEP_SYMBOLS", "").split(",")
@@ -77,7 +78,10 @@ class OrderLifecycle:
         return DEFAULT_EOD_CLOSE_TIME
 
     def _position_limit_max(self) -> int:
-        return max(1, self._get_config_int("position_limit_max", DEFAULT_POSITION_LIMIT_MAX))
+        return max(0, self._get_config_int("position_limit_max", DEFAULT_POSITION_LIMIT_MAX))
+
+    def _consecutive_stop_loss_limit(self) -> int:
+        return max(1, self._get_config_int("consecutive_stop_loss_limit", DEFAULT_CONSECUTIVE_STOP_LOSS_LIMIT))
 
     def _keep_symbols(self) -> set[str]:
         raw_value = self._get_config_value("eod_keep_symbols", ",".join(DEFAULT_KEEP_SYMBOLS))
@@ -153,6 +157,9 @@ class OrderLifecycle:
     def increment_sl_count(self):
         self._daily_sl_count += 1
 
+    def reset_sl_count(self):
+        self._daily_sl_count = 0
+
     def increment_position_count(self):
         self._daily_position_count += 1
 
@@ -220,11 +227,12 @@ class OrderLifecycle:
 
     @property
     def is_sl_circuit_breaker(self) -> bool:
-        return self._daily_sl_count >= 3
+        return self._daily_sl_count >= self._consecutive_stop_loss_limit()
 
     @property
     def is_position_limit_reached(self) -> bool:
-        return self._daily_position_count >= self._position_limit_max()
+        position_limit = self._position_limit_max()
+        return position_limit > 0 and self._daily_position_count >= position_limit
 
     def _lifecycle_loop(self):
         logger.info("Order lifecycle monitor started")
@@ -298,6 +306,8 @@ class OrderLifecycle:
             "eod_close_time": f"{eod_close_hour:02d}:{eod_close_minute:02d}",
             "eod_keep_symbols": sorted(self._keep_symbols()),
             "daily_sl_count": self._daily_sl_count,
+            "consecutive_stop_loss_count": self._daily_sl_count,
+            "consecutive_stop_loss_limit": self._consecutive_stop_loss_limit(),
             "daily_position_count": self._daily_position_count,
             "position_limit_max": self._position_limit_max(),
             "sl_circuit_breaker": self.is_sl_circuit_breaker,

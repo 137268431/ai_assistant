@@ -452,6 +452,8 @@ class TradingServiceRuntimeOpsMixin:
                 self.signal_processor.cooldown_bars_after_sl(),
                 "cooldown_after_stop_loss",
             )
+        else:
+            self.order_lifecycle.reset_sl_count()
 
     def _on_order_cancel(self, order: dict):
         service_mod = _service_mod()

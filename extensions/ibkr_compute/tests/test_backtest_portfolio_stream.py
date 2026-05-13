@@ -167,6 +167,96 @@ class BacktestPortfolioStreamTests(unittest.TestCase):
         self.assertEqual(result["portfolio_metrics"]["portfolio_rejection_counts"]["buying_power_exceeded"], 1)
         self.assertEqual(result["portfolio_metrics"]["portfolio_candidate_samples"][0]["symbol"], "AAPL")
 
+    def test_zero_position_limit_allows_more_than_three_daily_entries(self):
+        start = datetime(2026, 4, 1, 9, 35, tzinfo=ET)
+        start_ms = int(start.timestamp() * 1000)
+        signal_ms = start_ms + 5 * 60 * 1000
+        symbols = ["AAPL", "NVDA", "MSFT", "TSLA"]
+        bars_by_symbol = {symbol: build_bars(symbol, start_ms) for symbol in symbols}
+        base_signal = {
+            "direction": "long",
+            "signal": "mr_L",
+            "entry": 100.0,
+            "stop_loss": 95.0,
+            "take_profit": 110.0,
+            "shares": 10,
+            "reason": "unit-test",
+            "rr": 1.5,
+            "extra": {},
+        }
+        FakeSignalGenerator.signals_by_symbol_ms = {
+            (symbol, signal_ms): dict(base_signal) for symbol in symbols
+        }
+        self.service._load_symbol_bars = lambda symbol, *args, **kwargs: list(bars_by_symbol[symbol])
+        self.service._load_symbol_warmup_bars = lambda *args, **kwargs: []
+        self.service._load_daily_close_lookup = lambda *args, **kwargs: []
+        request = self._request(
+            symbols=",".join(symbols),
+            initial_capital=100000,
+            position_limit_max=0,
+        )
+
+        result = self.service._run_portfolio_stream_backtest(
+            symbols,
+            request,
+            allowed_trade_days_by_symbol={symbol: {"2026-04-01"} for symbol in symbols},
+        )
+
+        signals = {row["symbol"]: row for row in result["signal_rows"]}
+        self.assertEqual([signals[symbol]["status"] for symbol in symbols], ["executed", "executed", "executed", "executed"])
+        self.assertNotIn("position_limit_reached", result["portfolio_metrics"]["portfolio_rejection_counts"])
+        self.assertEqual(result["portfolio_metrics"]["portfolio_risk"]["position_limit_max"], 0)
+
+    def test_consecutive_stop_losses_stop_later_entries_for_same_day(self):
+        start = datetime(2026, 4, 1, 9, 35, tzinfo=ET)
+        start_ms = int(start.timestamp() * 1000)
+        first_signal_ms = start_ms + 5 * 60 * 1000
+        later_signal_ms = start_ms + 15 * 60 * 1000
+        symbols = ["AAPL", "NVDA", "MSFT", "GOOG"]
+        bars_by_symbol = {symbol: build_bars(symbol, start_ms) for symbol in symbols}
+        stop_signal = {
+            "direction": "long",
+            "signal": "mr_L",
+            "entry": 100.0,
+            "stop_loss": 99.5,
+            "take_profit": 110.0,
+            "shares": 10,
+            "reason": "unit-test",
+            "rr": 1.5,
+            "extra": {},
+        }
+        late_signal = {
+            **stop_signal,
+            "stop_loss": 95.0,
+        }
+        FakeSignalGenerator.signals_by_symbol_ms = {
+            ("AAPL", first_signal_ms): dict(stop_signal),
+            ("NVDA", first_signal_ms): dict(stop_signal),
+            ("MSFT", first_signal_ms): dict(stop_signal),
+            ("GOOG", later_signal_ms): dict(late_signal),
+        }
+        self.service._load_symbol_bars = lambda symbol, *args, **kwargs: list(bars_by_symbol[symbol])
+        self.service._load_symbol_warmup_bars = lambda *args, **kwargs: []
+        self.service._load_daily_close_lookup = lambda *args, **kwargs: []
+        request = self._request(
+            symbols=",".join(symbols),
+            initial_capital=100000,
+            position_limit_max=0,
+            consecutive_stop_loss_limit=3,
+        )
+
+        result = self.service._run_portfolio_stream_backtest(
+            symbols,
+            request,
+            allowed_trade_days_by_symbol={symbol: {"2026-04-01"} for symbol in symbols},
+        )
+
+        signals = {row["symbol"]: row for row in result["signal_rows"]}
+        self.assertEqual(signals["GOOG"]["status"], "skipped")
+        self.assertEqual(signals["GOOG"]["extra"]["signal_status_reason"], "sl_circuit_breaker")
+        self.assertEqual(result["portfolio_metrics"]["portfolio_rejection_counts"]["sl_circuit_breaker"], 1)
+        self.assertEqual(result["portfolio_metrics"]["portfolio_risk"]["max_consecutive_stop_loss_count"], 3)
+
     def test_indicator_rows_stay_memory_only_when_persistence_disabled(self):
         start = datetime(2026, 4, 1, 9, 35, tzinfo=ET)
         start_ms = int(start.timestamp() * 1000)

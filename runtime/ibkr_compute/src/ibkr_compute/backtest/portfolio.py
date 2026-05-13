@@ -71,6 +71,16 @@ class BacktestPortfolioMixin:
         end = self._parse_hhmm_tuple(request.get("order_window_end_time"), DEFAULT_PORTFOLIO_ORDER_WINDOW_END)
         return start <= current <= end
 
+    def _portfolio_consecutive_stop_loss_limit(self, request: dict) -> int:
+        try:
+            value = int(request.get("consecutive_stop_loss_limit", DEFAULT_PORTFOLIO_CONSECUTIVE_STOP_LOSS_LIMIT))
+        except Exception:
+            value = DEFAULT_PORTFOLIO_CONSECUTIVE_STOP_LOSS_LIMIT
+        return max(1, value)
+
+    def _portfolio_sl_circuit_breaker_active(self, ledger: dict, request: dict) -> bool:
+        return int(ledger.get("consecutive_stop_loss_count", 0) or 0) >= self._portfolio_consecutive_stop_loss_limit(request)
+
     def _read_backtest_resource_snapshot(self) -> dict:
         load1 = 0.0
         try:
@@ -859,8 +869,19 @@ class BacktestPortfolioMixin:
             self._portfolio_record_candidate_sample(ledger, candidate, "skipped", reason)
             return False
 
-        position_limit = int(request.get("position_limit_max", DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX) or DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX)
-        if int(ledger.get("daily_position_count", 0) or 0) >= position_limit:
+        if self._portfolio_sl_circuit_breaker_active(ledger, request):
+            reason = "sl_circuit_breaker"
+            details = {
+                "consecutive_stop_loss_count": int(ledger.get("consecutive_stop_loss_count", 0) or 0),
+                "consecutive_stop_loss_limit": self._portfolio_consecutive_stop_loss_limit(request),
+            }
+            self._mark_backtest_signal_status(signal_index, candidate.get("signal_id"), "skipped", reason, details)
+            self._portfolio_record_rejection(ledger, reason)
+            self._portfolio_record_candidate_sample(ledger, candidate, "skipped", reason, details)
+            return False
+
+        position_limit = int(request.get("position_limit_max", DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX) or 0)
+        if position_limit > 0 and int(ledger.get("daily_position_count", 0) or 0) >= position_limit:
             reason = "position_limit_reached"
             self._mark_backtest_signal_status(signal_index, candidate.get("signal_id"), "skipped", reason)
             self._portfolio_record_rejection(ledger, reason)
@@ -1281,6 +1302,8 @@ class BacktestPortfolioMixin:
             "max_gross_exposure": 0.0,
             "max_borrowed_amount": 0.0,
             "daily_position_count": 0,
+            "consecutive_stop_loss_count": 0,
+            "max_consecutive_stop_loss_count": 0,
             "current_day": "",
             "rejection_counts": {},
             "candidate_samples": [],
@@ -1372,7 +1395,11 @@ class BacktestPortfolioMixin:
                 "tv_symbol_reports": [],
                 "portfolio_metrics": {
                     "execution_model": "portfolio_stream",
-                    "portfolio_risk": risk_limits,
+                    "portfolio_risk": {
+                        **risk_limits,
+                        "position_limit_max": int(request.get("position_limit_max", DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX) or 0),
+                        "consecutive_stop_loss_limit": self._portfolio_consecutive_stop_loss_limit(request),
+                    },
                     "execution_cost_profile": compact_execution_cost_profile(build_execution_cost_profile(request)),
                     "portfolio_rejection_counts": {},
                     "portfolio_candidate_samples": [],
@@ -1403,6 +1430,11 @@ class BacktestPortfolioMixin:
             if closed_trade:
                 all_trades.append(closed_trade)
                 if str(closed_trade.get("exit_reason") or "") == "stop_loss":
+                    ledger["consecutive_stop_loss_count"] = int(ledger.get("consecutive_stop_loss_count", 0) or 0) + 1
+                    ledger["max_consecutive_stop_loss_count"] = max(
+                        int(ledger.get("max_consecutive_stop_loss_count", 0) or 0),
+                        int(ledger.get("consecutive_stop_loss_count", 0) or 0),
+                    )
                     state = states.get(str(closed_trade.get("symbol") or "").upper())
                     if state is not None:
                         self._start_backtest_cooldown(
@@ -1411,6 +1443,8 @@ class BacktestPortfolioMixin:
                             int(request.get("cooldown_bars_after_sl", 6) or 0),
                             "cooldown_after_stop_loss",
                         )
+                else:
+                    ledger["consecutive_stop_loss_count"] = 0
 
         for step_index, bar_ms in enumerate(bar_times):
             if self._cancel_event.is_set():
@@ -1450,6 +1484,7 @@ class BacktestPortfolioMixin:
             current_day = ms_to_et(bar_ms).strftime("%Y-%m-%d")
             if ledger.get("current_day") and ledger["current_day"] != current_day:
                 ledger["daily_position_count"] = 0
+                ledger["consecutive_stop_loss_count"] = 0
             ledger["current_day"] = current_day
 
             candidates = []
@@ -1625,6 +1660,13 @@ class BacktestPortfolioMixin:
                     elif not self._portfolio_bar_in_order_window(bar, request):
                         self._mark_backtest_signal_status(signal_index, signal_id, "skipped", "outside_order_window")
                         self._portfolio_record_rejection(ledger, "outside_order_window")
+                    elif self._portfolio_sl_circuit_breaker_active(ledger, request):
+                        details = {
+                            "consecutive_stop_loss_count": int(ledger.get("consecutive_stop_loss_count", 0) or 0),
+                            "consecutive_stop_loss_limit": self._portfolio_consecutive_stop_loss_limit(request),
+                        }
+                        self._mark_backtest_signal_status(signal_index, signal_id, "skipped", "sl_circuit_breaker", details)
+                        self._portfolio_record_rejection(ledger, "sl_circuit_breaker")
                     elif self._backtest_cooldown_active(state, bar)[0]:
                         _, cooldown_reason = self._backtest_cooldown_active(state, bar)
                         self._mark_backtest_signal_status(signal_index, signal_id, "skipped", cooldown_reason)
@@ -1871,7 +1913,10 @@ class BacktestPortfolioMixin:
             "portfolio_risk": {
                 **risk_limits,
                 "execution_cost_profile": compact_execution_cost_profile(execution_profile),
-                "position_limit_max": int(request.get("position_limit_max", DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX) or DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX),
+                "position_limit_max": int(request.get("position_limit_max", DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX) or 0),
+                "consecutive_stop_loss_limit": self._portfolio_consecutive_stop_loss_limit(request),
+                "consecutive_stop_loss_count": int(ledger.get("consecutive_stop_loss_count", 0) or 0),
+                "max_consecutive_stop_loss_count": int(ledger.get("max_consecutive_stop_loss_count", 0) or 0),
                 "portfolio_require_target_direction_alignment": self._normalize_bool(
                     request.get("portfolio_require_target_direction_alignment"),
                     False,
