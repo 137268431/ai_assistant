@@ -31,12 +31,14 @@ class SignalProcessor:
         environment: str = "live",
         readiness_provider: Callable | None = None,
         target_direction_provider: Callable | None = None,
+        capacity_provider: Callable | None = None,
     ):
         self.config = config
         self.order_lifecycle = order_lifecycle
         self.environment = environment
         self.readiness_provider = readiness_provider
         self.target_direction_provider = target_direction_provider
+        self.capacity_provider = capacity_provider
         self._active_positions: Dict[str, dict] = {}
         self._cooldowns: Dict[str, dict] = {}
 
@@ -67,6 +69,13 @@ class SignalProcessor:
 
         symbol = signal.get("symbol", "").upper()
         direction = signal.get("direction", "")
+
+        if self._is_fixed_position_symbol(symbol):
+            return False, "fixed_position_symbol_blocked"
+
+        capacity_ok, capacity_reason = self._strategy_capacity_status()
+        if not capacity_ok:
+            return False, capacity_reason
 
         cooldown_active, cooldown_reason = self._cooldown_status(symbol, et_now)
         if cooldown_active:
@@ -133,6 +142,31 @@ class SignalProcessor:
         if normalized_direction != target_direction:
             return False, "target_direction_mismatch"
         return True, "ok"
+
+    def _strategy_capacity_status(self) -> Tuple[bool, str]:
+        if callable(self.capacity_provider):
+            try:
+                payload = self.capacity_provider()
+            except Exception as exc:
+                logger.warning("Signal capacity provider failed: %s", exc)
+                return True, "capacity_provider_error"
+            if isinstance(payload, dict) and payload.get("capacity_full"):
+                return False, "strategy_capacity_full"
+            return True, "ok"
+
+        if self.order_lifecycle and getattr(self.order_lifecycle, "is_strategy_capacity_full", False):
+            return False, "strategy_capacity_full"
+        return True, "ok"
+
+    def _is_fixed_position_symbol(self, symbol: str) -> bool:
+        checker = getattr(self.order_lifecycle, "is_fixed_position_symbol", None)
+        if not callable(checker):
+            return False
+        try:
+            return bool(checker(symbol))
+        except Exception as exc:
+            logger.warning("Fixed-position symbol check failed: %s", exc)
+            return False
 
     def _get_time_window(self, key: str, default: Tuple[int, int]) -> Tuple[int, int]:
         raw_value = str(
@@ -296,6 +330,7 @@ class SignalProcessor:
             "trading_gate_open": trade_ready,
             "trading_gate_reason": trade_ready_reason,
             "target_direction_alignment_required": self._target_direction_alignment_enabled(),
+            "strategy_capacity_provider_enabled": callable(self.capacity_provider),
             "trade_window_start_time": f"{self._trade_window_start()[0]:02d}:{self._trade_window_start()[1]:02d}",
             "trade_window_end_time": f"{self._trade_window_end()[0]:02d}:{self._trade_window_end()[1]:02d}",
             "order_window_end_time": f"{self._order_window_end()[0]:02d}:{self._order_window_end()[1]:02d}",

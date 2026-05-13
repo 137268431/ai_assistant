@@ -221,6 +221,66 @@ class BacktestPortfolioMixin:
             pass
         return request_default
 
+    def _max_strategy_open_positions(self, request: dict) -> int:
+        try:
+            return max(
+                0,
+                int(
+                    request.get(
+                        "max_strategy_open_positions",
+                        DEFAULT_MAX_STRATEGY_OPEN_POSITIONS,
+                    )
+                    or 0
+                ),
+            )
+        except Exception:
+            return DEFAULT_MAX_STRATEGY_OPEN_POSITIONS
+
+    def _portfolio_strategy_slot_count(self, ledger: dict) -> int:
+        return max(0, int(ledger.get("open_position_slots", 0) or 0)) + max(
+            0,
+            int(ledger.get("pending_entry_slots", 0) or 0),
+        )
+
+    def _portfolio_capacity_details(self, ledger: dict, request: dict) -> dict:
+        open_slots = max(0, int(ledger.get("open_position_slots", 0) or 0))
+        pending_slots = max(0, int(ledger.get("pending_entry_slots", 0) or 0))
+        max_slots = self._max_strategy_open_positions(request)
+        return {
+            "max_strategy_open_positions": max_slots,
+            "strategy_open_position_slots": open_slots,
+            "strategy_pending_entry_slots": pending_slots,
+            "strategy_used_slots": open_slots + pending_slots,
+        }
+
+    def _portfolio_has_strategy_capacity(self, ledger: dict, request: dict) -> bool:
+        max_slots = self._max_strategy_open_positions(request)
+        return max_slots <= 0 or self._portfolio_strategy_slot_count(ledger) < max_slots
+
+    def _mark_capacity_wait_expired(
+        self,
+        ledger: dict,
+        candidate: dict,
+        signal_index: dict,
+        bar: dict,
+        request: dict,
+    ):
+        details = {
+            **self._portfolio_capacity_details(ledger, request),
+            "event_bar_ms": int(bar.get("bar_time_ms", 0) or 0),
+            "event_us_time": str(bar.get("us_time", "") or ""),
+            "event_cn_time": str(bar.get("cn_time", "") or ""),
+        }
+        self._mark_backtest_signal_status(
+            signal_index,
+            candidate.get("signal_id"),
+            "dropped",
+            "capacity_wait_expired",
+            details,
+        )
+        self._portfolio_record_rejection(ledger, "capacity_wait_expired")
+        self._portfolio_record_candidate_sample(ledger, candidate, "dropped", "capacity_wait_expired", details)
+
     def _cooldown_bars_to_ms(self, bars: int) -> int:
         return max(0, int(bars or 0)) * interval_to_ms("5m")
 
@@ -722,6 +782,7 @@ class BacktestPortfolioMixin:
             0.0,
             float(ledger.get("reserved_exposure", 0) or 0) - self._portfolio_signal_exposure(pending_signal),
         )
+        ledger["pending_entry_slots"] = max(0, int(ledger.get("pending_entry_slots", 0) or 0) - 1)
 
     def _open_portfolio_position_from_pending(
         self,
@@ -748,6 +809,7 @@ class BacktestPortfolioMixin:
         position["entry_exposure"] = exposure
         position["portfolio_execution_model"] = "portfolio_stream"
         ledger["open_exposure"] = float(ledger.get("open_exposure", 0) or 0) + exposure
+        ledger["open_position_slots"] = int(ledger.get("open_position_slots", 0) or 0) + 1
         ledger["max_gross_exposure"] = max(float(ledger.get("max_gross_exposure", 0) or 0), float(ledger.get("open_exposure", 0) or 0) + float(ledger.get("reserved_exposure", 0) or 0))
         ledger["max_borrowed_amount"] = max(float(ledger.get("max_borrowed_amount", 0) or 0), self._portfolio_projected_borrow(ledger, 0))
         return position
@@ -757,6 +819,7 @@ class BacktestPortfolioMixin:
             return trade
         exposure = self._portfolio_position_exposure(position)
         ledger["open_exposure"] = max(0.0, float(ledger.get("open_exposure", 0) or 0) - exposure)
+        ledger["open_position_slots"] = max(0, int(ledger.get("open_position_slots", 0) or 0) - 1)
         ledger["realized_pnl"] = float(ledger.get("realized_pnl", 0) or 0) + float(trade.get("pnl", 0) or 0)
         trade_extra = self._parse_object(trade.get("extra"))
         trade_extra.update(
@@ -888,6 +951,21 @@ class BacktestPortfolioMixin:
             self._portfolio_record_candidate_sample(ledger, candidate, "skipped", reason)
             return False
 
+        if not self._portfolio_has_strategy_capacity(ledger, request):
+            reason = "waiting_for_capacity"
+            details = self._portfolio_capacity_details(ledger, request)
+            current_status = str((signal_index.get(str(candidate.get("signal_id") or "")) or {}).get("status") or "")
+            if current_status != reason:
+                self._mark_backtest_signal_status(signal_index, candidate.get("signal_id"), reason, reason, details)
+            state = candidate.get("state") or {}
+            state["capacity_wait_candidate"] = {
+                **candidate,
+                "capacity_wait_since_bar_ms": int((candidate.get("bar") or {}).get("bar_time_ms", 0) or 0),
+                "capacity_wait_since_us_time": str((candidate.get("bar") or {}).get("us_time", "") or ""),
+            }
+            self._portfolio_record_candidate_sample(ledger, candidate, reason, reason, details)
+            return False
+
         confirm_delay_minutes = int(request.get("confirm_delay_minutes", 0) or 0)
         if str(request.get("manual_confirm_mode") or "auto") != "delayed":
             confirm_delay_minutes = 0
@@ -921,8 +999,15 @@ class BacktestPortfolioMixin:
         pending_signal["validity_minutes"] = validity_minutes
         pending_signal["portfolio_target_rank"] = int(candidate.get("target_rank", 999999) or 999999)
         pending_signal["portfolio_target_score"] = float(candidate.get("target_score", 0) or 0)
+        original_signal_ms = int((candidate.get("signal_payload") or {}).get("bar_time_ms", 0) or 0)
+        if original_signal_ms > 0:
+            pending_signal["signal_bar_ms"] = original_signal_ms
+            pending_signal["signal_us_time"] = str((candidate.get("signal_payload") or {}).get("us_time", "") or "")
+            pending_signal["signal_cn_time"] = str((candidate.get("signal_payload") or {}).get("cn_time", "") or "")
         state["pending_signal"] = pending_signal
+        state["capacity_wait_candidate"] = None
         ledger["reserved_exposure"] = float(ledger.get("reserved_exposure", 0) or 0) + exposure
+        ledger["pending_entry_slots"] = int(ledger.get("pending_entry_slots", 0) or 0) + 1
         ledger["daily_position_count"] = int(ledger.get("daily_position_count", 0) or 0) + 1
         ledger["max_gross_exposure"] = max(float(ledger.get("max_gross_exposure", 0) or 0), float(ledger.get("open_exposure", 0) or 0) + float(ledger.get("reserved_exposure", 0) or 0))
         ledger["max_borrowed_amount"] = max(float(ledger.get("max_borrowed_amount", 0) or 0), self._portfolio_projected_borrow(ledger, 0))
@@ -1035,6 +1120,7 @@ class BacktestPortfolioMixin:
             "previous_day": previous_day,
             "previous_bar": None,
             "pending_signal": None,
+            "capacity_wait_candidate": None,
             "open_position": None,
             "cooldown_until_ms": 0,
             "cooldown_reason": "",
@@ -1299,6 +1385,8 @@ class BacktestPortfolioMixin:
             "realized_pnl": 0.0,
             "open_exposure": 0.0,
             "reserved_exposure": 0.0,
+            "open_position_slots": 0,
+            "pending_entry_slots": 0,
             "max_gross_exposure": 0.0,
             "max_borrowed_amount": 0.0,
             "daily_position_count": 0,
@@ -1398,6 +1486,7 @@ class BacktestPortfolioMixin:
                     "portfolio_risk": {
                         **risk_limits,
                         "position_limit_max": int(request.get("position_limit_max", DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX) or 0),
+                        "max_strategy_open_positions": self._max_strategy_open_positions(request),
                         "consecutive_stop_loss_limit": self._portfolio_consecutive_stop_loss_limit(request),
                     },
                     "execution_cost_profile": compact_execution_cost_profile(build_execution_cost_profile(request)),
@@ -1528,6 +1617,15 @@ class BacktestPortfolioMixin:
                         )
                         self._release_portfolio_pending(ledger, state["pending_signal"])
                     state["pending_signal"] = None
+                    if state.get("capacity_wait_candidate"):
+                        self._mark_capacity_wait_expired(
+                            ledger,
+                            state["capacity_wait_candidate"],
+                            signal_index,
+                            state.get("previous_bar") or bar,
+                            request,
+                        )
+                    state["capacity_wait_candidate"] = None
                 state["previous_day"] = current_symbol_day
 
                 pending_signal = state.get("pending_signal")
@@ -1623,7 +1721,42 @@ class BacktestPortfolioMixin:
                 sd_admitted_for_bar = admitted_after_ms <= 0 or int(bar.get("bar_time_ms", 0) or 0) >= admitted_after_ms
                 preexisting_pending_signal = state.get("pending_signal") if state.get("pending_signal") and state.get("open_position") is None else None
                 preexisting_open_position = state.get("open_position")
+                preexisting_capacity_wait_candidate = (
+                    state.get("capacity_wait_candidate")
+                    if state.get("capacity_wait_candidate") and state.get("open_position") is None and state.get("pending_signal") is None
+                    else None
+                )
                 signal_conflict_emitted = False
+
+                if preexisting_capacity_wait_candidate:
+                    if self._portfolio_signal_expired(
+                        preexisting_capacity_wait_candidate.get("signal_payload") or {},
+                        bar,
+                        request,
+                    ):
+                        self._mark_capacity_wait_expired(
+                            ledger,
+                            preexisting_capacity_wait_candidate,
+                            signal_index,
+                            bar,
+                            request,
+                        )
+                        state["capacity_wait_candidate"] = None
+                        preexisting_capacity_wait_candidate = None
+                    elif (
+                        trading_day_enabled
+                        and sd_admitted_for_bar
+                        and self._portfolio_bar_in_trade_window(bar, request)
+                        and self._portfolio_bar_in_order_window(bar, request)
+                        and not self._portfolio_sl_circuit_breaker_active(ledger, request)
+                        and not self._backtest_cooldown_active(state, bar)[0]
+                    ):
+                        retry_candidate = dict(preexisting_capacity_wait_candidate)
+                        retry_candidate["bar"] = bar
+                        retry_candidate["state"] = state
+                        retry_candidate["current_day"] = current_symbol_day
+                        retry_candidate["capacity_retry"] = True
+                        candidates.append(retry_candidate)
 
                 if signal and int(signal.get("shares", 0) or 0) > 0:
                     signal_payload = self._build_tv_signal_compare_payload(
@@ -1671,6 +1804,8 @@ class BacktestPortfolioMixin:
                         _, cooldown_reason = self._backtest_cooldown_active(state, bar)
                         self._mark_backtest_signal_status(signal_index, signal_id, "skipped", cooldown_reason)
                         self._portfolio_record_rejection(ledger, cooldown_reason)
+                    elif preexisting_capacity_wait_candidate:
+                        self._mark_backtest_signal_status(signal_index, signal_id, "dropped", "capacity_wait_exists")
                     else:
                         active_target = preexisting_pending_signal if preexisting_pending_signal else preexisting_open_position
                         active_state = "pending_entry" if preexisting_pending_signal else ("filled_position" if preexisting_open_position else "")
@@ -1877,6 +2012,43 @@ class BacktestPortfolioMixin:
                 )
                 self._release_portfolio_pending(ledger, state["pending_signal"])
                 state["pending_signal"] = None
+            if state.get("capacity_wait_candidate"):
+                last_bar = state.get("last_bar") or state.get("previous_bar") or {}
+                if self._portfolio_signal_expired(
+                    (state["capacity_wait_candidate"] or {}).get("signal_payload") or {},
+                    last_bar,
+                    request,
+                ):
+                    self._mark_capacity_wait_expired(
+                        ledger,
+                        state["capacity_wait_candidate"],
+                        signal_index,
+                        last_bar,
+                        request,
+                    )
+                else:
+                    details = {
+                        **self._portfolio_capacity_details(ledger, request),
+                        "event_bar_ms": int(last_bar.get("bar_time_ms", 0) or 0),
+                        "event_us_time": str(last_bar.get("us_time", "") or ""),
+                        "event_cn_time": str(last_bar.get("cn_time", "") or ""),
+                    }
+                    self._mark_backtest_signal_status(
+                        signal_index,
+                        state["capacity_wait_candidate"].get("signal_id"),
+                        "dropped",
+                        "capacity_wait_open_at_backtest_end",
+                        details,
+                    )
+                    self._portfolio_record_rejection(ledger, "capacity_wait_open_at_backtest_end")
+                    self._portfolio_record_candidate_sample(
+                        ledger,
+                        state["capacity_wait_candidate"],
+                        "dropped",
+                        "capacity_wait_open_at_backtest_end",
+                        details,
+                    )
+                state["capacity_wait_candidate"] = None
 
             quality = {
                 "symbol": symbol,
@@ -1914,6 +2086,9 @@ class BacktestPortfolioMixin:
                 **risk_limits,
                 "execution_cost_profile": compact_execution_cost_profile(execution_profile),
                 "position_limit_max": int(request.get("position_limit_max", DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX) or 0),
+                "max_strategy_open_positions": self._max_strategy_open_positions(request),
+                "strategy_open_position_slots": int(ledger.get("open_position_slots", 0) or 0),
+                "strategy_pending_entry_slots": int(ledger.get("pending_entry_slots", 0) or 0),
                 "consecutive_stop_loss_limit": self._portfolio_consecutive_stop_loss_limit(request),
                 "consecutive_stop_loss_count": int(ledger.get("consecutive_stop_loss_count", 0) or 0),
                 "max_consecutive_stop_loss_count": int(ledger.get("max_consecutive_stop_loss_count", 0) or 0),

@@ -18,7 +18,7 @@
         const BACKTEST_MACHINE_PRESETS = Object.freeze({
             safe_4c8g: {
                 label: '4C8G safe',
-                maxSymbols: { manual: 20, targets: 20, daily_scan_replay: 20, watchlist: 80 },
+                maxSymbols: { manual: 20, targets: 20, daily_scan_replay: 0, watchlist: 80 },
                 warmupBars: 160,
                 sessionMode: 'extended',
                 resourceGuard: {
@@ -33,7 +33,7 @@
             },
             fast_sample: {
                 label: 'fast sample',
-                maxSymbols: { manual: 10, targets: 10, daily_scan_replay: 10, watchlist: 30 },
+                maxSymbols: { manual: 10, targets: 10, daily_scan_replay: 0, watchlist: 30 },
                 warmupBars: 120,
                 sessionMode: 'regular',
                 resourceGuard: {
@@ -48,7 +48,7 @@
             },
             full_watchlist: {
                 label: 'full watchlist',
-                maxSymbols: { manual: 200, targets: 200, daily_scan_replay: 80, watchlist: 200 },
+                maxSymbols: { manual: 200, targets: 200, daily_scan_replay: 0, watchlist: 200 },
                 warmupBars: 320,
                 sessionMode: 'extended',
                 resourceGuard: {
@@ -65,7 +65,7 @@
                 label: 'Daily selected fast + live SD',
                 symbolSource: 'daily_scan_replay',
                 executionModel: 'portfolio_stream',
-                maxSymbols: { manual: 12, targets: 12, daily_scan_replay: 12, watchlist: 12 },
+                maxSymbols: { manual: 12, targets: 12, daily_scan_replay: 0, watchlist: 12 },
                 warmupBars: 320,
                 sessionMode: 'extended',
                 dailySelection: {
@@ -177,7 +177,7 @@
             const spanDays = getBacktestDateSpanDays(payload.date_from, payload.date_to);
             return presetKey === 'full_watchlist'
                 && payload.symbol_source === 'watchlist'
-                && Number(payload.max_symbols || 0) >= 150
+                && (Number(payload.max_symbols || 0) === 0 || Number(payload.max_symbols || 0) >= 150)
                 && spanDays >= 180;
         }
 

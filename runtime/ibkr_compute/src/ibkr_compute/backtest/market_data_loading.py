@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .runtime_support import *
-from .watchlist_universe import merge_trade_watchlist_rows, request_excluded_symbols
+from .watchlist_universe import limit_symbols, merge_trade_watchlist_rows, request_excluded_symbols, should_truncate_symbols
 
 
 class BacktestMarketDataLoadingMixin:
@@ -10,7 +10,7 @@ class BacktestMarketDataLoadingMixin:
         symbols = [str(symbol or "").strip().upper() for symbol in list(request.get("symbols") or [])]
         symbols = [symbol for symbol in symbols if symbol and symbol not in excluded]
         if symbols:
-            return symbols[: request["max_symbols"]]
+            return limit_symbols(symbols, request)
 
         source = request["symbol_source"]
         if source == "targets":
@@ -28,7 +28,7 @@ class BacktestMarketDataLoadingMixin:
                     continue
                 seen.add(symbol)
                 resolved.append(symbol)
-                if len(resolved) >= request["max_symbols"]:
+                if should_truncate_symbols(request) and len(resolved) >= request["max_symbols"]:
                     break
             return resolved
 
@@ -44,7 +44,7 @@ class BacktestMarketDataLoadingMixin:
                 if not symbol or symbol in resolved:
                     continue
                 resolved.append(symbol)
-                if len(resolved) >= request["max_symbols"]:
+                if should_truncate_symbols(request) and len(resolved) >= request["max_symbols"]:
                     break
             return resolved
 

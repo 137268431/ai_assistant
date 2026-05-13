@@ -10,7 +10,7 @@ from ibkr_compute.workflows.daily_scanner_target_reasons import (
 )
 
 from .runtime_support import *
-from .watchlist_universe import merge_trade_watchlist_rows, request_excluded_symbols
+from .watchlist_universe import merge_trade_watchlist_rows, request_excluded_symbols, request_max_symbols
 
 
 DAILY_SELECTION_CACHE_ALGORITHM_VERSION = "daily_scan_replay_live_sd_v5"
@@ -170,7 +170,7 @@ class BacktestScanReplayMixin:
             "effective_warmup_bars": self._effective_indicator_warmup_bars(request, "warmup_bars"),
             "scan_warmup_bars": int(request.get("scan_warmup_bars", BACKTEST_WARMUP_BARS) or BACKTEST_WARMUP_BARS),
             "effective_scan_warmup_bars": self._effective_indicator_warmup_bars(request, "scan_warmup_bars"),
-            "max_symbols": int(request.get("max_symbols", DEFAULT_MAX_SYMBOLS) or DEFAULT_MAX_SYMBOLS),
+            "max_symbols": request_max_symbols(request),
             "daily_selected_only": bool(request.get("daily_selected_only")),
             "daily_selection_require_sd_trigger": bool(request.get("daily_selection_require_sd_trigger")),
             "daily_selection_reuse_live_admission": bool(request.get("daily_selection_reuse_live_admission")),
@@ -936,7 +936,8 @@ class BacktestScanReplayMixin:
 
         candidate_limit = int(request.get("daily_selection_candidate_limit", 0) or 0)
         if candidate_limit <= 0:
-            candidate_limit = max(int(request.get("max_symbols", DEFAULT_MAX_SYMBOLS) or DEFAULT_MAX_SYMBOLS) * 5, 20)
+            max_symbols = request_max_symbols(request)
+            candidate_limit = max(max_symbols * 5, 20) if max_symbols > 0 else len(day_candidates)
         scan_candidates = list(day_candidates[:candidate_limit])
         deferred = max(0, len(day_candidates) - len(scan_candidates))
         admitted: list[dict] = []
@@ -1704,7 +1705,8 @@ class BacktestScanReplayMixin:
                 request,
                 progress_context=progress_context,
             )
-            selected_rows = day_candidates[: request["max_symbols"]]
+            max_symbols = request_max_symbols(request)
+            selected_rows = day_candidates[:max_symbols] if max_symbols > 0 else list(day_candidates)
             selection_plan[trade_date] = [item["symbol"] for item in selected_rows]
             day_target_rows = []
             active_min_score = float(scan_settings.get("active_min_score", 0) or 0)

@@ -92,8 +92,8 @@
                             </div>
                             <div class="field">
                                 <label for="maxSymbols">Max Symbols</label>
-                                <input id="maxSymbols" type="number" min="1" max="200" value="12">
-                                <small>daily_scan_replay 下表示每日最多入选数；其它模式表示本次最多标的数。QQQ/SPY/VIX 不进策略回测。</small>
+                                <input id="maxSymbols" type="number" min="0" max="200" value="0">
+                                <small>0 表示不截断。daily_scan_replay 下表示每日最多入选数；其它模式表示本次最多标的数。QQQ/SPY/VIX/BOXX/IBKR 不进策略回测。</small>
                             </div>
                             <div class="field">
                                 <label for="sessionMode">Session</label>
@@ -133,6 +133,11 @@
                                 <label for="positionLimitMax">Daily Position Limit</label>
                                 <input id="positionLimitMax" type="number" min="0" max="100" step="1" value="0">
                                 <small>0 表示不限制每日交易次数；连续止损仍会停止当天新开仓。</small>
+                            </div>
+                            <div class="field">
+                                <label for="maxStrategyOpenPositions">Max Strategy Open</label>
+                                <input id="maxStrategyOpenPositions" type="number" min="0" max="100" step="1" value="5">
+                                <small>同时持仓 + 等待成交占用槽位；满仓信号会等待容量释放，0 表示不限制。</small>
                             </div>
                             <div class="field">
                                 <label for="consecutiveStopLossLimit">Consecutive SL Stop</label>

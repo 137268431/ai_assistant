@@ -320,6 +320,7 @@ class BacktestRuntimeRecordsMixin:
             "borrow_limit_mode": request.get("borrow_limit_mode", "none"),
             "max_borrow_amount": float(request.get("max_borrow_amount", 0) or 0),
             "position_limit_max": int(request.get("position_limit_max", DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX) or 0),
+            "max_strategy_open_positions": int(request.get("max_strategy_open_positions", DEFAULT_MAX_STRATEGY_OPEN_POSITIONS)),
             "consecutive_stop_loss_limit": int(
                 request.get("consecutive_stop_loss_limit", DEFAULT_PORTFOLIO_CONSECUTIVE_STOP_LOSS_LIMIT)
                 or DEFAULT_PORTFOLIO_CONSECUTIVE_STOP_LOSS_LIMIT

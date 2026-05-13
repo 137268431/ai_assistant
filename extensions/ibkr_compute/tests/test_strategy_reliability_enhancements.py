@@ -131,7 +131,7 @@ class StrategyReliabilityEnhancementTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(request["backfill_concurrency"], 5)
+        self.assertEqual(request["backfill_concurrency"], 10)
         self.assertEqual(request["backfill_symbol_timeout_s"], 3600)
         self.assertEqual(request["backfill_max_batches"], 240)
         self.assertEqual(request["backfill_history_timeout_s"], 60)
@@ -368,6 +368,46 @@ class StrategyReliabilityEnhancementTests(unittest.TestCase):
         self.assertEqual(mr_policy["tp_rr"], 1.5)
         self.assertEqual(trend_policy["name"], "chandelier_runner")
         self.assertEqual(trend_policy["tp_rr"], 2.0)
+
+    def test_setup_aware_hybrid_exit_policy_maps_setup_families(self):
+        self.assertEqual(
+            normalize_exit_policy_profile({"exit_policy_profile": "setup_aware_hybrid_v1"}),
+            "setup_aware_hybrid_v1",
+        )
+        mr_policy = resolve_exit_policy(
+            {"exit_policy_profile": "setup_aware_hybrid_v1"},
+            setup="mr_sdUpper",
+            signal_mode="mr",
+        )
+        trend_policy = resolve_exit_policy(
+            {"exit_policy_profile": "setup_aware_hybrid_v1"},
+            setup="trend_continuation_long",
+            signal_mode="trend_continuation",
+        )
+        breakout_policy = resolve_exit_policy(
+            {"exit_policy_profile": "setup_aware_hybrid_v1"},
+            setup="sd_squeeze_breakout_long",
+            signal_mode="breakout",
+        )
+
+        self.assertEqual(mr_policy["policy_type"], "mr_reversion")
+        self.assertEqual(mr_policy["tp_rr"], 1.5)
+        self.assertEqual(mr_policy["sl_atr_mult"], 2.0)
+        self.assertTrue(mr_policy["target_is_hard"])
+        self.assertEqual(mr_policy["checkpoint_lock_r"], 0.05)
+        self.assertEqual(mr_policy["breakeven_offset_r"], 0.05)
+        self.assertEqual(trend_policy["policy_type"], "trend_pullback")
+        self.assertEqual(trend_policy["target_mode"], "checkpoint_then_trail")
+        self.assertFalse(trend_policy["target_is_hard"])
+        self.assertEqual(trend_policy["tp_rr"], 4.0)
+        self.assertEqual(trend_policy["soft_target_r"], 2.0)
+        self.assertEqual(trend_policy["safety_tp_rr"], 4.0)
+        self.assertEqual(trend_policy["trail_type"], "chandelier")
+        self.assertEqual(breakout_policy["policy_type"], "breakout")
+        self.assertEqual(breakout_policy["soft_target_r"], 2.5)
+        self.assertEqual(breakout_policy["safety_tp_rr"], 5.0)
+        self.assertEqual(breakout_policy["tp_rr"], 5.0)
+        self.assertTrue(breakout_policy["failure_exit_enabled"])
 
     def test_fixed_atr_rr_defaults_to_hard_target(self):
         policy = resolve_exit_policy(

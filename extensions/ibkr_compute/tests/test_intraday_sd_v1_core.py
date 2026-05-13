@@ -169,18 +169,35 @@ class IntradaySdV1CoreTest(unittest.TestCase):
         self.assertEqual(trace["signal_state"]["setup"], "sd_squeeze_breakout_long")
         self.assertIn("intraday_entry_window", trace["signal_state"]["filter_reason"])
 
-    def test_intraday_sd_v1_suppresses_legacy_mr_signals_by_default(self):
+    def test_intraday_sd_v1_includes_legacy_sd_signals_by_default(self):
         gen = SignalGenerator("SPY", "5m", {"signal_strategy_profile": "intraday_sd_v1"})
+
+        signal = gen.update(legacy_mr_long_snapshot())
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal["signal"], "sd_mr_reversal_long")
+        trace = gen.get_trace_snapshot()
+        self.assertTrue(trace["component_flags"]["legacy_signals_enabled"])
+        self.assertTrue(trace["component_flags"]["buy_raw"])
+        self.assertEqual(trace["signal_state"]["stage"], "confirmed")
+
+    def test_intraday_sd_v1_can_opt_out_of_legacy_sd_signals(self):
+        gen = SignalGenerator(
+            "SPY",
+            "5m",
+            {
+                "signal_strategy_profile": "intraday_sd_v1",
+                "intraday_include_legacy_signals": False,
+            },
+        )
 
         signal = gen.update(legacy_mr_long_snapshot())
 
         self.assertIsNone(signal)
         trace = gen.get_trace_snapshot()
         self.assertFalse(trace["component_flags"]["legacy_signals_enabled"])
-        self.assertTrue(trace["component_flags"]["buy_raw"])
-        self.assertEqual(trace["signal_state"]["stage"], "none")
 
-    def test_intraday_sd_v1_can_temporarily_include_legacy_mr_signals(self):
+    def test_intraday_sd_v1_legacy_sd_uses_unified_entry_plan(self):
         gen = SignalGenerator(
             "SPY",
             "5m",
@@ -193,8 +210,15 @@ class IntradaySdV1CoreTest(unittest.TestCase):
         signal = gen.update(legacy_mr_long_snapshot())
 
         self.assertIsNotNone(signal)
-        self.assertEqual(signal["signal"], "mr_sdLower")
-        self.assertEqual(signal["extra"]["entry_order_type"], "pullback_limit")
+        self.assertEqual(signal["signal"], "sd_mr_reversal_long")
+        self.assertEqual(signal["extra"]["entry_order_type"], "marketable_limit")
+        self.assertEqual(signal["extra"]["entry_price_plan"], "marketable_limit_dynamic")
+        trace = gen.get_trace_snapshot()
+        legacy_candidate = next(
+            item for item in trace["setup_state"]["candidates"]
+            if item["source"] == "legacy_sd" and item["setup"] == "sd_mr_reversal_long"
+        )
+        self.assertTrue(legacy_candidate["triggered"])
 
     def test_intraday_entry_window_can_be_extended_by_params(self):
         gen = SignalGenerator(
@@ -296,7 +320,7 @@ class IntradaySdV1CoreTest(unittest.TestCase):
         )
         self.assertFalse(long_candidate["trigger_checks"]["trend_walk_regime"])
 
-    def test_intraday_marketable_short_entry_prices_for_immediate_limit(self):
+    def test_intraday_dynamic_marketable_short_entry_prices_for_immediate_limit(self):
         gen = SignalGenerator(
             "SPY",
             "5m",
@@ -319,9 +343,63 @@ class IntradaySdV1CoreTest(unittest.TestCase):
         self.assertIsNotNone(signal)
         self.assertEqual(signal["signal"], "sd_squeeze_breakout_short")
         self.assertEqual(signal["direction"], "short")
-        self.assertEqual(signal["entry"], 99.9)
+        self.assertEqual(signal["entry"], 99.7)
+        self.assertEqual(signal["extra"]["entry_price_plan"], "marketable_limit_dynamic")
         self.assertGreater(signal["stop_loss"], signal["entry"])
         self.assertLess(signal["take_profit"], signal["entry"])
+
+    def test_marketable_limit_bps_mode_remains_backwards_compatible(self):
+        gen = SignalGenerator(
+            "SPY",
+            "5m",
+            {
+                "signal_strategy_profile": "intraday_sd_v1",
+                "entry_limit_mode": "marketable_limit_bps",
+                "marketable_limit_bps": 10,
+            },
+        )
+
+        signal = gen.update(
+            intraday_breakout_snapshot(
+                close=100.0,
+                sd_regime="breakout_down",
+                sd_breakout_up=False,
+                sd_breakout_down=True,
+                vwap=101.0,
+                vwap_bullish=False,
+                orb_breakout_up=False,
+                orb_breakout_down=True,
+            )
+        )
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal["entry"], 99.9)
+        self.assertEqual(signal["extra"]["entry_price_plan"], "marketable_limit_bps")
+
+    def test_opposite_direction_candidates_are_blocked_as_ambiguous(self):
+        gen = SignalGenerator(
+            "SPY",
+            "5m",
+            {
+                "signal_strategy_profile": "intraday_sd_v1",
+                "intraday_include_legacy_signals": True,
+            },
+        )
+
+        signal = gen.update(
+            legacy_mr_long_snapshot(
+                sd_squeeze_active=True,
+                sd_breakout_down=True,
+                vwap=102.0,
+                orb_breakout_up=False,
+            )
+        )
+
+        self.assertIsNone(signal)
+        trace = gen.get_trace_snapshot()
+        self.assertEqual(trace["signal_state"]["stage"], "blocked")
+        self.assertEqual(trace["signal_state"]["filter_reason"], "ambiguous_opposite_directions")
+        self.assertTrue(trace["setup_state"]["ambiguous_opposite_directions"])
 
     def test_atr_resets_vwap_context_by_us_market_date(self):
         indicator = ATRIndicator({"orb_bars": 2, "atr_length": 1})

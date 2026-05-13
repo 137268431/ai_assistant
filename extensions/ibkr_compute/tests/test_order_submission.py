@@ -8,6 +8,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from ibkr_compute.broker import ib_gateway
 from ibkr_compute.order.order_placer import OrderPlacer
+from ibkr_compute.orchestration.signals import TradingServiceSignalsMixin
 from ibkr_compute.signal.signal_router import SignalRouter
 
 
@@ -75,6 +76,20 @@ class FakeOrderPBClient:
         return {"success": True}
 
 
+class FakeSignalPBClient:
+    def __init__(self, record):
+        self.record = dict(record)
+        self.updates = []
+
+    def get_first_record(self, collection, filter=None):
+        return dict(self.record)
+
+    def update_record(self, collection, record_id, data):
+        self.updates.append((collection, record_id, dict(data)))
+        self.record.update(data)
+        return dict(self.record)
+
+
 class FakeBracketBroker:
     def place_bracket_order(self, **kwargs):
         return {
@@ -94,6 +109,98 @@ class FakeBracketBroker:
 class FakeConfig:
     def get_for_environment(self, key, environment, default=None):
         return default
+
+
+class FakeSignalRouter:
+    def __init__(self, signals):
+        self.signals = list(signals)
+        self.processed = []
+        self.released = []
+        self.claimed = []
+
+    def fetch_pending_signals(self):
+        return list(self.signals)
+
+    def claim_signal(self, signal_id):
+        self.claimed.append(signal_id)
+        return True
+
+    def mark_processed(self, signal_id):
+        self.processed.append(signal_id)
+
+    def release_signal(self, signal_id):
+        self.released.append(signal_id)
+
+
+class FakeSignalProcessor:
+    def validate_signal(self, signal):
+        return True, "ok"
+
+
+class FakeOrderTracker:
+    def find_duplicate_open_entry(self, **kwargs):
+        return None
+
+
+class FakeConidResolver:
+    def __init__(self):
+        self.calls = []
+
+    def resolve(self, symbol):
+        self.calls.append(symbol)
+        return 123
+
+
+class FakeOrderPlacer:
+    def __init__(self):
+        self.calls = []
+
+    def place_bracket_order(self, **kwargs):
+        self.calls.append(dict(kwargs))
+        return {"ok": True, "order_ids": ["101", "102", "103"], "bracket_group": "AAPL_long"}
+
+
+class FakeLifecycle:
+    def __init__(self, capacity_full=False, fixed_symbols=None):
+        self.capacity_full = capacity_full
+        self.fixed_symbols = {str(item).upper() for item in (fixed_symbols or [])}
+
+    def is_fixed_position_symbol(self, symbol):
+        return str(symbol or "").upper() in self.fixed_symbols
+
+    def _fixed_position_symbols(self):
+        return set(self.fixed_symbols)
+
+    def strategy_capacity_snapshot(self, order_tracker=None):
+        return {
+            "capacity_full": self.capacity_full,
+            "strategy_capacity_used": 5 if self.capacity_full else 0,
+            "max_strategy_open_positions": 5,
+            "strategy_open_positions": 4 if self.capacity_full else 0,
+            "open_strategy_entry_orders": 1 if self.capacity_full else 0,
+        }
+
+    def increment_position_count(self):
+        pass
+
+
+class FakeSessionKeeper:
+    is_authenticated = True
+
+
+class FakeSignalService(TradingServiceSignalsMixin):
+    def __init__(self, signal, *, lifecycle, pb):
+        self.session_keeper = FakeSessionKeeper()
+        self.signal_router = FakeSignalRouter([signal])
+        self.signal_processor = FakeSignalProcessor()
+        self.order_tracker = FakeOrderTracker()
+        self.conid_resolver = FakeConidResolver()
+        self.order_placer = FakeOrderPlacer()
+        self.order_lifecycle = lifecycle
+        self.pb = pb
+
+    def _now_iso(self):
+        return "2026-05-13T10:00:00-04:00"
 
 
 class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
@@ -314,6 +421,55 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
         self.assertEqual("entry_NFLX_short_20260506_101500", pb_client.upserts[0]["unique_id"])
         self.assertEqual("entry_NFLX_short_20260506_101500", pb_client.upserts[1]["parent_order_unique_id"])
         self.assertEqual("entry_NFLX_short_20260506_101500", pb_client.upserts[2]["parent_order_unique_id"])
+
+
+class LiveSignalCapacityLifecycleTest(unittest.TestCase):
+    def _signal(self, symbol="AAPL"):
+        return {
+            "signal_id": f"sig-{symbol.lower()}",
+            "symbol": symbol,
+            "direction": "long",
+            "entry": 100.0,
+            "stop_loss": 98.0,
+            "take_profit": 104.0,
+            "shares": 10,
+            "signal_time": "2026-05-13 10:00:00",
+            "extra": {"source": "ibkr_compute"},
+            "raw": {
+                "id": f"row-{symbol.lower()}",
+                "signal_id": f"sig-{symbol.lower()}",
+                "environment": "live",
+                "extra": {"source": "ibkr_compute"},
+            },
+        }
+
+    def test_capacity_full_keeps_signal_pending_and_retriable(self):
+        signal = self._signal("AAPL")
+        pb = FakeSignalPBClient({"id": "row-aapl", "extra": {"source": "ibkr_compute"}})
+        service = FakeSignalService(signal, lifecycle=FakeLifecycle(capacity_full=True), pb=pb)
+
+        service._process_signals()
+
+        self.assertEqual([], service.signal_router.processed)
+        self.assertEqual(["sig-aapl"], service.signal_router.released)
+        self.assertEqual([], service.order_placer.calls)
+        self.assertEqual("pending", pb.updates[-1][2]["status"])
+        self.assertEqual("strategy_capacity_full", pb.updates[-1][2]["extra"]["status_reason"])
+        self.assertEqual("waiting_for_capacity", pb.updates[-1][2]["extra"]["execution_state"])
+
+    def test_fixed_symbol_is_blocked_and_marked_processed(self):
+        signal = self._signal("BOXX")
+        pb = FakeSignalPBClient({"id": "row-boxx", "extra": {"source": "ibkr_compute"}})
+        service = FakeSignalService(signal, lifecycle=FakeLifecycle(fixed_symbols={"BOXX", "IBKR"}), pb=pb)
+
+        service._process_signals()
+
+        self.assertEqual(["sig-boxx"], service.signal_router.processed)
+        self.assertEqual([], service.signal_router.released)
+        self.assertEqual([], service.order_placer.calls)
+        self.assertEqual("rejected", pb.updates[-1][2]["status"])
+        self.assertEqual("fixed_position_symbol_blocked", pb.updates[-1][2]["extra"]["status_reason"])
+        self.assertTrue(pb.updates[-1][2]["extra"]["fixed_position_symbol_blocked"])
 
 
 class SignalRouterDedupeTest(unittest.TestCase):

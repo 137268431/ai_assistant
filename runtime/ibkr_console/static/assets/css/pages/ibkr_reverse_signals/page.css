@@ -27,21 +27,13 @@
             border-color: var(--accent);
         }
 
-        .stats-bar {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 4px;
-            overflow-x: auto;
-            padding-bottom: 4px;
-        }
-
         /* 状态筛选 Tab */
         .status-tabs {
             display: flex;
             gap: 6px;
-            margin-bottom: 2px;
+            margin-bottom: 12px;
             overflow-x: auto;
-            padding: 4px 0;
+            padding: 8px 0;
             background: var(--bg);
             position: sticky;
             top: 0;
@@ -51,12 +43,12 @@
         .direction-tabs {
             display: flex;
             gap: 6px;
-            margin-bottom: 2px;
+            margin-bottom: 12px;
             overflow-x: auto;
-            padding: 4px 0;
+            padding: 8px 0;
             background: var(--bg);
             position: sticky;
-            top: 32px;
+            top: 50px;
             z-index: 9;
         }
 
@@ -65,7 +57,7 @@
             border-radius: 8px;
             border: 1px solid var(--border);
             background: var(--surface2);
-            color: var(--muted);
+            color: #C4D4E4;
             font-size: 12px;
             font-family: 'JetBrains Mono', monospace;
             cursor: pointer;
@@ -84,26 +76,16 @@
             color: #fff;
         }
 
-        .stat-chip {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            background: var(--surface2);
-            border: 1px solid var(--border);
-            border-radius: 20px;
-            padding: 8px 16px;
-            white-space: nowrap;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 11px;
+        .status-tab .tab-count {
+            font-size: 10px;
+            margin-left: 2px;
+            opacity: 0.8;
         }
 
-        .stat-chip .stat-label {
-            color: var(--muted);
-        }
-
-        .stat-chip .stat-value {
-            color: var(--accent);
-            font-weight: 700;
+        .dir-tab .tab-count {
+            font-size: 10px;
+            margin-left: 2px;
+            opacity: 0.8;
         }
 
         .signal-card {

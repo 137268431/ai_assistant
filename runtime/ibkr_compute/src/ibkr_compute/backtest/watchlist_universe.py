@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from ibkr_compute.backtest.constants import (
+    DEFAULT_FIXED_SYMBOLS,
     DEFAULT_MARKET_MONITOR_SYMBOLS,
     WATCHLIST_SYMBOL_ROLE_TRADE,
 )
@@ -11,14 +12,35 @@ from ibkr_compute.market.timeframe_utils import ET
 
 
 def request_excluded_symbols(request: dict) -> set[str]:
-    excluded = {
-        str(symbol or "").strip().upper()
-        for symbol in list(request.get("exclude_symbols") or [])
-        if str(symbol or "").strip()
-    }
+    excluded = set(DEFAULT_FIXED_SYMBOLS)
+    excluded.update(
+        {
+            str(symbol or "").strip().upper()
+            for symbol in list(request.get("exclude_symbols") or [])
+            if str(symbol or "").strip()
+        }
+    )
     if bool(request.get("exclude_market_monitors", True)):
         excluded.update(DEFAULT_MARKET_MONITOR_SYMBOLS)
     return excluded
+
+
+def request_max_symbols(request: dict) -> int:
+    try:
+        return max(0, int(request.get("max_symbols", 0) or 0))
+    except Exception:
+        return 0
+
+
+def should_truncate_symbols(request: dict) -> bool:
+    return request_max_symbols(request) > 0
+
+
+def limit_symbols(symbols: list[str], request: dict) -> list[str]:
+    limit = request_max_symbols(request)
+    if limit <= 0:
+        return list(symbols)
+    return list(symbols)[:limit]
 
 
 def parse_pb_datetime(raw_value: Any):

@@ -193,7 +193,10 @@ def normalize_request(payload: dict) -> dict:
         payload.get("exclude_market_monitors"),
         True,
     )
-    default_excludes = constants.DEFAULT_MARKET_MONITOR_SYMBOLS if exclude_market_monitors else ()
+    default_excludes = merge_symbols(
+        constants.DEFAULT_FIXED_SYMBOLS,
+        constants.DEFAULT_MARKET_MONITOR_SYMBOLS if exclude_market_monitors else (),
+    )
     exclude_symbols = merge_symbols(default_excludes, payload.get("exclude_symbols"), payload.get("exclude_symbols_text"))
     exclude_set = set(exclude_symbols)
     symbols = [
@@ -235,7 +238,9 @@ def normalize_request(payload: dict) -> dict:
     limit_price_protection = normalize_bool(payload.get("limit_price_protection"), slippage_model in {"bar_capped_bps_v1", "volume_share_v1"})
     stop_gap_to_open = normalize_bool(payload.get("stop_gap_to_open"), slippage_model in {"bar_capped_bps_v1", "volume_share_v1"})
     force_flat_eod = True
-    if effective_symbol_source == "watchlist" and not symbols:
+    if effective_symbol_source == "daily_scan_replay":
+        default_max_symbols = 0
+    elif effective_symbol_source == "watchlist" and not symbols:
         default_max_symbols = constants.DEFAULT_WATCHLIST_MAX_SYMBOLS
     elif symbols:
         default_max_symbols = min(constants.MAX_BACKTEST_SYMBOLS, max(constants.DEFAULT_MAX_SYMBOLS, len(symbols)))
@@ -244,7 +249,7 @@ def normalize_request(payload: dict) -> dict:
     max_symbols = normalize_positive_int(
         payload.get("max_symbols"),
         default=default_max_symbols,
-        minimum=1,
+        minimum=0,
         maximum=constants.MAX_BACKTEST_SYMBOLS,
     )
     execution_model = str(payload.get("execution_model") or "portfolio_stream").strip().lower() or "portfolio_stream"
@@ -259,6 +264,12 @@ def normalize_request(payload: dict) -> dict:
     position_limit_max = normalize_positive_int(
         payload.get("position_limit_max"),
         default=constants.DEFAULT_PORTFOLIO_POSITION_LIMIT_MAX,
+        minimum=0,
+        maximum=100,
+    )
+    max_strategy_open_positions = normalize_positive_int(
+        payload.get("max_strategy_open_positions"),
+        default=constants.DEFAULT_MAX_STRATEGY_OPEN_POSITIONS,
         minimum=0,
         maximum=100,
     )
@@ -363,8 +374,8 @@ def normalize_request(payload: dict) -> dict:
         daily_selection_sd_mode = "hard"
     daily_selection_candidate_limit = normalize_positive_int(
         payload.get("daily_selection_candidate_limit"),
-        default=max(20, max_symbols * 5),
-        minimum=1,
+        default=max(20, max_symbols * 5) if max_symbols > 0 else 0,
+        minimum=0,
         maximum=constants.MAX_BACKTEST_SYMBOLS,
     )
     default_daily_selection_cache = bool(
@@ -530,6 +541,7 @@ def normalize_request(payload: dict) -> dict:
         "borrow_limit_mode": borrow_limit_mode,
         "max_borrow_amount": max_borrow_amount,
         "position_limit_max": position_limit_max,
+        "max_strategy_open_positions": max_strategy_open_positions,
         "consecutive_stop_loss_limit": consecutive_stop_loss_limit,
         "portfolio_require_target_direction_alignment": portfolio_require_target_direction_alignment,
         "portfolio_use_target_strategy_policy": portfolio_use_target_strategy_policy,
@@ -644,6 +656,7 @@ def normalize_request(payload: dict) -> dict:
             "atr_stop_deviation_threshold": atr_stop_deviation_threshold,
             "atr_stop_min_change": atr_stop_min_change,
             "position_limit_max": position_limit_max,
+            "max_strategy_open_positions": max_strategy_open_positions,
             "consecutive_stop_loss_limit": consecutive_stop_loss_limit,
             "portfolio_require_target_direction_alignment": portfolio_require_target_direction_alignment,
             "portfolio_use_target_strategy_policy": portfolio_use_target_strategy_policy,

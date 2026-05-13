@@ -20,6 +20,22 @@ class _FakeConfig:
         return int(self.values.get(key, default))
 
 
+class _FakeBroker:
+    def __init__(self, positions=None):
+        self.positions = list(positions or [])
+
+    def list_positions(self):
+        return list(self.positions)
+
+
+class _FakeOrderTracker:
+    def __init__(self, orders=None):
+        self.orders = list(orders or [])
+
+    def get_live_orders(self):
+        return list(self.orders)
+
+
 class OrderLifecycleRiskLimitTests(unittest.TestCase):
     def test_zero_position_limit_disables_daily_trade_count_cap(self):
         lifecycle = OrderLifecycle(config=_FakeConfig({"position_limit_max": 0}))
@@ -52,6 +68,49 @@ class OrderLifecycleRiskLimitTests(unittest.TestCase):
         lifecycle.increment_sl_count()
 
         self.assertTrue(lifecycle.is_sl_circuit_breaker)
+
+    def test_fixed_position_symbols_default_to_boxx_ibkr(self):
+        lifecycle = OrderLifecycle(config=_FakeConfig({}))
+
+        self.assertTrue(lifecycle.is_fixed_position_symbol("BOXX"))
+        self.assertTrue(lifecycle.is_fixed_position_symbol("ibkr"))
+        self.assertEqual(["BOXX", "IBKR"], lifecycle.status()["fixed_position_symbols"])
+
+    def test_fixed_position_symbols_can_fallback_to_eod_keep_symbols(self):
+        lifecycle = OrderLifecycle(config=_FakeConfig({"eod_keep_symbols": "SGOV, BIL"}))
+
+        self.assertTrue(lifecycle.is_fixed_position_symbol("SGOV"))
+        self.assertTrue(lifecycle.is_fixed_position_symbol("bil"))
+        self.assertTrue(lifecycle.is_fixed_position_symbol("BOXX"))
+        self.assertTrue(lifecycle.is_fixed_position_symbol("IBKR"))
+
+    def test_strategy_capacity_excludes_fixed_positions_and_counts_open_entries(self):
+        lifecycle = OrderLifecycle(
+            config=_FakeConfig({
+                "max_strategy_open_positions": 2,
+                "fixed_position_symbols": "BOXX,IBKR",
+            }),
+            broker=_FakeBroker(
+                [
+                    {"ticker": "BOXX", "position": 100},
+                    {"ticker": "AAPL", "position": 5},
+                ]
+            ),
+        )
+        tracker = _FakeOrderTracker(
+            [
+                {"orderId": "101", "ticker": "MSFT", "status": "Submitted", "cOID": "entry_MSFT_long_20260513_100000"},
+                {"orderId": "102", "ticker": "MSFT", "status": "Submitted", "parentId": "101", "cOID": "tp_MSFT_long_20260513_100000"},
+                {"orderId": "103", "ticker": "IBKR", "status": "Submitted", "cOID": "entry_IBKR_long_20260513_100000"},
+            ]
+        )
+
+        snapshot = lifecycle.strategy_capacity_snapshot(order_tracker=tracker)
+
+        self.assertTrue(snapshot["capacity_full"])
+        self.assertEqual(2, snapshot["strategy_capacity_used"])
+        self.assertEqual(["AAPL"], snapshot["strategy_open_position_symbols"])
+        self.assertEqual(["MSFT"], snapshot["open_strategy_entry_order_symbols"])
 
 
 if __name__ == "__main__":

@@ -185,6 +185,14 @@ def exit_policy_uses_hard_target(position: dict) -> bool:
     return target_mode not in {"soft_runner", "checkpoint_then_trail"}
 
 
+def exit_policy_uses_safety_target(position: dict) -> bool:
+    """Return whether the broker/backtest target price is a safety take-profit."""
+    settings = _policy_settings(position)
+    if exit_policy_uses_hard_target(position):
+        return False
+    return _safe_float(settings.get("safety_tp_rr"), 0.0) > 0
+
+
 def compute_exit_policy_target_update(
     position: dict,
     *,
@@ -228,8 +236,14 @@ def compute_exit_policy_target_update(
     favorable = max(0.0, high - entry) if direction == "long" else max(0.0, entry - low)
     mfe = max(_safe_float(position.get("mfe"), 0.0), favorable)
     mfe_r = mfe / risk if risk > 0 else 0.0
+    soft_target_r = max(0.0, _safe_float(settings.get("soft_target_r"), 0.0))
+    soft_target = 0.0
+    if not target_is_hard and soft_target_r > 0:
+        soft_target = entry + risk * soft_target_r if direction == "long" else entry - risk * soft_target_r
+    elif target > 0:
+        soft_target = target
     target_touched = bool(
-        target > 0 and ((direction == "long" and high >= target) or (direction == "short" and low <= target))
+        soft_target > 0 and ((direction == "long" and high >= soft_target) or (direction == "short" and low <= soft_target))
     )
     checkpoint_r = max(0.0, _safe_float(settings.get("checkpoint_r"), 0.0))
     checkpoint_hit = checkpoint_r > 0 and mfe_r >= checkpoint_r
@@ -238,6 +252,8 @@ def compute_exit_policy_target_update(
         **old_state,
         "target_mode": target_mode or "soft_runner",
         "target_is_hard": target_is_hard,
+        "soft_target_r": round(soft_target_r, 4),
+        "soft_target_price": round(soft_target, 4),
         "highest_mfe_r": round(max(_safe_float(old_state.get("highest_mfe_r"), 0.0), mfe_r), 4),
         "target_touched": bool(old_state.get("target_touched") or target_touched),
         "checkpoint_hit": bool(old_state.get("checkpoint_hit") or checkpoint_hit),

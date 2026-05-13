@@ -35,6 +35,10 @@ SIGNAL_SUFFIX_MAP = {
     "mr_sdLower": "_mr_L",
     "mr_sdUpper": "_mr_U",
     "trend_sdLower": "_trend_L",
+    "sd_trend_continuation_long": "_trend_U",
+    "sd_mr_reversal_long": "_mr_L",
+    "sd_mr_reversal_short": "_mr_U",
+    "sd_trend_continuation_short": "_trend_L",
 }
 
 MARKET_SESSION_LABELS = {

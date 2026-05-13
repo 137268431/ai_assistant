@@ -17,6 +17,7 @@ MANUAL_TARGET_SOURCES = {
     "screener_targets_tab",
 }
 CONTEXT_ACTIVE_TARGET_SOURCES = {"daily_scan", "intraday_window_admission"}
+FIXED_TRADE_BLOCKED_SYMBOLS = {"BOXX", "IBKR"}
 
 
 def _safe_extra(row: dict | None) -> dict:
@@ -103,6 +104,7 @@ def _load_selected_active_trade_target_rows(environment: str, market_date: str |
         row
         for row in rows
         if str(row.get("symbol", "")).strip().upper() not in market_monitor_symbols
+        and str(row.get("symbol", "")).strip().upper() not in FIXED_TRADE_BLOCKED_SYMBOLS
         and _target_row_is_daily_scan_active(row)
     ]
     prioritized_rows = list(active_rows)
@@ -139,6 +141,71 @@ def get_market_monitor_symbols(environment: str) -> set[str]:
     return watchlist_symbols.union(configured_symbols)
 
 
+def _get_trade_watchlist_symbols(environment: str) -> set[str]:
+    api_app = _api_app()
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    market_monitor_symbols = get_market_monitor_symbols(runtime_environment)
+    watchlist_map = load_effective_watchlist(runtime_environment)
+    symbols: set[str] = set()
+    for symbol, row in watchlist_map.items():
+        normalized = str(symbol or (row or {}).get("symbol", "") or "").strip().upper()
+        if not normalized or normalized in market_monitor_symbols or normalized in FIXED_TRADE_BLOCKED_SYMBOLS:
+            continue
+        role = api_app.normalize_watchlist_symbol_role((row or {}).get("symbol_role"))
+        if role == api_app.WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR:
+            continue
+        symbols.add(normalized)
+    return symbols
+
+
+def _load_qualified_trade_target_rows(environment: str, market_date: str | None = None) -> list[dict]:
+    api_app = _api_app()
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    target_date = str(market_date or api_app.current_market_date()).strip() or api_app.current_market_date()
+    market_monitor_symbols = get_market_monitor_symbols(runtime_environment)
+    try:
+        rows = api_app.pb.get_all_records(
+            "ibkr_targets",
+            filter=(
+                f'date = "{target_date}" && '
+                f'environment = "{runtime_environment}" && '
+                'status = "active"'
+            ),
+            sort="-score,-updated",
+            max_pages=10,
+        )
+    except Exception:
+        traceback.print_exc()
+        return []
+    qualified_rows = []
+    seen = set()
+    for row in rows:
+        symbol = str(row.get("symbol", "")).strip().upper()
+        if (
+            not symbol
+            or symbol in seen
+            or symbol in market_monitor_symbols
+            or symbol in FIXED_TRADE_BLOCKED_SYMBOLS
+            or not (_target_row_is_daily_scan_active(row) or _target_row_is_manual(row))
+        ):
+            continue
+        qualified_rows.append(row)
+        seen.add(symbol)
+    return qualified_rows
+
+
+def _get_signal_enabled_symbols(environment: str) -> set[str]:
+    symbols = set(_get_trade_watchlist_symbols(environment))
+    symbols.update({
+        str(row.get("symbol", "")).strip().upper()
+        for row in _load_qualified_trade_target_rows(environment)
+        if str(row.get("symbol", "")).strip()
+    })
+    symbols.difference_update(get_market_monitor_symbols(environment))
+    symbols.difference_update(FIXED_TRADE_BLOCKED_SYMBOLS)
+    return symbols
+
+
 def get_active_trade_symbols(environment: str, market_date: str | None = None) -> set[str]:
     return {
         str(row.get("symbol", "")).strip().upper()
@@ -163,13 +230,7 @@ def get_signal_generator_params(environment: str) -> dict:
     runtime_environment = str(environment or "live").strip().lower() or "live"
     market_monitor_symbols = sorted(get_market_monitor_symbols(environment))
     selected_target_rows = _load_selected_active_trade_target_rows(runtime_environment)
-    signal_enabled_symbols = sorted(
-        {
-            str(row.get("symbol", "")).strip().upper()
-            for row in selected_target_rows
-            if str(row.get("symbol", "")).strip()
-        }
-    )
+    signal_enabled_symbols = sorted(_get_signal_enabled_symbols(runtime_environment))
     target_direction_bias_by_symbol: dict[str, str] = {}
     target_strategy_policy_by_symbol: dict[str, dict] = {}
     target_symbol_profile_by_symbol: dict[str, dict] = {}

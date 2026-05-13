@@ -300,6 +300,7 @@ class IBKRTradingService(
             environment=ENVIRONMENT,
             readiness_provider=self._trade_readiness_snapshot,
             target_direction_provider=self._active_target_direction_biases,
+            capacity_provider=self._strategy_capacity_snapshot,
         )
         self.reverse_handler = ReverseSignalHandler(
             pb_client=self.pb, order_placer=self.order_placer,

@@ -14,6 +14,7 @@ from typing import Any
 EXIT_POLICY_PROFILE_FIXED_ATR_RR = "fixed_atr_rr"
 EXIT_POLICY_PROFILE_SIGNAL_MODE_ADAPTIVE = "signal_mode_adaptive_v1"
 EXIT_POLICY_PROFILE_SIGNAL_MODE_ADAPTIVE_V2 = "signal_mode_adaptive_v2"
+EXIT_POLICY_PROFILE_SETUP_AWARE_HYBRID = "setup_aware_hybrid_v1"
 
 # Compatibility aliases. Older config/backtest rows may still submit these
 # values; normalize them to the strategy names above instead of breaking runs.
@@ -111,6 +112,60 @@ _SIGNAL_MODE_ADAPTIVE_V2_DEFAULTS: dict[str, dict[str, Any]] = {
 }
 
 
+_SETUP_AWARE_HYBRID_DEFAULTS: dict[str, dict[str, Any]] = {
+    "mr_reversion": {
+        "name": "mr_fixed_checkpoint",
+        "sl_atr_mult": 2.0,
+        "tp_rr": 1.5,
+        "target_mode": "checkpoint_then_trail",
+        "target_is_hard": True,
+        "checkpoint_r": 0.6,
+        "checkpoint_lock_r": 0.05,
+        "trail_type": "breakeven",
+        "trail_activation_r": 0.6,
+        "breakeven_offset_r": 0.05,
+        "time_stop_bars": 10,
+        "time_stop_min_mfe_r": 0.35,
+        "hard_time_stop_bars": 0,
+    },
+    "trend_pullback": {
+        "name": "trend_soft_checkpoint_chandelier",
+        "sl_atr_mult": 2.0,
+        "tp_rr": 4.0,
+        "target_mode": "checkpoint_then_trail",
+        "target_is_hard": False,
+        "soft_target_r": 2.0,
+        "safety_tp_rr": 4.0,
+        "checkpoint_r": 1.0,
+        "checkpoint_lock_r": 0.2,
+        "trail_type": "chandelier",
+        "trail_activation_r": 0.8,
+        "chandelier_lookback": 22,
+        "chandelier_atr_mult": 2.0,
+        "time_stop_bars": 18,
+        "time_stop_min_mfe_r": 0.5,
+    },
+    "breakout": {
+        "name": "breakout_soft_safety_runner",
+        "sl_atr_mult": 1.8,
+        "tp_rr": 5.0,
+        "target_mode": "soft_runner",
+        "target_is_hard": False,
+        "soft_target_r": 2.5,
+        "safety_tp_rr": 5.0,
+        "checkpoint_r": 1.0,
+        "checkpoint_lock_r": 0.2,
+        "trail_type": "chandelier",
+        "trail_activation_r": 1.0,
+        "chandelier_lookback": 22,
+        "chandelier_atr_mult": 2.5,
+        "failure_exit_enabled": True,
+        "failure_exit_bars": 6,
+        "failure_exit_min_mfe_r": 0.5,
+    },
+}
+
+
 _FIXED_PROFILE_ALIASES = {
     "",
     EXIT_POLICY_PROFILE_FIXED_ATR_RR,
@@ -142,6 +197,17 @@ _ADAPTIVE_V2_PROFILE_ALIASES = {
     "adaptive_by_signal_v2",
     "setup_aware_v2",
     "stateful_target_v2",
+}
+
+
+_SETUP_AWARE_HYBRID_PROFILE_ALIASES = {
+    EXIT_POLICY_PROFILE_SETUP_AWARE_HYBRID,
+    "setup_aware_hybrid",
+    "setup-aware-hybrid",
+    "setup-aware-hybrid-v1",
+    "setup_aware_hybrid_v1",
+    "hybrid_setup_aware_v1",
+    "signal_mode_hybrid_v1",
 }
 
 
@@ -199,6 +265,8 @@ def _parse_overrides(raw: Any) -> dict[str, Any]:
 def normalize_exit_policy_profile(params: dict | None) -> str:
     params = params or {}
     profile = _safe_str(params.get("exit_policy_profile"), EXIT_POLICY_PROFILE_FIXED_ATR_RR).lower()
+    if profile in _SETUP_AWARE_HYBRID_PROFILE_ALIASES:
+        return EXIT_POLICY_PROFILE_SETUP_AWARE_HYBRID
     if profile in _ADAPTIVE_V2_PROFILE_ALIASES:
         return EXIT_POLICY_PROFILE_SIGNAL_MODE_ADAPTIVE_V2
     if profile in _ADAPTIVE_PROFILE_ALIASES:
@@ -213,10 +281,12 @@ def is_signal_mode_adaptive_exit_profile(profile_or_params: Any) -> bool:
         return normalize_exit_policy_profile(profile_or_params) in {
             EXIT_POLICY_PROFILE_SIGNAL_MODE_ADAPTIVE,
             EXIT_POLICY_PROFILE_SIGNAL_MODE_ADAPTIVE_V2,
+            EXIT_POLICY_PROFILE_SETUP_AWARE_HYBRID,
         }
     return normalize_exit_policy_profile({"exit_policy_profile": profile_or_params}) in {
         EXIT_POLICY_PROFILE_SIGNAL_MODE_ADAPTIVE,
         EXIT_POLICY_PROFILE_SIGNAL_MODE_ADAPTIVE_V2,
+        EXIT_POLICY_PROFILE_SETUP_AWARE_HYBRID,
     }
 
 
@@ -225,7 +295,13 @@ def classify_exit_policy(setup: str = "", signal_mode: str = "") -> str:
     mode_text = _safe_str(signal_mode).lower()
     if "squeeze_breakout" in setup_text or setup_text.endswith("breakout") or "breakout" in setup_text:
         return "breakout"
-    if "vwap_trend_pullback" in setup_text or mode_text == "trend":
+    if (
+        "vwap_trend_pullback" in setup_text
+        or "trend_continuation" in setup_text
+        or "trend_continue" in setup_text
+        or "continuation" in mode_text
+        or mode_text == "trend"
+    ):
         return "trend_pullback"
     return "mr_reversion"
 
@@ -259,11 +335,19 @@ def resolve_exit_policy(params: dict | None, setup: str = "", signal_mode: str =
             "hard_time_stop_bars": 0,
         }
 
-    defaults = _SIGNAL_MODE_ADAPTIVE_V2_DEFAULTS if profile == EXIT_POLICY_PROFILE_SIGNAL_MODE_ADAPTIVE_V2 else _SIGNAL_MODE_ADAPTIVE_DEFAULTS
+    if profile == EXIT_POLICY_PROFILE_SETUP_AWARE_HYBRID:
+        defaults = _SETUP_AWARE_HYBRID_DEFAULTS
+    else:
+        defaults = _SIGNAL_MODE_ADAPTIVE_V2_DEFAULTS if profile == EXIT_POLICY_PROFILE_SIGNAL_MODE_ADAPTIVE_V2 else _SIGNAL_MODE_ADAPTIVE_DEFAULTS
     base = deepcopy(defaults.get(policy_type) or defaults["mr_reversion"])
     overrides = _parse_overrides(params.get("exit_policy_overrides"))
     profile_overrides = {}
-    for profile_key in (profile, EXIT_POLICY_PROFILE_SIGNAL_MODE_ADAPTIVE, EXIT_POLICY_PROFILE_SETUP_AWARE_ALIAS):
+    for profile_key in (
+        profile,
+        EXIT_POLICY_PROFILE_SIGNAL_MODE_ADAPTIVE,
+        EXIT_POLICY_PROFILE_SETUP_AWARE_ALIAS,
+        EXIT_POLICY_PROFILE_SETUP_AWARE_HYBRID,
+    ):
         if isinstance(overrides.get(profile_key), dict):
             profile_overrides.update(overrides.get(profile_key) or {})
     direct_overrides = overrides.get(policy_type) if isinstance(overrides.get(policy_type), dict) else {}
@@ -287,6 +371,10 @@ def _reprice_with_policy(
 ) -> tuple[float, float, float]:
     sl_mult = max(0.0, _safe_float(policy.get("sl_atr_mult"), 0.0))
     rr = max(0.0, _safe_float(policy.get("tp_rr"), _safe_float(position.get("rr"), 0.0)))
+    if not _safe_bool(policy.get("target_is_hard"), True):
+        safety_rr = max(0.0, _safe_float(policy.get("safety_tp_rr"), 0.0))
+        if safety_rr > 0:
+            rr = safety_rr
     if entry <= 0 or atr <= 0 or shares <= 0 or sl_mult <= 0 or rr <= 0:
         stop = _safe_float(position.get("stop_loss"), 0.0)
         target = _safe_float(position.get("take_profit"), 0.0)
@@ -320,6 +408,10 @@ def build_exit_policy_metadata(
     initial_take_profit: float,
 ) -> dict[str, Any]:
     entry = _safe_float(position.get("entry"), 0.0)
+    soft_target_r = _safe_float(policy.get("soft_target_r"), 0.0)
+    soft_target_price = 0.0
+    if entry > 0 and risk_r > 0 and soft_target_r > 0:
+        soft_target_price = entry + risk_r * soft_target_r if direction == "long" else entry - risk_r * soft_target_r
     return {
         "exit_policy_profile": _safe_str(policy.get("profile"), EXIT_POLICY_PROFILE_FIXED_ATR_RR),
         "exit_policy": _safe_str(policy.get("name"), EXIT_POLICY_PROFILE_FIXED_ATR_RR),
@@ -335,8 +427,11 @@ def build_exit_policy_metadata(
             "target_is_hard": _safe_bool(policy.get("target_is_hard"), True),
             "checkpoint_r": _safe_float(policy.get("checkpoint_r"), 0.0),
             "checkpoint_lock_r": _safe_float(policy.get("checkpoint_lock_r"), 0.0),
+            "soft_target_r": _safe_float(policy.get("soft_target_r"), 0.0),
+            "safety_tp_rr": _safe_float(policy.get("safety_tp_rr"), 0.0),
             "trail_type": _safe_str(policy.get("trail_type"), ""),
             "trail_activation_r": _safe_float(policy.get("trail_activation_r"), 0.0),
+            "breakeven_offset_r": _safe_float(policy.get("breakeven_offset_r"), 0.0),
             "chandelier_lookback": _safe_int(policy.get("chandelier_lookback"), 0),
             "chandelier_atr_mult": _safe_float(policy.get("chandelier_atr_mult"), 0.0),
             "time_stop_bars": _safe_int(policy.get("time_stop_bars"), 0),
@@ -349,6 +444,7 @@ def build_exit_policy_metadata(
         "target_state": {
             "target_mode": _safe_str(policy.get("target_mode"), "hard_rr"),
             "target_is_hard": _safe_bool(policy.get("target_is_hard"), True),
+            "soft_target_price": round(float(soft_target_price or 0.0), 4),
             "checkpoint_hit": False,
             "highest_mfe_r": 0.0,
         },
@@ -384,7 +480,11 @@ def apply_exit_policy_to_position(
     target = _safe_float(pos.get("take_profit"), 0.0)
     shares = max(0, _safe_int(pos.get("shares"), 0))
 
-    if policy.get("profile") in {EXIT_POLICY_PROFILE_SIGNAL_MODE_ADAPTIVE, EXIT_POLICY_PROFILE_SIGNAL_MODE_ADAPTIVE_V2}:
+    if policy.get("profile") in {
+        EXIT_POLICY_PROFILE_SIGNAL_MODE_ADAPTIVE,
+        EXIT_POLICY_PROFILE_SIGNAL_MODE_ADAPTIVE_V2,
+        EXIT_POLICY_PROFILE_SETUP_AWARE_HYBRID,
+    }:
         stop, target, risk = _reprice_with_policy(
             position=pos,
             direction=_safe_str(direction).lower(),
@@ -430,6 +530,7 @@ __all__ = [
     "EXIT_POLICY_PROFILE_SETUP_AWARE",
     "EXIT_POLICY_PROFILE_SIGNAL_MODE_ADAPTIVE",
     "EXIT_POLICY_PROFILE_SIGNAL_MODE_ADAPTIVE_V2",
+    "EXIT_POLICY_PROFILE_SETUP_AWARE_HYBRID",
     "apply_exit_policy_to_position",
     "classify_exit_policy",
     "is_signal_mode_adaptive_exit_profile",

@@ -449,7 +449,7 @@ class BacktestDailyScanReplayTests(unittest.TestCase):
         self.assertEqual(metrics["latest_bar_time_ms"], bar_ms(9, 20))
 
     def test_metric_prefilter_skips_indicator_engine_build_for_obvious_rejection(self):
-        self.service._build_historical_scan_metric_row = lambda symbol, trade_date, request, cutoff_ms, engines=None: {
+        self.service._build_historical_scan_metric_row = lambda symbol, trade_date, request, cutoff_ms, engines=None, **kwargs: {
             "symbol": symbol,
             "avg_10d_volume": 1,
             "premarket_volume": 1,

@@ -27,28 +27,13 @@
 
         <!-- 状态筛选 Tab -->
         <div class="status-tabs">
-            <button class="status-tab active" data-status="all" onclick="selectStatus('all', this)">全部</button>
-            <button class="status-tab" data-status="pending" onclick="selectStatus('pending', this)">待处理</button>
-            <button class="status-tab" data-status="confirmed" onclick="selectStatus('confirmed', this)">已确认</button>
-            <button class="status-tab" data-status="cancelled" onclick="selectStatus('cancelled', this)">已取消</button>
+            <button class="status-tab active" data-status="all" onclick="selectStatus('all', this)">全部<span class="tab-count" data-status="all">(<span class="count-value">0</span>)</span></button>
+            <button class="status-tab" data-status="pending" onclick="selectStatus('pending', this)">待处理<span class="tab-count" data-status="pending">(<span class="count-value">0</span>)</span></button>
+            <button class="status-tab" data-status="confirmed" onclick="selectStatus('confirmed', this)">已确认<span class="tab-count" data-status="confirmed">(<span class="count-value">0</span>)</span></button>
+            <button class="status-tab" data-status="cancelled" onclick="selectStatus('cancelled', this)">已取消<span class="tab-count" data-status="cancelled">(<span class="count-value">0</span>)</span></button>
         </div>
 
         <div id="directionTabs"></div>
-
-        <div class="stats-bar">
-            <div class="stat-chip">
-                <span class="stat-label">总计</span>
-                <span class="stat-value" id="stat-total">0</span>
-            </div>
-            <div class="stat-chip">
-                <span class="stat-label">待处理</span>
-                <span class="stat-value" id="stat-pending">0</span>
-            </div>
-            <div class="stat-chip">
-                <span class="stat-label">已确认</span>
-                <span class="stat-value" id="stat-confirmed">0</span>
-            </div>
-        </div>
 
         <div id="signalsContainer">
             <div class="loading">加载中...</div>
@@ -372,10 +357,16 @@
         }
 
         function updateStats() {
+            const statuses = ['pending', 'confirmed', 'cancelled'];
             const base = filterSignalsAll({ ignoreStatus: true });
-            document.getElementById('stat-total').textContent = base.length;
-            document.getElementById('stat-pending').textContent = base.filter((s) => s.status === 'pending').length;
-            document.getElementById('stat-confirmed').textContent = base.filter((s) => s.status === 'confirmed').length;
+            const counts = { all: base.length };
+            statuses.forEach((status) => {
+                counts[status] = base.filter((signal) => signal.status === status).length;
+            });
+            ['all', ...statuses].forEach((status) => {
+                const node = document.querySelector(`.status-tab .tab-count[data-status="${status}"] .count-value`);
+                if (node) node.textContent = counts[status] || 0;
+            });
         }
 
         function updateDirectionCounts() {

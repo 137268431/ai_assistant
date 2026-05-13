@@ -10,6 +10,8 @@ def _service_mod():
 
 
 class TradingServiceSignalsMixin:
+    CAPACITY_DEFER_REASONS = {"strategy_capacity_full"}
+
     @staticmethod
     def _is_protection_incomplete_result(result: dict) -> bool:
         if not isinstance(result, dict):
@@ -148,11 +150,23 @@ class TradingServiceSignalsMixin:
 
             finalized = False
             try:
+                if self._is_fixed_position_signal(sig):
+                    self._mark_signal_fixed_position_blocked(sig)
+                    service_mod.logger.info(
+                        "Signal blocked for fixed-position symbol: %s signal_id=%s",
+                        sig.get("symbol"),
+                        signal_id,
+                    )
+                    self.signal_router.mark_processed(signal_id)
+                    finalized = True
+                    continue
+
                 valid, reason = self.signal_processor.validate_signal(sig)
                 if not valid:
                     if (
                         str(reason or "").startswith("warmup")
                         or reason in {"session_unauthenticated", "runtime_stopped", "no_trade_symbols"}
+                        or reason in self.CAPACITY_DEFER_REASONS
                     ):
                         service_mod.logger.info(
                             "Signal deferred: %s %s - %s",
@@ -160,6 +174,8 @@ class TradingServiceSignalsMixin:
                             sig.get("direction"),
                             reason,
                         )
+                        if reason in self.CAPACITY_DEFER_REASONS:
+                            self._mark_signal_waiting_for_capacity(sig, self._strategy_capacity_snapshot())
                         continue
                     service_mod.logger.info(
                         "Signal rejected: %s %s - %s",
@@ -202,6 +218,18 @@ class TradingServiceSignalsMixin:
                     )
                     self.signal_router.mark_processed(signal_id)
                     finalized = True
+                    continue
+
+                capacity = self._strategy_capacity_snapshot()
+                if capacity.get("capacity_full"):
+                    service_mod.logger.info(
+                        "Signal waiting for strategy capacity: signal_id=%s symbol=%s used=%s max=%s",
+                        signal_id,
+                        symbol,
+                        capacity.get("strategy_capacity_used"),
+                        capacity.get("max_strategy_open_positions"),
+                    )
+                    self._mark_signal_waiting_for_capacity(sig, capacity)
                     continue
 
                 conid = self.conid_resolver.resolve(symbol)
@@ -273,6 +301,133 @@ class TradingServiceSignalsMixin:
             finally:
                 if not finalized:
                     self.signal_router.release_signal(signal_id)
+
+    def _is_fixed_position_signal(self, sig: dict) -> bool:
+        lifecycle = getattr(self, "order_lifecycle", None)
+        checker = getattr(lifecycle, "is_fixed_position_symbol", None)
+        if not callable(checker):
+            return False
+        try:
+            return bool(checker(str(sig.get("symbol") or "")))
+        except Exception:
+            return False
+
+    def _strategy_capacity_snapshot(self) -> dict:
+        lifecycle = getattr(self, "order_lifecycle", None)
+        snapshotter = getattr(lifecycle, "strategy_capacity_snapshot", None)
+        if not callable(snapshotter):
+            return {"capacity_full": False}
+        try:
+            snapshot = snapshotter(order_tracker=getattr(self, "order_tracker", None))
+        except TypeError:
+            snapshot = snapshotter()
+        except Exception as exc:
+            _service_mod().logger.warning("Strategy capacity check failed: %s", exc)
+            return {"capacity_full": False, "capacity_check_error": str(exc)}
+        return snapshot if isinstance(snapshot, dict) else {"capacity_full": False}
+
+    def _load_signal_record_and_extra(self, sig: dict) -> tuple[dict, dict]:
+        service_mod = _service_mod()
+        if not self.pb:
+            return {}, {}
+
+        signal_id = str(sig.get("signal_id") or "").strip()
+        if not signal_id:
+            return {}, {}
+
+        safe_signal_id = signal_id.replace('"', '\\"')
+        safe_environment = str(service_mod.ENVIRONMENT or "live").replace('"', '\\"')
+        record = self.pb.get_first_record(
+            "ibkr_signals",
+            filter=(
+                f'signal_id = "{safe_signal_id}" && '
+                f'environment = "{safe_environment}"'
+            ),
+        )
+        if not record or not record.get("id"):
+            return {}, {}
+
+        existing_extra = record.get("extra") or {}
+        if isinstance(existing_extra, str):
+            try:
+                existing_extra = json.loads(existing_extra)
+            except Exception:
+                existing_extra = {}
+        if not isinstance(existing_extra, dict):
+            existing_extra = {}
+        return record, existing_extra
+
+    def _mark_signal_waiting_for_capacity(self, sig: dict, capacity: dict):
+        service_mod = _service_mod()
+        if not self.pb:
+            return
+
+        signal_id = str(sig.get("signal_id") or "").strip()
+        try:
+            record, existing_extra = self._load_signal_record_and_extra(sig)
+            if not record:
+                return
+            self.pb.update_record(
+                "ibkr_signals",
+                record["id"],
+                {
+                    "status": "pending",
+                    "note": "strategy_capacity_full",
+                    "extra": {
+                        **existing_extra,
+                        "status_reason": "strategy_capacity_full",
+                        "execution_state": "waiting_for_capacity",
+                        "waiting_for_capacity": True,
+                        "waiting_for_capacity_at": self._now_iso(),
+                        "strategy_capacity": dict(capacity or {}),
+                    },
+                },
+            )
+        except Exception as exc:
+            service_mod.logger.error(
+                "Failed to mark signal waiting-for-capacity: signal_id=%s error=%s",
+                signal_id,
+                exc,
+            )
+
+    def _mark_signal_fixed_position_blocked(self, sig: dict):
+        service_mod = _service_mod()
+        if not self.pb:
+            return
+
+        signal_id = str(sig.get("signal_id") or "").strip()
+        try:
+            record, existing_extra = self._load_signal_record_and_extra(sig)
+            if not record:
+                return
+            fixed_symbols = []
+            lifecycle = getattr(self, "order_lifecycle", None)
+            getter = getattr(lifecycle, "_fixed_position_symbols", None)
+            if callable(getter):
+                fixed_symbols = sorted(getter())
+            self.pb.update_record(
+                "ibkr_signals",
+                record["id"],
+                {
+                    "status": "rejected",
+                    "note": "fixed_position_symbol_blocked",
+                    "extra": {
+                        **existing_extra,
+                        "status_reason": "fixed_position_symbol_blocked",
+                        "execution_state": "blocked",
+                        "fixed_position_symbol_blocked": True,
+                        "fixed_position_symbol": str(sig.get("symbol") or "").strip().upper(),
+                        "fixed_position_symbols": fixed_symbols,
+                        "blocked_at": self._now_iso(),
+                    },
+                },
+            )
+        except Exception as exc:
+            service_mod.logger.error(
+                "Failed to mark signal fixed-position-blocked: signal_id=%s error=%s",
+                signal_id,
+                exc,
+            )
 
     def _mark_signal_validation_rejected(self, sig: dict, reason: str):
         service_mod = _service_mod()
@@ -480,6 +635,26 @@ class TradingServiceSignalsMixin:
                 exc,
             )
 
+    @staticmethod
+    def _live_trailing_stop_metadata(signal_extra: dict) -> dict:
+        signal_extra = signal_extra if isinstance(signal_extra, dict) else {}
+        settings = signal_extra.get("exit_policy_settings") if isinstance(signal_extra.get("exit_policy_settings"), dict) else {}
+        target_mode = str(settings.get("target_mode") or "").strip().lower()
+        has_trail_intent = bool(
+            signal_extra.get("trail_state")
+            or "trail" in target_mode
+            or str(settings.get("trail_type") or "").strip()
+        )
+        if not has_trail_intent:
+            return {}
+        return {
+            "live_trailing_stop": {
+                "supported": True,
+                "mode": "completed_5m_bar_strategy_stop_updates",
+                "parity_source": "shared_risk_management_exit_policy",
+            }
+        }
+
     def _ack_signal_after_order_submission(self, sig: dict, result: dict):
         service_mod = _service_mod()
         raw = sig.get("raw") or {}
@@ -519,6 +694,7 @@ class TradingServiceSignalsMixin:
             )
             if signal_extra.get(key) not in (None, "")
         }
+        exit_policy_fields.update(self._live_trailing_stop_metadata(signal_extra))
         protection_complete = bool(result.get("protection_complete"))
         protection_incomplete = not protection_complete
         diagnostic = (

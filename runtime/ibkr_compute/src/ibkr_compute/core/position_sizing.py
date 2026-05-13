@@ -3,6 +3,35 @@
 import math
 
 
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _marketable_limit_offset(close: float, atr: float, params: dict) -> tuple[float, str]:
+    mode = str(
+        params.get("entry_limit_mode")
+        or params.get("entry_price_plan")
+        or params.get("entry_plan")
+        or "marketable_limit_dynamic"
+    ).strip().lower()
+    if mode in {"dynamic", "marketable_limit_dynamic", "marketable-limit-dynamic", "marketable_limit_dynamic_v1"}:
+        atr_mult = max(0.0, _safe_float(params.get("entry_limit_atr_mult"), 0.30))
+        floor_bps = max(0.0, _safe_float(params.get("entry_limit_floor_bps"), 15.0))
+        cap_bps = max(0.0, _safe_float(params.get("entry_limit_cap_bps"), 30.0))
+        floor = close * floor_bps / 10000.0
+        cap = max(floor, close * cap_bps / 10000.0)
+        raw = max(0.0, atr) * atr_mult
+        offset = min(max(raw, floor), cap)
+        return (max(0.01, offset) if close > 0 else 0.0), "marketable_limit_dynamic"
+
+    marketable_limit_bps = max(0.0, _safe_float(params.get("marketable_limit_bps"), 10.0))
+    offset = max(0.01, close * marketable_limit_bps / 10000.0) if close > 0 else 0.0
+    return offset, "marketable_limit_bps"
+
+
 def calc_long_position(close: float, atr: float, params: dict) -> dict:
     """Calculate long entry / stop-loss / take-profit / shares.
 
@@ -80,14 +109,13 @@ def calc_marketable_limit_position(close: float, atr: float, params: dict, direc
     """
     close = float(close or 0.0)
     atr = float(atr or 0.0)
-    marketable_limit_bps = max(0.0, float(params.get("marketable_limit_bps", 10) or 0.0))
     sl_atr_mult = params.get("sl_atr_mult", 2.0)
     rr_ratio = params.get("rr_ratio", 1.5)
     position_amount = params.get("position_amount", 10000)
     max_loss = params.get("max_loss_per_trade", 150)
     atr_raw = atr / params.get("atr_multiplier", 1.5) if params.get("atr_multiplier", 1.5) != 0 else atr
 
-    offset = max(0.01, close * marketable_limit_bps / 10000.0) if close > 0 else 0.0
+    offset, entry_limit_mode = _marketable_limit_offset(close, atr, params or {})
     if str(direction or "").lower() == "short":
         entry = close - offset
         sl_atr = entry + atr * sl_atr_mult
@@ -115,4 +143,6 @@ def calc_marketable_limit_position(close: float, atr: float, params: dict, direc
         "rr": rr_ratio,
         "sl_dist_pct": sl_dist_pct,
         "sl_atr_ratio": sl_atr_ratio,
+        "entry_limit_offset": offset,
+        "entry_limit_mode": entry_limit_mode,
     }

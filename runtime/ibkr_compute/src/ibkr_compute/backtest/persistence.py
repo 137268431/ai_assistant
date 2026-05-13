@@ -370,6 +370,7 @@ class BacktestPersistenceMixin:
         stop_price = float(position.get("stop_price", 0) or 0)
         target_price = float(position.get("target_price", 0) or 0)
         hard_target = exit_policy_uses_hard_target(position)
+        safety_target = exit_policy_uses_safety_target(position)
         high = float(bar.get("high", 0) or 0)
         low = float(bar.get("low", 0) or 0)
         close = float(bar.get("close", 0) or 0)
@@ -392,16 +393,16 @@ class BacktestPersistenceMixin:
             if stop_price > 0 and low <= stop_price:
                 raw_exit_price = stop_price
                 exit_reason = "stop_loss"
-            elif hard_target and target_price > 0 and high >= target_price:
+            elif (hard_target or safety_target) and target_price > 0 and high >= target_price:
                 raw_exit_price = target_price
-                exit_reason = "take_profit"
+                exit_reason = "take_profit" if hard_target else "safety_take_profit"
         else:
             if stop_price > 0 and high >= stop_price:
                 raw_exit_price = stop_price
                 exit_reason = "stop_loss"
-            elif hard_target and target_price > 0 and low <= target_price:
+            elif (hard_target or safety_target) and target_price > 0 and low <= target_price:
                 raw_exit_price = target_price
-                exit_reason = "take_profit"
+                exit_reason = "take_profit" if hard_target else "safety_take_profit"
 
         if not exit_reason:
             return None

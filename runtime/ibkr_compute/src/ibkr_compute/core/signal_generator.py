@@ -16,7 +16,7 @@ from datetime import datetime
 
 from .exit_policy import apply_exit_policy_to_position
 from .indicator_engine import params_for_interval
-from .position_sizing import calc_long_position, calc_marketable_limit_position, calc_short_position
+from .position_sizing import calc_marketable_limit_position
 from .time_utils import ET
 
 logger = logging.getLogger(__name__)
@@ -117,7 +117,9 @@ class SignalGenerator:
     def _legacy_signals_enabled(self) -> bool:
         if not self._is_intraday_sd_v1():
             return True
-        return self._intraday_param_bool("intraday_include_legacy_signals", False)
+        if "intraday_include_legacy_signals" not in self.params:
+            return True
+        return self._intraday_param_bool("intraday_include_legacy_signals", True)
 
     def update(self, snapshot: dict) -> dict:
         """根据最新指标快照更新 MR 窗口状态, 检测信号。
@@ -260,9 +262,7 @@ class SignalGenerator:
 
         legacy_signals_enabled = self._legacy_signals_enabled()
 
-        # 去重: buy_once / sell_once
-        buy_once = legacy_signals_enabled and buy_raw and not self._prev_buy_signal and not should_filter_buy
-        sell_once = legacy_signals_enabled and sell_raw and not self._prev_sell_signal and not should_filter_sell
+        # Track raw legacy state for backwards-compatible trace/debounce behavior.
         self._prev_buy_signal = buy_raw
         self._prev_sell_signal = sell_raw
 
@@ -275,50 +275,64 @@ class SignalGenerator:
             filter_reason_sell=filter_reason_sell,
         )
         setup_state = self._build_intraday_setup_state(snapshot, block_all=block_all)
-        intraday_candidate = setup_state.get("selected") if self._is_intraday_sd_v1() else None
-        intraday_signal = None
-        intraday_preview_signal = None
-        intraday_stage = "none"
-        if intraday_candidate:
-            raw_key = f"{intraday_candidate.get('direction')}:{intraday_candidate.get('setup')}"
-            intraday_once = raw_key != self._prev_intraday_raw_key
-            self._prev_intraday_raw_key = raw_key
-            intraday_preview_signal = self._build_intraday_signal(snapshot, intraday_candidate)
-            if intraday_candidate.get("filters_pass"):
-                intraday_stage = "confirmed" if intraday_once else "candidate"
-                if intraday_once:
-                    intraday_signal = intraday_preview_signal
-            else:
-                intraday_stage = "blocked"
-        else:
-            self._prev_intraday_raw_key = ""
+        legacy_candidates = self._build_legacy_sd_candidates(
+            legacy_signals_enabled=legacy_signals_enabled,
+            buy_raw=buy_raw,
+            sell_raw=sell_raw,
+            should_filter_buy=should_filter_buy,
+            should_filter_sell=should_filter_sell,
+            filter_reason_buy=filter_reason_buy,
+            filter_reason_sell=filter_reason_sell,
+            sd_upper_valid=sd_upper_valid,
+            sd_lower_valid=sd_lower_valid,
+        )
+        if legacy_candidates:
+            setup_state.setdefault("candidates", [])
+            setup_state["candidates"].extend(legacy_candidates)
+        selection = self._select_signal_candidate(setup_state.get("candidates") or [])
+        selected_candidate = selection.get("selected")
+        if selected_candidate:
+            setup_state["selected"] = selected_candidate
+            setup_state["selected_setup"] = selected_candidate.get("setup", "")
+            setup_state["selected_direction"] = selected_candidate.get("direction", "")
+        elif selection.get("ambiguous"):
+            setup_state.pop("selected", None)
+            setup_state["selected_setup"] = ""
+            setup_state["selected_direction"] = ""
+            setup_state["ambiguous_opposite_directions"] = True
+            setup_state["ambiguous_setups"] = list(selection.get("ambiguous_setups") or [])
 
         # ── 6. 生成信号预览 ──
         signal = None
         stage = "none"
         preview_signal = None
-        if buy_once:
-            signal = self._build_signal("long", snapshot, sd_upper_valid, sd_lower_valid)
-            preview_signal = signal
-            stage = "confirmed"
-        elif sell_once:
-            signal = self._build_signal("short", snapshot, sd_upper_valid, sd_lower_valid)
-            preview_signal = signal
-            stage = "confirmed"
-        elif intraday_signal:
-            signal = intraday_signal
-            preview_signal = signal
-            stage = "confirmed"
-            events.append(f"确认 {intraday_candidate.get('setup')} setup")
-        elif legacy_signals_enabled and buy_raw:
-            preview_signal = self._build_signal("long", snapshot, sd_upper_valid, sd_lower_valid)
-            stage = "blocked" if should_filter_buy else "candidate"
-        elif legacy_signals_enabled and sell_raw:
-            preview_signal = self._build_signal("short", snapshot, sd_upper_valid, sd_lower_valid)
-            stage = "blocked" if should_filter_sell else "candidate"
-        elif intraday_preview_signal:
-            preview_signal = intraday_preview_signal
-            stage = intraday_stage
+        if selection.get("ambiguous"):
+            stage = "blocked"
+            events.append("多空候选同时触发，阻止本根K线信号")
+            self._prev_intraday_raw_key = ""
+        elif selected_candidate:
+            raw_key = (
+                f"{selected_candidate.get('source', '')}:"
+                f"{selected_candidate.get('direction', '')}:"
+                f"{selected_candidate.get('setup', '')}"
+            )
+            candidate_once = raw_key != self._prev_intraday_raw_key
+            self._prev_intraday_raw_key = raw_key
+            preview_signal = self._build_candidate_signal(
+                snapshot,
+                selected_candidate,
+                sd_upper_valid=sd_upper_valid,
+                sd_lower_valid=sd_lower_valid,
+            )
+            if selected_candidate.get("filters_pass"):
+                stage = "confirmed" if candidate_once else "candidate"
+                if candidate_once:
+                    signal = preview_signal
+                    events.append(f"确认 {selected_candidate.get('setup')} setup")
+            else:
+                stage = "blocked"
+        else:
+            self._prev_intraday_raw_key = ""
 
         trace_component_flags = {
             "sd_upper_bull_touch_seen": self.sd_upper_bull_touch_seen,
@@ -337,12 +351,24 @@ class SignalGenerator:
         }
 
         # ── 7. 窗口消费 ──
-        if buy_once:
+        legacy_buy_confirmed = bool(
+            signal
+            and selected_candidate
+            and selected_candidate.get("source") == "legacy_sd"
+            and selected_candidate.get("direction") == "long"
+        )
+        legacy_sell_confirmed = bool(
+            signal
+            and selected_candidate
+            and selected_candidate.get("source") == "legacy_sd"
+            and selected_candidate.get("direction") == "short"
+        )
+        if legacy_buy_confirmed:
             if sd_upper_valid and self.sd_upper_bull_touch_seen and self.sd_upper_bull_fractal_seen and bull_div_seen:
                 self.sd_upper_mr_used = True
             if sd_lower_valid and self.sd_lower_bull_fractal_seen and bull_div_seen:
                 self.sd_lower_mr_used = True
-        if sell_once:
+        if legacy_sell_confirmed:
             if sd_upper_valid and self.sd_upper_bear_fractal_seen and bear_div_seen:
                 self.sd_upper_mr_used = True
             if sd_lower_valid and self.sd_lower_bear_touch_seen and self.sd_lower_bear_fractal_seen and bear_div_seen:
@@ -355,26 +381,32 @@ class SignalGenerator:
         if legacy_signals_enabled and sell_raw and should_filter_sell:
             self._clear_bear_components()
             events.append(f"空头候选被过滤: {filter_reason_sell or '未知原因'}")
-        if buy_once:
+        if legacy_buy_confirmed:
             self.buy_consumed = True
             self._clear_bull_components()
             events.append("多头信号确认并消费窗口")
-        if sell_once:
+        if legacy_sell_confirmed:
             self.sell_consumed = True
             self._clear_bear_components()
             events.append("空头信号确认并消费窗口")
 
         trace_filter_reason = ""
-        if stage == "blocked" and preview_signal and preview_signal.get("direction") == "long":
+        if selection.get("ambiguous"):
+            trace_filter_reason = "ambiguous_opposite_directions"
+        elif stage == "blocked" and preview_signal and preview_signal.get("direction") == "long":
             trace_filter_reason = filter_reason_buy
         elif stage == "blocked" and preview_signal and preview_signal.get("direction") == "short":
             trace_filter_reason = filter_reason_sell
-        if stage == "blocked" and intraday_candidate and preview_signal is intraday_preview_signal:
+        if stage == "blocked" and selected_candidate:
             failed = [
-                name for name, passed in dict(intraday_candidate.get("filter_checks") or {}).items()
+                name for name, passed in dict(selected_candidate.get("filter_checks") or {}).items()
                 if not passed
             ]
-            trace_filter_reason = ",".join(failed) or trace_filter_reason
+            trace_filter_reason = (
+                str(selected_candidate.get("filter_reason") or "")
+                or ",".join(failed)
+                or trace_filter_reason
+            )
 
         self.last_trace = self._build_trace_payload(
             snapshot,
@@ -616,6 +648,7 @@ class SignalGenerator:
                 squeeze_long_checks,
                 self._intraday_filter_checks(snapshot, "long", base_filter_checks),
                 "SD squeeze released upward with price holding above VWAP.",
+                priority=100,
             ),
             self._intraday_candidate(
                 "sd_squeeze_breakout_short",
@@ -624,6 +657,7 @@ class SignalGenerator:
                 squeeze_short_checks,
                 self._intraday_filter_checks(snapshot, "short", base_filter_checks),
                 "SD squeeze released downward with price holding below VWAP.",
+                priority=100,
             ),
             self._intraday_candidate(
                 "vwap_trend_pullback_long",
@@ -632,6 +666,7 @@ class SignalGenerator:
                 trend_long_checks,
                 self._intraday_filter_checks(snapshot, "long", base_filter_checks),
                 "SD trend-walk up remains intact after a pullback into the VWAP band.",
+                priority=80,
             ),
             self._intraday_candidate(
                 "vwap_trend_pullback_short",
@@ -640,6 +675,7 @@ class SignalGenerator:
                 trend_short_checks,
                 self._intraday_filter_checks(snapshot, "short", base_filter_checks),
                 "SD trend-walk down remains intact after a pullback into the VWAP band.",
+                priority=80,
             ),
         ]
         state["candidates"] = candidates
@@ -658,18 +694,136 @@ class SignalGenerator:
         trigger_checks: dict,
         filter_checks: dict,
         technical_description: str,
+        priority: int = 0,
+        source: str = "intraday",
+        filter_reason: str = "",
     ) -> dict:
         filters_pass = all(filter_checks.values())
         return {
             "setup": setup,
             "direction": direction,
             "signal_mode": signal_mode,
+            "source": source,
+            "priority": int(priority or 0),
             "trigger_checks": dict(trigger_checks),
             "filter_checks": dict(filter_checks),
             "triggered": all(trigger_checks.values()),
             "filters_pass": bool(filters_pass),
+            "filter_reason": str(filter_reason or ""),
             "technical_description": technical_description,
         }
+
+    def _build_legacy_sd_candidates(
+        self,
+        *,
+        legacy_signals_enabled: bool,
+        buy_raw: bool,
+        sell_raw: bool,
+        should_filter_buy: bool,
+        should_filter_sell: bool,
+        filter_reason_buy: str,
+        filter_reason_sell: str,
+        sd_upper_valid: bool,
+        sd_lower_valid: bool,
+    ) -> list[dict]:
+        if not legacy_signals_enabled:
+            return []
+        candidates: list[dict] = []
+        if buy_raw:
+            setup, signal_mode, description = self._legacy_setup_context(
+                "long", sd_upper_valid, sd_lower_valid
+            )
+            candidates.append(
+                self._intraday_candidate(
+                    setup,
+                    "long",
+                    signal_mode,
+                    {"legacy_sd_buy_raw": True},
+                    {"legacy_filters_pass": not should_filter_buy},
+                    description,
+                    priority=60 if signal_mode.startswith("trend") else 50,
+                    source="legacy_sd",
+                    filter_reason=filter_reason_buy,
+                )
+            )
+        if sell_raw:
+            setup, signal_mode, description = self._legacy_setup_context(
+                "short", sd_upper_valid, sd_lower_valid
+            )
+            candidates.append(
+                self._intraday_candidate(
+                    setup,
+                    "short",
+                    signal_mode,
+                    {"legacy_sd_sell_raw": True},
+                    {"legacy_filters_pass": not should_filter_sell},
+                    description,
+                    priority=60 if signal_mode.startswith("trend") else 50,
+                    source="legacy_sd",
+                    filter_reason=filter_reason_sell,
+                )
+            )
+        return candidates
+
+    def _legacy_setup_context(
+        self,
+        direction: str,
+        sd_upper_valid: bool,
+        sd_lower_valid: bool,
+    ) -> tuple[str, str, str]:
+        if direction == "long":
+            if sd_upper_valid and self.sd_upper_bull_touch_seen:
+                return (
+                    "sd_trend_continuation_long",
+                    "trend_continuation",
+                    f"SD上轨→顺势做多(fractal↑+EMA-touch↑[{self.sd_upper_bull_touch_line}]+div↑)",
+                )
+            return "sd_mr_reversal_long", "mr_reversal", "SD下轨→均值回归做多(fractal↑+div↑)"
+        if sd_lower_valid and self.sd_lower_bear_touch_seen:
+            return (
+                "sd_trend_continuation_short",
+                "trend_continuation",
+                f"SD下轨→顺势做空(fractal↓+EMA-touch↓[{self.sd_lower_bear_touch_line}]+div↓)",
+            )
+        return "sd_mr_reversal_short", "mr_reversal", "SD上轨→均值回归做空(fractal↓+div↓)"
+
+    @staticmethod
+    def _select_signal_candidate(candidates: list[dict]) -> dict:
+        triggered = [item for item in candidates if item.get("triggered")]
+        if not triggered:
+            return {"selected": None, "ambiguous": False}
+        viable = [item for item in triggered if item.get("filters_pass")]
+        selection_pool = viable or triggered
+        directions = {str(item.get("direction") or "").strip().lower() for item in selection_pool}
+        directions.discard("")
+        if len(directions) > 1:
+            return {
+                "selected": None,
+                "ambiguous": True,
+                "ambiguous_setups": [str(item.get("setup") or "") for item in selection_pool],
+            }
+        selected = max(
+            enumerate(selection_pool),
+            key=lambda pair: (int(pair[1].get("priority") or 0), -pair[0]),
+        )[1]
+        return {"selected": selected, "ambiguous": False}
+
+    def _build_candidate_signal(
+        self,
+        snapshot: dict,
+        candidate: dict,
+        *,
+        sd_upper_valid: bool,
+        sd_lower_valid: bool,
+    ) -> dict:
+        if candidate.get("source") == "legacy_sd":
+            return self._build_signal(
+                str(candidate.get("direction") or ""),
+                snapshot,
+                sd_upper_valid,
+                sd_lower_valid,
+            )
+        return self._build_intraday_signal(snapshot, candidate)
 
     def _build_intraday_signal(self, snapshot: dict, candidate: dict) -> dict:
         direction = str(candidate.get("direction") or "")
@@ -693,6 +847,8 @@ class SignalGenerator:
             "setup": setup,
             "sd_regime": snapshot.get("sd_regime", ""),
             "entry_order_type": "marketable_limit",
+            "entry_price_plan": pos.get("entry_limit_mode", "marketable_limit_dynamic"),
+            "entry_limit_offset": pos.get("entry_limit_offset", 0),
             "validity_minutes": self._intraday_validity_minutes(),
             "entry_window_start_time": self._intraday_entry_window_start_time(),
             "entry_window_end_time": self._intraday_entry_window_end_time(),
@@ -884,30 +1040,30 @@ class SignalGenerator:
         ema_touch_line_key = "none"
 
         if direction == "long":
-            pos = calc_long_position(close, atr, self.params)
+            pos = calc_marketable_limit_position(close, atr, self.params, direction)
             if sd_upper_valid and self.sd_upper_bull_touch_seen:
-                signal_type = "trend_sdUpper"
+                signal_type = "sd_trend_continuation_long"
                 signal_window = "sd_upper"
-                signal_mode = "trend"
+                signal_mode = "trend_continuation"
                 ema_touch_line_key = self._resolve_touch_line_key(snapshot, "bull")
                 reason = f"SD上轨→顺势做多(fractal↑+EMA-touch↑[{self.sd_upper_bull_touch_line}]+div↑)"
             else:
-                signal_type = "mr_sdLower"
+                signal_type = "sd_mr_reversal_long"
                 signal_window = "sd_lower"
-                signal_mode = "mr"
+                signal_mode = "mr_reversal"
                 reason = "SD下轨→均值回归做多(fractal↑+div↑)"
         else:
-            pos = calc_short_position(close, atr, self.params)
+            pos = calc_marketable_limit_position(close, atr, self.params, direction)
             if sd_lower_valid and self.sd_lower_bear_touch_seen:
-                signal_type = "trend_sdLower"
+                signal_type = "sd_trend_continuation_short"
                 signal_window = "sd_lower"
-                signal_mode = "trend"
+                signal_mode = "trend_continuation"
                 ema_touch_line_key = self._resolve_touch_line_key(snapshot, "bear")
                 reason = f"SD下轨→顺势做空(fractal↓+EMA-touch↓[{self.sd_lower_bear_touch_line}]+div↓)"
             else:
-                signal_type = "mr_sdUpper"
+                signal_type = "sd_mr_reversal_short"
                 signal_window = "sd_upper"
-                signal_mode = "mr"
+                signal_mode = "mr_reversal"
                 reason = "SD上轨→均值回归做空(fractal↓+div↓)"
 
         div_source = self._get_div_source(direction)
@@ -941,6 +1097,9 @@ class SignalGenerator:
             "sl_atr_ratio": pos.get("sl_atr_ratio", 0),
             "window_age_bars": self._window_age_bars("upper" if signal_window == "sd_upper" else "lower"),
             "source": "ibkr_compute",
+            "entry_order_type": "marketable_limit",
+            "entry_price_plan": pos.get("entry_limit_mode", "marketable_limit_dynamic"),
+            "entry_limit_offset": pos.get("entry_limit_offset", 0),
             **exit_meta,
         }
         if self._is_intraday_sd_v1():
@@ -948,7 +1107,6 @@ class SignalGenerator:
                 "strategy_profile": self.strategy_profile,
                 "setup": signal_type,
                 "sd_regime": snapshot.get("sd_regime", ""),
-                "entry_order_type": "pullback_limit",
                 "validity_minutes": self._intraday_validity_minutes(),
                 "trigger_checks": {
                     "legacy_mr_window_valid": bool(sd_upper_valid or sd_lower_valid),
