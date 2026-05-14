@@ -1567,6 +1567,226 @@
             loadSignals();
         };
 
+        const PROTECTION_ROLE_META = {
+            take_profit: { shortLabel: 'TP', label: '止盈', orderLabel: '止盈卖出单' },
+            stop_loss: { shortLabel: 'SL', label: '止损', orderLabel: '止损保护单' },
+        };
+        const PROTECTION_WORKING_STATUSES = new Set([
+            'apisent',
+            'apipending',
+            'pending',
+            'pendingsubmit',
+            'presubmitted',
+            'submitted',
+            'working',
+        ]);
+
+        function safeObject(value) {
+            return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+        }
+
+        function safeList(value) {
+            if (Array.isArray(value)) return value;
+            if (value === undefined || value === null || value === '') return [];
+            return String(value).split(',').map((item) => item.trim()).filter(Boolean);
+        }
+
+        function normalizeProtectionRole(role) {
+            const key = String(role || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+            if (['tp', 'takeprofit', 'take_profit'].includes(key)) return 'take_profit';
+            if (['sl', 'stoploss', 'stop_loss'].includes(key)) return 'stop_loss';
+            return key;
+        }
+
+        function uniqueProtectionRoles(...roleLists) {
+            const seen = new Set();
+            const roles = [];
+            roleLists.flatMap(safeList).forEach((role) => {
+                const normalized = normalizeProtectionRole(role);
+                if (!normalized || seen.has(normalized)) return;
+                seen.add(normalized);
+                roles.push(normalized);
+            });
+            return roles;
+        }
+
+        function normalizeProtectionStatusMap(value) {
+            const source = safeObject(value);
+            const result = {};
+            Object.entries(source).forEach(([role, statuses]) => {
+                const normalized = normalizeProtectionRole(role);
+                if (!normalized) return;
+                result[normalized] = safeList(statuses).map((status) => String(status || '').trim()).filter(Boolean);
+            });
+            return result;
+        }
+
+        function hasStatusMapData(statusMap) {
+            return Object.keys(statusMap || {}).length > 0;
+        }
+
+        function isWorkingProtectionStatus(status) {
+            return PROTECTION_WORKING_STATUSES.has(String(status || '').trim().toLowerCase());
+        }
+
+        function hasWorkingProtectionStatus(statuses) {
+            return safeList(statuses).some(isWorkingProtectionStatus);
+        }
+
+        function inferMissingProtectionRoles(pbStatuses, liveStatuses, liveCheckPerformed) {
+            const roles = Object.keys(PROTECTION_ROLE_META);
+            const inferred = [];
+            const hasPbData = hasStatusMapData(pbStatuses);
+            const hasLiveData = hasStatusMapData(liveStatuses);
+            roles.forEach((role) => {
+                const pbMissing = hasPbData && !hasWorkingProtectionStatus(pbStatuses[role]);
+                const liveMissing = liveCheckPerformed && hasLiveData && !hasWorkingProtectionStatus(liveStatuses[role]);
+                if (pbMissing || liveMissing) inferred.push(role);
+            });
+            return inferred;
+        }
+
+        function protectionRoleStatusText(statuses, fallback = '未确认') {
+            const values = [...new Set(safeList(statuses).map((status) => String(status || '').trim()).filter(Boolean))];
+            return values.length ? values.join(' / ') : fallback;
+        }
+
+        function protectionRoleChipHtml(role, missingRoles, pbStatuses, liveStatuses, liveCheckPerformed) {
+            const meta = PROTECTION_ROLE_META[role] || { shortLabel: role.toUpperCase(), label: role, orderLabel: role };
+            const missing = missingRoles.includes(role);
+            const liveText = liveCheckPerformed ? protectionRoleStatusText(liveStatuses[role]) : '';
+            const pbText = protectionRoleStatusText(pbStatuses[role]);
+            const stateText = missing
+                ? '缺失/未工作'
+                : (hasWorkingProtectionStatus(liveStatuses[role]) || hasWorkingProtectionStatus(pbStatuses[role]) ? '已确认' : '未确认');
+            const statusText = liveText ? `IBKR ${liveText}` : `PB ${pbText}`;
+            const cls = missing ? 'missing' : (stateText === '已确认' ? 'ok' : 'unknown');
+            return `
+                <span class="protection-role-chip ${cls}">
+                    <strong>${escapeHtml(meta.shortLabel)} ${escapeHtml(meta.label)}</strong>
+                    <span>${escapeHtml(stateText)}</span>
+                    <em>${escapeHtml(statusText)}</em>
+                </span>
+            `;
+        }
+
+        function describeProtectionIssue(missingRoles) {
+            const missingSet = new Set(missingRoles);
+            const missingStop = missingSet.has('stop_loss');
+            const missingTakeProfit = missingSet.has('take_profit');
+            if (missingStop && missingTakeProfit) {
+                return {
+                    title: '止盈/止损都未确认',
+                    severity: 'critical',
+                    summary: '系统没有确认到完整 TP/SL；如果已经成交，请按裸持仓处理。',
+                };
+            }
+            if (missingStop) {
+                return {
+                    title: '缺止损保护',
+                    severity: 'critical',
+                    summary: '止损未确认时，计划最大亏损不再可靠；已有持仓应优先补 SL 或平仓。',
+                };
+            }
+            if (missingTakeProfit) {
+                return {
+                    title: '缺止盈保护',
+                    severity: 'warning',
+                    summary: '止盈未确认会影响自动退出；先确认止损是否仍然有效。',
+                };
+            }
+            return {
+                title: '保护单未完整确认',
+                severity: 'warning',
+                summary: '系统无法确认 TP/SL 保护链路完整，需以 IBKR 实际持仓和挂单为准。',
+            };
+        }
+
+        function getProtectionActionCopy(missingRoles) {
+            const missingSet = new Set(missingRoles);
+            if (missingSet.has('stop_loss')) {
+                return '有持仓时先补止损或平仓；未成交但主单挂着时，取消主单或重提完整 bracket/OCO。';
+            }
+            if (missingSet.has('take_profit')) {
+                return '优先核对止损是否生效；确认安全后再补 TP、取消或重提完整保护单。';
+            }
+            return '先核对 IBKR Open Orders；如果 TP/SL 已存在，不要重复下单，改查同步和订单关联。';
+        }
+
+        function buildProtectionIncompletePanel(signal) {
+            if (String(signal?.status || '').trim().toLowerCase() !== 'protection_incomplete') return '';
+            const extra = safeObject(signal?.extra);
+            const diagnostic = safeObject(extra.protection_incomplete_diagnostic);
+            const pbStatuses = normalizeProtectionStatusMap(extra.protection_order_statuses || diagnostic.protection_order_statuses);
+            const liveStatuses = normalizeProtectionStatusMap(extra.protection_live_order_statuses || diagnostic.protection_live_order_statuses);
+            const liveCheckPerformed = Boolean(extra.protection_live_check_performed || diagnostic.protection_live_check_performed);
+            const inferredMissingRoles = inferMissingProtectionRoles(pbStatuses, liveStatuses, liveCheckPerformed);
+            const missingRoles = uniqueProtectionRoles(
+                extra.missing_protection_roles,
+                diagnostic.missing_protection_roles,
+                inferredMissingRoles,
+            );
+            const issue = describeProtectionIssue(missingRoles);
+            const liveCheckError = String(extra.protection_live_check_error || diagnostic.protection_live_check_error || '').trim();
+            const ordersChecked = Number(extra.protection_orders_checked ?? diagnostic.protection_orders_checked ?? 0) || 0;
+            const safetyCancelRecommended = Boolean(
+                extra.safety_cancel_recommended
+                || diagnostic.safety_cancel_recommended
+                || diagnostic.cancel_recommended
+            );
+            const reasonText = String(
+                diagnostic.reason
+                || extra.status_reason
+                || signal?.note
+                || 'protection_incomplete'
+            ).trim();
+            const missingOrderIds = safeList(extra.missing_order_ids || diagnostic.missing_order_ids)
+                .map((item) => String(item || '').trim())
+                .filter(Boolean);
+            const detailItems = [
+                ordersChecked > 0 ? `PB 已检查 ${ordersChecked} 条订单` : 'PB 未找到可确认的保护单记录',
+                liveCheckPerformed ? '已复核 IBKR Open Orders' : '尚未复核 IBKR Open Orders',
+                safetyCancelRecommended ? '系统建议人工复核并取消或修复未保护订单' : '',
+                liveCheckError ? `实盘复核错误: ${liveCheckError}` : '',
+            ].filter(Boolean);
+            const roleChips = Object.keys(PROTECTION_ROLE_META)
+                .map((role) => protectionRoleChipHtml(role, missingRoles, pbStatuses, liveStatuses, liveCheckPerformed))
+                .join('');
+            const signalIdLiteral = escapeHtml(toJsStringLiteral(signal?.signal_id || ''));
+            const ctaHtml = signal?.signal_id ? `
+                <button class="protection-panel-cta" type="button" onclick='viewSignalOrders(${signalIdLiteral})'>
+                    去订单页核对 TP/SL
+                </button>
+            ` : '';
+            const missingOrderHtml = missingOrderIds.length ? `
+                <div class="protection-missing-orders">
+                    missing_order_ids: ${escapeHtml(missingOrderIds.slice(0, 4).join(', '))}${missingOrderIds.length > 4 ? '...' : ''}
+                </div>
+            ` : '';
+            const severityClass = issue.severity === 'critical' || safetyCancelRecommended ? ' critical' : '';
+
+            return `
+                <div class="protection-alert${severityClass}">
+                    <div class="protection-alert-head">
+                        <div>
+                            <div class="protection-alert-kicker">Protection Check</div>
+                            <div class="protection-alert-title">${escapeHtml(issue.title)}</div>
+                        </div>
+                        <span class="protection-alert-badge">${issue.severity === 'critical' ? '高优先级' : '需复核'}</span>
+                    </div>
+                    <div class="protection-alert-summary">${escapeHtml(issue.summary)}</div>
+                    <div class="protection-role-row">${roleChips}</div>
+                    <div class="protection-action-copy">${escapeHtml(getProtectionActionCopy(missingRoles))}</div>
+                    <div class="protection-detail-row">
+                        ${detailItems.map((item) => `<span>${escapeHtml(item)}</span>`).join('')}
+                        <span>reason=${escapeHtml(reasonText)}</span>
+                    </div>
+                    ${missingOrderHtml}
+                    ${ctaHtml}
+                </div>
+            `;
+        }
+
         function renderSignals() {
             const container = document.getElementById('signalsContainer');
             const filtered = filterSignals();
@@ -1667,9 +1887,13 @@
                 const directionText = String(signal.direction || 'unknown').toUpperCase();
                 const signalIdLiteral = escapeHtml(toJsStringLiteral(signal.signal_id || ''));
                 const recordIdLiteral = escapeHtml(toJsStringLiteral(signal.id || ''));
+                const isProtectionIncomplete = String(statusClass || '').trim().toLowerCase() === 'protection_incomplete';
+                const protectionAlertHtml = buildProtectionIncompletePanel(signal);
+                const orderButtonClass = isProtectionIncomplete ? ' btn-protection' : '';
+                const orderButtonText = isProtectionIncomplete ? '🚨 订单处理' : '📋 订单';
 
                 return `
-                    <div class="signal-card${isSelected ? ' selected' : ''}" data-signal-id="${escapeHtml(signal.signal_id || '')}" style="${selectedStyle}">
+                    <div class="signal-card${isSelected ? ' selected' : ''}${isProtectionIncomplete ? ' protection-incomplete' : ''}" data-signal-id="${escapeHtml(signal.signal_id || '')}" style="${selectedStyle}">
                         <div class="signal-header">
                             <div style="display:flex;flex-direction:column;gap:4px;">
                                 <div class="signal-title">
@@ -1741,8 +1965,9 @@
                             </div>
                         </div>
 
-                        ${signal.note ? `<div class="signal-note signal-note-highlight"><strong>📋 备注:</strong> ${signal.note}</div>` : ''}
-                        ${signal.reason ? `<div class="signal-note"><strong>📊 原因:</strong> ${signal.reason}</div>` : ''}
+                        ${signal.note ? `<div class="signal-note signal-note-highlight"><strong>📋 备注:</strong> ${escapeHtml(signal.note)}</div>` : ''}
+                        ${signal.reason ? `<div class="signal-note"><strong>📊 原因:</strong> ${escapeHtml(signal.reason)}</div>` : ''}
+                        ${protectionAlertHtml}
 
                         <div class="signal-item full-width shares-amount">
                             <div class="shares-amount-left">
@@ -1774,8 +1999,8 @@
                                 <button class="action-btn btn-view${signal.signal_id ? '' : ' disabled'}" onclick='viewReverseSignal(${signalIdLiteral})' ${signal.signal_id ? '' : 'disabled'}>
                                     🔄 反向信号
                                 </button>
-                                <button class="action-btn btn-view${signal.signal_id ? '' : ' disabled'}" onclick='viewSignalOrders(${signalIdLiteral})' ${signal.signal_id ? '' : 'disabled'}>
-                                    📋 订单
+                                <button class="action-btn btn-view${orderButtonClass}${signal.signal_id ? '' : ' disabled'}" onclick='viewSignalOrders(${signalIdLiteral})' ${signal.signal_id ? '' : 'disabled'}>
+                                    ${orderButtonText}
                                 </button>
                             </div>
                             ${isAwaitingConfirm ? `
