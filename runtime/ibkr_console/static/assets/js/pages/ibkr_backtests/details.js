@@ -148,6 +148,7 @@
                         </div>
                     ` : '<div class="empty-state">暂无每日漏斗统计；旧 run 需要重新回测后生成。</div>'}
                 </div>
+                ${buildBacktestSetupBreakdownCard(selectedRun)}
                 <div class="detail-card">
                     <div class="subhead">Monthly Returns</div>
                     ${monthlyReturns.length ? `
@@ -201,6 +202,8 @@
                             event_type_counts: metrics.backtest_audit?.event_type_counts || {},
                             timeline_truncated: metrics.backtest_audit?.timeline_truncated || false,
                         },
+                        setup_summary: metrics.setup_summary || {},
+                        setup_stats: Array.isArray(metrics.setup_stats) ? metrics.setup_stats : [],
                         analysis_report: extra.analysis_report || {},
                     }, null, 2), 'runDetail')}
                 </div>

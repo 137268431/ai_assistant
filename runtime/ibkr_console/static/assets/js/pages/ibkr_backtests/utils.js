@@ -236,9 +236,10 @@
         }
 
         function normalizeTradeRecord(record) {
+            const extra = parseMaybeJson(record.extra, {});
             return {
                 ...record,
-                extra: parseMaybeJson(record.extra, {}),
+                extra,
                 pnl: Number(record.pnl || 0),
                 pnl_pct: Number(record.pnl_pct || 0),
                 entry_price: Number(record.entry_price || 0),
@@ -248,6 +249,10 @@
                 entry_bar_ms: Number(record.entry_bar_ms || 0),
                 exit_bar_ms: Number(record.exit_bar_ms || 0),
                 trade_index: Number(record.trade_index || 0),
+                setup: String(record.setup || extra.setup || '').trim(),
+                setup_label: String(record.setup_label || extra.setup_label || '').trim(),
+                setup_family: String(record.setup_family || extra.setup_family || '').trim(),
+                signal_mode: String(record.signal_mode || extra.signal_mode || '').trim(),
             };
         }
 
@@ -294,6 +299,10 @@
                 bar_index: Number(record.bar_index || extra.bar_index || 0),
                 us_time: String(record.us_time || extra.us_time || '').trim(),
                 cn_time: String(record.cn_time || extra.cn_time || '').trim(),
+                setup: String(record.setup || extra.setup || '').trim(),
+                setup_label: String(record.setup_label || extra.setup_label || '').trim(),
+                setup_family: String(record.setup_family || extra.setup_family || '').trim(),
+                signal_mode: String(record.signal_mode || extra.signal_mode || '').trim(),
             };
         }
 
@@ -319,6 +328,10 @@
                 bar_time_ms: Number(record.bar_time_ms || extra.bar_time_ms || 0),
                 us_time: String(record.us_time || extra.us_time || '').trim(),
                 cn_time: String(record.cn_time || extra.cn_time || '').trim(),
+                setup: String(record.setup || extra.setup || '').trim(),
+                setup_label: String(record.setup_label || extra.setup_label || '').trim(),
+                setup_family: String(record.setup_family || extra.setup_family || '').trim(),
+                signal_mode: String(record.signal_mode || extra.signal_mode || '').trim(),
                 score: Number(record.score || extra.score || 0),
                 priority: Number(record.priority || extra.priority || 0),
             };
@@ -358,6 +371,27 @@
             return compact;
         }
 
+        function getBacktestSetupField(source, key, fallback = '') {
+            if (!source || typeof source !== 'object') return fallback;
+            const details = source.details && typeof source.details === 'object' ? source.details : {};
+            const extra = source.extra && typeof source.extra === 'object' ? source.extra : {};
+            const value = source[key] ?? details[key] ?? extra[key];
+            return value === undefined || value === null || value === '' ? fallback : value;
+        }
+
+        function getBacktestSetupLabel(source) {
+            const label = getBacktestSetupField(source, 'setup_label', '');
+            if (label) return String(label).trim();
+            const setup = getBacktestSetupField(source, 'setup', '');
+            if (setup) return humanizeToken(String(setup));
+            const signal = getBacktestSetupField(source, 'signal', '');
+            return signal ? humanizeToken(String(signal)) : '';
+        }
+
+        function getBacktestSetupFilterValue(source) {
+            return String(getBacktestSetupLabel(source) || getBacktestSetupField(source, 'setup', '') || '').trim();
+        }
+
         function normalizeTrackingAuditEvent(event) {
             const source = event || {};
             const barTimeMs = Number(source.bar_time_ms || source.entry_bar_ms || source.exit_bar_ms || 0);
@@ -388,6 +422,10 @@
                 pnl: coerceTrackingNumber(source.pnl || 0),
                 pnl_pct: coerceTrackingNumber(source.pnl_pct || 0),
                 shares: Number(source.shares || 0),
+                setup: String(getBacktestSetupField(source, 'setup', '')).trim(),
+                setup_label: String(getBacktestSetupField(source, 'setup_label', '')).trim(),
+                setup_family: String(getBacktestSetupField(source, 'setup_family', '')).trim(),
+                signal_mode: String(getBacktestSetupField(source, 'signal_mode', '')).trim(),
                 details: cleanTrackingDetails(source.details || {}),
             };
             return normalized;
@@ -516,6 +554,7 @@
                         trade_count: 0,
                         risk_adjustment_count: 0,
                         special_event_count: 0,
+                        setup_labels: new Set(),
                         events: [],
                     });
                 }
@@ -527,6 +566,8 @@
                 if (eventType === 'trade_closed') flow.trade_count += 1;
                 if (stage === 'risk') flow.risk_adjustment_count += 1;
                 if (stage === 'special') flow.special_event_count += 1;
+                const setupLabel = getBacktestSetupLabel(event);
+                if (setupLabel) flow.setup_labels.add(setupLabel);
                 if (flow.events.length < 32) flow.events.push(event);
             });
             const dailySummary = Array.from(daily.values())
@@ -549,7 +590,10 @@
             const focusDate = dates.includes(requestedFocusDate) ? requestedFocusDate : (dates[dates.length - 1] || requestedFocusDate);
             const focusEvents = normalizedEvents.filter((event) => getTrackingEventDate(event) === focusDate);
             const focusDay = dailySummary.find((item) => item.date === focusDate) || { date: focusDate };
-            const flowRows = Array.from(flows.values()).sort((a, b) => (
+            const flowRows = Array.from(flows.values()).map((flow) => ({
+                ...flow,
+                setup_labels: Array.from(flow.setup_labels || []).sort(),
+            })).sort((a, b) => (
                 String(a.date || '').localeCompare(String(b.date || ''))
                 || (Number(Boolean(b.targeted)) - Number(Boolean(a.targeted)))
                 || String(a.symbol || '').localeCompare(String(b.symbol || ''))
@@ -560,6 +604,7 @@
                 dates,
                 symbols: Array.from(new Set(normalizedEvents.map((event) => event.symbol).filter(Boolean))).sort(),
                 eventTypes: Array.from(new Set(normalizedEvents.map((event) => event.event_type).filter(Boolean))).sort(),
+                setupLabels: Array.from(new Set(normalizedEvents.map((event) => getBacktestSetupFilterValue(event)).filter(Boolean))).sort(),
                 focus_date: focusDate,
                 focus_day: {
                     ...focusDay,
@@ -627,6 +672,9 @@
                     risk_adjustment_count: Number(flow.risk_adjustment_count || 0),
                     special_event_count: Number(flow.special_event_count || 0),
                     targeted: Boolean(flow.targeted),
+                    setup_labels: Array.isArray(flow.setup_labels) && flow.setup_labels.length
+                        ? flow.setup_labels.map((item) => String(item || '').trim()).filter(Boolean)
+                        : Array.from(new Set(dedupeTrackingEvents(flow.events || []).map((event) => getBacktestSetupFilterValue(event)).filter(Boolean))).sort(),
                 }))
                 : summaries.symbol_day_flows;
             return {
@@ -658,6 +706,10 @@
                     ...(Array.isArray(auditPayload.focus_symbols) ? auditPayload.focus_symbols : []),
                 ])).sort(),
                 eventTypes: summaries.eventTypes,
+                setupLabels: Array.from(new Set([
+                    ...summaries.setupLabels,
+                    ...symbolDayFlows.flatMap((flow) => flow.setup_labels || []),
+                ])).sort(),
             };
         }
 
@@ -716,6 +768,10 @@
                         direction: row.direction,
                         signal_id: row.signal_id,
                         signal: row.signal,
+                        setup: row.setup,
+                        setup_label: row.setup_label,
+                        setup_family: row.setup_family,
+                        signal_mode: row.signal_mode,
                         bar_time_ms: Number(item?.bar_time_ms || item?.entry_bar_ms || row.bar_time_ms || 0),
                         us_time: item?.us_time || item?.entry_us_time || row.us_time || '',
                         cn_time: item?.cn_time || item?.entry_cn_time || row.cn_time || '',
@@ -774,6 +830,10 @@
                         direction: trade.direction,
                         signal_id: trade.signal_id || adjustment.signal_id,
                         signal: trade.signal,
+                        setup: trade.setup || extra.setup || '',
+                        setup_label: trade.setup_label || extra.setup_label || '',
+                        setup_family: trade.setup_family || extra.setup_family || '',
+                        signal_mode: trade.signal_mode || extra.signal_mode || '',
                         trade_index: Number(trade.trade_index || 0),
                         bar_time_ms: Number(adjustment.bar_time_ms || 0),
                         us_time: adjustment.us_time || '',
@@ -794,6 +854,10 @@
                     direction: trade.direction,
                     signal_id: trade.signal_id,
                     signal: trade.signal,
+                    setup: trade.setup || extra.setup || '',
+                    setup_label: trade.setup_label || extra.setup_label || '',
+                    setup_family: trade.setup_family || extra.setup_family || '',
+                    signal_mode: trade.signal_mode || extra.signal_mode || '',
                     trade_index: Number(trade.trade_index || 0),
                     bar_time_ms: Number(trade.exit_bar_ms || 0),
                     us_time: trade.exit_us_time || '',
@@ -825,6 +889,10 @@
                     symbol: row.symbol,
                     direction: row.direction,
                     signal_id: row.signal_id || row.extra?.signal_id,
+                    setup: row.setup,
+                    setup_label: row.setup_label,
+                    setup_family: row.setup_family,
+                    signal_mode: row.signal_mode,
                     bar_time_ms: Number(row.bar_time_ms || 0),
                     us_time: row.us_time || '',
                     cn_time: row.cn_time || '',
@@ -867,6 +935,7 @@
                 dates: summaries.dates,
                 symbols: summaries.symbols,
                 eventTypes: summaries.eventTypes,
+                setupLabels: summaries.setupLabels,
             };
         }
 

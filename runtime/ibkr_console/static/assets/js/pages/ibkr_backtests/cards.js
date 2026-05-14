@@ -148,6 +148,79 @@
             `;
         }
 
+        function buildBacktestSetupBreakdownCard(run) {
+            const metrics = run?.metrics || {};
+            const setupRows = Array.isArray(metrics.setup_stats) ? metrics.setup_stats : [];
+            const summary = metrics.setup_summary && typeof metrics.setup_summary === 'object' ? metrics.setup_summary : {};
+            if (!setupRows.length && !Object.keys(summary).length) {
+                return `
+                    <div class="detail-card">
+                        <div class="subhead">Setup Breakdown</div>
+                        <div class="empty-state">暂无 setup 维度统计；旧 run 或未启用 setup-flattening 的 run 会显示为空。</div>
+                    </div>
+                `;
+            }
+            const sortedRows = setupRows.slice().sort((a, b) => Number(b?.net_pnl || 0) - Number(a?.net_pnl || 0));
+            const setupPage = getBacktestClientPagination('setupBreakdown', sortedRows);
+            const insufficient = Array.isArray(summary.insufficient_sample_setups)
+                ? summary.insufficient_sample_setups.map((item) => String(item || '').trim()).filter(Boolean)
+                : [];
+            return `
+                <div class="detail-card">
+                    <div class="subhead">Setup Breakdown</div>
+                    <div class="foot-note">按后端提供的 setup_stats 展示；字段缺失时以 -- 或 0 兜底。</div>
+                    <div class="detail-list" style="margin-top: 12px;">
+                        <div class="detail-item"><div class="detail-item-label">Setup Count</div><div class="detail-item-value">${escapeHtml(String(summary.setup_count ?? setupRows.length ?? 0))}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Top Contributor</div><div class="detail-item-value">${escapeHtml(summary.top_contributor || '--')}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Top Drag</div><div class="detail-item-value">${escapeHtml(summary.top_drag || '--')}</div></div>
+                        <div class="detail-item"><div class="detail-item-label">Insufficient Samples</div><div class="detail-item-value">${escapeHtml(insufficient.join(', ') || '--')}</div></div>
+                    </div>
+                    ${sortedRows.length ? `
+                        ${renderBacktestClientPaginationBar('setupBreakdown', sortedRows)}
+                        <div class="table-wrap" style="margin-top: 10px;">
+                            <table class="data-table" style="min-width: 980px;">
+                                <thead>
+                                    <tr>
+                                        <th>Setup</th>
+                                        <th>Family</th>
+                                        <th>Dir / Mode</th>
+                                        <th>Signals</th>
+                                        <th>Fill Rate</th>
+                                        <th>Trades</th>
+                                        <th>Net PnL</th>
+                                        <th>Win / PF</th>
+                                        <th>Expectancy</th>
+                                        <th>Reverse</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${setupPage.pageRows.map((item) => {
+                                        const setupName = item.setup_label || item.setup || '--';
+                                        const direction = String(item.direction || '').trim().toLowerCase();
+                                        return `
+                                            <tr>
+                                                <td>${escapeHtml(setupName)}<br><span class="mono" style="color: var(--muted);">${escapeHtml(item.setup || '--')}</span></td>
+                                                <td>${escapeHtml(item.setup_family || '--')}</td>
+                                                <td>${direction ? `<span class="tag ${direction === 'short' ? 'short' : 'long'}">${escapeHtml(direction.toUpperCase())}</span>` : '--'}<br><span class="mono" style="color: var(--muted);">${escapeHtml(item.signal_mode || '--')}</span></td>
+                                                <td>${escapeHtml(String(item.signal_count || 0))}<br><span style="color: var(--muted);">exec ${escapeHtml(String(item.executed_signal_count || 0))}</span></td>
+                                                <td>${escapeHtml(formatPct(item.signal_fill_rate || 0))}</td>
+                                                <td>${escapeHtml(String(item.trade_count || 0))}</td>
+                                                <td class="${classForValue(item.net_pnl)}">${escapeHtml(formatMoney(item.net_pnl || 0))}</td>
+                                                <td>${escapeHtml(formatPct(item.win_rate || 0))}<br><span style="color: var(--muted);">PF ${escapeHtml(formatNumber(item.profit_factor || 0, 2))}</span></td>
+                                                <td class="${classForValue(item.expectancy)}">${escapeHtml(formatMoney(item.expectancy || 0))}</td>
+                                                <td>${escapeHtml(formatBreakdown(item.reverse_action_breakdown || {}))}</td>
+                                            </tr>
+                                        `;
+                                    }).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    ` : '<div class="empty-state" style="margin-top: 14px;">setup_summary 存在，但暂无 setup_stats 明细。</div>'}
+                </div>
+            `;
+        }
+
+
         function backtestAuditEventLabel(event) {
             const type = String(event?.event_type || '');
             const labels = {

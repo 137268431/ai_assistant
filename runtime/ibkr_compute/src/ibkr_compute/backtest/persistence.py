@@ -310,6 +310,15 @@ class BacktestPersistenceMixin:
         initial_take_profit = float(
             signal.get("initial_take_profit", signal_extra.get("initial_take_profit", signal.get("target_price", signal.get("take_profit", 0)))) or 0
         )
+        setup_meta = build_setup_metadata(
+            signal_extra.get("setup") or signal.get("setup") or signal.get("signal", ""),
+            fallback_signal=signal.get("signal", ""),
+            direction=direction,
+            signal_mode=signal_extra.get("signal_mode") or signal.get("signal_mode", ""),
+            strategy_profile=signal_extra.get("strategy_profile", ""),
+            setup_priority=signal_extra.get("setup_priority") or signal.get("setup_priority"),
+            exit_policy_type=signal_extra.get("exit_policy_type") or signal.get("exit_policy_type", ""),
+        )
         return {
             "symbol": symbol,
             "direction": direction,
@@ -330,14 +339,20 @@ class BacktestPersistenceMixin:
             "risk_r": risk_r,
             "exit_policy_profile": str(signal_extra.get("exit_policy_profile") or signal.get("exit_policy_profile", "") or ""),
             "exit_policy": str(signal_extra.get("exit_policy") or signal.get("exit_policy", "") or ""),
-            "exit_policy_type": str(signal_extra.get("exit_policy_type") or signal.get("exit_policy_type", "") or ""),
+            "exit_policy_type": str(signal_extra.get("exit_policy_type") or signal.get("exit_policy_type") or setup_meta.get("exit_policy_type") or ""),
             "exit_policy_settings": dict(signal_extra.get("exit_policy_settings") or {}),
+            "setup": str(setup_meta.get("setup") or ""),
+            "setup_label": str(setup_meta.get("setup_label") or ""),
+            "setup_family": str(setup_meta.get("setup_family") or ""),
+            "signal_mode": str(setup_meta.get("signal_mode") or ""),
+            "strategy_profile": str(setup_meta.get("strategy_profile") or ""),
+            "setup_priority": setup_meta.get("setup_priority"),
             "target_state": dict(signal_extra.get("target_state") or {}),
             "trail_state": dict(signal_extra.get("trail_state") or {}),
             "risk_adjustments": [],
             "target_stop_adjust_count": 0,
             "last_target_policy_update": {},
-            "last_stop_atr": float((signal.get("extra") or {}).get("atr", 0) or 0),
+            "last_stop_atr": float(signal_extra.get("atr", 0) or 0),
             "atr_stop_adjust_count": 0,
             "mfe": 0.0,
             "mae": 0.0,
@@ -355,7 +370,6 @@ class BacktestPersistenceMixin:
             "signal_us_time": str(signal.get("signal_us_time", "") or ""),
             "signal_close": float(signal.get("signal_close", 0) or 0),
             "entry_order_type": entry_order_type,
-            "setup": str(signal.get("setup", "") or ""),
         }
 
     def _check_exit(
@@ -436,6 +450,15 @@ class BacktestPersistenceMixin:
         pnl_pct = 0.0
         position_cost = max(0.01, float(position["entry_price"]) * shares)
         pnl_pct = (pnl / position_cost) * 100.0
+        setup_meta = build_setup_metadata(
+            position.get("setup") or position.get("signal", ""),
+            fallback_signal=position.get("signal", ""),
+            direction=direction,
+            signal_mode=position.get("signal_mode", ""),
+            strategy_profile=position.get("strategy_profile", ""),
+            setup_priority=position.get("setup_priority"),
+            exit_policy_type=position.get("exit_policy_type", ""),
+        )
         execution_extra = self._build_execution_trade_extra(
             position,
             exit_result,
@@ -463,7 +486,12 @@ class BacktestPersistenceMixin:
             "bars_held": int(position.get("bars_held", 0) or 0),
             "exit_reason": exit_reason,
             "session_type": str(bar.get("session_type", "") or "regular"),
+            "setup": setup_meta.get("setup", ""),
+            "setup_label": setup_meta.get("setup_label", ""),
+            "setup_family": setup_meta.get("setup_family", ""),
+            "signal_mode": setup_meta.get("signal_mode", ""),
             "extra": {
+                **setup_meta,
                 "stop_price": stop_price,
                 "target_price": target_price,
                 "mfe": round(float(position.get("mfe", 0) or 0), 4),
@@ -529,6 +557,15 @@ class BacktestPersistenceMixin:
         pnl = gross_pnl - float(position["entry_commission"]) - exit_commission
         position_cost = max(0.01, float(position["entry_price"]) * shares)
         pnl_pct = (pnl / position_cost) * 100.0
+        setup_meta = build_setup_metadata(
+            position.get("setup") or position.get("signal", ""),
+            fallback_signal=position.get("signal", ""),
+            direction=direction,
+            signal_mode=position.get("signal_mode", ""),
+            strategy_profile=position.get("strategy_profile", ""),
+            setup_priority=position.get("setup_priority"),
+            exit_policy_type=position.get("exit_policy_type", ""),
+        )
         execution_extra = self._build_execution_trade_extra(
             position,
             exit_result,
@@ -556,7 +593,12 @@ class BacktestPersistenceMixin:
             "bars_held": int(position.get("bars_held", 0) or 0),
             "exit_reason": reason,
             "session_type": str(bar.get("session_type", "") or "regular"),
+            "setup": setup_meta.get("setup", ""),
+            "setup_label": setup_meta.get("setup_label", ""),
+            "setup_family": setup_meta.get("setup_family", ""),
+            "signal_mode": setup_meta.get("signal_mode", ""),
             "extra": {
+                **setup_meta,
                 "stop_price": float(position.get("stop_price", 0) or 0),
                 "target_price": float(position.get("target_price", 0) or 0),
                 "mfe": round(float(position.get("mfe", 0) or 0), 4),

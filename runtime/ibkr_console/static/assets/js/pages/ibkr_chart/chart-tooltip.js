@@ -14,7 +14,9 @@
                 : 'No signal on this bar';
             const traceStage = getTraceStage(context?.trace);
             const traceText = traceStage ? formatTraceDecisionLabel(context?.trace, signal) : '';
-            const setup = signal ? getSignalField(signal, 'setup', '') : context?.trace?.signal_state?.setup || context?.trace?.setup || '';
+            const setupMeta = getSignalSetupMeta(signal || getTraceSignalPayload(context?.trace), context?.trace);
+            const setup = setupMeta.label || setupMeta.setup;
+            const setupModeText = [setupMeta.mode, setupMeta.profile, setupMeta.source ? `src ${setupMeta.source}` : ''].filter(Boolean).join(' · ');
             const entryOrderType = signal ? getSignalField(signal, 'entry_order_type', '') : context?.trace?.signal_state?.entry_order_type || context?.trace?.entry_order_type || '';
             const technicalDescription = signal ? getSignalField(signal, 'technical_description', '') : context?.trace?.signal_state?.technical_description || context?.trace?.technical_description || '';
             const riskSignal = signal || getTraceSignalPayload(context?.trace);
@@ -36,7 +38,8 @@
                     <div style="color:#8BA4C4;">${isPreviewBar && !indicator ? 'SD 压缩与 Z 分数待收盘确认' : `WidthRank ${escapeHtml(formatOptionalNumber(indicator?.sd_width_rank))} · CloseZ ${escapeHtml(formatOptionalNumber(indicator?.sd_close_z))} · RVOL20 ${escapeHtml(formatOptionalNumber(indicator?.rvol_20))}`}</div>
                     <div style="color:#8BA4C4;">${isPreviewBar && !indicator ? 'ORB 待收盘确认' : `ORB H/L ${escapeHtml(formatPrice(indicator?.orb_high))}/${escapeHtml(formatPrice(indicator?.orb_low))} · ${escapeHtml(getOrbBreakoutText(indicator))}`}</div>
                     <div style="color:#8BA4C4;">${isPreviewBar && !indicator ? 'Preview bar 仅用于盘中参考' : `Touch ${escapeHtml(getTouchSummary(indicator))} · Div ${escapeHtml(getDivergenceSummary(indicator, 6))}`}</div>
-                    ${setup || entryOrderType ? `<div style="margin-top:6px;color:#CBD5E1;">Setup ${escapeHtml(humanizeToken(setup || '--'))} · Order ${escapeHtml(getOrderTypeText(entryOrderType))}</div>` : ''}
+                    ${setup || entryOrderType ? `<div style="margin-top:6px;color:#CBD5E1;">Setup ${escapeHtml(setup || '--')} · Order ${escapeHtml(getOrderTypeText(entryOrderType))}</div>` : ''}
+                    ${setupModeText ? `<div style="color:#CBD5E1;">${escapeHtml(setupModeText)}</div>` : ''}
                     ${riskSummary ? `<div style="color:#CBD5E1;">${escapeHtml(riskSummary)}</div>` : ''}
                     ${technicalDescription ? `<div style="color:#CBD5E1;">${escapeHtml(technicalDescription)}</div>` : ''}
                     ${traceText ? `<div style="margin-top:6px;color:${traceStage === 'blocked' ? '#FDBA74' : traceStage === 'confirmed' ? '#86EFAC' : '#FDE68A'};">${escapeHtml(traceText)}</div>` : ''}

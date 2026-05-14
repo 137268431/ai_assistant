@@ -39,6 +39,7 @@ from ibkr_compute.core.risk_management import (
 )
 from ibkr_compute.core.exit_policy import is_signal_mode_adaptive_exit_profile
 from ibkr_compute.core.signal_generator import SignalGenerator
+from ibkr_compute.core.setup_registry import build_setup_metadata, normalize_setup_name
 from ibkr_compute.core.timeline_builder import build_runtime_timeline
 from ibkr_compute.broker import BrokerAdapter
 from ibkr_compute.integrations.pb_client import PBClient

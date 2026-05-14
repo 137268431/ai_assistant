@@ -261,6 +261,8 @@
             const dailySelectedProfile = metrics.daily_selected_profile || metrics.portfolio_profile || selectedRun.extra?.daily_selected_profile || {};
             const dailySelectionCache = metrics.daily_selection_cache || selectedRun.extra?.daily_selection_cache || selectedRun.extra?.historical_targeting?.daily_selection_cache || {};
             const phaseRuntime = getBacktestPhaseRuntimeModel(selectedRun);
+            const setupStats = Array.isArray(metrics.setup_stats) ? metrics.setup_stats : [];
+            const setupSummary = metrics.setup_summary && typeof metrics.setup_summary === 'object' ? metrics.setup_summary : {};
             const primaryCards = [
                 ['Net PnL', formatMoney(selectedRun.net_pnl), classForValue(selectedRun.net_pnl), `${selectedRun.trade_count} trades`],
                 ['Total Return', formatPct(selectedRun.total_return_pct), classForValue(selectedRun.total_return_pct), `ending ${formatMoney(metrics.ending_equity || 0)}`],
@@ -283,6 +285,14 @@
                 ['Signal → Entry', formatPct(metrics.signal_to_entry_rate || 0), classForValue((metrics.signal_to_entry_rate || 0) - 50), `${metrics.funnel_executed_signal_count ?? metrics.executed_signal_count ?? 0}/${metrics.funnel_signal_count ?? metrics.signal_count ?? 0} executed`],
                 ['Reverse Actions', String(metrics.backtest_reverse_signal_count || 0), '', formatBreakdown(metrics.backtest_reverse_action_breakdown || {})],
             ];
+            if (setupStats.length || Object.keys(setupSummary).length) {
+                secondaryCards.splice(3, 0, [
+                    'Setup Mix',
+                    String(setupSummary.setup_count ?? setupStats.length ?? 0),
+                    '',
+                    `${setupSummary.top_contributor || 'top --'} / drag ${setupSummary.top_drag || '--'}`,
+                ]);
+            }
             if (dailySelectedProfile.enabled || dailySelectedProfile.mode === 'daily_selected_live_sd') {
                 secondaryCards.splice(6, 0, [
                     'Daily Selected',

@@ -401,8 +401,11 @@
             const extra = getSignalExtra(signal);
             const reason = signal.reason || signal.note || extra.reason || '暂无原因说明';
             const technicalDescription = getSignalField(signal, 'technical_description', '');
-            const setup = getSignalField(signal, 'setup', '');
-            const strategyProfile = getSignalField(signal, 'strategy_profile', '');
+            const setupMeta = getSignalSetupMeta(signal, ctx?.trace);
+            const setup = setupMeta.label || setupMeta.setup || getSignalField(signal, 'setup', '');
+            const strategyProfile = setupMeta.profile || getSignalField(signal, 'strategy_profile', '');
+            const setupMode = setupMeta.mode || getSignalField(signal, 'signal_mode', '');
+            const setupSource = setupMeta.source;
             const entryOrderType = getSignalField(signal, 'entry_order_type', '');
             const validityMinutes = getSignalField(signal, 'validity_minutes', '');
             const triggerChecks = getSignalField(signal, 'trigger_checks', null);
@@ -451,7 +454,11 @@
                     </div>
                     <div class="drawer-metric">
                         <div class="drawer-label">Setup / Order</div>
-                        <div class="drawer-value">${escapeHtml(humanizeToken(setup || strategyProfile || '--'))}<br>${escapeHtml(getOrderTypeText(entryOrderType))}${validityMinutes ? ` · ${escapeHtml(String(validityMinutes))}m` : ''}</div>
+                        <div class="drawer-value">${escapeHtml(setup || strategyProfile || '--')}<br>${escapeHtml(getOrderTypeText(entryOrderType))}${validityMinutes ? ` · ${escapeHtml(String(validityMinutes))}m` : ''}</div>
+                    </div>
+                    <div class="drawer-metric">
+                        <div class="drawer-label">Mode / Profile</div>
+                        <div class="drawer-value">${escapeHtml(setupMode || '--')}<br>${escapeHtml(strategyProfile || '--')}</div>
                     </div>
                 </div>
 
@@ -472,7 +479,7 @@
 
                 <div class="drawer-block">
                     <div class="drawer-block-title">Source</div>
-                    <div class="drawer-copy">${escapeHtml(sourceNote)}</div>
+                    <div class="drawer-copy">${escapeHtml(sourceNote)}${setupSource ? `<br>Setup source: ${escapeHtml(setupSource)}` : ''}</div>
                 </div>
 
                 <div class="drawer-grid">
@@ -534,6 +541,7 @@
                 windowFlags.sd_lower_valid || windowFlags.sd_lower_active ? '下轨窗口' : '',
             ].filter(Boolean).join(' / ') || '无窗口';
             const signalStage = getTraceSignalStageText(trace);
+            const setupMeta = getSignalSetupMeta(traceSignal, trace);
             const traceReason = trace?.technical_description || signalState.technical_description || traceSignal.technical_description || getTraceFilterReason(trace) || signalState.reason || signalState.filter_reason || 'bars 实时推演';
             const ohlc = formatInlineOHLC(bar);
             content.innerHTML = `
@@ -577,7 +585,7 @@
 
                 <div class="drawer-block">
                     <div class="drawer-block-title">Setup / Order</div>
-                    <div class="drawer-copy">${escapeHtml([signalState.strategy_profile || traceSignal.strategy_profile, signalState.setup || traceSignal.setup, getOrderTypeText(signalState.entry_order_type || traceSignal.entry_order_type), signalState.validity_minutes || traceSignal.validity_minutes ? `${signalState.validity_minutes || traceSignal.validity_minutes}m有效` : ''].filter(Boolean).join(' · ') || '旧 trace 未提供 setup')}</div>
+                    <div class="drawer-copy">${escapeHtml([setupMeta.label || setupMeta.setup, setupMeta.mode, setupMeta.profile, setupMeta.source ? `source ${setupMeta.source}` : '', getOrderTypeText(signalState.entry_order_type || traceSignal.entry_order_type), signalState.validity_minutes || traceSignal.validity_minutes ? `${signalState.validity_minutes || traceSignal.validity_minutes}m有效` : ''].filter(Boolean).join(' · ') || '旧 trace 未提供 setup')}</div>
                 </div>
 
                 <div class="drawer-block">
@@ -960,7 +968,7 @@
                             <div class="metric-item"><div class="metric-label">多头信号</div><div class="metric-value">${longCount}</div></div>
                             <div class="metric-item"><div class="metric-label">空头信号</div><div class="metric-value">${shortCount}</div></div>
                             <div class="metric-item"><div class="metric-label">最新信号</div><div class="metric-value">${latestSignal ? escapeHtml(buildTradeSignalLabel(latestSignal)) : '--'}</div></div>
-                            <div class="metric-item"><div class="metric-label">Setup / Order</div><div class="metric-value">${latestSignal ? `${escapeHtml(humanizeToken(getSignalField(latestSignal, 'setup', '--')))}<br>${escapeHtml(getOrderTypeText(getSignalField(latestSignal, 'entry_order_type', '')))}` : '--'}</div></div>
+                            <div class="metric-item"><div class="metric-label">Setup / Order</div><div class="metric-value">${latestSignal ? `${escapeHtml(getSignalSetupMeta(latestSignal).label || humanizeToken(getSignalField(latestSignal, 'setup', '--')))}<br>${escapeHtml(getSignalSetupMeta(latestSignal).mode || getOrderTypeText(getSignalField(latestSignal, 'entry_order_type', '')))}` : '--'}</div></div>
                         </div>
                         <div class="rail-sub">IBKR 对比不写库。</div>
                     </div>
@@ -975,7 +983,7 @@
                                     <div class="signal-item interactive ${isActive ? 'active' : ''}" onclick="focusSignalBar('${signalMs}', '${encodedSignalKey}')">
                                         <div class="signal-side">
                                             <div class="signal-title">${escapeHtml(buildTradeSignalLabel(signal))}</div>
-                                            <div class="signal-meta">${escapeHtml(formatSignalTime(signal))}${getSignalField(signal, 'setup', '') ? ` · ${escapeHtml(humanizeToken(getSignalField(signal, 'setup', '')))}` : ''}</div>
+                                            <div class="signal-meta">${escapeHtml(formatSignalTime(signal))}${getSignalSetupMeta(signal).label ? ` · ${escapeHtml(getSignalSetupMeta(signal).label)}` : ''}</div>
                                         </div>
                                         <span class="signal-badge ${escapeHtml(getSignalBadgeClass(signal))}">${escapeHtml(String(signal.direction || '--').toUpperCase())}</span>
                                     </div>
@@ -1061,7 +1069,7 @@
                             <div class="signal-item interactive ${isActive ? 'active' : ''}" onclick="focusSignalBar('${signalMs}', '${encodedSignalKey}')">
                                 <div class="signal-side">
                                     <div class="signal-title">${escapeHtml(buildTradeSignalLabel(signal))}</div>
-                                    <div class="signal-meta">${escapeHtml(formatSignalTime(signal))}${getSignalField(signal, 'setup', '') ? ` · ${escapeHtml(humanizeToken(getSignalField(signal, 'setup', '')))}` : ''}</div>
+                                    <div class="signal-meta">${escapeHtml(formatSignalTime(signal))}${getSignalSetupMeta(signal).label ? ` · ${escapeHtml(getSignalSetupMeta(signal).label)}` : ''}</div>
                                 </div>
                                 <span class="signal-badge ${String(signal.direction || '').toLowerCase() === 'short' ? 'short' : 'long'}">${escapeHtml(String(signal.direction || '--').toUpperCase())}</span>
                             </div>

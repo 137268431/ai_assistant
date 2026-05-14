@@ -13,6 +13,7 @@ from ibkr_compute.api.compute.runtime_state.caches import (
 )
 from ibkr_compute.api.compute.market_sentiment import build_market_sentiment_extra
 from ibkr_compute.api.compute.runtime_state.runtime import _api_app
+from ibkr_compute.core.setup_registry import build_setup_metadata
 
 
 def build_indicator_payload(environment: str, symbol: str, interval: str, bar: dict, engine, snapshot: dict):
@@ -58,6 +59,16 @@ def build_signal_payload(environment: str, symbol: str, interval: str, bar: dict
     signal_type = str(signal.get("signal", "") or "")
     initial_status, initial_status_reason = api_app.resolve_initial_signal_state(environment, bar_ms)
     signal_extra = dict(signal.get("extra") or {})
+    setup_meta = build_setup_metadata(
+        signal_extra.get("setup") or signal.get("setup") or signal_type,
+        fallback_signal=signal_type,
+        direction=signal.get("direction", ""),
+        signal_mode=signal_extra.get("signal_mode") or signal.get("signal_mode", ""),
+        strategy_profile=signal_extra.get("strategy_profile", ""),
+        setup_priority=signal_extra.get("setup_priority"),
+        exit_policy_type=signal_extra.get("exit_policy_type", ""),
+    )
+    signal_extra.update(setup_meta)
     market_sentiment_extra = build_market_sentiment_extra(
         api_app=api_app,
         environment=environment,

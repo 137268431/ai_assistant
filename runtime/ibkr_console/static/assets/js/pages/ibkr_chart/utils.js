@@ -750,6 +750,30 @@
             return value === undefined || value === null || value === '' ? fallback : value;
         }
 
+
+        function getSignalSetupMeta(signal, trace = null) {
+            const signalState = getTraceSignalState(trace);
+            const traceSignal = getTraceSignalPayload(trace) || {};
+            const source = signal || traceSignal || {};
+            const extra = getSignalExtra(source);
+            const pick = (...values) => {
+                for (const value of values) {
+                    if (value !== undefined && value !== null && value !== '') return value;
+                }
+                return '';
+            };
+            const setup = pick(source.setup, extra.setup, signalState.setup, traceSignal.setup, trace?.setup);
+            const label = pick(source.setup_label, extra.setup_label, signalState.setup_label, traceSignal.setup_label, trace?.setup_label, setup ? humanizeToken(setup) : '');
+            return {
+                setup: String(setup || '').trim(),
+                label: String(label || '').trim(),
+                family: String(pick(source.setup_family, extra.setup_family, signalState.setup_family, traceSignal.setup_family, trace?.setup_family) || '').trim(),
+                mode: String(pick(source.signal_mode, extra.signal_mode, signalState.signal_mode, traceSignal.signal_mode, trace?.signal_mode) || '').trim(),
+                profile: String(pick(source.strategy_profile, source.profile, extra.strategy_profile, extra.profile, signalState.strategy_profile, traceSignal.strategy_profile) || '').trim(),
+                source: String(pick(source.setup_source, source.source, extra.setup_source, extra.source, signalState.setup_source, traceSignal.setup_source, trace?.source) || '').trim(),
+            };
+        }
+
         function normalizeCheckList(value) {
             if (!value) return [];
             if (Array.isArray(value)) return value.filter((item) => item !== null && item !== undefined && String(item).trim());

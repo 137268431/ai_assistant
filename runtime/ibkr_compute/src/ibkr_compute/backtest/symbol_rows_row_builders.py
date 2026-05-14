@@ -176,6 +176,16 @@ class BacktestSymbolRowsRowBuildersMixin:
         chart_tf = interval_to_chart_tf("5m")
         bar_ms = int(bar.get("bar_time_ms", 0) or 0)
         signal_extra = dict(signal.get("extra") or {})
+        setup_meta = build_setup_metadata(
+            signal_extra.get("setup") or signal.get("setup") or signal.get("signal", ""),
+            fallback_signal=signal.get("signal", ""),
+            direction=signal.get("direction", ""),
+            signal_mode=signal_extra.get("signal_mode") or signal.get("signal_mode", ""),
+            strategy_profile=signal_extra.get("strategy_profile", ""),
+            setup_priority=signal_extra.get("setup_priority"),
+            exit_policy_type=signal_extra.get("exit_policy_type", ""),
+        )
+        signal_extra.update(setup_meta)
         signal_extra.update(
             {
                 **(daily_fields or {}),

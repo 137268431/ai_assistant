@@ -18,10 +18,14 @@
                 trackingFilters.date = model.focus_date || model.dates?.[model.dates.length - 1] || '';
                 trackingFilters.symbol = '';
                 trackingFilters.eventType = '';
+                trackingFilters.setup = '';
                 return;
             }
             if (trackingFilters.date && !(model.dates || []).includes(trackingFilters.date)) {
                 trackingFilters.date = model.focus_date || model.dates?.[model.dates.length - 1] || '';
+            }
+            if (trackingFilters.setup && !(model.setupLabels || []).includes(trackingFilters.setup)) {
+                trackingFilters.setup = '';
             }
         }
 
@@ -40,16 +44,20 @@
             const dateSelect = document.getElementById('trackingDateFilter');
             const symbolSelect = document.getElementById('trackingSymbolFilter');
             const eventTypeSelect = document.getElementById('trackingEventTypeFilter');
+            const setupSelect = document.getElementById('trackingSetupFilter');
             if (!dateSelect || !symbolSelect || !eventTypeSelect) return;
             const dateHtml = renderTrackingOptions(model?.dates || [], trackingFilters.date, '全部日期');
             const symbolHtml = renderTrackingOptions(model?.symbols || [], trackingFilters.symbol, '全部标的');
             const eventHtml = renderTrackingOptions(model?.eventTypes || [], trackingFilters.eventType, '全部事件');
+            const setupHtml = renderTrackingOptions(model?.setupLabels || [], trackingFilters.setup, '全部 Setup');
             if (dateSelect.innerHTML !== dateHtml) dateSelect.innerHTML = dateHtml;
             if (symbolSelect.innerHTML !== symbolHtml) symbolSelect.innerHTML = symbolHtml;
             if (eventTypeSelect.innerHTML !== eventHtml) eventTypeSelect.innerHTML = eventHtml;
+            if (setupSelect && setupSelect.innerHTML !== setupHtml) setupSelect.innerHTML = setupHtml;
             if (dateSelect.value !== trackingFilters.date) dateSelect.value = trackingFilters.date;
             if (symbolSelect.value !== trackingFilters.symbol) symbolSelect.value = trackingFilters.symbol;
             if (eventTypeSelect.value !== trackingFilters.eventType) eventTypeSelect.value = trackingFilters.eventType;
+            if (setupSelect && setupSelect.value !== trackingFilters.setup) setupSelect.value = trackingFilters.setup;
         }
 
         function getFilteredTrackingEvents(model) {
@@ -58,6 +66,7 @@
                 if (trackingFilters.date && getTrackingEventDate(event) !== trackingFilters.date) return false;
                 if (trackingFilters.symbol && String(event.symbol || '') !== trackingFilters.symbol) return false;
                 if (trackingFilters.eventType && String(event.event_type || '') !== trackingFilters.eventType) return false;
+                if (trackingFilters.setup && getBacktestSetupFilterValue(event) !== trackingFilters.setup) return false;
                 return true;
             });
         }
@@ -67,8 +76,10 @@
             return flows.filter((flow) => {
                 if (trackingFilters.date && String(flow.date || '') !== trackingFilters.date) return false;
                 if (trackingFilters.symbol && String(flow.symbol || '') !== trackingFilters.symbol) return false;
-                if (trackingFilters.eventType) {
-                    return (flow.events || []).some((event) => String(event.event_type || '') === trackingFilters.eventType);
+                if (trackingFilters.eventType && !(flow.events || []).some((event) => String(event.event_type || '') === trackingFilters.eventType)) return false;
+                if (trackingFilters.setup) {
+                    return (flow.setup_labels || []).includes(trackingFilters.setup)
+                        || (flow.events || []).some((event) => getBacktestSetupFilterValue(event) === trackingFilters.setup);
                 }
                 return true;
             });
@@ -193,6 +204,7 @@
                                     <span>trades ${escapeHtml(String(flow.trade_count || 0))}</span>
                                     <span>risk ${escapeHtml(String(flow.risk_adjustment_count || 0))}</span>
                                     <span>special ${escapeHtml(String(flow.special_event_count || 0))}</span>
+                                    ${(flow.setup_labels || []).slice(0, 2).map((label) => `<span>setup ${escapeHtml(label)}</span>`).join('')}
                                 </div>
                                 <div class="tracking-flow-chain">${renderTrackingEventChips(flow.events || [])}</div>
                                 <div class="tracking-flow-actions">
@@ -262,6 +274,7 @@
                                         <td>${escapeHtml(event.status || '--')}</td>
                                         <td class="mono">${formatAuditPriceChange(event)}</td>
                                         <td class="mono">${escapeHtml(event.signal_id || event.signal || '--')}</td>
+                                        <td>${escapeHtml(getBacktestSetupLabel(event) || '--')}${event.signal_mode ? `<br><span class="tracking-details mono">${escapeHtml(event.signal_mode)}</span>` : ''}</td>
                                         <td>${escapeHtml(event.reason || '--')}${formatTrackingDetails(event) ? `<br><span class="tracking-details mono">${escapeHtml(formatTrackingDetails(event))}</span>` : ''}</td>
                                         <td><button class="btn ghost" type="button" onclick="replayTrackingEvent('${escapeHtml(event.symbol || '')}', ${Number(replayMs || 0)})">回放</button></td>
                                     </tr>
@@ -342,6 +355,7 @@
             trackingFilters.date = String(document.getElementById('trackingDateFilter')?.value || '').trim();
             trackingFilters.symbol = String(document.getElementById('trackingSymbolFilter')?.value || '').trim();
             trackingFilters.eventType = String(document.getElementById('trackingEventTypeFilter')?.value || '').trim();
+            trackingFilters.setup = String(document.getElementById('trackingSetupFilter')?.value || '').trim();
             backtestTableExpandedState.trackingTimeline = false;
             backtestTableExpandedState.trackingFlows = false;
             resetBacktestClientPagination('trackingTimeline');
@@ -354,6 +368,7 @@
             trackingFilters.date = model?.focus_date || model?.dates?.[model.dates.length - 1] || '';
             trackingFilters.symbol = '';
             trackingFilters.eventType = '';
+            trackingFilters.setup = '';
             backtestTableExpandedState.trackingTimeline = false;
             backtestTableExpandedState.trackingFlows = false;
             resetBacktestClientPagination('trackingTimeline');

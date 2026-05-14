@@ -168,6 +168,7 @@
             trackingFilters.date = '';
             trackingFilters.symbol = '';
             trackingFilters.eventType = '';
+            trackingFilters.setup = '';
             backtestTableExpandedState.trades = false;
             backtestTableExpandedState.trackingTimeline = false;
             backtestTableExpandedState.trackingFlows = false;

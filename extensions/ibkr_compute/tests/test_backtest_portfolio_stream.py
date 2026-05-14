@@ -799,6 +799,61 @@ class BacktestPortfolioStreamTests(unittest.TestCase):
         self.assertFalse(self.service._portfolio_signal_expired(signal, signal_bar_ms + 5 * 60 * 1000, request))
         self.assertTrue(self.service._portfolio_signal_expired(signal, signal_bar_ms + 6 * 60 * 1000, request))
 
+    def test_setup_level_metrics_split_independent_setups(self):
+        metrics = self.service._build_setup_level_metrics(
+            [
+                {
+                    "signal_id": "sig-squeeze",
+                    "signal": "sd_squeeze_breakout_long",
+                    "direction": "long",
+                    "status": "executed",
+                    "extra": {"setup": "sd_squeeze_breakout_long", "signal_mode": "breakout"},
+                },
+                {
+                    "signal_id": "sig-vwap",
+                    "signal": "vwap_trend_pullback_short",
+                    "direction": "short",
+                    "status": "dropped",
+                    "extra": {
+                        "setup": "vwap_trend_pullback_short",
+                        "signal_mode": "trend_pullback",
+                        "signal_status_reason": "active_target_exists",
+                    },
+                },
+            ],
+            [
+                {
+                    "signal_id": "sig-squeeze",
+                    "signal": "sd_squeeze_breakout_long",
+                    "direction": "long",
+                    "pnl": 25.0,
+                    "exit_reason": "take_profit",
+                    "extra": {"mfe": 3.0, "mae": 0.5},
+                }
+            ],
+            [
+                {
+                    "signal_id": "sig-squeeze",
+                    "signal": "sd_squeeze_breakout_long",
+                    "direction": "long",
+                    "action_type": "adjust_sl",
+                    "extra": {},
+                }
+            ],
+        )
+
+        rows = {row["setup"]: row for row in metrics["setup_stats"]}
+        self.assertEqual(metrics["setup_summary"]["setup_count"], 2)
+        self.assertEqual(metrics["setup_summary"]["top_contributor"], "sd_squeeze_breakout_long")
+        self.assertIn("sd_squeeze_breakout_long", rows)
+        self.assertIn("vwap_trend_pullback_short", rows)
+        self.assertEqual(rows["sd_squeeze_breakout_long"]["setup_family"], "breakout")
+        self.assertEqual(rows["sd_squeeze_breakout_long"]["trade_count"], 1)
+        self.assertEqual(rows["sd_squeeze_breakout_long"]["net_pnl"], 25.0)
+        self.assertEqual(rows["sd_squeeze_breakout_long"]["reverse_action_breakdown"]["adjust_sl"], 1)
+        self.assertEqual(rows["vwap_trend_pullback_short"]["signal_rejection_breakdown"]["active_target_exists"], 1)
+        self.assertEqual(rows["vwap_trend_pullback_short"]["setup_family"], "trend_pullback")
+
     def test_marketable_limit_pending_fill_uses_signal_entry_price(self):
         signal_bar_ms = int(datetime(2026, 4, 1, 10, 0, tzinfo=ET).timestamp() * 1000)
         pending = {

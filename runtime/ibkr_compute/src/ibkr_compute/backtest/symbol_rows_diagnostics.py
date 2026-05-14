@@ -47,6 +47,201 @@ class BacktestSymbolRowsDiagnosticsMixin:
             counts[reason] = counts.get(reason, 0) + 1
         return counts
 
+    def _build_setup_level_metrics(
+        self,
+        signal_rows: list[dict],
+        trades: list[dict],
+        reverse_rows: list[dict],
+    ) -> dict:
+        def bump(counts: dict, key: str, amount: int = 1):
+            label = str(key or "").strip() or "unknown"
+            counts[label] = int(counts.get(label, 0) or 0) + int(amount or 0)
+
+        def pct(numerator: int, denominator: int) -> float:
+            return round((float(numerator) / float(denominator)) * 100.0, 4) if denominator else 0.0
+
+        def safe_float(value: Any, default: float = 0.0) -> float:
+            try:
+                return float(value)
+            except Exception:
+                return default
+
+        def row_setup_meta(row: dict, *, fallback_signal: str = "") -> dict:
+            extra = self._parse_object(row.get("extra"))
+            return build_setup_metadata(
+                extra.get("setup") or row.get("setup") or fallback_signal or row.get("signal", ""),
+                fallback_signal=fallback_signal or row.get("signal", ""),
+                direction=extra.get("direction") or row.get("direction", ""),
+                signal_mode=extra.get("signal_mode") or row.get("signal_mode", ""),
+                strategy_profile=extra.get("strategy_profile", ""),
+                setup_priority=extra.get("setup_priority") or row.get("setup_priority"),
+                exit_policy_type=extra.get("exit_policy_type") or row.get("exit_policy_type", ""),
+            )
+
+        def empty_stat(meta: dict) -> dict:
+            return {
+                "setup": str(meta.get("setup") or "unknown_setup"),
+                "setup_label": str(meta.get("setup_label") or ""),
+                "setup_family": str(meta.get("setup_family") or ""),
+                "direction": str(meta.get("direction") or ""),
+                "signal_mode": str(meta.get("signal_mode") or ""),
+                "strategy_profile": str(meta.get("strategy_profile") or ""),
+                "exit_policy_type": str(meta.get("exit_policy_type") or ""),
+                "signal_count": 0,
+                "executed_signal_count": 0,
+                "signal_fill_rate": 0.0,
+                "trade_count": 0,
+                "net_pnl": 0.0,
+                "gross_profit": 0.0,
+                "gross_loss": 0.0,
+                "win_rate": 0.0,
+                "profit_factor": 0.0,
+                "expectancy": 0.0,
+                "avg_win": 0.0,
+                "avg_loss": 0.0,
+                "win_loss_ratio": 0.0,
+                "avg_mfe": 0.0,
+                "avg_mae": 0.0,
+                "exit_reason_breakdown": {},
+                "signal_status_breakdown": {},
+                "signal_rejection_breakdown": {},
+                "reverse_action_breakdown": {},
+            }
+
+        setup_stats: dict[str, dict] = {}
+        signal_setup_by_id: dict[str, dict] = {}
+        pnl_by_setup: dict[str, list[float]] = {}
+        mfe_by_setup: dict[str, list[float]] = {}
+        mae_by_setup: dict[str, list[float]] = {}
+
+        def get_stat(meta: dict) -> dict:
+            key = str(meta.get("setup") or "unknown_setup")
+            stat = setup_stats.get(key)
+            if stat is None:
+                stat = empty_stat(meta)
+                setup_stats[key] = stat
+            for field in ("setup_label", "setup_family", "direction", "signal_mode", "strategy_profile", "exit_policy_type"):
+                if meta.get(field) and not stat.get(field):
+                    stat[field] = str(meta.get(field) or "")
+            return stat
+
+        for row in signal_rows or []:
+            meta = row_setup_meta(row)
+            stat = get_stat(meta)
+            stat["signal_count"] += 1
+            status = str(row.get("status", "") or "generated").strip().lower() or "generated"
+            bump(stat["signal_status_breakdown"], status)
+            if status == "executed":
+                stat["executed_signal_count"] += 1
+            if status in {"skipped", "dropped"}:
+                extra = self._parse_object(row.get("extra"))
+                reason = str(extra.get("signal_status_reason") or status).strip()
+                bump(stat["signal_rejection_breakdown"], reason)
+            signal_id = str(row.get("signal_id", "") or "").strip()
+            if signal_id:
+                signal_setup_by_id[signal_id] = meta
+
+        for trade in trades or []:
+            trade_extra = self._parse_object(trade.get("extra"))
+            signal_id = str(trade.get("signal_id", "") or "").strip()
+            meta = row_setup_meta(
+                {
+                    **trade,
+                    "extra": {
+                        **trade_extra,
+                        **(signal_setup_by_id.get(signal_id) or {}),
+                    },
+                },
+                fallback_signal=trade.get("signal", ""),
+            )
+            stat = get_stat(meta)
+            pnl = safe_float(trade.get("pnl"), 0.0)
+            stat["trade_count"] += 1
+            stat["net_pnl"] += pnl
+            stat["gross_profit"] += max(0.0, pnl)
+            stat["gross_loss"] += min(0.0, pnl)
+            bump(stat["exit_reason_breakdown"], str(trade.get("exit_reason") or "unknown"))
+            pnl_by_setup.setdefault(stat["setup"], []).append(pnl)
+            mfe_by_setup.setdefault(stat["setup"], []).append(safe_float(trade_extra.get("mfe"), 0.0))
+            mae_by_setup.setdefault(stat["setup"], []).append(safe_float(trade_extra.get("mae"), 0.0))
+
+        for row in reverse_rows or []:
+            extra = self._parse_object(row.get("extra"))
+            signal_id = str(row.get("signal_id") or extra.get("signal_id") or "").strip()
+            meta = row_setup_meta(
+                {
+                    **row,
+                    "extra": {
+                        **extra,
+                        **(signal_setup_by_id.get(signal_id) or {}),
+                    },
+                },
+                fallback_signal=row.get("signal", ""),
+            )
+            stat = get_stat(meta)
+            bump(stat["reverse_action_breakdown"], str(row.get("action_type") or "unknown"))
+
+        rows = []
+        setup_analysis = []
+        for setup, stat in setup_stats.items():
+            pnls = pnl_by_setup.get(setup, [])
+            winners = [value for value in pnls if value > 0]
+            losers = [value for value in pnls if value < 0]
+            trade_count = int(stat.get("trade_count", 0) or 0)
+            signal_count = int(stat.get("signal_count", 0) or 0)
+            gross_profit = float(stat.get("gross_profit", 0.0) or 0.0)
+            gross_loss = float(stat.get("gross_loss", 0.0) or 0.0)
+            stat["net_pnl"] = round(float(stat.get("net_pnl", 0.0) or 0.0), 4)
+            stat["gross_profit"] = round(gross_profit, 4)
+            stat["gross_loss"] = round(gross_loss, 4)
+            stat["signal_fill_rate"] = pct(int(stat.get("executed_signal_count", 0) or 0), signal_count)
+            stat["win_rate"] = pct(len(winners), trade_count)
+            stat["profit_factor"] = round((gross_profit / abs(gross_loss)), 4) if gross_loss < 0 else 0.0
+            stat["expectancy"] = round((stat["net_pnl"] / trade_count), 4) if trade_count else 0.0
+            stat["avg_win"] = round((gross_profit / len(winners)), 4) if winners else 0.0
+            stat["avg_loss"] = round((gross_loss / len(losers)), 4) if losers else 0.0
+            stat["win_loss_ratio"] = round((stat["avg_win"] / abs(stat["avg_loss"])), 4) if stat["avg_loss"] < 0 else 0.0
+            stat["avg_mfe"] = round(statistics.fmean(mfe_by_setup.get(setup, [])), 4) if mfe_by_setup.get(setup) else 0.0
+            stat["avg_mae"] = round(statistics.fmean(mae_by_setup.get(setup, [])), 4) if mae_by_setup.get(setup) else 0.0
+
+            if trade_count < 10 and signal_count < 30:
+                verdict = "insufficient_sample"
+            elif stat["net_pnl"] > 0 and stat["profit_factor"] >= 1.3 and stat["win_rate"] >= 45:
+                verdict = "strong"
+            elif stat["net_pnl"] <= 0 and (stat["profit_factor"] < 1 or stat["win_rate"] < 40):
+                verdict = "weak"
+            else:
+                verdict = "mixed"
+            analysis = {
+                "setup": stat["setup"],
+                "setup_label": stat["setup_label"],
+                "verdict": verdict,
+                "sample_note": "needs_more_samples" if verdict == "insufficient_sample" else "",
+            }
+            stat["analysis"] = analysis
+            setup_analysis.append(analysis)
+            rows.append(stat)
+
+        rows.sort(key=lambda item: (float(item.get("net_pnl", 0) or 0), int(item.get("trade_count", 0) or 0)), reverse=True)
+        traded_rows = [item for item in rows if int(item.get("trade_count", 0) or 0) > 0]
+        top_contributor = max(traded_rows, key=lambda item: float(item.get("net_pnl", 0) or 0), default={})
+        top_drag = min(traded_rows, key=lambda item: float(item.get("net_pnl", 0) or 0), default={})
+        insufficient = [
+            item["setup"]
+            for item in rows
+            if int(item.get("trade_count", 0) or 0) < 10 and int(item.get("signal_count", 0) or 0) < 30
+        ]
+        return {
+            "setup_stats": rows,
+            "setup_summary": {
+                "setup_count": len(rows),
+                "top_contributor": top_contributor.get("setup", ""),
+                "top_drag": top_drag.get("setup", ""),
+                "insufficient_sample_setups": insufficient,
+            },
+            "setup_analysis": setup_analysis,
+        }
+
     def _build_daily_scan_match_diagnostics(self, target_rows: list[dict], signal_rows: list[dict]) -> dict:
         selected_by_date: dict[str, set[str]] = {}
         selected_pairs = set()
@@ -425,6 +620,17 @@ class BacktestSymbolRowsDiagnosticsMixin:
             event["signal_id"] = str(event.get("signal_id", "") or "")
             event["reason"] = str(event.get("reason", "") or "")
             event["details"] = clean_details(event.get("details") if isinstance(event.get("details"), dict) else {})
+            if event.get("setup") or event["details"].get("setup") or event.get("signal"):
+                setup_meta = build_setup_metadata(
+                    event.get("setup") or event["details"].get("setup") or event.get("signal", ""),
+                    fallback_signal=event.get("signal", ""),
+                    direction=event.get("direction", ""),
+                    signal_mode=event.get("signal_mode") or event["details"].get("signal_mode", ""),
+                    strategy_profile=event.get("strategy_profile") or event["details"].get("strategy_profile", ""),
+                    setup_priority=event.get("setup_priority") or event["details"].get("setup_priority"),
+                    exit_policy_type=event.get("exit_policy_type") or event["details"].get("exit_policy_type", ""),
+                )
+                event.update(setup_meta)
             events.append(event)
 
         for row in target_rows or []:

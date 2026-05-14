@@ -15,6 +15,7 @@ from ibkr_compute.core.indicator_engine import IndicatorEngine
 from ibkr_compute.core.indicators.atr import ATRIndicator
 from ibkr_compute.core.indicators.sd_channel import SDChannel
 from ibkr_compute.core.signal_generator import SignalGenerator
+from ibkr_compute.market.timeframe_utils import build_signal_id
 
 
 def intraday_breakout_snapshot(**overrides):
@@ -150,6 +151,9 @@ class IntradaySdV1CoreTest(unittest.TestCase):
         self.assertEqual(extra["strategy_profile"], "intraday_sd_v1")
         self.assertEqual(extra["entry_order_type"], "marketable_limit")
         self.assertEqual(extra["setup"], "sd_squeeze_breakout_long")
+        self.assertEqual(extra["setup_family"], "breakout")
+        self.assertEqual(extra["setup_label"], "SD Squeeze Breakout Long")
+        self.assertEqual(extra["signal_mode"], "breakout")
         self.assertEqual(extra["entry_window_start_time"], "09:35")
         self.assertEqual(extra["entry_window_end_time"], "10:30")
 
@@ -219,6 +223,26 @@ class IntradaySdV1CoreTest(unittest.TestCase):
             if item["source"] == "legacy_sd" and item["setup"] == "sd_mr_reversal_long"
         )
         self.assertTrue(legacy_candidate["triggered"])
+        self.assertEqual(signal["extra"]["setup_family"], "mean_reversion")
+        self.assertEqual(signal["extra"]["setup_label"], "SD MR Reversal Long")
+
+    def test_intraday_sd_v1_canonical_setups_have_distinct_signal_id_suffixes(self):
+        bar_ms = 1777660200000
+        setups = [
+            "sd_squeeze_breakout_long",
+            "sd_squeeze_breakout_short",
+            "vwap_trend_pullback_long",
+            "vwap_trend_pullback_short",
+            "sd_trend_continuation_long",
+            "sd_trend_continuation_short",
+            "sd_mr_reversal_long",
+            "sd_mr_reversal_short",
+        ]
+
+        signal_ids = {build_signal_id("SPY", bar_ms, setup) for setup in setups}
+
+        self.assertEqual(len(signal_ids), len(setups))
+        self.assertTrue(all(signal_id.startswith("SPY_") for signal_id in signal_ids))
 
     def test_intraday_entry_window_can_be_extended_by_params(self):
         gen = SignalGenerator(

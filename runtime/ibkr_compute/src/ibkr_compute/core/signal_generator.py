@@ -17,6 +17,7 @@ from datetime import datetime
 from .exit_policy import apply_exit_policy_to_position
 from .indicator_engine import params_for_interval
 from .position_sizing import calc_marketable_limit_position
+from .setup_registry import build_setup_metadata
 from .time_utils import ET
 
 logger = logging.getLogger(__name__)
@@ -699,10 +700,19 @@ class SignalGenerator:
         filter_reason: str = "",
     ) -> dict:
         filters_pass = all(filter_checks.values())
+        setup_meta = build_setup_metadata(
+            setup,
+            direction=direction,
+            signal_mode=signal_mode,
+            setup_priority=priority,
+        )
         return {
             "setup": setup,
             "direction": direction,
             "signal_mode": signal_mode,
+            "setup_label": setup_meta.get("setup_label", ""),
+            "setup_family": setup_meta.get("setup_family", ""),
+            "exit_policy_type": setup_meta.get("exit_policy_type", ""),
             "source": source,
             "priority": int(priority or 0),
             "trigger_checks": dict(trigger_checks),
@@ -817,13 +827,37 @@ class SignalGenerator:
         sd_lower_valid: bool,
     ) -> dict:
         if candidate.get("source") == "legacy_sd":
-            return self._build_signal(
+            signal = self._build_signal(
                 str(candidate.get("direction") or ""),
                 snapshot,
                 sd_upper_valid,
                 sd_lower_valid,
             )
+            return self._with_candidate_setup_metadata(signal, candidate)
         return self._build_intraday_signal(snapshot, candidate)
+
+    def _with_candidate_setup_metadata(self, signal: dict, candidate: dict) -> dict:
+        if not signal:
+            return signal
+        extra = dict(signal.get("extra") or {})
+        setup = str(extra.get("setup") or signal.get("setup") or signal.get("signal") or candidate.get("setup") or "")
+        signal_mode = str(extra.get("signal_mode") or candidate.get("signal_mode") or "")
+        setup_meta = build_setup_metadata(
+            setup,
+            fallback_signal=signal.get("signal", ""),
+            direction=signal.get("direction") or candidate.get("direction") or "",
+            signal_mode=signal_mode,
+            strategy_profile=self.strategy_profile,
+            setup_priority=candidate.get("priority"),
+            exit_policy_type=extra.get("exit_policy_type") or candidate.get("exit_policy_type") or "",
+        )
+        extra.update(setup_meta)
+        signal["extra"] = extra
+        signal["setup"] = setup_meta.get("setup", setup)
+        signal["setup_label"] = setup_meta.get("setup_label", "")
+        signal["setup_family"] = setup_meta.get("setup_family", "")
+        signal["signal_mode"] = setup_meta.get("signal_mode", signal_mode)
+        return signal
 
     def _build_intraday_signal(self, snapshot: dict, candidate: dict) -> dict:
         direction = str(candidate.get("direction") or "")
@@ -842,9 +876,16 @@ class SignalGenerator:
             signal_mode=signal_mode,
         )
         reason = str(candidate.get("technical_description") or setup)
+        setup_meta = build_setup_metadata(
+            setup,
+            direction=direction,
+            signal_mode=signal_mode,
+            strategy_profile=self.strategy_profile,
+            setup_priority=candidate.get("priority"),
+            exit_policy_type=exit_meta.get("exit_policy_type", ""),
+        )
         extra = {
-            "strategy_profile": self.strategy_profile,
-            "setup": setup,
+            **setup_meta,
             "sd_regime": snapshot.get("sd_regime", ""),
             "entry_order_type": "marketable_limit",
             "entry_price_plan": pos.get("entry_limit_mode", "marketable_limit_dynamic"),
@@ -890,6 +931,10 @@ class SignalGenerator:
             "reason": reason,
             "interval": self.interval,
             "extra": extra,
+            "setup": setup_meta.get("setup", setup),
+            "setup_label": setup_meta.get("setup_label", ""),
+            "setup_family": setup_meta.get("setup_family", ""),
+            "signal_mode": setup_meta.get("signal_mode", signal_mode),
         }
 
     def _intraday_validity_minutes(self) -> int:
@@ -1080,7 +1125,15 @@ class SignalGenerator:
             signal_mode=signal_mode,
         )
 
+        setup_meta = build_setup_metadata(
+            signal_type,
+            direction=direction,
+            signal_mode=signal_mode,
+            strategy_profile=self.strategy_profile,
+            exit_policy_type=exit_meta.get("exit_policy_type", ""),
+        )
         extra = {
+            **setup_meta,
             "sd_zone": self._zone_str(snapshot),
             "sd_trend": self._trend_str(snapshot.get("sd_trend", 0)),
             "signal_window": signal_window,
@@ -1104,8 +1157,7 @@ class SignalGenerator:
         }
         if self._is_intraday_sd_v1():
             extra.update({
-                "strategy_profile": self.strategy_profile,
-                "setup": signal_type,
+                **setup_meta,
                 "sd_regime": snapshot.get("sd_regime", ""),
                 "validity_minutes": self._intraday_validity_minutes(),
                 "trigger_checks": {
@@ -1136,6 +1188,10 @@ class SignalGenerator:
             "reason": reason,
             "interval": self.interval,
             "extra": extra,
+            "setup": setup_meta.get("setup", signal_type),
+            "setup_label": setup_meta.get("setup_label", ""),
+            "setup_family": setup_meta.get("setup_family", ""),
+            "signal_mode": setup_meta.get("signal_mode", signal_mode),
         }
 
     def _empty_trace(self) -> dict:
@@ -1152,6 +1208,9 @@ class SignalGenerator:
                 "ema_touch_line": "",
                 "div_source": "",
                 "setup": "",
+                "setup_label": "",
+                "setup_family": "",
+                "strategy_profile": "",
                 "entry_order_type": "",
                 "technical_description": "",
                 "trigger_checks": {},
@@ -1203,16 +1262,24 @@ class SignalGenerator:
                 base = "SD挤压突破多"
             elif setup == "vwap_trend_pullback_long":
                 base = "VWAP趋势回踩多"
+            elif setup == "sd_trend_continuation_long":
+                base = "SD顺势延续多"
+            elif setup == "sd_mr_reversal_long":
+                base = "SD均值回归多"
             else:
-                base = "顺势多" if signal_mode == "trend" and signal_window == "sd_upper" else "回归多"
+                base = "顺势多" if signal_mode in {"trend", "trend_continuation"} and signal_window == "sd_upper" else "回归多"
         elif direction == "short":
             setup = str(extra.get("setup", "") or "")
             if setup == "sd_squeeze_breakout_short":
                 base = "SD挤压突破空"
             elif setup == "vwap_trend_pullback_short":
                 base = "VWAP趋势回踩空"
+            elif setup == "sd_trend_continuation_short":
+                base = "SD顺势延续空"
+            elif setup == "sd_mr_reversal_short":
+                base = "SD均值回归空"
             else:
-                base = "顺势空" if signal_mode == "trend" and signal_window == "sd_lower" else "回归空"
+                base = "顺势空" if signal_mode in {"trend", "trend_continuation"} and signal_window == "sd_lower" else "回归空"
         else:
             base = str(signal.get("signal") or "信号")
         suffix_map = {
@@ -1251,6 +1318,9 @@ class SignalGenerator:
                 "ema_touch_line": str(signal_extra.get("ema_touch_line", "") or ""),
                 "div_source": str(signal_extra.get("div_source", "") or ""),
                 "setup": str(signal_extra.get("setup", "") or ""),
+                "setup_label": str(signal_extra.get("setup_label", "") or ""),
+                "setup_family": str(signal_extra.get("setup_family", "") or ""),
+                "strategy_profile": str(signal_extra.get("strategy_profile", "") or ""),
                 "entry_order_type": str(signal_extra.get("entry_order_type", "") or ""),
                 "technical_description": str(signal_extra.get("technical_description", "") or ""),
                 "trigger_checks": dict(signal_extra.get("trigger_checks") or {}),

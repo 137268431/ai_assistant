@@ -76,11 +76,18 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
                 pageSize: 20,
                 pageSizeOptions: [20, 50, 100],
             },
+            setupBreakdown: {
+                label: 'Setup Breakdown',
+                noun: '个 setup',
+                pageSize: 12,
+                pageSizeOptions: [12, 24, 48],
+            },
         });
         const trackingFilters = {
             date: '',
             symbol: '',
             eventType: '',
+            setup: '',
         };
         const BACKTEST_TABLE_PREVIEW_LIMITS = Object.freeze({
             runs: 8,

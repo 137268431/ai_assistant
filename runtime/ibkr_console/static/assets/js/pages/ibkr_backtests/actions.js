@@ -343,6 +343,7 @@
             trackingFilters.date = '';
             trackingFilters.symbol = '';
             trackingFilters.eventType = '';
+            trackingFilters.setup = '';
             dataQualityFilters.date = 'all';
             dataQualityFilters.status = 'all';
             backtestTextExpandedState.strategyParams = false;

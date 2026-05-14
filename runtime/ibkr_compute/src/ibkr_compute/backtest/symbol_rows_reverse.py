@@ -184,7 +184,16 @@ class BacktestSymbolRowsReverseMixin:
         )
         if position:
             position["entry_order_type"] = entry_order_type
-            position["setup"] = str(pending_signal.get("setup") or "")
+            setup_meta = build_setup_metadata(
+                pending_signal.get("setup") or pending_signal.get("signal", ""),
+                fallback_signal=pending_signal.get("signal", ""),
+                direction=pending_signal.get("direction", ""),
+                signal_mode=pending_signal.get("signal_mode") or self._parse_object(pending_signal.get("extra")).get("signal_mode", ""),
+                strategy_profile=self._parse_object(pending_signal.get("extra")).get("strategy_profile", ""),
+                setup_priority=self._parse_object(pending_signal.get("extra")).get("setup_priority"),
+                exit_policy_type=pending_signal.get("exit_policy_type") or self._parse_object(pending_signal.get("extra")).get("exit_policy_type", ""),
+            )
+            position.update(setup_meta)
         return position
 
     def _calculate_position_progress(self, target: dict, current_price: float) -> dict:
@@ -510,7 +519,18 @@ class BacktestSymbolRowsReverseMixin:
         origin_signal_id = signal_id
         if origin_signal_payload is not None:
             origin_signal_id = str(origin_signal_payload.get("signal_id", "") or "").strip() or signal_id
+        target_extra = self._parse_object(target.get("extra"))
+        setup_meta = build_setup_metadata(
+            target_extra.get("setup") or target.get("setup") or target.get("signal", ""),
+            fallback_signal=target.get("signal", ""),
+            direction=direction,
+            signal_mode=target_extra.get("signal_mode") or target.get("signal_mode", ""),
+            strategy_profile=target_extra.get("strategy_profile") or target.get("strategy_profile", ""),
+            setup_priority=target_extra.get("setup_priority") or target.get("setup_priority"),
+            exit_policy_type=target_extra.get("exit_policy_type") or target.get("exit_policy_type", ""),
+        )
         extra = {
+            **setup_meta,
             "environment": BACKTEST_ENVIRONMENT,
             "source_environment": request.get("source_environment") or "",
             "reverse_kind": reverse_kind,
@@ -580,6 +600,10 @@ class BacktestSymbolRowsReverseMixin:
             "action_type": action_type,
             "status": "generated",
             "reason": reason,
+            "setup": setup_meta.get("setup", ""),
+            "setup_label": setup_meta.get("setup_label", ""),
+            "setup_family": setup_meta.get("setup_family", ""),
+            "signal_mode": setup_meta.get("signal_mode", ""),
             "priority": max(1, min(10, int(round(score)) or 1)),
             "signal_id": signal_id,
             "origin_signal_id": origin_signal_id,
