@@ -7,7 +7,7 @@ from ibkr_api.orders.group_cancel import CancelBrokerOrder
 from ibkr_api.orders.values import to_text
 from ibkr_api.signals.notifications import SignalStatusNotifier, apply_signal_status_notification, sync_signal_status_notification
 from ibkr_api.signals.order_cancel import OrderStatusNotifier, build_signal_cancel_order_summary, cancel_signal_related_orders
-from ibkr_api.signals.values import load_signal_record, merge_signal_extra, now_iso_utc, signal_status, signal_symbol
+from ibkr_api.signals.values import get_signal_extra, load_signal_record, merge_signal_extra, now_iso_utc, signal_status, signal_symbol
 from ibkr_api.webhooks.pages import fail_page, ok_page, warn_page
 
 
@@ -262,13 +262,26 @@ def build_signal_confirm_webhook_response(
             symbol,
         )
 
+    existing_extra = get_signal_extra(record)
+    confirm_time = now_iso_utc(now_provider or clock)
+    extra_update = {
+        "confirmed_by": "manual",
+        "confirmed_at": confirm_time,
+        "status_reason": "confirmed_by_user",
+    }
+    if existing_extra.get("followup_requires_reconfirm") or existing_extra.get("confirmation_stale"):
+        extra_update.update(
+            {
+                "followup_requires_reconfirm": False,
+                "confirmation_stale": False,
+                "reconfirmed_by": "manual",
+                "reconfirmed_at": confirm_time,
+                "reconfirm_resolution": "confirmed_by_user",
+            }
+        )
     extra_patch = merge_signal_extra(
         record,
-        {
-            "confirmed_by": "manual",
-            "confirmed_at": now_iso_utc(now_provider or clock),
-            "status_reason": "confirmed_by_user",
-        },
+        extra_update,
     )
     updated_record = pb.update_record(
         "ibkr_signals",

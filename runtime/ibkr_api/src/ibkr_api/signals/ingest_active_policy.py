@@ -15,6 +15,8 @@ PROTECTION_BLOCK_SIGNAL_STATUSES = {"protection_incomplete"}
 ACTIVE_SIGNAL_STATUSES = MUTABLE_SIGNAL_STATUSES | BROKER_CONTROLLED_SIGNAL_STATUSES | PROTECTION_BLOCK_SIGNAL_STATUSES
 INACTIVE_SIGNAL_STATUSES = {"rejected", "expired", "closed", "cancelled", "canceled", "dropped"}
 STRONG_REVERSE_SCORE = 6.0
+EXECUTION_PARAM_FIELDS = ("entry", "limit_price", "take_profit", "stop_loss", "shares")
+PRICE_EXECUTION_FIELDS = {"entry", "limit_price", "take_profit", "stop_loss"}
 
 
 def _now_iso_utc() -> str:
@@ -36,6 +38,75 @@ def _is_truthy(value: Any) -> bool:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return value != 0
     return parse_boolean(value, False)
+
+
+def _execution_compare_value(field: str, value: Any) -> float | str | None:
+    if value in (None, ""):
+        return None
+    parsed = _to_number(value)
+    if parsed is None:
+        text = to_text(value)
+        return text or None
+    if field in {"limit_price", "shares"} and float(parsed) == 0.0:
+        return None
+    if field in PRICE_EXECUTION_FIELDS:
+        return round(float(parsed), 2)
+    return round(float(parsed), 4)
+
+
+def changed_execution_fields(existing: dict[str, Any], incoming: dict[str, Any]) -> list[str]:
+    changed: list[str] = []
+    for field in EXECUTION_PARAM_FIELDS:
+        if _execution_compare_value(field, existing.get(field)) != _execution_compare_value(field, incoming.get(field)):
+            changed.append(field)
+    return changed
+
+
+def _execution_snapshot(row: dict[str, Any]) -> dict[str, Any]:
+    extra = get_signal_extra(row)
+    return {
+        "signal_id": to_text(row.get("signal_id")),
+        "status": to_text(row.get("status")),
+        "entry": row.get("entry"),
+        "limit_price": row.get("limit_price"),
+        "take_profit": row.get("take_profit"),
+        "stop_loss": row.get("stop_loss"),
+        "shares": row.get("shares"),
+        "confirmed_at": to_text(extra.get("confirmed_at")),
+        "confirmed_by": to_text(extra.get("confirmed_by")),
+    }
+
+
+def has_order_trace(row: dict[str, Any]) -> bool:
+    extra = get_signal_extra(row)
+    scalar_keys = (
+        "trade_group_id",
+        "entry_order_unique_id",
+        "bracket_group",
+        "order_unique_id",
+        "order_id",
+        "broker_order_id",
+    )
+    for key in scalar_keys:
+        if to_text(row.get(key) or extra.get(key)):
+            return True
+    list_keys = (
+        "order_results",
+        "child_orders",
+        "cancelled_order_ids",
+        "missing_order_ids",
+        "missing_protection_roles",
+    )
+    for key in list_keys:
+        value = extra.get(key)
+        if isinstance(value, list) and value:
+            return True
+    return bool(
+        _is_truthy(extra.get("ack_partial"))
+        or _is_truthy(extra.get("protection_incomplete"))
+        or to_text(extra.get("last_ack_status"))
+        or to_text(extra.get("last_ack_note"))
+    )
 
 
 def map_signal_strength(score: Any) -> str:
@@ -185,7 +256,49 @@ def build_active_signal_refresh_payload(existing: dict[str, Any], incoming: dict
     }
 
 
-def build_same_direction_followup_patch(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+def build_confirmed_signal_reconfirm_payload(existing: dict[str, Any], incoming: dict[str, Any], environment: str) -> dict[str, Any]:
+    existing_extra = get_signal_extra(existing)
+    incoming_extra = ensure_object(incoming.get("extra"))
+    incoming_signal_id = to_text(incoming.get("signal_id"))
+    changed_fields = changed_execution_fields(existing, incoming)
+    now_text = _now_iso_utc()
+    return {
+        **incoming,
+        "signal_id": to_text(existing.get("signal_id")) or incoming_signal_id,
+        "status": "awaiting_confirm",
+        "note": "followup_requires_reconfirm",
+        "extra": {
+            **existing_extra,
+            **incoming_extra,
+            "environment": environment,
+            "merged_signal_ids": _append_unique(existing_extra.get("merged_signal_ids"), incoming_signal_id),
+            "followup_signal_ids": _append_unique(existing_extra.get("followup_signal_ids"), incoming_signal_id),
+            "latest_merged_signal_id": incoming_signal_id,
+            "latest_merged_at": now_text,
+            "latest_followup_signal_id": incoming_signal_id,
+            "latest_followup_at": now_text,
+            "latest_followup_entry": incoming.get("entry"),
+            "latest_followup_take_profit": incoming.get("take_profit"),
+            "latest_followup_stop_loss": incoming.get("stop_loss"),
+            "latest_followup_bar_time_ms": incoming.get("bar_time_ms"),
+            "latest_followup_extra": incoming_extra,
+            "followup_requires_reconfirm": True,
+            "confirmation_stale": True,
+            "reconfirm_reason": "same_direction_followup_changed_execution_params",
+            "reconfirm_changed_fields": changed_fields,
+            "previous_confirmed_snapshot": _execution_snapshot(existing),
+            "merge_policy": "same_symbol_same_direction_reconfirm_after_manual_confirm",
+            "status_reason": "followup_requires_reconfirm",
+        },
+    }
+
+
+def build_same_direction_followup_patch(
+    existing: dict[str, Any],
+    incoming: dict[str, Any],
+    *,
+    reason: str = "same_direction_broker_order_active",
+) -> dict[str, Any]:
     existing_extra = get_signal_extra(existing)
     incoming_extra = ensure_object(incoming.get("extra"))
     incoming_signal_id = to_text(incoming.get("signal_id"))
@@ -201,7 +314,7 @@ def build_same_direction_followup_patch(existing: dict[str, Any], incoming: dict
             "latest_followup_stop_loss": incoming.get("stop_loss"),
             "latest_followup_bar_time_ms": incoming.get("bar_time_ms"),
             "latest_followup_extra": incoming_extra,
-            "suppressed_reason": "same_direction_broker_order_active",
+            "suppressed_reason": reason,
             "signal_strength_score": strength["score"],
             "signal_strength_level": strength["level"],
         }
@@ -310,11 +423,14 @@ __all__ = [
     "PROTECTION_BLOCK_SIGNAL_STATUSES",
     "STRONG_REVERSE_SCORE",
     "build_active_signal_refresh_payload",
+    "build_confirmed_signal_reconfirm_payload",
     "build_reverse_record_payload",
     "build_reverse_suppressed_patch",
     "build_same_direction_followup_patch",
     "build_superseded_patch",
     "calculate_signal_strength",
+    "changed_execution_fields",
     "find_active_symbol_signal",
+    "has_order_trace",
     "map_signal_strength",
 ]

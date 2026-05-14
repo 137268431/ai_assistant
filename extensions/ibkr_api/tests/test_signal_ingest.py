@@ -9,14 +9,18 @@ if str(SERVICE_SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SERVICE_SRC_ROOT))
 
 from ibkr_api.signals.ingest import build_signal_ingest_response, build_signals_ingest_response
-from ibkr_api.signals.notifications import build_signal_status_card
+from ibkr_api.signals.notifications import build_signal_notification_card, build_signal_status_card
 
 
 class _FakePB:
-    def __init__(self, signal_rows=None):
+    def __init__(self, signal_rows=None, order_rows=None):
         self.signals = {
             str(row["id"]): copy.deepcopy(row)
             for row in (signal_rows or [])
+        }
+        self.orders = {
+            str(row["id"]): copy.deepcopy(row)
+            for row in (order_rows or [])
         }
         self.reverse_signals = {}
         self.created = []
@@ -29,6 +33,8 @@ class _FakePB:
     def get_records(self, collection, filter=None, sort=None, per_page=200, page=1):
         if collection == "ibkr_reverse_signals":
             return list(copy.deepcopy(row) for row in self.reverse_signals.values())[:per_page]
+        if collection == "orders":
+            return list(copy.deepcopy(row) for row in self._filter_orders(filter))[:per_page]
         if collection != "ibkr_signals":
             return []
         filter_text = str(filter or "")
@@ -97,6 +103,19 @@ class _FakePB:
     def _extract_number(filter_text, field_name):
         match = re.search(rf"{re.escape(field_name)}\s*=\s*(\d+)", filter_text)
         return int(match.group(1)) if match else None
+
+    def _filter_orders(self, filter_value):
+        filter_text = str(filter_value or "")
+        environment = self._extract_string(filter_text, "environment")
+        signal_id = self._extract_string(filter_text, "signal_id")
+        rows = []
+        for row in self.orders.values():
+            if environment and str(row.get("environment") or "") != environment:
+                continue
+            if signal_id and str(row.get("signal_id") or "") != signal_id:
+                continue
+            rows.append(row)
+        return rows
 
 
 class SignalIngressBuildersTest(unittest.TestCase):
@@ -494,6 +513,183 @@ class SignalIngressBuildersTest(unittest.TestCase):
         self.assertEqual(extra["followup_signal_ids"], ["sig-followup"])
         self.assertEqual(extra["suppressed_reason"], "same_direction_broker_order_active")
 
+    def test_signal_ingest_reconfirms_confirmed_signal_when_followup_changes_execution_params(self):
+        pb = _FakePB(
+            [
+                {
+                    "id": "sig-row-1",
+                    "signal_id": "sig-old",
+                    "environment": "live",
+                    "symbol": "AAPL",
+                    "direction": "long",
+                    "status": "pending",
+                    "entry": 180.0,
+                    "limit_price": 0,
+                    "stop_loss": 178.0,
+                    "take_profit": 184.0,
+                    "shares": 20,
+                    "extra": {
+                        "feishu_signal_message_id": "msg-old",
+                        "confirmed_by": "manual",
+                        "confirmed_at": "2026-05-13T13:35:00Z",
+                    },
+                }
+            ]
+        )
+        updates = []
+
+        payload, status_code = build_signal_ingest_response(
+            pb,
+            payload={
+                "environment": "live",
+                "symbol": "AAPL",
+                "signal_id": "sig-followup",
+                "direction": "long",
+                "signal": "long_setup",
+                "entry": 181.0,
+                "stop_loss": 179.0,
+                "take_profit": 186.0,
+                "shares": 20,
+                "bar_time_ms": 1713798000000,
+            },
+            normalize_environment=self.normalize_environment,
+            escape_filter_string=self.escape_filter_string,
+            config_value=self.config_value,
+            send_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "should-not-send"},
+            update_interactive=lambda message_id, card, environment: updates.append((message_id, card, environment)) or {
+                "success": True,
+                "message_id": message_id,
+            },
+            signal_chat_id_fn=self.signal_chat_id_fn,
+            console_base_url="https://console.example.com",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["action"], "reconfirm_same_direction_followup")
+        self.assertEqual(payload["status"], "awaiting_confirm")
+        self.assertEqual(payload["changed_fields"], ["entry", "take_profit", "stop_loss"])
+        self.assertEqual(len(pb.created), 0)
+        row = pb.signals["sig-row-1"]
+        self.assertEqual(row["status"], "awaiting_confirm")
+        self.assertEqual(row["note"], "followup_requires_reconfirm")
+        self.assertEqual(row["entry"], 181.0)
+        self.assertEqual(row["take_profit"], 186.0)
+        self.assertEqual(row["signal_id"], "sig-old")
+        self.assertEqual(row["extra"]["followup_requires_reconfirm"], True)
+        self.assertEqual(row["extra"]["confirmation_stale"], True)
+        self.assertEqual(row["extra"]["merged_signal_ids"], ["sig-followup"])
+        self.assertEqual(row["extra"]["followup_signal_ids"], ["sig-followup"])
+        self.assertEqual(row["extra"]["previous_confirmed_snapshot"]["entry"], 180.0)
+        self.assertEqual(row["extra"]["previous_confirmed_snapshot"]["confirmed_by"], "manual")
+        self.assertEqual(updates[0][0], "msg-old")
+        self.assertIn("信号已更新，需重新确认", updates[0][1]["header"]["title"]["content"])
+        action_blocks = [el for el in updates[0][1]["elements"] if el.get("tag") == "action"]
+        self.assertTrue(any(action.get("value", {}).get("action") == "confirm" for block in action_blocks for action in block.get("actions", [])))
+
+    def test_signal_ingest_records_same_direction_pending_followup_without_execution_change(self):
+        pb = _FakePB(
+            [
+                {
+                    "id": "sig-row-1",
+                    "signal_id": "sig-old",
+                    "environment": "live",
+                    "symbol": "AAPL",
+                    "direction": "long",
+                    "status": "pending",
+                    "entry": 180.0,
+                    "limit_price": 0,
+                    "stop_loss": 178.0,
+                    "take_profit": 184.0,
+                    "shares": 20,
+                    "extra": {"feishu_signal_message_id": "msg-old"},
+                }
+            ]
+        )
+        updates = []
+
+        payload, status_code = build_signal_ingest_response(
+            pb,
+            payload={
+                "environment": "live",
+                "symbol": "AAPL",
+                "signal_id": "sig-followup",
+                "direction": "long",
+                "signal": "long_setup",
+                "entry": 180.0,
+                "stop_loss": 178.0,
+                "take_profit": 184.0,
+                "shares": 20,
+                "bar_time_ms": 1713798000000,
+            },
+            normalize_environment=self.normalize_environment,
+            escape_filter_string=self.escape_filter_string,
+            config_value=self.config_value,
+            send_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "should-not-send"},
+            update_interactive=lambda *args, **kwargs: updates.append((args, kwargs)) or {"success": True, "message_id": "unused"},
+            signal_chat_id_fn=self.signal_chat_id_fn,
+            console_base_url="https://console.example.com",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["action"], "suppressed_same_direction_followup")
+        row = pb.signals["sig-row-1"]
+        self.assertEqual(row["status"], "pending")
+        self.assertEqual(row["entry"], 180.0)
+        self.assertEqual(row["extra"]["followup_signal_ids"], ["sig-followup"])
+        self.assertEqual(row["extra"]["suppressed_reason"], "same_direction_followup_no_execution_change")
+        self.assertEqual(updates, [])
+
+    def test_signal_ingest_does_not_reconfirm_pending_signal_with_order_trace(self):
+        pb = _FakePB(
+            [
+                {
+                    "id": "sig-row-1",
+                    "signal_id": "sig-old",
+                    "environment": "live",
+                    "symbol": "AAPL",
+                    "direction": "long",
+                    "status": "pending",
+                    "entry": 180.0,
+                    "limit_price": 0,
+                    "stop_loss": 178.0,
+                    "take_profit": 184.0,
+                    "shares": 20,
+                    "extra": {"feishu_signal_message_id": "msg-old"},
+                }
+            ],
+            order_rows=[{"id": "order-1", "environment": "live", "signal_id": "sig-old"}],
+        )
+
+        payload, status_code = build_signal_ingest_response(
+            pb,
+            payload={
+                "environment": "live",
+                "symbol": "AAPL",
+                "signal_id": "sig-followup",
+                "direction": "long",
+                "signal": "long_setup",
+                "entry": 181.0,
+                "stop_loss": 179.0,
+                "take_profit": 186.0,
+                "shares": 20,
+                "bar_time_ms": 1713798000000,
+            },
+            normalize_environment=self.normalize_environment,
+            escape_filter_string=self.escape_filter_string,
+            config_value=self.config_value,
+            send_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "should-not-send"},
+            update_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "unused"},
+            signal_chat_id_fn=self.signal_chat_id_fn,
+            console_base_url="https://console.example.com",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["action"], "suppressed_same_direction_followup")
+        row = pb.signals["sig-row-1"]
+        self.assertEqual(row["status"], "pending")
+        self.assertEqual(row["entry"], 180.0)
+        self.assertEqual(row["extra"]["suppressed_reason"], "same_direction_order_trace_active")
+
     def test_signal_ingest_suppresses_weak_reverse_against_broker_order(self):
         pb = _FakePB(
             [
@@ -647,6 +843,39 @@ class SignalIngressBuildersTest(unittest.TestCase):
 
         self.assertIn("保护单已生效", card["header"]["title"]["content"])
         self.assertIn("保护单已生效", card["elements"][0]["content"])
+
+    def test_reconfirm_cards_are_not_labeled_as_new_independent_signal(self):
+        record = {
+            "id": "sig-row-1",
+            "signal_id": "sig-old",
+            "symbol": "AAPL",
+            "direction": "long",
+            "environment": "live",
+            "status": "awaiting_confirm",
+            "entry": 181.0,
+            "stop_loss": 179.0,
+            "take_profit": 186.0,
+            "extra": {
+                "followup_requires_reconfirm": True,
+                "latest_followup_signal_id": "sig-followup",
+                "reconfirm_changed_fields": ["entry", "stop_loss", "take_profit"],
+                "previous_confirmed_snapshot": {
+                    "entry": 180.0,
+                    "stop_loss": 178.0,
+                    "take_profit": 184.0,
+                },
+            },
+        }
+
+        notification_card = build_signal_notification_card(record, console_base_url="https://console.example.com")
+        status_card = build_signal_status_card(record, message="需要重确认", console_base_url="https://console.example.com")
+
+        self.assertIn("信号已更新，需重新确认", notification_card["header"]["title"]["content"])
+        self.assertNotIn("新交易信号", notification_card["header"]["title"]["content"])
+        self.assertIn("需重确认字段", notification_card["elements"][0]["content"])
+        self.assertIn("信号已更新，需重新确认", status_card["header"]["title"]["content"])
+        action_blocks = [el for el in status_card["elements"] if el.get("tag") == "action"]
+        self.assertTrue(any(action.get("value", {}).get("action") == "confirm" for block in action_blocks for action in block.get("actions", [])))
 
     def test_signals_batch_aggregates_created_duplicate_and_error_counts(self):
         pb = _FakePB(

@@ -162,6 +162,43 @@ class SignalWebhookBuildersTest(unittest.TestCase):
         self.assertEqual(notify_calls[0][0], "pending")
         self.assertEqual(notify_calls[0][2]["message"], "信号已确认，等待执行")
 
+    def test_confirm_webhook_clears_followup_reconfirm_flags(self):
+        pb = _FakePB(
+            [
+                {
+                    "id": "sig-row-1",
+                    "signal_id": "sig-1",
+                    "environment": "live",
+                    "symbol": "AAPL",
+                    "status": "awaiting_confirm",
+                    "note": "followup_requires_reconfirm",
+                    "extra": {
+                        "followup_requires_reconfirm": True,
+                        "confirmation_stale": True,
+                        "latest_followup_signal_id": "sig-followup",
+                    },
+                }
+            ]
+        )
+
+        page, status_code = build_signal_confirm_webhook_response(
+            pb,
+            payload={"id": "sig-1", "environment": "live"},
+            normalize_environment=self.normalize_environment,
+            escape_filter_string=self.escape_filter_string,
+            now_provider=self.now_provider,
+            notify_signal_status=lambda *_args, **_kwargs: {"success": True, "message_id": "sig-msg-1"},
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(page["page_kind"], "ok")
+        extra = pb.signals["sig-row-1"]["extra"]
+        self.assertEqual(extra["followup_requires_reconfirm"], False)
+        self.assertEqual(extra["confirmation_stale"], False)
+        self.assertEqual(extra["reconfirmed_by"], "manual")
+        self.assertEqual(extra["reconfirmed_at"], "2026-04-23T01:02:03Z")
+        self.assertEqual(extra["reconfirm_resolution"], "confirmed_by_user")
+
     def test_confirm_webhook_expires_signal_when_confirmation_is_too_late(self):
         pb = _FakePB(
             [

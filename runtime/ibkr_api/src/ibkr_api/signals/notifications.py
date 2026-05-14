@@ -137,6 +137,61 @@ def _source_lines(record_or_data: Any) -> list[str]:
     return lines
 
 
+def _reconfirm_required(record_or_data: Any) -> bool:
+    extra = get_signal_extra(record_or_data)
+    status = to_text(record_value(record_or_data, "status")).lower()
+    return status == "awaiting_confirm" and bool(extra.get("followup_requires_reconfirm") or extra.get("confirmation_stale"))
+
+
+def _followup_lines(record_or_data: Any) -> list[str]:
+    extra = get_signal_extra(record_or_data)
+    lines: list[str] = []
+    needs_reconfirm = _reconfirm_required(record_or_data)
+    latest_id = to_text(extra.get("latest_followup_signal_id") or extra.get("latest_merged_signal_id"))
+    if latest_id:
+        lines.append(f"**后续信号**: {latest_id}")
+    raw_changed_fields = extra.get("reconfirm_changed_fields")
+    if isinstance(raw_changed_fields, list):
+        changed_fields = [to_text(item) for item in raw_changed_fields if to_text(item)]
+    else:
+        changed_fields = [item.strip() for item in to_text(raw_changed_fields).split(",") if item.strip()]
+    if changed_fields:
+        label = "需重确认字段" if needs_reconfirm else "已合并字段"
+        lines.append(f"**{label}**: {', '.join(changed_fields)}")
+    previous = extra.get("previous_confirmed_snapshot")
+    if isinstance(previous, dict) and changed_fields:
+        previous_parts = []
+        for field in changed_fields:
+            previous_value = previous.get(field)
+            current_value = record_value(record_or_data, field)
+            if field in {"entry", "limit_price", "take_profit", "stop_loss"}:
+                previous_text = _format_price(previous_value)
+                current_text = _format_price(current_value)
+            elif field == "shares":
+                previous_text = _format_quantity(previous_value)
+                current_text = _format_quantity(current_value)
+            else:
+                previous_text = to_text(previous_value or "-")
+                current_text = to_text(current_value or "-")
+            previous_parts.append(f"{field}: {previous_text} → {current_text}")
+        if previous_parts:
+            lines.append(f"**参数变化**: {'; '.join(previous_parts)}")
+    return lines
+
+
+def _confirmation_action_elements(console_base_url: str, *, environment: str, signal_id: str) -> list[dict[str, Any]]:
+    if not signal_id:
+        return []
+    callback_url = _webhook_url(console_base_url, "webhook/feishu/callback")
+    actions: list[dict[str, Any]] = []
+    if callback_url:
+        actions.append(_callback_button("确认", "primary", callback_url, action="confirm", signal_id=signal_id, environment=environment))
+        actions.append(_callback_button("拒绝", "danger", callback_url, action="reject", signal_id=signal_id, environment=environment))
+    if actions:
+        return [{"tag": "action", "actions": actions}]
+    return [{"tag": "markdown", "content": "**人工确认** · 飞书回调未配置，请到 Signals 页面处理"}]
+
+
 def build_signal_notification_card(record_or_data: Any, *, console_base_url: str = "") -> dict[str, Any]:
     status = to_text(record_value(record_or_data, "status")).lower() or "pending"
     symbol = to_text(record_value(record_or_data, "symbol") or record_value(record_or_data, "signal_id") or "SIGNAL")
@@ -145,6 +200,7 @@ def build_signal_notification_card(record_or_data: Any, *, console_base_url: str
     signal_id = to_text(record_value(record_or_data, "signal_id") or record_value(record_or_data, "id"))
     status_reason = _status_reason(record_or_data)
     extra = get_signal_extra(record_or_data)
+    needs_reconfirm = _reconfirm_required(record_or_data)
 
     direction_text = {"long": "做多", "short": "做空"}.get(direction, direction or "-")
     body_lines = [
@@ -155,6 +211,7 @@ def build_signal_notification_card(record_or_data: Any, *, console_base_url: str
         f"**仓位 / 风报比**: {_format_quantity(record_value(record_or_data, 'shares'))} / {to_text(record_value(record_or_data, 'rr') or '-')}",
     ]
     body_lines.extend(_source_lines(record_or_data))
+    body_lines.extend(_followup_lines(record_or_data))
     reason = to_text(record_value(record_or_data, "reason") or extra.get("reason"))
     if reason:
         body_lines.append(f"**原因**: {reason}")
@@ -167,15 +224,7 @@ def build_signal_notification_card(record_or_data: Any, *, console_base_url: str
         {"tag": "hr"},
     ]
     if status == "awaiting_confirm" and signal_id:
-        callback_url = _webhook_url(console_base_url, "webhook/feishu/callback")
-        actions: list[dict[str, Any]] = []
-        if callback_url:
-            actions.append(_callback_button("确认", "primary", callback_url, action="confirm", signal_id=signal_id, environment=environment))
-            actions.append(_callback_button("拒绝", "danger", callback_url, action="reject", signal_id=signal_id, environment=environment))
-        if actions:
-            elements.append({"tag": "action", "actions": actions})
-        else:
-            elements.append({"tag": "markdown", "content": "**人工确认** · 飞书回调未配置，请到 Signals 页面处理"})
+        elements.extend(_confirmation_action_elements(console_base_url, environment=environment, signal_id=signal_id))
     else:
         elements.append(
             {
@@ -202,7 +251,7 @@ def build_signal_notification_card(record_or_data: Any, *, console_base_url: str
             "title": {
                 "tag": "plain_text",
                 "content": (
-                    f"{'🔔 新交易信号' if status == 'awaiting_confirm' else '⚙️ 自动确认'}"
+                    f"{'🔁 信号已更新，需重新确认' if needs_reconfirm else ('🔔 新交易信号' if status == 'awaiting_confirm' else '⚙️ 自动确认')}"
                     f" · {symbol} · {to_text(record_value(record_or_data, 'us_time') or '')}"
                 ),
             },
@@ -302,16 +351,19 @@ def build_signal_status_card(record_or_data: Any, *, message: str = "", console_
     direction = to_text(record_value(record_or_data, "direction")).lower()
     environment = to_text(record_value(record_or_data, "environment") or "live")
     extra = get_signal_extra(record_or_data)
+    signal_id = to_text(record_value(record_or_data, "signal_id") or record_value(record_or_data, "id"))
+    needs_reconfirm = _reconfirm_required(record_or_data)
 
     direction_text = {"long": "做多", "short": "做空"}.get(direction, direction or "-")
     body_lines = [
         f"**状态**: {meta['text']}",
-        f"**信号ID**: {to_text(record_value(record_or_data, 'signal_id') or record_value(record_or_data, 'id') or '-')}",
+        f"**信号ID**: {signal_id or '-'}",
         f"**方向**: {direction_text}",
         f"**环境**: {environment}",
         f"**入场 / 止盈 / 止损**: {_format_price(record_value(record_or_data, 'entry'))} / {_format_price(record_value(record_or_data, 'take_profit'))} / {_format_price(record_or_data and record_value(record_or_data, 'stop_loss'))}",
         f"**仓位**: {_format_quantity(record_value(record_or_data, 'shares'))}",
     ]
+    body_lines.extend(_followup_lines(record_or_data))
     if message:
         body_lines.append(f"**说明**: {message}")
     status_reason = _status_reason(record_or_data)
@@ -326,6 +378,9 @@ def build_signal_status_card(record_or_data: Any, *, message: str = "", console_
     elements: list[dict[str, Any]] = [
         {"tag": "markdown", "content": "\n".join(body_lines)},
     ]
+    if status == "awaiting_confirm" and signal_id:
+        elements.append({"tag": "hr"})
+        elements.extend(_confirmation_action_elements(console_base_url, environment=environment, signal_id=signal_id))
     signals_url = _signals_page_url(console_base_url, environment)
     if signals_url:
         elements.extend(
@@ -354,7 +409,10 @@ def build_signal_status_card(record_or_data: Any, *, message: str = "", console_
         "header": {
             "title": {
                 "tag": "plain_text",
-                "content": f"{meta['emoji']} {meta['text']} · {symbol} · {to_text(record_value(record_or_data, 'us_time') or '')}",
+                "content": (
+                    f"{'🔁 信号已更新，需重新确认' if needs_reconfirm else (meta['emoji'] + ' ' + meta['text'])}"
+                    f" · {symbol} · {to_text(record_value(record_or_data, 'us_time') or '')}"
+                ),
             },
             "template": meta["template"],
         },

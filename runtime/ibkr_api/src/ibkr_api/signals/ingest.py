@@ -9,12 +9,15 @@ from ibkr_api.signals.ingest_active_policy import (
     PROTECTION_BLOCK_SIGNAL_STATUSES,
     STRONG_REVERSE_SCORE,
     build_active_signal_refresh_payload,
+    build_confirmed_signal_reconfirm_payload,
     build_reverse_record_payload,
     build_reverse_suppressed_patch,
     build_same_direction_followup_patch,
     build_superseded_patch,
     calculate_signal_strength,
+    changed_execution_fields,
     find_active_symbol_signal,
+    has_order_trace,
 )
 from ibkr_api.signals.ingest_dedupe import (
     annotate_signal_duplicate,
@@ -132,6 +135,32 @@ def _create_or_update_reverse_record(pb: Any, payload: dict[str, Any], escape_fi
     return dict(record) if isinstance(record, dict) else {}
 
 
+def _active_signal_has_order_trace(
+    pb: Any,
+    active: dict[str, Any],
+    environment: str,
+    escape_filter_string: EscapeFilterString,
+) -> bool:
+    if has_order_trace(active):
+        return True
+    signal_id = to_text(active.get("signal_id"))
+    if not signal_id:
+        return False
+    try:
+        rows = pb.get_records(
+            "orders",
+            filter=(
+                f'environment = "{escape_filter_string(environment)}" && '
+                f'signal_id = "{escape_filter_string(signal_id)}"'
+            ),
+            per_page=1,
+            page=1,
+        )
+    except Exception:
+        return False
+    return bool(rows)
+
+
 def _sync_refreshed_signal_card(
     record: dict[str, Any],
     *,
@@ -141,13 +170,15 @@ def _sync_refreshed_signal_card(
     console_base_url: str,
 ) -> dict[str, Any]:
     extra = get_signal_extra(record)
-    if not to_text(extra.get("feishu_signal_message_id")):
+    status = to_text(record.get("status")).lower()
+    requires_reconfirm = status == "awaiting_confirm" and bool(extra.get("followup_requires_reconfirm"))
+    if not to_text(extra.get("feishu_signal_message_id")) and not requires_reconfirm:
         return {}
     return sync_signal_status_notification(
         record,
-        action="refreshed",
-        message="同向新信号已合并，入场/止盈/止损已刷新",
-        send_interactive=None,
+        action="reconfirm_required" if requires_reconfirm else "refreshed",
+        message="同向新信号已合并，执行参数变化，请重新确认" if requires_reconfirm else "同向新信号已合并，入场/止盈/止损已刷新",
+        send_interactive=send_interactive if requires_reconfirm else None,
         signal_chat_id=signal_chat_id,
         update_interactive=update_interactive,
         console_base_url=console_base_url,
@@ -159,6 +190,7 @@ def _handle_active_symbol_policy(
     *,
     prepared: dict[str, Any],
     environment: str,
+    manual_confirm_enabled: bool,
     escape_filter_string: EscapeFilterString,
     send_interactive: SendInteractive | None,
     update_interactive: UpdateInteractive | None,
@@ -181,7 +213,7 @@ def _handle_active_symbol_policy(
     active_signal_id = to_text(active.get("signal_id"))
 
     if incoming_direction and incoming_direction == active_direction:
-        if active_status in MUTABLE_SIGNAL_STATUSES:
+        if active_status == "awaiting_confirm":
             refresh_payload = build_active_signal_refresh_payload(active, prepared, environment)
             saved_row = _update_signal_row(pb, active, refresh_payload)
             notify_result = _sync_refreshed_signal_card(
@@ -202,6 +234,84 @@ def _handle_active_symbol_policy(
                     "target": "ibkr_signals",
                     "id": to_text(saved_row.get("id")),
                     "action": "refreshed_active_signal",
+                    "status": to_text(saved_row.get("status")),
+                },
+                200,
+                prepared,
+            )
+
+        if active_status == "pending":
+            changed_fields = changed_execution_fields(active, prepared)
+            order_trace_active = _active_signal_has_order_trace(pb, active, environment, escape_filter_string)
+            if manual_confirm_enabled and changed_fields and not order_trace_active:
+                reconfirm_payload = build_confirmed_signal_reconfirm_payload(active, prepared, environment)
+                saved_row = _update_signal_row(pb, active, reconfirm_payload)
+                notify_result = _sync_refreshed_signal_card(
+                    saved_row,
+                    send_interactive=send_interactive,
+                    update_interactive=update_interactive,
+                    signal_chat_id=signal_chat_id,
+                    console_base_url=console_base_url,
+                )
+                extra_patch = notify_result.get("extra_patch") if isinstance(notify_result, dict) else None
+                if isinstance(extra_patch, dict) and extra_patch and to_text(saved_row.get("id")):
+                    saved_row = _update_signal_row(pb, saved_row, {"extra": extra_patch})
+                return (
+                    {
+                        "ok": True,
+                        "signal_id": active_signal_id,
+                        "merged_signal_id": incoming_signal_id,
+                        "target": "ibkr_signals",
+                        "id": to_text(saved_row.get("id")),
+                        "action": "reconfirm_same_direction_followup",
+                        "status": to_text(saved_row.get("status")),
+                        "changed_fields": changed_fields,
+                    },
+                    200,
+                    prepared,
+                )
+
+            if not manual_confirm_enabled and changed_fields and not order_trace_active:
+                refresh_payload = build_active_signal_refresh_payload(active, prepared, environment)
+                saved_row = _update_signal_row(pb, active, refresh_payload)
+                notify_result = _sync_refreshed_signal_card(
+                    saved_row,
+                    send_interactive=send_interactive,
+                    update_interactive=update_interactive,
+                    signal_chat_id=signal_chat_id,
+                    console_base_url=console_base_url,
+                )
+                extra_patch = notify_result.get("extra_patch") if isinstance(notify_result, dict) else None
+                if isinstance(extra_patch, dict) and extra_patch and to_text(saved_row.get("id")):
+                    saved_row = _update_signal_row(pb, saved_row, {"extra": extra_patch})
+                return (
+                    {
+                        "ok": True,
+                        "signal_id": active_signal_id,
+                        "merged_signal_id": incoming_signal_id,
+                        "target": "ibkr_signals",
+                        "id": to_text(saved_row.get("id")),
+                        "action": "refreshed_active_signal",
+                        "status": to_text(saved_row.get("status")),
+                    },
+                    200,
+                    prepared,
+                )
+
+            reason = (
+                "same_direction_order_trace_active"
+                if order_trace_active
+                else "same_direction_followup_no_execution_change"
+            )
+            saved_row = _update_signal_row(pb, active, build_same_direction_followup_patch(active, prepared, reason=reason))
+            return (
+                {
+                    "ok": True,
+                    "signal_id": active_signal_id,
+                    "followup_signal_id": incoming_signal_id,
+                    "target": "ibkr_signals",
+                    "id": to_text(saved_row.get("id")),
+                    "action": "suppressed_same_direction_followup",
                     "status": to_text(saved_row.get("status")),
                 },
                 200,
@@ -336,6 +446,7 @@ def build_signal_ingest_response(
     if not prepared:
         return {"ok": False, "error": error or "invalid_signal_payload"}, 400
     prepared = _apply_signal_strength(prepared)
+    manual_confirm_enabled = _manual_confirm_enabled(config_value, environment)
 
     try:
         existing = pb.get_first_record(
@@ -374,6 +485,7 @@ def build_signal_ingest_response(
                 pb,
                 prepared=prepared,
                 environment=environment,
+                manual_confirm_enabled=manual_confirm_enabled,
                 escape_filter_string=escape_filter_string,
                 send_interactive=send_interactive,
                 update_interactive=update_interactive,
@@ -386,7 +498,7 @@ def build_signal_ingest_response(
         lifecycle = prepare_signal_lifecycle(
             prepared,
             existing_row,
-            manual_confirm_enabled=_manual_confirm_enabled(config_value, environment),
+            manual_confirm_enabled=manual_confirm_enabled,
         )
         saved_row, action = upsert_signal_record(pb, existing_row, prepared)
         if action != "skipped":
@@ -448,6 +560,7 @@ def build_signals_ingest_response(
                 errors += 1
                 continue
             prepared = _apply_signal_strength(prepared)
+            manual_confirm_enabled = _manual_confirm_enabled(config_value, environment)
             existing = pb.get_first_record(
                 "ibkr_signals",
                 filter=(
@@ -474,6 +587,7 @@ def build_signals_ingest_response(
                     pb,
                     prepared=prepared,
                     environment=environment,
+                    manual_confirm_enabled=manual_confirm_enabled,
                     escape_filter_string=escape_filter_string,
                     send_interactive=send_interactive,
                     update_interactive=update_interactive,
@@ -482,7 +596,7 @@ def build_signals_ingest_response(
                 )
                 if policy_response is not None:
                     action_name = to_text(policy_response.get("action"))
-                    if action_name == "refreshed_active_signal":
+                    if action_name in {"refreshed_active_signal", "reconfirm_same_direction_followup"}:
                         updated += 1
                     else:
                         skipped += 1
@@ -491,7 +605,7 @@ def build_signals_ingest_response(
             lifecycle = prepare_signal_lifecycle(
                 prepared,
                 existing_row,
-                manual_confirm_enabled=_manual_confirm_enabled(config_value, environment),
+                manual_confirm_enabled=manual_confirm_enabled,
             )
             saved_row, action = upsert_signal_record(pb, existing_row, prepared)
             if action == "created":

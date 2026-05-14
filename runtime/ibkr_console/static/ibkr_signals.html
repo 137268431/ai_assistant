@@ -1591,6 +1591,80 @@
             return String(value).split(',').map((item) => item.trim()).filter(Boolean);
         }
 
+        const MERGE_EXECUTION_FIELD_LABELS = {
+            entry: 'Entry',
+            limit_price: 'Limit',
+            take_profit: 'TP',
+            stop_loss: 'SL',
+            shares: '股数',
+        };
+
+        function uniqueStrings(...values) {
+            const seen = new Set();
+            const result = [];
+            values.flatMap(safeList).forEach((item) => {
+                const text = String(item || '').trim();
+                if (!text || seen.has(text)) return;
+                seen.add(text);
+                result.push(text);
+            });
+            return result;
+        }
+
+        function formatMergeFieldValue(field, value) {
+            if (['entry', 'limit_price', 'take_profit', 'stop_loss'].includes(field)) {
+                return formatSignalPrice(value, '--');
+            }
+            if (field === 'shares') {
+                return formatQuantityLabel(value).replace('数据缺失', '--');
+            }
+            return String(value ?? '--');
+        }
+
+        function buildSignalMergePanel(signal) {
+            const extra = safeObject(signal?.extra);
+            const mergedIds = uniqueStrings(extra.merged_signal_ids, extra.followup_signal_ids);
+            const latestId = String(extra.latest_followup_signal_id || extra.latest_merged_signal_id || '').trim();
+            if (latestId && !mergedIds.includes(latestId)) mergedIds.push(latestId);
+            if (!mergedIds.length && !latestId) return '';
+
+            const status = String(signal?.status || '').trim().toLowerCase();
+            const requiresReconfirm = status === 'awaiting_confirm' && Boolean(extra.followup_requires_reconfirm || extra.confirmation_stale);
+            const brokerLocked = ['submitted', 'protected_active', 'executed', 'protection_incomplete'].includes(status);
+            const changedFields = uniqueStrings(extra.reconfirm_changed_fields);
+            const previous = safeObject(extra.previous_confirmed_snapshot);
+            const shownIds = mergedIds.slice(0, 3).join(', ');
+            const moreText = mergedIds.length > 3 ? ` +${mergedIds.length - 3}` : '';
+            const title = requiresReconfirm
+                ? '同向后续已合并，需重新确认'
+                : (brokerLocked ? `已记录同向后续 ${mergedIds.length || 1} 个` : '同向后续已合并');
+            const summary = requiresReconfirm
+                ? '原信号已确认过，但后续信号改变了执行参数；系统已暂停执行，等待重新确认。'
+                : (brokerLocked ? '已有订单/保护链路时不加仓、不改订单；后续信号仅作为趋势确认记录。' : '后续信号未改变执行参数或仍在确认前，已合并到当前信号。');
+            const changedHtml = changedFields.length ? `
+                <div class="merge-change-row">
+                    ${changedFields.map((field) => {
+                        const label = MERGE_EXECUTION_FIELD_LABELS[field] || field;
+                        const oldValue = formatMergeFieldValue(field, previous[field]);
+                        const newValue = formatMergeFieldValue(field, signal?.[field]);
+                        return `<span>${escapeHtml(label)} ${escapeHtml(oldValue)} → ${escapeHtml(newValue)}</span>`;
+                    }).join('')}
+                </div>
+            ` : '';
+            const reason = String(extra.suppressed_reason || extra.reconfirm_reason || extra.merge_policy || '').trim();
+            return `
+                <div class="signal-merge-panel${requiresReconfirm ? ' reconfirm' : ''}${brokerLocked ? ' broker-locked' : ''}">
+                    <div class="merge-panel-head">
+                        <strong>${requiresReconfirm ? '🔁' : '🧩'} ${escapeHtml(title)}</strong>
+                        <span>${escapeHtml(shownIds || latestId)}${escapeHtml(moreText)}</span>
+                    </div>
+                    <div class="merge-panel-summary">${escapeHtml(summary)}</div>
+                    ${changedHtml}
+                    ${reason ? `<div class="merge-panel-reason">policy=${escapeHtml(reason)}</div>` : ''}
+                </div>
+            `;
+        }
+
         function normalizeProtectionRole(role) {
             const key = String(role || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
             if (['tp', 'takeprofit', 'take_profit'].includes(key)) return 'take_profit';
@@ -1888,6 +1962,7 @@
                 const signalIdLiteral = escapeHtml(toJsStringLiteral(signal.signal_id || ''));
                 const recordIdLiteral = escapeHtml(toJsStringLiteral(signal.id || ''));
                 const isProtectionIncomplete = String(statusClass || '').trim().toLowerCase() === 'protection_incomplete';
+                const mergePanelHtml = buildSignalMergePanel(signal);
                 const protectionAlertHtml = buildProtectionIncompletePanel(signal);
                 const orderButtonClass = isProtectionIncomplete ? ' btn-protection' : '';
                 const orderButtonText = isProtectionIncomplete ? '🚨 订单处理' : '📋 订单';
@@ -1967,6 +2042,7 @@
 
                         ${signal.note ? `<div class="signal-note signal-note-highlight"><strong>📋 备注:</strong> ${escapeHtml(signal.note)}</div>` : ''}
                         ${signal.reason ? `<div class="signal-note"><strong>📊 原因:</strong> ${escapeHtml(signal.reason)}</div>` : ''}
+                        ${mergePanelHtml}
                         ${protectionAlertHtml}
 
                         <div class="signal-item full-width shares-amount">
@@ -2116,6 +2192,13 @@
                     confirmed_at: new Date().toISOString(),
                     status_reason: 'confirmed_by_user'
                 };
+                if (nextExtra.followup_requires_reconfirm || nextExtra.confirmation_stale) {
+                    nextExtra.followup_requires_reconfirm = false;
+                    nextExtra.confirmation_stale = false;
+                    nextExtra.reconfirmed_by = 'manual';
+                    nextExtra.reconfirmed_at = nextExtra.confirmed_at;
+                    nextExtra.reconfirm_resolution = 'confirmed_by_user';
+                }
 
                 await patchSignalRecord(id, {
                     status: 'pending',
