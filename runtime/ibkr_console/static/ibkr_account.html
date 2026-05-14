@@ -419,6 +419,28 @@
             return 'badge neutral';
         }
 
+        function formatOrderStatusLabel(status) {
+            const text = String(status || '').trim();
+            const normalized = text.toLowerCase().replace(/[\s_-]+/g, '');
+            const map = {
+                submitted: '已提交/挂单中',
+                presubmitted: '已提交/挂单中',
+                pendingsubmit: '待提交',
+                apipending: '待提交',
+                init: '待提交',
+                pending: '等待处理',
+                filled: '已成交',
+                executed: '已执行',
+                cancelled: '已取消',
+                canceled: '已取消',
+                pendingcancel: '取消中',
+                inactive: '已失效',
+                rejected: '已拒绝',
+                closed: '已关闭',
+            };
+            return map[normalized] || text || '等待数据';
+        }
+
         function relationBadgeClass(status) {
             const text = String(status || '').toLowerCase();
             if (text === 'system_managed') return 'badge long';
@@ -509,7 +531,7 @@
             let stopCount = 0;
             let otherChildren = 0;
             (orders || []).forEach((order) => {
-                const role = String(order?.role || getOrderRole(order) || '').trim().toLowerCase();
+                const role = getOrderRole(order);
                 if (role === 'entry') entryCount += 1;
                 else if (role === 'take_profit') tpCount += 1;
                 else if (role === 'stop_loss') stopCount += 1;
@@ -531,11 +553,14 @@
 
         function getOrderRole(order) {
             const role = String(order?.role || '').trim().toLowerCase();
+            if (['entry', 'parent'].includes(role)) return 'entry';
+            if (['tp', 'take_profit', 'takeprofit', 'profit_target', 'target'].includes(role)) return 'take_profit';
+            if (['sl', 'stop', 'stop_loss', 'stoploss'].includes(role)) return 'stop_loss';
             if (role) return role;
             const type = String(order?.order_type || '').trim().toUpperCase();
-            const hasParent = Boolean(String(order?.parent_id || '').trim());
-            if (!hasParent) return 'entry';
             if (type.includes('STP') || type.includes('STOP')) return 'stop_loss';
+            const hasParent = Boolean(String(order?.parent_id || order?.parent_order_id || order?.parentPermId || '').trim());
+            if (!hasParent) return 'entry';
             if (type.includes('LMT') || type.includes('LIMIT')) return 'take_profit';
             return 'child';
         }
@@ -555,6 +580,47 @@
             return 'badge neutral';
         }
 
+        function getOrderRoleSortRank(order) {
+            const role = getOrderRole(order);
+            if (role === 'entry') return 0;
+            if (role === 'take_profit') return 1;
+            if (role === 'stop_loss') return 2;
+            return 3;
+        }
+
+        function getSortedOrderLegs(orders) {
+            return (Array.isArray(orders) ? orders.slice() : []).sort((a, b) => {
+                const roleDiff = getOrderRoleSortRank(a) - getOrderRoleSortRank(b);
+                if (roleDiff !== 0) return roleDiff;
+                const aTime = parseTimeValue(a?.submitted_time || a?.created || a?.updated || a?.last_execution_time);
+                const bTime = parseTimeValue(b?.submitted_time || b?.created || b?.updated || b?.last_execution_time);
+                if (aTime !== bTime) return aTime - bTime;
+                return String(a?.order_id || a?.broker_order_id || a?.unique_id || '').localeCompare(String(b?.order_id || b?.broker_order_id || b?.unique_id || ''));
+            });
+        }
+
+        function getOrderChainDirection(group, orders) {
+            const rawDirection = String(group?.direction || group?.trade_direction || '').trim().toLowerCase();
+            if (['long', 'buy'].includes(rawDirection)) return 'long';
+            if (['short', 'sell'].includes(rawDirection)) return 'short';
+            const entryOrder = getSortedOrderLegs(orders).find((order) => getOrderRole(order) === 'entry');
+            const side = getOrderSideLabel(entryOrder);
+            if (side === 'BUY') return 'long';
+            if (side === 'SELL') return 'short';
+            return '';
+        }
+
+        function getOrderSideLabel(order) {
+            return String(order?.side || order?.action || '').trim().toUpperCase();
+        }
+
+        function renderOrderChainDirectionBadge(direction) {
+            const normalized = String(direction || '').trim().toLowerCase();
+            if (normalized === 'long') return '<span class="badge long">做多</span>';
+            if (normalized === 'short') return '<span class="badge short">做空</span>';
+            return '<span class="badge neutral">方向待确认</span>';
+        }
+
         function formatOrderPrice(order) {
             const priceText = formatOptionalMoney(order?.price, '');
             const triggerText = formatOptionalMoney(order?.trigger_price, '');
@@ -562,7 +628,7 @@
             if (priceText) segments.push(`Lmt ${priceText}`);
             if (triggerText) segments.push(`Stop ${triggerText}`);
             if (!segments.length && String(order?.order_type || '').toUpperCase().includes('MKT')) return 'MKT';
-            return segments.join(' / ') || '--';
+            return segments.join(' / ') || '数据缺失';
         }
 
 
@@ -765,7 +831,7 @@
             const symbolCounts = {};
             liveOrders.forEach((order) => {
                 const symbol = String(order.symbol || '').trim().toUpperCase();
-                const status = String(order.status_key || order.status || '--').trim().toUpperCase();
+                const status = formatOrderStatusLabel(firstDefined(order.status_key, order.status));
                 if (symbol) {
                     symbols.add(symbol);
                     symbolCounts[symbol] = (symbolCounts[symbol] || 0) + 1;
@@ -1065,6 +1131,8 @@
             const signalId = String(order?.signal_id || pbContext.signal_id || '').trim();
             const tradeGroupId = String(order?.trade_group_id || pbContext.trade_group_id || '').trim();
             const entryUniqueId = String(order?.entry_order_unique_id || pbContext.entry_order_unique_id || '').trim();
+            const statusText = firstDefined(order?.status_key, order?.status);
+            const sideText = getOrderSideLabel(order);
             return `
                 <div class="order-row">
                     <div class="order-row-head">
@@ -1073,8 +1141,8 @@
                             <div class="summary-sub mono">parent=${escapeHtml(order?.parent_id || '--')} · client=${escapeHtml(order?.client_order_id || '--')} · acct=${escapeHtml(order?.account || '--')}</div>
                         </div>
                         <div class="badge-row">
-                            <span class="${badgeClass(order?.side === 'BUY' ? 'long' : order?.side === 'SELL' ? 'short' : '')}">${escapeHtml(order?.side || '--')}</span>
-                            <span class="${badgeClass(order?.can_cancel ? 'pending' : 'neutral')}">${escapeHtml(String(order?.status_key || order?.status || '--').toUpperCase())}</span>
+                            <span class="${badgeClass(sideText === 'BUY' ? 'long' : sideText === 'SELL' ? 'short' : '')}">${escapeHtml(sideText || '等待数据')}</span>
+                            <span class="${badgeClass(order?.can_cancel ? 'pending' : statusText)}">${escapeHtml(formatOrderStatusLabel(statusText))}</span>
                             <span class="${getOrderRoleBadgeClass(order)}">${escapeHtml(getOrderRoleLabel(order))}</span>
                             <span class="${badgeClass(String(order?.match_state || pbContext.match_state || '').toLowerCase() === 'matched' ? 'ready' : 'warning')}">${escapeHtml(String(order?.match_state || pbContext.match_state || 'broker_only').toUpperCase())}</span>
                             ${order?.outside_rth ? '<span class="badge warn">EXT</span>' : '<span class="badge neutral">RTH</span>'}
@@ -1123,6 +1191,7 @@
         }
 
         function renderPbShadowOrderRow(order) {
+            const statusText = firstDefined(order?.status_key, order?.status);
             return `
                 <div class="order-row">
                     <div class="order-row-head">
@@ -1132,7 +1201,7 @@
                         </div>
                         <div class="badge-row">
                             <span class="badge warn">PB STALE</span>
-                            <span class="${badgeClass(String(order?.status || '').toLowerCase())}">${escapeHtml(String(order?.status || '--').toUpperCase())}</span>
+                            <span class="${badgeClass(String(statusText || '').toLowerCase())}">${escapeHtml(formatOrderStatusLabel(statusText))}</span>
                         </div>
                     </div>
                     <div class="metric-grid">
@@ -1146,13 +1215,14 @@
         }
 
         function renderLiveGroupCard(group) {
-            const orders = Array.isArray(group?.orders) ? group.orders : [];
+            const orders = getSortedOrderLegs(group?.orders);
             const signalId = String(group?.signal_id || '').trim();
             const tradeGroupId = String(group?.trade_group_id || group?.entry_order_unique_id || group?.group_key || '').trim();
             const roleSummary = summarizeOrderRoles(orders).text || '--';
+            const direction = getOrderChainDirection(group, orders);
             const statusSummary = formatCompactCountMap(
                 orders.reduce((acc, order) => {
-                    const key = String(order?.status_key || order?.status || '--').trim().toUpperCase();
+                    const key = formatOrderStatusLabel(firstDefined(order?.status_key, order?.status));
                     acc[key] = (acc[key] || 0) + 1;
                     return acc;
                 }, {}),
@@ -1166,9 +1236,10 @@
                             <div class="summary-sub mono">group=${escapeHtml(tradeGroupId || '--')} · signal=${escapeHtml(signalId || '--')}</div>
                         </div>
                         <div class="badge-row">
+                            ${renderOrderChainDirectionBadge(direction)}
                             <span class="${badgeClass(String(group?.match_state || '').toLowerCase() === 'matched' ? 'ready' : 'warning')}">${escapeHtml(String(group?.match_state || 'broker_only').toUpperCase())}</span>
                             <span class="${badgeClass(group?.cancelable_orders ? 'pending' : 'neutral')}">${escapeHtml(`${Number(group?.live_order_count || orders.length || 0)} LIVE`)}</span>
-                            <span class="${badgeClass(String(group?.latest_order_status || '').toLowerCase())}">${escapeHtml(String(group?.latest_order_status || '--').toUpperCase())}</span>
+                            <span class="${badgeClass(String(group?.latest_order_status || '').toLowerCase())}">${escapeHtml(formatOrderStatusLabel(group?.latest_order_status))}</span>
                         </div>
                     </div>
                     <div class="chain-summary-grid">
@@ -1195,10 +1266,11 @@
         }
 
         function renderPbShadowGroupCard(group) {
-            const orders = Array.isArray(group?.orders) ? group.orders : [];
+            const orders = getSortedOrderLegs(group?.orders);
             const signalId = String(group?.signal_id || '').trim();
             const tradeGroupId = String(group?.trade_group_id || group?.entry_order_unique_id || '').trim();
             const roleSummary = summarizeOrderRoles(orders).text || '--';
+            const direction = getOrderChainDirection(group, orders);
             return `
                 <div class="surface-card chain-card">
                     <div class="record-head">
@@ -1207,8 +1279,9 @@
                             <div class="summary-sub mono">group=${escapeHtml(tradeGroupId || '--')} · signal=${escapeHtml(signalId || '--')}</div>
                         </div>
                         <div class="badge-row">
+                            ${renderOrderChainDirectionBadge(direction)}
                             <span class="badge warn">PB STALE</span>
-                            <span class="${badgeClass(String(group?.latest_order_status || '').toLowerCase())}">${escapeHtml(String(group?.latest_order_status || '--').toUpperCase())}</span>
+                            <span class="${badgeClass(String(group?.latest_order_status || '').toLowerCase())}">${escapeHtml(formatOrderStatusLabel(group?.latest_order_status))}</span>
                         </div>
                     </div>
                     <div class="chain-summary-grid">
@@ -1317,13 +1390,13 @@
         }
 
         function renderLiveGroupTableRows(group) {
-            const orders = Array.isArray(group?.orders) ? group.orders : [];
+            const orders = getSortedOrderLegs(group?.orders);
             const signalId = String(group?.signal_id || '').trim();
             const tradeGroupId = String(group?.trade_group_id || group?.entry_order_unique_id || group?.group_key || '').trim();
             const roleSummary = summarizeOrderRoles(orders).text || '--';
             const statusSummary = formatCompactCountMap(
                 orders.reduce((acc, order) => {
-                    const key = String(order?.status_key || order?.status || '--').trim().toUpperCase();
+                    const key = formatOrderStatusLabel(firstDefined(order?.status_key, order?.status));
                     acc[key] = (acc[key] || 0) + 1;
                     return acc;
                 }, {}),
@@ -1332,6 +1405,7 @@
             const matchState = String(group?.match_state || 'broker_only').toLowerCase();
             const symbol = String(group?.symbol || '--').trim().toUpperCase();
             const actionSymbol = symbol === '--' ? '' : symbol;
+            const direction = getOrderChainDirection(group, orders);
             const chainRow = `
                 <tr class="order-chain-row">
                     <td class="order-chain-cell">
@@ -1342,10 +1416,11 @@
                     <td>
                         <div class="orders-cell-stack">
                             <span class="${badgeClass(matchState === 'matched' ? 'ready' : 'warning')}">${escapeHtml(String(group?.match_state || 'broker_only').toUpperCase())}</span>
-                            <span class="${badgeClass(String(group?.latest_order_status || '').toLowerCase())}">${escapeHtml(String(group?.latest_order_status || '--').toUpperCase())}</span>
+                            <span class="${badgeClass(String(group?.latest_order_status || '').toLowerCase())}">${escapeHtml(formatOrderStatusLabel(group?.latest_order_status))}</span>
+                            <span class="${badgeClass(group?.cancelable_orders ? 'pending' : 'neutral')}">${escapeHtml(String(group?.live_order_count || orders.length || 0))} live</span>
                         </div>
                     </td>
-                    <td>${escapeHtml(String(group?.live_order_count || orders.length || 0))} live</td>
+                    <td>${renderOrderChainDirectionBadge(direction)}</td>
                     <td>${escapeHtml(statusSummary)}</td>
                     <td>${escapeHtml(`${group?.cancelable_orders || 0} 可撤 / ${group?.editable_orders || 0} 可改`)}</td>
                     <td><span class="order-table-strong">${escapeHtml(formatQty(group?.remaining_quantity || 0))}</span></td>
@@ -1356,6 +1431,8 @@
                 const pbContext = order?.pb_context || {};
                 const orderSignalId = String(order?.signal_id || pbContext.signal_id || signalId || '').trim();
                 const orderTradeGroupId = String(order?.trade_group_id || pbContext.trade_group_id || tradeGroupId || '').trim();
+                const statusText = firstDefined(order?.status_key, order?.status);
+                const sideText = getOrderSideLabel(order);
                 return `
                     <tr class="order-leg-row">
                         <td class="order-chain-cell">
@@ -1365,12 +1442,12 @@
                         <td><span class="${getOrderRoleBadgeClass(order)}">${escapeHtml(getOrderRoleLabel(order))}</span></td>
                         <td>
                             <div class="orders-cell-stack">
-                                <span class="${badgeClass(String(order?.status_key || order?.status || '').toLowerCase())}">${escapeHtml(String(order?.status_key || order?.status || '--').toUpperCase())}</span>
+                                <span class="${badgeClass(String(statusText || '').toLowerCase())}">${escapeHtml(formatOrderStatusLabel(statusText))}</span>
                                 <span class="${badgeClass(String(order?.match_state || pbContext.match_state || '').toLowerCase() === 'matched' ? 'ready' : 'warning')}">${escapeHtml(String(order?.match_state || pbContext.match_state || 'broker_only').toUpperCase())}</span>
                                 ${order?.outside_rth ? '<span class="badge warn">EXT</span>' : '<span class="badge neutral">RTH</span>'}
                             </div>
                         </td>
-                        <td><span class="${badgeClass(order?.side === 'BUY' ? 'long' : order?.side === 'SELL' ? 'short' : '')}">${escapeHtml(order?.side || '--')}</span></td>
+                        <td><span class="${badgeClass(sideText === 'BUY' ? 'long' : sideText === 'SELL' ? 'short' : '')}">${escapeHtml(sideText || '等待数据')}</span></td>
                         <td>${escapeHtml(formatQty(order?.total_quantity))} / ${escapeHtml(formatQty(order?.filled_quantity))}</td>
                         <td>${escapeHtml(order?.order_type || '--')}<br><span class="order-table-sub">${escapeHtml(formatOrderPrice(order))}</span></td>
                         <td><span class="order-table-strong">${escapeHtml(formatQty(order?.remaining_quantity))}</span></td>
@@ -1388,12 +1465,13 @@
         }
 
         function renderPbShadowGroupTableRows(group) {
-            const orders = Array.isArray(group?.orders) ? group.orders : [];
+            const orders = getSortedOrderLegs(group?.orders);
             const signalId = String(group?.signal_id || '').trim();
             const tradeGroupId = String(group?.trade_group_id || group?.entry_order_unique_id || '').trim();
             const roleSummary = summarizeOrderRoles(orders).text || '--';
             const symbol = String(group?.symbol || '--').trim().toUpperCase();
             const actionSymbol = symbol === '--' ? '' : symbol;
+            const direction = getOrderChainDirection(group, orders);
             const chainRow = `
                 <tr class="order-chain-row pb-shadow">
                     <td class="order-chain-cell">
@@ -1404,10 +1482,10 @@
                     <td>
                         <div class="orders-cell-stack">
                             <span class="badge warn">PB STALE</span>
-                            <span class="${badgeClass(String(group?.latest_order_status || '').toLowerCase())}">${escapeHtml(String(group?.latest_order_status || '--').toUpperCase())}</span>
+                            <span class="${badgeClass(String(group?.latest_order_status || '').toLowerCase())}">${escapeHtml(formatOrderStatusLabel(group?.latest_order_status))}</span>
                         </div>
                     </td>
-                    <td>${escapeHtml(String(group?.order_count || orders.length || 0))} pb</td>
+                    <td>${renderOrderChainDirectionBadge(direction)}</td>
                     <td>${escapeHtml(String(group?.matched_broker_orders || 0))} broker match</td>
                     <td>${escapeHtml(formatTimeLabel(group?.latest_updated))}</td>
                     <td><span class="order-table-strong">--</span></td>
@@ -1416,6 +1494,8 @@
             `;
             const legRows = orders.map((order) => {
                 const remaining = Math.max(0, Number(order?.quantity || 0) - Number(order?.filled_qty || 0));
+                const statusText = firstDefined(order?.status_key, order?.status);
+                const sideText = getOrderSideLabel(order);
                 return `
                     <tr class="order-leg-row pb-shadow">
                         <td class="order-chain-cell">
@@ -1423,8 +1503,8 @@
                             ${renderOrderCellMeta([`unique=${order?.unique_id || '--'}`])}
                         </td>
                         <td><span class="${getOrderRoleBadgeClass(order)}">${escapeHtml(getOrderRoleLabel(order))}</span></td>
-                        <td><span class="${badgeClass(String(order?.status || '').toLowerCase())}">${escapeHtml(String(order?.status || '--').toUpperCase())}</span></td>
-                        <td><span class="order-muted">--</span></td>
+                        <td><span class="${badgeClass(String(statusText || '').toLowerCase())}">${escapeHtml(formatOrderStatusLabel(statusText))}</span></td>
+                        <td><span class="${badgeClass(sideText === 'BUY' ? 'long' : sideText === 'SELL' ? 'short' : '')}">${escapeHtml(sideText || '等待数据')}</span></td>
                         <td>${escapeHtml(formatQty(order?.quantity))} / ${escapeHtml(formatQty(order?.filled_qty))}</td>
                         <td>${escapeHtml(formatOptionalMoney(order?.limit_price || order?.fill_price))}</td>
                         <td><span class="order-table-strong">${escapeHtml(formatQty(remaining))}</span></td>

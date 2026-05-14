@@ -288,20 +288,27 @@ def build_compute_response(payload=None):
                                 int(indicator_cursor_updates.get(key, 0) or 0),
                                 bar_ms,
                             )
-                            if is_latest_symbol_bar or len(indicator_batch) >= api_app.INDICATOR_BATCH_SIZE:
-                                flush_pending_indicators()
+                            should_flush_indicators = (
+                                is_latest_symbol_bar
+                                or len(indicator_batch) >= api_app.INDICATOR_BATCH_SIZE
+                            )
 
                             if interval != "5m" or not signal_generator:
+                                if should_flush_indicators:
+                                    flush_pending_indicators()
                                 if is_latest_symbol_bar:
                                     critical_finished_at = max(critical_finished_at, time.perf_counter())
                                 continue
 
                             if not signal_state_enabled or symbol not in signal_enabled_symbols:
                                 mark_signal_state_stale(key)
+                                if should_flush_indicators:
+                                    flush_pending_indicators()
                                 if is_latest_symbol_bar:
                                     critical_finished_at = max(critical_finished_at, time.perf_counter())
                                 continue
 
+                            should_flush_signals = False
                             with record_stage("signal_update"):
                                 signal_snapshot = {
                                     **snapshot,
@@ -320,8 +327,14 @@ def build_compute_response(payload=None):
                                     captured_signals.append(signal_payload)
                                 if plan["persist_signals"]:
                                     signal_batch.append(signal_payload)
-                                    if is_latest_symbol_bar or len(signal_batch) >= api_app.SIGNAL_BATCH_SIZE:
-                                        flush_pending_signals()
+                                    should_flush_signals = (
+                                        is_latest_symbol_bar
+                                        or len(signal_batch) >= api_app.SIGNAL_BATCH_SIZE
+                                    )
+                            if should_flush_signals:
+                                flush_pending_signals()
+                            if should_flush_indicators:
+                                flush_pending_indicators()
                             if is_latest_symbol_bar:
                                 critical_finished_at = max(critical_finished_at, time.perf_counter())
         except Exception:

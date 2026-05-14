@@ -39,7 +39,7 @@
             <button class="status-tab active" data-status="all" onclick="selectStatus('all', this)">全部<span class="tab-count" data-status="all">(<span class="count-value">0</span>)</span></button>
             <button class="status-tab" data-status="awaiting_confirm" onclick="selectStatus('awaiting_confirm', this)">待确认<span class="tab-count" data-status="awaiting_confirm">(<span class="count-value">0</span>)</span></button>
             <button class="status-tab" data-status="pending" onclick="selectStatus('pending', this)">等待执行<span class="tab-count" data-status="pending">(<span class="count-value">0</span>)</span></button>
-            <button class="status-tab" data-status="submitted" onclick="selectStatus('submitted', this)">已提交<span class="tab-count" data-status="submitted">(<span class="count-value">0</span>)</span></button>
+            <button class="status-tab" data-status="submitted" onclick="selectStatus('submitted', this)">已提交/挂单中<span class="tab-count" data-status="submitted">(<span class="count-value">0</span>)</span></button>
             <button class="status-tab" data-status="protected_active" onclick="selectStatus('protected_active', this)">保护中<span class="tab-count" data-status="protected_active">(<span class="count-value">0</span>)</span></button>
             <button class="status-tab" data-status="protection_incomplete" onclick="selectStatus('protection_incomplete', this)">保护异常<span class="tab-count" data-status="protection_incomplete">(<span class="count-value">0</span>)</span></button>
             <button class="status-tab" data-status="executed" onclick="selectStatus('executed', this)">已执行<span class="tab-count" data-status="executed">(<span class="count-value">0</span>)</span></button>
@@ -75,6 +75,8 @@
         let currentStatus = 'all';
         let currentSearch = '';
         let filterSignalId = '';
+        let selectedSignalId = '';
+        let detailSignalId = '';
         let refreshTimer = null;
         let currentInterval = 30;
         let currentEnvironment = getCurrentRuntimeEnvironment();
@@ -162,10 +164,73 @@
             const params = {
                 date: currentDate,
                 signal_id: filterSignalId || '',
-                search: currentSearch || '',
+                search: isSameSignalId(currentSearch, filterSignalId) ? '' : currentSearch || '',
                 ...overrides
             };
             return buildPageUrl('/ibkr_signals.html', params);
+        }
+
+        function toJsStringLiteral(value) {
+            return JSON.stringify(String(value ?? ''));
+        }
+
+        function cssEscapeValue(value) {
+            if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(String(value ?? ''));
+            return String(value ?? '').replace(/["\\]/g, '\\$&');
+        }
+
+        function normalizeSignalId(value) {
+            return String(value || '').trim();
+        }
+
+        function isSameSignalId(a, b) {
+            const left = normalizeSignalId(a).toUpperCase();
+            const right = normalizeSignalId(b).toUpperCase();
+            return Boolean(left && right && left === right);
+        }
+
+        function looksLikeSignalId(value) {
+            return /^[A-Z0-9._-]+_\d{8}_\d{4}/i.test(normalizeSignalId(value));
+        }
+
+        function parseSignalIdSearch(value) {
+            const text = normalizeSignalId(value);
+            if (!text) return '';
+            const exactMatch = text.match(/^signal_id\s*=\s*(.+)$/i);
+            if (exactMatch) return normalizeSignalId(exactMatch[1]);
+            return looksLikeSignalId(text) ? text : '';
+        }
+
+        function setSearchInputValue(value) {
+            const input = document.getElementById('searchInput');
+            if (input && input.value !== value) input.value = value;
+        }
+
+        function normalizeSignalFocusFromState() {
+            const parsedSignalId = parseSignalIdSearch(currentSearch);
+            if (parsedSignalId) {
+                filterSignalId = parsedSignalId;
+                selectedSignalId = parsedSignalId;
+                currentSearch = parsedSignalId;
+                setSearchInputValue(currentSearch);
+                return;
+            }
+            if (filterSignalId) {
+                selectedSignalId = filterSignalId;
+                currentSearch = filterSignalId;
+                setSearchInputValue(currentSearch);
+                return;
+            }
+            selectedSignalId = '';
+            detailSignalId = '';
+        }
+
+        function syncSignalsPageUrl() {
+            const nextUrl = buildSignalsPageUrl();
+            const currentUrl = `${window.location.pathname}${window.location.search}`;
+            if (currentUrl !== nextUrl) {
+                history.replaceState(null, '', nextUrl);
+            }
         }
 
         async function initAuth() {
@@ -193,24 +258,24 @@
                 .replace(/"/g, '\\"');
         }
 
-        function formatNumber(value, digits = 0) {
+        function formatNumber(value, digits = 0, fallback = '数据缺失') {
             const num = Number(value);
-            if (!Number.isFinite(num)) return '--';
+            if (!Number.isFinite(num)) return fallback;
             return num.toLocaleString('en-US', {
                 minimumFractionDigits: digits,
                 maximumFractionDigits: digits,
             });
         }
 
-        function formatPrice(value) {
+        function formatPrice(value, fallback = '数据缺失') {
             const num = Number(value);
-            if (!Number.isFinite(num) || num <= 0) return '--';
+            if (!Number.isFinite(num) || num <= 0) return fallback;
             return `$${formatNumber(num, 2)}`;
         }
 
         function formatSignedPercentHtml(value) {
             const num = Number(value);
-            if (!Number.isFinite(num)) return '<span style="color: var(--muted)">--</span>';
+            if (!Number.isFinite(num)) return '<span style="color: var(--muted)">数据缺失</span>';
             const color = num > 0 ? 'var(--long)' : num < 0 ? 'var(--short)' : 'var(--muted)';
             const sign = num > 0 ? '+' : '';
             return `<span style="color:${color}">${sign}${num.toFixed(2)}%</span>`;
@@ -325,12 +390,13 @@
             return `${text.slice(0, Math.max(0, maxLength - 3))}...`;
         }
 
-        function getSignalsStatusLabel(status = currentStatus) {
+        function formatSignalStatusLabel(status = currentStatus) {
+            const key = String(status || '').trim().toLowerCase();
             const map = {
                 all: '全部状态',
                 awaiting_confirm: '待确认',
                 pending: '等待执行',
-                submitted: '已提交',
+                submitted: '已提交/挂单中',
                 protected_active: '保护中',
                 protection_incomplete: '保护异常',
                 executed: '已执行',
@@ -338,7 +404,15 @@
                 expired: '已过期',
                 rejected: '已拒绝',
             };
-            return map[status] || status || '全部状态';
+            return map[key] || status || '全部状态';
+        }
+
+        function getSignalsStatusLabel(status = currentStatus) {
+            return formatSignalStatusLabel(status);
+        }
+
+        function hasDistinctSignalSearch() {
+            return Boolean(currentSearch && !isSameSignalId(currentSearch, filterSignalId));
         }
 
         function getSignalsDirectionLabel(direction = currentDirection) {
@@ -359,11 +433,11 @@
         function renderSignalsTopSection() {
             const scopeParts = [];
             if (filterSignalId) scopeParts.push(`signal_id=${summarizeHeaderValue(filterSignalId, 18)}`);
-            if (currentSearch) scopeParts.push(`search=${summarizeHeaderValue(currentSearch, 24)}`);
+            if (hasDistinctSignalSearch()) scopeParts.push(`search=${summarizeHeaderValue(currentSearch, 24)}`);
             const scopeText = scopeParts.length ? scopeParts.join(' · ') : '无附加过滤';
             setPageContextMeta([
                 { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
-                { label: '交易日', value: currentDate || '--' },
+                { label: '交易日', value: currentDate || '等待数据' },
                 { label: '范围', value: scopeText },
             ]);
             const summaryNode = document.getElementById('signalsCommandSummary');
@@ -391,7 +465,7 @@
         function renderFilterNote() {
             const notes = [];
             if (filterSignalId) notes.push(`signal_id=${filterSignalId}`);
-            if (currentSearch) notes.push(`search=${currentSearch}`);
+            if (hasDistinctSignalSearch()) notes.push(`search=${currentSearch}`);
             if (currentStatus !== 'all') notes.push(`status=${currentStatus}`);
             if (currentDirection !== 'all') notes.push(`direction=${currentDirection}`);
             document.getElementById('filterNote').innerHTML = notes.length
@@ -456,9 +530,9 @@
             return end - start;
         }
 
-        function formatLatency(ms) {
+        function formatLatency(ms, fallback = '计算中') {
             const value = Number(ms || 0);
-            if (!Number.isFinite(value) || value <= 0) return '--';
+            if (!Number.isFinite(value) || value <= 0) return fallback;
             if (value < 1000) return `${Math.round(value)}ms`;
             const totalSeconds = Math.round(value / 1000);
             const hours = Math.floor(totalSeconds / 3600);
@@ -469,8 +543,42 @@
             return `${seconds}s`;
         }
 
-        function formatEventTime(ms) {
-            return ms > 0 ? formatBarTimeMsToET(ms) : '--';
+        function formatEventTime(ms, fallback = '等待数据') {
+            return ms > 0 ? formatBarTimeMsToET(ms) : fallback;
+        }
+
+        function hasPositiveNumber(value) {
+            const num = Number(value);
+            return Number.isFinite(num) && num > 0;
+        }
+
+        function getIndicatorEmptyState(signal, latestIndicator) {
+            if (latestIndicator) return '数据缺失';
+            const status = String(signal?.status || '').trim().toLowerCase();
+            if (status === 'expired') return '已过期';
+            if (['awaiting_confirm', 'pending', 'submitted'].includes(status)) return '等待数据';
+            return '数据缺失';
+        }
+
+        function formatSignalPrice(value, preferred = '数据缺失') {
+            return hasPositiveNumber(value) ? formatPrice(value) : preferred;
+        }
+
+        function formatCurrentPrice(latestIndicator, signal) {
+            return hasPositiveNumber(latestIndicator?.close)
+                ? formatPrice(latestIndicator.close)
+                : getIndicatorEmptyState(signal, latestIndicator);
+        }
+
+        function formatQuantityLabel(value) {
+            const num = Number(value);
+            return Number.isFinite(num) && num > 0 ? `${formatNumber(num, 0)} 股` : '数据缺失';
+        }
+
+        function formatPositionSizeLabel(entryPrice, shares) {
+            return hasPositiveNumber(entryPrice) && hasPositiveNumber(shares)
+                ? formatPrice(Number(entryPrice) * Number(shares))
+                : '数据缺失';
         }
 
         function averageLatency(signals, getter) {
@@ -648,10 +756,11 @@
             if (!orders || orders.length === 0) return '';
 
             const getRole = (order) => order.role || order.extra?.role || '';
-            const hasExitFill = orders.some(order => getRole(order) !== 'entry' && order.status === 'Filled');
-            const hasEntryFill = orders.some(order => getRole(order) === 'entry' && order.status === 'Filled');
-            const hasWorkingOrder = orders.some(order => order.status === 'Init' || order.status === 'Submitted');
-            const allEnded = orders.every(order => order.status === 'Canceled' || order.status === 'Closed');
+            const getStatus = (order) => String(order.status || '').trim().toLowerCase();
+            const hasExitFill = orders.some(order => getRole(order) !== 'entry' && getStatus(order) === 'filled');
+            const hasEntryFill = orders.some(order => getRole(order) === 'entry' && getStatus(order) === 'filled');
+            const hasWorkingOrder = orders.some(order => ['init', 'submitted', 'presubmitted'].includes(getStatus(order)));
+            const allEnded = orders.every(order => ['canceled', 'cancelled', 'closed'].includes(getStatus(order)));
 
             if (hasExitFill) {
                 return '<span class="indicator-badge badge-long">✅ 已退出</span>';
@@ -660,7 +769,7 @@
                 return '<span class="indicator-badge" style="background:rgba(72,187,120,0.18);color:var(--long);">📦 持仓中</span>';
             }
             if (hasWorkingOrder) {
-                return '<span class="indicator-badge" style="background:rgba(246,173,85,0.2);color:var(--pending);">⏳ 挂单中</span>';
+                return '<span class="indicator-badge" style="background:rgba(246,173,85,0.2);color:var(--pending);">⏳ 已提交/挂单中</span>';
             }
             if (allEnded) {
                 return '<span class="indicator-badge" style="background:rgba(113,128,150,0.2);color:var(--rejected);">🔒 已结束</span>';
@@ -674,6 +783,8 @@
         async function loadSignals({ refreshCounts = true, showLoadingState = true } = {}) {
             // 防止重复调用
             if (isLoadingSignals) return;
+            normalizeSignalFocusFromState();
+            syncSignalsPageUrl();
             isLoadingSignals = true;
             const requestId = ++currentSignalsRequestId;
 
@@ -710,7 +821,7 @@
                 }
 
                 // 搜索筛选（symbol 或 signal_id）
-                if (currentSearch) {
+                if (hasDistinctSignalSearch()) {
                     const s = escapeFilterValue(currentSearch);
                     conditions.push(`(symbol ~ "${s}" || signal_id ~ "${s}")`);
                 }
@@ -1025,7 +1136,7 @@
             if (filterSignalId) {
                 baseConditions.push(`signal_id = "${escapeFilterValue(filterSignalId)}"`);
             }
-            if (currentSearch) {
+            if (hasDistinctSignalSearch()) {
                 const s = escapeFilterValue(currentSearch);
                 baseConditions.push(`(symbol ~ "${s}" || signal_id ~ "${s}")`);
             }
@@ -1127,7 +1238,7 @@
             if (filterSignalId) {
                 filtered = filtered.filter(s => s.signal_id === filterSignalId);
             }
-            if (currentSearch) {
+            if (hasDistinctSignalSearch()) {
                 const s = currentSearch.toUpperCase();
                 filtered = filtered.filter(sig =>
                     (sig.symbol || '').toUpperCase().includes(s) ||
@@ -1255,7 +1366,7 @@
                     const pct = Number(mi.change_pct);
                     const hasPct = Number.isFinite(pct);
                     const colorClass = hasPct && pct > 0 ? 'badge-change-up' : (hasPct && pct < 0 ? 'badge-change-down' : 'badge-div');
-                    const pctText = hasPct ? `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%` : (mi.stale ? '延迟' : '--');
+                    const pctText = hasPct ? `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%` : (mi.stale ? '已过期' : '数据缺失');
                     badges.push(`<span class="indicator-badge ${colorClass}" title="${escapeHtml(mi.source || '')}">${mi.symbol} ${pctText}</span>`);
                 }
             });
@@ -1297,7 +1408,7 @@
                 }
 
                 // 搜索筛选
-                if (currentSearch) {
+                if (hasDistinctSignalSearch()) {
                     const s = escapeFilterValue(currentSearch);
                     conditions.push(`(symbol ~ "${s}" || signal_id ~ "${s}")`);
                 }
@@ -1347,12 +1458,41 @@
         }
 
         function filterSignals() {
-            return displayedSignals;
+            return getFilteredSignals();
         }
+
+        function setSelectedSignal(signalId, { detail = false, reload = false } = {}) {
+            const normalized = normalizeSignalId(signalId);
+            filterSignalId = normalized;
+            selectedSignalId = normalized;
+            detailSignalId = normalized;
+            currentSearch = normalized;
+            setSearchInputValue(currentSearch);
+            syncSignalsPageUrl();
+            renderSignalsPageChrome();
+            if (reload) {
+                loadSignals({ refreshCounts: true, showLoadingState: false });
+            } else {
+                renderSignals();
+                scrollSelectedSignalIntoView();
+            }
+        }
+
+        function scrollSelectedSignalIntoView() {
+            if (!selectedSignalId) return;
+            const signalCard = document.querySelector(`[data-signal-id="${cssEscapeValue(selectedSignalId)}"]`);
+            if (!signalCard) return;
+            signalCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+
+        window.selectSignalCard = function(signalId) {
+            if (!signalId || isSameSignalId(signalId, selectedSignalId)) return;
+            setSelectedSignal(signalId, { reload: true });
+        };
 
         // 计算信号倒计时（从 bar_time_ms 开始，有效期从 config 读取）
         function calculateCountdown(barTimeMs, intervalValue) {
-            if (!barTimeMs) return '';
+            if (!barTimeMs) return '等待数据';
             const validityMinutes = signalValidityMinutes;
             const closeTimeMs = Number(barTimeMs || 0) + intervalToMs(intervalValue || '5m');
 
@@ -1365,9 +1505,7 @@
 
             const remainingMs = expiryTime - usEasternTime;
 
-            if (remainingMs <= 0) {
-                return ''; // 已过期不显示倒计时
-            }
+            if (remainingMs <= 0) return '已过期';
 
             const hours = Math.floor(remainingMs / (60 * 60 * 1000));
             const minutes = Math.floor((remainingMs % (60 * 60 * 1000)) / (60 * 1000));
@@ -1382,6 +1520,19 @@
         // 搜索输入处理（防抖）
         function handleSearchInput(value) {
             currentSearch = value.trim();
+            const parsedSignalId = parseSignalIdSearch(currentSearch);
+            if (parsedSignalId) {
+                filterSignalId = parsedSignalId;
+                selectedSignalId = parsedSignalId;
+                detailSignalId = parsedSignalId;
+                currentSearch = parsedSignalId;
+                setSearchInputValue(currentSearch);
+            } else {
+                filterSignalId = '';
+                selectedSignalId = '';
+                detailSignalId = '';
+            }
+            syncSignalsPageUrl();
             renderSignalsPageChrome();
             if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
             searchDebounceTimer = setTimeout(() => {
@@ -1435,17 +1586,7 @@
                 const directionIcon = signal.direction === 'long' ? '📈' : '📉';
                 const directionClass = signal.direction === 'long' ? 'long' : 'short';
                 const statusClass = signal.status || 'pending';
-                const statusText = {
-                    'pending': '等待执行',
-                    'awaiting_confirm': '待确认',
-                    'submitted': '已提交',
-                    'protected_active': '保护中',
-                    'protection_incomplete': '保护异常',
-                    'executed': '已执行',
-                    'expired': '已过期',
-                    'closed': '已平仓',
-                    'rejected': '已拒绝'
-                }[statusClass] || statusClass;
+                const statusText = formatSignalStatusLabel(statusClass);
 
                 const isAwaitingConfirm = signal.status === 'awaiting_confirm';
                 const isPending = signal.status === 'pending';
@@ -1454,14 +1595,14 @@
                 // 计算开仓金额
                 const entryPrice = signal.entry || 0;
                 const shares = signal.shares || 0;
-                const positionSize = entryPrice * shares;
 
                 // 计算预计盈亏
                 const isLong = signal.direction === 'long';
                 const stopLoss = signal.stop_loss || 0;
                 const takeProfit = signal.take_profit || 0;
-                const profitPerShare = isLong ? (takeProfit - entryPrice) : (entryPrice - takeProfit);
-                const lossPerShare = isLong ? (entryPrice - stopLoss) : (stopLoss - entryPrice);
+                const hasTradePrices = hasPositiveNumber(entryPrice) && hasPositiveNumber(takeProfit) && hasPositiveNumber(stopLoss) && hasPositiveNumber(shares);
+                const profitPerShare = hasTradePrices ? (isLong ? (takeProfit - entryPrice) : (entryPrice - takeProfit)) : 0;
+                const lossPerShare = hasTradePrices ? (isLong ? (entryPrice - stopLoss) : (stopLoss - entryPrice)) : 0;
                 const expectedProfit = profitPerShare * shares;
                 const expectedLoss = lossPerShare * shares;
 
@@ -1505,24 +1646,45 @@
                 const intervalBadge = intervalText ? `<span class="signal-interval">${intervalText}</span>` : '';
                 const chartParams = buildSignalChartParams(signal);
                 const hasChartContext = !!chartParams;
+                const isSelected = isSameSignalId(signal.signal_id, selectedSignalId);
+                const isDetailActive = isSameSignalId(signal.signal_id, detailSignalId);
+                const selectedStyle = isSelected ? 'border-color:rgba(59,130,246,0.85);box-shadow:0 0 0 1px rgba(59,130,246,0.35),0 20px 50px rgba(59,130,246,0.18);' : '';
+                const entryText = formatSignalPrice(signal.entry);
+                const currentPriceText = formatCurrentPrice(latestIndicator, signal);
+                const takeProfitText = formatSignalPrice(signal.take_profit);
+                const stopLossText = formatSignalPrice(signal.stop_loss);
+                const rrText = signal.rr || '数据缺失';
+                const sharesAmountText = `${formatQuantityLabel(signal.shares)} / ${formatPositionSizeLabel(signal.entry, signal.shares)}`;
+                const signalIdText = signal.signal_id || '数据缺失';
+                const usTimeText = signal.us_time || '等待数据';
+                const expectedProfitText = hasTradePrices ? formatPrice(expectedProfit) : '数据缺失';
+                const expectedLossText = hasTradePrices ? formatPrice(expectedLoss) : '数据缺失';
+                const indicatorStateText = getIndicatorEmptyState(signal, latestIndicator);
+                const chartStateText = hasChartContext ? '' : `(${indicatorStateText})`;
+                const indicatorButtonStateText = latestIndicator ? '' : `(${indicatorStateText})`;
+                const dayChangeText = dayChangePct || `<span style="color: var(--muted)">${escapeHtml(indicatorStateText)}</span>`;
+                const atrVolText = atrVolLevel ? `${atrVolLabel} ${atrPct.toFixed(2)}%` : indicatorStateText;
+                const directionText = String(signal.direction || 'unknown').toUpperCase();
+                const signalIdLiteral = escapeHtml(toJsStringLiteral(signal.signal_id || ''));
+                const recordIdLiteral = escapeHtml(toJsStringLiteral(signal.id || ''));
 
                 return `
-                    <div class="signal-card" data-signal-id="${signal.signal_id}">
+                    <div class="signal-card${isSelected ? ' selected' : ''}" data-signal-id="${escapeHtml(signal.signal_id || '')}" style="${selectedStyle}">
                         <div class="signal-header">
                             <div style="display:flex;flex-direction:column;gap:4px;">
                                 <div class="signal-title">
                                     <span class="signal-icon">${directionIcon}</span>
-                                    <span class="signal-symbol">${signal.symbol}</span>
-                                    <span class="signal-direction ${directionClass}">${signal.direction.toUpperCase()}</span>
+                                    <span class="signal-symbol">${escapeHtml(signal.symbol || '数据缺失')}</span>
+                                    <span class="signal-direction ${directionClass}">${escapeHtml(directionText)}</span>
                                     ${intervalBadge}
                                 </div>
-                                <div class="signal-label" style="font-size:11px;">${signal.us_time || '-'}</div>
+                                <div class="signal-label" style="font-size:11px;">${escapeHtml(usTimeText)}</div>
                             </div>
                             <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
-                                <div class="signal-status status-${statusClass}">${statusText}</div>
+                                <div class="signal-status status-${statusClass}">${escapeHtml(statusText)}</div>
                                 ${showCountdown ? `
                                 <div class="countdown-display" data-bar-time="${signal.bar_time_ms || ''}" data-interval="${escapeHtml(signal.interval || '')}" style="font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--pending);">
-                                    ⏱️ <span class="countdown-value">${calculateCountdown(signal.bar_time_ms, signal.interval) || '-'}</span>
+                                    ⏱️ <span class="countdown-value">${escapeHtml(calculateCountdown(signal.bar_time_ms, signal.interval))}</span>
                                 </div>
                                 ` : ''}
                             </div>
@@ -1531,27 +1693,27 @@
                         <div class="signal-grid">
                             <div class="signal-item">
                                 <div class="signal-label">信号ID</div>
-                                <div class="signal-value" style="font-size:12px;font-family:'JetBrains Mono',monospace;">${signal.signal_id || '-'}</div>
+                                <div class="signal-value" style="font-size:12px;font-family:'JetBrains Mono',monospace;cursor:pointer;" onclick='selectSignalCard(${signalIdLiteral})'>${escapeHtml(signalIdText)}</div>
                             </div>
                             <div class="signal-item">
-                                <div class="signal-label">入场价 / 当前价</div>
-                                <div class="signal-value">$${(signal.entry || 0).toFixed(2)} / ${latestIndicator?.close ? '$' + latestIndicator.close.toFixed(2) : '-'}</div>
+                                <div class="signal-label">Entry / 当前价</div>
+                                <div class="signal-value">${escapeHtml(entryText)} / ${escapeHtml(currentPriceText)}</div>
                             </div>
                             <div class="signal-item">
-                                <div class="signal-label">止损价</div>
-                                <div class="signal-value">$${(signal.stop_loss || 0).toFixed(2)}</div>
+                                <div class="signal-label">Take Profit</div>
+                                <div class="signal-value">${escapeHtml(takeProfitText)}</div>
                             </div>
                             <div class="signal-item">
-                                <div class="signal-label">止盈价</div>
-                                <div class="signal-value">$${(signal.take_profit || 0).toFixed(2)}</div>
+                                <div class="signal-label">Stop Loss</div>
+                                <div class="signal-value">${escapeHtml(stopLossText)}</div>
                             </div>
                             <div class="signal-item">
                                 <div class="signal-label">风险回报比</div>
-                                <div class="signal-value">${signal.rr || 'N/A'}</div>
+                                <div class="signal-value">${escapeHtml(rrText)}</div>
                             </div>
                             <div class="signal-item">
                                 <div class="signal-label">股数 / 开仓金额</div>
-                                <div class="signal-value">${signal.shares || 0} 股 / $${positionSize.toFixed(2)}</div>
+                                <div class="signal-value">${escapeHtml(sharesAmountText)}</div>
                             </div>
                             <div class="signal-item">
                                 <div class="signal-label">bar 收盘</div>
@@ -1569,18 +1731,14 @@
                                 <div class="signal-label">首次飞书耗时</div>
                                 <div class="signal-value">${escapeHtml(formatLatency(firstSentDelayMs))}</div>
                             </div>
-                            ${dayChangePct ? `
                             <div class="signal-item">
                                 <div class="signal-label">涨幅(当日/昨日/7日)</div>
-                                <div class="signal-value signal-daychange" style="font-size:11px;">${dayChangePct}</div>
+                                <div class="signal-value signal-daychange" style="font-size:11px;">${dayChangeText}</div>
                             </div>
-                            ` : ''}
-                            ${atrVolLevel ? `
                             <div class="signal-item">
                                 <div class="signal-label">波动率</div>
-                                <div class="signal-value">${atrVolLabel} ${atrPct.toFixed(2)}%</div>
+                                <div class="signal-value">${escapeHtml(atrVolText)}</div>
                             </div>
-                            ` : ''}
                         </div>
 
                         ${signal.note ? `<div class="signal-note signal-note-highlight"><strong>📋 备注:</strong> ${signal.note}</div>` : ''}
@@ -1589,12 +1747,12 @@
                         <div class="signal-item full-width shares-amount">
                             <div class="shares-amount-left">
                                 <div class="signal-label">预计盈利</div>
-                                <div class="signal-value" style="color:var(--long);">$${expectedProfit.toFixed(2)}</div>
+                                <div class="signal-value" style="color:var(--long);">${escapeHtml(expectedProfitText)}</div>
                             </div>
                             <div class="shares-amount-divider"></div>
                             <div class="shares-amount-right">
                                 <div class="signal-label">预计亏损</div>
-                                <div class="signal-value" style="color:var(--short);">$${expectedLoss.toFixed(2)}</div>
+                                <div class="signal-value" style="color:var(--short);">${escapeHtml(expectedLossText)}</div>
                             </div>
                         </div>
 
@@ -1607,25 +1765,25 @@
 
                         <div class="signal-actions" style="display:flex;flex-direction:column;gap:8px;">
                             <div class="action-btns-row">
-                                <button class="action-btn btn-view${latestIndicator ? '' : ' disabled'}" onclick="showIndicatorDetails('${signal.id}')" ${latestIndicator ? '' : 'disabled'}>
-                                    📊 技术指标${latestIndicator ? '' : '(无)'}
+                                <button class="action-btn btn-view${latestIndicator ? '' : ' disabled'}${isDetailActive ? ' active' : ''}" onclick='showIndicatorDetails(${recordIdLiteral})' ${latestIndicator ? '' : 'disabled'}>
+                                    📊 技术指标${indicatorButtonStateText}
                                 </button>
-                                <button class="action-btn btn-view${hasChartContext ? '' : ' disabled'}" onclick="openSignalChartPage('${signal.id}')" ${hasChartContext ? '' : 'disabled'}>
-                                    📉 图表页${hasChartContext ? '' : '(无)'}
+                                <button class="action-btn btn-view${hasChartContext ? '' : ' disabled'}" onclick='openSignalChartPage(${recordIdLiteral})' ${hasChartContext ? '' : 'disabled'}>
+                                    📉 图表页${chartStateText}
                                 </button>
-                                <button class="action-btn btn-view${signal.signal_id ? '' : ' disabled'}" onclick="viewReverseSignal('${signal.signal_id}')" ${signal.signal_id ? '' : 'disabled'}>
+                                <button class="action-btn btn-view${signal.signal_id ? '' : ' disabled'}" onclick='viewReverseSignal(${signalIdLiteral})' ${signal.signal_id ? '' : 'disabled'}>
                                     🔄 反向信号
                                 </button>
-                                <button class="action-btn btn-view${signal.signal_id ? '' : ' disabled'}" onclick="viewSignalOrders('${signal.signal_id}')" ${signal.signal_id ? '' : 'disabled'}>
+                                <button class="action-btn btn-view${signal.signal_id ? '' : ' disabled'}" onclick='viewSignalOrders(${signalIdLiteral})' ${signal.signal_id ? '' : 'disabled'}>
                                     📋 订单
                                 </button>
                             </div>
                             ${isAwaitingConfirm ? `
                                 <div style="display:flex;gap:6px;justify-content:flex-end;">
-                                    <button class="action-btn btn-confirm" onclick="confirmSignal('${signal.id}')">
+                                    <button class="action-btn btn-confirm" onclick='confirmSignal(${recordIdLiteral})'>
                                         ✓ 确认
                                     </button>
-                                    <button class="action-btn btn-cancel" onclick="cancelSignal('${signal.id}')">
+                                    <button class="action-btn btn-cancel" onclick='cancelSignal(${recordIdLiteral})'>
                                         ✕ 拒绝
                                     </button>
                                 </div>
@@ -1645,7 +1803,7 @@
                 const valueEl = el.querySelector('.countdown-value');
                 if (valueEl && barTime) {
                     const remainingMs = calculateRemainingMs(parseInt(barTime, 10), intervalValue);
-                    valueEl.textContent = formatCountdown(remainingMs) || '-';
+                    valueEl.textContent = formatCountdown(remainingMs);
 
                     // 少于5分钟时显示警告样式
                     if (remainingMs > 0 && remainingMs < 5 * 60 * 1000) {
@@ -1655,6 +1813,8 @@
                         valueEl.style.color = '';
                         el.style.color = '';
                     }
+                } else if (valueEl) {
+                    valueEl.textContent = '等待数据';
                 }
             });
         }
@@ -1672,7 +1832,7 @@
 
         // 格式化倒计时显示
         function formatCountdown(remainingMs) {
-            if (remainingMs <= 0) return '';
+            if (remainingMs <= 0) return '已过期';
             const hours = Math.floor(remainingMs / (60 * 60 * 1000));
             const minutes = Math.floor((remainingMs % (60 * 60 * 1000)) / (60 * 1000));
             const seconds = Math.floor((remainingMs % (60 * 1000)) / 1000);
@@ -1800,9 +1960,12 @@
             if (!signal) return;
 
             const latestIndicator = signalIndicatorsMap[signalId] || null;
+            if (signal.signal_id) {
+                setSelectedSignal(signal.signal_id, { detail: true, reload: false });
+            }
 
             if (!latestIndicator) {
-                showToast('暂无技术指标数据');
+                showToast(`技术指标${getIndicatorEmptyState(signal, latestIndicator)}`);
                 return;
             }
 
@@ -1822,6 +1985,7 @@
 
         window.onDateChange = function(startDate, endDate) {
             currentDate = startDate;
+            syncSignalsPageUrl();
             renderSignalsPageChrome();
             loadSignals();
         };
@@ -1882,9 +2046,13 @@
                 const dateInput = document.getElementById('customDate');
                 if (dateInput) dateInput.value = urlDate;
             }
-            filterSignalId = urlSignalId || '';
-            currentSearch = urlSearch;
-            document.getElementById('searchInput').value = currentSearch;
+            filterSignalId = normalizeSignalId(urlSignalId);
+            selectedSignalId = filterSignalId;
+            detailSignalId = filterSignalId;
+            currentSearch = normalizeSignalId(urlSearch) || filterSignalId;
+            setSearchInputValue(currentSearch);
+            normalizeSignalFocusFromState();
+            syncSignalsPageUrl();
             renderSignalsPageChrome();
             renderLatencySummary();
 
@@ -1926,15 +2094,7 @@
                 }
             });
 
-            if (filterSignalId && allSignals.length > 0) {
-                const signalCard = document.querySelector(`[data-signal-id="${filterSignalId}"]`);
-                if (signalCard) {
-                    signalCard.style.boxShadow = '0 0 20px rgba(59, 130, 246, 0.35)';
-                    setTimeout(() => {
-                        signalCard.style.boxShadow = '';
-                    }, 1500);
-                }
-            }
+            scrollSelectedSignalIntoView();
         });
 
         window.onEnvironmentChange = function(environment) {

@@ -589,6 +589,34 @@ class RuntimePipelineOfficial5mMixin:
             max_written_ms_by_symbol: dict[str, int] = {}
             sequence_status_by_symbol: dict[str, dict] = {}
             fetch_jobs = []
+            queued_compute_symbols: set[str] = set()
+
+            def queue_due_compute_symbols(symbol_candidates, *, bar_count: int = 0) -> None:
+                candidates = [
+                    symbol
+                    for symbol in self._normalize_symbol_list(symbol_candidates)
+                    if symbol in trade_set and symbol not in queued_compute_symbols
+                ]
+                if not candidates:
+                    return
+                due_symbols = [
+                    symbol
+                    for symbol in self._official_5m_due_compute_symbols(
+                        service_mod.ENVIRONMENT,
+                        candidates,
+                        due_bucket_ms,
+                    )
+                    if symbol not in queued_compute_symbols
+                ]
+                if not due_symbols:
+                    return
+                self._last_bar_close_at = time.time()
+                self._queue_compute_event(
+                    "canonical_close",
+                    bar_count=max(0, int(bar_count or 0)),
+                    symbols=due_symbols,
+                )
+                queued_compute_symbols.update(due_symbols)
 
             for symbol in symbols:
                 conid = int(conid_map.get(symbol) or 0)
@@ -754,6 +782,11 @@ class RuntimePipelineOfficial5mMixin:
                                 "trace": history_trace,
                             }
                         )
+                elif int(max_written_ms_by_symbol.get(symbol, 0) or 0) >= due_bucket_ms:
+                    queue_due_compute_symbols(
+                        [symbol],
+                        bar_count=written_bars,
+                    )
 
             repair_wrote_symbols = set()
             repair_workers = self._official_5m_fetch_workers(len(repair_jobs)) if repair_jobs else 0
@@ -839,6 +872,11 @@ class RuntimePipelineOfficial5mMixin:
                         max_written_ms,
                         format_us_time(max_written_ms) if max_written_ms > 0 else "",
                     )
+                elif int(max_written_ms_by_symbol.get(symbol, 0) or 0) >= due_bucket_ms:
+                    queue_due_compute_symbols(
+                        [symbol],
+                        bar_count=written_bars,
+                    )
 
             for symbol in [job["symbol"] for job in fetch_jobs]:
                 sequence_status = sequence_status_by_symbol.get(symbol) or {}
@@ -868,7 +906,9 @@ class RuntimePipelineOfficial5mMixin:
             written_symbols = [symbol for symbol in symbols if symbol in written_symbol_set]
             compute_symbols = [
                 symbol for symbol in symbols
-                if symbol in trade_set and symbol not in next_pending_symbols
+                if symbol in trade_set
+                and symbol not in next_pending_symbols
+                and symbol not in queued_compute_symbols
             ]
             due_compute_symbols = self._official_5m_due_compute_symbols(
                 service_mod.ENVIRONMENT,

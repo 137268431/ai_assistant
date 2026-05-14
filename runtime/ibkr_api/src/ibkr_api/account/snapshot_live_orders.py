@@ -16,6 +16,65 @@ from ibkr_api.account.snapshot_shared import (
 )
 
 
+ORDER_LEG_SORT_WEIGHT = {
+    "entry": 0,
+    "take_profit": 1,
+    "stop_loss": 2,
+}
+
+
+def _normalize_leg_role(order: dict[str, Any] | None) -> str:
+    data = order or {}
+    role_text = to_text(data.get("role") or data.get("leg_role") or data.get("order_type") or data.get("orderType")).lower()
+    compact = role_text.replace("-", "_").replace(" ", "_")
+    if compact in {"entry", "parent"} or "entry" in compact:
+        return "entry"
+    if compact in {"take_profit", "takeprofit", "tp", "profit_taker"} or "profit" in compact:
+        return "take_profit"
+    if compact in {"stop_loss", "stoploss", "sl", "stop"} or "stop" in compact:
+        return "stop_loss"
+    if not to_text(data.get("parent_id") or data.get("parent_order_unique_id")):
+        return "entry"
+    return compact or "child"
+
+
+def _order_leg_sort_key(order: dict[str, Any]) -> tuple[int, int, str]:
+    role = _normalize_leg_role(order)
+    return (
+        ORDER_LEG_SORT_WEIGHT.get(role, 9),
+        -to_int(order.get("updated_ms"), 0),
+        to_text(order.get("order_id") or order.get("broker_order_id") or order.get("unique_id")),
+    )
+
+
+def _sorted_order_legs(orders: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    result = [dict(order or {}) for order in (orders or [])]
+    for order in result:
+        order["leg_role"] = _normalize_leg_role(order)
+    return sorted(result, key=_order_leg_sort_key)
+
+
+def _infer_trade_direction(group: dict[str, Any] | None, orders: list[dict[str, Any]] | None) -> str:
+    group = group or {}
+    for key in ("trade_direction", "direction", "position_side"):
+        value = to_text(group.get(key)).lower()
+        if value in {"long", "short"}:
+            return value
+    sorted_orders = _sorted_order_legs(orders)
+    for order in sorted_orders:
+        for key in ("direction", "position_side"):
+            value = to_text(order.get(key)).lower()
+            if value in {"long", "short"}:
+                return value
+        if _normalize_leg_role(order) == "entry":
+            side = to_text(order.get("side")).upper()
+            if side == "BUY":
+                return "long"
+            if side == "SELL":
+                return "short"
+    return ""
+
+
 def _build_pb_order_lookup(normalized_orders: list[dict[str, Any]]) -> dict[str, Any]:
     lookup = {
         "by_broker_order_id": {},
@@ -230,12 +289,16 @@ def _build_pb_context(live_order: dict[str, Any], pb_match: dict[str, Any] | Non
 
 
 def _finalize_group(group: dict[str, Any]) -> dict[str, Any]:
+    orders = _sorted_order_legs(group["orders"])
+    trade_direction = _infer_trade_direction(group, orders)
     return {
         "group_key": group["group_key"],
         "symbol": group["symbol"],
         "signal_id": group["signal_id"],
         "trade_group_id": group["trade_group_id"],
         "entry_order_unique_id": group["entry_order_unique_id"],
+        "trade_direction": trade_direction,
+        "direction": trade_direction,
         "latest_updated": group["latest_updated"],
         "latest_updated_ms": group["latest_updated_ms"],
         "latest_order_status": group["latest_order_status"],
@@ -250,7 +313,7 @@ def _finalize_group(group: dict[str, Any]) -> dict[str, Any]:
         "filled_quantity": group["filled_quantity"],
         "remaining_quantity": group["remaining_quantity"],
         "recovery_sources": [f"{key}:{group['recovery_sources'][key]}" for key in sorted(group["recovery_sources"])],
-        "orders": group["orders"],
+        "orders": orders,
     }
 
 
@@ -349,6 +412,7 @@ def build_managed_order_context(pb: Any, environment: str, live_orders: list[dic
             live_order["price"] = to_float(pb_context.get("pb_limit_price")) or 0.0
         live_order["direction"] = to_text(pb_context.get("direction"))
         live_order["position_side"] = to_text(pb_context.get("position_side"))
+        live_order["leg_role"] = _normalize_leg_role(live_order)
         normalized_live_orders.append(live_order)
         if pb_context.get("match_state") == "matched":
             matched_live_order_count += 1
@@ -390,6 +454,8 @@ def build_managed_order_context(pb: Any, environment: str, live_orders: list[dic
                 "signal_id": to_text(pb_context.get("signal_id")),
                 "trade_group_id": to_text(pb_context.get("trade_group_id") or live_group_key),
                 "entry_order_unique_id": to_text(pb_context.get("entry_order_unique_id") or live_order.get("client_order_id") or live_order.get("order_id")),
+                "trade_direction": "",
+                "direction": "",
                 "latest_updated": "",
                 "latest_updated_ms": 0,
                 "latest_order_status": "",
@@ -413,6 +479,10 @@ def build_managed_order_context(pb: Any, environment: str, live_orders: list[dic
             live_group["trade_group_id"] = pb_context.get("trade_group_id")
         if not live_group["entry_order_unique_id"] and pb_context.get("entry_order_unique_id"):
             live_group["entry_order_unique_id"] = pb_context.get("entry_order_unique_id")
+        order_direction = _infer_trade_direction({}, [live_order])
+        if order_direction and not live_group.get("trade_direction"):
+            live_group["trade_direction"] = order_direction
+            live_group["direction"] = order_direction
         if pb_context.get("match_state") == "matched":
             live_group["matched_live_orders"] += 1
         else:
@@ -439,12 +509,16 @@ def build_managed_order_context(pb: Any, environment: str, live_orders: list[dic
     for key, group in active_pb_groups_by_key.items():
         has_open_exposure = group["entry_filled_qty"] > group["exit_filled_qty"]
         matched_live_orders = matched_pb_group_counts.get(key, 0)
+        sorted_orders = _sorted_order_legs([_serialize_managed_order(order) for order in group["orders"]])
+        trade_direction = _infer_trade_direction(group, sorted_orders)
         active_groups.append(
             {
                 "symbol": group["symbol"],
                 "signal_id": group["signal_id"],
                 "trade_group_id": group["trade_group_id"],
                 "entry_order_unique_id": group["entry_order_unique_id"],
+                "trade_direction": trade_direction,
+                "direction": trade_direction,
                 "latest_updated": group["latest_updated"],
                 "latest_updated_ms": group["latest_updated_ms"],
                 "latest_order_status": group["latest_order_status"],
@@ -453,7 +527,7 @@ def build_managed_order_context(pb: Any, environment: str, live_orders: list[dic
                 "broker_matched": matched_live_orders > 0,
                 "matched_broker_orders": matched_live_orders,
                 "order_count": len(group["orders"]),
-                "orders": [_serialize_managed_order(order) for order in group["orders"]],
+                "orders": sorted_orders,
             }
         )
     active_groups = [group for group in active_groups if group.get("has_active_order") or group.get("has_open_exposure")]

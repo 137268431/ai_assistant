@@ -18,6 +18,7 @@ class _FakePB:
             str(row["id"]): copy.deepcopy(row)
             for row in (signal_rows or [])
         }
+        self.reverse_signals = {}
         self.created = []
         self.updated = []
 
@@ -26,6 +27,8 @@ class _FakePB:
         return copy.deepcopy(rows[0]) if rows else None
 
     def get_records(self, collection, filter=None, sort=None, per_page=200, page=1):
+        if collection == "ibkr_reverse_signals":
+            return list(copy.deepcopy(row) for row in self.reverse_signals.values())[:per_page]
         if collection != "ibkr_signals":
             return []
         filter_text = str(filter or "")
@@ -68,9 +71,17 @@ class _FakePB:
         self.created.append((collection, copy.deepcopy(row)))
         if collection == "ibkr_signals":
             self.signals[str(row["id"])] = copy.deepcopy(row)
+        if collection == "ibkr_reverse_signals":
+            self.reverse_signals[str(row["id"])] = copy.deepcopy(row)
         return copy.deepcopy(row)
 
     def update_record(self, collection, record_id, patch):
+        if collection == "ibkr_reverse_signals":
+            current = copy.deepcopy(self.reverse_signals[str(record_id)])
+            current.update(copy.deepcopy(patch))
+            self.reverse_signals[str(record_id)] = current
+            self.updated.append((collection, str(record_id), copy.deepcopy(patch)))
+            return copy.deepcopy(current)
         current = copy.deepcopy(self.signals[str(record_id)])
         current.update(copy.deepcopy(patch))
         self.signals[str(record_id)] = current
@@ -381,6 +392,243 @@ class SignalIngressBuildersTest(unittest.TestCase):
         self.assertEqual(row["status"], "submitted")
         self.assertEqual(row["note"], "order_submitted_by_ibkr_compute")
         self.assertEqual(row["extra"]["status_reason"], "order_submitted_by_ibkr_compute")
+
+    def test_signal_ingest_refreshes_same_direction_unsubmitted_active_signal(self):
+        pb = _FakePB(
+            [
+                {
+                    "id": "sig-row-1",
+                    "signal_id": "sig-old",
+                    "environment": "live",
+                    "symbol": "AAPL",
+                    "direction": "long",
+                    "status": "awaiting_confirm",
+                    "entry": 180.0,
+                    "stop_loss": 178.0,
+                    "take_profit": 184.0,
+                    "bar_time_ms": 1713797700000,
+                    "extra": {"feishu_signal_message_id": "msg-old"},
+                }
+            ]
+        )
+        updates = []
+
+        payload, status_code = build_signal_ingest_response(
+            pb,
+            payload={
+                "environment": "live",
+                "symbol": "AAPL",
+                "signal_id": "sig-new",
+                "direction": "long",
+                "signal": "long_setup",
+                "entry": 181.0,
+                "stop_loss": 179.0,
+                "take_profit": 186.0,
+                "bar_time_ms": 1713798000000,
+            },
+            normalize_environment=self.normalize_environment,
+            escape_filter_string=self.escape_filter_string,
+            config_value=self.config_value,
+            send_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "should-not-send"},
+            update_interactive=lambda message_id, card, environment: updates.append((message_id, card, environment)) or {
+                "success": True,
+                "message_id": message_id,
+            },
+            signal_chat_id_fn=self.signal_chat_id_fn,
+            console_base_url="https://console.example.com",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["action"], "refreshed_active_signal")
+        self.assertEqual(payload["signal_id"], "sig-old")
+        self.assertEqual(len(pb.created), 0)
+        row = pb.signals["sig-row-1"]
+        self.assertEqual(row["entry"], 181.0)
+        self.assertEqual(row["take_profit"], 186.0)
+        self.assertEqual(row["signal_id"], "sig-old")
+        self.assertEqual(row["extra"]["merged_signal_ids"], ["sig-new"])
+        self.assertEqual(updates[0][0], "msg-old")
+
+    def test_signal_ingest_suppresses_same_direction_after_broker_submission(self):
+        pb = _FakePB(
+            [
+                {
+                    "id": "sig-row-1",
+                    "signal_id": "sig-old",
+                    "environment": "live",
+                    "symbol": "AAPL",
+                    "direction": "long",
+                    "status": "submitted",
+                    "entry": 180.0,
+                    "extra": {},
+                }
+            ]
+        )
+
+        payload, status_code = build_signal_ingest_response(
+            pb,
+            payload={
+                "environment": "live",
+                "symbol": "AAPL",
+                "signal_id": "sig-followup",
+                "direction": "long",
+                "signal": "long_setup",
+                "entry": 181.0,
+                "stop_loss": 179.0,
+                "take_profit": 186.0,
+                "bar_time_ms": 1713798000000,
+            },
+            normalize_environment=self.normalize_environment,
+            escape_filter_string=self.escape_filter_string,
+            config_value=self.config_value,
+            send_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "should-not-send"},
+            update_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "unused"},
+            signal_chat_id_fn=self.signal_chat_id_fn,
+            console_base_url="https://console.example.com",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["action"], "suppressed_same_direction_followup")
+        self.assertEqual(len(pb.created), 0)
+        extra = pb.signals["sig-row-1"]["extra"]
+        self.assertEqual(extra["followup_signal_ids"], ["sig-followup"])
+        self.assertEqual(extra["suppressed_reason"], "same_direction_broker_order_active")
+
+    def test_signal_ingest_suppresses_weak_reverse_against_broker_order(self):
+        pb = _FakePB(
+            [
+                {
+                    "id": "sig-row-1",
+                    "signal_id": "sig-old",
+                    "environment": "live",
+                    "symbol": "AAPL",
+                    "direction": "long",
+                    "status": "submitted",
+                    "extra": {},
+                }
+            ]
+        )
+
+        payload, status_code = build_signal_ingest_response(
+            pb,
+            payload={
+                "environment": "live",
+                "symbol": "AAPL",
+                "signal_id": "sig-weak-short",
+                "direction": "short",
+                "signal": "",
+                "entry": 179.0,
+                "bar_time_ms": 1713798000000,
+                "extra": {"signal_strength_score": 3},
+            },
+            normalize_environment=self.normalize_environment,
+            escape_filter_string=self.escape_filter_string,
+            config_value=self.config_value,
+            send_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "unused"},
+            update_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "unused"},
+            signal_chat_id_fn=self.signal_chat_id_fn,
+            console_base_url="https://console.example.com",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["action"], "suppressed_weak_reverse_signal")
+        self.assertEqual(len(pb.created), 0)
+        extra = pb.signals["sig-row-1"]["extra"]
+        self.assertEqual(extra["latest_suppressed_reverse_signal_id"], "sig-weak-short")
+        self.assertEqual(extra["latest_suppressed_reverse_reason"], "reverse_signal_below_strong_threshold")
+
+    def test_signal_ingest_queues_full_auto_reverse_for_strong_opposite_broker_signal(self):
+        pb = _FakePB(
+            [
+                {
+                    "id": "sig-row-1",
+                    "signal_id": "sig-old",
+                    "environment": "live",
+                    "symbol": "AAPL",
+                    "direction": "long",
+                    "status": "submitted",
+                    "extra": {"trade_group_id": "group-1"},
+                }
+            ]
+        )
+
+        payload, status_code = build_signal_ingest_response(
+            pb,
+            payload={
+                "environment": "live",
+                "symbol": "AAPL",
+                "signal_id": "sig-strong-short",
+                "direction": "short",
+                "signal": "short_setup",
+                "entry": 179.0,
+                "stop_loss": 181.0,
+                "take_profit": 174.0,
+                "bar_time_ms": 1713798000000,
+                "extra": {"signal_strength_score": 7},
+            },
+            normalize_environment=self.normalize_environment,
+            escape_filter_string=self.escape_filter_string,
+            config_value=self.config_value,
+            send_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "unused"},
+            update_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "unused"},
+            signal_chat_id_fn=self.signal_chat_id_fn,
+            console_base_url="https://console.example.com",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["action"], "queued_full_auto_reverse")
+        self.assertEqual(payload["target"], "ibkr_reverse_signals")
+        reverse_rows = [row for collection, row in pb.created if collection == "ibkr_reverse_signals"]
+        self.assertEqual(len(reverse_rows), 1)
+        reverse = reverse_rows[0]
+        self.assertEqual(reverse["action_type"], "cancel")
+        self.assertEqual(reverse["source"], "signal")
+        self.assertEqual(reverse["extra"]["reverse_stage"], "cancel_old_order")
+        self.assertEqual(reverse["extra"]["new_direction"], "short")
+        self.assertEqual(reverse["extra"]["reentry_signal_payload"]["signal_id"], "sig-strong-short")
+        self.assertEqual(pb.signals["sig-row-1"]["extra"]["reverse_policy"], "full_auto_reverse")
+
+    def test_signal_ingest_blocks_reverse_when_protection_incomplete(self):
+        pb = _FakePB(
+            [
+                {
+                    "id": "sig-row-1",
+                    "signal_id": "sig-old",
+                    "environment": "live",
+                    "symbol": "AAPL",
+                    "direction": "long",
+                    "status": "protection_incomplete",
+                    "extra": {},
+                }
+            ]
+        )
+
+        payload, status_code = build_signal_ingest_response(
+            pb,
+            payload={
+                "environment": "live",
+                "symbol": "AAPL",
+                "signal_id": "sig-strong-short",
+                "direction": "short",
+                "signal": "short_setup",
+                "entry": 179.0,
+                "bar_time_ms": 1713798000000,
+                "extra": {"signal_strength_score": 7},
+            },
+            normalize_environment=self.normalize_environment,
+            escape_filter_string=self.escape_filter_string,
+            config_value=self.config_value,
+            send_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "unused"},
+            update_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "unused"},
+            signal_chat_id_fn=self.signal_chat_id_fn,
+            console_base_url="https://console.example.com",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["action"], "blocked_reverse_protection_incomplete")
+        self.assertEqual([], [row for collection, row in pb.created if collection == "ibkr_reverse_signals"])
+        extra = pb.signals["sig-row-1"]["extra"]
+        self.assertEqual(extra["latest_suppressed_reverse_reason"], "protection_incomplete_blocks_auto_reverse")
 
     def test_signal_status_card_labels_protected_active(self):
         card = build_signal_status_card(

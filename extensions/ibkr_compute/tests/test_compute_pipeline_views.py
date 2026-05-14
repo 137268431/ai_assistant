@@ -296,7 +296,16 @@ class ComputePipelineSignalFastPathTest(unittest.TestCase):
                 ):
                     return pipeline_views.build_compute_response({}).get_json()
 
-    def _fake_app(self, *, bars, signal_generator=None, signal_params=None, signal_batch_sink=None, indicator_batch_sink=None):
+    def _fake_app(
+        self,
+        *,
+        bars,
+        signal_generator=None,
+        signal_params=None,
+        signal_batch_sink=None,
+        indicator_batch_sink=None,
+        event_log=None,
+    ):
         symbols = sorted({
             str((bar or {}).get("symbol") or "").strip().upper()
             for bar in (bars or [])
@@ -310,6 +319,7 @@ class ComputePipelineSignalFastPathTest(unittest.TestCase):
         bootstrap_calls = []
         signal_batches = signal_batch_sink if signal_batch_sink is not None else []
         indicator_batches = indicator_batch_sink if indicator_batch_sink is not None else []
+        events = event_log if event_log is not None else []
 
         def bootstrap_engine_state(
             environment,
@@ -343,23 +353,49 @@ class ComputePipelineSignalFastPathTest(unittest.TestCase):
             last_processed_ms.setdefault(engine_key, 100)
             return engines.setdefault(engine_key, _FakeEngine())
 
-        app = SimpleNamespace(
-            INDICATOR_BATCH_SIZE=10,
-            SIGNAL_BATCH_SIZE=10,
-            build_indicator_payload=lambda environment, symbol, interval, bar, current_engine, snapshot: {
+        def build_indicator_payload(environment, symbol, interval, bar, current_engine, snapshot):
+            events.append("indicator_payload")
+            return {
                 "environment": environment,
                 "symbol": symbol,
                 "interval": interval,
                 "bar_time_ms": int(bar["bar_time_ms"]),
                 "close": snapshot.get("close"),
-            },
-            build_signal_payload=lambda environment, symbol, interval, bar, current_engine, signal: {
+            }
+
+        def build_signal_payload(environment, symbol, interval, bar, current_engine, signal):
+            events.append("signal_payload")
+            return {
                 "environment": environment,
                 "symbol": symbol,
                 "interval": interval,
                 "bar_time_ms": int(bar["bar_time_ms"]),
                 "signal": signal.get("signal", "test"),
-            },
+            }
+
+        def flush_indicator_batch(batch):
+            events.append("indicator_flush")
+            indicator_batches.append(list(batch))
+            return {
+                "ok": True,
+                "written": len(batch),
+                "errors": 0,
+            }
+
+        def flush_signal_batch(batch):
+            events.append("signal_flush")
+            signal_batches.append(list(batch))
+            return {
+                "ok": True,
+                "written": len(batch),
+                "errors": 0,
+            }
+
+        app = SimpleNamespace(
+            INDICATOR_BATCH_SIZE=10,
+            SIGNAL_BATCH_SIZE=10,
+            build_indicator_payload=build_indicator_payload,
+            build_signal_payload=build_signal_payload,
             cfg=SimpleNamespace(refresh=lambda: None),
             compute_count=0,
             compute_lock=threading.Lock(),
@@ -367,16 +403,8 @@ class ComputePipelineSignalFastPathTest(unittest.TestCase):
             ensure_higher_timeframe_bars=lambda *args, **kwargs: {},
             error_count=0,
             fetch_interval_bars=lambda environment, interval, symbols=None, full_scan=False: list(bars),
-            flush_indicator_batch=lambda batch: indicator_batches.append(list(batch)) or {
-                "ok": True,
-                "written": len(batch),
-                "errors": 0,
-            },
-            flush_signal_batch=lambda batch: signal_batches.append(list(batch)) or {
-                "ok": True,
-                "written": len(batch),
-                "errors": 0,
-            },
+            flush_indicator_batch=flush_indicator_batch,
+            flush_signal_batch=flush_signal_batch,
             get_or_create_engine=get_or_create_engine,
             get_signal_generator_params=lambda environment: dict(signal_params or {"signal_enabled_symbols": "AAPL"}),
             is_recent_signal_bar=lambda bar_time_ms, interval: True,
@@ -460,6 +488,27 @@ class ComputePipelineSignalFastPathTest(unittest.TestCase):
         signal_generator.update.assert_called_once()
         self.assertEqual(len(fake_app._test_signal_batches), 1)
         self.assertEqual(fake_app._test_signal_batches[0][0]["bar_time_ms"], 200)
+
+    def test_latest_signal_update_and_flush_do_not_wait_for_indicator_flush(self):
+        events = []
+
+        def update_signal(snapshot):
+            del snapshot
+            events.append("signal_update")
+            return {"signal": "test"}
+
+        signal_generator = SimpleNamespace(update=mock.Mock(side_effect=update_signal))
+        fake_app = self._fake_app(
+            bars=[_base_bar(200)],
+            signal_generator=signal_generator,
+            event_log=events,
+        )
+
+        payload = self._run_compute(fake_app, _base_compute_plan(persist_signals=True, capture_signals=False))
+
+        self.assertEqual(payload["signals"], 1)
+        self.assertLess(events.index("signal_update"), events.index("indicator_flush"))
+        self.assertLess(events.index("signal_flush"), events.index("indicator_flush"))
 
     def test_indicator_flush_sorts_batch_by_latest_bar_time_first(self):
         fake_app = self._fake_app(

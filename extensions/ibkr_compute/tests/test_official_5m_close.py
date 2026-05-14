@@ -548,6 +548,54 @@ class Official5mCloseFlushTest(unittest.TestCase):
         )
         self.assertEqual(sorted(row["symbol"] for row in writer.flushed_rows), ["AAPL", "MSFT"])
 
+    def test_close_cycle_queues_ready_symbol_compute_before_repaired_symbol_finishes(self):
+        due_bucket_ms = int(datetime(2026, 4, 17, 10, 40, tzinfo=ET).timestamp() * 1000)
+        previous_bucket_ms = due_bucket_ms - (2 * STEP_MS)
+        middle_bucket_ms = due_bucket_ms - STEP_MS
+        writer = _FakeWriter()
+        backfill = _FakeBackfill(
+            writer,
+            initial_rows=[
+                _bar("AAPL", previous_bucket_ms),
+                _bar("MSFT", previous_bucket_ms),
+            ],
+            incremental_rows={
+                "AAPL": [_bar("AAPL", middle_bucket_ms), _bar("AAPL", due_bucket_ms)],
+                "MSFT": [_bar("MSFT", due_bucket_ms)],
+            },
+            repair_rows={
+                "MSFT": [_bar("MSFT", middle_bucket_ms)],
+            },
+        )
+        pipeline = _DummyPipeline(
+            due_bucket_ms=due_bucket_ms,
+            last_completed_bucket_ms=previous_bucket_ms,
+            data_writer=writer,
+            data_backfill=backfill,
+            pb=_FakePB(cursor_map={"AAPL|5m": previous_bucket_ms, "MSFT|5m": previous_bucket_ms}),
+            snapshot={
+                "symbols": ["AAPL", "MSFT"],
+                "trade_symbols": ["AAPL", "MSFT"],
+                "monitor_symbols": [],
+                "conid_map": {"AAPL": 1, "MSFT": 2},
+                "symbol_meta": {
+                    "AAPL": {"exchange": "NASDAQ"},
+                    "MSFT": {"exchange": "NASDAQ"},
+                },
+            },
+        )
+
+        with mock.patch("ibkr_compute.orchestration.runtime_pipeline._service_mod", return_value=self._service_mod()):
+            pipeline._run_official_5m_close_cycle()
+
+        self.assertEqual(
+            [event["symbols"] for event in pipeline.compute_events],
+            [["AAPL"], ["MSFT"]],
+        )
+        self.assertEqual(backfill.repair_fetch_calls, 1)
+        state = pipeline._copy_official_5m_state()
+        self.assertEqual(state["pending_symbols_total"], 0)
+
     def test_close_cycle_wakes_watchlist_after_completed_state_is_visible(self):
         due_bucket_ms = int(datetime(2026, 4, 17, 10, 50, tzinfo=ET).timestamp() * 1000)
         previous_bucket_ms = due_bucket_ms - STEP_MS

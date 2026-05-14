@@ -109,6 +109,79 @@ class AccountSnapshotRoutesTest(unittest.TestCase):
         self.assertEqual(1, len(enriched["matched_order_groups"]))
         self.assertEqual("matched", enriched["live_open_orders"][0]["pb_context"]["match_state"])
 
+    def test_live_order_group_orders_are_sorted_and_include_trade_direction(self):
+        pb = _FakePB(
+            {
+                "orders": [
+                    {
+                        "id": "ord-tp",
+                        "environment": "live",
+                        "symbol": "AAPL",
+                        "status": "Submitted",
+                        "signal_id": "sig-short",
+                        "trade_group_id": "grp-short",
+                        "entry_order_unique_id": "entry-short",
+                        "unique_id": "tp-short",
+                        "role": "take_profit",
+                        "direction": "short",
+                        "position_side": "short",
+                        "quantity": 10,
+                        "limit_price": 170,
+                    },
+                    {
+                        "id": "ord-entry",
+                        "environment": "live",
+                        "symbol": "AAPL",
+                        "status": "Submitted",
+                        "signal_id": "sig-short",
+                        "trade_group_id": "grp-short",
+                        "entry_order_unique_id": "entry-short",
+                        "unique_id": "entry-short",
+                        "role": "entry",
+                        "direction": "short",
+                        "position_side": "short",
+                        "quantity": 10,
+                        "limit_price": 180,
+                    },
+                    {
+                        "id": "ord-sl",
+                        "environment": "live",
+                        "symbol": "AAPL",
+                        "status": "Submitted",
+                        "signal_id": "sig-short",
+                        "trade_group_id": "grp-short",
+                        "entry_order_unique_id": "entry-short",
+                        "unique_id": "sl-short",
+                        "role": "stop_loss",
+                        "direction": "short",
+                        "position_side": "short",
+                        "quantity": 10,
+                        "limit_price": 182,
+                    },
+                ],
+                "ibkr_signals": [],
+            }
+        )
+        payload = {
+            "ok": True,
+            "environment": "live",
+            "positions": [],
+            "orders": [],
+            "live_open_orders": [
+                {"order_id": "1002", "client_order_id": "tp-short", "symbol": "AAPL", "side": "BUY", "status": "Submitted", "total_quantity": 10, "remaining_quantity": 10},
+                {"order_id": "1003", "client_order_id": "sl-short", "symbol": "AAPL", "side": "BUY", "status": "Submitted", "total_quantity": 10, "remaining_quantity": 10},
+                {"order_id": "1001", "client_order_id": "entry-short", "symbol": "AAPL", "side": "SELL", "status": "Submitted", "total_quantity": 10, "remaining_quantity": 10},
+            ],
+            "counts": {},
+        }
+
+        enriched = enrich_account_snapshot(pb, payload, "live")
+
+        group = enriched["live_order_groups"][0]
+        self.assertEqual("short", group["trade_direction"])
+        self.assertEqual(["entry", "take_profit", "stop_loss"], [order["leg_role"] for order in group["orders"]])
+        self.assertEqual(["SELL", "BUY", "BUY"], [order["side"] for order in group["orders"]])
+
     def test_pb_only_active_orders_are_stale_not_live_open(self):
         pb = _FakePB(
             {

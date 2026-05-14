@@ -746,6 +746,8 @@ class SystemSchedulerJobsTest(unittest.TestCase):
             self.assertEqual(path, "/scan")
             self.assertEqual(json_body["mode"], "topup")
             self.assertTrue(json_body["force"])
+            self.assertTrue(json_body["async"])
+            self.assertLessEqual(float(timeout), 30.0)
             return {
                 "ok": True,
                 "status_code": 200,
@@ -784,6 +786,8 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertTrue(payload["notified"])
         self.assertEqual(payload["message_id"], "msg-topup")
+        self.assertEqual(payload["status"], "success")
+        self.assertEqual(payload["detail"]["status"], "success")
         self.assertEqual(payload["new_active"], 1)
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0]["chat_id"], "startup-chat-live")
@@ -814,6 +818,137 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertTrue(payload["skipped"])
         self.assertEqual(payload["reason"], "no_new_targets")
         self.assertEqual(sent, [])
+        self.assertEqual(payload["status"], "success")
+        self.assertEqual(payload["detail"]["status"], "success")
+
+    def test_early_expansion_topup_async_submit_returns_submitted(self):
+        sent = []
+
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            self.assertEqual(method, "POST")
+            self.assertEqual(path, "/scan")
+            self.assertTrue(json_body["async"])
+            self.assertLessEqual(float(timeout), 30.0)
+            return {
+                "ok": True,
+                "status_code": 200,
+                "payload": {
+                    "ok": True,
+                    "accepted": True,
+                    "async": True,
+                    "run_id": "scan-live-2026-04-23-abc123",
+                    "status": "accepted",
+                    "mode": "topup",
+                },
+                "target_url": "http://compute/scan",
+            }
+
+        payload, status_code = build_early_expansion_topup_response(
+            payload={"environment": "live"},
+            normalize_environment=lambda value, default: str(value or default).strip().lower() or default,
+            time_strings=lambda: {"us": "2026-04-23 09:50:00", "cn": "2026-04-23 21:50:00", "date": "2026-04-23"},
+            request_json_request=request_json_request,
+            compute_base_url="http://compute",
+            feishu_send_interactive=lambda card, chat_id, environment: sent.append(card) or {"success": True},
+            write_system_event_record=lambda *args, **kwargs: {"id": "event-1"},
+            config_value=lambda key, default, environment: default,
+            console_base_url=lambda: "https://quant.lzw-glory.top",
+            startup_chat_id=lambda environment: f"startup-chat-{environment}",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["status"], "submitted")
+        self.assertTrue(payload["accepted"])
+        self.assertEqual(payload["run_id"], "scan-live-2026-04-23-abc123")
+        self.assertEqual(payload["notified"], False)
+        self.assertEqual(sent, [])
+        self.assertEqual(payload["detail"]["status"], "submitted")
+        self.assertEqual(payload["detail"]["upstream_status"], "accepted")
+
+    def test_early_expansion_topup_read_timeout_stays_pending(self):
+        sent = []
+        events = []
+
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            self.assertEqual(method, "POST")
+            self.assertEqual(path, "/scan")
+            self.assertTrue(json_body["async"])
+            self.assertLessEqual(float(timeout), 30.0)
+            return {
+                "ok": False,
+                "status_code": 0,
+                "payload": {},
+                "error": "HTTPConnectionPool(host='compute'): Read timed out. (read timeout=15)",
+                "target_url": "http://compute/scan",
+            }
+
+        with mock.patch("ibkr_api.system.jobs.early_expansion_topup.time.monotonic", side_effect=[100.0, 115.2]):
+            payload, status_code = build_early_expansion_topup_response(
+                payload={"environment": "live"},
+                normalize_environment=lambda value, default: str(value or default).strip().lower() or default,
+                time_strings=lambda: {"us": "2026-04-23 09:50:00", "cn": "2026-04-23 21:50:00", "date": "2026-04-23"},
+                request_json_request=request_json_request,
+                compute_base_url="http://compute",
+                feishu_send_interactive=lambda card, chat_id, environment: sent.append(card) or {"success": True},
+                write_system_event_record=lambda *args, **kwargs: events.append(args) or {"id": "event-1"},
+                config_value=lambda key, default, environment: default,
+                console_base_url=lambda: "https://quant.lzw-glory.top",
+                startup_chat_id=lambda environment: f"startup-chat-{environment}",
+            )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["status"], "timeout_waiting")
+        self.assertTrue(payload["pending"])
+        self.assertEqual(payload["notified"], False)
+        self.assertEqual(sent, [])
+        self.assertEqual(events, [])
+        self.assertNotIn("error", payload)
+        self.assertEqual(payload["elapsed_s"], 15.2)
+        self.assertEqual(payload["detail"]["status"], "timeout_waiting")
+        self.assertEqual(payload["detail"]["elapsed_s"], 15.2)
+        self.assertIn("Read timed out", payload["detail"]["upstream_error"])
+
+    def test_early_expansion_topup_real_failure_still_fails(self):
+        sent = []
+        events = []
+
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            return {
+                "ok": True,
+                "status_code": 200,
+                "payload": {"ok": False, "error": "scanner exploded", "status": "failed"},
+                "target_url": "http://compute/scan",
+            }
+
+        with mock.patch("ibkr_api.system.jobs.early_expansion_topup.time.monotonic", side_effect=[50.0, 53.456]):
+            payload, status_code = build_early_expansion_topup_response(
+                payload={"environment": "live"},
+                normalize_environment=lambda value, default: str(value or default).strip().lower() or default,
+                time_strings=lambda: {"us": "2026-04-23 09:50:00", "cn": "2026-04-23 21:50:00", "date": "2026-04-23"},
+                request_json_request=request_json_request,
+                compute_base_url="http://compute",
+                feishu_send_interactive=lambda card, chat_id, environment: sent.append(card) or {"success": True, "message_id": "msg-fail"},
+                write_system_event_record=lambda *args, **kwargs: events.append(args) or {"id": "event-1"},
+                config_value=lambda key, default, environment: default,
+                console_base_url=lambda: "https://quant.lzw-glory.top",
+                startup_chat_id=lambda environment: f"startup-chat-{environment}",
+            )
+
+        self.assertEqual(status_code, 502)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["status"], "failed")
+        self.assertEqual(payload["error"], "scanner exploded")
+        self.assertEqual(payload["elapsed_s"], 3.456)
+        self.assertEqual(payload["detail"]["status"], "failed")
+        self.assertEqual(payload["detail"]["error"], "scanner exploded")
+        self.assertEqual(payload["detail"]["elapsed_s"], 3.456)
+        self.assertEqual(payload["message_id"], "msg-fail")
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(events[0][1], "error")
+        self.assertEqual(events[0][4]["error"], "scanner exploded")
+        self.assertEqual(events[0][4]["elapsed_s"], 3.456)
 
     def test_intraday_window_admission_adds_valid_window_target_and_reconciles(self):
         pb = _IntradayAdmissionPB()

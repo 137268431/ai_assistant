@@ -1,0 +1,320 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any, Callable
+
+from ibkr_api.orders.values import ensure_object, parse_boolean, to_float, to_text
+from ibkr_api.signals.values import get_signal_extra
+
+
+EscapeFilterString = Callable[[Any], str]
+
+MUTABLE_SIGNAL_STATUSES = {"awaiting_confirm", "pending"}
+BROKER_CONTROLLED_SIGNAL_STATUSES = {"submitted", "protected_active", "executed"}
+PROTECTION_BLOCK_SIGNAL_STATUSES = {"protection_incomplete"}
+ACTIVE_SIGNAL_STATUSES = MUTABLE_SIGNAL_STATUSES | BROKER_CONTROLLED_SIGNAL_STATUSES | PROTECTION_BLOCK_SIGNAL_STATUSES
+INACTIVE_SIGNAL_STATUSES = {"rejected", "expired", "closed", "cancelled", "canceled", "dropped"}
+STRONG_REVERSE_SCORE = 6.0
+
+
+def _now_iso_utc() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _to_number(value: Any) -> float | None:
+    return to_float(value)
+
+
+def _append_unique(values: Any, value: str) -> list[str]:
+    result = [to_text(item) for item in values if to_text(item)] if isinstance(values, list) else []
+    if value and value not in result:
+        result.append(value)
+    return result
+
+
+def _is_truthy(value: Any) -> bool:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value != 0
+    return parse_boolean(value, False)
+
+
+def map_signal_strength(score: Any) -> str:
+    numeric = float(_to_number(score) or 0.0)
+    if numeric >= 6:
+        return "strong"
+    if numeric >= 3:
+        return "medium"
+    return "weak"
+
+
+def calculate_signal_strength(signal_payload: dict[str, Any]) -> dict[str, Any]:
+    data = dict(signal_payload or {})
+    extra = ensure_object(data.get("extra"))
+    for key in (
+        "signal_strength_score",
+        "reverse_score",
+        "signal_score",
+        "score",
+    ):
+        parsed = _to_number(extra.get(key) if key in extra else data.get(key))
+        if parsed is not None:
+            return {
+                "score": float(parsed),
+                "level": map_signal_strength(parsed),
+                "triggered_signals": list(extra.get("triggered_signals") or []),
+                "source": key,
+            }
+
+    direction = to_text(data.get("direction")).lower()
+    score = 0.0
+    triggered: list[str] = []
+    crsi = _to_number(extra.get("crsi"))
+    vwap_dist = _to_number(extra.get("vwap_dist"))
+
+    if direction == "long" and crsi is not None and crsi < 30:
+        score += 2
+        triggered.append("cRSI超卖")
+    elif direction == "short" and crsi is not None and crsi > 70:
+        score += 2
+        triggered.append("cRSI超买")
+
+    if direction == "long":
+        divergence = _is_truthy(extra.get("crsi_bull_div")) or _is_truthy(extra.get("obv_bull_div"))
+        fractal_or_channel = _is_truthy(extra.get("fractal_bull")) or _is_truthy(extra.get("sd_lower"))
+        ema_touch = _is_truthy(extra.get("ema_bull_touch"))
+    else:
+        divergence = _is_truthy(extra.get("crsi_bear_div")) or _is_truthy(extra.get("obv_bear_div"))
+        fractal_or_channel = _is_truthy(extra.get("fractal_bear")) or _is_truthy(extra.get("sd_upper"))
+        ema_touch = _is_truthy(extra.get("ema_bear_touch"))
+
+    if divergence:
+        score += 3
+        triggered.append("背离")
+    if fractal_or_channel:
+        score += 2
+        triggered.append("分形/SD通道")
+    if (vwap_dist is not None and abs(vwap_dist) > 2) or ema_touch:
+        score += 1
+        triggered.append("VWAP偏离/EMA触碰")
+
+    if score <= 0 and to_text(data.get("signal")):
+        score = STRONG_REVERSE_SCORE
+        triggered.append("完整反向交易信号")
+
+    deduped: list[str] = []
+    for item in triggered:
+        if item not in deduped:
+            deduped.append(item)
+    return {
+        "score": float(score),
+        "level": map_signal_strength(score),
+        "triggered_signals": deduped,
+        "source": "derived_signal_components" if deduped else "default",
+    }
+
+
+def _active_sort_key(row: dict[str, Any]) -> tuple[int, int, str]:
+    status = to_text(row.get("status")).lower()
+    status_weight = 3 if status in BROKER_CONTROLLED_SIGNAL_STATUSES else 2 if status in MUTABLE_SIGNAL_STATUSES else 1
+    return (
+        status_weight,
+        int(to_float(row.get("bar_time_ms")) or 0),
+        to_text(row.get("updated") or row.get("created")),
+    )
+
+
+def find_active_symbol_signal(
+    pb: Any,
+    data: dict[str, Any],
+    environment: str,
+    *,
+    escape_filter_string: EscapeFilterString,
+) -> dict[str, Any] | None:
+    symbol = to_text(data.get("symbol")).upper()
+    signal_id = to_text(data.get("signal_id"))
+    runtime_environment = to_text(environment or data.get("environment") or "live").lower() or "live"
+    if not symbol:
+        return None
+
+    rows = pb.get_records(
+        "ibkr_signals",
+        filter=(
+            f'environment = "{escape_filter_string(runtime_environment)}" && '
+            f'symbol = "{escape_filter_string(symbol)}"'
+        ),
+        sort="-updated,-created",
+        per_page=25,
+        page=1,
+    )
+    candidates: list[dict[str, Any]] = []
+    for row in rows or []:
+        record = dict(row) if isinstance(row, dict) else {}
+        if signal_id and to_text(record.get("signal_id")) == signal_id:
+            continue
+        status = to_text(record.get("status")).lower()
+        if status in INACTIVE_SIGNAL_STATUSES or status not in ACTIVE_SIGNAL_STATUSES:
+            continue
+        candidates.append(record)
+    if not candidates:
+        return None
+    candidates.sort(key=_active_sort_key, reverse=True)
+    return candidates[0]
+
+
+def build_active_signal_refresh_payload(existing: dict[str, Any], incoming: dict[str, Any], environment: str) -> dict[str, Any]:
+    existing_extra = get_signal_extra(existing)
+    incoming_extra = ensure_object(incoming.get("extra"))
+    incoming_signal_id = to_text(incoming.get("signal_id"))
+    refreshed_ids = _append_unique(existing_extra.get("merged_signal_ids"), incoming_signal_id)
+    now_text = _now_iso_utc()
+    return {
+        **incoming,
+        "signal_id": to_text(existing.get("signal_id")) or incoming_signal_id,
+        "status": to_text(existing.get("status") or incoming.get("status")),
+        "note": to_text(existing.get("note") or incoming.get("note")),
+        "extra": {
+            **existing_extra,
+            **incoming_extra,
+            "environment": environment,
+            "merged_signal_ids": refreshed_ids,
+            "latest_merged_signal_id": incoming_signal_id,
+            "latest_merged_at": now_text,
+            "merge_policy": "same_symbol_same_direction_refresh_before_broker_submit",
+            "status_reason": to_text(existing_extra.get("status_reason") or existing.get("note") or incoming.get("note")),
+        },
+    }
+
+
+def build_same_direction_followup_patch(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    existing_extra = get_signal_extra(existing)
+    incoming_extra = ensure_object(incoming.get("extra"))
+    incoming_signal_id = to_text(incoming.get("signal_id"))
+    strength = calculate_signal_strength(incoming)
+    return {
+        "extra": {
+            **existing_extra,
+            "followup_signal_ids": _append_unique(existing_extra.get("followup_signal_ids"), incoming_signal_id),
+            "latest_followup_signal_id": incoming_signal_id,
+            "latest_followup_at": _now_iso_utc(),
+            "latest_followup_entry": incoming.get("entry"),
+            "latest_followup_take_profit": incoming.get("take_profit"),
+            "latest_followup_stop_loss": incoming.get("stop_loss"),
+            "latest_followup_bar_time_ms": incoming.get("bar_time_ms"),
+            "latest_followup_extra": incoming_extra,
+            "suppressed_reason": "same_direction_broker_order_active",
+            "signal_strength_score": strength["score"],
+            "signal_strength_level": strength["level"],
+        }
+    }
+
+
+def build_reverse_suppressed_patch(existing: dict[str, Any], incoming: dict[str, Any], *, reason: str) -> dict[str, Any]:
+    existing_extra = get_signal_extra(existing)
+    incoming_signal_id = to_text(incoming.get("signal_id"))
+    strength = calculate_signal_strength(incoming)
+    return {
+        "extra": {
+            **existing_extra,
+            "suppressed_reverse_signal_ids": _append_unique(existing_extra.get("suppressed_reverse_signal_ids"), incoming_signal_id),
+            "latest_suppressed_reverse_signal_id": incoming_signal_id,
+            "latest_suppressed_reverse_at": _now_iso_utc(),
+            "latest_suppressed_reverse_reason": reason,
+            "latest_suppressed_reverse_direction": to_text(incoming.get("direction")).lower(),
+            "suppressed_reason": reason,
+            "signal_strength_score": strength["score"],
+            "signal_strength_level": strength["level"],
+        }
+    }
+
+
+def build_superseded_patch(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    existing_extra = get_signal_extra(existing)
+    incoming_signal_id = to_text(incoming.get("signal_id"))
+    return {
+        "status": "expired",
+        "note": "superseded_by_strong_reverse_signal",
+        "extra": {
+            **existing_extra,
+            "status_reason": "superseded_by_strong_reverse_signal",
+            "superseded_by_signal_id": incoming_signal_id,
+            "superseded_at": _now_iso_utc(),
+            "reverse_policy": "supersede_unsubmitted_signal",
+        },
+    }
+
+
+def build_reverse_record_payload(existing: dict[str, Any], incoming: dict[str, Any], environment: str) -> dict[str, Any]:
+    existing_extra = get_signal_extra(existing)
+    incoming_extra = ensure_object(incoming.get("extra"))
+    strength = calculate_signal_strength(incoming)
+    existing_status = to_text(existing.get("status")).lower()
+    action_type = "close" if existing_status in {"protected_active", "executed"} else "cancel"
+    target_state = "filled_position" if action_type == "close" else "pending_entry"
+    trade_group_id = to_text(
+        existing.get("trade_group_id")
+        or existing.get("entry_order_unique_id")
+        or existing_extra.get("trade_group_id")
+        or existing_extra.get("entry_order_unique_id")
+        or existing_extra.get("bracket_group")
+    )
+    return {
+        "symbol": to_text(existing.get("symbol") or incoming.get("symbol")).upper(),
+        "environment": environment,
+        "direction": to_text(existing.get("direction")).lower(),
+        "source": "signal",
+        "priority": 1,
+        "strength": strength["level"],
+        "score": strength["score"],
+        "triggered_signals": strength["triggered_signals"] or ["信号反转"],
+        "action_type": action_type,
+        "status": "pending",
+        "reason": "strong_reverse_signal_auto_reversal",
+        "bar_time_ms": incoming.get("bar_time_ms") or existing.get("bar_time_ms") or 0,
+        "us_time": incoming.get("us_time") or existing.get("us_time") or "",
+        "cn_time": incoming.get("cn_time") or existing.get("cn_time") or "",
+        "extra": {
+            "environment": environment,
+            "reverse_kind": "signal_conflict",
+            "target_state": target_state,
+            "reverse_policy": "full_auto_reverse",
+            "reverse_stage": "cancel_old_order" if action_type == "cancel" else "close_old_position",
+            "origin_signal_id": to_text(existing.get("signal_id")),
+            "source_signal_id": to_text(incoming.get("signal_id")),
+            "new_direction": to_text(incoming.get("direction")).lower(),
+            "current_direction": to_text(existing.get("direction")).lower(),
+            "old_signal_status": existing_status,
+            "trade_group_id": trade_group_id,
+            "entry_order_unique_id": trade_group_id,
+            "signal_strength_source": strength["source"],
+            "signal_strength_score": strength["score"],
+            "signal_strength_level": strength["level"],
+            "reentry_signal_payload": {
+                **incoming,
+                "extra": {
+                    **incoming_extra,
+                    "reverse_policy": "full_auto_reverse",
+                    "reverse_source_signal_id": to_text(existing.get("signal_id")),
+                    "signal_strength_score": strength["score"],
+                    "signal_strength_level": strength["level"],
+                    "reverse_stage": "awaiting_old_risk_resolution",
+                },
+            },
+        },
+    }
+
+
+__all__ = [
+    "ACTIVE_SIGNAL_STATUSES",
+    "BROKER_CONTROLLED_SIGNAL_STATUSES",
+    "MUTABLE_SIGNAL_STATUSES",
+    "PROTECTION_BLOCK_SIGNAL_STATUSES",
+    "STRONG_REVERSE_SCORE",
+    "build_active_signal_refresh_payload",
+    "build_reverse_record_payload",
+    "build_reverse_suppressed_patch",
+    "build_same_direction_followup_patch",
+    "build_superseded_patch",
+    "calculate_signal_strength",
+    "find_active_symbol_signal",
+    "map_signal_strength",
+]
