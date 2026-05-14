@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
@@ -12,6 +13,9 @@ DEFAULT_OPEN_REPORT_TIME_ET = "09:30"
 DEFAULT_OPEN_REPORT_WINDOW_MINUTES = 10
 DEFAULT_MARKET_SYMBOLS = "SPY,QQQ,VIX"
 ET = ZoneInfo("America/New_York")
+MS_PER_DAY = 24 * 60 * 60 * 1000
+PREV_CLOSE_LOOKBACK_DAYS = 10
+PREV_CLOSE_MAX_STALE_DAYS = 5
 
 NormalizeEnvironment = Callable[[Any, str], str]
 TimeStrings = Callable[[], dict[str, str]]
@@ -46,8 +50,34 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _to_float_or_none(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except Exception:
+        return None
+    return None if number != number else number
+
+
 def _as_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
+
+
+def _parse_json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if not value:
+        return {}
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", errors="ignore")
+    if not isinstance(value, str):
+        return {}
+    try:
+        parsed = json.loads(value)
+    except Exception:
+        return {}
+    return dict(parsed) if isinstance(parsed, dict) else {}
 
 
 def _truthy(value: Any) -> bool:
@@ -121,6 +151,61 @@ def _parse_market_date_bounds_ms(market_date: str) -> tuple[int, int]:
 
 def _format_et_datetime(ms: int) -> str:
     return datetime.fromtimestamp(int(ms or 0) / 1000, tz=ET).strftime("%Y-%m-%d %H:%M:%S") if int(ms or 0) > 0 else ""
+
+
+def _market_row_date(row: dict[str, Any]) -> str:
+    text = _to_text(row.get("us_time"))
+    if len(text) >= 10:
+        return text[:10]
+    ms = _to_int(row.get("bar_time_ms"), 0)
+    return _format_et_datetime(ms)[:10] if ms > 0 else ""
+
+
+def _regular_close_time(row: dict[str, Any]) -> str:
+    extra = _parse_json_dict(row.get("extra"))
+    return _to_text(extra.get("bar_close_us_time")) or _to_text(row.get("us_time")) or _format_et_datetime(_to_int(row.get("bar_time_ms"), 0))
+
+
+def _choose_prev_close(daily: dict[str, Any], regular_5m: dict[str, Any], market_start_ms: int) -> dict[str, Any]:
+    daily_close = _to_float(daily.get("close"), 0.0)
+    daily_ms = _to_int(daily.get("bar_time_ms"), 0)
+    daily_date = _market_row_date(daily)
+    regular_close = _to_float(regular_5m.get("close"), 0.0)
+    regular_time = _regular_close_time(regular_5m)
+    regular_date = regular_time[:10] if len(regular_time) >= 10 else _market_row_date(regular_5m)
+
+    if regular_close > 0 and regular_date and (not daily_date or regular_date > daily_date):
+        return {
+            "prev_close": regular_close,
+            "prev_close_time": regular_time,
+            "prev_close_source": "regular_5m",
+            "prev_close_stale": False,
+        }
+
+    if daily_close > 0 and daily_ms > 0:
+        stale = market_start_ms > 0 and market_start_ms - daily_ms > PREV_CLOSE_MAX_STALE_DAYS * MS_PER_DAY
+        if not stale:
+            return {
+                "prev_close": daily_close,
+                "prev_close_time": _to_text(daily.get("us_time")) or _format_et_datetime(daily_ms),
+                "prev_close_source": "daily_1d",
+                "prev_close_stale": False,
+            }
+
+    if regular_close > 0:
+        return {
+            "prev_close": regular_close,
+            "prev_close_time": regular_time,
+            "prev_close_source": "regular_5m",
+            "prev_close_stale": False,
+        }
+
+    return {
+        "prev_close": 0.0,
+        "prev_close_time": _to_text(daily.get("us_time")) or "",
+        "prev_close_source": "stale_daily" if daily_close > 0 else "missing",
+        "prev_close_stale": bool(daily_close > 0),
+    }
 
 
 def _parse_hhmm(value: Any) -> int | None:
@@ -209,23 +294,42 @@ def load_market_snapshots_from_pb(pb: Any, environment: str, symbols: list[str],
         sort="-bar_time_ms",
         max_pages=3,
     )
+    previous_regular_rows = _load_records_for_symbols(
+        pb,
+        "ibkr_bars",
+        base_filter_parts=[
+            'interval = "5m"',
+            _build_bar_environment_filter(environment),
+            'session_type = "regular"',
+            f"bar_time_ms >= {max(0, market_start_ms - PREV_CLOSE_LOOKBACK_DAYS * MS_PER_DAY)}",
+            f"bar_time_ms < {market_start_ms}",
+        ],
+        symbols=normalized_symbols,
+        sort="-bar_time_ms",
+        max_pages=30,
+    )
     latest_intraday = _first_by_symbol(intraday_rows)
     previous_daily = _first_by_symbol(daily_rows)
+    previous_regular = _first_by_symbol(previous_regular_rows)
     snapshots: list[dict[str, Any]] = []
     for symbol in normalized_symbols:
         intraday = latest_intraday.get(symbol, {})
         daily = previous_daily.get(symbol, {})
+        prev_close_info = _choose_prev_close(daily, previous_regular.get(symbol, {}), market_start_ms)
         intraday_ms = _to_int(intraday.get("bar_time_ms"), 0)
         price = _to_float(intraday.get("close"), 0.0)
-        prev_close = _to_float(daily.get("close"), 0.0)
+        prev_close = _to_float(prev_close_info.get("prev_close"), 0.0)
         if price <= 0 and prev_close > 0:
             price = prev_close
-        change_pct = round(((price - prev_close) / prev_close) * 100, 2) if price > 0 and prev_close > 0 else 0.0
+        change_pct = round(((price - prev_close) / prev_close) * 100, 2) if price > 0 and prev_close > 0 else None
         snapshots.append(
             {
                 "symbol": symbol,
                 "price": round(price, 4) if price > 0 else 0.0,
                 "prev_close": round(prev_close, 4) if prev_close > 0 else 0.0,
+                "prev_close_source": _to_text(prev_close_info.get("prev_close_source")),
+                "prev_close_time": _to_text(prev_close_info.get("prev_close_time")),
+                "prev_close_stale": bool(prev_close_info.get("prev_close_stale")),
                 "change_pct": change_pct,
                 "latest_us_time": _to_text(intraday.get("us_time")) or (_format_et_datetime(intraday_ms) if intraday_ms > 0 else ""),
                 "freshness_min": max(0, int((computed_at_ms - intraday_ms) // 60000)) if computed_at_ms > 0 and intraday_ms > 0 else None,
@@ -268,12 +372,13 @@ def _format_target_line(item: dict[str, Any], index: int) -> str:
 def _format_market_line(item: dict[str, Any]) -> str:
     symbol = _to_text(item.get("symbol")) or "--"
     price = _to_float(item.get("price"), 0.0)
-    change_pct = _to_float(item.get("change_pct"), 0.0)
+    change_pct = _to_float_or_none(item.get("change_pct"))
+    change_text = f"{change_pct:+.2f}%" if change_pct is not None else "n/a"
     latest = _to_text(item.get("latest_us_time")) or "n/a"
     freshness = item.get("freshness_min")
     freshness_text = f"{int(freshness)}m" if isinstance(freshness, int) else "n/a"
     status = _to_text(item.get("status")) or "unknown"
-    return f"{symbol}: ${price:.2f} ({change_pct:+.2f}%) · {latest} · fresh {freshness_text} · {status}"
+    return f"{symbol}: ${price:.2f} ({change_text}) · {latest} · fresh {freshness_text} · {status}"
 
 
 def _scan_issue_text(targets_payload: dict[str, Any]) -> str:

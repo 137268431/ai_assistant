@@ -1,6 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SRC_ROOTS = [
     Path(__file__).resolve().parents[3] / "runtime" / "ibkr_api" / "src",
@@ -12,7 +13,12 @@ for src_root in SRC_ROOTS:
 
 from ibkr_api.system.jobs.scan_summary import build_system_scan_summary_response
 from ibkr_api.system.jobs.status_heartbeat import build_system_status_reminder_response
-from ibkr_api.system.jobs.open_report import build_system_open_report_response, matches_open_report_time_window
+from ibkr_api.system.jobs import open_report as open_report_mod
+from ibkr_api.system.jobs.open_report import (
+    build_system_open_report_response,
+    load_market_snapshots_from_pb,
+    matches_open_report_time_window,
+)
 
 
 class SystemScanSummaryTest(unittest.TestCase):
@@ -21,6 +27,57 @@ class SystemScanSummaryTest(unittest.TestCase):
         self.assertTrue(matches_open_report_time_window("2026-04-28 09:30:00"))
         self.assertTrue(matches_open_report_time_window("2026-04-28 09:35:00"))
         self.assertFalse(matches_open_report_time_window("2026-04-28 09:40:00"))
+
+    def test_market_snapshot_uses_previous_regular_close_when_daily_is_stale(self):
+        def fake_load_records(pb, collection, *, base_filter_parts, symbols, sort, max_pages, chunk_size=24):
+            joined = " ".join(base_filter_parts)
+            if collection != "ibkr_bars":
+                return []
+            if 'interval = "5m"' in joined and 'bar_time_ms >= 1778731200000' in joined:
+                return [
+                    {
+                        "symbol": "SPY",
+                        "bar_time_ms": 1778765100000,
+                        "close": 743.77,
+                        "us_time": "2026-05-14 09:25:00",
+                    }
+                ]
+            if 'interval = "1d"' in joined:
+                return [
+                    {
+                        "symbol": "SPY",
+                        "bar_time_ms": 1777953600000,
+                        "close": 726.46,
+                        "us_time": "2026-05-05 00:00:00",
+                    }
+                ]
+            if 'interval = "5m"' in joined and 'session_type = "regular"' in joined:
+                return [
+                    {
+                        "symbol": "SPY",
+                        "bar_time_ms": 1778716500000,
+                        "close": 742.30,
+                        "us_time": "2026-05-13 15:55:00",
+                        "extra": '{"bar_close_us_time":"2026-05-13 16:00:00"}',
+                    }
+                ]
+            return []
+
+        with mock.patch.object(open_report_mod, "_load_records_for_symbols", side_effect=fake_load_records):
+            snapshots = load_market_snapshots_from_pb(
+                object(),
+                "live",
+                ["SPY"],
+                "2026-05-14",
+                1778765400000,
+            )
+
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(snapshots[0]["prev_close"], 742.3)
+        self.assertEqual(snapshots[0]["prev_close_source"], "regular_5m")
+        self.assertEqual(snapshots[0]["prev_close_time"], "2026-05-13 16:00:00")
+        self.assertEqual(snapshots[0]["change_pct"], 0.2)
+        self.assertEqual(snapshots[0]["freshness_min"], 5)
 
     def test_scan_summary_skips_weekend_without_sending_open_report(self):
         sent = []
