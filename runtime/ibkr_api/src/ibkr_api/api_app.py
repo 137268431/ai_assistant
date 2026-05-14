@@ -83,6 +83,7 @@ from ibkr_api.integrations.runtime_orders import cancel_broker_order_via_runtime
 from ibkr_api.universe.active_window_progress import build_active_window_progress_response
 from ibkr_api.universe.today_targets import build_today_targets_response
 from ibkr_api.orders.cancel_sync import build_order_cancel_sync_response
+from ibkr_api.orders.daily_stats import build_daily_order_stats, empty_daily_order_stats
 from ibkr_api.orders.group_cancel import build_order_cancel_group_response
 from ibkr_api.orders.group_close import build_order_close_group_response
 from ibkr_api.orders.integrity import build_order_detail_integrity_response
@@ -419,10 +420,12 @@ def _load_today_counts(environment: str, market_date: str) -> dict[str, Any]:
         main_orders = _count_main_order_rows(order_rows)
         counts["main_orders"] = main_orders
         counts["order_groups"] = main_orders
+        counts.update(build_daily_order_stats(order_rows))
     except Exception as exc:
         fallback_orders = int(counts.get("orders") or 0)
         counts["main_orders"] = fallback_orders
         counts["order_groups"] = fallback_orders
+        counts.update(empty_daily_order_stats())
         errors["order_groups"] = str(exc)
     if errors:
         counts["errors"] = errors

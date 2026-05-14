@@ -36,6 +36,13 @@ def _to_int(value: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _to_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
 def _as_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
@@ -130,6 +137,34 @@ def _target_summary_line(targets_payload: dict[str, Any]) -> str:
         f"ready {_to_int(summary.get('technical_ready_count'))} | "
         f"signals {_to_int(summary.get('signaled_count'))}"
     )
+
+
+def _format_signed_money(value: Any) -> str:
+    amount = _to_float(value, 0.0)
+    if amount > 0:
+        return f"+${amount:,.2f}"
+    if amount < 0:
+        return f"-${abs(amount):,.2f}"
+    return "$0.00"
+
+
+def _close_protection_line(today: dict[str, Any]) -> str:
+    return (
+        f"止盈成交 {_to_int(today.get('take_profit_filled'), 0)} | "
+        f"止损成交 {_to_int(today.get('stop_loss_filled'), 0)}"
+    )
+
+
+def _close_pnl_line(today: dict[str, Any]) -> str:
+    line = (
+        f"净 {_format_signed_money(today.get('realized_net_pnl'))} | "
+        f"盈利 {_to_int(today.get('winning_trades'), 0)}/{_format_signed_money(today.get('profit_amount'))} | "
+        f"亏损 {_to_int(today.get('losing_trades'), 0)}/{_format_signed_money(today.get('loss_amount'))}"
+    )
+    missing_count = _to_int(today.get("pnl_missing_count"), 0)
+    if missing_count > 0:
+        line += f" | PnL缺失 {missing_count}"
+    return line
 
 
 def _close_context(summary: dict[str, Any], monitor: dict[str, Any], targets_payload: dict[str, Any]) -> dict[str, Any]:
@@ -334,6 +369,8 @@ def _build_close_report_card(
                 f"signals {_to_int(today.get('ibkr_signals'), 0)} | "
                 f"orders {_today_order_count(today)} | "
                 f"events {_to_int(today.get('events'), 0)}\n"
+                f"**今日止盈/止损**: {_close_protection_line(today)}\n"
+                f"**今日盈亏**: {_close_pnl_line(today)}\n"
                 f"**今日标的**: {_target_summary_line(targets_payload)}\n"
                 f"**日筛**: {_to_text(daily_scan.get('status')) or 'unknown'}"
                 f"{(' · ' + _to_text(daily_scan.get('market_date'))) if _to_text(daily_scan.get('market_date')) else ''}"
@@ -407,6 +444,8 @@ def _close_event_detail(
             f"orders {_today_order_count(today)} | "
             f"events {_to_int(today.get('events'), 0)}"
         ),
+        "今日止盈/止损": _close_protection_line(today),
+        "今日盈亏": _close_pnl_line(today),
         "今日标的": _target_summary_line(targets_payload),
         "日筛": f"{_to_text(daily_scan.get('status')) or 'unknown'} {_to_text(daily_scan.get('market_date'))}".strip(),
         "系统链路": _system_line(context),

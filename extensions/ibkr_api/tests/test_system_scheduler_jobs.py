@@ -1137,9 +1137,45 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertIn("**结论**", card_text)
         self.assertIn("**需要处理**", card_text)
         self.assertIn("今日结果", card_text)
+        self.assertIn("今日止盈/止损", card_text)
+        self.assertIn("今日盈亏", card_text)
         self.assertEqual(sent[0]["card"]["header"]["template"], "green")
         self.assertIn("bars 10", card_text)
         self.assertNotIn("数据链路可能未落库", card_text)
+
+    def test_daily_report_includes_protective_exit_and_pnl_stats(self):
+        pb = _ReminderPB()
+        sent = []
+
+        payload, status_code = build_system_daily_report_response(
+            payload={"environment": "live"},
+            **self._reminder_deps(
+                pb,
+                sent,
+                now_us="2026-04-23 16:05:00",
+                today={
+                    "ibkr_bars": 10,
+                    "ibkr_signals": 2,
+                    "orders": 4,
+                    "events": 0,
+                    "take_profit_filled": 2,
+                    "stop_loss_filled": 1,
+                    "winning_trades": 2,
+                    "losing_trades": 1,
+                    "realized_net_pnl": 123.45,
+                    "profit_amount": 200,
+                    "loss_amount": -76.55,
+                    "pnl_missing_count": 1,
+                },
+                daily=True,
+            ),
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        card_text = "\n".join(element.get("content", "") for element in sent[0]["card"]["elements"] if element.get("tag") == "markdown")
+        self.assertIn("**今日止盈/止损**: 止盈成交 2 | 止损成交 1", card_text)
+        self.assertIn("**今日盈亏**: 净 +$123.45 | 盈利 2/+$200.00 | 亏损 1/-$76.55 | PnL缺失 1", card_text)
 
     def test_daily_report_does_not_mark_sent_when_notification_fails(self):
         pb = _ReminderPB()
@@ -1236,6 +1272,17 @@ class SystemSchedulerJobsTest(unittest.TestCase):
                 "order_groups": 0,
                 "events": 98,
                 "ibkr_targets": 9,
+                "take_profit_filled": 2,
+                "stop_loss_filled": 1,
+                "winning_trades": 2,
+                "losing_trades": 1,
+                "flat_trades": 0,
+                "pnl_missing_count": 1,
+                "realized_gross_pnl": 130.45,
+                "realized_net_pnl": 123.45,
+                "profit_amount": 200.0,
+                "loss_amount": -76.55,
+                "commission": 7.0,
             },
         )
 
@@ -1246,6 +1293,16 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(payload["today"]["order_groups"], 0)
         self.assertEqual(payload["today"]["events"], 98)
         self.assertEqual(payload["today"]["ibkr_targets"], 9)
+        self.assertEqual(payload["today"]["take_profit_filled"], 2)
+        self.assertEqual(payload["today"]["stop_loss_filled"], 1)
+        self.assertEqual(payload["today"]["winning_trades"], 2)
+        self.assertEqual(payload["today"]["losing_trades"], 1)
+        self.assertEqual(payload["today"]["pnl_missing_count"], 1)
+        self.assertEqual(payload["today"]["realized_gross_pnl"], 130.45)
+        self.assertEqual(payload["today"]["realized_net_pnl"], 123.45)
+        self.assertEqual(payload["today"]["profit_amount"], 200.0)
+        self.assertEqual(payload["today"]["loss_amount"], -76.55)
+        self.assertEqual(payload["today"]["commission"], 7.0)
         self.assertNotIn("today_errors", payload)
 
     def test_system_summary_payload_preserves_response_when_today_counts_fail(self):

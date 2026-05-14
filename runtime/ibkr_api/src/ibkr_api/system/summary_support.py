@@ -23,7 +23,14 @@ def _to_int(value: Any, default: int = 0) -> int:
         return int(default)
 
 
-def _empty_today_counts() -> dict[str, int]:
+def _to_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _empty_today_counts() -> dict[str, Any]:
     return {
         "ibkr_signals": 0,
         "ibkr_indicators": 0,
@@ -33,13 +40,27 @@ def _empty_today_counts() -> dict[str, int]:
         "ibkr_bars": 0,
         "ibkr_targets": 0,
         "events": 0,
+        "take_profit_filled": 0,
+        "stop_loss_filled": 0,
+        "winning_trades": 0,
+        "losing_trades": 0,
+        "flat_trades": 0,
+        "pnl_missing_count": 0,
+        "realized_gross_pnl": 0.0,
+        "realized_net_pnl": 0.0,
+        "profit_amount": 0.0,
+        "loss_amount": 0.0,
+        "commission": 0.0,
     }
 
 
-def _coerce_today_counts(value: Any) -> tuple[dict[str, int], dict[str, Any]]:
+def _coerce_today_counts(value: Any) -> tuple[dict[str, Any], dict[str, Any]]:
     source = dict(value) if isinstance(value, dict) else {}
     counts = _empty_today_counts()
-    for key in counts:
+    for key, default in counts.items():
+        if isinstance(default, float):
+            counts[key] = _to_float(source.get(key), default)
+            continue
         counts[key] = _to_int(source.get(key), 0)
     errors = source.get("errors") if isinstance(source.get("errors"), dict) else {}
     return counts, dict(errors)
