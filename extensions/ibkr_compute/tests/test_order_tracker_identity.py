@@ -10,7 +10,8 @@ from ibkr_compute.order.order_tracker import OrderTracker
 
 
 class FakePBClient:
-    def __init__(self):
+    def __init__(self, rows=None):
+        self.rows = list(rows or [])
         self.upserts = []
         self.get_records_calls = []
 
@@ -36,6 +37,32 @@ class FakePBClient:
                     "role": "entry",
                 }
             ]
+        if self.rows:
+            text = filter or ""
+            result = []
+            for row in self.rows:
+                if 'symbol = "' in text:
+                    symbol = text.split('symbol = "', 1)[1].split('"', 1)[0]
+                    if row.get("symbol") != symbol:
+                        continue
+                if 'environment = "' in text:
+                    environment = text.split('environment = "', 1)[1].split('"', 1)[0]
+                    if row.get("environment") != environment:
+                        continue
+                if 'role = "' in text:
+                    role = text.split('role = "', 1)[1].split('"', 1)[0]
+                    if row.get("role") != role:
+                        continue
+                if 'unique_id = "' in text:
+                    unique_id = text.split('unique_id = "', 1)[1].split('"', 1)[0]
+                    if row.get("unique_id") != unique_id:
+                        continue
+                if 'broker_order_id = "' in text:
+                    broker_order_id = text.split('broker_order_id = "', 1)[1].split('"', 1)[0]
+                    if str(row.get("broker_order_id") or row.get("order_id") or "") != broker_order_id:
+                        continue
+                result.append(dict(row))
+            return result[:per_page]
         if '(broker_order_id = "1" || order_id = "1")' in (filter or ""):
             return [
                 {
@@ -137,6 +164,78 @@ class OrderTrackerIdentityTest(unittest.TestCase):
         self.assertEqual("stop_loss", upsert["role"])
         self.assertEqual(192.93, upsert["limit_price"])
         self.assertEqual(192.93, upsert["sl_price"])
+
+    def test_sync_exit_order_keeps_position_side_from_chain_identity(self):
+        pb_client = FakePBClient()
+        tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="live")
+
+        tracker._sync_to_pb(
+            {
+                "orderId": "35",
+                "parentId": "34",
+                "ticker": "NVDA",
+                "side": "SELL",
+                "orderType": "LMT",
+                "totalSize": 43,
+                "filledQuantity": 0,
+                "avgPrice": 0,
+                "price": 244.96,
+                "status": "Submitted",
+                "cOID": "tp_NVDA_long_20260514_094637",
+            }
+        )
+
+        self.assertEqual(1, len(pb_client.upserts))
+        upsert = pb_client.upserts[0]
+        self.assertEqual("take_profit", upsert["role"])
+        self.assertEqual("long", upsert["direction"])
+        self.assertEqual("long", upsert["position_side"])
+
+    def test_sync_external_market_close_links_to_matching_pb_entry(self):
+        pb_client = FakePBClient(
+            rows=[
+                {
+                    "id": "nvda-entry",
+                    "unique_id": "entry_NVDA_long_20260514_094637",
+                    "signal_id": "NVDA_20260514_0940_vwappb_L",
+                    "trade_group_id": "NVDA_long_20260514_094637",
+                    "entry_order_unique_id": "entry_NVDA_long_20260514_094637",
+                    "role": "entry",
+                    "status": "Filled",
+                    "symbol": "NVDA",
+                    "position_side": "long",
+                    "quantity": 43,
+                    "filled_qty": 43,
+                    "environment": "live",
+                }
+            ]
+        )
+        tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="live")
+
+        tracker._sync_to_pb(
+            {
+                "orderId": "40",
+                "ticker": "NVDA",
+                "side": "SELL",
+                "orderType": "MKT",
+                "totalSize": 43,
+                "filledQuantity": 43,
+                "avgPrice": 234.8712,
+                "price": 234.86,
+                "status": "Filled",
+                "cOID": "close_NVDA_20260514_105722",
+                "commission": 0.43,
+            }
+        )
+
+        self.assertEqual(1, len(pb_client.upserts))
+        upsert = pb_client.upserts[0]
+        self.assertEqual("close", upsert["role"])
+        self.assertEqual("NVDA_long_20260514_094637", upsert["trade_group_id"])
+        self.assertEqual("entry_NVDA_long_20260514_094637", upsert["entry_order_unique_id"])
+        self.assertEqual("NVDA_20260514_0940_vwappb_L", upsert["signal_id"])
+        self.assertEqual("long", upsert["position_side"])
+        self.assertEqual(0.43, upsert["commission"])
 
     def test_complete_live_open_orders_restores_tracker_identity_fields(self):
         tracker = OrderTracker(pb_client=FakePBClient(), broker=FakeBroker(), environment="live")

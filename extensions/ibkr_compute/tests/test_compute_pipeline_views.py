@@ -489,6 +489,45 @@ class ComputePipelineSignalFastPathTest(unittest.TestCase):
         self.assertEqual(len(fake_app._test_signal_batches), 1)
         self.assertEqual(fake_app._test_signal_batches[0][0]["bar_time_ms"], 200)
 
+    def test_persist_signal_symbols_filters_signal_generation_to_subset(self):
+        aapl_generator = SimpleNamespace(update=mock.Mock(return_value={"signal": "aapl"}))
+        msft_generator = SimpleNamespace(update=mock.Mock(return_value={"signal": "msft"}))
+        fake_app = self._fake_app(
+            bars=[_base_bar(200, symbol="AAPL"), _base_bar(210, symbol="MSFT")],
+            signal_generator=aapl_generator,
+            signal_params={"signal_enabled_symbols": "AAPL,MSFT"},
+        )
+        fake_app.signal_gens[("live", "MSFT", "5m")] = msft_generator
+
+        payload = self._run_compute(
+            fake_app,
+            _base_compute_plan(
+                requested_symbols=["AAPL", "MSFT"],
+                persist_signals=True,
+                capture_signals=False,
+                persist_signal_symbols=["AAPL"],
+            ),
+        )
+
+        self.assertEqual(payload["signals"], 1)
+        self.assertEqual(payload["persist_signal_symbols"], ["AAPL"])
+        aapl_generator.update.assert_called_once()
+        msft_generator.update.assert_not_called()
+        self.assertEqual(len(fake_app._test_signal_batches), 1)
+        self.assertEqual([item["symbol"] for item in fake_app._test_signal_batches[0]], ["AAPL"])
+        indicator_symbols = [
+            item["symbol"]
+            for batch in fake_app._test_indicator_batches
+            for item in batch
+        ]
+        self.assertEqual(sorted(indicator_symbols), ["AAPL", "MSFT"])
+        hydrate_by_symbol = {
+            item["symbol"]: item["hydrate_signal_state"]
+            for item in fake_app._test_bootstrap_calls
+        }
+        self.assertTrue(hydrate_by_symbol["AAPL"])
+        self.assertFalse(hydrate_by_symbol["MSFT"])
+
     def test_latest_signal_update_and_flush_do_not_wait_for_indicator_flush(self):
         events = []
 

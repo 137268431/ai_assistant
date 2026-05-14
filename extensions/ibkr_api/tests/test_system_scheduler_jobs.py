@@ -866,6 +866,137 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(payload["detail"]["status"], "submitted")
         self.assertEqual(payload["detail"]["upstream_status"], "accepted")
 
+    def test_early_expansion_topup_notifies_completed_async_scan_before_submitting_next(self):
+        sent = []
+        events = []
+        states = {}
+        calls = []
+
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            calls.append({"method": method, "path": path, "params": params, "json_body": json_body})
+            if path == "/scan/status":
+                self.assertEqual(method, "GET")
+                self.assertIn(("mode", "topup"), params)
+                return {
+                    "ok": True,
+                    "status_code": 200,
+                    "payload": {
+                        "ok": True,
+                        "status": "completed",
+                        "run_id": "scan-live-2026-04-23-old",
+                        "environment": "live",
+                        "date": "2026-04-23",
+                        "mode": "topup",
+                        "result": {
+                            "ok": True,
+                            "scanned": 3,
+                            "eligible": 1,
+                            "new_active": 1,
+                            "new_candidates": 0,
+                            "new_targets": [
+                                {
+                                    "symbol": "NVDA",
+                                    "status": "active",
+                                    "direction_bias": "long",
+                                    "score": 18,
+                                    "scan_reason": "5m:ema_bullish",
+                                }
+                            ],
+                        },
+                    },
+                }
+            self.assertEqual(path, "/scan")
+            return {
+                "ok": True,
+                "status_code": 200,
+                "payload": {
+                    "ok": True,
+                    "accepted": True,
+                    "async": True,
+                    "run_id": "scan-live-2026-04-23-new",
+                    "status": "accepted",
+                    "mode": "topup",
+                },
+            }
+
+        payload, status_code = build_early_expansion_topup_response(
+            payload={"environment": "live"},
+            normalize_environment=lambda value, default: str(value or default).strip().lower() or default,
+            time_strings=lambda: {"us": "2026-04-23 09:50:00", "cn": "2026-04-23 21:50:00", "date": "2026-04-23"},
+            request_json_request=request_json_request,
+            compute_base_url="http://compute",
+            feishu_send_interactive=lambda card, chat_id, environment: sent.append({"card": card, "chat_id": chat_id, "environment": environment}) or {"success": True, "message_id": "msg-topup"},
+            write_system_event_record=lambda *args, **kwargs: events.append(args) or {"id": "event-1"},
+            config_value=lambda key, default, environment: default,
+            console_base_url=lambda: "https://quant.lzw-glory.top",
+            startup_chat_id=lambda environment: f"startup-chat-{environment}",
+            get_state_payload=lambda state_key, environment: {"data": states.get((state_key, environment), {})},
+            upsert_state=lambda key, environment, data, date: states.update({(key, environment): data}) or data,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["status"], "submitted")
+        self.assertTrue(payload["notified"])
+        self.assertEqual(payload["message_id"], "msg-topup")
+        self.assertEqual(payload["completed_notification"]["notify_key"], "scan-live-2026-04-23-old")
+        self.assertEqual([call["path"] for call in calls], ["/scan/status", "/scan"])
+        self.assertEqual(sent[0]["chat_id"], "startup-chat-live")
+        self.assertEqual(events[0][0], "early_expansion_topup")
+        state = states[("ibkr_early_expansion_topup_notify", "live")]
+        self.assertIn("scan-live-2026-04-23-old", state["notified_keys"])
+
+    def test_early_expansion_topup_does_not_duplicate_completed_async_notification(self):
+        sent = []
+        states = {
+            ("ibkr_early_expansion_topup_notify", "live"): {
+                "notified_keys": ["scan-live-2026-04-23-old"],
+            }
+        }
+
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            if path == "/scan/status":
+                return {
+                    "ok": True,
+                    "status_code": 200,
+                    "payload": {
+                        "ok": True,
+                        "status": "completed",
+                        "run_id": "scan-live-2026-04-23-old",
+                        "result": {
+                            "new_active": 1,
+                            "new_candidates": 0,
+                            "new_targets": [{"symbol": "NVDA", "status": "active"}],
+                        },
+                    },
+                }
+            return {
+                "ok": True,
+                "status_code": 200,
+                "payload": {"ok": True, "accepted": True, "async": True, "run_id": "scan-live-2026-04-23-new", "status": "accepted"},
+            }
+
+        payload, status_code = build_early_expansion_topup_response(
+            payload={"environment": "live"},
+            normalize_environment=lambda value, default: str(value or default).strip().lower() or default,
+            time_strings=lambda: {"us": "2026-04-23 10:00:00", "cn": "2026-04-23 22:00:00", "date": "2026-04-23"},
+            request_json_request=request_json_request,
+            compute_base_url="http://compute",
+            feishu_send_interactive=lambda card, chat_id, environment: sent.append(card) or {"success": True},
+            write_system_event_record=lambda *args, **kwargs: {"id": "event-1"},
+            config_value=lambda key, default, environment: default,
+            console_base_url=lambda: "https://quant.lzw-glory.top",
+            startup_chat_id=lambda environment: f"startup-chat-{environment}",
+            get_state_payload=lambda state_key, environment: {"data": states.get((state_key, environment), {})},
+            upsert_state=lambda key, environment, data, date: states.update({(key, environment): data}) or data,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["status"], "submitted")
+        self.assertFalse(payload["notified"])
+        self.assertEqual(payload["completed_notification"]["reason"], "already_notified")
+        self.assertEqual(sent, [])
+
     def test_early_expansion_topup_read_timeout_stays_pending(self):
         sent = []
         events = []

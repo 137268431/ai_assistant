@@ -69,7 +69,8 @@
             take_profit: '止盈',
             stop_loss: '止损',
             repair_tp: '修复止盈',
-            repair_sl: '修复止损'
+            repair_sl: '修复止损',
+            close: '平仓'
         };
 
         let allOrders = [];
@@ -845,6 +846,7 @@
             if (role === 'repair_tp') return 'role-repair-tp';
             if (role === 'stop_loss') return 'role-stop-loss';
             if (role === 'repair_sl') return 'role-repair-sl';
+            if (role === 'close') return 'role-stop-loss';
             return 'role-other';
         }
 
@@ -914,6 +916,7 @@
                 sl_price: toNumber(firstDefined(raw.sl_price, extra.sl_price)),
                 pnl: toNumber(firstDefined(raw.pnl, extra.pnl)),
                 commission: toNumber(firstDefined(raw.commission, extra.commission)),
+                conid: toNumber(firstDefined(raw.conid, extra.conid)),
                 signal_id: firstDefined(raw.signal_id, extra.signal_id, ''),
                 bar_time_ms: barTimeMs,
                 time_key: timeKey,
@@ -944,7 +947,8 @@
                 take_profit: 1,
                 repair_tp: 1,
                 stop_loss: 2,
-                repair_sl: 2
+                repair_sl: 2,
+                close: 3
             }[role] ?? 9;
         }
 
@@ -960,6 +964,7 @@
             const role = String(order?.role || '').trim().toLowerCase();
             const orderType = String(order?.order_type || '').trim().toLowerCase();
             return ['take_profit', 'stop_loss', 'repair_tp', 'repair_sl', 'tp', 'sl'].includes(role)
+                || ['close', 'manual_close', 'market_close', 'close_order'].includes(role)
                 || ['takeprofit', 'stoploss'].includes(orderType);
         }
 
@@ -1051,8 +1056,8 @@
                     signal_id: primaryOrder?.signal_id || latestEvent?.signal_id || '',
                     status: primaryOrder?.status || latestEvent?.status || 'Init',
                     latest_time: Math.max(...ordersInGroup.map((order) => order.time_key || 0)),
-                    activeChildCount: ordersInGroup.filter((order) => order.role !== 'entry' && order.relation_status === 'active').length,
-                    plannedChildCount: ordersInGroup.filter((order) => order.role !== 'entry' && order.relation_status === 'planned').length
+                    activeChildCount: ordersInGroup.filter((order) => !['entry', 'close'].includes(order.role) && order.relation_status === 'active').length,
+                    plannedChildCount: ordersInGroup.filter((order) => !['entry', 'close'].includes(order.role) && order.relation_status === 'planned').length
                 };
             }).filter(Boolean).sort((left, right) => right.latest_time - left.latest_time);
         }
@@ -1277,6 +1282,27 @@
             }, 0);
         }
 
+        function absCommission(order) {
+            const direct = toNumber(order?.commission);
+            if (direct !== null) return Math.abs(direct);
+            const extra = order?.extra || {};
+            const nested = toNumber(firstDefined(extra.commission, extra.ibkr_commission));
+            return nested === null ? 0 : Math.abs(nested);
+        }
+
+        function commissionBreakdownText(entryOrder, exitOrder, orders) {
+            const entryCommission = absCommission(entryOrder);
+            const exitCommission = absCommission(exitOrder);
+            const known = entryCommission + exitCommission;
+            const total = sumCommissions(orders);
+            const parts = [];
+            if (entryCommission > 0) parts.push(`买/开 ${formatMoney(entryCommission)}`);
+            if (exitCommission > 0) parts.push(`卖/平 ${formatMoney(exitCommission)}`);
+            if (!parts.length && total > 0) parts.push(`总手续费 ${formatMoney(total)}`);
+            if (parts.length && total > known + 0.0001) parts.push(`其他 ${formatMoney(total - known)}`);
+            return parts.join(' / ');
+        }
+
         function buildPnlMetric(group, tpPrice, slPrice) {
             const primary = group.primaryOrder || {};
             const entryPrice = resolveEntryFillPrice(primary);
@@ -1303,7 +1329,8 @@
             const planParts = [];
             if (tpPotential !== null) planParts.push(`TP ${formatSignedMoney(tpPotential)}`);
             if (slPotential !== null) planParts.push(`SL ${formatSignedMoney(slPotential)}`);
-            if (commission > 0 && realizedGross !== null) planParts.push(`comm ${formatMoney(commission)}`);
+            const commissionText = commissionBreakdownText(primary, group.exitOrder, group.orders);
+            if (commissionText && realizedGross !== null) planParts.push(commissionText);
             const planText = planParts.length ? planParts.join(' / ') : '缺少价格或数量';
             return `${realizedText}<br><span class="metric-subvalue">${escapeHtml(exitText)} · ${escapeHtml(planText)}</span>`;
         }
@@ -1330,6 +1357,7 @@
                         ${renderDetail('signal_id', escapeHtml(order.signal_id || '-'))}
                         ${renderDetail('数量 / 已成交', `${escapeHtml(formatQty(order.quantity))} / ${escapeHtml(formatQty(order.filled_qty))}`)}
                         ${renderDetail(priceLabel, `${escapeHtml(formatMoney(displayPrice))} / ${escapeHtml(formatMoney(order.fill_price))}`)}
+                        ${renderDetail('手续费', escapeHtml(formatMoney(absCommission(order))))}
                         ${renderDetail('parent_order', escapeHtml(order.parent_order_unique_id || '-'))}
                         ${renderDetail('sibling_order', escapeHtml(order.sibling_order_unique_id || '-'))}
                         ${renderDetail('entry_order', escapeHtml(order.entry_order_unique_id || '-'))}
@@ -1341,7 +1369,7 @@
 
         function renderGroupCard(group) {
             const primary = group.primaryOrder;
-            const visibleOrders = group.orders.filter(isMainOrder);
+            const visibleOrders = group.orders.filter((order) => isMainOrder(order) || order.role === 'close');
             const tpOrder = group.orders.find((order) => order.role === 'take_profit' || order.role === 'repair_tp');
             const slOrder = group.orders.find((order) => order.role === 'stop_loss' || order.role === 'repair_sl');
             const tpPrice = resolveTakeProfitPrice(primary, tpOrder);
@@ -1400,7 +1428,7 @@
 
                     ${renderRelationshipStrip(group)}
 
-                    <div class="section-title">主单</div>
+                    <div class="section-title">主单 / 平仓</div>
                     <div class="order-list">
                         ${visibleOrders.map((order) => renderOrderCard(order, order.unique_id === primary?.unique_id)).join('')}
                     </div>
@@ -1601,11 +1629,201 @@
             loadOrders();
         };
 
+        function findCloseActionGroup(uniqueId) {
+            const decoded = decodeURIComponent(uniqueId || '');
+            return allGroups.find((group) => {
+                const primary = group.primaryOrder || {};
+                return [
+                    group.trade_group_id,
+                    group.group_id,
+                    primary.entry_order_unique_id,
+                    primary.unique_id,
+                    primary.broker_order_id,
+                ].some((value) => String(value || '') === decoded);
+            }) || null;
+        }
+
+        function getLiveOrderClientId(order) {
+            const raw = order?.raw || {};
+            return String(firstDefined(order?.client_order_id, order?.cOID, order?.coid, order?.order_ref, order?.orderRef, raw.cOID, raw.coid, raw.orderRef, raw.order_ref, '')).trim();
+        }
+
+        function getLiveOrderParentId(order) {
+            const raw = order?.raw || {};
+            return String(firstDefined(order?.parent_id, order?.parentId, order?.parent_order_id, raw.parentId, raw.parent_id, '')).trim();
+        }
+
+        function getLiveOrderId(order) {
+            const raw = order?.raw || {};
+            return String(firstDefined(order?.order_id, order?.orderId, order?.id, raw.orderId, raw.order_id, raw.id, '')).trim();
+        }
+
+        function getLiveOrderRole(order) {
+            const role = String(firstDefined(order?.role, order?.leg_role, '')).trim().toLowerCase();
+            if (role) return role;
+            const orderType = String(firstDefined(order?.order_type, order?.orderType, '')).trim().toUpperCase();
+            if (getLiveOrderParentId(order) && (orderType.includes('STP') || orderType.includes('STOP'))) return 'stop_loss';
+            if (getLiveOrderParentId(order) && (orderType.includes('LMT') || orderType.includes('LIMIT'))) return 'take_profit';
+            return getLiveOrderParentId(order) ? 'child' : 'entry';
+        }
+
+        function buildGroupCloseAliases(group) {
+            const primary = group?.primaryOrder || {};
+            const seeds = [
+                group?.trade_group_id,
+                group?.group_id,
+                primary.entry_order_unique_id,
+                primary.unique_id,
+            ].map((value) => String(value || '').trim()).filter(Boolean);
+            const aliases = [];
+            seeds.forEach((value) => {
+                if (!aliases.includes(value)) aliases.push(value);
+                if (value.startsWith('entry_')) {
+                    const stripped = value.slice('entry_'.length);
+                    if (stripped && !aliases.includes(stripped)) aliases.push(stripped);
+                } else {
+                    const prefixed = `entry_${value}`;
+                    if (value && !aliases.includes(prefixed)) aliases.push(prefixed);
+                }
+            });
+            return aliases;
+        }
+
+        function brokerOrderMatchesGroup(order, group) {
+            const pbContext = order?.pb_context || {};
+            const aliases = buildGroupCloseAliases(group);
+            const values = [
+                getLiveOrderClientId(order),
+                order?.oca_group,
+                order?.ocaGroup,
+                order?.trade_group_id,
+                order?.entry_order_unique_id,
+                order?.parent_order_unique_id,
+                order?.sibling_order_unique_id,
+                pbContext.trade_group_id,
+                pbContext.entry_order_unique_id,
+                pbContext.parent_order_unique_id,
+                pbContext.sibling_order_unique_id,
+            ].map((value) => String(value || '').trim()).filter(Boolean);
+            return aliases.length && values.some((value) => aliases.some((alias) => value === alias || value.endsWith(alias) || value.includes(alias)));
+        }
+
+        function isProtectionBrokerOrder(order) {
+            const role = getLiveOrderRole(order);
+            const clientId = getLiveOrderClientId(order).toLowerCase();
+            return Boolean(
+                getLiveOrderParentId(order)
+                || ['take_profit', 'stop_loss', 'repair_tp', 'repair_sl', 'tp', 'sl'].includes(role)
+                || clientId.startsWith('tp_')
+                || clientId.startsWith('sl_')
+            );
+        }
+
+        function brokerOrderCloseSideMatches(order, group) {
+            const direction = String(group?.direction || group?.primaryOrder?.direction || group?.primaryOrder?.position_side || '').trim().toLowerCase();
+            const expected = direction === 'long' ? 'SELL' : direction === 'short' ? 'BUY' : '';
+            const side = String(firstDefined(order?.side, order?.action, order?.raw?.side, '')).trim().toUpperCase();
+            return !expected || !side || side === expected;
+        }
+
+        function collectGroupProtectionOrderIds(group) {
+            const ids = [];
+            const symbol = String(group?.symbol || '').trim().toUpperCase();
+            (group?.orders || []).forEach((order) => {
+                if (order.role === 'entry') return;
+                if (['Canceled', 'Closed'].includes(order.status)) return;
+                const brokerId = String(order.broker_order_id || order.order_id || '').trim();
+                if (brokerId && !ids.includes(brokerId)) ids.push(brokerId);
+            });
+            getBrokerLiveOrders().forEach((order) => {
+                const orderId = getLiveOrderId(order);
+                if (!orderId || ids.includes(orderId)) return;
+                const orderSymbol = String(firstDefined(order?.symbol, order?.ticker, order?.raw?.ticker, '')).trim().toUpperCase();
+                if (symbol && orderSymbol && orderSymbol !== symbol) return;
+                if (!isProtectionBrokerOrder(order)) return;
+                if (!brokerOrderCloseSideMatches(order, group)) return;
+                if (brokerOrderMatchesGroup(order, group) || getLiveOrderParentId(order)) ids.push(orderId);
+            });
+            return ids;
+        }
+
+        async function confirmOrdersAction(options, fallbackMessage) {
+            if (typeof showConfirmDialog === 'function') {
+                return showConfirmDialog(options);
+            }
+            return window.confirm(fallbackMessage || options.message || options.title || '确认操作？');
+        }
+
+        async function requestPositionClose(payload) {
+            return readOrderActionResponse(
+                await fetchWithRetry(
+                    buildPageUrl('/api/custom/ibkr/positions/close', {}, { environment: currentEnvironment }),
+                    {
+                        method: 'POST',
+                        headers: getOrderActionHeaders({ 'Content-Type': 'application/json' }),
+                        body: JSON.stringify({
+                            ...payload,
+                            environment: currentEnvironment
+                        })
+                    },
+                    { attempts: 2, retryDelayMs: 400 }
+                )
+            );
+        }
+
+        function describeProtectionCancel(payload) {
+            const protection = payload?.result?.protection_cancel || payload?.protection_cancel || {};
+            const cancelled = Array.isArray(protection.cancelled_order_ids) ? protection.cancelled_order_ids.length : 0;
+            const errors = Array.isArray(protection.errors) ? protection.errors.length : 0;
+            if (errors > 0) return `保护单撤销失败 ${errors} 个`;
+            if (cancelled > 0) return `已撤保护单 ${cancelled} 个`;
+            return '未发现需撤保护单';
+        }
+
         async function closePosition(uniqueId, symbol) {
-            if (!confirm(`确认平仓 ${symbol} 的整组订单？`)) return;
+            const group = findCloseActionGroup(uniqueId);
+            const primary = group?.primaryOrder || {};
+            const closeSymbol = String(symbol || group?.symbol || primary.symbol || '').trim().toUpperCase();
+            const quantity = Math.abs(Number(primary.filled_qty || primary.quantity || 0) || 0);
+            const direction = String(group?.direction || primary.position_side || primary.direction || '').trim().toLowerCase();
+            const protectionOrderIds = group ? collectGroupProtectionOrderIds(group) : [];
+            const confirmed = await confirmOrdersAction({
+                kicker: 'Close Group',
+                title: `确认对 ${closeSymbol || symbol} 发起真实市价平仓？`,
+                message: '这会提交真实 IBKR 市价平仓；提交成功后撤掉匹配到的 TP / SL 括号保护单，并同步关闭本地交易组。',
+                details: [
+                    { label: '数量', value: quantity ? formatQty(quantity) : '-' },
+                    { label: '方向', value: direction ? direction.toUpperCase() : '-' },
+                    { label: '保护单', value: protectionOrderIds.length ? `${protectionOrderIds.length} 个待撤` : '未匹配到' },
+                    { label: '交易组', value: group?.trade_group_id || decodeURIComponent(uniqueId || '') || '-' },
+                ],
+                confirmText: '市价平仓',
+                tone: 'danger',
+            }, `确认平仓 ${closeSymbol || symbol} 的整组订单？`);
+            if (!confirmed) return;
             try {
-                await requestOrderAction('/api/custom/ibkr/orders/close_group', uniqueId);
-                showToast('已发送平仓整组请求');
+                const result = await requestPositionClose({
+                    id: decodeURIComponent(uniqueId || ''),
+                    symbol: closeSymbol,
+                    conid: Number(primary.conid || 0) || 0,
+                    quantity,
+                    position: direction === 'short' ? -quantity : quantity,
+                    direction,
+                    trade_group_id: group?.trade_group_id || '',
+                    entry_order_unique_id: primary.entry_order_unique_id || '',
+                    cancel_order_ids: protectionOrderIds,
+                    cancel_bracket_after_close: true,
+                    source: 'orders_page_close_group',
+                });
+                try {
+                    await requestOrderAction('/api/custom/ibkr/orders/close_group', uniqueId, {
+                        source: 'orders_page_close_group',
+                        reason: '页面真实市价平仓后关闭交易组',
+                    });
+                } catch (syncError) {
+                    console.warn('[Orders] 本地交易组状态同步失败:', syncError);
+                }
+                showToast(`已发送真实平仓请求，${describeProtectionCancel(result)}`);
                 loadOrders({ showLoadingState: false });
             } catch (error) {
                 showToast(`平仓失败: ${error.message}`);
@@ -1613,7 +1831,18 @@
         }
 
         async function cancelOrder(targetId, brokerOrderId, symbol) {
-            if (!confirm(`确认取消 ${symbol} 的主入场单？`)) return;
+            const confirmed = await confirmOrdersAction({
+                kicker: 'Cancel Entry',
+                title: `确认取消 ${symbol} 的主入场单？`,
+                message: '该操作会同步撤销 IBKR 真实挂单与系统订单状态。',
+                details: [
+                    { label: 'Broker Order', value: decodeURIComponent(brokerOrderId || '') || '-' },
+                    { label: '环境', value: currentEnvironment.toUpperCase() },
+                ],
+                confirmText: '取消主单',
+                tone: 'warn',
+            }, `确认取消 ${symbol} 的主入场单？`);
+            if (!confirmed) return;
             try {
                 await requestCancelSync(targetId, brokerOrderId);
                 showToast('已同步撤销 IBKR 与系统订单');
@@ -1630,7 +1859,7 @@
             return headers;
         }
 
-        async function requestOrderAction(path, uniqueId) {
+        async function requestOrderAction(path, uniqueId, extraPayload = {}) {
             return readOrderActionResponse(
                 await fetchWithRetry(
                     buildPageUrl(path, {}, { environment: currentEnvironment }),
@@ -1638,6 +1867,7 @@
                         method: 'POST',
                         headers: getOrderActionHeaders({ 'Content-Type': 'application/json' }),
                         body: JSON.stringify({
+                            ...extraPayload,
                             id: decodeURIComponent(uniqueId),
                             environment: currentEnvironment
                         })

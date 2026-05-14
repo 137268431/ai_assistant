@@ -141,8 +141,15 @@ class OrderPlacer:
         direction: str,
         quantity: int,
         use_paper: bool = False,
+        trade_group_id: str = "",
+        entry_order_unique_id: str = "",
+        signal_id: str = "",
+        source: str = "",
     ) -> Dict[str, Any]:
         acct_id = self.get_active_account_id(use_paper)
+        symbol = str(symbol or "").upper()
+        direction = str(direction or "").lower()
+        close_order_ref = f"close_{symbol}_{datetime.now(ET).strftime('%Y%m%d_%H%M%S')}"
         logger.info(
             "Placing market close: %s %s qty=%s account=%s",
             symbol,
@@ -150,13 +157,81 @@ class OrderPlacer:
             quantity,
             acct_id or "-",
         )
-        return self.broker.place_market_close(
+        result = self.broker.place_market_close(
             conid=int(conid or 0),
-            symbol=str(symbol or "").upper(),
-            direction=str(direction or "").lower(),
+            symbol=symbol,
+            direction=direction,
             quantity=int(quantity or 0),
             account_id=acct_id,
+            order_ref=close_order_ref,
         )
+        if result.get("ok"):
+            self._log_close_order_to_pb(
+                symbol=symbol,
+                conid=int(conid or 0),
+                direction=direction,
+                quantity=int(quantity or 0),
+                close_coid=str(result.get("entry_coid") or close_order_ref),
+                broker_order_id=(result.get("order_ids") or [""])[0],
+                trade_group_id=trade_group_id,
+                entry_order_unique_id=entry_order_unique_id,
+                signal_id=signal_id,
+                source=source,
+                account=acct_id,
+            )
+        return result
+
+    def _log_close_order_to_pb(self, **kwargs):
+        if not self.pb_client or not hasattr(self.pb_client, "upsert_order"):
+            return
+        try:
+            et_now = datetime.now(ET)
+            us_time = et_now.strftime("%Y-%m-%d %H:%M:%S")
+            close_coid = str(kwargs.get("close_coid") or "").strip()
+            broker_order_id = str(kwargs.get("broker_order_id") or "").strip()
+            symbol = str(kwargs.get("symbol") or "").strip().upper()
+            direction = str(kwargs.get("direction") or "").strip().lower()
+            trade_group_id = str(kwargs.get("trade_group_id") or "").strip()
+            entry_order_unique_id = str(kwargs.get("entry_order_unique_id") or "").strip()
+            if not trade_group_id:
+                trade_group_id = entry_order_unique_id or close_coid
+            if not entry_order_unique_id:
+                entry_order_unique_id = trade_group_id or close_coid
+            payload = {
+                "symbol": symbol,
+                "conid": kwargs.get("conid", 0),
+                "direction": direction,
+                "position_side": direction,
+                "quantity": kwargs.get("quantity", 0),
+                "limit_price": 0,
+                "status": "Submitted",
+                "order_type": "MKT",
+                "unique_id": close_coid or broker_order_id,
+                "order_id": broker_order_id,
+                "broker_order_id": broker_order_id,
+                "trade_group_id": trade_group_id,
+                "entry_order_unique_id": entry_order_unique_id,
+                "parent_order_unique_id": entry_order_unique_id if entry_order_unique_id != (close_coid or broker_order_id) else "",
+                "sibling_order_unique_id": "",
+                "role": "close",
+                "relation_status": "active",
+                "signal_id": str(kwargs.get("signal_id") or "").strip(),
+                "bar_time_ms": int(et_now.timestamp() * 1000),
+                "us_time": us_time,
+                "cn_time": "",
+                "extra": {
+                    "source": str(kwargs.get("source") or "order_placer_market_close"),
+                    "account": kwargs.get("account") or "",
+                    "close_order": True,
+                    "close_order_unique_id": close_coid or broker_order_id,
+                    "linked_trade_group_id": trade_group_id,
+                    "linked_entry_order_unique_id": entry_order_unique_id,
+                    "submitted_via": "market_close",
+                },
+            }
+            self.pb_client.upsert_order(payload)
+        except Exception as exc:
+            logger.debug("Failed to log close order to PB: %s", exc)
 
     def _log_order_to_pb(self, **kwargs):
         if not self.pb_client:

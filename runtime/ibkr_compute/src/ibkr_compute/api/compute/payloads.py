@@ -55,6 +55,8 @@ def build_signal_payload(environment: str, symbol: str, interval: str, bar: dict
     api_app = _api_app()
     chart_tf = interval_to_chart_tf(interval)
     bar_ms = int(bar.get("bar_time_ms", 0) or 0)
+    reference_price = round(float(bar.get("close", 0) or 0), 2)
+    entry_price = round(float(signal.get("entry", 0) or 0), 2)
     symbol_meta = refresh_symbol_metadata().get(symbol, {})
     signal_type = str(signal.get("signal", "") or "")
     initial_status, initial_status_reason = api_app.resolve_initial_signal_state(environment, bar_ms)
@@ -84,7 +86,10 @@ def build_signal_payload(environment: str, symbol: str, interval: str, bar: dict
         "chart_tf": chart_tf,
         "bar_time_ms": bar_ms,
         "bar_index": engine.bar_count,
-        "close": round(float(bar.get("close", 0) or 0), 2),
+        "close": reference_price,
+        "reference_price": reference_price,
+        "reference_source": "bar_close",
+        "limit_price": entry_price,
         "atr": signal_extra.get("atr_raw", signal_extra.get("atr", 0)),
         "environment": environment,
         "source": "ibkr_compute",
@@ -108,8 +113,8 @@ def build_signal_payload(environment: str, symbol: str, interval: str, bar: dict
         "signal_id": build_signal_id(symbol, bar_ms, signal_type),
         "direction": signal.get("direction", ""),
         "signal": signal_type,
-        "limit_price": round(float(bar.get("close", 0) or 0), 2),
-        "entry": signal.get("entry", 0),
+        "limit_price": entry_price,
+        "entry": entry_price,
         "stop_loss": signal.get("stop_loss", 0),
         "take_profit": signal.get("take_profit", 0),
         "rr": rr_text,

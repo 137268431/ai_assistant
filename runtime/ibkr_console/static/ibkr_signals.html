@@ -40,7 +40,7 @@
             <button class="status-tab" data-status="awaiting_confirm" onclick="selectStatus('awaiting_confirm', this)">待确认<span class="tab-count" data-status="awaiting_confirm">(<span class="count-value">0</span>)</span></button>
             <button class="status-tab" data-status="pending" onclick="selectStatus('pending', this)">等待执行<span class="tab-count" data-status="pending">(<span class="count-value">0</span>)</span></button>
             <button class="status-tab" data-status="submitted" onclick="selectStatus('submitted', this)">已提交/挂单中<span class="tab-count" data-status="submitted">(<span class="count-value">0</span>)</span></button>
-            <button class="status-tab" data-status="protected_active" onclick="selectStatus('protected_active', this)">保护中<span class="tab-count" data-status="protected_active">(<span class="count-value">0</span>)</span></button>
+            <button class="status-tab" data-status="protected_active" onclick="selectStatus('protected_active', this)">持仓保护中<span class="tab-count" data-status="protected_active">(<span class="count-value">0</span>)</span></button>
             <button class="status-tab" data-status="protection_incomplete" onclick="selectStatus('protection_incomplete', this)">保护异常<span class="tab-count" data-status="protection_incomplete">(<span class="count-value">0</span>)</span></button>
             <button class="status-tab" data-status="executed" onclick="selectStatus('executed', this)">已执行<span class="tab-count" data-status="executed">(<span class="count-value">0</span>)</span></button>
             <button class="status-tab" data-status="closed" onclick="selectStatus('closed', this)">已平仓<span class="tab-count" data-status="closed">(<span class="count-value">0</span>)</span></button>
@@ -273,6 +273,41 @@
             return `$${formatNumber(num, 2)}`;
         }
 
+        function toFiniteNumber(value) {
+            if (value === null || value === undefined || value === '') return null;
+            const num = Number(value);
+            return Number.isFinite(num) ? num : null;
+        }
+
+        function firstFiniteNumber(...values) {
+            for (const value of values) {
+                const num = toFiniteNumber(value);
+                if (num !== null) return num;
+            }
+            return null;
+        }
+
+        function firstPositiveNumber(...values) {
+            for (const value of values) {
+                const num = toFiniteNumber(value);
+                if (num !== null && num > 0) return num;
+            }
+            return null;
+        }
+
+        function formatSignedMoney(value, fallback = '数据缺失') {
+            const num = toFiniteNumber(value);
+            if (num === null) return fallback;
+            const sign = num > 0 ? '+' : (num < 0 ? '-' : '');
+            return `${sign}$${formatNumber(Math.abs(num), 2)}`;
+        }
+
+        function pnlToneClass(value) {
+            const num = toFiniteNumber(value);
+            if (num === null || Math.abs(num) < 0.005) return 'flat';
+            return num > 0 ? 'positive' : 'negative';
+        }
+
         function formatSignedPercentHtml(value) {
             const num = Number(value);
             if (!Number.isFinite(num)) return '<span style="color: var(--muted)">数据缺失</span>';
@@ -397,7 +432,7 @@
                 awaiting_confirm: '待确认',
                 pending: '等待执行',
                 submitted: '已提交/挂单中',
-                protected_active: '保护中',
+                protected_active: '持仓保护中',
                 protection_incomplete: '保护异常',
                 executed: '已执行',
                 closed: '已平仓',
@@ -579,6 +614,332 @@
             return hasPositiveNumber(entryPrice) && hasPositiveNumber(shares)
                 ? formatPrice(Number(entryPrice) * Number(shares))
                 : '数据缺失';
+        }
+
+        function getSignalExtra(signal) {
+            return signal && signal.extra && typeof signal.extra === 'object' ? signal.extra : {};
+        }
+
+        function getSignalTradeGroupId(signal) {
+            const extra = getSignalExtra(signal);
+            return String(
+                signal?.trade_group_id
+                || extra.trade_group_id
+                || extra.bracket_group
+                || extra.submit_failed_bracket_group
+                || extra.old_trade_group_id
+                || ''
+            ).trim();
+        }
+
+        function getOrderExtra(order) {
+            return order && order.extra && typeof order.extra === 'object' ? order.extra : {};
+        }
+
+        function getOrderNumber(order, ...keys) {
+            const extra = getOrderExtra(order);
+            for (const key of keys) {
+                const direct = toFiniteNumber(order?.[key]);
+                if (direct !== null) return direct;
+                const nested = toFiniteNumber(extra?.[key]);
+                if (nested !== null) return nested;
+            }
+            return null;
+        }
+
+        function getOrderText(order, ...keys) {
+            const extra = getOrderExtra(order);
+            for (const key of keys) {
+                const direct = String(order?.[key] ?? '').trim();
+                if (direct) return direct;
+                const nested = String(extra?.[key] ?? '').trim();
+                if (nested) return nested;
+            }
+            return '';
+        }
+
+        function normalizePnlOrderRole(order) {
+            const role = getOrderText(order, 'role', 'order_type').toLowerCase();
+            const uniqueId = getOrderText(order, 'unique_id', 'cOID', 'coid', 'orderRef', 'order_ref').toLowerCase();
+            if (['tp', 'takeprofit', 'take_profit', 'profit_target', 'target'].includes(role) || uniqueId.startsWith('tp_')) return 'take_profit';
+            if (['sl', 'stop', 'stoploss', 'stop_loss', 'repair_sl'].includes(role) || uniqueId.startsWith('sl_')) return 'stop_loss';
+            if (['entry', 'main', 'parent'].includes(role) || uniqueId.startsWith('entry_')) return 'entry';
+            if (role.includes('close') || uniqueId.startsWith('close_')) return 'close';
+            return role;
+        }
+
+        function isFilledOrderStatus(order) {
+            const status = getOrderText(order, 'status', 'order_status').toLowerCase();
+            return ['filled', 'executed', 'closed'].includes(status);
+        }
+
+        function orderSortTime(order) {
+            const extra = getOrderExtra(order);
+            const ms = firstPositiveNumber(
+                order?.fill_bar_time_ms,
+                extra.fill_bar_time_ms,
+                order?.bar_time_ms,
+                extra.bar_time_ms
+            );
+            if (ms !== null) return ms;
+            const parsed = Date.parse(
+                order?.fill_time
+                || extra.fill_time
+                || extra.filled_us_time
+                || order?.updated
+                || order?.created
+                || ''
+            );
+            return Number.isFinite(parsed) ? parsed : 0;
+        }
+
+        function findEntryOrderForPnl(orders) {
+            return (orders || [])
+                .filter((order) => normalizePnlOrderRole(order) === 'entry')
+                .sort((a, b) => orderSortTime(b) - orderSortTime(a))[0] || null;
+        }
+
+        function findExitOrderForPnl(orders) {
+            return (orders || [])
+                .filter((order) => {
+                    const role = normalizePnlOrderRole(order);
+                    return role && role !== 'entry' && isFilledOrderStatus(order);
+                })
+                .sort((a, b) => orderSortTime(b) - orderSortTime(a))[0] || null;
+        }
+
+        function sumOrderCommissions(orders) {
+            return (orders || []).reduce((sum, order) => {
+                const commission = getOrderNumber(order, 'commission');
+                return sum + (commission === null ? 0 : Math.abs(commission));
+            }, 0);
+        }
+
+        function absOrderCommission(order) {
+            const value = firstFiniteNumber(
+                getOrderNumber(order, 'commission'),
+                getOrderNumber(order, 'ibkr_commission')
+            );
+            return value === null ? 0 : Math.abs(value);
+        }
+
+        function nonZeroPnlValue() {
+            for (const value of arguments) {
+                const num = toFiniteNumber(value);
+                if (num !== null && Math.abs(num) > 0.000001) return num;
+            }
+            return null;
+        }
+
+        function computeDirectionalPnl(direction, entryPrice, exitPrice, quantity) {
+            const entry = toFiniteNumber(entryPrice);
+            const exit = toFiniteNumber(exitPrice);
+            const qty = toFiniteNumber(quantity);
+            if (entry === null || exit === null || qty === null || entry <= 0 || exit <= 0 || qty <= 0) return null;
+            const side = String(direction || '').trim().toLowerCase();
+            const perShare = side === 'short' ? entry - exit : exit - entry;
+            return perShare * Math.abs(qty);
+        }
+
+        function getRelatedOrdersForSignal(signal) {
+            const tradeGroupId = getSignalTradeGroupId(signal);
+            const keys = [
+                String(signal?.signal_id || '').trim(),
+                tradeGroupId ? `tg:${tradeGroupId}` : '',
+            ].filter(Boolean);
+            const seen = new Set();
+            const rows = [];
+            keys.forEach((key) => {
+                (ordersMap[key] || []).forEach((order) => {
+                    const id = String(order?.id || order?.unique_id || order?.order_id || order?.broker_order_id || JSON.stringify(order));
+                    if (seen.has(id)) return;
+                    seen.add(id);
+                    rows.push(order);
+                });
+            });
+            return rows;
+        }
+
+        function roleLabelForPnl(role) {
+            const normalized = String(role || '').trim().toLowerCase();
+            if (normalized === 'take_profit') return 'TP成交';
+            if (normalized === 'stop_loss') return 'SL成交';
+            if (normalized === 'close') return '平仓成交';
+            return normalized ? normalized : '退出成交';
+        }
+
+        function buildClosedSignalPnl(signal, latestIndicator, relatedOrders = []) {
+            const extra = getSignalExtra(signal);
+            const direction = signal?.direction || extra.direction || '';
+            const signalEntryPrice = firstPositiveNumber(
+                signal?.executed_price,
+                extra.executed_price,
+                extra.entry_fill_price,
+                signal?.entry,
+                extra.entry
+            );
+            const signalQuantity = firstPositiveNumber(
+                extra.exit_fill_quantity,
+                extra.filled_qty,
+                signal?.shares,
+                extra.shares,
+                extra.quantity
+            );
+            const signalExitPrice = firstPositiveNumber(
+                signal?.exit_price,
+                extra.exit_fill_price,
+                extra.exit_price,
+                extra.closed_price,
+                extra.close_price
+            );
+            const explicitPnl = firstFiniteNumber(
+                extra.realized_pnl_net,
+                extra.realized_net_pnl,
+                signal?.realized_pnl,
+                extra.realized_pnl,
+                extra.actual_pnl,
+                extra.exit_pnl,
+                signal?.pnl,
+                extra.pnl
+            );
+            if (explicitPnl !== null) {
+                return {
+                    value: explicitPnl,
+                    label: '实际盈亏',
+                    estimated: false,
+                    source: extra.realized_pnl_source || extra.actual_pnl_source || '已记录',
+                    exitPrice: signalExitPrice,
+                    quantity: signalQuantity,
+                    role: extra.exit_fill_role || extra.closed_by || '',
+                    commission: firstFiniteNumber(extra.total_commission, extra.commission),
+                    entryCommission: firstFiniteNumber(extra.entry_commission),
+                    exitCommission: firstFiniteNumber(extra.exit_commission),
+                };
+            }
+
+            const exitOrder = findExitOrderForPnl(relatedOrders);
+            const entryOrder = findEntryOrderForPnl(relatedOrders);
+            if (exitOrder) {
+                const role = normalizePnlOrderRole(exitOrder);
+                const storedGrossPnl = nonZeroPnlValue(
+                    getOrderNumber(exitOrder, 'realized_pnl_net', 'realized_net_pnl'),
+                    getOrderNumber(exitOrder, 'realized_pnl', 'actual_pnl', 'pnl')
+                );
+                const entryCommission = absOrderCommission(entryOrder);
+                const exitCommission = absOrderCommission(exitOrder);
+                const commission = sumOrderCommissions(relatedOrders);
+                const exitPrice = firstPositiveNumber(
+                    getOrderNumber(exitOrder, 'fill_price', 'filled_price', 'avgPrice', 'avgFillPrice'),
+                    getOrderNumber(exitOrder, 'limit_price', 'price'),
+                    signalExitPrice
+                );
+                const entryPrice = firstPositiveNumber(
+                    getOrderNumber(entryOrder, 'fill_price', 'filled_price', 'avgPrice', 'avgFillPrice'),
+                    getOrderNumber(entryOrder, 'limit_price', 'price'),
+                    signalEntryPrice
+                );
+                const quantity = firstPositiveNumber(
+                    getOrderNumber(exitOrder, 'filled_qty', 'filledQuantity', 'quantity'),
+                    signalQuantity
+                );
+                const computed = computeDirectionalPnl(direction, entryPrice, exitPrice, quantity);
+                const gross = storedGrossPnl !== null ? storedGrossPnl : computed;
+                if (gross !== null) {
+                    return {
+                        value: gross - commission,
+                        label: '实际盈亏',
+                        estimated: false,
+                        source: roleLabelForPnl(role),
+                        exitPrice,
+                        quantity,
+                        role,
+                        commission,
+                        entryCommission,
+                        exitCommission,
+                    };
+                }
+            }
+
+            if (signalExitPrice !== null && signalEntryPrice !== null && signalQuantity !== null) {
+                const value = computeDirectionalPnl(direction, signalEntryPrice, signalExitPrice, signalQuantity);
+                if (value !== null) {
+                    return {
+                        value,
+                        label: '实际盈亏',
+                        estimated: false,
+                        source: extra.exit_fill_role ? roleLabelForPnl(extra.exit_fill_role) : '信号成交价',
+                        exitPrice: signalExitPrice,
+                        quantity: signalQuantity,
+                        role: extra.exit_fill_role || '',
+                    };
+                }
+            }
+
+            const currentPrice = firstPositiveNumber(latestIndicator?.close, extra.close);
+            const estimatedValue = computeDirectionalPnl(direction, signalEntryPrice, currentPrice, signalQuantity);
+            if (estimatedValue !== null) {
+                return {
+                    value: estimatedValue,
+                    label: '估算盈亏',
+                    estimated: true,
+                    source: '按当前价估算',
+                    exitPrice: currentPrice,
+                    quantity: signalQuantity,
+                    role: '',
+                };
+            }
+            return null;
+        }
+
+        function buildPnlDetailText(model) {
+            if (!model) return '等待成交价回填';
+            const parts = [];
+            if (model.source) parts.push(model.source);
+            if (model.exitPrice) parts.push(`退出 ${formatPrice(model.exitPrice)}`);
+            if (model.quantity) parts.push(`${formatNumber(model.quantity, 0)}股`);
+            if (model.entryCommission) parts.push(`买/开手续费 ${formatPrice(model.entryCommission)}`);
+            if (model.exitCommission) parts.push(`卖/平手续费 ${formatPrice(model.exitCommission)}`);
+            if (model.commission && !model.entryCommission && !model.exitCommission) parts.push(`手续费 ${formatPrice(model.commission)}`);
+            if (model.estimated) parts.push('待成交价回填');
+            return parts.join(' · ') || '等待成交价回填';
+        }
+
+        function buildSignalPnlPanelHtml(signal, closedPnl, expectedProfitText, expectedLossText) {
+            const isClosed = String(signal?.status || '').trim().toLowerCase() === 'closed';
+            if (isClosed) {
+                const valueText = closedPnl ? formatSignedMoney(closedPnl.value) : '数据缺失';
+                const tone = closedPnl ? pnlToneClass(closedPnl.value) : 'flat';
+                const detailText = closedPnl ? buildPnlDetailText(closedPnl) : '未找到退出成交价 / 数量';
+                const rightLabel = closedPnl?.estimated ? '估算依据' : '退出价 / 数量';
+                return `
+                    <div class="signal-item full-width shares-amount signal-pnl-panel ${closedPnl?.estimated ? 'pnl-estimated' : ''}">
+                        <div class="shares-amount-left">
+                            <div class="signal-label">${closedPnl?.label || '实际盈亏'}</div>
+                            <div class="signal-value signal-pnl-value ${tone}">${escapeHtml(valueText)}</div>
+                            <div class="signal-pnl-detail">${escapeHtml(detailText)}</div>
+                        </div>
+                        <div class="shares-amount-divider"></div>
+                        <div class="shares-amount-right">
+                            <div class="signal-label">${rightLabel}</div>
+                            <div class="signal-value">${closedPnl?.exitPrice ? escapeHtml(formatPrice(closedPnl.exitPrice)) : '数据缺失'}</div>
+                            <div class="signal-pnl-detail">${closedPnl?.quantity ? `${escapeHtml(formatNumber(closedPnl.quantity, 0))} 股` : '数量缺失'}</div>
+                        </div>
+                    </div>
+                `;
+            }
+            return `
+                <div class="signal-item full-width shares-amount">
+                    <div class="shares-amount-left">
+                        <div class="signal-label">预计盈利</div>
+                        <div class="signal-value" style="color:var(--long);">${escapeHtml(expectedProfitText)}</div>
+                    </div>
+                    <div class="shares-amount-divider"></div>
+                    <div class="shares-amount-right">
+                        <div class="signal-label">预计亏损</div>
+                        <div class="signal-value" style="color:var(--short);">${escapeHtml(expectedLossText)}</div>
+                    </div>
+                </div>
+            `;
         }
 
         function averageLatency(signals, getter) {
@@ -850,6 +1211,9 @@
                 await fetchRealtimeQuotes(allSignals.map((signal) => signal.symbol), { reset: true }).catch((error) => {
                     console.warn('加载实时行情失败:', error);
                 });
+                await loadOrdersMap().catch((error) => {
+                    console.warn('加载订单映射失败:', error);
+                });
 
                 // 更新分页状态
                 hasMore = result.items.length === perPage;
@@ -1068,14 +1432,15 @@
             }
         }
 
-        // 加载订单映射（按 signal_id 分组）
+        // 加载订单映射（按 signal_id / trade_group_id 分组）
         let ordersMap = {};
         async function loadOrdersMap() {
             ordersMap = {};
 
-            // 获取当前信号的 signal_id
+            // 获取当前信号的 signal_id 和 trade_group_id，便于已平仓卡片回查退出成交。
             const signalIds = [...new Set(allSignals.map(s => s.signal_id).filter(id => id))];
-            if (signalIds.length === 0) return;
+            const tradeGroupIds = [...new Set(allSignals.map(getSignalTradeGroupId).filter(id => id))];
+            if (signalIds.length === 0 && tradeGroupIds.length === 0) return;
 
             // 确定时间范围（美国时区）
             let startTimeMs, endTimeMs;
@@ -1093,6 +1458,22 @@
             }
 
             try {
+                const addOrderToMap = (order) => {
+                    if (order.signal_id) {
+                        if (!ordersMap[order.signal_id]) {
+                            ordersMap[order.signal_id] = [];
+                        }
+                        ordersMap[order.signal_id].push(order);
+                    }
+                    if (order.trade_group_id) {
+                        const tradeGroupKey = `tg:${order.trade_group_id}`;
+                        if (!ordersMap[tradeGroupKey]) {
+                            ordersMap[tradeGroupKey] = [];
+                        }
+                        ordersMap[tradeGroupKey].push(order);
+                    }
+                };
+
                 for (const idChunk of chunkArray(signalIds, 8)) {
                     const idFilter = idChunk.map(id => `signal_id = "${escapeFilterValue(id)}"`).join(' || ');
                     const rows = await fetchCollectionFullList('orders', {
@@ -1100,15 +1481,17 @@
                         sort: '-bar_time_ms,-created',
                         maxPages: 6
                     });
+                    rows.forEach(addOrderToMap);
+                }
 
-                    rows.forEach((order) => {
-                        if (order.signal_id) {
-                            if (!ordersMap[order.signal_id]) {
-                                ordersMap[order.signal_id] = [];
-                            }
-                            ordersMap[order.signal_id].push(order);
-                        }
+                for (const groupChunk of chunkArray(tradeGroupIds, 8)) {
+                    const groupFilter = groupChunk.map(id => `trade_group_id = "${escapeFilterValue(id)}"`).join(' || ');
+                    const rows = await fetchCollectionFullList('orders', {
+                        filter: `environment = "${currentEnvironment}" && (${groupFilter}) && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                        sort: '-bar_time_ms,-created',
+                        maxPages: 6
                     });
+                    rows.forEach(addOrderToMap);
                 }
 
                 console.log('[Orders] 加载完成:', ordersMap);
@@ -1181,9 +1564,14 @@
 
             // 更新每个标签的数量
             ['all', ...statuses].forEach(status => {
+                const countValue = counts[status] || 0;
                 const tab = document.querySelector(`.status-tab .tab-count[data-status="${status}"] .count-value`);
                 if (tab) {
-                    tab.textContent = counts[status] || 0;
+                    tab.textContent = countValue;
+                }
+                const statusButton = document.querySelector(`.status-tab[data-status="${status}"]`);
+                if (statusButton && status === 'protection_incomplete') {
+                    statusButton.classList.toggle('has-count', countValue > 0);
                 }
             });
         }
@@ -1426,6 +1814,9 @@
                 allSignals = [...allSignals, ...newSignals];
                 await fetchRealtimeQuotes(allSignals.map((signal) => signal.symbol), { reset: true }).catch((error) => {
                     console.warn('加载实时行情失败:', error);
+                });
+                await loadOrdersMap().catch((error) => {
+                    console.warn('加载订单映射失败:', error);
                 });
                 hasMore = newSignals.length === itemsPerPage;
                 totalItems = result.totalItems;
@@ -1953,6 +2344,9 @@
                 const usTimeText = signal.us_time || '等待数据';
                 const expectedProfitText = hasTradePrices ? formatPrice(expectedProfit) : '数据缺失';
                 const expectedLossText = hasTradePrices ? formatPrice(expectedLoss) : '数据缺失';
+                const relatedOrders = getRelatedOrdersForSignal(signal);
+                const closedPnl = buildClosedSignalPnl(signal, latestIndicator, relatedOrders);
+                const pnlPanelHtml = buildSignalPnlPanelHtml(signal, closedPnl, expectedProfitText, expectedLossText);
                 const indicatorStateText = getIndicatorEmptyState(signal, latestIndicator);
                 const chartStateText = hasChartContext ? '' : `(${indicatorStateText})`;
                 const indicatorButtonStateText = latestIndicator ? '' : `(${indicatorStateText})`;
@@ -2045,17 +2439,7 @@
                         ${mergePanelHtml}
                         ${protectionAlertHtml}
 
-                        <div class="signal-item full-width shares-amount">
-                            <div class="shares-amount-left">
-                                <div class="signal-label">预计盈利</div>
-                                <div class="signal-value" style="color:var(--long);">${escapeHtml(expectedProfitText)}</div>
-                            </div>
-                            <div class="shares-amount-divider"></div>
-                            <div class="shares-amount-right">
-                                <div class="signal-label">预计亏损</div>
-                                <div class="signal-value" style="color:var(--short);">${escapeHtml(expectedLossText)}</div>
-                            </div>
-                        </div>
+                        ${pnlPanelHtml}
 
 
                         ${marketIndexBadges ? `

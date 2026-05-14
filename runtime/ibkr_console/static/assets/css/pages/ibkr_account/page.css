@@ -434,6 +434,10 @@
         .badge.short { background: rgba(252,129,129,0.14); color: var(--short); }
         .badge.warn { background: rgba(246,173,85,0.14); color: var(--pending); }
         .badge.neutral { background: rgba(160,174,192,0.14); color: #CBD5E0; }
+        .badge.filled { background: rgba(72,187,120,0.2); color: #68D391; }
+        .badge.canceled { background: rgba(246,173,85,0.2); color: #FBD38D; }
+        .badge.closed { background: rgba(113,128,150,0.18); color: #A0AEC0; }
+        .badge.rejected { background: rgba(252,129,129,0.18); color: #FC8181; }
 
         .metric-grid {
             display: grid;
@@ -467,6 +471,23 @@
             font-size: 18px;
             font-weight: 700;
             line-height: 1.1;
+        }
+
+        .summary-mini-value.positive,
+        .order-pnl-value.positive {
+            color: var(--long);
+        }
+
+        .summary-mini-value.negative,
+        .order-pnl-value.negative {
+            color: var(--short);
+        }
+
+        .order-pnl-value {
+            font-size: 13px;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 800;
+            color: #E6F4FF;
         }
 
         .summary-mini-copy {
@@ -581,6 +602,32 @@
         .orders-section-card {
             display: grid;
             gap: 12px;
+        }
+
+        #historyArea {
+            display: grid;
+            gap: 12px;
+        }
+
+        .history-cta-card {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+
+        .history-summary-grid {
+            margin-bottom: 0;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+        }
+
+        .history-orders-table {
+            margin-top: 0;
+        }
+
+        .history-orders-table .orders-live-table {
+            min-width: 1120px;
         }
 
         #ordersArea.section-scroll-body {

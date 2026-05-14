@@ -135,13 +135,16 @@ class IntradaySdV1CoreTest(unittest.TestCase):
         self.assertIsNotNone(signal)
         self.assertEqual(signal["signal"], "sd_squeeze_breakout_long")
         self.assertEqual(signal["direction"], "long")
-        self.assertGreater(signal["entry"], 101.0)
+        self.assertEqual(signal["entry"], 100.7)
+        self.assertLess(signal["entry"], 101.0)
         extra = signal["extra"]
         for key in (
             "strategy_profile",
             "setup",
             "sd_regime",
             "entry_order_type",
+            "entry_limit_mode",
+            "entry_price_plan",
             "validity_minutes",
             "trigger_checks",
             "filter_checks",
@@ -149,7 +152,9 @@ class IntradaySdV1CoreTest(unittest.TestCase):
         ):
             self.assertIn(key, extra)
         self.assertEqual(extra["strategy_profile"], "intraday_sd_v1")
-        self.assertEqual(extra["entry_order_type"], "marketable_limit")
+        self.assertEqual(extra["entry_order_type"], "limit")
+        self.assertEqual(extra["entry_limit_mode"], "passive_limit_dynamic")
+        self.assertEqual(extra["entry_price_plan"], "passive_limit_dynamic")
         self.assertEqual(extra["setup"], "sd_squeeze_breakout_long")
         self.assertEqual(extra["setup_family"], "breakout")
         self.assertEqual(extra["setup_label"], "SD Squeeze Breakout Long")
@@ -159,7 +164,9 @@ class IntradaySdV1CoreTest(unittest.TestCase):
 
         trace = gen.get_trace_snapshot()
         self.assertEqual(trace["signal_state"]["setup"], "sd_squeeze_breakout_long")
-        self.assertEqual(trace["signal_state"]["entry_order_type"], "marketable_limit")
+        self.assertEqual(trace["signal_state"]["entry_order_type"], "limit")
+        self.assertEqual(trace["signal_state"]["entry_limit_mode"], "passive_limit_dynamic")
+        self.assertEqual(trace["signal_state"]["entry_price_plan"], "passive_limit_dynamic")
         self.assertEqual(trace["setup_state"]["selected_setup"], "sd_squeeze_breakout_long")
 
     def test_intraday_sd_v1_blocks_late_new_setups_by_default(self):
@@ -215,8 +222,9 @@ class IntradaySdV1CoreTest(unittest.TestCase):
 
         self.assertIsNotNone(signal)
         self.assertEqual(signal["signal"], "sd_mr_reversal_long")
-        self.assertEqual(signal["extra"]["entry_order_type"], "marketable_limit")
-        self.assertEqual(signal["extra"]["entry_price_plan"], "marketable_limit_dynamic")
+        self.assertEqual(signal["extra"]["entry_order_type"], "limit")
+        self.assertEqual(signal["extra"]["entry_limit_mode"], "passive_limit_dynamic")
+        self.assertEqual(signal["extra"]["entry_price_plan"], "passive_limit_dynamic")
         trace = gen.get_trace_snapshot()
         legacy_candidate = next(
             item for item in trace["setup_state"]["candidates"]
@@ -344,20 +352,28 @@ class IntradaySdV1CoreTest(unittest.TestCase):
         )
         self.assertFalse(long_candidate["trigger_checks"]["trend_walk_regime"])
 
-    def test_intraday_dynamic_marketable_short_entry_prices_for_immediate_limit(self):
+    def test_intraday_passive_dynamic_short_entry_prices_above_close_amd_style(self):
         gen = SignalGenerator(
-            "SPY",
+            "AMD",
             "5m",
-            {"signal_strategy_profile": "intraday_sd_v1", "marketable_limit_bps": 10},
+            {
+                "signal_strategy_profile": "intraday_sd_v1",
+                "entry_limit_mode": "marketable_limit_dynamic",
+                "marketable_limit_bps": 10,
+            },
         )
 
         signal = gen.update(
             intraday_breakout_snapshot(
-                close=100.0,
+                close=450.10,
+                open=449.0,
+                high=451.2,
+                low=449.8,
+                atr=3.0,
                 sd_regime="breakout_down",
                 sd_breakout_up=False,
                 sd_breakout_down=True,
-                vwap=101.0,
+                vwap=451.0,
                 vwap_bullish=False,
                 orb_breakout_up=False,
                 orb_breakout_down=True,
@@ -367,8 +383,12 @@ class IntradaySdV1CoreTest(unittest.TestCase):
         self.assertIsNotNone(signal)
         self.assertEqual(signal["signal"], "sd_squeeze_breakout_short")
         self.assertEqual(signal["direction"], "short")
-        self.assertEqual(signal["entry"], 99.7)
-        self.assertEqual(signal["extra"]["entry_price_plan"], "marketable_limit_dynamic")
+        self.assertEqual(signal["entry"], 451.0)
+        self.assertGreater(signal["entry"], 450.10)
+        self.assertAlmostEqual(signal["extra"]["entry_limit_offset"], 0.90)
+        self.assertEqual(signal["extra"]["entry_order_type"], "limit")
+        self.assertEqual(signal["extra"]["entry_limit_mode"], "passive_limit_dynamic")
+        self.assertEqual(signal["extra"]["entry_price_plan"], "passive_limit_dynamic")
         self.assertGreater(signal["stop_loss"], signal["entry"])
         self.assertLess(signal["take_profit"], signal["entry"])
 
@@ -398,6 +418,8 @@ class IntradaySdV1CoreTest(unittest.TestCase):
 
         self.assertIsNotNone(signal)
         self.assertEqual(signal["entry"], 99.9)
+        self.assertEqual(signal["extra"]["entry_order_type"], "limit")
+        self.assertEqual(signal["extra"]["entry_limit_mode"], "marketable_limit_bps")
         self.assertEqual(signal["extra"]["entry_price_plan"], "marketable_limit_bps")
 
     def test_opposite_direction_candidates_are_blocked_as_ambiguous(self):
@@ -576,6 +598,7 @@ class IntradaySdV1CoreTest(unittest.TestCase):
         self.assertEqual(params["intraday_entry_window_start_time"], "09:40")
         self.assertEqual(params["intraday_entry_window_end_time"], "10:20")
         self.assertEqual(params["signal_window_max_bars"], 9)
+        self.assertEqual(params["entry_limit_mode"], "passive_limit_dynamic")
         self.assertEqual(params["marketable_limit_bps"], 8.0)
         self.assertEqual(params["intraday_min_rvol_20"], 0.5)
         self.assertEqual(params["intraday_min_atr_pct"], 0.8)
@@ -667,6 +690,82 @@ class IntradaySdV1CoreTest(unittest.TestCase):
 
         self.assertEqual(biases, {"APP": "short", "DDOG": "long"})
         self.assertEqual(symbols, {"APP", "DDOG"})
+
+    def test_signal_params_include_unsubscribed_active_target_policy(self):
+        class FakeCfg:
+            def get_for_environment(self, key, environment, default=None):
+                if key == "ibkr_market_ws_symbols":
+                    return "SPY,QQQ,VIX"
+                return default
+
+            def get_int_for_environment(self, key, environment, default=0):
+                if key == "ibkr_target_subscription_limit":
+                    return 1
+                if key == "ibkr_total_subscription_limit":
+                    return 5
+                return default
+
+            def get_bool_for_environment(self, key, environment, default=False):
+                if key == "ibkr_target_strategy_policy_enabled":
+                    return True
+                return default
+
+            def get_float_for_environment(self, key, environment, default=0.0):
+                return default
+
+        rows = [
+            {
+                "symbol": "APP",
+                "status": "active",
+                "direction_bias": "short",
+                "extra": {
+                    "source": "daily_scan",
+                    "active_gate_passed": True,
+                    "strategy_policy": {"recommended_signal_profile": "intraday_sd_v1"},
+                    "symbol_profile": {"threshold_profile": "large_liquid"},
+                },
+            },
+            {
+                "symbol": "DDOG",
+                "status": "active",
+                "direction_bias": "long",
+                "extra": {
+                    "source": "daily_scan",
+                    "context_gate_passed": True,
+                    "strategy_policy": {"recommended_exit_policy": {"tp_rr": 2.1}},
+                },
+            },
+        ]
+        fake_app = SimpleNamespace(
+            WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR="market_monitor",
+            pb=SimpleNamespace(
+                get_all_records=lambda collection, **kwargs: rows
+                if collection == "ibkr_targets"
+                else []
+            ),
+            cfg=FakeCfg(),
+            current_market_date=lambda: "2026-05-01",
+            normalize_symbol_csv=lambda text: [item.strip().upper() for item in str(text or "").split(",") if item.strip()],
+            normalize_watchlist_symbol_role=lambda role: str(role or "").strip().lower(),
+        )
+
+        with mock.patch.object(universe_mod, "_api_app", return_value=fake_app), mock.patch.object(
+            universe_mod,
+            "load_effective_watchlist",
+            return_value={"SPY": {"symbol": "SPY", "symbol_role": "market_monitor"}},
+        ):
+            params = universe_mod.get_signal_generator_params("live")
+            selected_symbols = universe_mod.get_active_trade_symbols("live")
+
+        self.assertEqual(selected_symbols, {"APP"})
+        self.assertEqual(params["signal_enabled_symbols"], "APP,DDOG")
+        bias_map = json.loads(params["target_direction_bias_by_symbol"])
+        strategy_map = json.loads(params["target_strategy_policy_by_symbol"])
+        profile_map = json.loads(params["target_symbol_profile_by_symbol"])
+        self.assertEqual(bias_map, {"APP": "short", "DDOG": "long"})
+        self.assertEqual(strategy_map["APP"]["recommended_signal_profile"], "intraday_sd_v1")
+        self.assertEqual(strategy_map["DDOG"]["recommended_exit_policy"]["tp_rr"], 2.1)
+        self.assertEqual(profile_map["APP"]["threshold_profile"], "large_liquid")
 
     def test_live_signal_params_apply_per_symbol_target_policy(self):
         params = engines_mod._signal_params_for_symbol(

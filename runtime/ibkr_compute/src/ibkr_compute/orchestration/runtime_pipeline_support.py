@@ -187,6 +187,7 @@ class RuntimePipelineSupportMixin:
             source: str = "bar_close",
             symbols: list[str] | None = None,
             persist_signals: bool | None = None,
+            persist_signal_symbols: list[str] | None = None,
             intervals: list[str] | None = None,
             rollup_intervals: list[str] | None = None,
         ) -> dict:
@@ -195,6 +196,14 @@ class RuntimePipelineSupportMixin:
                 payload = {"source": source, "environments": [service_mod.ENVIRONMENT]}
                 if persist_signals is not None:
                     payload["persist_signals"] = bool(persist_signals)
+                if persist_signal_symbols is not None:
+                    payload["persist_signal_symbols"] = sorted(
+                        {
+                            str(symbol or "").strip().upper()
+                            for symbol in persist_signal_symbols
+                            if str(symbol or "").strip()
+                        }
+                    )
                 if intervals is not None:
                     payload["intervals"] = [
                         normalize_interval(interval)

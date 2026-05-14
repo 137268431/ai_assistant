@@ -271,7 +271,11 @@ class TradingServiceMarketUniverseTargetsMixin:
             service_mod.logger.warning("Failed to load target rows for status sync: %s", exc)
             return
 
-        selected_ids = {str(row.get("id") or "") for row in selected_rows}
+        selected_rank_by_id = {
+            str(row.get("id") or ""): rank
+            for rank, row in enumerate(selected_rows, start=1)
+            if str(row.get("id") or "")
+        }
         for row in existing:
             record_id = str(row.get("id") or "")
             if not record_id:
@@ -284,6 +288,9 @@ class TradingServiceMarketUniverseTargetsMixin:
                     {
                         "blocked_from_trading": True,
                         "block_reason": "market_context_symbol",
+                        "within_subscription_budget": False,
+                        "subscription_rank": 0,
+                        "subscription_selected": False,
                     }
                 )
                 update_data = {"extra": extra}
@@ -294,12 +301,28 @@ class TradingServiceMarketUniverseTargetsMixin:
                 except Exception as exc:
                     service_mod.logger.warning("Failed to block market context target %s: %s", record_id, exc)
                 continue
-            desired = "active" if record_id in selected_ids else "candidate"
+            subscription_rank = selected_rank_by_id.get(record_id, 0)
+            subscription_selected = subscription_rank > 0
+            extra = _safe_extra(row)
+            if str(extra.get("block_reason") or "").strip().lower() == "market_context_symbol":
+                extra.pop("blocked_from_trading", None)
+                extra.pop("block_reason", None)
+            extra.update(
+                {
+                    "within_subscription_budget": subscription_selected,
+                    "subscription_rank": subscription_rank,
+                    "subscription_selected": subscription_selected,
+                }
+            )
+            desired = "active"
             current = str(row.get("status", "") or "").strip().lower()
-            if current == desired:
+            if current == desired and extra == _safe_extra(row):
                 continue
             try:
-                self.pb.update_record("ibkr_targets", record_id, {"status": desired})
+                update_data = {"extra": extra}
+                if current != desired:
+                    update_data["status"] = desired
+                self.pb.update_record("ibkr_targets", record_id, update_data)
             except Exception as exc:
                 service_mod.logger.warning("Failed to update target status %s -> %s: %s", record_id, desired, exc)
 

@@ -229,12 +229,12 @@ def get_signal_generator_params(environment: str) -> dict:
     api_app = _api_app()
     runtime_environment = str(environment or "live").strip().lower() or "live"
     market_monitor_symbols = sorted(get_market_monitor_symbols(environment))
-    selected_target_rows = _load_selected_active_trade_target_rows(runtime_environment)
+    active_target_rows = _load_qualified_trade_target_rows(runtime_environment)
     signal_enabled_symbols = sorted(_get_signal_enabled_symbols(runtime_environment))
     target_direction_bias_by_symbol: dict[str, str] = {}
     target_strategy_policy_by_symbol: dict[str, dict] = {}
     target_symbol_profile_by_symbol: dict[str, dict] = {}
-    for row in selected_target_rows:
+    for row in active_target_rows:
         symbol = str(row.get("symbol", "")).strip().upper()
         if not symbol:
             continue

@@ -12,6 +12,11 @@ WriteSystemEventRecord = Callable[..., dict[str, Any]]
 ConfigValue = Callable[[str, str, str], str]
 ConsoleBaseUrl = Callable[[], str]
 StartupChatId = Callable[[str], str]
+GetStatePayload = Callable[[str, str], dict[str, Any]]
+UpsertState = Callable[[str, str, dict[str, Any], str], dict[str, Any]]
+
+
+TOPUP_NOTIFY_STATE_KEY = "ibkr_early_expansion_topup_notify"
 
 
 def _to_text(value: Any) -> str:
@@ -68,6 +73,88 @@ def _submission_status(result: dict[str, Any]) -> str:
     if status in {"running", "in_progress", "processing"}:
         return "running"
     return "submitted"
+
+
+def _is_pending_scan_status(status: str) -> bool:
+    return status in {"accepted", "submitted", "running", "pending", "in_progress", "processing"}
+
+
+def _scan_status_params(environment: str, market_date: str) -> list[tuple[str, str]]:
+    return [
+        ("environment", environment),
+        ("date", market_date),
+        ("mode", "topup"),
+    ]
+
+
+def _scan_result_from_status(payload: dict[str, Any]) -> dict[str, Any]:
+    result = _as_dict(payload.get("result"))
+    return result if result else _as_dict(payload)
+
+
+def _new_targets(result: dict[str, Any]) -> list[dict[str, Any]]:
+    return [item for item in (result.get("new_targets") or []) if isinstance(item, dict)]
+
+
+def _notify_key(status_payload: dict[str, Any], result: dict[str, Any], environment: str, market_date: str) -> str:
+    run_id = _to_text(status_payload.get("run_id") or result.get("run_id"))
+    if run_id:
+        return run_id
+    symbols = ",".join(_to_text(item.get("symbol")).upper() for item in _new_targets(result) if _to_text(item.get("symbol")))
+    finished_at = _to_text(status_payload.get("finished_at") or result.get("finished_at"))
+    return f"{environment}:{market_date}:{symbols}:{finished_at}"
+
+
+def _load_notify_state(get_state_payload: GetStatePayload | None, environment: str) -> dict[str, Any]:
+    if not callable(get_state_payload):
+        return {}
+    try:
+        return _as_dict(_as_dict(get_state_payload(TOPUP_NOTIFY_STATE_KEY, environment)).get("data"))
+    except Exception:
+        return {}
+
+
+def _notified_keys(state: dict[str, Any]) -> set[str]:
+    values = state.get("notified_keys") or state.get("notified_run_ids") or []
+    keys = {_to_text(item) for item in values if _to_text(item)}
+    last_key = _to_text(state.get("last_notified_key") or state.get("last_notified_run_id"))
+    if last_key:
+        keys.add(last_key)
+    return keys
+
+
+def _record_notify_state(
+    *,
+    upsert_state: UpsertState | None,
+    environment: str,
+    market_date: str,
+    state: dict[str, Any],
+    notify_key: str,
+    times: dict[str, str],
+    result: dict[str, Any],
+    message_id: str,
+) -> None:
+    if not callable(upsert_state) or not notify_key:
+        return
+    previous = [item for item in (state.get("notified_keys") or state.get("notified_run_ids") or []) if _to_text(item)]
+    keys = [*previous, notify_key]
+    deduped_keys = list(dict.fromkeys(keys))[-30:]
+    next_state = {
+        **state,
+        "last_notified_key": notify_key,
+        "last_notified_run_id": notify_key,
+        "last_notified_at": _to_text(times.get("us")),
+        "last_message_id": message_id,
+        "last_new_active": _to_int(result.get("new_active")),
+        "last_new_candidates": _to_int(result.get("new_candidates")),
+        "last_symbols": [_to_text(item.get("symbol")) for item in _new_targets(result)[:20]],
+        "notified_keys": deduped_keys,
+        "notified_run_ids": deduped_keys,
+    }
+    try:
+        upsert_state(TOPUP_NOTIFY_STATE_KEY, environment, next_state, market_date)
+    except Exception:
+        pass
 
 
 def _status_detail(
@@ -200,6 +287,151 @@ def _build_failure_card(*, environment: str, market_date: str, times: dict[str, 
     }
 
 
+def _deliver_new_targets_notification(
+    *,
+    environment: str,
+    market_date: str,
+    times: dict[str, str],
+    result: dict[str, Any],
+    feishu_send_interactive: FeishuSendInteractive,
+    write_system_event_record: WriteSystemEventRecord,
+    config_value: ConfigValue,
+    console_base_url: ConsoleBaseUrl,
+    startup_chat_id: StartupChatId,
+) -> dict[str, Any]:
+    new_targets = _new_targets(result)
+    notified = False
+    message_id = ""
+    send_result: dict[str, Any] = {}
+    notify_enabled = _truthy(config_value("status_notify_enabled", "TRUE", environment))
+    if notify_enabled:
+        card = _build_card(
+            environment=environment,
+            market_date=market_date,
+            times=times,
+            result={**result, "new_targets": new_targets},
+            console_base_url=console_base_url(),
+        )
+        send_result = _as_dict(feishu_send_interactive(card, startup_chat_id(environment), environment))
+        notified = bool(send_result.get("success")) and not bool(send_result.get("suppressed"))
+        message_id = _to_text(send_result.get("message_id"))
+
+    write_system_event_record(
+        "early_expansion_topup",
+        "info",
+        "ibkr_api",
+        "IBKR 早盘扩池新增",
+        {
+            "market_date": market_date,
+            "new_active": _to_int(result.get("new_active")),
+            "new_candidates": _to_int(result.get("new_candidates")),
+            "symbols": [_to_text(item.get("symbol")) for item in new_targets[:20]],
+        },
+        environment,
+        notified,
+    )
+    finalized = (
+        not notify_enabled
+        or notified
+        or bool(send_result.get("skipped"))
+        or bool(send_result.get("suppressed"))
+    )
+    return {
+        "notified": notified,
+        "message_id": message_id,
+        "finalized": finalized,
+        "skipped": bool(send_result.get("skipped")) if notify_enabled else True,
+        "suppressed": bool(send_result.get("suppressed")),
+        "error": "" if finalized else (_to_text(send_result.get("error")) or "send_failed"),
+        "new_targets": new_targets,
+        "new_active": _to_int(result.get("new_active")),
+        "new_candidates": _to_int(result.get("new_candidates")),
+    }
+
+
+def _notify_completed_async_scan(
+    *,
+    status_payload: dict[str, Any],
+    result: dict[str, Any],
+    environment: str,
+    market_date: str,
+    times: dict[str, str],
+    feishu_send_interactive: FeishuSendInteractive,
+    write_system_event_record: WriteSystemEventRecord,
+    config_value: ConfigValue,
+    console_base_url: ConsoleBaseUrl,
+    startup_chat_id: StartupChatId,
+    get_state_payload: GetStatePayload | None,
+    upsert_state: UpsertState | None,
+) -> dict[str, Any]:
+    new_targets = _new_targets(result)
+    if not new_targets:
+        return {"checked": True, "skipped": True, "reason": "no_new_targets", "notified": False}
+
+    state = _load_notify_state(get_state_payload, environment)
+    notify_key = _notify_key(status_payload, result, environment, market_date)
+    if notify_key and notify_key in _notified_keys(state):
+        return {
+            "checked": True,
+            "skipped": True,
+            "reason": "already_notified",
+            "notify_key": notify_key,
+            "notified": False,
+            "new_targets": new_targets,
+        }
+
+    delivered = _deliver_new_targets_notification(
+        environment=environment,
+        market_date=market_date,
+        times=times,
+        result=result,
+        feishu_send_interactive=feishu_send_interactive,
+        write_system_event_record=write_system_event_record,
+        config_value=config_value,
+        console_base_url=console_base_url,
+        startup_chat_id=startup_chat_id,
+    )
+    if delivered.get("finalized"):
+        _record_notify_state(
+            upsert_state=upsert_state,
+            environment=environment,
+            market_date=market_date,
+            state=state,
+            notify_key=notify_key,
+            times=times,
+            result=result,
+            message_id=_to_text(delivered.get("message_id")),
+        )
+    return {
+        "checked": True,
+        "notify_key": notify_key,
+        **delivered,
+    }
+
+
+def _fetch_completed_or_pending_scan(
+    *,
+    request_json_request: RequestJsonRequest,
+    compute_base_url: str,
+    environment: str,
+    market_date: str,
+) -> dict[str, Any]:
+    try:
+        status_result = request_json_request(
+            "GET",
+            compute_base_url,
+            "/scan/status",
+            params=_scan_status_params(environment, market_date),
+            timeout=3.0,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "payload": {}}
+    payload = _as_dict(status_result.get("payload"))
+    if not bool(status_result.get("ok")):
+        return {"ok": False, "error": _to_text(status_result.get("error")), "payload": payload}
+    return {"ok": True, "payload": payload}
+
+
 def build_early_expansion_topup_response(
     *,
     payload: dict[str, Any] | None,
@@ -212,6 +444,8 @@ def build_early_expansion_topup_response(
     config_value: ConfigValue,
     console_base_url: ConsoleBaseUrl,
     startup_chat_id: StartupChatId,
+    get_state_payload: GetStatePayload | None = None,
+    upsert_state: UpsertState | None = None,
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
     environment = normalize_environment(request_payload.get("environment"), "live")
@@ -224,6 +458,70 @@ def build_early_expansion_topup_response(
         "async": True,
         "trigger_source": _to_text(request_payload.get("trigger_source")) or "early_expansion_topup",
     }
+    completed_notification: dict[str, Any] = {}
+    should_check_existing_scan = callable(get_state_payload) and callable(upsert_state)
+    if should_check_existing_scan:
+        existing_scan = _fetch_completed_or_pending_scan(
+            request_json_request=request_json_request,
+            compute_base_url=compute_base_url,
+            environment=environment,
+            market_date=market_date,
+        )
+        existing_payload = _as_dict(existing_scan.get("payload"))
+        existing_status = _scan_status(existing_payload)
+        if bool(existing_scan.get("ok")) and existing_status == "completed":
+            existing_result = _scan_result_from_status(existing_payload)
+            completed_notification = _notify_completed_async_scan(
+                status_payload=existing_payload,
+                result=existing_result,
+                environment=environment,
+                market_date=market_date,
+                times=times,
+                feishu_send_interactive=feishu_send_interactive,
+                write_system_event_record=write_system_event_record,
+                config_value=config_value,
+                console_base_url=console_base_url,
+                startup_chat_id=startup_chat_id,
+                get_state_payload=get_state_payload,
+                upsert_state=upsert_state,
+            )
+            if completed_notification.get("error"):
+                return {
+                    "ok": False,
+                    "environment": environment,
+                    "market_date": market_date,
+                    "job_id": "ibkr_early_expansion_topup",
+                    "status": "notification_failed",
+                    "notified": False,
+                    "message_id": _to_text(completed_notification.get("message_id")),
+                    "error": _to_text(completed_notification.get("error")),
+                    "completed_notification": completed_notification,
+                    "scan": existing_payload,
+                    "source": "ibkr-api",
+                }, 502
+        elif bool(existing_scan.get("ok")) and _is_pending_scan_status(existing_status):
+            return {
+                "ok": True,
+                "environment": environment,
+                "market_date": market_date,
+                "job_id": "ibkr_early_expansion_topup",
+                "status": _submission_status(existing_payload),
+                "accepted": True,
+                "async": True,
+                "run_id": _to_text(existing_payload.get("run_id")),
+                "pending": True,
+                "notified": False,
+                "detail": _status_detail(
+                    status=_submission_status(existing_payload),
+                    elapsed_s=0.0,
+                    scan_payload=scan_payload,
+                    upstream={"ok": True, "status_code": 200, "target_url": f"{compute_base_url.rstrip('/')}/scan/status"},
+                    result=existing_payload,
+                ),
+                "scan": existing_payload,
+                "source": "ibkr-api",
+            }, 200
+
     started_at = time.monotonic()
     upstream = request_json_request(
         "POST",
@@ -284,9 +582,11 @@ def build_early_expansion_topup_response(
             "accepted": True,
             "async": True,
             "run_id": _to_text(result.get("run_id")),
-            "notified": False,
+            "notified": bool(completed_notification.get("notified")),
+            "message_id": _to_text(completed_notification.get("message_id")),
             "elapsed_s": elapsed_s,
             "detail": detail,
+            "completed_notification": completed_notification,
             "scan": result,
             "source": "ibkr-api",
         }, 200
@@ -355,34 +655,75 @@ def build_early_expansion_topup_response(
             "source": "ibkr-api",
         }, 200
 
-    notified = False
-    message_id = ""
-    if _truthy(config_value("status_notify_enabled", "TRUE", environment)):
-        card = _build_card(
+    notify_key = _notify_key({"run_id": result.get("run_id")}, result, environment, market_date)
+    state = _load_notify_state(get_state_payload, environment)
+    if notify_key and notify_key in _notified_keys(state):
+        delivered = {
+            "notified": False,
+            "message_id": "",
+            "finalized": True,
+            "skipped": True,
+            "reason": "already_notified",
+            "new_targets": new_targets,
+            "new_active": _to_int(result.get("new_active")),
+            "new_candidates": _to_int(result.get("new_candidates")),
+        }
+    else:
+        delivered = _deliver_new_targets_notification(
             environment=environment,
             market_date=market_date,
             times=times,
             result=result,
-            console_base_url=console_base_url(),
+            feishu_send_interactive=feishu_send_interactive,
+            write_system_event_record=write_system_event_record,
+            config_value=config_value,
+            console_base_url=console_base_url,
+            startup_chat_id=startup_chat_id,
         )
-        send_result = _as_dict(feishu_send_interactive(card, startup_chat_id(environment), environment))
-        notified = bool(send_result.get("success")) and not bool(send_result.get("suppressed"))
-        message_id = _to_text(send_result.get("message_id"))
-
-    write_system_event_record(
-        "early_expansion_topup",
-        "info",
-        "ibkr_api",
-        "IBKR 早盘扩池新增",
-        {
+        if delivered.get("finalized"):
+            _record_notify_state(
+                upsert_state=upsert_state,
+                environment=environment,
+                market_date=market_date,
+                state=state,
+                notify_key=notify_key,
+                times=times,
+                result=result,
+                message_id=_to_text(delivered.get("message_id")),
+            )
+    if delivered.get("error"):
+        return {
+            "ok": False,
+            "environment": environment,
             "market_date": market_date,
+            "job_id": "ibkr_early_expansion_topup",
+            "status": "notification_failed",
+            "notified": False,
+            "message_id": _to_text(delivered.get("message_id")),
+            "error": _to_text(delivered.get("error")),
+            "new_targets": new_targets,
             "new_active": _to_int(result.get("new_active")),
             "new_candidates": _to_int(result.get("new_candidates")),
-            "symbols": [_to_text(item.get("symbol")) for item in new_targets[:20]],
-        },
-        environment,
-        notified,
-    )
+            "elapsed_s": elapsed_s,
+            "detail": _status_detail(
+                status="notification_failed",
+                elapsed_s=elapsed_s,
+                scan_payload=scan_payload,
+                upstream=upstream,
+                result=result,
+                error=_to_text(delivered.get("error")),
+            ),
+            "scan": result,
+            "source": "ibkr-api",
+        }, 502
+
+    notified = bool(delivered.get("notified"))
+    message_id = _to_text(delivered.get("message_id"))
+    completed_notification = completed_notification or {
+        "checked": False,
+        "notify_key": notify_key,
+        **delivered,
+    }
     return {
         "ok": True,
         "environment": environment,
@@ -402,6 +743,7 @@ def build_early_expansion_topup_response(
             upstream=upstream,
             result=result,
         ),
+        "completed_notification": completed_notification,
         "scan": result,
         "source": "ibkr-api",
     }, 200

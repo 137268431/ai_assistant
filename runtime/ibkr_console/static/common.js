@@ -1,7 +1,7 @@
 // Shared compatibility entrypoint.
 // Source-of-truth browser modules now live under /assets/js/shared and /assets/css.
 (function loadSharedCommonBundle() {
-  const sharedBundleVersion = '20260512-shared-pagination';
+  const sharedBundleVersion = '20260514-confirm-close';
   const sharedScriptPaths = [
     `/assets/js/shared/runtime-config.js?v=${sharedBundleVersion}`,
     `/assets/js/shared/base.js?v=${sharedBundleVersion}`,
@@ -74,6 +74,7 @@
       hideLoading: (...args) => pick('hideLoading')(...args),
       withLoading: (...args) => pick('withLoading')(...args),
       guardedLoader: (...args) => pick('guardedLoader')(...args),
+      showConfirmDialog: (...args) => pick('showConfirmDialog')(...args),
       getIndicatorModalStyles: (...args) => pick('getIndicatorModalStyles')(...args),
       showIndicatorModal: (...args) => pick('showIndicatorModal')(...args),
     };

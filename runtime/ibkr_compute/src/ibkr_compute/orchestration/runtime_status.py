@@ -81,6 +81,7 @@ class TradingServiceRuntimeStatusMixin:
         realtime_quotes = self.realtime_quote_book.status()
         warmup_state = self._copy_warmup_state()
         daily_scan_state = self._copy_daily_scan_state()
+        broker_client_id = int(getattr(getattr(self, "broker", None), "client_id", 0) or 0)
         bar_repair_queue = {}
         coordinator = getattr(self, "bar_repair_coordinator", None)
         if coordinator is not None and hasattr(coordinator, "status"):
@@ -187,6 +188,8 @@ class TradingServiceRuntimeStatusMixin:
             "startup_strategy": self.startup_strategy(),
             "auto_restore_guard": self.auto_restore_guard(),
             "environment": service_mod.ENVIRONMENT,
+            "ib_gateway_client_id": broker_client_id,
+            "broker_client_id": broker_client_id,
             "market_session": market_session,
             "gateway": self.gateway_manager.status(),
             "auth_recovery": auth_recovery,

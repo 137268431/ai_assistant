@@ -6,6 +6,13 @@ from typing import Any, Callable
 
 MONITOR_ALERT_STATE_KEY = "system_monitor_alert"
 MONITOR_ALERT_COOLDOWN_MS = 15 * 60 * 1000
+IB_CLIENT_SERVICE_LABELS = (
+    ("ibkr-runtime", "Runtime"),
+    ("ibkr-compute", "Compute"),
+    ("ibkr-api", "API"),
+    ("ibkr-scheduler", "Scheduler"),
+    ("ibkr-backtest", "Backtest"),
+)
 
 NormalizeEnvironment = Callable[[Any, str], str]
 TimeStrings = Callable[[], dict[str, str]]
@@ -60,6 +67,31 @@ def _backtest_service_line(service_monitor: dict[str, Any]) -> str:
     return " | ".join(parts)
 
 
+def _service_client_id(service: dict[str, Any]) -> int:
+    return _to_int(
+        service.get("ib_gateway_client_id")
+        or service.get("broker_client_id")
+        or service.get("client_id"),
+        0,
+    )
+
+
+def _ib_client_ids_line(service_monitor: dict[str, Any]) -> str:
+    services = _as_dict(service_monitor.get("services"))
+    parts: list[str] = []
+    seen: set[str] = set()
+    for service_key, label in IB_CLIENT_SERVICE_LABELS:
+        client_id = _service_client_id(_as_dict(services.get(service_key)))
+        if not client_id:
+            continue
+        marker = f"{label}:{client_id}"
+        if marker in seen:
+            continue
+        seen.add(marker)
+        parts.append(f"{label} client {client_id}")
+    return " | ".join(parts)
+
+
 def _alert_flags(monitor_payload: dict[str, Any]) -> list[dict[str, Any]]:
     flags: list[dict[str, Any]] = []
     for item in monitor_payload.get("flags") or []:
@@ -100,6 +132,7 @@ def _detail(monitor_payload: dict[str, Any], flags: list[dict[str, Any]], *, tim
         ) or "none",
         "服务统计": _service_counts_line(service_monitor),
         "Backtest": _backtest_service_line(service_monitor),
+        "IB ClientID": _ib_client_ids_line(service_monitor) or "n/a",
         "Session": "authenticated" if session.get("authenticated") else "pending",
         "WebSocket": "connected" if websocket.get("connected") or websocket.get("ready") else "offline",
         "DispatchLag": (

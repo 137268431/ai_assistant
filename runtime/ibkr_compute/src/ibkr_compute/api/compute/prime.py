@@ -7,11 +7,13 @@ from typing import Any
 
 from flask import jsonify
 
+from ibkr_compute.api.compute.lock_manager import build_compute_lock_request
 from ibkr_compute.market.timeframe_utils import interval_to_chart_tf, normalize_interval
 
 from ibkr_compute.api.compute.pipeline_views import (
     COMPUTE_LOCK_TIMEOUT_SECONDS,
-    _acquire_compute_lock,
+    _acquire_compute_lock_request,
+    _compute_lock_busy_payload,
 )
 from ibkr_compute.api.compute.request import (
     get_requested_environments,
@@ -374,20 +376,25 @@ def build_compute_prime_response(payload=None):
             }
         )
 
-    compute_lock = _acquire_compute_lock(api_app)
+    lock_request = build_compute_lock_request(
+        environments=enabled_environments,
+        symbols=requested_symbols,
+        intervals=intervals,
+        reason="compute_prime",
+    )
+    compute_lock = _acquire_compute_lock_request(api_app, lock_request)
     if compute_lock is None:
-        return jsonify(
+        payload = _compute_lock_busy_payload(lock_request)
+        payload.update(
             {
-                "ok": False,
-                "error": "compute_busy",
-                "retryable": True,
                 "lock_timeout_s": COMPUTE_LOCK_TIMEOUT_SECONDS,
                 "requested_environments": requested_environments,
                 "environments": enabled_environments,
                 "symbols": requested_symbols,
                 "intervals": intervals,
             }
-        ), 503
+        )
+        return jsonify(payload), 503
 
     started = time.time()
     results = {}

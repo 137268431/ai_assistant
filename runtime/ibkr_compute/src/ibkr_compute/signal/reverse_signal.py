@@ -596,8 +596,21 @@ class ReverseSignalHandler:
         if close_qty <= 0:
             return self._mark_blocked(detail, "close_quantity_invalid", position_qty=qty)
 
+        origin_signal_id = str(
+            self._signal_value(signal, "origin_signal_id")
+            or self._signal_value(signal, "signal_id")
+            or self._signal_value(signal, "source_signal_id")
+            or ""
+        ).strip()
         result = self.order_placer.place_market_close(
-            conid, symbol, direction, close_qty,
+            conid,
+            symbol,
+            direction,
+            close_qty,
+            trade_group_id=self._related_trade_group_id(signal),
+            entry_order_unique_id=str(self._signal_value(signal, "entry_order_unique_id") or "").strip(),
+            signal_id=origin_signal_id,
+            source="reverse_signal_close",
         )
         detail["close_old_position"] = "submitted" if result.get("ok") else "failed"
         detail["close_result"] = dict(result or {})

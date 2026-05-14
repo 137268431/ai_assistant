@@ -97,6 +97,16 @@ class BacktestSymbolRowsReverseMixin:
             ]
         )
 
+    def _normalize_backtest_entry_order_type(self, entry_order_type: Any) -> str:
+        normalized = str(entry_order_type or "").strip().lower()
+        if normalized in {"marketable_limit", "marketable-limit", "marketable limit"}:
+            return "passive"
+        if normalized in {"passive", "passive_limit", "passive-limit", "passive limit"}:
+            return "passive"
+        if normalized in {"limit", "lmt"}:
+            return "limit"
+        return "limit"
+
     def _build_backtest_pending_signal(
         self,
         symbol: str,
@@ -106,11 +116,9 @@ class BacktestSymbolRowsReverseMixin:
     ) -> dict:
         signal_id = signal_payload.get("signal_id", build_signal_id(symbol, int(bar["bar_time_ms"]), str(signal.get("signal", ""))))
         extra = self._parse_object(signal_payload.get("extra"))
-        entry_order_type = str(
+        entry_order_type = self._normalize_backtest_entry_order_type(
             extra.get("entry_order_type") or signal_payload.get("entry_order_type") or signal.get("entry_order_type") or "limit"
-        ).strip().lower()
-        if entry_order_type not in {"limit", "marketable_limit"}:
-            entry_order_type = "limit"
+        )
         return {
             **signal,
             "symbol": symbol,
@@ -159,24 +167,28 @@ class BacktestSymbolRowsReverseMixin:
         bar_high = float(bar.get("high", 0) or 0)
         bar_low = float(bar.get("low", 0) or 0)
         raw_fill_price = 0.0
-        entry_order_type = str(pending_signal.get("entry_order_type") or "limit").strip().lower()
+        pending_extra = self._parse_object(pending_signal.get("extra"))
+        entry_order_type = self._normalize_backtest_entry_order_type(
+            pending_signal.get("entry_order_type") or pending_extra.get("entry_order_type") or "limit"
+        )
         if direction == "long":
             if bar_open > 0 and bar_open <= entry_price:
                 raw_fill_price = bar_open
-            elif bar_low <= entry_price <= max(bar_high, bar_open):
+            elif bar_low > 0 and bar_low <= entry_price:
                 raw_fill_price = entry_price
         else:
             if bar_open > 0 and bar_open >= entry_price:
                 raw_fill_price = bar_open
-            elif min(bar_low, bar_open) <= entry_price <= bar_high:
+            elif bar_high > 0 and bar_high >= entry_price:
                 raw_fill_price = entry_price
 
         if raw_fill_price <= 0:
             return None
+        pending_for_fill = {**pending_signal, "entry_order_type": entry_order_type}
         position = self._open_position(
             symbol,
             bar,
-            pending_signal,
+            pending_for_fill,
             commission_per_share,
             slippage_bps,
             raw_fill_price=raw_fill_price,

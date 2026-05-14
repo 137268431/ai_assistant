@@ -13,6 +13,13 @@ CONNECTION_ISSUE_CODES = {"gateway_offline", "session_unauthenticated", "websock
 DEGRADED_SERVICE_STATUSES = {"degraded", "warning"}
 OFFLINE_SERVICE_STATUSES = {"offline", "error"}
 TRUTHY_TEXT = {"1", "true", "yes", "on"}
+IB_CLIENT_SERVICE_LABELS = (
+    ("ibkr-runtime", "Runtime"),
+    ("ibkr-compute", "Compute"),
+    ("ibkr-api", "API"),
+    ("ibkr-scheduler", "Scheduler"),
+    ("ibkr-backtest", "Backtest"),
+)
 
 NormalizeEnvironment = Callable[[Any, str], str]
 TimeStrings = Callable[[], dict[str, str]]
@@ -175,6 +182,31 @@ def _backtest_service_line(services: dict[str, Any]) -> str:
         parts.append(f"client {client_id}")
     if active_runs or queue_depth:
         parts.append(f"active {active_runs} / queue {queue_depth}")
+    return " | ".join(parts)
+
+
+def _service_client_id(service: dict[str, Any]) -> int:
+    return _to_int(
+        service.get("ib_gateway_client_id")
+        or service.get("broker_client_id")
+        or service.get("client_id"),
+        0,
+    )
+
+
+def _ib_client_ids_line(services: dict[str, Any]) -> str:
+    parts: list[str] = []
+    seen: set[str] = set()
+    for service_key, label in IB_CLIENT_SERVICE_LABELS:
+        service = _as_dict(services.get(service_key))
+        client_id = _service_client_id(service)
+        if not client_id:
+            continue
+        marker = f"{label}:{client_id}"
+        if marker in seen:
+            continue
+        seen.add(marker)
+        parts.append(f"{label} client {client_id}")
     return " | ".join(parts)
 
 
@@ -431,6 +463,7 @@ def _heartbeat_detail(snapshot: dict[str, Any], *, timestamp_us: str) -> dict[st
     human = _human_issue_detail(snapshot)
     services_line, connection_line = _status_overview(snapshot)
     backtest_line = _backtest_service_line(services)
+    client_ids_line = _ib_client_ids_line(services)
     detail = {
         "检查时间": timestamp_us,
         "结论": human["结论"],
@@ -455,6 +488,8 @@ def _heartbeat_detail(snapshot: dict[str, Any], *, timestamp_us: str) -> dict[st
     }
     if backtest_line:
         detail["Backtest"] = f"{backtest_line} | independent non-blocking"
+    if client_ids_line:
+        detail["IB ClientID"] = client_ids_line
     if snapshot.get("unhealthy"):
         offline_text = _format_service_items([_as_dict(item) for item in snapshot.get("offline_services") or []])
         degraded_text = _format_service_items([_as_dict(item) for item in snapshot.get("actionable_degraded_services") or []])
@@ -481,7 +516,7 @@ def _signal_status_label(value: Any) -> str:
         "awaiting_confirm": "待确认",
         "pending": "待执行",
         "submitted": "已提交",
-        "protected_active": "保护中",
+        "protected_active": "持仓保护中",
         "protection_incomplete": "保护不完整",
         "executed": "已执行",
         "expired": "已过期",
@@ -610,8 +645,35 @@ def _window_item_label(item: dict[str, Any], *, active: bool) -> str:
     return f"{symbol}({_window_status_label(item.get('window_status') or item.get('status'))})"
 
 
+def _window_status_value(item: dict[str, Any]) -> str:
+    return _to_text(item.get("window_status") or item.get("status")).lower()
+
+
+def _window_trace_error(item: dict[str, Any]) -> str:
+    return _to_text(item.get("trace_error") or item.get("error"))
+
+
+def _window_count(
+    summary: dict[str, Any],
+    key: str,
+    items: list[dict[str, Any]],
+    predicate: Callable[[dict[str, Any]], bool],
+) -> int:
+    return max(_to_int(summary.get(key), 0), sum(1 for item in items if predicate(item)))
+
+
+def _is_operable_waiting_target(item: dict[str, Any]) -> bool:
+    return bool(item.get("is_operable")) and not bool(item.get("has_signal_today"))
+
+
 def _active_window_item(item: dict[str, Any]) -> bool:
-    status = _to_text(item.get("window_status") or item.get("status")).lower()
+    status = _window_status_value(item)
+    if (
+        status == "blocked"
+        or _to_text(item.get("trace_stage")).lower() == "blocked"
+        or _to_text(item.get("blocked_reason"))
+    ):
+        return False
     return bool(item.get("sd_upper_valid") or item.get("sd_lower_valid")) or status in {
         "upper_active",
         "lower_active",
@@ -620,30 +682,106 @@ def _active_window_item(item: dict[str, Any]) -> bool:
     }
 
 
+def _window_reason(value: Any, *, max_len: int = 40) -> str:
+    text = _to_text(value)
+    if len(text) <= max_len:
+        return text
+    return f"{text[:max_len - 3]}..."
+
+
+def _window_attention_item(item: dict[str, Any], target: dict[str, Any]) -> bool:
+    status = _window_status_value(item)
+    if status in {"blocked", "near_expiry"} or _window_trace_error(item):
+        return True
+    return _is_operable_waiting_target(target) and not _active_window_item(item)
+
+
+def _window_attention_label(item: dict[str, Any], target: dict[str, Any]) -> str:
+    symbol = _to_text(item.get("symbol")).upper()
+    if not symbol:
+        return ""
+    status = _window_status_value(item)
+    parts: list[str] = []
+    if status == "near_expiry":
+        parts.append(_window_side_label(item) or "临近过期")
+        bars_remaining = _to_int(item.get("bars_remaining"), 0)
+        if bars_remaining > 0:
+            parts.append(f"{bars_remaining} bars")
+    else:
+        status_label = _window_status_label(status)
+        if status_label:
+            parts.append(status_label)
+    if _is_operable_waiting_target(target):
+        parts.append("可操作待信号")
+    blocked_reason = _window_reason(item.get("blocked_reason") or item.get("filter_reason"))
+    if blocked_reason:
+        parts.append(blocked_reason)
+    trace_error = _window_reason(_window_trace_error(item))
+    if trace_error:
+        parts.append(f"trace错误:{trace_error}")
+    return f"{symbol}({','.join(parts)})" if parts else symbol
+
+
 def _active_window_summary(active_window_payload: dict[str, Any], targets_payload: dict[str, Any]) -> dict[str, str]:
     summary = _as_dict(active_window_payload.get("summary"))
     window_items = [_as_dict(item) for item in active_window_payload.get("items") or [] if isinstance(item, dict)]
     window_by_symbol = {_to_text(item.get("symbol")).upper(): item for item in window_items if _to_text(item.get("symbol"))}
-    target_symbols = [_to_text(_as_dict(item).get("symbol")).upper() for item in targets_payload.get("items") or [] if isinstance(item, dict)]
+    target_items = [_as_dict(item) for item in targets_payload.get("items") or [] if isinstance(item, dict)]
+    target_by_symbol = {_to_text(item.get("symbol")).upper(): item for item in target_items if _to_text(item.get("symbol"))}
+    target_symbols = [_to_text(item.get("symbol")).upper() for item in target_items if _to_text(item.get("symbol"))]
     symbols = [symbol for symbol in target_symbols if symbol] or list(window_by_symbol)
     active_items: list[dict[str, Any]] = []
-    inactive_items: list[dict[str, Any]] = []
+    attention_items: list[dict[str, Any]] = []
     for symbol in symbols:
         item = window_by_symbol.get(symbol) or {"symbol": symbol, "window_status": "no_window"}
+        target = target_by_symbol.get(symbol) or {}
         if _active_window_item(item):
             active_items.append(item)
-        else:
-            inactive_items.append(item)
-    return {
+        if _window_attention_item(item, target):
+            attention_items.append(item)
+
+    valid_count = _window_count(summary, "window_valid_count", window_items, _active_window_item)
+    blocked_count = _window_count(
+        summary,
+        "blocked_count",
+        window_items,
+        lambda item: _window_status_value(item) == "blocked",
+    )
+    near_expiry_count = _window_count(
+        summary,
+        "near_expiry_count",
+        window_items,
+        lambda item: _window_status_value(item) == "near_expiry",
+    )
+    trace_error_count = _window_count(
+        summary,
+        "trace_error_count",
+        window_items,
+        lambda item: bool(_window_trace_error(item)),
+    )
+    if valid_count <= 0 and not attention_items and blocked_count <= 0 and near_expiry_count <= 0 and trace_error_count <= 0:
+        return {}
+
+    result = {
         "窗口统计": (
             f"active {_to_int(summary.get('window_active_count'), 0)} | "
-            f"valid {_to_int(summary.get('window_valid_count'), len(active_items))} | "
+            f"valid {valid_count} | "
             f"candidate {_to_int(summary.get('candidate_signal_count'), 0)} | "
-            f"near_expiry {_to_int(summary.get('near_expiry_count'), 0)}"
-        ),
-        "窗口已激活": _join_limited([_window_item_label(item, active=True) for item in active_items]),
-        "窗口未激活": _join_limited([_window_item_label(item, active=False) for item in inactive_items]),
+            f"blocked {blocked_count} | "
+            f"near_expiry {near_expiry_count} | "
+            f"trace_error {trace_error_count}"
+        )
     }
+    if active_items:
+        result["窗口已激活"] = _join_limited([_window_item_label(item, active=True) for item in active_items])
+    if attention_items:
+        result["窗口异常"] = _join_limited(
+            [
+                _window_attention_label(item, target_by_symbol.get(_to_text(item.get("symbol")).upper()) or {})
+                for item in attention_items
+            ]
+        )
+    return result
 
 
 def _load_today_targets_payload(

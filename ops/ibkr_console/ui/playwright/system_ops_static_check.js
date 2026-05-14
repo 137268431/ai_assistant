@@ -115,7 +115,7 @@ const systemJs = readPageScriptBundle(
 );
 assert(systemHtml.includes('运维摘要'), 'system_missing_ops_summary_section');
 assert(systemJs.includes('ops-summary-link') && systemJs.includes('/ibkr_monitor.html'), 'system_summary_missing_monitor_link');
-assert(includesAll(systemJs, ["'ibkr-backtest'", 'Backtest Service', 'backtestIdle', 'IB client']), 'system_summary_missing_backtest_idle_or_client_copy');
+assert(includesAll(systemJs, ["'ibkr-backtest'", 'Backtest Service', 'backtestIdle', 'IB client', 'IB Clients']), 'system_summary_missing_backtest_idle_or_client_copy');
 
 const runtimeHtml = readStatic('ibkr_runtime.html');
 const runtimeJs = readPageScriptBundle(

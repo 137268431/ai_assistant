@@ -449,6 +449,10 @@ class ControlPlaneSplitStackSchedulerJobsTest(unittest.TestCase):
                 "service_monitor": {
                     "status_counts": {"running": 8},
                     "services": {
+                        "ibkr-runtime": {"status": "running", "ib_gateway_client_id": 31},
+                        "ibkr-compute": {"status": "running", "ib_gateway_client_id": 51},
+                        "ibkr-api": {"status": "running", "ib_gateway_client_id": 61},
+                        "ibkr-scheduler": {"status": "running", "ib_gateway_client_id": 71},
                         "ibkr-backtest": {
                             "status": "running",
                             "worker_status": "idle",
@@ -469,6 +473,11 @@ class ControlPlaneSplitStackSchedulerJobsTest(unittest.TestCase):
         self.assertIn("worker idle", detail["Backtest"])
         self.assertIn("client 81", detail["Backtest"])
         self.assertIn("non-blocking", detail["Backtest"])
+        self.assertIn("Runtime client 31", detail["IB ClientID"])
+        self.assertIn("Compute client 51", detail["IB ClientID"])
+        self.assertIn("API client 61", detail["IB ClientID"])
+        self.assertIn("Scheduler client 71", detail["IB ClientID"])
+        self.assertIn("Backtest client 81", detail["IB ClientID"])
         self.assertIn("running:8", detail["服务统计"])
 
     def test_system_monitor_alert_job_emits_on_warning_flags(self):
@@ -498,6 +507,10 @@ class ControlPlaneSplitStackSchedulerJobsTest(unittest.TestCase):
                 "service_monitor": {
                     "status_counts": {"running": 7, "degraded": 1},
                     "services": {
+                        "ibkr-runtime": {"status": "degraded", "ib_gateway_client_id": 31},
+                        "ibkr-compute": {"status": "running", "ib_gateway_client_id": 51},
+                        "ibkr-api": {"status": "running", "ib_gateway_client_id": 61},
+                        "ibkr-scheduler": {"status": "running", "ib_gateway_client_id": 71},
                         "ibkr-backtest": {
                             "status": "running",
                             "worker_status": "idle",
@@ -517,5 +530,7 @@ class ControlPlaneSplitStackSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(payload["job_id"], "system_monitor_alert_guard")
         self.assertEqual(events[0]["title"], "IBKR Monitor 告警（1项）")
         self.assertIn("client 81", events[0]["detail"]["Backtest"])
+        self.assertIn("Runtime client 31", events[0]["detail"]["IB ClientID"])
+        self.assertIn("Backtest client 81", events[0]["detail"]["IB ClientID"])
         self.assertIn("running:7", events[0]["detail"]["服务统计"])
         self.assertIn(("system_monitor_alert", "live"), states)

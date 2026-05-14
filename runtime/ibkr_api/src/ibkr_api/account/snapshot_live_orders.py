@@ -54,24 +54,99 @@ def _sorted_order_legs(orders: list[dict[str, Any]] | None) -> list[dict[str, An
     return sorted(result, key=_order_leg_sort_key)
 
 
+def _normalize_trade_direction(value: Any) -> str:
+    text = to_text(value).lower()
+    return text if text in {"long", "short"} else ""
+
+
+def _direction_from_identifier(*values: Any, allow_signal_suffix: bool = False) -> str:
+    for value in values:
+        text = to_text(value).lower()
+        if not text:
+            continue
+        normalized = text
+        for separator in ("-", ":", "/", ".", " "):
+            normalized = normalized.replace(separator, "_")
+        tokens = [token for token in normalized.split("_") if token]
+        direction_tokens = [(index, token) for index, token in enumerate(tokens) if token in {"long", "short"}]
+        if direction_tokens:
+            return direction_tokens[-1][1]
+        if allow_signal_suffix and tokens:
+            if tokens[-1] == "l":
+                return "long"
+            if tokens[-1] == "s":
+                return "short"
+    return ""
+
+
+def _group_identifier_direction(group: dict[str, Any] | None) -> str:
+    group = group or {}
+    return _direction_from_identifier(
+        group.get("trade_group_id"),
+        group.get("entry_order_unique_id"),
+        group.get("group_key"),
+    ) or _direction_from_identifier(group.get("signal_id"), allow_signal_suffix=True)
+
+
+def _order_identifier_direction(order: dict[str, Any] | None) -> str:
+    order = order or {}
+    pb_context = ensure_object(order.get("pb_context"))
+    return _direction_from_identifier(
+        order.get("trade_group_id"),
+        order.get("entry_order_unique_id"),
+        order.get("client_order_id"),
+        order.get("unique_id"),
+        pb_context.get("trade_group_id"),
+        pb_context.get("entry_order_unique_id"),
+    ) or _direction_from_identifier(order.get("signal_id"), pb_context.get("signal_id"), allow_signal_suffix=True)
+
+
+def _direction_from_order_side(order: dict[str, Any] | None) -> str:
+    order = order or {}
+    side = to_text(order.get("side")).upper()
+    if side not in {"BUY", "SELL"}:
+        return ""
+    role = _normalize_leg_role(order)
+    has_parent = bool(to_text(order.get("parent_id") or order.get("parent_order_unique_id")))
+    is_exit_leg = role in {"take_profit", "stop_loss", "child"} or has_parent
+    if is_exit_leg:
+        return "long" if side == "SELL" else "short"
+    return "long" if side == "BUY" else "short"
+
+
 def _infer_trade_direction(group: dict[str, Any] | None, orders: list[dict[str, Any]] | None) -> str:
     group = group or {}
+    direction = _group_identifier_direction(group)
+    if direction:
+        return direction
     for key in ("trade_direction", "direction", "position_side"):
-        value = to_text(group.get(key)).lower()
-        if value in {"long", "short"}:
+        value = _normalize_trade_direction(group.get(key))
+        if value:
             return value
     sorted_orders = _sorted_order_legs(orders)
     for order in sorted_orders:
+        direction = _order_identifier_direction(order)
+        if direction:
+            return direction
+    for order in sorted_orders:
+        if _normalize_leg_role(order) != "entry":
+            continue
         for key in ("direction", "position_side"):
-            value = to_text(order.get(key)).lower()
-            if value in {"long", "short"}:
+            value = _normalize_trade_direction(order.get(key))
+            if value:
                 return value
-        if _normalize_leg_role(order) == "entry":
-            side = to_text(order.get("side")).upper()
-            if side == "BUY":
-                return "long"
-            if side == "SELL":
-                return "short"
+        direction = _direction_from_order_side(order)
+        if direction:
+            return direction
+    for order in sorted_orders:
+        direction = _direction_from_order_side(order)
+        if direction:
+            return direction
+    for order in sorted_orders:
+        for key in ("position_side", "direction"):
+            value = _normalize_trade_direction(order.get(key))
+            if value:
+                return value
     return ""
 
 
@@ -127,6 +202,23 @@ def normalize_live_order(order: dict[str, Any]) -> dict[str, Any]:
     filled_quantity = to_float(normalized.get("filled_quantity") if normalized.get("filled_quantity") not in (None, "") else normalized.get("filledQuantity"))
     if filled_quantity is None:
         filled_quantity = to_float(normalized.get("cum_fill")) or 0.0
+    commission = abs(to_float(
+        normalized.get("commission")
+        if normalized.get("commission") not in (None, "")
+        else normalized.get("ibkr_commission")
+        if normalized.get("ibkr_commission") not in (None, "")
+        else normalized.get("commissionAmount")
+        if normalized.get("commissionAmount") not in (None, "")
+        else normalized.get("commission_amount")
+    ) or 0.0)
+    commission_currency = _pick_first_non_empty(
+        normalized.get("commission_currency"),
+        normalized.get("commissionCurrency"),
+        normalized.get("ibCommissionCurrency"),
+        normalized.get("ibkr_commission_currency"),
+        normalized.get("currency"),
+        "USD",
+    ).upper()
     remaining_quantity = normalized.get("remaining_quantity")
     if remaining_quantity in (None, ""):
         remaining_quantity = normalized.get("remainingQuantity")
@@ -156,6 +248,8 @@ def normalize_live_order(order: dict[str, Any]) -> dict[str, Any]:
         "price": to_float(normalized.get("price")) or 0.0,
         "trigger_price": to_float(normalized.get("trigger_price")) or 0.0,
         "avg_price": to_float(normalized.get("avg_price")) or 0.0,
+        "commission": commission,
+        "commission_currency": commission_currency,
         "total_quantity": total_quantity,
         "filled_quantity": filled_quantity,
         "remaining_quantity": remaining if remaining is not None else max(total_quantity - filled_quantity, 0.0),
@@ -257,6 +351,8 @@ def _build_pb_context(live_order: dict[str, Any], pb_match: dict[str, Any] | Non
             "pb_filled_qty": 0.0,
             "pb_limit_price": 0.0,
             "pb_fill_price": 0.0,
+            "pb_commission": 0.0,
+            "pb_commission_currency": "USD",
             "diagnostic_tags": tags,
             "diagnostic_note": _build_diagnostic_note(live_order, None, tags, ambiguous_match),
         }
@@ -283,6 +379,8 @@ def _build_pb_context(live_order: dict[str, Any], pb_match: dict[str, Any] | Non
         "pb_filled_qty": to_float(pb_match.get("filled_qty")) or 0.0,
         "pb_limit_price": to_float(pb_match.get("limit_price")) or 0.0,
         "pb_fill_price": to_float(pb_match.get("fill_price")) or 0.0,
+        "pb_commission": abs(to_float(pb_match.get("commission")) or 0.0),
+        "pb_commission_currency": to_text(pb_match.get("commission_currency") or "USD").upper(),
         "diagnostic_tags": tags,
         "diagnostic_note": _build_diagnostic_note(live_order, pb_match, tags, ambiguous_match),
     }
@@ -312,6 +410,7 @@ def _finalize_group(group: dict[str, Any]) -> dict[str, Any]:
         "total_quantity": group["total_quantity"],
         "filled_quantity": group["filled_quantity"],
         "remaining_quantity": group["remaining_quantity"],
+        "commission": abs(to_float(group.get("commission")) or 0.0),
         "recovery_sources": [f"{key}:{group['recovery_sources'][key]}" for key in sorted(group["recovery_sources"])],
         "orders": orders,
     }
@@ -351,11 +450,13 @@ def build_managed_order_context(pb: Any, environment: str, live_orders: list[dic
                 "best_status_weight": -1,
                 "entry_filled_qty": 0.0,
                 "exit_filled_qty": 0.0,
+                "commission": 0.0,
                 "has_active_order": False,
                 "orders": [],
             },
         )
         group["orders"].append(normalized)
+        group["commission"] += abs(to_float(normalized.get("commission")) or 0.0)
         if not group["signal_id"] and normalized.get("signal_id"):
             group["signal_id"] = normalized.get("signal_id")
         if to_int(normalized.get("updated_ms"), 0) >= group["latest_updated_ms"]:
@@ -410,8 +511,21 @@ def build_managed_order_context(pb: Any, environment: str, live_orders: list[dic
             live_order["total_quantity"] = to_float(pb_context.get("pb_quantity")) or 0.0
         if (to_float(live_order.get("price")) or 0.0) <= 0 and (to_float(pb_context.get("pb_limit_price")) or 0.0) > 0:
             live_order["price"] = to_float(pb_context.get("pb_limit_price")) or 0.0
-        live_order["direction"] = to_text(pb_context.get("direction"))
-        live_order["position_side"] = to_text(pb_context.get("position_side"))
+        if (to_float(live_order.get("commission")) or 0.0) <= 0 and (to_float(pb_context.get("pb_commission")) or 0.0) > 0:
+            live_order["commission"] = abs(to_float(pb_context.get("pb_commission")) or 0.0)
+            live_order["commission_currency"] = to_text(pb_context.get("pb_commission_currency") or live_order.get("commission_currency") or "USD").upper()
+        live_direction = _infer_trade_direction(
+            {
+                "signal_id": pb_context.get("signal_id"),
+                "trade_group_id": pb_context.get("trade_group_id"),
+                "entry_order_unique_id": pb_context.get("entry_order_unique_id"),
+                "direction": pb_context.get("direction"),
+                "position_side": pb_context.get("position_side"),
+            },
+            [live_order],
+        )
+        live_order["direction"] = live_direction
+        live_order["position_side"] = live_direction
         live_order["leg_role"] = _normalize_leg_role(live_order)
         normalized_live_orders.append(live_order)
         if pb_context.get("match_state") == "matched":
@@ -468,6 +582,7 @@ def build_managed_order_context(pb: Any, environment: str, live_orders: list[dic
                 "total_quantity": 0.0,
                 "filled_quantity": 0.0,
                 "remaining_quantity": 0.0,
+                "commission": 0.0,
                 "recovery_sources": {},
                 "orders": [],
             },
@@ -479,10 +594,6 @@ def build_managed_order_context(pb: Any, environment: str, live_orders: list[dic
             live_group["trade_group_id"] = pb_context.get("trade_group_id")
         if not live_group["entry_order_unique_id"] and pb_context.get("entry_order_unique_id"):
             live_group["entry_order_unique_id"] = pb_context.get("entry_order_unique_id")
-        order_direction = _infer_trade_direction({}, [live_order])
-        if order_direction and not live_group.get("trade_direction"):
-            live_group["trade_direction"] = order_direction
-            live_group["direction"] = order_direction
         if pb_context.get("match_state") == "matched":
             live_group["matched_live_orders"] += 1
         else:
@@ -496,6 +607,7 @@ def build_managed_order_context(pb: Any, environment: str, live_orders: list[dic
         live_group["total_quantity"] += abs(to_float(live_order.get("total_quantity")) or 0.0)
         live_group["filled_quantity"] += abs(to_float(live_order.get("filled_quantity")) or 0.0)
         live_group["remaining_quantity"] += abs(to_float(live_order.get("remaining_quantity")) or 0.0)
+        live_group["commission"] += abs(to_float(live_order.get("commission")) or 0.0)
         live_group["orders"].append(live_order)
         updated_ms = max(to_int(live_order.get("last_execution_time_ms"), 0), to_int(live_order.get("submitted_time_ms"), 0), to_int(live_order.get("updated_ms"), 0))
         if updated_ms >= live_group["latest_updated_ms"]:
@@ -526,6 +638,7 @@ def build_managed_order_context(pb: Any, environment: str, live_orders: list[dic
                 "has_open_exposure": has_open_exposure,
                 "broker_matched": matched_live_orders > 0,
                 "matched_broker_orders": matched_live_orders,
+                "commission": abs(to_float(group.get("commission")) or 0.0),
                 "order_count": len(group["orders"]),
                 "orders": sorted_orders,
             }

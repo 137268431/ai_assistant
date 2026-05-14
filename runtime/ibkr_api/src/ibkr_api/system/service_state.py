@@ -124,6 +124,7 @@ def derive_compute_state(compute: dict[str, Any], *, observed_at: str) -> dict[s
     status_text = normalize_service_status(payload.get("status") or ("running" if payload else "offline"))
     ready_engines = int(payload.get("ready_engines") or 0)
     total_engines = int(payload.get("total_engines") or 0)
+    client_id = _safe_int(payload.get("ib_gateway_client_id") or payload.get("broker_client_id") or payload.get("client_id"))
     if _preload_active(payload):
         status = "starting"
         phase = "preload"
@@ -144,7 +145,9 @@ def derive_compute_state(compute: dict[str, Any], *, observed_at: str) -> dict[s
         phase = "ready"
         ready = True
         detail = f"engines {ready_engines}/{total_engines}" if total_engines else "compute endpoint reachable"
-    return {
+    if client_id:
+        detail = f"{detail} · client {client_id}" if detail else f"client {client_id}"
+    state = {
         "service_name": "ibkr-compute",
         "status": status,
         "ready": ready,
@@ -154,6 +157,9 @@ def derive_compute_state(compute: dict[str, Any], *, observed_at: str) -> dict[s
         "stale": bool(payload.get("stale", False)),
         "detail": detail,
     }
+    if client_id:
+        state["ib_gateway_client_id"] = client_id
+    return state
 
 
 def derive_runtime_state(runtime: dict[str, Any], *, observed_at: str) -> dict[str, Any]:
@@ -162,6 +168,14 @@ def derive_runtime_state(runtime: dict[str, Any], *, observed_at: str) -> dict[s
     session = as_dict(payload.get("session"))
     websocket = as_dict(payload.get("websocket"))
     runtime_phase = str(payload.get("runtime_phase") or "").strip().lower()
+    broker = as_dict(payload.get("broker"))
+    client_id = _safe_int(
+        payload.get("ib_gateway_client_id")
+        or payload.get("broker_client_id")
+        or payload.get("client_id")
+        or broker.get("client_id")
+        or gateway.get("client_id")
+    )
     gateway_ready = bool(gateway.get("running") or gateway.get("reachable"))
     session_ready = bool(session.get("authenticated"))
     websocket_ready = bool(websocket.get("connected") or websocket.get("ready"))
@@ -215,8 +229,10 @@ def derive_runtime_state(runtime: dict[str, Any], *, observed_at: str) -> dict[s
         phase = "ready"
         ready = True
         detail = f"phase {runtime_phase or 'running'}"
+    if client_id:
+        detail = f"{detail} · client {client_id}" if detail else f"client {client_id}"
 
-    return {
+    state = {
         "service_name": "ibkr-runtime",
         "status": status,
         "ready": ready,
@@ -226,6 +242,9 @@ def derive_runtime_state(runtime: dict[str, Any], *, observed_at: str) -> dict[s
         "stale": bool(payload.get("stale", False)),
         "detail": detail,
     }
+    if client_id:
+        state["ib_gateway_client_id"] = client_id
+    return state
 
 
 def derive_gateway_state(runtime: dict[str, Any], *, observed_at: str) -> dict[str, Any]:

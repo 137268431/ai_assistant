@@ -16,11 +16,33 @@ DEFAULT_API_INTERNAL_URL = "http://127.0.0.1:5102"
 DEFAULT_SCHEDULER_INTERNAL_URL = "http://127.0.0.1:5103"
 DEFAULT_CONSOLE_BASE_URL = "http://127.0.0.1:5104"
 DEFAULT_PB_BASE_URL = "http://127.0.0.1:8090"
+IBGW_CLIENT_ID_OFFSETS = {
+    "runtime": 0,
+    "compute": 20,
+    "api": 30,
+    "scheduler": 40,
+    "backtest": 50,
+}
 
 
 def _normalize_base_url(value: str | None, default: str) -> str:
     text = str(value or "").strip() or default
     return text.rstrip("/")
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(str(os.environ.get(name, "") or default).strip())
+    except Exception:
+        return int(default)
+
+
+def _ib_gateway_client_id(profile: str) -> int:
+    normalized = str(profile or "").strip().lower()
+    base_client_id = _env_int("IBGW_CLIENT_ID", 31)
+    default = base_client_id + IBGW_CLIENT_ID_OFFSETS.get(normalized, 0)
+    env_key = f"IBGW_{normalized.upper()}_CLIENT_ID"
+    return _env_int(env_key, default)
 
 
 def get_service_profile() -> str:
@@ -153,6 +175,17 @@ def build_service_topology(service=None, service_status: dict | None = None) -> 
     topology_payload = _select_topology_status_payload(runtime_mode, service_profile, payload)
     gateway = topology_payload.get("gateway") or {}
     session = topology_payload.get("session") or {}
+    runtime_client_id = _ib_gateway_client_id("runtime")
+    try:
+        runtime_client_id = int(
+            str(
+                topology_payload.get("ib_gateway_client_id")
+                or topology_payload.get("broker_client_id")
+                or runtime_client_id
+            ).strip()
+        )
+    except Exception:
+        runtime_client_id = _ib_gateway_client_id("runtime")
 
     return {
         "service_profile": service_profile,
@@ -187,6 +220,7 @@ def build_service_topology(service=None, service_status: dict | None = None) -> 
                 "fault_domain": "control_plane",
                 "owner": "ibkr-api",
                 "status": _owned_service_status(service_profile, "api"),
+                "ib_gateway_client_id": _ib_gateway_client_id("api"),
                 "internal_url": api_internal_url,
                 "upstream": pocketbase_base_url,
                 "responsibility": "compatibility routes + control APIs",
@@ -198,6 +232,7 @@ def build_service_topology(service=None, service_status: dict | None = None) -> 
                 "fault_domain": "scheduler",
                 "owner": "ibkr-scheduler",
                 "status": _owned_service_status(service_profile, "scheduler"),
+                "ib_gateway_client_id": _ib_gateway_client_id("scheduler"),
                 "internal_url": scheduler_internal_url,
                 "upstream": pocketbase_base_url,
                 "responsibility": "job registry + persisted cursor dispatch",
@@ -209,6 +244,7 @@ def build_service_topology(service=None, service_status: dict | None = None) -> 
                 "fault_domain": "compute_plane",
                 "owner": "ibkr-compute",
                 "status": _owned_service_status(service_profile, "compute"),
+                "ib_gateway_client_id": _ib_gateway_client_id("compute"),
                 "internal_url": compute_internal_url,
                 "upstream": runtime_internal_url if runtime_mode == "remote" else "",
                 "runtime_mode": runtime_mode,
@@ -222,6 +258,7 @@ def build_service_topology(service=None, service_status: dict | None = None) -> 
                 "fault_domain": "backtest_plane",
                 "owner": "ibkr-backtest",
                 "status": _owned_service_status(service_profile, "backtest"),
+                "ib_gateway_client_id": _ib_gateway_client_id("backtest"),
                 "internal_url": backtest_internal_url,
                 "upstream": pocketbase_base_url,
                 "responsibility": "backtest runs + replay + backtest cleanup",
@@ -236,6 +273,7 @@ def build_service_topology(service=None, service_status: dict | None = None) -> 
                 "internal_url": runtime_internal_url,
                 "upstream": runtime_internal_url if runtime_mode == "remote" else "",
                 "runtime_mode": runtime_mode,
+                "ib_gateway_client_id": runtime_client_id,
                 "session_authenticated": bool(session.get("authenticated")),
                 "responsibility": "gateway + bars + live trading state",
                 "restart_independent": runtime_mode == "remote",

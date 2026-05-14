@@ -220,6 +220,49 @@ class SignalPayloadMarketSentimentTest(unittest.TestCase):
         self.assertEqual(result["direction"], "long")
         self.assertEqual(result["entry"], 100.0)
 
+    def test_signal_payload_limit_price_uses_order_entry_not_bar_close(self):
+        fake_app = SimpleNamespace(
+            IBKR_SCRIPT_TAG="ibkr_compute",
+            resolve_initial_signal_state=lambda environment, bar_ms: ("pending", "ready"),
+        )
+        engine = SimpleNamespace(bar_count=42)
+        bar = {
+            "symbol": "AMD",
+            "bar_time_ms": 2000,
+            "close": 450.10,
+            "exchange": "NASDAQ",
+            "us_time": "2026-05-07 10:00:00",
+            "cn_time": "2026-05-07 22:00:00",
+        }
+        signal = {
+            "direction": "short",
+            "signal": "mr_sdUpper",
+            "entry": 451.37,
+            "stop_loss": 455.0,
+            "take_profit": 444.11,
+            "rr": 2,
+            "shares": 10,
+            "reason": "test",
+            "extra": {"atr": 1.2},
+        }
+
+        with mock.patch.object(payloads, "_api_app", return_value=fake_app), mock.patch.object(
+            payloads,
+            "refresh_symbol_metadata",
+            return_value={"AMD": {"industry": "Semiconductors", "exchange": "NASDAQ"}},
+        ), mock.patch.object(payloads, "get_daily_change_fields", return_value={}), mock.patch.object(
+            payloads,
+            "build_market_sentiment_extra",
+            return_value={},
+        ):
+            result = payloads.build_signal_payload("live", "AMD", "5m", bar, engine, signal)
+
+        self.assertEqual(result["entry"], 451.37)
+        self.assertEqual(result["limit_price"], 451.37)
+        self.assertEqual(result["extra"]["limit_price"], 451.37)
+        self.assertEqual(result["extra"]["reference_price"], 450.10)
+        self.assertEqual(result["extra"]["reference_source"], "bar_close")
+
 
 if __name__ == "__main__":
     unittest.main()

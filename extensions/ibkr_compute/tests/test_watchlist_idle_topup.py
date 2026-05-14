@@ -103,6 +103,18 @@ class DummyConidResolver:
         return {symbol: int(self.conid_map.get(symbol) or 0) for symbol in normalized}
 
 
+class DummyPB:
+    def __init__(self, target_rows=None):
+        self.target_rows = list(target_rows or [])
+        self.calls = []
+
+    def get_all_records(self, collection, **kwargs):
+        self.calls.append({"collection": collection, **kwargs})
+        if collection != "ibkr_targets":
+            return []
+        return list(self.target_rows)
+
+
 class DummyBarRepairCoordinator:
     def __init__(self, *, pending=0, inflight=0):
         self.pending = int(pending)
@@ -149,6 +161,7 @@ class DummyWatchlistIdleTopup(TradingServiceMarketUniverseMixin):
         self._subscription_lock = threading.RLock()
         self._active_subscription_symbols = {"AAPL"}
         self._active_trade_symbols = {"AAPL"}
+        self._current_market_date = "2026-04-30"
         self._watchlist_symbols = ["AAPL", "MSFT", "NVDA", "TSLA"]
         self._watchlist_records = {symbol: {"symbol": symbol} for symbol in self._watchlist_symbols}
         self._watchlist_idle_topup_cursor = 0
@@ -160,6 +173,7 @@ class DummyWatchlistIdleTopup(TradingServiceMarketUniverseMixin):
         self._latest_5m_bar_ms = {"AAPL": 5000, "MSFT": 3000, "TSLA": 1000}
         self.data_backfill = DummyDataBackfill(self._latest_5m_bar_ms)
         self.conid_resolver = DummyConidResolver({"MSFT": 2, "NVDA": 3, "TSLA": 4, "META": 5})
+        self.realtime_compute_calls = []
         self._symbol_meta = {
             "MSFT": {"exchange": "NASDAQ"},
             "NVDA": {"exchange": "NASDAQ"},
@@ -211,6 +225,30 @@ class DummyWatchlistIdleTopup(TradingServiceMarketUniverseMixin):
 
     def _watchlist_idle_topup_force_catchup_active(self):
         return self._watchlist_topup_force_until > 1_000.0
+
+    def _trigger_realtime_compute(
+        self,
+        source="bar_close",
+        symbols=None,
+        persist_signals=None,
+        persist_signal_symbols=None,
+        intervals=None,
+        rollup_intervals=None,
+    ):
+        self.realtime_compute_calls.append(
+            {
+                "source": source,
+                "symbols": [str(symbol or "").strip().upper() for symbol in (symbols or [])],
+                "persist_signals": persist_signals,
+                "persist_signal_symbols": [
+                    str(symbol or "").strip().upper()
+                    for symbol in (persist_signal_symbols or [])
+                ],
+                "intervals": list(intervals or []),
+                "rollup_intervals": list(rollup_intervals or []),
+            }
+        )
+        return {"ok": True, "processed": 0, "signals": 0, "errors": 0}
 
 
 class WatchlistIdleTopupAdmissionTest(unittest.TestCase):
@@ -570,6 +608,52 @@ class WatchlistIdleTopupCycleTest(unittest.TestCase):
         )
         self.assertEqual(self.service.bar_writer.flush_calls, len(self.service.data_backfill.backfill_all_calls))
 
+    def test_idle_topup_default_compute_payload_persists_signals_only_for_active_targets(self):
+        state = self.service._run_watchlist_idle_topup_cycle()
+
+        self.assertEqual(state["status"], "completed")
+        self.assertEqual(len(self.service.realtime_compute_calls), 1)
+        call = self.service.realtime_compute_calls[0]
+        self.assertEqual(call["source"], "watchlist_idle_topup")
+        self.assertCountEqual(call["symbols"], ["AAPL", "MSFT", "NVDA", "TSLA"])
+        self.assertEqual(call["persist_signals"], True)
+        self.assertEqual(call["persist_signal_symbols"], ["AAPL"])
+        self.assertEqual(call["intervals"], ["5m"])
+        self.assertEqual(call["rollup_intervals"], [])
+        for symbol in ("MSFT", "NVDA", "TSLA"):
+            self.assertNotIn(symbol, call["persist_signal_symbols"])
+
+    def test_idle_topup_persists_signals_for_unsubscribed_active_targets(self):
+        self.service.pb = DummyPB(
+            [
+                {
+                    "symbol": "MSFT",
+                    "status": "active",
+                    "extra": {"source": "daily_scan", "context_gate_passed": True},
+                },
+                {
+                    "symbol": "NVDA",
+                    "status": "active",
+                    "extra": {"source": "daily_scan", "context_gate_passed": False},
+                },
+                {
+                    "symbol": "TSLA",
+                    "status": "candidate",
+                    "extra": {"source": "daily_scan", "context_gate_passed": True},
+                },
+            ]
+        )
+
+        state = self.service._run_watchlist_idle_topup_cycle()
+
+        self.assertEqual(state["status"], "completed")
+        self.assertEqual(len(self.service.realtime_compute_calls), 1)
+        call = self.service.realtime_compute_calls[0]
+        self.assertCountEqual(call["symbols"], ["AAPL", "MSFT", "NVDA", "TSLA"])
+        self.assertEqual(call["persist_signal_symbols"], ["AAPL", "MSFT"])
+        self.assertNotIn("NVDA", call["persist_signal_symbols"])
+        self.assertNotIn("TSLA", call["persist_signal_symbols"])
+
     def test_active_targets_continue_when_next_due_budget_is_close(self):
         self.service.config = DummyConfig(
             {
@@ -598,7 +682,7 @@ class WatchlistIdleTopupCycleTest(unittest.TestCase):
         with mock.patch.object(
             self.service,
             "_seconds_until_next_active_5m_due",
-            side_effect=[600, 600, 50],
+            side_effect=[600, 600, 600, 50],
         ):
             state = self.service._run_watchlist_idle_topup_cycle()
 

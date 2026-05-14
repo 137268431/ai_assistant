@@ -8,16 +8,19 @@ from ibkr_api.orders.values import ensure_object, first_defined, to_float, to_te
 
 TAKE_PROFIT_ROLES = {"take_profit", "repair_tp", "tp"}
 STOP_LOSS_ROLES = {"stop_loss", "repair_sl", "sl"}
+CLOSE_ROLES = {"close", "manual_close", "market_close", "close_order", "reverse_close"}
 ENTRY_ROLES = {"entry"}
 ENTRY_ORDER_TYPES = {"entry", "entryorder"}
 TAKE_PROFIT_ORDER_TYPES = {"takeprofit", "takeprofitorder", "tp"}
 STOP_LOSS_ORDER_TYPES = {"stoploss", "stoplossorder", "sl", "stop"}
+CLOSE_ORDER_TYPES = {"mkt", "market", "marketclose"}
 
 
 def empty_daily_order_stats() -> dict[str, Any]:
     return {
         "take_profit_filled": 0,
         "stop_loss_filled": 0,
+        "manual_close_filled": 0,
         "winning_trades": 0,
         "losing_trades": 0,
         "flat_trades": 0,
@@ -53,11 +56,15 @@ def _exit_role(row: dict[str, Any]) -> str:
         return "take_profit"
     if role in STOP_LOSS_ROLES:
         return "stop_loss"
+    if role in CLOSE_ROLES:
+        return "close"
     order_type = _normalized_token(_row_value(row, "order_type"))
     if order_type in TAKE_PROFIT_ORDER_TYPES:
         return "take_profit"
     if order_type in STOP_LOSS_ORDER_TYPES:
         return "stop_loss"
+    if order_type in CLOSE_ORDER_TYPES and to_text(_row_value(row, "unique_id")).lower().startswith("close_"):
+        return "close"
     return ""
 
 
@@ -216,6 +223,8 @@ def build_daily_order_stats(rows: list[dict[str, Any]] | None) -> dict[str, Any]
             stats["take_profit_filled"] += 1
         elif exit_role == "stop_loss":
             stats["stop_loss_filled"] += 1
+        elif exit_role == "close":
+            stats["manual_close_filled"] += 1
 
         entry_order = _find_entry(row, entry_index)
         gross_pnl, missing = _stored_or_computed_pnl(row, entry_order)

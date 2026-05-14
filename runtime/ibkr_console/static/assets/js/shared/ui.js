@@ -169,6 +169,10 @@
     getCommonStyles() {
       return '<link rel="stylesheet" href="/assets/css/common.css">';
     },
+    showConfirmDialog(options = {}) {
+      const message = options.message || options.title || '确认操作？';
+      return Promise.resolve(typeof confirm !== 'function' || confirm(message));
+    },
     getIbkrExtraObject(record) {
       return record && typeof record.extra === 'object' && record.extra ? record.extra : {};
     },
@@ -241,8 +245,8 @@
     'spinPageRefreshButton', 'renderPageContextBar', 'renderPageBridge', 'renderSystemBridge',
     'renderExecutionBridge', 'renderAnalyticsBridge', 'renderHomeBridge', 'renderOpsBridge',
     'renderBacktestsBridge', 'getCommonStyles', 'showLoading', 'hideLoading', 'withLoading',
-    'guardedLoader', 'getIndicatorModalStyles', 'renderIndicatorModalHTML', 'showIndicatorModal',
-    'closeIndicatorModal'
+    'guardedLoader', 'showConfirmDialog', 'getIndicatorModalStyles', 'renderIndicatorModalHTML',
+    'showIndicatorModal', 'closeIndicatorModal'
   ];
 
   function install(name) {

@@ -40,7 +40,22 @@ class TradingServiceRuntimeOpsMixin:
             return "take_profit"
         if not role and unique_id.startswith("sl_"):
             return "stop_loss"
+        if not role and unique_id.startswith("entry_"):
+            return "entry"
+        if unique_id.startswith("close_"):
+            return "close"
         return role
+
+    @staticmethod
+    def _normalize_order_role(role: Any) -> str:
+        normalized = str(role or "").strip().lower()
+        if normalized in {"tp", "takeprofit", "take_profit", "profit_target", "target"}:
+            return "take_profit"
+        if normalized in {"sl", "stop", "stoploss", "stop_loss"}:
+            return "stop_loss"
+        if normalized in {"close", "manual_close", "market_close", "close_order", "reverse_close"}:
+            return "close"
+        return normalized
 
     @staticmethod
     def _order_status(order: dict[str, Any]) -> str:
@@ -264,11 +279,545 @@ class TradingServiceRuntimeOpsMixin:
             "cancel_recommended": True,
         }
 
-    def _update_signal_after_entry_fill(self, order: dict, symbol: str, direction: str):
+    def _resolve_signal_id_for_order(self, order: dict, runtime_environment: str) -> str:
+        signal_id = str((order or {}).get("signal_id") or "").strip()
+        if signal_id:
+            return signal_id
+
+        coid = str(
+            (order or {}).get("cOID")
+            or (order or {}).get("coid")
+            or (order or {}).get("orderRef")
+            or (order or {}).get("order_ref")
+            or ""
+        ).strip()
+        order_id = str(
+            (order or {}).get("orderId")
+            or (order or {}).get("order_id")
+            or (order or {}).get("broker_order_id")
+            or ""
+        ).strip()
+        if not coid and not order_id:
+            return ""
+
+        filters = []
+        env_filter = self._escape_filter_value(runtime_environment)
+        if coid:
+            safe_coid = self._escape_filter_value(coid)
+            filters.append(f'unique_id = "{safe_coid}" && environment = "{env_filter}"')
+            filters.append(f'entry_order_unique_id = "{safe_coid}" && environment = "{env_filter}"')
+        if order_id:
+            safe_order_id = self._escape_filter_value(order_id)
+            filters.append(f'order_id = "{safe_order_id}" && environment = "{env_filter}"')
+            filters.append(f'broker_order_id = "{safe_order_id}" && environment = "{env_filter}"')
+
+        for filter_expr in filters:
+            rows = self.pb.get_records("orders", filter=filter_expr, sort="-updated", per_page=1)
+            if rows:
+                signal_id = str((rows[0] or {}).get("signal_id") or "").strip()
+                if signal_id:
+                    return signal_id
+        return ""
+
+    @staticmethod
+    def _first_nonempty_order_value(order: dict, *keys: str) -> Any:
+        for key in keys:
+            value = (order or {}).get(key)
+            if value not in (None, ""):
+                return value
+        return ""
+
+    def _now_iso_for_signal_patch(self) -> str:
+        now_fn = getattr(self, "_now_iso", None)
+        if callable(now_fn):
+            try:
+                return str(now_fn())
+            except Exception:
+                pass
+        service_mod = _service_mod()
+        return datetime.now(service_mod.ET).isoformat()
+
+    @staticmethod
+    def _coerce_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _first_positive_order_float(self, order: dict, *keys: str) -> float:
+        for key in keys:
+            value = self._coerce_float((order or {}).get(key), 0.0)
+            if value > 0:
+                return value
+        return 0.0
+
+    def _config_bool_for_environment(self, key: str, environment: str, default: bool) -> bool:
+        config = getattr(self, "config", None)
+        getter = getattr(config, "get_bool_for_environment", None)
+        if callable(getter):
+            try:
+                return bool(getter(key, environment, default))
+            except Exception:
+                return default
+        return default
+
+    def _config_float_for_environment(self, key: str, environment: str, default: float) -> float:
+        config = getattr(self, "config", None)
+        getter = getattr(config, "get_float_for_environment", None)
+        if callable(getter):
+            try:
+                return float(getter(key, environment, default))
+            except Exception:
+                return default
+        getter = getattr(config, "get_for_environment", None)
+        if callable(getter):
+            try:
+                return float(getter(key, environment, str(default)))
+            except Exception:
+                return default
+        return default
+
+    def _signal_order_rows(self, *, signal_id: str, environment: str, trade_group_id: str = "") -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        env_filter = f'environment = "{self._escape_filter_value(environment)}"'
+
+        def add_rows(filter_expr: str) -> None:
+            for row in (
+                self.pb.get_records(
+                    "orders",
+                    filter=filter_expr,
+                    sort="-updated",
+                    per_page=100,
+                )
+                or []
+            ):
+                if not isinstance(row, dict):
+                    continue
+                key = str(row.get("id") or row.get("unique_id") or row.get("order_id") or len(seen))
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append(row)
+
+        if signal_id:
+            add_rows(f'signal_id = "{self._escape_filter_value(signal_id)}" && {env_filter}')
+        if trade_group_id:
+            add_rows(f'trade_group_id = "{self._escape_filter_value(trade_group_id)}" && {env_filter}')
+        return rows
+
+    def _resolve_order_role_for_fill_event(self, order: dict, runtime_environment: str) -> str:
+        coid = str(
+            (order or {}).get("cOID")
+            or (order or {}).get("coid")
+            or (order or {}).get("orderRef")
+            or (order or {}).get("order_ref")
+            or ""
+        ).strip()
+        order_id = str(
+            (order or {}).get("orderId")
+            or (order or {}).get("order_id")
+            or (order or {}).get("broker_order_id")
+            or ""
+        ).strip()
+        if not getattr(self, "pb", None) or not (coid or order_id):
+            return ""
+
+        filters = []
+        env_filter = self._escape_filter_value(runtime_environment)
+        if coid:
+            safe_coid = self._escape_filter_value(coid)
+            filters.append(f'unique_id = "{safe_coid}" && environment = "{env_filter}"')
+        if order_id:
+            safe_order_id = self._escape_filter_value(order_id)
+            filters.append(f'order_id = "{safe_order_id}" && environment = "{env_filter}"')
+            filters.append(f'broker_order_id = "{safe_order_id}" && environment = "{env_filter}"')
+        for filter_expr in filters:
+            try:
+                rows = self.pb.get_records("orders", filter=filter_expr, sort="-updated", per_page=1) or []
+            except Exception:
+                rows = []
+            if rows:
+                return self._normalize_order_role(self._order_role(rows[0]))
+        return ""
+
+    def _load_pb_order_for_event(self, order: dict, runtime_environment: str) -> dict[str, Any]:
+        coid = str(
+            (order or {}).get("cOID")
+            or (order or {}).get("coid")
+            or (order or {}).get("orderRef")
+            or (order or {}).get("order_ref")
+            or (order or {}).get("unique_id")
+            or ""
+        ).strip()
+        order_id = str(
+            (order or {}).get("orderId")
+            or (order or {}).get("order_id")
+            or (order or {}).get("broker_order_id")
+            or ""
+        ).strip()
+        if not getattr(self, "pb", None) or not (coid or order_id):
+            return {}
+        filters = []
+        env_filter = self._escape_filter_value(runtime_environment)
+        if coid:
+            safe_coid = self._escape_filter_value(coid)
+            filters.append(f'unique_id = "{safe_coid}" && environment = "{env_filter}"')
+        if order_id:
+            safe_order_id = self._escape_filter_value(order_id)
+            filters.append(f'order_id = "{safe_order_id}" && environment = "{env_filter}"')
+            filters.append(f'broker_order_id = "{safe_order_id}" && environment = "{env_filter}"')
+        for filter_expr in filters:
+            try:
+                rows = self.pb.get_records("orders", filter=filter_expr, sort="-updated", per_page=1) or []
+            except Exception:
+                rows = []
+            if rows:
+                return dict(rows[0])
+        return {}
+
+    def _order_price_value(self, row: dict[str, Any], *keys: str) -> float:
+        extra = row.get("extra") if isinstance(row.get("extra"), dict) else {}
+        for key in keys:
+            value = self._coerce_float(row.get(key), 0.0)
+            if value > 0:
+                return value
+            value = self._coerce_float(extra.get(key), 0.0)
+            if value > 0:
+                return value
+        return 0.0
+
+    def _signal_price_value(self, signal_record: dict[str, Any], *keys: str) -> float:
+        extra = self._safe_extra((signal_record or {}).get("extra"))
+        for key in keys:
+            value = self._coerce_float((signal_record or {}).get(key), 0.0)
+            if value > 0:
+                return value
+            value = self._coerce_float(extra.get(key), 0.0)
+            if value > 0:
+                return value
+        return 0.0
+
+    def _order_numeric_value(self, row: dict[str, Any], *keys: str, default: float = 0.0) -> float:
+        extra = row.get("extra") if isinstance(row.get("extra"), dict) else {}
+        for key in keys:
+            if key in row and row.get(key) not in (None, ""):
+                return self._coerce_float(row.get(key), default)
+            if key in extra and extra.get(key) not in (None, ""):
+                return self._coerce_float(extra.get(key), default)
+        return default
+
+    def _signal_text_value(self, signal_record: dict[str, Any], *keys: str) -> str:
+        extra = self._safe_extra((signal_record or {}).get("extra"))
+        for key in keys:
+            value = (signal_record or {}).get(key)
+            if value not in (None, ""):
+                return str(value).strip()
+            value = extra.get(key)
+            if value not in (None, ""):
+                return str(value).strip()
+        return ""
+
+    def _trade_group_id_for_exit(self, signal_record: dict[str, Any], order: dict[str, Any]) -> str:
+        extra = self._safe_extra((signal_record or {}).get("extra"))
+        order_extra = order.get("extra") if isinstance(order.get("extra"), dict) else {}
+        return str(
+            order.get("trade_group_id")
+            or order_extra.get("trade_group_id")
+            or extra.get("bracket_group")
+            or extra.get("trade_group_id")
+            or extra.get("submit_failed_bracket_group")
+            or ""
+        ).strip()
+
+    def _exit_realized_pnl(
+        self,
+        *,
+        signal_record: dict[str, Any],
+        exit_order: dict[str, Any],
+        signal_id: str,
+        environment: str,
+        trade_group_id: str = "",
+    ) -> dict[str, Any]:
+        rows = self._signal_order_rows(signal_id=signal_id, environment=environment, trade_group_id=trade_group_id)
+        entry_row = next(
+            (row for row in rows if self._normalize_order_role(self._order_role(row)) == "entry"),
+            {},
+        )
+        entry_price = (
+            self._order_price_value(entry_row, "fill_price", "filled_price", "avgPrice", "avgFillPrice")
+            or self._signal_price_value(signal_record, "executed_price", "entry_fill_price")
+            or self._order_price_value(entry_row, "limit_price", "entry", "entry_price")
+            or self._signal_price_value(signal_record, "entry", "limit_price")
+        )
+        exit_price = (
+            self._order_price_value(exit_order, "avgPrice", "avgFillPrice", "fill_price", "filled_price", "lastFillPrice")
+            or self._order_price_value(exit_order, "price", "limit_price", "exit_price", "tp_price", "sl_price")
+        )
+        quantity = (
+            self._order_price_value(exit_order, "filledQuantity", "filled_qty", "filled", "totalSize", "quantity")
+            or self._order_price_value(entry_row, "filled_qty", "quantity")
+            or self._signal_price_value(signal_record, "shares", "quantity")
+        )
+        direction = (
+            self._signal_text_value(signal_record, "direction")
+            or str(entry_row.get("position_side") or entry_row.get("direction") or "").strip().lower()
+            or str(exit_order.get("position_side") or exit_order.get("direction") or "").strip().lower()
+        )
+        if direction not in {"long", "short"}:
+            exit_side = str(exit_order.get("side") or exit_order.get("action") or "").strip().upper()
+            if exit_side == "SELL":
+                direction = "long"
+            elif exit_side == "BUY":
+                direction = "short"
+        result = {
+            "ok": False,
+            "entry_price": entry_price,
+            "exit_price": exit_price,
+            "quantity": quantity,
+            "direction": direction,
+            "gross_pnl": 0.0,
+            "commission": 0.0,
+            "net_pnl": 0.0,
+            "pnl_pct": 0.0,
+            "source": "computed_from_entry_exit_fills",
+        }
+        if entry_price <= 0 or exit_price <= 0 or quantity <= 0 or direction not in {"long", "short"}:
+            result["reason"] = "missing_entry_exit_price_or_quantity"
+            return result
+
+        per_share = entry_price - exit_price if direction == "short" else exit_price - entry_price
+        gross = per_share * abs(quantity)
+        entry_commission = abs(self._order_numeric_value(entry_row, "commission", default=0.0)) if entry_row else 0.0
+        exit_commission = abs(self._order_numeric_value(exit_order, "commission", default=0.0)) if exit_order else 0.0
+        same_order = bool(
+            entry_row
+            and exit_order
+            and str(entry_row.get("id") or entry_row.get("unique_id") or "")
+            and str(entry_row.get("id") or entry_row.get("unique_id") or "")
+            == str(exit_order.get("id") or exit_order.get("unique_id") or "")
+        )
+        commission = exit_commission if same_order else entry_commission + exit_commission
+        net = gross - commission
+        position_cost = entry_price * abs(quantity)
+        result.update(
+            {
+                "ok": True,
+                "gross_pnl": round(gross, 4),
+                "commission": round(commission, 4),
+                "entry_commission": round(entry_commission, 4),
+                "exit_commission": round(exit_commission, 4),
+                "net_pnl": round(net, 4),
+                "pnl_pct": round((net / position_cost) * 100.0, 4) if position_cost > 0 else 0.0,
+                "reason": "",
+            }
+        )
+        return result
+
+    def _patch_exit_order_pnl(self, order: dict[str, Any], pnl_result: dict[str, Any]) -> None:
+        if not bool((pnl_result or {}).get("ok")):
+            return
+        patch = {
+            "pnl": pnl_result.get("gross_pnl", 0.0),
+            "commission": pnl_result.get("exit_commission", 0.0),
+            "extra": {
+                **self._safe_extra((order or {}).get("extra")),
+                "realized_gross_pnl": pnl_result.get("gross_pnl", 0.0),
+                "realized_net_pnl": pnl_result.get("net_pnl", 0.0),
+                "realized_pnl": pnl_result.get("net_pnl", 0.0),
+                "total_commission": pnl_result.get("commission", 0.0),
+                "entry_commission": pnl_result.get("entry_commission", 0.0),
+                "exit_commission": pnl_result.get("exit_commission", 0.0),
+                "realized_pnl_source": pnl_result.get("source", "computed_from_entry_exit_fills"),
+                "entry_price_for_pnl": pnl_result.get("entry_price", 0.0),
+                "exit_price_for_pnl": pnl_result.get("exit_price", 0.0),
+                "quantity_for_pnl": pnl_result.get("quantity", 0.0),
+                "pnl_pct": pnl_result.get("pnl_pct", 0.0),
+            },
+        }
+        self._update_pb_order_row(order, patch)
+
+    def _update_pb_order_row(self, row: dict[str, Any], patch: dict[str, Any]) -> None:
+        if not getattr(self, "pb", None) or not isinstance(row, dict) or not patch:
+            return
+        try:
+            record_id = str(row.get("id") or "").strip()
+            if record_id and callable(getattr(self.pb, "update_record", None)):
+                self.pb.update_record("orders", record_id, patch)
+                return
+            if callable(getattr(self.pb, "upsert_order", None)):
+                self.pb.upsert_order({**row, **patch})
+        except Exception:
+            _service_mod().logger.debug("PB order update failed", exc_info=True)
+
+    def _entry_fill_rebase_result(
+        self,
+        *,
+        order: dict,
+        signal_record: dict[str, Any],
+        signal_id: str,
+        environment: str,
+        trade_group_id: str,
+        actual_fill_price: float,
+    ) -> dict[str, Any]:
+        enabled = self._config_bool_for_environment("entry_fill_rebase_enabled", environment, True)
+        min_bps = max(0.0, self._config_float_for_environment("entry_fill_rebase_min_bps", environment, 1.0))
+        min_abs = max(0.0, self._config_float_for_environment("entry_fill_rebase_min_abs", environment, 0.01))
+        rows = self._signal_order_rows(signal_id=signal_id, environment=environment, trade_group_id=trade_group_id)
+        entry_rows = [row for row in rows if self._normalize_order_role(self._order_role(row)) == "entry"]
+        tp_rows = [row for row in rows if self._normalize_order_role(self._order_role(row)) == "take_profit"]
+        sl_rows = [row for row in rows if self._normalize_order_role(self._order_role(row)) == "stop_loss"]
+        entry_row = entry_rows[0] if entry_rows else {}
+        tp_row = tp_rows[0] if tp_rows else {}
+        sl_row = sl_rows[0] if sl_rows else {}
+
+        entry_order_limit = self._order_price_value(
+            entry_row,
+            "limit_price",
+            "limitPrice",
+            "lmtPrice",
+            "lmt_price",
+            "submitted_price",
+            "submitted_limit_price",
+            "entry_limit_price",
+            "entry_limit",
+        )
+        event_order_limit = self._first_positive_order_float(
+            order,
+            "limit_price",
+            "limitPrice",
+            "lmtPrice",
+            "lmt_price",
+            "submitted_price",
+            "submitted_limit_price",
+            "entry_limit_price",
+            "entry_limit",
+        )
+        entry_order_price = self._order_price_value(entry_row, "entry_price", "entry", "price")
+        signal_entry_reference = self._signal_price_value(
+            signal_record,
+            "limit_price",
+            "submitted_price",
+            "submitted_limit_price",
+            "entry_limit_price",
+            "entry_price",
+            "entry",
+        )
+        submitted_entry = entry_order_limit or event_order_limit or entry_order_price or signal_entry_reference
+        old_tp = (
+            self._order_price_value(tp_row, "limit_price", "take_profit", "tp_price", "price")
+            or self._signal_price_value(signal_record, "take_profit", "tp_price", "initial_take_profit")
+        )
+        old_sl = (
+            self._order_price_value(sl_row, "limit_price", "stop_loss", "sl_price", "auxPrice", "price")
+            or self._signal_price_value(signal_record, "stop_loss", "sl_price", "initial_stop_loss")
+        )
+        delta = actual_fill_price - submitted_entry if actual_fill_price > 0 and submitted_entry > 0 else 0.0
+        threshold = max(min_abs, abs(submitted_entry) * min_bps / 10000.0) if submitted_entry > 0 else min_abs
+        result: dict[str, Any] = {
+            "ok": True,
+            "enabled": enabled,
+            "attempted": False,
+            "material": False,
+            "reason": "not_material",
+            "actual_fill_price": actual_fill_price,
+            "submitted_entry": submitted_entry,
+            "delta": delta,
+            "min_bps": min_bps,
+            "min_abs": min_abs,
+            "threshold_abs": threshold,
+            "old_stop_loss": old_sl,
+            "old_take_profit": old_tp,
+            "stop_loss": old_sl,
+            "take_profit": old_tp,
+        }
+        if actual_fill_price <= 0:
+            return {**result, "reason": "missing_actual_fill_price"}
+        if submitted_entry <= 0:
+            return {**result, "reason": "missing_submitted_entry_price"}
+        if not enabled:
+            return {**result, "reason": "disabled"}
+        if abs(delta) < threshold:
+            return result
+        result["material"] = True
+
+        new_sl = round(old_sl + delta, 4) if old_sl > 0 else 0.0
+        new_tp = round(old_tp + delta, 4) if old_tp > 0 else 0.0
+        sl_order_id = self._order_broker_id(sl_row)
+        tp_order_id = self._order_broker_id(tp_row)
+        result.update(
+            {
+                "attempted": True,
+                "reason": "rebased",
+                "stop_loss": new_sl,
+                "take_profit": new_tp,
+                "stop_loss_order_id": sl_order_id,
+                "take_profit_order_id": tp_order_id,
+            }
+        )
+        if not sl_order_id or not tp_order_id or new_sl <= 0 or new_tp <= 0:
+            return {**result, "ok": False, "reason": "missing_rebase_order_or_price"}
+        order_modifier = getattr(self, "order_modifier", None)
+        if not order_modifier:
+            return {**result, "ok": False, "reason": "order_modifier_unavailable"}
+
+        try:
+            sl_modify = order_modifier.update_stop_loss(sl_order_id, new_sl)
+        except Exception as exc:
+            sl_modify = {"ok": False, "error": str(exc), "exception": type(exc).__name__}
+        try:
+            tp_modify = order_modifier.update_take_profit(tp_order_id, new_tp)
+        except Exception as exc:
+            tp_modify = {"ok": False, "error": str(exc), "exception": type(exc).__name__}
+        result["modify_results"] = {
+            "stop_loss": dict(sl_modify or {}),
+            "take_profit": dict(tp_modify or {}),
+        }
+        if not (sl_modify or {}).get("ok") or not (tp_modify or {}).get("ok"):
+            return {**result, "ok": False, "reason": "broker_modify_failed"}
+
+        self._update_pb_order_row(
+            entry_row,
+            {"stop_loss": new_sl, "take_profit": new_tp, "sl_price": new_sl, "tp_price": new_tp},
+        )
+        self._update_pb_order_row(sl_row, {"limit_price": new_sl, "stop_loss": new_sl, "sl_price": new_sl})
+        self._update_pb_order_row(tp_row, {"limit_price": new_tp, "take_profit": new_tp, "tp_price": new_tp})
+        return result
+
+    def _reconcile_signal_exit_fill(
+        self,
+        *,
+        signal_record: dict[str, Any],
+        signal_id: str,
+        environment: str,
+        symbol: str,
+        trade_group_id: str = "",
+        trigger_order: dict | None = None,
+        preferred_role: str = "",
+    ) -> str:
+        if not signal_record or str(signal_record.get("status") or "").strip().lower() == "closed":
+            return ""
+        rows = self._signal_order_rows(signal_id=signal_id, environment=environment, trade_group_id=trade_group_id)
+        preferred = self._normalize_order_role(preferred_role)
+        filled_children: list[dict[str, Any]] = []
+        for row in rows:
+            role = self._normalize_order_role(self._order_role(row))
+            if role not in {"stop_loss", "take_profit", "close"}:
+                continue
+            if self._order_status(row).strip().lower() == "filled":
+                filled_children.append(row)
+        if preferred in {"stop_loss", "take_profit", "close"}:
+            filled_children.sort(key=lambda row: 0 if self._normalize_order_role(self._order_role(row)) == preferred else 1)
+        for child in filled_children:
+            role = self._normalize_order_role(self._order_role(child))
+            if self._update_signal_after_exit_fill(child, symbol, role, signal_record=signal_record):
+                return role
+        return ""
+
+    def _update_signal_after_entry_fill(self, order: dict, symbol: str, direction: str) -> str:
         service_mod = _service_mod()
         if not getattr(self, "pb", None):
-            return
-        signal_id = str(order.get("signal_id") or "").strip()
+            return ""
         coid = str(
             order.get("cOID")
             or order.get("coid")
@@ -280,32 +829,9 @@ class TradingServiceRuntimeOpsMixin:
         runtime_environment = str(service_mod.ENVIRONMENT or "live").strip().lower() or "live"
 
         try:
-            if not signal_id and (coid or order_id):
-                filters = []
-                if coid:
-                    safe_coid = self._escape_filter_value(coid)
-                    filters.append(
-                        f'unique_id = "{safe_coid}" && environment = "{self._escape_filter_value(runtime_environment)}"'
-                    )
-                    filters.append(
-                        f'entry_order_unique_id = "{safe_coid}" && environment = "{self._escape_filter_value(runtime_environment)}"'
-                    )
-                if order_id:
-                    safe_order_id = self._escape_filter_value(order_id)
-                    filters.append(
-                        f'order_id = "{safe_order_id}" && environment = "{self._escape_filter_value(runtime_environment)}"'
-                    )
-                    filters.append(
-                        f'broker_order_id = "{safe_order_id}" && environment = "{self._escape_filter_value(runtime_environment)}"'
-                    )
-                for filter_expr in filters:
-                    rows = self.pb.get_records("orders", filter=filter_expr, sort="-updated", per_page=1)
-                    if rows:
-                        signal_id = str((rows[0] or {}).get("signal_id") or "").strip()
-                        if signal_id:
-                            break
+            signal_id = self._resolve_signal_id_for_order(order, runtime_environment)
             if not signal_id:
-                return
+                return ""
 
             signal_record = self.pb.get_first_record(
                 "ibkr_signals",
@@ -315,10 +841,10 @@ class TradingServiceRuntimeOpsMixin:
                 ),
             )
             if not signal_record or not signal_record.get("id"):
-                return
+                return ""
             current_status = str(signal_record.get("status") or "").strip().lower()
-            if current_status in {"protected_active", "closed", "expired", "rejected"}:
-                return
+            if current_status in {"closed", "expired", "rejected"}:
+                return ""
             existing_extra = self._safe_extra(signal_record.get("extra"))
             trade_group_id = str(
                 existing_extra.get("bracket_group")
@@ -327,11 +853,50 @@ class TradingServiceRuntimeOpsMixin:
                 or (coid[6:] if coid.startswith("entry_") else "")
                 or ""
             ).strip()
+            closed_role = self._reconcile_signal_exit_fill(
+                signal_record=signal_record,
+                signal_id=signal_id,
+                environment=runtime_environment,
+                symbol=symbol,
+                trade_group_id=trade_group_id,
+                trigger_order=order,
+            )
+            if closed_role:
+                return closed_role
+            if current_status == "protected_active":
+                return ""
             protection_status = self._signal_protection_status(
                 signal_id=signal_id,
                 environment=runtime_environment,
                 trade_group_id=trade_group_id,
             )
+            actual_fill_price = self._first_positive_order_float(
+                order,
+                "avgPrice",
+                "avgFillPrice",
+                "fill_price",
+                "filled_price",
+                "lastFillPrice",
+                "price",
+            )
+            entry_rows = [
+                row
+                for row in self._signal_order_rows(
+                    signal_id=signal_id,
+                    environment=runtime_environment,
+                    trade_group_id=trade_group_id,
+                )
+                if self._normalize_order_role(self._order_role(row)) == "entry"
+            ]
+            if actual_fill_price > 0:
+                for entry_row in entry_rows:
+                    self._update_pb_order_row(
+                        entry_row,
+                        {
+                            "fill_price": actual_fill_price,
+                            "status": "Filled",
+                        },
+                    )
             if not bool(protection_status.get("complete")):
                 diagnostic = {}
                 handler = getattr(getattr(self, "order_lifecycle", None), "handle_protection_incomplete", None)
@@ -360,6 +925,8 @@ class TradingServiceRuntimeOpsMixin:
                     **existing_extra,
                     "entry_fill_detected_by": "order_tracker",
                     "entry_fill_broker_order_id": order_id,
+                    "entry_fill_price": actual_fill_price,
+                    "executed_price": actual_fill_price,
                     "entry_fill_status": str(order.get("status") or ""),
                     "entry_fill_direction": direction,
                     "entry_fill_symbol": symbol,
@@ -386,17 +953,103 @@ class TradingServiceRuntimeOpsMixin:
                         "extra": extra,
                     },
                 )
-                return
+                return ""
+            rebase_result = self._entry_fill_rebase_result(
+                order=order,
+                signal_record=signal_record,
+                signal_id=signal_id,
+                environment=runtime_environment,
+                trade_group_id=trade_group_id,
+                actual_fill_price=actual_fill_price,
+            )
+            if not bool(rebase_result.get("ok", True)):
+                diagnostic = {
+                    "status": "protection_incomplete",
+                    "reason": "protection_rebase_failed",
+                    "signal_id": signal_id,
+                    "symbol": symbol,
+                    "direction": direction,
+                    "protection_complete": False,
+                    "protection_rebase_result": rebase_result,
+                    "safe_action": "diagnostic_only_no_protected_active_claim",
+                    "recommended_action": "review_and_cancel_or_repair_unprotected_entry",
+                    "cancel_recommended": True,
+                }
+                handler = getattr(getattr(self, "order_lifecycle", None), "handle_protection_incomplete", None)
+                if callable(handler):
+                    try:
+                        lifecycle_diagnostic = handler(
+                            signal_id=signal_id,
+                            symbol=symbol,
+                            direction=direction,
+                            order=order,
+                            result={
+                                "order_ids": [
+                                    item
+                                    for item in (
+                                        rebase_result.get("stop_loss_order_id"),
+                                        rebase_result.get("take_profit_order_id"),
+                                    )
+                                    if item
+                                ],
+                                "bracket_group": trade_group_id,
+                            },
+                            reason="protection_rebase_failed",
+                        )
+                        if isinstance(lifecycle_diagnostic, dict):
+                            diagnostic = {**lifecycle_diagnostic, **diagnostic}
+                    except Exception:
+                        pass
+                extra = {
+                    **existing_extra,
+                    "entry_fill_detected_by": "order_tracker",
+                    "entry_fill_broker_order_id": order_id,
+                    "entry_fill_price": actual_fill_price,
+                    "entry_fill_rebase_delta": rebase_result.get("delta", 0.0),
+                    "executed_price": actual_fill_price,
+                    "entry_fill_status": str(order.get("status") or ""),
+                    "entry_fill_direction": direction,
+                    "entry_fill_symbol": symbol,
+                    "status_reason": "protection_rebase_failed",
+                    "protection_complete": False,
+                    "protection_incomplete": True,
+                    "protection_rebase_result": rebase_result,
+                    "protection_rebase_failed": diagnostic,
+                    "protection_incomplete_diagnostic": diagnostic,
+                    "missing_protection_roles": [],
+                    "protection_order_statuses": dict(protection_status.get("role_statuses") or {}),
+                    "protection_live_order_statuses": dict(protection_status.get("live_role_statuses") or {}),
+                    "protection_live_check_performed": bool(protection_status.get("live_check_performed")),
+                    "protection_live_coverage": dict(protection_status.get("live_coverage") or {}),
+                    "unverified_protection_roles": [],
+                    "protection_orders_checked": int(protection_status.get("orders_checked") or 0),
+                    "safety_cancel_recommended": True,
+                }
+                self.pb.update_record(
+                    "ibkr_signals",
+                    str(signal_record.get("id")),
+                    {
+                        "status": "protection_incomplete",
+                        "note": "protection_rebase_failed",
+                        "executed_price": actual_fill_price,
+                        "extra": extra,
+                    },
+                )
+                return ""
             extra = {
                 **existing_extra,
                 "entry_fill_detected_by": "order_tracker",
                 "entry_fill_broker_order_id": order_id,
+                "entry_fill_price": actual_fill_price,
+                "entry_fill_rebase_delta": rebase_result.get("delta", 0.0),
+                "executed_price": actual_fill_price,
                 "entry_fill_status": str(order.get("status") or ""),
                 "entry_fill_direction": direction,
                 "entry_fill_symbol": symbol,
                 "status_reason": "entry_filled_protection_expected",
                 "protection_complete": True,
                 "protection_incomplete": False,
+                "protection_rebase_result": rebase_result,
                 "missing_protection_roles": [],
                 "protection_order_statuses": dict(protection_status.get("role_statuses") or {}),
                 "protection_live_order_statuses": dict(protection_status.get("live_role_statuses") or {}),
@@ -412,11 +1065,173 @@ class TradingServiceRuntimeOpsMixin:
                 {
                     "status": "protected_active",
                     "note": "entry_filled_protection_expected",
+                    "executed_price": actual_fill_price,
+                    "stop_loss": rebase_result.get("stop_loss") or self._signal_price_value(signal_record, "stop_loss", "sl_price"),
+                    "take_profit": rebase_result.get("take_profit") or self._signal_price_value(signal_record, "take_profit", "tp_price"),
                     "extra": extra,
                 },
             )
         except Exception as exc:
             service_mod.logger.error("Failed to update signal after entry fill: %s", exc)
+        return ""
+
+    def _update_signal_after_exit_fill(
+        self,
+        order: dict,
+        symbol: str,
+        role: str,
+        *,
+        signal_record: dict[str, Any] | None = None,
+    ) -> bool:
+        service_mod = _service_mod()
+        if not getattr(self, "pb", None):
+            return True
+        runtime_environment = str(service_mod.ENVIRONMENT or "live").strip().lower() or "live"
+        normalized_role = self._normalize_order_role(role)
+        if normalized_role not in {"stop_loss", "take_profit", "close"}:
+            normalized_role = "take_profit"
+        status_reason = "closed_by_manual_close" if normalized_role == "close" else f"closed_by_{normalized_role}"
+        order_id = str(order.get("broker_order_id") or order.get("order_id") or order.get("orderId") or "").strip()
+        fill_price = self._first_nonempty_order_value(
+            order,
+            "avgPrice",
+            "avgFillPrice",
+            "fill_price",
+            "filled_price",
+            "lastFillPrice",
+            "price",
+        )
+        filled_qty = self._first_nonempty_order_value(
+            order,
+            "filledQuantity",
+            "filled_qty",
+            "filled",
+            "totalSize",
+            "quantity",
+        )
+
+        try:
+            signal_id = self._resolve_signal_id_for_order(order, runtime_environment)
+            if not signal_id:
+                return True
+
+            if not signal_record:
+                signal_record = self.pb.get_first_record(
+                    "ibkr_signals",
+                    filter=(
+                        f'signal_id = "{self._escape_filter_value(signal_id)}" && '
+                        f'environment = "{self._escape_filter_value(runtime_environment)}"'
+                    ),
+                )
+            if not signal_record or not signal_record.get("id"):
+                return True
+            current_status = str(signal_record.get("status") or "").strip().lower()
+            existing_extra = self._safe_extra(signal_record.get("extra"))
+            pb_exit_order = self._load_pb_order_for_event(order, runtime_environment)
+            exit_order_for_pnl = {**pb_exit_order, **order} if pb_exit_order else order
+            if pb_exit_order:
+                merged_extra = {
+                    **self._safe_extra(pb_exit_order.get("extra")),
+                    **self._safe_extra(order.get("extra")),
+                }
+                if merged_extra:
+                    exit_order_for_pnl["extra"] = merged_extra
+            if current_status == "closed":
+                trade_group_id = self._trade_group_id_for_exit(signal_record, exit_order_for_pnl)
+                pnl_result = self._exit_realized_pnl(
+                    signal_record=signal_record,
+                    exit_order=exit_order_for_pnl,
+                    signal_id=signal_id,
+                    environment=runtime_environment,
+                    trade_group_id=trade_group_id,
+                )
+                self._patch_exit_order_pnl(exit_order_for_pnl, pnl_result)
+                if pnl_result.get("ok"):
+                    self.pb.update_record(
+                        "ibkr_signals",
+                        str(signal_record.get("id")),
+                        {
+                            "extra": {
+                                **existing_extra,
+                                "realized_pnl": pnl_result.get("net_pnl", 0.0),
+                                "realized_net_pnl": pnl_result.get("net_pnl", 0.0),
+                                "realized_gross_pnl": pnl_result.get("gross_pnl", 0.0),
+                                "total_commission": pnl_result.get("commission", 0.0),
+                                "entry_commission": pnl_result.get("entry_commission", 0.0),
+                                "exit_commission": pnl_result.get("exit_commission", 0.0),
+                                "realized_pnl_pct": pnl_result.get("pnl_pct", 0.0),
+                                "realized_pnl_source": pnl_result.get("source", "computed_from_entry_exit_fills"),
+                                "realized_pnl_diagnostic": pnl_result,
+                                "pnl": pnl_result.get("net_pnl", 0.0),
+                            },
+                        },
+                    )
+                return False
+
+            trade_group_id = self._trade_group_id_for_exit(signal_record, exit_order_for_pnl)
+            pnl_result = self._exit_realized_pnl(
+                signal_record=signal_record,
+                exit_order=exit_order_for_pnl,
+                signal_id=signal_id,
+                environment=runtime_environment,
+                trade_group_id=trade_group_id,
+            )
+            self._patch_exit_order_pnl(exit_order_for_pnl, pnl_result)
+            extra = {
+                **existing_extra,
+                "status_reason": status_reason,
+                "closed_by": "order_tracker",
+                "closed_at": self._now_iso_for_signal_patch(),
+                "exit_fill_detected_by": "order_tracker",
+                "exit_fill_role": normalized_role,
+                "exit_fill_broker_order_id": order_id,
+                "exit_fill_status": str(order.get("status") or ""),
+                "exit_fill_symbol": symbol,
+                "exit_fill_side": str(order.get("side") or ""),
+                "exit_fill_order_type": str(order.get("orderType") or order.get("order_type") or ""),
+                "exit_fill_price": fill_price,
+                "exit_fill_quantity": filled_qty,
+                "exit_price": pnl_result.get("exit_price") or self._coerce_float(fill_price, 0.0),
+                "exit_quantity": pnl_result.get("quantity") or self._coerce_float(filled_qty, 0.0),
+                "realized_pnl": pnl_result.get("net_pnl", 0.0) if pnl_result.get("ok") else existing_extra.get("realized_pnl", 0.0),
+                "realized_net_pnl": pnl_result.get("net_pnl", 0.0) if pnl_result.get("ok") else existing_extra.get("realized_net_pnl", 0.0),
+                "realized_gross_pnl": pnl_result.get("gross_pnl", 0.0) if pnl_result.get("ok") else existing_extra.get("realized_gross_pnl", 0.0),
+                "total_commission": pnl_result.get("commission", 0.0) if pnl_result.get("ok") else existing_extra.get("total_commission", 0.0),
+                "entry_commission": pnl_result.get("entry_commission", 0.0) if pnl_result.get("ok") else existing_extra.get("entry_commission", 0.0),
+                "exit_commission": pnl_result.get("exit_commission", 0.0) if pnl_result.get("ok") else existing_extra.get("exit_commission", 0.0),
+                "realized_pnl_pct": pnl_result.get("pnl_pct", 0.0) if pnl_result.get("ok") else existing_extra.get("realized_pnl_pct", 0.0),
+                "realized_pnl_source": pnl_result.get("source", "computed_from_entry_exit_fills"),
+                "realized_pnl_diagnostic": pnl_result,
+                "pnl": pnl_result.get("net_pnl", 0.0) if pnl_result.get("ok") else existing_extra.get("pnl", 0.0),
+                "protection_active": False,
+                "protection_incomplete": False,
+                "safety_cancel_recommended": False,
+            }
+            self.pb.update_record(
+                "ibkr_signals",
+                str(signal_record.get("id")),
+                {
+                    "status": "closed",
+                    "note": status_reason,
+                    "extra": extra,
+                },
+            )
+            return True
+        except Exception as exc:
+            service_mod.logger.error("Failed to close signal after exit fill: %s", exc)
+        return True
+
+    def _apply_exit_fill_side_effects(self, symbol: str, role: str) -> None:
+        self.signal_processor.remove_position(symbol)
+        if role == "stop_loss":
+            self.order_lifecycle.increment_sl_count()
+            self.signal_processor.start_cooldown(
+                symbol,
+                self.signal_processor.cooldown_bars_after_sl(),
+                "cooldown_after_stop_loss",
+            )
+        else:
+            self.order_lifecycle.reset_sl_count()
 
     def _on_order_fill(self, order: dict):
         service_mod = _service_mod()
@@ -424,11 +1239,17 @@ class TradingServiceRuntimeOpsMixin:
         order_type = str(order.get("orderType") or order.get("order_type") or "").strip().upper()
         has_parent = bool(str(order.get("parentId") or order.get("parent_id") or "").strip())
         side = str(order.get("side") or "").strip().upper()
+        runtime_environment = str(service_mod.ENVIRONMENT or "live").strip().lower() or "live"
         role = "entry"
         if has_parent and order_type in {"STP", "STOP", "STOPLOSS"}:
             role = "stop_loss"
         elif has_parent:
             role = "take_profit"
+        resolved_role = self._resolve_order_role_for_fill_event(order, runtime_environment)
+        if resolved_role in {"stop_loss", "take_profit", "close"}:
+            role = resolved_role
+        elif not has_parent and str(order.get("cOID") or order.get("coid") or order.get("orderRef") or "").lower().startswith("close_"):
+            role = "close"
         service_mod.logger.info("Order filled: %s role=%s", symbol or order.get("ticker"), role)
         if not symbol:
             return
@@ -442,18 +1263,12 @@ class TradingServiceRuntimeOpsMixin:
                     "state": "filled_position",
                 },
             )
-            self._update_signal_after_entry_fill(order, symbol, direction)
+            closed_role = self._update_signal_after_entry_fill(order, symbol, direction)
+            if closed_role:
+                self._apply_exit_fill_side_effects(symbol, closed_role)
             return
-        self.signal_processor.remove_position(symbol)
-        if role == "stop_loss":
-            self.order_lifecycle.increment_sl_count()
-            self.signal_processor.start_cooldown(
-                symbol,
-                self.signal_processor.cooldown_bars_after_sl(),
-                "cooldown_after_stop_loss",
-            )
-        else:
-            self.order_lifecycle.reset_sl_count()
+        if self._update_signal_after_exit_fill(order, symbol, role):
+            self._apply_exit_fill_side_effects(symbol, role)
 
     def _on_order_cancel(self, order: dict):
         service_mod = _service_mod()

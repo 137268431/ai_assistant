@@ -41,7 +41,7 @@ DEFAULT_PARAMS = {
     "position_amount": 10000, "max_loss_per_trade": 150,
     "entry_atr_mult": 1.0, "sl_atr_mult": 2.0, "rr_ratio": 1.5,
     "exit_policy_profile": "setup_aware_hybrid_v1", "exit_policy_overrides": "",
-    "entry_limit_mode": "marketable_limit_dynamic",
+    "entry_limit_mode": "passive_limit_dynamic",
     "entry_limit_atr_mult": 0.30,
     "entry_limit_floor_bps": 15.0,
     "entry_limit_cap_bps": 30.0,

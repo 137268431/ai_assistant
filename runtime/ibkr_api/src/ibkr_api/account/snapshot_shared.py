@@ -147,6 +147,8 @@ def normalize_order_record(record: dict[str, Any]) -> dict[str, Any]:
         "filled_qty": filled_qty,
         "limit_price": to_float(record.get("limit_price") if record.get("limit_price") not in (None, "") else extra.get("limit_price")) or 0.0,
         "fill_price": to_float(record.get("fill_price") if record.get("fill_price") not in (None, "") else extra.get("fill_price")) or 0.0,
+        "commission": abs(to_float(record.get("commission") if record.get("commission") not in (None, "") else extra.get("commission")) or 0.0),
+        "commission_currency": _pick_first_non_empty(record.get("commission_currency"), extra.get("commission_currency"), "USD").upper(),
         "updated": updated,
         "updated_ms": _parse_time_ms(updated),
         "status_weight": _order_status_weight(status),
@@ -204,6 +206,8 @@ def _serialize_managed_order(order: dict[str, Any]) -> dict[str, Any]:
         "filled_qty": to_float(order.get("filled_qty")) or 0.0,
         "limit_price": to_float(order.get("limit_price")) or 0.0,
         "fill_price": to_float(order.get("fill_price")) or 0.0,
+        "commission": abs(to_float(order.get("commission")) or 0.0),
+        "commission_currency": to_text(order.get("commission_currency") or "USD").upper(),
         "updated": to_text(order.get("updated")),
     }
 

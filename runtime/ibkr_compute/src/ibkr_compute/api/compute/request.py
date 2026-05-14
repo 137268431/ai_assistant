@@ -102,6 +102,27 @@ def get_requested_symbols(payload=None):
     return api_app.normalize_symbols(requested)
 
 
+def get_requested_persist_signal_symbols(payload=None):
+    api_app = _api_app()
+    payload = payload if isinstance(payload, dict) else get_json_payload()
+    if "persist_signal_symbols" not in payload and "persist_signal_symbol" not in payload:
+        return None
+    requested = payload.get("persist_signal_symbols")
+    if requested is None:
+        requested = payload.get("persist_signal_symbol")
+    if isinstance(requested, str):
+        requested = requested.replace("\n", ",").split(",")
+    elif isinstance(requested, (list, tuple, set)):
+        items = []
+        for value in requested:
+            if isinstance(value, str):
+                items.extend(value.replace("\n", ",").split(","))
+            else:
+                items.append(value)
+        requested = items
+    return api_app.normalize_symbols(requested)
+
+
 def is_environment_compute_enabled(environment: str) -> bool:
     api_app = _api_app()
     runtime_environment = str(environment or "").strip().lower()
@@ -126,6 +147,7 @@ def build_compute_execution_plan(payload=None) -> dict:
     payload = payload if isinstance(payload, dict) else get_json_payload()
     source = str(payload.get("source") or "").strip().lower()
     requested_symbols = get_requested_symbols(payload)
+    persist_signal_symbols = get_requested_persist_signal_symbols(payload)
     requested_environments = get_requested_environments(payload)
     enabled_environments = [env for env in requested_environments if is_environment_compute_enabled(env)]
     capture_signals = _coerce_payload_bool(payload.get("capture_signals"), False)
@@ -155,6 +177,7 @@ def build_compute_execution_plan(payload=None) -> dict:
         "payload": payload,
         "source": source,
         "persist_signals": should_persist_compute_signals(payload),
+        "persist_signal_symbols": persist_signal_symbols,
         "capture_signals": capture_signals,
         "requested_symbols": requested_symbols,
         "requested_environments": requested_environments,

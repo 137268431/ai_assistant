@@ -314,6 +314,8 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
             config_value=config_value,
             console_base_url=console_base_url,
             startup_chat_id=startup_chat_id,
+            get_state_payload=lambda state_key, environment: get_state_payload(state_key, environment, date=time_strings()["date"]),
+            upsert_state=lambda key, environment, data, date: pb.upsert_state(key, environment, data, date=date),
         )
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)

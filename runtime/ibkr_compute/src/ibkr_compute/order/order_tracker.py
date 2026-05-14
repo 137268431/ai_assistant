@@ -95,6 +95,100 @@ class OrderTracker:
     def _normalize_text(value: Any) -> str:
         return str(value or "").strip()
 
+    @classmethod
+    def _normalize_trade_direction(cls, value: Any) -> str:
+        normalized = cls._normalize_text(value).lower()
+        return normalized if normalized in {"long", "short"} else ""
+
+    @classmethod
+    def _direction_from_identifier(cls, *values: Any, allow_signal_suffix: bool = False) -> str:
+        for value in values:
+            text = cls._normalize_text(value).lower()
+            if not text:
+                continue
+            normalized = text
+            for separator in ("-", ":", "/", ".", " "):
+                normalized = normalized.replace(separator, "_")
+            tokens = [token for token in normalized.split("_") if token]
+            direction_tokens = [(index, token) for index, token in enumerate(tokens) if token in {"long", "short"}]
+            if direction_tokens:
+                return direction_tokens[-1][1]
+            if allow_signal_suffix and tokens:
+                if tokens[-1] == "l":
+                    return "long"
+                if tokens[-1] == "s":
+                    return "short"
+        return ""
+
+    @classmethod
+    def _record_identifier_direction(cls, record: Optional[Dict[str, Any]]) -> str:
+        if not isinstance(record, dict):
+            return ""
+        return cls._direction_from_identifier(
+            record.get("trade_group_id"),
+            record.get("entry_order_unique_id"),
+            record.get("unique_id"),
+        ) or cls._direction_from_identifier(record.get("signal_id"), allow_signal_suffix=True)
+
+    @classmethod
+    def _record_explicit_direction(cls, record: Optional[Dict[str, Any]]) -> str:
+        if not isinstance(record, dict):
+            return ""
+        return cls._normalize_trade_direction(record.get("position_side")) or cls._normalize_trade_direction(record.get("direction"))
+
+    @classmethod
+    def _position_side_from_close_order_side(cls, side: Any) -> str:
+        normalized_side = cls._normalize_text(side).upper()
+        if normalized_side == "SELL":
+            return "long"
+        if normalized_side == "BUY":
+            return "short"
+        return ""
+
+    @classmethod
+    def _infer_position_side(
+        cls,
+        *,
+        side: Any,
+        role: Any,
+        parent_id: Any,
+        coid: Any,
+        trade_group_id: Any,
+        entry_order_unique_id: Any,
+        signal_id: Any,
+        existing_order: Optional[Dict[str, Any]],
+        parent_record: Optional[Dict[str, Any]],
+    ) -> str:
+        identity_direction = cls._direction_from_identifier(
+            coid,
+            trade_group_id,
+            entry_order_unique_id,
+        ) or cls._direction_from_identifier(signal_id, allow_signal_suffix=True)
+        if identity_direction:
+            return identity_direction
+
+        for record in (existing_order, parent_record):
+            identity_direction = cls._record_identifier_direction(record)
+            if identity_direction:
+                return identity_direction
+
+        parent_direction = cls._record_explicit_direction(parent_record)
+        if parent_direction:
+            return parent_direction
+
+        existing_direction = cls._record_explicit_direction(existing_order)
+        if existing_direction:
+            return existing_direction
+
+        normalized_side = cls._normalize_text(side).upper()
+        normalized_role = cls._normalize_text(role).lower()
+        is_exit_leg = bool(cls._normalize_text(parent_id)) or normalized_role in {"take_profit", "stop_loss"}
+        if normalized_side == "BUY":
+            return "short" if is_exit_leg else "long"
+        if normalized_side == "SELL":
+            return "long" if is_exit_leg else "short"
+        return ""
+
     @staticmethod
     def _extract_live_symbol(order: Dict) -> str:
         return str(order.get("ticker") or order.get("symbol") or order.get("contractDesc") or "").strip().upper()
@@ -240,6 +334,11 @@ class OrderTracker:
 
         snapshot = self.broker.get_order_snapshot(normalized)
         if snapshot:
+            fill_payload = dict(self._build_fill_history_index().get(normalized) or {})
+            if fill_payload:
+                merged = dict(snapshot)
+                merged.update({key: value for key, value in fill_payload.items() if value not in (None, "")})
+                return merged
             return snapshot
 
         for order in self.get_live_orders():
@@ -600,6 +699,72 @@ class OrderTracker:
         )
         return None
 
+    def _find_pb_entry_for_close_order(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        quantity: Any,
+        runtime_environment: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Best-effort link for broker-side market closes that lack PB identity."""
+        if not getattr(self, "pb_client", None):
+            return None
+        normalized_symbol = self._normalize_text(symbol).upper()
+        position_side = self._position_side_from_close_order_side(side)
+        if not normalized_symbol or not position_side:
+            return None
+
+        try:
+            rows = self.pb_client.get_records(
+                "orders",
+                filter=(
+                    f'symbol = "{self._escape_filter_value(normalized_symbol)}" && '
+                    f'environment = "{self._escape_filter_value(runtime_environment)}" && '
+                    f'role = "entry"'
+                ),
+                sort="-updated,-created",
+                per_page=25,
+            )
+        except Exception as exc:
+            logger.debug("Close-order PB entry lookup failed: symbol=%s error=%s", normalized_symbol, exc)
+            return None
+
+        close_qty = self._to_float(quantity, 0.0)
+        candidates: list[Dict[str, Any]] = []
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            unique_id = self._normalize_text(row.get("unique_id"))
+            if unique_id.lower().startswith("close_"):
+                continue
+            row_side = self._record_explicit_direction(row) or self._record_identifier_direction(row)
+            if row_side and row_side != position_side:
+                continue
+            row_qty = self._to_float(
+                row.get("filled_qty")
+                if row.get("filled_qty") not in (None, "")
+                else row.get("quantity"),
+                0.0,
+            )
+            if close_qty > 0 and row_qty > 0 and close_qty - row_qty > 1e-6:
+                continue
+            status = self._normalize_text(row.get("status")).lower()
+            if status not in {"filled", "closed", "protected_active"}:
+                continue
+            candidates.append(dict(row))
+
+        if not candidates:
+            return None
+        candidates.sort(
+            key=lambda item: (
+                1 if self._normalize_text(item.get("status")).lower() == "filled" else 0,
+                self._normalize_text(item.get("updated") or item.get("created")),
+            ),
+            reverse=True,
+        )
+        return candidates[0]
+
     def _stamp_known_order(self, order: Dict, *, seen_live: bool) -> Dict:
         stamped = dict(order or {})
         stamped["_seen_live"] = bool(seen_live)
@@ -865,10 +1030,10 @@ class OrderTracker:
 
             if hasattr(self.pb_client, "upsert_order"):
                 normalized_side = str(order.get("side", "")).upper()
-                direction = "long" if normalized_side == "BUY" else "short" if normalized_side == "SELL" else ""
                 quantity = order.get("totalSize", order.get("quantity", 0))
                 fill_qty = order.get("filledQuantity", 0)
                 avg_price = order.get("avgPrice", 0)
+                commission = abs(self._to_float(order.get("commission"), 0.0))
                 limit_price = self._to_float(order.get("price", 0), 0.0)
                 stop_trigger_price = self._to_float(order.get("auxPrice", order.get("stop_price", 0)), 0.0)
                 parent_id = order.get("parentId") or ""
@@ -876,6 +1041,8 @@ class OrderTracker:
                 upper_type = str(order_type).upper()
                 if not parent_id:
                     role = "entry"
+                    if coid.lower().startswith("close_"):
+                        role = "close"
                 elif upper_type in ("STP", "STOP", "STOPLOSS"):
                     role = "stop_loss"
                 else:
@@ -901,6 +1068,8 @@ class OrderTracker:
                 parent_order_unique_id = ""
                 canonical_unique_id = entry_order_unique_id if not parent_id else coid
                 existing_order = None
+                parent_record = None
+                linked_close_entry = None
 
                 if coid:
                     coid_order_filter = (
@@ -935,6 +1104,28 @@ class OrderTracker:
                         trade_group_id = str(parent_record.get("trade_group_id") or parent_record.get("entry_order_unique_id") or trade_group_id).strip()
                         entry_order_unique_id = str(parent_record.get("entry_order_unique_id") or parent_order_unique_id or entry_order_unique_id).strip()
                         signal_id = signal_id or str(parent_record.get("signal_id") or "").strip()
+                elif not parent_id and role in {"entry", "close"} and upper_type in {"MKT", "MARKET"}:
+                    linked_close_entry = self._find_pb_entry_for_close_order(
+                        symbol=symbol,
+                        side=normalized_side,
+                        quantity=quantity,
+                        runtime_environment=runtime_environment,
+                    )
+                    if linked_close_entry:
+                        role = "close"
+                        parent_order_unique_id = str(linked_close_entry.get("unique_id") or "").strip()
+                        trade_group_id = str(
+                            linked_close_entry.get("trade_group_id")
+                            or linked_close_entry.get("entry_order_unique_id")
+                            or parent_order_unique_id
+                            or trade_group_id
+                        ).strip()
+                        entry_order_unique_id = str(
+                            linked_close_entry.get("entry_order_unique_id")
+                            or parent_order_unique_id
+                            or entry_order_unique_id
+                        ).strip()
+                        signal_id = signal_id or str(linked_close_entry.get("signal_id") or "").strip()
 
                 if not canonical_unique_id:
                     canonical_unique_id = order_id
@@ -943,12 +1134,49 @@ class OrderTracker:
                 if not entry_order_unique_id:
                     entry_order_unique_id = canonical_unique_id
 
+                position_side = self._infer_position_side(
+                    side=normalized_side,
+                    role=role,
+                    parent_id=parent_id,
+                    coid=coid,
+                    trade_group_id=trade_group_id,
+                    entry_order_unique_id=entry_order_unique_id,
+                    signal_id=signal_id,
+                    existing_order=existing_order,
+                    parent_record=parent_record,
+                )
+                if role == "close":
+                    position_side = (
+                        self._record_explicit_direction(existing_order)
+                        or self._record_explicit_direction(linked_close_entry)
+                        or self._position_side_from_close_order_side(normalized_side)
+                        or position_side
+                    )
+
                 extra = {
                     "source": "order_tracker",
                     "seen_live": bool(order.get("_seen_live")),
                 }
                 if coid:
                     extra["coid"] = coid
+                if role == "close":
+                    extra.update(
+                        {
+                            "close_order": True,
+                            "close_link_source": "existing_order" if existing_order else ("symbol_side_quantity" if linked_close_entry else "client_order_id"),
+                            "linked_entry_order_unique_id": entry_order_unique_id,
+                            "linked_trade_group_id": trade_group_id,
+                            "close_side": normalized_side,
+                        }
+                    )
+                if commission:
+                    extra.update(
+                        {
+                            "commission": commission,
+                            "ibkr_commission": commission,
+                            "commission_currency": str(order.get("commissionCurrency") or "USD"),
+                        }
+                    )
                 if order.get("_status_inferred"):
                     extra["status_inferred"] = True
                     extra["status_inferred_reason"] = str(order.get("_status_inferred_reason") or "")
@@ -959,8 +1187,8 @@ class OrderTracker:
                     "broker_order_id": order_id,
                     "order_type": order_type,
                     "symbol": symbol,
-                    "direction": direction,
-                    "position_side": direction,
+                    "direction": position_side,
+                    "position_side": position_side,
                     "trade_group_id": trade_group_id,
                     "entry_order_unique_id": entry_order_unique_id,
                     "parent_order_unique_id": parent_order_unique_id,
@@ -972,6 +1200,7 @@ class OrderTracker:
                     "status": mapped_status,
                     "filled_qty": fill_qty,
                     "fill_price": avg_price,
+                    "commission": commission,
                     "us_time": now_str,
                     "bar_time_ms": int(time.time() * 1000),
                     "extra": extra,

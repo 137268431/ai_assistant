@@ -78,14 +78,9 @@
                     <div class="section-kicker">History</div>
                     <div class="section-title">历史订单</div>
                 </div>
+                <div class="section-copy mono" id="historyMeta">--</div>
             </div>
-            <div class="surface-card" style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;">
-                <div>
-                    <div class="summary-label">完整订单历史</div>
-                    <div class="ticket-copy" style="margin-top:6px;">按交易组查看完整的 entry / TP / SL 链路、成交时间线和盈亏记录。</div>
-                </div>
-                <button class="action-btn view" type="button" onclick="openHistoryOrdersPage()" style="white-space:nowrap;flex-shrink:0;">打开订单页 →</button>
-            </div>
+            <div id="historyArea"></div>
         </div>
     </div>
 
@@ -412,7 +407,11 @@
         }
 
         function badgeClass(kind) {
-            const text = String(kind || '').toLowerCase();
+            const text = String(kind || '').toLowerCase().replace(/[\s_-]+/g, '');
+            if (text === 'filled' || text === 'executed') return 'badge filled';
+            if (text === 'cancelled' || text === 'canceled' || text === 'pendingcancel') return 'badge canceled';
+            if (text === 'closed') return 'badge closed';
+            if (text === 'inactive' || text === 'rejected') return 'badge rejected';
             if (text === 'long' || text === 'buy' || text === 'authenticated' || text === 'ready') return 'badge long';
             if (text === 'short' || text === 'sell' || text === 'offline' || text === 'error') return 'badge short';
             if (text === 'warning' || text === 'pending' || text === 'submitted') return 'badge warn';
@@ -599,14 +598,74 @@
             });
         }
 
+        function normalizeTradeDirection(value) {
+            const normalized = String(value || '').trim().toLowerCase();
+            if (['long', 'buy'].includes(normalized)) return 'long';
+            if (['short', 'sell'].includes(normalized)) return 'short';
+            return '';
+        }
+
+        function inferDirectionFromIdentifiers(...values) {
+            for (const value of values) {
+                const text = String(value || '').trim().toLowerCase();
+                if (!text) continue;
+                const tokens = text.replace(/[-:/.\s]+/g, '_').split('_').filter(Boolean);
+                const directionTokens = tokens.filter((token) => token === 'long' || token === 'short');
+                if (directionTokens.length) return directionTokens[directionTokens.length - 1];
+                const last = tokens[tokens.length - 1];
+                if (last === 'l') return 'long';
+                if (last === 's') return 'short';
+            }
+            return '';
+        }
+
+        function inferDirectionFromOrderSide(order) {
+            const side = getOrderSideLabel(order);
+            if (!['BUY', 'SELL'].includes(side)) return '';
+            const role = getOrderRole(order);
+            const hasParent = Boolean(String(order?.parent_id || order?.parent_order_id || order?.parentPermId || '').trim());
+            const isExitLeg = hasParent || role === 'take_profit' || role === 'stop_loss';
+            if (side === 'BUY') return isExitLeg ? 'short' : 'long';
+            if (side === 'SELL') return isExitLeg ? 'long' : 'short';
+            return '';
+        }
+
         function getOrderChainDirection(group, orders) {
-            const rawDirection = String(group?.direction || group?.trade_direction || '').trim().toLowerCase();
-            if (['long', 'buy'].includes(rawDirection)) return 'long';
-            if (['short', 'sell'].includes(rawDirection)) return 'short';
-            const entryOrder = getSortedOrderLegs(orders).find((order) => getOrderRole(order) === 'entry');
-            const side = getOrderSideLabel(entryOrder);
-            if (side === 'BUY') return 'long';
-            if (side === 'SELL') return 'short';
+            const identifierDirection = inferDirectionFromIdentifiers(
+                group?.trade_group_id,
+                group?.entry_order_unique_id,
+                group?.group_key,
+                group?.signal_id
+            );
+            if (identifierDirection) return identifierDirection;
+            const rawDirection = normalizeTradeDirection(group?.direction || group?.trade_direction || group?.position_side);
+            if (rawDirection) return rawDirection;
+            const sortedOrders = getSortedOrderLegs(orders);
+            for (const order of sortedOrders) {
+                const pbContext = order?.pb_context || {};
+                const orderIdentifierDirection = inferDirectionFromIdentifiers(
+                    order?.trade_group_id,
+                    order?.entry_order_unique_id,
+                    order?.client_order_id,
+                    order?.unique_id,
+                    pbContext.trade_group_id,
+                    pbContext.entry_order_unique_id,
+                    order?.signal_id,
+                    pbContext.signal_id
+                );
+                if (orderIdentifierDirection) return orderIdentifierDirection;
+            }
+            const entryOrder = sortedOrders.find((order) => getOrderRole(order) === 'entry');
+            const entryDirection = normalizeTradeDirection(entryOrder?.position_side || entryOrder?.direction) || inferDirectionFromOrderSide(entryOrder);
+            if (entryDirection) return entryDirection;
+            for (const order of sortedOrders) {
+                const sideDirection = inferDirectionFromOrderSide(order);
+                if (sideDirection) return sideDirection;
+            }
+            for (const order of sortedOrders) {
+                const fallbackDirection = normalizeTradeDirection(order?.position_side || order?.direction);
+                if (fallbackDirection) return fallbackDirection;
+            }
             return '';
         }
 
@@ -629,6 +688,148 @@
             if (triggerText) segments.push(`Stop ${triggerText}`);
             if (!segments.length && String(order?.order_type || '').toUpperCase().includes('MKT')) return 'MKT';
             return segments.join(' / ') || '数据缺失';
+        }
+
+        function getOrderCommissionValue(order) {
+            const raw = order?.raw || {};
+            const pbContext = order?.pb_context || {};
+            return [
+                order?.commission,
+                order?.ibkr_commission,
+                raw.commission,
+                raw.ibkr_commission,
+                raw.commissionAmount,
+                raw.commission_amount,
+                pbContext.pb_commission,
+            ].map((item) => Number(item)).find((item) => Number.isFinite(item) && Math.abs(item) > 0) || 0;
+        }
+
+        function formatOrderCommission(order) {
+            const raw = order?.raw || {};
+            const pbContext = order?.pb_context || {};
+            const value = getOrderCommissionValue(order);
+            if (!Number.isFinite(value) || Math.abs(value) <= 0) return '--';
+            const currency = String(firstDefined(
+                order?.commission_currency,
+                raw.commissionCurrency,
+                raw.commission_currency,
+                pbContext.pb_commission_currency,
+                order?.currency,
+                'USD'
+            ) || 'USD').trim().toUpperCase();
+            const text = Math.abs(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+            return currency === 'USD' ? `$${text}` : `${currency} ${text}`;
+        }
+
+        function getLiveOrderClientId(order) {
+            const raw = order?.raw || {};
+            return String(firstDefined(order?.client_order_id, order?.cOID, order?.coid, order?.order_ref, order?.orderRef, raw.cOID, raw.coid, raw.orderRef, raw.order_ref, '')).trim();
+        }
+
+        function getLiveOrderParentId(order) {
+            const raw = order?.raw || {};
+            return String(firstDefined(order?.parent_id, order?.parentId, order?.parent_order_id, raw.parentId, raw.parent_id, '')).trim();
+        }
+
+        function getLiveOrderId(order) {
+            const raw = order?.raw || {};
+            return String(firstDefined(order?.order_id, order?.orderId, order?.id, raw.orderId, raw.order_id, raw.id, '')).trim();
+        }
+
+        function getLiveOrderOcaGroup(order) {
+            const raw = order?.raw || {};
+            return String(firstDefined(order?.oca_group, order?.ocaGroup, raw.ocaGroup, raw.oca_group, '')).trim();
+        }
+
+        function getProtectionAliasValues(order) {
+            const pbContext = order?.pb_context || {};
+            return [
+                getLiveOrderClientId(order),
+                getLiveOrderOcaGroup(order),
+                order?.trade_group_id,
+                order?.entry_order_unique_id,
+                order?.parent_order_unique_id,
+                order?.sibling_order_unique_id,
+                pbContext.trade_group_id,
+                pbContext.entry_order_unique_id,
+                pbContext.parent_order_unique_id,
+                pbContext.sibling_order_unique_id,
+            ].map((value) => String(value || '').trim()).filter(Boolean);
+        }
+
+        function buildPositionGroupAliases(position) {
+            const relation = position?.relation || {};
+            const seeds = [relation.trade_group_id, relation.entry_order_unique_id].map((value) => String(value || '').trim()).filter(Boolean);
+            const aliases = [];
+            seeds.forEach((value) => {
+                if (!aliases.includes(value)) aliases.push(value);
+                if (value.startsWith('entry_')) {
+                    const stripped = value.slice('entry_'.length);
+                    if (stripped && !aliases.includes(stripped)) aliases.push(stripped);
+                } else {
+                    const prefixed = `entry_${value}`;
+                    if (value && !aliases.includes(prefixed)) aliases.push(prefixed);
+                }
+            });
+            return aliases;
+        }
+
+        function liveOrderMatchesAliases(order, aliases) {
+            if (!aliases.length) return false;
+            const values = getProtectionAliasValues(order);
+            return values.some((value) => aliases.some((alias) => value === alias || value.endsWith(alias) || value.includes(alias)));
+        }
+
+        function isProtectionLiveOrder(order) {
+            const role = getOrderRole(order);
+            const clientId = getLiveOrderClientId(order).toLowerCase();
+            return Boolean(
+                getLiveOrderParentId(order)
+                || ['take_profit', 'stop_loss', 'repair_tp', 'repair_sl'].includes(role)
+                || clientId.startsWith('tp_')
+                || clientId.startsWith('sl_')
+            );
+        }
+
+        function liveOrderCloseSideMatchesPosition(order, position) {
+            const qty = Number(position?.quantity || 0);
+            const expected = qty > 0 || position?.direction === 'long' ? 'SELL' : qty < 0 || position?.direction === 'short' ? 'BUY' : '';
+            const side = getOrderSideLabel(order);
+            return !expected || !side || side === expected;
+        }
+
+        function collectPositionProtectionOrderIds(position) {
+            const symbol = String(position?.symbol || '').trim().toUpperCase();
+            const aliases = buildPositionGroupAliases(position);
+            const sources = [];
+            if (Array.isArray(latestSnapshot?.live_open_orders)) sources.push(...latestSnapshot.live_open_orders);
+            (Array.isArray(latestSnapshot?.live_order_groups) ? latestSnapshot.live_order_groups : []).forEach((group) => {
+                if (Array.isArray(group?.orders)) sources.push(...group.orders);
+            });
+            const ids = [];
+            sources.forEach((order) => {
+                const orderId = getLiveOrderId(order);
+                if (!orderId || ids.includes(orderId)) return;
+                const orderSymbol = String(order?.symbol || order?.ticker || order?.raw?.ticker || '').trim().toUpperCase();
+                if (symbol && orderSymbol && orderSymbol !== symbol) return;
+                if (!isProtectionLiveOrder(order)) return;
+                if (!liveOrderCloseSideMatchesPosition(order, position)) return;
+                if (aliases.length && liveOrderMatchesAliases(order, aliases)) {
+                    ids.push(orderId);
+                    return;
+                }
+                if (!aliases.length || getLiveOrderParentId(order)) {
+                    ids.push(orderId);
+                }
+            });
+            return ids;
+        }
+
+        async function confirmAccountAction(options, fallbackMessage) {
+            if (typeof showConfirmDialog === 'function') {
+                return showConfirmDialog(options);
+            }
+            return window.confirm(fallbackMessage || options.message || options.title || '确认操作？');
         }
 
 
@@ -660,6 +861,217 @@
                     ? reconciliation.stale_pb_groups
                     : (Array.isArray(snapshot?.pb_only_order_groups) ? snapshot.pb_only_order_groups : []);
             return groups.map((group) => ({ ...group, authority: 'pb_stale', match_state: 'pb_stale', is_pb_shadow: true }));
+        }
+
+        function getStoredHistoryGroups(snapshot) {
+            const managedGroups = Array.isArray(snapshot?.managed_order_groups) ? snapshot.managed_order_groups : [];
+            const staleGroups = getStalePbGroups(snapshot);
+            const byKey = new Map();
+            [...managedGroups, ...staleGroups].forEach((group) => {
+                const key = String(group?.trade_group_id || group?.entry_order_unique_id || group?.group_key || '').trim();
+                if (!key) return;
+                const current = byKey.get(key);
+                const currentMs = Number(current?.latest_updated_ms || 0);
+                const nextMs = Number(group?.latest_updated_ms || parseTimeValue(group?.latest_updated) || 0);
+                if (!current || nextMs >= currentMs) {
+                    byKey.set(key, {
+                        ...group,
+                        latest_updated_ms: nextMs,
+                    });
+                }
+            });
+            return Array.from(byKey.values()).sort((a, b) => {
+                const scoreA = (a?.has_open_exposure ? 1000 : 0) + (a?.has_active_order ? 100 : 0) + (a?.broker_matched ? 10 : 0);
+                const scoreB = (b?.has_open_exposure ? 1000 : 0) + (b?.has_active_order ? 100 : 0) + (b?.broker_matched ? 10 : 0);
+                if (scoreA !== scoreB) return scoreB - scoreA;
+                return Number(b?.latest_updated_ms || 0) - Number(a?.latest_updated_ms || 0);
+            });
+        }
+
+        function getStoredOrderSideLabel(order, group) {
+            const direct = getOrderSideLabel(order);
+            if (direct) return direct;
+            const direction = getOrderChainDirection(group, group?.orders || []);
+            const role = getOrderRole(order);
+            if (direction === 'long') return role === 'entry' ? 'BUY' : 'SELL';
+            if (direction === 'short') return role === 'entry' ? 'SELL' : 'BUY';
+            return '';
+        }
+
+        function getStoredOrderQuantity(order) {
+            return Number(firstDefined(order?.quantity, order?.total_quantity, order?.pb_quantity, 0)) || 0;
+        }
+
+        function getStoredOrderFilledQty(order) {
+            return Number(firstDefined(order?.filled_qty, order?.filled_quantity, order?.pb_filled_qty, 0)) || 0;
+        }
+
+        function getStoredOrderExecutionStatus(order) {
+            const statusText = firstDefined(order?.status_key, order?.status);
+            const normalized = String(statusText || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+            const quantity = getStoredOrderQuantity(order);
+            const filled = getStoredOrderFilledQty(order);
+            if (normalized === 'closed' && quantity > 0 && filled >= quantity - 0.0001) {
+                return 'Filled';
+            }
+            return statusText;
+        }
+
+        function getStoredOrderLifecycleLabel(status) {
+            const normalized = String(status || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+            const map = {
+                active: '链活跃',
+                planned: '计划中',
+                closed: '链已关闭',
+                orphaned: '孤儿单',
+                stale: '已过期',
+                cancelled: '链已取消',
+                canceled: '链已取消',
+            };
+            return map[normalized] || String(status || '').trim().toUpperCase();
+        }
+
+        function lifecycleBadgeClass(status) {
+            const normalized = String(status || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+            if (normalized === 'active') return 'badge long';
+            if (normalized === 'planned') return 'badge warn';
+            if (normalized === 'closed') return 'badge closed';
+            if (['orphaned', 'stale', 'cancelled', 'canceled'].includes(normalized)) return 'badge rejected';
+            return 'badge neutral';
+        }
+
+        function getStoredOrderRemainingQty(order) {
+            return Math.max(0, getStoredOrderQuantity(order) - getStoredOrderFilledQty(order));
+        }
+
+        function formatStoredOrderPrice(order) {
+            const fillPrice = Number(firstDefined(order?.fill_price, order?.avg_price, 0)) || 0;
+            const limitPrice = Number(firstDefined(order?.limit_price, order?.price, 0)) || 0;
+            const triggerPrice = Number(firstDefined(order?.trigger_price, 0)) || 0;
+            const isStopOrder = getOrderRole(order) === 'stop_loss';
+            const parts = [];
+            if (fillPrice > 0) parts.push(`Fill ${formatMoney(fillPrice)}`);
+            if (triggerPrice > 0) parts.push(`Stop ${formatMoney(triggerPrice)}`);
+            if (limitPrice > 0) parts.push(`${isStopOrder && triggerPrice <= 0 ? 'Stop' : 'Lmt'} ${formatMoney(limitPrice)}`);
+            return parts.join(' / ') || '--';
+        }
+
+        function getStoredOrderRoleKey(order) {
+            return String(getOrderRole(order) || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+        }
+
+        function isStoredExitRole(role) {
+            return ['take_profit', 'stop_loss', 'repair_tp', 'repair_sl', 'close', 'manual_close', 'market_close', 'reverse_close'].includes(role);
+        }
+
+        function getStoredOrderFillPriceValue(order) {
+            return [order?.fill_price, order?.avg_price, order?.limit_price, order?.price]
+                .map((item) => Number(item))
+                .find((item) => Number.isFinite(item) && item > 0) || 0;
+        }
+
+        function isStoredExitOrder(order, group, direction) {
+            const role = getStoredOrderRoleKey(order);
+            if (isStoredExitRole(role)) return true;
+            if (role === 'entry') return false;
+            const side = getStoredOrderSideLabel(order, group);
+            if (direction === 'long') return side === 'SELL';
+            if (direction === 'short') return side === 'BUY';
+            return false;
+        }
+
+        function computeStoredGroupExposure(group, orders) {
+            const legs = getSortedOrderLegs(orders || group?.orders || []);
+            const direction = getOrderChainDirection(group, legs);
+            let entryFilled = 0;
+            let exitFilled = 0;
+            legs.forEach((order) => {
+                const filled = Math.abs(getStoredOrderFilledQty(order));
+                if (filled <= 0) return;
+                const role = getStoredOrderRoleKey(order);
+                if (role === 'entry') {
+                    entryFilled += filled;
+                } else if (isStoredExitOrder(order, group, direction)) {
+                    exitFilled += filled;
+                }
+            });
+            return {
+                entryFilled,
+                exitFilled,
+                openQuantity: Math.max(0, entryFilled - exitFilled),
+                hasOpenExposure: entryFilled > exitFilled + 0.0001,
+            };
+        }
+
+        function computeStoredGroupPnl(group, orders) {
+            const legs = getSortedOrderLegs(orders || group?.orders || []);
+            const direction = getOrderChainDirection(group, legs);
+            const entryOrder = legs.find((order) => getStoredOrderRoleKey(order) === 'entry' && getStoredOrderFilledQty(order) > 0)
+                || legs.find((order) => getStoredOrderRoleKey(order) === 'entry');
+            const entryPrice = getStoredOrderFillPriceValue(entryOrder);
+            const entryQty = Math.abs(getStoredOrderFilledQty(entryOrder));
+            if (!entryOrder || !direction || entryPrice <= 0 || entryQty <= 0) return null;
+
+            let grossPnl = 0;
+            let exitQty = 0;
+            let weightedExitPrice = 0;
+            let commission = Math.abs(getOrderCommissionValue(entryOrder));
+            legs.forEach((order) => {
+                if (!isStoredExitOrder(order, group, direction)) return;
+                const qty = Math.abs(getStoredOrderFilledQty(order));
+                const exitPrice = getStoredOrderFillPriceValue(order);
+                if (qty <= 0 || exitPrice <= 0) return;
+                const perShare = direction === 'short' ? entryPrice - exitPrice : exitPrice - entryPrice;
+                grossPnl += perShare * qty;
+                exitQty += qty;
+                weightedExitPrice += exitPrice * qty;
+                commission += Math.abs(getOrderCommissionValue(order));
+            });
+            if (exitQty <= 0) {
+                return {
+                    realized: false,
+                    entryQty,
+                    openQuantity: entryQty,
+                    commission,
+                };
+            }
+            return {
+                realized: true,
+                entryQty,
+                exitQty,
+                openQuantity: Math.max(0, entryQty - exitQty),
+                entryPrice,
+                avgExitPrice: weightedExitPrice / exitQty,
+                grossPnl,
+                commission,
+                netPnl: grossPnl - commission,
+                commissionKnown: commission > 0,
+            };
+        }
+
+        function renderStoredPnlCell(model) {
+            if (!model || !model.realized) {
+                return '<span class="order-muted">未实现</span>';
+            }
+            const value = model.commissionKnown ? model.netPnl : model.grossPnl;
+            const label = model.commissionKnown ? '净盈亏' : '毛盈亏';
+            const details = model.commissionKnown
+                ? `Gross ${formatSignedMoney(model.grossPnl)} · Fee ${formatMoney(model.commission)}`
+                : '手续费未同步';
+            return `
+                <span class="order-pnl-value ${valueClass(value)}">${escapeHtml(formatSignedMoney(value))}</span>
+                <br><span class="order-table-sub">${escapeHtml(label)} · ${escapeHtml(details)}</span>
+            `;
+        }
+
+        function renderStoredOrderPnlCell(order, group, orders, model) {
+            if (!model || !model.realized) return '<span class="order-muted">--</span>';
+            const direction = getOrderChainDirection(group, orders);
+            const filled = Math.abs(getStoredOrderFilledQty(order));
+            if (filled <= 0 || !isStoredExitOrder(order, group, direction)) {
+                return '<span class="order-muted">--</span>';
+            }
+            return renderStoredPnlCell(model);
         }
 
         function buildFallbackLiveGroups(liveOrders) {
@@ -1114,7 +1526,7 @@
                         <button class="action-btn view" type="button" onclick="openAccountChart('${escapeHtml(position.symbol || '')}')">图表页</button>
                         ${position?.relation?.signal_id ? `<button class="action-btn view" type="button" onclick="viewSignal('${escapeHtml(position.relation.signal_id)}')">信号页</button>` : ''}
                         ${position?.relation?.trade_group_id ? `<button class="action-btn view" type="button" onclick="viewTradeGroup('${escapeHtml(position.relation.trade_group_id)}', '${escapeHtml(position?.relation?.signal_id || '')}')">订单页</button>` : ''}
-                        <button class="action-btn close" type="button" onclick='closePosition(${JSON.stringify({ symbol: position.symbol, conid: position.conid, quantity: position.quantity, direction: position.direction }).replace(/'/g, "&#39;")})'>市价平仓</button>
+                        <button class="action-btn close" type="button" onclick='closePosition(${JSON.stringify({ symbol: position.symbol, conid: position.conid, quantity: position.quantity, direction: position.direction, relation: position.relation || {} }).replace(/'/g, "&#39;")})'>市价平仓</button>
                     </div>
                 </div>
             `).join('')}</div>`;
@@ -1153,6 +1565,7 @@
                         <div class="metric-item"><div class="metric-label">Price Plan</div><div class="metric-value">${escapeHtml(formatOrderPrice(order))}</div></div>
                         <div class="metric-item"><div class="metric-label">TIF</div><div class="metric-value">${escapeHtml(order?.time_in_force || '--')}</div></div>
                         <div class="metric-item"><div class="metric-label">Avg Fill</div><div class="metric-value">${escapeHtml(formatOptionalMoney(order?.avg_price))}</div></div>
+                        <div class="metric-item"><div class="metric-label">Commission</div><div class="metric-value">${escapeHtml(formatOrderCommission(order))}</div></div>
                         <div class="metric-item"><div class="metric-label">Total / Filled</div><div class="metric-value">${escapeHtml(formatQty(order?.total_quantity))} / ${escapeHtml(formatQty(order?.filled_quantity))}</div></div>
                         <div class="metric-item"><div class="metric-label">Remaining</div><div class="metric-value">${escapeHtml(formatQty(order?.remaining_quantity))}</div></div>
                         <div class="metric-item"><div class="metric-label">Submitted</div><div class="metric-value">${escapeHtml(formatTimeLabel(order?.submitted_time))}</div></div>
@@ -1172,6 +1585,7 @@
                         <span class="detail-pill">pb_status=${escapeHtml(pbContext.pb_status || '--')}</span>
                         <span class="detail-pill">pb_qty=${escapeHtml(formatQty(pbContext.pb_quantity || 0))}</span>
                         <span class="detail-pill">pb_filled=${escapeHtml(formatQty(pbContext.pb_filled_qty || 0))}</span>
+                        <span class="detail-pill">pb_fee=${escapeHtml(formatOrderCommission({ commission: pbContext.pb_commission, commission_currency: pbContext.pb_commission_currency }))}</span>
                     </div>
                     ${diagnosticTags.length ? `<div class="detail-row">${diagnosticTags.map((tag) => `<span class="detail-pill">${escapeHtml(tag)}</span>`).join('')}</div>` : ''}
                     ${order?.diagnostic_note ? `<div class="record-copy mono">${escapeHtml(order.diagnostic_note)}</div>` : ''}
@@ -1449,7 +1863,7 @@
                         </td>
                         <td><span class="${badgeClass(sideText === 'BUY' ? 'long' : sideText === 'SELL' ? 'short' : '')}">${escapeHtml(sideText || '等待数据')}</span></td>
                         <td>${escapeHtml(formatQty(order?.total_quantity))} / ${escapeHtml(formatQty(order?.filled_quantity))}</td>
-                        <td>${escapeHtml(order?.order_type || '--')}<br><span class="order-table-sub">${escapeHtml(formatOrderPrice(order))}</span></td>
+                        <td>${escapeHtml(order?.order_type || '--')}<br><span class="order-table-sub">${escapeHtml(formatOrderPrice(order))} · Fee ${escapeHtml(formatOrderCommission(order))}</span></td>
                         <td><span class="order-table-strong">${escapeHtml(formatQty(order?.remaining_quantity))}</span></td>
                         <td>${renderLiveOrderActionButtons(order, orderSignalId, orderTradeGroupId)}</td>
                     </tr>
@@ -1506,7 +1920,7 @@
                         <td><span class="${badgeClass(String(statusText || '').toLowerCase())}">${escapeHtml(formatOrderStatusLabel(statusText))}</span></td>
                         <td><span class="${badgeClass(sideText === 'BUY' ? 'long' : sideText === 'SELL' ? 'short' : '')}">${escapeHtml(sideText || '等待数据')}</span></td>
                         <td>${escapeHtml(formatQty(order?.quantity))} / ${escapeHtml(formatQty(order?.filled_qty))}</td>
-                        <td>${escapeHtml(formatOptionalMoney(order?.limit_price || order?.fill_price))}</td>
+                        <td>${escapeHtml(formatOptionalMoney(order?.limit_price || order?.fill_price))}<br><span class="order-table-sub">Fee ${escapeHtml(formatOrderCommission(order))}</span></td>
                         <td><span class="order-table-strong">${escapeHtml(formatQty(remaining))}</span></td>
                         <td><span class="order-muted">PB stale</span></td>
                     </tr>
@@ -1518,6 +1932,159 @@
                     ${legRows}
                     ${renderOrderDiagnosticsDetails(group, orders, { pbShadow: true })}
                 </tbody>
+            `;
+        }
+
+        function renderHistoryGroupTableRows(group) {
+            const orders = getSortedOrderLegs(group?.orders);
+            const signalId = String(group?.signal_id || '').trim();
+            const tradeGroupId = String(group?.trade_group_id || group?.entry_order_unique_id || group?.group_key || '').trim();
+            const roleSummary = summarizeOrderRoles(orders).text || '--';
+            const statusSummary = formatCompactCountMap(
+                orders.reduce((acc, order) => {
+                    const key = formatOrderStatusLabel(getStoredOrderExecutionStatus(order));
+                    acc[key] = (acc[key] || 0) + 1;
+                    return acc;
+                }, {}),
+                (key, count) => `${key}×${count}`
+            ) || '--';
+            const symbol = String(group?.symbol || '--').trim().toUpperCase();
+            const actionSymbol = symbol === '--' ? '' : symbol;
+            const direction = getOrderChainDirection(group, orders);
+            const exposure = computeStoredGroupExposure(group, orders);
+            const pnlModel = computeStoredGroupPnl(group, orders);
+            const relationBadges = [
+                exposure.hasOpenExposure ? '<span class="badge long">OPEN EXPOSURE</span>' : '',
+                group?.has_active_order ? '<span class="badge warn">PB ACTIVE</span>' : '',
+                group?.broker_matched ? '<span class="badge long">BROKER MATCHED</span>' : '',
+                group?.is_pb_shadow ? '<span class="badge warn">PB STALE</span>' : '',
+            ].filter(Boolean).join('');
+            const chainRow = `
+                <tr class="order-chain-row">
+                    <td class="order-chain-cell">
+                        <div class="order-chain-symbol">${escapeHtml(symbol || '--')}</div>
+                        ${renderOrderCellMeta([`group=${tradeGroupId || '--'}`, `signal=${signalId || '--'}`])}
+                    </td>
+                    <td><span class="order-table-strong">${escapeHtml(roleSummary)}</span></td>
+                    <td>
+                        <div class="orders-cell-stack">
+                            <span class="${badgeClass(String(group?.latest_order_status || '').toLowerCase())}">${escapeHtml(formatOrderStatusLabel(group?.latest_order_status))}</span>
+                            ${relationBadges || '<span class="badge neutral">PB HISTORY</span>'}
+                        </div>
+                    </td>
+                    <td>${renderOrderChainDirectionBadge(direction)}</td>
+                    <td>${escapeHtml(statusSummary)}</td>
+                    <td>${escapeHtml(formatTimeLabel(group?.latest_updated))}</td>
+                    <td>${renderStoredPnlCell(pnlModel)}</td>
+                    <td><span class="order-table-strong">${escapeHtml(String(group?.order_count || orders.length || 0))} legs</span></td>
+                    <td>${renderGroupActionButtons(actionSymbol, signalId, tradeGroupId)}</td>
+                </tr>
+            `;
+            const legRows = orders.map((order) => {
+                const statusText = getStoredOrderExecutionStatus(order);
+                const sideText = getStoredOrderSideLabel(order, group);
+                const remaining = getStoredOrderRemainingQty(order);
+                return `
+                    <tr class="order-leg-row">
+                        <td class="order-chain-cell">
+                            <div class="order-leg-id">${escapeHtml(order?.broker_order_id || order?.order_id || order?.unique_id || '--')}</div>
+                            ${renderOrderCellMeta([`unique=${order?.unique_id || '--'}`, `record=${order?.record_id || '--'}`])}
+                        </td>
+                        <td><span class="${getOrderRoleBadgeClass(order)}">${escapeHtml(getOrderRoleLabel(order))}</span></td>
+                        <td>
+                            <div class="orders-cell-stack">
+                                <span class="${badgeClass(String(statusText || '').toLowerCase())}">${escapeHtml(formatOrderStatusLabel(statusText))}</span>
+                                ${order?.relation_status ? `<span class="${lifecycleBadgeClass(order.relation_status)}">${escapeHtml(getStoredOrderLifecycleLabel(order.relation_status))}</span>` : ''}
+                            </div>
+                        </td>
+                        <td><span class="${badgeClass(sideText === 'BUY' ? 'long' : sideText === 'SELL' ? 'short' : '')}">${escapeHtml(sideText || '等待数据')}</span></td>
+                        <td>${escapeHtml(formatQty(getStoredOrderQuantity(order)))} / ${escapeHtml(formatQty(getStoredOrderFilledQty(order)))}</td>
+                        <td>${escapeHtml(formatStoredOrderPrice(order))}<br><span class="order-table-sub">Fee ${escapeHtml(formatOrderCommission(order))}</span></td>
+                        <td>${renderStoredOrderPnlCell(order, group, orders, pnlModel)}</td>
+                        <td><span class="order-table-strong">${escapeHtml(formatQty(remaining))}</span></td>
+                        <td>${tradeGroupId ? `<button class="action-btn view" type="button" onclick="viewTradeGroup(${toJsStringAttribute(tradeGroupId)}, ${toJsStringAttribute(signalId)})">详情</button>` : '<span class="order-muted">--</span>'}</td>
+                    </tr>
+                `;
+            }).join('');
+            return `
+                <tbody class="order-chain-group">
+                    ${chainRow}
+                    ${legRows}
+                </tbody>
+            `;
+        }
+
+        function renderHistoryOrders(snapshot) {
+            const area = document.getElementById('historyArea');
+            const meta = document.getElementById('historyMeta');
+            if (!area) return;
+            const groups = getStoredHistoryGroups(snapshot);
+            const orders = collectManagedGroupOrders(groups);
+            const groupPnlModels = groups.map((group) => computeStoredGroupPnl(group, getSortedOrderLegs(group?.orders)));
+            const realizedPnlModels = groupPnlModels.filter((model) => model?.realized);
+            const realizedPnlValue = realizedPnlModels.reduce((sum, model) => sum + (model.commissionKnown ? model.netPnl : model.grossPnl), 0);
+            const hasMissingCommission = realizedPnlModels.some((model) => !model.commissionKnown);
+            const openExposureGroups = groups.filter((group) => computeStoredGroupExposure(group, getSortedOrderLegs(group?.orders)).hasOpenExposure).length;
+            const activeGroups = groups.filter((group) => group?.has_active_order).length;
+            if (meta) {
+                meta.textContent = `${groups.length} linked · ${orders.length} stored · PB + IBKR`;
+            }
+
+            const ctaCard = `
+                <div class="surface-card history-cta-card">
+                    <div>
+                        <div class="summary-label">账户页内联历史</div>
+                        <div class="ticket-copy" style="margin-top:6px;">这里展示当前实盘持仓 / 实时挂单对应的 PB 订单链；完整跨日历史仍在订单页。</div>
+                    </div>
+                    <button class="action-btn view" type="button" onclick="openHistoryOrdersPage()" style="white-space:nowrap;flex-shrink:0;">打开订单页 →</button>
+                </div>
+            `;
+
+            if (!groups.length) {
+                area.innerHTML = `
+                    ${ctaCard}
+                    <div class="empty-state">当前账户快照里没有匹配到系统订单历史链。如果是外部手动仓位，只会在上方持仓区标记 EXTERNAL；如需查全部记录请打开订单页。</div>
+                `;
+                return;
+            }
+
+            const cards = [
+                ['Linked Groups', String(groups.length), '当前账户相关交易链'],
+                ['Stored Orders', String(orders.length), 'PB entry / TP / SL 记录'],
+                ['Open Exposure', String(openExposureGroups), 'entry 成交量大于 close/TP/SL 的链'],
+                [hasMissingCommission ? 'Gross P/L' : 'Net P/L', formatSignedMoney(realizedPnlValue), hasMissingCommission ? '已实现毛盈亏，手续费未同步' : '已实现净盈亏', valueClass(realizedPnlValue)],
+                ['PB Active', String(activeGroups), 'PB 仍标记活跃/计划中的链'],
+            ];
+
+            area.innerHTML = `
+                ${ctaCard}
+                <div class="orders-summary-grid history-summary-grid">
+                    ${cards.map(([label, value, copy, tone]) => `
+                        <div class="summary-mini-card">
+                            <div class="summary-label">${escapeHtml(label)}</div>
+                            <div class="summary-mini-value ${escapeHtml(tone || '')}">${escapeHtml(value)}</div>
+                            <div class="summary-mini-copy">${escapeHtml(copy)}</div>
+                        </div>
+                    `).join('')}
+                </div>
+                <div class="orders-live-table-wrap history-orders-table">
+                    <table class="orders-live-table">
+                        <thead>
+                            <tr>
+                                <th>Symbol / Chain</th>
+                                <th>Role</th>
+                                <th>Status</th>
+                                <th>Side</th>
+                                <th>Qty</th>
+                                <th>Price</th>
+                                <th>P/L</th>
+                                <th>Remaining</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        ${groups.map((group) => renderHistoryGroupTableRows(group)).join('')}
+                    </table>
+                </div>
             `;
         }
 
@@ -1649,6 +2216,7 @@
                 renderMeta(snapshot);
                 renderPositions(snapshot);
                 renderOrders(snapshot);
+                renderHistoryOrders(snapshot);
                 renderTicketPreview();
                 setPageRefreshTime(snapshot.fetched_at || new Date());
                 refreshInfo.textContent = '账户状态已加载';
@@ -1661,6 +2229,8 @@
                 document.getElementById('positionsArea').innerHTML = `<div class="empty-state">加载失败：${escapeHtml(error.message || 'unknown error')}</div>`;
                 document.getElementById('ordersSummary').innerHTML = '';
                 document.getElementById('ordersArea').innerHTML = `<div class="empty-state">加载失败：${escapeHtml(error.message || 'unknown error')}</div>`;
+                document.getElementById('historyMeta').textContent = '--';
+                document.getElementById('historyArea').innerHTML = `<div class="empty-state">加载失败：${escapeHtml(error.message || 'unknown error')}</div>`;
                 refreshInfo.textContent = `刷新失败：${error.message || error}`;
                 if (showFeedback) showToast(`加载失败: ${error.message || error}`);
             }
@@ -1678,12 +2248,14 @@
                     renderMeta(payload.snapshot);
                     renderPositions(payload.snapshot);
                     renderOrders(payload.snapshot);
+                    renderHistoryOrders(payload.snapshot);
                     renderTicketPreview();
                     setPageRefreshTime(payload.snapshot.fetched_at || new Date());
                     document.getElementById('refreshInfo').textContent = '账户状态已加载';
                 }
-                showToast(successMessage || `${label} 已执行`);
-                return true;
+                const message = typeof successMessage === 'function' ? successMessage(payload) : successMessage;
+                showToast(message || `${label} 已执行`);
+                return payload;
             } catch (error) {
                 showToast(`${label} 失败: ${error.message || error}`);
                 return false;
@@ -1699,7 +2271,19 @@
         }
 
         async function cancelOrder(orderId) {
-            if (!orderId || !window.confirm(`确认撤掉真实挂单 ${orderId} ?`)) return;
+            if (!orderId) return;
+            const confirmed = await confirmAccountAction({
+                kicker: 'Live Order',
+                title: '确认撤掉真实挂单？',
+                message: '该操作会直接发送到 IBKR Gateway。',
+                details: [
+                    { label: 'Order ID', value: orderId },
+                    { label: '环境', value: currentEnvironment.toUpperCase() },
+                ],
+                confirmText: '撤单',
+                tone: 'warn',
+            }, `确认撤掉真实挂单 ${orderId} ?`);
+            if (!confirmed) return;
             await runAction('撤单', '/api/custom/ibkr/orders/cancel', { order_id: orderId }, `订单 ${orderId} 撤单请求已发送`);
         }
 
@@ -1745,8 +2329,24 @@
             if (!position || !position.symbol || !position.conid) return;
             const qty = Number(position.quantity || 0);
             if (!Number.isFinite(qty) || qty === 0) return;
-            if (!window.confirm(`确认对 ${position.symbol} 发起真实市价平仓？\n数量: ${formatQty(Math.abs(qty))}`)) return;
-            await runAction(
+            const protectionOrderIds = collectPositionProtectionOrderIds(position);
+            const relation = position.relation || {};
+            const localCloseGroupId = String(relation.entry_order_unique_id || relation.trade_group_id || '').trim();
+            const confirmed = await confirmAccountAction({
+                kicker: 'Market Close',
+                title: `确认对 ${position.symbol} 发起真实市价平仓？`,
+                message: '系统会先提交真实市价平仓请求；提交成功后自动撤掉匹配到的 TP / SL 括号保护单，并关闭本地交易组状态。',
+                details: [
+                    { label: '数量', value: formatQty(Math.abs(qty)) },
+                    { label: '方向', value: String(position.direction || (qty > 0 ? 'long' : 'short')).toUpperCase() },
+                    { label: '保护单', value: protectionOrderIds.length ? `${protectionOrderIds.length} 个待撤` : '未匹配到' },
+                    { label: '交易组', value: relation.trade_group_id || relation.entry_order_unique_id || 'EXTERNAL' },
+                ],
+                confirmText: '市价平仓',
+                tone: 'danger',
+            }, `确认对 ${position.symbol} 发起真实市价平仓？\n数量: ${formatQty(Math.abs(qty))}`);
+            if (!confirmed) return;
+            const actionPayload = await runAction(
                 '平仓',
                 '/api/custom/ibkr/positions/close',
                 {
@@ -1755,9 +2355,36 @@
                     quantity: Math.abs(qty),
                     position: qty,
                     direction: position.direction,
+                    trade_group_id: relation.trade_group_id || '',
+                    entry_order_unique_id: relation.entry_order_unique_id || '',
+                    cancel_order_ids: protectionOrderIds,
+                    cancel_bracket_after_close: true,
                 },
-                `${position.symbol} 平仓请求已发送`
+                (payload) => {
+                    const protection = payload?.result?.protection_cancel || {};
+                    const cancelled = Array.isArray(protection.cancelled_order_ids) ? protection.cancelled_order_ids.length : 0;
+                    const errors = Array.isArray(protection.errors) ? protection.errors.length : 0;
+                    if (errors > 0) return `${position.symbol} 平仓已提交，保护单撤销失败 ${errors} 个`;
+                    if (cancelled > 0) return `${position.symbol} 平仓已提交，已撤保护单 ${cancelled} 个`;
+                    return `${position.symbol} 平仓请求已发送，未发现需撤的保护单`;
+                }
             );
+            if (!actionPayload || !localCloseGroupId) return;
+            try {
+                await requestAccountJson('/api/custom/ibkr/orders/close_group', {
+                    method: 'POST',
+                    body: {
+                        id: localCloseGroupId,
+                        environment: currentEnvironment,
+                        source: 'account_market_close',
+                        reason: '账户页真实市价平仓后关闭交易组',
+                    },
+                });
+                showToast(`${position.symbol} 本地交易组已关闭`);
+                setTimeout(() => loadAccountSnapshot(false), 800);
+            } catch (error) {
+                showToast(`${position.symbol} 平仓已提交，但本地交易组关闭失败: ${error.message || error}`);
+            }
         }
 
         async function submitManualOrder() {

@@ -91,6 +91,28 @@ def _normalize_live_order(order: dict) -> dict:
 
     price = float(_app_coerce_float(order.get("price") or order.get("limit_price"), 0.0) or 0.0)
     trigger_price = float(_app_coerce_float(order.get("auxPrice") or order.get("stop_price"), 0.0) or 0.0)
+    commission = abs(
+        float(
+            _app_coerce_float(
+                order.get("commission")
+                if order.get("commission") is not None
+                else order.get("ibkr_commission")
+                if order.get("ibkr_commission") is not None
+                else order.get("commissionAmount")
+                if order.get("commissionAmount") is not None
+                else order.get("commission_amount"),
+                0.0,
+            )
+            or 0.0
+        )
+    )
+    commission_currency = _extract_live_order_text(
+        order,
+        "commissionCurrency",
+        "commission_currency",
+        "ibCommissionCurrency",
+        "ibkr_commission_currency",
+    ).upper() or str(order.get("currency") or "USD").strip().upper()
     submitted_time = _extract_live_order_text(order, "submittedTime", "submitTime", "order_time", "createdTime", "createTime")
     last_execution_time = _extract_live_order_text(order, "lastExecutionTime", "lastFillTime", "lastExecutionTime_r")
     good_till_date = _extract_live_order_text(order, "goodTillDate")
@@ -116,6 +138,8 @@ def _normalize_live_order(order: dict) -> dict:
         "price": price,
         "trigger_price": trigger_price,
         "avg_price": float(_app_coerce_float(order.get("avgPrice") or order.get("average_price"), 0.0) or 0.0),
+        "commission": commission,
+        "commission_currency": commission_currency,
         "total_quantity": total_quantity,
         "filled_quantity": filled_quantity,
         "remaining_quantity": float(remaining_quantity or 0.0),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 
 
@@ -188,6 +189,32 @@ class TradingServiceSignalsMixin:
                     finalized = True
                     continue
 
+                capacity = self._strategy_capacity_snapshot()
+                if capacity.get("capacity_full"):
+                    service_mod.logger.info(
+                        "Signal waiting for strategy capacity: signal_id=%s symbol=%s used=%s max=%s",
+                        signal_id,
+                        sig.get("symbol"),
+                        capacity.get("strategy_capacity_used"),
+                        capacity.get("max_strategy_open_positions"),
+                    )
+                    self._mark_signal_waiting_for_capacity(sig, capacity)
+                    continue
+
+                guard_ok, guarded_sig, guard_reason = self._prepare_pre_submit_signal(sig)
+                if not guard_ok:
+                    service_mod.logger.warning(
+                        "Signal rejected by entry pre-submit guard: signal_id=%s symbol=%s reason=%s",
+                        signal_id,
+                        sig.get("symbol"),
+                        guard_reason,
+                    )
+                    self._mark_signal_entry_guard_rejected(sig, guard_reason)
+                    self.signal_router.mark_processed(signal_id)
+                    finalized = True
+                    continue
+
+                sig = guarded_sig
                 symbol = sig["symbol"]
                 duplicate_order = self.order_tracker.find_duplicate_open_entry(
                     symbol=symbol,
@@ -220,18 +247,6 @@ class TradingServiceSignalsMixin:
                     finalized = True
                     continue
 
-                capacity = self._strategy_capacity_snapshot()
-                if capacity.get("capacity_full"):
-                    service_mod.logger.info(
-                        "Signal waiting for strategy capacity: signal_id=%s symbol=%s used=%s max=%s",
-                        signal_id,
-                        symbol,
-                        capacity.get("strategy_capacity_used"),
-                        capacity.get("max_strategy_open_positions"),
-                    )
-                    self._mark_signal_waiting_for_capacity(sig, capacity)
-                    continue
-
                 conid = self.conid_resolver.resolve(symbol)
                 if not conid:
                     service_mod.logger.warning("Cannot resolve conid for %s, skipping", symbol)
@@ -250,6 +265,7 @@ class TradingServiceSignalsMixin:
                 )
 
                 if result.get("ok"):
+                    self._patch_signal_pre_submit_prices(sig)
                     service_mod.logger.info(
                         "Order placed: %s %s bracket_group=%s",
                         symbol,
@@ -266,6 +282,9 @@ class TradingServiceSignalsMixin:
                                 "entry_price": sig["entry"],
                                 "tp_price": sig["take_profit"],
                                 "sl_price": sig["stop_loss"],
+                                "entry_order_type": "LMT",
+                                "entry_limit_intent": "passive",
+                                "entry_price_plan": "passive_limit",
                                 "entry_unique_id": result.get("entry_coid")
                                 or result.get("bracket_group")
                                 or "",
@@ -301,6 +320,275 @@ class TradingServiceSignalsMixin:
             finally:
                 if not finalized:
                     self.signal_router.release_signal(signal_id)
+
+    @staticmethod
+    def _safe_float(value, default: float = 0.0) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return default
+        if number != number:
+            return default
+        return number
+
+    @staticmethod
+    def _round_price(value) -> float:
+        return round(TradingServiceSignalsMixin._safe_float(value, 0.0), 2)
+
+    def _config_bool(self, key: str, default: bool) -> bool:
+        getter = getattr(getattr(self, "config", None), "get_bool_for_environment", None)
+        if not callable(getter):
+            return bool(default)
+        try:
+            value = getter(key, _service_mod().ENVIRONMENT, default)
+        except Exception:
+            return bool(default)
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "1", "yes", "y", "on"}
+        return bool(value)
+
+    def _config_float(self, key: str, default: float) -> float:
+        getter = getattr(getattr(self, "config", None), "get_float_for_environment", None)
+        if not callable(getter):
+            return float(default)
+        try:
+            return float(getter(key, _service_mod().ENVIRONMENT, default))
+        except Exception:
+            return float(default)
+
+    def _config_text(self, key: str, default: str) -> str:
+        getter = getattr(getattr(self, "config", None), "get_for_environment", None)
+        if not callable(getter):
+            return str(default)
+        try:
+            return str(getter(key, _service_mod().ENVIRONMENT, default))
+        except Exception:
+            return str(default)
+
+    @staticmethod
+    def _signal_extra(sig: dict) -> dict:
+        extra = sig.get("extra") if isinstance(sig.get("extra"), dict) else {}
+        if extra:
+            return dict(extra)
+        raw = sig.get("raw") if isinstance(sig.get("raw"), dict) else {}
+        raw_extra = raw.get("extra") if isinstance(raw.get("extra"), dict) else {}
+        if isinstance(raw.get("extra"), str):
+            try:
+                raw_extra = json.loads(raw.get("extra") or "{}")
+            except Exception:
+                raw_extra = {}
+        return dict(raw_extra or {}) if isinstance(raw_extra, dict) else {}
+
+    @staticmethod
+    def _quote_price(quote: dict, key: str) -> float:
+        return TradingServiceSignalsMixin._safe_float((quote or {}).get(key), 0.0)
+
+    def _entry_guard_quote(self, symbol: str) -> dict:
+        quote_book = getattr(self, "realtime_quote_book", None)
+        getter = getattr(quote_book, "get_quote", None)
+        if not callable(getter):
+            return {}
+        try:
+            quote = getter(symbol)
+        except Exception as exc:
+            _service_mod().logger.warning("Entry pre-submit quote lookup failed for %s: %s", symbol, exc)
+            return {}
+        return dict(quote or {}) if isinstance(quote, dict) else {}
+
+    def _guard_reference_price(self, quote: dict, direction: str) -> tuple[float, str]:
+        last_price = self._quote_price(quote, "last_price")
+        if last_price > 0:
+            return last_price, "last_price"
+        normalized_direction = str(direction or "").strip().lower()
+        primary_key = "ask" if normalized_direction == "long" else "bid"
+        fallback_key = "bid" if normalized_direction == "long" else "ask"
+        primary = self._quote_price(quote, primary_key)
+        if primary > 0:
+            return primary, primary_key
+        fallback = self._quote_price(quote, fallback_key)
+        if fallback > 0:
+            return fallback, fallback_key
+        return 0.0, ""
+
+    def _reprice_base_price(self, quote: dict, direction: str) -> tuple[float, str]:
+        normalized_direction = str(direction or "").strip().lower()
+        if normalized_direction == "short":
+            ask = self._quote_price(quote, "ask")
+            if ask > 0:
+                return ask, "ask"
+            last_price = self._quote_price(quote, "last_price")
+            if last_price > 0:
+                return last_price, "last_price"
+            bid = self._quote_price(quote, "bid")
+            return (bid, "bid") if bid > 0 else (0.0, "")
+
+        bid = self._quote_price(quote, "bid")
+        if bid > 0:
+            return bid, "bid"
+        last_price = self._quote_price(quote, "last_price")
+        if last_price > 0:
+            return last_price, "last_price"
+        ask = self._quote_price(quote, "ask")
+        return (ask, "ask") if ask > 0 else (0.0, "")
+
+    def _entry_limit_offset(self, sig: dict, reference_price: float, extra: dict) -> tuple[float, str]:
+        offset = self._safe_float(extra.get("entry_limit_offset"), 0.0)
+        if offset > 0:
+            return offset, "signal_extra.entry_limit_offset"
+
+        entry = self._safe_float(sig.get("entry"), 0.0)
+        raw = sig.get("raw") if isinstance(sig.get("raw"), dict) else {}
+        limit_candidates = (
+            sig.get("limit_price"),
+            sig.get("entry_limit_price"),
+            raw.get("limit_price"),
+            raw.get("entry_limit_price"),
+            extra.get("limit_price"),
+            extra.get("entry_limit_price"),
+        )
+        for candidate in limit_candidates:
+            limit_price = self._safe_float(candidate, 0.0)
+            candidate_offset = abs(entry - limit_price)
+            if entry > 0 and limit_price > 0 and candidate_offset > 0:
+                return candidate_offset, "entry_limit_price_delta"
+
+        mode = self._config_text("entry_limit_mode", "passive_limit_dynamic").strip().lower()
+        if mode in {
+            "dynamic",
+            "passive_limit_dynamic",
+            "passive-limit-dynamic",
+            "passive_limit_dynamic_v1",
+            "marketable_limit_dynamic",
+            "marketable-limit-dynamic",
+            "marketable_limit_dynamic_v1",
+        }:
+            atr = max(
+                0.0,
+                self._safe_float(extra.get("atr"), 0.0)
+                or self._safe_float(raw.get("atr") if isinstance(raw, dict) else 0.0, 0.0),
+            )
+            atr_mult = max(0.0, self._config_float("entry_limit_atr_mult", 0.30))
+            floor_bps = max(0.0, self._config_float("entry_limit_floor_bps", 15.0))
+            cap_bps = max(floor_bps, self._config_float("entry_limit_cap_bps", 30.0))
+            floor = reference_price * floor_bps / 10000.0 if reference_price > 0 else 0.0
+            cap = reference_price * cap_bps / 10000.0 if reference_price > 0 else floor
+            raw_offset = atr * atr_mult if atr > 0 else floor
+            return max(0.01, min(max(raw_offset, floor), max(floor, cap))), "config.passive_limit_dynamic"
+
+        bps = max(0.0, self._config_float("entry_limit_bps", self._config_float("marketable_limit_bps", 10.0)))
+        if reference_price <= 0:
+            return 0.0, "none"
+        return max(0.01, reference_price * bps / 10000.0), "config.passive_limit_bps"
+
+    def _prepare_pre_submit_signal(self, sig: dict) -> tuple[bool, dict, str]:
+        environment = str(_service_mod().ENVIRONMENT or "").strip().lower()
+        guard_enabled = self._config_bool("entry_pre_submit_guard_enabled", True)
+        reprice_enabled = self._config_bool("entry_pre_submit_reprice_enabled", True)
+        if not guard_enabled:
+            return True, sig, ""
+
+        symbol = str(sig.get("symbol") or "").strip().upper()
+        direction = str(sig.get("direction") or "").strip().lower()
+        entry = self._safe_float(sig.get("entry"), 0.0)
+        stop_loss = self._safe_float(sig.get("stop_loss"), 0.0)
+        take_profit = self._safe_float(sig.get("take_profit"), 0.0)
+        risk_r = abs(entry - stop_loss)
+        max_age_s = max(0.0, self._config_float("entry_pre_submit_quote_max_age_sec", 10.0))
+        max_drift_r = max(0.0, self._config_float("entry_pre_submit_max_adverse_drift_r", 0.50))
+        live_environment = environment in {"live", "paper"}
+
+        quote = self._entry_guard_quote(symbol)
+        quote_age_s = self._safe_float(quote.get("quote_age_s"), -1.0) if quote else -1.0
+        reference_price, reference_source = self._guard_reference_price(quote, direction)
+        fresh_quote = bool(quote and quote_age_s >= 0 and quote_age_s <= max_age_s and reference_price > 0)
+
+        extra = self._signal_extra(sig)
+        diagnostics = {
+            "original_entry": entry,
+            "original_stop_loss": stop_loss,
+            "original_take_profit": take_profit,
+            "pre_submit_guard": True,
+            "quote_age_s": quote.get("quote_age_s") if quote else None,
+            "pre_submit_reference_price": round(reference_price, 4) if reference_price > 0 else None,
+            "pre_submit_reference_source": reference_source,
+            "price_drift_r": 0.0,
+            "reprice_source": "",
+            "entry_limit_offset": self._safe_float(extra.get("entry_limit_offset"), 0.0),
+            "entry_order_type": "LMT",
+            "entry_limit_intent": "passive",
+            "entry_price_plan": "passive_limit",
+            "entry_repriced": False,
+        }
+
+        if live_environment and not fresh_quote:
+            sig["extra"] = {**extra, **diagnostics, "status_reason": "entry_guard_no_fresh_quote"}
+            return False, sig, "entry_guard_no_fresh_quote"
+
+        if not fresh_quote:
+            sig["extra"] = {**extra, **diagnostics}
+            return True, sig, ""
+
+        if direction == "long":
+            if reference_price <= stop_loss:
+                sig["extra"] = {**extra, **diagnostics, "status_reason": "entry_guard_stop_already_crossed"}
+                return False, sig, "entry_guard_stop_already_crossed"
+            adverse_drift_r = max(0.0, entry - reference_price) / risk_r if risk_r > 0 else 0.0
+        elif direction == "short":
+            if reference_price >= stop_loss:
+                sig["extra"] = {**extra, **diagnostics, "status_reason": "entry_guard_stop_already_crossed"}
+                return False, sig, "entry_guard_stop_already_crossed"
+            adverse_drift_r = max(0.0, reference_price - entry) / risk_r if risk_r > 0 else 0.0
+        else:
+            adverse_drift_r = 0.0
+
+        diagnostics["price_drift_r"] = round(adverse_drift_r, 4)
+        drift_requires_reprice = adverse_drift_r > max_drift_r
+        diagnostics["price_drift_threshold_r"] = max_drift_r
+        diagnostics["price_drift_exceeds_threshold"] = bool(drift_requires_reprice)
+        if drift_requires_reprice and not reprice_enabled:
+            sig["extra"] = {**extra, **diagnostics, "status_reason": "entry_guard_price_drift"}
+            return False, sig, "entry_guard_price_drift"
+
+        if not reprice_enabled:
+            sig["extra"] = {**extra, **diagnostics}
+            return True, sig, ""
+
+        base_price, base_source = self._reprice_base_price(quote, direction)
+        if base_price <= 0:
+            if drift_requires_reprice:
+                sig["extra"] = {**extra, **diagnostics, "status_reason": "entry_guard_price_drift"}
+                return False, sig, "entry_guard_price_drift"
+            sig["extra"] = {**extra, **diagnostics}
+            return True, sig, ""
+        offset, offset_source = self._entry_limit_offset(sig, base_price, extra)
+        new_entry = base_price + offset if direction == "short" else base_price - offset
+        if new_entry <= 0:
+            if drift_requires_reprice:
+                sig["extra"] = {**extra, **diagnostics, "status_reason": "entry_guard_price_drift"}
+                return False, sig, "entry_guard_price_drift"
+            sig["extra"] = {**extra, **diagnostics}
+            return True, sig, ""
+
+        delta = new_entry - entry
+        adjusted_sig = copy.deepcopy(sig)
+        adjusted_sig["entry"] = self._round_price(new_entry)
+        adjusted_sig["stop_loss"] = self._round_price(stop_loss + delta)
+        adjusted_sig["take_profit"] = self._round_price(take_profit + delta)
+        diagnostics.update(
+            {
+                "reprice_source": f"{base_source}{'+' if direction == 'short' else '-'}{offset_source}"
+                if offset > 0
+                else base_source,
+                "entry_limit_offset": round(offset, 4),
+                "entry_repriced": (
+                    adjusted_sig["entry"] != self._round_price(entry)
+                    or adjusted_sig["stop_loss"] != self._round_price(stop_loss)
+                    or adjusted_sig["take_profit"] != self._round_price(take_profit)
+                ),
+            }
+        )
+        adjusted_sig["extra"] = {**extra, **diagnostics}
+        return True, adjusted_sig, ""
 
     def _is_fixed_position_signal(self, sig: dict) -> bool:
         lifecycle = getattr(self, "order_lifecycle", None)
@@ -429,6 +717,40 @@ class TradingServiceSignalsMixin:
                 exc,
             )
 
+    def _patch_signal_pre_submit_prices(self, sig: dict):
+        extra = sig.get("extra") if isinstance(sig.get("extra"), dict) else {}
+        if not bool(extra.get("entry_repriced")) or not self.pb:
+            return
+        service_mod = _service_mod()
+        signal_id = str(sig.get("signal_id") or "").strip()
+        if not signal_id:
+            return
+        try:
+            record, existing_extra = self._load_signal_record_and_extra(sig)
+            if not record:
+                return
+            self.pb.update_record(
+                "ibkr_signals",
+                record["id"],
+                {
+                    "entry": self._round_price(sig.get("entry")),
+                    "stop_loss": self._round_price(sig.get("stop_loss")),
+                    "take_profit": self._round_price(sig.get("take_profit")),
+                    "extra": {
+                        **existing_extra,
+                        **extra,
+                        "pre_submit_prices_patched": True,
+                        "pre_submit_prices_patched_at": self._now_iso(),
+                    },
+                },
+            )
+        except Exception as exc:
+            service_mod.logger.error(
+                "Failed to patch signal pre-submit prices: signal_id=%s error=%s",
+                signal_id,
+                exc,
+            )
+
     def _mark_signal_validation_rejected(self, sig: dict, reason: str):
         service_mod = _service_mod()
         if not self.pb:
@@ -479,6 +801,45 @@ class TradingServiceSignalsMixin:
         except Exception as exc:
             service_mod.logger.error(
                 "Failed to mark signal validation-rejected: signal_id=%s reason=%s error=%s",
+                signal_id,
+                reason,
+                exc,
+            )
+
+    def _mark_signal_entry_guard_rejected(self, sig: dict, reason: str):
+        service_mod = _service_mod()
+        if not self.pb:
+            return
+
+        signal_id = str(sig.get("signal_id") or "").strip()
+        if not signal_id:
+            return
+
+        status_reason = str(reason or "entry_guard_rejected").strip() or "entry_guard_rejected"
+        try:
+            record, existing_extra = self._load_signal_record_and_extra(sig)
+            if not record:
+                return
+
+            guard_extra = sig.get("extra") if isinstance(sig.get("extra"), dict) else {}
+            self.pb.update_record(
+                "ibkr_signals",
+                record["id"],
+                {
+                    "status": "rejected",
+                    "note": status_reason,
+                    "extra": {
+                        **existing_extra,
+                        **guard_extra,
+                        "status_reason": status_reason,
+                        "entry_guard_rejected": True,
+                        "entry_guard_rejected_at": self._now_iso(),
+                    },
+                },
+            )
+        except Exception as exc:
+            service_mod.logger.error(
+                "Failed to mark signal entry-guard-rejected: signal_id=%s reason=%s error=%s",
                 signal_id,
                 reason,
                 exc,
@@ -777,6 +1138,10 @@ class TradingServiceSignalsMixin:
                 "source": "ibkr_compute",
                 "reason": "order_submitted_by_ibkr_compute",
                 "ack_source": "ibkr_service",
+                "entry_order_type": "LMT",
+                "entry_limit_intent": "passive",
+                "entry_price_plan": "passive_limit",
+                "submitted_entry_limit_price": sig["entry"],
                 "bracket_group": trade_group_id,
                 "oca_group": oca_group,
                 "order_family_type": order_family_type,

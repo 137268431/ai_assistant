@@ -45,7 +45,7 @@ class DailyScannerRunMixin:
         """
         执行每日自动筛选。
 
-        返回聚合统计，active / candidate 已经按订阅预算写入。
+        返回聚合统计，订阅预算只写入 metadata，不再把预算溢出目标降为 candidate。
         """
         scanned = 0
         candidates = 0
@@ -345,15 +345,16 @@ class DailyScannerRunMixin:
                         note="active 订阅预算已满，topup 不再追加 candidate",
                     )
                     continue
-            status = "active" if qualifies_active and len(active_symbols) < active_limit else "candidate"
-            context_active = status == "active" and context_gate_passed
+            status = "active"
+            within_subscription_budget = qualifies_active and len(active_symbols) < active_limit
             retained_symbols.add(symbol)
-            if status == "active":
+            if within_subscription_budget:
                 active_symbols.add(symbol)
-                active_count += 1
+                subscription_rank = len(active_symbols)
             else:
-                candidate_count += 1
-            subscription_rank = len(active_symbols) if status == "active" else 0
+                subscription_rank = 0
+            active_count += 1
+            context_active = context_gate_passed
 
             extra = {
                 **(result.get("extra") or {}),
@@ -370,7 +371,7 @@ class DailyScannerRunMixin:
                 "day_change_pct": round(_safe_float(result.get("day_change_pct")), 2),
                 "selection_rank": auto_rank,
                 "subscription_rank": subscription_rank,
-                "within_subscription_budget": status == "active",
+                "within_subscription_budget": within_subscription_budget,
                 "active_target_limit": active_target_limit,
                 "active_min_score": active_min_score,
                 "active_gate_passed": context_gate_passed,

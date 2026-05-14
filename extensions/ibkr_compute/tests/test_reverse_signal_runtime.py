@@ -123,13 +123,14 @@ class _FakeOrderPlacer:
         self.result = result or {"ok": True, "order_id": "close-1"}
         self.calls = []
 
-    def place_market_close(self, conid, symbol, direction, quantity):
+    def place_market_close(self, conid, symbol, direction, quantity, **kwargs):
         self.calls.append(
             {
                 "conid": conid,
                 "symbol": symbol,
                 "direction": direction,
                 "quantity": quantity,
+                **kwargs,
             }
         )
         return dict(self.result)
@@ -222,7 +223,12 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
 
         handler.check_and_process()
 
-        self.assertEqual([{"conid": 123, "symbol": "AAPL", "direction": "long", "quantity": 10}], placer.calls)
+        self.assertEqual(1, len(placer.calls))
+        self.assertEqual(
+            {"conid": 123, "symbol": "AAPL", "direction": "long", "quantity": 10},
+            {key: placer.calls[0][key] for key in ("conid", "symbol", "direction", "quantity")},
+        )
+        self.assertEqual("reverse_signal_close", placer.calls[0]["source"])
         updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
         extra = updated["extra"]
         self.assertEqual("confirmed", updated["status"])

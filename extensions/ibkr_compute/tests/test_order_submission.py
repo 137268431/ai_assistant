@@ -80,6 +80,7 @@ class FakeSignalPBClient:
     def __init__(self, record):
         self.record = dict(record)
         self.updates = []
+        self.acks = []
 
     def get_first_record(self, collection, filter=None):
         return dict(self.record)
@@ -88,6 +89,10 @@ class FakeSignalPBClient:
         self.updates.append((collection, record_id, dict(data)))
         self.record.update(data)
         return dict(self.record)
+
+    def ack_ibkr_signal(self, **kwargs):
+        self.acks.append(dict(kwargs))
+        return {"status": kwargs.get("status"), "fallback": False}
 
 
 class FakeBracketBroker:
@@ -111,8 +116,21 @@ class FakeBracketBroker:
 
 
 class FakeConfig:
+    def __init__(self, values=None):
+        self.values = dict(values or {})
+
     def get_for_environment(self, key, environment, default=None):
-        return default
+        return self.values.get(key, default)
+
+    def get_bool_for_environment(self, key, environment, default=False):
+        value = self.values.get(key, default)
+        return str(value).lower() in ("true", "1", "yes") if isinstance(value, str) else bool(value)
+
+    def get_float_for_environment(self, key, environment, default=0.0):
+        try:
+            return float(self.values.get(key, default))
+        except (TypeError, ValueError):
+            return default
 
 
 class FakeSignalRouter:
@@ -137,13 +155,27 @@ class FakeSignalRouter:
 
 
 class FakeSignalProcessor:
+    def __init__(self):
+        self.pending_entries = []
+
     def validate_signal(self, signal):
         return True, "ok"
 
+    def register_pending_entry(self, symbol, position_data):
+        self.pending_entries.append((symbol, dict(position_data or {})))
+
 
 class FakeOrderTracker:
+    def __init__(self):
+        self.duplicate_calls = []
+        self.registered = []
+
     def find_duplicate_open_entry(self, **kwargs):
+        self.duplicate_calls.append(dict(kwargs))
         return None
+
+    def register_submitted_orders(self, order_ids, seed=None):
+        self.registered.append((list(order_ids or []), dict(seed or {})))
 
 
 class FakeConidResolver:
@@ -192,8 +224,20 @@ class FakeSessionKeeper:
     is_authenticated = True
 
 
+class FakeQuoteBook:
+    def __init__(self, quotes):
+        self.quotes = dict(quotes or {})
+        self.calls = []
+
+    def get_quote(self, symbol):
+        normalized_symbol = str(symbol or "").strip().upper()
+        self.calls.append(normalized_symbol)
+        quote = self.quotes.get(normalized_symbol)
+        return dict(quote or {}) if quote else None
+
+
 class FakeSignalService(TradingServiceSignalsMixin):
-    def __init__(self, signal, *, lifecycle, pb):
+    def __init__(self, signal, *, lifecycle, pb, quote_book=None, config=None):
         self.session_keeper = FakeSessionKeeper()
         self.signal_router = FakeSignalRouter([signal])
         self.signal_processor = FakeSignalProcessor()
@@ -202,6 +246,8 @@ class FakeSignalService(TradingServiceSignalsMixin):
         self.order_placer = FakeOrderPlacer()
         self.order_lifecycle = lifecycle
         self.pb = pb
+        self.config = config or FakeConfig()
+        self.realtime_quote_book = quote_book or FakeQuoteBook({})
 
     def _now_iso(self):
         return "2026-05-13T10:00:00-04:00"
@@ -515,6 +561,202 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertEqual("rejected", pb.updates[-1][2]["status"])
         self.assertEqual("fixed_position_symbol_blocked", pb.updates[-1][2]["extra"]["status_reason"])
         self.assertTrue(pb.updates[-1][2]["extra"]["fixed_position_symbol_blocked"])
+
+    def test_entry_guard_corrects_adverse_drift_on_stale_30m_confirmation(self):
+        signal = self._signal("AAPL")
+        signal.update(
+            {
+                "entry": 100.0,
+                "stop_loss": 98.0,
+                "take_profit": 104.0,
+                "signal_time": "2026-05-13 09:30:00",
+            }
+        )
+        signal["extra"] = {**signal["extra"], "entry_limit_offset": 0.05}
+        pb = FakeSignalPBClient({"id": "row-aapl", "extra": {"source": "ibkr_compute"}})
+        quote_book = FakeQuoteBook(
+            {
+                "AAPL": {
+                    "last_price": 98.9,
+                    "bid": 98.85,
+                    "ask": 98.95,
+                    "quote_age_s": 1.0,
+                }
+            }
+        )
+        service = FakeSignalService(signal, lifecycle=FakeLifecycle(), pb=pb, quote_book=quote_book)
+
+        service._process_signals()
+
+        self.assertEqual(["sig-aapl"], service.signal_router.processed)
+        self.assertEqual([], service.signal_router.released)
+        self.assertEqual(1, len(service.order_placer.calls))
+        order_payload = service.order_placer.calls[0]
+        self.assertEqual(98.8, order_payload["entry_price"])
+        self.assertEqual(96.8, order_payload["stop_loss_price"])
+        self.assertEqual(102.8, order_payload["take_profit_price"])
+        self.assertEqual(98.8, service.order_tracker.duplicate_calls[0]["entry_price"])
+        ack_order = pb.acks[-1]["order"]
+        self.assertEqual(98.8, ack_order["limit_price"])
+        self.assertEqual(96.8, ack_order["stop_loss"])
+        self.assertEqual(102.8, ack_order["take_profit"])
+        self.assertEqual("passive", ack_order["extra"]["entry_limit_intent"])
+        self.assertEqual("passive_limit", ack_order["extra"]["entry_price_plan"])
+        pre_submit_patch = next(
+            patch
+            for collection, _record_id, patch in pb.updates
+            if collection == "ibkr_signals" and patch.get("extra", {}).get("pre_submit_prices_patched")
+        )
+        extra = pre_submit_patch["extra"]
+        self.assertEqual(100.0, extra["original_entry"])
+        self.assertEqual(98.0, extra["original_stop_loss"])
+        self.assertEqual(104.0, extra["original_take_profit"])
+        self.assertEqual(1.0, extra["quote_age_s"])
+        self.assertEqual(98.9, extra["pre_submit_reference_price"])
+        self.assertAlmostEqual(0.55, extra["price_drift_r"])
+        self.assertTrue(extra["price_drift_exceeds_threshold"])
+        self.assertTrue(extra["entry_repriced"])
+        self.assertEqual("bid-signal_extra.entry_limit_offset", extra["reprice_source"])
+        self.assertEqual("passive", extra["entry_limit_intent"])
+
+    def test_entry_guard_reprices_order_payload_and_tracker_seed_for_acceptable_drift(self):
+        signal = self._signal("AAPL")
+        signal.update({"entry": 100.0, "stop_loss": 98.0, "take_profit": 104.0})
+        signal["extra"] = {**signal["extra"], "entry_limit_offset": 0.05}
+        pb = FakeSignalPBClient({"id": "row-aapl", "extra": {"source": "ibkr_compute"}})
+        quote_book = FakeQuoteBook(
+            {
+                "AAPL": {
+                    "last_price": 100.2,
+                    "bid": 100.15,
+                    "ask": 100.3,
+                    "quote_age_s": 2.0,
+                }
+            }
+        )
+        service = FakeSignalService(signal, lifecycle=FakeLifecycle(), pb=pb, quote_book=quote_book)
+
+        service._process_signals()
+
+        self.assertEqual(["sig-aapl"], service.signal_router.processed)
+        self.assertEqual([], service.signal_router.released)
+        self.assertEqual(1, len(service.order_placer.calls))
+        order_payload = service.order_placer.calls[0]
+        self.assertEqual(100.1, order_payload["entry_price"])
+        self.assertEqual(98.1, order_payload["stop_loss_price"])
+        self.assertEqual(104.1, order_payload["take_profit_price"])
+        self.assertEqual(100.1, service.order_tracker.duplicate_calls[0]["entry_price"])
+        order_ids, seed = service.order_tracker.registered[0]
+        self.assertEqual(["101", "102", "103"], order_ids)
+        self.assertEqual(100.1, seed["entry_price"])
+        self.assertEqual(98.1, seed["sl_price"])
+        self.assertEqual(104.1, seed["tp_price"])
+        self.assertEqual("LMT", seed["entry_order_type"])
+        self.assertEqual("passive", seed["entry_limit_intent"])
+        self.assertEqual("passive_limit", seed["entry_price_plan"])
+        ack_order = pb.acks[-1]["order"]
+        self.assertEqual(100.1, ack_order["limit_price"])
+        self.assertEqual(98.1, ack_order["stop_loss"])
+        self.assertEqual(104.1, ack_order["take_profit"])
+        self.assertEqual("LMT", ack_order["extra"]["entry_order_type"])
+        self.assertEqual("passive", ack_order["extra"]["entry_limit_intent"])
+        self.assertEqual("passive_limit", ack_order["extra"]["entry_price_plan"])
+        self.assertNotIn("marketable", str(seed).lower())
+        self.assertNotIn("marketable", str(ack_order["extra"]).lower())
+        self.assertTrue(service.signal_processor.pending_entries)
+
+    def test_entry_guard_reprices_short_with_passive_ask_offset_and_shifted_protection(self):
+        signal = self._signal("MSFT")
+        signal.update(
+            {
+                "direction": "short",
+                "entry": 100.0,
+                "stop_loss": 102.0,
+                "take_profit": 96.0,
+            }
+        )
+        signal["extra"] = {**signal["extra"], "entry_limit_offset": 0.05}
+        pb = FakeSignalPBClient({"id": "row-msft", "extra": {"source": "ibkr_compute"}})
+        quote_book = FakeQuoteBook(
+            {
+                "MSFT": {
+                    "last_price": 101.2,
+                    "bid": 101.0,
+                    "ask": 101.4,
+                    "quote_age_s": 1.0,
+                }
+            }
+        )
+        service = FakeSignalService(signal, lifecycle=FakeLifecycle(), pb=pb, quote_book=quote_book)
+
+        service._process_signals()
+
+        self.assertEqual(["sig-msft"], service.signal_router.processed)
+        self.assertEqual([], service.signal_router.released)
+        self.assertEqual(1, len(service.order_placer.calls))
+        order_payload = service.order_placer.calls[0]
+        self.assertEqual("short", order_payload["direction"])
+        self.assertEqual(101.45, order_payload["entry_price"])
+        self.assertEqual(103.45, order_payload["stop_loss_price"])
+        self.assertEqual(97.45, order_payload["take_profit_price"])
+        self.assertEqual(101.45, service.order_tracker.duplicate_calls[0]["entry_price"])
+        order_ids, seed = service.order_tracker.registered[0]
+        self.assertEqual(["101", "102", "103"], order_ids)
+        self.assertEqual(101.45, seed["entry_price"])
+        self.assertEqual(103.45, seed["sl_price"])
+        self.assertEqual(97.45, seed["tp_price"])
+        self.assertEqual("LMT", seed["entry_order_type"])
+        self.assertEqual("passive", seed["entry_limit_intent"])
+        ack_order = pb.acks[-1]["order"]
+        self.assertEqual(101.45, ack_order["limit_price"])
+        self.assertEqual(103.45, ack_order["stop_loss"])
+        self.assertEqual(97.45, ack_order["take_profit"])
+        self.assertEqual("passive_limit", ack_order["extra"]["entry_price_plan"])
+        pre_submit_patch = next(
+            patch
+            for collection, _record_id, patch in pb.updates
+            if collection == "ibkr_signals" and patch.get("extra", {}).get("pre_submit_prices_patched")
+        )
+        extra = pre_submit_patch["extra"]
+        self.assertEqual(100.0, extra["original_entry"])
+        self.assertEqual(102.0, extra["original_stop_loss"])
+        self.assertEqual(96.0, extra["original_take_profit"])
+        self.assertEqual(101.2, extra["pre_submit_reference_price"])
+        self.assertAlmostEqual(0.6, extra["price_drift_r"])
+        self.assertTrue(extra["price_drift_exceeds_threshold"])
+        self.assertTrue(extra["entry_repriced"])
+        self.assertEqual("ask+signal_extra.entry_limit_offset", extra["reprice_source"])
+        self.assertEqual("passive", extra["entry_limit_intent"])
+
+    def test_entry_guard_reprices_short_with_passive_limit_buffer(self):
+        signal = self._signal("AAPL")
+        signal.update({"direction": "short", "entry": 100.0, "stop_loss": 102.0, "take_profit": 96.0})
+        signal["extra"] = {**signal["extra"], "entry_limit_offset": 0.05}
+        pb = FakeSignalPBClient({"id": "row-aapl", "extra": {"source": "ibkr_compute"}})
+        quote_book = FakeQuoteBook(
+            {
+                "AAPL": {
+                    "last_price": 101.1,
+                    "bid": 101.0,
+                    "ask": 101.2,
+                    "quote_age_s": 1.0,
+                }
+            }
+        )
+        service = FakeSignalService(signal, lifecycle=FakeLifecycle(), pb=pb, quote_book=quote_book)
+
+        service._process_signals()
+
+        self.assertEqual(1, len(service.order_placer.calls))
+        order_payload = service.order_placer.calls[0]
+        self.assertEqual(101.25, order_payload["entry_price"])
+        self.assertEqual(103.25, order_payload["stop_loss_price"])
+        self.assertEqual(97.25, order_payload["take_profit_price"])
+        ack_order = pb.acks[-1]["order"]
+        self.assertEqual(101.25, ack_order["limit_price"])
+        self.assertEqual(103.25, ack_order["stop_loss"])
+        self.assertEqual(97.25, ack_order["take_profit"])
+        self.assertEqual("passive", ack_order["extra"]["entry_limit_intent"])
 
 
 class SignalRouterDedupeTest(unittest.TestCase):

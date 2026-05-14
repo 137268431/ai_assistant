@@ -267,6 +267,35 @@ class SignalIngressBuildersTest(unittest.TestCase):
         self.assertTrue(any("/ibkr_signals.html" in url and "signal_id=sig-url" in url for url in action_urls))
         self.assertEqual([], [action for action in actions if "behaviors" in action])
 
+    def test_signal_notification_card_separates_reference_limit_and_actual_fill_prices(self):
+        record = {
+            "id": "sig-row-1",
+            "signal_id": "sig-price",
+            "symbol": "AAPL",
+            "direction": "long",
+            "environment": "live",
+            "status": "protected_active",
+            "entry": 100.1,
+            "stop_loss": 98.1,
+            "take_profit": 104.1,
+            "shares": 10,
+            "extra": {
+                "pre_submit_reference_price": 100.2,
+                "pre_submit_reference_source": "last_price",
+                "entry_fill_price": 100.08,
+            },
+        }
+
+        notification_card = build_signal_notification_card(record, console_base_url="https://console.example.com")
+        status_card = build_signal_status_card(record, message="entry filled", console_base_url="https://console.example.com")
+
+        for card in (notification_card, status_card):
+            content = card["elements"][0]["content"]
+            self.assertIn("**参考价**: 100.20 (last_price)", content)
+            self.assertIn("**入场限价 / 止盈 / 止损**: 100.10 / 104.10 / 98.10", content)
+            self.assertIn("**实际成交价**: 100.08", content)
+            self.assertNotIn("**入场 / 止盈 / 止损**", content)
+
     def test_signal_ingest_skips_duplicate_bar_signal_and_annotates_existing_row(self):
         pb = _FakePB(
             [

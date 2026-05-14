@@ -886,8 +886,74 @@ class BacktestPortfolioStreamTests(unittest.TestCase):
         self.assertIsNotNone(position)
         self.assertEqual(position["entry_limit_price"], 102.0)
         self.assertEqual(position["entry_price"], 101.0)
-        self.assertEqual(position["entry_order_type"], "marketable_limit")
+        self.assertEqual(position["entry_order_type"], "passive")
         self.assertEqual(position["setup"], "orb_vwap")
+
+    def test_passive_pending_limit_does_not_fill_until_price_touched(self):
+        signal_bar_ms = int(datetime(2026, 4, 1, 10, 0, tzinfo=ET).timestamp() * 1000)
+        cases = [
+            (
+                "long",
+                "passive",
+                100.0,
+                {
+                    "open": 100.5,
+                    "high": 101.25,
+                    "low": 100.01,
+                    "close": 100.75,
+                },
+            ),
+            (
+                "short",
+                "limit",
+                100.0,
+                {
+                    "open": 99.5,
+                    "high": 99.99,
+                    "low": 98.75,
+                    "close": 99.25,
+                },
+            ),
+            (
+                "long",
+                "marketable_limit",
+                100.0,
+                {
+                    "open": 100.5,
+                    "high": 101.0,
+                    "low": 100.01,
+                    "close": 100.8,
+                },
+            ),
+        ]
+
+        for direction, entry_order_type, entry_price, prices in cases:
+            with self.subTest(direction=direction, entry_order_type=entry_order_type):
+                pending = {
+                    "symbol": "AAPL",
+                    "direction": direction,
+                    "signal": "intraday_sd_v1",
+                    "signal_id": f"sig-no-touch-{direction}-{entry_order_type}",
+                    "entry_price": entry_price,
+                    "take_profit": 108.0 if direction == "long" else 92.0,
+                    "stop_loss": 98.0 if direction == "long" else 102.0,
+                    "shares": 10,
+                    "signal_bar_ms": signal_bar_ms,
+                    "extra": {"entry_order_type": entry_order_type, "setup": "orb_vwap"},
+                    "entry_order_type": entry_order_type,
+                    "setup": "orb_vwap",
+                }
+                bar = {
+                    "bar_time_ms": signal_bar_ms + 5 * 60 * 1000,
+                    "us_time": "2026-04-01 10:05:00",
+                    "cn_time": "",
+                    **prices,
+                    "session_type": "regular",
+                }
+
+                position = self.service._check_pending_entry_fill("AAPL", bar, pending, 0.0, 0.0)
+
+                self.assertIsNone(position)
 
     def test_order_window_rejects_late_new_signals(self):
         request = self._request(order_window_end_time="15:00")

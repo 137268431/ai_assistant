@@ -1162,12 +1162,12 @@
             color: #fff;
         }
 
-        .status-tab[data-status="protection_incomplete"] {
+        .status-tab[data-status="protection_incomplete"].has-count {
             border-color: rgba(252,129,129,0.35);
             color: #FCA5A5;
         }
 
-        .status-tab[data-status="protection_incomplete"].active {
+        .status-tab[data-status="protection_incomplete"].has-count.active {
             background: linear-gradient(135deg, rgba(252,129,129,0.94), rgba(246,173,85,0.9));
             border-color: rgba(252,129,129,0.85);
             color: #111827;
@@ -1363,6 +1363,36 @@
             width: 1px;
             height: 30px;
             background: var(--border);
+        }
+
+        .signal-pnl-panel {
+            border: 1px solid rgba(79,209,197,0.14);
+            background: linear-gradient(135deg, rgba(15,23,42,0.82), rgba(22,36,48,0.88));
+        }
+
+        .signal-pnl-panel.pnl-estimated {
+            border-color: rgba(246,173,85,0.24);
+            background: linear-gradient(135deg, rgba(246,173,85,0.11), rgba(15,23,42,0.84));
+        }
+
+        .signal-pnl-value.positive {
+            color: var(--long);
+        }
+
+        .signal-pnl-value.negative {
+            color: var(--short);
+        }
+
+        .signal-pnl-value.flat {
+            color: var(--muted);
+        }
+
+        .signal-pnl-detail {
+            margin-top: 2px;
+            font-size: 10px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+            line-height: 1.35;
         }
 
         .signal-label {

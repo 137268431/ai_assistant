@@ -13,6 +13,7 @@ from .market_universe_support import (
     _safe_float,
     _safe_int,
     _service_mod,
+    _target_row_is_daily_scan_active,
     _target_row_is_manual,
 )
 
@@ -21,6 +22,7 @@ from ibkr_compute.market.bar_freshness import DEFAULT_CLOSE_DELAY_SECONDS, lates
 from . import market_universe_support as _market_universe_support
 
 WATCHLIST_IDLE_TOPUP_MAX_SYMBOLS_HARD_CAP = 200
+WATCHLIST_IDLE_TOPUP_SIGNAL_BLOCKED_SYMBOLS = {"BOXX", "IBKR"}
 
 
 def _service_mod():
@@ -890,6 +892,70 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             reason = reason or "estimated_bars_budget"
         return selected, selected_estimated_bars, reason
 
+    def _watchlist_idle_topup_target_date(self) -> str:
+        current = str(getattr(self, "_current_market_date", "") or "").strip()
+        if current:
+            return current
+        market_date_fn = getattr(self, "_market_date", None)
+        if callable(market_date_fn):
+            try:
+                current = str(market_date_fn() or "").strip()
+            except Exception:
+                current = ""
+            if current:
+                return current
+        return datetime.now(_service_mod().ET).strftime("%Y-%m-%d")
+
+    def _watchlist_idle_topup_monitor_symbols(self) -> set[str]:
+        symbols = set(self._normalize_symbol_list(getattr(self, "_watchlist_monitor_symbols", []) or []))
+        market_ws_symbols = getattr(self, "_market_ws_symbols", None)
+        if callable(market_ws_symbols):
+            try:
+                symbols.update(self._normalize_symbol_list(market_ws_symbols() or []))
+            except Exception:
+                pass
+        return symbols
+
+    def _watchlist_idle_topup_active_signal_symbols(self) -> list[str]:
+        with self._subscription_lock:
+            signal_symbols = set(self._normalize_symbol_list(getattr(self, "_active_trade_symbols", []) or []))
+
+        pb = getattr(self, "pb", None)
+        if pb is None:
+            return sorted(signal_symbols)
+
+        service_mod = _service_mod()
+        safe_env = str(service_mod.ENVIRONMENT or "live").strip().lower().replace('"', '\\"')
+        safe_date = self._watchlist_idle_topup_target_date().replace('"', '\\"')
+        try:
+            rows = pb.get_all_records(
+                "ibkr_targets",
+                filter=(
+                    f'date = "{safe_date}" && '
+                    f'environment = "{safe_env}" && '
+                    'status = "active"'
+                ),
+                sort="-score,-updated",
+                max_pages=10,
+            )
+        except Exception as exc:
+            service_mod.logger.warning("Failed to load active target symbols for idle topup signals: %s", exc)
+            return sorted(signal_symbols)
+
+        monitor_symbols = self._watchlist_idle_topup_monitor_symbols()
+        for row in rows or []:
+            symbol = str((row or {}).get("symbol", "") or "").strip().upper()
+            if (
+                not symbol
+                or symbol in monitor_symbols
+                or symbol in WATCHLIST_IDLE_TOPUP_SIGNAL_BLOCKED_SYMBOLS
+                or str((row or {}).get("status", "") or "").strip().lower() != "active"
+            ):
+                continue
+            if _target_row_is_daily_scan_active(row) or _target_row_is_manual(row):
+                signal_symbols.add(symbol)
+        return sorted(signal_symbols)
+
     def _run_watchlist_idle_topup_cycle(self) -> dict:
         service_mod = _service_mod()
         if not hasattr(self, "_watchlist_idle_topup_state"):
@@ -1209,15 +1275,24 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
                         and self.config.get_bool_for_environment(
                             "ibkr_watchlist_idle_topup_materialize_5m",
                             service_mod.ENVIRONMENT,
-                            False,
+                            True,
                         )
                     ):
                         admitted_after_write, _ = self._watchlist_idle_topup_admission()
                         if admitted_after_write:
+                            active_signal_symbols = self._watchlist_idle_topup_active_signal_symbols()
+                            compute_symbols = sorted(
+                                set(self._normalize_symbol_list(list(conid_map.keys()) + active_signal_symbols))
+                            )
+                            compute_symbol_set = set(compute_symbols)
+                            persist_signal_symbols = [
+                                symbol for symbol in active_signal_symbols if symbol in compute_symbol_set
+                            ]
                             self._trigger_realtime_compute(
                                 source="watchlist_idle_topup",
-                                symbols=list(conid_map.keys()),
-                                persist_signals=False,
+                                symbols=compute_symbols,
+                                persist_signals=bool(persist_signal_symbols),
+                                persist_signal_symbols=persist_signal_symbols,
                                 intervals=["5m"],
                                 rollup_intervals=[],
                             )

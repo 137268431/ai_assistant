@@ -12,6 +12,7 @@ from ibkr_compute.market.bar_freshness import BarFreshnessPlanner
 from ibkr_compute.market.bar_repair import BarRepairCoordinator
 from ibkr_compute.market.backtest_preload import BacktestPreloadCoordinator
 from ibkr_compute.market.timeframe_utils import COMPUTE_INTERVALS
+from ibkr_compute.api.compute.lock_manager import ComputeLockManager
 from ibkr_compute.api.service_topology import get_runtime_mode, get_service_profile
 from ibkr_compute.workflows.history_rebuild import HistoryRebuildManager
 
@@ -137,6 +138,7 @@ def build_runtime_state_bundle() -> dict:
         "daily_close_cache_date": "",
         "metadata_cache_updated_at": 0.0,
         "compute_lock": threading.RLock(),
+        "compute_lock_manager": ComputeLockManager(),
         "ibkr_account_snapshot_cache": {},
         "ibkr_account_snapshot_cache_lock": threading.Lock(),
         "host_cpu_snapshot_lock": threading.Lock(),

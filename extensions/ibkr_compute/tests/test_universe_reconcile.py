@@ -332,6 +332,39 @@ class UniverseTargetSubscriptionPlanTest(unittest.TestCase):
         self.assertIn("MSFT", symbols)
         self.assertEqual(["AAPL", "MSFT"], [row["symbol"] for row in selected_rows])
 
+    def test_status_sync_keeps_unselected_active_target_active(self):
+        universe = DummyTargetPlanUniverse(
+            [
+                {
+                    "id": "target-aapl",
+                    "symbol": "AAPL",
+                    "status": "active",
+                    "score": 90,
+                    "extra": {"source": "daily_scan", "context_active": True},
+                },
+                {
+                    "id": "target-msft",
+                    "symbol": "MSFT",
+                    "status": "active",
+                    "score": 80,
+                    "extra": {"source": "daily_scan", "context_active": True},
+                },
+            ]
+        )
+        universe.config.values["ibkr_target_subscription_limit"] = 1
+
+        target_date, _symbols, _meta, selected_rows = universe._build_target_subscription_plan()
+        universe._mark_target_statuses(target_date, selected_rows)
+
+        self.assertEqual(["AAPL"], [row["symbol"] for row in selected_rows])
+        rows_by_id = {row["id"]: row for row in universe.pb.rows}
+        self.assertEqual("active", rows_by_id["target-aapl"]["status"])
+        self.assertTrue(rows_by_id["target-aapl"]["extra"]["within_subscription_budget"])
+        self.assertEqual(1, rows_by_id["target-aapl"]["extra"]["subscription_rank"])
+        self.assertEqual("active", rows_by_id["target-msft"]["status"])
+        self.assertFalse(rows_by_id["target-msft"]["extra"]["within_subscription_budget"])
+        self.assertEqual(0, rows_by_id["target-msft"]["extra"]["subscription_rank"])
+
     def test_non_context_active_candidate_is_not_selected_as_trade_row(self):
         universe = DummyTargetPlanUniverse(
             [

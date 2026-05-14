@@ -100,7 +100,7 @@
                 awaiting_confirm: '待确认',
                 pending: '等待执行',
                 submitted: '已提交',
-                protected_active: '保护中',
+                protected_active: '持仓保护中',
                 protection_incomplete: '保护不完整',
                 executed: '已执行',
                 closed: '已平仓',

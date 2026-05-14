@@ -96,12 +96,29 @@ def _load_watchlist_symbols(pb: Any, environment: str) -> list[str]:
 
 
 def _load_target_symbols(pb: Any, environment: str, date_token: str) -> list[str]:
+    return [row["symbol"] for row in _load_target_rows(pb, environment, date_token)]
+
+
+def _load_target_rows(pb: Any, environment: str, date_token: str) -> list[dict[str, Any]]:
     filter_expr = (
         f'date = "{date_token}" && environment = "{environment}" && '
         '(status = "candidate" || status = "active")'
     )
     rows = pb.get_records("ibkr_targets", filter=filter_expr, sort="-score,-updated", per_page=500, page=1)
-    return _unique_sorted([row.get("symbol") for row in rows or [] if isinstance(row, dict)])
+    by_symbol: dict[str, dict[str, Any]] = {}
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        symbol = _to_text(row.get("symbol")).upper()
+        if not symbol:
+            continue
+        by_symbol[symbol] = {
+            "symbol": symbol,
+            "status": _to_text(row.get("status")).lower(),
+            "score": row.get("score"),
+            "updated": _to_text(row.get("updated")),
+        }
+    return [by_symbol[symbol] for symbol in sorted(by_symbol)]
 
 
 def _today_bounds_ms(today_start: str) -> tuple[int, int]:
@@ -110,6 +127,25 @@ def _today_bounds_ms(today_start: str) -> tuple[int, int]:
         token = token[:10]
     dt = datetime.strptime(token, "%Y-%m-%d").replace(tzinfo=ET, hour=0, minute=0, second=0, microsecond=0)
     return int(dt.timestamp() * 1000), int((dt + timedelta(days=1)).timestamp() * 1000)
+
+
+def _indicator_interval_values(collection: str, interval: str) -> list[str]:
+    text = _to_text(interval)
+    values = [text] if text else []
+    if collection == "ibkr_indicators":
+        if text == "5":
+            values.append("5m")
+        elif text == "5m":
+            values.append("5")
+    output: list[str] = []
+    for value in values:
+        if value and value not in output:
+            output.append(value)
+    return output or [text]
+
+
+def _pb_filter_quote(value: Any) -> str:
+    return _to_text(value).replace("\\", "\\\\").replace('"', '\\"')
 
 
 def _load_recent_rows_by_symbol_sqlite(collection: str, environment: str, interval: str, today_start: str, limit: int) -> dict[str, Any] | None:
@@ -121,19 +157,38 @@ def _load_recent_rows_by_symbol_sqlite(collection: str, environment: str, interv
         start_ms, end_ms = _today_bounds_ms(today_start)
         session_expr = "session_type" if collection == "ibkr_bars" else "'' AS session_type"
         index_hint = "INDEXED BY idx_ibkr_indicators_bartimems" if collection == "ibkr_indicators" else ""
+        interval_values = _indicator_interval_values(collection, interval)
+        interval_placeholders = ", ".join("?" for _ in interval_values)
+        per_symbol_limit = max(1, min(12, int(limit or 12)))
         with open_pb_sqlite(readonly=True, timeout=2.0) as conn:
             rows = conn.execute(
                 f"""
+                WITH ranked AS (
                 SELECT symbol, bar_time_ms, us_time, {session_expr}
                 FROM {collection} {index_hint}
                 WHERE environment = ?
-                  AND interval = ?
+                  AND interval IN ({interval_placeholders})
                   AND bar_time_ms >= ?
                   AND bar_time_ms < ?
-                ORDER BY bar_time_ms DESC
-                LIMIT ?
+                ),
+                numbered AS (
+                    SELECT
+                        symbol,
+                        bar_time_ms,
+                        us_time,
+                        session_type,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY symbol
+                            ORDER BY bar_time_ms DESC
+                        ) AS row_rank
+                    FROM ranked
+                )
+                SELECT symbol, bar_time_ms, us_time, session_type
+                FROM numbered
+                WHERE row_rank <= ?
+                ORDER BY bar_time_ms DESC, symbol ASC
                 """,
-                (str(environment or "live"), str(interval or ""), start_ms, end_ms, max(1, int(limit or 1))),
+                (str(environment or "live"), *interval_values, start_ms, end_ms, per_symbol_limit),
             ).fetchall()
         return _rows_by_symbol_payload([dict(row) for row in rows])
     except Exception:
@@ -171,11 +226,16 @@ def _load_recent_rows_by_symbol(pb: Any, collection: str, environment: str, inte
     sqlite_payload = _load_recent_rows_by_symbol_sqlite(collection, environment, interval, today_start, limit)
     if sqlite_payload is not None:
         return sqlite_payload
+    interval_values = _indicator_interval_values(collection, interval)
+    if len(interval_values) == 1:
+        interval_filter = f'interval = "{_pb_filter_quote(interval_values[0])}"'
+    else:
+        interval_filter = "(" + " || ".join(f'interval = "{_pb_filter_quote(item)}"' for item in interval_values) + ")"
     rows = pb.get_records(
         collection,
         filter=(
             f'environment = "{environment}" && '
-            f'interval = "{interval}" && '
+            f'{interval_filter} && '
             f'us_time >= "{today_start}"'
         ),
         sort="-bar_time_ms",
@@ -196,6 +256,54 @@ def _build_gap_fingerprint(summary: dict[str, Any]) -> str:
     )
 
 
+def _count_target_statuses(target_rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in target_rows or []:
+        status = _to_text(_as_dict(row).get("status")).lower() or "unknown"
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+def _build_indicator_lag_reason_hint(details: list[dict[str, Any]]) -> str:
+    if not details:
+        return ""
+    statuses = {_to_text(_as_dict(item).get("target_status")).lower() for item in details}
+    reasons = {_to_text(_as_dict(item).get("reason")).lower() for item in details}
+    if statuses == {"candidate"} and reasons == {"missing_today"}:
+        return "全部为 candidate 且缺当日 5m 指标；通常表示候选标的只有 5m bars 回补，没有进入实时 compute/指标物化。"
+    if "missing_today" in reasons:
+        return "存在缺当日 5m 指标；优先检查该标的是否进入 compute 调度、materialize 是否开启、指标写入是否失败。"
+    return "已有 5m 指标但落后最新 5m bar；优先检查 compute 调度、indicator_flush 和 compute_busy/队列积压。"
+
+
+def _format_indicator_lag_sample(details: list[dict[str, Any]], limit: int = 6) -> str:
+    parts: list[str] = []
+    for item in details[: max(1, int(limit or 1))]:
+        detail = _as_dict(item)
+        symbol = _to_text(detail.get("symbol"))
+        status = _to_text(detail.get("target_status")) or "target"
+        bar_time = _to_text(detail.get("bar_us_time"))[-8:-3] or "bar?"
+        indicator_time = _to_text(detail.get("indicator_us_time"))[-8:-3]
+        reason = _to_text(detail.get("reason")).lower()
+        if reason == "missing_today":
+            parts.append(f"{symbol}({status}): 缺当日5m指标，bar {bar_time}")
+            continue
+        lag_min = _to_int(detail.get("lag_min"), 0)
+        parts.append(f"{symbol}({status}): {lag_min}分钟 {indicator_time or '指标?'}->{bar_time}")
+    return "; ".join(part for part in parts if part)
+
+
+def _format_max_indicator_lag(gaps: dict[str, Any]) -> str:
+    parts: list[str] = []
+    max_lag = _to_int(gaps.get("max_indicator_lag_min"), 0)
+    missing = _to_int(gaps.get("indicator_missing_count"), 0)
+    if max_lag > 0:
+        parts.append(f"{max_lag}分钟")
+    if missing > 0:
+        parts.append(f"缺当日5m指标 {missing}")
+    return " / ".join(parts) if parts else "0分钟"
+
+
 def load_data_gap_summary(
     pb: Any,
     *,
@@ -207,7 +315,13 @@ def load_data_gap_summary(
     indicator_requires_targets: bool = DEFAULT_INDICATOR_REQUIRES_TARGETS,
 ) -> dict[str, Any]:
     watchlist_symbols = _load_watchlist_symbols(pb, environment)
-    target_symbols = _load_target_symbols(pb, environment, date_token)
+    target_rows = _load_target_rows(pb, environment, date_token)
+    target_symbols = [row["symbol"] for row in target_rows]
+    target_status_by_symbol = {
+        _to_text(row.get("symbol")).upper(): _to_text(row.get("status")).lower()
+        for row in target_rows
+        if _to_text(row.get("symbol"))
+    }
     bars = _load_recent_rows_by_symbol(pb, "ibkr_bars", environment, "5m", today_start, 1200)
     indicators = _load_recent_rows_by_symbol(pb, "ibkr_indicators", environment, "5", today_start, 1200)
     latest_bar_by_symbol = _as_dict(bars.get("latest_by_symbol"))
@@ -243,6 +357,8 @@ def load_data_gap_summary(
 
     bar_lag_symbols: list[str] = []
     indicator_lag_symbols: list[str] = []
+    indicator_missing_symbols: list[str] = []
+    indicator_lag_details: list[dict[str, Any]] = []
     sequence_gap_examples: list[dict[str, Any]] = []
     max_bar_lag_ms = 0
     max_indicator_lag_ms = 0
@@ -261,7 +377,26 @@ def load_data_gap_summary(
             indicator_ms = _to_int(latest_indicator.get("bar_time_ms"), 0)
             if bar_ms > 0 and (bar_ms - indicator_ms) > indicator_lag_alert_ms:
                 indicator_lag_symbols.append(symbol)
-                max_indicator_lag_ms = max(max_indicator_lag_ms, bar_ms - indicator_ms)
+                target_status = _to_text(target_status_by_symbol.get(symbol)) or "unknown"
+                if indicator_ms > 0:
+                    lag_ms = bar_ms - indicator_ms
+                    max_indicator_lag_ms = max(max_indicator_lag_ms, lag_ms)
+                    reason = "lag_over_threshold"
+                    lag_min: int | None = round(lag_ms / 60000)
+                else:
+                    indicator_missing_symbols.append(symbol)
+                    reason = "missing_today"
+                    lag_min = None
+                indicator_lag_details.append(
+                    {
+                        "symbol": symbol,
+                        "target_status": target_status,
+                        "bar_us_time": _to_text(latest_bar.get("us_time")),
+                        "indicator_us_time": _to_text(latest_indicator.get("us_time")),
+                        "lag_min": lag_min,
+                        "reason": reason,
+                    }
+                )
         if len(sequence_gap_examples) >= 6:
             continue
         series = list(_as_dict(bars.get("series_by_symbol")).get(symbol) or [])
@@ -288,6 +423,7 @@ def load_data_gap_summary(
     summary = {
         "watchlist_count": len(watchlist_symbols),
         "target_count": len(target_symbols),
+        "target_status_counts": _count_target_statuses(target_rows),
         "monitored_symbol_count": len(monitored_symbols),
         "alertable_symbol_count": len(symbols),
         "indicator_monitored_symbol_count": len(indicator_symbols),
@@ -302,14 +438,18 @@ def load_data_gap_summary(
         "latest_bar_us_time": _to_text(_as_dict(latest_bar_by_symbol.get(latest_bar_symbol)).get("us_time")),
         "bar_lag_symbols": bar_lag_symbols,
         "indicator_lag_symbols": indicator_lag_symbols,
+        "indicator_missing_symbols": indicator_missing_symbols,
+        "indicator_lag_details": indicator_lag_details,
         "sequence_gap_examples": sequence_gap_examples,
         "bar_lag_count": len(bar_lag_symbols),
         "indicator_lag_count": len(indicator_lag_symbols),
+        "indicator_missing_count": len(indicator_missing_symbols),
         "sequence_gap_count": len(sequence_gap_examples),
         "max_bar_lag_min": round(max_bar_lag_ms / 60000) if max_bar_lag_ms else 0,
         "max_indicator_lag_min": round(max_indicator_lag_ms / 60000) if max_indicator_lag_ms else 0,
         "market_activity_detected": latest_bar_time_ms > 0,
     }
+    summary["indicator_lag_reason_hint"] = _build_indicator_lag_reason_hint(indicator_lag_details)
     summary["has_issue"] = bool(summary["market_activity_detected"] and (summary["bar_lag_count"] or summary["indicator_lag_count"] or summary["sequence_gap_count"]))
     summary["fingerprint"] = _build_gap_fingerprint(summary)
     return summary
@@ -394,16 +534,32 @@ def build_data_gap_guard_response(
             "检查时间": times["us"],
             "最新bar时间": gaps.get("latest_bar_us_time") or "unknown",
             "bars缺口数": str(gaps.get("bar_lag_count") or 0),
+            "bars最大滞后": f"{_to_int(gaps.get('max_bar_lag_min'), 0)}分钟",
             "指标滞后数": str(gaps.get("indicator_lag_count") or 0),
+            "指标周期": "5m",
+            "指标滞后判定": f"缺当日5m指标 或 5m指标落后最新5m bar >{_to_int(gaps.get('indicator_lag_alert_min'), DEFAULT_INDICATOR_LAG_ALERT_MIN)}分钟",
+            "指标最大滞后": _format_max_indicator_lag(gaps),
             "序列缺口数": str(gaps.get("sequence_gap_count") or 0),
         }
+        target_status_counts = _as_dict(gaps.get("target_status_counts"))
+        if target_status_counts:
+            detail["目标范围"] = ", ".join(
+                f"{key}:{target_status_counts[key]}"
+                for key in sorted(target_status_counts)
+            )
         bar_lag_symbols = list(gaps.get("bar_lag_symbols") or [])
         indicator_lag_symbols = list(gaps.get("indicator_lag_symbols") or [])
+        indicator_lag_details = list(gaps.get("indicator_lag_details") or [])
         sequence_gap_examples = list(gaps.get("sequence_gap_examples") or [])
         if bar_lag_symbols:
             detail["bars异常样本"] = ", ".join(bar_lag_symbols[:10])
         if indicator_lag_symbols:
             detail["指标异常样本"] = ", ".join(indicator_lag_symbols[:10])
+        if indicator_lag_details:
+            detail["指标滞后明细"] = _format_indicator_lag_sample(indicator_lag_details)
+        reason_hint = _to_text(gaps.get("indicator_lag_reason_hint"))
+        if reason_hint:
+            detail["排查提示"] = reason_hint
         if sequence_gap_examples:
             first = _as_dict(sequence_gap_examples[0])
             detail["序列缺口样本"] = f"{_to_text(first.get('symbol'))}: {_to_text(first.get('prev_us_time'))} -> {_to_text(first.get('next_us_time'))} ({_to_int(first.get('missing_points'), 0)})"

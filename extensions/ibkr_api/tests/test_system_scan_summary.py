@@ -12,7 +12,10 @@ for src_root in SRC_ROOTS:
         sys.path.insert(0, str(src_root))
 
 from ibkr_api.system.jobs.scan_summary import build_system_scan_summary_response
-from ibkr_api.system.jobs.status_heartbeat import build_system_status_reminder_response
+from ibkr_api.system.jobs.status_heartbeat import (
+    _active_window_summary,
+    build_system_status_reminder_response,
+)
 from ibkr_api.system.jobs import open_report as open_report_mod
 from ibkr_api.system.jobs.open_report import (
     build_system_open_report_response,
@@ -292,6 +295,66 @@ class SystemScanSummaryTest(unittest.TestCase):
         self.assertEqual(payload["reason"], "open_report_window")
         self.assertEqual(emitted, [])
 
+    def test_active_window_summary_hides_normal_no_window_items(self):
+        detail = _active_window_summary(
+            {
+                "summary": {
+                    "window_active_count": 0,
+                    "window_valid_count": 0,
+                    "candidate_signal_count": 3,
+                    "blocked_count": 0,
+                    "near_expiry_count": 0,
+                    "trace_error_count": 0,
+                },
+                "items": [
+                    {"symbol": "AAPL", "window_status": "no_window"},
+                    {"symbol": "TSLA", "window_status": "used"},
+                ],
+            },
+            {
+                "items": [
+                    {"symbol": "AAPL", "is_operable": False, "has_signal_today": False},
+                    {"symbol": "TSLA", "is_operable": False, "has_signal_today": True},
+                ]
+            },
+        )
+
+        self.assertEqual(detail, {})
+
+    def test_active_window_summary_reports_actionable_window_anomalies(self):
+        detail = _active_window_summary(
+            {
+                "summary": {
+                    "window_active_count": 0,
+                    "window_valid_count": 0,
+                    "candidate_signal_count": 2,
+                    "blocked_count": 1,
+                    "near_expiry_count": 0,
+                    "trace_error_count": 1,
+                },
+                "items": [
+                    {"symbol": "NVDA", "window_status": "blocked", "blocked_reason": "volume_filter"},
+                    {"symbol": "MSFT", "window_status": "no_window", "trace_error": "trace timed out"},
+                    {"symbol": "AMD", "window_status": "no_window"},
+                ],
+            },
+            {
+                "items": [
+                    {"symbol": "NVDA", "is_operable": True, "has_signal_today": False},
+                    {"symbol": "MSFT", "is_operable": False, "has_signal_today": False},
+                    {"symbol": "AMD", "is_operable": True, "has_signal_today": False},
+                ]
+            },
+        )
+
+        self.assertIn("candidate 2", detail["窗口统计"])
+        self.assertIn("blocked 1", detail["窗口统计"])
+        self.assertIn("trace_error 1", detail["窗口统计"])
+        self.assertIn("NVDA(受阻,可操作待信号,volume_filter)", detail["窗口异常"])
+        self.assertIn("MSFT(无窗口,trace错误:trace timed out)", detail["窗口异常"])
+        self.assertIn("AMD(无窗口,可操作待信号)", detail["窗口异常"])
+        self.assertNotIn("窗口未激活", detail)
+
     def test_status_reminder_includes_targets_and_active_windows(self):
         emitted = []
 
@@ -429,10 +492,12 @@ class SystemScanSummaryTest(unittest.TestCase):
         self.assertIn("AAPL(多,已过期)", detail["标的链路"])
         self.assertIn("INTC(空,待确认)", detail["标的链路"])
         self.assertIn("valid 2", detail["窗口统计"])
+        self.assertIn("blocked 0", detail["窗口统计"])
+        self.assertIn("trace_error 0", detail["窗口统计"])
         self.assertIn("AAPL(上窗口,4 bars)", detail["窗口已激活"])
         self.assertIn("INTC(下窗口,1 bars)", detail["窗口已激活"])
-        self.assertIn("NVDA(无窗口)", detail["窗口未激活"])
-        self.assertIn("TSLA(已使用)", detail["窗口未激活"])
+        self.assertIn("INTC(下窗口,1 bars)", detail["窗口异常"])
+        self.assertNotIn("窗口未激活", detail)
 
 
 if __name__ == "__main__":

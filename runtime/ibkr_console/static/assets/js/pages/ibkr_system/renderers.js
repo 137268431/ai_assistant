@@ -188,6 +188,18 @@ function renderServiceTopology(topologyPayload = {}) {
             tone: attentionCount ? 'warn' : 'ok',
         },
     ];
+    const clientServiceKeys = new Set(['ibkr-runtime', 'ibkr-compute', 'ibkr-api', 'ibkr-scheduler', 'ibkr-backtest']);
+    const clientEntries = normalizedServices
+        .filter((service) => service.clientId && clientServiceKeys.has(service.key))
+        .map((service) => `${service.title.replace(/^ibkr-/, '')} ${service.clientId}`);
+    if (clientEntries.length) {
+        cards.push({
+            label: 'IB Clients',
+            value: String(clientEntries.length),
+            copy: clientEntries.join(' · '),
+            tone: 'neutral',
+        });
+    }
     const backtestService = normalizedServices.find((service) => service.key === 'ibkr-backtest');
     if (backtestService) {
         const workerLabel = String(backtestService.workerStatus || backtestService.readinessPhase || backtestService.status || '--').toUpperCase();

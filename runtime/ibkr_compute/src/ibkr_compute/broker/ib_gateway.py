@@ -1728,6 +1728,7 @@ class BrokerAdapter:
         direction: str,
         quantity: int,
         account_id: str = "",
+        order_ref: str = "",
     ) -> dict:
         contract_info = self.resolve_contract(symbol=symbol, conid=conid)
         if not contract_info:
@@ -1746,7 +1747,8 @@ class BrokerAdapter:
         order.orderType = "MKT"
         order.totalQuantity = float(quantity)
         order.tif = "DAY"
-        order.orderRef = f"close_{contract.symbol}_{datetime.now(ET).strftime('%Y%m%d_%H%M%S')}"
+        order_ref = str(order_ref or "").strip()
+        order.orderRef = order_ref or f"close_{contract.symbol}_{datetime.now(ET).strftime('%Y%m%d_%H%M%S')}"
         account_id = str(account_id or "").strip()
         if account_id:
             order.account = account_id

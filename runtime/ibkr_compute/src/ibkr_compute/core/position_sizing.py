@@ -3,6 +3,17 @@
 import math
 
 
+PASSIVE_LIMIT_DYNAMIC_MODES = {
+    "dynamic",
+    "passive_limit_dynamic",
+    "passive-limit-dynamic",
+    "passive_limit_dynamic_v1",
+    "marketable_limit_dynamic",
+    "marketable-limit-dynamic",
+    "marketable_limit_dynamic_v1",
+}
+
+
 def _safe_float(value, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -15,9 +26,9 @@ def _marketable_limit_offset(close: float, atr: float, params: dict) -> tuple[fl
         params.get("entry_limit_mode")
         or params.get("entry_price_plan")
         or params.get("entry_plan")
-        or "marketable_limit_dynamic"
+        or "passive_limit_dynamic"
     ).strip().lower()
-    if mode in {"dynamic", "marketable_limit_dynamic", "marketable-limit-dynamic", "marketable_limit_dynamic_v1"}:
+    if mode in PASSIVE_LIMIT_DYNAMIC_MODES:
         atr_mult = max(0.0, _safe_float(params.get("entry_limit_atr_mult"), 0.30))
         floor_bps = max(0.0, _safe_float(params.get("entry_limit_floor_bps"), 15.0))
         cap_bps = max(0.0, _safe_float(params.get("entry_limit_cap_bps"), 30.0))
@@ -25,7 +36,7 @@ def _marketable_limit_offset(close: float, atr: float, params: dict) -> tuple[fl
         cap = max(floor, close * cap_bps / 10000.0)
         raw = max(0.0, atr) * atr_mult
         offset = min(max(raw, floor), cap)
-        return (max(0.01, offset) if close > 0 else 0.0), "marketable_limit_dynamic"
+        return (max(0.01, offset) if close > 0 else 0.0), "passive_limit_dynamic"
 
     marketable_limit_bps = max(0.0, _safe_float(params.get("marketable_limit_bps"), 10.0))
     offset = max(0.01, close * marketable_limit_bps / 10000.0) if close > 0 else 0.0
@@ -101,11 +112,10 @@ def calc_short_position(close: float, atr: float, params: dict) -> dict:
 
 
 def calc_marketable_limit_position(close: float, atr: float, params: dict, direction: str) -> dict:
-    """Calculate a marketable limit entry while keeping ATR risk controls.
+    """Calculate limit entry pricing while keeping ATR risk controls.
 
-    Long entries use a limit above the latest close; short entries use a limit
-    below the latest close. This keeps the order type as LimitOrder but makes
-    the simulated/live entry intent immediate instead of waiting for a pullback.
+    Dynamic entries are passive: longs bid below the latest close and shorts
+    offer above it. The old fixed-bps marketable mode keeps its legacy side.
     """
     close = float(close or 0.0)
     atr = float(atr or 0.0)
@@ -116,8 +126,9 @@ def calc_marketable_limit_position(close: float, atr: float, params: dict, direc
     atr_raw = atr / params.get("atr_multiplier", 1.5) if params.get("atr_multiplier", 1.5) != 0 else atr
 
     offset, entry_limit_mode = _marketable_limit_offset(close, atr, params or {})
+    passive_limit = entry_limit_mode == "passive_limit_dynamic"
     if str(direction or "").lower() == "short":
-        entry = close - offset
+        entry = close + offset if passive_limit else close - offset
         sl_atr = entry + atr * sl_atr_mult
         shares = math.ceil(position_amount / entry) if entry > 0 else 0
         sl_max = entry + max_loss / shares if shares > 0 else sl_atr
@@ -125,7 +136,7 @@ def calc_marketable_limit_position(close: float, atr: float, params: dict, direc
         sl_dist = sl - entry
         tp = entry - sl_dist * rr_ratio
     else:
-        entry = close + offset
+        entry = close - offset if passive_limit else close + offset
         sl_atr = entry - atr * sl_atr_mult
         shares = math.ceil(position_amount / entry) if entry > 0 else 0
         sl_max = entry - max_loss / shares if shares > 0 else sl_atr

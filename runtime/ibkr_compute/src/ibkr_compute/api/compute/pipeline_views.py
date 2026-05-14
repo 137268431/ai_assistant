@@ -8,6 +8,10 @@ from contextlib import contextmanager
 
 from flask import jsonify
 
+from ibkr_compute.api.compute.lock_manager import (
+    ComputeLockRequest,
+    build_compute_plan_lock_request,
+)
 from ibkr_compute.api.compute.request import build_compute_disabled_payload, build_compute_execution_plan
 from ibkr_compute.api.compute.runtime_state.caches import get_daily_change_fields
 
@@ -45,6 +49,47 @@ def _acquire_compute_lock(api_app):
     return _HeldComputeLock(api_app.compute_lock)
 
 
+def _acquire_compute_lock_request(api_app, lock_request: ComputeLockRequest | None = None):
+    lock_manager = getattr(api_app, "compute_lock_manager", None)
+    if lock_manager is None:
+        return _acquire_compute_lock(api_app)
+    return lock_manager.acquire(
+        lock_request or ComputeLockRequest.global_lock(),
+        timeout=COMPUTE_LOCK_TIMEOUT_SECONDS,
+    )
+
+
+def _compute_lock_busy_payload(lock_request: ComputeLockRequest | None = None) -> dict:
+    payload = {
+        "ok": False,
+        "error": "compute_busy",
+        "retryable": True,
+        "lock_timeout_s": COMPUTE_LOCK_TIMEOUT_SECONDS,
+    }
+    if lock_request is not None:
+        payload.update(lock_request.describe())
+    return payload
+
+
+def _compute_preflight_response(plan: dict):
+    if not plan["enabled_environments"]:
+        return jsonify(build_compute_disabled_payload(plan["requested_environments"]))
+    daily_rollup_error = _unbounded_daily_rollup_error(plan)
+    if daily_rollup_error:
+        return jsonify(
+            {
+                "ok": False,
+                "error": daily_rollup_error,
+                "requested_environments": plan["requested_environments"],
+                "environments": sorted(plan["enabled_environments"]),
+                "symbols": plan["requested_symbols"],
+                "rollup_intervals": plan["rollup_intervals"],
+                "hint": "Pass an explicit symbols list for 1d rollup, or set allow_unbounded_daily_rollup for offline maintenance.",
+            }
+        ), 400
+    return None
+
+
 def _coerce_bool(value) -> bool:
     if isinstance(value, bool):
         return value
@@ -67,36 +112,30 @@ def _unbounded_daily_rollup_error(plan: dict) -> str:
 
 def build_compute_response(payload=None):
     api_app = _api_app()
+    plan = None
+    lock_request = None
 
-    compute_lock = _acquire_compute_lock(api_app)
-    if compute_lock is None:
-        return jsonify(
-            {
-                "ok": False,
-                "error": "compute_busy",
-                "retryable": True,
-                "lock_timeout_s": COMPUTE_LOCK_TIMEOUT_SECONDS,
-            }
-        ), 503
-
-    with compute_lock:
+    if getattr(api_app, "compute_lock_manager", None) is not None:
         api_app.cfg.refresh()
         plan = build_compute_execution_plan(payload)
-        if not plan["enabled_environments"]:
-            return jsonify(build_compute_disabled_payload(plan["requested_environments"]))
-        daily_rollup_error = _unbounded_daily_rollup_error(plan)
-        if daily_rollup_error:
-            return jsonify(
-                {
-                    "ok": False,
-                    "error": daily_rollup_error,
-                    "requested_environments": plan["requested_environments"],
-                    "environments": sorted(plan["enabled_environments"]),
-                    "symbols": plan["requested_symbols"],
-                    "rollup_intervals": plan["rollup_intervals"],
-                    "hint": "Pass an explicit symbols list for 1d rollup, or set allow_unbounded_daily_rollup for offline maintenance.",
-                }
-            ), 400
+        preflight_response = _compute_preflight_response(plan)
+        if preflight_response is not None:
+            return preflight_response
+        lock_request = build_compute_plan_lock_request(plan)
+        compute_lock = _acquire_compute_lock_request(api_app, lock_request)
+    else:
+        compute_lock = _acquire_compute_lock(api_app)
+
+    if compute_lock is None:
+        return jsonify(_compute_lock_busy_payload(lock_request)), 503
+
+    with compute_lock:
+        if plan is None:
+            api_app.cfg.refresh()
+            plan = build_compute_execution_plan(payload)
+            preflight_response = _compute_preflight_response(plan)
+            if preflight_response is not None:
+                return preflight_response
 
         start = time.time()
         perf_start = time.perf_counter()
@@ -110,7 +149,15 @@ def build_compute_response(payload=None):
         dirty_cursor_environments = set()
         stage_timings = defaultdict(float)
         critical_finished_at = 0.0
-        signal_state_enabled = bool(plan["persist_signals"] or plan["capture_signals"])
+        persist_signal_symbol_filter = plan.get("persist_signal_symbols")
+        if persist_signal_symbol_filter is None:
+            persist_signal_symbol_set = None
+        else:
+            persist_signal_symbol_set = {
+                str(symbol or "").strip().upper()
+                for symbol in persist_signal_symbol_filter
+                if str(symbol or "").strip()
+            }
 
         @contextmanager
         def record_stage(name: str):
@@ -144,6 +191,15 @@ def build_compute_response(payload=None):
             signal_bootstrap_checked = getattr(api_app, "signal_bootstrap_checked", None)
             if isinstance(signal_bootstrap_checked, set):
                 signal_bootstrap_checked.discard(signal_key)
+
+        def should_persist_signal_for_symbol(symbol: str) -> bool:
+            if not plan["persist_signals"]:
+                return False
+            normalized_symbol = str(symbol or "").strip().upper()
+            return persist_signal_symbol_set is None or normalized_symbol in persist_signal_symbol_set
+
+        def should_update_signal_for_symbol(symbol: str) -> bool:
+            return bool(plan["capture_signals"] or should_persist_signal_for_symbol(symbol))
 
         def flush_pending_indicators():
             nonlocal errors, indicator_batch, indicator_cursor_updates
@@ -236,6 +292,7 @@ def build_compute_response(payload=None):
                         key = (environment, symbol, interval)
                         last_ms = int(api_app.last_processed_ms.get(key, 0) or 0)
                         force_bootstrap_rebuild = int(getattr(engine, "last_bar_time_ms", 0) or 0) > last_ms
+                        symbol_signal_state_enabled = should_update_signal_for_symbol(symbol)
                         bootstrap_target_ms = last_ms
                         bootstrap_inclusive = True
                         if bootstrap_target_ms <= 0 and bars:
@@ -250,7 +307,7 @@ def build_compute_response(payload=None):
                                     bootstrap_target_ms,
                                     inclusive=bootstrap_inclusive,
                                     force_rebuild=force_bootstrap_rebuild,
-                                    hydrate_signal_state=signal_state_enabled,
+                                    hydrate_signal_state=symbol_signal_state_enabled,
                                 )
                             last_ms = int(api_app.last_processed_ms.get(key, 0) or 0)
 
@@ -300,7 +357,7 @@ def build_compute_response(payload=None):
                                     critical_finished_at = max(critical_finished_at, time.perf_counter())
                                 continue
 
-                            if not signal_state_enabled or symbol not in signal_enabled_symbols:
+                            if not symbol_signal_state_enabled or symbol not in signal_enabled_symbols:
                                 mark_signal_state_stale(key)
                                 if should_flush_indicators:
                                     flush_pending_indicators()
@@ -325,7 +382,7 @@ def build_compute_response(payload=None):
                                     signal_payload = api_app.build_signal_payload(environment, symbol, interval, bar, engine, signal)
                                 if plan["capture_signals"]:
                                     captured_signals.append(signal_payload)
-                                if plan["persist_signals"]:
+                                if should_persist_signal_for_symbol(symbol):
                                     signal_batch.append(signal_payload)
                                     should_flush_signals = (
                                         is_latest_symbol_bar
@@ -362,6 +419,7 @@ def build_compute_response(payload=None):
             "captured_signals": captured_signals,
             "captured_signal_count": len(captured_signals),
             "persist_signals": plan["persist_signals"],
+            "persist_signal_symbols": list(plan.get("persist_signal_symbols") or []),
             "capture_signals": plan["capture_signals"],
             "errors": errors,
             "rollup": rollup_results,

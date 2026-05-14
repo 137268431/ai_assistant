@@ -43,6 +43,49 @@ def _format_quantity(value: Any) -> str:
     return f"{parsed:.2f}"
 
 
+def _positive_price(record_or_data: Any, *fields: str) -> float | None:
+    extra = get_signal_extra(record_or_data)
+    for field in fields:
+        for value in (record_value(record_or_data, field), extra.get(field)):
+            parsed = to_float(value)
+            if parsed is not None and parsed > 0:
+                return parsed
+    return None
+
+
+def _price_plan_lines(record_or_data: Any) -> list[str]:
+    extra = get_signal_extra(record_or_data)
+    reference_price = _positive_price(
+        record_or_data,
+        "pre_submit_reference_price",
+        "reference_price",
+        "last_price",
+    )
+    entry_limit = _positive_price(
+        record_or_data,
+        "limit_price",
+        "entry_limit_price",
+        "entry",
+    )
+    actual_fill = _positive_price(
+        record_or_data,
+        "executed_price",
+        "entry_fill_price",
+        "fill_price",
+        "avg_fill_price",
+        "avgPrice",
+    )
+    reference_source = to_text(extra.get("pre_submit_reference_source") or extra.get("reference_source"))
+    reference_suffix = f" ({reference_source})" if reference_price is not None and reference_source else ""
+    lines = [
+        f"**参考价**: {_format_price(reference_price)}{reference_suffix}",
+        f"**入场限价 / 止盈 / 止损**: {_format_price(entry_limit)} / {_format_price(record_value(record_or_data, 'take_profit'))} / {_format_price(record_value(record_or_data, 'stop_loss'))}",
+    ]
+    if actual_fill is not None:
+        lines.append(f"**实际成交价**: {_format_price(actual_fill)}")
+    return lines
+
+
 def _status_reason(record_or_data: Any) -> str:
     extra = get_signal_extra(record_or_data)
     return to_text(
@@ -207,9 +250,9 @@ def build_signal_notification_card(record_or_data: Any, *, console_base_url: str
         f"**信号ID**: {signal_id or '-'}",
         f"**方向**: {direction_text}",
         f"**环境**: {environment}",
-        f"**入场 / 止盈 / 止损**: {_format_price(record_value(record_or_data, 'entry'))} / {_format_price(record_value(record_or_data, 'take_profit'))} / {_format_price(record_value(record_or_data, 'stop_loss'))}",
         f"**仓位 / 风报比**: {_format_quantity(record_value(record_or_data, 'shares'))} / {to_text(record_value(record_or_data, 'rr') or '-')}",
     ]
+    body_lines.extend(_price_plan_lines(record_or_data))
     body_lines.extend(_source_lines(record_or_data))
     body_lines.extend(_followup_lines(record_or_data))
     reason = to_text(record_value(record_or_data, "reason") or extra.get("reason"))
@@ -360,9 +403,9 @@ def build_signal_status_card(record_or_data: Any, *, message: str = "", console_
         f"**信号ID**: {signal_id or '-'}",
         f"**方向**: {direction_text}",
         f"**环境**: {environment}",
-        f"**入场 / 止盈 / 止损**: {_format_price(record_value(record_or_data, 'entry'))} / {_format_price(record_value(record_or_data, 'take_profit'))} / {_format_price(record_or_data and record_value(record_or_data, 'stop_loss'))}",
         f"**仓位**: {_format_quantity(record_value(record_or_data, 'shares'))}",
     ]
+    body_lines.extend(_price_plan_lines(record_or_data))
     body_lines.extend(_followup_lines(record_or_data))
     if message:
         body_lines.append(f"**说明**: {message}")

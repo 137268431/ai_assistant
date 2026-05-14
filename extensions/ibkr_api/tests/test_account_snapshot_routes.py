@@ -53,6 +53,8 @@ class _FakePB:
                     "filled_qty": 100,
                     "limit_price": 101,
                     "fill_price": 101.2,
+                    "commission": 1.23,
+                    "commission_currency": "USD",
                     "updated": "2026-04-23 09:40:00",
                 }
             ],
@@ -108,6 +110,9 @@ class AccountSnapshotRoutesTest(unittest.TestCase):
         self.assertEqual(1, enriched["order_reconciliation"]["broker_matched_orders"])
         self.assertEqual(1, len(enriched["matched_order_groups"]))
         self.assertEqual("matched", enriched["live_open_orders"][0]["pb_context"]["match_state"])
+        self.assertEqual(1.23, enriched["live_open_orders"][0]["commission"])
+        self.assertEqual(1.23, enriched["live_open_orders"][0]["pb_context"]["pb_commission"])
+        self.assertEqual(1.23, enriched["matched_order_groups"][0]["commission"])
 
     def test_live_order_group_orders_are_sorted_and_include_trade_direction(self):
         pb = _FakePB(
@@ -181,6 +186,84 @@ class AccountSnapshotRoutesTest(unittest.TestCase):
         self.assertEqual("short", group["trade_direction"])
         self.assertEqual(["entry", "take_profit", "stop_loss"], [order["leg_role"] for order in group["orders"]])
         self.assertEqual(["SELL", "BUY", "BUY"], [order["side"] for order in group["orders"]])
+
+    def test_live_exit_only_long_chain_does_not_render_as_short(self):
+        pb = _FakePB(
+            {
+                "orders": [
+                    {
+                        "id": "ord-tp",
+                        "environment": "live",
+                        "symbol": "NVDA",
+                        "status": "Submitted",
+                        "signal_id": "NVDA_20260514_0940_vwappb_L",
+                        "trade_group_id": "NVDA_long_20260514_094637",
+                        "entry_order_unique_id": "entry_NVDA_long_20260514_094637",
+                        "unique_id": "tp_NVDA_long_20260514_094637",
+                        "role": "take_profit",
+                        "direction": "short",
+                        "position_side": "short",
+                        "quantity": 43,
+                        "limit_price": 244.96,
+                    },
+                    {
+                        "id": "ord-sl",
+                        "environment": "live",
+                        "symbol": "NVDA",
+                        "status": "Submitted",
+                        "signal_id": "NVDA_20260514_0940_vwappb_L",
+                        "trade_group_id": "NVDA_long_20260514_094637",
+                        "entry_order_unique_id": "entry_NVDA_long_20260514_094637",
+                        "unique_id": "sl_NVDA_long_20260514_094637",
+                        "role": "stop_loss",
+                        "direction": "short",
+                        "position_side": "short",
+                        "quantity": 43,
+                        "limit_price": 229.72,
+                    },
+                ],
+                "ibkr_signals": [],
+            }
+        )
+        payload = {
+            "ok": True,
+            "environment": "live",
+            "positions": [],
+            "orders": [],
+            "live_open_orders": [
+                {
+                    "order_id": "35",
+                    "parent_id": "34",
+                    "client_order_id": "tp_NVDA_long_20260514_094637",
+                    "symbol": "NVDA",
+                    "side": "SELL",
+                    "order_type": "LMT",
+                    "status": "Submitted",
+                    "total_quantity": 43,
+                    "remaining_quantity": 43,
+                },
+                {
+                    "order_id": "36",
+                    "parent_id": "34",
+                    "client_order_id": "sl_NVDA_long_20260514_094637",
+                    "symbol": "NVDA",
+                    "side": "SELL",
+                    "order_type": "STP",
+                    "status": "Submitted",
+                    "total_quantity": 43,
+                    "remaining_quantity": 43,
+                },
+            ],
+            "counts": {},
+        }
+
+        enriched = enrich_account_snapshot(pb, payload, "live")
+
+        group = enriched["live_order_groups"][0]
+        self.assertEqual("long", group["trade_direction"])
+        self.assertEqual("long", group["direction"])
+        self.assertEqual(["long", "long"], [order["position_side"] for order in group["orders"]])
+        self.assertEqual(["SELL", "SELL"], [order["side"] for order in group["orders"]])
 
     def test_pb_only_active_orders_are_stale_not_live_open(self):
         pb = _FakePB(
