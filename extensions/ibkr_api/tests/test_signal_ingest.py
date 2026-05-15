@@ -10,6 +10,7 @@ if str(SERVICE_SRC_ROOT) not in sys.path:
 
 from ibkr_api.signals.ingest import build_signal_ingest_response, build_signals_ingest_response
 from ibkr_api.signals.notifications import build_signal_notification_card, build_signal_status_card
+from ibkr_api.orders.notifications import build_order_status_card
 
 
 class _FakePB:
@@ -265,6 +266,7 @@ class SignalIngressBuildersTest(unittest.TestCase):
         self.assertFalse(any("/webhook/signal/confirm" in url for url in action_urls))
         self.assertFalse(any("/webhook/signal/cancel" in url for url in action_urls))
         self.assertTrue(any("/ibkr_signals.html" in url and "signal_id=sig-url" in url for url in action_urls))
+        self.assertTrue(any("/ibkr_lifecycle_flow.html" in url and "signal_id=sig-url" in url for url in action_urls))
         self.assertEqual([], [action for action in actions if "behaviors" in action])
 
     def test_signal_notification_card_separates_reference_limit_and_actual_fill_prices(self):
@@ -295,6 +297,80 @@ class SignalIngressBuildersTest(unittest.TestCase):
             self.assertIn("**入场限价 / 止盈 / 止损**: 100.10 / 104.10 / 98.10", content)
             self.assertIn("**实际成交价**: 100.08", content)
             self.assertNotIn("**入场 / 止盈 / 止损**", content)
+
+    def test_signal_status_card_includes_lifecycle_button(self):
+        card = build_signal_status_card(
+            {
+                "id": "sig-row-1",
+                "signal_id": "sig-life",
+                "symbol": "AAPL",
+                "direction": "long",
+                "environment": "live",
+                "status": "submitted",
+                "us_time": "2026-05-15 09:35:00",
+                "extra": {"trade_group_id": "tg-1"},
+            },
+            message="订单已提交",
+            console_base_url="https://console.example.com",
+        )
+        actions = [
+            action
+            for element in card["elements"]
+            if element.get("tag") == "action"
+            for action in element.get("actions", [])
+        ]
+        urls = [action.get("multi_url", {}).get("url", "") for action in actions]
+
+        self.assertTrue(any("/ibkr_signals.html" in url and "signal_id=sig-life" in url for url in urls))
+        self.assertTrue(
+            any(
+                "/ibkr_lifecycle_flow.html" in url
+                and "signal_id=sig-life" in url
+                and "trade_group_id=tg-1" in url
+                and "date=2026-05-15" in url
+                for url in urls
+            )
+        )
+
+    def test_order_status_card_includes_lifecycle_button(self):
+        card = build_order_status_card(
+            {
+                "id": "order-row-1",
+                "unique_id": "entry-1",
+                "order_id": "12345",
+                "symbol": "AAPL",
+                "environment": "paper",
+                "signal_id": "sig-order",
+                "trade_group_id": "tg-order",
+                "status": "Submitted",
+                "role": "entry",
+                "order_type": "LMT",
+                "quantity": 20,
+                "filled_qty": 5,
+                "us_time": "2026-05-15 09:40:00",
+            },
+            message="部分成交，等待保护单同步",
+            console_base_url="https://console.example.com",
+        )
+        actions = [
+            action
+            for element in card["elements"]
+            if element.get("tag") == "action"
+            for action in element.get("actions", [])
+        ]
+        urls = [action.get("multi_url", {}).get("url", "") for action in actions]
+
+        self.assertTrue(any("/orders.html" in url and "order_id=12345" in url for url in urls))
+        self.assertTrue(
+            any(
+                "/ibkr_lifecycle_flow.html" in url
+                and "environment=paper" in url
+                and "signal_id=sig-order" in url
+                and "trade_group_id=tg-order" in url
+                and "order_id=12345" in url
+                for url in urls
+            )
+        )
 
     def test_signal_status_card_includes_buying_power_guard(self):
         record = {

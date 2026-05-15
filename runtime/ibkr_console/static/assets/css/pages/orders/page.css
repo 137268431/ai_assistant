@@ -708,3 +708,88 @@
         font-size: 20px;
     }
 }
+
+/* Mobile polish for the shared chrome on the execution orders page. */
+@media (max-width: 640px) {
+    body > #contextBar > .page-context-bar.has-subtitle {
+        gap: 10px;
+    }
+
+    body > #contextBar > .page-context-bar.has-subtitle .page-context-tools {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(112px, 0.62fr);
+        gap: 8px;
+        width: 100%;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        box-shadow: none;
+    }
+
+    body > #contextBar > .page-context-bar.has-subtitle .page-context-refresh-time,
+    body > #contextBar > .page-context-bar.has-subtitle .env-switcher {
+        min-width: 0;
+        min-height: 38px;
+        border: 1px solid rgba(147,197,253,0.14);
+        border-radius: 12px;
+        background: rgba(10,24,34,0.72);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+    }
+
+    body > #contextBar > .page-context-bar.has-subtitle .page-context-refresh-time {
+        justify-content: center;
+        padding: 0 9px;
+        border-right: 1px solid rgba(147,197,253,0.14);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-size: 10.5px;
+    }
+
+    body > #contextBar > .page-context-bar.has-subtitle .env-switcher {
+        width: auto;
+        justify-content: space-between;
+        gap: 6px;
+        padding: 0 8px;
+    }
+
+    body > #contextBar > .page-context-bar.has-subtitle .env-switcher-select {
+        width: 100%;
+        min-width: 0;
+        text-align-last: center;
+    }
+
+    body > #pageBridge > .page-bridge {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 6px;
+    }
+
+    body > #pageBridge > .page-bridge .page-bridge-link {
+        min-height: 56px;
+        max-height: none;
+        padding: 7px 6px;
+        border-radius: 14px;
+    }
+
+    body > #pageBridge > .page-bridge .page-bridge-kicker {
+        font-size: 8.5px;
+        letter-spacing: 0.5px;
+    }
+
+    body > #pageBridge > .page-bridge .page-bridge-label {
+        font-size: 12px;
+    }
+
+    body > #pageBridge > .page-bridge .page-bridge-copy {
+        font-size: 9px;
+    }
+}
+
+@media (max-width: 360px) {
+    body > #contextBar > .page-context-bar.has-subtitle .page-context-tools {
+        grid-template-columns: 1fr;
+    }
+
+    body > #pageBridge > .page-bridge {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}

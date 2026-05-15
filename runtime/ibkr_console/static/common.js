@@ -1,7 +1,7 @@
 // Shared compatibility entrypoint.
 // Source-of-truth browser modules now live under /assets/js/shared and /assets/css.
 (function loadSharedCommonBundle() {
-  const sharedBundleVersion = '20260514-confirm-close';
+  const sharedBundleVersion = '20260515-lifecycle-entry';
   const sharedScriptPaths = [
     `/assets/js/shared/runtime-config.js?v=${sharedBundleVersion}`,
     `/assets/js/shared/base.js?v=${sharedBundleVersion}`,

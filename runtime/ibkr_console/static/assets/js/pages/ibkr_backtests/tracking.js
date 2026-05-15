@@ -171,6 +171,32 @@
             );
         }
 
+        function buildTrackingLifecycleFlowUrl(flow, replayMs = 0) {
+            const symbol = String(flow?.symbol || '').trim().toUpperCase();
+            const runId = String(selectedRunId || selectedRun?.id || selectedRun?.run_id || '').trim();
+            if (!symbol || !runId) return '';
+            const barTimeMs = Number(replayMs || 0);
+            const backtestDate = String(flow?.date || trackingFilters.date || selectedTrackingModel?.focus_date || selectedRun?.date_to || '').trim();
+            const params = {
+                mode: 'backtest',
+                run_id: runId,
+                backtest_run_id: runId,
+                symbol,
+                interval: '5m',
+                backtest_date: backtestDate,
+                date: backtestDate,
+                trace: 1,
+            };
+            if (barTimeMs > 0) {
+                const padMs = 90 * 60 * 1000;
+                params.range = 'custom';
+                params.bar_time_ms = Math.round(barTimeMs);
+                params.start_ms = Math.max(0, Math.round(barTimeMs - padMs));
+                params.end_ms = Math.round(barTimeMs + padMs);
+            }
+            return buildPageUrl('/ibkr_lifecycle_flow.html', params, { environment: 'backtest' });
+        }
+
         function renderTrackingFlows(model) {
             const flows = getFilteredTrackingFlows(model);
             setTrackingText('trackingFlowCountLabel', `${flows.length} flows`);
@@ -189,6 +215,7 @@
                     ${pageModel.pageRows.map((flow) => {
                         const firstEvent = (flow.events || [])[0] || {};
                         const replayMs = getTrackingReplayBarMs(firstEvent);
+                        const lifecycleFlowUrl = buildTrackingLifecycleFlowUrl(flow, replayMs);
                         return `
                             <div class="tracking-flow-card ${flow.targeted ? 'targeted' : ''}">
                                 <div class="tracking-flow-top">
@@ -210,6 +237,7 @@
                                 <div class="tracking-flow-actions">
                                     <button class="btn ghost" type="button" onclick="replayTrackingEvent('${escapeHtml(flow.symbol || '')}', ${Number(replayMs || 0)})">Replay</button>
                                     <button class="btn ghost" type="button" onclick="openTradeChart('${escapeHtml(flow.symbol || '')}', ${Number(replayMs || 0)}, ${Number(replayMs || 0)})">主图</button>
+                                    ${lifecycleFlowUrl ? `<a class="btn ghost" href="${lifecycleFlowUrl}">流程图</a>` : ''}
                                 </div>
                             </div>
                         `;

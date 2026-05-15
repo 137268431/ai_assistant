@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>IBKR 生命周期流程图 - Trading Flight</title>
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <script src="common.js"></script>
+  <script>document.write(getCommonStyles());</script>
+  <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dagre@0.8.5/dist/dagre.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.min.js"></script>
+  <link rel="stylesheet" href="/assets/css/pages/ibkr_lifecycle_flow/page.css">
+</head>
+<body>
+  <div id="nav"></div>
+
+  <div class="page-shell page-shell-wide lifecycle-shell">
+    <div id="contextBar"></div>
+    <div id="pageBridge"></div>
+
+    <section class="hero lifecycle-hero">
+      <div class="hero-top lifecycle-hero-top">
+        <div class="hero-main-copy">
+          <div class="hero-kicker">Lifecycle DAG</div>
+          <div class="hero-title">信号 → 订单 → 成交 → 持仓的 <span class="accent">生命周期泳道</span></div>
+          <div class="hero-copy">按 environment / date / symbol / signal_id / trade_group_id / run_id 串联全链路。价格展示严格标记 fill_source：真实、paper、回测模拟与未知不会混在一起。</div>
+        </div>
+        <div class="hero-meta lifecycle-hero-meta">
+          <div class="meta-line" id="refreshInfo">等待加载...</div>
+          <div class="meta-line" id="endpointInfo">GET /api/custom/ibkr/lifecycle-flow</div>
+          <div class="meta-line" id="graphModeInfo">Cytoscape DAG</div>
+        </div>
+      </div>
+
+      <div class="source-rail" aria-label="fill_source legend">
+        <div class="source-card source-actual">
+          <span class="source-dot"></span>
+          <strong>actual_ibkr</strong>
+          <span>真实 IBKR 成交来源</span>
+        </div>
+        <div class="source-card source-paper">
+          <span class="source-dot"></span>
+          <strong>paper_ibkr</strong>
+          <span>Paper IBKR 成交来源</span>
+        </div>
+        <div class="source-card source-backtest">
+          <span class="source-dot"></span>
+          <strong>backtest_simulated</strong>
+          <span>回测模拟，不是真实成交</span>
+        </div>
+        <div class="source-card source-unknown">
+          <span class="source-dot"></span>
+          <strong>unknown</strong>
+          <span>来源未知，不当真实价使用</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel filter-panel" aria-label="生命周期筛选">
+      <form class="filter-form" id="lifecycleFilterForm">
+        <div class="field">
+          <label for="modeInput">Mode</label>
+          <select id="modeInput" name="mode">
+            <option value="auto">auto</option>
+            <option value="live">live</option>
+            <option value="paper">paper</option>
+            <option value="backtest">backtest</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="environmentInput">Environment</label>
+          <select id="environmentInput" name="environment">
+            <option value="live">LIVE</option>
+            <option value="paper">PAPER</option>
+            <option value="backtest">BACKTEST</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="dateInput">Date</label>
+          <input id="dateInput" name="date" type="date">
+        </div>
+        <div class="field">
+          <label for="symbolInput">Symbol</label>
+          <input id="symbolInput" name="symbol" type="text" placeholder="AAPL / NVDA" autocomplete="off">
+        </div>
+        <div class="field wide-field">
+          <label for="signalIdInput">Signal ID</label>
+          <input id="signalIdInput" name="signal_id" type="text" placeholder="signal_id">
+        </div>
+        <div class="field wide-field">
+          <label for="tradeGroupIdInput">Trade Group ID</label>
+          <input id="tradeGroupIdInput" name="trade_group_id" type="text" placeholder="trade_group_id / entry_order_unique_id">
+        </div>
+        <div class="field wide-field">
+          <label for="runIdInput">Run ID</label>
+          <input id="runIdInput" name="run_id" type="text" placeholder="backtest run_id">
+        </div>
+        <div class="field">
+          <label for="backtestDateInput">Backtest Date</label>
+          <input id="backtestDateInput" name="backtest_date" type="date">
+        </div>
+        <div class="filter-actions">
+          <button class="flow-btn primary" type="submit">读取流程</button>
+          <button class="flow-btn" id="resetFiltersButton" type="button">重置</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="overview-grid">
+      <article class="status-card current-stage-card" id="currentStageCard">
+        <div class="card-kicker">Current Phase</div>
+        <div class="stage-placeholder">等待生命周期数据...</div>
+      </article>
+      <article class="status-card warning-card" id="warningCard">
+        <div class="card-kicker">Warnings</div>
+        <div class="warning-placeholder">读取后会列出价格来源、缺失节点和链路异常。</div>
+      </article>
+    </section>
+
+    <section class="flow-workspace">
+      <article class="panel graph-panel">
+        <div class="panel-header graph-panel-header">
+          <div>
+            <div class="panel-title">DAG / Swimlanes</div>
+            <div class="panel-copy" id="graphSummary">按阶段自动布局；点击节点查看详情。</div>
+          </div>
+          <div class="panel-tools graph-tools">
+            <button class="flow-btn compact" id="fitGraphButton" type="button">Fit</button>
+            <button class="flow-btn compact" id="relayoutGraphButton" type="button">Layout</button>
+            <button class="flow-btn compact" id="toggleTimelineButton" type="button">Timeline</button>
+          </div>
+        </div>
+        <div class="lane-strip" id="laneStrip"></div>
+        <div class="graph-frame">
+          <div id="cyGraph" class="cy-graph" role="img" aria-label="生命周期 DAG 图谱"></div>
+          <div id="timelineFallback" class="timeline-fallback" hidden></div>
+        </div>
+      </article>
+
+      <aside class="panel detail-panel" aria-label="节点详情">
+        <div class="panel-header">
+          <div>
+            <div class="panel-title">节点详情</div>
+            <div class="panel-copy">价格字段会按 fill_source 明确区分真实、paper、模拟和未知。</div>
+          </div>
+        </div>
+        <div id="nodeDetails" class="node-details">
+          <div class="empty-state">点击流程节点查看详情。</div>
+        </div>
+      </aside>
+    </section>
+
+    <section class="panel events-panel">
+      <div class="panel-header events-panel-header">
+        <div>
+          <div class="panel-title">事件时间线</div>
+          <div class="panel-copy" id="eventSummary">Cytoscape 不可用时也会展示这个降级视图。</div>
+        </div>
+        <div class="event-count" id="eventCount">0 events</div>
+      </div>
+      <div id="eventList" class="event-list">
+        <div class="empty-state">等待加载事件...</div>
+      </div>
+    </section>
+  </div>
+
+  <script src="/assets/js/pages/ibkr_lifecycle_flow/page.js"></script>
+</body>
+</html>

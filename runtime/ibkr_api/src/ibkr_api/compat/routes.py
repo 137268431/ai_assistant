@@ -28,6 +28,7 @@ NATIVE_CUSTOM_ROUTES = [
     "ibkr/2fa/panic-reset",
     "ibkr/indicator",
     "ibkr/indicators",
+    "ibkr/lifecycle-flow",
     "ibkr/emergency-stop",
     "ibkr/fundamentals",
     "ibkr/fundamentals/list",

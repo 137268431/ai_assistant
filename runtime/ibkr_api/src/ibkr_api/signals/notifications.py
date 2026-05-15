@@ -135,14 +135,6 @@ def _status_reason(record_or_data: Any) -> str:
     )
 
 
-def _signals_page_url(console_base_url: str, environment: str) -> str:
-    base = str(console_base_url or "").rstrip("/")
-    if not base:
-        return ""
-    runtime_environment = to_text(environment) or "live"
-    return f"{base}/ibkr_signals.html?environment={runtime_environment}"
-
-
 def _page_url(console_base_url: str, path: str, **params: Any) -> str:
     base = str(console_base_url or "").rstrip("/")
     if not base:
@@ -165,6 +157,51 @@ def _button_url(url: str) -> dict[str, str]:
     }
 
 
+def _record_or_extra_value(record_or_data: Any, *fields: str) -> Any:
+    extra = get_signal_extra(record_or_data)
+    for field in fields:
+        value = first_defined(record_value(record_or_data, field), extra.get(field))
+        if value not in (None, ""):
+            return value
+    return ""
+
+
+def _record_date(record_or_data: Any) -> str:
+    explicit = to_text(_record_or_extra_value(record_or_data, "date", "market_date", "trade_date", "backtest_date"))
+    if explicit:
+        return explicit[:10]
+    for field in ("us_time", "order_time", "created", "updated"):
+        text = to_text(_record_or_extra_value(record_or_data, field))
+        if len(text) >= 10 and text[4:5] == "-" and text[7:8] == "-":
+            return text[:10]
+    return ""
+
+
+def _lifecycle_page_url(
+    console_base_url: str,
+    *,
+    environment: str,
+    signal_id: str = "",
+    symbol: str = "",
+    trade_group_id: str = "",
+    order_id: str = "",
+    date: str = "",
+) -> str:
+    if not any(to_text(value) for value in (signal_id, symbol, trade_group_id, order_id)):
+        return ""
+    return _page_url(
+        console_base_url,
+        "ibkr_lifecycle_flow.html",
+        mode="auto",
+        environment=environment,
+        date=date,
+        symbol=to_text(symbol).upper(),
+        signal_id=signal_id,
+        trade_group_id=trade_group_id,
+        order_id=order_id,
+    )
+
+
 def _callback_button(label: str, button_type: str, callback_url: str, *, action: str, signal_id: str, environment: str) -> dict[str, Any]:
     return {
         "tag": "button",
@@ -176,8 +213,13 @@ def _callback_button(label: str, button_type: str, callback_url: str, *, action:
     }
 
 
-def _view_buttons(console_base_url: str, *, environment: str, signal_id: str) -> list[dict[str, Any]]:
+def _view_buttons(console_base_url: str, *, environment: str, signal_id: str, record_or_data: Any | None = None) -> list[dict[str, Any]]:
     buttons: list[dict[str, Any]] = []
+    source = record_or_data or {}
+    resolved_symbol = to_text(_record_or_extra_value(source, "symbol"))
+    resolved_trade_group_id = to_text(_record_or_extra_value(source, "trade_group_id", "entry_order_unique_id"))
+    resolved_order_id = to_text(_record_or_extra_value(source, "order_id", "broker_order_id", "ib_order_id", "unique_id"))
+    resolved_date = _record_date(source)
     signals_url = _page_url(
         console_base_url,
         "ibkr_signals.html",
@@ -189,10 +231,21 @@ def _view_buttons(console_base_url: str, *, environment: str, signal_id: str) ->
         "orders.html",
         environment=environment,
         signal_id=signal_id,
+        symbol=resolved_symbol,
+    )
+    lifecycle_url = _lifecycle_page_url(
+        console_base_url,
+        environment=environment,
+        signal_id=signal_id,
+        symbol=resolved_symbol,
+        trade_group_id=resolved_trade_group_id,
+        order_id=resolved_order_id,
+        date=resolved_date,
     )
     for label, url in (
         ("查看 Signals", signals_url),
         ("查看 Orders", orders_url),
+        ("查看事件流", lifecycle_url),
     ):
         if not url:
             continue
@@ -315,7 +368,7 @@ def build_signal_notification_card(record_or_data: Any, *, console_base_url: str
             }
         )
 
-    buttons = _view_buttons(console_base_url, environment=environment, signal_id=signal_id)
+    buttons = _view_buttons(console_base_url, environment=environment, signal_id=signal_id, record_or_data=record_or_data)
     if buttons:
         elements.extend(
             [
@@ -464,26 +517,14 @@ def build_signal_status_card(record_or_data: Any, *, message: str = "", console_
     if status == "awaiting_confirm" and signal_id:
         elements.append({"tag": "hr"})
         elements.extend(_confirmation_action_elements(console_base_url, environment=environment, signal_id=signal_id))
-    signals_url = _signals_page_url(console_base_url, environment)
-    if signals_url:
+    buttons = _view_buttons(console_base_url, environment=environment, signal_id=signal_id, record_or_data=record_or_data)
+    if buttons:
         elements.extend(
             [
                 {"tag": "hr"},
                 {
                     "tag": "action",
-                    "actions": [
-                        {
-                            "tag": "button",
-                            "type": "default",
-                            "text": {"tag": "plain_text", "content": "查看 Signals"},
-                            "multi_url": {
-                                "url": signals_url,
-                                "pc_url": signals_url,
-                                "ios_url": signals_url,
-                                "android_url": signals_url,
-                            },
-                        }
-                    ],
+                    "actions": buttons,
                 },
             ]
         )

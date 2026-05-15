@@ -6,6 +6,7 @@ from flask import Response, jsonify, request
 
 from ibkr_api.universe.active_window_progress import build_active_window_progress_response
 from ibkr_api.universe.fundamentals import build_fundamentals_list_response, build_fundamentals_refresh_response
+from ibkr_api.universe.lifecycle_flow import build_lifecycle_flow_response
 from ibkr_api.universe.screener import build_screener_proxy_response
 from ibkr_api.universe.today_targets import build_today_targets_response
 from ibkr_api.universe.targets import (
@@ -152,6 +153,19 @@ def register_universe_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
         return response if status_code == 200 else (response, status_code)
 
     exports["custom_ibkr_active_window_progress"] = custom_ibkr_active_window_progress
+
+    @app.route("/api/custom/ibkr/lifecycle-flow", methods=["GET"])
+    def custom_ibkr_lifecycle_flow() -> Response:
+        payload, status_code = build_lifecycle_flow_response(
+            pb,
+            payload=request.args.to_dict(flat=True),
+            normalize_environment=normalize_environment,
+            time_strings=time_strings,
+        )
+        response = jsonify(payload)
+        return response if status_code == 200 else (response, status_code)
+
+    exports["custom_ibkr_lifecycle_flow"] = custom_ibkr_lifecycle_flow
 
     @app.route("/api/custom/ibkr/fundamentals/refresh", methods=["POST"])
     def custom_ibkr_fundamentals_refresh() -> Response:

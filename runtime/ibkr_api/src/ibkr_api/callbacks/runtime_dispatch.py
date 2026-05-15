@@ -66,6 +66,7 @@ def build_dispatch_feishu_order_callback(
             build_order_cancel_group_response_fn=globals_dict["build_order_cancel_group_response"],
             build_order_close_group_response_fn=globals_dict["build_order_close_group_response"],
             callback_toast_fn=globals_dict["_callback_toast"],
+            console_base_url=globals_dict["_console_base_url"](),
         )
 
     return _dispatch_feishu_order_callback

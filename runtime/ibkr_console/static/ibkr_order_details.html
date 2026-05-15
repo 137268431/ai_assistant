@@ -625,6 +625,7 @@
             const summary = buildFocusedSummary(snapshots, orderedTimeline);
             const primary = summary.primary;
             const latestEvent = summary.latestEvent || primary;
+            const lifecycleFlowUrl = buildDetailLifecycleFlowUrl(primary);
 
             container.innerHTML = `
                 <div class="focus-card">
@@ -686,12 +687,14 @@
                 <div class="action-row">
                     ${primary.signal_id ? `<button class="action-btn btn-secondary" onclick="viewSignal('${encodeURIComponent(primary.signal_id)}')">📡 查看信号</button>` : ''}
                     ${primary.symbol ? `<button class="action-btn btn-secondary" onclick="openDetailChart('${encodeURIComponent(primary.id || primary.order_id || primary.trade_group_id || '')}')">📉 图表页</button>` : ''}
+                    ${lifecycleFlowUrl ? `<a class="action-btn btn-secondary" href="${lifecycleFlowUrl}">🧭 流程图</a>` : ''}
                     ${primary.trade_group_id ? `<button class="action-btn btn-view" onclick="viewTradeGroup('${encodeURIComponent(primary.trade_group_id)}', '${encodeURIComponent(primary.signal_id || contextSignalId)}')">🔁 刷新本交易组</button>` : ''}
                 </div>
             `;
         }
 
         function renderListCard(detail) {
+            const lifecycleFlowUrl = buildDetailLifecycleFlowUrl(detail);
             return `
                 <div class="list-card">
                     <div class="list-card-head">
@@ -724,6 +727,7 @@
 
                     <div class="action-row">
                         <button class="action-btn btn-secondary" onclick="openDetailChart('${encodeURIComponent(detail.id || detail.order_id || detail.trade_group_id || '')}')">📉 图表页</button>
+                        ${lifecycleFlowUrl ? `<a class="action-btn btn-secondary" href="${lifecycleFlowUrl}">🧭 流程图</a>` : ''}
                         <button class="action-btn btn-view" onclick="viewTradeGroup('${encodeURIComponent(detail.trade_group_id)}', '${encodeURIComponent(detail.signal_id || contextSignalId)}')">📜 交易组</button>
                         <button class="action-btn btn-secondary" onclick="viewOrder('${encodeURIComponent(detail.order_id || detail.broker_order_id)}', '${encodeURIComponent(detail.signal_id || contextSignalId)}')">🔎 订单轨迹</button>
                     </div>
@@ -790,6 +794,31 @@
                 bar_time_ms: Number(detail.bar_time_ms || extra.bar_time_ms || 0) || '',
                 indicator_id: String(extra.indicator_id || '').trim()
             };
+        }
+
+        function deriveDetailLifecycleDate(detail) {
+            const candidates = [detail?.date, detail?.us_time, detail?.created, detail?.updated];
+            for (const value of candidates) {
+                const match = String(value || '').trim().match(/^(\d{4}-\d{2}-\d{2})/);
+                if (match) return match[1];
+            }
+            const barTimeMs = Number(detail?.bar_time_ms || detail?.extra?.bar_time_ms || 0);
+            if (Number.isFinite(barTimeMs) && barTimeMs > 0) return new Date(barTimeMs).toISOString().slice(0, 10);
+            return currentDate;
+        }
+
+        function buildDetailLifecycleFlowUrl(detail) {
+            const params = buildDetailChartParams(detail);
+            if (!params) return '';
+            const signalId = String(detail?.signal_id || contextSignalId || detail?.extra?.signal_id || '').trim();
+            const tradeGroupId = String(detail?.trade_group_id || detail?.extra?.trade_group_id || '').trim();
+            const orderId = String(detail?.order_id || detail?.broker_order_id || detail?.extra?.order_id || '').trim();
+            params.date = deriveDetailLifecycleDate(detail);
+            params.trace = 1;
+            if (signalId) params.signal_id = signalId;
+            if (tradeGroupId) params.trade_group_id = tradeGroupId;
+            if (orderId) params.order_id = orderId;
+            return buildPageUrl('/ibkr_lifecycle_flow.html', params, { environment: currentEnvironment });
         }
 
         function openDetailChart(detailRef) {

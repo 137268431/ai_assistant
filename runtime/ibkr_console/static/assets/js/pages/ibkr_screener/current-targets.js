@@ -102,6 +102,68 @@
       }, { environment: currentEnvironment });
     }
 
+    function getLifecycleContextObject(value) {
+      if (!value) return {};
+      if (typeof value === 'object') return value;
+      if (typeof value === 'string') {
+        try {
+          const parsed = JSON.parse(value);
+          return parsed && typeof parsed === 'object' ? parsed : {};
+        } catch (_) {
+          return {};
+        }
+      }
+      return {};
+    }
+
+    function pickLifecycleContextValue(row, keys) {
+      const signalState = getLifecycleContextObject(row?.signal_state);
+      const candidateSignal = getLifecycleContextObject(row?.candidate_signal || signalState.signal_payload);
+      const sources = [
+        row || {},
+        getLifecycleContextObject(row?.extra),
+        signalState,
+        candidateSignal,
+      ];
+      for (const source of sources) {
+        for (const key of keys) {
+          const value = source?.[key];
+          if (value !== undefined && value !== null && value !== '') return value;
+        }
+      }
+      return '';
+    }
+
+    function normalizeLifecycleDateToken(value, fallback = '') {
+      const text = String(value || '').trim();
+      const match = text.match(/^(\d{4}-\d{2}-\d{2})/);
+      if (match) return match[1];
+      const num = Number(text);
+      if (Number.isFinite(num) && num > 0) return new Date(num).toISOString().slice(0, 10);
+      return fallback;
+    }
+
+    function buildLifecycleFlowUrl(row, marketDate, extraParams = {}) {
+      const symbol = String(pickLifecycleContextValue(row, ['symbol', 'ticker']) || '').trim().toUpperCase();
+      if (!symbol) return '';
+      const signalId = String(pickLifecycleContextValue(row, ['latest_signal_id', 'signal_id', 'origin_signal_id']) || '').trim();
+      const tradeGroupId = String(pickLifecycleContextValue(row, ['latest_trade_group_id', 'trade_group_id', 'entry_order_unique_id', 'order_unique_id']) || '').trim();
+      const barTimeMs = Number(pickLifecycleContextValue(row, ['latest_signal_time_ms', 'signal_time_ms', 'bar_time_ms', 'latest_bar_time_ms', 'latest_intraday_bar_time_ms']) || 0);
+      const date = normalizeLifecycleDateToken(marketDate)
+        || normalizeLifecycleDateToken(pickLifecycleContextValue(row, ['date', 'market_date', 'latest_signal_time', 'latest_us_time', 'us_time', 'latest_bar_time_ms']));
+      const params = {
+        symbol,
+        interval: '5m',
+        date,
+        trace: 1,
+        ...extraParams,
+      };
+      if (signalId) params.signal_id = signalId;
+      if (tradeGroupId) params.trade_group_id = tradeGroupId;
+      if (Number.isFinite(barTimeMs) && barTimeMs > 0) params.bar_time_ms = Math.round(barTimeMs);
+      return buildPageUrl('/ibkr_lifecycle_flow.html', params, { environment: currentEnvironment });
+    }
+
     function buildMobileMetricCard(label, valueHtml) {
       return `
         <article class="mobile-metric-card">
@@ -133,6 +195,7 @@
         const chartUrl = buildChartUrl(row.symbol || '');
         const indicatorUrl = buildIndicatorUrl(row.symbol || '', marketDate);
         const signalUrl = buildSignalUrl(row.symbol || '', marketDate);
+        const flowUrl = buildLifecycleFlowUrl(row, marketDate);
         return `
           <article class="mobile-data-card">
             <div class="mobile-data-head">
@@ -174,6 +237,7 @@
               <a class="mini-link" href="${chartUrl}">Chart</a>
               <a class="mini-link" href="${indicatorUrl}">指标</a>
               <a class="mini-link" href="${signalUrl}">信号</a>
+              ${flowUrl ? `<a class="mini-link" href="${flowUrl}">流程图</a>` : ''}
             </div>
           </article>
         `;
@@ -518,6 +582,7 @@
         }, ['missing_components', 'components_missing', 'nested_missing_components'], []);
         const filterReasons = coalesceValue(row, ['filter_reasons', 'filter_reason', 'blocked_reasons', 'block_reason'], []);
         const traceUrl = getWindowTraceUrl(row, marketDate);
+        const flowUrl = buildLifecycleFlowUrl(row, marketDate);
         return `
           <article class="mobile-data-card window-progress-card">
             <div class="mobile-data-head">
@@ -551,6 +616,7 @@
 
             <div class="mobile-data-actions">
               <a class="mini-link" href="${traceUrl}">Trace</a>
+              ${flowUrl ? `<a class="mini-link" href="${flowUrl}">流程图</a>` : ''}
               <a class="mini-link" href="${buildChartUrl(row.symbol || '')}">Chart</a>
             </div>
           </article>
@@ -605,6 +671,7 @@
         }, ['missing_components', 'components_missing', 'nested_missing_components'], []);
         const filterReasons = coalesceValue(row, ['filter_reasons', 'filter_reason', 'blocked_reasons', 'block_reason'], []);
         const traceUrl = getWindowTraceUrl(row, marketDate);
+        const flowUrl = buildLifecycleFlowUrl(row, marketDate);
         return `
           <tr>
             <td>
@@ -631,6 +698,7 @@
             <td>
               <div class="row-actions">
                 <a class="mini-link" href="${traceUrl}">Trace</a>
+                ${flowUrl ? `<a class="mini-link" href="${flowUrl}">流程图</a>` : ''}
               </div>
             </td>
           </tr>
@@ -1007,6 +1075,7 @@
           symbol: row.symbol || '',
           interval: '5m',
         }, { environment: currentEnvironment });
+        const flowUrl = buildLifecycleFlowUrl(row, marketDateToken);
         return `
           <tr>
             <td>
@@ -1062,6 +1131,7 @@
                 <a class="mini-link" href="${chartUrl}">Chart</a>
                 <a class="mini-link" href="${indicatorUrl}">指标</a>
                 <a class="mini-link" href="${signalUrl}">信号</a>
+                ${flowUrl ? `<a class="mini-link" href="${flowUrl}">流程图</a>` : ''}
               </div>
             </td>
           </tr>

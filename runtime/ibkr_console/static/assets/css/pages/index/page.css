@@ -392,6 +392,17 @@
             border-color: rgba(99, 179, 237, 0.28);
         }
 
+        .home-quick-link-lifecycle {
+            border-color: rgba(94, 234, 212, 0.20);
+            background:
+                radial-gradient(circle at top right, rgba(94, 234, 212, 0.14), transparent 36%),
+                linear-gradient(180deg, rgba(13, 39, 43, 0.96), rgba(8, 22, 31, 0.92));
+        }
+
+        .home-quick-link-lifecycle .home-quick-arrow {
+            color: var(--accent);
+        }
+
         .home-quick-link-top {
             display: flex;
             justify-content: space-between;

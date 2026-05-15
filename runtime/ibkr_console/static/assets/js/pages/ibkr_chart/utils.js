@@ -1195,6 +1195,36 @@
             return buildPageUrl('/ibkr_order_details.html', params, { environment: currentEnvironment });
         }
 
+        function buildLifecycleFlowUrl(signal, fallbackDate = '') {
+            if (!signal || typeof signal !== 'object') return '';
+            const extra = getSignalExtra(signal);
+            const symbol = String(signal.symbol || extra.symbol || currentSymbol || '').trim().toUpperCase();
+            if (!symbol) return '';
+            const signalId = String(signal.signal_id || extra.signal_id || '').trim();
+            const tradeGroupId = String(
+                signal.trade_group_id
+                || extra.trade_group_id
+                || extra.entry_order_unique_id
+                || ''
+            ).trim();
+            const orderId = String(
+                signal.order_id
+                || extra.order_id
+                || extra.broker_order_id
+                || ''
+            ).trim();
+            const params = {
+                symbol,
+                interval: currentInterval || '5m',
+                date: fallbackDate || deriveItemDate(signal),
+                bar_time_ms: Number(signal.bar_time_ms || extra.bar_time_ms || 0) || '',
+            };
+            if (signalId) params.signal_id = signalId;
+            if (tradeGroupId) params.trade_group_id = tradeGroupId;
+            else if (orderId) params.order_id = orderId;
+            return buildPageUrl('/ibkr_lifecycle_flow.html', params, { environment: currentEnvironment });
+        }
+
         function parseQueryContext() {
             const params = new URLSearchParams(window.location.search || '');
             const startMs = parseQueryTimeMs(params.get('start_ms') || params.get('from') || '');

@@ -397,6 +397,7 @@
             const signalUrl = buildPageUrl('/ibkr_signals.html', { search: currentSymbol, date: signalDate }, { environment: currentEnvironment });
             const orderUrl = buildPageUrl('/orders.html', { search: currentSymbol, date: signalDate }, { environment: currentEnvironment });
             const orderDetailsUrl = buildOrderDetailsUrl(signal, signalDate);
+            const lifecycleFlowUrl = buildLifecycleFlowUrl(signal, signalDate);
             const accountUrl = buildPageUrl('/ibkr_account.html', {}, { environment: currentEnvironment });
             const extra = getSignalExtra(signal);
             const reason = signal.reason || signal.note || extra.reason || '暂无原因说明';
@@ -509,6 +510,7 @@
                     <a class="mini-link" href="${signalUrl}">历史信号页</a>
                     <a class="mini-link" href="${orderUrl}">历史订单页</a>
                     ${orderDetailsUrl ? `<a class="mini-link" href="${orderDetailsUrl}">打开订单明细</a>` : ''}
+                    ${lifecycleFlowUrl ? `<a class="mini-link" href="${lifecycleFlowUrl}">生命周期流程图</a>` : ''}
                     <a class="mini-link" href="${accountUrl}">打开账户页</a>
                 </div>
             `;

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ibkr_api.orders.group_common import load_order_action_context
+from ibkr_api.orders.notifications import build_order_status_card
 from ibkr_api.signals.notifications import build_signal_status_card
 from ibkr_api.signals.values import load_signal_record, signal_status
 
@@ -78,6 +80,32 @@ def _signal_callback_card(
     return build_signal_status_card(record, message=message, console_base_url=console_base_url)
 
 
+def _order_callback_card(
+    pb: Any,
+    *,
+    order_id: str,
+    environment: str,
+    escape_filter_string: Callable[[Any], str],
+    message: str,
+    console_base_url: str,
+) -> dict[str, Any] | None:
+    if not console_base_url or not order_id:
+        return None
+    try:
+        context = load_order_action_context(
+            pb,
+            payload={"id": order_id, "environment": environment},
+            environment=environment,
+            escape_filter_string=escape_filter_string,
+        )
+    except Exception:
+        return None
+    row = context.get("primary_row") or context.get("action_row")
+    if not isinstance(row, dict) or not row.get("id"):
+        return None
+    return build_order_status_card(row, message=message, console_base_url=console_base_url)
+
+
 def dispatch_feishu_signal_callback(
     action: str,
     signal_id: str,
@@ -140,10 +168,12 @@ def dispatch_feishu_order_callback(
     build_order_cancel_group_response_fn: Callable[..., tuple[dict[str, Any], int]],
     build_order_close_group_response_fn: Callable[..., tuple[dict[str, Any], int]],
     callback_toast_fn: Callable[..., dict[str, Any]],
+    console_base_url: str = "",
 ) -> tuple[dict[str, Any], int]:
     payload: dict[str, Any]
     status_code: int
-    action_payload = {"id": order_id, "environment": environment}
+    runtime_environment = normalize_environment(environment, "live")
+    action_payload = {"id": order_id, "environment": runtime_environment}
     if action == "cancel":
         payload, status_code = build_order_cancel_group_response_fn(
             pb,
@@ -164,10 +194,19 @@ def dispatch_feishu_order_callback(
     else:
         return callback_toast_fn("error", f"未知操作: {action}"), 400
 
+    message = str(payload.get("message") or payload.get("error") or success_message or "订单操作完成")
+    card = _order_callback_card(
+        pb,
+        order_id=order_id,
+        environment=runtime_environment,
+        escape_filter_string=escape_filter_string,
+        message=message,
+        console_base_url=console_base_url,
+    )
     if status_code < 400 and not bool(payload.get("warning")):
-        return callback_toast_fn("success", str(payload.get("message") or success_message)), 200
+        return callback_toast_fn("success", str(payload.get("message") or success_message), card=card), 200
     level = "warning" if bool(payload.get("warning")) and status_code < 400 else "error"
-    return callback_toast_fn(level, str(payload.get("error") or payload.get("message") or "订单操作失败")), int(
+    return callback_toast_fn(level, str(payload.get("error") or payload.get("message") or "订单操作失败"), card=card), int(
         status_code or 500
     )
 

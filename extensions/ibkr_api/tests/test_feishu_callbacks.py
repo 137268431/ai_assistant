@@ -20,17 +20,29 @@ from ibkr_api.signals.webhooks import build_signal_cancel_webhook_response, buil
 
 
 class _FakePB:
-    def __init__(self, signal=None):
+    def __init__(self, signal=None, order_rows=None):
         self.signal = copy.deepcopy(signal)
+        self.orders = {str(row["id"]): copy.deepcopy(row) for row in (order_rows or [])}
         self.updated = []
 
     def get_first_record(self, collection, filter=None, sort=None):
-        if collection != "ibkr_signals":
-            raise AssertionError(f"unexpected collection lookup: {collection}")
-        return copy.deepcopy(self.signal)
+        if collection == "ibkr_signals":
+            return copy.deepcopy(self.signal)
+        if collection == "orders":
+            rows = self.get_records(collection, filter=filter, sort=sort, per_page=1, page=1)
+            return copy.deepcopy(rows[0]) if rows else None
+        raise AssertionError(f"unexpected collection lookup: {collection}")
+
+    def get_records(self, collection, filter=None, sort=None, per_page=200, page=1):
+        if collection == "orders":
+            return [copy.deepcopy(row) for row in self.orders.values()][:per_page]
+        raise AssertionError(f"unexpected collection lookup: {collection}")
 
     def update_record(self, collection, record_id, patch):
         self.updated.append((collection, str(record_id), copy.deepcopy(patch)))
+        if collection == "orders":
+            self.orders[str(record_id)].update(copy.deepcopy(patch))
+            return copy.deepcopy(self.orders[str(record_id)])
         if isinstance(self.signal, dict):
             self.signal.update(copy.deepcopy(patch))
         return copy.deepcopy(self.signal)
@@ -168,6 +180,52 @@ class FeishuCallbacksTest(unittest.TestCase):
 
         self.assertEqual(status_code, 200)
         self.assertEqual(payload["toast"]["content"], "cancelled")
+
+    def test_dispatch_feishu_order_callback_card_includes_lifecycle_button(self):
+        pb = _FakePB(
+            order_rows=[
+                {
+                    "id": "order-row-1",
+                    "unique_id": "entry-1",
+                    "order_id": "12345",
+                    "symbol": "AAPL",
+                    "environment": "live",
+                    "signal_id": "sig-order",
+                    "trade_group_id": "tg-order",
+                    "status": "Submitted",
+                    "role": "entry",
+                    "order_type": "LMT",
+                    "quantity": 20,
+                    "filled_qty": 5,
+                    "us_time": "2026-05-15 09:40:00",
+                }
+            ]
+        )
+
+        payload, status_code = dispatch_feishu_order_callback(
+            "cancel",
+            "tg-order",
+            "live",
+            pb=pb,
+            normalize_environment=self.normalize_environment,
+            escape_filter_string=self.escape_filter_string,
+            cancel_broker_order=lambda environment, order_id, payload=None: {"ok": True},
+            build_order_cancel_group_response_fn=lambda *args, **kwargs: ({"message": "cancelled"}, 200),
+            build_order_close_group_response_fn=lambda *args, **kwargs: ({"message": "closed"}, 200),
+            callback_toast_fn=callback_toast,
+            console_base_url="https://console.example.com",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertIn("card", payload)
+        actions = [
+            action
+            for element in payload["card"]["data"]["elements"]
+            if element.get("tag") == "action"
+            for action in element.get("actions", [])
+        ]
+        urls = [action.get("multi_url", {}).get("url", "") for action in actions]
+        self.assertTrue(any("/ibkr_lifecycle_flow.html" in url and "signal_id=sig-order" in url for url in urls))
 
     def test_handle_feishu_callback_prioritizes_order_id_before_signal_id(self):
         order_calls = []

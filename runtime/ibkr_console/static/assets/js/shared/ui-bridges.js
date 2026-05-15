@@ -134,6 +134,12 @@ function renderHomeBridge() {
       copy: '信号 / 订单'
     },
     {
+      path: '/ibkr_lifecycle_flow.html',
+      kicker: 'Lifecycle',
+      label: '流程图',
+      copy: '交易全生命周期'
+    },
+    {
       path: '/ibkr_screener.html',
       params: { tab: 'screener', view: 'current' },
       kicker: 'Targets',
