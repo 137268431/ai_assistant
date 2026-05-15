@@ -11,7 +11,7 @@
   <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dagre@0.8.5/dist/dagre.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.min.js"></script>
-  <link rel="stylesheet" href="/assets/css/pages/ibkr_lifecycle_flow/page.css?v=20260516-lifecycle-lane-colors1">
+  <link rel="stylesheet" href="/assets/css/pages/ibkr_lifecycle_flow/page.css?v=20260516-lifecycle-source-filter1">
 </head>
 <body>
   <div id="nav"></div>
@@ -104,12 +104,12 @@
         <div class="panel-header graph-panel-header">
           <div>
             <div class="panel-title">DAG / Swimlanes</div>
-            <div class="panel-copy" id="graphSummary">按阶段自动布局；节点底色按泳道区分；点击节点查看详情。</div>
+            <div class="panel-copy" id="graphSummary">按阶段自动布局；节点底色按泳道区分；点来源标签可突出对应成交节点。</div>
           </div>
           <div class="panel-tools graph-tools">
-            <span class="fill-pill actual_ibkr">actual_ibkr</span>
-            <span class="fill-pill paper_ibkr">paper_ibkr</span>
-            <span class="fill-pill backtest_simulated">backtest_simulated</span>
+            <button class="fill-pill fill-filter actual_ibkr" type="button" data-fill-source="actual_ibkr" aria-pressed="false" title="只突出真实 IBKR 成交节点；再次点击清除">actual_ibkr</button>
+            <button class="fill-pill fill-filter paper_ibkr" type="button" data-fill-source="paper_ibkr" aria-pressed="false" title="只突出 Paper IBKR 成交节点；再次点击清除">paper_ibkr</button>
+            <button class="fill-pill fill-filter backtest_simulated" type="button" data-fill-source="backtest_simulated" aria-pressed="false" title="只突出回测模拟成交节点；再次点击清除">backtest_simulated</button>
             <button class="flow-btn compact" id="fitGraphButton" type="button">Fit</button>
             <button class="flow-btn compact" id="relayoutGraphButton" type="button">Layout</button>
             <button class="flow-btn compact" id="toggleTimelineButton" type="button">Timeline</button>
@@ -147,6 +147,6 @@
     </section>
   </div>
 
-  <script src="/assets/js/pages/ibkr_lifecycle_flow/page.js?v=20260516-lifecycle-lane-colors1"></script>
+  <script src="/assets/js/pages/ibkr_lifecycle_flow/page.js?v=20260516-lifecycle-source-filter1"></script>
 </body>
 </html>

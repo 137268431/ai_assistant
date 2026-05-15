@@ -147,6 +147,25 @@ def _date_bounds(date_text: str) -> tuple[int, int]:
         return 0, 0
 
 
+def _parse_time_text_ms(text: Any) -> int:
+    value = _safe_text(text)
+    if not value:
+        return 0
+    try:
+        normalized = value.replace("Z", "+00:00")
+        parsed_dt = datetime.fromisoformat(normalized)
+        if parsed_dt.tzinfo is None:
+            # PB created/updated fields are UTC ISO timestamps; keep naive text off local TZ.
+            parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
+        return int(parsed_dt.timestamp() * 1000)
+    except Exception:
+        try:
+            parsed = datetime.strptime(value.replace("T", " ")[:19], "%Y-%m-%d %H:%M:%S")
+            return int(parsed.replace(tzinfo=timezone.utc).timestamp() * 1000)
+        except Exception:
+            return 0
+
+
 def _event_time_ms(row: dict[str, Any], extra: dict[str, Any] | None = None) -> int:
     source = {**(extra or {}), **(row or {})}
     for key in (
@@ -163,22 +182,9 @@ def _event_time_ms(row: dict[str, Any], extra: dict[str, Any] | None = None) -> 
         if value > 0:
             return value
     for key in ("created", "updated", "trade_time", "us_time"):
-        text = _safe_text(source.get(key))
-        if not text:
-            continue
-        try:
-            normalized = text.replace("Z", "+00:00")
-            parsed_dt = datetime.fromisoformat(normalized)
-            if parsed_dt.tzinfo is None:
-                # PB created/updated fields are UTC ISO timestamps; keep naive text off local TZ.
-                parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
-            return int(parsed_dt.timestamp() * 1000)
-        except Exception:
-            try:
-                parsed = datetime.strptime(text.replace("T", " ")[:19], "%Y-%m-%d %H:%M:%S")
-                return int(parsed.replace(tzinfo=timezone.utc).timestamp() * 1000)
-            except Exception:
-                continue
+        value = _parse_time_text_ms(source.get(key))
+        if value > 0:
+            return value
     return 0
 
 
@@ -648,6 +654,58 @@ def _signal_status_event_type(status: str) -> tuple[str, str, str]:
     return "signal_status", "confirmation", "done"
 
 
+def _first_time_from_sources(sources: list[dict[str, Any]], *, ms_keys: tuple[str, ...], text_keys: tuple[str, ...]) -> int:
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key in ms_keys:
+            value = to_int(source.get(key), 0)
+            if value > 0:
+                return value
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key in text_keys:
+            value = _parse_time_text_ms(source.get(key))
+            if value > 0:
+                return value
+    return 0
+
+
+def _signal_status_time_ms(status: str, row: dict[str, Any], extra: dict[str, Any], fallback_ts_ms: int, *, allow_bar_time: bool = False) -> int:
+    normalized = _lower(status)
+    sources = [extra or {}, row or {}]
+    ms_keys = [
+        "status_updated_bar_time_ms",
+        "status_changed_bar_time_ms",
+        "status_time_ms",
+        "timestamp_ms",
+        "updated_at_ms",
+    ]
+    text_keys = [
+        "status_updated_at",
+        "status_changed_at",
+        "status_time",
+        "updated",
+    ]
+    if normalized == "expired":
+        ms_keys[:0] = ["expired_at_ms", "expired_bar_time_ms"]
+        text_keys[:0] = ["expired_at"]
+    elif normalized in {"rejected", "cancelled", "canceled"}:
+        ms_keys[:0] = ["rejected_at_ms", "cancelled_at_ms", "canceled_at_ms"]
+        text_keys[:0] = ["rejected_at", "cancelled_at", "canceled_at"]
+    elif normalized in {"confirmed", "pending", "submitted", "executed", "protected_active"}:
+        ms_keys[:0] = ["confirmed_at_ms", "reconfirmed_at_ms", "submitted_at_ms", "executed_at_ms", "protected_at_ms"]
+        text_keys[:0] = ["confirmed_at", "reconfirmed_at", "submitted_at", "executed_at", "protected_at"]
+    elif normalized in {"blocked", "dropped", "skipped", "protection_incomplete"}:
+        ms_keys[:0] = ["blocked_at_ms", "dropped_at_ms", "skipped_at_ms"]
+        text_keys[:0] = ["blocked_at", "dropped_at", "skipped_at", "status_repaired_at"]
+    if allow_bar_time:
+        ms_keys.append("bar_time_ms")
+    value = _first_time_from_sources(sources, ms_keys=tuple(ms_keys), text_keys=tuple(text_keys))
+    return value or fallback_ts_ms
+
+
 def _role(row: dict[str, Any]) -> str:
     extra = _json_object(row.get("extra"))
     role = _lower(first_defined(row.get("role"), extra.get("role")))
@@ -980,6 +1038,7 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
         status = _lower(row.get("status"))
         if status and status not in {"generated", "new"}:
             event_type, stage, state = _signal_status_event_type(status)
+            status_ts_ms = _signal_status_time_ms(status, row, extra, ts_ms)
             events.append(
                 _base_event(
                     event_type,
@@ -987,12 +1046,12 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
                     state=state,
                     label=status.replace("_", " "),
                     reason=_safe_text(first_defined(extra.get("status_reason"), row.get("note"), reason, status)),
-                    ts_ms=ts_ms,
+                    ts_ms=status_ts_ms,
                     symbol=event_symbol,
                     signal_id=row_signal_id,
                     trade_group_id=trade_group_id,
                     source="ibkr_signals.status",
-                    details={"status": status},
+                    details={"status": status, "signal_bar_time_ms": ts_ms},
                 )
             )
         for item in _json_list(extra.get("status_history")):
@@ -1002,6 +1061,7 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
             if not item_status:
                 continue
             event_type, stage, state = _signal_status_event_type(item_status)
+            item_ts_ms = _signal_status_time_ms(item_status, item, {}, ts_ms, allow_bar_time=True)
             events.append(
                 _base_event(
                     event_type,
@@ -1009,7 +1069,7 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
                     state=state,
                     label=item_status.replace("_", " "),
                     reason=_safe_text(first_defined(item.get("reason"), item.get("note"), item_status)),
-                    ts_ms=_event_time_ms(item) or ts_ms,
+                    ts_ms=item_ts_ms,
                     symbol=event_symbol,
                     signal_id=row_signal_id,
                     trade_group_id=trade_group_id,

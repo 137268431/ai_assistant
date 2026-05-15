@@ -1,5 +1,6 @@
 import sys
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 
@@ -113,6 +114,34 @@ class LifecycleFlowApiTest(unittest.TestCase):
         self.assertNotEqual(150, missing_events[0].get("price"))
         actual_fill_events = [event for event in payload["events"] if event.get("fill_source") == "actual_ibkr"]
         self.assertEqual([], actual_fill_events)
+
+    def test_signal_expired_uses_expired_at_instead_of_signal_bar_time(self):
+        signal_bar_ms = 1778852700000
+        expired_at = "2026-05-15T14:15:27Z"
+        expected_expired_ms = int(datetime.fromisoformat(expired_at.replace("Z", "+00:00")).timestamp() * 1000)
+        payload, status_code = self.build(
+            {
+                "ibkr_signals": [
+                    {
+                        "symbol": "AAPL",
+                        "signal_id": "sig_expired_time",
+                        "status": "expired",
+                        "entry": 100,
+                        "shares": 10,
+                        "bar_time_ms": signal_bar_ms,
+                        "extra": {"expired_at": expired_at, "status_reason": "signal_timeout"},
+                    }
+                ],
+            },
+            {"signal_id": "sig_expired_time"},
+        )
+
+        self.assertEqual(status_code, 200)
+        generated = next(event for event in payload["events"] if event["event_type"] == "signal_generated")
+        expired = next(event for event in payload["events"] if event["event_type"] == "signal_expired")
+        self.assertEqual(signal_bar_ms, generated["ts_ms"])
+        self.assertEqual(expected_expired_ms, expired["ts_ms"])
+        self.assertEqual(signal_bar_ms, expired["details"]["signal_bar_time_ms"])
 
     def test_partial_fill_warns_when_protection_exceeds_remaining_position(self):
         payload, status_code = self.build(
