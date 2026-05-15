@@ -813,6 +813,54 @@ class SignalIngressBuildersTest(unittest.TestCase):
         self.assertEqual(reverse["extra"]["reentry_signal_payload"]["signal_id"], "sig-strong-short")
         self.assertEqual(pb.signals["sig-row-1"]["extra"]["reverse_policy"], "full_auto_reverse")
 
+    def test_signal_ingest_skips_reverse_when_broker_signal_has_no_order_trace(self):
+        pb = _FakePB(
+            [
+                {
+                    "id": "sig-row-1",
+                    "signal_id": "sig-old",
+                    "environment": "live",
+                    "symbol": "AAPL",
+                    "direction": "long",
+                    "status": "protected_active",
+                    "extra": {},
+                }
+            ]
+        )
+
+        payload, status_code = build_signal_ingest_response(
+            pb,
+            payload={
+                "environment": "live",
+                "symbol": "AAPL",
+                "signal_id": "sig-strong-short",
+                "direction": "short",
+                "signal": "short_setup",
+                "entry": 179.0,
+                "stop_loss": 181.0,
+                "take_profit": 174.0,
+                "bar_time_ms": 1713798000000,
+                "extra": {"signal_strength_score": 7},
+            },
+            normalize_environment=self.normalize_environment,
+            escape_filter_string=self.escape_filter_string,
+            config_value=self.config_value,
+            send_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "unused"},
+            update_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "unused"},
+            signal_chat_id_fn=self.signal_chat_id_fn,
+            console_base_url="https://console.example.com",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["target"], "ibkr_signals")
+        self.assertEqual(payload["action"], "created")
+        self.assertEqual([], [row for collection, row in pb.created if collection == "ibkr_reverse_signals"])
+        self.assertEqual(pb.signals["sig-row-1"]["status"], "closed")
+        self.assertEqual(pb.signals["sig-row-1"]["extra"]["closed_reason"], "stale_active_signal_without_order_trace")
+        created_signals = [row for collection, row in pb.created if collection == "ibkr_signals"]
+        self.assertEqual(len(created_signals), 1)
+        self.assertEqual(created_signals[0]["extra"]["stale_active_signal_id"], "sig-old")
+
     def test_signal_ingest_blocks_reverse_when_protection_incomplete(self):
         pb = _FakePB(
             [

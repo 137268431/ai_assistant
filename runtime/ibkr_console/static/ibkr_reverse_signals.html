@@ -457,7 +457,18 @@
             return map[signal.status] || { cls: 'status-pending', text: signal.status || '未知' };
         }
 
-        function getActionView(actionType) {
+        function isNoOldPosition(signal) {
+            if (!signal || signal.action_type !== 'close') return false;
+            const extra = signal.extra || {};
+            const beforeClose = Number(extra.position_qty_before_close);
+            const flatByBroker = Number.isFinite(beforeClose) && beforeClose === 0;
+            return flatByBroker || extra.close_old_position === 'skipped_flat';
+        }
+
+        function getActionView(actionType, signal = null) {
+            if (isNoOldPosition(signal)) {
+                return { text: '无旧仓', cls: 'action-neutral' };
+            }
             const text = {
                 close: '平旧仓',
                 cancel: '撤旧挂单',
@@ -477,7 +488,8 @@
             }[reverseKind] || reverseKind || 'N/A';
         }
 
-        function getTargetStateText(targetState) {
+        function getTargetStateText(targetState, signal = null) {
+            if (isNoOldPosition(signal)) return '旧仓已空';
             return {
                 pending_entry: '待成交挂单',
                 filled_position: '已成交持仓',
@@ -497,6 +509,9 @@
 
             if (signal.triggered_signals?.length) {
                 notes.push(`<div class="signal-note"><strong>触发条件:</strong> ${escapeHtml(signal.triggered_signals.join(', '))}</div>`);
+            }
+            if (isNoOldPosition(signal)) {
+                notes.push(`<div class="signal-note signal-note-warning"><strong>旧仓检查:</strong> IBKR 持仓为 0，已按无旧仓处理；新逻辑会跳过没有订单痕迹的旧状态，避免再次生成反转。</div>`);
             }
             if (signal.signal_id) {
                 notes.push(`<div class="signal-note"><strong>SignalID:</strong> ${escapeHtml(signal.signal_id)}</div>`);
@@ -561,7 +576,9 @@
 
         function renderViewButtons(signal) {
             const buttons = [];
-            buttons.push(`<button class="action-btn btn-details" onclick="viewReverse('${encodeURIComponent(signal.id)}')">🔄 查看反转</button>`);
+            const encodedReverseId = encodeURIComponent(signal.id);
+            const hasOrderContext = !!(signal.trade_group_id || signal.entry_order_unique_id || signal.order_unique_id || signal.broker_order_id);
+            buttons.push(`<button class="action-btn btn-details btn-primary-detail" onclick="viewReverse('${encodedReverseId}')">🔎 反转详情</button>`);
             if (signal.signal_id || signal.origin_signal_id) {
                 buttons.push(`<button class="action-btn btn-details" onclick="viewSignal('${encodeURIComponent(signal.signal_id || signal.origin_signal_id)}')">📡 查看信号</button>`);
             }
@@ -570,7 +587,7 @@
             }
             if (signal.trade_group_id) {
                 buttons.push(`<button class="action-btn btn-details" onclick="viewTradeGroup('${encodeURIComponent(signal.trade_group_id)}', '${encodeURIComponent(signal.signal_id || signal.origin_signal_id || '')}')">📜 交易组明细</button>`);
-            } else if (signal.signal_id || signal.origin_signal_id) {
+            } else if (hasOrderContext && (signal.signal_id || signal.origin_signal_id)) {
                 buttons.push(`<button class="action-btn btn-details" onclick="viewOrders('${encodeURIComponent(signal.signal_id || signal.origin_signal_id)}')">📋 查看订单</button>`);
             }
             return buttons.join('');
@@ -596,7 +613,7 @@
                 const directionClass = direction === 'long' ? 'long' : 'short';
                 const strengthClass = signal.strength === 'strong' ? 'strength-strong' : signal.strength === 'medium' ? 'strength-medium' : 'strength-weak';
                 const strengthText = signal.strength === 'strong' ? '强' : signal.strength === 'medium' ? '中' : '弱';
-                const actionView = getActionView(signal.action_type);
+                const actionView = getActionView(signal.action_type, signal);
                 const statusView = getStatusView(signal);
                 const isPending = signal.status === 'pending';
 
@@ -620,7 +637,7 @@
                             </div>
                             <div class="signal-item">
                                 <div class="signal-label">目标状态</div>
-                                <div class="signal-value">${escapeHtml(getTargetStateText(signal.target_state))}</div>
+                                <div class="signal-value">${escapeHtml(getTargetStateText(signal.target_state, signal))}</div>
                             </div>
                             <div class="signal-item">
                                 <div class="signal-label">当前方向 → 新方向</div>

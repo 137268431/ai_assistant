@@ -834,7 +834,18 @@ class _IBGatewayApp(EWrapper, EClient):
         self._ensure_ready(timeout, "request_executions")
         req_id, ctx = self._next_request("executions")
         self.reqExecutions(req_id, ExecutionFilter())
-        return self._await(req_id, ctx, timeout)
+        items = self._await(req_id, ctx, timeout)
+        # IB sends commissionReport callbacks separately from execDetailsEnd.
+        # Give those callbacks a short window, then return the refreshed cache.
+        exec_ids = [str(item.get("execId") or "") for item in (items or []) if str(item.get("execId") or "")]
+        if exec_ids:
+            deadline = time.time() + min(2.0, max(0.0, float(timeout or 0)) * 0.25)
+            while time.time() < deadline:
+                if all(abs(_safe_float(self._executions.get(exec_id, {}).get("commission"), 0.0)) > 0 for exec_id in exec_ids):
+                    break
+                time.sleep(0.1)
+            return [dict(self._executions.get(exec_id) or item) for exec_id, item in zip(exec_ids, items)]
+        return items
 
     def place_order(self, contract: Any, order: Any, timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS):
         self._ensure_ready(timeout, "place_order")

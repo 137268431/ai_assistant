@@ -13,6 +13,7 @@ from ibkr_api.signals.ingest_active_policy import (
     build_reverse_record_payload,
     build_reverse_suppressed_patch,
     build_same_direction_followup_patch,
+    build_stale_active_close_patch,
     build_superseded_patch,
     calculate_signal_strength,
     changed_execution_fields,
@@ -378,6 +379,22 @@ def _handle_active_symbol_policy(
             200,
             prepared,
         )
+
+    if active_status in BROKER_CONTROLLED_SIGNAL_STATUSES and not _active_signal_has_order_trace(
+        pb,
+        active,
+        environment,
+        escape_filter_string,
+    ):
+        reason = "stale_active_signal_without_order_trace"
+        _update_signal_row(pb, active, build_stale_active_close_patch(active, prepared, reason=reason))
+        prepared["extra"] = {
+            **get_signal_extra(prepared),
+            "reverse_policy": "skip_stale_active_without_order_trace",
+            "stale_active_signal_id": active_signal_id,
+            "stale_active_signal_status": active_status,
+        }
+        return None, None, prepared
 
     if active_status in MUTABLE_SIGNAL_STATUSES:
         _update_signal_row(pb, active, build_superseded_patch(active, prepared))

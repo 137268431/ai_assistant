@@ -780,39 +780,58 @@
         }
 
         function calculatePnL(orders) {
-            const entryOrders = {};
-            let totalPnL = 0;
+            const grouped = new Map();
 
-            orders.forEach((order) => {
-                const uniqueId = order.unique_id || '';
-                const parts = uniqueId.split('_');
-                if (parts.length < 5) return;
-
-                const baseId = parts.slice(0, 4).join('_');
-                const orderType = parts[4];
-
-                if (orderType === 'Entry' && order.status === 'Filled') {
-                    entryOrders[baseId] = order;
-                } else if ((orderType === 'TP' || orderType === 'SL') && order.status === 'Filled') {
-                    const entry = entryOrders[baseId];
-                    if (!entry) return;
-
-                    const direction = order.direction;
-                    const entryPrice = parseFloat(entry.fill_price || entry.limit_price);
-                    const exitPrice = parseFloat(order.fill_price || order.limit_price);
-                    const quantity = parseFloat(order.filled_qty || order.quantity);
-                    if (!Number.isFinite(entryPrice) || !Number.isFinite(exitPrice) || !Number.isFinite(quantity)) {
-                        return;
-                    }
-
-                    const pnl = direction === 'long'
-                        ? (exitPrice - entryPrice) * quantity
-                        : (entryPrice - exitPrice) * quantity;
-                    totalPnL += pnl;
-                }
+            (orders || []).forEach((order, index) => {
+                const key = orderGroupKey(order, index);
+                if (!key) return;
+                if (!grouped.has(key)) grouped.set(key, []);
+                grouped.get(key).push(order);
             });
 
-            return totalPnL;
+            let totalPnL = 0;
+            let exitCount = 0;
+
+            grouped.forEach((groupOrders) => {
+                const entry = groupOrders.find((order) => isEntryOrder(order));
+                const entryPrice = firstOrderPositiveNumber(entry, 'fill_price', 'limit_price', 'entry_price');
+                const entryDirection = normalizeOrderDirection(
+                    orderField(entry, 'position_side') || orderField(entry, 'direction')
+                );
+                const entryQuantity = firstOrderPositiveNumber(entry, 'filled_qty', 'quantity');
+                const entryCommission = Math.abs(firstOrderNumber(entry, 'commission', 'ibkr_commission') || 0);
+
+                groupOrders.filter(isFilledExitOrder).forEach((exitOrder) => {
+                    const storedPnl = firstOrderNumber(
+                        exitOrder,
+                        'realized_net_pnl',
+                        'realized_pnl',
+                        'realized_gross_pnl',
+                        'pnl'
+                    );
+                    const canEstimate = entry && entryDirection && Number.isFinite(entryPrice);
+                    let pnl = Number.isFinite(storedPnl) && Math.abs(storedPnl) > 0 ? storedPnl : null;
+
+                    if (pnl === null && canEstimate) {
+                        const exitPrice = firstOrderPositiveNumber(exitOrder, 'fill_price', 'limit_price');
+                        const quantity = firstOrderPositiveNumber(exitOrder, 'filled_qty', 'quantity') || entryQuantity;
+                        if (Number.isFinite(exitPrice) && Number.isFinite(quantity) && quantity > 0) {
+                            const gross = entryDirection === 'short'
+                                ? (entryPrice - exitPrice) * quantity
+                                : (exitPrice - entryPrice) * quantity;
+                            const exitCommission = Math.abs(firstOrderNumber(exitOrder, 'commission', 'ibkr_commission') || 0);
+                            pnl = gross - entryCommission - exitCommission;
+                        }
+                    }
+
+                    if (pnl !== null && Number.isFinite(pnl)) {
+                        totalPnL += pnl;
+                        exitCount += 1;
+                    }
+                });
+            });
+
+            return { total: totalPnL, exitCount };
         }
 
         function orderField(order, fieldName) {
@@ -823,13 +842,46 @@
             return extra[fieldName] ?? '';
         }
 
+        function firstOrderNumber(order, ...fieldNames) {
+            for (const fieldName of fieldNames) {
+                const num = toNumericOrNull(orderField(order, fieldName));
+                if (num !== null) return num;
+            }
+            return null;
+        }
+
+        function firstOrderPositiveNumber(order, ...fieldNames) {
+            for (const fieldName of fieldNames) {
+                const num = toNumericOrNull(orderField(order, fieldName));
+                if (num !== null && num > 0) return num;
+            }
+            return null;
+        }
+
+        function uniqueOrderBase(order) {
+            const uniqueId = String(orderField(order, 'unique_id') || orderField(order, 'coid') || '').trim();
+            if (!uniqueId) return '';
+            const prefixMatch = uniqueId.match(/^(entry|tp|sl|close|manual_close|market_close)_(.+)$/i);
+            if (prefixMatch?.[2]) return prefixMatch[2];
+
+            const parts = uniqueId.split('_');
+            const lifecycleIndex = parts.findIndex((part) => {
+                const token = String(part || '').trim().toLowerCase();
+                return ['entry', 'tp', 'sl', 'takeprofit', 'stoploss'].includes(token);
+            });
+            if (lifecycleIndex > 0) {
+                return parts.slice(0, lifecycleIndex).join('_');
+            }
+            return uniqueId;
+        }
+
         function orderGroupKey(order, index) {
-            const fields = ['trade_group_id', 'entry_order_unique_id', 'signal_id'];
+            const fields = ['trade_group_id', 'linked_trade_group_id', 'entry_order_unique_id', 'linked_entry_order_unique_id', 'parent_order_unique_id', 'signal_id'];
             for (const fieldName of fields) {
                 const value = String(orderField(order, fieldName) || '').trim();
                 if (value) return value;
             }
-            return String(orderField(order, 'id') || orderField(order, 'unique_id') || `row-${index}`).trim() || `row-${index}`;
+            return uniqueOrderBase(order) || String(orderField(order, 'id') || `row-${index}`).trim() || `row-${index}`;
         }
 
         function normalizeOrderDirection(value) {
@@ -847,12 +899,36 @@
             return String(orderField(order, 'order_type') || '').trim().toLowerCase();
         }
 
-        function isMainOrder(order) {
+        function orderLifecycleRole(order) {
             const role = orderRole(order);
             const type = orderType(order);
-            if (['take_profit', 'stop_loss', 'repair_tp', 'repair_sl', 'tp', 'sl'].includes(role)) return false;
-            if (['takeprofit', 'stoploss'].includes(type)) return false;
-            return role === 'entry' || ['entry', 'entryorder'].includes(type);
+            const uniqueId = String(orderField(order, 'unique_id') || orderField(order, 'coid') || '').trim().toLowerCase();
+
+            if (['entry', 'take_profit', 'stop_loss', 'repair_tp', 'repair_sl', 'close', 'manual_close', 'market_close'].includes(role)) {
+                return role;
+            }
+            if (['entry', 'entryorder'].includes(type)) return 'entry';
+            if (['takeprofit', 'take_profit', 'tp'].includes(type)) return 'take_profit';
+            if (['stoploss', 'stop_loss', 'sl'].includes(type)) return 'stop_loss';
+            if (uniqueId.startsWith('entry_') || uniqueId.endsWith('_entry')) return 'entry';
+            if (uniqueId.startsWith('tp_') || uniqueId.endsWith('_tp') || uniqueId.endsWith('_takeprofit')) return 'take_profit';
+            if (uniqueId.startsWith('sl_') || uniqueId.endsWith('_sl') || uniqueId.endsWith('_stoploss')) return 'stop_loss';
+            if (uniqueId.startsWith('close_') || uniqueId.startsWith('manual_close_') || uniqueId.startsWith('market_close_')) return 'close';
+            return role || type;
+        }
+
+        function isEntryOrder(order) {
+            return orderLifecycleRole(order) === 'entry';
+        }
+
+        function isFilledExitOrder(order) {
+            const status = String(orderField(order, 'status') || '').trim().toLowerCase();
+            if (status !== 'filled') return false;
+            return ['take_profit', 'stop_loss', 'repair_tp', 'repair_sl', 'close', 'manual_close', 'market_close'].includes(orderLifecycleRole(order));
+        }
+
+        function isMainOrder(order) {
+            return isEntryOrder(order);
         }
 
         function mainOrderDirection(order) {
@@ -972,7 +1048,8 @@
                 const shortOrders = orderSummary.short;
                 const longPositions = activePositions.filter((item) => item.direction === 'long').length;
                 const shortPositions = activePositions.filter((item) => item.direction === 'short').length;
-                const pnl = calculatePnL(orders);
+                const pnlSummary = calculatePnL(orders);
+                const pnl = pnlSummary.total;
 
                 document.getElementById('todaySignalsLong').textContent = formatNumber(longSignals, 0);
                 document.getElementById('todaySignalsShort').textContent = formatNumber(shortSignals, 0);
@@ -983,7 +1060,7 @@
                 document.getElementById('activePositionsShort').textContent = formatNumber(shortPositions, 0);
 
                 const pnlEl = document.getElementById('todayPnL');
-                if (pnl !== 0) {
+                if (pnlSummary.exitCount > 0) {
                     pnlEl.textContent = `${pnl > 0 ? '+' : ''}${formatNumber(pnl, 0)}`;
                 } else {
                     pnlEl.textContent = '-';

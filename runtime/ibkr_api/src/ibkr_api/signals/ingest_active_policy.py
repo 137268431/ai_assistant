@@ -340,6 +340,31 @@ def build_reverse_suppressed_patch(existing: dict[str, Any], incoming: dict[str,
     }
 
 
+def build_stale_active_close_patch(existing: dict[str, Any], incoming: dict[str, Any], *, reason: str) -> dict[str, Any]:
+    existing_extra = get_signal_extra(existing)
+    incoming_signal_id = to_text(incoming.get("signal_id"))
+    strength = calculate_signal_strength(incoming)
+    now_text = _now_iso_utc()
+    return {
+        "status": "closed",
+        "note": reason,
+        "extra": {
+            **existing_extra,
+            "status_reason": reason,
+            "closed_reason": reason,
+            "closed_at": now_text,
+            "reverse_policy": "skip_stale_active_without_order_trace",
+            "latest_suppressed_reverse_signal_id": incoming_signal_id,
+            "latest_suppressed_reverse_at": now_text,
+            "latest_suppressed_reverse_reason": reason,
+            "latest_suppressed_reverse_direction": to_text(incoming.get("direction")).lower(),
+            "suppressed_reason": reason,
+            "signal_strength_score": strength["score"],
+            "signal_strength_level": strength["level"],
+        },
+    }
+
+
 def build_superseded_patch(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
     existing_extra = get_signal_extra(existing)
     incoming_signal_id = to_text(incoming.get("signal_id"))
@@ -427,6 +452,7 @@ __all__ = [
     "build_reverse_record_payload",
     "build_reverse_suppressed_patch",
     "build_same_direction_followup_patch",
+    "build_stale_active_close_patch",
     "build_superseded_patch",
     "calculate_signal_strength",
     "changed_execution_fields",

@@ -208,6 +208,9 @@ def _serialize_managed_order(order: dict[str, Any]) -> dict[str, Any]:
         "fill_price": to_float(order.get("fill_price")) or 0.0,
         "commission": abs(to_float(order.get("commission")) or 0.0),
         "commission_currency": to_text(order.get("commission_currency") or "USD").upper(),
+        "commission_known": bool(order.get("commission_known")) or abs(to_float(order.get("commission")) or 0.0) > 0,
+        "commission_source": to_text(order.get("commission_source")),
+        "commission_fill_count": to_int(order.get("commission_fill_count"), 0),
         "updated": to_text(order.get("updated")),
     }
 

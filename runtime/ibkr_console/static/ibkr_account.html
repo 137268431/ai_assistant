@@ -704,11 +704,25 @@
             ].map((item) => Number(item)).find((item) => Number.isFinite(item) && Math.abs(item) > 0) || 0;
         }
 
+        function isOrderCommissionKnown(order) {
+            const raw = order?.raw || {};
+            const pbContext = order?.pb_context || {};
+            return Boolean(
+                order?.commission_known
+                || order?.commission_source
+                || raw.commission_known
+                || raw.commission_source
+                || pbContext.pb_commission_known
+                || pbContext.pb_commission_source
+                || getOrderCommissionValue(order) > 0
+            );
+        }
+
         function formatOrderCommission(order) {
             const raw = order?.raw || {};
             const pbContext = order?.pb_context || {};
             const value = getOrderCommissionValue(order);
-            if (!Number.isFinite(value) || Math.abs(value) <= 0) return '--';
+            if ((!Number.isFinite(value) || Math.abs(value) <= 0) && !isOrderCommissionKnown(order)) return '--';
             const currency = String(firstDefined(
                 order?.commission_currency,
                 raw.commissionCurrency,
@@ -1016,11 +1030,15 @@
             let exitQty = 0;
             let weightedExitPrice = 0;
             let commission = Math.abs(getOrderCommissionValue(entryOrder));
+            let expectedCommissionLegs = 1;
+            let knownCommissionLegs = isOrderCommissionKnown(entryOrder) ? 1 : 0;
             legs.forEach((order) => {
                 if (!isStoredExitOrder(order, group, direction)) return;
                 const qty = Math.abs(getStoredOrderFilledQty(order));
                 const exitPrice = getStoredOrderFillPriceValue(order);
                 if (qty <= 0 || exitPrice <= 0) return;
+                expectedCommissionLegs += 1;
+                if (isOrderCommissionKnown(order)) knownCommissionLegs += 1;
                 const perShare = direction === 'short' ? entryPrice - exitPrice : exitPrice - entryPrice;
                 grossPnl += perShare * qty;
                 exitQty += qty;
@@ -1045,7 +1063,8 @@
                 grossPnl,
                 commission,
                 netPnl: grossPnl - commission,
-                commissionKnown: commission > 0,
+                commissionKnown: knownCommissionLegs >= expectedCommissionLegs,
+                commissionPartial: knownCommissionLegs > 0 && knownCommissionLegs < expectedCommissionLegs,
             };
         }
 
@@ -1057,7 +1076,9 @@
             const label = model.commissionKnown ? '净盈亏' : '毛盈亏';
             const details = model.commissionKnown
                 ? `Gross ${formatSignedMoney(model.grossPnl)} · Fee ${formatMoney(model.commission)}`
-                : '手续费未同步';
+                : model.commissionPartial
+                    ? `部分手续费 ${formatMoney(model.commission)}`
+                    : '手续费未同步';
             return `
                 <span class="order-pnl-value ${valueClass(value)}">${escapeHtml(formatSignedMoney(value))}</span>
                 <br><span class="order-table-sub">${escapeHtml(label)} · ${escapeHtml(details)}</span>

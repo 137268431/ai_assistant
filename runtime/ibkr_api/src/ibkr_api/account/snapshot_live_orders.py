@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ibkr_api.orders.values import ensure_object, to_float, to_int, to_text
+from ibkr_api.orders.values import ensure_object, escape_filter_string, to_float, to_int, to_text
 from ibkr_api.account.snapshot_shared import (
     OPEN_ORDER_FILTER_PER_PAGE,
     _clone_string_list,
@@ -52,6 +52,68 @@ def _sorted_order_legs(orders: list[dict[str, Any]] | None) -> list[dict[str, An
     for order in result:
         order["leg_role"] = _normalize_leg_role(order)
     return sorted(result, key=_order_leg_sort_key)
+
+
+def _fetch_execution_commissions(pb: Any, environment: str) -> dict[str, dict[str, Any]]:
+    try:
+        rows = pb.get_records(
+            "ibkr_execution_fills",
+            filter=f'environment = "{escape_filter_string(environment)}"',
+            sort="-trade_time_ms,-updated",
+            per_page=500,
+            page=1,
+        ) or []
+    except Exception:
+        return {}
+
+    by_order_id: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        item = ensure_object(row)
+        order_id = to_text(item.get("order_id"))
+        if not order_id:
+            continue
+        bucket = by_order_id.setdefault(
+            order_id,
+            {
+                "commission": 0.0,
+                "commission_currency": to_text(item.get("commission_currency") or item.get("currency") or "USD").upper(),
+                "commission_known": False,
+                "commission_source": "ibkr_execution_fills",
+                "fill_count": 0,
+            },
+        )
+        bucket["commission"] += abs(to_float(item.get("commission")) or 0.0)
+        if item.get("commission") not in (None, ""):
+            bucket["commission_known"] = True
+        currency = to_text(item.get("commission_currency") or item.get("currency")).upper()
+        if currency:
+            bucket["commission_currency"] = currency
+        source = to_text(item.get("source"))
+        if source:
+            bucket["commission_source"] = source
+        bucket["fill_count"] += 1
+    return by_order_id
+
+
+def _enrich_orders_with_execution_commissions(orders: list[dict[str, Any]], commission_by_order_id: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    if not commission_by_order_id:
+        return orders
+    enriched: list[dict[str, Any]] = []
+    for order in orders:
+        item = dict(order or {})
+        order_id = to_text(item.get("order_id") or item.get("broker_order_id"))
+        commission = commission_by_order_id.get(order_id) if order_id else None
+        if commission and commission.get("commission_known"):
+            item["commission"] = round(abs(to_float(commission.get("commission")) or 0.0), 6)
+            item["commission_currency"] = to_text(commission.get("commission_currency") or item.get("commission_currency") or "USD").upper()
+            item["commission_known"] = True
+            item["commission_source"] = to_text(commission.get("commission_source") or "ibkr_execution_fills")
+            item["commission_fill_count"] = to_int(commission.get("fill_count"), 0)
+        elif abs(to_float(item.get("commission")) or 0.0) > 0:
+            item["commission_known"] = True
+            item["commission_source"] = to_text(item.get("commission_source") or "orders")
+        enriched.append(item)
+    return enriched
 
 
 def _normalize_trade_direction(value: Any) -> str:
@@ -430,6 +492,8 @@ def build_managed_order_context(pb: Any, environment: str, live_orders: list[dic
     order_rows = pb.get_records("orders", filter=f'environment = "{environment}"', sort="-updated", per_page=OPEN_ORDER_FILTER_PER_PAGE, page=1) or []
     normalized_order_records = [normalize_order_record(dict(row)) for row in order_rows if isinstance(row, dict)]
     normalized_order_records = [row for row in normalized_order_records if row.get("symbol")]
+    execution_commissions = _fetch_execution_commissions(pb, environment)
+    normalized_order_records = _enrich_orders_with_execution_commissions(normalized_order_records, execution_commissions)
     pb_lookup = _build_pb_order_lookup(normalized_order_records)
     active_pb_groups_by_key: dict[str, dict[str, Any]] = {}
     active_order_count = 0

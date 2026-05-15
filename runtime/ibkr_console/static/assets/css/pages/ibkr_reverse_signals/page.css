@@ -190,6 +190,11 @@
             color: var(--accent);
         }
 
+        .action-neutral {
+            background: rgba(113,128,150,0.2);
+            color: var(--muted);
+        }
+
         .signal-status {
             padding: 4px 12px;
             border-radius: 12px;
@@ -264,29 +269,42 @@
             color: var(--muted);
         }
 
+        .signal-note-warning {
+            background: rgba(246,173,85,0.08);
+            border-left-color: var(--pending);
+            color: #FBD38D;
+        }
+
         .signal-actions {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 4px;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px;
             margin-top: 12px;
             padding-top: 12px;
             border-top: 1px solid var(--border);
         }
 
         .action-btn {
-            padding: 6px 10px;
-            border: none;
+            flex: 0 1 auto;
+            min-width: 128px;
+            padding: 8px 12px;
+            border: 1px solid rgba(99,179,237,0.22);
             border-radius: 8px;
-            font-size: clamp(11px, 3vw, 12px);
+            background: rgba(99,179,237,0.10);
+            color: var(--text);
+            font-size: 12px;
             font-family: 'JetBrains Mono', monospace;
             font-weight: 700;
             cursor: pointer;
             transition: all 0.2s;
             letter-spacing: 0.5px;
+            white-space: nowrap;
         }
 
         .btn-execute {
             background: var(--long);
+            border-color: transparent;
             color: var(--bg);
         }
 
@@ -296,6 +314,7 @@
 
         .btn-dismiss {
             background: var(--short);
+            border-color: transparent;
             color: var(--bg);
         }
 
@@ -304,8 +323,14 @@
         }
 
         .btn-details {
-            grid-column: 1 / -1;
+            background: rgba(79,209,197,0.12);
+            border-color: rgba(79,209,197,0.28);
+            color: #D7FFFB;
+        }
+
+        .btn-primary-detail {
             background: var(--accent);
+            border-color: transparent;
             color: var(--bg);
         }
 
@@ -466,5 +491,24 @@
 
     :where(.hero-title, .page-title) {
         font-size: 20px;
+    }
+
+    .signal-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .signal-item.full-width {
+        grid-column: span 1;
+    }
+
+    .action-btn {
+        flex: 1 1 calc(50% - 8px);
+        min-width: 0;
+    }
+}
+
+@media (max-width: 420px) {
+    .action-btn {
+        flex-basis: 100%;
     }
 }
