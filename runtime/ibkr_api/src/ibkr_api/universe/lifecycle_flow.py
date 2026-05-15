@@ -35,6 +35,19 @@ LANE_DEFINITIONS = [
     {"key": "interrupt", "label": "中断/异常", "copy": "缺成交、保护不完整、系统中断"},
 ]
 LANE_INDEX = {lane["key"]: index for index, lane in enumerate(LANE_DEFINITIONS)}
+GRAPH_EXCLUDED_EVENT_TYPES = {"order_detail_snapshot"}
+ENDPOINT_EVENT_TYPE = "lifecycle_endpoint"
+TERMINAL_EVENT_TYPES = {
+    "exit_take_profit",
+    "exit_stop_loss",
+    "exit_reverse",
+    "exit_eod",
+    "manual_close",
+    "trade_closed",
+    "signal_rejected",
+    "signal_expired",
+}
+ENTRY_TERMINAL_STATUSES = {"cancelled", "canceled", "expired", "rejected", "inactive"}
 
 
 def _now_ms() -> int:
@@ -43,6 +56,10 @@ def _now_ms() -> int:
 
 def _safe_float(value: Any) -> float:
     return to_float(value) or 0.0
+
+
+def _is_present(value: Any) -> bool:
+    return value is not None and value != ""
 
 
 def _safe_text(value: Any) -> str:
@@ -202,6 +219,9 @@ def _base_event(
     price_label: str = "",
     source: str = "",
     details: dict[str, Any] | None = None,
+    changes: list[dict[str, Any]] | None = None,
+    change_summary: str = "",
+    changed_at_ms: int = 0,
 ) -> dict[str, Any]:
     normalized_price_kind = _safe_text(price_kind) or (
         "actual_fill"
@@ -231,15 +251,158 @@ def _base_event(
         "source": source,
         "details": details or {},
     }
+    if changes:
+        event_changes = [dict(item) for item in changes if isinstance(item, dict)]
+        event["changes"] = event_changes
+        event["change_summary"] = _safe_text(change_summary) or _format_change_summary(event_changes)
+        change_ts_ms = changed_at_ms or ts_ms
+        if change_ts_ms:
+            event["changed_at_ms"] = change_ts_ms
+            event["changed_at_us"] = format_et_datetime(change_ts_ms)
+            event["changed_at_cn"] = format_cn_time(change_ts_ms)
     return {key: value for key, value in event.items() if value is not None}
 
 
-def _sort_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    def key(event: dict[str, Any]) -> tuple[int, int, str]:
-        stage = _safe_text(event.get("stage"))
-        return (to_int(event.get("ts_ms"), 0) or 9_999_999_999_999, LANE_INDEX.get(stage, 99), _safe_text(event.get("event_type")))
+def _format_change_value(value: Any) -> str:
+    if value is None or value == "":
+        return "--"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return _safe_text(value) or "--"
+    if not (numeric == numeric and abs(numeric) != float("inf")):
+        return _safe_text(value) or "--"
+    formatted = f"{numeric:.4f}".rstrip("0").rstrip(".")
+    return formatted or "0"
 
-    ordered = sorted(events, key=key)
+
+def _build_change(field: str, label: str, before: Any, after: Any) -> dict[str, Any]:
+    if not _is_present(before) and not _is_present(after):
+        return {}
+    if _safe_text(before) == _safe_text(after):
+        return {}
+    return {
+        "field": field,
+        "label": label,
+        "before": "" if before is None else before,
+        "after": "" if after is None else after,
+        "before_text": _format_change_value(before),
+        "after_text": _format_change_value(after),
+    }
+
+
+def _format_change_summary(changes: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for change in changes or []:
+        if not isinstance(change, dict):
+            continue
+        label = _safe_text(change.get("label") or change.get("field"))
+        if not label:
+            continue
+        before = change.get("before_text") or _format_change_value(change.get("before"))
+        after = change.get("after_text") or _format_change_value(change.get("after"))
+        parts.append(f"{label} {before} -> {after}")
+        if len(parts) >= 3:
+            break
+    return " / ".join(parts)
+
+
+def _first_present_from_sources(sources: list[dict[str, Any]], keys: tuple[str, ...]) -> Any:
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key in keys:
+            if key in source and _is_present(source.get(key)):
+                return source.get(key)
+    return None
+
+
+def _price_changes_from_sources(
+    sources: list[dict[str, Any]],
+    specs: list[tuple[str, str, tuple[str, ...], tuple[str, ...]]],
+) -> list[dict[str, Any]]:
+    changes: list[dict[str, Any]] = []
+    for field, label, before_keys, after_keys in specs:
+        change = _build_change(
+            field,
+            label,
+            _first_present_from_sources(sources, before_keys),
+            _first_present_from_sources(sources, after_keys),
+        )
+        if change:
+            changes.append(change)
+    return changes
+
+
+def _status_changes_from_sources(row: dict[str, Any], extra: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    sources = [extra or {}, row or {}]
+    previous_status = _first_present_from_sources(sources, ("previous_status", "old_status", "status_before"))
+    if not _is_present(previous_status):
+        return []
+    current_status = _first_present_from_sources(sources, ("current_status", "new_status", "status_after", "status", "order_status"))
+    change = _build_change("status", "状态", previous_status, current_status)
+    return [change] if change else []
+
+
+def _order_price_changes(row: dict[str, Any], extra: dict[str, Any], role: str, limit_price: float) -> list[dict[str, Any]]:
+    sources = [
+        extra or {},
+        row or {},
+        {"limit_price": limit_price} if limit_price > 0 else {},
+    ]
+    if role in {"take_profit", "repair_tp"}:
+        return _price_changes_from_sources(
+            sources,
+            [
+                (
+                    "take_profit",
+                    "TP",
+                    ("old_tp", "old_take_profit", "previous_tp", "previous_take_profit", "before_tp"),
+                    ("new_tp", "take_profit", "tp_price", "limit_price"),
+                )
+            ],
+        )
+    if role in {"stop_loss", "repair_sl"}:
+        return _price_changes_from_sources(
+            sources,
+            [
+                (
+                    "stop_loss",
+                    "SL",
+                    ("old_sl", "old_stop_loss", "previous_sl", "previous_stop_loss", "before_sl"),
+                    ("new_sl", "stop_loss", "sl_price", "auxPrice", "aux_price", "limit_price"),
+                )
+            ],
+        )
+    return []
+
+
+def _protective_change_specs() -> list[tuple[str, str, tuple[str, ...], tuple[str, ...]]]:
+    return [
+        (
+            "stop_loss",
+            "SL",
+            ("old_sl", "old_stop_loss", "previous_sl", "previous_stop_loss", "before_sl"),
+            ("new_sl", "stop_loss", "sl_price", "stop_price"),
+        ),
+        (
+            "take_profit",
+            "TP",
+            ("old_tp", "old_take_profit", "previous_tp", "previous_take_profit", "before_tp"),
+            ("new_tp", "take_profit", "tp_price", "target_price"),
+        ),
+    ]
+
+
+def _event_sort_key(event: dict[str, Any]) -> tuple[int, int, str]:
+    stage = _safe_text(event.get("stage"))
+    return (to_int(event.get("ts_ms"), 0) or 9_999_999_999_999, LANE_INDEX.get(stage, 99), _safe_text(event.get("event_type")))
+
+
+def _sort_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ordered = sorted(events, key=_event_sort_key)
     for index, event in enumerate(ordered, start=1):
         event["seq"] = index
         event["id"] = event.get("id") or f"evt_{index:03d}_{_safe_text(event.get('event_type')) or 'event'}"
@@ -250,6 +413,8 @@ def _events_to_graph(events: list[dict[str, Any]], warnings: list[dict[str, Any]
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
     for event in events:
+        if _safe_text(event.get("event_type")) in GRAPH_EXCLUDED_EVENT_TYPES:
+            continue
         node_id = _safe_text(event.get("id"))
         nodes.append(
             {
@@ -272,6 +437,8 @@ def _events_to_graph(events: list[dict[str, Any]], warnings: list[dict[str, Any]
                 "price_kind": _safe_text(event.get("price_kind")),
                 "price_label": _safe_text(event.get("price_label")),
                 "price": event.get("price"),
+                "changes": event.get("changes") or [],
+                "change_summary": _safe_text(event.get("change_summary")),
                 "data": event,
             }
         )
@@ -335,6 +502,102 @@ def _events_to_graph(events: list[dict[str, Any]], warnings: list[dict[str, Any]
             }
         )
     return nodes, edges
+
+
+def _endpoint_context_groups(events: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    candidates = [
+        event
+        for event in events or []
+        if _safe_text(event.get("event_type")) not in GRAPH_EXCLUDED_EVENT_TYPES | {ENDPOINT_EVENT_TYPE}
+    ]
+    if not candidates:
+        return {}
+
+    def group_by(field: str) -> dict[str, list[dict[str, Any]]]:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for event in candidates:
+            value = _safe_text(event.get(field))
+            if value:
+                grouped.setdefault(f"{field}:{value}", []).append(event)
+        return grouped
+
+    for field in ("trade_group_id", "signal_id", "symbol"):
+        grouped = group_by(field)
+        if grouped:
+            return grouped
+    return {"global:lifecycle": candidates}
+
+
+def _event_status(event: dict[str, Any]) -> str:
+    details = _json_object(event.get("details"))
+    return _lower(first_defined(details.get("status"), event.get("state"), event.get("status")))
+
+
+def _terminal_event_for_group(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    ordered = sorted(events or [], key=_event_sort_key)
+    for event in reversed(ordered):
+        if _safe_text(event.get("event_type")) in TERMINAL_EVENT_TYPES:
+            return event
+
+    has_entry_fill = any(
+        _safe_text(event.get("event_type")) in {"entry_filled", "entry_partially_filled"}
+        or (_safe_text(event.get("event_type")) == "fill_execution" and _safe_text(event.get("role")) == "entry")
+        for event in ordered
+    )
+    if has_entry_fill:
+        return None
+    for event in reversed(ordered):
+        if _safe_text(event.get("role")) == "entry" and _event_status(event) in ENTRY_TERMINAL_STATUSES:
+            return event
+    return None
+
+
+def _append_lifecycle_endpoints(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not events:
+        return events
+    if any(_safe_text(event.get("event_type")) == ENDPOINT_EVENT_TYPE for event in events):
+        return events
+
+    result = list(events)
+    now_ms = _now_ms()
+    for group_events in _endpoint_context_groups(events).values():
+        ordered = sorted(group_events, key=_event_sort_key)
+        if not ordered:
+            continue
+        last_event = ordered[-1]
+        terminal_event = _terminal_event_for_group(ordered)
+        is_terminal = terminal_event is not None
+        anchor = terminal_event or last_event
+        anchor_ts = to_int(anchor.get("ts_ms"), 0)
+        last_ts = to_int(last_event.get("ts_ms"), 0)
+        endpoint_ts = (max(anchor_ts, last_ts) + 1) if is_terminal and max(anchor_ts, last_ts) > 0 else now_ms
+        result.append(
+            _base_event(
+                ENDPOINT_EVENT_TYPE,
+                stage="exit" if is_terminal else (_safe_text(last_event.get("stage")) or "interrupt"),
+                state="terminal" if is_terminal else "active",
+                label="生命周期结束" if is_terminal else "当前仍进行中",
+                reason=(
+                    f"ended_by_{_safe_text(anchor.get('event_type'))}"
+                    if is_terminal
+                    else "no_terminal_event_detected"
+                ),
+                ts_ms=endpoint_ts,
+                symbol=_safe_text(first_defined(last_event.get("symbol"), anchor.get("symbol"))),
+                signal_id=_safe_text(first_defined(last_event.get("signal_id"), anchor.get("signal_id"))),
+                trade_group_id=_safe_text(first_defined(last_event.get("trade_group_id"), anchor.get("trade_group_id"))),
+                order_id=_safe_text(anchor.get("order_id")),
+                source="lifecycle_flow.endpoint",
+                details={
+                    "terminal": is_terminal,
+                    "last_event_id": _safe_text(last_event.get("id")),
+                    "last_event_type": _safe_text(last_event.get("event_type")),
+                    "anchor_event_id": _safe_text(anchor.get("id")),
+                    "anchor_event_type": _safe_text(anchor.get("event_type")),
+                },
+            )
+        )
+    return result
 
 
 def _current_step(nodes: list[dict[str, Any]], warnings: list[dict[str, Any]]) -> dict[str, Any]:
@@ -778,6 +1041,7 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
         limit_price = _order_limit_price(row)
         ts_ms = _order_time_ms(row)
         direction = _lower(first_defined(row.get("direction"), row.get("position_side"), extra.get("direction"), extra.get("position_side")))
+        status_changes = _status_changes_from_sources(row, extra)
 
         if role == "entry":
             entry_order_count += 1
@@ -800,12 +1064,15 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
                     price_label="开仓限价" if limit_price > 0 else "",
                     source="orders",
                     details={"status": status, "quantity": quantity, "limit_price": limit_price, "price_policy": "limit_or_plan_not_actual_fill"},
+                    changes=status_changes,
                 )
             )
         elif role in {"take_profit", "repair_tp"}:
             protection_roles_seen.add("take_profit")
             protection_open_qty_by_role["take_profit"] += quantity if _is_open_status(status) else 0.0
             event_type = "take_profit_modified" if role == "repair_tp" or extra.get("old_tp") or extra.get("new_tp") else "take_profit_created"
+            price_changes = _order_price_changes(row, extra, role, limit_price) if event_type.endswith("modified") else []
+            changes = price_changes + status_changes
             events.append(
                 _base_event(
                     event_type,
@@ -825,12 +1092,15 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
                     price_label="止盈价" if limit_price > 0 else "",
                     source="orders",
                     details={"status": status, "quantity": quantity, "tp_price": limit_price, **({"old_tp": extra.get("old_tp"), "new_tp": extra.get("new_tp")} if extra else {})},
+                    changes=changes,
                 )
             )
         elif role in {"stop_loss", "repair_sl"}:
             protection_roles_seen.add("stop_loss")
             protection_open_qty_by_role["stop_loss"] += quantity if _is_open_status(status) else 0.0
             event_type = "stop_loss_modified" if role == "repair_sl" or extra.get("old_sl") or extra.get("new_sl") else "stop_loss_created"
+            price_changes = _order_price_changes(row, extra, role, limit_price) if event_type.endswith("modified") else []
+            changes = price_changes + status_changes
             events.append(
                 _base_event(
                     event_type,
@@ -850,6 +1120,7 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
                     price_label="止损价" if limit_price > 0 else "",
                     source="orders",
                     details={"status": status, "quantity": quantity, "sl_price": limit_price, **({"old_sl": extra.get("old_sl"), "new_sl": extra.get("new_sl")} if extra else {})},
+                    changes=changes,
                 )
             )
         else:
@@ -872,6 +1143,7 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
                     price_label="平仓限价" if limit_price > 0 else "",
                     source="orders",
                     details={"status": status, "quantity": quantity, "limit_price": limit_price},
+                    changes=status_changes,
                 )
             )
 
@@ -1163,6 +1435,7 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
         detail_status = _order_status(row)
         detail_stage = "execution" if detail_role == "entry" else "protection" if detail_role in {"take_profit", "stop_loss", "repair_tp", "repair_sl"} else "exit"
         detail_price, detail_price_kind, detail_price_label = _order_reference_price(row, detail_role)
+        detail_changes = _status_changes_from_sources(row, extra)
         events.append(
             _base_event(
                 "order_detail_snapshot",
@@ -1189,6 +1462,7 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
                     "limit_price": _order_limit_price(row),
                     "calculation_policy": "timeline_only_not_position_calculation",
                 },
+                changes=detail_changes,
             )
         )
 
@@ -1206,6 +1480,7 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
         elif action in {"close", "cancel", "reverse_close"}:
             event_type = "exit_reverse"
             stage = "exit"
+        changes = _price_changes_from_sources([extra, row], _protective_change_specs())
         events.append(
             _base_event(
                 event_type,
@@ -1219,6 +1494,7 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
                 trade_group_id=_safe_text(first_defined(row.get("trade_group_id"), extra.get("trade_group_id"), trade_group_id)),
                 source="ibkr_reverse_signals",
                 details={"action_type": action, "old_sl": extra.get("old_sl"), "new_sl": extra.get("new_sl"), "old_tp": extra.get("old_tp"), "new_tp": extra.get("new_tp")},
+                changes=changes,
             )
         )
 
@@ -1324,6 +1600,8 @@ def _normalize_backtest_event(row: dict[str, Any], *, run_id: str, symbol_filter
         elif event_status in {"cancel", "cancelled", "canceled"}:
             stage = "interrupt"
     fill_event = any(token in _lower(event_type) for token in ("fill", "opened", "closed", "trade"))
+    row_details = _json_object(row.get("details")) if not isinstance(row.get("details"), dict) else dict(row.get("details") or {})
+    changes = _price_changes_from_sources([row, row_details], _protective_change_specs())
     return _base_event(
         event_type,
         stage=stage,
@@ -1338,7 +1616,8 @@ def _normalize_backtest_event(row: dict[str, Any], *, run_id: str, symbol_filter
         qty=_safe_float(first_defined(row.get("shares"), row.get("qty"), row.get("quantity"))) if fill_event else None,
         price=_safe_float(first_defined(row.get("entry_price"), row.get("exit_price"), row.get("price"))) if fill_event else None,
         source="ibkr_backtest_runs.metrics.backtest_audit",
-        details={"run_id": run_id, "backtest_simulated": fill_event, **(_json_object(row.get("details")) if not isinstance(row.get("details"), dict) else dict(row.get("details") or {}))},
+        details={"run_id": run_id, "backtest_simulated": fill_event, **row_details},
+        changes=changes,
     )
 
 
@@ -1459,6 +1738,7 @@ def _build_backtest_fallback_events(pb: Any, *, run_id: str, symbol: str = "", d
         extra = _json_object(row.get("extra"))
         action = _lower(first_defined(row.get("action_type"), row.get("status")))
         stage = "risk_adjustment" if action.startswith("adjust") else "exit" if action in {"close", "cancel"} else "interrupt"
+        changes = _price_changes_from_sources([extra, row], _protective_change_specs())
         events.append(
             _base_event(
                 "reverse_action",
@@ -1472,6 +1752,7 @@ def _build_backtest_fallback_events(pb: Any, *, run_id: str, symbol: str = "", d
                 trade_group_id=_safe_text(first_defined(row.get("trade_group_id"), extra.get("trade_group_id"))),
                 source="ibkr_backtest_reverse_signals",
                 details={"run_id": run_id, "action_type": action, **extra},
+                changes=changes,
             )
         )
     return events, warnings
@@ -1569,7 +1850,7 @@ def build_lifecycle_flow_response(
         events, warnings, context, source_summary = _build_live_events(pb, environment=environment, payload=payload, market_date=requested_market_date)
         requested_mode = mode
 
-    ordered_events = _sort_events(events)
+    ordered_events = _sort_events(_append_lifecycle_endpoints(events))
     nodes, edges = _events_to_graph(ordered_events, warnings)
     response = {
         "ok": True,

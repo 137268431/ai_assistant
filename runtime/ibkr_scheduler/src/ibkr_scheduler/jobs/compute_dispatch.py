@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -21,6 +22,7 @@ COMPUTE_DISPATCH_RETRY_BACKOFF_SECONDS = (0.25, 0.5)
 COMPUTE_DISPATCH_RETRYABLE_ERRORS = {"compute_busy"}
 COMPUTE_DISPATCH_RETRYABLE_STATUS_CODES = {503}
 COMPUTE_DISPATCH_TARGET_STATUSES = {"active", "candidate"}
+INDICATOR_5M_INTERVALS = {"5", "5m"}
 
 
 def _extract_compute_startup_preload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -79,6 +81,24 @@ def _payload_error_count(payload: dict[str, Any]) -> int:
         return int((payload or {}).get("errors", 0) or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _coerce_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value or default)
+    except (TypeError, ValueError):
+        return int(default or 0)
+
+
+def _coerce_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value if value is not None else default)
+    except (TypeError, ValueError):
+        return float(default or 0.0)
+
+
+def _compute_dispatch_chunk_size() -> int:
+    return max(1, _coerce_int(os.environ.get("IBKR_COMPUTE_DISPATCH_CHUNK_SIZE"), 8))
 
 
 def _is_retryable_compute_failure(response: requests.Response, payload: dict[str, Any]) -> bool:
@@ -200,6 +220,132 @@ def _latest_bar_time_for_symbols(
     except Exception:
         return None
     return latest_ms
+
+
+def _load_indicator_coverage(
+    pb: Any,
+    *,
+    environment: str,
+    symbols: list[str],
+    bar_time_ms: int,
+) -> dict[str, Any]:
+    normalized_symbols = _normalize_symbols(symbols)
+    target_ms = _coerce_int(bar_time_ms)
+    coverage = {
+        "indicator_coverage_status": "unknown",
+        "indicator_coverage_bar_time_ms": target_ms,
+        "indicator_coverage_symbol_count": len(normalized_symbols),
+        "covered_indicator_symbols": [],
+        "covered_indicator_symbol_count": 0,
+        "missing_indicator_symbols": normalized_symbols,
+        "missing_indicator_symbol_count": len(normalized_symbols),
+    }
+    if not normalized_symbols or target_ms <= 0:
+        coverage["indicator_coverage_status"] = "not_applicable"
+        coverage["missing_indicator_symbols"] = []
+        coverage["missing_indicator_symbol_count"] = 0
+        return coverage
+    if not hasattr(pb, "get_records"):
+        coverage["indicator_coverage_error"] = "pb_get_records_unavailable"
+        return coverage
+
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    covered_symbols: set[str] = set()
+    try:
+        for chunk in _chunked_symbols(normalized_symbols):
+            symbol_filter = " || ".join(f'symbol = "{_pb_filter_quote(symbol)}"' for symbol in chunk)
+            interval_filter = " || ".join(f'interval = "{interval}"' for interval in sorted(INDICATOR_5M_INTERVALS))
+            filter_expr = (
+                f'environment = "{_pb_filter_quote(runtime_environment)}" && '
+                f"({interval_filter}) && "
+                f"bar_time_ms >= {target_ms} && "
+                f"({symbol_filter})"
+            )
+            rows = pb.get_records(
+                "ibkr_indicators",
+                filter=filter_expr,
+                sort="-bar_time_ms",
+                per_page=max(200, len(chunk) * 2),
+                page=1,
+            )
+            chunk_symbols = set(chunk)
+            for row in rows or []:
+                if not isinstance(row, dict):
+                    continue
+                symbol = str(row.get("symbol") or "").strip().upper()
+                interval = str(row.get("interval") or "").strip().lower()
+                row_environment = str(row.get("environment") or "").strip().lower()
+                row_ms = _coerce_int(row.get("bar_time_ms"))
+                if (
+                    symbol in chunk_symbols
+                    and interval in INDICATOR_5M_INTERVALS
+                    and row_environment == runtime_environment
+                    and row_ms >= target_ms
+                ):
+                    covered_symbols.add(symbol)
+    except Exception as exc:
+        coverage["indicator_coverage_error"] = str(exc)
+        return coverage
+
+    covered = sorted(covered_symbols)
+    missing = sorted(symbol for symbol in normalized_symbols if symbol not in covered_symbols)
+    coverage.update(
+        {
+            "indicator_coverage_status": "covered" if not missing else "missing",
+            "covered_indicator_symbols": covered,
+            "covered_indicator_symbol_count": len(covered),
+            "missing_indicator_symbols": missing,
+            "missing_indicator_symbol_count": len(missing),
+        }
+    )
+    return coverage
+
+
+def _runtime_realtime_compute_status(status_payload: dict[str, Any]) -> dict[str, Any]:
+    payload = status_payload if isinstance(status_payload, dict) else {}
+    candidates: list[dict[str, Any]] = []
+    for item in (
+        payload,
+        payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {},
+        payload.get("compute") if isinstance(payload.get("compute"), dict) else {},
+        payload.get("payload") if isinstance(payload.get("payload"), dict) else {},
+    ):
+        if isinstance(item, dict):
+            candidates.append(item)
+    for item in candidates:
+        realtime = item.get("realtime_compute")
+        if isinstance(realtime, dict) and realtime:
+            return dict(realtime)
+    return {}
+
+
+def _should_wait_for_inflight(status_payload: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+    realtime = _runtime_realtime_compute_status(status_payload)
+    inflight = bool(realtime.get("inflight"))
+    stalled = bool(realtime.get("stalled"))
+    inflight_age_s = _coerce_float(realtime.get("inflight_age_s"), 0.0)
+    threshold_s = _coerce_float(realtime.get("inflight_timeout_threshold_s"), 0.0)
+    wait = bool(inflight and not stalled and (threshold_s <= 0.0 or inflight_age_s < threshold_s))
+    return wait, {
+        "compute_in_progress": bool(inflight),
+        "inflight_age_s": inflight_age_s if inflight else 0.0,
+        "inflight_timeout_threshold_s": threshold_s,
+        "inflight_stalled": bool(stalled),
+        "inflight_stall_reason": str(realtime.get("stall_reason") or ""),
+        "realtime_compute": realtime,
+    }
+
+
+def _load_runtime_status_payload(compute_base_url: str, environment: str) -> dict[str, Any]:
+    try:
+        response = requests.get(
+            f"{compute_base_url}/ibkr/status",
+            params={"environment": environment},
+            timeout=5,
+        )
+        return response.json() if response.content else {}
+    except Exception:
+        return {}
 
 
 def _resolve_target_dispatch(
@@ -368,7 +514,7 @@ def build_compute_dispatch_runner(
                 timeout=5,
             )
             status_payload = status_response.json() if status_response.content else {}
-        except requests.RequestException:
+        except Exception:
             status_payload = {}
         if _is_compute_startup_preload_active(status_payload):
             return {
@@ -379,7 +525,7 @@ def build_compute_dispatch_runner(
                 **detail,
             }
 
-        compute_payload = {
+        compute_payload_base = {
             "source": "ibkr_scheduler",
             "environments": [environment],
             "intervals": ["5m"],
@@ -388,95 +534,304 @@ def build_compute_dispatch_runner(
         ingest_cursor = detail.get("ingest_cursor") if isinstance(detail.get("ingest_cursor"), dict) else {}
         ingest_intervals = ingest_cursor.get("intervals") if isinstance(ingest_cursor.get("intervals"), dict) else {}
         latest_5m = dict(ingest_intervals.get("5m") or {})
+        dispatch_cursor = detail.get("dispatch_cursor") if isinstance(detail.get("dispatch_cursor"), dict) else {}
+        dispatch_5m = dict((dispatch_cursor.get("intervals") or {}).get("5m") or {})
         symbols = sorted(
             set(_cursor_symbols(latest_5m))
             | set(_normalize_symbols(detail.get("compute_dispatch_target_symbols")))
         )
-        if symbols:
-            compute_payload["symbols"] = symbols
+        latest_dispatch_ms = int(detail.get("latest_ingested_bar_time_ms") or latest_5m.get("latest_bar_time_ms") or 0)
+        target_symbols = _normalize_symbols(detail.get("compute_dispatch_target_symbols"))
+        coverage_detail: dict[str, Any] = {}
+        compute_symbols = list(symbols)
 
-        retry_count = 0
-        compute_attempts = 0
-        for attempt_index in range(len(COMPUTE_DISPATCH_RETRY_BACKOFF_SECONDS) + 1):
-            compute_attempts = attempt_index + 1
-            response = requests.post(
-                f"{compute_base_url}/compute",
-                json=compute_payload,
-                timeout=60,
+        def _cursor_metadata(
+            *,
+            source: str,
+            coverage: dict[str, Any] | None = None,
+            skip_reason: str = "",
+            extra: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            metadata = {
+                "last_dispatched_at_ms": int(time.time() * 1000),
+                "dispatch_source": source,
+            }
+            if skip_reason:
+                metadata["dispatch_skip_reason"] = skip_reason
+            if symbols:
+                metadata["latest_compute_dispatch_symbols"] = symbols
+            if target_symbols:
+                metadata["latest_target_dispatch_symbols"] = target_symbols
+                metadata["latest_target_dispatch_bar_time_ms"] = int(detail.get("compute_dispatch_target_bar_time_ms") or 0)
+                metadata["latest_target_dispatch_date"] = str(detail.get("compute_dispatch_target_date") or "")
+            if coverage:
+                for key in (
+                    "indicator_coverage_status",
+                    "indicator_coverage_bar_time_ms",
+                    "indicator_coverage_symbol_count",
+                    "covered_indicator_symbols",
+                    "covered_indicator_symbol_count",
+                    "missing_indicator_symbols",
+                    "missing_indicator_symbol_count",
+                    "indicator_coverage_error",
+                ):
+                    if key in coverage:
+                        metadata[key] = coverage[key]
+            if extra:
+                metadata.update(extra)
+            return metadata
+
+        def _save_advanced_dispatch_cursor(
+            *,
+            source: str,
+            compute_result: dict[str, Any] | None = None,
+            coverage: dict[str, Any] | None = None,
+            skip_reason: str = "",
+        ) -> dict[str, Any]:
+            advanced_5m = dict(latest_5m)
+            advanced_5m["latest_bar_time_ms"] = latest_dispatch_ms
+            if latest_dispatch_ms == int(advanced_5m.get("latest_compute_ingest_bar_time_ms") or 0):
+                advanced_5m["latest_bar_us"] = str(
+                    advanced_5m.get("latest_compute_ingest_bar_us") or advanced_5m.get("latest_bar_us") or ""
+                )
+                advanced_5m["latest_bar_cn"] = str(
+                    advanced_5m.get("latest_compute_ingest_bar_cn") or advanced_5m.get("latest_bar_cn") or ""
+                )
+                advanced_5m["latest_batch_symbols"] = list(
+                    advanced_5m.get("latest_compute_ingest_symbols") or advanced_5m.get("latest_batch_symbols") or []
+                )
+                advanced_5m["latest_sources"] = list(
+                    advanced_5m.get("latest_compute_ingest_sources") or advanced_5m.get("latest_sources") or []
+                )
+            dispatch_intervals = {
+                **(dispatch_cursor.get("intervals") or {}),
+                "5m": {
+                    **advanced_5m,
+                    **_cursor_metadata(source=source, coverage=coverage, skip_reason=skip_reason),
+                },
+            }
+            payload = {"intervals": dispatch_intervals}
+            if compute_result is not None:
+                payload["latest_compute_result"] = compute_result
+            return save_dispatch_cursor(environment, payload)
+
+        def _save_partial_dispatch_cursor(
+            *,
+            compute_result: dict[str, Any],
+            coverage: dict[str, Any] | None,
+            extra: dict[str, Any],
+        ) -> dict[str, Any]:
+            dispatch_intervals = {
+                **(dispatch_cursor.get("intervals") or {}),
+                "5m": {
+                    **dispatch_5m,
+                    **_cursor_metadata(
+                        source="ibkr_scheduler_partial_repair",
+                        coverage=coverage,
+                        skip_reason="compute_busy_deferred",
+                        extra=extra,
+                    ),
+                },
+            }
+            return save_dispatch_cursor(
+                environment,
+                {
+                    "intervals": dispatch_intervals,
+                    "latest_compute_result": compute_result,
+                },
             )
-            payload = response.json() if response.content else {}
+
+        if symbols and latest_dispatch_ms > 0:
+            coverage_detail = _load_indicator_coverage(
+                pb,
+                environment=environment,
+                symbols=symbols,
+                bar_time_ms=latest_dispatch_ms,
+            )
+            if coverage_detail.get("indicator_coverage_status") == "covered":
+                saved_dispatch_cursor = _save_advanced_dispatch_cursor(
+                    source="ibkr_scheduler_indicator_coverage",
+                    coverage=coverage_detail,
+                    skip_reason="indicators_already_current",
+                )
+                return {
+                    "ok": True,
+                    "skipped": False,
+                    "reason": "indicators_already_current",
+                    "compute_skipped": True,
+                    **detail,
+                    **coverage_detail,
+                    "latest_dispatched_bar_time_ms": int(
+                        ((saved_dispatch_cursor.get("intervals") or {}).get("5m") or {}).get("latest_bar_time_ms") or 0
+                    ),
+                    "dispatch_cursor": saved_dispatch_cursor,
+                }
+            compute_symbols = _normalize_symbols(coverage_detail.get("missing_indicator_symbols")) or symbols
+            runtime_status_payload = _load_runtime_status_payload(compute_base_url, environment)
+            wait_for_inflight, inflight_detail = _should_wait_for_inflight(runtime_status_payload)
+            if compute_symbols and wait_for_inflight:
+                return {
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "close_compute_inflight",
+                    **detail,
+                    **coverage_detail,
+                    **inflight_detail,
+                }
+
+        def _post_compute_with_retries(payload: dict[str, Any]) -> tuple[bool, Any, dict[str, Any], int, int]:
+            retry_count = 0
+            compute_attempts = 0
+            response = None
+            response_payload: dict[str, Any] = {}
+            for attempt_index in range(len(COMPUTE_DISPATCH_RETRY_BACKOFF_SECONDS) + 1):
+                compute_attempts = attempt_index + 1
+                response = requests.post(
+                    f"{compute_base_url}/compute",
+                    json=payload,
+                    timeout=60,
+                )
+                response_payload = response.json() if response.content else {}
+                compute_errors = _payload_error_count(response_payload)
+                if response.ok and response_payload.get("ok") is not False and compute_errors <= 0:
+                    return True, response, response_payload, retry_count, compute_attempts
+                if (
+                    _is_retryable_compute_failure(response, response_payload)
+                    and attempt_index < len(COMPUTE_DISPATCH_RETRY_BACKOFF_SECONDS)
+                ):
+                    retry_count += 1
+                    time.sleep(COMPUTE_DISPATCH_RETRY_BACKOFF_SECONDS[attempt_index])
+                    continue
+                return False, response, response_payload, retry_count, compute_attempts
+            return False, response, response_payload, retry_count, compute_attempts  # pragma: no cover
+
+        chunks = _chunked_symbols(compute_symbols, _compute_dispatch_chunk_size()) if compute_symbols else [[]]
+        successful_payloads: list[dict[str, Any]] = []
+        deferred_busy_symbols: list[str] = []
+        compute_retry_count = 0
+        compute_attempts = 0
+        successful_symbols: list[str] = []
+        for chunk in chunks:
+            chunk_payload = dict(compute_payload_base)
+            if chunk:
+                chunk_payload["symbols"] = list(chunk)
+            ok, response, payload, retry_count, attempts = _post_compute_with_retries(chunk_payload)
+            compute_retry_count += retry_count
+            compute_attempts += attempts
+            if ok:
+                successful_payloads.append(payload)
+                successful_symbols.extend(chunk)
+                continue
             compute_errors = _payload_error_count(payload)
-            if response.ok and payload.get("ok") is not False and compute_errors <= 0:
-                break
-            if (
-                _is_retryable_compute_failure(response, payload)
-                and attempt_index < len(COMPUTE_DISPATCH_RETRY_BACKOFF_SECONDS)
-            ):
-                retry_count += 1
-                time.sleep(COMPUTE_DISPATCH_RETRY_BACKOFF_SECONDS[attempt_index])
+            if chunk and _is_retryable_compute_failure(response, payload):
+                deferred_busy_symbols.extend(chunk)
                 continue
             retry_detail = (
                 {
-                    "compute_dispatch_retry_count": retry_count,
+                    "compute_dispatch_retry_count": compute_retry_count,
                     "compute_dispatch_attempts": compute_attempts,
                 }
-                if retry_count
+                if compute_retry_count
                 else {}
             )
             return {
                 "ok": False,
-                "status_code": response.status_code,
+                "status_code": int(getattr(response, "status_code", 0) or 0),
                 "error": payload.get("error")
-                or ("compute_errors" if compute_errors > 0 else f"http_{response.status_code}"),
+                or ("compute_errors" if compute_errors > 0 else f"http_{int(getattr(response, 'status_code', 0) or 0)}"),
                 "compute_errors": compute_errors,
                 **retry_detail,
                 **detail,
+                **coverage_detail,
             }
 
-        latest_dispatch_ms = int(detail.get("latest_ingested_bar_time_ms") or latest_5m.get("latest_bar_time_ms") or 0)
-        latest_5m["latest_bar_time_ms"] = latest_dispatch_ms
-        if latest_dispatch_ms == int(latest_5m.get("latest_compute_ingest_bar_time_ms") or 0):
-            latest_5m["latest_bar_us"] = str(latest_5m.get("latest_compute_ingest_bar_us") or latest_5m.get("latest_bar_us") or "")
-            latest_5m["latest_bar_cn"] = str(latest_5m.get("latest_compute_ingest_bar_cn") or latest_5m.get("latest_bar_cn") or "")
-            latest_5m["latest_batch_symbols"] = list(latest_5m.get("latest_compute_ingest_symbols") or latest_5m.get("latest_batch_symbols") or [])
-            latest_5m["latest_sources"] = list(latest_5m.get("latest_compute_ingest_sources") or latest_5m.get("latest_sources") or [])
-        if symbols:
-            latest_5m["latest_compute_dispatch_symbols"] = symbols
-        target_symbols = _normalize_symbols(detail.get("compute_dispatch_target_symbols"))
-        if target_symbols:
-            latest_5m["latest_target_dispatch_symbols"] = target_symbols
-            latest_5m["latest_target_dispatch_bar_time_ms"] = int(detail.get("compute_dispatch_target_bar_time_ms") or 0)
-            latest_5m["latest_target_dispatch_date"] = str(detail.get("compute_dispatch_target_date") or "")
-        dispatch_intervals = {
-            **(detail.get("dispatch_cursor", {}).get("intervals") or {}),
-            "5m": {
-                **latest_5m,
-                "last_dispatched_at_ms": int(time.time() * 1000),
-                "dispatch_source": "ibkr_scheduler",
-            },
-        }
-        saved_dispatch_cursor = save_dispatch_cursor(
-            environment,
-            {
-                "intervals": dispatch_intervals,
-                "latest_compute_result": payload,
-            },
+        if not successful_payloads and deferred_busy_symbols:
+            aggregate_payload = {
+                "ok": True,
+                "deferred_compute_busy": True,
+                "deferred_busy_symbols": _normalize_symbols(deferred_busy_symbols),
+                "deferred_busy_symbol_count": len(_normalize_symbols(deferred_busy_symbols)),
+                "chunks": len(chunks),
+                "successful_chunks": 0,
+            }
+        elif len(successful_payloads) == 1 and not deferred_busy_symbols:
+            aggregate_payload = successful_payloads[0]
+        else:
+            aggregate_payload = {
+                "ok": True,
+                "chunks": len(chunks),
+                "successful_chunks": len(successful_payloads),
+                "processed": sum(_coerce_int(payload.get("processed")) for payload in successful_payloads),
+                "errors": sum(_payload_error_count(payload) for payload in successful_payloads),
+            }
+            if deferred_busy_symbols:
+                aggregate_payload.update(
+                    {
+                        "deferred_compute_busy": True,
+                        "deferred_busy_symbols": _normalize_symbols(deferred_busy_symbols),
+                        "deferred_busy_symbol_count": len(_normalize_symbols(deferred_busy_symbols)),
+                    }
+                )
+
+        if deferred_busy_symbols:
+            deferred_symbols = _normalize_symbols(deferred_busy_symbols)
+            partial_cursor = _save_partial_dispatch_cursor(
+                compute_result=aggregate_payload,
+                coverage=coverage_detail,
+                extra={
+                    "latest_partial_dispatched_bar_time_ms": latest_dispatch_ms,
+                    "latest_partial_dispatch_symbols": _normalize_symbols(successful_symbols),
+                    "deferred_compute_busy": True,
+                    "deferred_busy_symbols": deferred_symbols,
+                    "deferred_busy_symbol_count": len(deferred_symbols),
+                },
+            )
+            return {
+                "ok": True,
+                "skipped": False,
+                "reason": "compute_busy_deferred",
+                "compute": aggregate_payload,
+                "deferred_compute_busy": True,
+                "deferred_busy_symbols": deferred_symbols,
+                "deferred_busy_symbol_count": len(deferred_symbols),
+                **(
+                    {
+                        "compute_dispatch_retry_count": compute_retry_count,
+                        "compute_dispatch_attempts": compute_attempts,
+                    }
+                    if compute_retry_count
+                    else {}
+                ),
+                **detail,
+                **coverage_detail,
+                "latest_dispatched_bar_time_ms": int((dispatch_5m or {}).get("latest_bar_time_ms") or 0),
+                "latest_partial_dispatched_bar_time_ms": latest_dispatch_ms,
+                "dispatch_cursor": partial_cursor,
+            }
+
+        saved_dispatch_cursor = _save_advanced_dispatch_cursor(
+            source="ibkr_scheduler",
+            compute_result=aggregate_payload,
+            coverage=coverage_detail,
         )
         return {
             "ok": True,
             "skipped": False,
-            "compute": payload,
+            "compute": aggregate_payload,
             **(
                 {
-                    "compute_dispatch_retry_count": retry_count,
+                    "compute_dispatch_retry_count": compute_retry_count,
                     "compute_dispatch_attempts": compute_attempts,
                 }
-                if retry_count
+                if compute_retry_count
                 else {}
             ),
             **{
                 **detail,
-                "latest_dispatched_bar_time_ms": int((dispatch_intervals.get("5m") or {}).get("latest_bar_time_ms") or 0),
+                **coverage_detail,
+                "latest_dispatched_bar_time_ms": int(
+                    ((saved_dispatch_cursor.get("intervals") or {}).get("5m") or {}).get("latest_bar_time_ms") or 0
+                ),
                 "dispatch_cursor": saved_dispatch_cursor,
             },
         }

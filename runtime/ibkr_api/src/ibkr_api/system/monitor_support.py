@@ -242,6 +242,12 @@ def derive_monitor_service_map(
                 return True
         return False
 
+    def _scheduler_close_compute_deferred() -> bool:
+        reason = str(scheduler_summary.get("dispatch_lag_reason") or "").strip().lower()
+        in_progress = bool(scheduler_summary.get("compute_in_progress")) or reason == "close_compute_inflight"
+        stalled = bool(scheduler_summary.get("compute_in_progress_stalled") or scheduler_summary.get("inflight_stalled"))
+        return bool(in_progress and not stalled)
+
     observed_at = utc_timestamp()
     backtest_probe = backtest_health if isinstance(backtest_health, dict) else {}
     if not backtest_probe:
@@ -302,12 +308,14 @@ def derive_monitor_service_map(
     gateway_status = "running" if bool(gateway.get("running") or gateway.get("reachable")) else "offline"
     scheduler_status = str(scheduler_summary.get("status") or "").strip().lower() or "offline"
     compute_preload_active = _compute_startup_preload_active() or _scheduler_compute_preload_deferred()
+    close_compute_deferred = _scheduler_close_compute_deferred()
     scheduler_lag_compute_relevant = bool(scheduler_summary.get("dispatch_lag_compute_relevant", True))
     if (
         scheduler_status == "running"
         and scheduler_lag_compute_relevant
         and float(scheduler_summary.get("dispatch_lag_min") or 0) > 10
         and not compute_preload_active
+        and not close_compute_deferred
     ):
         scheduler_status = "degraded"
 
@@ -342,6 +350,21 @@ def derive_monitor_service_map(
                 ),
                 "non-compute ingest" if scheduler_summary.get("dispatch_lag_reason") == "non_compute_ingest_source" else "",
                 "deferred by compute preload" if compute_preload_active else "",
+                (
+                    f"close compute in progress {float(scheduler_summary.get('inflight_age_s') or 0):.1f}s"
+                    if close_compute_deferred
+                    else ""
+                ),
+                (
+                    f"missing indicators {int(scheduler_summary.get('missing_indicator_symbol_count') or 0)}"
+                    if close_compute_deferred and scheduler_summary.get("missing_indicator_symbol_count")
+                    else ""
+                ),
+                (
+                    f"busy deferred {int(scheduler_summary.get('deferred_busy_symbol_count') or 0)}"
+                    if scheduler_summary.get("deferred_compute_busy")
+                    else ""
+                ),
                 f"jobs {int(scheduler_summary.get('job_count') or 0)}",
             ),
         },

@@ -1442,8 +1442,9 @@
             if (isOrdersDatasetPartial) notes.push('dataset=首屏快照');
             if (brokerLiveSnapshot) notes.push(`broker_live=${getBrokerLiveCount()}/${getBrokerCoverageState()}`);
             if (brokerLiveError) notes.push(`broker_live_error=${brokerLiveError}`);
+            const lifecycleFilterUrl = buildFilterLifecycleFlowUrl();
             document.getElementById('filterNote').innerHTML = notes.length
-                ? `<div class="filter-note">当前过滤: ${escapeHtml(notes.join(' · '))}</div>`
+                ? `<div class="filter-note"><span>当前过滤: ${escapeHtml(notes.join(' · '))}</span>${lifecycleFilterUrl ? `<a class="filter-note-link" href="${lifecycleFilterUrl}">🧭 生命周期</a>` : ''}</div>`
                 : '';
         }
 
@@ -1744,6 +1745,7 @@
             const actionTargetId = order?.entry_order_unique_id || order?.unique_id || order?.trade_group_id;
             const cancelTargetOrderId = order?.broker_order_id || order?.order_id || '';
             const activeProtectionCount = countEntryProtectionOrders(group, order, 'active');
+            const lifecycleFlowUrl = buildOrderLifecycleFlowUrl(order, group);
             const canCancel = order?.role === 'entry'
                 && (order?.status === 'Init' || order?.status === 'Submitted')
                 && actualFilledQty(order) === 0
@@ -1751,6 +1753,7 @@
                 && !!cancelTargetOrderId;
             const canClose = order?.role === 'entry' && order?.status === 'Filled' && !hasFilledExitForEntry(group, order);
             const buttons = [
+                lifecycleFlowUrl ? `<a class="action-btn btn-secondary lifecycle-action" href="${lifecycleFlowUrl}">🧭 生命周期</a>` : '',
                 order?.trade_group_id ? `<button class="action-btn btn-secondary" onclick="viewTradeGroup('${encodeURIComponent(order.trade_group_id)}', '${encodeURIComponent(order.signal_id || group.signal_id || '')}')">📜 交易组明细</button>` : '',
                 !isOrdersDatasetPartial && !isReadOnlySnapshot && canCancel ? `<button class="action-btn btn-cancel" onclick="cancelOrder('${encodeURIComponent(actionTargetId || cancelTargetOrderId)}', '${encodeURIComponent(cancelTargetOrderId)}', '${escapeHtml(group.symbol)}')">✕ 取消本 Entry</button>` : '',
                 !isOrdersDatasetPartial && !isReadOnlySnapshot && canClose ? `<button class="action-btn btn-close" onclick="closePosition('${encodeURIComponent(actionTargetId)}', '${escapeHtml(group.symbol)}')">🔒 平仓本 Entry</button>` : '',
@@ -1787,6 +1790,7 @@
             const isReadOnlySnapshot = currentOrdersSource === 'ibkr_order_details';
             const tpOrder = group.protectionOrders.find((order) => order.role === 'take_profit' || order.role === 'repair_tp');
             const slOrder = group.protectionOrders.find((order) => order.role === 'stop_loss' || order.role === 'repair_sl');
+            const lifecycleFlowUrl = buildOrderLifecycleFlowUrl(null, group);
             const tpPrice = resolveTakeProfitPrice(primary, tpOrder);
             const slPrice = resolveStopLossPrice(primary, slOrder);
             const entryQuantity = (group.entryOrders || []).reduce((sum, order) => sum + (Number(order.quantity || 0) || 0), 0);
@@ -1820,6 +1824,7 @@
                         <div class="header-side">
                             <div class="group-subtitle">${escapeHtml(formatTimePair(group.latestEvent || primary || {}))}</div>
                             ${renderCountdown(primary)}
+                            ${lifecycleFlowUrl ? `<a class="action-btn btn-secondary lifecycle-header-link" href="${lifecycleFlowUrl}">🧭 生命周期</a>` : ''}
                         </div>
                     </div>
 
@@ -1855,6 +1860,7 @@
                         <div class="action-row">
                             ${group.signal_id ? `<button class="action-btn btn-secondary" onclick="viewSignal('${encodeURIComponent(group.signal_id)}')">📡 信号</button>` : ''}
                             ${group.symbol ? `<button class="action-btn btn-secondary" onclick="openTradeGroupChart('${encodeURIComponent(group.group_id)}')">📉 图表页</button>` : ''}
+                            ${lifecycleFlowUrl ? `<a class="action-btn btn-secondary lifecycle-action" href="${lifecycleFlowUrl}">🧭 生命周期</a>` : ''}
                             ${renderSignalOrderDetailsButton(group)}
                         </div>
                     </div>
@@ -2418,6 +2424,66 @@
                 ),
                 bar_time_ms: Number(anchorOrder?.bar_time_ms || group.latestEvent?.bar_time_ms || anchorExtra.bar_time_ms || latestExtra.bar_time_ms || 0) || ''
             };
+        }
+
+        function deriveLifecycleDateFromOrder(order, fallback = '') {
+            const candidates = [order?.date, order?.us_time, order?.order_time, order?.fill_time, order?.created, order?.updated];
+            for (const value of candidates) {
+                const match = String(value || '').trim().match(/^(\d{4}-\d{2}-\d{2})/);
+                if (match) return match[1];
+            }
+            const barTimeMs = Number(order?.bar_time_ms || order?.extra?.bar_time_ms || 0);
+            if (Number.isFinite(barTimeMs) && barTimeMs > 0) return new Date(barTimeMs).toISOString().slice(0, 10);
+            return fallback || currentDate;
+        }
+
+        function buildOrderLifecycleFlowUrl(order = null, group = null) {
+            const hasOrderContext = Boolean(order);
+            const anchorOrder = order || group?.primaryOrder || group?.latestEvent || group?.orders?.[0] || null;
+            const anchorExtra = anchorOrder?.extra || {};
+            const latestExtra = group?.latestEvent?.extra || {};
+            const params = {
+                date: deriveLifecycleDateFromOrder(anchorOrder || group?.latestEvent, currentDate),
+                trace: 1
+            };
+            const symbol = String(group?.symbol || anchorOrder?.symbol || anchorExtra.symbol || '').trim().toUpperCase();
+            const interval = normalizeChartInterval(
+                anchorOrder?.interval
+                || anchorExtra.interval
+                || anchorExtra.chart_tf
+                || group?.latestEvent?.interval
+                || latestExtra.interval
+                || latestExtra.chart_tf,
+                ''
+            );
+            const barTimeMs = Number(anchorOrder?.bar_time_ms || group?.latestEvent?.bar_time_ms || anchorExtra.bar_time_ms || latestExtra.bar_time_ms || 0) || 0;
+            const signalId = String(anchorOrder?.signal_id || group?.signal_id || anchorExtra.signal_id || '').trim();
+            const tradeGroupIds = Array.isArray(group?.tradeGroupIds) ? group.tradeGroupIds.filter(Boolean) : [];
+            const tradeGroupId = String(
+                hasOrderContext || !signalId || tradeGroupIds.length <= 1
+                    ? (anchorOrder?.trade_group_id || group?.trade_group_id || group?.group_id || anchorExtra.trade_group_id || '')
+                    : ''
+            ).trim();
+            const orderId = hasOrderContext
+                ? String(anchorOrder?.order_id || anchorOrder?.broker_order_id || anchorExtra.order_id || anchorExtra.broker_order_id || '').trim()
+                : '';
+
+            if (symbol) params.symbol = symbol;
+            if (interval) params.interval = interval;
+            if (barTimeMs > 0) params.bar_time_ms = barTimeMs;
+            if (signalId) params.signal_id = signalId;
+            if (tradeGroupId) params.trade_group_id = tradeGroupId;
+            if (orderId) params.order_id = orderId;
+            if (!symbol && !signalId && !tradeGroupId && !orderId) return '';
+            return buildPageUrl('/ibkr_lifecycle_flow.html', params, { environment: currentEnvironment });
+        }
+
+        function buildFilterLifecycleFlowUrl() {
+            if (!filterSignalId && !filterTradeGroupId) return '';
+            const params = { date: currentDate, trace: 1 };
+            if (filterSignalId) params.signal_id = filterSignalId;
+            if (filterTradeGroupId) params.trade_group_id = filterTradeGroupId;
+            return buildPageUrl('/ibkr_lifecycle_flow.html', params, { environment: currentEnvironment });
         }
 
         function openTradeGroupChart(groupId) {

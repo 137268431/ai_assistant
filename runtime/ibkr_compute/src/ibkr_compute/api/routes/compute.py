@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from ibkr_compute.api.compute.pipeline_views import build_compute_locks_response
 from ibkr_compute.api.route_runtime import get_app_module
 
 
 def register_compute_routes(app):
     app.add_url_rule("/compute", endpoint="compute", view_func=lambda: get_app_module().compute(), methods=["POST"])
+    app.add_url_rule("/compute/locks", endpoint="compute_locks", view_func=build_compute_locks_response, methods=["GET"])
     app.add_url_rule(
         "/compute/prime",
         endpoint="compute_prime",

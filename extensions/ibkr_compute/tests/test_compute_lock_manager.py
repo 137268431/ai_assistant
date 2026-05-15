@@ -127,6 +127,29 @@ class ComputeLockManagerTest(unittest.TestCase):
         self.assertIsNotNone(targeted)
         targeted.release()
 
+    def test_snapshot_describes_active_slot_lease_owner(self):
+        manager = ComputeLockManager()
+        release, thread = _hold_lock_in_thread(manager, _targeted_request("AAPL"))
+        try:
+            snapshot = manager.snapshot()
+            self.assertFalse(snapshot["active_global"])
+            self.assertEqual(snapshot["active_slot_leases"], 1)
+            self.assertEqual(snapshot["active_lease_count"], 1)
+            self.assertFalse(snapshot["state_inconsistent"])
+            lease = snapshot["leases"][0]
+            self.assertEqual(lease["scope"], "slots")
+            self.assertEqual(lease["reason"], "test")
+            self.assertEqual(lease["slot_count"], 1)
+            self.assertEqual(lease["slots"][0]["symbol"], "AAPL")
+            self.assertGreater(lease["lease_id"], 0)
+            self.assertGreaterEqual(lease["age_s"], 0.0)
+            self.assertTrue(lease["thread_name"])
+        finally:
+            release.set()
+            thread.join(1.0)
+
+        self.assertEqual(manager.snapshot()["active_lease_count"], 0)
+
     def test_plan_request_locks_symbols_across_compute_and_rollup_intervals(self):
         request = build_compute_plan_lock_request(
             {
@@ -241,9 +264,29 @@ class ComputePipelineManagedLockTest(unittest.TestCase):
             self.assertEqual(payload["error"], "compute_busy")
             self.assertEqual(payload["lock_scope"], "slots")
             self.assertEqual(payload["lock_slot_count"], 1)
+            self.assertEqual(payload["blocked_by_count"], 1)
+            self.assertEqual(payload["conflict_slot_count"], 1)
+            self.assertEqual(payload["conflict_slots"][0]["symbol"], "AAPL")
+            self.assertEqual(payload["blocked_by"][0]["reason"], "test")
         finally:
             release.set()
             thread.join(1.0)
+
+    def test_compute_locks_response_returns_snapshot(self):
+        manager = ComputeLockManager()
+        fake_app = SimpleNamespace(compute_lock_manager=manager)
+        lease = manager.acquire(_targeted_request("AAPL"), timeout=0.01)
+        self.assertIsNotNone(lease)
+        try:
+            with mock.patch.object(pipeline_views, "_api_app", return_value=fake_app), \
+                    mock.patch.object(pipeline_views, "jsonify", side_effect=lambda payload: _FakeResponse(payload)):
+                response = pipeline_views.build_compute_locks_response()
+            payload = response.get_json()
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["active_lease_count"], 1)
+            self.assertEqual(payload["leases"][0]["slots"][0]["symbol"], "AAPL")
+        finally:
+            lease.release()
 
 
 def _fake_prime_app(manager: ComputeLockManager):

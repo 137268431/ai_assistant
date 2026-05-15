@@ -384,7 +384,10 @@ def build_compute_prime_response(payload=None):
     )
     compute_lock = _acquire_compute_lock_request(api_app, lock_request)
     if compute_lock is None:
-        payload = _compute_lock_busy_payload(lock_request)
+        payload = _compute_lock_busy_payload(
+            lock_request,
+            lock_manager=getattr(api_app, "compute_lock_manager", None),
+        )
         payload.update(
             {
                 "lock_timeout_s": COMPUTE_LOCK_TIMEOUT_SECONDS,

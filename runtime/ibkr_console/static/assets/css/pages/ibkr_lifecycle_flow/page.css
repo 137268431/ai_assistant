@@ -538,6 +538,57 @@ body {
 .price-panel.is-unverified { border-color: rgba(252, 129, 129, 0.24); background: rgba(252, 129, 129, 0.06); }
 .price-panel.is-reference { border-color: rgba(94, 234, 212, 0.2); background: rgba(94, 234, 212, 0.045); }
 
+.change-panel {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border-radius: var(--radius-md, 12px);
+  border: 1px solid rgba(94, 234, 212, 0.18);
+  background: rgba(94, 234, 212, 0.045);
+}
+
+.change-title {
+  color: var(--flow-text);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.change-list {
+  display: grid;
+  gap: 7px;
+}
+
+.change-row {
+  display: grid;
+  grid-template-columns: minmax(54px, 0.5fr) minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  padding: 8px 9px;
+  border-radius: var(--radius-md, 12px);
+  background: rgba(4, 13, 22, 0.38);
+}
+
+.change-label,
+.change-before,
+.change-after,
+.change-arrow {
+  font: 700 11px/1.25 var(--font-mono, 'JetBrains Mono', monospace);
+  overflow-wrap: anywhere;
+}
+
+.change-label,
+.change-arrow {
+  color: var(--flow-muted);
+}
+
+.change-before {
+  color: var(--flow-warn);
+}
+
+.change-after {
+  color: var(--flow-green);
+}
+
 .price-title {
   display: flex;
   align-items: center;

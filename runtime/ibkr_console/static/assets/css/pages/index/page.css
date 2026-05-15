@@ -373,38 +373,49 @@
         .home-quick-grid {
             display: grid;
             grid-template-columns: repeat(2, minmax(0, 1fr));
+            grid-auto-rows: minmax(112px, auto);
             gap: 10px;
             align-content: start;
         }
 
         .home-quick-link {
+            position: relative;
             display: grid;
-            gap: 10px;
+            grid-template-rows: auto auto 1fr;
+            gap: 9px;
             min-height: 112px;
             padding: 16px;
             border-radius: 18px;
-            border: 1px solid rgba(255, 255, 255, 0.06);
-            background: linear-gradient(180deg, rgba(14, 30, 41, 0.94), rgba(8, 22, 31, 0.9));
+            border: 1px solid rgba(147, 197, 253, 0.12);
+            background:
+                radial-gradient(circle at top right, rgba(79, 209, 197, 0.08), transparent 34%),
+                linear-gradient(180deg, rgba(14, 30, 41, 0.95), rgba(8, 22, 31, 0.91));
             color: var(--text);
             text-decoration: none;
-            transition: transform 0.2s, border-color 0.2s;
+            overflow: hidden;
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+            transition: transform 0.2s, border-color 0.2s, background 0.2s, box-shadow 0.2s;
+        }
+
+        .home-quick-link::before {
+            content: "";
+            position: absolute;
+            inset: 0 0 auto;
+            height: 2px;
+            background: linear-gradient(90deg, rgba(79, 209, 197, 0.72), rgba(99, 179, 237, 0.12));
+            opacity: 0.7;
         }
 
         .home-quick-link:hover,
         .home-quick-link:active {
             transform: translateY(-1px);
             border-color: rgba(99, 179, 237, 0.28);
-        }
-
-        .home-quick-link-lifecycle {
-            border-color: rgba(94, 234, 212, 0.20);
             background:
-                radial-gradient(circle at top right, rgba(94, 234, 212, 0.14), transparent 36%),
-                linear-gradient(180deg, rgba(13, 39, 43, 0.96), rgba(8, 22, 31, 0.92));
-        }
-
-        .home-quick-link-lifecycle .home-quick-arrow {
-            color: var(--accent);
+                radial-gradient(circle at top right, rgba(79, 209, 197, 0.12), transparent 36%),
+                linear-gradient(180deg, rgba(16, 36, 48, 0.96), rgba(8, 22, 31, 0.93));
+            box-shadow:
+                inset 0 1px 0 rgba(255, 255, 255, 0.04),
+                0 12px 24px rgba(0, 0, 0, 0.16);
         }
 
         .home-quick-link-top {
@@ -412,28 +423,62 @@
             justify-content: space-between;
             align-items: flex-start;
             gap: 10px;
+            position: relative;
+            z-index: 1;
         }
 
         .home-quick-icon {
-            font-size: 20px;
+            display: inline-grid;
+            place-items: center;
+            width: 34px;
+            height: 34px;
+            border-radius: 12px;
+            border: 1px solid rgba(147, 197, 253, 0.12);
+            background: rgba(255, 255, 255, 0.045);
+            font-size: 18px;
+            line-height: 1;
         }
 
         .home-quick-arrow {
+            display: inline-flex;
+            align-items: center;
+            min-height: 24px;
+            padding: 3px 8px;
+            border-radius: 999px;
+            border: 1px solid rgba(147, 197, 253, 0.12);
+            background: rgba(255, 255, 255, 0.035);
             color: var(--muted);
             font-family: 'JetBrains Mono', monospace;
-            font-size: 12px;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 1px;
+        }
+
+        .home-quick-link:hover .home-quick-arrow,
+        .home-quick-link:active .home-quick-arrow {
+            color: var(--accent);
+            border-color: rgba(79, 209, 197, 0.24);
+            background: rgba(79, 209, 197, 0.08);
         }
 
         .home-quick-title {
+            position: relative;
+            z-index: 1;
             font-size: 15px;
             font-weight: 700;
             color: var(--text);
         }
 
         .home-quick-copy {
+            position: relative;
+            z-index: 1;
             color: var(--muted);
             font-size: 12px;
             line-height: 1.5;
+            display: -webkit-box;
+            -webkit-box-orient: vertical;
+            -webkit-line-clamp: 2;
+            overflow: hidden;
         }
 
         .home-tool-strip {

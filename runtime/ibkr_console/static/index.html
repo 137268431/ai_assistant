@@ -180,13 +180,22 @@
                             <div class="home-quick-copy">跟踪入场、止盈、止损和当前状态。</div>
                         </a>
 
-                        <a id="actionLifecycleLink" href="/ibkr_lifecycle_flow.html" class="home-quick-link home-quick-link-lifecycle">
+                        <a id="actionLifecycleLink" href="/ibkr_lifecycle_flow.html" class="home-quick-link">
                             <div class="home-quick-link-top">
                                 <div class="home-quick-icon">🧬</div>
                                 <div class="home-quick-arrow">OPEN</div>
                             </div>
                             <div class="home-quick-title">生命周期流程图</div>
                             <div class="home-quick-copy">从选股、信号、成交到止盈止损，一张图看当前交易走到哪一步。</div>
+                        </a>
+
+                        <a id="actionChartLink" href="/ibkr_chart.html" class="home-quick-link">
+                            <div class="home-quick-link-top">
+                                <div class="home-quick-icon">📈</div>
+                                <div class="home-quick-arrow">OPEN</div>
+                            </div>
+                            <div class="home-quick-title">图表工作台</div>
+                            <div class="home-quick-copy">查看 K 线、指标轨迹和标的信号上下文。</div>
                         </a>
 
                         <a id="actionAccountLink" href="/ibkr_account.html" class="home-quick-link">
@@ -365,6 +374,7 @@
                 actionSignalsLink: buildPageUrl('/ibkr_signals.html'),
                 actionOrdersLink: buildPageUrl('/orders.html'),
                 actionLifecycleLink: buildPageUrl('/ibkr_lifecycle_flow.html', { date: getUsDate() }),
+                actionChartLink: buildPageUrl('/ibkr_chart.html'),
                 actionAccountLink: buildPageUrl('/ibkr_account.html'),
                 actionSystemLink: buildPageUrl('/ibkr_system.html'),
                 actionIndicatorsLink: buildPageUrl('/ibkr_indicators.html'),
@@ -649,7 +659,7 @@
             const toolCount = document.querySelectorAll('#homeQuickLinks .home-tool-chip').length;
             const metaEl = document.getElementById('quickLinksMeta');
             if (!metaEl) return;
-            metaEl.textContent = `${primaryCount} 个主入口 · ${toolCount} 个补充工具 · 覆盖筛选 / 执行 / 账户 / 系统`;
+            metaEl.textContent = `${primaryCount} 个主入口 · ${toolCount} 个补充工具 · 覆盖筛选 / 研究 / 执行 / 账户 / 系统`;
         }
 
         function buildTargetSignalUrl(symbol, marketDate) {

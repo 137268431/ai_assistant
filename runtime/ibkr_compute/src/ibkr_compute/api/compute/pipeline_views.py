@@ -59,7 +59,7 @@ def _acquire_compute_lock_request(api_app, lock_request: ComputeLockRequest | No
     )
 
 
-def _compute_lock_busy_payload(lock_request: ComputeLockRequest | None = None) -> dict:
+def _compute_lock_busy_payload(lock_request: ComputeLockRequest | None = None, *, lock_manager=None) -> dict:
     payload = {
         "ok": False,
         "error": "compute_busy",
@@ -68,7 +68,22 @@ def _compute_lock_busy_payload(lock_request: ComputeLockRequest | None = None) -
     }
     if lock_request is not None:
         payload.update(lock_request.describe())
+    if lock_manager is None:
+        try:
+            lock_manager = getattr(_api_app(), "compute_lock_manager", None)
+        except Exception:
+            lock_manager = None
+    if lock_manager is not None and hasattr(lock_manager, "describe_blockers"):
+        payload.update(lock_manager.describe_blockers(lock_request))
     return payload
+
+
+def build_compute_locks_response():
+    api_app = _api_app()
+    lock_manager = getattr(api_app, "compute_lock_manager", None)
+    if lock_manager is not None and hasattr(lock_manager, "snapshot"):
+        return jsonify({"ok": True, **lock_manager.snapshot()})
+    return jsonify({"ok": True, "available": False, "reason": "compute_lock_manager_unavailable"})
 
 
 def _compute_preflight_response(plan: dict):
@@ -127,7 +142,12 @@ def build_compute_response(payload=None):
         compute_lock = _acquire_compute_lock(api_app)
 
     if compute_lock is None:
-        return jsonify(_compute_lock_busy_payload(lock_request)), 503
+        return jsonify(
+            _compute_lock_busy_payload(
+                lock_request,
+                lock_manager=getattr(api_app, "compute_lock_manager", None),
+            )
+        ), 503
 
     with compute_lock:
         if plan is None:

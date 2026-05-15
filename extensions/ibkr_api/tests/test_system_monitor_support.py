@@ -197,6 +197,49 @@ class SystemMonitorSupportTest(unittest.TestCase):
         self.assertEqual(scheduler["status"], "running")
         self.assertIn("deferred by compute preload", scheduler["detail"])
 
+    def test_scheduler_lag_is_not_degraded_while_close_compute_inflight(self):
+        service_monitor = derive_monitor_service_map(
+            "live",
+            {
+                "status": "ok",
+                "runtime": {
+                    "status": "running",
+                    "runtime_phase": "running",
+                    "gateway": {"running": True, "reachable": True},
+                    "session": {"authenticated": True},
+                    "websocket": {"connected": True, "ready": True},
+                },
+                "compute": {
+                    "status": "running",
+                    "total_engines": 10,
+                    "ready_engines": 10,
+                    "compute_startup_preload": {"status": "completed", "running": False},
+                },
+                "service_topology": {"services": {}},
+            },
+            {
+                "status": "running",
+                "dispatch_lag_min": 15.0,
+                "latest_ingested_bar_time_ms": 1713797100000,
+                "loop_interval_seconds": 30,
+                "job_count": 12,
+                "dispatch_lag_reason": "close_compute_inflight",
+                "compute_in_progress": True,
+                "compute_in_progress_stalled": False,
+                "inflight_age_s": 45.0,
+                "inflight_timeout_threshold_s": 900.0,
+                "missing_indicator_symbol_count": 2,
+            },
+            console_probe={"ok": True, "status_code": 200, "target_url": "https://quant.lzw-glory.top/index.html"},
+            pb_health={"ok": True, "status_code": 200},
+            build_service_topology=lambda: {"services": {}},
+        )
+
+        scheduler = service_monitor["services"]["ibkr-scheduler"]
+        self.assertEqual(scheduler["status"], "running")
+        self.assertIn("close compute in progress", scheduler["detail"])
+        self.assertIn("missing indicators 2", scheduler["detail"])
+
     def test_monitor_marks_compute_starting_when_root_preload_active(self):
         service_monitor = derive_monitor_service_map(
             "live",
@@ -369,6 +412,42 @@ class SystemMonitorSupportTest(unittest.TestCase):
         self.assertEqual(summary["dispatch_lag_min"], 10.0)
         self.assertTrue(summary["dispatch_lag_compute_relevant"])
         self.assertEqual(summary["latest_compute_ingest_sources"], ["ibkr_history_close"])
+
+    def test_scheduler_summary_exposes_close_compute_inflight_result(self):
+        summary = build_scheduler_summary(
+            "live",
+            {
+                "ok": True,
+                "status": "running",
+                "environment": "live",
+                "loop_interval_seconds": 30,
+                "ingest_cursor": {"intervals": {"5m": {"latest_bar_time_ms": 1713797400000}}},
+                "compute_dispatch_cursor": {"intervals": {"5m": {"latest_bar_time_ms": 1713796800000}}},
+                "jobs": {
+                    "ibkr_compute_runtime": {
+                        "status": "idle",
+                        "last_result": {
+                            "ok": True,
+                            "skipped": True,
+                            "reason": "close_compute_inflight",
+                            "indicator_coverage_status": "missing",
+                            "missing_indicator_symbols": ["AAPL", "MSFT"],
+                            "missing_indicator_symbol_count": 2,
+                            "compute_in_progress": True,
+                            "inflight_age_s": 30,
+                            "inflight_timeout_threshold_s": 900,
+                            "realtime_compute": {"inflight": True, "stalled": False},
+                        },
+                    }
+                },
+            },
+        )
+
+        self.assertEqual(summary["dispatch_lag_min"], 10.0)
+        self.assertEqual(summary["dispatch_lag_reason"], "close_compute_inflight")
+        self.assertTrue(summary["compute_in_progress"])
+        self.assertFalse(summary["compute_in_progress_stalled"])
+        self.assertEqual(summary["missing_indicator_symbols"], ["AAPL", "MSFT"])
 
     def test_scheduler_exact_lag_threshold_stays_running(self):
         service_monitor = derive_monitor_service_map(

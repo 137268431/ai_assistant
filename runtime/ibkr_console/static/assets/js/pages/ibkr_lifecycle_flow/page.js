@@ -172,6 +172,7 @@
     trade_closed: '交易平仓',
     close_submitted: '平仓提交',
     order_detail_snapshot: '订单明细快照',
+    lifecycle_endpoint: '生命周期收口',
     protection_qty_mismatch: '保护单数量不匹配',
     fill_missing_actual: '缺少实际成交',
     system_interrupt: '系统事件',
@@ -384,7 +385,8 @@
   function normalizeStatus(value) {
     const text = String(value || '').trim().toLowerCase();
     if (!text) return 'unknown';
-    if (['ok', 'success', 'completed', 'complete', 'filled', 'executed', 'done', 'active', 'open'].includes(text)) return 'ok';
+    if (['ok', 'success', 'completed', 'complete', 'filled', 'executed', 'done'].includes(text)) return 'ok';
+    if (['active', 'open', 'working'].includes(text)) return 'active';
     if (['pending', 'new', 'created', 'queued', 'awaiting', 'waiting', 'partial', 'partially_filled'].includes(text)) return 'pending';
     if (['warn', 'warning', 'stale', 'simulated', 'estimated', 'manual'].includes(text)) return 'warning';
     if (['error', 'failed', 'rejected', 'cancelled', 'canceled', 'blocked', 'expired'].includes(text)) return 'error';
@@ -486,6 +488,122 @@
     const recordObj = asObject(record.record);
     if (Object.prototype.hasOwnProperty.call(recordObj, key)) return recordObj[key];
     return undefined;
+  }
+
+  function isPresent(value) {
+    return value !== undefined && value !== null && value !== '';
+  }
+
+  function formatChangeValue(value) {
+    if (!isPresent(value)) return '--';
+    if (typeof value === 'boolean') return value ? 'true' : 'false';
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && String(value).trim() !== '') {
+      return numeric.toLocaleString('en-US', { maximumFractionDigits: 4 });
+    }
+    return String(value);
+  }
+
+  function firstValueFromRoots(roots, keys) {
+    for (const root of roots) {
+      if (!root || typeof root !== 'object') continue;
+      for (const key of keys) {
+        if (Object.prototype.hasOwnProperty.call(root, key) && isPresent(root[key])) return root[key];
+      }
+    }
+    return '';
+  }
+
+  function normalizeChangeItem(item) {
+    const data = asObject(item);
+    const field = normalizeText(firstNonEmpty(data.field, data.key, data.name));
+    const label = normalizeText(firstNonEmpty(data.label, data.title, field));
+    const before = firstNonEmpty(data.before, data.old, data.previous, data.from);
+    const after = firstNonEmpty(data.after, data.new, data.current, data.to);
+    if (!label || (!isPresent(before) && !isPresent(after))) return null;
+    if (String(before ?? '') === String(after ?? '')) return null;
+    return {
+      field,
+      label,
+      before,
+      after,
+      beforeText: normalizeText(firstNonEmpty(data.before_text, data.beforeText), formatChangeValue(before)),
+      afterText: normalizeText(firstNonEmpty(data.after_text, data.afterText), formatChangeValue(after))
+    };
+  }
+
+  function fallbackChangeItems(record) {
+    const data = asObject(record?.data);
+    const roots = [
+      record,
+      data,
+      asObject(record?.details),
+      asObject(data.details),
+      asObject(record?.extra),
+      asObject(data.extra)
+    ];
+    const specs = [
+      {
+        field: 'stop_loss',
+        label: 'SL',
+        before: ['old_sl', 'old_stop_loss', 'previous_sl', 'previous_stop_loss', 'before_sl'],
+        after: ['new_sl', 'stop_loss', 'sl_price', 'stop_price']
+      },
+      {
+        field: 'take_profit',
+        label: 'TP',
+        before: ['old_tp', 'old_take_profit', 'previous_tp', 'previous_take_profit', 'before_tp'],
+        after: ['new_tp', 'take_profit', 'tp_price', 'target_price']
+      },
+      {
+        field: 'status',
+        label: '状态',
+        before: ['previous_status', 'old_status', 'status_before'],
+        after: ['current_status', 'new_status', 'status_after', 'status'],
+        requireBefore: true
+      }
+    ];
+    return specs
+      .map((spec) => {
+        const before = firstValueFromRoots(roots, spec.before);
+        if (spec.requireBefore && !isPresent(before)) return null;
+        return normalizeChangeItem({
+          field: spec.field,
+          label: spec.label,
+          before,
+          after: firstValueFromRoots(roots, spec.after)
+        });
+      })
+      .filter(Boolean);
+  }
+
+  function collectChangeItems(record) {
+    const data = asObject(record?.data);
+    const roots = [record, data, asObject(record?.details), asObject(data.details), asObject(record?.extra), asObject(data.extra)];
+    for (const root of roots) {
+      if (Array.isArray(root?.changes)) {
+        const changes = root.changes.map(normalizeChangeItem).filter(Boolean);
+        if (changes.length) return changes;
+      }
+    }
+    return fallbackChangeItems(record || {});
+  }
+
+  function changeSummaryForRecord(record) {
+    const data = asObject(record?.data);
+    const explicit = normalizeText(firstNonEmpty(
+      record?.change_summary,
+      record?.changeSummary,
+      data.change_summary,
+      data.changeSummary,
+      asObject(record?.details).change_summary,
+      asObject(data.details).change_summary
+    ));
+    if (explicit) return explicit;
+    const changes = collectChangeItems(record || {});
+    return changes.slice(0, 3)
+      .map((item) => `${item.label} ${item.beforeText} -> ${item.afterText}`)
+      .join(' / ');
   }
 
   function collectPriceCandidates(record) {
@@ -719,8 +837,11 @@
       typeText
     ));
     const displayTitle = symbol ? `${symbol} · ${label}` : label;
-    const displayLabelParts = [displayTitle, displayStatusLabel(status)];
-    if (priceFacts.shortLabel) displayLabelParts[1] += ` · ${priceFacts.shortLabel}`;
+    const timeLabel = formatTime(time);
+    const changeSummary = changeSummaryForRecord(data);
+    const displayLabelParts = [displayTitle, `${timeLabel} · ${displayStatusLabel(status)}`];
+    const compactFacts = changeSummary || priceFacts.shortLabel;
+    if (compactFacts) displayLabelParts.push(compactFacts);
 
     return {
       id,
@@ -741,6 +862,8 @@
       raw: data.__raw || raw,
       data,
       priceFacts,
+      changes: collectChangeItems(data),
+      changeSummary,
       rank: stageRank(stage)
     };
   }
@@ -774,6 +897,7 @@
     const copy = normalizeText(firstNonEmpty(data.message, data.copy, data.summary, data.reason, data.description, data.detail));
     const nodeId = normalizeText(firstNonEmpty(data.node_id, data.id, data.order_unique_id, data.signal_id, data.trade_group_id, `event_${index + 1}`));
     const symbol = normalizeText(firstNonEmpty(data.symbol, data.ticker, getNested(data, 'symbol'))).toUpperCase();
+    const changeSummary = changeSummaryForRecord(data);
     return {
       id: nodeId,
       title,
@@ -789,7 +913,9 @@
       copy,
       raw: data.__raw || raw,
       data,
-      priceFacts: getPriceFacts(data, fillSource)
+      priceFacts: getPriceFacts(data, fillSource),
+      changes: collectChangeItems(data),
+      changeSummary
     };
   }
 
@@ -825,6 +951,8 @@
       fill_source: event.fillSource,
       time: event.time,
       message: event.copy,
+      changes: event.changes,
+      change_summary: event.changeSummary,
       raw_event: event.raw
     }, index));
   }
@@ -987,6 +1115,7 @@
       if (!seenNodes.has(node.id)) seenNodes.set(node.id, node);
     });
     nodes = Array.from(seenNodes.values()).sort(compareByTimeOrStage);
+    nodes = nodes.filter((node) => String(node.type || '').trim().toLowerCase() !== 'order_detail_snapshot');
 
     const nodeIdSet = new Set(nodes.map((node) => node.id));
     let edges = rawEdges.map((edge, index) => normalizeEdge(edge, index, nodeIdSet)).filter(Boolean);
@@ -1282,10 +1411,11 @@
       ? `${priceFacts.label}: ${priceFacts.valueText}`
       : sourceMeta.copy;
     const sourceChip = shouldShowFillSourcePill(priceFacts, source) ? fillSourcePill(source) : priceKindPill(priceFacts);
+    const changeSummary = current.changeSummary || changeSummaryForRecord(current.raw || current.data || current);
     $('currentStageCard').innerHTML = `
       <div class="card-kicker">Current Phase</div>
       <div class="stage-title">${escapeHtml(current.symbol ? `${current.symbol} / ${current.label || humanizeKey(current.stage)}` : (current.label || humanizeKey(current.stage)))}</div>
-      <div class="stage-copy">${escapeHtml(current.copy || priceLine || '当前阶段无说明。')}</div>
+      <div class="stage-copy">${escapeHtml(changeSummary || current.copy || priceLine || '当前阶段无说明。')}</div>
       <div class="stage-chip-row">
         <span class="flow-chip">stage=${escapeHtml(current.stage || '--')}</span>
         <span class="flow-chip">status=${escapeHtml(displayStatusLabel(current.status || 'unknown'))}</span>
@@ -1356,9 +1486,11 @@
         status: node.status,
         fillSource: node.fillSource,
         priceKind: node.priceFacts?.priceKind || '',
+        changeSummary: node.changeSummary || '',
         rank: node.rank
       },
       classes: [
+        `type-${safeClassToken(node.type)}`,
         `stage-${safeClassToken(node.stage)}`,
         `lane-${safeClassToken(node.lane)}`,
         `status-${safeClassToken(node.status)}`,
@@ -1384,7 +1516,7 @@
         selector: 'node',
         style: {
           'shape': 'round-rectangle',
-          'width': '172px',
+          'width': '196px',
           'min-height': '58px',
           'height': 'label',
           'padding': '14px',
@@ -1397,11 +1529,11 @@
           'label': 'data(label)',
           'font-family': 'Sora, sans-serif',
           'font-weight': 700,
-          'font-size': '10px',
+          'font-size': '9.5px',
           'line-height': 1.25,
           'color': '#e8f1f8',
           'text-wrap': 'wrap',
-          'text-max-width': '148px',
+          'text-max-width': '172px',
           'text-valign': 'center',
           'text-halign': 'center',
           'overlay-padding': '8px',
@@ -1417,9 +1549,11 @@
       { selector: '.fill-backtest_simulated', style: { 'border-color': '#f6ad55', 'background-gradient-stop-colors': '#3a2813 #1d150b' } },
       { selector: '.fill-unknown', style: { 'border-color': 'rgba(144,167,184,0.52)', 'background-gradient-stop-colors': '#1d2933 #0d1720' } },
       { selector: '.status-error', style: { 'border-color': '#fc8181', 'background-gradient-stop-colors': '#3a171b #1e0e13' } },
+      { selector: '.status-active', style: { 'border-color': '#5eead4', 'border-style': 'dashed', 'background-gradient-stop-colors': '#12343a #071c22' } },
       { selector: '.status-warning', style: { 'border-color': '#f6ad55' } },
       { selector: '.status-terminal', style: { 'border-color': '#a0aec0', 'background-gradient-stop-colors': '#1c2c39 #0c1620' } },
       { selector: '.status-pending', style: { 'border-style': 'dashed' } },
+      { selector: '.type-lifecycle_endpoint', style: { 'shape': 'hexagon', 'border-width': 3 } },
       {
         selector: 'edge',
         style: {
@@ -1552,6 +1686,8 @@
       time: node.time,
       copy: node.copy,
       priceFacts: node.priceFacts,
+      changes: node.changes,
+      changeSummary: node.changeSummary,
       raw: node.raw,
       data: node.data
     }));
@@ -1578,16 +1714,18 @@
     const source = normalizeFillSource(item.fillSource);
     const title = item.symbol ? `${item.symbol} · ${item.title || item.label || humanizeKey(item.stage)}` : (item.title || item.label || humanizeKey(item.stage));
     const sourceChip = shouldShowFillSourcePill(priceFacts, source) ? fillSourcePill(source) : priceKindPill(priceFacts);
+    const changeSummary = item.changeSummary || changeSummaryForRecord(item.raw || item.data || item);
     return `
       <article class="${prefix}-item fill-${escapeHtml(source)}">
         <div class="${prefix}-title">${escapeHtml(title)}</div>
-        <div class="${prefix}-copy">${escapeHtml(item.copy || priceFacts.trustCopy || '--')}</div>
+        <div class="${prefix}-copy">${escapeHtml(changeSummary || item.copy || priceFacts.trustCopy || '--')}</div>
         <div class="event-meta-row">
           <span class="event-chip">${escapeHtml(formatTime(item.time))}</span>
           <span class="event-chip">stage=${escapeHtml(item.stage || '--')}</span>
           <span class="event-chip">status=${escapeHtml(item.status || '--')}</span>
           ${sourceChip}
           ${priceFacts.hasPrice ? `<span class="event-chip">${escapeHtml(priceFacts.shortLabel)}</span>` : ''}
+          ${changeSummary ? `<span class="event-chip">change=${escapeHtml(changeSummary)}</span>` : ''}
         </div>
       </article>
     `;
@@ -1632,6 +1770,26 @@
     `;
   }
 
+  function renderChangePanel(changes) {
+    const items = Array.isArray(changes) ? changes.filter(Boolean) : [];
+    if (!items.length) return '';
+    return `
+      <div class="change-panel">
+        <div class="change-title">变更对比</div>
+        <div class="change-list">
+          ${items.map((item) => `
+            <div class="change-row">
+              <span class="change-label">${escapeHtml(item.label || item.field || 'change')}</span>
+              <span class="change-before">${escapeHtml(item.beforeText || formatChangeValue(item.before))}</span>
+              <span class="change-arrow">-&gt;</span>
+              <span class="change-after">${escapeHtml(item.afterText || formatChangeValue(item.after))}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+
   function stringifyRaw(raw) {
     let text = '';
     try {
@@ -1671,13 +1829,17 @@
     const rawData = node.data || asObject(node.raw);
     const detailTitle = node.symbol ? `${node.symbol} / ${node.label || node.id}` : (node.label || node.id);
     const sourceChip = shouldShowFillSourcePill(facts, node.fillSource) ? fillSourcePill(node.fillSource) : priceKindPill(facts);
+    const changes = Array.isArray(node.changes) && node.changes.length ? node.changes : collectChangeItems(rawData);
+    const changeSummary = node.changeSummary || changeSummaryForRecord(rawData);
     const keys = [
       ['id', node.id],
       ['stage', node.stage],
       ['lane', LANE_LABELS[node.lane] || node.lane],
       ['status', node.status],
       ['type', node.type],
-      ['time', formatTime(node.time)],
+      ['time_et', formatTime(node.time)],
+      ['time_us', firstNonEmpty(getNested(rawData, 'us_time'), getNested(rawData, 'changed_at_us'))],
+      ['time_cn', firstNonEmpty(getNested(rawData, 'cn_time'), getNested(rawData, 'changed_at_cn'))],
       ['symbol', firstNonEmpty(node.symbol, getNested(rawData, 'symbol'), getNested(rawData, 'ticker'))],
       ['signal_id', firstNonEmpty(node.signalId, getNested(rawData, 'signal_id'))],
       ['trade_group_id', firstNonEmpty(node.tradeGroupId, getNested(rawData, 'trade_group_id'))],
@@ -1690,14 +1852,16 @@
         <div>
           <div class="detail-kicker">${escapeHtml(node.stage || 'node')}</div>
           <div class="detail-title">${escapeHtml(detailTitle)}</div>
-          <div class="detail-subtitle">${escapeHtml(node.copy || '无节点说明。')}</div>
+          <div class="detail-subtitle">${escapeHtml(changeSummary || node.copy || '无节点说明。')}</div>
           <div class="detail-chip-row">
             <span class="flow-chip">${escapeHtml(node.status || '--')}</span>
             ${sourceChip}
+            ${changeSummary ? `<span class="flow-chip">${escapeHtml(changeSummary)}</span>` : ''}
             ${facts.estimated ? '<span class="flow-chip">estimated_only</span>' : ''}
           </div>
         </div>
         ${renderPricePanel(facts, node.fillSource)}
+        ${renderChangePanel(changes)}
         <div class="detail-grid">
           ${keys.map(([label, value]) => renderDetailRow(label, value)).join('')}
         </div>

@@ -36,6 +36,12 @@ class LifecycleFlowStaticSmokeTest(unittest.TestCase):
             "stop_loss_price",
             "entry_limit",
             "order_detail_unverified_fill",
+            "order_detail_snapshot",
+            "lifecycle_endpoint",
+            "change_summary",
+            "changeSummaryForRecord",
+            "renderChangePanel",
+            "formatTime(time)",
             "estimated",
             "fill_source_policy",
         ):
@@ -59,6 +65,12 @@ class LifecycleFlowStaticSmokeTest(unittest.TestCase):
                 "/ibkr_lifecycle_flow.html",
                 "order_id",
                 "signal_id",
+                "trade_group_id",
+            ),
+            "runtime/ibkr_console/static/orders.html": (
+                "/ibkr_lifecycle_flow.html",
+                "buildOrderLifecycleFlowUrl",
+                "order_id",
                 "trade_group_id",
             ),
             "runtime/ibkr_console/static/assets/js/pages/ibkr_backtests/tracking.js": (

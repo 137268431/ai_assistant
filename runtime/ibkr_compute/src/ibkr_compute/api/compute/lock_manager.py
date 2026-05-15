@@ -24,6 +24,11 @@ class ComputeLockLease:
     slots: tuple[ComputeSlot, ...]
     global_scope: bool = False
     acquired: bool = True
+    request: "ComputeLockRequest | None" = None
+    lease_id: int = 0
+    acquired_at: float = 0.0
+    thread_id: int = 0
+    thread_name: str = ""
 
     def __enter__(self) -> "ComputeLockLease":
         return self
@@ -80,13 +85,21 @@ class ComputeLockManager:
         self._active_global = False
         self._active_slot_leases = 0
         self._slot_locks: dict[ComputeSlot, threading.RLock] = {}
+        self._next_lease_id = 0
+        self._active_leases: dict[int, ComputeLockLease] = {}
+        self._active_global_lease_id = 0
 
     def acquire(self, request: ComputeLockRequest, timeout: float | None = None) -> ComputeLockLease | None:
         if request.global_scope:
-            return self.acquire_global(timeout)
-        return self.acquire_slots(request.slots, timeout)
+            return self.acquire_global(timeout, request=request)
+        return self.acquire_slots(request.slots, timeout, request=request)
 
-    def acquire_global(self, timeout: float | None = None) -> ComputeLockLease | None:
+    def acquire_global(
+        self,
+        timeout: float | None = None,
+        *,
+        request: ComputeLockRequest | None = None,
+    ) -> ComputeLockLease | None:
         deadline = self._deadline(timeout)
         with self._condition:
             while self._active_global or self._active_slot_leases:
@@ -95,12 +108,24 @@ class ComputeLockManager:
                     return None
                 self._condition.wait(remaining)
             self._active_global = True
-        return ComputeLockLease(self, (), global_scope=True)
+            lease = self._new_lease(
+                slots=(),
+                global_scope=True,
+                request=request or ComputeLockRequest.global_lock("global"),
+            )
+            self._active_global_lease_id = lease.lease_id
+            return lease
 
-    def acquire_slots(self, slots: Iterable[ComputeSlot], timeout: float | None = None) -> ComputeLockLease | None:
+    def acquire_slots(
+        self,
+        slots: Iterable[ComputeSlot],
+        timeout: float | None = None,
+        *,
+        request: ComputeLockRequest | None = None,
+    ) -> ComputeLockLease | None:
         normalized_slots = tuple(sorted({slot for slot in slots if slot[1] and slot[2]}))
         if not normalized_slots:
-            return self.acquire_global(timeout)
+            return self.acquire_global(timeout, request=request or ComputeLockRequest.global_lock("global"))
 
         deadline = self._deadline(timeout)
         with self._condition:
@@ -130,12 +155,20 @@ class ComputeLockManager:
                 self._condition.notify_all()
             return None
 
-        return ComputeLockLease(self, normalized_slots)
+        with self._condition:
+            return self._new_lease(
+                slots=normalized_slots,
+                global_scope=False,
+                request=request or ComputeLockRequest(reason="slots", slots=normalized_slots),
+            )
 
     def release(self, lease: ComputeLockLease) -> None:
         if lease.global_scope:
             with self._condition:
-                self._active_global = False
+                self._active_leases.pop(int(lease.lease_id or 0), None)
+                if self._active_global_lease_id == int(lease.lease_id or 0):
+                    self._active_global_lease_id = 0
+                    self._active_global = False
                 self._condition.notify_all()
             return
 
@@ -144,8 +177,109 @@ class ComputeLockManager:
             if lock is not None:
                 lock.release()
         with self._condition:
-            self._active_slot_leases -= 1
+            removed = self._active_leases.pop(int(lease.lease_id or 0), None)
+            if removed is not None:
+                self._active_slot_leases = max(0, self._active_slot_leases - 1)
             self._condition.notify_all()
+
+    def snapshot(self) -> dict:
+        now = time.time()
+        with self._condition:
+            leases = [self._lease_payload(lease, now=now) for lease in self._active_leases.values()]
+            active_global_count = sum(1 for lease in self._active_leases.values() if lease.global_scope)
+            active_slot_count = sum(1 for lease in self._active_leases.values() if not lease.global_scope)
+            return {
+                "active_global": bool(self._active_global),
+                "active_global_lease_id": int(self._active_global_lease_id or 0),
+                "active_slot_leases": int(self._active_slot_leases or 0),
+                "active_lease_count": len(leases),
+                "leases": leases,
+                "state_inconsistent": bool(
+                    bool(self._active_global) != bool(active_global_count)
+                    or int(self._active_slot_leases or 0) != active_slot_count
+                ),
+            }
+
+    def describe_blockers(self, request: ComputeLockRequest | None, *, limit: int = 8) -> dict:
+        requested = request or ComputeLockRequest.global_lock("global")
+        requested_slots = set(requested.slots or ())
+        now = time.time()
+        blockers = []
+        conflict_slots: set[ComputeSlot] = set()
+        with self._condition:
+            for lease in self._active_leases.values():
+                if requested.global_scope or lease.global_scope:
+                    matches = True
+                    if not requested.global_scope and lease.global_scope:
+                        conflict_slots.update(requested_slots)
+                    elif requested.global_scope:
+                        conflict_slots.update(lease.slots)
+                else:
+                    overlap = requested_slots.intersection(lease.slots)
+                    matches = bool(overlap)
+                    conflict_slots.update(overlap)
+                if matches:
+                    blockers.append(self._lease_payload(lease, now=now))
+            blockers.sort(key=lambda item: float(item.get("age_s") or 0), reverse=True)
+            snapshot = {
+                "active_global": bool(self._active_global),
+                "active_slot_leases": int(self._active_slot_leases or 0),
+                "active_lease_count": len(self._active_leases),
+                "blocked_by": blockers[: max(0, int(limit or 0))],
+                "blocked_by_count": len(blockers),
+                "conflict_slots": [
+                    {"environment": env, "symbol": symbol, "interval": interval}
+                    for env, symbol, interval in sorted(conflict_slots)[:20]
+                ],
+                "conflict_slot_count": len(conflict_slots),
+            }
+            return snapshot
+
+    def _new_lease(
+        self,
+        *,
+        slots: tuple[ComputeSlot, ...],
+        global_scope: bool,
+        request: ComputeLockRequest,
+    ) -> ComputeLockLease:
+        self._next_lease_id += 1
+        current_thread = threading.current_thread()
+        lease = ComputeLockLease(
+            manager=self,
+            slots=slots,
+            global_scope=global_scope,
+            request=request,
+            lease_id=self._next_lease_id,
+            acquired_at=time.time(),
+            thread_id=int(threading.get_ident() or 0),
+            thread_name=str(current_thread.name or ""),
+        )
+        self._active_leases[lease.lease_id] = lease
+        return lease
+
+    @staticmethod
+    def _lease_payload(lease: ComputeLockLease, *, now: float) -> dict:
+        request = lease.request or ComputeLockRequest.global_lock("global" if lease.global_scope else "slots")
+        payload = {
+            "lease_id": int(lease.lease_id or 0),
+            "scope": "global" if lease.global_scope else "slots",
+            "reason": str(request.reason or ""),
+            "acquired_at_ms": int(float(lease.acquired_at or 0.0) * 1000),
+            "age_s": round(max(0.0, float(now or time.time()) - float(lease.acquired_at or 0.0)), 3),
+            "thread_id": int(lease.thread_id or 0),
+            "thread_name": str(lease.thread_name or ""),
+            "slot_count": len(lease.slots or ()),
+        }
+        if lease.slots:
+            payload["slots"] = [
+                {
+                    "environment": environment,
+                    "symbol": symbol,
+                    "interval": interval,
+                }
+                for environment, symbol, interval in lease.slots[:20]
+            ]
+        return payload
 
     @staticmethod
     def _deadline(timeout: float | None) -> float | None:

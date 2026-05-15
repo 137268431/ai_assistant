@@ -294,6 +294,145 @@ class LifecycleFlowApiTest(unittest.TestCase):
         snapshot = next(event for event in payload["events"] if event["event_type"] == "order_detail_snapshot")
         self.assertEqual("order_detail_unverified_fill", snapshot["price_kind"])
         self.assertNotEqual("actual_ibkr", snapshot.get("fill_source"))
+        self.assertEqual([], [node for node in payload["nodes"] if node["type"] == "order_detail_snapshot"])
+
+    def test_order_detail_snapshots_stay_out_of_graph_nodes(self):
+        payload, status_code = self.build(
+            {
+                "orders": [
+                    {
+                        "symbol": "AAPL",
+                        "signal_id": "sig_snapshots",
+                        "trade_group_id": "tg_snapshots",
+                        "order_id": "4101",
+                        "role": "entry",
+                        "status": "Submitted",
+                        "quantity": 2,
+                        "limit_price": 77,
+                        "bar_time_ms": 2000,
+                    }
+                ],
+                "ibkr_order_details": [
+                    {
+                        "symbol": "AAPL",
+                        "signal_id": "sig_snapshots",
+                        "trade_group_id": "tg_snapshots",
+                        "order_id": f"410{i}",
+                        "role": "entry",
+                        "status": "Submitted",
+                        "quantity": 2,
+                        "limit_price": 77,
+                        "bar_time_ms": 2010 + i,
+                    }
+                    for i in range(1, 4)
+                ],
+            },
+            {"signal_id": "sig_snapshots", "trade_group_id": "tg_snapshots"},
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(3, len([event for event in payload["events"] if event["event_type"] == "order_detail_snapshot"]))
+        self.assertFalse(any(node["type"] == "order_detail_snapshot" for node in payload["nodes"]))
+        self.assertTrue(any(node["type"] == "lifecycle_endpoint" for node in payload["nodes"]))
+
+    def test_modified_protection_events_include_change_summary_and_times(self):
+        payload, status_code = self.build(
+            {
+                "orders": [
+                    {
+                        "symbol": "AAPL",
+                        "signal_id": "sig_modify",
+                        "trade_group_id": "tg_modify",
+                        "order_id": "4201",
+                        "role": "repair_sl",
+                        "status": "Submitted",
+                        "quantity": 5,
+                        "limit_price": 96.25,
+                        "sl_price": 96.25,
+                        "bar_time_ms": 2200,
+                        "extra": {"old_sl": 95.0, "new_sl": 96.25},
+                    }
+                ],
+            },
+            {"signal_id": "sig_modify", "trade_group_id": "tg_modify"},
+        )
+
+        self.assertEqual(status_code, 200)
+        event = next(event for event in payload["events"] if event["event_type"] == "stop_loss_modified")
+        self.assertEqual("SL 95 -> 96.25", event["change_summary"])
+        self.assertEqual(2200, event["changed_at_ms"])
+        self.assertTrue(event["changed_at_us"])
+        self.assertTrue(event["changed_at_cn"])
+        self.assertEqual([("stop_loss", 95.0, 96.25)], [(item["field"], item["before"], item["after"]) for item in event["changes"]])
+        node = next(node for node in payload["nodes"] if node["type"] == "stop_loss_modified")
+        self.assertEqual(event["changes"], node["changes"])
+        self.assertEqual("SL 95 -> 96.25", node["change_summary"])
+
+    def test_lifecycle_endpoint_marks_active_open_chain(self):
+        payload, status_code = self.build(
+            {
+                "orders": [
+                    {
+                        "symbol": "AAPL",
+                        "signal_id": "sig_active",
+                        "trade_group_id": "tg_active",
+                        "order_id": "4301",
+                        "role": "entry",
+                        "status": "Submitted",
+                        "quantity": 3,
+                        "limit_price": 123,
+                        "bar_time_ms": 2000,
+                    }
+                ]
+            },
+            {"signal_id": "sig_active", "trade_group_id": "tg_active"},
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(all(node.get("ts_ms", 0) > 0 for node in payload["nodes"]))
+        endpoint = next(node for node in payload["nodes"] if node["type"] == "lifecycle_endpoint")
+        self.assertEqual("active", endpoint["state"])
+        self.assertEqual("当前仍进行中", endpoint["label"])
+        self.assertEqual("tg_active", endpoint["trade_group_id"])
+
+    def test_lifecycle_endpoint_marks_terminal_closed_chain(self):
+        payload, status_code = self.build(
+            {
+                "orders": [
+                    {
+                        "symbol": "AAPL",
+                        "signal_id": "sig_done",
+                        "trade_group_id": "tg_done",
+                        "order_id": "4401",
+                        "role": "entry",
+                        "status": "Filled",
+                        "quantity": 3,
+                        "filled_qty": 3,
+                        "fill_price": 100,
+                        "bar_time_ms": 2000,
+                    },
+                    {
+                        "symbol": "AAPL",
+                        "signal_id": "sig_done",
+                        "trade_group_id": "tg_done",
+                        "order_id": "4402",
+                        "role": "take_profit",
+                        "status": "Filled",
+                        "quantity": 3,
+                        "filled_qty": 3,
+                        "fill_price": 110,
+                        "bar_time_ms": 3000,
+                    },
+                ]
+            },
+            {"signal_id": "sig_done", "trade_group_id": "tg_done"},
+        )
+
+        self.assertEqual(status_code, 200)
+        endpoint = next(node for node in payload["nodes"] if node["type"] == "lifecycle_endpoint")
+        self.assertEqual("terminal", endpoint["state"])
+        self.assertEqual("生命周期结束", endpoint["label"])
+        self.assertEqual("ended_by_exit_take_profit", endpoint["reason"])
 
     def test_edges_stay_within_trade_group_context(self):
         payload, status_code = self.build(

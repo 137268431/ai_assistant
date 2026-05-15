@@ -42,6 +42,38 @@ def _sources_are_non_compute_only(sources: list[str]) -> bool:
     return bool(sources) and all(source in NON_COMPUTE_DISPATCH_SOURCES for source in sources)
 
 
+def _normalize_symbols(raw_symbols: Any) -> list[str]:
+    if not isinstance(raw_symbols, (list, tuple, set)):
+        return []
+    symbols = set()
+    for item in raw_symbols:
+        symbol = str(item or "").strip().upper()
+        if symbol:
+            symbols.add(symbol)
+    return sorted(symbols)
+
+
+def _coerce_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value or default)
+    except (TypeError, ValueError):
+        return int(default or 0)
+
+
+def _coerce_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value if value is not None else default)
+    except (TypeError, ValueError):
+        return float(default or 0.0)
+
+
+def _compute_runtime_last_result(jobs: dict[str, Any]) -> dict[str, Any]:
+    compute_job = jobs.get("ibkr_compute_runtime") if isinstance(jobs.get("ibkr_compute_runtime"), dict) else {}
+    last_result = compute_job.get("last_result") if isinstance(compute_job.get("last_result"), dict) else {}
+    nested = last_result.get("payload") if isinstance(last_result.get("payload"), dict) else {}
+    return dict(nested or last_result) if isinstance((nested or last_result), dict) else {}
+
+
 def _resolve_compute_ingest_cursor(ingest_5m: dict[str, Any], latest_dispatched_bar_time_ms: int) -> dict[str, Any]:
     raw_latest = int(ingest_5m.get("latest_bar_time_ms") or 0)
     explicit_latest = int(ingest_5m.get("latest_compute_ingest_bar_time_ms") or 0)
@@ -84,6 +116,7 @@ def build_scheduler_summary(environment: str, scheduler_payload: dict[str, Any])
     dispatch_5m = extract_cursor_interval(dispatch_cursor, "5m")
     latest_ingested_bar_time_ms = int(ingest_5m.get("latest_bar_time_ms") or 0)
     latest_dispatched_bar_time_ms = int(dispatch_5m.get("latest_bar_time_ms") or 0)
+    last_compute_result = _compute_runtime_last_result(jobs)
     compute_ingest = _resolve_compute_ingest_cursor(ingest_5m, latest_dispatched_bar_time_ms)
     latest_compute_ingested_bar_time_ms = int(compute_ingest.get("latest_compute_ingested_bar_time_ms") or 0)
     lag_ms = (
@@ -96,6 +129,36 @@ def build_scheduler_summary(environment: str, scheduler_payload: dict[str, Any])
     for state in jobs.values():
         normalized = str((state or {}).get("status") or "idle").strip().lower() or "idle"
         status_counts[normalized] = status_counts.get(normalized, 0) + 1
+
+    indicator_coverage_status = str(
+        dispatch_5m.get("indicator_coverage_status")
+        or last_compute_result.get("indicator_coverage_status")
+        or ""
+    ).strip().lower()
+    missing_indicator_symbols = _normalize_symbols(
+        dispatch_5m.get("missing_indicator_symbols")
+        or last_compute_result.get("missing_indicator_symbols")
+        or []
+    )
+    deferred_busy_symbols = _normalize_symbols(
+        dispatch_5m.get("deferred_busy_symbols")
+        or last_compute_result.get("deferred_busy_symbols")
+        or []
+    )
+    realtime_compute = last_compute_result.get("realtime_compute") if isinstance(last_compute_result.get("realtime_compute"), dict) else {}
+    compute_in_progress = bool(
+        last_compute_result.get("compute_in_progress")
+        or dispatch_5m.get("compute_in_progress")
+        or str(last_compute_result.get("reason") or "").strip().lower() == "close_compute_inflight"
+    )
+    inflight_stalled = bool(
+        last_compute_result.get("inflight_stalled")
+        or last_compute_result.get("compute_in_progress_stalled")
+        or (realtime_compute or {}).get("stalled")
+    )
+    dispatch_lag_reason = str(compute_ingest.get("dispatch_lag_reason") or "")
+    if compute_in_progress and dispatch_lag_reason != "non_compute_ingest_source":
+        dispatch_lag_reason = "close_compute_inflight"
 
     return {
         "ok": bool(payload.get("ok", False)) if payload else False,
@@ -118,8 +181,45 @@ def build_scheduler_summary(environment: str, scheduler_payload: dict[str, Any])
         "dispatch_lag_ms": lag_ms,
         "dispatch_lag_min": round(lag_ms / 60000.0, 2) if lag_ms else 0.0,
         "dispatch_lag_compute_relevant": bool(compute_ingest.get("dispatch_lag_compute_relevant", True)),
-        "dispatch_lag_reason": str(compute_ingest.get("dispatch_lag_reason") or ""),
+        "dispatch_lag_reason": dispatch_lag_reason,
         "compute_ingest_source_policy": str(compute_ingest.get("compute_ingest_source_policy") or ""),
+        "indicator_coverage_status": indicator_coverage_status,
+        "indicator_coverage_bar_time_ms": _coerce_int(
+            dispatch_5m.get("indicator_coverage_bar_time_ms")
+            or last_compute_result.get("indicator_coverage_bar_time_ms")
+        ),
+        "missing_indicator_symbols": missing_indicator_symbols,
+        "missing_indicator_symbol_count": _coerce_int(
+            dispatch_5m.get("missing_indicator_symbol_count")
+            or last_compute_result.get("missing_indicator_symbol_count")
+            or len(missing_indicator_symbols)
+        ),
+        "missing_indicator_symbols_sample": missing_indicator_symbols[:20],
+        "covered_indicator_symbol_count": _coerce_int(
+            dispatch_5m.get("covered_indicator_symbol_count")
+            or last_compute_result.get("covered_indicator_symbol_count")
+        ),
+        "compute_in_progress": compute_in_progress,
+        "compute_in_progress_stalled": inflight_stalled,
+        "inflight_age_s": _coerce_float(last_compute_result.get("inflight_age_s") or dispatch_5m.get("inflight_age_s")),
+        "inflight_timeout_threshold_s": _coerce_float(
+            last_compute_result.get("inflight_timeout_threshold_s")
+            or dispatch_5m.get("inflight_timeout_threshold_s")
+        ),
+        "inflight_stall_reason": str(
+            last_compute_result.get("inflight_stall_reason")
+            or (realtime_compute or {}).get("stall_reason")
+            or ""
+        ),
+        "deferred_compute_busy": bool(dispatch_5m.get("deferred_compute_busy") or last_compute_result.get("deferred_compute_busy")),
+        "deferred_busy_symbols": deferred_busy_symbols,
+        "deferred_busy_symbol_count": _coerce_int(
+            dispatch_5m.get("deferred_busy_symbol_count")
+            or last_compute_result.get("deferred_busy_symbol_count")
+            or len(deferred_busy_symbols)
+        ),
+        "deferred_busy_symbols_sample": deferred_busy_symbols[:20],
+        "latest_partial_dispatched_bar_time_ms": _coerce_int(dispatch_5m.get("latest_partial_dispatched_bar_time_ms")),
     }
 
 
