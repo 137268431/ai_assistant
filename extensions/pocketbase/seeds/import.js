@@ -86,6 +86,13 @@ const configData = [
 
   cfg('position_limit_max', '0', '0', '当日交易次数上限', '交易风控', 400, '当日成功下单计数达到该上限后，新的交易信号将被拒绝；0 表示不限制每日交易次数'),
   cfg('max_strategy_open_positions', '5', '5', '策略同时持仓上限', '交易风控', 402, '策略持仓与已提交未成交策略入场单合计达到该上限时，新信号保持 pending 等待容量'),
+  cfg('ibkr_buying_power_guard_enabled', 'TRUE', 'TRUE', '购买力阈值保护', '交易风控', 402.1, '开启后新开仓会基于 IBKR BuyingPower 计算下单后剩余购买力；低于禁止阈值时拒绝下单'),
+  cfg('ibkr_buying_power_warn_usd', '25000', '25000', '购买力预警金额', '交易风控', 402.2, '下单后剩余 BuyingPower 低于 max(该金额, NetLiq 百分比阈值) 时发送预警但允许继续'),
+  cfg('ibkr_buying_power_warn_pct_net_liq', '20', '20', '购买力预警净值%', '交易风控', 402.3, '预警阈值的 NetLiq 百分比部分；默认 20%'),
+  cfg('ibkr_buying_power_block_usd', '10000', '10000', '购买力禁止金额', '交易风控', 402.4, '下单后剩余 BuyingPower 低于 max(该金额, NetLiq 百分比阈值) 时禁止交易'),
+  cfg('ibkr_buying_power_block_pct_net_liq', '10', '10', '购买力禁止净值%', '交易风控', 402.5, '禁止阈值的 NetLiq 百分比部分；默认 10%'),
+  cfg('ibkr_buying_power_notify_enabled', 'TRUE', 'TRUE', '购买力通知', '交易风控', 402.6, '开启后手动/自动开仓会记录剩余购买力，预警或禁止时发送告警'),
+  cfg('ibkr_buying_power_notify_cooldown_sec', '1800', '1800', '购买力预警冷却秒数', '交易风控', 402.7, '同一标的同一购买力状态重复预警的最短间隔；成功开仓通知不受此冷却限制'),
   cfg('fixed_position_symbols', 'BOXX,IBKR', 'BOXX,IBKR', '固定持仓标的', '交易风控', 403, '这些标的不允许策略开仓，也不占用策略同时持仓容量；逗号分隔'),
   cfg('cooldown_bars_after_sl', '6', '6', '止损后冷却K线数', '交易风控', 405, '同标的止损后冷却多少根 5m K线，冷却期间不再开新仓'),
   cfg('cooldown_bars_after_reverse', '3', '3', '反向退出后冷却K线数', '交易风控', 406, '同标的反向信号平仓后冷却多少根 5m K线，冷却期间不再开新仓'),

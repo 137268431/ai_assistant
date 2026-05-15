@@ -81,6 +81,7 @@ class FakeSignalPBClient:
         self.record = dict(record)
         self.updates = []
         self.acks = []
+        self.events = []
 
     def get_first_record(self, collection, filter=None):
         return dict(self.record)
@@ -94,22 +95,30 @@ class FakeSignalPBClient:
         self.acks.append(dict(kwargs))
         return {"status": kwargs.get("status"), "fallback": False}
 
+    def notify_system_event(self, title, detail=None, **kwargs):
+        self.events.append({"title": title, "detail": dict(detail or {}), **kwargs})
+        return {"ok": True}
+
 
 class FakeBracketBroker:
     def __init__(self):
         self.calls = []
 
     def place_bracket_order(self, **kwargs):
+        call_index = len(self.calls)
         self.calls.append(dict(kwargs))
+        suffix = str(kwargs.get("order_ref_suffix") or "").strip()
+        group = "NFLX_short_20260506_101500" + (f"_{suffix}" if suffix else "")
+        base_order_id = 101 + call_index * 10
         return {
             "ok": True,
-            "entry_coid": "entry_NFLX_short_20260506_101500",
-            "tp_coid": "tp_NFLX_short_20260506_101500",
-            "sl_coid": "sl_NFLX_short_20260506_101500",
-            "bracket_group": "NFLX_short_20260506_101500",
-            "oca_group": "NFLX_short_20260506_101500",
+            "entry_coid": f"entry_{group}",
+            "tp_coid": f"tp_{group}",
+            "sl_coid": f"sl_{group}",
+            "bracket_group": group,
+            "oca_group": group,
             "order_family_type": "bracket_oco",
-            "order_ids": ["101", "102", "103"],
+            "order_ids": [str(base_order_id), str(base_order_id + 1), str(base_order_id + 2)],
             "submission": {"ok": True},
             "protection_complete": True,
         }
@@ -195,6 +204,50 @@ class FakeOrderPlacer:
         self.calls.append(dict(kwargs))
         return {"ok": True, "order_ids": ["101", "102", "103"], "bracket_group": "AAPL_long"}
 
+    def place_harvest_bracket_order(self, **kwargs):
+        self.calls.append(dict(kwargs))
+        return {
+            "ok": True,
+            "harvest_split": True,
+            "harvest_profile": "intraday_volatility_harvest_v1",
+            "order_ids": ["101", "102", "103", "111", "112", "113"],
+            "bracket_group": "AAPL_long_core",
+            "entry_coid": "entry_AAPL_long_core",
+            "tp_coid": "tp_AAPL_long_core",
+            "sl_coid": "sl_AAPL_long_core",
+            "quantity": 70,
+            "order_extra": {
+                "harvest_managed": True,
+                "harvest_lot": "core",
+                "harvest_profile": "intraday_volatility_harvest_v1",
+            },
+            "legs": [
+                {
+                    "lot": "core",
+                    "quantity": 70,
+                    "ok": True,
+                    "order_ids": ["101", "102", "103"],
+                    "bracket_group": "AAPL_long_core",
+                    "entry_coid": "entry_AAPL_long_core",
+                    "tp_coid": "tp_AAPL_long_core",
+                    "sl_coid": "sl_AAPL_long_core",
+                    "order_extra": {"harvest_managed": True, "harvest_lot": "core"},
+                },
+                {
+                    "lot": "tactical",
+                    "quantity": 30,
+                    "ok": True,
+                    "order_ids": ["111", "112", "113"],
+                    "bracket_group": "AAPL_long_tactical",
+                    "entry_coid": "entry_AAPL_long_tactical",
+                    "tp_coid": "tp_AAPL_long_tactical",
+                    "sl_coid": "sl_AAPL_long_tactical",
+                    "order_extra": {"harvest_managed": True, "harvest_lot": "tactical"},
+                },
+            ],
+            "protection_complete": True,
+        }
+
 
 class FakeLifecycle:
     def __init__(self, capacity_full=False, fixed_symbols=None):
@@ -237,7 +290,7 @@ class FakeQuoteBook:
 
 
 class FakeSignalService(TradingServiceSignalsMixin):
-    def __init__(self, signal, *, lifecycle, pb, quote_book=None, config=None):
+    def __init__(self, signal, *, lifecycle, pb, quote_book=None, config=None, account_snapshot=None):
         self.session_keeper = FakeSessionKeeper()
         self.signal_router = FakeSignalRouter([signal])
         self.signal_processor = FakeSignalProcessor()
@@ -248,6 +301,10 @@ class FakeSignalService(TradingServiceSignalsMixin):
         self.pb = pb
         self.config = config or FakeConfig()
         self.realtime_quote_book = quote_book or FakeQuoteBook({})
+        self.account_snapshot_provider = lambda: dict(account_snapshot or {
+            "ok": True,
+            "summary": {"buying_power": 100000, "net_liquidation": 120000},
+        })
 
     def _now_iso(self):
         return "2026-05-13T10:00:00-04:00"
@@ -513,6 +570,33 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
         self.assertEqual("entry_NFLX_short_20260506_101500", pb_client.upserts[1]["parent_order_unique_id"])
         self.assertEqual("entry_NFLX_short_20260506_101500", pb_client.upserts[2]["parent_order_unique_id"])
 
+    def test_harvest_bracket_splits_core_and_tactical_lots_with_metadata(self):
+        pb_client = FakeOrderPBClient()
+        broker = FakeBracketBroker()
+        placer = OrderPlacer(pb_client=pb_client, broker=broker, account_id="DU123")
+
+        result = placer.place_harvest_bracket_order(
+            conid=123,
+            symbol="NFLX",
+            direction="short",
+            quantity=100,
+            entry_price=600.0,
+            take_profit_price=580.0,
+            stop_loss_price=610.0,
+            signal_id="sig-nflx",
+            settings={"tactical_fraction": 0.30},
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["harvest_split"])
+        self.assertEqual(2, len(result["legs"]))
+        self.assertEqual([70, 30], [leg["quantity"] for leg in result["legs"]])
+        self.assertEqual(["core", "tactical"], [call["order_ref_suffix"] for call in broker.calls])
+        self.assertEqual(6, len(pb_client.upserts))
+        lots = [row["extra"]["harvest_lot"] for row in pb_client.upserts if row["role"] == "entry"]
+        self.assertEqual(["core", "tactical"], lots)
+        self.assertTrue(all(row["extra"]["harvest_managed"] for row in pb_client.upserts))
+
 
 class LiveSignalCapacityLifecycleTest(unittest.TestCase):
     def _signal(self, symbol="AAPL"):
@@ -757,6 +841,52 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertEqual(103.25, ack_order["stop_loss"])
         self.assertEqual(97.25, ack_order["take_profit"])
         self.assertEqual("passive", ack_order["extra"]["entry_limit_intent"])
+
+    def test_buying_power_guard_blocks_signal_before_order_submission(self):
+        signal = self._signal("AAPL")
+        signal["shares"] = 50
+        pb = FakeSignalPBClient({"id": "row-aapl", "extra": {"source": "ibkr_compute"}})
+        service = FakeSignalService(
+            signal,
+            lifecycle=FakeLifecycle(),
+            pb=pb,
+            config=FakeConfig({"entry_pre_submit_guard_enabled": "false"}),
+            account_snapshot={"ok": True, "summary": {"buying_power": 12000, "net_liquidation": 100000}},
+        )
+
+        service._process_signals()
+
+        self.assertEqual(["sig-aapl"], service.signal_router.processed)
+        self.assertEqual([], service.signal_router.released)
+        self.assertEqual([], service.order_placer.calls)
+        patch = pb.updates[-1][2]
+        self.assertEqual("rejected", patch["status"])
+        self.assertEqual("buying_power_blocked", patch["extra"]["status_reason"])
+        self.assertEqual("blocked", patch["extra"]["buying_power_guard"]["state"])
+        self.assertEqual("自动开仓已被购买力阈值拦截", pb.events[-1]["title"])
+
+    def test_buying_power_warning_continues_and_ack_includes_guard(self):
+        signal = self._signal("AAPL")
+        signal["shares"] = 100
+        pb = FakeSignalPBClient({"id": "row-aapl", "extra": {"source": "ibkr_compute"}})
+        service = FakeSignalService(
+            signal,
+            lifecycle=FakeLifecycle(),
+            pb=pb,
+            config=FakeConfig({"entry_pre_submit_guard_enabled": "false"}),
+            account_snapshot={"ok": True, "summary": {"buying_power": 30000, "net_liquidation": 100000}},
+        )
+
+        service._process_signals()
+
+        self.assertEqual(["sig-aapl"], service.signal_router.processed)
+        self.assertEqual(1, len(service.order_placer.calls))
+        ack_order = pb.acks[-1]["order"]
+        self.assertEqual("warning", ack_order["extra"]["buying_power_guard"]["state"])
+        self.assertEqual(10000.0, ack_order["extra"]["buying_power_requested_exposure"])
+        self.assertEqual(20000.0, ack_order["extra"]["buying_power_remaining_after"])
+        self.assertTrue(any(event["title"] == "自动开仓购买力预警" for event in pb.events))
+        self.assertTrue(any(event["title"] == "自动开仓已提交" for event in pb.events))
 
 
 class SignalRouterDedupeTest(unittest.TestCase):

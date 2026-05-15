@@ -43,6 +43,20 @@ def _format_quantity(value: Any) -> str:
     return f"{parsed:.2f}"
 
 
+def _format_money(value: Any) -> str:
+    parsed = to_float(value)
+    if parsed is None:
+        return "-"
+    return f"${parsed:,.2f}"
+
+
+def _format_percent(value: Any) -> str:
+    parsed = to_float(value)
+    if parsed is None:
+        return "-"
+    return f"{parsed:.1f}%"
+
+
 def _positive_price(record_or_data: Any, *fields: str) -> float | None:
     extra = get_signal_extra(record_or_data)
     for field in fields:
@@ -83,6 +97,31 @@ def _price_plan_lines(record_or_data: Any) -> list[str]:
     ]
     if actual_fill is not None:
         lines.append(f"**实际成交价**: {_format_price(actual_fill)}")
+    return lines
+
+
+def _buying_power_lines(record_or_data: Any) -> list[str]:
+    extra = get_signal_extra(record_or_data)
+    guard = extra.get("buying_power_guard") if isinstance(extra.get("buying_power_guard"), dict) else {}
+    remaining = first_defined(guard.get("remaining") if guard else None, extra.get("buying_power_remaining"))
+    remaining_after = first_defined(guard.get("remaining_after") if guard else None, extra.get("buying_power_remaining_after"))
+    requested = first_defined(guard.get("requested_exposure") if guard else None, extra.get("buying_power_requested_exposure"))
+    pct = first_defined(guard.get("remaining_pct_net_liq") if guard else None, extra.get("buying_power_remaining_pct_net_liq"))
+    after_pct = first_defined(
+        guard.get("remaining_after_pct_net_liq") if guard else None,
+        extra.get("buying_power_remaining_after_pct_net_liq"),
+    )
+    state = to_text(first_defined(guard.get("state") if guard else None, extra.get("buying_power_guard_state")))
+    reason = to_text(first_defined(guard.get("reason") if guard else None, extra.get("buying_power_guard_reason")))
+    if remaining in (None, "") and remaining_after in (None, "") and requested in (None, ""):
+        return []
+    lines = [f"**当前剩余购买力**: {_format_money(remaining)} ({_format_percent(pct)} NetLiq)"]
+    lines.append(
+        f"**本次预估占用 / 下单后**: {_format_money(requested)} / {_format_money(remaining_after)}"
+        f" ({_format_percent(after_pct)} NetLiq)"
+    )
+    if state and state.lower() != "ok":
+        lines.append(f"**购买力状态**: {state.upper()}{f' · {reason}' if reason else ''}")
     return lines
 
 
@@ -406,6 +445,7 @@ def build_signal_status_card(record_or_data: Any, *, message: str = "", console_
         f"**仓位**: {_format_quantity(record_value(record_or_data, 'shares'))}",
     ]
     body_lines.extend(_price_plan_lines(record_or_data))
+    body_lines.extend(_buying_power_lines(record_or_data))
     body_lines.extend(_followup_lines(record_or_data))
     if message:
         body_lines.append(f"**说明**: {message}")

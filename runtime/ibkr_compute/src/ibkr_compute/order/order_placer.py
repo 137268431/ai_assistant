@@ -55,6 +55,8 @@ class OrderPlacer:
         use_paper: bool = False,
         signal_id: str = "",
         entry_order_type: str = "LMT",
+        order_extra: Dict[str, Any] | None = None,
+        order_ref_suffix: str = "",
     ) -> Dict[str, Any]:
         acct_id = self.get_active_account_id(use_paper)
         logger.info(
@@ -77,6 +79,7 @@ class OrderPlacer:
             stop_loss_price=float(stop_loss_price or 0.0),
             entry_order_type=str(entry_order_type or "LMT").upper(),
             account_id=acct_id,
+            order_ref_suffix=str(order_ref_suffix or ""),
         )
         if result.get("ok"):
             self._order_count += 1
@@ -97,6 +100,7 @@ class OrderPlacer:
                 bracket_group=result.get("bracket_group") or "",
                 oca_group=result.get("oca_group") or result.get("bracket_group") or "",
                 order_family_type=result.get("order_family_type") or "bracket_oco",
+                order_extra=dict(order_extra or {}),
             )
         missing_order_ids = [
             str(item or "").strip()
@@ -131,7 +135,134 @@ class OrderPlacer:
             if protection_incomplete
             else "",
             "safe_action": "diagnostic_only_no_broker_call" if protection_incomplete else "",
+            "quantity": int(quantity or 0),
+            "order_extra": dict(order_extra or {}),
             "raw_response": result.get("raw"),
+        }
+
+    def place_harvest_bracket_order(
+        self,
+        *,
+        conid: int,
+        symbol: str,
+        direction: str,
+        quantity: int,
+        entry_price: float,
+        take_profit_price: float,
+        stop_loss_price: float,
+        use_paper: bool = False,
+        signal_id: str = "",
+        settings: Dict[str, Any] | None = None,
+        entry_order_type: str = "LMT",
+    ) -> Dict[str, Any]:
+        from ibkr_compute.core.intraday_harvest import (
+            INTRADAY_VOLATILITY_HARVEST_PROFILE,
+            normalize_harvest_settings,
+            split_core_tactical_quantity,
+        )
+
+        settings = normalize_harvest_settings(settings or {})
+        split = split_core_tactical_quantity(int(quantity or 0), settings)
+        if not split.get("split"):
+            result = self.place_bracket_order(
+                conid=conid,
+                symbol=symbol,
+                direction=direction,
+                quantity=int(quantity or 0),
+                entry_price=entry_price,
+                take_profit_price=take_profit_price,
+                stop_loss_price=stop_loss_price,
+                use_paper=use_paper,
+                signal_id=signal_id,
+                entry_order_type=entry_order_type,
+                order_extra={
+                    "harvest_managed": True,
+                    "harvest_profile": INTRADAY_VOLATILITY_HARVEST_PROFILE,
+                    "harvest_lot": "core",
+                    "harvest_lot_fraction": 1.0,
+                    "harvest_original_quantity": int(quantity or 0),
+                    "harvest_state": {
+                        "profile": INTRADAY_VOLATILITY_HARVEST_PROFILE,
+                        "lot": "core",
+                        "cycles": 0,
+                        "partial_exited": False,
+                    },
+                },
+                order_ref_suffix="core",
+            )
+            result["harvest_split"] = False
+            result["harvest_profile"] = INTRADAY_VOLATILITY_HARVEST_PROFILE
+            result["legs"] = [{"lot": "core", "quantity": int(quantity or 0), **result}]
+            return result
+
+        legs = []
+        combined_order_ids: list[str] = []
+        ok = True
+        errors = []
+        for lot_name, lot_qty in (("core", int(split["core"])), ("tactical", int(split["tactical"]))):
+            if lot_qty <= 0:
+                continue
+            leg = self.place_bracket_order(
+                conid=conid,
+                symbol=symbol,
+                direction=direction,
+                quantity=lot_qty,
+                entry_price=entry_price,
+                take_profit_price=take_profit_price,
+                stop_loss_price=stop_loss_price,
+                use_paper=use_paper,
+                signal_id=signal_id,
+                entry_order_type=entry_order_type,
+                order_extra={
+                    "harvest_managed": True,
+                    "harvest_profile": INTRADAY_VOLATILITY_HARVEST_PROFILE,
+                    "harvest_lot": lot_name,
+                    "harvest_lot_fraction": round(lot_qty / max(1, int(quantity or 0)), 6),
+                    "harvest_original_quantity": int(quantity or 0),
+                    "harvest_state": {
+                        "profile": INTRADAY_VOLATILITY_HARVEST_PROFILE,
+                        "lot": lot_name,
+                        "cycles": 0,
+                        "partial_exited": False,
+                    },
+                },
+                order_ref_suffix=lot_name,
+            )
+            legs.append({"lot": lot_name, "quantity": lot_qty, **leg})
+            combined_order_ids.extend(leg.get("order_ids") or [])
+            if not leg.get("ok"):
+                ok = False
+                errors.append({"lot": lot_name, "error": leg.get("error") or "submit_failed"})
+
+        primary = legs[0] if legs else {}
+        all_legs_ok = bool(legs) and ok
+        failed_order_ids = [
+            order_id
+            for leg in legs
+            if not leg.get("ok")
+            for order_id in (leg.get("order_ids") or [])
+        ]
+        return {
+            "ok": all_legs_ok,
+            "harvest_split": True,
+            "harvest_profile": INTRADAY_VOLATILITY_HARVEST_PROFILE,
+            "legs": legs,
+            "order_ids": combined_order_ids,
+            "bracket_group": str(primary.get("bracket_group") or ""),
+            "oca_group": str(primary.get("oca_group") or ""),
+            "entry_coid": str(primary.get("entry_coid") or ""),
+            "tp_coid": str(primary.get("tp_coid") or ""),
+            "sl_coid": str(primary.get("sl_coid") or ""),
+            "protection_complete": all_legs_ok and all(bool(item.get("protection_complete")) for item in legs),
+            "protection_incomplete": (bool(legs) and not all_legs_ok) or any(bool(item.get("protection_incomplete")) for item in legs),
+            "missing_order_ids": failed_order_ids,
+            "missing_protection_roles": [
+                role
+                for leg in legs
+                for role in (leg.get("missing_protection_roles") or [])
+            ],
+            "error": "; ".join(item["error"] for item in errors) if errors else None,
+            "partial_submit_errors": errors,
         }
 
     def place_market_close(
@@ -250,6 +381,7 @@ class OrderPlacer:
             trade_group_id = bracket_group or entry_unique_id
             oca_group = str(kwargs.get("oca_group") or bracket_group or "").strip()
             order_family_type = str(kwargs.get("order_family_type") or "bracket_oco").strip()
+            order_extra = dict(kwargs.get("order_extra") or {})
             symbol = kwargs.get("symbol")
             signal_id = kwargs.get("signal_id", "")
             order_ids = [str(item or "").strip() for item in (kwargs.get("order_ids") or [])]
@@ -275,10 +407,12 @@ class OrderPlacer:
                         "bracket_group": bracket_group,
                         "oca_group": oca_group,
                         "order_family_type": order_family_type,
+                        **order_extra,
                     },
                 }
                 self.pb_client.upsert_order({
                     **base_payload,
+                    "conid": kwargs.get("conid", 0),
                     "unique_id": entry_unique_id,
                     "order_id": entry_order_id,
                     "broker_order_id": entry_order_id,
@@ -294,6 +428,7 @@ class OrderPlacer:
                 })
                 self.pb_client.upsert_order({
                     **base_payload,
+                    "conid": kwargs.get("conid", 0),
                     "unique_id": tp_unique_id,
                     "order_id": tp_order_id,
                     "broker_order_id": tp_order_id,
@@ -309,6 +444,7 @@ class OrderPlacer:
                 })
                 self.pb_client.upsert_order({
                     **base_payload,
+                    "conid": kwargs.get("conid", 0),
                     "unique_id": sl_unique_id,
                     "order_id": sl_order_id,
                     "broker_order_id": sl_order_id,

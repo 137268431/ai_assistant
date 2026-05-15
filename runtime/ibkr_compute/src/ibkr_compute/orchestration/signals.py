@@ -2,6 +2,12 @@ from __future__ import annotations
 
 import copy
 import json
+import time
+
+from ibkr_compute.api.account.buying_power_guard import (
+    build_buying_power_guard,
+    estimate_entry_exposure,
+)
 
 
 def _service_mod():
@@ -215,6 +221,29 @@ class TradingServiceSignalsMixin:
                     continue
 
                 sig = guarded_sig
+                buying_power_guard = self._evaluate_signal_buying_power_guard(sig)
+                if buying_power_guard.get("state") == "blocked":
+                    service_mod.logger.warning(
+                        "Signal blocked by buying-power guard: signal_id=%s symbol=%s remaining_after=%s block_floor=%s",
+                        signal_id,
+                        sig.get("symbol"),
+                        buying_power_guard.get("remaining_after"),
+                        buying_power_guard.get("block_floor"),
+                    )
+                    self._mark_signal_buying_power_blocked(sig, buying_power_guard)
+                    self._notify_buying_power_guard(sig, buying_power_guard, level="error", event_type="alert")
+                    self.signal_router.mark_processed(signal_id)
+                    finalized = True
+                    continue
+                if buying_power_guard.get("enabled"):
+                    extra = self._signal_extra(sig)
+                    sig["extra"] = {
+                        **extra,
+                        **self._buying_power_extra_fields(buying_power_guard),
+                    }
+                if buying_power_guard.get("state") == "warning":
+                    self._notify_buying_power_guard(sig, buying_power_guard, level="warning", event_type="alert")
+
                 symbol = sig["symbol"]
                 duplicate_order = self.order_tracker.find_duplicate_open_entry(
                     symbol=symbol,
@@ -252,19 +281,44 @@ class TradingServiceSignalsMixin:
                     service_mod.logger.warning("Cannot resolve conid for %s, skipping", symbol)
                     continue
 
-                result = self.order_placer.place_bracket_order(
-                    conid=conid,
-                    symbol=symbol,
-                    direction=sig["direction"],
-                    quantity=sig["shares"],
-                    entry_price=sig["entry"],
-                    take_profit_price=sig["take_profit"],
-                    stop_loss_price=sig["stop_loss"],
-                    use_paper=service_mod.ENVIRONMENT == "paper",
-                    signal_id=signal_id,
-                )
+                harvest_settings = self._harvest_entry_settings()
+                harvest_submitter = getattr(self.order_placer, "place_harvest_bracket_order", None)
+                if not callable(harvest_submitter):
+                    result = {
+                        "ok": False,
+                        "error": "intraday_harvest_submitter_unavailable",
+                        "protection_complete": False,
+                    }
+                else:
+                    extra = self._signal_extra(sig)
+                    sig["extra"] = {
+                        **extra,
+                        "intraday_harvest_profile": "intraday_volatility_harvest_v1",
+                        "intraday_harvest_split_requested": True,
+                    }
+                    result = harvest_submitter(
+                        conid=conid,
+                        symbol=symbol,
+                        direction=sig["direction"],
+                        quantity=sig["shares"],
+                        entry_price=sig["entry"],
+                        take_profit_price=sig["take_profit"],
+                        stop_loss_price=sig["stop_loss"],
+                        use_paper=service_mod.ENVIRONMENT == "paper",
+                        signal_id=signal_id,
+                        settings=harvest_settings,
+                    )
 
                 if result.get("ok"):
+                    if buying_power_guard.get("enabled"):
+                        result["buying_power_guard"] = dict(buying_power_guard)
+                        self._notify_buying_power_guard(
+                            sig,
+                            buying_power_guard,
+                            level="info",
+                            event_type="account_order",
+                            force=True,
+                        )
                     self._patch_signal_pre_submit_prices(sig)
                     service_mod.logger.info(
                         "Order placed: %s %s bracket_group=%s",
@@ -273,25 +327,7 @@ class TradingServiceSignalsMixin:
                         result.get("bracket_group"),
                     )
                     try:
-                        self.order_tracker.register_submitted_orders(
-                            result.get("order_ids") or [],
-                            {
-                                "symbol": symbol,
-                                "direction": sig["direction"],
-                                "quantity": sig["shares"],
-                                "entry_price": sig["entry"],
-                                "tp_price": sig["take_profit"],
-                                "sl_price": sig["stop_loss"],
-                                "entry_order_type": "LMT",
-                                "entry_limit_intent": "passive",
-                                "entry_price_plan": "passive_limit",
-                                "entry_unique_id": result.get("entry_coid")
-                                or result.get("bracket_group")
-                                or "",
-                                "tp_unique_id": result.get("tp_coid") or "",
-                                "sl_unique_id": result.get("sl_coid") or "",
-                            },
-                        )
+                        self._register_submitted_order_result(result, sig, symbol)
                     except Exception as track_err:
                         service_mod.logger.error("Order tracker register failed: %s", track_err)
                     try:
@@ -364,6 +400,73 @@ class TradingServiceSignalsMixin:
             return str(getter(key, _service_mod().ENVIRONMENT, default))
         except Exception:
             return str(default)
+
+    def _harvest_entry_settings(self) -> dict:
+        try:
+            from ibkr_compute.core.intraday_harvest import harvest_settings_from_config
+
+            settings = harvest_settings_from_config(
+                getattr(self, "config", None),
+                _service_mod().ENVIRONMENT,
+            )
+            settings["enabled"] = True
+            settings["live_auto_enabled"] = True
+            settings["split_brackets_enabled"] = True
+            return settings
+        except Exception:
+            return {"enabled": True, "live_auto_enabled": True, "split_brackets_enabled": True}
+
+    @staticmethod
+    def _harvest_entry_split_enabled(settings: dict | None) -> bool:
+        settings = settings if isinstance(settings, dict) else {}
+        return bool(settings.get("enabled") and settings.get("split_brackets_enabled"))
+
+    @staticmethod
+    def _primary_order_result(result: dict) -> dict:
+        result = result if isinstance(result, dict) else {}
+        legs = [dict(item) for item in (result.get("legs") or []) if isinstance(item, dict)]
+        if not legs:
+            return dict(result)
+        primary = next((item for item in legs if item.get("ok") and item.get("lot") == "core"), None)
+        if primary is None:
+            primary = next((item for item in legs if item.get("ok")), None)
+        if primary is None:
+            primary = legs[0]
+        return {
+            **result,
+            **primary,
+            "harvest_split": bool(result.get("harvest_split")),
+            "harvest_legs": legs,
+            "combined_order_ids": list(result.get("order_ids") or []),
+            "order_ids": list(primary.get("order_ids") or []),
+        }
+
+    def _register_submitted_order_result(self, result: dict, sig: dict, symbol: str):
+        legs = [dict(item) for item in ((result or {}).get("legs") or []) if isinstance(item, dict)]
+        targets = legs if (result or {}).get("harvest_split") and legs else [dict(result or {})]
+        for target in targets:
+            order_ids = target.get("order_ids") or []
+            if not order_ids:
+                continue
+            self.order_tracker.register_submitted_orders(
+                order_ids,
+                {
+                    "symbol": symbol,
+                    "direction": sig["direction"],
+                    "quantity": target.get("quantity") or sig["shares"],
+                    "entry_price": sig["entry"],
+                    "tp_price": sig["take_profit"],
+                    "sl_price": sig["stop_loss"],
+                    "entry_order_type": "LMT",
+                    "entry_limit_intent": "passive",
+                    "entry_price_plan": "passive_limit",
+                    "entry_unique_id": target.get("entry_coid")
+                    or target.get("bracket_group")
+                    or "",
+                    "tp_unique_id": target.get("tp_coid") or "",
+                    "sl_unique_id": target.get("sl_coid") or "",
+                },
+            )
 
     @staticmethod
     def _signal_extra(sig: dict) -> dict:
@@ -614,6 +717,131 @@ class TradingServiceSignalsMixin:
             return {"capacity_full": False, "capacity_check_error": str(exc)}
         return snapshot if isinstance(snapshot, dict) else {"capacity_full": False}
 
+    @staticmethod
+    def _buying_power_extra_fields(guard: dict) -> dict:
+        guard = dict(guard or {}) if isinstance(guard, dict) else {}
+        return {
+            "buying_power_guard": guard,
+            "buying_power_remaining": guard.get("remaining"),
+            "buying_power_remaining_after": guard.get("remaining_after"),
+            "buying_power_remaining_pct_net_liq": guard.get("remaining_pct_net_liq"),
+            "buying_power_remaining_after_pct_net_liq": guard.get("remaining_after_pct_net_liq"),
+            "buying_power_requested_exposure": guard.get("requested_exposure"),
+            "buying_power_guard_state": guard.get("state"),
+            "buying_power_guard_reason": guard.get("reason"),
+        }
+
+    def _account_buying_power_snapshot(self) -> dict:
+        provider = getattr(self, "account_snapshot_provider", None)
+        if callable(provider):
+            try:
+                snapshot = provider()
+                return snapshot if isinstance(snapshot, dict) else {}
+            except Exception as exc:
+                _service_mod().logger.warning("Buying-power snapshot provider failed: %s", exc)
+                return {}
+        try:
+            from ibkr_compute.api.account.snapshot import _build_ibkr_account_snapshot
+
+            snapshot = _build_ibkr_account_snapshot(self)
+            return snapshot if isinstance(snapshot, dict) else {}
+        except Exception as exc:
+            _service_mod().logger.warning("Buying-power snapshot failed: %s", exc)
+            return {}
+
+    def _evaluate_signal_buying_power_guard(self, sig: dict) -> dict:
+        service_mod = _service_mod()
+        snapshot = self._account_buying_power_snapshot()
+        exposure = estimate_entry_exposure(
+            sig.get("shares"),
+            sig.get("entry"),
+            sig.get("take_profit"),
+            sig.get("stop_loss"),
+            sig.get("direction"),
+            "LMT",
+        )
+        guard = build_buying_power_guard(
+            (snapshot or {}).get("summary") or {},
+            config=getattr(self, "config", None),
+            environment=service_mod.ENVIRONMENT,
+            requested_exposure=exposure,
+        )
+        guard["snapshot_fetched_at"] = (snapshot or {}).get("fetched_at") or ""
+        if exposure <= 0 and guard.get("enabled"):
+            guard["state"] = "blocked"
+            guard["reason"] = "buying_power_price_unavailable"
+        return guard
+
+    def _buying_power_notify_enabled(self) -> bool:
+        return self._config_bool("ibkr_buying_power_notify_enabled", True)
+
+    def _buying_power_guard_notify_allowed(self, sig: dict, guard: dict, level: str, *, force: bool = False) -> bool:
+        if force:
+            return True
+        cooldown = max(0.0, self._config_float("ibkr_buying_power_notify_cooldown_sec", 1800.0))
+        if cooldown <= 0:
+            return True
+        state = str((guard or {}).get("state") or "ok").strip().lower()
+        symbol = str((sig or {}).get("symbol") or "").strip().upper()
+        key = f"{_service_mod().ENVIRONMENT}:{level}:{state}:{symbol}"
+        now = time.time()
+        last_map = getattr(self, "_buying_power_guard_last_notify", None)
+        if not isinstance(last_map, dict):
+            last_map = {}
+            setattr(self, "_buying_power_guard_last_notify", last_map)
+        last = float(last_map.get(key) or 0.0)
+        if last and now - last < cooldown:
+            return False
+        last_map[key] = now
+        return True
+
+    def _notify_buying_power_guard(
+        self,
+        sig: dict,
+        guard: dict,
+        *,
+        level: str,
+        event_type: str = "alert",
+        force: bool = False,
+    ) -> None:
+        if not self._buying_power_notify_enabled():
+            return
+        if not self._buying_power_guard_notify_allowed(sig, guard, level, force=force):
+            return
+        pb = getattr(self, "pb", None)
+        notifier = getattr(pb, "notify_system_event", None)
+        if not callable(notifier):
+            return
+        state = str((guard or {}).get("state") or "ok").strip().lower()
+        title = "自动开仓购买力预警"
+        if state == "blocked":
+            title = "自动开仓已被购买力阈值拦截"
+        elif level == "info":
+            title = "自动开仓已提交"
+        try:
+            notifier(
+                title,
+                {
+                    "信号ID": str((sig or {}).get("signal_id") or ""),
+                    "标的": str((sig or {}).get("symbol") or "").upper(),
+                    "方向": str((sig or {}).get("direction") or ""),
+                    "数量": int(self._safe_float((sig or {}).get("shares"), 0.0)),
+                    "当前剩余购买力": round(float((guard or {}).get("remaining") or 0.0), 2),
+                    "本次预估占用": round(float((guard or {}).get("requested_exposure") or 0.0), 2),
+                    "下单后剩余购买力": round(float((guard or {}).get("remaining_after") or 0.0), 2),
+                    "预警阈值": round(float((guard or {}).get("warn_floor") or 0.0), 2),
+                    "禁止阈值": round(float((guard or {}).get("block_floor") or 0.0), 2),
+                    "状态": state,
+                    "原因": str((guard or {}).get("reason") or ""),
+                },
+                event_type=event_type,
+                level=level,
+                source="ibkr_compute",
+                environment=_service_mod().ENVIRONMENT,
+            )
+        except Exception as exc:
+            _service_mod().logger.warning("Buying-power notification failed: %s", exc)
+
     def _load_signal_record_and_extra(self, sig: dict) -> tuple[dict, dict]:
         service_mod = _service_mod()
         if not self.pb:
@@ -713,6 +941,44 @@ class TradingServiceSignalsMixin:
         except Exception as exc:
             service_mod.logger.error(
                 "Failed to mark signal fixed-position-blocked: signal_id=%s error=%s",
+                signal_id,
+                exc,
+            )
+
+    def _mark_signal_buying_power_blocked(self, sig: dict, guard: dict):
+        service_mod = _service_mod()
+        if not self.pb:
+            return
+
+        signal_id = str(sig.get("signal_id") or "").strip()
+        if not signal_id:
+            return
+
+        try:
+            record, existing_extra = self._load_signal_record_and_extra(sig)
+            if not record:
+                return
+            signal_extra = sig.get("extra") if isinstance(sig.get("extra"), dict) else {}
+            self.pb.update_record(
+                "ibkr_signals",
+                record["id"],
+                {
+                    "status": "rejected",
+                    "note": "buying_power_blocked",
+                    "extra": {
+                        **existing_extra,
+                        **signal_extra,
+                        **self._buying_power_extra_fields(guard),
+                        "status_reason": "buying_power_blocked",
+                        "execution_state": "blocked",
+                        "buying_power_blocked": True,
+                        "buying_power_blocked_at": self._now_iso(),
+                    },
+                },
+            )
+        except Exception as exc:
+            service_mod.logger.error(
+                "Failed to mark signal buying-power-blocked: signal_id=%s error=%s",
                 signal_id,
                 exc,
             )
@@ -1018,6 +1284,8 @@ class TradingServiceSignalsMixin:
 
     def _ack_signal_after_order_submission(self, sig: dict, result: dict):
         service_mod = _service_mod()
+        submitted_result = dict(result or {})
+        result = self._primary_order_result(submitted_result)
         raw = sig.get("raw") or {}
         order_ids = result.get("order_ids") or []
         entry_order_id = str(order_ids[0]) if len(order_ids) > 0 and order_ids[0] else ""
@@ -1029,6 +1297,32 @@ class TradingServiceSignalsMixin:
         trade_group_id = result.get("bracket_group") or entry_unique_id
         oca_group = str(result.get("oca_group") or trade_group_id or "").strip()
         order_family_type = str(result.get("order_family_type") or ("bracket_oco" if trade_group_id else "")).strip()
+        ack_quantity = int(result.get("quantity") or sig["shares"] or 0)
+        order_extra = dict(result.get("order_extra") or {})
+        harvest_legs = [dict(item) for item in (submitted_result.get("legs") or []) if isinstance(item, dict)]
+        harvest_fields = {}
+        if submitted_result.get("harvest_split") or order_extra.get("harvest_managed"):
+            harvest_fields = {
+                "intraday_harvest_managed": True,
+                "intraday_harvest_profile": submitted_result.get("harvest_profile")
+                or order_extra.get("harvest_profile")
+                or "intraday_volatility_harvest_v1",
+                "intraday_harvest_split": bool(submitted_result.get("harvest_split")),
+                "intraday_harvest_lot": order_extra.get("harvest_lot") or result.get("lot") or "",
+                "intraday_harvest_legs": [
+                    {
+                        "lot": item.get("lot") or "",
+                        "quantity": item.get("quantity") or 0,
+                        "order_ids": list(item.get("order_ids") or []),
+                        "bracket_group": item.get("bracket_group") or "",
+                        "entry_coid": item.get("entry_coid") or "",
+                        "tp_coid": item.get("tp_coid") or "",
+                        "sl_coid": item.get("sl_coid") or "",
+                        "ok": bool(item.get("ok")),
+                    }
+                    for item in harvest_legs
+                ],
+            }
         bar_time_ms = int(raw.get("bar_time_ms") or 0)
         us_time = raw.get("us_time") or sig.get("signal_time") or ""
         cn_time = raw.get("cn_time") or ""
@@ -1056,6 +1350,12 @@ class TradingServiceSignalsMixin:
             if signal_extra.get(key) not in (None, "")
         }
         exit_policy_fields.update(self._live_trailing_stop_metadata(signal_extra))
+        buying_power_guard = (
+            dict(signal_extra.get("buying_power_guard"))
+            if isinstance(signal_extra.get("buying_power_guard"), dict)
+            else {}
+        )
+        buying_power_fields = self._buying_power_extra_fields(buying_power_guard) if buying_power_guard else {}
         protection_complete = bool(result.get("protection_complete"))
         protection_incomplete = not protection_complete
         diagnostic = (
@@ -1089,6 +1389,7 @@ class TradingServiceSignalsMixin:
                         "bracket_group": trade_group_id,
                         "oca_group": oca_group,
                         "order_family_type": order_family_type,
+                        **order_extra,
                         **exit_policy_fields,
                     },
                 }
@@ -1110,6 +1411,7 @@ class TradingServiceSignalsMixin:
                         "bracket_group": trade_group_id,
                         "oca_group": oca_group,
                         "order_family_type": order_family_type,
+                        **order_extra,
                         **exit_policy_fields,
                     },
                 }
@@ -1124,7 +1426,7 @@ class TradingServiceSignalsMixin:
             "relation_status": "active" if protection_complete else "protection_incomplete",
             "direction": sig["direction"],
             "position_side": sig["direction"],
-            "quantity": sig["shares"],
+            "quantity": ack_quantity,
             "limit_price": sig["entry"],
             "status": "Submitted",
             "stop_loss": sig["stop_loss"],
@@ -1156,7 +1458,10 @@ class TradingServiceSignalsMixin:
                 else "bracket_protection_incomplete",
                 "protection_incomplete_diagnostic": diagnostic,
                 "safety_cancel_recommended": bool(diagnostic.get("cancel_recommended")) if diagnostic else False,
+                **order_extra,
+                **harvest_fields,
                 **exit_policy_fields,
+                **buying_power_fields,
             },
         }
 

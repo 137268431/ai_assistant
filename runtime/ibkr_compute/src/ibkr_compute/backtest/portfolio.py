@@ -301,14 +301,83 @@ class BacktestPortfolioMixin:
         state["cooldown_until_ms"] = int(bar.get("bar_time_ms", 0) or 0) + duration_ms
         state["cooldown_reason"] = str(reason or "cooldown_active").strip() or "cooldown_active"
 
+    def _backtest_intraday_harvest_settings(self, request: dict) -> dict:
+        enabled = self._normalize_bool(request.get("intraday_harvest_enabled"), False)
+        raw_settings = request.get("intraday_harvest_settings")
+        settings = normalize_harvest_settings(raw_settings if isinstance(raw_settings, dict) else {})
+        settings["enabled"] = enabled
+        settings["live_auto_enabled"] = enabled
+        return settings
+
+    @staticmethod
+    def _backtest_stop_tightens(direction: str, old_stop: float, new_stop: float) -> bool:
+        if new_stop <= 0:
+            return False
+        if old_stop <= 0:
+            return True
+        if str(direction or "").strip().lower() == "short":
+            return new_stop < old_stop - 0.005
+        return new_stop > old_stop + 0.005
+
+    def _maybe_apply_backtest_intraday_harvest(
+        self,
+        position: dict | None,
+        snapshot: dict,
+        request: dict,
+    ) -> dict | None:
+        if not position:
+            return position
+        settings = self._backtest_intraday_harvest_settings(request)
+        if not settings.get("enabled"):
+            return position
+        state = dict(position.get("harvest_state") or {})
+        decision = evaluate_intraday_harvest(position, snapshot, state=state, settings=settings)
+        position["harvest_state"] = dict(decision.get("state") or state)
+        position["last_intraday_harvest_decision"] = {
+            "action": str(decision.get("action") or ""),
+            "reason": str(decision.get("reason") or ""),
+            "score": int(decision.get("score") or 0),
+            "reasons": list(decision.get("reasons") or []),
+            "progress_r": decision.get("progress_r"),
+            "mfe_r": decision.get("mfe_r"),
+            "bar_time_ms": int(snapshot.get("bar_time_ms", 0) or 0),
+        }
+        action = str(decision.get("action") or "")
+        if action == ACTION_TIGHTEN_STOP:
+            new_sl = self._coerce_float_value(decision.get("stop_price"), 0.0)
+            old_sl = float(position.get("stop_price", 0) or 0)
+            if self._backtest_stop_tightens(str(position.get("direction") or ""), old_sl, new_sl):
+                position["stop_price"] = float(new_sl)
+                position["harvest_stop_adjust_count"] = int(position.get("harvest_stop_adjust_count", 0) or 0) + 1
+                self._append_backtest_risk_adjustment(
+                    position,
+                    {
+                        "event_type": "intraday_harvest_tighten_stop",
+                        "source": "intraday_harvest",
+                        "bar_time_ms": int(snapshot.get("bar_time_ms", 0) or 0),
+                        "us_time": str(snapshot.get("us_time", "") or ""),
+                        "cn_time": str(snapshot.get("cn_time", "") or ""),
+                        "old_sl": round(old_sl, 4),
+                        "new_sl": round(new_sl, 4),
+                        "reason": str(decision.get("reason") or "intraday_harvest_tighten_stop"),
+                        "progress_r": round(float(decision.get("progress_r", 0) or 0), 4),
+                        "mfe_r": round(float(decision.get("mfe_r", 0) or 0), 4),
+                    },
+                )
+        elif action == ACTION_FULL_EXIT:
+            position["backtest_harvest_force_exit"] = dict(decision)
+        return position
+
     def _maybe_apply_backtest_atr_stop(
         self,
         position: dict | None,
         snapshot: dict,
         request: dict,
     ) -> dict | None:
-        if not position or not self._normalize_bool(request.get("atr_dynamic_stop_enabled"), True):
+        if not position:
             return position
+        if not self._normalize_bool(request.get("atr_dynamic_stop_enabled"), True):
+            return self._maybe_apply_backtest_intraday_harvest(position, snapshot, request)
         current_price = self._coerce_float_value(snapshot.get("close"), 0.0)
         current_atr = self._coerce_float_value(snapshot.get("atr"), 0.0)
         if is_signal_mode_adaptive_exit_profile(position.get("exit_policy_profile")):
@@ -363,7 +432,7 @@ class BacktestPortfolioMixin:
                 min_change=self._coerce_float_value(request.get("atr_stop_min_change"), 0.01),
             )
         if not result.get("should_update"):
-            return position
+            return self._maybe_apply_backtest_intraday_harvest(position, snapshot, request)
         old_sl = float(position.get("stop_price", 0) or 0)
         position["stop_price"] = float(result["new_sl"])
         position["last_stop_atr"] = float(result.get("current_atr", current_atr) or current_atr)
@@ -386,7 +455,7 @@ class BacktestPortfolioMixin:
                 "atr_deviation": round(float(result.get("atr_deviation", 0) or 0), 4),
             },
         )
-        return position
+        return self._maybe_apply_backtest_intraday_harvest(position, snapshot, request)
 
     def _maybe_close_backtest_exit_policy_time_stop(
         self,
@@ -411,6 +480,32 @@ class BacktestPortfolioMixin:
         )
         extra = self._parse_object(trade.get("extra"))
         extra["exit_policy_time_stop"] = result
+        trade["extra"] = extra
+        return trade
+
+    def _maybe_close_backtest_intraday_harvest(
+        self,
+        position: dict | None,
+        bar: dict,
+        commission_per_share: float,
+        slippage_bps: float,
+        execution_profile: dict | None = None,
+    ) -> dict | None:
+        if not position:
+            return None
+        decision = position.pop("backtest_harvest_force_exit", None)
+        if not isinstance(decision, dict) or not decision:
+            return None
+        trade = self._close_position(
+            position,
+            bar,
+            commission_per_share,
+            slippage_bps,
+            "intraday_harvest_full_exit",
+            execution_profile,
+        )
+        extra = self._parse_object(trade.get("extra"))
+        extra["intraday_harvest_decision"] = decision
         trade["extra"] = extra
         return trade
 
@@ -1967,6 +2062,17 @@ class BacktestPortfolioMixin:
                         snapshot,
                         request,
                     )
+                    harvest_trade = self._maybe_close_backtest_intraday_harvest(
+                        state["open_position"],
+                        bar,
+                        commission_per_share,
+                        slippage_bps,
+                        execution_profile,
+                    )
+                    if harvest_trade:
+                        append_trade(state["open_position"], harvest_trade)
+                        state["open_position"] = None
+                        continue
                     time_stop_trade = self._maybe_close_backtest_exit_policy_time_stop(
                         state["open_position"],
                         bar,

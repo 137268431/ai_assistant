@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from ibkr_compute.api.account.buying_power_guard import (
+    build_buying_power_guard,
+    enrich_buying_power_summary,
+)
 from ibkr_compute.api.account.live import (
     _extract_summary_number,
     _extract_summary_text,
@@ -68,7 +72,7 @@ def _build_snapshot_summary(summary_raw: dict, account_id: str, positions: list[
     summary_map = _summary_lookup(summary_raw)
     total_unrealized = sum(float(item.get("unrealized_pnl", 0) or 0) for item in positions)
     total_market_value = sum(abs(float(item.get("market_value", 0) or 0)) for item in positions)
-    return {
+    summary = {
         "account_code": _extract_summary_text(summary_map, "accountcode") or account_id,
         "account_type": _extract_summary_text(summary_map, "accounttype"),
         "net_liquidation": _extract_summary_number(summary_map, "netliquidation", "netliq"),
@@ -84,6 +88,7 @@ def _build_snapshot_summary(summary_raw: dict, account_id: str, positions: list[
         "realized_pnl": _extract_summary_number(summary_map, "realizedpnl"),
         "currency": _extract_summary_text(summary_map, "currency", "basecurrency") or "USD",
     }
+    return enrich_buying_power_summary(summary)
 
 
 def _build_snapshot_counts(positions: list[dict], orders: list[dict], live_open_orders: list[dict]) -> dict:
@@ -125,6 +130,7 @@ def _build_ibkr_account_snapshot(service) -> dict:
         fallback_ids,
     )
 
+    summary = _build_snapshot_summary(snapshot_sources["summary_raw"], context["account_id"], positions)
     payload = {
         "ok": True,
         "environment": context["runtime_environment"],
@@ -134,7 +140,12 @@ def _build_ibkr_account_snapshot(service) -> dict:
         "session_authenticated": bool((context["service_status"].get("session") or {}).get("authenticated")),
         "gateway_running": bool((context["service_status"].get("gateway") or {}).get("running")),
         "websocket_ready": bool((context["service_status"].get("websocket") or {}).get("ready")),
-        "summary": _build_snapshot_summary(snapshot_sources["summary_raw"], context["account_id"], positions),
+        "summary": summary,
+        "buying_power_guard": build_buying_power_guard(
+            summary,
+            config=getattr(service, "config", None),
+            environment=context["runtime_environment"],
+        ),
         "summary_raw": snapshot_sources["summary_raw"] if isinstance(snapshot_sources["summary_raw"], dict) else {},
         "positions": positions,
         "orders": orders,

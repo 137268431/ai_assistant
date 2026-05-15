@@ -81,6 +81,10 @@ def register_signal_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             normalize_environment=normalize_environment,
             escape_filter_string=escape_filter_string,
             order_upsert_builder=build_order_upsert_response,
+            send_interactive=feishu_send_interactive,
+            update_interactive=feishu_update_interactive,
+            signal_chat_id_fn=signal_chat_id,
+            console_base_url=console_base_url(),
         )
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)

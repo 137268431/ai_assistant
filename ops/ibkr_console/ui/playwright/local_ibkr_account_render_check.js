@@ -121,6 +121,8 @@ const mockSnapshot = enrichAccountSnapshot(
       net_liquidation: 120000,
       available_funds: 50000,
       buying_power: 100000,
+      remaining_buying_power: 100000,
+      remaining_buying_power_pct_net_liq: 83.3333333333,
       excess_liquidity: 75000,
       equity_with_loan: 120000,
       gross_position_value: 25000,
@@ -130,6 +132,24 @@ const mockSnapshot = enrichAccountSnapshot(
       sma: 50000,
       day_trades_remaining: 3,
       leverage: 0.2,
+    },
+    buying_power_guard: {
+      enabled: true,
+      basis: 'buying_power',
+      remaining: 100000,
+      net_liquidation: 120000,
+      remaining_after: 100000,
+      requested_exposure: 0,
+      remaining_pct_net_liq: 83.3333333333,
+      remaining_after_pct_net_liq: 83.3333333333,
+      warn_floor: 25000,
+      block_floor: 12000,
+      warn_usd: 25000,
+      warn_pct_net_liq: 20,
+      block_usd: 10000,
+      block_pct_net_liq: 10,
+      state: 'ok',
+      reason: 'ok',
     },
     positions: [
       {
@@ -306,8 +326,19 @@ const mockSnapshot = enrichAccountSnapshot(
 const htmlPath = path.join(repoRoot, 'runtime', 'ibkr_console', 'static', 'ibkr_account.html');
 const commonBasePath = path.join(repoRoot, 'runtime', 'ibkr_console', 'static', 'assets', 'js', 'shared', 'base.js');
 const commonUiPath = path.join(repoRoot, 'runtime', 'ibkr_console', 'static', 'assets', 'js', 'shared', 'ui.js');
+const commonUiBundlePaths = [
+  'ui-toast-nav.js',
+  'ui-time-indicator.js',
+  'ui-page.js',
+  'ui-bridges.js',
+  'ui-legacy.js',
+].map((file) => path.join(repoRoot, 'runtime', 'ibkr_console', 'static', 'assets', 'js', 'shared', file));
 let html = fs.readFileSync(htmlPath, 'utf8');
-let common = `${fs.readFileSync(commonBasePath, 'utf8')}\n${fs.readFileSync(commonUiPath, 'utf8')}`;
+let common = [
+  fs.readFileSync(commonBasePath, 'utf8'),
+  fs.readFileSync(commonUiPath, 'utf8'),
+  ...commonUiBundlePaths.map((filePath) => fs.readFileSync(filePath, 'utf8')),
+].join('\n');
 common = common.replace(
   /function getStoredEnvironment\(\) \{[\s\S]*?\n\}/,
   "function getStoredEnvironment() {\n  return window.__mock_environment || '';\n}",
@@ -324,7 +355,8 @@ common = common.replace(
   /function clearToken\(\) \{[\s\S]*?\n\}/,
   "function clearToken() {}\n",
 );
-const injected = `<script>${common}</script><script>
+const safeCommon = common.replace(/<\/script/gi, '<\\/script');
+const injected = `<script>${safeCommon}</script><script>
 window.__MOCK_SNAPSHOT__ = ${JSON.stringify(mockSnapshot)};
 window.buildPageUrl = function(path, params = {}, options = {}) {
   const search = new URLSearchParams();
@@ -364,7 +396,7 @@ html = html.replace(/<link href="https:\/\/fonts\.googleapis\.com[^"]+" rel="sty
   try {
     await page.waitForFunction(() => {
       const text = document.getElementById('ordersMeta')?.textContent || '';
-      return text.includes('live · groups');
+      return text.includes('IBKR live') && text.includes('groups');
     }, { timeout: 15000 });
   } catch (error) {
     const debug = await page.evaluate(() => ({
@@ -380,6 +412,8 @@ html = html.replace(/<link href="https:\/\/fonts\.googleapis\.com[^"]+" rel="sty
 
   const result = await page.evaluate(() => ({
     ordersMeta: document.getElementById('ordersMeta')?.textContent || '',
+    accountSummaryText: document.getElementById('summaryGrid')?.innerText || '',
+    positionsText: document.getElementById('positionsArea')?.innerText || '',
     summaryText: document.getElementById('ordersSummary')?.innerText || '',
     areaText: document.getElementById('ordersArea')?.innerText || '',
     sectionTitles: Array.from(document.querySelectorAll('.orders-section-card .section-title')).map((el) => el.textContent.trim()),
@@ -393,12 +427,14 @@ html = html.replace(/<link href="https:\/\/fonts\.googleapis\.com[^"]+" rel="sty
   await page.screenshot({ path: screenshot, fullPage: false });
   await browser.close();
 
-  const passed = result.ordersMeta.includes('3 live')
+  const passed = result.ordersMeta.includes('3 IBKR live')
     && result.ordersMeta.includes('groups 2')
     && result.areaText.includes('Broker Only Live Chains')
     && result.areaText.includes('Matched Live Chains')
-    && result.areaText.includes('PB Shadow Chains')
+    && result.areaText.includes('PB Stale / Needs Repair Chains')
     && result.areaText.includes('missing_client_order_id')
+    && result.accountSummaryText.includes('Remaining BP')
+    && result.positionsText.includes('Unrealized %')
     && result.tableCount >= 3
     && result.chainRowCount >= 3
     && result.legRowCount >= 4

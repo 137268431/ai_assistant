@@ -114,6 +114,9 @@ def build_execution_cost_profile(
         "ibkr_fixed_per_share": max(0.0, _safe_float(custom.get("ibkr_fixed_per_share"), 0.005)),
         "ibkr_fixed_min_commission": max(0.0, _safe_float(custom.get("ibkr_fixed_min_commission"), 1.0)),
         "ibkr_fixed_max_pct_trade_value": max(0.0, _safe_float(custom.get("ibkr_fixed_max_pct_trade_value"), 0.01)),
+        "ibkr_tiered_per_share": max(0.0, _safe_float(custom.get("ibkr_tiered_per_share"), 0.0035)),
+        "ibkr_tiered_min_commission": max(0.0, _safe_float(custom.get("ibkr_tiered_min_commission"), 0.35)),
+        "ibkr_tiered_max_pct_trade_value": max(0.0, _safe_float(custom.get("ibkr_tiered_max_pct_trade_value"), 0.01)),
         "calibrated_per_share": max(0.0, _safe_float(custom.get("calibrated_per_share"), commission)),
         "calibrated_min_commission": max(0.0, _safe_float(custom.get("calibrated_min_commission"), 0.0)),
         "calibrated_max_pct_trade_value": max(0.0, _safe_float(custom.get("calibrated_max_pct_trade_value"), 0.0)),
@@ -172,6 +175,14 @@ def calculate_execution_commission(
         base_commission = quantity * _safe_float(profile.get("ibkr_fixed_per_share"), 0.005)
         min_commission = _safe_float(profile.get("ibkr_fixed_min_commission"), 1.0)
         max_pct = _safe_float(profile.get("ibkr_fixed_max_pct_trade_value"), 0.01)
+        if min_commission > 0:
+            base_commission = max(base_commission, min_commission)
+        if max_pct > 0 and trade_value > 0:
+            base_commission = min(base_commission, trade_value * max_pct)
+    elif fee_model == "ibkr_us_equity_tiered_v1":
+        base_commission = quantity * _safe_float(profile.get("ibkr_tiered_per_share"), 0.0035)
+        min_commission = _safe_float(profile.get("ibkr_tiered_min_commission"), 0.35)
+        max_pct = _safe_float(profile.get("ibkr_tiered_max_pct_trade_value"), 0.01)
         if min_commission > 0:
             base_commission = max(base_commission, min_commission)
         if max_pct > 0 and trade_value > 0:

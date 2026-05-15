@@ -112,6 +112,16 @@
             box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18);
         }
 
+        .summary-card.warn {
+            border-color: rgba(246,173,85,0.42);
+            background: linear-gradient(180deg, rgba(42, 31, 12, 0.96), rgba(20,28,46,0.96));
+        }
+
+        .summary-card.danger {
+            border-color: rgba(252,129,129,0.46);
+            background: linear-gradient(180deg, rgba(44, 18, 22, 0.96), rgba(20,28,46,0.96));
+        }
+
         .summary-label,
         .meta-label,
         .section-kicker {
@@ -232,6 +242,14 @@
 
         .ticket-preview strong {
             color: var(--text);
+        }
+
+        .ticket-bp-line.warning {
+            color: var(--pending);
+        }
+
+        .ticket-bp-line.danger {
+            color: var(--short);
         }
 
         .ticket-actions {
@@ -946,6 +964,27 @@
         .blocker {
             margin: 0 16px 14px;
             border-style: solid;
+        }
+
+        .bp-guard-banner {
+            margin: 0 16px 14px;
+            padding: 12px 14px;
+            border-radius: 14px;
+            font-size: 12px;
+            line-height: 1.6;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .bp-guard-banner.warn {
+            border: 1px solid rgba(246,173,85,0.32);
+            background: rgba(246,173,85,0.10);
+            color: #FBD38D;
+        }
+
+        .bp-guard-banner.danger {
+            border: 1px solid rgba(252,129,129,0.32);
+            background: rgba(252,129,129,0.10);
+            color: #FEB2B2;
         }
 
         .mono {

@@ -248,6 +248,12 @@
             return `${prefix}${formatMoney(num).replace('$', '$')}`;
         }
 
+        function formatPercent(value, digits = 1) {
+            const num = Number(value);
+            if (!Number.isFinite(num)) return '--';
+            return `${num.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })}%`;
+        }
+
         function normalizeTimeValue(value) {
             if (value === null || value === undefined || value === '') return '';
             if (typeof value !== 'string') return value;
@@ -318,6 +324,66 @@
             return formatMoney(value);
         }
 
+        function getSummaryRemainingBuyingPower(summary = latestSnapshot?.summary || {}) {
+            return Number(firstDefined(summary?.remaining_buying_power, summary?.buying_power, 0) || 0);
+        }
+
+        function getAccountBuyingPowerLabel(snapshot = latestSnapshot) {
+            if (!snapshot) return '--';
+            const summary = snapshot?.summary || {};
+            const remaining = getSummaryRemainingBuyingPower(summary);
+            const pct = Number(firstDefined(summary.remaining_buying_power_pct_net_liq, snapshot?.buying_power_guard?.remaining_pct_net_liq));
+            const pctText = Number.isFinite(pct) ? ` · ${formatPercent(pct)} NetLiq` : '';
+            return `${formatMoney(remaining)}${pctText}`;
+        }
+
+        function getBuyingPowerGuard(snapshot = latestSnapshot) {
+            const summary = snapshot?.summary || {};
+            const existing = snapshot?.buying_power_guard && typeof snapshot.buying_power_guard === 'object'
+                ? { ...snapshot.buying_power_guard }
+                : {};
+            const remaining = Number(firstDefined(existing.remaining, summary.remaining_buying_power, summary.buying_power, 0) || 0);
+            const netLiq = Number(firstDefined(existing.net_liquidation, summary.net_liquidation, 0) || 0);
+            const warnUsd = Number(firstDefined(existing.warn_usd, 25000) || 0);
+            const warnPct = Number(firstDefined(existing.warn_pct_net_liq, 20) || 0);
+            const blockUsd = Number(firstDefined(existing.block_usd, 10000) || 0);
+            const blockPct = Number(firstDefined(existing.block_pct_net_liq, 10) || 0);
+            const warnFloor = Number(firstDefined(existing.warn_floor, Math.max(warnUsd, netLiq > 0 ? netLiq * warnPct / 100 : 0)) || 0);
+            const blockFloor = Number(firstDefined(existing.block_floor, Math.max(blockUsd, netLiq > 0 ? netLiq * blockPct / 100 : 0)) || 0);
+            const requested = Number(firstDefined(existing.requested_exposure, 0) || 0);
+            const remainingAfter = Number(firstDefined(existing.remaining_after, remaining - requested) || 0);
+            let state = String(firstDefined(existing.state, '') || '').toLowerCase();
+            if (!state) state = remainingAfter < blockFloor ? 'blocked' : (remainingAfter < warnFloor ? 'warning' : 'ok');
+            return {
+                enabled: existing.enabled !== false,
+                basis: existing.basis || 'buying_power',
+                remaining,
+                net_liquidation: netLiq,
+                remaining_after: remainingAfter,
+                requested_exposure: requested,
+                remaining_pct_net_liq: netLiq > 0 ? remaining / netLiq * 100 : Number(firstDefined(existing.remaining_pct_net_liq, 0) || 0),
+                remaining_after_pct_net_liq: netLiq > 0 ? remainingAfter / netLiq * 100 : Number(firstDefined(existing.remaining_after_pct_net_liq, 0) || 0),
+                warn_floor: warnFloor,
+                block_floor: blockFloor,
+                warn_usd: warnUsd,
+                warn_pct_net_liq: warnPct,
+                block_usd: blockUsd,
+                block_pct_net_liq: blockPct,
+                state,
+                reason: existing.reason || (state === 'ok' ? 'ok' : `buying_power_below_${state === 'blocked' ? 'block' : 'warning'}_threshold`),
+            };
+        }
+
+        function positionUnrealizedPct(position) {
+            const quantity = Math.abs(Number(position?.quantity || 0));
+            const avgCost = Math.abs(Number(firstDefined(position?.avg_cost, position?.avg_price, 0) || 0));
+            const basis = quantity * avgCost;
+            if (!Number.isFinite(basis) || basis <= 0) return null;
+            const pnl = Number(position?.unrealized_pnl || 0);
+            if (!Number.isFinite(pnl)) return null;
+            return pnl / basis * 100;
+        }
+
         function getAccountFilterSummary() {
             const parts = [`scope=${getAccountOrderScopeLabel()}`];
             if (orderViewState.search) parts.push(`search=${summarizeHeaderValue(orderViewState.search, 24)}`);
@@ -364,6 +430,7 @@
             const statusHtml = `
                 <div class="chip-row">
                     <span class="status-chip"><span class="dot" style="color:#4FD1C5"></span>Net Liq ${escapeHtml(getAccountNetLiqLabel(snapshot))}</span>
+                    <span class="status-chip"><span class="dot" style="color:#68D391"></span>BP ${escapeHtml(getAccountBuyingPowerLabel(snapshot))}</span>
                     <span class="status-chip"><span class="dot" style="color:#63B3ED"></span>持仓 ${escapeHtml(String(counts.open_positions || 0))}</span>
                     <span class="status-chip"><span class="dot" style="color:#F6AD55"></span>IBKR 挂单 ${escapeHtml(String(metrics.liveOrdersCount || counts.open_orders || 0))}</span>
                     <span class="status-chip"><span class="dot" style="color:#FC8181"></span>订单链 ${escapeHtml(String(metrics.visibleGroupCount || 0))}</span>
@@ -1333,7 +1400,9 @@
             actionBusy = Boolean(busy);
             ['refreshButton', 'openTicketButton', 'cancelAllButton', 'runtimeButton', 'submitOrderButton', 'openChartButton', 'resetOrderButton', 'closeTicketButton'].forEach((id) => {
                 const node = document.getElementById(id);
-                if (node) node.disabled = actionBusy;
+                if (node) node.disabled = id === 'submitOrderButton'
+                    ? (actionBusy || Boolean(evaluateTicketBuyingPower(getManualOrderState()).blocked))
+                    : actionBusy;
             });
             document.querySelectorAll('.action-btn').forEach((node) => {
                 node.disabled = actionBusy;
@@ -1382,6 +1451,47 @@
             };
         }
 
+        function estimateTicketExposure(state) {
+            const quantity = Math.abs(Number(state?.quantity || 0));
+            if (!Number.isFinite(quantity) || quantity <= 0) {
+                return { exposure: 0, price: 0, reason: 'quantity_missing' };
+            }
+            const orderType = String(state?.orderType || 'LMT').toUpperCase();
+            const entry = Number(state?.entryPrice || 0);
+            const takeProfit = Number(state?.takeProfit || 0);
+            const stopLoss = Number(state?.stopLoss || 0);
+            const price = orderType === 'MKT'
+                ? Math.max(takeProfit > 0 ? takeProfit : 0, stopLoss > 0 ? stopLoss : 0, entry > 0 ? entry : 0)
+                : entry;
+            if (!Number.isFinite(price) || price <= 0) {
+                return { exposure: 0, price: 0, reason: 'price_missing' };
+            }
+            return { exposure: quantity * price, price, reason: '' };
+        }
+
+        function evaluateTicketBuyingPower(state) {
+            if (!latestSnapshot) return { state: 'unknown', blocked: false, warning: false };
+            const baseGuard = getBuyingPowerGuard(latestSnapshot);
+            if (baseGuard.enabled === false) return { ...baseGuard, state: 'disabled', blocked: false, warning: false };
+            const estimate = estimateTicketExposure(state || getManualOrderState());
+            const remainingAfter = baseGuard.remaining - estimate.exposure;
+            let stateText = remainingAfter < baseGuard.block_floor ? 'blocked' : (remainingAfter < baseGuard.warn_floor ? 'warning' : 'ok');
+            if (estimate.reason === 'price_missing' && Number(state?.quantity || 0) > 0) {
+                stateText = 'warning';
+            }
+            return {
+                ...baseGuard,
+                requested_exposure: estimate.exposure,
+                exposure_price: estimate.price,
+                exposure_reason: estimate.reason,
+                remaining_after: remainingAfter,
+                remaining_after_pct_net_liq: baseGuard.net_liquidation > 0 ? remainingAfter / baseGuard.net_liquidation * 100 : 0,
+                state: stateText,
+                blocked: stateText === 'blocked',
+                warning: stateText === 'warning',
+            };
+        }
+
         function toggleEntryPriceField() {
             const orderType = String(document.getElementById('ticketOrderType')?.value || 'LMT').trim().toUpperCase();
             const field = document.getElementById('ticketEntryPrice');
@@ -1408,11 +1518,26 @@
             lines.push(`入场方式: <strong>${escapeHtml(state.orderType)}</strong>${state.orderType === 'LMT' && Number.isFinite(state.entryPrice) && state.entryPrice > 0 ? ` · Entry ${escapeHtml(formatMoney(state.entryPrice))}` : state.orderType === 'MKT' ? ' · 市价触发' : ''}`);
             lines.push(`止盈 / 止损: <strong>${Number.isFinite(state.takeProfit) && state.takeProfit > 0 ? escapeHtml(formatMoney(state.takeProfit)) : '--'}</strong> / <strong>${Number.isFinite(state.stopLoss) && state.stopLoss > 0 ? escapeHtml(formatMoney(state.stopLoss)) : '--'}</strong>`);
 
+            const bp = evaluateTicketBuyingPower(state);
+            if (bp.state !== 'unknown' && bp.state !== 'disabled') {
+                lines.push(`<span class="ticket-bp-line">当前剩余购买力: <strong>${escapeHtml(formatMoney(bp.remaining))}</strong> (${escapeHtml(formatPercent(bp.remaining_pct_net_liq))} NetLiq)</span>`);
+                if (bp.requested_exposure > 0) {
+                    lines.push(`<span class="ticket-bp-line ${bp.blocked ? 'danger' : bp.warning ? 'warning' : ''}">预估占用 / 下单后: <strong>${escapeHtml(formatMoney(bp.requested_exposure))}</strong> / <strong>${escapeHtml(formatMoney(bp.remaining_after))}</strong> (${escapeHtml(formatPercent(bp.remaining_after_pct_net_liq))} NetLiq)</span>`);
+                }
+                if (bp.blocked) {
+                    lines.push(`<span class="ticket-bp-line danger">剩余购买力将低于禁止阈值 ${escapeHtml(formatMoney(bp.block_floor))}，禁止提交。</span>`);
+                } else if (bp.warning) {
+                    lines.push(`<span class="ticket-bp-line warning">剩余购买力将低于预警阈值 ${escapeHtml(formatMoney(bp.warn_floor))}，提交后会报警。</span>`);
+                }
+            }
+
             if (latestSnapshot && !latestSnapshot.session_authenticated) {
                 lines.push('<span style="color:var(--short)">当前会话未认证，先去控制台完成 2FA。</span>');
             }
 
             preview.innerHTML = lines.map((line) => `<div>${line}</div>`).join('');
+            const submit = document.getElementById('submitOrderButton');
+            if (submit) submit.disabled = actionBusy || Boolean(bp.blocked);
         }
 
         function resetManualOrderForm() {
@@ -1438,8 +1563,11 @@
             const hasFetchError = Boolean(errors.summary || errors.positions || errors.orders);
             const sessionAuthenticated = Boolean(snapshot?.session_authenticated);
             const serviceRunning = Boolean(snapshot?.service_running || snapshot?.service_starting);
+            const bpGuard = getBuyingPowerGuard(snapshot);
+            const bpState = String(bpGuard.state || 'ok').toLowerCase();
+            const hasBuyingPowerIssue = Boolean(snapshot?.summary && bpGuard.enabled !== false && (bpState === 'warning' || bpState === 'blocked'));
 
-            if (serviceRunning && sessionAuthenticated && !hasFetchError) {
+            if (serviceRunning && sessionAuthenticated && !hasFetchError && !hasBuyingPowerIssue) {
                 blocker.innerHTML = '';
                 return;
             }
@@ -1450,22 +1578,31 @@
             if (errors.summary) lines.push(`summary error: ${errors.summary}`);
             if (errors.positions) lines.push(`positions error: ${errors.positions}`);
             if (errors.orders) lines.push(`orders error: ${errors.orders}`);
-            blocker.innerHTML = `<div class="blocker">${lines.map((line) => `<div>${escapeHtml(line)}</div>`).join('') || '当前状态正常。'}</div>`;
+            const serviceHtml = lines.length ? `<div class="blocker">${lines.map((line) => `<div>${escapeHtml(line)}</div>`).join('')}</div>` : '';
+            const bpHtml = hasBuyingPowerIssue ? `
+                <div class="bp-guard-banner ${bpState === 'blocked' ? 'danger' : 'warn'}">
+                    <div><strong>${bpState === 'blocked' ? '购买力低于禁止阈值' : '购买力低于预警阈值'}</strong></div>
+                    <div>当前剩余 ${escapeHtml(formatMoney(bpGuard.remaining))} (${escapeHtml(formatPercent(bpGuard.remaining_pct_net_liq))} NetLiq) · 预警 ${escapeHtml(formatMoney(bpGuard.warn_floor))} · 禁止 ${escapeHtml(formatMoney(bpGuard.block_floor))}</div>
+                </div>
+            ` : '';
+            blocker.innerHTML = `${serviceHtml}${bpHtml}`;
         }
 
         function renderSummary(snapshot) {
             const summary = snapshot?.summary || {};
             const counts = snapshot?.counts || {};
+            const bpGuard = getBuyingPowerGuard(snapshot);
             const cards = [
                 ['Net Liq', formatMoney(summary.net_liquidation), '账户净值'],
                 ['Available', formatMoney(summary.available_funds), '可用资金'],
                 ['Buying Power', formatMoney(summary.buying_power), '购买力'],
+                ['Remaining BP', formatMoney(summary.remaining_buying_power ?? summary.buying_power), `当前剩余购买力 · ${formatPercent(summary.remaining_buying_power_pct_net_liq ?? bpGuard.remaining_pct_net_liq)} NetLiq`],
                 ['Cash', formatMoney(summary.total_cash_value), '现金余额'],
                 ['Gross Exposure', formatMoney(summary.gross_position_value), '持仓市值'],
                 ['Unrealized', formatSignedMoney(summary.unrealized_pnl), `${counts.open_positions || 0} positions`],
             ];
             document.getElementById('summaryGrid').innerHTML = cards.map(([label, value, sub]) => `
-                <div class="summary-card">
+                <div class="summary-card ${label === 'Remaining BP' && bpGuard.state === 'blocked' ? 'danger' : label === 'Remaining BP' && bpGuard.state === 'warning' ? 'warn' : ''}">
                     <div class="summary-label">${escapeHtml(label)}</div>
                     <div class="summary-value ${valueClass(value)}">${escapeHtml(String(value))}</div>
                     <div class="summary-sub">${escapeHtml(sub)}</div>
@@ -1541,6 +1678,7 @@
                         <div class="metric-item"><div class="metric-label">Market Price</div><div class="metric-value">${escapeHtml(formatMoney(position.market_price))}</div></div>
                         <div class="metric-item"><div class="metric-label">Market Value</div><div class="metric-value">${escapeHtml(formatMoney(position.market_value))}</div></div>
                         <div class="metric-item"><div class="metric-label">Unrealized</div><div class="metric-value ${valueClass(position.unrealized_pnl)}">${escapeHtml(formatSignedMoney(position.unrealized_pnl))}</div></div>
+                        <div class="metric-item"><div class="metric-label">Unrealized %</div><div class="metric-value ${valueClass(positionUnrealizedPct(position))}">${escapeHtml(positionUnrealizedPct(position) === null ? '--' : formatPercent(positionUnrealizedPct(position), 2))}</div></div>
                         <div class="metric-item"><div class="metric-label">Realized</div><div class="metric-value ${valueClass(position.realized_pnl)}">${escapeHtml(formatSignedMoney(position.realized_pnl))}</div></div>
                     </div>
                     <div class="record-actions">
@@ -2457,12 +2595,19 @@
                 showToast('当前会话未认证，请先完成 2FA');
                 return;
             }
+            const bp = evaluateTicketBuyingPower(state);
+            if (bp.blocked) {
+                renderTicketPreview();
+                showToast(`剩余购买力不足：下单后 ${formatMoney(bp.remaining_after)}，低于禁止阈值 ${formatMoney(bp.block_floor)}`);
+                return;
+            }
 
             const summary = [
                 `${currentEnvironment.toUpperCase()} · ${state.symbol}`,
                 `${state.direction.toUpperCase()} ${state.quantity} shares`,
                 `${state.orderType}${state.orderType === 'LMT' ? ` @ ${formatMoney(state.entryPrice)}` : ''}`,
-                `TP ${formatMoney(state.takeProfit)} / SL ${formatMoney(state.stopLoss)}`
+                `TP ${formatMoney(state.takeProfit)} / SL ${formatMoney(state.stopLoss)}`,
+                `BP ${formatMoney(bp.remaining)} -> ${formatMoney(bp.remaining_after)}${bp.warning ? ' (WARNING)' : ''}`
             ].join('\n');
 
             if (currentEnvironment === 'live') {

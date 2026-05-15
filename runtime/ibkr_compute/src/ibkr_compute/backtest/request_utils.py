@@ -319,6 +319,12 @@ def normalize_request(payload: dict) -> dict:
     atr_stop_min_profit_r = normalize_positive_float(payload.get("atr_stop_min_profit_r"), 0.3, minimum=0.0, maximum=10.0)
     atr_stop_deviation_threshold = normalize_positive_float(payload.get("atr_stop_deviation_threshold"), 0.30, minimum=0.0, maximum=10.0)
     atr_stop_min_change = normalize_positive_float(payload.get("atr_stop_min_change"), 0.01, minimum=0.0, maximum=100.0)
+    intraday_harvest_enabled = normalize_bool(payload.get("intraday_harvest_enabled"), False)
+    intraday_harvest_settings = (
+        deepcopy(payload.get("intraday_harvest_settings"))
+        if isinstance(payload.get("intraday_harvest_settings"), dict)
+        else {}
+    )
     trade_window_start_time = normalize_hhmm(
         payload.get("trade_window_start_time"),
         constants.DEFAULT_PORTFOLIO_TRADE_WINDOW_START,
@@ -556,6 +562,8 @@ def normalize_request(payload: dict) -> dict:
         "atr_stop_min_profit_r": atr_stop_min_profit_r,
         "atr_stop_deviation_threshold": atr_stop_deviation_threshold,
         "atr_stop_min_change": atr_stop_min_change,
+        "intraday_harvest_enabled": intraday_harvest_enabled,
+        "intraday_harvest_settings": intraday_harvest_settings,
         "trade_window_start_time": trade_window_start_time,
         "trade_window_end_time": trade_window_end_time,
         "order_window_end_time": order_window_end_time,
@@ -655,6 +663,8 @@ def normalize_request(payload: dict) -> dict:
             "atr_stop_min_profit_r": atr_stop_min_profit_r,
             "atr_stop_deviation_threshold": atr_stop_deviation_threshold,
             "atr_stop_min_change": atr_stop_min_change,
+            "intraday_harvest_enabled": intraday_harvest_enabled,
+            "intraday_harvest_settings": intraday_harvest_settings,
             "position_limit_max": position_limit_max,
             "max_strategy_open_positions": max_strategy_open_positions,
             "consecutive_stop_loss_limit": consecutive_stop_loss_limit,

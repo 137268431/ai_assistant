@@ -353,6 +353,17 @@ class BacktestSymbolRowsRunnerMixin:
 
             if open_position:
                 open_position = self._maybe_apply_backtest_atr_stop(open_position, snapshot, request)
+                harvest_trade = self._maybe_close_backtest_intraday_harvest(
+                    open_position,
+                    bar,
+                    commission_per_share,
+                    slippage_bps,
+                    execution_profile,
+                )
+                if harvest_trade:
+                    trades.append(harvest_trade)
+                    open_position = None
+                    continue
                 time_stop_trade = self._maybe_close_backtest_exit_policy_time_stop(
                     open_position,
                     bar,

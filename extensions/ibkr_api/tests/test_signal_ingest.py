@@ -296,6 +296,38 @@ class SignalIngressBuildersTest(unittest.TestCase):
             self.assertIn("**实际成交价**: 100.08", content)
             self.assertNotIn("**入场 / 止盈 / 止损**", content)
 
+    def test_signal_status_card_includes_buying_power_guard(self):
+        record = {
+            "id": "sig-row-1",
+            "signal_id": "sig-bp",
+            "symbol": "AAPL",
+            "direction": "long",
+            "environment": "live",
+            "status": "submitted",
+            "entry": 100.0,
+            "stop_loss": 98.0,
+            "take_profit": 104.0,
+            "shares": 10,
+            "extra": {
+                "buying_power_guard": {
+                    "state": "warning",
+                    "reason": "buying_power_below_warning_threshold",
+                    "remaining": 30000,
+                    "remaining_pct_net_liq": 30,
+                    "requested_exposure": 10000,
+                    "remaining_after": 20000,
+                    "remaining_after_pct_net_liq": 20,
+                }
+            },
+        }
+
+        status_card = build_signal_status_card(record, message="订单已提交", console_base_url="https://console.example.com")
+        content = status_card["elements"][0]["content"]
+
+        self.assertIn("**当前剩余购买力**: $30,000.00 (30.0% NetLiq)", content)
+        self.assertIn("**本次预估占用 / 下单后**: $10,000.00 / $20,000.00 (20.0% NetLiq)", content)
+        self.assertIn("**购买力状态**: WARNING", content)
+
     def test_signal_ingest_skips_duplicate_bar_signal_and_annotates_existing_row(self):
         pb = _FakePB(
             [

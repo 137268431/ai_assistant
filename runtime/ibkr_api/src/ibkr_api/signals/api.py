@@ -5,6 +5,7 @@ from typing import Any, Callable
 from ibkr_api.orders.upsert import build_order_upsert_response
 from ibkr_api.orders.values import ensure_object
 from ibkr_api.signals.ack import build_signal_ack_orders
+from ibkr_api.signals.notifications import sync_signal_status_notification
 
 
 def _normalize_indicator_snapshot(
@@ -185,6 +186,10 @@ def build_signals_ack_response(
     normalize_environment: Callable[[Any, str], str],
     escape_filter_string: Callable[[Any], str],
     order_upsert_builder: Callable[..., tuple[dict[str, Any], int]] = build_order_upsert_response,
+    send_interactive: Callable[..., dict[str, Any]] | None = None,
+    update_interactive: Callable[..., dict[str, Any]] | None = None,
+    signal_chat_id_fn: Callable[[str], str] | None = None,
+    console_base_url: str = "",
 ) -> tuple[dict[str, Any], int]:
     environment = normalize_environment(payload.get("environment"), "live")
     signal_id = str(payload.get("signal_id") or "").strip()
@@ -304,7 +309,7 @@ def build_signals_ack_response(
                     int(response_status_code or 500 or 500),
                 )
 
-        pb.update_record(
+        updated_signal = pb.update_record(
             "ibkr_signals",
             str(signal_record.get("id")),
             {
@@ -313,6 +318,26 @@ def build_signals_ack_response(
                 "extra": signal_extra,
             },
         )
+        notification_result: dict[str, Any] = {}
+        if callable(update_interactive) or callable(send_interactive):
+            signal_chat_id = signal_chat_id_fn(environment) if callable(signal_chat_id_fn) else ""
+            notification_result = sync_signal_status_notification(
+                updated_signal if isinstance(updated_signal, dict) else {**signal_record, "status": status, "note": note, "extra": signal_extra},
+                action=status,
+                message="订单已提交，当前剩余购买力已更新" if status == "submitted" else note,
+                send_interactive=send_interactive,
+                signal_chat_id=signal_chat_id,
+                update_interactive=update_interactive,
+                console_base_url=console_base_url,
+            )
+            notification_extra = ensure_object(notification_result.get("extra_patch"))
+            if notification_extra:
+                signal_extra = notification_extra
+                updated_signal = pb.update_record(
+                    "ibkr_signals",
+                    str(signal_record.get("id")),
+                    {"extra": signal_extra},
+                )
 
         return (
             {
@@ -322,6 +347,7 @@ def build_signals_ack_response(
                 "signal_status": status,
                 "primary_order_status": primary_status or "Init",
                 "order_results": order_results,
+                "notification": notification_result,
                 "source": "ibkr-api",
             },
             200,

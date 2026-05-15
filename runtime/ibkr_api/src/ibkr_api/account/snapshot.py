@@ -17,6 +17,47 @@ NormalizeEnvironment = Callable[[Any, str], str]
 RequestJsonRequest = Callable[..., dict[str, Any]]
 
 
+def _enrich_buying_power_summary(payload: dict[str, Any]) -> None:
+    summary = ensure_object(payload.get("summary"))
+    if not summary:
+        return
+    remaining = to_float(summary.get("remaining_buying_power"))
+    if remaining is None:
+        remaining = to_float(summary.get("buying_power")) or 0.0
+    net_liq = to_float(summary.get("net_liquidation")) or 0.0
+    summary["remaining_buying_power"] = remaining
+    summary["remaining_buying_power_pct_net_liq"] = (remaining / net_liq * 100.0) if net_liq > 0 else 0.0
+    payload["summary"] = summary
+    if isinstance(payload.get("buying_power_guard"), dict):
+        return
+    warn_usd = 25000.0
+    warn_pct = 20.0
+    block_usd = 10000.0
+    block_pct = 10.0
+    warn_floor = max(warn_usd, net_liq * warn_pct / 100.0 if net_liq > 0 else 0.0)
+    block_floor = max(block_usd, net_liq * block_pct / 100.0 if net_liq > 0 else 0.0)
+    state = "blocked" if remaining < block_floor else ("warning" if remaining < warn_floor else "ok")
+    payload["buying_power_guard"] = {
+        "enabled": True,
+        "basis": "buying_power",
+        "environment": to_text(payload.get("environment") or "live"),
+        "remaining": remaining,
+        "net_liquidation": net_liq,
+        "remaining_after": remaining,
+        "requested_exposure": 0.0,
+        "remaining_pct_net_liq": summary["remaining_buying_power_pct_net_liq"],
+        "remaining_after_pct_net_liq": summary["remaining_buying_power_pct_net_liq"],
+        "warn_floor": warn_floor,
+        "block_floor": block_floor,
+        "warn_usd": warn_usd,
+        "warn_pct_net_liq": warn_pct,
+        "block_usd": block_usd,
+        "block_pct_net_liq": block_pct,
+        "state": state,
+        "reason": "ok" if state == "ok" else f"buying_power_below_{'block' if state == 'blocked' else 'warning'}_threshold",
+    }
+
+
 def _is_broker_confirmed_live_order(order: dict[str, Any]) -> bool:
     item = ensure_object(order)
     authority = to_text(item.get("authority") or item.get("order_authority")).lower()
@@ -40,6 +81,7 @@ def _is_broker_confirmed_live_order(order: dict[str, Any]) -> bool:
 def enrich_account_snapshot(pb: Any, payload: dict[str, Any], environment: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return payload
+    _enrich_buying_power_summary(payload)
     positions = list(payload.get("positions") or [])
     broker_orders = list(payload.get("orders") or [])
     live_open_orders_raw = list(payload.get("live_open_orders") or []) or [item for item in broker_orders if not _is_closed_order_status((item or {}).get("status_key") or (item or {}).get("status"))]

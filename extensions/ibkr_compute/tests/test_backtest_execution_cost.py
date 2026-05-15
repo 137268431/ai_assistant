@@ -44,6 +44,17 @@ class BacktestExecutionCostTests(unittest.TestCase):
         self.assertAlmostEqual(normal["commission"], 5.0)
         self.assertAlmostEqual(capped["commission"], 0.25)
 
+    def test_ibkr_tiered_model_matches_pro_minimum_and_one_percent_cap(self):
+        profile = build_execution_cost_profile({"fee_model": "ibkr_us_equity_tiered_v1"})
+
+        minimum = calculate_execution_commission(shares=100, price=25.0, side="buy", profile=profile)
+        normal = calculate_execution_commission(shares=1000, price=25.0, side="buy", profile=profile)
+        capped = calculate_execution_commission(shares=100, price=0.25, side="buy", profile=profile)
+
+        self.assertAlmostEqual(minimum["commission"], 0.35)
+        self.assertAlmostEqual(normal["commission"], 3.5)
+        self.assertAlmostEqual(capped["commission"], 0.25)
+
     def test_bar_capped_slippage_respects_limit_price(self):
         profile = build_execution_cost_profile(
             {
@@ -98,6 +109,21 @@ class BacktestExecutionCostTests(unittest.TestCase):
 
         self.assertEqual(request["position_limit_max"], 0)
         self.assertEqual(request["consecutive_stop_loss_limit"], 4)
+
+    def test_request_preserves_intraday_harvest_backtest_options(self):
+        request = request_utils.normalize_request(
+            {
+                "symbols": "AAPL",
+                "date_from": "2026-04-01",
+                "date_to": "2026-04-01",
+                "intraday_harvest_enabled": True,
+                "intraday_harvest_settings": {"partial_score": 3},
+            }
+        )
+
+        self.assertTrue(request["intraday_harvest_enabled"])
+        self.assertEqual(3, request["intraday_harvest_settings"]["partial_score"])
+        self.assertTrue(request["params"]["intraday_harvest_enabled"])
 
     def test_trade_extra_contains_gross_net_and_cost_summary(self):
         service = BacktestService(None)

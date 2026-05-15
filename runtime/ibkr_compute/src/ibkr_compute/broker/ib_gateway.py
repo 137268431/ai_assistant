@@ -1562,6 +1562,7 @@ class BrokerAdapter:
         entry_order_type: str = "LMT",
         tif: str = "DAY",
         account_id: str = "",
+        order_ref_suffix: str = "",
     ) -> dict:
         contract_info = self.resolve_contract(symbol=symbol, conid=conid)
         if not contract_info:
@@ -1577,7 +1578,9 @@ class BrokerAdapter:
         side = "BUY" if str(direction).lower() == "long" else "SELL"
         close_side = "SELL" if side == "BUY" else "BUY"
         stamp = datetime.now(ET).strftime("%Y%m%d_%H%M%S")
-        group = f"{contract.symbol}_{direction}_{stamp}"
+        suffix = str(order_ref_suffix or "").strip()
+        safe_suffix = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in suffix)
+        group = f"{contract.symbol}_{direction}_{stamp}" + (f"_{safe_suffix}" if safe_suffix else "")
         oca_group = group
         order_family_type = "bracket_oco"
         entry_ref = f"entry_{group}"

@@ -287,6 +287,7 @@ class IBKRTradingService(
         self.order_lifecycle = OrderLifecycle(
             pb_client=self.pb,
             order_modifier=self.order_modifier,
+            order_placer=self.order_placer,
             config=self.config,
             environment=ENVIRONMENT,
             broker=self.broker,

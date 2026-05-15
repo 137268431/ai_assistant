@@ -14,6 +14,15 @@ from typing import Any, Dict, List, Optional
 
 from ibkr_compute.broker import BrokerAdapter
 from ibkr_compute.core.exit_policy import is_signal_mode_adaptive_exit_profile
+from ibkr_compute.core.intraday_harvest import (
+    ACTION_FULL_EXIT,
+    ACTION_PARTIAL_EXIT,
+    ACTION_REENTRY,
+    ACTION_TIGHTEN_STOP,
+    build_reentry_prices,
+    evaluate_intraday_harvest,
+    harvest_settings_from_config,
+)
 from ibkr_compute.core.risk_management import (
     compute_atr_tightened_stop,
     compute_exit_policy_stop_update,
@@ -29,7 +38,7 @@ DEFAULT_POSITION_LIMIT_MAX = 0
 DEFAULT_MAX_STRATEGY_OPEN_POSITIONS = 5
 DEFAULT_CONSECUTIVE_STOP_LOSS_LIMIT = 3
 DEFAULT_FIXED_POSITION_SYMBOLS = ("BOXX", "IBKR")
-DEFAULT_LIVE_EXIT_POLICY_UPDATE_ENABLED = True
+DEFAULT_LIVE_EXIT_POLICY_UPDATE_ENABLED = False
 DEFAULT_KEEP_SYMBOLS = tuple(
     symbol.strip().upper()
     for symbol in os.environ.get("IBKR_EOD_KEEP_SYMBOLS", "").split(",")
@@ -44,6 +53,7 @@ class OrderLifecycle:
         account_id: str = None,
         pb_client=None,
         order_modifier=None,
+        order_placer=None,
         config=None,
         environment: str = "live",
         broker: BrokerAdapter | None = None,
@@ -51,6 +61,7 @@ class OrderLifecycle:
         self.account_id = account_id or ACCOUNT_ID
         self.pb_client = pb_client
         self.order_modifier = order_modifier
+        self.order_placer = order_placer
         self.config = config
         self.environment = str(environment or "live").strip().lower() or "live"
         self.broker = broker or BrokerAdapter()
@@ -63,6 +74,12 @@ class OrderLifecycle:
         self._last_live_exit_policy_update_ms = 0
         self._live_exit_policy_update_count = 0
         self._live_exit_policy_update_error_count = 0
+        self._harvest_locks: dict[str, threading.Lock] = {}
+        self._harvest_frozen_symbols: dict[str, str] = {}
+        self._last_harvest_action_ms: dict[str, int] = {}
+        self._intraday_harvest_action_count = 0
+        self._intraday_harvest_error_count = 0
+        self._last_intraday_harvest_action_ms = 0
 
     def _get_config_value(self, key: str, default: str) -> str:
         if not self.config:
@@ -708,6 +725,689 @@ class OrderLifecycle:
             self._live_exit_policy_update_error_count += 1
             logger.warning("Live exit-policy stop update loop failed: %s", exc)
 
+    def _intraday_harvest_settings(self) -> dict:
+        try:
+            settings = harvest_settings_from_config(self.config, self.environment)
+        except Exception:
+            settings = {}
+        settings["enabled"] = True
+        settings["live_auto_enabled"] = True
+        settings["split_brackets_enabled"] = True
+        return settings
+
+    def _intraday_harvest_enabled(self) -> bool:
+        settings = self._intraday_harvest_settings()
+        return bool(settings.get("enabled") and settings.get("live_auto_enabled"))
+
+    @staticmethod
+    def _broker_position_symbol(position: dict | None) -> str:
+        return str(
+            (position or {}).get("ticker")
+            or (position or {}).get("symbol")
+            or (position or {}).get("contractDesc")
+            or ""
+        ).strip().upper()
+
+    @staticmethod
+    def _broker_position_quantity(position: dict | None) -> float:
+        return OrderLifecycle._coerce_float(
+            (position or {}).get("position", (position or {}).get("quantity", 0)),
+            0.0,
+        )
+
+    @staticmethod
+    def _broker_position_conid(position: dict | None) -> int:
+        try:
+            return int((position or {}).get("conid", 0) or 0)
+        except Exception:
+            return 0
+
+    def _harvest_lock_for_symbol(self, symbol: str) -> threading.Lock:
+        normalized = str(symbol or "").strip().upper()
+        lock = self._harvest_locks.get(normalized)
+        if lock is None:
+            lock = threading.Lock()
+            self._harvest_locks[normalized] = lock
+        return lock
+
+    @staticmethod
+    def _harvest_lot(row: dict | None) -> str:
+        extra = OrderLifecycle._order_extra(row)
+        return str(extra.get("harvest_lot") or extra.get("intraday_harvest_lot") or "").strip().lower()
+
+    @staticmethod
+    def _is_harvest_managed_order(row: dict | None) -> bool:
+        extra = OrderLifecycle._order_extra(row)
+        return bool(extra.get("harvest_managed") or extra.get("intraday_harvest_managed") or extra.get("harvest_profile"))
+
+    @staticmethod
+    def _order_status(row: dict | None) -> str:
+        return str((row or {}).get("status") or "").strip()
+
+    @staticmethod
+    def _order_is_closed(row: dict | None) -> bool:
+        return OrderLifecycle._order_status(row).upper() in {
+            "FILLED",
+            "EXECUTED",
+            "CANCELED",
+            "CANCELLED",
+            "CLOSED",
+            "INACTIVE",
+            "REJECTED",
+            "EXPIRED",
+        }
+
+    @staticmethod
+    def _entry_is_filled(row: dict | None) -> bool:
+        status = OrderLifecycle._order_status(row).upper()
+        filled_qty = OrderLifecycle._coerce_float((row or {}).get("filled_qty"), 0.0)
+        return filled_qty > 0 or status in {"FILLED", "EXECUTED"}
+
+    @staticmethod
+    def _order_quantity(row: dict | None) -> int:
+        return abs(int(round(OrderLifecycle._coerce_float((row or {}).get("quantity"), 0.0))))
+
+    @staticmethod
+    def _order_broker_id(row: dict | None) -> str:
+        return str((row or {}).get("broker_order_id") or (row or {}).get("order_id") or "").strip()
+
+    @staticmethod
+    def _cancel_result_looks_closed(result: dict | None) -> bool:
+        text = str(
+            (result or {}).get("error")
+            or (result or {}).get("message")
+            or (result or {}).get("raw")
+            or ""
+        ).lower()
+        return any(marker in text for marker in ("not found", "inactive", "filled", "cancelled", "canceled"))
+
+    @staticmethod
+    def _harvest_state(row: dict | None) -> dict:
+        extra = OrderLifecycle._order_extra(row)
+        state = extra.get("harvest_state")
+        return dict(state) if isinstance(state, dict) else {}
+
+    def _group_harvest_rows(self, rows: list[dict]) -> list[dict]:
+        groups: dict[str, dict] = {}
+        for row in rows or []:
+            if not self._is_harvest_managed_order(row):
+                continue
+            group_key = self._order_group_key(row)
+            if not group_key:
+                continue
+            bucket = groups.setdefault(
+                group_key,
+                {
+                    "group_key": group_key,
+                    "rows": [],
+                    "lot": "",
+                    "entry": {},
+                    "stop_loss": {},
+                    "take_profit": {},
+                },
+            )
+            bucket["rows"].append(row)
+            lot = self._harvest_lot(row)
+            if lot and not bucket.get("lot"):
+                bucket["lot"] = lot
+            role = self._order_role(row)
+            if role == "entry" and not bucket.get("entry"):
+                bucket["entry"] = row
+            elif role == "stop_loss" and not bucket.get("stop_loss"):
+                bucket["stop_loss"] = row
+            elif role == "take_profit" and not bucket.get("take_profit"):
+                bucket["take_profit"] = row
+        return [
+            bucket
+            for bucket in groups.values()
+            if bucket.get("entry") and bucket.get("lot") in {"core", "tactical"}
+        ]
+
+    def _harvest_group_active(self, group: dict) -> bool:
+        entry = group.get("entry") or {}
+        entry_status = self._order_status(entry).upper()
+        if not self._entry_is_filled(entry) or entry_status in {
+            "CANCELED",
+            "CANCELLED",
+            "CLOSED",
+            "INACTIVE",
+            "REJECTED",
+            "EXPIRED",
+        }:
+            return False
+        state = self._harvest_state(entry)
+        if bool(state.get("partial_exited")):
+            return False
+        stop_row = group.get("stop_loss") or {}
+        target_row = group.get("take_profit") or {}
+        return self._order_is_open(stop_row) or self._order_is_open(target_row)
+
+    @staticmethod
+    def _latest_group(groups: list[dict]) -> dict:
+        if not groups:
+            return {}
+        return max(
+            groups,
+            key=lambda group: int(((group.get("entry") or {}).get("bar_time_ms") or 0)),
+        )
+
+    def _build_harvest_position(self, broker_position: dict, group: dict, fallback_group: dict | None = None) -> dict:
+        entry_row = group.get("entry") or (fallback_group or {}).get("entry") or {}
+        stop_row = group.get("stop_loss") or (fallback_group or {}).get("stop_loss") or {}
+        target_row = group.get("take_profit") or (fallback_group or {}).get("take_profit") or {}
+        position = self._build_live_risk_position(broker_position, entry_row, stop_row, target_row)
+        quantity = self._order_quantity(entry_row)
+        if quantity > 0:
+            position["shares"] = quantity
+            position["quantity"] = quantity
+        return position
+
+    def _upsert_harvest_order_patch(
+        self,
+        row: dict,
+        *,
+        status: str | None = None,
+        relation_status: str | None = None,
+        limit_price: float | None = None,
+        extra_patch: dict | None = None,
+    ) -> None:
+        if not self.pb_client or not row:
+            return
+        extra = {
+            **self._order_extra(row),
+            **(extra_patch or {}),
+            "harvest_last_update_ms": int(time.time() * 1000),
+        }
+        payload = {**row, "extra": extra}
+        if status:
+            payload["status"] = status
+        if relation_status:
+            payload["relation_status"] = relation_status
+        if limit_price is not None:
+            payload["limit_price"] = limit_price
+        try:
+            if hasattr(self.pb_client, "upsert_order"):
+                self.pb_client.upsert_order(payload)
+            elif row.get("id"):
+                self.pb_client.update_record("orders", row["id"], payload)
+        except Exception as exc:
+            logger.debug("Harvest PB patch failed for %s: %s", row.get("unique_id"), exc)
+
+    def _persist_harvest_state(self, row: dict, state: dict, decision: dict | None = None) -> None:
+        if not row:
+            return
+        decision = decision or {}
+        self._upsert_harvest_order_patch(
+            row,
+            extra_patch={
+                "harvest_state": dict(state or {}),
+                "harvest_last_decision": {
+                    "action": str(decision.get("action") or ""),
+                    "reason": str(decision.get("reason") or ""),
+                    "score": int(decision.get("score") or 0),
+                    "reasons": list(decision.get("reasons") or []),
+                    "progress_r": decision.get("progress_r"),
+                    "mfe_r": decision.get("mfe_r"),
+                    "decided_at_ms": int(time.time() * 1000),
+                },
+            },
+        )
+
+    def _record_harvest_action(self, symbol: str) -> None:
+        now_ms = int(time.time() * 1000)
+        self._last_harvest_action_ms[str(symbol or "").strip().upper()] = now_ms
+        self._last_intraday_harvest_action_ms = now_ms
+        self._intraday_harvest_action_count += 1
+
+    def _harvest_action_allowed(self, symbol: str) -> bool:
+        cooldown_ms = int(max(0.0, self._get_config_float("intraday_harvest_action_cooldown_sec", 10.0)) * 1000)
+        if cooldown_ms <= 0:
+            return True
+        last_ms = int(self._last_harvest_action_ms.get(str(symbol or "").strip().upper(), 0) or 0)
+        return int(time.time() * 1000) - last_ms >= cooldown_ms
+
+    def _freeze_harvest_symbol(self, symbol: str, reason: str, rows: list[dict] | None = None) -> None:
+        normalized = str(symbol or "").strip().upper()
+        if not normalized:
+            return
+        self._harvest_frozen_symbols[normalized] = str(reason or "harvest_safety_freeze")
+        for row in rows or []:
+            self._upsert_harvest_order_patch(
+                row,
+                extra_patch={
+                    "harvest_frozen": True,
+                    "harvest_freeze_reason": str(reason or "harvest_safety_freeze"),
+                    "harvest_frozen_at_ms": int(time.time() * 1000),
+                },
+            )
+        logger.warning("Intraday harvest frozen for %s: %s", normalized, reason)
+
+    def _cancel_harvest_protection(self, group: dict, reason: str) -> list[dict]:
+        errors: list[dict] = []
+        for role in ("take_profit", "stop_loss"):
+            row = group.get(role) or {}
+            if not row or not self._order_is_open(row):
+                continue
+            broker_id = self._order_broker_id(row)
+            if not broker_id:
+                continue
+            result = self.order_modifier.cancel_order(broker_id) if self.order_modifier else {"ok": False, "error": "order_modifier_unavailable"}
+            if not result.get("ok") and not self._cancel_result_looks_closed(result):
+                errors.append({"order_id": broker_id, "role": role, "error": result.get("error") or "cancel_failed"})
+                continue
+            self._upsert_harvest_order_patch(
+                row,
+                status="Canceled",
+                relation_status="closed",
+                extra_patch={
+                    "reason": reason,
+                    "harvest_cancelled_by": "intraday_harvest",
+                    "harvest_cancel_result": dict(result or {}),
+                },
+            )
+        return errors
+
+    def _place_harvest_market_close(
+        self,
+        *,
+        conid: int,
+        symbol: str,
+        direction: str,
+        quantity: int,
+        trade_group_id: str,
+        entry_order_unique_id: str,
+        source: str,
+    ) -> dict:
+        if self.order_placer and hasattr(self.order_placer, "place_market_close"):
+            return self.order_placer.place_market_close(
+                conid=conid,
+                symbol=symbol,
+                direction=direction,
+                quantity=quantity,
+                use_paper=self.environment == "paper",
+                trade_group_id=trade_group_id,
+                entry_order_unique_id=entry_order_unique_id,
+                source=source,
+            )
+        return self.broker.place_market_close(
+            conid=conid,
+            symbol=symbol,
+            direction=direction,
+            quantity=quantity,
+            account_id=str(self.account_id or "").strip(),
+            order_ref=f"{source}_{symbol}_{datetime.now(ET).strftime('%Y%m%d_%H%M%S')}",
+        )
+
+    @staticmethod
+    def _stop_tightens(direction: str, old_stop: float, new_stop: float) -> bool:
+        if new_stop <= 0:
+            return False
+        if old_stop <= 0:
+            return True
+        if str(direction or "").lower() == "short":
+            return new_stop < old_stop - 0.005
+        return new_stop > old_stop + 0.005
+
+    def _execute_harvest_tighten_stop(
+        self,
+        *,
+        symbol: str,
+        groups: list[dict],
+        direction: str,
+        stop_price: float,
+        reason: str,
+    ) -> int:
+        updated = 0
+        if not self.order_modifier or stop_price <= 0:
+            return 0
+        for group in groups:
+            stop_row = group.get("stop_loss") or {}
+            if not stop_row or not self._order_is_open(stop_row):
+                continue
+            old_stop = (
+                self._coerce_float(stop_row.get("limit_price"), 0.0)
+                or self._coerce_float(stop_row.get("sl_price"), 0.0)
+            )
+            if not self._stop_tightens(direction, old_stop, stop_price):
+                continue
+            stop_order_id = self._order_broker_id(stop_row)
+            if not stop_order_id:
+                continue
+            result = self.order_modifier.update_stop_loss(stop_order_id, stop_price)
+            if not result.get("ok"):
+                logger.warning("Harvest stop tighten failed: %s order=%s error=%s", symbol, stop_order_id, result.get("error"))
+                continue
+            self._upsert_harvest_order_patch(
+                stop_row,
+                limit_price=stop_price,
+                extra_patch={
+                    "reason": reason,
+                    "harvest_stop_tightened": True,
+                    "harvest_stop_tightened_at_ms": int(time.time() * 1000),
+                    "harvest_old_stop": old_stop,
+                    "harvest_new_stop": stop_price,
+                },
+            )
+            updated += 1
+        if updated:
+            self._record_harvest_action(symbol)
+        return updated
+
+    def _execute_harvest_partial_exit(
+        self,
+        *,
+        symbol: str,
+        broker_position: dict,
+        tactical_group: dict,
+        core_groups: list[dict],
+        decision: dict,
+    ) -> dict:
+        entry_row = tactical_group.get("entry") or {}
+        quantity = min(self._order_quantity(entry_row), abs(int(round(self._broker_position_quantity(broker_position)))))
+        conid = self._broker_position_conid(broker_position)
+        direction = "long" if self._broker_position_quantity(broker_position) > 0 else "short"
+        if quantity <= 0 or conid <= 0:
+            return {"ok": False, "reason": "missing_quantity_or_conid"}
+        cancel_errors = self._cancel_harvest_protection(tactical_group, "intraday_harvest_partial_exit")
+        if cancel_errors:
+            self._freeze_harvest_symbol(symbol, "partial_exit_protection_cancel_failed", tactical_group.get("rows") or [])
+            return {"ok": False, "reason": "protection_cancel_failed", "errors": cancel_errors}
+        result = self._place_harvest_market_close(
+            conid=conid,
+            symbol=symbol,
+            direction=direction,
+            quantity=quantity,
+            trade_group_id=str(tactical_group.get("group_key") or ""),
+            entry_order_unique_id=str(entry_row.get("entry_order_unique_id") or entry_row.get("unique_id") or ""),
+            source="intraday_harvest_partial_exit",
+        )
+        if not result.get("ok"):
+            self._freeze_harvest_symbol(symbol, "partial_exit_market_close_failed", tactical_group.get("rows") or [])
+            return {"ok": False, "reason": "market_close_failed", "result": result}
+        self._upsert_harvest_order_patch(
+            entry_row,
+            status="Closed",
+            relation_status="closed",
+            extra_patch={
+                "reason": str(decision.get("reason") or "intraday_harvest_partial_exit"),
+                "harvest_state": dict(decision.get("state") or {}),
+                "harvest_partial_exit": {
+                    "closed_quantity": quantity,
+                    "closed_at_ms": int(time.time() * 1000),
+                    "market_close_result": dict(result or {}),
+                },
+            },
+        )
+        stop_price = self._coerce_float(decision.get("stop_price"), 0.0)
+        if stop_price > 0 and core_groups:
+            self._execute_harvest_tighten_stop(
+                symbol=symbol,
+                groups=core_groups,
+                direction=direction,
+                stop_price=stop_price,
+                reason="intraday_harvest_partial_exit_lock_core_stop",
+            )
+        self._record_harvest_action(symbol)
+        logger.info("Intraday harvest partial exit: %s qty=%s reason=%s", symbol, quantity, decision.get("reason"))
+        return {"ok": True, "closed_quantity": quantity, "result": result}
+
+    def _execute_harvest_full_exit(
+        self,
+        *,
+        symbol: str,
+        broker_position: dict,
+        groups: list[dict],
+        decision: dict,
+    ) -> dict:
+        conid = self._broker_position_conid(broker_position)
+        broker_qty = self._broker_position_quantity(broker_position)
+        quantity = abs(int(round(broker_qty)))
+        direction = "long" if broker_qty > 0 else "short"
+        if quantity <= 0 or conid <= 0:
+            return {"ok": False, "reason": "missing_quantity_or_conid"}
+        cancel_errors: list[dict] = []
+        for group in groups:
+            cancel_errors.extend(self._cancel_harvest_protection(group, "intraday_harvest_full_exit"))
+        if cancel_errors:
+            self._freeze_harvest_symbol(symbol, "full_exit_protection_cancel_failed", [row for group in groups for row in group.get("rows") or []])
+            return {"ok": False, "reason": "protection_cancel_failed", "errors": cancel_errors}
+        first_group = groups[0] if groups else {}
+        first_entry = first_group.get("entry") or {}
+        result = self._place_harvest_market_close(
+            conid=conid,
+            symbol=symbol,
+            direction=direction,
+            quantity=quantity,
+            trade_group_id=str(first_group.get("group_key") or ""),
+            entry_order_unique_id=str(first_entry.get("entry_order_unique_id") or first_entry.get("unique_id") or ""),
+            source="intraday_harvest_full_exit",
+        )
+        if not result.get("ok"):
+            self._freeze_harvest_symbol(symbol, "full_exit_market_close_failed", [row for group in groups for row in group.get("rows") or []])
+            return {"ok": False, "reason": "market_close_failed", "result": result}
+        for group in groups:
+            entry = group.get("entry") or {}
+            self._upsert_harvest_order_patch(
+                entry,
+                status="Closed",
+                relation_status="closed",
+                extra_patch={
+                    "reason": str(decision.get("reason") or "intraday_harvest_full_exit"),
+                    "harvest_state": dict(decision.get("state") or self._harvest_state(entry)),
+                    "harvest_full_exit": {
+                        "closed_quantity": quantity,
+                        "closed_at_ms": int(time.time() * 1000),
+                        "market_close_result": dict(result or {}),
+                    },
+                },
+            )
+        self._record_harvest_action(symbol)
+        logger.info("Intraday harvest full exit: %s qty=%s reason=%s", symbol, quantity, decision.get("reason"))
+        return {"ok": True, "closed_quantity": quantity, "result": result}
+
+    def _execute_harvest_reentry(
+        self,
+        *,
+        symbol: str,
+        broker_position: dict,
+        source_group: dict,
+        quantity: int,
+        decision: dict,
+        settings: dict,
+    ) -> dict:
+        if not self.order_placer or not hasattr(self.order_placer, "place_bracket_order"):
+            return {"ok": False, "reason": "order_placer_unavailable"}
+        conid = self._broker_position_conid(broker_position)
+        if conid <= 0 or quantity <= 0:
+            return {"ok": False, "reason": "missing_quantity_or_conid"}
+        direction = "long" if self._broker_position_quantity(broker_position) > 0 else "short"
+        prices = dict(decision.get("reentry_prices") or {})
+        if not all(self._coerce_float(prices.get(key), 0.0) > 0 for key in ("entry", "stop_loss", "take_profit")):
+            snapshot_price = self._coerce_float(decision.get("current_price"), 0.0)
+            prices = build_reentry_prices(direction, snapshot_price, 0.0, settings)
+        if not all(self._coerce_float(prices.get(key), 0.0) > 0 for key in ("entry", "stop_loss", "take_profit")):
+            return {"ok": False, "reason": "invalid_reentry_prices"}
+        entry_row = source_group.get("entry") or {}
+        state = dict(decision.get("state") or self._harvest_state(entry_row))
+        state["partial_exited"] = False
+        state["last_action"] = ACTION_REENTRY
+        state["reentered_at_ms"] = int(time.time() * 1000)
+        cycles = int(state.get("cycles") or 0)
+        result = self.order_placer.place_bracket_order(
+            conid=conid,
+            symbol=symbol,
+            direction=direction,
+            quantity=quantity,
+            entry_price=float(prices["entry"]),
+            take_profit_price=float(prices["take_profit"]),
+            stop_loss_price=float(prices["stop_loss"]),
+            use_paper=self.environment == "paper",
+            signal_id=str(entry_row.get("signal_id") or ""),
+            order_extra={
+                "harvest_managed": True,
+                "harvest_profile": "intraday_volatility_harvest_v1",
+                "harvest_lot": "tactical",
+                "harvest_reentry": True,
+                "harvest_reentry_source_group": str(source_group.get("group_key") or ""),
+                "harvest_state": state,
+            },
+            order_ref_suffix=f"tactical_r{cycles}",
+        )
+        if not result.get("ok"):
+            return {"ok": False, "reason": "reentry_submit_failed", "result": result}
+        self._upsert_harvest_order_patch(
+            entry_row,
+            extra_patch={
+                "harvest_state": {**self._harvest_state(entry_row), "last_reentry_at_ms": int(time.time() * 1000)},
+                "harvest_last_reentry_result": {
+                    "order_ids": list(result.get("order_ids") or []),
+                    "bracket_group": result.get("bracket_group") or "",
+                    "quantity": quantity,
+                },
+            },
+        )
+        self._record_harvest_action(symbol)
+        logger.info("Intraday harvest tactical reentry: %s qty=%s reason=%s", symbol, quantity, decision.get("reason"))
+        return {"ok": True, "quantity": quantity, "result": result}
+
+    def _maybe_apply_intraday_harvest_for_symbol(self, broker_position: dict, settings: dict) -> None:
+        symbol = self._broker_position_symbol(broker_position)
+        if not symbol or symbol in self._fixed_position_symbols():
+            return
+        if symbol in self._harvest_frozen_symbols:
+            return
+        if not self._harvest_action_allowed(symbol):
+            return
+        broker_qty = self._broker_position_quantity(broker_position)
+        if not broker_qty:
+            return
+        rows = self._load_live_order_rows_for_symbol(symbol)
+        groups = self._group_harvest_rows(rows)
+        if not groups:
+            return
+        snapshot = self._load_latest_5m_risk_snapshot(symbol)
+        if self._coerce_float(snapshot.get("close"), 0.0) <= 0:
+            return
+        core_groups = [group for group in groups if group.get("lot") == "core" and self._harvest_group_active(group)]
+        tactical_groups = [group for group in groups if group.get("lot") == "tactical" and self._harvest_group_active(group)]
+        active_groups = [*core_groups, *tactical_groups]
+        direction = "long" if broker_qty > 0 else "short"
+
+        if tactical_groups:
+            tactical_group = self._latest_group(tactical_groups)
+            position = self._build_harvest_position(broker_position, tactical_group)
+            state = self._harvest_state(tactical_group.get("entry"))
+            decision = evaluate_intraday_harvest(position, snapshot, state=state, settings=settings)
+            self._persist_harvest_state(tactical_group.get("entry") or {}, decision.get("state") or state, decision)
+            action = str(decision.get("action") or "")
+            if action == ACTION_FULL_EXIT:
+                self._execute_harvest_full_exit(
+                    symbol=symbol,
+                    broker_position=broker_position,
+                    groups=active_groups,
+                    decision=decision,
+                )
+                return
+            if action == ACTION_PARTIAL_EXIT:
+                self._execute_harvest_partial_exit(
+                    symbol=symbol,
+                    broker_position=broker_position,
+                    tactical_group=tactical_group,
+                    core_groups=core_groups,
+                    decision=decision,
+                )
+                return
+            if action == ACTION_TIGHTEN_STOP:
+                self._execute_harvest_tighten_stop(
+                    symbol=symbol,
+                    groups=active_groups,
+                    direction=direction,
+                    stop_price=self._coerce_float(decision.get("stop_price"), 0.0),
+                    reason=str(decision.get("reason") or "intraday_harvest_tighten_stop"),
+                )
+                return
+
+        core_group = self._latest_group(core_groups)
+        if core_group:
+            position = self._build_harvest_position(broker_position, core_group)
+            state = self._harvest_state(core_group.get("entry"))
+            decision = evaluate_intraday_harvest(position, snapshot, state=state, settings=settings)
+            self._persist_harvest_state(core_group.get("entry") or {}, decision.get("state") or state, decision)
+            action = str(decision.get("action") or "")
+            if action == ACTION_FULL_EXIT:
+                self._execute_harvest_full_exit(
+                    symbol=symbol,
+                    broker_position=broker_position,
+                    groups=active_groups or core_groups,
+                    decision=decision,
+                )
+                return
+            if action == ACTION_TIGHTEN_STOP:
+                self._execute_harvest_tighten_stop(
+                    symbol=symbol,
+                    groups=active_groups or core_groups,
+                    direction=direction,
+                    stop_price=self._coerce_float(decision.get("stop_price"), 0.0),
+                    reason=str(decision.get("reason") or "intraday_harvest_core_tighten_stop"),
+                )
+
+        if tactical_groups or not core_group:
+            return
+        tactical_state_groups = [
+            group
+            for group in groups
+            if group.get("lot") == "tactical" and bool(self._harvest_state(group.get("entry")).get("partial_exited"))
+        ]
+        source_group = self._latest_group(tactical_state_groups)
+        if not source_group:
+            return
+        source_entry = source_group.get("entry") or {}
+        state = self._harvest_state(source_entry)
+        tactical_qty = self._order_quantity(source_entry)
+        if tactical_qty <= 0:
+            return
+        position = self._build_harvest_position(broker_position, core_group)
+        position["shares"] = tactical_qty
+        position["quantity"] = tactical_qty
+        decision = evaluate_intraday_harvest(
+            position,
+            snapshot,
+            state=state,
+            settings=settings,
+            allow_reentry=True,
+        )
+        self._persist_harvest_state(source_entry, decision.get("state") or state, decision)
+        if str(decision.get("action") or "") == ACTION_REENTRY:
+            self._execute_harvest_reentry(
+                symbol=symbol,
+                broker_position=broker_position,
+                source_group=source_group,
+                quantity=tactical_qty,
+                decision=decision,
+                settings=settings,
+            )
+
+    def _maybe_apply_intraday_harvest(self, positions: Optional[List[Dict]] = None):
+        if not self._intraday_harvest_enabled() or not self.pb_client or not self.order_modifier:
+            return
+        settings = self._intraday_harvest_settings()
+        try:
+            source_positions = positions if positions is not None else self.get_positions()
+            for broker_position in source_positions or []:
+                symbol = self._broker_position_symbol(broker_position)
+                if not symbol:
+                    continue
+                lock = self._harvest_lock_for_symbol(symbol)
+                if not lock.acquire(blocking=False):
+                    continue
+                try:
+                    self._maybe_apply_intraday_harvest_for_symbol(broker_position, settings)
+                finally:
+                    lock.release()
+        except Exception as exc:
+            self._intraday_harvest_error_count += 1
+            logger.warning("Intraday harvest loop failed: %s", exc)
+
     def handle_protection_incomplete(
         self,
         *,
@@ -793,7 +1493,10 @@ class OrderLifecycle:
 
             positions = self.get_positions()
             self._sync_positions_to_pb_from_snapshot(positions)
-            self._maybe_update_live_exit_policy_stops(positions)
+            if self._intraday_harvest_enabled():
+                self._maybe_apply_intraday_harvest(positions)
+            else:
+                self._maybe_update_live_exit_policy_stops(positions)
             for _ in range(30):
                 if not self._running:
                     break
@@ -865,6 +1568,11 @@ class OrderLifecycle:
             "live_exit_policy_stop_update_count": self._live_exit_policy_update_count,
             "live_exit_policy_stop_update_error_count": self._live_exit_policy_update_error_count,
             "last_live_exit_policy_update_ms": self._last_live_exit_policy_update_ms,
+            "intraday_harvest_enabled": self._intraday_harvest_enabled(),
+            "intraday_harvest_action_count": self._intraday_harvest_action_count,
+            "intraday_harvest_error_count": self._intraday_harvest_error_count,
+            "last_intraday_harvest_action_ms": self._last_intraday_harvest_action_ms,
+            "intraday_harvest_frozen_symbols": dict(self._harvest_frozen_symbols),
             "sl_circuit_breaker": self.is_sl_circuit_breaker,
             "position_limit_reached": self.is_position_limit_reached,
         }

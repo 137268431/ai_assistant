@@ -38,6 +38,12 @@ from ibkr_compute.core.risk_management import (
     exit_policy_uses_safety_target,
 )
 from ibkr_compute.core.exit_policy import is_signal_mode_adaptive_exit_profile
+from ibkr_compute.core.intraday_harvest import (
+    ACTION_FULL_EXIT,
+    ACTION_TIGHTEN_STOP,
+    evaluate_intraday_harvest,
+    normalize_harvest_settings,
+)
 from ibkr_compute.core.signal_generator import SignalGenerator
 from ibkr_compute.core.setup_registry import build_setup_metadata, normalize_setup_name
 from ibkr_compute.core.timeline_builder import build_runtime_timeline
