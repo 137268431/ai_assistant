@@ -136,6 +136,24 @@
     interrupt: 'Interrupt'
   };
 
+  const LANE_TONE_META = {
+    selection: { border: '#f472b6', gradient: '#3a1731 #170a16' },
+    confirmation: { border: '#fbbf24', gradient: '#3c2b0d #171107' },
+    compute: { border: '#22d3ee', gradient: '#0d3540 #061820' },
+    execution: { border: '#60a5fa', gradient: '#0f3150 #071827' },
+    protection: { border: '#fb7185', gradient: '#3d1720 #1b0a10' },
+    risk_adjustment: { border: '#fb923c', gradient: '#3d220f #1b0e06' },
+    scale: { border: '#a78bfa', gradient: '#291d4f #100b24' },
+    exit: { border: '#f87171', gradient: '#3b1717 #1a0a0a' },
+    interrupt: { border: '#ef4444', gradient: '#3c1212 #1a0808' },
+    universe: { border: '#a3e635', gradient: '#26380e #101908' },
+    market_data: { border: '#38bdf8', gradient: '#0f3348 #071724' },
+    account: { border: '#34d399', gradient: '#0f392c #071a14' },
+    risk: { border: '#fb923c', gradient: '#3d220f #1b0e06' },
+    backtest: { border: '#f6ad55', gradient: '#3a2813 #1d150b' },
+    system: { border: '#94a3b8', gradient: '#1f2937 #0d1720' }
+  };
+
   const EVENT_LABELS = {
     target_selected: '选股入选',
     signal_generated: '信号生成',
@@ -1385,7 +1403,7 @@
       ]);
     }
     if ($('graphSummary')) {
-      $('graphSummary').textContent = `${model.nodes.length} nodes · ${model.edges.length} edges · ${model.events.length} events`;
+      $('graphSummary').textContent = `${model.nodes.length} nodes · ${model.edges.length} edges · ${model.events.length} events · lane-colored`;
     }
     if ($('eventSummary')) {
       $('eventSummary').textContent = `按时间排序展示 ${model.events.length || model.nodes.length} 个生命周期事件。`;
@@ -1433,7 +1451,7 @@
       id: 'fill_source_policy',
       severity: 'low',
       title: '价格来源展示策略',
-      copy: '成交价按 fill_source 区分；止盈/止损/限价按 price_kind 显示，不再把非成交价格标成 UNK。'
+      copy: '节点底色按 swimlane/stage 区分；成交价按 fill_source 区分；止盈/止损/限价按 price_kind 显示。'
     };
     const warnings = [baseNotice, ...model.warnings];
     $('warningCard').innerHTML = `
@@ -1510,6 +1528,16 @@
     return [...nodes, ...edges];
   }
 
+  function laneToneStyleItems() {
+    return Object.entries(LANE_TONE_META).map(([lane, tone]) => ({
+      selector: `.lane-${safeClassToken(lane)}`,
+      style: {
+        'border-color': tone.border,
+        'background-gradient-stop-colors': tone.gradient
+      }
+    }));
+  }
+
   function graphStyle() {
     return [
       {
@@ -1543,17 +1571,18 @@
           'shadow-opacity': 0.45
         }
       },
-      { selector: 'node:selected', style: { 'border-width': 4, 'border-color': '#5eead4', 'shadow-color': 'rgba(94,234,212,0.38)', 'shadow-opacity': 0.82 } },
+      { selector: '.fill-unknown', style: { 'border-color': 'rgba(144,167,184,0.52)', 'background-gradient-stop-colors': '#1d2933 #0d1720' } },
+      ...laneToneStyleItems(),
       { selector: '.fill-actual_ibkr', style: { 'border-color': '#68d391', 'background-gradient-stop-colors': '#123629 #0a1c18' } },
       { selector: '.fill-paper_ibkr', style: { 'border-color': '#63b3ed', 'background-gradient-stop-colors': '#12304b #091b2a' } },
       { selector: '.fill-backtest_simulated', style: { 'border-color': '#f6ad55', 'background-gradient-stop-colors': '#3a2813 #1d150b' } },
-      { selector: '.fill-unknown', style: { 'border-color': 'rgba(144,167,184,0.52)', 'background-gradient-stop-colors': '#1d2933 #0d1720' } },
       { selector: '.status-error', style: { 'border-color': '#fc8181', 'background-gradient-stop-colors': '#3a171b #1e0e13' } },
       { selector: '.status-active', style: { 'border-color': '#5eead4', 'border-style': 'dashed', 'background-gradient-stop-colors': '#12343a #071c22' } },
       { selector: '.status-warning', style: { 'border-color': '#f6ad55' } },
       { selector: '.status-terminal', style: { 'border-color': '#a0aec0', 'background-gradient-stop-colors': '#1c2c39 #0c1620' } },
       { selector: '.status-pending', style: { 'border-style': 'dashed' } },
       { selector: '.type-lifecycle_endpoint', style: { 'shape': 'hexagon', 'border-width': 3 } },
+      { selector: 'node:selected', style: { 'border-width': 4, 'border-color': '#5eead4', 'shadow-color': 'rgba(94,234,212,0.38)', 'shadow-opacity': 0.82 } },
       {
         selector: 'edge',
         style: {

@@ -394,6 +394,22 @@ body {
   color: var(--flow-muted);
 }
 
+.lane-chip.lane-selection { border-color: rgba(244, 114, 182, 0.34); background: linear-gradient(135deg, rgba(244, 114, 182, 0.12), rgba(244, 114, 182, 0.035)); }
+.lane-chip.lane-confirmation { border-color: rgba(251, 191, 36, 0.34); background: linear-gradient(135deg, rgba(251, 191, 36, 0.12), rgba(251, 191, 36, 0.035)); }
+.lane-chip.lane-compute { border-color: rgba(34, 211, 238, 0.32); background: linear-gradient(135deg, rgba(34, 211, 238, 0.11), rgba(34, 211, 238, 0.032)); }
+.lane-chip.lane-execution { border-color: rgba(96, 165, 250, 0.34); background: linear-gradient(135deg, rgba(96, 165, 250, 0.12), rgba(96, 165, 250, 0.035)); }
+.lane-chip.lane-protection { border-color: rgba(251, 113, 133, 0.34); background: linear-gradient(135deg, rgba(251, 113, 133, 0.12), rgba(251, 113, 133, 0.035)); }
+.lane-chip.lane-risk_adjustment,
+.lane-chip.lane-risk { border-color: rgba(251, 146, 60, 0.34); background: linear-gradient(135deg, rgba(251, 146, 60, 0.12), rgba(251, 146, 60, 0.035)); }
+.lane-chip.lane-scale { border-color: rgba(167, 139, 250, 0.34); background: linear-gradient(135deg, rgba(167, 139, 250, 0.12), rgba(167, 139, 250, 0.035)); }
+.lane-chip.lane-exit,
+.lane-chip.lane-interrupt { border-color: rgba(248, 113, 113, 0.34); background: linear-gradient(135deg, rgba(248, 113, 113, 0.12), rgba(248, 113, 113, 0.035)); }
+.lane-chip.lane-universe { border-color: rgba(163, 230, 53, 0.3); background: linear-gradient(135deg, rgba(163, 230, 53, 0.11), rgba(163, 230, 53, 0.032)); }
+.lane-chip.lane-market_data { border-color: rgba(56, 189, 248, 0.32); background: linear-gradient(135deg, rgba(56, 189, 248, 0.11), rgba(56, 189, 248, 0.032)); }
+.lane-chip.lane-account { border-color: rgba(52, 211, 153, 0.32); background: linear-gradient(135deg, rgba(52, 211, 153, 0.11), rgba(52, 211, 153, 0.032)); }
+.lane-chip.lane-backtest { border-color: rgba(246, 173, 85, 0.34); background: linear-gradient(135deg, rgba(246, 173, 85, 0.12), rgba(246, 173, 85, 0.035)); }
+.lane-chip.lane-system { border-color: rgba(148, 163, 184, 0.3); background: linear-gradient(135deg, rgba(148, 163, 184, 0.1), rgba(148, 163, 184, 0.03)); }
+
 .graph-frame {
   position: relative;
   min-height: 560px;
