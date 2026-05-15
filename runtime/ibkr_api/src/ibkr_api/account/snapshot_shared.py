@@ -8,6 +8,18 @@ from ibkr_api.orders.values import ensure_object, to_float, to_int, to_text
 
 OPEN_ORDER_FILTER_PER_PAGE = 800
 
+EXIT_EXPOSURE_ROLES = {
+    "take_profit",
+    "stop_loss",
+    "repair_tp",
+    "repair_sl",
+    "close",
+    "manual_close",
+    "market_close",
+    "close_order",
+    "reverse_close",
+}
+
 
 def _parse_json_object(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
@@ -185,6 +197,10 @@ def _is_open_like_order(order: dict[str, Any]) -> bool:
     return to_int(order.get("status_weight"), 0) >= 40
 
 
+def _is_exit_exposure_role(role: Any) -> bool:
+    return to_text(role).lower().replace("-", "_").replace(" ", "_") in EXIT_EXPOSURE_ROLES
+
+
 def _serialize_managed_order(order: dict[str, Any]) -> dict[str, Any]:
     return {
         "record_id": to_text(order.get("record_id")),
@@ -217,8 +233,10 @@ def _serialize_managed_order(order: dict[str, Any]) -> dict[str, Any]:
 
 __all__ = [
     "OPEN_ORDER_FILTER_PER_PAGE",
+    "EXIT_EXPOSURE_ROLES",
     "_clone_string_list",
     "_is_closed_order_status",
+    "_is_exit_exposure_role",
     "_is_open_like_order",
     "_pick_first_non_empty",
     "_serialize_managed_order",

@@ -198,9 +198,16 @@ def _base_event(
     fill_source: str = "",
     qty: float | None = None,
     price: float | None = None,
+    price_kind: str = "",
+    price_label: str = "",
     source: str = "",
     details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    normalized_price_kind = _safe_text(price_kind) or (
+        "actual_fill"
+        if fill_source in {"actual_ibkr", "paper_ibkr"}
+        else ("simulated_fill" if fill_source == "backtest_simulated" else "not_a_fill")
+    )
     event = {
         "id": "",
         "event_type": event_type,
@@ -219,7 +226,8 @@ def _base_event(
         "fill_source": fill_source,
         "qty": qty,
         "price": price,
-        "price_kind": "actual_fill" if fill_source in {"actual_ibkr", "paper_ibkr"} else ("simulated_fill" if fill_source == "backtest_simulated" else "not_a_fill"),
+        "price_kind": normalized_price_kind,
+        "price_label": price_label,
         "source": source,
         "details": details or {},
     }
@@ -255,12 +263,60 @@ def _events_to_graph(events: list[dict[str, Any]], warnings: list[dict[str, Any]
                 "summary": _safe_text(event.get("reason")) or _safe_text(event.get("source")),
                 "reason": _safe_text(event.get("reason")),
                 "ts_ms": to_int(event.get("ts_ms"), 0),
+                "symbol": _safe_text(event.get("symbol")),
+                "signal_id": _safe_text(event.get("signal_id")),
+                "trade_group_id": _safe_text(event.get("trade_group_id")),
+                "order_id": _safe_text(event.get("order_id")),
+                "role": _safe_text(event.get("role")),
                 "fill_source": _safe_text(event.get("fill_source")),
+                "price_kind": _safe_text(event.get("price_kind")),
+                "price_label": _safe_text(event.get("price_label")),
+                "price": event.get("price"),
                 "data": event,
             }
         )
-    for left, right in zip(nodes, nodes[1:]):
-        edges.append({"id": f"edge_{left['id']}_{right['id']}", "source": left["id"], "target": right["id"], "type": "next"})
+
+    def context_key(node: dict[str, Any]) -> str:
+        for key in ("trade_group_id", "signal_id", "symbol"):
+            value = _safe_text(node.get(key))
+            if value:
+                return f"{key}:{value}"
+        return ""
+
+    def add_edge(left: dict[str, Any], right: dict[str, Any], edge_type: str = "next") -> None:
+        source_id = _safe_text(left.get("id"))
+        target_id = _safe_text(right.get("id"))
+        if not source_id or not target_id or source_id == target_id:
+            return
+        edge_id = f"edge_{source_id}_{target_id}_{edge_type}"
+        if any(edge.get("id") == edge_id for edge in edges):
+            return
+        edges.append({"id": edge_id, "source": source_id, "target": target_id, "type": edge_type})
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for node in nodes:
+        key = context_key(node)
+        if key:
+            grouped.setdefault(key, []).append(node)
+    for group_nodes in grouped.values():
+        for left, right in zip(group_nodes, group_nodes[1:]):
+            add_edge(left, right)
+
+    signal_heads: dict[str, dict[str, Any]] = {}
+    for node in nodes:
+        signal_id = _safe_text(node.get("signal_id"))
+        if signal_id and not _safe_text(node.get("trade_group_id")):
+            signal_heads[signal_id] = node
+    seen_trade_groups: set[str] = set()
+    for node in nodes:
+        signal_id = _safe_text(node.get("signal_id"))
+        trade_group_id = _safe_text(node.get("trade_group_id"))
+        if not signal_id or not trade_group_id or trade_group_id in seen_trade_groups:
+            continue
+        seen_trade_groups.add(trade_group_id)
+        head = signal_heads.get(signal_id)
+        if head:
+            add_edge(head, node, "signal_to_group")
 
     if warnings:
         warning_node_id = "warnings_current"
@@ -278,9 +334,6 @@ def _events_to_graph(events: list[dict[str, Any]], warnings: list[dict[str, Any]
                 "data": {"warnings": warnings},
             }
         )
-        if nodes and len(nodes) > 1:
-            previous = nodes[-2]["id"]
-            edges.append({"id": f"edge_{previous}_{warning_node_id}", "source": previous, "target": warning_node_id, "type": "warning"})
     return nodes, edges
 
 
@@ -397,6 +450,24 @@ def _order_fill_price(row: dict[str, Any]) -> float:
 def _order_limit_price(row: dict[str, Any]) -> float:
     extra = _json_object(row.get("extra"))
     return _safe_float(first_defined(row.get("limit_price"), row.get("price"), row.get("tp_price"), row.get("sl_price"), extra.get("limit_price"), extra.get("price"), extra.get("tp_price"), extra.get("sl_price")))
+
+
+def _order_reference_price(row: dict[str, Any], role: str) -> tuple[float | None, str, str]:
+    fill_price = _order_fill_price(row)
+    limit_price = _order_limit_price(row)
+    if fill_price > 0:
+        return fill_price, "order_detail_unverified_fill", "订单明细价"
+    if limit_price <= 0:
+        return None, "not_a_fill", ""
+    if role in {"take_profit", "repair_tp"}:
+        return limit_price, "take_profit_price", "止盈价"
+    if role in {"stop_loss", "repair_sl"}:
+        return limit_price, "stop_loss_price", "止损价"
+    if role == "entry":
+        return limit_price, "entry_limit", "开仓限价"
+    if role == "close":
+        return limit_price, "close_limit", "平仓限价"
+    return limit_price, "order_reference_price", "订单参考价"
 
 
 def _order_status(row: dict[str, Any]) -> str:
@@ -725,6 +796,8 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
                     role=role,
                     qty=quantity,
                     price=limit_price if limit_price > 0 else None,
+                    price_kind="entry_limit" if limit_price > 0 else "not_a_fill",
+                    price_label="开仓限价" if limit_price > 0 else "",
                     source="orders",
                     details={"status": status, "quantity": quantity, "limit_price": limit_price, "price_policy": "limit_or_plan_not_actual_fill"},
                 )
@@ -748,6 +821,8 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
                     role=role,
                     qty=quantity,
                     price=limit_price if limit_price > 0 else None,
+                    price_kind="take_profit_price" if limit_price > 0 else "not_a_fill",
+                    price_label="止盈价" if limit_price > 0 else "",
                     source="orders",
                     details={"status": status, "quantity": quantity, "tp_price": limit_price, **({"old_tp": extra.get("old_tp"), "new_tp": extra.get("new_tp")} if extra else {})},
                 )
@@ -771,6 +846,8 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
                     role=role,
                     qty=quantity,
                     price=limit_price if limit_price > 0 else None,
+                    price_kind="stop_loss_price" if limit_price > 0 else "not_a_fill",
+                    price_label="止损价" if limit_price > 0 else "",
                     source="orders",
                     details={"status": status, "quantity": quantity, "sl_price": limit_price, **({"old_sl": extra.get("old_sl"), "new_sl": extra.get("new_sl")} if extra else {})},
                 )
@@ -791,6 +868,8 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
                     role=role,
                     qty=quantity,
                     price=limit_price if limit_price > 0 else None,
+                    price_kind="close_limit" if limit_price > 0 else "not_a_fill",
+                    price_label="平仓限价" if limit_price > 0 else "",
                     source="orders",
                     details={"status": status, "quantity": quantity, "limit_price": limit_price},
                 )
@@ -1083,6 +1162,7 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
         detail_role = _role(row)
         detail_status = _order_status(row)
         detail_stage = "execution" if detail_role == "entry" else "protection" if detail_role in {"take_profit", "stop_loss", "repair_tp", "repair_sl"} else "exit"
+        detail_price, detail_price_kind, detail_price_label = _order_reference_price(row, detail_role)
         events.append(
             _base_event(
                 "order_detail_snapshot",
@@ -1096,9 +1176,10 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
                 trade_group_id=_safe_text(first_defined(row.get("trade_group_id"), extra.get("trade_group_id"), trade_group_id)),
                 order_id=_order_id(row),
                 role=detail_role,
-                fill_source="unknown" if _order_fill_price(row) > 0 else "",
                 qty=_order_filled_qty(row) or _order_qty(row) or None,
-                price=_order_fill_price(row) or _order_limit_price(row) or None,
+                price=detail_price,
+                price_kind=detail_price_kind,
+                price_label=detail_price_label,
                 source="ibkr_order_details",
                 details={
                     "status": detail_status,

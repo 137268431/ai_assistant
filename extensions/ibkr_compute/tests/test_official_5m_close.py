@@ -1,5 +1,6 @@
 import sys
 import threading
+import time
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -55,7 +56,7 @@ class _FakeWriter:
 
 
 class _FakeBackfill:
-    def __init__(self, writer: _FakeWriter, initial_rows=None, incremental_rows=None, repair_rows=None):
+    def __init__(self, writer: _FakeWriter, initial_rows=None, incremental_rows=None, repair_rows=None, fetch_delays=None):
         self.writer = writer
         self.initial_rows = [dict(row) for row in (initial_rows or [])]
         self.incremental_rows_by_symbol = {
@@ -70,6 +71,13 @@ class _FakeBackfill:
         self.repair_rows = [] if isinstance(repair_rows, dict) else [dict(row) for row in (repair_rows or [])]
         self.repair_fetch_calls = 0
         self.backfill_all_calls = []
+        self.fetch_delays = {
+            str(symbol or "").upper(): float(delay or 0.0)
+            for symbol, delay in (fetch_delays or {}).items()
+        }
+        self.fetch_started_symbols = set()
+        self.fetch_finished_symbols = set()
+        self.fetch_lock = threading.Lock()
 
     def _visible_rows(self, symbol: str) -> list[dict]:
         return [
@@ -99,9 +107,19 @@ class _FakeBackfill:
             if self.repair_rows_by_symbol:
                 return [dict(row) for row in self.repair_rows_by_symbol.get(str(symbol or "").upper(), [])]
             return [dict(row) for row in self.repair_rows]
-        if self.incremental_rows_by_symbol:
-            return [dict(row) for row in self.incremental_rows_by_symbol.get(str(symbol or "").upper(), [])]
-        return [dict(row) for row in self.incremental_rows]
+        normalized_symbol = str(symbol or "").upper()
+        with self.fetch_lock:
+            self.fetch_started_symbols.add(normalized_symbol)
+        try:
+            delay = float(self.fetch_delays.get(normalized_symbol, 0.0) or 0.0)
+            if delay > 0:
+                time.sleep(delay)
+            if self.incremental_rows_by_symbol:
+                return [dict(row) for row in self.incremental_rows_by_symbol.get(normalized_symbol, [])]
+            return [dict(row) for row in self.incremental_rows]
+        finally:
+            with self.fetch_lock:
+                self.fetch_finished_symbols.add(normalized_symbol)
 
     def get_required_sequence_snapshot(
         self,
@@ -152,21 +170,28 @@ class _FakeBackfill:
 
 
 class _FakeConfig:
+    def __init__(self, values=None):
+        self.values = dict(values or {})
+
+    def _get(self, key: str, default=None):
+        return self.values.get(key, default)
+
     def get_bool_for_environment(self, key: str, environment: str, default=False):
-        del key, environment
-        return default
+        del environment
+        value = self._get(key, default)
+        return str(value).strip().lower() in {"true", "1", "yes", "on"}
 
     def get_for_environment(self, key: str, environment: str, default=None):
-        del key, environment
-        return default
+        del environment
+        return self._get(key, default)
 
     def get_int_for_environment(self, key: str, environment: str, default=0):
-        del key, environment
-        return default
+        del environment
+        return int(self._get(key, default))
 
     def get_float_for_environment(self, key: str, environment: str, default=0.0):
-        del key, environment
-        return default
+        del environment
+        return float(self._get(key, default))
 
 
 class _FakePB:
@@ -229,12 +254,12 @@ class _DummyPipeline(TradingServiceRuntimePipelineMixin):
         self.config = _FakeConfig()
         self._direct_topup_lock = threading.Lock()
         self._direct_topup_state = {
-            "enabled": True,
+            "enabled": False,
             "driver": "ibkr_history_direct_topup",
             "intervals": ["15m", "30m", "1h", "4h", "1d"],
             "close_delay_sec": 30,
             "loop_interval_s": 5,
-            "parallel_enabled": True,
+            "parallel_enabled": False,
             "interval_priority": ["4h", "1h", "30m", "15m", "1d"],
             "last_run": "",
             "last_error": "",
@@ -244,6 +269,7 @@ class _DummyPipeline(TradingServiceRuntimePipelineMixin):
         }
         self._direct_topup_due_ms = due_bucket_ms
         self.compute_events = []
+        self.compute_event_snapshots = []
         self.compute_triggers = []
         self.watchlist_topup_requests = []
 
@@ -273,6 +299,14 @@ class _DummyPipeline(TradingServiceRuntimePipelineMixin):
         return sorted({str(symbol or "").strip().upper() for symbol in (symbols or []) if str(symbol or "").strip()})
 
     def _queue_compute_event(self, source: str, bar_count: int = 0, symbols=None):
+        self.compute_event_snapshots.append(
+            {
+                "source": source,
+                "bar_count": bar_count,
+                "symbols": list(symbols or []),
+                "fetch_finished_symbols": sorted(getattr(self.data_backfill, "fetch_finished_symbols", set())),
+            }
+        )
         self.compute_events.append(
             {
                 "source": source,
@@ -343,7 +377,7 @@ class Official5mCloseFlushTest(unittest.TestCase):
             DEFAULT_RUNTIME_DIRECT_TOPUP_INTERVALS=("15m", "30m", "1h", "4h", "1d"),
             DEFAULT_RUNTIME_DIRECT_TOPUP_CLOSE_DELAY_SECONDS=30,
             DEFAULT_RUNTIME_DIRECT_TOPUP_LOOP_INTERVAL_SECONDS=5.0,
-            DEFAULT_RUNTIME_DIRECT_TOPUP_PARALLEL_ENABLED=True,
+            DEFAULT_RUNTIME_DIRECT_TOPUP_PARALLEL_ENABLED=False,
             DEFAULT_RUNTIME_DIRECT_TOPUP_INTERVAL_PRIORITY=("4h", "1h", "30m", "15m", "1d"),
             DEFAULT_RUNTIME_DIRECT_TOPUP_PERIODS={
                 "15m": "2d",
@@ -490,16 +524,54 @@ class Official5mCloseFlushTest(unittest.TestCase):
         self.assertEqual(state["pending_symbols"], [])
         self.assertEqual(state["written_symbols"], ["AAPL", "MSFT"])
         self.assertEqual(sorted(row["symbol"] for row in writer.flushed_rows), ["AAPL", "MSFT"])
-        self.assertEqual(
-            pipeline.compute_events,
-            [
-                {
-                    "source": "canonical_close",
-                    "bar_count": 2,
-                    "symbols": ["AAPL"],
-                }
+        self.assertEqual(len(pipeline.compute_events), 1)
+        self.assertEqual(pipeline.compute_events[0]["source"], "canonical_close")
+        self.assertEqual(pipeline.compute_events[0]["symbols"], ["AAPL"])
+        self.assertGreaterEqual(pipeline.compute_events[0]["bar_count"], 1)
+
+    def test_streaming_close_queues_fast_symbol_before_slow_symbol_finishes(self):
+        due_bucket_ms = int(datetime(2026, 4, 17, 10, 50, tzinfo=ET).timestamp() * 1000)
+        previous_bucket_ms = due_bucket_ms - STEP_MS
+        writer = _FakeWriter()
+        backfill = _FakeBackfill(
+            writer,
+            initial_rows=[
+                _bar("AAPL", previous_bucket_ms),
+                _bar("MSFT", previous_bucket_ms),
             ],
+            incremental_rows={
+                "AAPL": [_bar("AAPL", due_bucket_ms)],
+                "MSFT": [_bar("MSFT", due_bucket_ms)],
+            },
+            repair_rows={},
+            fetch_delays={"MSFT": 0.1},
         )
+        pipeline = _DummyPipeline(
+            due_bucket_ms=due_bucket_ms,
+            last_completed_bucket_ms=previous_bucket_ms,
+            data_writer=writer,
+            data_backfill=backfill,
+            pb=_FakePB(cursor_map={"AAPL|5m": previous_bucket_ms, "MSFT|5m": previous_bucket_ms}),
+            snapshot={
+                "symbols": ["AAPL", "MSFT"],
+                "trade_symbols": ["AAPL", "MSFT"],
+                "monitor_symbols": [],
+                "conid_map": {"AAPL": 1, "MSFT": 2},
+                "symbol_meta": {
+                    "AAPL": {"exchange": "NASDAQ"},
+                    "MSFT": {"exchange": "NASDAQ"},
+                },
+            },
+        )
+
+        with mock.patch("ibkr_compute.orchestration.runtime_pipeline._service_mod", return_value=self._service_mod()):
+            pipeline._run_official_5m_close_cycle()
+
+        self.assertGreaterEqual(len(pipeline.compute_event_snapshots), 2)
+        self.assertEqual(pipeline.compute_event_snapshots[0]["symbols"], ["AAPL"])
+        self.assertIn("AAPL", pipeline.compute_event_snapshots[0]["fetch_finished_symbols"])
+        self.assertNotIn("MSFT", pipeline.compute_event_snapshots[0]["fetch_finished_symbols"])
+        self.assertEqual([event["symbols"] for event in pipeline.compute_events], [["AAPL"], ["MSFT"]])
 
     def test_close_cycle_fetches_multiple_trade_symbols_with_worker_trace(self):
         due_bucket_ms = int(datetime(2026, 4, 17, 10, 50, tzinfo=ET).timestamp() * 1000)
@@ -685,6 +757,7 @@ class Official5mCloseFlushTest(unittest.TestCase):
                 },
             },
         )
+        pipeline.config = _FakeConfig({"ibkr_runtime_direct_topup_enabled": "true"})
         pipeline._direct_topup_due_ms = due_15m_ms
 
         with mock.patch("ibkr_compute.orchestration.runtime_pipeline._service_mod", return_value=self._service_mod()):
@@ -736,6 +809,12 @@ class Official5mCloseFlushTest(unittest.TestCase):
                 },
             },
         )
+        pipeline.config = _FakeConfig(
+            {
+                "ibkr_runtime_direct_topup_enabled": "true",
+                "ibkr_runtime_direct_topup_parallel_enabled": "true",
+            }
+        )
         pipeline._direct_topup_due_ms = due_15m_ms
 
         with mock.patch("ibkr_compute.orchestration.runtime_pipeline._service_mod", return_value=self._service_mod()):
@@ -778,6 +857,7 @@ class Official5mCloseFlushTest(unittest.TestCase):
             data_writer=writer,
             data_backfill=backfill,
         )
+        pipeline.config = _FakeConfig({"ibkr_runtime_direct_topup_enabled": "true"})
 
         with mock.patch("ibkr_compute.orchestration.runtime_pipeline._service_mod", return_value=self._service_mod()):
             pipeline._run_runtime_direct_topup_cycle(["15m"])
@@ -805,6 +885,7 @@ class Official5mCloseFlushTest(unittest.TestCase):
                 "unobserved": 0,
             },
         )
+        pipeline.config = _FakeConfig({"ibkr_runtime_direct_topup_enabled": "true"})
         pipeline._direct_topup_due_ms = due_15m_ms
 
         with mock.patch("ibkr_compute.orchestration.runtime_pipeline._service_mod", return_value=self._service_mod()):
@@ -814,6 +895,26 @@ class Official5mCloseFlushTest(unittest.TestCase):
         self.assertEqual(pipeline.compute_triggers, [])
         state = pipeline._copy_direct_topup_state()
         self.assertEqual(state["last_error"], "watchlist_5m_pending")
+
+    def test_runtime_direct_topup_is_disabled_by_default(self):
+        due_5m_ms = int(datetime(2026, 4, 17, 10, 45, tzinfo=ET).timestamp() * 1000)
+        writer = _FakeWriter()
+        backfill = _FakeBackfill(writer)
+        pipeline = _DummyPipeline(
+            due_bucket_ms=due_5m_ms,
+            last_completed_bucket_ms=due_5m_ms,
+            data_writer=writer,
+            data_backfill=backfill,
+        )
+
+        with mock.patch("ibkr_compute.orchestration.runtime_pipeline._service_mod", return_value=self._service_mod()):
+            pipeline._run_runtime_direct_topup_cycle(["15m"])
+
+        self.assertEqual(backfill.backfill_all_calls, [])
+        self.assertEqual(pipeline.compute_triggers, [])
+        state = pipeline._copy_direct_topup_state()
+        self.assertFalse(state["enabled"])
+        self.assertFalse(state["parallel_enabled"])
 
 
 if __name__ == "__main__":

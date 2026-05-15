@@ -22,6 +22,7 @@ from ibkr_compute.core.intraday_harvest import (
     build_reentry_prices,
     evaluate_intraday_harvest,
     harvest_settings_from_config,
+    suggested_stop_price,
 )
 from ibkr_compute.core.risk_management import (
     compute_atr_tightened_stop,
@@ -732,7 +733,7 @@ class OrderLifecycle:
             settings = {}
         settings["enabled"] = True
         settings["live_auto_enabled"] = True
-        settings["split_brackets_enabled"] = True
+        settings["split_brackets_enabled"] = False
         return settings
 
     def _intraday_harvest_enabled(self) -> bool:
@@ -779,6 +780,15 @@ class OrderLifecycle:
     def _is_harvest_managed_order(row: dict | None) -> bool:
         extra = OrderLifecycle._order_extra(row)
         return bool(extra.get("harvest_managed") or extra.get("intraday_harvest_managed") or extra.get("harvest_profile"))
+
+    @staticmethod
+    def _is_partial_harvest_order(row: dict | None) -> bool:
+        extra = OrderLifecycle._order_extra(row)
+        family = str((row or {}).get("order_family_type") or extra.get("order_family_type") or "").strip().lower()
+        return bool(
+            extra.get("partial_harvest_managed")
+            or family == "partial_harvest_bracket"
+        )
 
     @staticmethod
     def _order_status(row: dict | None) -> str:
@@ -860,8 +870,16 @@ class OrderLifecycle:
         return [
             bucket
             for bucket in groups.values()
-            if bucket.get("entry") and bucket.get("lot") in {"core", "tactical"}
+            if bucket.get("entry")
+            and (
+                bucket.get("lot") in {"core", "tactical", "primary"}
+                or self._is_partial_harvest_order(bucket.get("entry"))
+            )
         ]
+
+    def _is_partial_harvest_group(self, group: dict | None) -> bool:
+        group = group or {}
+        return self._is_partial_harvest_order(group.get("entry")) or self._is_partial_harvest_order(group.get("take_profit"))
 
     def _harvest_group_active(self, group: dict) -> bool:
         entry = group.get("entry") or {}
@@ -881,6 +899,84 @@ class OrderLifecycle:
         stop_row = group.get("stop_loss") or {}
         target_row = group.get("take_profit") or {}
         return self._order_is_open(stop_row) or self._order_is_open(target_row)
+
+    def _order_filled_quantity(self, row: dict | None) -> int:
+        row = row or {}
+        filled = self._coerce_float(row.get("filled_qty"), 0.0)
+        if filled > 0:
+            return abs(int(round(filled)))
+        if self._order_status(row).upper() in {"FILLED", "EXECUTED"}:
+            return self._order_quantity(row)
+        return 0
+
+    def _partial_harvest_quantity(self, group: dict) -> int:
+        entry = group.get("entry") or {}
+        target = group.get("take_profit") or {}
+        entry_extra = self._order_extra(entry)
+        target_extra = self._order_extra(target)
+        configured = (
+            self._coerce_float(entry_extra.get("partial_tp_quantity"), 0.0)
+            or self._coerce_float(target_extra.get("partial_tp_quantity"), 0.0)
+            or self._coerce_float(target.get("quantity"), 0.0)
+        )
+        return max(0, int(round(configured)))
+
+    def _partial_harvest_remaining_quantity(self, group: dict, broker_position: dict) -> int:
+        entry = group.get("entry") or {}
+        target = group.get("take_profit") or {}
+        entry_qty = self._order_filled_quantity(entry) or self._order_quantity(entry)
+        tp_qty = self._order_filled_quantity(target) or self._partial_harvest_quantity(group)
+        broker_qty = abs(int(round(self._broker_position_quantity(broker_position))))
+        remaining = max(0, entry_qty - tp_qty)
+        return min(remaining, broker_qty) if broker_qty > 0 else remaining
+
+    def _partial_harvest_handled(self, group: dict) -> bool:
+        extra = self._order_extra(group.get("entry"))
+        return bool(extra.get("partial_tp_handled") or extra.get("partial_harvest_stop_adjusted"))
+
+    def _partial_harvest_reentry_done(self, group: dict) -> bool:
+        extra = self._order_extra(group.get("entry"))
+        return bool(extra.get("reentry_done") or extra.get("partial_harvest_reentry_done"))
+
+    def _partial_harvest_stop_price(self, broker_position: dict, group: dict, snapshot: dict, settings: dict) -> float:
+        position = self._build_harvest_position(broker_position, group)
+        stop_price = suggested_stop_price(position, snapshot, settings)
+        if stop_price > 0:
+            return stop_price
+        entry_price = self._coerce_float(position.get("entry_price"), 0.0)
+        initial_stop = self._coerce_float(position.get("initial_stop_loss"), self._coerce_float(position.get("stop_price"), 0.0))
+        risk = abs(entry_price - initial_stop) if entry_price > 0 and initial_stop > 0 else 0.0
+        lock_r = max(0.0, self._get_config_float("intraday_harvest_breakeven_lock_r", 0.10))
+        if entry_price <= 0:
+            return 0.0
+        if str(position.get("direction") or "").lower() == "short":
+            return round(entry_price - risk * lock_r, 4)
+        return round(entry_price + risk * lock_r, 4)
+
+    def _near_partial_harvest_reentry_support(self, snapshot: dict, settings: dict) -> tuple[bool, list[str]]:
+        close = self._coerce_float(snapshot.get("close"), 0.0)
+        if close <= 0:
+            return False, []
+        support_bps = max(0.0, float(settings.get("reentry_support_bps") or self._get_config_float("intraday_harvest_reentry_support_bps", 35.0)))
+        reasons: list[str] = []
+        for field, reason in (("vwap", "near_vwap_support"), ("ema_fast", "near_ema_fast_support")):
+            level = self._coerce_float(snapshot.get(field), 0.0)
+            if level > 0 and abs(close - level) / close * 10000.0 <= support_bps:
+                reasons.append(reason)
+        return bool(reasons), reasons
+
+    def _has_reentry_for_source(self, groups: list[dict], source_group_key: str) -> bool:
+        source_group_key = str(source_group_key or "").strip()
+        if not source_group_key:
+            return False
+        for group in groups or []:
+            entry = group.get("entry") or {}
+            extra = self._order_extra(entry)
+            if str(extra.get("harvest_reentry_source_group") or "").strip() != source_group_key:
+                continue
+            if self._order_is_open(entry) or self._harvest_group_active(group) or self._entry_is_filled(entry):
+                return True
+        return False
 
     @staticmethod
     def _latest_group(groups: list[dict]) -> dict:
@@ -1093,6 +1189,185 @@ class OrderLifecycle:
             self._record_harvest_action(symbol)
         return updated
 
+    def _modify_partial_harvest_stop(
+        self,
+        *,
+        symbol: str,
+        group: dict,
+        broker_position: dict,
+        snapshot: dict,
+        settings: dict,
+    ) -> bool:
+        if not self.order_modifier:
+            return False
+        entry_row = group.get("entry") or {}
+        target_row = group.get("take_profit") or {}
+        stop_row = group.get("stop_loss") or {}
+        if not stop_row or not self._order_is_open(stop_row):
+            return False
+        remaining_qty = self._partial_harvest_remaining_quantity(group, broker_position)
+        partial_qty = self._order_filled_quantity(target_row) or self._partial_harvest_quantity(group)
+        if remaining_qty <= 0 or partial_qty <= 0:
+            return False
+        stop_order_id = self._order_broker_id(stop_row)
+        if not stop_order_id:
+            return False
+        stop_price = self._partial_harvest_stop_price(broker_position, group, snapshot, settings)
+        if stop_price <= 0:
+            return False
+        modifier = getattr(self.order_modifier, "modify_order", None)
+        updates = {"quantity": remaining_qty, "auxPrice": stop_price}
+        result = modifier(stop_order_id, updates) if callable(modifier) else self.order_modifier.update_stop_loss(stop_order_id, stop_price)
+        if not result.get("ok"):
+            logger.warning("Partial harvest stop adjust failed: %s order=%s error=%s", symbol, stop_order_id, result.get("error"))
+            return False
+        now_ms = int(time.time() * 1000)
+        state = {
+            **self._harvest_state(entry_row),
+            "partial_exited": True,
+            "cycles": max(1, int(self._harvest_state(entry_row).get("cycles") or 0)),
+            "last_action": ACTION_PARTIAL_EXIT,
+            "last_action_bar_ms": int(snapshot.get("bar_time_ms") or 0),
+        }
+        self._upsert_harvest_order_patch(
+            entry_row,
+            extra_patch={
+                "partial_tp_handled": True,
+                "partial_harvest_stop_adjusted": True,
+                "partial_tp_quantity": partial_qty,
+                "partial_tp_filled_quantity": partial_qty,
+                "remaining_after_partial_tp": remaining_qty,
+                "breakeven_stop_price": stop_price,
+                "reentry_allowed": True,
+                "harvest_state": state,
+                "partial_harvest_stop_adjust_result": dict(result or {}),
+                "partial_tp_handled_at_ms": now_ms,
+            },
+        )
+        self._upsert_harvest_order_patch(
+            stop_row,
+            limit_price=stop_price,
+            extra_patch={
+                "partial_harvest_stop_adjusted": True,
+                "partial_harvest_remaining_quantity": remaining_qty,
+                "partial_harvest_old_quantity": self._order_quantity(stop_row),
+                "partial_harvest_new_stop": stop_price,
+                "partial_harvest_stop_adjusted_at_ms": now_ms,
+            },
+        )
+        self._record_harvest_action(symbol)
+        logger.info("Partial harvest TP handled: %s partial=%s remaining=%s stop=%s", symbol, partial_qty, remaining_qty, stop_price)
+        return True
+
+    def _cancel_partial_harvest_target_after_stop(self, *, symbol: str, group: dict) -> bool:
+        target_row = group.get("take_profit") or {}
+        stop_row = group.get("stop_loss") or {}
+        if self._order_status(stop_row).upper() not in {"FILLED", "EXECUTED"}:
+            return False
+        if not target_row or not self._order_is_open(target_row):
+            return False
+        broker_id = self._order_broker_id(target_row)
+        if not broker_id or not self.order_modifier:
+            return False
+        result = self.order_modifier.cancel_order(broker_id)
+        if not result.get("ok") and not self._cancel_result_looks_closed(result):
+            logger.warning("Partial harvest stale target cancel failed: %s order=%s error=%s", symbol, broker_id, result.get("error"))
+            return False
+        self._upsert_harvest_order_patch(
+            target_row,
+            status="Canceled",
+            relation_status="closed",
+            extra_patch={
+                "partial_harvest_cancelled_after_stop": True,
+                "partial_harvest_cancel_result": dict(result or {}),
+            },
+        )
+        self._record_harvest_action(symbol)
+        return True
+
+    def _maybe_reenter_partial_harvest(
+        self,
+        *,
+        symbol: str,
+        broker_position: dict,
+        group: dict,
+        groups: list[dict],
+        snapshot: dict,
+        settings: dict,
+    ) -> bool:
+        entry_row = group.get("entry") or {}
+        extra = self._order_extra(entry_row)
+        if not bool(extra.get("partial_tp_handled")) or not bool(extra.get("reentry_allowed")):
+            return False
+        if self._partial_harvest_reentry_done(group) or self._has_reentry_for_source(groups, str(group.get("group_key") or "")):
+            return False
+        near_support, reasons = self._near_partial_harvest_reentry_support(snapshot, settings)
+        if not near_support:
+            return False
+        quantity = int(extra.get("partial_tp_filled_quantity") or extra.get("partial_tp_quantity") or self._partial_harvest_quantity(group) or 0)
+        if quantity <= 0:
+            return False
+        current = self._coerce_float(snapshot.get("close"), 0.0)
+        atr = self._coerce_float(snapshot.get("atr"), 0.0)
+        direction = "long" if self._broker_position_quantity(broker_position) > 0 else "short"
+        prices = build_reentry_prices(direction, current, atr, settings)
+        decision = {
+            "action": ACTION_REENTRY,
+            "reason": ",".join(reasons) or "near_vwap_or_ema_support",
+            "reasons": reasons,
+            "score": len(reasons),
+            "quantity_fraction": float(settings.get("tactical_fraction") or 0.30),
+            "state": {
+                **self._harvest_state(entry_row),
+                "partial_exited": True,
+                "last_action": ACTION_REENTRY,
+                "last_action_bar_ms": int(snapshot.get("bar_time_ms") or 0),
+            },
+            "reentry_prices": prices,
+            "current_price": current,
+        }
+        result = self._execute_harvest_reentry(
+            symbol=symbol,
+            broker_position=broker_position,
+            source_group=group,
+            quantity=quantity,
+            decision=decision,
+            settings=settings,
+        )
+        return bool(result.get("ok"))
+
+    def _handle_partial_harvest_group(
+        self,
+        *,
+        symbol: str,
+        broker_position: dict,
+        group: dict,
+        groups: list[dict],
+        snapshot: dict,
+        settings: dict,
+    ) -> bool:
+        if not self._is_partial_harvest_group(group):
+            return False
+        if self._cancel_partial_harvest_target_after_stop(symbol=symbol, group=group):
+            return True
+        target_row = group.get("take_profit") or {}
+        if self._order_status(target_row).upper() in {"FILLED", "EXECUTED"} and not self._partial_harvest_handled(group):
+            return self._modify_partial_harvest_stop(
+                symbol=symbol,
+                group=group,
+                broker_position=broker_position,
+                snapshot=snapshot,
+                settings=settings,
+            )
+        return self._maybe_reenter_partial_harvest(
+            symbol=symbol,
+            broker_position=broker_position,
+            group=group,
+            groups=groups,
+            snapshot=snapshot,
+            settings=settings,
+        )
+
     def _execute_harvest_partial_exit(
         self,
         *,
@@ -1258,7 +1533,9 @@ class OrderLifecycle:
         self._upsert_harvest_order_patch(
             entry_row,
             extra_patch={
-                "harvest_state": {**self._harvest_state(entry_row), "last_reentry_at_ms": int(time.time() * 1000)},
+                "harvest_state": {**state, "last_reentry_at_ms": int(time.time() * 1000)},
+                "reentry_done": True,
+                "partial_harvest_reentry_done": True,
                 "harvest_last_reentry_result": {
                     "order_ids": list(result.get("order_ids") or []),
                     "bracket_group": result.get("bracket_group") or "",
@@ -1276,18 +1553,32 @@ class OrderLifecycle:
             return
         if symbol in self._harvest_frozen_symbols:
             return
-        if not self._harvest_action_allowed(symbol):
-            return
         broker_qty = self._broker_position_quantity(broker_position)
-        if not broker_qty:
-            return
         rows = self._load_live_order_rows_for_symbol(symbol)
         groups = self._group_harvest_rows(rows)
         if not groups:
             return
+        partial_groups = [group for group in groups if self._is_partial_harvest_group(group)]
+        for partial_group in partial_groups:
+            if self._cancel_partial_harvest_target_after_stop(symbol=symbol, group=partial_group):
+                return
+        if not broker_qty:
+            return
+        if not self._harvest_action_allowed(symbol):
+            return
         snapshot = self._load_latest_5m_risk_snapshot(symbol)
         if self._coerce_float(snapshot.get("close"), 0.0) <= 0:
             return
+        for partial_group in partial_groups:
+            if self._handle_partial_harvest_group(
+                symbol=symbol,
+                broker_position=broker_position,
+                group=partial_group,
+                groups=groups,
+                snapshot=snapshot,
+                settings=settings,
+            ):
+                return
         core_groups = [group for group in groups if group.get("lot") == "core" and self._harvest_group_active(group)]
         tactical_groups = [group for group in groups if group.get("lot") == "tactical" and self._harvest_group_active(group)]
         active_groups = [*core_groups, *tactical_groups]

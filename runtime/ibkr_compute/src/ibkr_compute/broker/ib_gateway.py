@@ -1559,10 +1559,13 @@ class BrokerAdapter:
         entry_price: float,
         take_profit_price: float,
         stop_loss_price: float,
+        take_profit_quantity: int | None = None,
+        stop_loss_quantity: int | None = None,
         entry_order_type: str = "LMT",
         tif: str = "DAY",
         account_id: str = "",
         order_ref_suffix: str = "",
+        order_family_type: str = "",
     ) -> dict:
         contract_info = self.resolve_contract(symbol=symbol, conid=conid)
         if not contract_info:
@@ -1581,8 +1584,16 @@ class BrokerAdapter:
         suffix = str(order_ref_suffix or "").strip()
         safe_suffix = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in suffix)
         group = f"{contract.symbol}_{direction}_{stamp}" + (f"_{safe_suffix}" if safe_suffix else "")
-        oca_group = group
-        order_family_type = "bracket_oco"
+        entry_quantity = int(quantity or 0)
+        tp_quantity = int(take_profit_quantity if take_profit_quantity is not None else entry_quantity)
+        sl_quantity = int(stop_loss_quantity if stop_loss_quantity is not None else entry_quantity)
+        tp_quantity = max(0, tp_quantity)
+        sl_quantity = max(0, sl_quantity)
+        requested_family_type = str(order_family_type or "").strip()
+        order_family_type = requested_family_type or (
+            "bracket_oco" if tp_quantity == entry_quantity and sl_quantity == entry_quantity else "partial_harvest_bracket"
+        )
+        oca_group = group if order_family_type == "bracket_oco" else ""
         entry_ref = f"entry_{group}"
         tp_ref = f"tp_{group}"
         sl_ref = f"sl_{group}"
@@ -1592,7 +1603,7 @@ class BrokerAdapter:
         entry.orderId = int(order_ids[0])
         entry.action = side
         entry.orderType = str(entry_order_type or "LMT").upper()
-        entry.totalQuantity = float(quantity)
+        entry.totalQuantity = float(entry_quantity)
         entry.tif = str(tif or "DAY")
         entry.orderRef = entry_ref
         if account_id:
@@ -1606,15 +1617,16 @@ class BrokerAdapter:
         tp.orderId = int(order_ids[1])
         tp.action = close_side
         tp.orderType = "LMT"
-        tp.totalQuantity = float(quantity)
+        tp.totalQuantity = float(tp_quantity)
         tp.lmtPrice = float(take_profit_price)
         tp.tif = "GTC"
         tp.parentId = int(order_ids[0])
         tp.orderRef = tp_ref
         if account_id:
             tp.account = account_id
-        tp.ocaGroup = oca_group
-        tp.ocaType = 1
+        if oca_group:
+            tp.ocaGroup = oca_group
+            tp.ocaType = 1
         tp.transmit = False
         self._clear_legacy_order_flags(tp)
 
@@ -1622,15 +1634,16 @@ class BrokerAdapter:
         sl.orderId = int(order_ids[2])
         sl.action = close_side
         sl.orderType = "STP"
-        sl.totalQuantity = float(quantity)
+        sl.totalQuantity = float(sl_quantity)
         sl.auxPrice = float(stop_loss_price)
         sl.tif = "GTC"
         sl.parentId = int(order_ids[0])
         sl.orderRef = sl_ref
         if account_id:
             sl.account = account_id
-        sl.ocaGroup = oca_group
-        sl.ocaType = 1
+        if oca_group:
+            sl.ocaGroup = oca_group
+            sl.ocaType = 1
         sl.transmit = True
         self._clear_legacy_order_flags(sl)
 
@@ -1648,6 +1661,9 @@ class BrokerAdapter:
                 "bracket_group": group,
                 "oca_group": oca_group,
                 "order_family_type": order_family_type,
+                "quantity": entry_quantity,
+                "take_profit_quantity": tp_quantity,
+                "stop_loss_quantity": sl_quantity,
                 "entry_coid": entry_ref,
                 "tp_coid": tp_ref,
                 "sl_coid": sl_ref,
@@ -1699,6 +1715,9 @@ class BrokerAdapter:
                     "bracket_group": group,
                     "oca_group": oca_group,
                     "order_family_type": order_family_type,
+                    "quantity": entry_quantity,
+                    "take_profit_quantity": tp_quantity,
+                    "stop_loss_quantity": sl_quantity,
                     "entry_coid": entry_ref,
                     "tp_coid": tp_ref,
                     "sl_coid": sl_ref,
@@ -1716,6 +1735,9 @@ class BrokerAdapter:
                 "bracket_group": group,
                 "oca_group": oca_group,
                 "order_family_type": order_family_type,
+                "quantity": entry_quantity,
+                "take_profit_quantity": tp_quantity,
+                "stop_loss_quantity": sl_quantity,
                 "entry_coid": entry_ref,
                 "tp_coid": tp_ref,
                 "sl_coid": sl_ref,
@@ -1727,6 +1749,9 @@ class BrokerAdapter:
             "bracket_group": group,
             "oca_group": oca_group,
             "order_family_type": order_family_type,
+            "quantity": entry_quantity,
+            "take_profit_quantity": tp_quantity,
+            "stop_loss_quantity": sl_quantity,
             "entry_coid": entry_ref,
             "tp_coid": tp_ref,
             "sl_coid": sl_ref,

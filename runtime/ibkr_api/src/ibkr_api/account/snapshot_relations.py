@@ -6,6 +6,7 @@ from ibkr_api.orders.values import to_float, to_int, to_text
 from ibkr_api.account.snapshot_shared import (
     OPEN_ORDER_FILTER_PER_PAGE,
     canonical_order_status,
+    _is_exit_exposure_role,
     normalize_order_record,
     normalize_signal_record,
 )
@@ -64,7 +65,7 @@ def build_relation_context(pb: Any, environment: str, symbols: list[str], normal
         role = to_text(normalized.get("role"))
         if role == "entry":
             group["entry_filled_qty"] += abs(to_float(normalized.get("filled_qty")) or 0.0)
-        if role in {"take_profit", "stop_loss"}:
+        if _is_exit_exposure_role(role):
             group["exit_filled_qty"] += abs(to_float(normalized.get("filled_qty")) or 0.0)
         if to_text(normalized.get("relation_status")).lower() in {"active", "planned"} or (to_int(normalized.get("status_weight"), 0) >= 70 and canonical_order_status(normalized.get("status")) != "FILLED"):
             group["has_active_order"] = True

@@ -1075,6 +1075,9 @@
                 } else {
                     pnlEl.textContent = '-';
                 }
+                pnlEl.className = pnlSummary.exitCount > 0
+                    ? (pnl > 0 ? 'long' : (pnl < 0 ? 'short' : 'neutral'))
+                    : 'neutral';
 
                 const totalSignals = longSignals + shortSignals;
                 const totalOrders = longOrders + shortOrders;

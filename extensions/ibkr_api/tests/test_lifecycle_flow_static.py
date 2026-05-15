@@ -31,6 +31,11 @@ class LifecycleFlowStaticSmokeTest(unittest.TestCase):
             "backtest_simulated",
             "unknown",
             "normalizeFillSource",
+            "price_kind",
+            "take_profit_price",
+            "stop_loss_price",
+            "entry_limit",
+            "order_detail_unverified_fill",
             "estimated",
             "fill_source_policy",
         ):

@@ -320,6 +320,8 @@ body {
 .fill-pill.paper_ibkr { color: var(--flow-blue); border-color: rgba(99,179,237,0.34); background: rgba(99,179,237,0.09); }
 .fill-pill.backtest_simulated { color: var(--flow-warn); border-color: rgba(246,173,85,0.34); background: rgba(246,173,85,0.09); }
 .fill-pill.unknown { color: var(--flow-muted); border-color: rgba(144,167,184,0.28); background: rgba(144,167,184,0.08); }
+.fill-pill.price_kind { color: var(--flow-ink); border-color: rgba(94,234,212,0.24); background: rgba(94,234,212,0.07); }
+.fill-pill.order_detail_unverified_fill { color: var(--flow-danger); border-color: rgba(252,129,129,0.26); background: rgba(252,129,129,0.06); }
 
 .flow-workspace {
   display: grid;
@@ -534,6 +536,7 @@ body {
 .price-panel.is-paper { border-color: rgba(99, 179, 237, 0.28); background: rgba(99, 179, 237, 0.07); }
 .price-panel.is-sim { border-color: rgba(246, 173, 85, 0.3); background: rgba(246, 173, 85, 0.07); }
 .price-panel.is-unverified { border-color: rgba(252, 129, 129, 0.24); background: rgba(252, 129, 129, 0.06); }
+.price-panel.is-reference { border-color: rgba(94, 234, 212, 0.2); background: rgba(94, 234, 212, 0.045); }
 
 .price-title {
   display: flex;

@@ -38,6 +38,79 @@
     }
   };
 
+  const PRICE_KIND_META = {
+    actual_fill: {
+      label: '成交价',
+      short: 'FILL',
+      title: 'IBKR 成交价',
+      tone: 'real',
+      copy: '来自成交/执行回填的价格。'
+    },
+    simulated_fill: {
+      label: '模拟成交价',
+      short: 'SIM',
+      title: '回测模拟成交价',
+      tone: 'sim',
+      copy: '来自回测撮合/模拟模型，不是真实 IBKR 成交价。'
+    },
+    take_profit_price: {
+      label: '止盈价',
+      short: 'TP',
+      title: '止盈保护价格',
+      tone: 'reference',
+      copy: '这是止盈保护单价格，不代表真实成交价。'
+    },
+    stop_loss_price: {
+      label: '止损价',
+      short: 'SL',
+      title: '止损保护价格',
+      tone: 'reference',
+      copy: '这是止损保护单价格，不代表真实成交价。'
+    },
+    entry_limit: {
+      label: '开仓限价',
+      short: 'LIMIT',
+      title: '开仓订单限价',
+      tone: 'reference',
+      copy: '这是订单提交/限价参考，不代表真实成交价。'
+    },
+    close_limit: {
+      label: '平仓限价',
+      short: 'LIMIT',
+      title: '平仓订单限价',
+      tone: 'reference',
+      copy: '这是订单提交/限价参考，不代表真实成交价。'
+    },
+    order_reference_price: {
+      label: '订单参考价',
+      short: 'REF',
+      title: '订单参考价格',
+      tone: 'reference',
+      copy: '这是订单或策略参考价格，不代表真实成交价。'
+    },
+    order_detail_unverified_fill: {
+      label: '订单明细价',
+      short: 'DETAIL',
+      title: '订单明细价格（未验证成交）',
+      tone: 'unverified',
+      copy: '来自订单明细同步字段，未匹配逐笔 IBKR execution fill；不能作为确认成交价。'
+    },
+    market_reference_price: {
+      label: '当前参考价',
+      short: 'MARK',
+      title: '市场参考价格',
+      tone: 'reference',
+      copy: '这是实时/当前市场参考价，不代表成交价。'
+    },
+    not_a_fill: {
+      label: '参考价',
+      short: 'REF',
+      title: '非成交价格',
+      tone: 'reference',
+      copy: '这是非成交价格字段，不代表真实成交价。'
+    }
+  };
+
   const STAGE_ORDER = [
     'selection', 'universe', 'bars', 'indicators', 'signal', 'confirmation', 'confirm',
     'execution', 'order', 'fill', 'protection', 'protective', 'position',
@@ -253,6 +326,61 @@
     return `<span class="fill-pill ${source}" title="${escapeHtml(meta.copy)}">${escapeHtml(meta.label)}</span>`;
   }
 
+  function normalizePriceKind(value) {
+    const normalized = String(value || '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+    return PRICE_KIND_META[normalized] ? normalized : '';
+  }
+
+  function inferPriceKind(record, primary, source) {
+    const explicit = normalizePriceKind(firstNonEmpty(getNested(record, 'price_kind'), asObject(record?.data).price_kind));
+    if (explicit && explicit !== 'not_a_fill') return explicit;
+
+    const eventType = String(firstNonEmpty(getNested(record, 'event_type'), getNested(record, 'type'), getNested(record, 'kind')) || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[-\s]+/g, '_');
+    const role = String(firstNonEmpty(getNested(record, 'role'), getNested(record, 'order_role')) || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[-\s]+/g, '_');
+    const rawFillSource = String(firstNonEmpty(getNested(record, 'fill_source'), asObject(record?.data).fill_source) || '')
+      .trim()
+      .toLowerCase();
+    const key = String(primary?.key || '').toLowerCase();
+    const haystack = `${eventType} ${role} ${key}`;
+
+    if (eventType === 'order_detail_snapshot' && rawFillSource === 'unknown') return 'order_detail_unverified_fill';
+    if (source === 'backtest_simulated' && /fill|filled|opened|closed|trade/.test(haystack)) return 'simulated_fill';
+    if ((source === 'actual_ibkr' || source === 'paper_ibkr') && /fill|execution|executed|avg/.test(haystack)) return 'actual_fill';
+    if (/take_profit|repair_tp|\btp\b/.test(haystack)) return 'take_profit_price';
+    if (/stop_loss|repair_sl|\bsl\b|stop_price/.test(haystack)) return 'stop_loss_price';
+    if (/entry_submitted|entry_limit|limit_price/.test(haystack) && /entry|limit/.test(haystack)) return 'entry_limit';
+    if (/close_submitted|close_limit/.test(haystack)) return 'close_limit';
+    if (/current_price|mark_price/.test(haystack)) return 'market_reference_price';
+    if (/limit|price/.test(key)) return 'order_reference_price';
+    return explicit || 'not_a_fill';
+  }
+
+  function isVerifiedFillKind(priceKind) {
+    return priceKind === 'actual_fill' || priceKind === 'simulated_fill';
+  }
+
+  function shouldShowFillSourcePill(priceFacts, fillSource) {
+    const source = normalizeFillSource(fillSource || priceFacts?.fillSource);
+    if (source === 'actual_ibkr' || source === 'paper_ibkr' || source === 'backtest_simulated') return true;
+    return Boolean(priceFacts?.hasPrice && isVerifiedFillKind(priceFacts.priceKind));
+  }
+
+  function priceKindPill(priceFacts) {
+    if (!priceFacts?.hasPrice) return '';
+    const kind = normalizePriceKind(priceFacts.priceKind) || 'not_a_fill';
+    if (shouldShowFillSourcePill(priceFacts, priceFacts.fillSource)) {
+      return fillSourcePill(priceFacts.fillSource);
+    }
+    const meta = PRICE_KIND_META[kind] || PRICE_KIND_META.not_a_fill;
+    return `<span class="fill-pill price_kind ${escapeHtml(safeClassToken(kind))}" title="${escapeHtml(meta.copy)}">${escapeHtml(meta.short)}</span>`;
+  }
+
   function normalizeStatus(value) {
     const text = String(value || '').trim().toLowerCase();
     if (!text) return 'unknown';
@@ -361,7 +489,17 @@
   }
 
   function collectPriceCandidates(record) {
-    const roots = [record, asObject(record?.data), asObject(record?.extra), asObject(record?.payload), asObject(record?.record), asObject(record?.context)];
+    const data = asObject(record?.data);
+    const roots = [
+      record,
+      data,
+      asObject(record?.details),
+      asObject(data.details),
+      asObject(record?.extra),
+      asObject(record?.payload),
+      asObject(record?.record),
+      asObject(record?.context)
+    ];
     const fields = [
       ['avg_fill_price', 'Avg Fill'],
       ['average_fill_price', 'Avg Fill'],
@@ -418,18 +556,23 @@
     const candidates = collectPriceCandidates(record || {});
     const primary = candidates.find((item) => /fill|execution|executed|avg/.test(item.key)) || candidates[0] || null;
     const estimated = inferEstimatedFlag(record || {}, candidates);
+    const priceKind = inferPriceKind(record || {}, primary, source);
+    const kindMeta = PRICE_KIND_META[priceKind] || PRICE_KIND_META.not_a_fill;
     if (!primary) {
       return {
         hasPrice: false,
         fillSource: source,
+        priceKind,
+        priceLabel: kindMeta.label,
+        isFillPrice: isVerifiedFillKind(priceKind),
         estimated,
         value: '',
         valueText: '--',
         label: '无价格字段',
         shortLabel: '',
-        trustTitle: FILL_SOURCE_META[source].title,
-        trustCopy: FILL_SOURCE_META[source].copy,
-        tone: FILL_SOURCE_META[source].tone,
+        trustTitle: kindMeta.title || FILL_SOURCE_META[source].title,
+        trustCopy: kindMeta.copy || FILL_SOURCE_META[source].copy,
+        tone: kindMeta.tone || FILL_SOURCE_META[source].tone,
         candidates
       };
     }
@@ -438,11 +581,11 @@
       ? primary.numeric.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })
       : String(primary.value);
     const meta = FILL_SOURCE_META[source] || FILL_SOURCE_META.unknown;
-    let label = primary.label;
-    let shortLabel = `${meta.short} ${valueText}`;
-    let trustTitle = meta.title;
-    let trustCopy = meta.copy;
-    let tone = meta.tone;
+    let label = normalizeText(firstNonEmpty(getNested(record, 'price_label'), kindMeta.label, primary.label));
+    let shortLabel = `${kindMeta.short || 'REF'} ${valueText}`;
+    let trustTitle = kindMeta.title || meta.title;
+    let trustCopy = kindMeta.copy || meta.copy;
+    let tone = kindMeta.tone || meta.tone;
 
     if (estimated) {
       label = `估算${label}`;
@@ -450,23 +593,44 @@
       trustTitle = '估算价格（非真实成交）';
       trustCopy = '该价格来自 estimated/proxy/derived 字段，只能辅助判断，不能当真实成交价展示。';
       tone = 'unverified';
-    } else if (source === 'unknown') {
-      label = `${label}（来源未知）`;
-      shortLabel = `UNK ${valueText}`;
+    } else if (priceKind === 'actual_fill') {
+      label = `${label}（${meta.title}）`;
+      shortLabel = `${meta.short} ${valueText}`;
+      trustTitle = meta.title;
+      trustCopy = meta.copy;
+      tone = meta.tone;
     } else if (source === 'backtest_simulated') {
       label = `${label}（回测模拟）`;
       shortLabel = `SIM ${valueText}`;
+      trustTitle = FILL_SOURCE_META.backtest_simulated.title;
+      trustCopy = FILL_SOURCE_META.backtest_simulated.copy;
+      tone = FILL_SOURCE_META.backtest_simulated.tone;
     } else if (source === 'paper_ibkr') {
       label = `${label}（Paper IBKR）`;
       shortLabel = `PAPER ${valueText}`;
-    } else {
+      trustTitle = FILL_SOURCE_META.paper_ibkr.title;
+      trustCopy = FILL_SOURCE_META.paper_ibkr.copy;
+      tone = FILL_SOURCE_META.paper_ibkr.tone;
+    } else if (source === 'actual_ibkr' && isVerifiedFillKind(priceKind)) {
       label = `${label}（actual IBKR）`;
       shortLabel = `IBKR ${valueText}`;
+      trustTitle = FILL_SOURCE_META.actual_ibkr.title;
+      trustCopy = FILL_SOURCE_META.actual_ibkr.copy;
+      tone = FILL_SOURCE_META.actual_ibkr.tone;
+    } else if (source === 'unknown' && isVerifiedFillKind(priceKind)) {
+      label = `${label}（来源未知）`;
+      shortLabel = `UNK ${valueText}`;
+      trustTitle = FILL_SOURCE_META.unknown.title;
+      trustCopy = FILL_SOURCE_META.unknown.copy;
+      tone = FILL_SOURCE_META.unknown.tone;
     }
 
     return {
       hasPrice: true,
       fillSource: source,
+      priceKind,
+      priceLabel: label,
+      isFillPrice: isVerifiedFillKind(priceKind),
       estimated,
       value: primary.value,
       valueText,
@@ -517,6 +681,10 @@
     const stage = normalizeStage(firstNonEmpty(data.stage, data.phase, data.lifecycle_stage, typeText, data.label, data.title));
     const lane = safeClassToken(firstNonEmpty(data.lane, data.swimlane, data.domain, deriveLane(stage, `${typeText} ${data.label || ''}`)), 'system');
     const status = normalizeStatus(firstNonEmpty(data.status, data.state, data.outcome, data.result, data.order_status));
+    const symbol = normalizeText(firstNonEmpty(data.symbol, data.ticker, getNested(data, 'symbol'))).toUpperCase();
+    const signalId = normalizeText(firstNonEmpty(data.signal_id, getNested(data, 'signal_id')));
+    const tradeGroupId = normalizeText(firstNonEmpty(data.trade_group_id, getNested(data, 'trade_group_id')));
+    const orderId = normalizeText(firstNonEmpty(data.order_id, data.broker_order_id, data.order_unique_id, getNested(data, 'order_id')));
     const fillSource = normalizeFillSource(firstNonEmpty(
       data.fill_source,
       data.fillSource,
@@ -550,7 +718,8 @@
       extra.reason,
       typeText
     ));
-    const displayLabelParts = [label, displayStatusLabel(status)];
+    const displayTitle = symbol ? `${symbol} · ${label}` : label;
+    const displayLabelParts = [displayTitle, displayStatusLabel(status)];
     if (priceFacts.shortLabel) displayLabelParts[1] += ` · ${priceFacts.shortLabel}`;
 
     return {
@@ -558,6 +727,10 @@
       label,
       displayLabel: displayLabelParts.join('\n'),
       type: typeText || stage,
+      symbol,
+      signalId,
+      tradeGroupId,
+      orderId,
       stage,
       lane,
       laneLabel: LANE_LABELS[lane] || humanizeKey(lane),
@@ -600,9 +773,14 @@
     const time = normalizeTimeValue(firstNonEmpty(data.time, data.timestamp, data.event_time, data.created, data.updated, data.ts_ms, data.bar_time_ms));
     const copy = normalizeText(firstNonEmpty(data.message, data.copy, data.summary, data.reason, data.description, data.detail));
     const nodeId = normalizeText(firstNonEmpty(data.node_id, data.id, data.order_unique_id, data.signal_id, data.trade_group_id, `event_${index + 1}`));
+    const symbol = normalizeText(firstNonEmpty(data.symbol, data.ticker, getNested(data, 'symbol'))).toUpperCase();
     return {
       id: nodeId,
       title,
+      symbol,
+      signalId: normalizeText(firstNonEmpty(data.signal_id, getNested(data, 'signal_id'))),
+      tradeGroupId: normalizeText(firstNonEmpty(data.trade_group_id, getNested(data, 'trade_group_id'))),
+      orderId: normalizeText(firstNonEmpty(data.order_id, data.broker_order_id, data.order_unique_id, getNested(data, 'order_id'))),
       stage,
       lane: safeClassToken(firstNonEmpty(data.lane, data.swimlane, deriveLane(stage, `${typeText} ${title}`)), 'system'),
       status,
@@ -640,6 +818,10 @@
       stage: event.stage,
       lane: event.lane,
       status: event.status,
+      symbol: event.symbol,
+      signal_id: event.signalId,
+      trade_group_id: event.tradeGroupId,
+      order_id: event.orderId,
       fill_source: event.fillSource,
       time: event.time,
       message: event.copy,
@@ -682,7 +864,7 @@
     });
 
     const pricedNodes = nodes.filter((node) => node.priceFacts.hasPrice);
-    if (pricedNodes.some((node) => node.fillSource === 'unknown')) {
+    if (pricedNodes.some((node) => node.fillSource === 'unknown' && node.priceFacts.isFillPrice)) {
       warnings.push({
         id: 'unknown_fill_source_prices',
         severity: 'high',
@@ -698,7 +880,7 @@
         copy: 'estimated/proxy/derived 价格仅作为辅助信息；不能替代 actual_ibkr 或 paper_ibkr 成交回填。'
       });
     }
-    if (nodes.some((node) => node.fillSource === 'backtest_simulated' && node.priceFacts.hasPrice)) {
+    if (nodes.some((node) => node.priceFacts.priceKind === 'simulated_fill' && node.priceFacts.hasPrice)) {
       warnings.push({
         id: 'backtest_simulated_prices',
         severity: 'medium',
@@ -733,6 +915,10 @@
       return {
         id: event.id,
         label: event.title,
+        symbol: event.symbol,
+        signalId: event.signalId,
+        tradeGroupId: event.tradeGroupId,
+        orderId: event.orderId,
         stage: event.stage,
         lane: event.lane,
         status: event.status,
@@ -751,6 +937,10 @@
       return {
         id: normalizeText(firstNonEmpty(current.id, 'current')),
         label: normalizeText(firstNonEmpty(current.label, current.title, current.stage, '当前阶段')),
+        symbol: normalizeText(firstNonEmpty(current.symbol, getNested(current, 'symbol'))).toUpperCase(),
+        signalId: normalizeText(firstNonEmpty(current.signal_id, getNested(current, 'signal_id'))),
+        tradeGroupId: normalizeText(firstNonEmpty(current.trade_group_id, getNested(current, 'trade_group_id'))),
+        orderId: normalizeText(firstNonEmpty(current.order_id, current.broker_order_id, getNested(current, 'order_id'))),
         stage: normalizeStage(firstNonEmpty(current.stage, current.phase)),
         lane: deriveLane(current.stage, current.label),
         status: normalizeStatus(firstNonEmpty(current.status, current.state)),
@@ -1091,15 +1281,16 @@
     const priceLine = priceFacts.hasPrice
       ? `${priceFacts.label}: ${priceFacts.valueText}`
       : sourceMeta.copy;
+    const sourceChip = shouldShowFillSourcePill(priceFacts, source) ? fillSourcePill(source) : priceKindPill(priceFacts);
     $('currentStageCard').innerHTML = `
       <div class="card-kicker">Current Phase</div>
-      <div class="stage-title">${escapeHtml(current.label || humanizeKey(current.stage))}</div>
+      <div class="stage-title">${escapeHtml(current.symbol ? `${current.symbol} / ${current.label || humanizeKey(current.stage)}` : (current.label || humanizeKey(current.stage)))}</div>
       <div class="stage-copy">${escapeHtml(current.copy || priceLine || '当前阶段无说明。')}</div>
       <div class="stage-chip-row">
         <span class="flow-chip">stage=${escapeHtml(current.stage || '--')}</span>
         <span class="flow-chip">status=${escapeHtml(displayStatusLabel(current.status || 'unknown'))}</span>
         <span class="flow-chip">lane=${escapeHtml(LANE_LABELS[current.lane] || current.lane || '--')}</span>
-        ${fillSourcePill(source)}
+        ${sourceChip}
         <span class="flow-chip">${escapeHtml(formatTime(current.time))}</span>
       </div>
       <div class="stage-copy">价格判读：${escapeHtml(priceFacts.trustTitle)}。${escapeHtml(priceFacts.trustCopy)}</div>
@@ -1112,7 +1303,7 @@
       id: 'fill_source_policy',
       severity: 'low',
       title: '价格来源展示策略',
-      copy: '只有 actual_ibkr / paper_ibkr 会展示为 IBKR 成交来源；backtest_simulated 标为模拟，unknown 和 estimated 只标为未验证。'
+      copy: '成交价按 fill_source 区分；止盈/止损/限价按 price_kind 显示，不再把非成交价格标成 UNK。'
     };
     const warnings = [baseNotice, ...model.warnings];
     $('warningCard').innerHTML = `
@@ -1159,10 +1350,12 @@
         id: node.id,
         label: node.displayLabel,
         title: node.label,
+        symbol: node.symbol,
         stage: node.stage,
         lane: node.lane,
         status: node.status,
         fillSource: node.fillSource,
+        priceKind: node.priceFacts?.priceKind || '',
         rank: node.rank
       },
       classes: [
@@ -1348,6 +1541,10 @@
     return model.nodes.map((node) => ({
       id: node.id,
       title: node.label,
+      symbol: node.symbol,
+      signalId: node.signalId,
+      tradeGroupId: node.tradeGroupId,
+      orderId: node.orderId,
       stage: node.stage,
       lane: node.lane,
       status: node.status,
@@ -1379,15 +1576,17 @@
   function renderTimelineItem(item, prefix) {
     const priceFacts = item.priceFacts || getPriceFacts(item.raw || item.data || item, item.fillSource);
     const source = normalizeFillSource(item.fillSource);
+    const title = item.symbol ? `${item.symbol} · ${item.title || item.label || humanizeKey(item.stage)}` : (item.title || item.label || humanizeKey(item.stage));
+    const sourceChip = shouldShowFillSourcePill(priceFacts, source) ? fillSourcePill(source) : priceKindPill(priceFacts);
     return `
       <article class="${prefix}-item fill-${escapeHtml(source)}">
-        <div class="${prefix}-title">${escapeHtml(item.title || item.label || humanizeKey(item.stage))}</div>
+        <div class="${prefix}-title">${escapeHtml(title)}</div>
         <div class="${prefix}-copy">${escapeHtml(item.copy || priceFacts.trustCopy || '--')}</div>
         <div class="event-meta-row">
           <span class="event-chip">${escapeHtml(formatTime(item.time))}</span>
           <span class="event-chip">stage=${escapeHtml(item.stage || '--')}</span>
           <span class="event-chip">status=${escapeHtml(item.status || '--')}</span>
-          ${fillSourcePill(source)}
+          ${sourceChip}
           ${priceFacts.hasPrice ? `<span class="event-chip">${escapeHtml(priceFacts.shortLabel)}</span>` : ''}
         </div>
       </article>
@@ -1410,11 +1609,12 @@
     const source = normalizeFillSource(fillSource || facts.fillSource);
     const meta = FILL_SOURCE_META[source] || FILL_SOURCE_META.unknown;
     const toneClass = facts.estimated ? 'is-unverified' : `is-${facts.tone || meta.tone}`;
+    const sourceChip = shouldShowFillSourcePill(facts, source) ? fillSourcePill(source) : priceKindPill(facts);
     return `
       <div class="price-panel ${toneClass}">
         <div class="price-title">
           <span>${escapeHtml(facts.trustTitle || meta.title)}</span>
-          ${fillSourcePill(source)}
+          ${sourceChip}
         </div>
         <div class="price-value">${escapeHtml(facts.hasPrice ? facts.valueText : '--')}</div>
         <div class="price-copy">${escapeHtml(facts.hasPrice ? facts.label : '未返回价格字段')} · ${escapeHtml(facts.trustCopy || meta.copy)}</div>
@@ -1469,6 +1669,8 @@
     }
     const facts = node.priceFacts || getPriceFacts(node.raw || node.data || node, node.fillSource);
     const rawData = node.data || asObject(node.raw);
+    const detailTitle = node.symbol ? `${node.symbol} / ${node.label || node.id}` : (node.label || node.id);
+    const sourceChip = shouldShowFillSourcePill(facts, node.fillSource) ? fillSourcePill(node.fillSource) : priceKindPill(facts);
     const keys = [
       ['id', node.id],
       ['stage', node.stage],
@@ -1476,21 +1678,22 @@
       ['status', node.status],
       ['type', node.type],
       ['time', formatTime(node.time)],
-      ['symbol', firstNonEmpty(getNested(rawData, 'symbol'), getNested(rawData, 'ticker'))],
-      ['signal_id', getNested(rawData, 'signal_id')],
-      ['trade_group_id', getNested(rawData, 'trade_group_id')],
-      ['order_id', firstNonEmpty(getNested(rawData, 'order_id'), getNested(rawData, 'broker_order_id'), getNested(rawData, 'order_unique_id'))],
+      ['symbol', firstNonEmpty(node.symbol, getNested(rawData, 'symbol'), getNested(rawData, 'ticker'))],
+      ['signal_id', firstNonEmpty(node.signalId, getNested(rawData, 'signal_id'))],
+      ['trade_group_id', firstNonEmpty(node.tradeGroupId, getNested(rawData, 'trade_group_id'))],
+      ['order_id', firstNonEmpty(node.orderId, getNested(rawData, 'order_id'), getNested(rawData, 'broker_order_id'), getNested(rawData, 'order_unique_id'))],
+      ['price_kind', facts.priceKind],
       ['run_id', getNested(rawData, 'run_id')]
     ];
     target.innerHTML = `
       <div class="detail-card">
         <div>
           <div class="detail-kicker">${escapeHtml(node.stage || 'node')}</div>
-          <div class="detail-title">${escapeHtml(node.label || node.id)}</div>
+          <div class="detail-title">${escapeHtml(detailTitle)}</div>
           <div class="detail-subtitle">${escapeHtml(node.copy || '无节点说明。')}</div>
           <div class="detail-chip-row">
             <span class="flow-chip">${escapeHtml(node.status || '--')}</span>
-            ${fillSourcePill(node.fillSource)}
+            ${sourceChip}
             ${facts.estimated ? '<span class="flow-chip">estimated_only</span>' : ''}
           </div>
         </div>

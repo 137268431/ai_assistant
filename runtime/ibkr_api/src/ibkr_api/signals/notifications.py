@@ -57,6 +57,30 @@ def _format_percent(value: Any) -> str:
     return f"{parsed:.1f}%"
 
 
+def _metric_float(value: Any) -> float | None:
+    if isinstance(value, str):
+        value = value.strip().replace(",", "").removesuffix("%")
+    return to_float(value)
+
+
+def _format_signed_percent(value: Any) -> str:
+    parsed = _metric_float(value)
+    if parsed is None:
+        return "-"
+    return f"{parsed:+.2f}%"
+
+
+def _format_number(value: Any, *, digits: int = 2) -> str:
+    parsed = _metric_float(value)
+    if parsed is None:
+        return "-"
+    return f"{parsed:.{digits}f}"
+
+
+def _has_metric_number(value: Any) -> bool:
+    return _metric_float(value) is not None
+
+
 def _positive_price(record_or_data: Any, *fields: str) -> float | None:
     extra = get_signal_extra(record_or_data)
     for field in fields:
@@ -97,6 +121,61 @@ def _price_plan_lines(record_or_data: Any) -> list[str]:
     ]
     if actual_fill is not None:
         lines.append(f"**实际成交价**: {_format_price(actual_fill)}")
+    return lines
+
+
+def _atr_volatility_text(value: Any) -> str:
+    parsed = _metric_float(value)
+    if parsed is None:
+        return "-"
+    label = ""
+    if parsed >= 3:
+        label = "高波动"
+    elif parsed >= 1.5:
+        label = "中波动"
+    elif parsed > 0:
+        label = "低波动"
+    suffix = f" ({label})" if label else ""
+    return f"{parsed:.2f}%{suffix}"
+
+
+def _market_metric_lines(record_or_data: Any) -> list[str]:
+    day_change_pct = _record_or_extra_value(
+        record_or_data,
+        "day_change_pct",
+        "dayChangePct",
+        "current_change_pct",
+        "currentChangePct",
+        "change_pct",
+        "changePct",
+        "pct_change",
+        "change_1d_pct",
+    )
+    atr_value = _record_or_extra_value(record_or_data, "atr", "atr_raw", "atrRaw")
+    atr_pct = _record_or_extra_value(
+        record_or_data,
+        "atr_pct",
+        "atrPct",
+        "atr_percent",
+        "atrPercent",
+        "atr_volatility_pct",
+        "atrVolatilityPct",
+    )
+    sl_atr_ratio = _record_or_extra_value(
+        record_or_data,
+        "sl_atr_ratio",
+        "slAtrRatio",
+        "stop_loss_atr_ratio",
+        "stopLossAtrRatio",
+    )
+
+    lines: list[str] = []
+    if _has_metric_number(day_change_pct):
+        lines.append(f"**当前涨幅**: {_format_signed_percent(day_change_pct)}")
+    if _has_metric_number(atr_value) or _has_metric_number(atr_pct):
+        lines.append(f"**ATR值 / ATR波动率**: {_format_number(atr_value)} / {_atr_volatility_text(atr_pct)}")
+    if _has_metric_number(sl_atr_ratio):
+        lines.append(f"**止损ATR倍数**: {_format_number(sl_atr_ratio)}x")
     return lines
 
 
@@ -345,6 +424,7 @@ def build_signal_notification_card(record_or_data: Any, *, console_base_url: str
         f"**仓位 / 风报比**: {_format_quantity(record_value(record_or_data, 'shares'))} / {to_text(record_value(record_or_data, 'rr') or '-')}",
     ]
     body_lines.extend(_price_plan_lines(record_or_data))
+    body_lines.extend(_market_metric_lines(record_or_data))
     body_lines.extend(_source_lines(record_or_data))
     body_lines.extend(_followup_lines(record_or_data))
     reason = to_text(record_value(record_or_data, "reason") or extra.get("reason"))
@@ -498,6 +578,7 @@ def build_signal_status_card(record_or_data: Any, *, message: str = "", console_
         f"**仓位**: {_format_quantity(record_value(record_or_data, 'shares'))}",
     ]
     body_lines.extend(_price_plan_lines(record_or_data))
+    body_lines.extend(_market_metric_lines(record_or_data))
     body_lines.extend(_buying_power_lines(record_or_data))
     body_lines.extend(_followup_lines(record_or_data))
     if message:

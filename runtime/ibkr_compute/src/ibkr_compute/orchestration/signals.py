@@ -294,7 +294,8 @@ class TradingServiceSignalsMixin:
                     sig["extra"] = {
                         **extra,
                         "intraday_harvest_profile": "intraday_volatility_harvest_v1",
-                        "intraday_harvest_split_requested": True,
+                        "partial_harvest_requested": True,
+                        "intraday_harvest_split_requested": False,
                     }
                     result = harvest_submitter(
                         conid=conid,
@@ -411,10 +412,10 @@ class TradingServiceSignalsMixin:
             )
             settings["enabled"] = True
             settings["live_auto_enabled"] = True
-            settings["split_brackets_enabled"] = True
+            settings["split_brackets_enabled"] = False
             return settings
         except Exception:
-            return {"enabled": True, "live_auto_enabled": True, "split_brackets_enabled": True}
+            return {"enabled": True, "live_auto_enabled": True, "split_brackets_enabled": False}
 
     @staticmethod
     def _harvest_entry_split_enabled(settings: dict | None) -> bool:
@@ -1295,9 +1296,12 @@ class TradingServiceSignalsMixin:
         tp_unique_id = result.get("tp_coid") or ""
         sl_unique_id = result.get("sl_coid") or ""
         trade_group_id = result.get("bracket_group") or entry_unique_id
-        oca_group = str(result.get("oca_group") or trade_group_id or "").strip()
         order_family_type = str(result.get("order_family_type") or ("bracket_oco" if trade_group_id else "")).strip()
+        raw_oca_group = str(result.get("oca_group") or "").strip()
+        oca_group = raw_oca_group or (trade_group_id if order_family_type == "bracket_oco" else "")
         ack_quantity = int(result.get("quantity") or sig["shares"] or 0)
+        tp_quantity = int(result.get("take_profit_quantity") or ack_quantity)
+        sl_quantity = int(result.get("stop_loss_quantity") or ack_quantity)
         order_extra = dict(result.get("order_extra") or {})
         harvest_legs = [dict(item) for item in (submitted_result.get("legs") or []) if isinstance(item, dict)]
         harvest_fields = {}
@@ -1383,6 +1387,7 @@ class TradingServiceSignalsMixin:
                     "relation_status": "planned",
                     "parent_order_unique_id": entry_unique_id,
                     "sibling_order_unique_id": sl_unique_id,
+                    "quantity": tp_quantity,
                     "limit_price": sig["take_profit"],
                     "status": "Submitted" if protection_complete else "Init",
                     "extra": {
@@ -1405,6 +1410,7 @@ class TradingServiceSignalsMixin:
                     "relation_status": "planned",
                     "parent_order_unique_id": entry_unique_id,
                     "sibling_order_unique_id": tp_unique_id,
+                    "quantity": sl_quantity,
                     "limit_price": sig["stop_loss"],
                     "status": "Submitted" if protection_complete else "Init",
                     "extra": {

@@ -437,47 +437,40 @@ class RuntimePipelineOfficial5mMixin:
                 "timing": timing,
             }
 
-    def _official_5m_run_parallel(self, jobs: list[dict], worker_fn, workers: int) -> list[dict]:
+    def _official_5m_error_result(self, job: dict, exc: Exception) -> dict:
+            return {
+                "symbol": str(job.get("symbol") or "").strip().upper(),
+                "conid": int(job.get("conid") or 0),
+                "exchange": str(job.get("exchange") or ""),
+                "candidate_rows": [],
+                "error": str(exc),
+                "timing": {
+                    "symbol": str(job.get("symbol") or "").strip().upper(),
+                    "total_s": 0.0,
+                },
+            }
+
+    def _official_5m_stream_parallel(self, jobs: list[dict], worker_fn, workers: int):
             if not jobs:
-                return []
+                return
             if max(1, int(workers or 1)) <= 1 or len(jobs) <= 1:
-                results = []
                 for job in jobs:
                     try:
-                        results.append(worker_fn(**job))
+                        yield worker_fn(**job)
                     except Exception as exc:
-                        results.append({
-                            "symbol": str(job.get("symbol") or "").strip().upper(),
-                            "conid": int(job.get("conid") or 0),
-                            "exchange": str(job.get("exchange") or ""),
-                            "candidate_rows": [],
-                            "error": str(exc),
-                            "timing": {
-                                "symbol": str(job.get("symbol") or "").strip().upper(),
-                                "total_s": 0.0,
-                            },
-                        })
-                return results
-            results = []
+                        yield self._official_5m_error_result(job, exc)
+                return
             with ThreadPoolExecutor(max_workers=max(1, int(workers or 1)), thread_name_prefix="official-5m") as executor:
                 future_map = {executor.submit(worker_fn, **job): job for job in jobs}
                 for future in as_completed(future_map):
                     job = future_map[future]
                     try:
-                        results.append(future.result())
+                        yield future.result()
                     except Exception as exc:
-                        results.append({
-                            "symbol": str(job.get("symbol") or "").strip().upper(),
-                            "conid": int(job.get("conid") or 0),
-                            "exchange": str(job.get("exchange") or ""),
-                            "candidate_rows": [],
-                            "error": str(exc),
-                            "timing": {
-                                "symbol": str(job.get("symbol") or "").strip().upper(),
-                                "total_s": 0.0,
-                            },
-                        })
-            return results
+                        yield self._official_5m_error_result(job, exc)
+
+    def _official_5m_run_parallel(self, jobs: list[dict], worker_fn, workers: int) -> list[dict]:
+            return list(self._official_5m_stream_parallel(jobs, worker_fn, workers))
 
     def _run_official_5m_close_cycle(self, symbols_override: list[str] | None = None):
             service_mod = _service_mod()
@@ -681,76 +674,14 @@ class RuntimePipelineOfficial5mMixin:
                 format_us_time(last_completed_bucket_ms) if last_completed_bucket_ms > 0 else "--",
             )
 
-            fetch_results = self._official_5m_run_parallel(
-                fetch_jobs,
-                self._official_5m_fetch_incremental_symbol,
-                fetch_workers,
-            )
-            fetch_results_by_symbol = {
-                str((result or {}).get("symbol") or "").strip().upper(): (result or {})
-                for result in fetch_results
-                if str((result or {}).get("symbol") or "").strip()
+            repair_jobs = []
+            fetch_job_by_symbol = {
+                str(job.get("symbol") or "").strip().upper(): job
+                for job in fetch_jobs
+                if str(job.get("symbol") or "").strip()
             }
 
-            incremental_wrote_symbols = set()
-            for symbol in [job["symbol"] for job in fetch_jobs]:
-                result = fetch_results_by_symbol.get(symbol) or {}
-                timing = dict(result.get("timing") or {})
-                timing["symbol"] = symbol
-                timing["fetched_rows"] = int(result.get("fetched_rows_count", 0) or 0)
-                timing["candidate_rows"] = len(result.get("candidate_rows") or [])
-                symbol_timings_by_symbol[symbol] = timing
-
-                error_text = str(result.get("error") or "").strip()
-                if error_text:
-                    cycle_errors.append(f"{symbol}:{error_text}")
-
-                latest_stored_ms = int(result.get("latest_stored_ms", 0) or 0)
-                max_written_ms_by_symbol[symbol] = latest_stored_ms
-                candidate_rows = list(result.get("candidate_rows") or [])
-                fetched_count = int(result.get("fetched_rows_count", 0) or 0)
-                if fetched_count and not candidate_rows:
-                    fetched_first_ms = int(result.get("fetched_first_ms", 0) or 0)
-                    fetched_last_ms = int(result.get("fetched_last_ms", 0) or 0)
-                    service_mod.logger.warning(
-                        "Official 5m close filtered all fetched rows for %s: latest_stored_ms=%d due_bucket_ms=%d fetched_first=%d(%s) fetched_last=%d(%s) fetched_count=%d",
-                        symbol,
-                        latest_stored_ms,
-                        due_bucket_ms,
-                        fetched_first_ms,
-                        format_us_time(fetched_first_ms),
-                        fetched_last_ms,
-                        format_us_time(fetched_last_ms),
-                        fetched_count,
-                    )
-
-                write_started = time.perf_counter()
-                incremental_wrote, incremental_bars, incremental_max_ms = self._write_official_5m_rows(
-                    candidate_rows,
-                    str(result.get("exchange") or ""),
-                    request_period,
-                )
-                timing["write_s"] = round(max(0.0, time.perf_counter() - write_started), 3)
-                timing["written_bars"] = int(incremental_bars or 0)
-                if incremental_wrote:
-                    written_symbol_set.add(symbol)
-                    incremental_wrote_symbols.add(symbol)
-                written_bars += int(incremental_bars or 0)
-                max_written_ms_by_symbol[symbol] = max(
-                    int(max_written_ms_by_symbol.get(symbol, 0) or 0),
-                    int(incremental_max_ms or 0),
-                )
-
-            if incremental_wrote_symbols:
-                flush_started = time.perf_counter()
-                if not self.data_writer.flush():
-                    cycle_errors.append("batch:flush:incremental")
-                flush_s = round(max(0.0, time.perf_counter() - flush_started), 3)
-                for symbol in incremental_wrote_symbols:
-                    symbol_timings_by_symbol.setdefault(symbol, {"symbol": symbol})["flush_s"] = flush_s
-
-            repair_jobs = []
-            for symbol in [job["symbol"] for job in fetch_jobs]:
+            def verify_symbol_ready(symbol: str, *, repair_phase: bool = False) -> None:
                 timing = symbol_timings_by_symbol.setdefault(symbol, {"symbol": symbol})
                 sequence_status = {}
                 if required_window_start_ms > 0 and required_window_start_ms <= due_bucket_ms:
@@ -762,121 +693,141 @@ class RuntimePipelineOfficial5mMixin:
                         end_ms=due_bucket_ms,
                         example_limit=4,
                     )
-                    timing["verify_s"] = round(max(0.0, time.perf_counter() - verify_started), 3)
+                    timing["repair_verify_s" if repair_phase else "verify_s"] = round(
+                        max(0.0, time.perf_counter() - verify_started),
+                        3,
+                    )
                     if str(sequence_status.get("query_error") or "").strip():
                         cycle_errors.append(f"{symbol}:sequence:{sequence_status['query_error']}")
                 sequence_status_by_symbol[symbol] = dict(sequence_status or {})
                 missing_count = int(sequence_status.get("missing_count", 0) or 0)
                 timing["missing_count"] = missing_count
                 if missing_count > 0:
-                    job = next((item for item in fetch_jobs if item.get("symbol") == symbol), None)
-                    if job:
-                        repair_jobs.append(
-                            {
-                                "symbol": symbol,
-                                "conid": int(job.get("conid") or 0),
-                                "exchange": str(job.get("exchange") or ""),
-                                "required_window_start_ms": required_window_start_ms,
-                                "due_bucket_ms": due_bucket_ms,
-                                "request_period": request_period,
-                                "trace": history_trace,
-                            }
+                    if repair_phase:
+                        missing_bar_times = list(sequence_status.get("missing_bar_times") or [])
+                        missing_us_times = list(sequence_status.get("missing_us_times") or [])
+                        max_written_ms = int(max_written_ms_by_symbol.get(symbol, 0) or 0)
+                        service_mod.logger.warning(
+                            "Official 5m close still missing required bars for %s: required_start_ms=%d(%s) due_bucket_ms=%d(%s) missing=%s latest_stored_ms=%d(%s)",
+                            symbol,
+                            required_window_start_ms,
+                            format_us_time(required_window_start_ms),
+                            due_bucket_ms,
+                            format_us_time(due_bucket_ms),
+                            ",".join(missing_us_times) or ",".join(format_us_time(ms) for ms in missing_bar_times[:4]),
+                            max_written_ms,
+                            format_us_time(max_written_ms) if max_written_ms > 0 else "",
                         )
+                    else:
+                        job = fetch_job_by_symbol.get(symbol)
+                        if job:
+                            repair_jobs.append(
+                                {
+                                    "symbol": symbol,
+                                    "conid": int(job.get("conid") or 0),
+                                    "exchange": str(job.get("exchange") or ""),
+                                    "required_window_start_ms": required_window_start_ms,
+                                    "due_bucket_ms": due_bucket_ms,
+                                    "request_period": request_period,
+                                    "trace": history_trace,
+                                }
+                            )
                 elif int(max_written_ms_by_symbol.get(symbol, 0) or 0) >= due_bucket_ms:
                     queue_due_compute_symbols(
                         [symbol],
                         bar_count=written_bars,
                     )
 
-            repair_wrote_symbols = set()
-            repair_workers = self._official_5m_fetch_workers(len(repair_jobs)) if repair_jobs else 0
-            repair_results = self._official_5m_run_parallel(
-                repair_jobs,
-                self._official_5m_fetch_repair_symbol,
-                repair_workers,
-            )
-            for result in repair_results:
+            def process_stream_result(result: dict, *, repair_phase: bool = False) -> None:
+                nonlocal written_bars
                 symbol = str((result or {}).get("symbol") or "").strip().upper()
                 if not symbol:
-                    continue
+                    return
                 timing = symbol_timings_by_symbol.setdefault(symbol, {"symbol": symbol})
-                repair_timing = dict((result or {}).get("timing") or {})
-                for key, value in repair_timing.items():
-                    if key == "total_s":
+                result_timing = dict((result or {}).get("timing") or {})
+                for key, value in result_timing.items():
+                    if key == "symbol":
+                        continue
+                    if repair_phase and key == "total_s":
                         timing["repair_total_s"] = value
-                    elif key != "symbol":
+                    elif repair_phase:
                         timing[key] = value
+                    else:
+                        timing[key] = value
+                timing["symbol"] = symbol
+                timing["fetched_rows"] = int((result or {}).get("fetched_rows_count", 0) or 0)
+
                 error_text = str((result or {}).get("error") or "").strip()
                 if error_text:
-                    cycle_errors.append(f"{symbol}:repair:{error_text}")
-                repair_rows = list((result or {}).get("candidate_rows") or [])
-                timing["repair_candidate_rows"] = len(repair_rows)
+                    cycle_errors.append(f"{symbol}:repair:{error_text}" if repair_phase else f"{symbol}:{error_text}")
+
+                rows = list((result or {}).get("candidate_rows") or [])
+                if repair_phase:
+                    timing["repair_candidate_rows"] = len(rows)
+                    write_key = "repair_write_s"
+                    written_key = "repair_written_bars"
+                    flush_key = "repair_flush_s"
+                    flush_error = f"{symbol}:flush:repair"
+                else:
+                    latest_stored_ms = int((result or {}).get("latest_stored_ms", 0) or 0)
+                    max_written_ms_by_symbol[symbol] = latest_stored_ms
+                    timing["candidate_rows"] = len(rows)
+                    fetched_count = int((result or {}).get("fetched_rows_count", 0) or 0)
+                    if fetched_count and not rows:
+                        fetched_first_ms = int((result or {}).get("fetched_first_ms", 0) or 0)
+                        fetched_last_ms = int((result or {}).get("fetched_last_ms", 0) or 0)
+                        service_mod.logger.warning(
+                            "Official 5m close filtered all fetched rows for %s: latest_stored_ms=%d due_bucket_ms=%d fetched_first=%d(%s) fetched_last=%d(%s) fetched_count=%d",
+                            symbol,
+                            latest_stored_ms,
+                            due_bucket_ms,
+                            fetched_first_ms,
+                            format_us_time(fetched_first_ms),
+                            fetched_last_ms,
+                            format_us_time(fetched_last_ms),
+                            fetched_count,
+                        )
+                    write_key = "write_s"
+                    written_key = "written_bars"
+                    flush_key = "flush_s"
+                    flush_error = f"{symbol}:flush:incremental"
+
                 write_started = time.perf_counter()
-                repair_wrote, repair_bars, repair_max_ms = self._write_official_5m_rows(
-                    repair_rows,
+                wrote, written_count, max_written_ms = self._write_official_5m_rows(
+                    rows,
                     str((result or {}).get("exchange") or ""),
                     request_period,
                 )
-                timing["repair_write_s"] = round(max(0.0, time.perf_counter() - write_started), 3)
-                timing["repair_written_bars"] = int(repair_bars or 0)
-                if repair_wrote:
+                timing[write_key] = round(max(0.0, time.perf_counter() - write_started), 3)
+                timing[written_key] = int(written_count or 0)
+                if wrote:
                     written_symbol_set.add(symbol)
-                    repair_wrote_symbols.add(symbol)
-                written_bars += int(repair_bars or 0)
-                max_written_ms_by_symbol[symbol] = max(
-                    int(max_written_ms_by_symbol.get(symbol, 0) or 0),
-                    int(repair_max_ms or 0),
-                )
+                    written_bars += int(written_count or 0)
+                    max_written_ms_by_symbol[symbol] = max(
+                        int(max_written_ms_by_symbol.get(symbol, 0) or 0),
+                        int(max_written_ms or 0),
+                    )
+                    flush_started = time.perf_counter()
+                    if not self.data_writer.flush():
+                        cycle_errors.append(flush_error)
+                    timing[flush_key] = round(max(0.0, time.perf_counter() - flush_started), 3)
 
-            if repair_wrote_symbols:
-                flush_started = time.perf_counter()
-                if not self.data_writer.flush():
-                    cycle_errors.append("batch:flush:repair")
-                repair_flush_s = round(max(0.0, time.perf_counter() - flush_started), 3)
-                for symbol in repair_wrote_symbols:
-                    symbol_timings_by_symbol.setdefault(symbol, {"symbol": symbol})["repair_flush_s"] = repair_flush_s
+                verify_symbol_ready(symbol, repair_phase=repair_phase)
 
-            for repair_job in repair_jobs:
-                symbol = str(repair_job.get("symbol") or "").strip().upper()
-                if not symbol:
-                    continue
-                timing = symbol_timings_by_symbol.setdefault(symbol, {"symbol": symbol})
-                sequence_status = sequence_status_by_symbol.get(symbol) or {}
-                if required_window_start_ms > 0 and required_window_start_ms <= due_bucket_ms:
-                    verify_started = time.perf_counter()
-                    sequence_status = self.data_backfill.get_required_sequence_snapshot(
-                        symbol,
-                        "5m",
-                        start_ms=required_window_start_ms,
-                        end_ms=due_bucket_ms,
-                        example_limit=4,
-                    )
-                    timing["repair_verify_s"] = round(max(0.0, time.perf_counter() - verify_started), 3)
-                    if str(sequence_status.get("query_error") or "").strip():
-                        cycle_errors.append(f"{symbol}:sequence:{sequence_status['query_error']}")
-                sequence_status_by_symbol[symbol] = dict(sequence_status or {})
-                missing_count = int(sequence_status.get("missing_count", 0) or 0)
-                timing["missing_count"] = missing_count
-                if missing_count > 0:
-                    missing_bar_times = list(sequence_status.get("missing_bar_times") or [])
-                    missing_us_times = list(sequence_status.get("missing_us_times") or [])
-                    max_written_ms = int(max_written_ms_by_symbol.get(symbol, 0) or 0)
-                    service_mod.logger.warning(
-                        "Official 5m close still missing required bars for %s: required_start_ms=%d(%s) due_bucket_ms=%d(%s) missing=%s latest_stored_ms=%d(%s)",
-                        symbol,
-                        required_window_start_ms,
-                        format_us_time(required_window_start_ms),
-                        due_bucket_ms,
-                        format_us_time(due_bucket_ms),
-                        ",".join(missing_us_times) or ",".join(format_us_time(ms) for ms in missing_bar_times[:4]),
-                        max_written_ms,
-                        format_us_time(max_written_ms) if max_written_ms > 0 else "",
-                    )
-                elif int(max_written_ms_by_symbol.get(symbol, 0) or 0) >= due_bucket_ms:
-                    queue_due_compute_symbols(
-                        [symbol],
-                        bar_count=written_bars,
-                    )
+            for result in self._official_5m_stream_parallel(
+                fetch_jobs,
+                self._official_5m_fetch_incremental_symbol,
+                fetch_workers,
+            ):
+                process_stream_result(result, repair_phase=False)
+
+            repair_workers = self._official_5m_fetch_workers(len(repair_jobs)) if repair_jobs else 0
+            for result in self._official_5m_stream_parallel(
+                repair_jobs,
+                self._official_5m_fetch_repair_symbol,
+                repair_workers,
+            ):
+                process_stream_result(result, repair_phase=True)
 
             for symbol in [job["symbol"] for job in fetch_jobs]:
                 sequence_status = sequence_status_by_symbol.get(symbol) or {}

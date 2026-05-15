@@ -25,9 +25,9 @@
         </div>
 
         <div class="summary-bar" id="summaryBar">
-            <div class="summary-card"><div class="summary-label">TRADE GROUPS</div><div class="summary-value">0</div></div>
-            <div class="summary-card"><div class="summary-label">ORDERS</div><div class="summary-value">0</div></div>
-            <div class="summary-card"><div class="summary-label">OPEN GROUPS</div><div class="summary-value">0</div></div>
+            <div class="summary-card"><div class="summary-label">SIGNALS</div><div class="summary-value">0</div></div>
+            <div class="summary-card"><div class="summary-label">ENTRY ORDERS</div><div class="summary-value">0</div></div>
+            <div class="summary-card"><div class="summary-label">OPEN SIGNALS</div><div class="summary-value">0</div></div>
         </div>
 
         <div id="filterNote"></div>
@@ -75,6 +75,7 @@
 
         let allOrders = [];
         let allGroups = [];
+        let allTradeGroups = [];
         let displayedGroups = [];
         let currentDate = new Date().toISOString().split('T')[0];
         let currentStatus = 'all';
@@ -101,6 +102,7 @@
         const CONFIG_CACHE_TTL_MS = 5 * 60 * 1000;
         const ORDERS_FETCH_PAGE_SIZE = 200;
         const ORDERS_FETCH_MAX_PAGES = 40;
+        const EXECUTION_FILL_FETCH_MAX_PAGES = 8;
         const configValueCache = {};
 
         function pickConfigValue(records, fallbackValue) {
@@ -162,6 +164,15 @@
             }
 
             return items;
+        }
+
+        function chunkArray(items, size) {
+            const chunkSize = Math.max(1, Number(size || 1));
+            const chunks = [];
+            for (let index = 0; index < (items || []).length; index += chunkSize) {
+                chunks.push(items.slice(index, index + chunkSize));
+            }
+            return chunks;
         }
 
         function parseJsonLike(value) {
@@ -746,7 +757,7 @@
 
         function renderOrdersTopSection() {
             const visibleGroups = getVisibleGroups();
-            const visibleOrderCount = visibleGroups.reduce((sum, group) => sum + group.orders.length, 0);
+            const visibleOrderCount = visibleGroups.reduce((sum, group) => sum + (group.entryOrders || []).length, 0);
             const brokerLiveCount = getBrokerLiveCount();
             const scopeParts = [];
             if (filterSignalId) scopeParts.push(`signal_id=${summarizeHeaderValue(filterSignalId, 18)}`);
@@ -762,8 +773,8 @@
             ]);
             const statusHtml = `
                 <div class="chip-row">
-                    <span class="status-chip"><span class="dot" style="color:#4FD1C5"></span>交易组 ${escapeHtml(formatCountValue(visibleGroups.length))}</span>
-                    <span class="status-chip"><span class="dot" style="color:#63B3ED"></span>订单 ${escapeHtml(formatCountValue(visibleOrderCount))}</span>
+                    <span class="status-chip"><span class="dot" style="color:#4FD1C5"></span>信号 ${escapeHtml(formatCountValue(visibleGroups.length))}</span>
+                    <span class="status-chip"><span class="dot" style="color:#63B3ED"></span>Entry 订单 ${escapeHtml(formatCountValue(visibleOrderCount))}</span>
                     <span class="status-chip"><span class="dot" style="color:#F6AD55"></span>Broker Live ${escapeHtml(String(brokerLiveCount))}</span>
                     <span class="status-chip"><span class="dot" style="color:#F6AD55"></span>${escapeHtml(getOrdersDirectionLabel())}</span>
                     <span class="status-chip"><span class="dot" style="color:#FC8181"></span>${escapeHtml(getOrdersStatusLabel())}</span>
@@ -772,7 +783,7 @@
             document.getElementById('pageTopSection').innerHTML = renderPageTopSection({
                 kicker: 'Execution Orders',
                 title: '订单链工作台',
-                copy: '聚焦 trade group、bracket 链路和 broker / PB 对账状态，从这里继续钻取订单明细与账户动作。',
+                copy: '按 signal 聚合 entry 订单、真实成交价、bracket 链路和 broker / PB 对账状态。',
                 statusHtml,
             });
         }
@@ -927,6 +938,166 @@
             };
         }
 
+        function orderIdentityAliases(order) {
+            return [
+                order?.broker_order_id,
+                order?.order_id,
+                order?.extra?.broker_order_id,
+                order?.extra?.order_id,
+                order?.extra?.coid,
+                order?.extra?.cOID,
+            ].map((value) => String(value || '').trim()).filter(Boolean);
+        }
+
+        function normalizeExecutionFill(raw) {
+            const rawPayload = parseJsonLike(raw?.raw);
+            const orderId = firstDefined(raw?.order_id, rawPayload.orderId, rawPayload.order_id, rawPayload.order_id_str);
+            const shares = Math.abs(Number(firstDefined(raw?.shares, rawPayload.shares, rawPayload.qty, rawPayload.quantity, 0)) || 0);
+            const price = Number(firstDefined(raw?.price, raw?.fill_price, rawPayload.price, rawPayload.avgPrice, rawPayload.avg_fill_price, 0)) || 0;
+            const commission = Number(firstDefined(raw?.commission, rawPayload.commission, 0)) || 0;
+            const tradeTimeMs = Number(firstDefined(raw?.trade_time_ms, rawPayload.trade_time_ms, rawPayload.time_ms, 0)) || 0;
+            if (!orderId || shares <= 0 || price <= 0) return null;
+            return {
+                ...raw,
+                raw: rawPayload,
+                order_id: String(orderId).trim(),
+                shares,
+                price,
+                commission,
+                trade_time_ms: tradeTimeMs,
+            };
+        }
+
+        function buildExecutionFillLookup(fills) {
+            const lookup = new Map();
+            (fills || []).forEach((rawFill) => {
+                const fill = normalizeExecutionFill(rawFill);
+                if (!fill) return;
+                const key = String(fill.order_id || '').trim();
+                if (!key) return;
+                if (!lookup.has(key)) {
+                    lookup.set(key, {
+                        quantity: 0,
+                        value: 0,
+                        commission: 0,
+                        fills: []
+                    });
+                }
+                const bucket = lookup.get(key);
+                bucket.quantity += fill.shares;
+                bucket.value += fill.shares * fill.price;
+                bucket.commission += fill.commission;
+                bucket.fills.push(fill);
+            });
+
+            lookup.forEach((bucket) => {
+                bucket.avg_price = bucket.quantity > 0 ? bucket.value / bucket.quantity : null;
+            });
+            return lookup;
+        }
+
+        function resolveOrderActualFill(order) {
+            const filledQty = firstPositiveNumber(order?.filled_qty, order?.extra?.filled_qty);
+            const status = String(order?.status || '').trim().toLowerCase();
+            const hasFilledState = filledQty !== null || ['filled', 'closed'].includes(status);
+            if (!hasFilledState) {
+                return { price: null, quantity: filledQty || 0, source: 'missing', fillCount: 0, commission: null };
+            }
+
+            const role = String(order?.role || '').trim().toLowerCase();
+            const extra = order?.extra || {};
+            const roleSpecificPrice = role === 'entry'
+                ? firstPositiveNumber(extra.entry_fill_price, extra.executed_price)
+                : firstPositiveNumber(extra.exit_fill_price, extra.closed_price, extra.close_price);
+            const price = firstPositiveNumber(
+                order?.fill_price,
+                order?.avg_fill_price,
+                order?.avgPrice,
+                order?.avg_price,
+                order?.average_price,
+                extra.fill_price,
+                extra.avg_fill_price,
+                extra.avgPrice,
+                extra.avg_price,
+                extra.average_price,
+                roleSpecificPrice
+            );
+
+            return {
+                price,
+                quantity: filledQty || 0,
+                source: price ? 'orders.actual_fill_fields' : 'missing',
+                fillCount: 0,
+                commission: null
+            };
+        }
+
+        function applyActualFillToOrder(order, fillLookup) {
+            const matchedFill = orderIdentityAliases(order)
+                .map((key) => fillLookup.get(key))
+                .find((value) => value && value.avg_price > 0);
+            if (matchedFill) {
+                return {
+                    ...order,
+                    actual_fill_price: matchedFill.avg_price,
+                    actual_filled_qty: matchedFill.quantity,
+                    actual_fill_commission: matchedFill.commission,
+                    fill_source: 'ibkr_execution_fills',
+                    fill_count: matchedFill.fills.length
+                };
+            }
+
+            const resolved = resolveOrderActualFill(order);
+            return {
+                ...order,
+                actual_fill_price: resolved.price,
+                actual_filled_qty: resolved.quantity,
+                actual_fill_commission: resolved.commission,
+                fill_source: resolved.source,
+                fill_count: resolved.fillCount
+            };
+        }
+
+        async function fetchExecutionFillsForOrders(orders, requestId) {
+            const orderIds = [...new Set(
+                (orders || [])
+                    .flatMap(orderIdentityAliases)
+                    .map((value) => String(value || '').trim())
+                    .filter(Boolean)
+            )];
+            if (!orderIds.length) return [];
+
+            const fills = [];
+            try {
+                for (const idChunk of chunkArray(orderIds, 12)) {
+                    const idFilter = idChunk.map((id) => `order_id = "${escapeFilterValue(id)}"`).join(' || ');
+                    const records = await fetchCollectionFullList('ibkr_execution_fills', {
+                        filter: `environment = "${currentEnvironment}" && (${idFilter})`,
+                        sort: 'trade_time_ms,created',
+                        perPage: ORDERS_FETCH_PAGE_SIZE,
+                        maxPages: EXECUTION_FILL_FETCH_MAX_PAGES,
+                        requestId
+                    });
+                    if (!records || requestId !== currentOrdersRequestId) return [];
+                    fills.push(...records);
+                }
+            } catch (error) {
+                console.warn('[Orders] 加载 ibkr_execution_fills 失败，回退到订单同步成交字段:', error);
+                return [];
+            }
+            return fills;
+        }
+
+        async function enrichOrdersWithActualFills(orders, requestId) {
+            const normalizedOrders = (orders || []).map((order) => (
+                order && order.time_key !== undefined && order.extra !== undefined ? order : normalizeOrder(order)
+            ));
+            const fills = await fetchExecutionFillsForOrders(normalizedOrders, requestId);
+            if (requestId && requestId !== currentOrdersRequestId) return null;
+            const fillLookup = buildExecutionFillLookup(fills);
+            return normalizedOrders.map((order) => applyActualFillToOrder(order, fillLookup));
+        }
+
         function buildLatestOrdersFromDetails(records) {
             const latestByOrder = new Map();
             (Array.isArray(records) ? records : []).forEach((record) => {
@@ -1002,13 +1173,13 @@
 
         function resolveMainGroupKey(order, aliasMap) {
             const candidates = [
-                order.signal_id,
+                order.trade_group_id,
                 order.entry_order_unique_id,
                 order.parent_order_unique_id,
-                order.trade_group_id,
                 order.sibling_order_unique_id,
                 order.unique_id,
-                order.id
+                order.id,
+                order.signal_id
             ];
             for (const value of candidates) {
                 const key = aliasMap.get(String(value || '').trim());
@@ -1062,6 +1233,97 @@
             }).filter(Boolean).sort((left, right) => right.latest_time - left.latest_time);
         }
 
+        function uniqueNonEmpty(values) {
+            const seen = new Set();
+            const result = [];
+            (values || []).forEach((value) => {
+                const text = String(value || '').trim();
+                if (!text || seen.has(text)) return;
+                seen.add(text);
+                result.push(text);
+            });
+            return result;
+        }
+
+        function aggregateSignalStatus(entryOrders, orders) {
+            const statuses = (entryOrders && entryOrders.length ? entryOrders : orders)
+                .map((order) => String(order?.status || '').trim())
+                .filter(Boolean);
+            if (statuses.includes('Submitted')) return 'Submitted';
+            if (statuses.includes('Init')) return 'Init';
+            if (statuses.includes('Filled')) return 'Filled';
+            if (statuses.includes('Closed')) return 'Closed';
+            if (statuses.length && statuses.every((status) => status === 'Canceled')) return 'Canceled';
+            return statuses[0] || 'Init';
+        }
+
+        function buildSignalGroupKey(tradeGroup) {
+            return firstDefined(
+                tradeGroup?.signal_id,
+                tradeGroup?.primaryOrder?.signal_id,
+                tradeGroup?.latestEvent?.signal_id,
+                tradeGroup?.trade_group_id,
+                tradeGroup?.group_id
+            );
+        }
+
+        function buildSignalGroups(tradeGroups) {
+            const grouped = new Map();
+            (tradeGroups || []).forEach((tradeGroup) => {
+                const key = buildSignalGroupKey(tradeGroup);
+                if (!key) return;
+                if (!grouped.has(key)) {
+                    grouped.set(key, {
+                        group_id: key,
+                        signal_id: tradeGroup.signal_id || '',
+                        tradeGroups: [],
+                        orders: []
+                    });
+                }
+                const bucket = grouped.get(key);
+                if (!bucket.signal_id && tradeGroup.signal_id) bucket.signal_id = tradeGroup.signal_id;
+                bucket.tradeGroups.push(tradeGroup);
+                bucket.orders.push(...(tradeGroup.orders || []));
+            });
+
+            return Array.from(grouped.values()).map((bucket) => {
+                const ordersSorted = [...bucket.orders].sort(sortOrdersInGroup);
+                const entryOrders = ordersSorted.filter(isMainOrder);
+                const protectionOrders = ordersSorted.filter((order) => isProtectiveOrder(order) && order.role !== 'close');
+                const closeOrders = ordersSorted.filter((order) => String(order.role || '').trim().toLowerCase() === 'close');
+                const primaryOrder = entryOrders[0] || pickPrimaryOrder(ordersSorted);
+                const latestEvent = [...ordersSorted].sort((a, b) => (b.time_key || 0) - (a.time_key || 0))[0] || primaryOrder;
+                const exitOrder = ordersSorted.find((order) => order.role !== 'entry' && order.status === 'Filled') || null;
+                const relationAlert = ordersSorted.find((order) => order.relation_status === 'orphaned') || null;
+                const tradeGroupIds = uniqueNonEmpty(bucket.tradeGroups.map((group) => group.trade_group_id || group.group_id));
+                const signalId = bucket.signal_id || primaryOrder?.signal_id || latestEvent?.signal_id || '';
+                return {
+                    group_id: bucket.group_id,
+                    signal_id: signalId,
+                    trade_group_id: tradeGroupIds[0] || bucket.group_id,
+                    tradeGroupIds,
+                    tradeGroups: bucket.tradeGroups,
+                    orders: ordersSorted,
+                    entryOrders,
+                    protectionOrders,
+                    closeOrders,
+                    primaryOrder,
+                    latestEvent,
+                    exitOrder,
+                    relationAlert,
+                    symbol: primaryOrder?.symbol || latestEvent?.symbol || '-',
+                    direction: primaryOrder?.position_side || primaryOrder?.direction || latestEvent?.direction || '',
+                    status: aggregateSignalStatus(entryOrders, ordersSorted),
+                    latest_time: Math.max(...ordersSorted.map((order) => order.time_key || 0)),
+                    activeChildCount: protectionOrders.filter((order) => order.relation_status === 'active').length,
+                    plannedChildCount: protectionOrders.filter((order) => order.relation_status === 'planned').length,
+                    entryOrderCount: entryOrders.length,
+                    protectionLegCount: protectionOrders.length,
+                    closeOrderCount: closeOrders.length
+                };
+            }).filter((group) => group.primaryOrder).sort((left, right) => right.latest_time - left.latest_time);
+        }
+
         function matchesSearch(group, keyword) {
             if (!keyword) return true;
             const search = keyword.toUpperCase();
@@ -1069,11 +1331,13 @@
                 group.symbol,
                 group.signal_id,
                 group.trade_group_id,
+                ...(group.tradeGroupIds || []),
                 group.primaryOrder?.entry_order_unique_id,
                 group.primaryOrder?.broker_order_id,
                 ...group.orders.flatMap((order) => [
                     order.unique_id,
                     order.broker_order_id,
+                    order.trade_group_id,
                     order.parent_order_unique_id,
                     order.sibling_order_unique_id,
                     order.role,
@@ -1089,7 +1353,7 @@
                 if (currentStatus !== 'all' && group.status !== currentStatus) return false;
                 if (currentDirection !== 'all' && group.direction !== currentDirection) return false;
                 if (filterSignalId && !group.orders.some((order) => order.signal_id === filterSignalId)) return false;
-                if (filterTradeGroupId && group.trade_group_id !== filterTradeGroupId) return false;
+                if (filterTradeGroupId && !(group.tradeGroupIds || [group.trade_group_id]).includes(filterTradeGroupId)) return false;
                 if (!matchesSearch(group, currentSearch)) return false;
                 return true;
             });
@@ -1127,14 +1391,16 @@
             const filtered = filterGroups(allGroups);
             const summary = document.getElementById('summaryBar');
             const openGroups = filtered.filter((group) => !group.exitOrder && group.status !== 'Canceled' && group.status !== 'Closed').length;
-            const mainOrderCount = filtered.reduce((sum, group) => sum + group.orders.filter(isMainOrder).length, 0);
-            const legOrderCount = filtered.reduce((sum, group) => sum + group.orders.length, 0);
+            const entryOrderCount = filtered.reduce((sum, group) => sum + (group.entryOrders || []).length, 0);
+            const protectionLegCount = filtered.reduce((sum, group) => sum + (group.protectionOrders || []).length, 0);
+            const tradeGroupCount = uniqueNonEmpty(filtered.flatMap((group) => group.tradeGroupIds || [])).length;
             summary.innerHTML = `
-                <div class="summary-card"><div class="summary-label">TRADE GROUPS</div><div class="summary-value">${formatCountValue(filtered.length)}</div></div>
-                <div class="summary-card"><div class="summary-label">MAIN ORDERS</div><div class="summary-value">${formatCountValue(mainOrderCount)}</div></div>
-                <div class="summary-card"><div class="summary-label">ORDER LEGS</div><div class="summary-value">${formatCountValue(legOrderCount)}</div></div>
+                <div class="summary-card"><div class="summary-label">SIGNALS</div><div class="summary-value">${formatCountValue(filtered.length)}</div></div>
+                <div class="summary-card"><div class="summary-label">ENTRY ORDERS</div><div class="summary-value">${formatCountValue(entryOrderCount)}</div></div>
+                <div class="summary-card"><div class="summary-label">PROTECTION LEGS</div><div class="summary-value">${formatCountValue(protectionLegCount)}</div></div>
+                <div class="summary-card"><div class="summary-label">TRADE GROUPS</div><div class="summary-value">${formatCountValue(tradeGroupCount)}</div></div>
                 <div class="summary-card"><div class="summary-label">BROKER LIVE</div><div class="summary-value">${escapeHtml(String(getBrokerLiveCount()))}</div></div>
-                <div class="summary-card"><div class="summary-label">OPEN GROUPS</div><div class="summary-value">${formatCountValue(openGroups)}</div></div>
+                <div class="summary-card"><div class="summary-label">OPEN SIGNALS</div><div class="summary-value">${formatCountValue(openGroups)}</div></div>
                 ${currentOrdersSource === 'ibkr_order_details' ? '<div class="summary-hint">当前使用 ibkr_order_details 最新快照回退展示，可查看图表与交易组明细，但不提供撤单/平仓操作。</div>' : ''}
                 ${isOrdersDatasetPartial ? '<div class="summary-hint">首屏已加载，剩余订单后台补齐中</div>' : ''}
             `;
@@ -1208,6 +1474,49 @@
             `;
         }
 
+        function actualFilledQty(order) {
+            return firstPositiveNumber(order?.actual_filled_qty, order?.filled_qty, order?.extra?.filled_qty) || 0;
+        }
+
+        function actualFillSourceLabel(order) {
+            if (order?.fill_source === 'ibkr_execution_fills') {
+                return `IBKR fills${order.fill_count ? ` x${order.fill_count}` : ''}`;
+            }
+            if (order?.fill_source === 'orders.actual_fill_fields') return 'order fill';
+            return 'missing';
+        }
+
+        function renderActualFillValue(order) {
+            const price = firstPositiveNumber(order?.actual_fill_price);
+            const filledQty = actualFilledQty(order);
+            const status = String(order?.status || '').trim().toLowerCase();
+            if (price) {
+                return `${escapeHtml(formatMoney(price))}<br><span class="metric-subvalue">${escapeHtml(actualFillSourceLabel(order))}</span>`;
+            }
+            if (filledQty > 0 || ['filled', 'closed'].includes(status)) {
+                return '<span class="missing-fill">成交价缺失</span><br><span class="metric-subvalue">未找到真实成交字段</span>';
+            }
+            return '<span class="pnl-flat">未成交</span>';
+        }
+
+        function buildActualEntryFillMetric(group) {
+            const filledEntries = (group.entryOrders || []).filter((order) => actualFilledQty(order) > 0);
+            const pricedEntries = filledEntries.filter((order) => firstPositiveNumber(order.actual_fill_price));
+            if (!filledEntries.length) return '<span class="pnl-flat">未成交</span>';
+            if (!pricedEntries.length) return '<span class="missing-fill">成交价缺失</span>';
+
+            const totalQty = pricedEntries.reduce((sum, order) => sum + actualFilledQty(order), 0);
+            const totalValue = pricedEntries.reduce((sum, order) => sum + actualFilledQty(order) * firstPositiveNumber(order.actual_fill_price), 0);
+            const avgPrice = totalQty > 0 ? totalValue / totalQty : null;
+            const prices = pricedEntries.map((order) => firstPositiveNumber(order.actual_fill_price)).filter(Boolean);
+            const minPrice = Math.min(...prices);
+            const maxPrice = Math.max(...prices);
+            const missingCount = filledEntries.length - pricedEntries.length;
+            const rangeText = minPrice !== maxPrice ? ` · range ${formatMoney(minPrice)}-${formatMoney(maxPrice)}` : '';
+            const missingText = missingCount > 0 ? ` · ${missingCount} 单缺价` : '';
+            return `${escapeHtml(formatMoney(avgPrice))}<br><span class="metric-subvalue">qty ${escapeHtml(formatQty(totalQty))}${escapeHtml(rangeText)}${escapeHtml(missingText)}</span>`;
+        }
+
         function resolveTakeProfitPrice(primary, tpOrder) {
             return firstPositiveNumber(
                 tpOrder?.limit_price,
@@ -1247,8 +1556,12 @@
 
         function resolveEntryFillPrice(primary) {
             return firstPositiveNumber(
+                primary?.actual_fill_price,
                 primary?.fill_price,
                 primary?.extra?.fill_price,
+                primary?.extra?.avg_fill_price,
+                primary?.extra?.avgPrice,
+                primary?.extra?.entry_fill_price,
                 primary?.limit_price,
                 primary?.extra?.limit_price,
                 primary?.extra?.entry_price
@@ -1257,8 +1570,12 @@
 
         function resolveExitFillPrice(exitOrder, fallbackPrice) {
             return firstPositiveNumber(
+                exitOrder?.actual_fill_price,
                 exitOrder?.fill_price,
                 exitOrder?.extra?.fill_price,
+                exitOrder?.extra?.avg_fill_price,
+                exitOrder?.extra?.avgPrice,
+                exitOrder?.extra?.exit_fill_price,
                 exitOrder?.limit_price,
                 exitOrder?.extra?.limit_price,
                 fallbackPrice
@@ -1277,12 +1594,14 @@
 
         function sumCommissions(orders) {
             return (orders || []).reduce((sum, order) => {
-                const commission = toNumber(order?.commission);
+                const commission = firstPositiveNumber(Math.abs(Number(order?.actual_fill_commission || 0)), Math.abs(Number(order?.commission || 0)));
                 return sum + (commission === null ? 0 : commission);
             }, 0);
         }
 
         function absCommission(order) {
+            const actual = toNumber(order?.actual_fill_commission);
+            if (actual !== null && Math.abs(actual) > 0) return Math.abs(actual);
             const direct = toNumber(order?.commission);
             if (direct !== null) return Math.abs(direct);
             const extra = order?.extra || {};
@@ -1337,7 +1656,7 @@
 
         function renderOrderCard(order, isPrimary) {
             const displayPrice = resolveDisplayPrice(order);
-            const priceLabel = order.role === 'stop_loss' || order.role === 'repair_sl' ? '触发价 / 成交价' : '限价 / 成交价';
+            const priceLabel = order.role === 'stop_loss' || order.role === 'repair_sl' ? '触发价 / 真实成交价' : 'Limit / Actual Fill';
             return `
                 <div class="order-item-card ${isPrimary ? 'primary' : ''}">
                     <div class="order-item-head">
@@ -1355,9 +1674,10 @@
                     <div class="detail-grid">
                         ${renderDetail('order_type', escapeHtml(getOrderTypeText(order.order_type)))}
                         ${renderDetail('signal_id', escapeHtml(order.signal_id || '-'))}
-                        ${renderDetail('数量 / 已成交', `${escapeHtml(formatQty(order.quantity))} / ${escapeHtml(formatQty(order.filled_qty))}`)}
-                        ${renderDetail(priceLabel, `${escapeHtml(formatMoney(displayPrice))} / ${escapeHtml(formatMoney(order.fill_price))}`)}
+                        ${renderDetail('数量 / 实际成交', `${escapeHtml(formatQty(order.quantity))} / ${escapeHtml(formatQty(actualFilledQty(order)))}`)}
+                        ${renderDetail(priceLabel, `${escapeHtml(formatMoney(displayPrice))}<br>${renderActualFillValue(order)}`)}
                         ${renderDetail('手续费', escapeHtml(formatMoney(absCommission(order))))}
+                        ${renderDetail('trade_group', escapeHtml(order.trade_group_id || '-'))}
                         ${renderDetail('parent_order', escapeHtml(order.parent_order_unique_id || '-'))}
                         ${renderDetail('sibling_order', escapeHtml(order.sibling_order_unique_id || '-'))}
                         ${renderDetail('entry_order', escapeHtml(order.entry_order_unique_id || '-'))}
@@ -1367,39 +1687,130 @@
             `;
         }
 
+        function sameTradeGroupOrder(order, entryOrder) {
+            const tradeGroupId = String(entryOrder?.trade_group_id || '').trim();
+            const entryUniqueId = String(entryOrder?.entry_order_unique_id || entryOrder?.unique_id || '').trim();
+            return Boolean(
+                (tradeGroupId && String(order?.trade_group_id || '').trim() === tradeGroupId)
+                || (entryUniqueId && String(order?.entry_order_unique_id || order?.parent_order_unique_id || '').trim() === entryUniqueId)
+            );
+        }
+
+        function hasFilledExitForEntry(group, entryOrder) {
+            return (group.orders || []).some((order) => {
+                if (order === entryOrder || order.role === 'entry') return false;
+                if (String(order.status || '') !== 'Filled') return false;
+                return sameTradeGroupOrder(order, entryOrder);
+            });
+        }
+
+        function countEntryProtectionOrders(group, entryOrder, relationStatus = '') {
+            return (group.protectionOrders || []).filter((order) => {
+                if (!sameTradeGroupOrder(order, entryOrder)) return false;
+                return !relationStatus || order.relation_status === relationStatus;
+            }).length;
+        }
+
+        function buildSignalPnlMetric(group) {
+            let realizedNet = 0;
+            let realizedCount = 0;
+            let missingCount = 0;
+            (group.tradeGroups || []).forEach((tradeGroup) => {
+                const entry = tradeGroup.primaryOrder || null;
+                const exit = tradeGroup.exitOrder || null;
+                if (!entry || !exit) return;
+                const entryPrice = firstPositiveNumber(entry.actual_fill_price);
+                const exitPrice = firstPositiveNumber(exit.actual_fill_price);
+                const quantity = firstPositiveNumber(exit.actual_filled_qty, exit.filled_qty, entry.actual_filled_qty, entry.filled_qty, entry.quantity);
+                const pnl = computeDirectionalPnl(tradeGroup.direction || group.direction, entryPrice, exitPrice, quantity);
+                if (pnl === null) {
+                    missingCount += 1;
+                    return;
+                }
+                realizedNet += pnl - sumCommissions(tradeGroup.orders);
+                realizedCount += 1;
+            });
+            if (realizedCount > 0) {
+                const missingText = missingCount ? ` · ${missingCount} 组缺价` : '';
+                return `<span class="${pnlClass(realizedNet)}">${escapeHtml(formatSignedMoney(realizedNet))}</span><br><span class="metric-subvalue">${realizedCount} 个交易组已退出${escapeHtml(missingText)}</span>`;
+            }
+            if (missingCount > 0) {
+                return `<span class="missing-fill">P/L 缺成交价</span><br><span class="metric-subvalue">${missingCount} 个交易组缺真实成交价</span>`;
+            }
+            return '<span class="pnl-flat">未退出</span><br><span class="metric-subvalue">等待真实退出成交</span>';
+        }
+
+        function renderEntryActionRow(order, group, isReadOnlySnapshot) {
+            const actionTargetId = order?.entry_order_unique_id || order?.unique_id || order?.trade_group_id;
+            const cancelTargetOrderId = order?.broker_order_id || order?.order_id || '';
+            const activeProtectionCount = countEntryProtectionOrders(group, order, 'active');
+            const canCancel = order?.role === 'entry'
+                && (order?.status === 'Init' || order?.status === 'Submitted')
+                && actualFilledQty(order) === 0
+                && activeProtectionCount === 0
+                && !!cancelTargetOrderId;
+            const canClose = order?.role === 'entry' && order?.status === 'Filled' && !hasFilledExitForEntry(group, order);
+            const buttons = [
+                order?.trade_group_id ? `<button class="action-btn btn-secondary" onclick="viewTradeGroup('${encodeURIComponent(order.trade_group_id)}', '${encodeURIComponent(order.signal_id || group.signal_id || '')}')">📜 交易组明细</button>` : '',
+                !isOrdersDatasetPartial && !isReadOnlySnapshot && canCancel ? `<button class="action-btn btn-cancel" onclick="cancelOrder('${encodeURIComponent(actionTargetId || cancelTargetOrderId)}', '${encodeURIComponent(cancelTargetOrderId)}', '${escapeHtml(group.symbol)}')">✕ 取消本 Entry</button>` : '',
+                !isOrdersDatasetPartial && !isReadOnlySnapshot && canClose ? `<button class="action-btn btn-close" onclick="closePosition('${encodeURIComponent(actionTargetId)}', '${escapeHtml(group.symbol)}')">🔒 平仓本 Entry</button>` : '',
+            ].filter(Boolean);
+            if (!buttons.length) return '';
+            return `<div class="entry-action-row">${buttons.join('')}</div>`;
+        }
+
+        function renderEntryOrderCard(order, group, isReadOnlySnapshot) {
+            return `
+                <div class="entry-order-block">
+                    ${renderOrderCard(order, order.unique_id === group.primaryOrder?.unique_id)}
+                    ${renderEntryActionRow(order, group, isReadOnlySnapshot)}
+                </div>
+            `;
+        }
+
+        function summarizeTradeGroupIds(group) {
+            const ids = group.tradeGroupIds || [];
+            if (!ids.length) return '-';
+            const shown = ids.slice(0, 3).join(', ');
+            return ids.length > 3 ? `${shown} +${ids.length - 3}` : shown;
+        }
+
+        function renderSignalOrderDetailsButton(group) {
+            if (group.signal_id) {
+                return `<button class="action-btn btn-view" onclick="viewSignalOrderDetails('${encodeURIComponent(group.signal_id)}')">📜 信号订单明细</button>`;
+            }
+            return `<button class="action-btn btn-view" onclick="viewTradeGroup('${encodeURIComponent(group.trade_group_id)}', '')">📜 交易组明细</button>`;
+        }
+
         function renderGroupCard(group) {
             const primary = group.primaryOrder;
-            const visibleOrders = group.orders.filter((order) => isMainOrder(order) || order.role === 'close');
-            const tpOrder = group.orders.find((order) => order.role === 'take_profit' || order.role === 'repair_tp');
-            const slOrder = group.orders.find((order) => order.role === 'stop_loss' || order.role === 'repair_sl');
+            const isReadOnlySnapshot = currentOrdersSource === 'ibkr_order_details';
+            const tpOrder = group.protectionOrders.find((order) => order.role === 'take_profit' || order.role === 'repair_tp');
+            const slOrder = group.protectionOrders.find((order) => order.role === 'stop_loss' || order.role === 'repair_sl');
             const tpPrice = resolveTakeProfitPrice(primary, tpOrder);
             const slPrice = resolveStopLossPrice(primary, slOrder);
-            const isReadOnlySnapshot = currentOrdersSource === 'ibkr_order_details';
+            const entryQuantity = (group.entryOrders || []).reduce((sum, order) => sum + (Number(order.quantity || 0) || 0), 0);
+            const filledQuantity = (group.entryOrders || []).reduce((sum, order) => sum + actualFilledQty(order), 0);
             const exitText = group.exitOrder
-                ? `已由 ${getRoleText(group.exitOrder.role, group.exitOrder.order_type)} 成交退出`
+                ? `已有真实退出成交：${getRoleText(group.exitOrder.role, group.exitOrder.order_type)}`
                 : group.activeChildCount > 0
                     ? `保护单激活中 (${group.activeChildCount})`
                     : group.plannedChildCount > 0
                         ? `保护单已预创建 (${group.plannedChildCount})`
                         : '等待后续状态';
-            const actionTargetId = primary?.entry_order_unique_id || primary?.unique_id || group.trade_group_id;
-            const cancelTargetOrderId = primary?.broker_order_id || primary?.order_id || '';
-            const canCancel = primary?.role === 'entry'
-                && (primary?.status === 'Init' || primary?.status === 'Submitted')
-                && Number(primary?.filled_qty || 0) === 0
-                && group.activeChildCount === 0
-                && !!cancelTargetOrderId;
-            const canClose = primary?.role === 'entry' && primary?.status === 'Filled' && !group.exitOrder;
+            const tradeGroupText = summarizeTradeGroupIds(group);
+            const protectionAndExitOrders = [...(group.protectionOrders || []), ...(group.closeOrders || [])].sort(sortOrdersInGroup);
 
             return `
-                <div class="group-card">
+                <div class="group-card signal-group-card">
                     <div class="group-header">
                         <div>
                             <div class="group-symbol-row">
                                 <span class="group-symbol">${escapeHtml(group.symbol)}</span>
                                 <span class="direction-badge ${escapeHtml(group.direction || 'long')}">${escapeHtml((group.direction || '-').toUpperCase())}</span>
                                 <span class="status-badge ${statusClass(group.status)}">${escapeHtml(ORDER_STATUS_TEXT[group.status] || group.status || '-')}</span>
-                                ${group.exitOrder ? `<span class="chip highlight-chip">${escapeHtml(getRoleText(group.exitOrder.role, group.exitOrder.order_type))} 成交</span>` : ''}
+                                <span class="chip highlight-chip">Entry ${escapeHtml(String(group.entryOrderCount || 0))}</span>
+                                <span class="chip">TG ${escapeHtml(String((group.tradeGroupIds || []).length))}</span>
                                 ${group.relationAlert ? `<span class="chip warn-chip">存在孤儿单</span>` : ''}
                                 ${isReadOnlySnapshot ? '<span class="chip">明细快照</span>' : ''}
                                 ${isOrdersDatasetPartial ? '<span class="chip">数据补齐中</span>' : ''}
@@ -1413,35 +1824,38 @@
                     </div>
 
                     <div class="chip-row">
-                        <span class="chip">trade_group_id=${escapeHtml(group.trade_group_id)}</span>
-                        <span class="chip">entry=${escapeHtml(primary?.entry_order_unique_id || '-')}</span>
                         <span class="chip">signal_id=${escapeHtml(group.signal_id || '-')}</span>
+                        <span class="chip">trade_groups=${escapeHtml(tradeGroupText)}</span>
+                        <span class="chip">protection_legs=${escapeHtml(String(group.protectionLegCount || 0))}</span>
                     </div>
 
                     <div class="group-grid">
-                        ${renderMetric('Entry IBKR / Broker', `${escapeHtml(primary?.unique_id || '-')}<br><span style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;">${escapeHtml(primary?.broker_order_id || '-')}</span>`)}
-                        ${renderMetric('Qty / Filled', `${escapeHtml(formatQty(primary?.quantity))} / ${escapeHtml(formatQty(primary?.filled_qty))}`)}
-                        ${renderMetric('Entry Limit / Fill', `${escapeHtml(formatMoney(primary?.limit_price))} / ${escapeHtml(formatMoney(primary?.fill_price))}`)}
-                        ${renderMetric('TP / SL', `${escapeHtml(formatMoney(tpPrice))} / ${escapeHtml(formatMoney(slPrice))}`)}
-                        ${renderMetric('P/L', buildPnlMetric(group, tpPrice, slPrice))}
+                        ${renderMetric('Entry Orders', `${escapeHtml(String(group.entryOrderCount || 0))}<br><span class="metric-subvalue">只统计开仓 entry</span>`)}
+                        ${renderMetric('Qty / Actual Filled', `${escapeHtml(formatQty(entryQuantity))} / ${escapeHtml(formatQty(filledQuantity))}`)}
+                        ${renderMetric('Entry Actual Avg', buildActualEntryFillMetric(group))}
+                        ${renderMetric('Plan Entry / TP / SL', `${escapeHtml(formatMoney(primary?.limit_price))} / ${escapeHtml(formatMoney(tpPrice))} / ${escapeHtml(formatMoney(slPrice))}`)}
+                        ${renderMetric('P/L', buildSignalPnlMetric(group))}
                     </div>
 
                     ${renderRelationshipStrip(group)}
 
-                    <div class="section-title">主单 / 平仓</div>
+                    <div class="section-title">开仓 Entry (${escapeHtml(String((group.entryOrders || []).length))})</div>
                     <div class="order-list">
-                        ${visibleOrders.map((order) => renderOrderCard(order, order.unique_id === primary?.unique_id)).join('')}
+                        ${(group.entryOrders || []).map((order) => renderEntryOrderCard(order, group, isReadOnlySnapshot)).join('')}
                     </div>
+
+                    ${protectionAndExitOrders.length ? `
+                        <div class="section-title">保护 / 退出 (${escapeHtml(String(protectionAndExitOrders.length))})</div>
+                        <div class="order-list">
+                            ${protectionAndExitOrders.map((order) => renderOrderCard(order, false)).join('')}
+                        </div>
+                    ` : ''}
 
                     <div class="action-panel">
                         <div class="action-row">
                             ${group.signal_id ? `<button class="action-btn btn-secondary" onclick="viewSignal('${encodeURIComponent(group.signal_id)}')">📡 信号</button>` : ''}
-                            ${group.symbol ? `<button class="action-btn btn-secondary" onclick="openTradeGroupChart('${encodeURIComponent(group.trade_group_id)}')">📉 图表页</button>` : ''}
-                            <button class="action-btn btn-view" onclick="viewTradeGroup('${encodeURIComponent(group.trade_group_id)}', '${encodeURIComponent(group.signal_id || '')}')">📜 交易组明细</button>
-                        </div>
-                        <div class="action-row">
-                            ${!isOrdersDatasetPartial && !isReadOnlySnapshot && canCancel ? `<button class="action-btn btn-cancel" onclick="cancelOrder('${encodeURIComponent(actionTargetId || cancelTargetOrderId)}', '${encodeURIComponent(cancelTargetOrderId)}', '${escapeHtml(group.symbol)}')">✕ 取消主单</button>` : ''}
-                            ${!isOrdersDatasetPartial && !isReadOnlySnapshot && canClose ? `<button class="action-btn btn-close" onclick="closePosition('${encodeURIComponent(actionTargetId)}', '${escapeHtml(group.symbol)}')">🔒 平仓整组</button>` : ''}
+                            ${group.symbol ? `<button class="action-btn btn-secondary" onclick="openTradeGroupChart('${encodeURIComponent(group.group_id)}')">📉 图表页</button>` : ''}
+                            ${renderSignalOrderDetailsButton(group)}
                         </div>
                     </div>
                 </div>
@@ -1454,7 +1868,7 @@
                 container.innerHTML = `
                     <div class="empty">
                         <div class="empty-icon">📭</div>
-                        <div class="empty-text">没有符合条件的交易组</div>
+                        <div class="empty-text">没有符合条件的信号订单</div>
                     </div>
                 `;
                 return;
@@ -1468,7 +1882,8 @@
 
             currentOrdersSource = source;
             allOrders = Array.isArray(records) ? records : [];
-            allGroups = buildTradeGroups(allOrders);
+            allTradeGroups = buildTradeGroups(allOrders);
+            allGroups = buildSignalGroups(allTradeGroups);
             isOrdersDatasetPartial = partial;
 
             if (!partial && pendingLegacySearchResolution) {
@@ -1509,7 +1924,9 @@
                     requestId
                 });
                 if (!remainingItems || requestId !== currentOrdersRequestId) return;
-                applyOrdersDataset([...(initialItems || []), ...remainingItems].map(normalizeOrder), { partial: false, requestId, source: 'orders' });
+                const enrichedItems = await enrichOrdersWithActualFills([...(initialItems || []), ...remainingItems].map(normalizeOrder), requestId);
+                if (!enrichedItems || requestId !== currentOrdersRequestId) return;
+                applyOrdersDataset(enrichedItems, { partial: false, requestId, source: 'orders' });
             } catch (error) {
                 console.error('后台补齐订单失败:', error);
             }
@@ -1542,11 +1959,15 @@
                     if (!firstPageItems.length) {
                         const fallbackRecords = await loadOrderDetailsFallback(requestId);
                         if (!fallbackRecords || requestId !== currentOrdersRequestId) return;
-                        applyOrdersDataset(fallbackRecords, { partial: false, requestId, source: fallbackRecords.length ? 'ibkr_order_details' : 'orders' });
+                        const enrichedFallbackRecords = await enrichOrdersWithActualFills(fallbackRecords, requestId);
+                        if (!enrichedFallbackRecords || requestId !== currentOrdersRequestId) return;
+                        applyOrdersDataset(enrichedFallbackRecords, { partial: false, requestId, source: fallbackRecords.length ? 'ibkr_order_details' : 'orders' });
                         return;
                     }
                     const hasMorePages = Number(firstPage?.totalItems || 0) > firstPageItems.length;
-                    applyOrdersDataset(firstPageItems.map(normalizeOrder), { partial: hasMorePages, requestId, source: 'orders' });
+                    const enrichedFirstPageItems = await enrichOrdersWithActualFills(firstPageItems.map(normalizeOrder), requestId);
+                    if (!enrichedFirstPageItems || requestId !== currentOrdersRequestId) return;
+                    applyOrdersDataset(enrichedFirstPageItems, { partial: hasMorePages, requestId, source: 'orders' });
 
                     if (hasMorePages) {
                         hydrateRemainingOrders(baseFilter, firstPageItems, requestId);
@@ -1565,10 +1986,14 @@
                 if (!records.length) {
                     const fallbackRecords = await loadOrderDetailsFallback(requestId);
                     if (!fallbackRecords || requestId !== currentOrdersRequestId) return;
-                    applyOrdersDataset(fallbackRecords, { partial: false, requestId, source: fallbackRecords.length ? 'ibkr_order_details' : 'orders' });
+                    const enrichedFallbackRecords = await enrichOrdersWithActualFills(fallbackRecords, requestId);
+                    if (!enrichedFallbackRecords || requestId !== currentOrdersRequestId) return;
+                    applyOrdersDataset(enrichedFallbackRecords, { partial: false, requestId, source: fallbackRecords.length ? 'ibkr_order_details' : 'orders' });
                     return;
                 }
-                applyOrdersDataset(records.map(normalizeOrder), { partial: false, requestId, source: 'orders' });
+                const enrichedRecords = await enrichOrdersWithActualFills(records.map(normalizeOrder), requestId);
+                if (!enrichedRecords || requestId !== currentOrdersRequestId) return;
+                applyOrdersDataset(enrichedRecords, { partial: false, requestId, source: 'orders' });
             } catch (error) {
                 console.error('加载订单失败:', error);
                 if (error.status === 401 || error.status === 403) {
@@ -1631,7 +2056,7 @@
 
         function findCloseActionGroup(uniqueId) {
             const decoded = decodeURIComponent(uniqueId || '');
-            return allGroups.find((group) => {
+            const tradeGroupMatch = allTradeGroups.find((group) => {
                 const primary = group.primaryOrder || {};
                 return [
                     group.trade_group_id,
@@ -1640,6 +2065,15 @@
                     primary.unique_id,
                     primary.broker_order_id,
                 ].some((value) => String(value || '') === decoded);
+            });
+            if (tradeGroupMatch) return tradeGroupMatch;
+            return allGroups.find((group) => {
+                return (group.entryOrders || []).some((entry) => [
+                    entry.trade_group_id,
+                    entry.entry_order_unique_id,
+                    entry.unique_id,
+                    entry.broker_order_id,
+                ].some((value) => String(value || '') === decoded));
             }) || null;
         }
 
@@ -1988,13 +2422,22 @@
 
         function openTradeGroupChart(groupId) {
             const decoded = decodeURIComponent(groupId);
-            const group = allGroups.find((item) => item.trade_group_id === decoded || item.group_id === decoded);
+            const group = allGroups.find((item) => item.trade_group_id === decoded || item.group_id === decoded || (item.tradeGroupIds || []).includes(decoded))
+                || allTradeGroups.find((item) => item.trade_group_id === decoded || item.group_id === decoded);
             const params = buildGroupChartParams(group);
             if (!params) {
                 showToast('暂无图表上下文');
                 return;
             }
             location.href = buildPageUrl('/ibkr_chart.html', params, { environment: currentEnvironment });
+        }
+
+        function viewSignalOrderDetails(signalId) {
+            const decoded = decodeURIComponent(signalId);
+            location.href = buildPageUrl('/ibkr_order_details.html', {
+                signal_id: decoded,
+                date: currentDate
+            });
         }
 
         function viewTradeGroup(groupId, signalId = '') {
@@ -2036,7 +2479,7 @@
                 defaultSeconds: 30,
             });
             document.getElementById('contextBar').innerHTML = renderPageContextBar('📋 IBKR 订单', {
-                subtitle: '交易组 / bracket / 执行状态 / 跳转明细',
+                subtitle: '信号聚合 / entry 订单 / 真实成交价 / bracket',
             });
             document.getElementById('nav').innerHTML = renderNav('/orders.html');
             document.getElementById('directionTabs').innerHTML = renderDirectionTabs();

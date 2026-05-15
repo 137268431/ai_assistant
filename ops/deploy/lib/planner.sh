@@ -193,45 +193,23 @@ collect_touched_plan_for_target() {
 auto_mode_for_target() {
   local target="$1"
   local unit
-  local families=()
-  local has_runtime=0
-  local has_ops=0
-  local change_count="${#INPUT_TOUCHED_PATHS[@]}"
   AUTO_REASONS=()
-  if [[ "$change_count" -gt 10 ]]; then
-    append_unique AUTO_REASONS "change-count>10"
-  fi
   if [[ "$HAS_COMPLEX_CHANGES" -eq 1 ]]; then
     append_unique AUTO_REASONS "diff includes delete or rename"
   fi
   for unit in "${CANDIDATE_UNITS[@]}"; do
-    append_unique families "$(unit_family "$unit")"
     case "$unit" in
       ibkr_requirements|ibkr_backtest_requirements|ibkr_runtime_requirements)
         append_unique AUTO_REASONS "requirements changed"
         ;;
-      ibkr_systemd|ibkr_backtest_systemd|ibkr_runtime_systemd|gateway_display_systemd|gateway_systemd)
+      pb_systemd|ibkr_systemd|ibkr_backtest_systemd|ibkr_api_systemd|ibkr_scheduler_systemd|ibkr_runtime_systemd|ibkr_console_systemd|gateway_display_systemd|gateway_systemd)
         append_unique AUTO_REASONS "systemd changed"
         ;;
       pb_migrations)
         append_unique AUTO_REASONS "migrations changed"
         ;;
     esac
-    case "$(unit_category "$unit")" in
-      runtime|systemd)
-        has_runtime=1
-        ;;
-      ops)
-        has_ops=1
-        ;;
-    esac
   done
-  if [[ "$target" == "all" && ${#families[@]} -gt 1 ]]; then
-    append_unique AUTO_REASONS "cross-service changes"
-  fi
-  if [[ "$has_runtime" -eq 1 && "$has_ops" -eq 1 ]]; then
-    append_unique AUTO_REASONS "runtime and ops changed together"
-  fi
   if [[ ${#AUTO_REASONS[@]} -gt 0 ]]; then
     printf '%s\n' package
   else

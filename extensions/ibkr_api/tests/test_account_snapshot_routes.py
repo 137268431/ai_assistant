@@ -114,6 +114,68 @@ class AccountSnapshotRoutesTest(unittest.TestCase):
         self.assertEqual(1.23, enriched["live_open_orders"][0]["pb_context"]["pb_commission"])
         self.assertEqual(1.23, enriched["matched_order_groups"][0]["commission"])
 
+    def test_close_role_offsets_open_exposure_for_history_groups(self):
+        pb = _FakePB(
+            {
+                "orders": [
+                    {
+                        "id": "ord-entry",
+                        "environment": "live",
+                        "symbol": "NVDA",
+                        "status": "Closed",
+                        "signal_id": "sig-nvda",
+                        "trade_group_id": "grp-nvda",
+                        "entry_order_unique_id": "entry-nvda",
+                        "unique_id": "entry-nvda",
+                        "role": "entry",
+                        "relation_status": "closed",
+                        "direction": "long",
+                        "position_side": "long",
+                        "quantity": 43,
+                        "filled_qty": 43,
+                        "limit_price": 232.77,
+                        "fill_price": 232.42,
+                        "updated": "2026-05-14 14:55:16",
+                    },
+                    {
+                        "id": "ord-close",
+                        "environment": "live",
+                        "symbol": "NVDA",
+                        "status": "Filled",
+                        "signal_id": "sig-nvda",
+                        "trade_group_id": "grp-nvda",
+                        "entry_order_unique_id": "entry-nvda",
+                        "unique_id": "close-nvda",
+                        "role": "close",
+                        "relation_status": "closed",
+                        "direction": "long",
+                        "position_side": "long",
+                        "quantity": 43,
+                        "filled_qty": 43,
+                        "limit_price": 234.86,
+                        "fill_price": 234.87,
+                        "updated": "2026-05-14 14:57:22",
+                    },
+                ],
+                "ibkr_signals": [],
+            }
+        )
+        payload = {
+            "ok": True,
+            "environment": "live",
+            "positions": [],
+            "orders": [],
+            "live_open_orders": [],
+            "live_order_coverage": {"coverage_state": "complete", "bulk_open_count": 0},
+            "counts": {},
+        }
+
+        enriched = enrich_account_snapshot(pb, payload, "live")
+
+        self.assertEqual([], enriched["managed_order_groups"])
+        self.assertEqual([], enriched["stale_pb_order_groups"])
+        self.assertEqual(0, enriched["counts"]["pb_active_order_groups"])
+
     def test_live_order_group_orders_are_sorted_and_include_trade_direction(self):
         pb = _FakePB(
             {

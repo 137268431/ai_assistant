@@ -298,6 +298,35 @@ class SignalIngressBuildersTest(unittest.TestCase):
             self.assertIn("**实际成交价**: 100.08", content)
             self.assertNotIn("**入场 / 止盈 / 止损**", content)
 
+    def test_signal_cards_include_market_context_metrics(self):
+        record = {
+            "id": "sig-row-1",
+            "signal_id": "sig-metrics",
+            "symbol": "AAPL",
+            "direction": "long",
+            "environment": "live",
+            "status": "pending",
+            "entry": 100.1,
+            "stop_loss": 98.1,
+            "take_profit": 104.1,
+            "shares": 10,
+            "extra": {
+                "day_change_pct": "2.34%",
+                "atr": 0.8472,
+                "atr_pct": 0.57,
+                "sl_atr_ratio": 1.61,
+            },
+        }
+
+        notification_card = build_signal_notification_card(record, console_base_url="https://console.example.com")
+        status_card = build_signal_status_card(record, message="信号已确认，等待执行", console_base_url="https://console.example.com")
+
+        for card in (notification_card, status_card):
+            content = card["elements"][0]["content"]
+            self.assertIn("**当前涨幅**: +2.34%", content)
+            self.assertIn("**ATR值 / ATR波动率**: 0.85 / 0.57% (低波动)", content)
+            self.assertIn("**止损ATR倍数**: 1.61x", content)
+
     def test_signal_status_card_includes_lifecycle_button(self):
         card = build_signal_status_card(
             {

@@ -208,6 +208,15 @@ class LifecycleFlowApiTest(unittest.TestCase):
         warning_codes = {warning["code"] for warning in payload["warnings"]}
         self.assertNotIn("protection_qty_exceeds_remaining_position", warning_codes)
         self.assertEqual({"take_profit": 10, "stop_loss": 10}, payload["source_summary"]["open_protection_qty_by_role"])
+        tp_event = next(event for event in payload["events"] if event["event_type"] == "take_profit_created")
+        sl_event = next(event for event in payload["events"] if event["event_type"] == "stop_loss_created")
+        self.assertEqual("take_profit_price", tp_event["price_kind"])
+        self.assertEqual("止盈价", tp_event["price_label"])
+        self.assertEqual("stop_loss_price", sl_event["price_kind"])
+        self.assertEqual("止损价", sl_event["price_label"])
+        tp_node = next(node for node in payload["nodes"] if node["event_id"] == tp_event["id"])
+        self.assertEqual("AAPL", tp_node["symbol"])
+        self.assertEqual("take_profit_price", tp_node["price_kind"])
 
     def test_execution_fill_matches_broker_order_id(self):
         payload, status_code = self.build(
@@ -282,6 +291,78 @@ class LifecycleFlowApiTest(unittest.TestCase):
         self.assertEqual(status_code, 200)
         self.assertEqual(5, payload["source_summary"]["actual_entry_qty"])
         self.assertEqual(1, len([event for event in payload["events"] if event["event_type"] == "order_detail_snapshot"]))
+        snapshot = next(event for event in payload["events"] if event["event_type"] == "order_detail_snapshot")
+        self.assertEqual("order_detail_unverified_fill", snapshot["price_kind"])
+        self.assertNotEqual("actual_ibkr", snapshot.get("fill_source"))
+
+    def test_edges_stay_within_trade_group_context(self):
+        payload, status_code = self.build(
+            {
+                "ibkr_signals": [
+                    {"symbol": "NOW", "signal_id": "sig_now", "status": "pending", "entry": 93.76, "shares": 2, "bar_time_ms": 900}
+                ],
+                "orders": [
+                    {
+                        "symbol": "NOW",
+                        "signal_id": "sig_now",
+                        "trade_group_id": "NOW_long_core",
+                        "order_id": "core-entry",
+                        "role": "entry",
+                        "status": "Submitted",
+                        "quantity": 1,
+                        "limit_price": 93.76,
+                        "bar_time_ms": 1000,
+                    },
+                    {
+                        "symbol": "NOW",
+                        "signal_id": "sig_now",
+                        "trade_group_id": "NOW_long_tactical",
+                        "order_id": "tactical-entry",
+                        "role": "entry",
+                        "status": "Submitted",
+                        "quantity": 1,
+                        "limit_price": 93.76,
+                        "bar_time_ms": 1100,
+                    },
+                    {
+                        "symbol": "NOW",
+                        "signal_id": "sig_now",
+                        "trade_group_id": "NOW_long_core",
+                        "order_id": "core-tp",
+                        "role": "take_profit",
+                        "status": "Submitted",
+                        "quantity": 1,
+                        "tp_price": 99.37,
+                        "bar_time_ms": 1200,
+                    },
+                    {
+                        "symbol": "NOW",
+                        "signal_id": "sig_now",
+                        "trade_group_id": "NOW_long_tactical",
+                        "order_id": "tactical-tp",
+                        "role": "take_profit",
+                        "status": "Submitted",
+                        "quantity": 1,
+                        "tp_price": 99.37,
+                        "bar_time_ms": 1300,
+                    },
+                ],
+            },
+            {"symbol": "NOW", "signal_id": "sig_now"},
+        )
+
+        self.assertEqual(status_code, 200)
+        nodes_by_id = {node["id"]: node for node in payload["nodes"]}
+        for edge in payload["edges"]:
+            left = nodes_by_id[edge["source"]]
+            right = nodes_by_id[edge["target"]]
+            left_group = left.get("trade_group_id") or ""
+            right_group = right.get("trade_group_id") or ""
+            if left_group and right_group:
+                self.assertEqual(left_group, right_group)
+        tp_nodes = [node for node in payload["nodes"] if node["type"] == "take_profit_created"]
+        self.assertEqual({"NOW"}, {node["symbol"] for node in tp_nodes})
+        self.assertEqual({"take_profit_price"}, {node["price_kind"] for node in tp_nodes})
 
     def test_backtest_fill_events_are_labeled_simulated(self):
         payload, status_code = build_lifecycle_flow_response(

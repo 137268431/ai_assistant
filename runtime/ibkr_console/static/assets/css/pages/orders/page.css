@@ -257,6 +257,13 @@
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
         }
 
+        .signal-group-card {
+            border-color: rgba(79,209,197,0.20);
+            background:
+                radial-gradient(circle at 0% 0%, rgba(79,209,197,0.10), transparent 34%),
+                linear-gradient(180deg, rgba(14,20,32,0.98), rgba(20,28,46,0.96));
+        }
+
         .group-header {
             display: flex;
             justify-content: space-between;
@@ -458,6 +465,10 @@
             color: var(--muted);
         }
 
+        .missing-fill {
+            color: var(--pending);
+        }
+
         .relationship-strip {
             display: flex;
             gap: 8px;
@@ -516,6 +527,25 @@
         .order-item-card.primary {
             border-color: rgba(99,179,237,0.20);
             box-shadow: inset 0 0 0 1px rgba(99,179,237,0.10);
+        }
+
+        .entry-order-block {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .entry-action-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            padding: 0 2px 2px;
+        }
+
+        .entry-action-row .action-btn {
+            flex: 0 1 auto;
+            min-width: 130px;
+            padding: 8px 10px;
         }
 
         .order-item-head {

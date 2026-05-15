@@ -342,6 +342,10 @@
             color: var(--short);
         }
 
+        .home-stat-value .neutral {
+            color: var(--muted);
+        }
+
         .home-stat-value .candidate {
             color: #f6ad55;
         }

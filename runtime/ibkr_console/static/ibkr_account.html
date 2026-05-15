@@ -400,13 +400,10 @@
                 };
             }
             const liveOrders = getLiveOrders(snapshot);
-            const liveGroups = getLiveGroups(snapshot, liveOrders);
-            const matchedGroups = Array.isArray(snapshot?.matched_order_groups) && snapshot.matched_order_groups.length
-                ? snapshot.matched_order_groups.slice()
-                : liveGroups.filter((group) => String(group?.match_state || '').toLowerCase() === 'matched');
-            const brokerOnlyGroups = Array.isArray(snapshot?.broker_only_order_groups) && snapshot.broker_only_order_groups.length
-                ? snapshot.broker_only_order_groups.slice()
-                : liveGroups.filter((group) => String(group?.match_state || '').toLowerCase() !== 'matched');
+            const rawLiveGroups = getLiveGroups(snapshot, liveOrders);
+            const liveGroups = aggregateLiveGroupsBySignal(rawLiveGroups);
+            const matchedGroups = liveGroups.filter((group) => String(group?.match_state || '').toLowerCase() === 'matched');
+            const brokerOnlyGroups = liveGroups.filter((group) => String(group?.match_state || '').toLowerCase() !== 'matched');
             const pbOnlyGroups = getStalePbGroups(snapshot);
             const visibleGroupCount = filterOrderGroups(matchedGroups).length
                 + filterOrderGroups(brokerOnlyGroups).length
@@ -433,7 +430,7 @@
                     <span class="status-chip"><span class="dot" style="color:#68D391"></span>BP ${escapeHtml(getAccountBuyingPowerLabel(snapshot))}</span>
                     <span class="status-chip"><span class="dot" style="color:#63B3ED"></span>持仓 ${escapeHtml(String(counts.open_positions || 0))}</span>
                     <span class="status-chip"><span class="dot" style="color:#F6AD55"></span>IBKR 挂单 ${escapeHtml(String(metrics.liveOrdersCount || counts.open_orders || 0))}</span>
-                    <span class="status-chip"><span class="dot" style="color:#FC8181"></span>订单链 ${escapeHtml(String(metrics.visibleGroupCount || 0))}</span>
+                    <span class="status-chip"><span class="dot" style="color:#FC8181"></span>信号组 ${escapeHtml(String(metrics.visibleGroupCount || 0))}</span>
                 </div>
             `;
             document.getElementById('pageTopSection').innerHTML = renderPageTopSection({
@@ -1223,6 +1220,108 @@
             return groups.length ? groups : buildFallbackLiveGroups(liveOrders);
         }
 
+        function uniqueNonEmpty(values) {
+            const seen = new Set();
+            const result = [];
+            (values || []).forEach((value) => {
+                const text = String(value || '').trim();
+                if (!text || seen.has(text)) return;
+                seen.add(text);
+                result.push(text);
+            });
+            return result;
+        }
+
+        function liveGroupIdentity(group) {
+            return String(group?.trade_group_id || group?.entry_order_unique_id || group?.group_key || '').trim();
+        }
+
+        function makeLiveAggregateBucket(group, key, signalId, aggregatedBySignal) {
+            return {
+                ...group,
+                group_key: aggregatedBySignal ? signalId : String(group?.group_key || key || '').trim(),
+                trade_group_id: aggregatedBySignal ? '' : String(group?.trade_group_id || '').trim(),
+                entry_order_unique_id: aggregatedBySignal ? '' : String(group?.entry_order_unique_id || '').trim(),
+                signal_id: signalId || String(group?.signal_id || '').trim(),
+                latest_updated: '',
+                latest_updated_ms: 0,
+                latest_order_status: '',
+                match_state: '',
+                live_order_count: 0,
+                matched_live_orders: 0,
+                broker_only_live_orders: 0,
+                cancelable_orders: 0,
+                editable_orders: 0,
+                outside_rth_orders: 0,
+                total_quantity: 0,
+                filled_quantity: 0,
+                remaining_quantity: 0,
+                commission: 0,
+                recovery_sources: [],
+                orders: [],
+                _aggregated_by_signal: Boolean(aggregatedBySignal),
+                _raw_group_count: 0,
+                _raw_trade_group_ids: [],
+            };
+        }
+
+        function aggregateLiveGroupsBySignal(groups) {
+            const sourceGroups = Array.isArray(groups) ? groups : [];
+            const signalCounts = new Map();
+            sourceGroups.forEach((group) => {
+                const signalId = String(group?.signal_id || '').trim();
+                if (signalId) signalCounts.set(signalId, Number(signalCounts.get(signalId) || 0) + 1);
+            });
+
+            const buckets = new Map();
+            sourceGroups.forEach((group, index) => {
+                const signalId = String(group?.signal_id || '').trim();
+                const aggregatedBySignal = Boolean(signalId && Number(signalCounts.get(signalId) || 0) > 1);
+                const rawGroupId = liveGroupIdentity(group);
+                const key = aggregatedBySignal ? `signal:${signalId}` : `group:${rawGroupId || index}`;
+                const bucket = buckets.get(key) || makeLiveAggregateBucket(group, key, signalId, aggregatedBySignal);
+                const orders = Array.isArray(group?.orders) ? group.orders : [];
+                bucket._raw_group_count += 1;
+                bucket._raw_trade_group_ids = uniqueNonEmpty([...bucket._raw_trade_group_ids, rawGroupId]);
+                bucket.live_order_count += Number(group?.live_order_count || orders.length || 0);
+                bucket.matched_live_orders += Number(group?.matched_live_orders || 0);
+                bucket.broker_only_live_orders += Number(group?.broker_only_live_orders || 0);
+                bucket.cancelable_orders += Number(group?.cancelable_orders || 0);
+                bucket.editable_orders += Number(group?.editable_orders || 0);
+                bucket.outside_rth_orders += Number(group?.outside_rth_orders || 0);
+                bucket.total_quantity += Math.abs(Number(group?.total_quantity || 0));
+                bucket.filled_quantity += Math.abs(Number(group?.filled_quantity || 0));
+                bucket.remaining_quantity += Math.abs(Number(group?.remaining_quantity || 0));
+                bucket.commission += Math.abs(Number(group?.commission || 0));
+                bucket.orders.push(...orders);
+                bucket.recovery_sources = uniqueNonEmpty([...bucket.recovery_sources, ...(Array.isArray(group?.recovery_sources) ? group.recovery_sources : [])]);
+                if (!bucket.symbol && group?.symbol) bucket.symbol = group.symbol;
+                const updatedMs = Number(group?.latest_updated_ms || parseTimeValue(group?.latest_updated) || 0);
+                if (updatedMs >= Number(bucket.latest_updated_ms || 0)) {
+                    bucket.latest_updated_ms = updatedMs;
+                    bucket.latest_updated = group?.latest_updated || '';
+                    bucket.latest_order_status = group?.latest_order_status || '';
+                }
+                buckets.set(key, bucket);
+            });
+
+            return Array.from(buckets.values()).map((group) => {
+                const matched = Number(group.matched_live_orders || 0);
+                const brokerOnly = Number(group.broker_only_live_orders || 0);
+                const matchState = matched > 0 && brokerOnly <= 0 ? 'matched' : matched > 0 && brokerOnly > 0 ? 'mixed' : 'broker_only';
+                return {
+                    ...group,
+                    match_state: matchState,
+                    _raw_trade_group_ids: uniqueNonEmpty(group._raw_trade_group_ids),
+                };
+            }).sort((a, b) => {
+                const scoreA = (String(a.match_state).toLowerCase() === 'matched' ? 100 : 0) + Number(a.cancelable_orders || 0);
+                const scoreB = (String(b.match_state).toLowerCase() === 'matched' ? 100 : 0) + Number(b.cancelable_orders || 0);
+                if (scoreA !== scoreB) return scoreB - scoreA;
+                return Number(b.latest_updated_ms || 0) - Number(a.latest_updated_ms || 0);
+            });
+        }
+
         function getGroupSearchText(group) {
             const parts = [
                 group?.symbol,
@@ -1230,6 +1329,7 @@
                 group?.trade_group_id,
                 group?.entry_order_unique_id,
                 group?.group_key,
+                ...(Array.isArray(group?._raw_trade_group_ids) ? group._raw_trade_group_ids : []),
             ];
             (group?.orders || []).forEach((order) => {
                 parts.push(
@@ -1254,9 +1354,10 @@
         function groupMatchesScope(group, scope) {
             const normalized = String(scope || 'all').trim().toLowerCase();
             const orders = Array.isArray(group?.orders) ? group.orders : [];
+            const matchState = String(group?.match_state || '').toLowerCase();
             if (normalized === 'all') return true;
-            if (normalized === 'matched') return String(group?.match_state || '').toLowerCase() === 'matched';
-            if (normalized === 'broker_only') return String(group?.match_state || '').toLowerCase() === 'broker_only';
+            if (normalized === 'matched') return matchState === 'matched' || Number(group?.matched_live_orders || 0) > 0;
+            if (normalized === 'broker_only') return matchState === 'broker_only' || Number(group?.broker_only_live_orders || 0) > 0;
             if (normalized === 'pb_shadow') return Boolean(group?.is_pb_shadow);
             if (normalized === 'cancelable') return orders.some((order) => order?.can_cancel);
             if (normalized === 'editable') return orders.some((order) => order?.can_modify);
@@ -1317,7 +1418,7 @@
             `;
         }
 
-        function renderOrdersSummary(snapshot, liveOrders, liveGroups, pbOnlyGroups, visibleGroups) {
+        function renderOrdersSummary(snapshot, liveOrders, liveGroups, pbOnlyGroups, visibleGroups, rawLiveGroupCount = null) {
             const area = document.getElementById('ordersSummary');
             if (!area) return;
             if (!liveOrders.length && !pbOnlyGroups.length) {
@@ -1342,10 +1443,11 @@
             const roleLine = summarizeOrderRoles(liveOrders).text || '--';
             const statusLine = formatCompactCountMap(statusCounts, (key, count) => `${key}×${count}`) || '--';
             const symbolLine = formatCompactCountMap(symbolCounts, (key, count) => `${key}×${count}`) || '--';
+            const rawGroupCount = Number(rawLiveGroupCount ?? liveGroups.length ?? 0);
             const cards = [
                 ['IBKR Live Open', String(snapshot?.counts?.open_orders || liveOrders.length || 0), 'IBKR broker 已确认仍在挂着的订单'],
-                ['Chains', String(liveGroups.length || 0), '按订单链 / bracket 聚合'],
-                ['Matched', String(reconciliation.broker_matched_groups || 0), '已关联到 PB 订单链'],
+                ['Signals / Brackets', `${liveGroups.length || 0} / ${rawGroupCount}`, '按 signal_id 聚合显示 / 原始 bracket 数'],
+                ['Matched Brackets', String(reconciliation.broker_matched_groups || 0), '已关联到 PB 的原始 bracket 数'],
                 ['Broker Only', String(reconciliation.broker_only_groups || 0), 'broker 有，PB 未匹配'],
                 ['PB Stale / Needs Repair', String(reconciliation.stale_pb_order_groups || reconciliation.pb_shadow_groups || pbOnlyGroups.length || 0), 'PB 仍活跃但 IBKR 未确认，需修复'],
                 ['Editable / Cancelable', `${snapshot?.counts?.editable_orders || 0} / ${snapshot?.counts?.cancelable_orders || 0}`, '可改 / 可撤'],
@@ -1353,8 +1455,11 @@
                 ['Remaining Qty', formatQty(computeBracketAwareRemainingQty(liveOrders)), '去重后的剩余待成交数量'],
             ];
             const extraNotes = [
-                `当前筛选后显示 ${visibleGroups} 个订单链`,
+                `当前筛选后显示 ${visibleGroups} 个 signal 组`,
             ];
+            if (rawGroupCount > liveGroups.length) {
+                extraNotes.push(`显示已按 signal_id 聚合: ${rawGroupCount} 个 bracket -> ${liveGroups.length} 个 signal 组`);
+            }
             if (Number(reconciliation.missing_client_order_id_orders || 0) > 0) {
                 extraNotes.push(`有 ${reconciliation.missing_client_order_id_orders} 条实时挂单缺少 client_order_id`)
             }
@@ -1648,6 +1753,15 @@
             window.location.href = buildPageUrl('/orders.html', params, { environment: currentEnvironment });
         }
 
+        function viewOrdersBySignal(signalId) {
+            const normalized = String(signalId || '').trim();
+            if (!normalized) {
+                showToast('缺少 signal_id');
+                return;
+            }
+            window.location.href = buildPageUrl('/orders.html', { signal_id: normalized }, { environment: currentEnvironment });
+        }
+
         function renderPositions(snapshot) {
             const allPositions = Array.isArray(snapshot?.positions) ? snapshot.positions.slice() : [];
             const positions = allPositions.filter((position) => Number(position?.quantity || 0) !== 0);
@@ -1883,11 +1997,16 @@
             return escapeHtml(toJsStringLiteral(value));
         }
 
-        function renderGroupActionButtons(symbol, signalId, tradeGroupId) {
+        function renderGroupActionButtons(symbol, signalId, tradeGroupId, options = {}) {
+            const orderButton = options.ordersBySignal && signalId
+                ? `<button class="action-btn view" type="button" onclick="viewOrdersBySignal(${toJsStringAttribute(signalId)})">订单</button>`
+                : tradeGroupId
+                    ? `<button class="action-btn view" type="button" onclick="viewTradeGroup(${toJsStringAttribute(tradeGroupId)}, ${toJsStringAttribute(signalId)})">订单</button>`
+                    : '';
             return renderOrderActionButtons([
                 symbol ? `<button class="action-btn view" type="button" onclick="openAccountChart(${toJsStringAttribute(symbol)})">图表</button>` : '',
                 signalId ? `<button class="action-btn view" type="button" onclick="viewSignal(${toJsStringAttribute(signalId)})">信号</button>` : '',
-                tradeGroupId ? `<button class="action-btn view" type="button" onclick="viewTradeGroup(${toJsStringAttribute(tradeGroupId)}, ${toJsStringAttribute(signalId)})">订单</button>` : '',
+                orderButton,
             ]);
         }
 
@@ -1914,6 +2033,11 @@
                 `outside_rth=${String(group?.outside_rth_orders || 0)}`,
                 `updated=${formatTimeLabel(group?.latest_updated)}`,
             ];
+            if (group?._aggregated_by_signal) {
+                detailItems.push(`signal_aggregate=${String(group?._raw_group_count || 0)}`);
+                const groupIds = uniqueNonEmpty(group?._raw_trade_group_ids || []);
+                if (groupIds.length) detailItems.push(`brackets=${groupIds.join(',')}`);
+            }
             if (Array.isArray(group?.recovery_sources)) {
                 group.recovery_sources.forEach((item) => {
                     if (item) detailItems.push(String(item));
@@ -1965,7 +2089,17 @@
         function renderLiveGroupTableRows(group) {
             const orders = getSortedOrderLegs(group?.orders);
             const signalId = String(group?.signal_id || '').trim();
-            const tradeGroupId = String(group?.trade_group_id || group?.entry_order_unique_id || group?.group_key || '').trim();
+            const rawGroupIds = uniqueNonEmpty(group?._raw_trade_group_ids || []);
+            const isSignalAggregate = Boolean(group?._aggregated_by_signal && Number(group?._raw_group_count || 0) > 1);
+            const tradeGroupId = isSignalAggregate
+                ? ''
+                : String(group?.trade_group_id || group?.entry_order_unique_id || group?.group_key || '').trim();
+            const groupMeta = isSignalAggregate
+                ? [
+                    `signal=${signalId || '--'}`,
+                    `brackets=${rawGroupIds.length || Number(group?._raw_group_count || 0)}${rawGroupIds.length ? `: ${rawGroupIds.join(', ')}` : ''}`,
+                ]
+                : [`group=${tradeGroupId || '--'}`, `signal=${signalId || '--'}`];
             const roleSummary = summarizeOrderRoles(orders).text || '--';
             const statusSummary = formatCompactCountMap(
                 orders.reduce((acc, order) => {
@@ -1979,11 +2113,14 @@
             const symbol = String(group?.symbol || '--').trim().toUpperCase();
             const actionSymbol = symbol === '--' ? '' : symbol;
             const direction = getOrderChainDirection(group, orders);
+            const displayRemainingQty = isSignalAggregate
+                ? computeBracketAwareRemainingQty(orders)
+                : Number(group?.remaining_quantity || 0);
             const chainRow = `
                 <tr class="order-chain-row">
                     <td class="order-chain-cell">
                         <div class="order-chain-symbol">${escapeHtml(symbol || '--')}</div>
-                        ${renderOrderCellMeta([`group=${tradeGroupId || '--'}`, `signal=${signalId || '--'}`])}
+                        ${renderOrderCellMeta(groupMeta)}
                     </td>
                     <td><span class="order-table-strong">${escapeHtml(roleSummary)}</span></td>
                     <td>
@@ -1996,8 +2133,8 @@
                     <td>${renderOrderChainDirectionBadge(direction)}</td>
                     <td>${escapeHtml(statusSummary)}</td>
                     <td>${escapeHtml(`${group?.cancelable_orders || 0} 可撤 / ${group?.editable_orders || 0} 可改`)}</td>
-                    <td><span class="order-table-strong">${escapeHtml(formatQty(group?.remaining_quantity || 0))}</span></td>
-                    <td>${renderGroupActionButtons(actionSymbol, signalId, tradeGroupId)}</td>
+                    <td><span class="order-table-strong">${escapeHtml(formatQty(displayRemainingQty))}</span></td>
+                    <td>${renderGroupActionButtons(actionSymbol, signalId, tradeGroupId, { ordersBySignal: isSignalAggregate })}</td>
                 </tr>
             `;
             const legRows = orders.map((order) => {
@@ -2259,7 +2396,7 @@
                                 <div class="section-note">${escapeHtml(copy)}</div>
                             </div>
                             <div class="badge-row">
-                                <span class="badge neutral">${escapeHtml(String(groups.length))} CHAINS</span>
+                                <span class="badge neutral">${escapeHtml(String(groups.length))} GROUPS</span>
                                 <span class="badge neutral">${escapeHtml(String(countOrdersInGroups(groups)))} ORDERS</span>
                             </div>
                         </div>
@@ -2287,13 +2424,10 @@
 
         function renderOrders(snapshot) {
             const liveOrders = getLiveOrders(snapshot);
-            const liveGroups = getLiveGroups(snapshot, liveOrders);
-            const matchedGroups = Array.isArray(snapshot?.matched_order_groups) && snapshot.matched_order_groups.length
-                ? snapshot.matched_order_groups.slice()
-                : liveGroups.filter((group) => String(group?.match_state || '').toLowerCase() === 'matched');
-            const brokerOnlyGroups = Array.isArray(snapshot?.broker_only_order_groups) && snapshot.broker_only_order_groups.length
-                ? snapshot.broker_only_order_groups.slice()
-                : liveGroups.filter((group) => String(group?.match_state || '').toLowerCase() !== 'matched');
+            const rawLiveGroups = getLiveGroups(snapshot, liveOrders);
+            const liveGroups = aggregateLiveGroupsBySignal(rawLiveGroups);
+            const matchedGroups = liveGroups.filter((group) => String(group?.match_state || '').toLowerCase() === 'matched');
+            const brokerOnlyGroups = liveGroups.filter((group) => String(group?.match_state || '').toLowerCase() !== 'matched');
             const pbOnlyGroups = getStalePbGroups(snapshot);
             const filteredMatchedGroups = filterOrderGroups(matchedGroups);
             const filteredBrokerOnlyGroups = filterOrderGroups(brokerOnlyGroups);
@@ -2306,23 +2440,23 @@
                 pbOnlyGroupsCount: pbOnlyGroups.length,
                 visibleGroupCount,
             });
-            document.getElementById('ordersMeta').textContent = `${liveOrders.length} IBKR live · ${pbOnlyGroups.length} PB stale · groups ${liveGroups.length} · showing ${visibleGroupCount}`;
+            document.getElementById('ordersMeta').textContent = `${liveOrders.length} IBKR live · ${pbOnlyGroups.length} PB stale · signals ${liveGroups.length} · brackets ${rawLiveGroups.length} · showing ${visibleGroupCount}`;
             const area = document.getElementById('ordersArea');
-            renderOrdersSummary(snapshot, liveOrders, liveGroups, pbOnlyGroups, visibleGroupCount);
+            renderOrdersSummary(snapshot, liveOrders, liveGroups, pbOnlyGroups, visibleGroupCount, rawLiveGroups.length);
 
             const sections = [];
             if (filteredBrokerOnlyGroups.length) {
                 sections.push(renderOrdersSection(
-                    'Broker Only Live Chains',
-                    '这些订单已被 IBKR broker 实时确认仍在挂着，但当前没有匹配到 PB 订单记录，优先排查 broker_order_id / client_order_id 回填。',
+                    'Broker Only Live Signal Groups',
+                    '这些订单已被 IBKR broker 实时确认仍在挂着，但当前没有匹配到 PB 订单记录；同一 signal_id 会合并显示。',
                     filteredBrokerOnlyGroups,
                     renderLiveGroupTableRows,
                 ));
             }
             if (filteredMatchedGroups.length) {
                 sections.push(renderOrdersSection(
-                    'Matched Live Chains',
-                    '这些订单链已完成 IBKR broker 实时挂单与 PB 订单链关联，可以直接从单条订单查看完整 broker + PB 维度。',
+                    'Matched Live Signal Groups',
+                    '同一 signal_id 下的 core / tactical bracket 会合并显示；展开后仍保留每条真实 broker 订单腿。',
                     filteredMatchedGroups,
                     renderLiveGroupTableRows,
                 ));
@@ -2647,6 +2781,7 @@
         window.goRuntime = goRuntime;
         window.viewSignal = viewSignal;
         window.viewTradeGroup = viewTradeGroup;
+        window.viewOrdersBySignal = viewOrdersBySignal;
         window.submitManualOrder = submitManualOrder;
         window.resetManualOrderForm = resetManualOrderForm;
         window.renderTicketPreview = renderTicketPreview;

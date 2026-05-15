@@ -110,14 +110,18 @@ class FakeBracketBroker:
         suffix = str(kwargs.get("order_ref_suffix") or "").strip()
         group = "NFLX_short_20260506_101500" + (f"_{suffix}" if suffix else "")
         base_order_id = 101 + call_index * 10
+        family = kwargs.get("order_family_type") or "bracket_oco"
         return {
             "ok": True,
             "entry_coid": f"entry_{group}",
             "tp_coid": f"tp_{group}",
             "sl_coid": f"sl_{group}",
             "bracket_group": group,
-            "oca_group": group,
-            "order_family_type": "bracket_oco",
+            "oca_group": group if family == "bracket_oco" else "",
+            "order_family_type": family,
+            "quantity": kwargs.get("quantity"),
+            "take_profit_quantity": kwargs.get("take_profit_quantity", kwargs.get("quantity")),
+            "stop_loss_quantity": kwargs.get("stop_loss_quantity", kwargs.get("quantity")),
             "order_ids": [str(base_order_id), str(base_order_id + 1), str(base_order_id + 2)],
             "submission": {"ok": True},
             "protection_complete": True,
@@ -206,45 +210,30 @@ class FakeOrderPlacer:
 
     def place_harvest_bracket_order(self, **kwargs):
         self.calls.append(dict(kwargs))
+        quantity = int(kwargs.get("quantity") or 0)
+        tp_quantity = max(1, int(round(quantity * 0.30))) if quantity >= 2 else quantity
         return {
             "ok": True,
-            "harvest_split": True,
+            "harvest_split": False,
+            "partial_harvest": True,
             "harvest_profile": "intraday_volatility_harvest_v1",
-            "order_ids": ["101", "102", "103", "111", "112", "113"],
-            "bracket_group": "AAPL_long_core",
-            "entry_coid": "entry_AAPL_long_core",
-            "tp_coid": "tp_AAPL_long_core",
-            "sl_coid": "sl_AAPL_long_core",
-            "quantity": 70,
+            "order_ids": ["101", "102", "103"],
+            "bracket_group": "AAPL_long_harvest",
+            "entry_coid": "entry_AAPL_long_harvest",
+            "tp_coid": "tp_AAPL_long_harvest",
+            "sl_coid": "sl_AAPL_long_harvest",
+            "quantity": quantity,
+            "take_profit_quantity": tp_quantity,
+            "stop_loss_quantity": quantity,
+            "order_family_type": "partial_harvest_bracket",
             "order_extra": {
                 "harvest_managed": True,
-                "harvest_lot": "core",
+                "harvest_lot": "primary",
                 "harvest_profile": "intraday_volatility_harvest_v1",
+                "partial_harvest_managed": True,
+                "partial_tp_quantity": tp_quantity,
+                "reentry_allowed": True,
             },
-            "legs": [
-                {
-                    "lot": "core",
-                    "quantity": 70,
-                    "ok": True,
-                    "order_ids": ["101", "102", "103"],
-                    "bracket_group": "AAPL_long_core",
-                    "entry_coid": "entry_AAPL_long_core",
-                    "tp_coid": "tp_AAPL_long_core",
-                    "sl_coid": "sl_AAPL_long_core",
-                    "order_extra": {"harvest_managed": True, "harvest_lot": "core"},
-                },
-                {
-                    "lot": "tactical",
-                    "quantity": 30,
-                    "ok": True,
-                    "order_ids": ["111", "112", "113"],
-                    "bracket_group": "AAPL_long_tactical",
-                    "entry_coid": "entry_AAPL_long_tactical",
-                    "tp_coid": "tp_AAPL_long_tactical",
-                    "sl_coid": "sl_AAPL_long_tactical",
-                    "order_extra": {"harvest_managed": True, "harvest_lot": "tactical"},
-                },
-            ],
             "protection_complete": True,
         }
 
@@ -498,6 +487,57 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
         self.assertEqual(1, tp_order.ocaType)
         self.assertEqual(1, sl_order.ocaType)
 
+    def test_place_partial_harvest_bracket_uses_single_entry_with_partial_tp_and_no_oca(self):
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeClient(
+            submission_result={
+                "ok": True,
+                "orders": {"101": {"ok": True}, "102": {"ok": True}, "103": {"ok": True}},
+                "missing_order_ids": [],
+            }
+        )
+        adapter.resolve_contract = lambda **kwargs: {
+            "conid": 123,
+            "symbol": "NFLX",
+            "sec_type": "STK",
+            "exchange": "SMART",
+            "currency": "USD",
+        }
+
+        original_order = ib_gateway.Order
+        original_contract = ib_gateway.Contract
+        try:
+            ib_gateway.Order = FakeOrder
+            ib_gateway.Contract = FakeContract
+            result = ib_gateway.BrokerAdapter.place_bracket_order(
+                adapter,
+                conid=123,
+                symbol="NFLX",
+                direction="long",
+                quantity=107,
+                take_profit_quantity=32,
+                stop_loss_quantity=107,
+                entry_price=93.76,
+                take_profit_price=99.37,
+                stop_loss_price=92.36,
+                order_family_type="partial_harvest_bracket",
+            )
+        finally:
+            ib_gateway.Order = original_order
+            ib_gateway.Contract = original_contract
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("partial_harvest_bracket", result["order_family_type"])
+        self.assertEqual("", result["oca_group"])
+        entry_order = adapter.client.placed_orders[0][1]
+        tp_order = adapter.client.placed_orders[1][1]
+        sl_order = adapter.client.placed_orders[2][1]
+        self.assertEqual(107.0, entry_order.totalQuantity)
+        self.assertEqual(32.0, tp_order.totalQuantity)
+        self.assertEqual(107.0, sl_order.totalQuantity)
+        self.assertFalse(hasattr(tp_order, "ocaGroup"))
+        self.assertFalse(hasattr(sl_order, "ocaGroup"))
+
     def test_place_market_close_sets_account_id_on_order(self):
         adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
         adapter.client = FakeClient({"ok": True})
@@ -570,7 +610,7 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
         self.assertEqual("entry_NFLX_short_20260506_101500", pb_client.upserts[1]["parent_order_unique_id"])
         self.assertEqual("entry_NFLX_short_20260506_101500", pb_client.upserts[2]["parent_order_unique_id"])
 
-    def test_harvest_bracket_splits_core_and_tactical_lots_with_metadata(self):
+    def test_harvest_bracket_uses_single_entry_with_partial_tp_metadata(self):
         pb_client = FakeOrderPBClient()
         broker = FakeBracketBroker()
         placer = OrderPlacer(pb_client=pb_client, broker=broker, account_id="DU123")
@@ -588,13 +628,26 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        self.assertTrue(result["harvest_split"])
-        self.assertEqual(2, len(result["legs"]))
-        self.assertEqual([70, 30], [leg["quantity"] for leg in result["legs"]])
-        self.assertEqual(["core", "tactical"], [call["order_ref_suffix"] for call in broker.calls])
-        self.assertEqual(6, len(pb_client.upserts))
-        lots = [row["extra"]["harvest_lot"] for row in pb_client.upserts if row["role"] == "entry"]
-        self.assertEqual(["core", "tactical"], lots)
+        self.assertFalse(result["harvest_split"])
+        self.assertTrue(result["partial_harvest"])
+        self.assertEqual(1, len(broker.calls))
+        self.assertEqual(100, broker.calls[0]["quantity"])
+        self.assertEqual(30, broker.calls[0]["take_profit_quantity"])
+        self.assertEqual(100, broker.calls[0]["stop_loss_quantity"])
+        self.assertEqual("partial_harvest_bracket", broker.calls[0]["order_family_type"])
+        self.assertEqual("", result["oca_group"])
+        self.assertEqual(3, len(pb_client.upserts))
+        entry, tp, sl = pb_client.upserts
+        self.assertEqual(100, entry["quantity"])
+        self.assertEqual(30, tp["quantity"])
+        self.assertEqual(100, sl["quantity"])
+        self.assertEqual("", entry["oca_group"])
+        self.assertEqual("", tp["oca_group"])
+        self.assertEqual("", sl["oca_group"])
+        self.assertEqual("primary", entry["extra"]["harvest_lot"])
+        self.assertEqual(30, entry["extra"]["partial_tp_quantity"])
+        self.assertTrue(entry["extra"]["partial_harvest_managed"])
+        self.assertTrue(entry["extra"]["reentry_allowed"])
         self.assertTrue(all(row["extra"]["harvest_managed"] for row in pb_client.upserts))
 
 
@@ -742,6 +795,15 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertEqual(100.1, ack_order["limit_price"])
         self.assertEqual(98.1, ack_order["stop_loss"])
         self.assertEqual(104.1, ack_order["take_profit"])
+        self.assertEqual(10, ack_order["quantity"])
+        self.assertEqual("partial_harvest_bracket", ack_order["extra"]["order_family_type"])
+        self.assertEqual("", ack_order["extra"]["oca_group"])
+        self.assertFalse(ack_order["extra"]["intraday_harvest_split"])
+        self.assertEqual(2, len(pb.acks[-1]["child_orders"]))
+        self.assertEqual(3, pb.acks[-1]["child_orders"][0]["quantity"])
+        self.assertEqual(10, pb.acks[-1]["child_orders"][1]["quantity"])
+        self.assertEqual("", pb.acks[-1]["child_orders"][0]["extra"]["oca_group"])
+        self.assertEqual("", pb.acks[-1]["child_orders"][1]["extra"]["oca_group"])
         self.assertEqual("LMT", ack_order["extra"]["entry_order_type"])
         self.assertEqual("passive", ack_order["extra"]["entry_limit_intent"])
         self.assertEqual("passive_limit", ack_order["extra"]["entry_price_plan"])

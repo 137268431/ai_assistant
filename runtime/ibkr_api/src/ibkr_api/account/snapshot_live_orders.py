@@ -7,6 +7,7 @@ from ibkr_api.account.snapshot_shared import (
     OPEN_ORDER_FILTER_PER_PAGE,
     _clone_string_list,
     _is_closed_order_status,
+    _is_exit_exposure_role,
     _is_open_like_order,
     _parse_time_ms,
     _pick_first_non_empty,
@@ -532,7 +533,7 @@ def build_managed_order_context(pb: Any, environment: str, live_orders: list[dic
         role = to_text(normalized.get("role"))
         if role == "entry":
             group["entry_filled_qty"] += abs(to_float(normalized.get("filled_qty")) or 0.0)
-        if role in {"take_profit", "stop_loss"}:
+        if _is_exit_exposure_role(role):
             group["exit_filled_qty"] += abs(to_float(normalized.get("filled_qty")) or 0.0)
         if _is_open_like_order(normalized):
             group["has_active_order"] = True

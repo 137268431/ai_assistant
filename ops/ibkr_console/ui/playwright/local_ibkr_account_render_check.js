@@ -243,6 +243,41 @@ const mockSnapshot = enrichAccountSnapshot(
         raw: { orderId: '1002' },
       },
       {
+        order_id: '1003',
+        symbol: 'AAPL',
+        side: 'BUY',
+        status: 'Submitted',
+        status_key: 'SUBMITTED',
+        total_quantity: 30,
+        filled_quantity: 0,
+        remaining_quantity: 30,
+        order_type: 'LMT',
+        price: 180,
+        client_order_id: 'coid-1-tactical',
+        signal_id: 'sig-1',
+        trade_group_id: 'tg-1-tactical',
+        entry_order_unique_id: 'coid-1-tactical',
+        match_state: 'matched',
+        pb_context: {
+          signal_id: 'sig-1',
+          trade_group_id: 'tg-1-tactical',
+          entry_order_unique_id: 'coid-1-tactical',
+          match_state: 'matched',
+          relation_status: 'active',
+          pb_status: 'Submitted',
+        },
+        can_cancel: true,
+        can_modify: true,
+        is_open: true,
+        submitted_time: '2026-04-10T09:31:02Z',
+        submitted_time_ms: 1775813462000,
+        account: 'U1234567',
+        currency: 'USD',
+        asset_class: 'STK',
+        listing_exchange: 'NASDAQ',
+        raw: { orderId: '1003' },
+      },
+      {
         order_id: '3001',
         symbol: 'TSLA',
         side: 'BUY',
@@ -295,17 +330,17 @@ const mockSnapshot = enrichAccountSnapshot(
       },
     ],
     counts: {
-      open_orders: 3,
-      cancelable_orders: 3,
-      editable_orders: 2,
+      open_orders: 4,
+      cancelable_orders: 4,
+      editable_orders: 3,
       outside_rth_orders: 0,
     },
     order_reconciliation: {
-      broker_matched_groups: 1,
+      broker_matched_groups: 2,
       broker_only_groups: 1,
       pb_shadow_groups: 1,
-      cancelable_orders: 3,
-      editable_orders: 2,
+      cancelable_orders: 4,
+      editable_orders: 3,
       missing_client_order_id_orders: 1,
       status_mismatch_orders: 0,
       quantity_mismatch_orders: 0,
@@ -314,7 +349,7 @@ const mockSnapshot = enrichAccountSnapshot(
     },
     live_order_coverage: {
       coverage_state: 'recovered',
-      bulk_open_count: 2,
+      bulk_open_count: 3,
       recovered_from_status_count: 1,
       unresolved_seed_count: 0,
       unresolved_order_ids: [],
@@ -396,7 +431,7 @@ html = html.replace(/<link href="https:\/\/fonts\.googleapis\.com[^"]+" rel="sty
   try {
     await page.waitForFunction(() => {
       const text = document.getElementById('ordersMeta')?.textContent || '';
-      return text.includes('IBKR live') && text.includes('groups');
+      return text.includes('IBKR live') && text.includes('signals') && text.includes('brackets');
     }, { timeout: 15000 });
   } catch (error) {
     const debug = await page.evaluate(() => ({
@@ -427,10 +462,14 @@ html = html.replace(/<link href="https:\/\/fonts\.googleapis\.com[^"]+" rel="sty
   await page.screenshot({ path: screenshot, fullPage: false });
   await browser.close();
 
-  const passed = result.ordersMeta.includes('3 IBKR live')
-    && result.ordersMeta.includes('groups 2')
-    && result.areaText.includes('Broker Only Live Chains')
-    && result.areaText.includes('Matched Live Chains')
+  const passed = result.ordersMeta.includes('4 IBKR live')
+    && result.ordersMeta.includes('signals 2')
+    && result.ordersMeta.includes('brackets 3')
+    && result.areaText.includes('Broker Only Live Signal Groups')
+    && result.areaText.includes('Matched Live Signal Groups')
+    && result.areaText.includes('brackets=2:')
+    && result.areaText.includes('tg-1')
+    && result.areaText.includes('tg-1-tactical')
     && result.areaText.includes('PB Stale / Needs Repair Chains')
     && result.areaText.includes('missing_client_order_id')
     && result.accountSummaryText.includes('Remaining BP')

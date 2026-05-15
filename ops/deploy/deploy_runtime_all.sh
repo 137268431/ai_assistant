@@ -331,6 +331,71 @@ collect_target_file_args() {
   done
 }
 
+path_is_deployable_input() {
+  local rel_path="$1"
+  array_contains "$rel_path" "${INPUT_DEPLOYABLE_FILES[@]-}"
+}
+
+unit_requires_package_mode() {
+  case "$1" in
+    ibkr_requirements|ibkr_backtest_requirements|ibkr_runtime_requirements)
+      return 0
+      ;;
+    pb_systemd|ibkr_systemd|ibkr_backtest_systemd|ibkr_api_systemd|ibkr_scheduler_systemd|ibkr_runtime_systemd|ibkr_console_systemd|gateway_display_systemd|gateway_systemd)
+      return 0
+      ;;
+    pb_migrations)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+target_needs_package_mode() {
+  local target="$1"
+  local rel_path
+  local selected_unit
+  for rel_path in "${INPUT_TOUCHED_PATHS[@]-}"; do
+    [[ -n "$rel_path" ]] || continue
+    while IFS= read -r selected_unit; do
+      [[ -n "$selected_unit" ]] || continue
+      if ! unit_matches_path "$selected_unit" "$rel_path"; then
+        continue
+      fi
+      if unit_requires_package_mode "$selected_unit"; then
+        return 0
+      fi
+      if ! path_is_deployable_input "$rel_path"; then
+        return 0
+      fi
+    done < <(list_selected_units_for_target "$target")
+  done
+  return 1
+}
+
+child_mode_for_target() {
+  local target="$1"
+  if [[ "$REQUESTED_MODE" == "auto" ]]; then
+    if target_needs_package_mode "$target"; then
+      printf '%s\n' package
+    else
+      printf '%s\n' auto
+    fi
+    return 0
+  fi
+  printf '%s\n' "$FINAL_MODE"
+}
+
+file_source_for_child_mode() {
+  if [[ "$1" == "package" ]]; then
+    printf '%s\n' touched
+  else
+    printf '%s\n' deployable
+  fi
+}
+
 stack_health_failure_tolerated() {
   local output="$1"
   [[ "${STRICT_GATEWAY_HEALTH:-0}" != "1" ]] || return 1
@@ -409,27 +474,33 @@ if [[ "$NO_MANAGED_CHANGES" -eq 1 && "$PUBLIC_PROXY_NEEDS_DEPLOY" -eq 0 ]]; then
 fi
 
 if [[ "$REQUESTED_MODE" != "scope" || "$HAS_CHANGE_SOURCE" -eq 1 ]]; then
-  local_file_source="deployable"
-  if [[ "$FINAL_MODE" == "package" ]]; then
-    local_file_source="touched"
-  fi
+  pb_mode="$(child_mode_for_target pocketbase)"
+  console_mode="$(child_mode_for_target ibkr_console)"
+  compute_mode="$(child_mode_for_target ibkr_compute)"
+  backtest_mode="$(child_mode_for_target ibkr_backtest)"
+  runtime_mode="$(child_mode_for_target ibkr_runtime)"
+  pb_file_source="$(file_source_for_child_mode "$pb_mode")"
+  console_file_source="$(file_source_for_child_mode "$console_mode")"
+  compute_file_source="$(file_source_for_child_mode "$compute_mode")"
+  backtest_file_source="$(file_source_for_child_mode "$backtest_mode")"
+  runtime_file_source="$(file_source_for_child_mode "$runtime_mode")"
 
   target_pb_file_args=()
   target_console_file_args=()
   target_compute_file_args=()
   target_backtest_file_args=()
   target_runtime_file_args=()
-  collect_target_file_args target_pb_file_args pocketbase "$local_file_source"
-  collect_target_file_args target_console_file_args ibkr_console "$local_file_source"
-  collect_target_file_args target_compute_file_args ibkr_compute "$local_file_source"
-  collect_target_file_args target_backtest_file_args ibkr_backtest "$local_file_source"
-  collect_target_file_args target_runtime_file_args ibkr_runtime "$local_file_source"
+  collect_target_file_args target_pb_file_args pocketbase "$pb_file_source"
+  collect_target_file_args target_console_file_args ibkr_console "$console_file_source"
+  collect_target_file_args target_compute_file_args ibkr_compute "$compute_file_source"
+  collect_target_file_args target_backtest_file_args ibkr_backtest "$backtest_file_source"
+  collect_target_file_args target_runtime_file_args ibkr_runtime "$runtime_file_source"
 
-  pb_args+=(--mode "$FINAL_MODE")
-  console_args+=(--mode "$FINAL_MODE")
-  compute_args+=(--mode "$FINAL_MODE")
-  backtest_args+=(--mode "$FINAL_MODE")
-  runtime_args+=(--mode "$FINAL_MODE")
+  pb_args+=(--mode "$pb_mode")
+  console_args+=(--mode "$console_mode")
+  compute_args+=(--mode "$compute_mode")
+  backtest_args+=(--mode "$backtest_mode")
+  runtime_args+=(--mode "$runtime_mode")
   if [[ ${#target_pb_file_args[@]} -gt 0 ]]; then
     pb_args+=( "${target_pb_file_args[@]}" )
   fi

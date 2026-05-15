@@ -13,7 +13,7 @@ class RuntimePipelineDirectTopupMixin:
             return self.config.get_bool_for_environment(
                 "ibkr_runtime_direct_topup_enabled",
                 service_mod.ENVIRONMENT,
-                True,
+                False,
             )
 
     def _runtime_direct_topup_intervals(self) -> list[str]:
@@ -63,7 +63,7 @@ class RuntimePipelineDirectTopupMixin:
             return self.config.get_bool_for_environment(
                 "ibkr_runtime_direct_topup_parallel_enabled",
                 service_mod.ENVIRONMENT,
-                bool(getattr(service_mod, "DEFAULT_RUNTIME_DIRECT_TOPUP_PARALLEL_ENABLED", True)),
+                bool(getattr(service_mod, "DEFAULT_RUNTIME_DIRECT_TOPUP_PARALLEL_ENABLED", False)),
             )
 
     def _runtime_direct_topup_interval_priority(self) -> list[str]:
@@ -125,12 +125,12 @@ class RuntimePipelineDirectTopupMixin:
     def _initial_direct_topup_state(self) -> dict:
             service_mod = _service_mod()
             return {
-                "enabled": True,
+                "enabled": False,
                 "driver": "ibkr_history_direct_topup",
                 "intervals": list(service_mod.DEFAULT_RUNTIME_DIRECT_TOPUP_INTERVALS),
                 "close_delay_sec": service_mod.DEFAULT_RUNTIME_DIRECT_TOPUP_CLOSE_DELAY_SECONDS,
                 "loop_interval_s": service_mod.DEFAULT_RUNTIME_DIRECT_TOPUP_LOOP_INTERVAL_SECONDS,
-                "parallel_enabled": bool(getattr(service_mod, "DEFAULT_RUNTIME_DIRECT_TOPUP_PARALLEL_ENABLED", True)),
+                "parallel_enabled": bool(getattr(service_mod, "DEFAULT_RUNTIME_DIRECT_TOPUP_PARALLEL_ENABLED", False)),
                 "interval_priority": list(
                     getattr(
                         service_mod,
