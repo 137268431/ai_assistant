@@ -237,7 +237,6 @@
     cy: null,
     model: null,
     selectedNodeId: '',
-    sourceFilter: '',
     showTimeline: false,
     loading: false
   };
@@ -1404,7 +1403,7 @@
       ]);
     }
     if ($('graphSummary')) {
-      $('graphSummary').textContent = `${model.nodes.length} nodes · ${model.edges.length} edges · ${model.events.length} events · source filters enabled`;
+      $('graphSummary').textContent = `${model.nodes.length} nodes · ${model.edges.length} edges · ${model.events.length} events · lane-colored`;
     }
     if ($('eventSummary')) {
       $('eventSummary').textContent = `按时间排序展示 ${model.events.length || model.nodes.length} 个生命周期事件。`;
@@ -1539,42 +1538,6 @@
     }));
   }
 
-  function syncFillFilterButtons() {
-    document.querySelectorAll('[data-fill-source]').forEach((button) => {
-      const active = button.getAttribute('data-fill-source') === state.sourceFilter;
-      button.classList.toggle('is-active', active);
-      button.setAttribute('aria-pressed', active ? 'true' : 'false');
-    });
-  }
-
-  function applyFillSourceFilter() {
-    syncFillFilterButtons();
-    if (!state.cy) return;
-
-    state.cy.elements().removeClass('source-dimmed source-focused');
-    const source = normalizeFillSource(state.sourceFilter);
-    if (!state.sourceFilter || source === 'unknown') return;
-
-    const selector = `.fill-${safeClassToken(source)}`;
-    const matchingNodes = state.cy.nodes(selector);
-    matchingNodes.addClass('source-focused');
-    state.cy.nodes().difference(matchingNodes).addClass('source-dimmed');
-    state.cy.edges().forEach((edge) => {
-      const sourceMatches = edge.source().is(selector);
-      const targetMatches = edge.target().is(selector);
-      edge.addClass(sourceMatches || targetMatches ? 'source-focused' : 'source-dimmed');
-    });
-  }
-
-  function setFillSourceFilter(fillSource) {
-    const source = normalizeFillSource(fillSource);
-    state.sourceFilter = state.sourceFilter === source ? '' : source;
-    applyFillSourceFilter();
-    if (typeof showToast === 'function') {
-      showToast(state.sourceFilter ? `已突出 ${state.sourceFilter} 节点` : '已清除成交来源筛选');
-    }
-  }
-
   function graphStyle() {
     return [
       {
@@ -1618,10 +1581,6 @@
       { selector: '.status-warning', style: { 'border-color': '#f6ad55' } },
       { selector: '.status-terminal', style: { 'border-color': '#a0aec0', 'background-gradient-stop-colors': '#1c2c39 #0c1620' } },
       { selector: '.status-pending', style: { 'border-style': 'dashed' } },
-      { selector: '.source-dimmed', style: { 'opacity': 0.16, 'text-opacity': 0.22 } },
-      { selector: 'edge.source-dimmed', style: { 'opacity': 0.1, 'text-opacity': 0 } },
-      { selector: '.source-focused', style: { 'opacity': 1, 'text-opacity': 1 } },
-      { selector: 'node.source-focused', style: { 'border-width': 3 } },
       { selector: '.type-lifecycle_endpoint', style: { 'shape': 'hexagon', 'border-width': 3 } },
       { selector: 'node:selected', style: { 'border-width': 4, 'border-color': '#5eead4', 'shadow-color': 'rgba(94,234,212,0.38)', 'shadow-opacity': 0.82 } },
       {
@@ -1693,7 +1652,6 @@
     const timelineEl = $('timelineFallback');
     if (!graphEl || !timelineEl) return;
     renderLaneStrip(model);
-    syncFillFilterButtons();
 
     if (!window.cytoscape || state.showTimeline) {
       graphEl.hidden = true;
@@ -1735,7 +1693,6 @@
     });
 
     runGraphLayout();
-    applyFillSourceFilter();
     const currentId = model.current?.id && model.nodes.some((node) => node.id === model.current.id)
       ? model.current.id
       : model.nodes[0]?.id;
@@ -2010,9 +1967,6 @@
       state.showTimeline = !state.showTimeline;
       if ($('toggleTimelineButton')) $('toggleTimelineButton').textContent = state.showTimeline ? 'DAG' : 'Timeline';
       if (state.model) renderGraph(state.model);
-    });
-    document.querySelectorAll('[data-fill-source]').forEach((button) => {
-      button.addEventListener('click', () => setFillSourceFilter(button.getAttribute('data-fill-source')));
     });
     window.addEventListener('popstate', () => {
       setFiltersToForm(readFiltersFromUrl());
