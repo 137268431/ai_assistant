@@ -1348,14 +1348,24 @@
             return fields.some((field) => String(field || '').toUpperCase().includes(search));
         }
 
-        function filterGroups(groups) {
+        function groupMatchesFilterScope(group, overrides = {}) {
+            const statusFilter = overrides.status !== undefined ? overrides.status : currentStatus;
+            const directionFilter = overrides.direction !== undefined ? overrides.direction : currentDirection;
+            const signalIdFilter = overrides.signalId !== undefined ? overrides.signalId : filterSignalId;
+            const tradeGroupIdFilter = overrides.tradeGroupId !== undefined ? overrides.tradeGroupId : filterTradeGroupId;
+            const searchFilter = overrides.search !== undefined ? overrides.search : currentSearch;
+
+            if (statusFilter !== 'all' && group.status !== statusFilter) return false;
+            if (directionFilter !== 'all' && group.direction !== directionFilter) return false;
+            if (signalIdFilter && !group.orders.some((order) => order.signal_id === signalIdFilter)) return false;
+            if (tradeGroupIdFilter && !(group.tradeGroupIds || [group.trade_group_id]).includes(tradeGroupIdFilter)) return false;
+            if (!matchesSearch(group, searchFilter)) return false;
+            return true;
+        }
+
+        function filterGroups(groups, overrides = {}) {
             return groups.filter((group) => {
-                if (currentStatus !== 'all' && group.status !== currentStatus) return false;
-                if (currentDirection !== 'all' && group.direction !== currentDirection) return false;
-                if (filterSignalId && !group.orders.some((order) => order.signal_id === filterSignalId)) return false;
-                if (filterTradeGroupId && !(group.tradeGroupIds || [group.trade_group_id]).includes(filterTradeGroupId)) return false;
-                if (!matchesSearch(group, currentSearch)) return false;
-                return true;
+                return groupMatchesFilterScope(group, overrides);
             });
         }
 
@@ -1408,9 +1418,9 @@
 
         function updateStatusTabCounts() {
             const statuses = ['Init', 'Submitted', 'Filled', 'Canceled', 'Closed'];
-            const counts = { all: allGroups.length };
+            const counts = { all: filterGroups(allGroups, { status: 'all' }).length };
             statuses.forEach((status) => {
-                counts[status] = allGroups.filter((group) => group.status === status).length;
+                counts[status] = filterGroups(allGroups, { status }).length;
             });
             document.querySelectorAll('.status-tab').forEach((button) => {
                 const status = button.dataset.status;
@@ -1421,9 +1431,9 @@
 
         function updateDirectionTabCounts() {
             const directions = ['long', 'short'];
-            const counts = { all: allGroups.length };
+            const counts = { all: filterGroups(allGroups, { direction: 'all' }).length };
             directions.forEach((direction) => {
-                counts[direction] = allGroups.filter((group) => group.direction === direction).length;
+                counts[direction] = filterGroups(allGroups, { direction }).length;
             });
             document.querySelectorAll('.dir-tab').forEach((button) => {
                 const direction = button.dataset.dir;
@@ -2029,6 +2039,8 @@
             resetPagination();
             renderOrdersPageChrome();
             updateSummaryBar();
+            updateStatusTabCounts();
+            updateDirectionTabCounts();
             renderGroups();
             updateLoadMoreButton();
         }
@@ -2040,6 +2052,8 @@
             resetPagination();
             renderOrdersTopSection();
             updateSummaryBar();
+            updateStatusTabCounts();
+            updateDirectionTabCounts();
             renderGroups();
             updateLoadMoreButton();
         };
@@ -2049,6 +2063,8 @@
             resetPagination();
             renderOrdersTopSection();
             updateSummaryBar();
+            updateStatusTabCounts();
+            updateDirectionTabCounts();
             renderGroups();
             updateLoadMoreButton();
         };
