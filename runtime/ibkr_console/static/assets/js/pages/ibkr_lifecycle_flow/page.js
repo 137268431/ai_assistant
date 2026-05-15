@@ -1069,7 +1069,7 @@
       $('graphSummary').textContent = `${model.nodes.length} nodes · ${model.edges.length} edges · ${model.events.length} events`;
     }
     if ($('eventSummary')) {
-      $('eventSummary').textContent = `按时间排序展示 ${model.events.length || model.nodes.length} 个生命周期事件；DAG 不可用时自动降级。`;
+      $('eventSummary').textContent = `按时间排序展示 ${model.events.length || model.nodes.length} 个生命周期事件。`;
     }
     if ($('eventCount')) $('eventCount').textContent = `${model.events.length} events`;
     if ($('endpointInfo')) $('endpointInfo').textContent = `GET ${buildEndpointUrl(filters)}`;
@@ -1118,7 +1118,7 @@
     $('warningCard').innerHTML = `
       <div class="card-kicker">Warnings</div>
       <div class="warning-list">
-        ${warnings.slice(0, 6).map((warning) => `
+        ${warnings.slice(0, 3).map((warning) => `
           <div class="warning-item severity-${escapeHtml(safeClassToken(warning.severity || 'medium', 'medium'))}">
             <div class="warning-title">${escapeHtml(warning.title || 'Warning')}</div>
             <div class="warning-copy">${escapeHtml(warning.copy || warning.message || '--')}</div>
@@ -1585,19 +1585,22 @@
         subtitle: 'DAG / 泳道 / fill_source 可信度'
       });
     }
-    if ($('pageBridge') && typeof renderPageBridge === 'function') {
+    if ($('pageBridge') && (typeof renderExecutionBridge === 'function' || typeof renderPageBridge === 'function')) {
       const bridgeParams = {
         date: filters.date || '',
         symbol: filters.symbol || '',
         signal_id: filters.signal_id || '',
-        trade_group_id: filters.trade_group_id || ''
+        trade_group_id: filters.trade_group_id || '',
+        order_id: filters.order_id || '',
+        run_id: filters.run_id || ''
       };
-      $('pageBridge').innerHTML = renderPageBridge([
-        { path: PAGE_PATH, params: bridgeParams, kicker: 'Lifecycle', label: '生命周期', copy: 'DAG / 事件', active: true },
-        { path: '/ibkr_signals.html', params: bridgeParams, kicker: 'Signals', label: '主信号', copy: '确认 / 执行' },
-        { path: '/orders.html', params: bridgeParams, kicker: 'Orders', label: '订单', copy: '状态 / 操作' },
-        { path: '/ibkr_chart.html', params: { symbol: filters.symbol || '', interval: '5m' }, kicker: 'Chart', label: '图表', copy: 'K线 / trace' }
-      ]);
+      $('pageBridge').innerHTML = typeof renderExecutionBridge === 'function'
+        ? renderExecutionBridge(PAGE_PATH, bridgeParams)
+        : renderPageBridge([
+          { path: '/ibkr_signals.html', params: bridgeParams, kicker: 'Signals', label: '主信号', copy: '确认 / 执行' },
+          { path: '/orders.html', params: bridgeParams, kicker: 'Orders', label: '订单', copy: '状态 / 操作' },
+          { path: PAGE_PATH, params: bridgeParams, kicker: 'Lifecycle', label: '生命周期', copy: '流程 / 事件', active: true }
+        ]);
     }
   }
 

@@ -11,7 +11,7 @@
   <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dagre@0.8.5/dist/dagre.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.min.js"></script>
-  <link rel="stylesheet" href="/assets/css/pages/ibkr_lifecycle_flow/page.css">
+  <link rel="stylesheet" href="/assets/css/pages/ibkr_lifecycle_flow/page.css?v=20260515-lifecycle-style-unify1">
 </head>
 <body>
   <div id="nav"></div>
@@ -20,55 +20,21 @@
     <div id="contextBar"></div>
     <div id="pageBridge"></div>
 
-    <section class="hero lifecycle-hero">
-      <div class="hero-top lifecycle-hero-top">
-        <div class="hero-main-copy">
-          <div class="hero-kicker">Lifecycle DAG</div>
-          <div class="hero-title">信号 → 订单 → 成交 → 持仓的 <span class="accent">生命周期泳道</span></div>
-          <div class="hero-copy">按 environment / date / symbol / signal_id / trade_group_id / run_id 串联全链路。价格展示严格标记 fill_source：真实、paper、回测模拟与未知不会混在一起。</div>
-        </div>
-        <div class="hero-meta lifecycle-hero-meta">
-          <div class="meta-line" id="refreshInfo">等待加载...</div>
-          <div class="meta-line" id="endpointInfo">GET /api/custom/ibkr/lifecycle-flow</div>
-          <div class="meta-line" id="graphModeInfo">Cytoscape DAG</div>
-        </div>
+    <section class="panel lifecycle-head">
+      <div class="lifecycle-title-block">
+        <div class="hero-kicker">Execution / Lifecycle</div>
+        <h1>交易生命周期</h1>
+        <p>选股、信号、订单、IBKR 实际成交、保护单调整、止盈止损和平仓事件统一串成一张图。</p>
       </div>
-
-      <div class="source-rail" aria-label="fill_source legend">
-        <div class="source-card source-actual">
-          <span class="source-dot"></span>
-          <strong>actual_ibkr</strong>
-          <span>真实 IBKR 成交来源</span>
-        </div>
-        <div class="source-card source-paper">
-          <span class="source-dot"></span>
-          <strong>paper_ibkr</strong>
-          <span>Paper IBKR 成交来源</span>
-        </div>
-        <div class="source-card source-backtest">
-          <span class="source-dot"></span>
-          <strong>backtest_simulated</strong>
-          <span>回测模拟，不是真实成交</span>
-        </div>
-        <div class="source-card source-unknown">
-          <span class="source-dot"></span>
-          <strong>unknown</strong>
-          <span>来源未知，不当真实价使用</span>
-        </div>
+      <div class="lifecycle-meta">
+        <span id="refreshInfo">等待加载...</span>
+        <span id="graphModeInfo">Cytoscape DAG</span>
+        <span id="endpointInfo">GET /api/custom/ibkr/lifecycle-flow</span>
       </div>
     </section>
 
     <section class="panel filter-panel" aria-label="生命周期筛选">
       <form class="filter-form" id="lifecycleFilterForm">
-        <div class="field">
-          <label for="modeInput">Mode</label>
-          <select id="modeInput" name="mode">
-            <option value="auto">auto</option>
-            <option value="live">live</option>
-            <option value="paper">paper</option>
-            <option value="backtest">backtest</option>
-          </select>
-        </div>
         <div class="field">
           <label for="environmentInput">Environment</label>
           <select id="environmentInput" name="environment">
@@ -97,10 +63,24 @@
           <label for="runIdInput">Run ID</label>
           <input id="runIdInput" name="run_id" type="text" placeholder="backtest run_id">
         </div>
-        <div class="field">
-          <label for="backtestDateInput">Backtest Date</label>
-          <input id="backtestDateInput" name="backtest_date" type="date">
-        </div>
+        <details class="advanced-filter">
+          <summary>高级</summary>
+          <div class="advanced-filter-grid">
+            <div class="field">
+              <label for="modeInput">Mode</label>
+              <select id="modeInput" name="mode">
+                <option value="auto">auto</option>
+                <option value="live">live</option>
+                <option value="paper">paper</option>
+                <option value="backtest">backtest</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="backtestDateInput">Backtest Date</label>
+              <input id="backtestDateInput" name="backtest_date" type="date">
+            </div>
+          </div>
+        </details>
         <div class="filter-actions">
           <button class="flow-btn primary" type="submit">读取流程</button>
           <button class="flow-btn" id="resetFiltersButton" type="button">重置</button>
@@ -108,7 +88,7 @@
       </form>
     </section>
 
-    <section class="overview-grid">
+    <section class="insight-strip">
       <article class="status-card current-stage-card" id="currentStageCard">
         <div class="card-kicker">Current Phase</div>
         <div class="stage-placeholder">等待生命周期数据...</div>
@@ -127,6 +107,9 @@
             <div class="panel-copy" id="graphSummary">按阶段自动布局；点击节点查看详情。</div>
           </div>
           <div class="panel-tools graph-tools">
+            <span class="fill-pill actual_ibkr">actual_ibkr</span>
+            <span class="fill-pill paper_ibkr">paper_ibkr</span>
+            <span class="fill-pill backtest_simulated">backtest_simulated</span>
             <button class="flow-btn compact" id="fitGraphButton" type="button">Fit</button>
             <button class="flow-btn compact" id="relayoutGraphButton" type="button">Layout</button>
             <button class="flow-btn compact" id="toggleTimelineButton" type="button">Timeline</button>
@@ -149,23 +132,21 @@
         <div id="nodeDetails" class="node-details">
           <div class="empty-state">点击流程节点查看详情。</div>
         </div>
-      </aside>
-    </section>
 
-    <section class="panel events-panel">
-      <div class="panel-header events-panel-header">
-        <div>
-          <div class="panel-title">事件时间线</div>
-          <div class="panel-copy" id="eventSummary">Cytoscape 不可用时也会展示这个降级视图。</div>
-        </div>
-        <div class="event-count" id="eventCount">0 events</div>
-      </div>
-      <div id="eventList" class="event-list">
-        <div class="empty-state">等待加载事件...</div>
-      </div>
+        <details class="events-drawer" open>
+          <summary>
+            <span>事件时间线</span>
+            <span class="event-count" id="eventCount">0 events</span>
+          </summary>
+          <div class="panel-copy" id="eventSummary">按时间顺序展示完整生命周期事件。</div>
+          <div id="eventList" class="event-list">
+            <div class="empty-state">等待加载事件...</div>
+          </div>
+        </details>
+      </aside>
     </section>
   </div>
 
-  <script src="/assets/js/pages/ibkr_lifecycle_flow/page.js"></script>
+  <script src="/assets/js/pages/ibkr_lifecycle_flow/page.js?v=20260515-lifecycle-compact2"></script>
 </body>
 </html>

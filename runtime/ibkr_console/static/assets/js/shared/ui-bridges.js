@@ -84,6 +84,14 @@ function renderExecutionBridge(activePage, params = {}) {
       active: activePage === '/orders.html' || activePage === '/ibkr_order_details.html'
     },
     {
+      path: '/ibkr_lifecycle_flow.html',
+      params: bridgeParams,
+      kicker: 'Lifecycle',
+      label: '生命周期',
+      copy: '流程 / 事件',
+      active: activePage === '/ibkr_lifecycle_flow.html'
+    },
+    {
       path: '/ibkr_account.html',
       params: bridgeParams,
       kicker: 'Account',
@@ -131,13 +139,7 @@ function renderHomeBridge() {
       path: '/ibkr_signals.html',
       kicker: 'Execution',
       label: '执行域',
-      copy: '信号 / 订单'
-    },
-    {
-      path: '/ibkr_lifecycle_flow.html',
-      kicker: 'Lifecycle',
-      label: '流程图',
-      copy: '交易全生命周期'
+      copy: '信号 / 订单 / 生命周期'
     },
     {
       path: '/ibkr_screener.html',

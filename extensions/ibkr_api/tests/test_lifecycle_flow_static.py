@@ -75,7 +75,12 @@ class LifecycleFlowStaticSmokeTest(unittest.TestCase):
             ),
             "runtime/ibkr_console/static/assets/js/shared/ui-toast-nav.js": (
                 "/ibkr_lifecycle_flow.html",
-                "流程",
+                "执行",
+            ),
+            "runtime/ibkr_console/static/assets/js/shared/ui-bridges.js": (
+                "/ibkr_lifecycle_flow.html",
+                "生命周期",
+                "renderExecutionBridge",
             ),
         }
 
