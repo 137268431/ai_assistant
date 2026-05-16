@@ -160,7 +160,7 @@ class IntradaySdV1CoreTest(unittest.TestCase):
         self.assertEqual(extra["setup_label"], "SD Squeeze Breakout Long")
         self.assertEqual(extra["signal_mode"], "breakout")
         self.assertEqual(extra["entry_window_start_time"], "09:35")
-        self.assertEqual(extra["entry_window_end_time"], "10:30")
+        self.assertEqual(extra["entry_window_end_time"], "15:00")
 
         trace = gen.get_trace_snapshot()
         self.assertEqual(trace["signal_state"]["setup"], "sd_squeeze_breakout_long")
@@ -172,7 +172,7 @@ class IntradaySdV1CoreTest(unittest.TestCase):
     def test_intraday_sd_v1_blocks_late_new_setups_by_default(self):
         gen = SignalGenerator("SPY", "5m", {"signal_strategy_profile": "intraday_sd_v1"})
 
-        signal = gen.update(intraday_breakout_snapshot(us_time="2026-05-01 10:35:00"))
+        signal = gen.update(intraday_breakout_snapshot(us_time="2026-05-01 15:05:00"))
 
         self.assertIsNone(signal)
         trace = gen.get_trace_snapshot()

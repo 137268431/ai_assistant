@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from ibkr_api.orders.values import first_defined, to_float, to_int, to_text
+from ibkr_api.reverse.normalize import normalize_reverse_record
 from ibkr_api.universe.maintenance import parse_json_object
 from ibkr_api.universe.today_targets_shared import (
     LIVE_ENVIRONMENT,
@@ -44,6 +45,7 @@ TERMINAL_EVENT_TYPES = {
     "exit_eod",
     "manual_close",
     "trade_closed",
+    "entry_canceled",
     "signal_rejected",
     "signal_expired",
 }
@@ -145,6 +147,103 @@ def _date_bounds(date_text: str) -> tuple[int, int]:
         return parse_market_date_bounds_ms(date_text)
     except Exception:
         return 0, 0
+
+
+def _text_matches(value: str, candidates: list[Any]) -> bool:
+    expected = _safe_text(value).casefold()
+    if not expected:
+        return False
+    for candidate in candidates:
+        if _safe_text(candidate).casefold() == expected:
+            return True
+    return False
+
+
+def _reverse_row_matches_context(
+    row: dict[str, Any],
+    *,
+    environment: str,
+    signal_id: str,
+    trade_group_id: str,
+    order_id: str,
+) -> bool:
+    if not (signal_id or trade_group_id or order_id):
+        return True
+
+    normalized = normalize_reverse_record(row, default_environment=environment)
+    extra = _json_object(normalized.get("extra"))
+    triggered_signals = normalized.get("triggered_signals")
+    if not isinstance(triggered_signals, list):
+        triggered_signals = _json_list(triggered_signals)
+
+    if signal_id and _text_matches(
+        signal_id,
+        [
+            normalized.get("signal_id"),
+            normalized.get("origin_signal_id"),
+            extra.get("signal_id"),
+            extra.get("origin_signal_id"),
+            extra.get("signal_id_orig"),
+            extra.get("source_signal_id"),
+            *triggered_signals,
+        ],
+    ):
+        return True
+
+    if trade_group_id and _text_matches(
+        trade_group_id,
+        [
+            normalized.get("trade_group_id"),
+            normalized.get("entry_order_unique_id"),
+            normalized.get("order_unique_id"),
+            extra.get("trade_group_id"),
+            extra.get("entry_order_unique_id"),
+            extra.get("order_unique_id"),
+            extra.get("bracket_group"),
+        ],
+    ):
+        return True
+
+    if order_id and _text_matches(
+        order_id,
+        [
+            normalized.get("order_id"),
+            normalized.get("broker_order_id"),
+            normalized.get("entry_order_unique_id"),
+            normalized.get("order_unique_id"),
+            extra.get("order_id"),
+            extra.get("broker_order_id"),
+            extra.get("ib_order_id"),
+            extra.get("entry_order_unique_id"),
+            extra.get("order_unique_id"),
+        ],
+    ):
+        return True
+
+    return False
+
+
+def _filter_reverse_rows_by_context(
+    rows: list[dict[str, Any]],
+    *,
+    environment: str,
+    signal_id: str,
+    trade_group_id: str,
+    order_id: str,
+) -> list[dict[str, Any]]:
+    if not (signal_id or trade_group_id or order_id):
+        return rows
+    return [
+        row
+        for row in rows
+        if _reverse_row_matches_context(
+            row,
+            environment=environment,
+            signal_id=signal_id,
+            trade_group_id=trade_group_id,
+            order_id=order_id,
+        )
+    ]
 
 
 def _parse_time_text_ms(text: Any) -> int:
@@ -726,6 +825,31 @@ def _order_time_ms(row: dict[str, Any]) -> int:
     return _event_time_ms(row, _json_object(row.get("extra")))
 
 
+def _order_submission_time_ms(row: dict[str, Any], extra: dict[str, Any] | None = None, fallback_ts_ms: int = 0) -> int:
+    sources = [extra or {}, row or {}]
+    created_ms = _first_time_from_sources(
+        sources,
+        ms_keys=(
+            "created_bar_time_ms",
+            "submitted_bar_time_ms",
+            "submit_bar_time_ms",
+            "order_created_bar_time_ms",
+            "order_submitted_bar_time_ms",
+            "placed_bar_time_ms",
+            "created_at_ms",
+        ),
+        text_keys=(
+            "created_at",
+            "submitted_at",
+            "submit_time",
+            "order_created_at",
+            "order_submitted_at",
+            "created",
+        ),
+    )
+    return created_ms or fallback_ts_ms or _order_time_ms(row)
+
+
 def _order_id(row: dict[str, Any]) -> str:
     return _safe_text(first_defined(row.get("order_id"), row.get("broker_order_id"), row.get("ib_order_id"), row.get("unique_id")))
 
@@ -796,9 +920,29 @@ def _order_status(row: dict[str, Any]) -> str:
     return status.replace("-", "_").replace(" ", "_")
 
 
+def _normalized_order_status(value: Any) -> str:
+    return _lower(value).replace("-", "_").replace(" ", "_")
+
+
+def _order_initial_status(row: dict[str, Any], extra: dict[str, Any] | None, current_status: str) -> str:
+    previous_status = _first_present_from_sources([extra or {}, row or {}], ("previous_status", "old_status", "status_before"))
+    return _normalized_order_status(previous_status) or current_status
+
+
+def _order_submission_state(initial_status: str, current_status: str) -> str:
+    if _is_open_status(initial_status) or _is_open_status(current_status):
+        return "active"
+    return "done"
+
+
 def _is_filled_status(status: str) -> bool:
     normalized = _lower(status).replace("-", "_").replace(" ", "_")
     return normalized in {"filled", "executed", "closed", "complete", "completed", "partiallyfilled", "partially_filled"}
+
+
+def _is_canceled_status(status: str) -> bool:
+    normalized = _lower(status).replace("-", "_").replace(" ", "_")
+    return normalized in {"cancelled", "canceled", "inactive", "api_cancelled", "api_canceled"}
 
 
 def _is_open_status(status: str) -> bool:
@@ -819,6 +963,31 @@ def _is_open_status(status: str) -> bool:
         "working",
         "held",
     }
+
+
+def _order_cancel_event_meta(role: str) -> tuple[str, str, str, str]:
+    normalized = _lower(role)
+    if normalized in {"take_profit", "repair_tp"}:
+        return "take_profit_canceled", "exit", "done", "止盈单取消"
+    if normalized in {"stop_loss", "repair_sl"}:
+        return "stop_loss_canceled", "exit", "done", "止损单取消"
+    if normalized == "entry":
+        return "entry_canceled", "execution", "terminal", "开仓订单取消"
+    return "close_canceled", "exit", "done", "平仓订单取消"
+
+
+def _order_transition_reason(row: dict[str, Any], extra: dict[str, Any], fallback: str) -> str:
+    return _safe_text(
+        first_defined(
+            extra.get("status_transition_text"),
+            row.get("status_transition_text"),
+            extra.get("status_reason"),
+            row.get("status_reason"),
+            extra.get("reason"),
+            row.get("reason"),
+            fallback,
+        )
+    )
 
 
 def _fill_source_for_environment(environment: str) -> str:
@@ -900,11 +1069,11 @@ def _load_live_sources(pb: Any, *, environment: str, payload: dict[str, Any], ma
     signal_parts = [env_part]
     target_parts = [env_part]
     order_parts = [env_part]
-    reverse_parts = [env_part]
+    reverse_query_parts = [env_part]
     system_parts: list[str] = []
 
     if symbol:
-        for parts in (signal_parts, target_parts, order_parts, reverse_parts):
+        for parts in (signal_parts, target_parts, order_parts, reverse_query_parts):
             parts.append(f'symbol = "{escape_filter(symbol)}"')
     if market_date:
         target_parts.append(f'date = "{escape_filter(market_date)}"')
@@ -912,17 +1081,15 @@ def _load_live_sources(pb: Any, *, environment: str, payload: dict[str, Any], ma
     if signal_id:
         signal_parts.append(f'signal_id = "{escape_filter(signal_id)}"')
         order_parts.append(f'signal_id = "{escape_filter(signal_id)}"')
-        reverse_parts.append(f'(signal_id = "{escape_filter(signal_id)}" || origin_signal_id = "{escape_filter(signal_id)}")')
         system_parts.append(f'(title ~ "{escape_filter(signal_id)}" || detail ~ "{escape_filter(signal_id)}")')
     if trade_group_id:
         order_parts.append(f'trade_group_id = "{escape_filter(trade_group_id)}"')
-        reverse_parts.append(f'trade_group_id = "{escape_filter(trade_group_id)}"')
         system_parts.append(f'(title ~ "{escape_filter(trade_group_id)}" || detail ~ "{escape_filter(trade_group_id)}")')
     if order_id:
         order_parts.append(f'(order_id = "{escape_filter(order_id)}" || broker_order_id = "{escape_filter(order_id)}")')
     if start_ms > 0 and end_ms > 0:
-        reverse_parts.append(f"bar_time_ms >= {start_ms}")
-        reverse_parts.append(f"bar_time_ms < {end_ms}")
+        reverse_query_parts.append(f"bar_time_ms >= {start_ms}")
+        reverse_query_parts.append(f"bar_time_ms < {end_ms}")
         if not (signal_id or trade_group_id or order_id):
             order_parts.append(f"bar_time_ms >= {start_ms}")
             order_parts.append(f"bar_time_ms < {end_ms}")
@@ -931,7 +1098,13 @@ def _load_live_sources(pb: Any, *, environment: str, payload: dict[str, Any], ma
     signals = load("ibkr_signals", signal_parts, sort="bar_time_ms", max_pages=4)
     orders = _dedupe_rows(load("orders", order_parts, sort="bar_time_ms,created", max_pages=4))
     order_details = _dedupe_rows(load("ibkr_order_details", order_parts, sort="bar_time_ms,created", max_pages=4))
-    reverse_rows = load("ibkr_reverse_signals", reverse_parts, sort="bar_time_ms", max_pages=3)
+    reverse_rows = _filter_reverse_rows_by_context(
+        load("ibkr_reverse_signals", reverse_query_parts, sort="bar_time_ms", max_pages=3),
+        environment=environment,
+        signal_id=signal_id,
+        trade_group_id=trade_group_id,
+        order_id=order_id,
+    )
 
     system_filter_parts = []
     if system_parts:
@@ -1102,6 +1275,9 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
         ts_ms = _order_time_ms(row)
         direction = _lower(first_defined(row.get("direction"), row.get("position_side"), extra.get("direction"), extra.get("position_side")))
         status_changes = _status_changes_from_sources(row, extra)
+        initial_status = _order_initial_status(row, extra, status)
+        submission_ts_ms = _order_submission_time_ms(row, extra, ts_ms)
+        submission_state = _order_submission_state(initial_status, status)
 
         if role == "entry":
             entry_order_count += 1
@@ -1109,10 +1285,10 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
                 _base_event(
                     "entry_submitted",
                     stage="execution",
-                    state="active" if _is_open_status(status) else "done",
+                    state=submission_state,
                     label="开仓订单提交",
-                    reason=_safe_text(first_defined(row.get("reason"), extra.get("reason"), status, "entry_submitted")),
-                    ts_ms=ts_ms,
+                    reason=_safe_text(first_defined(row.get("reason"), extra.get("reason"), initial_status, "entry_submitted")),
+                    ts_ms=submission_ts_ms,
                     symbol=row_symbol,
                     signal_id=row_signal_id,
                     trade_group_id=row_trade_group,
@@ -1123,8 +1299,7 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
                     price_kind="entry_limit" if limit_price > 0 else "not_a_fill",
                     price_label="开仓限价" if limit_price > 0 else "",
                     source="orders",
-                    details={"status": status, "quantity": quantity, "limit_price": limit_price, "price_policy": "limit_or_plan_not_actual_fill"},
-                    changes=status_changes,
+                    details={"status": initial_status, "current_status": status, "quantity": quantity, "limit_price": limit_price, "price_policy": "limit_or_plan_not_actual_fill"},
                 )
             )
         elif role in {"take_profit", "repair_tp"}:
@@ -1132,15 +1307,16 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
             protection_open_qty_by_role["take_profit"] += quantity if _is_open_status(status) else 0.0
             event_type = "take_profit_modified" if role == "repair_tp" or extra.get("old_tp") or extra.get("new_tp") else "take_profit_created"
             price_changes = _order_price_changes(row, extra, role, limit_price) if event_type.endswith("modified") else []
-            changes = price_changes + status_changes
+            event_ts_ms = ts_ms if event_type.endswith("modified") else submission_ts_ms
+            event_state = ("active" if _is_open_status(status) else "done") if event_type.endswith("modified") else submission_state
             events.append(
                 _base_event(
                     event_type,
                     stage="protection" if event_type.endswith("created") else "risk_adjustment",
-                    state="active" if _is_open_status(status) else "done",
+                    state=event_state,
                     label="止盈单" + ("修改" if event_type.endswith("modified") else "创建"),
-                    reason=_safe_text(first_defined(row.get("reason"), extra.get("reason"), status, event_type)),
-                    ts_ms=ts_ms,
+                    reason=_safe_text(first_defined(row.get("reason"), extra.get("reason"), initial_status, event_type)),
+                    ts_ms=event_ts_ms,
                     symbol=row_symbol,
                     signal_id=row_signal_id,
                     trade_group_id=row_trade_group,
@@ -1151,8 +1327,8 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
                     price_kind="take_profit_price" if limit_price > 0 else "not_a_fill",
                     price_label="止盈价" if limit_price > 0 else "",
                     source="orders",
-                    details={"status": status, "quantity": quantity, "tp_price": limit_price, **({"old_tp": extra.get("old_tp"), "new_tp": extra.get("new_tp")} if extra else {})},
-                    changes=changes,
+                    details={"status": initial_status, "current_status": status, "quantity": quantity, "tp_price": limit_price, **({"old_tp": extra.get("old_tp"), "new_tp": extra.get("new_tp")} if extra else {})},
+                    changes=price_changes,
                 )
             )
         elif role in {"stop_loss", "repair_sl"}:
@@ -1160,15 +1336,16 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
             protection_open_qty_by_role["stop_loss"] += quantity if _is_open_status(status) else 0.0
             event_type = "stop_loss_modified" if role == "repair_sl" or extra.get("old_sl") or extra.get("new_sl") else "stop_loss_created"
             price_changes = _order_price_changes(row, extra, role, limit_price) if event_type.endswith("modified") else []
-            changes = price_changes + status_changes
+            event_ts_ms = ts_ms if event_type.endswith("modified") else submission_ts_ms
+            event_state = ("active" if _is_open_status(status) else "done") if event_type.endswith("modified") else submission_state
             events.append(
                 _base_event(
                     event_type,
                     stage="protection" if event_type.endswith("created") else "risk_adjustment",
-                    state="active" if _is_open_status(status) else "done",
+                    state=event_state,
                     label="止损单" + ("修改" if event_type.endswith("modified") else "创建"),
-                    reason=_safe_text(first_defined(row.get("reason"), extra.get("reason"), status, event_type)),
-                    ts_ms=ts_ms,
+                    reason=_safe_text(first_defined(row.get("reason"), extra.get("reason"), initial_status, event_type)),
+                    ts_ms=event_ts_ms,
                     symbol=row_symbol,
                     signal_id=row_signal_id,
                     trade_group_id=row_trade_group,
@@ -1179,8 +1356,8 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
                     price_kind="stop_loss_price" if limit_price > 0 else "not_a_fill",
                     price_label="止损价" if limit_price > 0 else "",
                     source="orders",
-                    details={"status": status, "quantity": quantity, "sl_price": limit_price, **({"old_sl": extra.get("old_sl"), "new_sl": extra.get("new_sl")} if extra else {})},
-                    changes=changes,
+                    details={"status": initial_status, "current_status": status, "quantity": quantity, "sl_price": limit_price, **({"old_sl": extra.get("old_sl"), "new_sl": extra.get("new_sl")} if extra else {})},
+                    changes=price_changes,
                 )
             )
         else:
@@ -1188,10 +1365,10 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
                 _base_event(
                     "close_submitted",
                     stage="exit",
-                    state="active" if _is_open_status(status) else "done",
+                    state=submission_state,
                     label="平仓订单提交",
-                    reason=_safe_text(first_defined(row.get("reason"), extra.get("reason"), status, "close_submitted")),
-                    ts_ms=ts_ms,
+                    reason=_safe_text(first_defined(row.get("reason"), extra.get("reason"), initial_status, "close_submitted")),
+                    ts_ms=submission_ts_ms,
                     symbol=row_symbol,
                     signal_id=row_signal_id,
                     trade_group_id=row_trade_group,
@@ -1202,8 +1379,7 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
                     price_kind="close_limit" if limit_price > 0 else "not_a_fill",
                     price_label="平仓限价" if limit_price > 0 else "",
                     source="orders",
-                    details={"status": status, "quantity": quantity, "limit_price": limit_price},
-                    changes=status_changes,
+                    details={"status": initial_status, "current_status": status, "quantity": quantity, "limit_price": limit_price},
                 )
             )
 
@@ -1435,6 +1611,39 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
                         details={"requested_qty": quantity, "filled_qty": aggregate_qty},
                     )
                 )
+
+        if _is_canceled_status(status):
+            cancel_event_type, cancel_stage, cancel_state, cancel_label = _order_cancel_event_meta(role)
+            reference_price, reference_price_kind, reference_price_label = _order_reference_price(row, role)
+            events.append(
+                _base_event(
+                    cancel_event_type,
+                    stage=cancel_stage,
+                    state=cancel_state,
+                    label=cancel_label,
+                    reason=_order_transition_reason(row, extra, "order_canceled"),
+                    ts_ms=ts_ms,
+                    symbol=row_symbol,
+                    signal_id=row_signal_id,
+                    trade_group_id=row_trade_group,
+                    order_id=order_id,
+                    role=role,
+                    qty=quantity,
+                    price=reference_price,
+                    price_kind=reference_price_kind,
+                    price_label=reference_price_label,
+                    source="orders.status",
+                    details={
+                        "status": status,
+                        "initial_status": initial_status,
+                        "quantity": quantity,
+                        "filled_qty": filled_qty,
+                        "fill_price": fill_price,
+                        "transition_policy": "terminal_status_split_from_submission_event",
+                    },
+                    changes=status_changes,
+                )
+            )
 
     remaining_position_qty = max(0.0, entry_actual_qty - exit_actual_qty)
     excessive_protection_roles = {

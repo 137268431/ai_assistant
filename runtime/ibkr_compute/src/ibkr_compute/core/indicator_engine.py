@@ -55,7 +55,7 @@ DEFAULT_PARAMS = {
     "ibkr_signal_strategy_profile": "",
     "intraday_signal_validity_minutes": 15,
     "intraday_entry_window_start_time": "09:35",
-    "intraday_entry_window_end_time": "10:30",
+    "intraday_entry_window_end_time": "15:00",
     "intraday_min_rvol_20": 0.0,
     "intraday_min_atr_pct": 0.0,
     "intraday_max_atr_pct": 0.0,

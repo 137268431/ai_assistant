@@ -174,7 +174,7 @@ class Config:
         "intraday_harvest_min_tactical_shares": "1",
         "intraday_signal_validity_minutes": "15",
         "intraday_entry_window_start_time": "09:35",
-        "intraday_entry_window_end_time": "10:30",
+        "intraday_entry_window_end_time": "15:00",
         "entry_limit_mode": "passive_limit_dynamic",
         "entry_limit_atr_mult": "0.30",
         "entry_limit_floor_bps": "15",

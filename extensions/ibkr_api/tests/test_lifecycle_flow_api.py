@@ -24,6 +24,21 @@ class FakePocketBase:
         return [dict(row) for row in self.records.get(collection, [])]
 
 
+class StrictReversePocketBase(FakePocketBase):
+    def __init__(self, records=None):
+        super().__init__(records)
+        self.calls = []
+
+    def get_all_records(self, collection, **kwargs):
+        self.calls.append((collection, dict(kwargs)))
+        if collection == "ibkr_reverse_signals":
+            filter_text = str(kwargs.get("filter") or "")
+            for invalid_field in ("signal_id", "origin_signal_id", "trade_group_id", "order_id"):
+                if invalid_field in filter_text:
+                    raise RuntimeError(f"invalid reverse filter field: {invalid_field}")
+        return super().get_all_records(collection, **kwargs)
+
+
 def normalize_environment(value, default="live"):
     return str(value or default).strip().lower()
 
@@ -279,6 +294,73 @@ class LifecycleFlowApiTest(unittest.TestCase):
         warning_codes = {warning["code"] for warning in payload["warnings"]}
         self.assertNotIn("execution_fill_unmatched", warning_codes)
 
+    def test_reverse_source_uses_schema_safe_filter_and_context_match(self):
+        pb = StrictReversePocketBase(
+            {
+                "ibkr_reverse_signals": [
+                    {
+                        "id": "rev_match",
+                        "symbol": "AAPL",
+                        "environment": "live",
+                        "action_type": "adjust_sl",
+                        "status": "confirmed",
+                        "reason": "raise stop",
+                        "bar_time_ms": 2000,
+                        "extra": {
+                            "signal_id": "sig_reverse_child",
+                            "origin_signal_id": "sig_reverse_origin",
+                            "trade_group_id": "tg_reverse",
+                            "old_sl": 95,
+                            "new_sl": 96.5,
+                        },
+                    },
+                    {
+                        "id": "rev_other",
+                        "symbol": "AAPL",
+                        "environment": "live",
+                        "action_type": "adjust_tp",
+                        "status": "confirmed",
+                        "bar_time_ms": 2100,
+                        "extra": {
+                            "signal_id": "sig_other",
+                            "trade_group_id": "tg_other",
+                        },
+                    },
+                ]
+            }
+        )
+        payload, status_code = build_lifecycle_flow_response(
+            pb,
+            payload={
+                "environment": "live",
+                "date": "2026-04-28",
+                "symbol": "AAPL",
+                "signal_id": "sig_reverse_origin",
+                "trade_group_id": "tg_reverse",
+            },
+            normalize_environment=normalize_environment,
+            time_strings=time_strings,
+        )
+
+        self.assertEqual(status_code, 200)
+        reverse_filters = [
+            kwargs.get("filter") or ""
+            for collection, kwargs in pb.calls
+            if collection == "ibkr_reverse_signals"
+        ]
+        self.assertTrue(reverse_filters)
+        self.assertNotIn("signal_id", reverse_filters[0])
+        self.assertNotIn("origin_signal_id", reverse_filters[0])
+        self.assertNotIn("trade_group_id", reverse_filters[0])
+        self.assertNotIn("order_id", reverse_filters[0])
+        warning_codes = {warning["code"] for warning in payload["warnings"]}
+        self.assertNotIn("source_read_failed", warning_codes)
+        self.assertEqual(1, payload["source_summary"]["counts"]["reverse_rows"])
+        reverse_events = [event for event in payload["events"] if event["source"] == "ibkr_reverse_signals"]
+        self.assertEqual(1, len(reverse_events))
+        self.assertEqual("stop_loss_modified", reverse_events[0]["event_type"])
+        self.assertEqual("tg_reverse", reverse_events[0]["trade_group_id"])
+
     def test_order_details_do_not_double_count_position(self):
         payload, status_code = self.build(
             {
@@ -462,6 +544,76 @@ class LifecycleFlowApiTest(unittest.TestCase):
         self.assertEqual("terminal", endpoint["state"])
         self.assertEqual("生命周期结束", endpoint["label"])
         self.assertEqual("ended_by_exit_take_profit", endpoint["reason"])
+
+    def test_protection_creation_and_terminal_status_are_separate_events(self):
+        payload, status_code = self.build(
+            {
+                "orders": [
+                    {
+                        "symbol": "NOW",
+                        "signal_id": "sig_oco",
+                        "trade_group_id": "tg_oco",
+                        "order_id": "5001",
+                        "role": "entry",
+                        "status": "Filled",
+                        "quantity": 10,
+                        "filled_qty": 10,
+                        "fill_price": 93.76,
+                        "limit_price": 93.76,
+                        "bar_time_ms": 2000,
+                        "extra": {"created_bar_time_ms": 1000, "previous_status": "Submitted", "current_status": "Filled"},
+                    },
+                    {
+                        "symbol": "NOW",
+                        "signal_id": "sig_oco",
+                        "trade_group_id": "tg_oco",
+                        "order_id": "5002",
+                        "role": "take_profit",
+                        "status": "Canceled",
+                        "quantity": 10,
+                        "filled_qty": 0,
+                        "fill_price": 0,
+                        "tp_price": 99.37,
+                        "bar_time_ms": 3010,
+                        "extra": {"created_bar_time_ms": 1100, "previous_status": "Submitted", "current_status": "Canceled"},
+                    },
+                    {
+                        "symbol": "NOW",
+                        "signal_id": "sig_oco",
+                        "trade_group_id": "tg_oco",
+                        "order_id": "5003",
+                        "role": "stop_loss",
+                        "status": "Filled",
+                        "quantity": 10,
+                        "filled_qty": 10,
+                        "fill_price": 92.36,
+                        "sl_price": 92.36,
+                        "bar_time_ms": 3000,
+                        "extra": {"created_bar_time_ms": 1110, "previous_status": "Submitted", "current_status": "Filled"},
+                    },
+                ]
+            },
+            {"symbol": "NOW", "signal_id": "sig_oco", "trade_group_id": "tg_oco"},
+        )
+
+        self.assertEqual(status_code, 200)
+        created_tp = next(event for event in payload["events"] if event["event_type"] == "take_profit_created")
+        created_sl = next(event for event in payload["events"] if event["event_type"] == "stop_loss_created")
+        canceled_tp = next(event for event in payload["events"] if event["event_type"] == "take_profit_canceled")
+        stop_exit = next(event for event in payload["events"] if event["event_type"] == "exit_stop_loss")
+        endpoint = next(event for event in payload["events"] if event["event_type"] == "lifecycle_endpoint")
+
+        self.assertEqual(1100, created_tp["ts_ms"])
+        self.assertEqual(1110, created_sl["ts_ms"])
+        self.assertEqual("submitted", created_tp["details"]["status"])
+        self.assertEqual("submitted", created_sl["details"]["status"])
+        self.assertEqual([], created_tp.get("changes", []))
+        self.assertEqual([], created_sl.get("changes", []))
+        self.assertEqual(3000, stop_exit["ts_ms"])
+        self.assertEqual(92.36, stop_exit["price"])
+        self.assertEqual(3010, canceled_tp["ts_ms"])
+        self.assertEqual("状态 Submitted -> Canceled", canceled_tp["change_summary"])
+        self.assertEqual("ended_by_exit_stop_loss", endpoint["reason"])
 
     def test_edges_stay_within_trade_group_context(self):
         payload, status_code = self.build(

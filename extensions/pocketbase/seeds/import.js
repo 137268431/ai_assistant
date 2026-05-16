@@ -63,7 +63,7 @@ const configData = [
   cfg('intraday_vwap_pullback_long_require_trend_walk', 'false', 'false', 'VWAP 回踩多需 Trend Walk', '信号与反转', 222.695, 'intraday_sd_v1 可选过滤：开启后 vwap_trend_pullback_long 只接受 sd_regime=trend_walk_up，避免 breakout 初段假回踩'),
   cfg('intraday_include_legacy_signals', 'true', 'true', '日内策略包含 legacy SD', '信号与反转', 222.697, 'intraday_sd_v1 默认把 legacy SD 拆成独立 setup candidate，并与 SD squeeze / VWAP 回踩统一排序、去重、入场和出场'),
   cfg('intraday_entry_window_start_time', '09:35', '09:35', '日内策略开始时间', '信号与反转', 222.8, 'intraday_sd_v1 新 setup 的最早生成时间，ET；默认 09:35，避开第一根 5m 噪音'),
-  cfg('intraday_entry_window_end_time', '10:30', '10:30', '日内策略截止时间', '信号与反转', 222.9, 'intraday_sd_v1 新 setup 的最晚生成时间，ET；回测显示 10:30 后胜率明显下降，默认只做早盘动量窗口'),
+  cfg('intraday_entry_window_end_time', '15:00', '15:00', '日内策略截止时间', '信号与反转', 222.9, 'intraday_sd_v1 新 setup 的最晚生成时间，ET；默认 15:00，保留午后机会并避开收盘最后一小时执行风险'),
   cfg('orb_bars', '6', '6', 'ORB K线根数', '信号与反转', 223.0, '开盘区间高低点使用多少根 regular 5m K线；默认 6 根即前 30 分钟'),
   cfg('sd_squeeze_lookback', '120', '120', 'SD压缩回看根数', '信号与反转', 223.2, '计算 SD 通道宽度分位的回看 5m 根数，用于识别波动压缩'),
   cfg('sd_squeeze_rank_max', '0.25', '0.25', 'SD压缩分位阈值', '信号与反转', 223.4, 'SD 通道宽度分位低于该值时视为压缩；默认最低 25%'),

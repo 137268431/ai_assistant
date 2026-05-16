@@ -1029,14 +1029,14 @@ class SignalGenerator:
         return self._normalize_hhmm_text(self.params.get("intraday_entry_window_start_time"), "09:35")
 
     def _intraday_entry_window_end_time(self) -> str:
-        return self._normalize_hhmm_text(self.params.get("intraday_entry_window_end_time"), "10:30")
+        return self._normalize_hhmm_text(self.params.get("intraday_entry_window_end_time"), "15:00")
 
     def _intraday_entry_window_pass(self, snapshot: dict) -> bool:
         current = self._snapshot_hhmm_tuple(snapshot)
         if current is None:
             return True
         start = self._parse_hhmm_tuple(self._intraday_entry_window_start_time(), "09:35")
-        end = self._parse_hhmm_tuple(self._intraday_entry_window_end_time(), "10:30")
+        end = self._parse_hhmm_tuple(self._intraday_entry_window_end_time(), "15:00")
         return start <= current <= end
 
     @staticmethod

@@ -23,6 +23,7 @@ COMPUTE_DISPATCH_RETRYABLE_ERRORS = {"compute_busy"}
 COMPUTE_DISPATCH_RETRYABLE_STATUS_CODES = {503}
 COMPUTE_DISPATCH_TARGET_STATUSES = {"active", "candidate"}
 INDICATOR_5M_INTERVALS = {"5", "5m"}
+SIGNAL_DISPATCH_ENVIRONMENTS = {"live", "paper"}
 
 
 def _extract_compute_startup_preload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -301,6 +302,92 @@ def _load_indicator_coverage(
     return coverage
 
 
+def _load_signal_dispatch_coverage(
+    dispatch_5m: dict[str, Any],
+    *,
+    environment: str,
+    symbols: list[str],
+    bar_time_ms: int,
+) -> dict[str, Any]:
+    normalized_symbols = _normalize_symbols(symbols)
+    target_ms = _coerce_int(bar_time_ms)
+    coverage = {
+        "signal_dispatch_status": "unknown",
+        "signal_dispatch_bar_time_ms": target_ms,
+        "signal_dispatch_symbol_count": len(normalized_symbols),
+        "covered_signal_dispatch_symbols": [],
+        "covered_signal_dispatch_symbol_count": 0,
+        "missing_signal_dispatch_symbols": normalized_symbols,
+        "missing_signal_dispatch_symbol_count": len(normalized_symbols),
+    }
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    if runtime_environment not in SIGNAL_DISPATCH_ENVIRONMENTS or not normalized_symbols or target_ms <= 0:
+        coverage["signal_dispatch_status"] = "not_applicable"
+        coverage["missing_signal_dispatch_symbols"] = []
+        coverage["missing_signal_dispatch_symbol_count"] = 0
+        return coverage
+
+    latest_signal_ms = _coerce_int(dispatch_5m.get("latest_signal_dispatch_bar_time_ms"))
+    covered_symbols: set[str] = set()
+    if latest_signal_ms >= target_ms:
+        covered_symbols.update(_cursor_symbols(dispatch_5m, "latest_signal_dispatch_symbols"))
+
+    required = set(normalized_symbols)
+    covered = sorted(required & covered_symbols)
+    missing = sorted(required - covered_symbols)
+    coverage.update(
+        {
+            "signal_dispatch_status": "covered" if not missing else "missing",
+            "covered_signal_dispatch_symbols": covered,
+            "covered_signal_dispatch_symbol_count": len(covered),
+            "missing_signal_dispatch_symbols": missing,
+            "missing_signal_dispatch_symbol_count": len(missing),
+        }
+    )
+    return coverage
+
+
+def _build_signal_dispatch_success_metadata(
+    *,
+    environment: str,
+    required_symbols: list[str],
+    processed_symbols: list[str],
+    prior_covered_symbols: list[str],
+    bar_time_ms: int,
+) -> dict[str, Any]:
+    runtime_environment = str(environment or "live").strip().lower() or "live"
+    required = set(_normalize_symbols(required_symbols))
+    if runtime_environment not in SIGNAL_DISPATCH_ENVIRONMENTS or not required:
+        return {}
+    target_ms = _coerce_int(bar_time_ms)
+    if target_ms <= 0:
+        return {}
+
+    covered = required & (set(_normalize_symbols(prior_covered_symbols)) | set(_normalize_symbols(processed_symbols)))
+    missing = sorted(required - covered)
+    if missing:
+        return {
+            "signal_dispatch_status": "missing",
+            "signal_dispatch_bar_time_ms": target_ms,
+            "signal_dispatch_symbol_count": len(required),
+            "covered_signal_dispatch_symbols": sorted(covered),
+            "covered_signal_dispatch_symbol_count": len(covered),
+            "missing_signal_dispatch_symbols": missing,
+            "missing_signal_dispatch_symbol_count": len(missing),
+        }
+    return {
+        "latest_signal_dispatch_bar_time_ms": target_ms,
+        "latest_signal_dispatch_symbols": sorted(required),
+        "signal_dispatch_status": "covered",
+        "signal_dispatch_bar_time_ms": target_ms,
+        "signal_dispatch_symbol_count": len(required),
+        "covered_signal_dispatch_symbols": sorted(required),
+        "covered_signal_dispatch_symbol_count": len(required),
+        "missing_signal_dispatch_symbols": [],
+        "missing_signal_dispatch_symbol_count": 0,
+    }
+
+
 def _runtime_realtime_compute_status(status_payload: dict[str, Any]) -> dict[str, Any]:
     payload = status_payload if isinstance(status_payload, dict) else {}
     candidates: list[dict[str, Any]] = []
@@ -574,6 +661,13 @@ def build_compute_dispatch_runner(
                     "missing_indicator_symbols",
                     "missing_indicator_symbol_count",
                     "indicator_coverage_error",
+                    "signal_dispatch_status",
+                    "signal_dispatch_bar_time_ms",
+                    "signal_dispatch_symbol_count",
+                    "covered_signal_dispatch_symbols",
+                    "covered_signal_dispatch_symbol_count",
+                    "missing_signal_dispatch_symbols",
+                    "missing_signal_dispatch_symbol_count",
                 ):
                     if key in coverage:
                         metadata[key] = coverage[key]
@@ -587,6 +681,7 @@ def build_compute_dispatch_runner(
             compute_result: dict[str, Any] | None = None,
             coverage: dict[str, Any] | None = None,
             skip_reason: str = "",
+            extra: dict[str, Any] | None = None,
         ) -> dict[str, Any]:
             advanced_5m = dict(latest_5m)
             advanced_5m["latest_bar_time_ms"] = latest_dispatch_ms
@@ -607,7 +702,7 @@ def build_compute_dispatch_runner(
                 **(dispatch_cursor.get("intervals") or {}),
                 "5m": {
                     **advanced_5m,
-                    **_cursor_metadata(source=source, coverage=coverage, skip_reason=skip_reason),
+                    **_cursor_metadata(source=source, coverage=coverage, skip_reason=skip_reason, extra=extra),
                 },
             }
             payload = {"intervals": dispatch_intervals}
@@ -648,7 +743,17 @@ def build_compute_dispatch_runner(
                 symbols=symbols,
                 bar_time_ms=latest_dispatch_ms,
             )
-            if coverage_detail.get("indicator_coverage_status") == "covered":
+            signal_dispatch_detail = _load_signal_dispatch_coverage(
+                dispatch_5m,
+                environment=environment,
+                symbols=symbols,
+                bar_time_ms=latest_dispatch_ms,
+            )
+            coverage_detail.update(signal_dispatch_detail)
+            if (
+                coverage_detail.get("indicator_coverage_status") == "covered"
+                and coverage_detail.get("signal_dispatch_status") in {"covered", "not_applicable"}
+            ):
                 saved_dispatch_cursor = _save_advanced_dispatch_cursor(
                     source="ibkr_scheduler_indicator_coverage",
                     coverage=coverage_detail,
@@ -666,7 +771,10 @@ def build_compute_dispatch_runner(
                     ),
                     "dispatch_cursor": saved_dispatch_cursor,
                 }
-            compute_symbols = _normalize_symbols(coverage_detail.get("missing_indicator_symbols")) or symbols
+            compute_symbols = sorted(
+                set(_normalize_symbols(coverage_detail.get("missing_indicator_symbols")))
+                | set(_normalize_symbols(coverage_detail.get("missing_signal_dispatch_symbols")))
+            ) or symbols
             runtime_status_payload = _load_runtime_status_payload(compute_base_url, environment)
             wait_for_inflight, inflight_detail = _should_wait_for_inflight(runtime_status_payload)
             if compute_symbols and wait_for_inflight:
@@ -775,12 +883,30 @@ def build_compute_dispatch_runner(
 
         if deferred_busy_symbols:
             deferred_symbols = _normalize_symbols(deferred_busy_symbols)
+            required_signal_symbols = _normalize_symbols(symbols)
+            partial_signal_symbols = sorted(
+                set(_normalize_symbols(coverage_detail.get("covered_signal_dispatch_symbols")))
+                | set(_normalize_symbols(successful_symbols))
+            )
+            missing_partial_signal_symbols = sorted(set(required_signal_symbols) - set(partial_signal_symbols))
             partial_cursor = _save_partial_dispatch_cursor(
                 compute_result=aggregate_payload,
                 coverage=coverage_detail,
                 extra={
                     "latest_partial_dispatched_bar_time_ms": latest_dispatch_ms,
                     "latest_partial_dispatch_symbols": _normalize_symbols(successful_symbols),
+                    "latest_partial_signal_dispatch_bar_time_ms": latest_dispatch_ms,
+                    "latest_partial_signal_dispatch_symbols": partial_signal_symbols,
+                    "signal_dispatch_status": (
+                        "missing"
+                        if coverage_detail.get("signal_dispatch_status") != "not_applicable"
+                        and missing_partial_signal_symbols
+                        else coverage_detail.get("signal_dispatch_status", "unknown")
+                    ),
+                    "covered_signal_dispatch_symbols": partial_signal_symbols,
+                    "covered_signal_dispatch_symbol_count": len(partial_signal_symbols),
+                    "missing_signal_dispatch_symbols": missing_partial_signal_symbols,
+                    "missing_signal_dispatch_symbol_count": len(missing_partial_signal_symbols),
                     "deferred_compute_busy": True,
                     "deferred_busy_symbols": deferred_symbols,
                     "deferred_busy_symbol_count": len(deferred_symbols),
@@ -809,10 +935,18 @@ def build_compute_dispatch_runner(
                 "dispatch_cursor": partial_cursor,
             }
 
+        signal_dispatch_extra = _build_signal_dispatch_success_metadata(
+            environment=environment,
+            required_symbols=symbols,
+            processed_symbols=compute_symbols,
+            prior_covered_symbols=_normalize_symbols(coverage_detail.get("covered_signal_dispatch_symbols")),
+            bar_time_ms=latest_dispatch_ms,
+        )
         saved_dispatch_cursor = _save_advanced_dispatch_cursor(
             source="ibkr_scheduler",
             compute_result=aggregate_payload,
             coverage=coverage_detail,
+            extra=signal_dispatch_extra,
         )
         return {
             "ok": True,
