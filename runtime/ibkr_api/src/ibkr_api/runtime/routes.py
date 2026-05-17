@@ -4,6 +4,7 @@ from typing import Any
 
 from flask import Response, jsonify, request
 
+from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_api.system.service_state import canonicalize_topology
 
 
@@ -52,7 +53,20 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
 
     @app.route("/api/custom/ibkr/runtime/config", methods=["GET"])
     def custom_ibkr_runtime_config() -> Response:
-        environment = normalize_environment(request.args.get("environment"), "live")
+        requested_environment = normalize_environment(request.args.get("environment"), "live")
+        environment = requested_environment
+        runtime_payload: dict[str, Any] = {}
+        try:
+            runtime_result = fetch_runtime_status(requested_environment)
+            runtime_payload = as_dict(runtime_result.get("payload"))
+            if runtime_payload:
+                environment = normalize_environment(
+                    runtime_payload.get("broker_mode") or runtime_payload.get("environment") or requested_environment,
+                    requested_environment,
+                )
+        except Exception:
+            runtime_payload = {}
+        data_environment = resolve_data_environment(environment)
         scope = str(request.args.get("scope") or "").strip().lower() or "effective"
         rows = pb.get_runtime_config(scope="all", environment=environment)
         if scope != "all":
@@ -61,6 +75,13 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             {
                 "ok": True,
                 "environment": environment,
+                "requested_environment": requested_environment,
+                "broker_mode": environment,
+                "gateway_mode": str(runtime_payload.get("gateway_mode") or ""),
+                "data_environment": data_environment,
+                "market_data_environment": data_environment,
+                "shared_market_data": data_environment == "live",
+                "runtime": runtime_payload,
                 "scope": "all" if scope == "all" else "effective",
                 "items": serialize_config_rows(rows),
                 "source": "ibkr-api",
@@ -72,6 +93,7 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     @app.route("/api/custom/ibkr/healthz", methods=["GET"])
     def custom_ibkr_healthz() -> Response:
         environment = normalize_environment(request.args.get("environment"), "live")
+        data_environment = resolve_data_environment(environment)
         compute_result = fetch_compute_health(environment)
         backtest_result = fetch_backtest_health(environment)
         runtime_result = fetch_runtime_health(environment)
@@ -112,6 +134,10 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
                 "ok": ok,
                 "status": "running" if ok else ("degraded" if degraded else "offline"),
                 "environment": environment,
+                "broker_mode": environment,
+                "data_environment": data_environment,
+                "market_data_environment": data_environment,
+                "shared_market_data": data_environment == "live",
                 "requested_environment": environment,
                 "actual_runtime_environment": normalize_environment(runtime_payload.get("environment") or environment, environment),
                 "compute": compute_payload,
@@ -135,6 +161,7 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     @app.route("/api/custom/ibkr/statusz", methods=["GET"])
     def custom_ibkr_statusz() -> Response:
         environment = normalize_environment(request.args.get("environment"), "live")
+        data_environment = resolve_data_environment(environment)
         include_engines = parse_boolean(request.args.get("full"), False) or not parse_boolean(request.args.get("lite"), True)
         include_warmup_details = (
             parse_boolean(request.args.get("warmup"), False)
@@ -217,6 +244,11 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
                 "storage_health": storage_health,
                 "warmup_details_included": bool(include_warmup_details),
                 "requested_environment": environment,
+                "broker_mode": runtime_data.get("broker_mode") or actual_runtime_environment,
+                "gateway_mode": runtime_data.get("gateway_mode") or "",
+                "data_environment": runtime_data.get("data_environment") or data_environment,
+                "market_data_environment": runtime_data.get("market_data_environment") or data_environment,
+                "shared_market_data": bool(runtime_data.get("shared_market_data") or data_environment == "live"),
                 "actual_runtime_environment": actual_runtime_environment,
                 "runtime_environment_mismatch": actual_runtime_environment != environment,
                 "ok": ok,

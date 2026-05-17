@@ -35,6 +35,7 @@ from ibkr_api.signals.notifications import (
     sync_signal_status_notification,
 )
 from ibkr_api.signals.values import get_signal_extra
+from ibkr_compute.core.broker_mode import resolve_data_environment
 
 
 NormalizeEnvironment = Callable[[Any, str], str]
@@ -120,6 +121,17 @@ def _apply_signal_strength(prepared: dict[str, Any]) -> dict[str, Any]:
     return prepared
 
 
+def _apply_broker_metadata(prepared: dict[str, Any], broker_mode: str, data_environment: str) -> dict[str, Any]:
+    extra = get_signal_extra(prepared)
+    prepared["extra"] = {
+        **extra,
+        "broker_mode": broker_mode,
+        "data_environment": data_environment,
+        "shared_market_data": data_environment == "live",
+    }
+    return prepared
+
+
 def _update_signal_row(pb: Any, record: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
     record_id = to_text(record.get("id"))
     if not record_id:
@@ -191,6 +203,7 @@ def _handle_active_symbol_policy(
     *,
     prepared: dict[str, Any],
     environment: str,
+    broker_mode: str,
     manual_confirm_enabled: bool,
     escape_filter_string: EscapeFilterString,
     send_interactive: SendInteractive | None,
@@ -243,7 +256,7 @@ def _handle_active_symbol_policy(
 
         if active_status == "pending":
             changed_fields = changed_execution_fields(active, prepared)
-            order_trace_active = _active_signal_has_order_trace(pb, active, environment, escape_filter_string)
+            order_trace_active = _active_signal_has_order_trace(pb, active, broker_mode, escape_filter_string)
             if manual_confirm_enabled and changed_fields and not order_trace_active:
                 reconfirm_payload = build_confirmed_signal_reconfirm_payload(active, prepared, environment)
                 saved_row = _update_signal_row(pb, active, reconfirm_payload)
@@ -383,7 +396,7 @@ def _handle_active_symbol_policy(
     if active_status in BROKER_CONTROLLED_SIGNAL_STATUSES and not _active_signal_has_order_trace(
         pb,
         active,
-        environment,
+        broker_mode,
         escape_filter_string,
     ):
         reason = "stale_active_signal_without_order_trace"
@@ -406,7 +419,7 @@ def _handle_active_symbol_policy(
         return None, None, prepared
 
     if active_status in BROKER_CONTROLLED_SIGNAL_STATUSES:
-        reverse_payload = build_reverse_record_payload(active, prepared, environment)
+        reverse_payload = build_reverse_record_payload(active, prepared, broker_mode)
         reverse_record = _create_or_update_reverse_record(pb, reverse_payload, escape_filter_string)
         active_extra = get_signal_extra(active)
         reverse_id = to_text(reverse_record.get("id"))
@@ -458,12 +471,14 @@ def build_signal_ingest_response(
     signal_chat_id_fn: SignalChatId | None = None,
     console_base_url: str = "",
 ) -> tuple[dict[str, Any], int]:
-    environment = normalize_environment((payload or {}).get("environment"), "live")
+    broker_mode = normalize_environment((payload or {}).get("environment"), "live")
+    environment = resolve_data_environment(broker_mode)
     prepared, error = build_signal_record_payload(payload or {}, environment)
     if not prepared:
         return {"ok": False, "error": error or "invalid_signal_payload"}, 400
+    prepared = _apply_broker_metadata(prepared, broker_mode, environment)
     prepared = _apply_signal_strength(prepared)
-    manual_confirm_enabled = _manual_confirm_enabled(config_value, environment)
+    manual_confirm_enabled = _manual_confirm_enabled(config_value, broker_mode)
 
     try:
         existing = pb.get_first_record(
@@ -502,11 +517,12 @@ def build_signal_ingest_response(
                 pb,
                 prepared=prepared,
                 environment=environment,
+                broker_mode=broker_mode,
                 manual_confirm_enabled=manual_confirm_enabled,
                 escape_filter_string=escape_filter_string,
                 send_interactive=send_interactive,
                 update_interactive=update_interactive,
-                signal_chat_id=_signal_chat_id(signal_chat_id_fn, environment),
+                signal_chat_id=_signal_chat_id(signal_chat_id_fn, broker_mode),
                 console_base_url=console_base_url,
             )
             if policy_response is not None and policy_status is not None:
@@ -524,7 +540,7 @@ def build_signal_ingest_response(
                 previous_status=lifecycle["previous_status"],
                 send_interactive=send_interactive,
                 update_interactive=update_interactive,
-                signal_chat_id=_signal_chat_id(signal_chat_id_fn, environment),
+                signal_chat_id=_signal_chat_id(signal_chat_id_fn, broker_mode),
                 console_base_url=console_base_url,
             )
             extra_patch = notify_result.get("extra_patch") if isinstance(notify_result, dict) else None
@@ -539,6 +555,8 @@ def build_signal_ingest_response(
                 "id": to_text(saved_row.get("id")),
                 "action": action,
                 "status": to_text(saved_row.get("status") or prepared["status"]),
+                "broker_mode": broker_mode,
+                "data_environment": environment,
             },
             200,
         )
@@ -560,7 +578,8 @@ def build_signals_ingest_response(
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
     items = request_payload.get("items") if isinstance(request_payload.get("items"), list) else []
-    default_environment = normalize_environment(request_payload.get("environment"), "live")
+    default_broker_mode = normalize_environment(request_payload.get("environment"), "live")
+    default_environment = resolve_data_environment(default_broker_mode)
     if not items:
         return {"ok": False, "error": "Empty signals array"}, 400
 
@@ -571,13 +590,15 @@ def build_signals_ingest_response(
     errors = 0
     for item in items:
         try:
-            environment = normalize_environment((item or {}).get("environment"), default_environment)
+            broker_mode = normalize_environment((item or {}).get("environment"), default_broker_mode)
+            environment = resolve_data_environment(broker_mode)
             prepared, error = build_signal_record_payload(item or {}, environment)
             if not prepared:
                 errors += 1
                 continue
+            prepared = _apply_broker_metadata(prepared, broker_mode, environment)
             prepared = _apply_signal_strength(prepared)
-            manual_confirm_enabled = _manual_confirm_enabled(config_value, environment)
+            manual_confirm_enabled = _manual_confirm_enabled(config_value, broker_mode)
             existing = pb.get_first_record(
                 "ibkr_signals",
                 filter=(
@@ -604,11 +625,12 @@ def build_signals_ingest_response(
                     pb,
                     prepared=prepared,
                     environment=environment,
+                    broker_mode=broker_mode,
                     manual_confirm_enabled=manual_confirm_enabled,
                     escape_filter_string=escape_filter_string,
                     send_interactive=send_interactive,
                     update_interactive=update_interactive,
-                    signal_chat_id=_signal_chat_id(signal_chat_id_fn, environment),
+                    signal_chat_id=_signal_chat_id(signal_chat_id_fn, broker_mode),
                     console_base_url=console_base_url,
                 )
                 if policy_response is not None:
@@ -638,7 +660,7 @@ def build_signals_ingest_response(
                     previous_status=lifecycle["previous_status"],
                     send_interactive=send_interactive,
                     update_interactive=update_interactive,
-                    signal_chat_id=_signal_chat_id(signal_chat_id_fn, environment),
+                    signal_chat_id=_signal_chat_id(signal_chat_id_fn, broker_mode),
                     console_base_url=console_base_url,
                 )
                 extra_patch = notify_result.get("extra_patch") if isinstance(notify_result, dict) else None
@@ -658,6 +680,8 @@ def build_signals_ingest_response(
             "duplicates": duplicates,
             "errors": errors,
             "target": "ibkr_signals",
+            "broker_mode": default_broker_mode,
+            "data_environment": default_environment,
         },
         200,
     )

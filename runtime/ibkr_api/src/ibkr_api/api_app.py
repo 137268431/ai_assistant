@@ -154,6 +154,7 @@ from ibkr_api.system.summary_support import build_system_summary_payload as _bui
 from ibkr_api.tradingview.ingest import upsert_tv_indicator as _upsert_tv_indicator_support, upsert_tv_signal as _upsert_tv_signal_support
 from ibkr_api.tradingview.runtime_adapters import build_upsert_tv_indicator, build_upsert_tv_signal
 from ibkr_compute.api.service_topology import build_service_topology
+from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_scheduler.cron_registry import build_cron_payload
 from ibkr_compute.core.config import Config
 from ibkr_compute.integrations.pb_client import PBClient
@@ -370,6 +371,7 @@ def _count_main_order_rows(rows: list[dict[str, Any]]) -> int:
 
 def _load_today_counts(environment: str, market_date: str) -> dict[str, Any]:
     runtime_environment = _normalize_environment(environment, "live")
+    data_environment = resolve_data_environment(runtime_environment)
     date_token = str(market_date or _time_strings()["date"]).strip() or _time_strings()["date"]
     try:
         next_date = (datetime.strptime(date_token, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -377,21 +379,22 @@ def _load_today_counts(environment: str, market_date: str) -> dict[str, Any]:
         date_token = _time_strings()["date"]
         next_date = (datetime.strptime(date_token, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
     env = _escape_filter_string(runtime_environment)
+    data_env = _escape_filter_string(data_environment)
     start_us = _escape_filter_string(f"{date_token} 00:00:00")
     end_us = _escape_filter_string(f"{next_date} 00:00:00")
     date_filter = _escape_filter_string(date_token)
     specs = {
         "ibkr_bars": (
             "ibkr_bars",
-            f'environment = "{env}" && interval = "5m" && us_time >= "{start_us}" && us_time < "{end_us}"',
+            f'environment = "{data_env}" && interval = "5m" && us_time >= "{start_us}" && us_time < "{end_us}"',
         ),
         "ibkr_indicators": (
             "ibkr_indicators",
-            f'environment = "{env}" && interval = "5" && us_time >= "{start_us}" && us_time < "{end_us}"',
+            f'environment = "{data_env}" && interval = "5" && us_time >= "{start_us}" && us_time < "{end_us}"',
         ),
         "ibkr_signals": (
             "ibkr_signals",
-            f'environment = "{env}" && us_time >= "{start_us}" && us_time < "{end_us}"',
+            f'environment = "{data_env}" && us_time >= "{start_us}" && us_time < "{end_us}"',
         ),
         "orders": (
             "orders",
@@ -403,14 +406,15 @@ def _load_today_counts(environment: str, market_date: str) -> dict[str, Any]:
         ),
         "ibkr_targets": (
             "ibkr_targets",
-            f'environment = "{env}" && date = "{date_filter}"',
+            f'environment = "{data_env}" && date = "{date_filter}"',
         ),
     }
     counts: dict[str, Any] = {}
     errors: dict[str, str] = {}
     for key, (collection, filter_expr) in specs.items():
         try:
-            sqlite_count = _sqlite_today_market_count(collection, runtime_environment, date_token)
+            count_environment = data_environment if key in {"ibkr_bars", "ibkr_indicators", "ibkr_signals", "ibkr_targets"} else runtime_environment
+            sqlite_count = _sqlite_today_market_count(collection, count_environment, date_token)
             counts[key] = sqlite_count if sqlite_count is not None else _pb_count_records(collection, filter_expr)
         except Exception as exc:
             counts[key] = 0

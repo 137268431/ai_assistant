@@ -94,9 +94,15 @@ class SignalProcessor:
         return True, "ok"
 
     def _is_trading_enabled(self) -> bool:
-        return self.config.get_bool_for_environment(
+        trading_enabled = self.config.get_bool_for_environment(
             "ibkr_trading_enabled", self.environment, True
         )
+        if str(self.environment or "").strip().lower() != "live":
+            return trading_enabled
+        live_trading_enabled = self.config.get_bool_for_environment(
+            "ibkr_live_trading_enabled", self.environment, True
+        )
+        return bool(trading_enabled and live_trading_enabled)
 
     def _trade_readiness_status(self) -> Tuple[bool, str]:
         if not callable(self.readiness_provider):
@@ -327,6 +333,9 @@ class SignalProcessor:
                 for symbol, row in self._cooldowns.items()
             },
             "ibkr_trading_enabled": self._is_trading_enabled(),
+            "ibkr_live_trading_enabled": self.config.get_bool_for_environment(
+                "ibkr_live_trading_enabled", self.environment, True
+            ),
             "trading_gate_open": trade_ready,
             "trading_gate_reason": trade_ready_reason,
             "target_direction_alignment_required": self._target_direction_alignment_enabled(),

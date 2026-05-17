@@ -4,6 +4,7 @@ import threading
 import traceback
 
 from ibkr_compute.api.shared.service_status import get_service_status_snapshot
+from ibkr_compute.core.broker_mode import normalize_runtime_environment
 
 
 def _api_app():
@@ -161,17 +162,20 @@ def get_ibkr_service():
 
 def _normalize_runtime_environment_name(value, default: str = "live") -> str:
     api_app = _api_app()
-    normalized = str(value or "").strip().lower() or default
+    normalized = normalize_runtime_environment(value, default)
     if normalized in api_app.SUPPORTED_COMPUTE_ENVIRONMENTS:
         return normalized
-    fallback = str(default or "live").strip().lower() or "live"
+    fallback = normalize_runtime_environment(default, "live")
     return fallback if fallback in api_app.SUPPORTED_COMPUTE_ENVIRONMENTS else "live"
 
 
 def _ibkr_service_environment(service) -> str:
     try:
         status_payload = get_service_status_snapshot(service, {"environment": "live"})
-        return _normalize_runtime_environment_name(status_payload.get("environment"), "live")
+        return _normalize_runtime_environment_name(
+            status_payload.get("broker_mode") or status_payload.get("environment"),
+            "live",
+        )
     except Exception:
         return "live"
 

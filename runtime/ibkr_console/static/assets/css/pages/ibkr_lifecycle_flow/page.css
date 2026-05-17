@@ -180,6 +180,15 @@ body {
   box-shadow: 0 0 0 3px rgba(79, 209, 197, 0.09);
 }
 
+.readonly-mode-field {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 0;
+}
+
 .advanced-filter {
   grid-column: span 2;
   min-height: 36px;

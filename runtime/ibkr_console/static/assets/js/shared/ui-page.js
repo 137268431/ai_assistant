@@ -199,9 +199,22 @@ function buildPageContextMetaItems(items = [], options = {}) {
   const pageAllowGlobal = typeof window !== 'undefined' ? window.__ibkrPageContextAllowGlobal : false;
   const allowGlobal = Boolean(options.allowGlobal ?? pageAllowGlobal);
   const environment = resolvePageContextEnvironment(allowGlobal);
+  const brokerContext = !allowGlobal && typeof getBrokerModeContext === 'function' ? getBrokerModeContext() : {};
+  const brokerMode = brokerContext.broker_mode || environment;
+  const dataEnvironment = brokerContext.data_environment || 'live';
   const tradingDate = resolvePageContextTradingDate(items);
+  const baseItems = allowGlobal
+    ? [{ label: '环境', value: getEnvironmentLabel(environment, true), tone: environment }]
+    : [
+        { label: 'Broker', value: getEnvironmentLabel(brokerMode), tone: brokerMode },
+        {
+          label: '数据',
+          value: dataEnvironment === 'live' ? 'Shared Data' : getEnvironmentLabel(dataEnvironment),
+          tone: dataEnvironment === 'live' ? 'shared' : dataEnvironment,
+        },
+      ];
   return [
-    { label: '环境', value: getEnvironmentLabel(environment, allowGlobal), tone: environment },
+    ...baseItems,
     { label: '交易日', value: tradingDate || '--' },
   ];
 }
@@ -221,6 +234,7 @@ function renderPageContextMeta(items = [], options = {}) {
 }
 
 function setPageContextMeta(items = []) {
+  window.__ibkrPageContextSourceMetaItems = Array.isArray(items) ? items : [];
   const normalized = buildPageContextMetaItems(items);
   window.__ibkrPageContextMetaItems = normalized;
   const html = renderPageContextMeta(normalized);
@@ -511,6 +525,7 @@ function renderPageContextBar(title, options = {}) {
   const metaItems = Array.isArray(options.metaItems)
     ? options.metaItems
     : (Array.isArray(window.__ibkrPageContextMetaItems) ? window.__ibkrPageContextMetaItems : []);
+  window.__ibkrPageContextSourceMetaItems = metaItems;
   const normalizedMetaItems = buildPageContextMetaItems(metaItems, { allowGlobal });
   window.__ibkrPageContextMetaItems = normalizedMetaItems;
   const metaHtml = renderPageContextMeta(normalizedMetaItems, { allowGlobal });
@@ -526,6 +541,7 @@ function renderPageContextBar(title, options = {}) {
         <div class="page-context-title">
           ${safeTitle ? `<span class="page-context-heading">${safeTitle}</span>` : ''}
           ${renderEnvironmentBadge({ allowGlobal })}
+          ${allowGlobal ? '' : renderSharedDataBadge()}
           ${safeDescription ? `<span class="page-context-description">${safeDescription}</span>` : ''}
         </div>
         ${safeSubtitle ? `<div class="page-context-subtitle">${safeSubtitle}</div>` : ''}
@@ -534,7 +550,7 @@ function renderPageContextBar(title, options = {}) {
       <div class="page-context-tools">
         ${actionsHtml ? `<div class="page-context-actions">${actionsHtml}</div>` : ''}
         <div class="page-context-refresh-time" data-page-refresh-time>${escapePageUiText(refreshText)}</div>
-        ${renderEnvironmentSwitcher({ allowGlobal })}
+        ${allowGlobal ? renderEnvironmentSwitcher({ allowGlobal }) : ''}
       </div>
     </div>
   `;

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ibkr_compute.core.broker_mode import resolve_data_environment
+
 
 WATCHLIST_SYMBOL_ROLE_TRADE = "trade"
 WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR = "market_monitor"
@@ -10,9 +12,9 @@ VALID_WATCHLIST_SYMBOL_ROLES = {
 
 
 def build_bar_environment_filter(environment: str, include_legacy_empty: bool = False) -> str:
-    runtime_environment = str(environment or "").strip().lower() or "live"
-    clauses = [f'environment = "{runtime_environment}"']
-    if include_legacy_empty and runtime_environment == "live":
+    data_environment = resolve_data_environment(environment)
+    clauses = [f'environment = "{data_environment}"']
+    if include_legacy_empty and data_environment == "live":
         clauses.append('environment = ""')
     return f"({' || '.join(clauses)})" if len(clauses) > 1 else clauses[0]
 
@@ -62,5 +64,9 @@ def build_symbol_filter(symbols) -> str:
 
 def normalize_bar_environment(bar: dict, environment: str) -> dict:
     payload = dict(bar)
-    payload["environment"] = str(environment or "live").strip().lower() or "live"
+    requested_environment = str(environment or "live").strip().lower() or "live"
+    data_environment = resolve_data_environment(requested_environment)
+    payload["environment"] = requested_environment
+    if data_environment != requested_environment:
+        payload["data_environment"] = data_environment
     return payload

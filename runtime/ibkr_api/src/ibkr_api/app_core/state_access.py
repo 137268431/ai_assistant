@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from ibkr_compute.core.broker_mode import resolve_data_environment
+
 
 def get_state_payload(pb, state_key: str, environment: str, *, as_dict, normalize_environment, date: str = "global") -> dict[str, Any]:
     runtime_environment = normalize_environment(environment)
@@ -27,7 +29,7 @@ def load_daily_scan_state(
     get_state_payload_fn,
     daily_scan_state_key: str,
 ) -> dict[str, Any]:
-    payload = get_state_payload_fn(daily_scan_state_key, environment, date="global")
+    payload = get_state_payload_fn(daily_scan_state_key, resolve_data_environment(environment), date="global")
     data = as_dict(payload.get("data"))
     data["result"] = as_dict(data.get("result"))
     return data
@@ -66,7 +68,7 @@ def count_active_today_targets(pb, environment: str, market_date: str, *, normal
     normalized_market_date = str(market_date or "").strip()
     if not normalized_market_date:
         return 0
-    runtime_environment = normalize_environment(environment)
+    runtime_environment = resolve_data_environment(normalize_environment(environment))
     target_filter = (
         f'date = "{escape_filter_string(normalized_market_date)}" && '
         f'environment = "{escape_filter_string(runtime_environment)}" && '

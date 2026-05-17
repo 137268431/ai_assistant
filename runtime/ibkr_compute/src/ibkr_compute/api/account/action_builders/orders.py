@@ -120,6 +120,22 @@ def _build_ibkr_place_order_response(service, payload: dict) -> tuple[dict, int]
     runtime_environment = api_app._ibkr_service_environment(service)
     if runtime_environment == "backtest":
         return {"ok": False, "error": "Backtest environment does not support live order placement"}, 400
+    trading_enabled = _config_bool(getattr(service, "config", None), "ibkr_trading_enabled", runtime_environment, True)
+    live_trading_enabled = _config_bool(
+        getattr(service, "config", None),
+        "ibkr_live_trading_enabled",
+        runtime_environment,
+        True,
+    )
+    if not trading_enabled or (runtime_environment == "live" and not live_trading_enabled):
+        return {
+            "ok": False,
+            "error": "trading_disabled",
+            "environment": runtime_environment,
+            "broker_mode": runtime_environment,
+            "ibkr_trading_enabled": bool(trading_enabled),
+            "ibkr_live_trading_enabled": bool(live_trading_enabled),
+        }, 403
 
     service_status = get_service_status_snapshot(service)
     session_authenticated = bool((service_status.get("session") or {}).get("authenticated"))

@@ -6,6 +6,7 @@ from ibkr_api.orders.group_common import load_order_action_context
 from ibkr_api.orders.notifications import build_order_status_card
 from ibkr_api.signals.notifications import build_signal_status_card
 from ibkr_api.signals.values import load_signal_record, signal_status
+from ibkr_compute.core.broker_mode import resolve_data_environment
 
 
 def callback_toast(toast_type: str, content: str, *, card: Any = None) -> dict[str, Any]:
@@ -147,7 +148,12 @@ def dispatch_feishu_signal_callback(
     else:
         return callback_toast_fn("error", f"未知操作: {action}"), 400
 
-    latest_record = load_signal_record(pb, signal_id, runtime_environment, escape_filter=escape_filter_string)
+    latest_record = load_signal_record(
+        pb,
+        signal_id,
+        resolve_data_environment(runtime_environment),
+        escape_filter=escape_filter_string,
+    )
     latest_record = latest_record if isinstance(latest_record, dict) else None
     message = _signal_callback_message(action, payload, latest_record)
     card = _signal_callback_card(latest_record, message=message, console_base_url=console_base_url)

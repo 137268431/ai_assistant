@@ -57,6 +57,7 @@ const ENVIRONMENT_LABELS = {
   backtest: 'BACKTEST',
   global: 'GLOBAL'
 };
+const SHARED_DATA_LABEL = 'Shared Data';
 
 function escapeQueryValue(value) {
   return String(value ?? '');
@@ -98,14 +99,23 @@ function setStoredEnvironment(environment) {
 
 function getCurrentRuntimeEnvironment() {
   const fromUrl = new URLSearchParams(window.location.search).get('environment') || '';
-  const runtimeEnvironment = normalizeRuntimeEnvironment(fromUrl || getStoredEnvironment() || 'live', 'live');
+  const contextEnvironment = (
+    window.__ibkrBrokerModeContext?.broker_mode
+    || RUNTIME_CONFIG.BROKER_MODE
+    || RUNTIME_CONFIG.IBKR_ENVIRONMENT
+    || ''
+  );
+  const runtimeEnvironment = normalizeRuntimeEnvironment(
+    contextEnvironment || (normalizeRuntimeEnvironment(fromUrl, '') === 'backtest' ? 'backtest' : 'live'),
+    'live'
+  );
   setStoredEnvironment(runtimeEnvironment);
   return runtimeEnvironment;
 }
 
 function getCurrentConfigEnvironment() {
   const fromUrl = new URLSearchParams(window.location.search).get('environment') || '';
-  const configEnvironment = normalizeConfigEnvironment(fromUrl || getStoredEnvironment() || 'global', 'global');
+  const configEnvironment = normalizeConfigEnvironment(fromUrl || 'global', 'global');
   setStoredEnvironment(configEnvironment);
   return configEnvironment;
 }
@@ -115,6 +125,82 @@ function getEnvironmentLabel(environment, allowGlobal = false) {
     ? normalizeConfigEnvironment(environment, 'global')
     : normalizeRuntimeEnvironment(environment, 'live');
   return ENVIRONMENT_LABELS[normalized] || normalized.toUpperCase();
+}
+
+function getBrokerModeContext() {
+  const context = (typeof window !== 'undefined' && window.__ibkrBrokerModeContext && typeof window.__ibkrBrokerModeContext === 'object')
+    ? window.__ibkrBrokerModeContext
+    : {};
+  const brokerMode = normalizeRuntimeEnvironment(
+    context.broker_mode || context.environment || getCurrentRuntimeEnvironment(),
+    'live'
+  );
+  const dataEnvironment = normalizeRuntimeEnvironment(
+    context.data_environment || context.market_data_environment || 'live',
+    'live'
+  );
+  return {
+    ...context,
+    broker_mode: brokerMode,
+    environment: brokerMode,
+    data_environment: dataEnvironment,
+    market_data_environment: dataEnvironment,
+    shared_market_data: context.shared_market_data !== false && dataEnvironment === 'live',
+  };
+}
+
+function setBrokerModeContext(payload = {}) {
+  const source = payload && typeof payload === 'object' ? payload : {};
+  const brokerMode = normalizeRuntimeEnvironment(
+    source.broker_mode || source.actual_runtime_environment || source.environment || getCurrentRuntimeEnvironment(),
+    'live'
+  );
+  const dataEnvironment = normalizeRuntimeEnvironment(
+    source.data_environment || source.market_data_environment || 'live',
+    'live'
+  );
+  window.__ibkrBrokerModeContext = {
+    ...(window.__ibkrBrokerModeContext || {}),
+    ...source,
+    broker_mode: brokerMode,
+    environment: brokerMode,
+    data_environment: dataEnvironment,
+    market_data_environment: dataEnvironment,
+    shared_market_data: source.shared_market_data !== false && dataEnvironment === 'live',
+  };
+  setStoredEnvironment(brokerMode);
+  document.querySelectorAll('[data-broker-mode-badge]').forEach((node) => {
+    node.className = `env-badge broker-badge broker-${brokerMode} env-${brokerMode}`;
+    node.textContent = `Broker ${getEnvironmentLabel(brokerMode)}`;
+  });
+  document.querySelectorAll('[data-shared-data-badge]').forEach((node) => {
+    node.className = `env-badge data-badge data-${dataEnvironment} env-${dataEnvironment}`;
+    node.textContent = dataEnvironment === 'live' ? SHARED_DATA_LABEL : `Data ${getEnvironmentLabel(dataEnvironment)}`;
+  });
+  document.querySelectorAll('[data-page-context-meta]').forEach((node) => {
+    if (typeof setPageContextMeta === 'function' && Array.isArray(window.__ibkrPageContextSourceMetaItems)) {
+      setPageContextMeta(window.__ibkrPageContextSourceMetaItems);
+    }
+  });
+  return window.__ibkrBrokerModeContext;
+}
+
+function syncBrokerModeFromPayload(payload = {}) {
+  if (!payload || typeof payload !== 'object') return getBrokerModeContext();
+  return setBrokerModeContext(payload);
+}
+
+function renderBrokerModeBadge() {
+  const context = getBrokerModeContext();
+  return `<span class="env-badge broker-badge broker-${context.broker_mode} env-${context.broker_mode}" data-broker-mode-badge>Broker ${getEnvironmentLabel(context.broker_mode)}</span>`;
+}
+
+function renderSharedDataBadge() {
+  const context = getBrokerModeContext();
+  const label = context.data_environment === 'live'
+    ? SHARED_DATA_LABEL
+    : `Data ${getEnvironmentLabel(context.data_environment)}`;
+  return `<span class="env-badge data-badge data-${context.data_environment} env-${context.data_environment}" data-shared-data-badge>${label}</span>`;
 }
 
 function getCurrentEtDateString(value = new Date()) {
@@ -170,6 +256,9 @@ function buildPageUrl(path, params = {}, options = {}) {
 
 function renderEnvironmentSwitcher(options = {}) {
   const allowGlobal = Boolean(options.allowGlobal);
+  if (!allowGlobal) {
+    return renderBrokerModeBadge();
+  }
   const selected = allowGlobal ? getCurrentConfigEnvironment() : getCurrentRuntimeEnvironment();
   const environments = allowGlobal ? CONFIG_ENVIRONMENTS : RUNTIME_ENVIRONMENTS;
 
@@ -187,6 +276,9 @@ function renderEnvironmentSwitcher(options = {}) {
 
 function renderEnvironmentBadge(options = {}) {
   const allowGlobal = Boolean(options.allowGlobal);
+  if (!allowGlobal) {
+    return renderBrokerModeBadge();
+  }
   const environment = allowGlobal ? getCurrentConfigEnvironment() : getCurrentRuntimeEnvironment();
   return `<span class="env-badge env-${environment}">${getEnvironmentLabel(environment, allowGlobal)}</span>`;
 }
@@ -345,6 +437,32 @@ async function fetchWithRetry(url, options = {}, retryOptions = {}) {
   }
 
   throw lastError || new Error('Request failed');
+}
+
+async function refreshBrokerModeContext() {
+  if (typeof window === 'undefined') return getBrokerModeContext();
+  try {
+    const headers = {};
+    const token = typeof getToken === 'function' ? getToken() : '';
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const response = await fetchWithRetry(
+      `${BASE_URL}/api/custom/ibkr/runtime/config?environment=live`,
+      { method: 'GET', headers },
+      { attempts: 1 }
+    );
+    if (!response.ok) return getBrokerModeContext();
+    const payload = await response.json();
+    return syncBrokerModeFromPayload(payload);
+  } catch (_) {
+    return getBrokerModeContext();
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.refreshBrokerModeContext = refreshBrokerModeContext;
+  window.setTimeout(() => {
+    refreshBrokerModeContext();
+  }, 50);
 }
 
 // ── API 请求封装 ──

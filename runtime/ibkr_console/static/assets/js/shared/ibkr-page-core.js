@@ -158,6 +158,9 @@ async function requestIbkrPageJson(path, {
     if (!response.ok) {
         throw new Error(data.message || data.error || `Request failed (${response.status})`);
     }
+    if (typeof syncBrokerModeFromPayload === 'function') {
+        syncBrokerModeFromPayload(data);
+    }
     return data;
 }
 

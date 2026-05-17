@@ -589,7 +589,7 @@ def _build_open_report_card(
     return {
         "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"tag": "plain_text", "content": f"IBKR 09:30 开盘交易摘要 · {environment.upper()}"},
+            "title": {"tag": "plain_text", "content": f"IBKR 09:30 开盘交易摘要 · Broker {environment.upper()}"},
             "template": _report_template(level, targets_payload),
         },
         "elements": elements,

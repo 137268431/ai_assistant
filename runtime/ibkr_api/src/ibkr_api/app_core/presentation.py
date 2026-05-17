@@ -22,7 +22,10 @@ def time_strings(*, now_ts: float | None, et_tz, cn_tz) -> dict[str, str]:
 
 def environment_tag(environment: str, *, normalize_environment, environment_labels: dict[str, str]) -> str:
     runtime_environment = normalize_environment(environment, "live")
-    return f"[{environment_labels.get(runtime_environment, runtime_environment.upper())}]"
+    label = environment_labels.get(runtime_environment, runtime_environment.upper())
+    if runtime_environment in {"live", "paper"}:
+        return f"[Broker {label}]"
+    return f"[{label}]"
 
 
 def label_title_with_environment(title: Any, environment: str, *, environment_tag_fn) -> str:

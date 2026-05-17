@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_compute.core.timeline_builder import build_runtime_timeline
 from ibkr_compute.market.bar_freshness import BarFreshnessPlanner
 from ibkr_compute.market.timeframe_utils import interval_to_chart_tf, normalize_interval
@@ -317,6 +318,7 @@ def build_chart_timeline_payload_from_source(
 ) -> dict:
     api_app = _api_app()
     runtime_environment = str(environment or "live").strip().lower() or "live"
+    data_environment = resolve_data_environment(runtime_environment)
     normalized_symbol = str(symbol or "").strip().upper()
     normalized_interval = normalize_interval(interval)
     chart_tf = interval_to_chart_tf(normalized_interval)
@@ -334,6 +336,9 @@ def build_chart_timeline_payload_from_source(
             "trace_timeline": [],
             "meta": {
                 "environment": runtime_environment,
+                "broker_mode": runtime_environment,
+                "data_environment": data_environment,
+                "shared_market_data": data_environment == "live",
                 "symbol": normalized_symbol,
                 "interval": chart_tf,
                 "start_ms": int(start_ms or 0),
@@ -370,6 +375,9 @@ def build_chart_timeline_payload_from_source(
     bars = [
         {
             "environment": runtime_environment,
+            "broker_mode": runtime_environment,
+            "data_environment": data_environment,
+            "shared_market_data": data_environment == "live",
             "symbol": normalized_symbol,
             "interval": chart_tf,
             "exchange": str(row.get("exchange", "") or "").upper(),
@@ -463,6 +471,7 @@ def build_chart_timeline_payload(
 ) -> dict:
     api_app = _api_app()
     runtime_environment = str(environment or "live").strip().lower() or "live"
+    data_environment = resolve_data_environment(runtime_environment)
     normalized_symbol = str(symbol or "").strip().upper()
     normalized_interval = normalize_interval(interval)
     normalized_preview_bar = _normalize_preview_bar(preview_bar, normalized_symbol, normalized_interval)
@@ -532,6 +541,9 @@ def build_chart_timeline_payload(
         **(source.get("meta") or {}),
         "freshness": chart_freshness,
         "repair": repair_meta,
+        "broker_mode": runtime_environment,
+        "data_environment": data_environment,
+        "shared_market_data": data_environment == "live",
         "progress": {
             "status": "completed",
             "phase": "timeline_ready",

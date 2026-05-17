@@ -260,7 +260,7 @@ def _build_card(
     return {
         "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"tag": "plain_text", "content": f"IBKR 早盘扩池新增 · {environment.upper()}"},
+            "title": {"tag": "plain_text", "content": f"IBKR 早盘扩池新增 · Broker {environment.upper()}"},
             "template": "green",
         },
         "elements": elements,
@@ -271,7 +271,7 @@ def _build_failure_card(*, environment: str, market_date: str, times: dict[str, 
     return {
         "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"tag": "plain_text", "content": f"IBKR 早盘扩池失败 · {environment.upper()}"},
+            "title": {"tag": "plain_text", "content": f"IBKR 早盘扩池失败 · Broker {environment.upper()}"},
             "template": "red",
         },
         "elements": [

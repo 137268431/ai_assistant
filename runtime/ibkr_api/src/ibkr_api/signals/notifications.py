@@ -50,6 +50,59 @@ def _format_money(value: Any) -> str:
     return f"${parsed:,.2f}"
 
 
+def _broker_badge(environment: Any) -> str:
+    normalized = to_text(environment or "live").lower()
+    if normalized in {"live", "paper"}:
+        return f"Broker {normalized.upper()}"
+    return normalized.upper() if normalized else "Broker LIVE"
+
+
+def _signal_broker_mode(record_or_data: Any, extra: dict[str, Any] | None = None) -> str:
+    signal_extra = extra if isinstance(extra, dict) else get_signal_extra(record_or_data)
+    candidates = (
+        record_value(record_or_data, "broker_mode"),
+        signal_extra.get("last_ack_broker_mode"),
+        signal_extra.get("last_runtime_broker_mode"),
+        signal_extra.get("signal_ack_fallback_broker_mode"),
+        signal_extra.get("broker_mode"),
+        record_value(record_or_data, "environment"),
+    )
+    for candidate in candidates:
+        normalized = to_text(candidate).lower()
+        if normalized in {"live", "paper"}:
+            return normalized
+    execution_by_mode = signal_extra.get("execution_by_mode")
+    if isinstance(execution_by_mode, dict):
+        for mode in ("live", "paper"):
+            if isinstance(execution_by_mode.get(mode), dict):
+                return mode
+    return "live"
+
+
+def _signal_data_environment(record_or_data: Any, extra: dict[str, Any] | None = None) -> str:
+    signal_extra = extra if isinstance(extra, dict) else get_signal_extra(record_or_data)
+    candidates = (
+        record_value(record_or_data, "data_environment"),
+        signal_extra.get("data_environment"),
+        signal_extra.get("last_ack_data_environment"),
+        signal_extra.get("last_runtime_data_environment"),
+        signal_extra.get("signal_ack_fallback_data_environment"),
+        record_value(record_or_data, "environment"),
+    )
+    for candidate in candidates:
+        normalized = to_text(candidate).lower()
+        if normalized in {"live", "paper", "backtest"}:
+            return "live" if normalized == "paper" else normalized
+    return "live"
+
+
+def _data_badge(data_environment: Any) -> str:
+    normalized = to_text(data_environment or "live").lower()
+    if normalized == "live":
+        return "Shared Data"
+    return f"Data {normalized.upper()}" if normalized else "Shared Data"
+
+
 def _format_percent(value: Any) -> str:
     parsed = to_float(value)
     if parsed is None:
@@ -410,17 +463,20 @@ def build_signal_notification_card(record_or_data: Any, *, console_base_url: str
     status = to_text(record_value(record_or_data, "status")).lower() or "pending"
     symbol = to_text(record_value(record_or_data, "symbol") or record_value(record_or_data, "signal_id") or "SIGNAL")
     direction = to_text(record_value(record_or_data, "direction")).lower()
-    environment = to_text(record_value(record_or_data, "environment") or "live")
     signal_id = to_text(record_value(record_or_data, "signal_id") or record_value(record_or_data, "id"))
     status_reason = _status_reason(record_or_data)
     extra = get_signal_extra(record_or_data)
+    environment = _signal_broker_mode(record_or_data, extra)
+    data_environment = _signal_data_environment(record_or_data, extra)
+    broker_badge = _broker_badge(environment)
     needs_reconfirm = _reconfirm_required(record_or_data)
 
     direction_text = {"long": "做多", "short": "做空"}.get(direction, direction or "-")
     body_lines = [
         f"**信号ID**: {signal_id or '-'}",
         f"**方向**: {direction_text}",
-        f"**环境**: {environment}",
+        f"**Broker**: {broker_badge}",
+        f"**数据**: {_data_badge(data_environment)}",
         f"**仓位 / 风报比**: {_format_quantity(record_value(record_or_data, 'shares'))} / {to_text(record_value(record_or_data, 'rr') or '-')}",
     ]
     body_lines.extend(_price_plan_lines(record_or_data))
@@ -467,7 +523,7 @@ def build_signal_notification_card(record_or_data: Any, *, console_base_url: str
                 "tag": "plain_text",
                 "content": (
                     f"{'🔁 信号已更新，需重新确认' if needs_reconfirm else ('🔔 新交易信号' if status == 'awaiting_confirm' else '⚙️ 自动确认')}"
-                    f" · {symbol} · {to_text(record_value(record_or_data, 'us_time') or '')}"
+                    f" · {broker_badge} · {symbol} · {to_text(record_value(record_or_data, 'us_time') or '')}"
                 ),
             },
             "template": "green" if direction == "long" else "red",
@@ -543,7 +599,7 @@ def send_signal_notification(
         return {"success": False, "skipped": True, "message_id": message_id, "extra_patch": {}}
 
     card = build_signal_notification_card(record_or_data, console_base_url=console_base_url)
-    environment = to_text(record_value(record_or_data, "environment") or "live")
+    environment = _signal_broker_mode(record_or_data)
     result = dict(send_interactive(card, signal_chat_id, environment) or {})
     return {
         **result,
@@ -564,8 +620,10 @@ def build_signal_status_card(record_or_data: Any, *, message: str = "", console_
     meta = _status_meta(status)
     symbol = to_text(record_value(record_or_data, "symbol") or record_value(record_or_data, "signal_id") or "SIGNAL")
     direction = to_text(record_value(record_or_data, "direction")).lower()
-    environment = to_text(record_value(record_or_data, "environment") or "live")
     extra = get_signal_extra(record_or_data)
+    environment = _signal_broker_mode(record_or_data, extra)
+    data_environment = _signal_data_environment(record_or_data, extra)
+    broker_badge = _broker_badge(environment)
     signal_id = to_text(record_value(record_or_data, "signal_id") or record_value(record_or_data, "id"))
     needs_reconfirm = _reconfirm_required(record_or_data)
 
@@ -574,7 +632,8 @@ def build_signal_status_card(record_or_data: Any, *, message: str = "", console_
         f"**状态**: {meta['text']}",
         f"**信号ID**: {signal_id or '-'}",
         f"**方向**: {direction_text}",
-        f"**环境**: {environment}",
+        f"**Broker**: {broker_badge}",
+        f"**数据**: {_data_badge(data_environment)}",
         f"**仓位**: {_format_quantity(record_value(record_or_data, 'shares'))}",
     ]
     body_lines.extend(_price_plan_lines(record_or_data))
@@ -616,7 +675,7 @@ def build_signal_status_card(record_or_data: Any, *, message: str = "", console_
                 "tag": "plain_text",
                 "content": (
                     f"{'🔁 信号已更新，需重新确认' if needs_reconfirm else (meta['emoji'] + ' ' + meta['text'])}"
-                    f" · {symbol} · {to_text(record_value(record_or_data, 'us_time') or '')}"
+                    f" · {broker_badge} · {symbol} · {to_text(record_value(record_or_data, 'us_time') or '')}"
                 ),
             },
             "template": meta["template"],
@@ -643,7 +702,7 @@ def sync_signal_status_notification(
         return {"success": False, "skipped": True, "message_id": message_id, "extra_patch": {}}
 
     card = build_signal_status_card(record_or_data, message=message, console_base_url=console_base_url)
-    environment = to_text(record_value(record_or_data, "environment") or "live")
+    environment = _signal_broker_mode(record_or_data, extra)
     if message_id and callable(update_interactive):
         result = dict(update_interactive(message_id, card, environment) or {})
     else:

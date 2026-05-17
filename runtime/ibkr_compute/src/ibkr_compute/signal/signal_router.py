@@ -16,17 +16,47 @@ logger = logging.getLogger(__name__)
 
 
 class SignalRouter:
-    def __init__(self, pb_client, config, environment: str = "live"):
+    def __init__(self, pb_client, config, environment: str = "live", broker_mode: str | None = None):
         self.pb_client = pb_client
         self.config = config
-        self.environment = environment
+        self.environment = str(environment or "live").strip().lower() or "live"
+        self.broker_mode = str(broker_mode or self.environment or "live").strip().lower() or "live"
         self._processed_ids = set()
         self._inflight_ids = set()
         self._last_poll: Optional[float] = None
 
     @property
     def signal_source(self) -> str:
-        return self.config.get_for_environment("ibkr_signal_source", self.environment, "both")
+        return self.config.get_for_environment("ibkr_signal_source", self.broker_mode, "both")
+
+    @staticmethod
+    def _execution_status_for_mode(extra: dict, broker_mode: str) -> str:
+        execution_by_mode = extra.get("execution_by_mode")
+        if not isinstance(execution_by_mode, dict):
+            return ""
+        broker_execution = execution_by_mode.get(broker_mode)
+        if not isinstance(broker_execution, dict):
+            return ""
+        return str(broker_execution.get("status") or "").strip().lower()
+
+    def _already_handled_for_broker(self, row: Dict, extra: dict) -> bool:
+        status = self._execution_status_for_mode(extra, self.broker_mode)
+        if status in {
+            "submitted",
+            "rejected",
+            "expired",
+            "blocked",
+            "duplicate_existing_broker_order",
+            "validation_rejected",
+            "submit_failed",
+            "protection_incomplete",
+        }:
+            return True
+        # Backward compatibility: legacy LIVE signals used only the top-level status.
+        legacy_status = str(row.get("status") or "").strip().lower()
+        if self.broker_mode == self.environment and legacy_status and legacy_status != "pending":
+            return True
+        return False
 
     def fetch_pending_signals(self) -> List[Dict]:
         today = datetime.now(ET).strftime("%Y-%m-%d")
@@ -64,6 +94,8 @@ class SignalRouter:
                     extra = {}
             if not isinstance(extra, dict):
                 extra = {}
+            if self._already_handled_for_broker(row, extra):
+                continue
 
             signals.append({
                 "signal_id": signal_id,
@@ -139,6 +171,8 @@ class SignalRouter:
         return {
             "signal_source": self.signal_source,
             "environment": self.environment,
+            "broker_mode": self.broker_mode,
+            "data_environment": self.environment,
             "processed_count": len(self._processed_ids),
             "inflight_count": len(self._inflight_ids),
             "last_poll": datetime.fromtimestamp(self._last_poll, timezone.utc).isoformat()

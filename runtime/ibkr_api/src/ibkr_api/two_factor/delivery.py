@@ -101,9 +101,10 @@ def build_two_factor_card(
     runtime_url = f"{console_base_url}/ibkr_runtime.html?environment={runtime_environment}" if console_base_url else ""
     system_url = f"{console_base_url}/ibkr_system.html?environment={runtime_environment}" if console_base_url else ""
     callback_url = f"{console_base_url}/webhook/feishu/callback" if console_base_url else ""
+    broker_badge = f"Broker {runtime_environment.upper()}" if runtime_environment in {"live", "paper"} else runtime_environment.upper()
 
     meta_lines = [
-        f"**环境**: {runtime_environment.upper()}",
+        f"**Broker**: {broker_badge}",
         f"**当前用途**: {reason_label}",
         f"**状态**: {meta['emoji']} {state.get('status') or 'requested'}",
         f"**请求时间**: {state.get('requested_at') or '-'}",
@@ -177,7 +178,7 @@ def build_two_factor_card(
     return {
         "config": {"wide_screen_mode": True, "update_multi": True},
         "header": {
-            "title": {"tag": "plain_text", "content": f"{meta['emoji']} [{runtime_environment.upper()}] {meta['title']} · {reason_label}"},
+            "title": {"tag": "plain_text", "content": f"{meta['emoji']} [{broker_badge}] {meta['title']} · {reason_label}"},
             "template": meta["template"],
         },
         "elements": elements,

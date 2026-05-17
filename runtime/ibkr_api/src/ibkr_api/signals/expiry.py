@@ -6,12 +6,23 @@ from typing import Any, Callable
 from ibkr_api.orders.values import to_text
 from ibkr_api.signals.notifications import SendInteractive, UpdateInteractive, sync_signal_status_notification
 from ibkr_api.signals.values import get_signal_extra
+from ibkr_compute.core.broker_mode import resolve_data_environment
 
 
 NormalizeEnvironment = Callable[[Any, str], str]
 EscapeFilterString = Callable[[Any], str]
 ConfigValue = Callable[[str, str, str], str]
 SignalChatId = Callable[[str], str]
+
+BROKER_FINAL_STATUSES = {
+    "submitted",
+    "protected_active",
+    "protection_incomplete",
+    "executed",
+    "rejected",
+    "expired",
+    "closed",
+}
 
 
 def _parse_timestamp_ms(text: Any) -> int:
@@ -97,6 +108,45 @@ def _repair_status_from_orders(orders: list[dict[str, Any]]) -> tuple[str, str]:
     return "", ""
 
 
+def _broker_execution_status(extra: dict[str, Any], broker_mode: str) -> str:
+    execution_by_mode = extra.get("execution_by_mode") if isinstance(extra, dict) else {}
+    if not isinstance(execution_by_mode, dict):
+        return ""
+    broker_payload = execution_by_mode.get(broker_mode)
+    if not isinstance(broker_payload, dict):
+        return ""
+    return to_text(broker_payload.get("status")).lower()
+
+
+def _with_broker_execution(
+    extra: dict[str, Any],
+    *,
+    broker_mode: str,
+    data_environment: str,
+    status: str,
+    note: str,
+) -> dict[str, Any]:
+    merged = dict(extra if isinstance(extra, dict) else {})
+    execution_by_mode = merged.get("execution_by_mode")
+    if not isinstance(execution_by_mode, dict):
+        execution_by_mode = {}
+    broker_payload = execution_by_mode.get(broker_mode)
+    if not isinstance(broker_payload, dict):
+        broker_payload = {}
+    execution_by_mode[broker_mode] = {
+        **broker_payload,
+        "status": status,
+        "note": note,
+        "data_environment": data_environment,
+        "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "source": "signal_expiry_check",
+    }
+    merged["execution_by_mode"] = execution_by_mode
+    merged["broker_mode"] = broker_mode
+    merged["data_environment"] = data_environment
+    return merged
+
+
 def _apply_notification_patch(pb: Any, row: dict[str, Any], notify_result: dict[str, Any]) -> dict[str, Any]:
     extra_patch = notify_result.get("extra_patch") if isinstance(notify_result, dict) else None
     record_id = to_text((row or {}).get("id"))
@@ -119,6 +169,7 @@ def build_signal_expiry_response(
     console_base_url: str = "",
 ) -> tuple[dict[str, Any], int]:
     environment = normalize_environment((payload or {}).get("environment"), "live")
+    data_environment = resolve_data_environment(environment)
     validity_minutes = _validity_minutes(config_value, environment)
     cutoff_ms = int(datetime.now(timezone.utc).timestamp() * 1000) - validity_minutes * 60 * 1000
     candidate_limit = max(1, int((payload or {}).get("limit") or 100))
@@ -129,7 +180,7 @@ def build_signal_expiry_response(
                 "ibkr_signals",
                 filter=(
                     '(status = "pending" || status = "awaiting_confirm") && '
-                    f'environment = "{escape_filter_string(environment)}"'
+                    f'environment = "{escape_filter_string(data_environment)}"'
                 ),
                 sort="-created",
                 per_page=candidate_limit,
@@ -139,9 +190,13 @@ def build_signal_expiry_response(
         )
         expired_rows = []
         for row in candidates:
-            reference_kind, reference_ms = _signal_reference_time(row if isinstance(row, dict) else {})
+            record = dict(row) if isinstance(row, dict) else {}
+            extra = get_signal_extra(record)
+            if _broker_execution_status(extra, environment) in BROKER_FINAL_STATUSES:
+                continue
+            reference_kind, reference_ms = _signal_reference_time(record)
             if reference_ms > 0 and reference_ms <= cutoff_ms:
-                expired_rows.append((dict(row), reference_kind))
+                expired_rows.append((record, reference_kind))
 
         expired_count = 0
         repaired_count = 0
@@ -174,21 +229,34 @@ def build_signal_expiry_response(
                 [dict(order_row) for order_row in related_orders if isinstance(order_row, dict)]
             )
             if repair_status:
+                existing_extra = get_signal_extra(row)
+                repaired_extra = _with_broker_execution(
+                    {
+                        **existing_extra,
+                        "status_repaired_by": "signal_expiry_check",
+                        "status_repaired_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                        "status_repair_reason": repair_reason,
+                        "linked_order_unique_ids": order_refs,
+                    },
+                    broker_mode=environment,
+                    data_environment=data_environment,
+                    status=repair_status,
+                    note=repair_reason,
+                )
+                update_payload = {
+                    "extra": repaired_extra,
+                    "note": repair_reason if environment == data_environment == "live" else f"{environment}:{repair_reason}",
+                }
+                if environment == data_environment == "live":
+                    update_payload["status"] = repair_status
                 updated = pb.update_record(
                     "ibkr_signals",
                     to_text(row.get("id")),
-                    {
-                        "status": repair_status,
-                        "extra": {
-                            **get_signal_extra(row),
-                            "status_repaired_by": "signal_expiry_check",
-                            "status_repaired_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                            "status_repair_reason": repair_reason,
-                            "linked_order_unique_ids": order_refs,
-                        },
-                    },
+                    update_payload,
                 )
-                updated_row = dict(updated) if isinstance(updated, dict) else {**row, "status": repair_status}
+                updated_row = dict(updated) if isinstance(updated, dict) else {**row, **update_payload}
+                updated_row["status"] = repair_status
+                updated_row["note"] = repair_reason
                 notify_result = sync_signal_status_notification(
                     updated_row,
                     action=repair_status,
@@ -211,20 +279,33 @@ def build_signal_expiry_response(
                 )
                 continue
 
+            existing_extra = get_signal_extra(row)
+            expired_extra = _with_broker_execution(
+                {
+                    **existing_extra,
+                    "expired_by": "signal_expiry_check",
+                    "expired_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    "expiry_reference": reference_kind or "created_or_updated",
+                },
+                broker_mode=environment,
+                data_environment=data_environment,
+                status="expired",
+                note="signal_expired",
+            )
+            update_payload = {
+                "extra": expired_extra,
+                "note": "signal_expired" if environment == data_environment == "live" else f"{environment}:signal_expired",
+            }
+            if environment == data_environment == "live":
+                update_payload["status"] = "expired"
             updated = pb.update_record(
                 "ibkr_signals",
                 to_text(row.get("id")),
-                {
-                    "status": "expired",
-                    "extra": {
-                        **get_signal_extra(row),
-                        "expired_by": "signal_expiry_check",
-                        "expired_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                        "expiry_reference": reference_kind or "created_or_updated",
-                    },
-                },
+                update_payload,
             )
-            updated_row = dict(updated) if isinstance(updated, dict) else {**row, "status": "expired"}
+            updated_row = dict(updated) if isinstance(updated, dict) else {**row, **update_payload}
+            updated_row["status"] = "expired"
+            updated_row["note"] = "signal_expired"
             notify_result = sync_signal_status_notification(
                 updated_row,
                 action="expired",
@@ -249,6 +330,8 @@ def build_signal_expiry_response(
             {
                 "ok": True,
                 "environment": environment,
+                "broker_mode": environment,
+                "data_environment": data_environment,
                 "validity_minutes": validity_minutes,
                 "candidate_count": len(candidates),
                 "expired_candidate_count": len(expired_rows),

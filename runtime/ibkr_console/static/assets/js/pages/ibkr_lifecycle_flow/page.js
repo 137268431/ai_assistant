@@ -334,6 +334,13 @@
     return RUNTIME_ENVS.includes(text) ? text : 'live';
   }
 
+  function currentBrokerEnvironment() {
+    if (typeof getBrokerModeContext === 'function') {
+      return normalizeEnvironment(getBrokerModeContext().broker_mode);
+    }
+    return normalizeEnvironment(typeof getCurrentRuntimeEnvironment === 'function' ? getCurrentRuntimeEnvironment() : 'live');
+  }
+
   function normalizeFillSource(value) {
     const text = String(value || '').trim().toLowerCase();
     const normalized = text.replace(/[-\s]+/g, '_');
@@ -1183,9 +1190,13 @@
 
   function readFiltersFromUrl() {
     const params = new URLSearchParams(window.location.search);
+    const urlMode = normalizeText(params.get('mode'), 'auto');
+    const urlEnvironment = normalizeEnvironment(params.get('environment'));
     return {
-      mode: normalizeText(params.get('mode'), 'auto'),
-      environment: normalizeEnvironment(params.get('environment') || (typeof getCurrentRuntimeEnvironment === 'function' ? getCurrentRuntimeEnvironment() : 'live')),
+      mode: urlMode,
+      environment: (urlMode === 'backtest' || urlEnvironment === 'backtest' || normalizeText(params.get('run_id')))
+        ? 'backtest'
+        : currentBrokerEnvironment(),
       date: params.get('date') || getDefaultDate(),
       symbol: normalizeText(params.get('symbol')).toUpperCase(),
       signal_id: normalizeText(params.get('signal_id')),
@@ -1197,9 +1208,10 @@
   }
 
   function getFiltersFromForm() {
+    const mode = normalizeText($('modeInput')?.value, 'auto');
     return {
-      mode: normalizeText($('modeInput')?.value, 'auto'),
-      environment: normalizeEnvironment($('environmentInput')?.value),
+      mode,
+      environment: mode === 'backtest' ? 'backtest' : currentBrokerEnvironment(),
       date: normalizeText($('dateInput')?.value),
       symbol: normalizeText($('symbolInput')?.value).toUpperCase(),
       signal_id: normalizeText($('signalIdInput')?.value),
@@ -1213,7 +1225,6 @@
   function setFiltersToForm(filters) {
     const safe = filters || readFiltersFromUrl();
     if ($('modeInput')) $('modeInput').value = safe.mode || 'auto';
-    if ($('environmentInput')) $('environmentInput').value = normalizeEnvironment(safe.environment);
     if ($('dateInput')) $('dateInput').value = safe.date || '';
     if ($('symbolInput')) $('symbolInput').value = safe.symbol || '';
     if ($('signalIdInput')) $('signalIdInput').value = safe.signal_id || '';
@@ -1231,7 +1242,7 @@
       query[key] = key === 'symbol' ? value.toUpperCase() : value;
     });
     if (!query.mode && query.run_id) query.mode = 'backtest';
-    if (!query.environment) query.environment = normalizeEnvironment(filters.environment);
+    if (!query.environment) query.environment = normalizeEnvironment(filters.environment || currentBrokerEnvironment());
     return query;
   }
 
@@ -1400,7 +1411,6 @@
   function updateContext(filters, model) {
     if (typeof setPageContextMeta === 'function') {
       setPageContextMeta([
-        { label: '环境', value: normalizeEnvironment(filters.environment).toUpperCase(), tone: normalizeEnvironment(filters.environment) },
         { label: '交易日', value: filters.date || '--' },
         { label: 'Mode', value: filters.mode || 'auto' },
         { label: 'Symbol', value: filters.symbol || '--' }
@@ -1930,6 +1940,7 @@
     renderLoadingState();
     try {
       const payload = await requestLifecycleJson(filters);
+      if (typeof syncBrokerModeFromPayload === 'function') syncBrokerModeFromPayload(payload);
       const model = normalizeModel(payload);
       renderAll(model, filters);
       if (typeof showToast === 'function') showToast('生命周期流程已更新');
@@ -1942,7 +1953,7 @@
   }
 
   function resetFilters() {
-    const environment = typeof getCurrentRuntimeEnvironment === 'function' ? getCurrentRuntimeEnvironment() : 'live';
+    const environment = currentBrokerEnvironment();
     setFiltersToForm({
       mode: 'auto',
       environment,
@@ -2011,11 +2022,14 @@
     loadLifecycle({ updateUrl: true });
   };
 
-  document.addEventListener('DOMContentLoaded', () => {
+  document.addEventListener('DOMContentLoaded', async () => {
     try {
       if (typeof requireAuth === 'function') requireAuth(`${location.pathname}${location.search}`);
     } catch (_) {
       return;
+    }
+    if (typeof refreshBrokerModeContext === 'function') {
+      await refreshBrokerModeContext();
     }
 
     const filters = readFiltersFromUrl();

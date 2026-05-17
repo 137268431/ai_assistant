@@ -299,6 +299,7 @@ class Config:
         "ibkr_signal_source": "both",
         "signal_manual_confirm_enabled": "true",
         "ibkr_trading_enabled": "true",
+        "ibkr_live_trading_enabled": "true",
         "system_monitor_ws_message_age_regular_warn_sec": "60",
         "system_monitor_ws_message_age_regular_critical_sec": "180",
         "system_monitor_ws_message_age_late_session_warn_sec": "600",

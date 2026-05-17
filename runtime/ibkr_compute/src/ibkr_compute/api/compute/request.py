@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ibkr_compute.api.route_request import get_json_payload
+from ibkr_compute.core.broker_mode import resolve_data_environment
 
 
 def _api_app():
@@ -86,7 +87,9 @@ def get_requested_environments(payload=None, defaults=None):
         for value in requested:
             environment = str(value or "").strip().lower()
             if environment in api_app.SUPPORTED_COMPUTE_ENVIRONMENTS and environment not in environments:
-                environments.append(environment)
+                data_environment = resolve_data_environment(environment)
+                if data_environment not in environments:
+                    environments.append(data_environment)
         if environments:
             return environments
 

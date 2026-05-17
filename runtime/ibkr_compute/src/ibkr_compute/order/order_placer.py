@@ -299,6 +299,7 @@ class OrderPlacer:
                 entry_order_unique_id = trade_group_id or close_coid
             payload = {
                 "symbol": symbol,
+                "environment": self.environment,
                 "conid": kwargs.get("conid", 0),
                 "direction": direction,
                 "position_side": direction,
@@ -365,6 +366,7 @@ class OrderPlacer:
             if hasattr(self.pb_client, "upsert_order"):
                 base_payload = {
                     "symbol": symbol,
+                    "environment": self.environment,
                     "direction": direction,
                     "position_side": direction,
                     "trade_group_id": trade_group_id,

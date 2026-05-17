@@ -6,6 +6,7 @@ import os
 import sqlite3
 from typing import Any
 
+from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite
 from ibkr_compute.market.timeframe_utils import normalize_interval
 
@@ -76,9 +77,9 @@ def _direct_sqlite_read_timeout(api_app, environment: str) -> float:
 
 
 def _bar_environment_sql(environment: str, *, include_legacy_empty: bool = True) -> tuple[str, list[Any]]:
-    runtime_environment = str(environment or "live").strip().lower() or "live"
-    values: list[Any] = [runtime_environment]
-    if include_legacy_empty and runtime_environment == "live":
+    data_environment = resolve_data_environment(environment)
+    values: list[Any] = [data_environment]
+    if include_legacy_empty and data_environment == "live":
         values.append("")
     if len(values) == 1:
         return "environment = ?", values

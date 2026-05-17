@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 from ibkr_api.orders.values import ensure_object, first_defined, parse_boolean, to_float, to_int, to_text
 from ibkr_api.universe.maintenance import parse_json_object
+from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_compute.market.timeframe_utils import ET, classify_session, format_cn_time, format_us_time, interval_to_chart_tf, ms_to_et
 
 
@@ -109,8 +110,9 @@ def build_symbol_filter(symbols: list[str]) -> str:
 
 
 def build_bar_environment_filter(runtime_environment: str) -> str:
-    clauses = [f'environment = "{escape_filter(runtime_environment)}"']
-    if runtime_environment == LIVE_ENVIRONMENT:
+    data_environment = resolve_data_environment(runtime_environment)
+    clauses = [f'environment = "{escape_filter(data_environment)}"']
+    if data_environment == LIVE_ENVIRONMENT:
         clauses.append('environment = ""')
     return f"({' || '.join(clauses)})"
 

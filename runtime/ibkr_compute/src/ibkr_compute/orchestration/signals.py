@@ -853,7 +853,7 @@ class TradingServiceSignalsMixin:
             return {}, {}
 
         safe_signal_id = signal_id.replace('"', '\\"')
-        safe_environment = str(service_mod.ENVIRONMENT or "live").replace('"', '\\"')
+        safe_environment = str(service_mod.DATA_ENVIRONMENT or "live").replace('"', '\\"')
         record = self.pb.get_first_record(
             "ibkr_signals",
             filter=(
@@ -874,6 +874,41 @@ class TradingServiceSignalsMixin:
             existing_extra = {}
         return record, existing_extra
 
+    def _signal_broker_patch(self, status: str, note: str, existing_extra: dict, extra: dict | None = None) -> dict:
+        service_mod = _service_mod()
+        broker_mode = str(service_mod.ENVIRONMENT or "live").strip().lower() or "live"
+        data_environment = str(service_mod.DATA_ENVIRONMENT or "live").strip().lower() or "live"
+        status_text = str(status or "").strip() or "pending"
+        note_text = str(note or status_text).strip() or status_text
+        merged_extra = {
+            **(existing_extra if isinstance(existing_extra, dict) else {}),
+            **(extra if isinstance(extra, dict) else {}),
+            "last_runtime_broker_mode": broker_mode,
+            "last_runtime_data_environment": data_environment,
+        }
+        execution_by_mode = merged_extra.get("execution_by_mode")
+        if not isinstance(execution_by_mode, dict):
+            execution_by_mode = {}
+        broker_execution = execution_by_mode.get(broker_mode)
+        if not isinstance(broker_execution, dict):
+            broker_execution = {}
+        execution_by_mode[broker_mode] = {
+            **broker_execution,
+            "status": status_text,
+            "note": note_text,
+            "data_environment": data_environment,
+            "updated_at": self._now_iso(),
+            "source": "ibkr_compute",
+        }
+        merged_extra["execution_by_mode"] = execution_by_mode
+        patch = {
+            "note": note_text if broker_mode == data_environment == "live" else f"{broker_mode}:{note_text}",
+            "extra": merged_extra,
+        }
+        if broker_mode == data_environment == "live":
+            patch["status"] = status_text
+        return patch
+
     def _mark_signal_waiting_for_capacity(self, sig: dict, capacity: dict):
         service_mod = _service_mod()
         if not self.pb:
@@ -884,22 +919,19 @@ class TradingServiceSignalsMixin:
             record, existing_extra = self._load_signal_record_and_extra(sig)
             if not record:
                 return
-            self.pb.update_record(
-                "ibkr_signals",
-                record["id"],
+            patch = self._signal_broker_patch(
+                "pending",
+                "strategy_capacity_full",
+                existing_extra,
                 {
-                    "status": "pending",
-                    "note": "strategy_capacity_full",
-                    "extra": {
-                        **existing_extra,
-                        "status_reason": "strategy_capacity_full",
-                        "execution_state": "waiting_for_capacity",
-                        "waiting_for_capacity": True,
-                        "waiting_for_capacity_at": self._now_iso(),
-                        "strategy_capacity": dict(capacity or {}),
-                    },
+                    "status_reason": "strategy_capacity_full",
+                    "execution_state": "waiting_for_capacity",
+                    "waiting_for_capacity": True,
+                    "waiting_for_capacity_at": self._now_iso(),
+                    "strategy_capacity": dict(capacity or {}),
                 },
             )
+            self.pb.update_record("ibkr_signals", record["id"], patch)
         except Exception as exc:
             service_mod.logger.error(
                 "Failed to mark signal waiting-for-capacity: signal_id=%s error=%s",
@@ -922,23 +954,20 @@ class TradingServiceSignalsMixin:
             getter = getattr(lifecycle, "_fixed_position_symbols", None)
             if callable(getter):
                 fixed_symbols = sorted(getter())
-            self.pb.update_record(
-                "ibkr_signals",
-                record["id"],
+            patch = self._signal_broker_patch(
+                "rejected",
+                "fixed_position_symbol_blocked",
+                existing_extra,
                 {
-                    "status": "rejected",
-                    "note": "fixed_position_symbol_blocked",
-                    "extra": {
-                        **existing_extra,
-                        "status_reason": "fixed_position_symbol_blocked",
-                        "execution_state": "blocked",
-                        "fixed_position_symbol_blocked": True,
-                        "fixed_position_symbol": str(sig.get("symbol") or "").strip().upper(),
-                        "fixed_position_symbols": fixed_symbols,
-                        "blocked_at": self._now_iso(),
-                    },
+                    "status_reason": "fixed_position_symbol_blocked",
+                    "execution_state": "blocked",
+                    "fixed_position_symbol_blocked": True,
+                    "fixed_position_symbol": str(sig.get("symbol") or "").strip().upper(),
+                    "fixed_position_symbols": fixed_symbols,
+                    "blocked_at": self._now_iso(),
                 },
             )
+            self.pb.update_record("ibkr_signals", record["id"], patch)
         except Exception as exc:
             service_mod.logger.error(
                 "Failed to mark signal fixed-position-blocked: signal_id=%s error=%s",
@@ -960,23 +989,20 @@ class TradingServiceSignalsMixin:
             if not record:
                 return
             signal_extra = sig.get("extra") if isinstance(sig.get("extra"), dict) else {}
-            self.pb.update_record(
-                "ibkr_signals",
-                record["id"],
+            patch = self._signal_broker_patch(
+                "rejected",
+                "buying_power_blocked",
+                existing_extra,
                 {
-                    "status": "rejected",
-                    "note": "buying_power_blocked",
-                    "extra": {
-                        **existing_extra,
-                        **signal_extra,
-                        **self._buying_power_extra_fields(guard),
-                        "status_reason": "buying_power_blocked",
-                        "execution_state": "blocked",
-                        "buying_power_blocked": True,
-                        "buying_power_blocked_at": self._now_iso(),
-                    },
+                    **signal_extra,
+                    **self._buying_power_extra_fields(guard),
+                    "status_reason": "buying_power_blocked",
+                    "execution_state": "blocked",
+                    "buying_power_blocked": True,
+                    "buying_power_blocked_at": self._now_iso(),
                 },
             )
+            self.pb.update_record("ibkr_signals", record["id"], patch)
         except Exception as exc:
             service_mod.logger.error(
                 "Failed to mark signal buying-power-blocked: signal_id=%s error=%s",
@@ -996,21 +1022,25 @@ class TradingServiceSignalsMixin:
             record, existing_extra = self._load_signal_record_and_extra(sig)
             if not record:
                 return
-            self.pb.update_record(
-                "ibkr_signals",
-                record["id"],
+            patch = self._signal_broker_patch(
+                "pending",
+                "pre_submit_prices_patched",
+                existing_extra,
                 {
-                    "entry": self._round_price(sig.get("entry")),
-                    "stop_loss": self._round_price(sig.get("stop_loss")),
-                    "take_profit": self._round_price(sig.get("take_profit")),
-                    "extra": {
-                        **existing_extra,
-                        **extra,
-                        "pre_submit_prices_patched": True,
-                        "pre_submit_prices_patched_at": self._now_iso(),
-                    },
+                    **extra,
+                    "pre_submit_prices_patched": True,
+                    "pre_submit_prices_patched_at": self._now_iso(),
                 },
             )
+            if service_mod.ENVIRONMENT == service_mod.DATA_ENVIRONMENT == "live":
+                patch.update(
+                    {
+                        "entry": self._round_price(sig.get("entry")),
+                        "stop_loss": self._round_price(sig.get("stop_loss")),
+                        "take_profit": self._round_price(sig.get("take_profit")),
+                    }
+                )
+            self.pb.update_record("ibkr_signals", record["id"], patch)
         except Exception as exc:
             service_mod.logger.error(
                 "Failed to patch signal pre-submit prices: signal_id=%s error=%s",
@@ -1027,44 +1057,22 @@ class TradingServiceSignalsMixin:
         if not signal_id:
             return
 
-        safe_signal_id = signal_id.replace('"', '\\"')
-        safe_environment = str(service_mod.ENVIRONMENT or "live").replace('"', '\\"')
-
         try:
-            record = self.pb.get_first_record(
-                "ibkr_signals",
-                filter=(
-                    f'signal_id = "{safe_signal_id}" && '
-                    f'environment = "{safe_environment}"'
-                ),
-            )
-            if not record or not record.get("id"):
+            record, existing_extra = self._load_signal_record_and_extra(sig)
+            if not record:
                 return
-
-            existing_extra = record.get("extra") or {}
-            if isinstance(existing_extra, str):
-                try:
-                    existing_extra = json.loads(existing_extra)
-                except Exception:
-                    existing_extra = {}
-            if not isinstance(existing_extra, dict):
-                existing_extra = {}
-
             status_reason = str(reason or "validation_rejected").strip() or "validation_rejected"
-            self.pb.update_record(
-                "ibkr_signals",
-                record["id"],
+            patch = self._signal_broker_patch(
+                "rejected",
+                status_reason,
+                existing_extra,
                 {
-                    "status": "rejected",
-                    "note": status_reason,
-                    "extra": {
-                        **existing_extra,
-                        "status_reason": status_reason,
-                        "validation_rejected": True,
-                        "validation_rejected_at": self._now_iso(),
-                    },
+                    "status_reason": status_reason,
+                    "validation_rejected": True,
+                    "validation_rejected_at": self._now_iso(),
                 },
             )
+            self.pb.update_record("ibkr_signals", record["id"], patch)
         except Exception as exc:
             service_mod.logger.error(
                 "Failed to mark signal validation-rejected: signal_id=%s reason=%s error=%s",
@@ -1089,21 +1097,18 @@ class TradingServiceSignalsMixin:
                 return
 
             guard_extra = sig.get("extra") if isinstance(sig.get("extra"), dict) else {}
-            self.pb.update_record(
-                "ibkr_signals",
-                record["id"],
+            patch = self._signal_broker_patch(
+                "rejected",
+                status_reason,
+                existing_extra,
                 {
-                    "status": "rejected",
-                    "note": status_reason,
-                    "extra": {
-                        **existing_extra,
-                        **guard_extra,
-                        "status_reason": status_reason,
-                        "entry_guard_rejected": True,
-                        "entry_guard_rejected_at": self._now_iso(),
-                    },
+                    **guard_extra,
+                    "status_reason": status_reason,
+                    "entry_guard_rejected": True,
+                    "entry_guard_rejected_at": self._now_iso(),
                 },
             )
+            self.pb.update_record("ibkr_signals", record["id"], patch)
         except Exception as exc:
             service_mod.logger.error(
                 "Failed to mark signal entry-guard-rejected: signal_id=%s reason=%s error=%s",
@@ -1121,29 +1126,10 @@ class TradingServiceSignalsMixin:
         if not signal_id:
             return
 
-        safe_signal_id = signal_id.replace('"', '\\"')
-        safe_environment = str(service_mod.ENVIRONMENT or "live").replace('"', '\\"')
-
         try:
-            record = self.pb.get_first_record(
-                "ibkr_signals",
-                filter=(
-                    f'signal_id = "{safe_signal_id}" && '
-                    f'environment = "{safe_environment}"'
-                ),
-            )
-            if not record or not record.get("id"):
+            record, existing_extra = self._load_signal_record_and_extra(sig)
+            if not record:
                 return
-
-            existing_extra = record.get("extra") or {}
-            if isinstance(existing_extra, str):
-                try:
-                    existing_extra = json.loads(existing_extra)
-                except Exception:
-                    existing_extra = {}
-            if not isinstance(existing_extra, dict):
-                existing_extra = {}
-
             broker_order_id = str(broker_order.get("orderId") or broker_order.get("id") or "").strip()
             broker_coid = str(
                 broker_order.get("cOID")
@@ -1152,11 +1138,11 @@ class TradingServiceSignalsMixin:
                 or broker_order.get("orderRef")
                 or ""
             ).strip()
-            patch = {
-                "status": "rejected",
-                "note": "duplicate_existing_broker_order",
-                "extra": {
-                    **existing_extra,
+            patch = self._signal_broker_patch(
+                "rejected",
+                "duplicate_existing_broker_order",
+                existing_extra,
+                {
                     "status_reason": "duplicate_existing_broker_order",
                     "duplicate_broker_order_detected": True,
                     "duplicate_broker_order_id": broker_order_id,
@@ -1173,7 +1159,7 @@ class TradingServiceSignalsMixin:
                     "duplicate_detected_at": self._now_iso(),
                     "duplicate_action": "skip_submit_existing_broker_order",
                 },
-            }
+            )
             self.pb.update_record("ibkr_signals", record["id"], patch)
         except Exception as exc:
             service_mod.logger.error(
@@ -1191,29 +1177,10 @@ class TradingServiceSignalsMixin:
         if not signal_id:
             return
 
-        safe_signal_id = signal_id.replace('"', '\\"')
-        safe_environment = str(service_mod.ENVIRONMENT or "live").replace('"', '\\"')
-
         try:
-            record = self.pb.get_first_record(
-                "ibkr_signals",
-                filter=(
-                    f'signal_id = "{safe_signal_id}" && '
-                    f'environment = "{safe_environment}"'
-                ),
-            )
-            if not record or not record.get("id"):
+            record, existing_extra = self._load_signal_record_and_extra(sig)
+            if not record:
                 return
-
-            existing_extra = record.get("extra") or {}
-            if isinstance(existing_extra, str):
-                try:
-                    existing_extra = json.loads(existing_extra)
-                except Exception:
-                    existing_extra = {}
-            if not isinstance(existing_extra, dict):
-                existing_extra = {}
-
             error_text = str((result or {}).get("error") or "submit_failed").strip() or "submit_failed"
             entry_error = (result or {}).get("entry_error") if isinstance(result, dict) else {}
             if not isinstance(entry_error, dict):
@@ -1233,11 +1200,11 @@ class TradingServiceSignalsMixin:
                 else {}
             )
             protection_fields = self._protection_fields(result or {}, diagnostic)
-            patch = {
-                "status": status,
-                "note": note,
-                "extra": {
-                    **existing_extra,
+            patch = self._signal_broker_patch(
+                status,
+                note,
+                existing_extra,
+                {
                     "status_reason": status_reason,
                     "submit_failed": not protection_incomplete,
                     "submit_failed_error": error_text,
@@ -1254,7 +1221,7 @@ class TradingServiceSignalsMixin:
                     "protection_incomplete_diagnostic": diagnostic,
                     "safety_cancel_recommended": bool(diagnostic.get("cancel_recommended")) if diagnostic else False,
                 },
-            }
+            )
             self.pb.update_record("ibkr_signals", record["id"], patch)
         except Exception as exc:
             service_mod.logger.error(

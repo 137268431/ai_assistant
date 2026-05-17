@@ -25,6 +25,12 @@ from ibkr_compute.broker import (
 from ibkr_compute.broker.cookie_store import clear_cookies
 from ibkr_compute.integrations.pb_client import PBClient
 from ibkr_compute.core.config import Config
+from ibkr_compute.core.broker_mode import (
+    broker_mode_payload,
+    resolve_data_environment,
+    startup_broker_mode,
+    startup_gateway_mode,
+)
 from ibkr_compute.core.host_resources import HostResourceMonitor
 from ibkr_compute.market.conid_resolver import ConidResolver
 from ibkr_compute.market.ws_client import IBKRWebSocketClient
@@ -84,7 +90,11 @@ CONSOLE_BASE_URL = (
     or "https://quant.lzw-glory.top"
 ).rstrip("/")
 PB_PUBLIC_URL = CONSOLE_BASE_URL
-ENVIRONMENT = os.environ.get("IBKR_ENVIRONMENT", "live")
+ENVIRONMENT = startup_broker_mode()
+BROKER_MODE = ENVIRONMENT
+GATEWAY_MODE = startup_gateway_mode()
+DATA_ENVIRONMENT = resolve_data_environment(ENVIRONMENT)
+MODE_PAYLOAD = broker_mode_payload(ENVIRONMENT)
 DEFAULT_SIGNAL_POLL_INTERVAL = 5
 DEFAULT_WARMUP_REQUIRED_INTERVAL = "5m"
 STARTUP_BACKGROUND_PRIME_INTERVALS = ("15m", "30m", "1h", "4h", "1d")
@@ -222,18 +232,18 @@ class IBKRTradingService(
         )
 
         self.conid_resolver = ConidResolver(pb_client=self.pb, broker=self.broker)
-        self.data_writer = DataWriter(pb_client=self.pb, config=self.config, environment=ENVIRONMENT)
+        self.data_writer = DataWriter(pb_client=self.pb, config=self.config, environment=DATA_ENVIRONMENT)
         self.data_backfill = DataBackfill(
             data_writer=self.data_writer,
             config=self.config,
-            environment=ENVIRONMENT,
+            environment=DATA_ENVIRONMENT,
             broker=self.broker,
         )
-        self.bar_freshness_planner = BarFreshnessPlanner(self.pb, self.config, environment=ENVIRONMENT)
+        self.bar_freshness_planner = BarFreshnessPlanner(self.pb, self.config, environment=DATA_ENVIRONMENT)
         self.bar_repair_coordinator = BarRepairCoordinator(
             pb_client=self.pb,
             config=self.config,
-            environment=ENVIRONMENT,
+            environment=DATA_ENVIRONMENT,
             data_backfill=self.data_backfill,
             data_writer=self.data_writer,
             conid_resolver=self.conid_resolver,
@@ -253,7 +263,7 @@ class IBKRTradingService(
         self.data_retention = DataRetention(
             pb_client=self.pb,
             config=self.config,
-            default_environments=[ENVIRONMENT],
+            default_environments=[DATA_ENVIRONMENT],
         )
         self.timeframe_builder = TimeframeBarBuilder()
 
@@ -264,7 +274,7 @@ class IBKRTradingService(
         self.ws_client = IBKRWebSocketClient(
             on_tick=self._on_ws_market_tick,
             config=self.config,
-            environment=ENVIRONMENT,
+            environment=DATA_ENVIRONMENT,
             broker=self.broker,
         )
 
@@ -294,7 +304,10 @@ class IBKRTradingService(
         )
 
         self.signal_router = SignalRouter(
-            pb_client=self.pb, config=self.config, environment=ENVIRONMENT,
+            pb_client=self.pb,
+            config=self.config,
+            environment=DATA_ENVIRONMENT,
+            broker_mode=ENVIRONMENT,
         )
         self.signal_processor = SignalProcessor(
             config=self.config, order_lifecycle=self.order_lifecycle,
@@ -434,7 +447,7 @@ class IBKRTradingService(
                 "ibkr_targets",
                 filter=(
                     f'date = "{market_date}" && '
-                    f'environment = "{ENVIRONMENT}" && '
+                    f'environment = "{DATA_ENVIRONMENT}" && '
                     'status = "active"'
                 ),
                 sort="-score,-updated",

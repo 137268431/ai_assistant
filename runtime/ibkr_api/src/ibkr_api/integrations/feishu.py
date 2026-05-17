@@ -66,7 +66,9 @@ def _response_error_result(response: Any, payload: Any, *, message_id: str = "")
 
 
 def feishu_suppressed(environment: str, *, normalize_environment: NormalizeEnvironment) -> bool:
-    return normalize_environment(environment, "live") == "paper"
+    if str(os.environ.get("FEISHU_SUPPRESS_PAPER") or "").strip().lower() in {"1", "true", "yes", "on"}:
+        return normalize_environment(environment, "live") == "paper"
+    return False
 
 
 

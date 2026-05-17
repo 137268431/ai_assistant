@@ -45,6 +45,13 @@ def _format_quantity(value: Any) -> str:
     return f"{parsed:.2f}"
 
 
+def _broker_badge(environment: Any) -> str:
+    normalized = to_text(environment or "live").lower()
+    if normalized in {"live", "paper"}:
+        return f"Broker {normalized.upper()}"
+    return normalized.upper() if normalized else "Broker LIVE"
+
+
 def _record_date(record_or_data: Any) -> str:
     explicit = to_text(_record_or_extra_value(record_or_data, "date", "market_date", "trade_date", "backtest_date"))
     if explicit:
@@ -134,6 +141,7 @@ def order_view_buttons(console_base_url: str, order_record: Any) -> list[dict[st
 
 def build_order_status_card(order_record: Any, *, status: str = "", message: str = "", console_base_url: str = "") -> dict[str, Any]:
     environment = to_text(_record_or_extra_value(order_record, "environment")) or "live"
+    broker_badge = _broker_badge(environment)
     symbol = to_text(_record_or_extra_value(order_record, "symbol")).upper() or "ORDER"
     resolved_status = to_text(status or _record_or_extra_value(order_record, "status", "order_status", "current_status"))
     status_text = ORDER_STATUS_TEXT_MAP.get(resolved_status, resolved_status or "-")
@@ -147,7 +155,7 @@ def build_order_status_card(order_record: Any, *, status: str = "", message: str
     body_lines = [
         f"**状态**: {status_text}",
         f"**Symbol**: {symbol}",
-        f"**环境**: {environment}",
+        f"**Broker**: {broker_badge}",
         f"**订单ID / UniqueID**: {order_id or '-'} / {unique_id or '-'}",
         f"**信号ID / 交易组**: {signal_id or '-'} / {trade_group_id or '-'}",
         f"**角色 / 类型**: {role or '-'} / {order_type or '-'}",
@@ -169,7 +177,7 @@ def build_order_status_card(order_record: Any, *, status: str = "", message: str
         "header": {
             "title": {
                 "tag": "plain_text",
-                "content": f"📦 订单状态 · {status_text} · {symbol}",
+                "content": f"📦 订单状态 · {broker_badge} · {status_text} · {symbol}",
             },
             "template": template,
         },

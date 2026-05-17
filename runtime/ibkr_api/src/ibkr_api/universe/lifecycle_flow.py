@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from ibkr_api.orders.values import first_defined, to_float, to_int, to_text
+from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_api.reverse.normalize import normalize_reverse_record
 from ibkr_api.universe.maintenance import parse_json_object
 from ibkr_api.universe.today_targets_shared import (
@@ -1051,7 +1052,14 @@ def _signed_position_delta(role: str, side: str, qty: float, direction: str) -> 
     return 0.0
 
 
-def _load_live_sources(pb: Any, *, environment: str, payload: dict[str, Any], market_date: str) -> tuple[dict[str, list[dict[str, Any]]], list[dict[str, Any]], dict[str, Any]]:
+def _load_live_sources(
+    pb: Any,
+    *,
+    environment: str,
+    data_environment: str,
+    payload: dict[str, Any],
+    market_date: str,
+) -> tuple[dict[str, list[dict[str, Any]]], list[dict[str, Any]], dict[str, Any]]:
     source_errors: list[dict[str, Any]] = []
     symbol = _upper(payload.get("symbol"))
     signal_id = _safe_text(payload.get("signal_id"))
@@ -1065,11 +1073,12 @@ def _load_live_sources(pb: Any, *, environment: str, payload: dict[str, Any], ma
             source_errors.append(_warning("source_read_failed", f"读取 {collection} 失败: {error}", collection=collection))
         return rows
 
-    env_part = f'environment = "{escape_filter(environment)}"'
-    signal_parts = [env_part]
-    target_parts = [env_part]
-    order_parts = [env_part]
-    reverse_query_parts = [env_part]
+    broker_env_part = f'environment = "{escape_filter(environment)}"'
+    data_env_part = f'environment = "{escape_filter(data_environment)}"'
+    signal_parts = [data_env_part]
+    target_parts = [data_env_part]
+    order_parts = [broker_env_part]
+    reverse_query_parts = [broker_env_part]
     system_parts: list[str] = []
 
     if symbol:
@@ -1120,7 +1129,7 @@ def _load_live_sources(pb: Any, *, environment: str, payload: dict[str, Any], ma
         for match_id in _order_match_ids(row):
             if match_id not in order_ids:
                 order_ids.append(match_id)
-    fill_parts = [env_part]
+    fill_parts = [broker_env_part]
     order_filter = _or_equals("order_id", order_ids, limit=30)
     if order_filter:
         fill_parts.append(order_filter)
@@ -1146,11 +1155,20 @@ def _load_live_sources(pb: Any, *, environment: str, payload: dict[str, Any], ma
         "market_date": market_date,
         "start_ms": start_ms,
         "end_ms": end_ms,
+        "broker_mode": environment,
+        "data_environment": data_environment,
     }
 
 
 def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], market_date: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
-    sources, warnings, context = _load_live_sources(pb, environment=environment, payload=payload, market_date=market_date)
+    data_environment = resolve_data_environment(environment)
+    sources, warnings, context = _load_live_sources(
+        pb,
+        environment=environment,
+        data_environment=data_environment,
+        payload=payload,
+        market_date=market_date,
+    )
     symbol = context.get("symbol") or ""
     signal_id = context.get("signal_id") or ""
     trade_group_id = context.get("trade_group_id") or ""
@@ -1810,6 +1828,8 @@ def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], ma
         "remaining_position_qty": remaining_position_qty,
         "open_protection_qty_by_role": protection_open_qty_by_role,
         "environment": environment,
+        "broker_mode": environment,
+        "data_environment": data_environment,
     }
     return events, warnings, context, source_summary
 
@@ -2108,10 +2128,12 @@ def build_lifecycle_flow_response(
 
     if requested_mode == "backtest":
         environment = "backtest"
+        data_environment = "backtest"
         events, warnings, context, source_summary = _build_backtest_events(pb, payload=payload)
     else:
         default_environment = "paper" if requested_mode == "paper" else LIVE_ENVIRONMENT
         environment = normalize_environment(payload.get("environment"), default_environment)
+        data_environment = resolve_data_environment(environment)
         if environment not in SUPPORTED_LIVE_ENVIRONMENTS:
             return {"ok": False, "error": "unsupported_environment", "environment": environment, "supported_environments": sorted(SUPPORTED_LIVE_ENVIRONMENTS)}, 400
         mode = environment
@@ -2125,6 +2147,10 @@ def build_lifecycle_flow_response(
         "ok": True,
         "mode": requested_mode,
         "environment": environment,
+        "broker_mode": environment,
+        "data_environment": data_environment,
+        "market_data_environment": data_environment,
+        "shared_market_data": data_environment == "live",
         "context": context,
         "current_step": _current_step(nodes, warnings),
         "lanes": LANE_DEFINITIONS,

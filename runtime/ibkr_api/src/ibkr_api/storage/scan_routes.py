@@ -4,6 +4,7 @@ from typing import Any
 
 from flask import Response, jsonify, request
 
+from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_api.storage.helpers import batch_upsert_records, prepare_scan_row
 
 
@@ -17,7 +18,7 @@ def register_storage_scan_routes(app, *, deps: StorageDeps, exports: dict[str, A
     @app.route("/api/custom/ibkr/scan", methods=["POST"])
     def custom_ibkr_scan() -> Response:
         payload = request.get_json(silent=True) or {}
-        environment = normalize_environment(payload.get("environment"), "live")
+        environment = resolve_data_environment(normalize_environment(payload.get("environment"), "live"))
         row, error = prepare_scan_row(payload, environment)
         if row is None:
             return jsonify({"ok": False, "error": error or "missing_symbol_or_date"}), 400

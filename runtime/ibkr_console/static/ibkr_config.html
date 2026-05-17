@@ -56,6 +56,7 @@ const LEGACY_KEY_REDIRECTS = {
 }
 const ACTIVE_CONFIG_KEYS = new Set([
   'ibkr_trading_enabled',
+  'ibkr_live_trading_enabled',
   'ibkr_signal_source',
   'signal_manual_confirm_enabled',
   'position_limit_max',
@@ -220,6 +221,7 @@ function meta(displayName, groupName, sortOrder, defaultValue = '', description 
 
 const CONFIG_META = {
   ibkr_trading_enabled: meta('交易总开关', '运行总控', 100, 'TRUE', 'OFF 时不下新单；仍执行信号拉取、取消确认、手动操作轮询与状态同步'),
+  ibkr_live_trading_enabled: meta('LIVE 下单二次开关', '运行总控', 101, 'TRUE', 'LIVE 模式必须同时开启交易总开关和此开关才允许新下单；PAPER 不读取此开关'),
   ibkr_compute_enabled: meta('Compute 调度开关', '运行总控', 110, 'TRUE', '控制自动 compute / scan 调度；关闭后不再自动计算指标和执行盘前扫描'),
   pb_scheduler_enabled: meta('Scheduler 总开关', '运行总控', 120, 'TRUE', '控制 IBKR Scheduler；关闭后信号过期、订单过期、健康巡检、状态提醒等定时任务都会停止'),
 
@@ -415,6 +417,7 @@ const GROUP_ORDER = [
 
 const BOOLEAN_CONFIG_KEYS = new Set([
   'ibkr_trading_enabled',
+  'ibkr_live_trading_enabled',
   'signal_manual_confirm_enabled',
   'status_notify_enabled',
   'daily_summary_notify_enabled',

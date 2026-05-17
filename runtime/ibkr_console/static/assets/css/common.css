@@ -479,6 +479,21 @@
         color: #E2E8F0;
       }
 
+      .env-badge.broker-badge {
+        letter-spacing: 0.8px;
+        text-transform: uppercase;
+      }
+
+      .env-badge.data-badge {
+        border-color: rgba(56,189,248,0.24);
+        background: rgba(56,189,248,0.10);
+        color: #7dd3fc;
+      }
+
+      .page-context-meta-chip.is-shared .page-context-meta-value {
+        color: #7dd3fc;
+      }
+
       .env-switcher {
         display: inline-flex;
         align-items: center;

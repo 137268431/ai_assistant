@@ -4,6 +4,7 @@ from typing import Any
 
 from flask import Response, jsonify, request
 
+from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_api.storage.helpers import prepare_bar_row
 
 
@@ -23,8 +24,9 @@ def register_storage_bar_routes(app, *, deps: StorageDeps, exports: dict[str, An
         if not isinstance(bars, list) or not bars:
             return jsonify({"ok": False, "error": "Empty bars array"}), 400
 
-        default_environment = normalize_environment(payload.get("environment"), "live")
-        enabled_value = config_value("ibkr_bar_publish_enabled", "true", default_environment)
+        broker_mode = normalize_environment(payload.get("environment"), "live")
+        default_environment = resolve_data_environment(broker_mode)
+        enabled_value = config_value("ibkr_bar_publish_enabled", "true", broker_mode)
         if not parse_boolean(enabled_value, True):
             return jsonify(
                 {
@@ -38,7 +40,10 @@ def register_storage_bar_routes(app, *, deps: StorageDeps, exports: dict[str, An
         prepared_rows: list[dict[str, Any]] = []
         errors = 0
         for item in bars:
-            row, error = prepare_bar_row(item if isinstance(item, dict) else {}, default_environment)
+            item_payload = dict(item) if isinstance(item, dict) else {}
+            item_broker_mode = normalize_environment(item_payload.get("environment"), broker_mode)
+            item_payload["environment"] = resolve_data_environment(item_broker_mode)
+            row, error = prepare_bar_row(item_payload, default_environment)
             if row is None:
                 errors += 1
                 continue

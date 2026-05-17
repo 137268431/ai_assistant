@@ -440,7 +440,9 @@ class PBClient:
         return self.call_custom_api("ibkr/data_quality/truth_audit", method="POST", data=data, timeout=60)
 
     def upsert_order(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        return self.call_custom_api("ibkr/orders/upsert", method="POST", data=data)
+        payload = dict(data or {})
+        payload.setdefault("environment", os.environ.get("IBKR_ENVIRONMENT", "live"))
+        return self.call_custom_api("ibkr/orders/upsert", method="POST", data=payload)
 
     def ack_ibkr_signal(
         self,
@@ -467,8 +469,11 @@ class PBClient:
             return self.call_custom_api("ibkr/signals/ack", method="POST", data=payload, timeout=15)
         except Exception:
             # Fallback: ensure the signal is not left pending if the custom hook is temporarily unavailable.
+            from ibkr_compute.core.broker_mode import resolve_data_environment
+
             safe_signal_id = str(signal_id or "").replace('"', '\\"')
-            safe_environment = str(runtime_environment or "live").replace('"', '\\"')
+            data_environment = resolve_data_environment(runtime_environment)
+            safe_environment = str(data_environment or "live").replace('"', '\\"')
             record = self.get_first_record(
                 "ibkr_signals",
                 filter=(
@@ -480,9 +485,10 @@ class PBClient:
                 raise
 
             patch: Dict[str, Any] = {
-                "status": status,
-                "note": note,
+                "note": note if data_environment == runtime_environment == "live" else f"{runtime_environment}:{status}",
             }
+            if data_environment == runtime_environment == "live":
+                patch["status"] = status
             existing_extra = record.get("extra") or {}
             if isinstance(existing_extra, str):
                 try:
@@ -491,10 +497,27 @@ class PBClient:
                     existing_extra = {}
             if not isinstance(existing_extra, dict):
                 existing_extra = {}
+            execution_by_mode = existing_extra.get("execution_by_mode")
+            if not isinstance(execution_by_mode, dict):
+                execution_by_mode = {}
+            broker_execution = execution_by_mode.get(runtime_environment)
+            if not isinstance(broker_execution, dict):
+                broker_execution = {}
+            execution_by_mode[runtime_environment] = {
+                **broker_execution,
+                "status": status,
+                "note": note,
+                "data_environment": data_environment,
+                "source": "ibkr_compute_fallback",
+                "updated_at_ms": int(time.time() * 1000),
+            }
             patch["extra"] = {
                 **existing_extra,
+                "execution_by_mode": execution_by_mode,
                 "signal_ack_fallback": True,
                 "signal_ack_fallback_at": int(time.time() * 1000),
+                "signal_ack_fallback_broker_mode": runtime_environment,
+                "signal_ack_fallback_data_environment": data_environment,
             }
             updated = self.update_record("ibkr_signals", record["id"], patch)
             return {

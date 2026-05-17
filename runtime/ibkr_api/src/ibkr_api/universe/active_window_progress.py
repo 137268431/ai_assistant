@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ibkr_api.universe.active_window_progress_support import *  # noqa: F401,F403
+from ibkr_compute.core.broker_mode import resolve_data_environment
 
 def build_active_window_items_for_symbols(
     pb: Any,
@@ -20,6 +21,7 @@ def build_active_window_items_for_symbols(
     if limit is not None:
         ordered_symbols = ordered_symbols[: max(0, int(limit or 0))]
     runtime_environment = to_text(environment).lower() or LIVE_ENVIRONMENT
+    data_environment = resolve_data_environment(runtime_environment)
     normalized_interval = normalize_interval(to_text(interval) or "5m")
     computed_ms = int(computed_at_ms or int(time.time() * 1000))
     window_max_bars = (
@@ -50,7 +52,7 @@ def build_active_window_items_for_symbols(
 
     bars_by_symbol = _load_timeline_bars_by_symbol(
         pb,
-        environment=runtime_environment,
+        environment=data_environment,
         symbols=ordered_symbols,
         interval=normalized_interval,
         market_start_ms=market_start_ms,
@@ -61,7 +63,7 @@ def build_active_window_items_for_symbols(
         "ibkr_indicators",
         base_filter_parts=[
             f'interval = "{interval_to_chart_tf(normalized_interval)}"',
-            f'environment = "{escape_filter(runtime_environment)}"',
+            f'environment = "{escape_filter(data_environment)}"',
             f"bar_time_ms >= {market_start_ms}",
             f"bar_time_ms < {market_end_ms}",
         ],
@@ -73,7 +75,7 @@ def build_active_window_items_for_symbols(
         pb,
         "ibkr_signals",
         base_filter_parts=[
-            f'environment = "{escape_filter(runtime_environment)}"',
+            f'environment = "{escape_filter(data_environment)}"',
             f"bar_time_ms >= {market_start_ms}",
             f"bar_time_ms < {market_end_ms}",
         ],
@@ -260,6 +262,7 @@ def build_active_window_progress_response(
     time_strings: TimeStrings,
 ) -> tuple[dict[str, Any], int]:
     runtime_environment = normalize_environment(payload.get("environment"), LIVE_ENVIRONMENT)
+    data_environment = resolve_data_environment(runtime_environment)
     if runtime_environment not in SUPPORTED_ENVIRONMENTS:
         return {"ok": False, "error": "unsupported_environment", "environment": runtime_environment}, 400
 
@@ -290,7 +293,7 @@ def build_active_window_progress_response(
     target_rows = pb.get_records(
         "ibkr_targets",
         filter=(
-            f'environment = "{escape_filter(runtime_environment)}" && '
+            f'environment = "{escape_filter(data_environment)}" && '
             f'date = "{escape_filter(market_date)}" && '
             f"{_status_filter(requested_status)}"
         ),
@@ -331,6 +334,8 @@ def build_active_window_progress_response(
         return {
             "ok": True,
             "environment": runtime_environment,
+            "broker_mode": runtime_environment,
+            "data_environment": data_environment,
             "market_date": market_date,
             "current_market_date": current_date,
             "status": requested_status,
@@ -347,7 +352,7 @@ def build_active_window_progress_response(
 
     bars_by_symbol = _load_timeline_bars_by_symbol(
         pb,
-        environment=runtime_environment,
+        environment=data_environment,
         symbols=ordered_symbols,
         interval=interval,
         market_start_ms=market_start_ms,
@@ -358,7 +363,7 @@ def build_active_window_progress_response(
         "ibkr_indicators",
         base_filter_parts=[
             f'interval = "{interval_to_chart_tf(interval)}"',
-            f'environment = "{escape_filter(runtime_environment)}"',
+            f'environment = "{escape_filter(data_environment)}"',
             f"bar_time_ms >= {market_start_ms}",
             f"bar_time_ms < {market_end_ms}",
         ],
@@ -370,7 +375,7 @@ def build_active_window_progress_response(
         pb,
         "ibkr_signals",
         base_filter_parts=[
-            f'environment = "{escape_filter(runtime_environment)}"',
+            f'environment = "{escape_filter(data_environment)}"',
             f"bar_time_ms >= {market_start_ms}",
             f"bar_time_ms < {market_end_ms}",
         ],
@@ -558,6 +563,8 @@ def build_active_window_progress_response(
     return {
         "ok": True,
         "environment": runtime_environment,
+        "broker_mode": runtime_environment,
+        "data_environment": data_environment,
         "market_date": market_date,
         "current_market_date": current_date,
         "status": requested_status,

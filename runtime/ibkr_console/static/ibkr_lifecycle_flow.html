@@ -11,7 +11,7 @@
   <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dagre@0.8.5/dist/dagre.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.min.js"></script>
-  <link rel="stylesheet" href="/assets/css/pages/ibkr_lifecycle_flow/page.css?v=20260516-lifecycle-no-source-pills1">
+  <link rel="stylesheet" href="/assets/css/pages/ibkr_lifecycle_flow/page.css?v=20260517-broker-mode">
 </head>
 <body>
   <div id="nav"></div>
@@ -36,12 +36,11 @@
     <section class="panel filter-panel" aria-label="生命周期筛选">
       <form class="filter-form" id="lifecycleFilterForm">
         <div class="field">
-          <label for="environmentInput">Environment</label>
-          <select id="environmentInput" name="environment">
-            <option value="live">LIVE</option>
-            <option value="paper">PAPER</option>
-            <option value="backtest">BACKTEST</option>
-          </select>
+          <label>Broker</label>
+          <div class="readonly-mode-field">
+            <span class="env-badge broker-badge env-live" data-broker-mode-badge>Broker LIVE</span>
+            <span class="env-badge data-badge env-live" data-shared-data-badge>Shared Data</span>
+          </div>
         </div>
         <div class="field">
           <label for="dateInput">Date</label>
@@ -70,8 +69,6 @@
               <label for="modeInput">Mode</label>
               <select id="modeInput" name="mode">
                 <option value="auto">auto</option>
-                <option value="live">live</option>
-                <option value="paper">paper</option>
                 <option value="backtest">backtest</option>
               </select>
             </div>
@@ -144,6 +141,6 @@
     </section>
   </div>
 
-  <script src="/assets/js/pages/ibkr_lifecycle_flow/page.js?v=20260516-lifecycle-no-source-pills1"></script>
+  <script src="/assets/js/pages/ibkr_lifecycle_flow/page.js?v=20260517-broker-mode"></script>
 </body>
 </html>

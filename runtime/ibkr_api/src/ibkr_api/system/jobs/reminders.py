@@ -413,7 +413,7 @@ def _build_close_report_card(
     return {
         "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"tag": "plain_text", "content": f"IBKR 16:05 收盘汇总 · {environment.upper()}"},
+            "title": {"tag": "plain_text", "content": f"IBKR 16:05 收盘汇总 · Broker {environment.upper()}"},
             "template": _close_report_template(issue_lines, blocking),
         },
         "elements": elements,

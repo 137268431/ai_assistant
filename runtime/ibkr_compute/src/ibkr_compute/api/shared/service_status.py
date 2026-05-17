@@ -4,6 +4,8 @@ import inspect
 import logging
 import os
 
+from ibkr_compute.core.broker_mode import broker_mode_payload
+
 
 logger = logging.getLogger(__name__)
 
@@ -99,12 +101,13 @@ def _build_minimal_runtime_status(service, error: Exception | None = None) -> di
         trade_universe_status = "no_trade_symbols"
     active_subscription_set = set(active_subscription_symbols)
     market_ws_symbols_ready = len([symbol for symbol in market_ws_symbols if symbol in active_subscription_set])
+    mode_payload = broker_mode_payload(os.environ.get("IBKR_ENVIRONMENT"))
     status = {
         "gateway_control_available": True,
         "starting": starting,
         "startup_complete": bool(running and not starting),
         "runtime_phase": _safe_method_text(service, "_runtime_phase_label", errors),
-        "environment": str(os.environ.get("IBKR_ENVIRONMENT") or "live"),
+        **mode_payload,
         "gateway": _safe_component_status(service, "gateway_manager", errors),
         "session": _safe_component_status(service, "session_keeper", errors),
         "websocket": websocket_status,

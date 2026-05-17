@@ -40,6 +40,7 @@ from ibkr_api.universe.today_targets_workflow import (
     resolve_technical_state,
     sort_rows,
 )
+from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_compute.api.market.screener.payload import parse_market_date_bounds_ms
 from ibkr_compute.api.market.screener.scoring import (
     TRADABILITY_OPERABLE_MAX_FRESHNESS_MIN,
@@ -61,6 +62,7 @@ def build_today_targets_response(
     time_strings: TimeStrings,
 ) -> tuple[dict[str, Any], int]:
     runtime_environment = normalize_environment(payload.get("environment"), LIVE_ENVIRONMENT)
+    data_environment = resolve_data_environment(runtime_environment)
     current_date = current_market_date(time_strings)
     requested_market_date = to_text(first_defined(payload.get("marketDate"), payload.get("market_date"), payload.get("date"))) or current_date
     try:
@@ -75,12 +77,12 @@ def build_today_targets_response(
     requested_per_page = max(1, min(200, to_int(first_defined(payload.get("per_page"), payload.get("perPage")), 10)))
     requested_page = max(1, to_int(payload.get("page"), 1)) if paginate else 1
     computed_at_ms = int(time.time() * 1000)
-    daily_scan = load_daily_scan_state(pb, runtime_environment)
+    daily_scan = load_daily_scan_state(pb, data_environment)
 
     target_rows = pb.get_records(
         "ibkr_targets",
         filter=(
-            f'environment = "{escape_filter(runtime_environment)}" && '
+            f'environment = "{escape_filter(data_environment)}" && '
             f'date = "{escape_filter(market_date)}" && '
             '(status = "candidate" || status = "active")'
         ),
@@ -103,6 +105,8 @@ def build_today_targets_response(
         return {
             "ok": True,
             "environment": runtime_environment,
+            "broker_mode": runtime_environment,
+            "data_environment": data_environment,
             "market_date": market_date,
             "current_market_date": current_date,
             "computed_at_ms": computed_at_ms,
@@ -174,7 +178,7 @@ def build_today_targets_response(
         "ibkr_indicators",
         base_filter_parts=[
             f'interval = "{interval_to_chart_tf("5m")}"',
-            f'environment = "{escape_filter(runtime_environment)}"',
+            f'environment = "{escape_filter(data_environment)}"',
             f"bar_time_ms >= {indicator_lookback_ms}",
         ],
         symbols=ordered_symbols,
@@ -185,7 +189,7 @@ def build_today_targets_response(
         pb,
         "ibkr_signals",
         base_filter_parts=[
-            f'environment = "{escape_filter(runtime_environment)}"',
+            f'environment = "{escape_filter(data_environment)}"',
             f"bar_time_ms >= {market_start_ms}",
             f"bar_time_ms < {market_end_ms}",
         ],
@@ -395,6 +399,8 @@ def build_today_targets_response(
     return {
         "ok": True,
         "environment": runtime_environment,
+        "broker_mode": runtime_environment,
+        "data_environment": data_environment,
         "market_date": market_date,
         "current_market_date": current_date,
         "computed_at_ms": computed_at_ms,

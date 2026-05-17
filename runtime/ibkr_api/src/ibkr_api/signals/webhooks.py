@@ -9,6 +9,7 @@ from ibkr_api.signals.notifications import SignalStatusNotifier, apply_signal_st
 from ibkr_api.signals.order_cancel import OrderStatusNotifier, build_signal_cancel_order_summary, cancel_signal_related_orders
 from ibkr_api.signals.values import get_signal_extra, load_signal_record, merge_signal_extra, now_iso_utc, signal_status, signal_symbol
 from ibkr_api.webhooks.pages import fail_page, ok_page, warn_page
+from ibkr_compute.core.broker_mode import resolve_data_environment
 
 
 HTML_CONTENT_TYPE = "text/html; charset=utf-8"
@@ -208,7 +209,8 @@ def build_signal_confirm_webhook_response(
         return _fail_response("参数错误", "缺少信号ID", status_code=400, action="signal_confirm")
 
     environment = normalize_environment((payload or {}).get("environment"), "live")
-    record = load_signal_record(pb, signal_id, environment, escape_filter=escape_filter_string)
+    data_environment = resolve_data_environment(environment)
+    record = load_signal_record(pb, signal_id, data_environment, escape_filter=escape_filter_string)
     if not record or not record.get("id"):
         return _fail_response("信号不存在", "找不到信号", signal_id, status_code=404, action="signal_confirm")
 
@@ -230,6 +232,8 @@ def build_signal_confirm_webhook_response(
                 "expired_at": now_iso_utc(now_provider or clock),
                 "status_reason": "confirm_too_late",
                 "signal_validity_minutes": validity_minutes,
+                "broker_mode": environment,
+                "data_environment": data_environment,
             },
         )
         updated_record = pb.update_record(
@@ -268,6 +272,8 @@ def build_signal_confirm_webhook_response(
         "confirmed_by": "manual",
         "confirmed_at": confirm_time,
         "status_reason": "confirmed_by_user",
+        "broker_mode": environment,
+        "data_environment": data_environment,
     }
     if existing_extra.get("followup_requires_reconfirm") or existing_extra.get("confirmation_stale"):
         extra_update.update(
@@ -336,7 +342,8 @@ def build_signal_cancel_webhook_response(
         return _fail_response("参数错误", "缺少信号ID", status_code=400, action="signal_cancel")
 
     environment = normalize_environment((payload or {}).get("environment"), "live")
-    record = load_signal_record(pb, signal_id, environment, escape_filter=escape_filter_string)
+    data_environment = resolve_data_environment(environment)
+    record = load_signal_record(pb, signal_id, data_environment, escape_filter=escape_filter_string)
     if not record or not record.get("id"):
         return _fail_response("信号不存在", "找不到信号", signal_id, status_code=404, action="signal_cancel")
 
@@ -390,6 +397,8 @@ def build_signal_cancel_webhook_response(
             "status_reason": "manual_rejected" if cancel_summary.get("ok") else "manual_rejected_with_cancel_failures",
             "cancel_order_failures": list(cancel_summary.get("failed_order_ids") or []),
             "cancelled_order_ids": list(cancel_summary.get("cancelled_order_ids") or []),
+            "broker_mode": environment,
+            "data_environment": data_environment,
         },
     )
     updated_record = pb.update_record(

@@ -4,6 +4,8 @@ import json
 import re
 from typing import Any, Callable
 
+from ibkr_compute.core.broker_mode import resolve_data_environment
+
 
 def to_finite_number(value: Any) -> float | None:
     try:
@@ -135,13 +137,16 @@ def upsert_tv_indicator(
             400,
         )
 
-    environment = normalize_environment(payload.get("environment"), "live")
+    broker_mode = normalize_environment(payload.get("environment"), "live")
+    environment = resolve_data_environment(broker_mode)
     extra.update(
         {
             "symbol": symbol,
             "interval": interval,
             "bar_time_ms": int(bar_time_ms),
             "environment": environment,
+            "broker_mode": broker_mode,
+            "data_environment": environment,
         }
     )
     if exchange:
@@ -210,10 +215,13 @@ def upsert_tv_signal(
     if direction not in {"long", "short"}:
         return jsonify_fn({"ok": False, "error": "Invalid direction: must be 'long' or 'short'", "signal_id": payload.get("signal_id")}), 400
 
-    environment = normalize_environment(payload.get("environment"), "live")
+    broker_mode = normalize_environment(payload.get("environment"), "live")
+    environment = resolve_data_environment(broker_mode)
     base_extra = payload.get("extra") if isinstance(payload.get("extra"), dict) else {}
     extra = dict(base_extra)
     extra["environment"] = environment
+    extra["broker_mode"] = broker_mode
+    extra["data_environment"] = environment
     extra.setdefault("source", "tradingview")
     date_str = extract_signal_date(payload.get("us_time"), time_strings=time_strings)
 
