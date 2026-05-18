@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -690,6 +691,55 @@ class IntradaySdV1CoreTest(unittest.TestCase):
 
         self.assertEqual(biases, {"APP": "short", "DDOG": "long"})
         self.assertEqual(symbols, {"APP", "DDOG"})
+
+    def test_paper_active_targets_read_shared_live_target_rows(self):
+        filters = []
+
+        class FakeCfg:
+            def get_for_environment(self, key, environment, default=None):
+                if key == "ibkr_market_ws_symbols":
+                    return "SPY,QQQ,VIX"
+                return default
+
+            def get_int_for_environment(self, key, environment, default=0):
+                return default
+
+            def get_bool_for_environment(self, key, environment, default=False):
+                return default
+
+        def get_all_records(collection, **kwargs):
+            if collection != "ibkr_targets":
+                return []
+            filters.append(str(kwargs.get("filter") or ""))
+            return [
+                {
+                    "symbol": "APP",
+                    "status": "active",
+                    "direction_bias": "short",
+                    "extra": {"source": "daily_scan", "active_gate_passed": True},
+                }
+            ]
+
+        fake_app = SimpleNamespace(
+            WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR="market_monitor",
+            pb=SimpleNamespace(get_all_records=get_all_records),
+            cfg=FakeCfg(),
+            current_market_date=lambda: "2026-05-18",
+            normalize_symbol_csv=lambda text: [item.strip().upper() for item in str(text or "").split(",") if item.strip()],
+            normalize_watchlist_symbol_role=lambda role: str(role or "").strip().lower(),
+        )
+
+        with mock.patch.dict(os.environ, {"IBKR_DATA_ENVIRONMENT": "live"}, clear=False), mock.patch.object(
+            universe_mod,
+            "_api_app",
+            return_value=fake_app,
+        ), mock.patch.object(universe_mod, "load_effective_watchlist", return_value={}):
+            symbols = universe_mod.get_active_trade_symbols("paper")
+
+        self.assertEqual(symbols, {"APP"})
+        self.assertTrue(filters)
+        self.assertIn('environment = "live"', filters[0])
+        self.assertNotIn('environment = "paper"', filters[0])
 
     def test_signal_params_include_unsubscribed_active_target_policy(self):
         class FakeCfg:

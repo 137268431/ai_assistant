@@ -569,6 +569,25 @@ class UniverseRoutesTest(unittest.TestCase):
         self.assertEqual(2, payload["created"])
         self.assertEqual(["AAPL", "MSFT"], payload["symbols"])
 
+    def test_screener_targets_upsert_paper_writes_shared_live_targets(self):
+        pb = _MinimalPB()
+        payload, status_code = build_screener_targets_upsert_response(
+            pb,
+            payload={
+                "environment": "paper",
+                "market_date": "2026-05-18",
+                "items": [{"symbol": "aapl", "score": 12, "direction_bias": "long"}],
+            },
+            normalize_environment=lambda value, default="live": str(value or default).strip().lower() or default,
+            escape_filter_string=lambda value: str(value or "").replace('"', '\\"'),
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertEqual("paper", payload["environment"])
+        self.assertEqual("live", payload["data_environment"])
+        self.assertEqual("live", pb.created[0][1]["environment"])
+
     def test_today_targets_builds_signal_workflow_payload(self):
         pb = _MinimalPB()
         pb._records["ibkr_targets"] = [

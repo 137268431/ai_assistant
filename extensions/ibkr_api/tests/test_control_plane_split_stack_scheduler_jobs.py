@@ -424,6 +424,81 @@ class ControlPlaneSplitStackSchedulerJobsTest(unittest.TestCase):
         self.assertTrue(events)
         self.assertIn("ibkr-scheduler degraded", events[0]["detail"]["原因"])
 
+    def test_system_heartbeat_emits_partial_recovery_when_service_offline_clears(self):
+        states = {
+            ("system_notify_heartbeat", "paper"): {
+                "last_issue_hash": "previous-offline",
+                "last_issue_ms": 1779100000000,
+                "last_issue_codes": ["services_offline:1"],
+            }
+        }
+        events = []
+
+        def get_state_payload(state_key, environment):
+            return {"data": states.get((state_key, environment), {})}
+
+        def upsert_state(state_key, environment, data, date):
+            states[(state_key, environment)] = dict(data)
+            return data
+
+        def emit_system_event(**kwargs):
+            events.append(kwargs)
+            return {"ok": True, "notified": True, "title": kwargs.get("title")}
+
+        payload, status_code = build_system_heartbeat_response(
+            payload={"environment": "paper"},
+            normalize_environment=lambda value, default="live": str(value or default),
+            time_strings=lambda: {"us": "2026-05-18 09:40:33", "cn": "2026-05-18 21:40:33", "date": "2026-05-18"},
+            build_system_summary_payload=lambda environment, lite_mode=False: {
+                "status": "running",
+                "ibkr_compute": {"status": "running"},
+                "ibkr_runtime": {"status": "running"},
+                "today": {"ibkr_bars": 8207, "ibkr_signals": 0, "orders": 0},
+            },
+            build_system_monitor_payload=lambda environment: {
+                "status": "warning",
+                "runtime": {
+                    "status": "running",
+                    "session": {"authenticated": True},
+                    "websocket": {"connected": True, "ready": True},
+                    "gateway": {"running": True, "reachable": True},
+                },
+                "compute": {"status": "running"},
+                "scheduler": {"status": "running", "latest_ingested_bar_time_ms": 0, "dispatch_lag_min": 0.0},
+                "service_monitor": {
+                    "status_counts": {"running": 8},
+                    "services": {
+                        "ibkr-runtime": {"status": "running", "ib_gateway_client_id": 31},
+                        "ibkr-compute": {"status": "running", "ib_gateway_client_id": 51},
+                        "ibkr-api": {"status": "running", "ib_gateway_client_id": 61},
+                        "ibkr-scheduler": {"status": "running", "ib_gateway_client_id": 71},
+                        "ibkr-backtest": {"status": "running", "worker_status": "idle", "ib_gateway_client_id": 81},
+                    },
+                },
+                "flags": [
+                    {
+                        "code": "no_active_targets",
+                        "severity": "warning",
+                        "title": "No active trade targets",
+                        "detail": "watchlist 中存在交易标的，但当前 active target 数为 0",
+                    }
+                ],
+            },
+            emit_system_event=emit_system_event,
+            get_state_payload=get_state_payload,
+            upsert_state=upsert_state,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["unhealthy"])
+        self.assertTrue(payload["partial_recovery"])
+        self.assertEqual(events[0]["title"], "IBKR 系统部分恢复")
+        self.assertEqual(events[0]["level"], "info")
+        self.assertIn("services_offline:1", events[0]["detail"]["已恢复诊断码"])
+        self.assertIn("no_active_targets", events[0]["detail"]["仍存在诊断码"])
+        self.assertEqual(events[1]["title"], "IBKR 系统心跳异常")
+        self.assertEqual(states[("system_notify_heartbeat", "paper")]["last_partial_recovery_at"], "2026-05-18 09:40:33")
+
     def test_system_status_reminder_includes_backtest_service_semantics(self):
         events = []
 

@@ -2,6 +2,65 @@ from control_plane_split_stack_helpers import *
 
 
 class ControlPlaneSplitStackDataGapGuardTest(unittest.TestCase):
+    def test_paper_data_gap_guard_reads_shared_live_targets_and_bars(self):
+        class FakeGapPB:
+            def __init__(self):
+                self.states = {}
+                self.filters = []
+
+            def get_state(self, state_key, environment, date="global"):
+                return self.states.get((state_key, environment, date))
+
+            def upsert_state(self, state_key, environment, data, date="global"):
+                self.states[(state_key, environment, date)] = {"data": dict(data)}
+                return self.states[(state_key, environment, date)]
+
+            def get_records(self, collection, filter=None, sort=None, per_page=200, page=1):
+                self.filters.append((collection, str(filter or "")))
+                if collection == "watchlist":
+                    return [{"symbol": "AAPL", "environment": "live"}] if 'environment = "live"' in str(filter or "") else []
+                if collection == "ibkr_targets":
+                    return [{"symbol": "AAPL", "status": "active", "environment": "live"}] if 'environment = "live"' in str(filter or "") else []
+                if collection == "ibkr_bars":
+                    return [
+                        {
+                            "environment": "live",
+                            "symbol": "AAPL",
+                            "interval": "5m",
+                            "bar_time_ms": 1713881100000,
+                            "us_time": "2026-04-23 09:45:00",
+                            "session_type": "regular",
+                        }
+                    ] if 'environment = "live"' in str(filter or "") else []
+                if collection == "ibkr_indicators":
+                    return [
+                        {
+                            "environment": "live",
+                            "symbol": "AAPL",
+                            "interval": "5",
+                            "bar_time_ms": 1713881100000,
+                            "us_time": "2026-04-23 09:45:00",
+                            "session_type": "regular",
+                        }
+                    ] if 'environment = "live"' in str(filter or "") else []
+                return []
+
+        pb = FakeGapPB()
+        payload, status_code = build_data_gap_guard_response(
+            pb,
+            payload={"environment": "paper"},
+            normalize_environment=lambda value, default="live": str(value or default),
+            time_strings=lambda: {"us": "2026-04-23 09:50:00", "cn": "2026-04-23 21:50:00", "date": "2026-04-23"},
+            emit_system_event=lambda **kwargs: {"ok": True, "notified": True},
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["environment"], "paper")
+        self.assertEqual(payload["summary"]["data_environment"], "live")
+        self.assertEqual(payload["summary"]["target_count"], 1)
+        self.assertTrue(any(collection == "ibkr_targets" and 'environment = "live"' in filter_expr for collection, filter_expr in pb.filters))
+        self.assertFalse(any(collection == "ibkr_targets" and 'environment = "paper"' in filter_expr for collection, filter_expr in pb.filters))
+
     def test_data_gap_guard_ignores_vix_bar_gap(self):
         class FakeGapPB:
             def __init__(self):

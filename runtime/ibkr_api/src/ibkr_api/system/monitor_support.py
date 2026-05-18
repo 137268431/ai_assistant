@@ -58,7 +58,7 @@ def _monitor_builder_flag(error: dict[str, Any]) -> dict[str, str]:
 def _fallback_scheduler_payload(environment: str) -> dict[str, Any]:
     return {
         "ok": False,
-        "status": "offline",
+        "status": "unknown",
         "environment": environment,
         "jobs": {},
         "ingest_cursor": {},
@@ -69,7 +69,7 @@ def _fallback_scheduler_payload(environment: str) -> dict[str, Any]:
 def _fallback_scheduler_summary(environment: str) -> dict[str, Any]:
     return {
         "ok": False,
-        "status": "offline",
+        "status": "unknown",
         "environment": environment,
         "loop_interval_seconds": 0.0,
         "job_count": 0,
@@ -306,7 +306,8 @@ def derive_monitor_service_map(
         runtime_status = "offline"
 
     gateway_status = "running" if bool(gateway.get("running") or gateway.get("reachable")) else "offline"
-    scheduler_status = str(scheduler_summary.get("status") or "").strip().lower() or "offline"
+    scheduler_status = str(scheduler_summary.get("status") or "").strip().lower() or "unknown"
+    scheduler_unavailable = scheduler_status == "unknown" and not bool(scheduler_summary.get("ok", True))
     compute_preload_active = _compute_startup_preload_active() or _scheduler_compute_preload_deferred()
     close_compute_deferred = _scheduler_close_compute_deferred()
     scheduler_lag_compute_relevant = bool(scheduler_summary.get("dispatch_lag_compute_relevant", True))
@@ -342,6 +343,7 @@ def derive_monitor_service_map(
             **_topology_meta("ibkr-scheduler"),
             "status": scheduler_status,
             "detail": _detail_parts(
+                "status unavailable" if scheduler_unavailable else "",
                 f"loop {int(float(scheduler_summary.get('loop_interval_seconds') or 0))}s" if scheduler_summary.get("loop_interval_seconds") else "",
                 (
                     f"lag {float(scheduler_summary.get('dispatch_lag_min') or 0):.2f}m"
@@ -479,6 +481,19 @@ def build_system_monitor_payload(
     except Exception as exc:
         builder_errors.append(_monitor_builder_error("scheduler_status", exc))
         scheduler_payload = _fallback_scheduler_payload(runtime_environment)
+    else:
+        scheduler_meta = as_dict(scheduler_payload.get("_meta")) if isinstance(scheduler_payload, dict) else {}
+        scheduler_status_text = str((scheduler_payload or {}).get("status") or "").strip().lower()
+        scheduler_error = str(scheduler_meta.get("error") or "").strip()
+        scheduler_status_code = int(scheduler_meta.get("status_code") or 0)
+        if isinstance(scheduler_payload, dict) and not bool(scheduler_payload.get("ok", False)) and (
+            scheduler_error or scheduler_status_text in {"unknown", "offline", "error"} or scheduler_status_code >= 400
+        ):
+            detail = scheduler_error or (
+                f"status={scheduler_status_text or 'unknown'} status_code={scheduler_status_code}"
+            )
+            severity = "error" if scheduler_status_text in {"offline", "error"} else "warning"
+            builder_errors.append(_monitor_builder_error("scheduler_status", detail, severity=severity))
     scheduler_jobs = scheduler_payload.get("jobs") if isinstance(scheduler_payload.get("jobs"), dict) else {}
     try:
         scheduler_items = build_cron_payload(config, runtime_environment, scheduler_jobs)

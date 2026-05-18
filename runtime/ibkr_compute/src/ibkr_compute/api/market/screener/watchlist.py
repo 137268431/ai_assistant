@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 from ibkr_compute.api.market.screener.runtime import get_api_app
+from ibkr_compute.core.broker_mode import resolve_data_environment
 
 
 def load_effective_watchlist(environment: str) -> dict:
     api_app = get_api_app()
     runtime_environment = str(environment or "live").strip().lower() or "live"
+    data_environment = resolve_data_environment(runtime_environment)
     rows = api_app.pb.get_all_records(
         "watchlist",
         filter=(
-            f'environment = "{runtime_environment}" '
+            f'environment = "{data_environment}" '
             '|| environment = "global" '
             '|| environment = ""'
         ),
@@ -18,7 +20,7 @@ def load_effective_watchlist(environment: str) -> dict:
     )
     merged = {}
     applied = {}
-    priority = {"": 0, "global": 1, runtime_environment: 2}
+    priority = {"": 0, "global": 1, data_environment: 2}
     for row in rows:
         symbol = str(row.get("symbol", "")).strip().upper()
         if not symbol:

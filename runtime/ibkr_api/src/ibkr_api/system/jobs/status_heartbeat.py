@@ -12,6 +12,7 @@ ALERT_FLAG_SEVERITIES = {"warning", "error"}
 CONNECTION_ISSUE_CODES = {"gateway_offline", "session_unauthenticated", "websocket_not_ready"}
 DEGRADED_SERVICE_STATUSES = {"degraded", "warning"}
 OFFLINE_SERVICE_STATUSES = {"offline", "error"}
+PARTIAL_RECOVERY_ISSUE_BASES = CONNECTION_ISSUE_CODES | {"services_offline", "services_degraded", "runtime", "summary"}
 TRUTHY_TEXT = {"1", "true", "yes", "on"}
 IB_CLIENT_SERVICE_LABELS = (
     ("ibkr-runtime", "Runtime"),
@@ -99,6 +100,25 @@ def _issue_base_code(value: Any) -> str:
 
 def _issue_code_set(snapshot: dict[str, Any]) -> set[str]:
     return {_issue_base_code(item) for item in snapshot.get("issue_codes") or [] if _issue_base_code(item)}
+
+
+def _issue_bases_from_codes(codes: Any) -> set[str]:
+    return {_issue_base_code(item) for item in codes or [] if _issue_base_code(item)}
+
+
+def _recovered_issue_codes(previous_codes: Any, current_codes: Any) -> list[str]:
+    previous_items = [_to_text(item) for item in previous_codes or [] if _to_text(item)]
+    current_bases = _issue_bases_from_codes(current_codes)
+    recovered_bases = {
+        _issue_base_code(item)
+        for item in previous_items
+        if _issue_base_code(item) in PARTIAL_RECOVERY_ISSUE_BASES and _issue_base_code(item) not in current_bases
+    }
+    recovered: list[str] = []
+    for item in previous_items:
+        if _issue_base_code(item) in recovered_bases and item not in recovered:
+            recovered.append(item)
+    return recovered
 
 
 def _append_unique(items: list[str], value: str) -> None:
@@ -505,6 +525,21 @@ def _heartbeat_detail(snapshot: dict[str, Any], *, timestamp_us: str) -> dict[st
     return detail
 
 
+def _partial_recovery_detail(
+    snapshot: dict[str, Any],
+    *,
+    timestamp_us: str,
+    recovered_codes: list[str],
+    remaining_codes: list[str],
+) -> dict[str, Any]:
+    detail = _heartbeat_detail(snapshot, timestamp_us=timestamp_us)
+    detail["结论"] = "部分系统故障已恢复，仍有项目需要关注。"
+    detail["已恢复诊断码"] = ", ".join(recovered_codes) or "n/a"
+    detail["仍存在诊断码"] = ", ".join(remaining_codes) or "无"
+    detail["建议"] = "已恢复项无需重复处理；继续关注仍存在的诊断码。"
+    return detail
+
+
 def _direction_label(value: Any) -> str:
     direction = _to_text(value).lower()
     return {"long": "多", "short": "空", "neutral": "中性"}.get(direction, direction)
@@ -874,12 +909,15 @@ def build_system_heartbeat_response(
     fingerprint = _heartbeat_fingerprint(snapshot)
     current_ms = _to_int(datetime.now(timezone.utc).timestamp() * 1000, 0)
     issue_event: dict[str, Any] = {}
+    recovery_event: dict[str, Any] = {}
+    current_issue_codes = list(snapshot.get("issue_codes") or [])
+    previous_issue_codes = list(state.get("last_issue_codes") or [])
     next_state = {
         **state,
         "last_checked_at": times["us"],
         "last_monitor_status": _to_text(snapshot.get("monitor_status")),
         "last_summary_status": _to_text(snapshot.get("summary_status")),
-        "last_issue_codes": list(snapshot.get("issue_codes") or []),
+        "last_issue_codes": current_issue_codes,
     }
     last_issue_hash = _to_text(state.get("last_issue_hash"))
     last_issue_ms = _to_int(state.get("last_issue_ms"), 0)
@@ -887,6 +925,23 @@ def build_system_heartbeat_response(
     nominal_ok_suppressed = False
 
     if snapshot.get("unhealthy"):
+        recovered_codes = _recovered_issue_codes(previous_issue_codes, current_issue_codes)
+        if recovered_codes:
+            recovery_event = emit_system_event(
+                event_type="alert",
+                level="info",
+                source="ibkr-api",
+                title="IBKR 系统部分恢复",
+                detail=_partial_recovery_detail(
+                    snapshot,
+                    timestamp_us=times["us"],
+                    recovered_codes=recovered_codes,
+                    remaining_codes=current_issue_codes,
+                ),
+                environment=environment,
+            )
+            next_state["last_partial_recovery_at"] = times["us"]
+            next_state["last_partial_recovery_codes"] = recovered_codes
         should_notify = fingerprint != last_issue_hash or last_issue_ms <= 0 or (current_ms - last_issue_ms) >= HEARTBEAT_ALERT_COOLDOWN_MS
         next_state.update(
             {
@@ -948,8 +1003,10 @@ def build_system_heartbeat_response(
         "severity": _to_text(snapshot.get("severity")) or "warning",
         "summary_status": _to_text(snapshot.get("summary_status")) or "unknown",
         "monitor_status": _to_text(snapshot.get("monitor_status")) or "unknown",
-        "issue_codes": list(snapshot.get("issue_codes") or []),
+        "issue_codes": current_issue_codes,
         "event": issue_event,
+        "recovery_event": recovery_event,
+        "partial_recovery": bool(recovery_event),
         "nominal_ok_suppressed": nominal_ok_suppressed,
         "state": next_state,
         "source": "ibkr-api",

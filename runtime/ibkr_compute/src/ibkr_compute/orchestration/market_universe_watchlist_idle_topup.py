@@ -925,7 +925,11 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             return sorted(signal_symbols)
 
         service_mod = _service_mod()
-        safe_env = str(service_mod.ENVIRONMENT or "live").strip().lower().replace('"', '\\"')
+        safe_env = str(
+            getattr(service_mod, "DATA_ENVIRONMENT", None)
+            or getattr(service_mod, "ENVIRONMENT", None)
+            or "live"
+        ).strip().lower().replace('"', '\\"')
         safe_date = self._watchlist_idle_topup_target_date().replace('"', '\\"')
         try:
             rows = pb.get_all_records(

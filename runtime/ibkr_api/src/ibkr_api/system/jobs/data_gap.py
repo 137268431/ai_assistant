@@ -5,6 +5,7 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from ibkr_api.orders.values import parse_boolean
+from ibkr_compute.core.broker_mode import resolve_data_environment
 
 
 BAR_INTERVAL_MS = 5 * 60 * 1000
@@ -466,6 +467,7 @@ def build_data_gap_guard_response(
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
     environment = normalize_environment(request_payload.get("environment"), "live")
+    data_environment = resolve_data_environment(environment)
     times = time_strings()
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     today_start = f"{times['date']} 00:00:00"
@@ -495,13 +497,14 @@ def build_data_gap_guard_response(
     )
     gaps = load_data_gap_summary(
         pb,
-        environment=environment,
+        environment=data_environment,
         date_token=times["date"],
         today_start=today_start,
         bar_lag_alert_min=bar_lag_alert_min,
         indicator_lag_alert_min=indicator_lag_alert_min,
         indicator_requires_targets=indicator_requires_targets,
     )
+    gaps["data_environment"] = data_environment
     gaps["alert_cooldown_min"] = alert_cooldown_min
     next_state = {
         "last_gap_scan_at": times["us"],

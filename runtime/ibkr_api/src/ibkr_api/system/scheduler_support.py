@@ -110,6 +110,7 @@ def _resolve_compute_ingest_cursor(ingest_5m: dict[str, Any], latest_dispatched_
 def build_scheduler_summary(environment: str, scheduler_payload: dict[str, Any]) -> dict[str, Any]:
     payload = scheduler_payload if isinstance(scheduler_payload, dict) else {}
     jobs = payload.get("jobs") if isinstance(payload.get("jobs"), dict) else {}
+    raw_status = str(payload.get("status") or "").strip().lower()
     ingest_cursor = payload.get("ingest_cursor") if isinstance(payload.get("ingest_cursor"), dict) else {}
     dispatch_cursor = payload.get("compute_dispatch_cursor") if isinstance(payload.get("compute_dispatch_cursor"), dict) else {}
     ingest_5m = extract_cursor_interval(ingest_cursor, "5m")
@@ -162,7 +163,7 @@ def build_scheduler_summary(environment: str, scheduler_payload: dict[str, Any])
 
     return {
         "ok": bool(payload.get("ok", False)) if payload else False,
-        "status": str(payload.get("status") or ("running" if payload else "offline")).strip().lower() or "offline",
+        "status": raw_status or ("running" if payload else "unknown"),
         "environment": str(payload.get("environment") or environment).strip().lower() or environment,
         "loop_interval_seconds": float(payload.get("loop_interval_seconds") or 0),
         "job_count": len(jobs),
@@ -249,7 +250,7 @@ def scheduler_status(
         }
     return {
         "ok": False,
-        "status": "offline",
+        "status": "unknown",
         "environment": environment,
         "jobs": {},
         "ingest_cursor": {},

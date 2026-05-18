@@ -12,6 +12,7 @@ from ibkr_compute.api.market.screener.scoring import (
     build_tradability_assessment,
 )
 from ibkr_compute.api.market.screener.watchlist import load_effective_watchlist
+from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_compute.core.time_utils import ET
 from ibkr_compute.market.bar_freshness import (
     BarFreshnessPlanner,
@@ -441,6 +442,7 @@ def build_screener_payload(
 ) -> dict:
     api_app = get_api_app()
     runtime_environment = str(environment or "live").strip().lower() or "live"
+    data_environment = resolve_data_environment(runtime_environment)
     selected_symbols = api_app.normalize_symbols(symbols)
     selected_set = set(selected_symbols)
     market_date = str(market_date or api_app.current_market_date()).strip() or api_app.current_market_date()
@@ -468,7 +470,7 @@ def build_screener_payload(
 
     target_rows = api_app.pb.get_all_records(
         "ibkr_targets",
-        filter=f'date = "{market_date}" && environment = "{runtime_environment}"',
+        filter=f'date = "{market_date}" && environment = "{data_environment}"',
         sort="-updated",
         max_pages=20,
     )

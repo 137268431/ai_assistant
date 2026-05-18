@@ -5,6 +5,7 @@ import traceback
 
 from ibkr_compute.api.compute.runtime_state.runtime import _api_app
 from ibkr_compute.api.market.screener import load_effective_watchlist
+from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_compute.core.indicator_engine import DEFAULT_PARAMS, params_for_interval
 
 
@@ -18,6 +19,14 @@ MANUAL_TARGET_SOURCES = {
 }
 CONTEXT_ACTIVE_TARGET_SOURCES = {"daily_scan", "intraday_window_admission"}
 FIXED_TRADE_BLOCKED_SYMBOLS = {"BOXX", "IBKR"}
+
+
+def _normalize_environment(environment: str) -> str:
+    return str(environment or "live").strip().lower() or "live"
+
+
+def _target_data_environment(environment: str) -> str:
+    return resolve_data_environment(_normalize_environment(environment))
 
 
 def _safe_extra(row: dict | None) -> dict:
@@ -64,7 +73,7 @@ def _target_row_is_daily_scan_active(row: dict | None) -> bool:
 
 
 def _get_trade_subscription_budget(api_app, environment: str) -> int | None:
-    runtime_environment = str(environment or "live").strip().lower() or "live"
+    runtime_environment = _normalize_environment(environment)
     target_limit = max(
         0,
         int(api_app.cfg.get_int_for_environment("ibkr_target_subscription_limit", runtime_environment, 80) or 0),
@@ -82,7 +91,8 @@ def _get_trade_subscription_budget(api_app, environment: str) -> int | None:
 
 def _load_selected_active_trade_target_rows(environment: str, market_date: str | None = None) -> list[dict]:
     api_app = _api_app()
-    runtime_environment = str(environment or "live").strip().lower() or "live"
+    runtime_environment = _normalize_environment(environment)
+    target_environment = _target_data_environment(runtime_environment)
     target_date = str(market_date or api_app.current_market_date()).strip() or api_app.current_market_date()
     market_monitor_symbols = get_market_monitor_symbols(runtime_environment)
     try:
@@ -90,7 +100,7 @@ def _load_selected_active_trade_target_rows(environment: str, market_date: str |
             "ibkr_targets",
             filter=(
                 f'date = "{target_date}" && '
-                f'environment = "{runtime_environment}" && '
+                f'environment = "{target_environment}" && '
                 'status = "active"'
             ),
             sort="-score,-updated",
@@ -143,7 +153,7 @@ def get_market_monitor_symbols(environment: str) -> set[str]:
 
 def _get_trade_watchlist_symbols(environment: str) -> set[str]:
     api_app = _api_app()
-    runtime_environment = str(environment or "live").strip().lower() or "live"
+    runtime_environment = _normalize_environment(environment)
     market_monitor_symbols = get_market_monitor_symbols(runtime_environment)
     watchlist_map = load_effective_watchlist(runtime_environment)
     symbols: set[str] = set()
@@ -160,7 +170,8 @@ def _get_trade_watchlist_symbols(environment: str) -> set[str]:
 
 def _load_qualified_trade_target_rows(environment: str, market_date: str | None = None) -> list[dict]:
     api_app = _api_app()
-    runtime_environment = str(environment or "live").strip().lower() or "live"
+    runtime_environment = _normalize_environment(environment)
+    target_environment = _target_data_environment(runtime_environment)
     target_date = str(market_date or api_app.current_market_date()).strip() or api_app.current_market_date()
     market_monitor_symbols = get_market_monitor_symbols(runtime_environment)
     try:
@@ -168,7 +179,7 @@ def _load_qualified_trade_target_rows(environment: str, market_date: str | None 
             "ibkr_targets",
             filter=(
                 f'date = "{target_date}" && '
-                f'environment = "{runtime_environment}" && '
+                f'environment = "{target_environment}" && '
                 'status = "active"'
             ),
             sort="-score,-updated",
@@ -227,7 +238,7 @@ def get_active_target_direction_biases(environment: str, market_date: str | None
 
 def get_signal_generator_params(environment: str) -> dict:
     api_app = _api_app()
-    runtime_environment = str(environment or "live").strip().lower() or "live"
+    runtime_environment = _normalize_environment(environment)
     market_monitor_symbols = sorted(get_market_monitor_symbols(environment))
     active_target_rows = _load_qualified_trade_target_rows(runtime_environment)
     signal_enabled_symbols = sorted(_get_signal_enabled_symbols(runtime_environment))

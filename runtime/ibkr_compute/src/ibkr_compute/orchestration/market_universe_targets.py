@@ -36,9 +36,20 @@ def _service_mod():
 
 
 class TradingServiceMarketUniverseTargetsMixin:
-    def _environment_watchlist_filter(self) -> str:
+    def _market_universe_data_environment(self) -> str:
         service_mod = _service_mod()
-        safe_env = str(service_mod.ENVIRONMENT or "live").strip().lower().replace('"', '\\"')
+        environment = str(
+            getattr(service_mod, "DATA_ENVIRONMENT", None)
+            or getattr(service_mod, "ENVIRONMENT", None)
+            or "live"
+        ).strip().lower()
+        return environment or "live"
+
+    def _escaped_market_universe_data_environment(self) -> str:
+        return self._market_universe_data_environment().replace('"', '\\"')
+
+    def _environment_watchlist_filter(self) -> str:
+        safe_env = self._escaped_market_universe_data_environment()
         return f'environment = "{safe_env}" || environment = "global" || environment = ""'
 
     def _watchlist_record_role(self, row: dict) -> str:
@@ -86,10 +97,15 @@ class TradingServiceMarketUniverseTargetsMixin:
         ):
             return
 
-        service_mod.logger.info("Refreshing watchlist pool for env=%s", service_mod.ENVIRONMENT)
+        data_environment = self._market_universe_data_environment()
+        service_mod.logger.info(
+            "Refreshing watchlist pool for broker_env=%s data_env=%s",
+            service_mod.ENVIRONMENT,
+            data_environment,
+        )
         merged = {}
         applied = {}
-        priority = {"": 0, "global": 1, str(service_mod.ENVIRONMENT or "live").strip().lower(): 2}
+        priority = {"": 0, "global": 1, data_environment: 2}
 
         try:
             rows = self.pb.get_all_records(
@@ -177,7 +193,7 @@ class TradingServiceMarketUniverseTargetsMixin:
     def _today_target_rows(self):
         service_mod = _service_mod()
         today = datetime.now(service_mod.ET).strftime("%Y-%m-%d")
-        safe_env = str(service_mod.ENVIRONMENT or "live").strip().lower().replace('"', '\\"')
+        safe_env = self._escaped_market_universe_data_environment()
         rows = self.pb.get_all_records(
             "ibkr_targets",
             filter=(
@@ -257,7 +273,7 @@ class TradingServiceMarketUniverseTargetsMixin:
 
     def _mark_target_statuses(self, target_date: str, selected_rows):
         service_mod = _service_mod()
-        safe_env = str(service_mod.ENVIRONMENT or "live").strip().lower().replace('"', '\\"')
+        safe_env = self._escaped_market_universe_data_environment()
         monitor_symbols = set(self._market_ws_symbols())
         try:
             existing = self.pb.get_all_records(
@@ -944,7 +960,7 @@ class TradingServiceMarketUniverseTargetsMixin:
 
     def _remove_stale_target_rows(self, active_date: str) -> int:
         service_mod = _service_mod()
-        safe_env = str(service_mod.ENVIRONMENT or "live").strip().lower().replace('"', '\\"')
+        safe_env = self._escaped_market_universe_data_environment()
         try:
             rows = self.pb.get_all_records(
                 "ibkr_targets",

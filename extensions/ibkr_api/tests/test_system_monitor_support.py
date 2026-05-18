@@ -9,6 +9,7 @@ if str(SERVICE_SRC_ROOT) not in sys.path:
 from ibkr_api.system.monitor_support import build_system_monitor_payload
 from ibkr_api.system.monitor_support import derive_monitor_service_map
 from ibkr_api.system.scheduler_support import build_scheduler_summary
+from ibkr_api.system.scheduler_support import scheduler_status
 from ibkr_api.system.service_state import derive_compute_state
 
 
@@ -151,6 +152,50 @@ class SystemMonitorSupportTest(unittest.TestCase):
         scheduler = service_monitor["services"]["ibkr-scheduler"]
         self.assertEqual(scheduler["status"], "running")
         self.assertIn("deferred by compute preload", scheduler["detail"])
+
+    def test_scheduler_empty_status_payload_is_unknown_not_offline(self):
+        scheduler_payload = scheduler_status(
+            "paper",
+            request_json=lambda *args, **kwargs: {
+                "ok": False,
+                "status_code": 200,
+                "error": "empty scheduler status payload",
+                "payload": {},
+            },
+            scheduler_base_url="http://scheduler.internal:5103",
+        )
+        scheduler_summary = build_scheduler_summary("paper", scheduler_payload)
+        service_monitor = derive_monitor_service_map(
+            "paper",
+            {
+                "status": "ok",
+                "runtime": {
+                    "status": "running",
+                    "runtime_phase": "running",
+                    "gateway": {"running": True, "reachable": True},
+                    "session": {"authenticated": True},
+                    "websocket": {"connected": True, "ready": True},
+                },
+                "compute": {
+                    "status": "running",
+                    "total_engines": 10,
+                    "ready_engines": 10,
+                },
+                "service_topology": {"services": {}},
+            },
+            scheduler_summary,
+            console_probe={"ok": True, "status_code": 200, "target_url": "https://quant.lzw-glory.top/index.html"},
+            pb_health={"ok": True, "status_code": 200},
+            build_service_topology=lambda: {"services": {}},
+        )
+
+        scheduler = service_monitor["services"]["ibkr-scheduler"]
+        self.assertEqual(scheduler_payload["status"], "unknown")
+        self.assertEqual(scheduler["status"], "unknown")
+        self.assertEqual(0, service_monitor["status_counts"].get("offline", 0))
+        self.assertIn("status unavailable", scheduler["detail"])
+        self.assertIn("awaiting bars", scheduler["detail"])
+        self.assertIn("jobs 0", scheduler["detail"])
 
     def test_scheduler_lag_is_not_degraded_when_compute_job_deferred_by_preload(self):
         service_monitor = derive_monitor_service_map(

@@ -21,6 +21,7 @@ from ibkr_api.universe.maintenance import (
     upsert_record,
     WATCHLIST_ROLE_MARKET_MONITOR,
 )
+from ibkr_compute.core.broker_mode import resolve_data_environment
 
 RequestJsonRequest = Callable[..., dict[str, Any]]
 TimeStrings = Callable[[], dict[str, str]]
@@ -56,6 +57,7 @@ def build_target_upsert_response(
     compute_base_url: str,
 ) -> tuple[dict[str, Any], int]:
     environment = normalize_environment(payload.get("environment"), "live")
+    data_environment = resolve_data_environment(environment)
     symbol = to_text(payload.get("symbol")).upper()
     times = time_strings() or {}
     target_date = to_text(payload.get("date") or times.get("date"))
@@ -90,7 +92,7 @@ def build_target_upsert_response(
     effective_watchlist_record = find_effective_watchlist_record(
         pb,
         symbol,
-        environment,
+        data_environment,
         escape_filter_string=escape_filter_string,
     )
     effective_role = normalize_watchlist_role((effective_watchlist_record or {}).get("symbol_role"))
@@ -119,11 +121,11 @@ def build_target_upsert_response(
     filter_expr = (
         f'symbol = "{escape_filter_string(symbol)}" && '
         f'date = "{escape_filter_string(target_date)}" && '
-        f'environment = "{escape_filter_string(environment)}"'
+        f'environment = "{escape_filter_string(data_environment)}"'
     )
     compare_data = {
         "symbol": symbol,
-        "environment": environment,
+        "environment": data_environment,
         "exchange": exchange,
         "date": target_date,
         "direction_bias": direction_bias,
@@ -154,7 +156,7 @@ def build_target_upsert_response(
         watchlist_sync = ensure_target_watchlist_record(
             pb,
             symbol=symbol,
-            environment=environment,
+            environment=data_environment,
             exchange=exchange,
             industry=to_text(extra.get("industry") or extra.get("asset_class") or extra.get("description")),
             escape_filter_string=escape_filter_string,
@@ -183,19 +185,19 @@ def build_target_upsert_response(
         watchlist_sync = remove_auto_watchlist_record_if_eligible(
             pb,
             symbol,
-            environment,
+            data_environment,
             current_market_date,
             escape_filter_string=escape_filter_string,
         )
         if not has_effective_watchlist_member(
             pb,
             symbol,
-            environment,
+            data_environment,
             escape_filter_string=escape_filter_string,
         ) and not list_active_today_targets(
             pb,
             symbol,
-            environment,
+            data_environment,
             current_market_date,
             escape_filter_string=escape_filter_string,
         ):
@@ -226,6 +228,7 @@ def build_target_upsert_response(
             "symbol": symbol,
             "date": target_date,
             "environment": environment,
+            "data_environment": data_environment,
             "current_market_date": current_market_date,
             "watchlist_sync": watchlist_sync,
             "runtime_reconcile": runtime_reconcile,
@@ -246,13 +249,14 @@ def build_target_remove_response(
     compute_base_url: str,
 ) -> tuple[dict[str, Any], int]:
     fallback_environment = normalize_environment(payload.get("environment"), "live")
+    data_environment = resolve_data_environment(fallback_environment)
     record_id = to_text(payload.get("record_id") or payload.get("id"))
     symbol_hint = to_text(payload.get("symbol")).upper()
     filter_expr = ""
     if symbol_hint:
         filter_expr = (
             f'symbol = "{escape_filter_string(symbol_hint)}" && '
-            f'environment = "{escape_filter_string(fallback_environment)}"'
+            f'environment = "{escape_filter_string(data_environment)}"'
         )
     record = find_record_by_id_or_filter(
         pb,
@@ -264,7 +268,7 @@ def build_target_remove_response(
     if not record:
         return {"ok": False, "error": "target_record_not_found", "source": "ibkr-api"}, 404
 
-    environment = normalize_environment(record.get("environment") or fallback_environment, fallback_environment)
+    environment = fallback_environment
     symbol = to_text(record.get("symbol") or symbol_hint).upper()
     current_market_date = get_runtime_market_date(
         environment,
@@ -278,21 +282,21 @@ def build_target_remove_response(
     auto_watchlist = remove_auto_watchlist_record_if_eligible(
         pb,
         symbol,
-        environment,
+        data_environment,
         current_market_date,
         escape_filter_string=escape_filter_string,
     )
     keep_watchlist = has_effective_watchlist_member(
         pb,
         symbol,
-        environment,
+        data_environment,
         escape_filter_string=escape_filter_string,
     )
     keep_targets = bool(
         list_active_today_targets(
             pb,
             symbol,
-            environment,
+            data_environment,
             current_market_date,
             escape_filter_string=escape_filter_string,
         )
@@ -326,6 +330,7 @@ def build_target_remove_response(
             "id": actual_record_id,
             "symbol": symbol,
             "environment": environment,
+            "data_environment": data_environment,
             "current_market_date": current_market_date,
             "watchlist_sync": auto_watchlist,
             "runtime_reconcile": runtime_reconcile,
@@ -344,6 +349,7 @@ def build_screener_targets_upsert_response(
 ) -> tuple[dict[str, Any], int]:
     items = payload.get("items") if isinstance(payload.get("items"), list) else []
     environment = normalize_environment(payload.get("environment"), "live")
+    data_environment = resolve_data_environment(environment)
     market_date = to_text(payload.get("market_date") or payload.get("date"))
     if not market_date:
         return {"ok": False, "error": "Missing market_date", "source": "ibkr-api"}, 400
@@ -366,7 +372,7 @@ def build_screener_targets_upsert_response(
         filter_expr = (
             f'symbol = "{escape_filter_string(symbol)}" && '
             f'date = "{escape_filter_string(market_date)}" && '
-            f'environment = "{escape_filter_string(environment)}"'
+            f'environment = "{escape_filter_string(data_environment)}"'
         )
         existing = None
         try:
@@ -401,11 +407,11 @@ def build_screener_targets_upsert_response(
                 else ("score" if (to_float(item.get("score")) or 0) > 0 else "tradability_score")
             ),
             "market_date": market_date,
-            "environment": environment,
+            "environment": data_environment,
         }
         row_payload = {
             "symbol": symbol,
-            "environment": environment,
+            "environment": data_environment,
             "exchange": to_text(item.get("exchange") or existing_row.get("exchange")).upper(),
             "date": market_date,
             "direction_bias": normalize_direction_bias(item.get("direction_bias") or existing_row.get("direction_bias"), default="neutral"),
@@ -442,6 +448,7 @@ def build_screener_targets_upsert_response(
             "ok": errors == 0,
             "market_date": market_date,
             "environment": environment,
+            "data_environment": data_environment,
             "received": len(items),
             "created": created,
             "updated": updated,

@@ -34,6 +34,7 @@ from ibkr_compute.api.market.screener.scoring import (
     TRADABILITY_OPERABLE_MIN_SCORE,
     build_tradability_assessment,
 )
+from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_compute.core.active_window_admission import is_active_window_admitted
 from ibkr_compute.market.timeframe_utils import normalize_interval
 
@@ -616,6 +617,7 @@ def build_intraday_window_admission_response(
     environment = normalize_environment(request_payload.get("environment"), LIVE_ENVIRONMENT)
     if environment not in SUPPORTED_ENVIRONMENTS:
         return {"ok": False, "error": "unsupported_environment", "environment": environment, "source": "ibkr-api"}, 400
+    data_environment = resolve_data_environment(environment)
 
     interval = normalize_interval(to_text(request_payload.get("interval")) or "5m")
     if interval != "5m":
@@ -644,6 +646,7 @@ def build_intraday_window_admission_response(
             "skipped": True,
             "reason": "outside_admission_window",
             "environment": environment,
+            "data_environment": data_environment,
             "market_date": market_date,
             "window": {"start_et": start_et, "end_et": end_et, "current_us": to_text(times.get("us"))},
             "source": "ibkr-api",
@@ -691,12 +694,12 @@ def build_intraday_window_admission_response(
     computed_at_ms = int(time.time() * 1000)
     trade_watchlist, watchlist_monitor_symbols = _load_effective_watchlist(
         pb,
-        environment,
+        data_environment,
         escape_filter_string=escape_filter_string,
     )
     configured_monitor_symbols = _configured_monitor_symbols(config_value, environment)
     monitor_symbols = watchlist_monitor_symbols.union(configured_monitor_symbols)
-    today_targets = _load_today_targets(pb, environment, market_date, escape_filter_string=escape_filter_string)
+    today_targets = _load_today_targets(pb, data_environment, market_date, escape_filter_string=escape_filter_string)
     active_symbols = {
         symbol
         for symbol, row in today_targets.items()
@@ -828,7 +831,7 @@ def build_intraday_window_admission_response(
             existing = today_targets.get(symbol) or {}
             score = to_float(row.get("score")) or 0.0
             extra = _target_extra(
-                existing={**existing, "environment": environment},
+                existing={**existing, "environment": data_environment},
                 item=item,
                 metrics=metrics,
                 market_date=market_date,
@@ -837,7 +840,7 @@ def build_intraday_window_admission_response(
             )
             row_payload = {
                 "symbol": symbol,
-                "environment": environment,
+                "environment": data_environment,
                 "exchange": to_text(first_defined(metrics.get("exchange"), (trade_watchlist.get(symbol) or {}).get("exchange"), item.get("exchange"), "SMART")).upper(),
                 "date": market_date,
                 "direction_bias": normalize_direction_bias(row.get("direction_bias"), default="neutral"),
@@ -852,7 +855,7 @@ def build_intraday_window_admission_response(
             filter_expr = (
                 f'symbol = "{escape_filter_string(symbol)}" && '
                 f'date = "{escape_filter_string(market_date)}" && '
-                f'environment = "{escape_filter_string(environment)}"'
+                f'environment = "{escape_filter_string(data_environment)}"'
             )
             try:
                 result = upsert_record(
@@ -865,7 +868,7 @@ def build_intraday_window_admission_response(
                 sync = ensure_target_watchlist_record(
                     pb,
                     symbol=symbol,
-                    environment=environment,
+                    environment=data_environment,
                     exchange=row_payload["exchange"],
                     industry=to_text((trade_watchlist.get(symbol) or {}).get("industry")),
                     escape_filter_string=escape_filter_string,
@@ -940,6 +943,7 @@ def build_intraday_window_admission_response(
     response = {
         "ok": ok,
         "environment": environment,
+        "data_environment": data_environment,
         "market_date": market_date,
         "job_id": "ibkr_intraday_window_admission",
         "dry_run": dry_run,
