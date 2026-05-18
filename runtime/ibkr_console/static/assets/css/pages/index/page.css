@@ -1105,7 +1105,7 @@
 
 /* Home density tune. */
 .home-shell {
-    padding: 14px 16px 84px;
+    padding: 16px 16px 84px;
 }
 
 .home-main,
@@ -1322,13 +1322,12 @@
     }
 
     .home-targets-grid {
-        grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 360px));
-        justify-content: start;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
     }
 
     .home-target-card,
     .home-targets-more {
-        max-width: 360px;
+        max-width: none;
     }
 }
 

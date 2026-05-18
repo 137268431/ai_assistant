@@ -35,9 +35,8 @@
     }
 
     .page-shell {
-      max-width: 1500px;
       margin: 0 auto;
-      padding: 18px 18px 120px;
+      padding: 16px 16px 120px;
     }
 
     .page-shell > #contextBar > .page-context-bar {
@@ -455,7 +454,7 @@
     }
 
     #pageBridge {
-      margin-bottom: 6px;
+      margin-bottom: 0;
     }
 
     .screener-domain-bridge .screener-domain-tab {
@@ -471,32 +470,32 @@
 
     .page-shell > #pageBridge > .screener-domain-bridge.page-bridge {
       grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 6px;
-      margin: 0 0 6px;
+      gap: var(--space-2);
+      margin: 0 0 var(--space-3);
     }
 
     .screener-domain-bridge .screener-domain-tab.page-bridge-link {
-      min-height: 42px;
-      max-height: none;
-      padding: 7px 11px;
-      gap: 2px;
-      overflow: visible;
+      min-height: 48px;
+      max-height: var(--bridge-tab-max-height);
+      padding: 7px 10px;
+      gap: 3px;
+      overflow: hidden;
     }
 
     .screener-domain-bridge .page-bridge-kicker {
-      font-size: 8.5px;
-      line-height: 1.15;
-      letter-spacing: 0.12em;
+      font-size: 10px;
+      line-height: 1.2;
+      letter-spacing: 1px;
     }
 
     .screener-domain-bridge .page-bridge-label {
-      font-size: 12.5px;
-      line-height: 1.2;
+      font-size: 12px;
+      line-height: 1.25;
       font-weight: 700;
     }
 
     .screener-domain-bridge .page-bridge-copy {
-      display: none;
+      display: -webkit-box;
     }
 
     .domain-tabs {
@@ -2190,7 +2189,7 @@
 
 /* Screener density tune. */
 .page-shell {
-    padding: 14px 14px 96px;
+    padding: 16px 16px 96px;
 }
 
 .hero,

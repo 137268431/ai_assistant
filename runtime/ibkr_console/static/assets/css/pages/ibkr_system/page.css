@@ -1391,30 +1391,26 @@
     }
 }
 
-/* Card-density pass: bound operational/config cards so sparse rows do not look oversized. */
+/* Fluid density pass: fill the wide shell while keeping readable card minimums. */
 @media (min-width: 1121px) {
     .ops-summary-grid {
-        grid-template-columns: repeat(auto-fill, minmax(min(100%, 190px), 260px));
-        justify-content: start;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr));
     }
 
     .scheduler-summary-grid {
-        grid-template-columns: repeat(auto-fill, minmax(min(100%, 180px), 260px));
-        justify-content: start;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr));
     }
 
     .config-grid {
-        grid-template-columns: repeat(auto-fill, minmax(min(100%, 190px), 260px));
-        justify-content: start;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
     }
 
     .config-grid-primary,
     .config-grid-secondary {
-        grid-template-columns: repeat(auto-fill, minmax(min(100%, 190px), 260px));
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
     }
 
     .cron-grid {
-        grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 320px));
-        justify-content: start;
+        grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
     }
 }

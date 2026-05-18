@@ -819,7 +819,7 @@
 
 /* Warmup density tune. */
 .page-shell {
-    padding: 0 14px 84px;
+    padding: 0 16px 84px;
 }
 
 .service-topology-shell {
@@ -844,8 +844,7 @@
 }
 
 .detail-grid {
-    grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 260px));
-    justify-content: start;
+    grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
 }
 
 .warmup-link-summary {

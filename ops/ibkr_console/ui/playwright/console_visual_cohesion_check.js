@@ -10,6 +10,8 @@ const ENVIRONMENT = process.env.IBKR_ENVIRONMENT || 'live';
 const TIMEOUT_MS = Number(process.env.PB_SMOKE_NAV_TIMEOUT_MS || 20000);
 const ARTIFACT_DIR = process.env.PB_SMOKE_ARTIFACT_DIR || '/tmp/ai_assistant_pb_smoke';
 const VISUAL_WAIT_MS = Number(process.env.VISUAL_WAIT_MS || 1400);
+const DESKTOP_VIEWPORT_WIDTH = Number(process.env.VISUAL_DESKTOP_WIDTH || 2048);
+const DESKTOP_VIEWPORT_HEIGHT = Number(process.env.VISUAL_DESKTOP_HEIGHT || 1100);
 
 function findRepoRoot(startDir) {
   let current = startDir;
@@ -69,7 +71,7 @@ async function inspectPage(browser, token, fileName, mobile = false) {
   const deviceLabel = mobile ? 'mobile' : 'desktop';
   const context = mobile
     ? await browser.newContext({ ...devices['iPhone 12'], ignoreHTTPSErrors: true })
-    : await browser.newContext({ viewport: { width: 1440, height: 960 }, ignoreHTTPSErrors: true });
+    : await browser.newContext({ viewport: { width: DESKTOP_VIEWPORT_WIDTH, height: DESKTOP_VIEWPORT_HEIGHT }, ignoreHTTPSErrors: true });
   await context.addInitScript((savedToken) => {
     localStorage.setItem('pb_token', savedToken);
   }, token);
@@ -158,8 +160,12 @@ async function inspectPage(browser, token, fileName, mobile = false) {
       document.documentElement.scrollWidth - document.documentElement.clientWidth,
       document.body.scrollWidth - document.documentElement.clientWidth
     );
+    const shell = document.querySelector('.page-shell, .home-shell, .content, .workspace');
+    const shellRect = shell ? shell.getBoundingClientRect() : null;
+    const shellWidthGap = shellRect ? Math.max(0, document.documentElement.clientWidth - shellRect.width) : 0;
     const bridge = document.querySelector('#pageBridge .page-bridge');
     const bridgeRect = bridge ? bridge.getBoundingClientRect() : null;
+    const pageGutter = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--page-gutter')) || 16;
     const configAction = document.querySelector('.config-action-bar');
     const configGap = bridgeRect && configAction
       ? Math.round(configAction.getBoundingClientRect().top - bridgeRect.bottom)
@@ -171,6 +177,13 @@ async function inspectPage(browser, token, fileName, mobile = false) {
       defaultLinks,
       panelIssues,
       overflowX,
+      shellWidth: shellRect ? Math.round(shellRect.width) : null,
+      viewportWidth: document.documentElement.clientWidth,
+      shellWidthGap: Math.round(shellWidthGap),
+      bridgeLeft: bridgeRect ? Math.round(bridgeRect.left) : null,
+      bridgeRight: bridgeRect ? Math.round(document.documentElement.clientWidth - bridgeRect.right) : null,
+      bridgeHeight: bridgeRect ? Math.round(bridgeRect.height) : null,
+      pageGutter: Math.round(pageGutter),
       configGap,
     };
   }, { targetFile: fileName, isMobile: mobile }).catch((error) => {
@@ -185,6 +198,17 @@ async function inspectPage(browser, token, fileName, mobile = false) {
     audit.panelIssues.forEach((issue) => errors.push(`panel:${issue}`));
     if (audit.overflowX > 8) {
       errors.push(`horizontal_overflow:${audit.overflowX}`);
+    }
+    if (!mobile && audit.shellWidth != null && audit.shellWidthGap > 48) {
+      errors.push(`shell_not_fluid:${audit.shellWidth}/${audit.viewportWidth}`);
+    }
+    if (!mobile && audit.bridgeLeft != null) {
+      if (Math.abs(audit.bridgeLeft - audit.pageGutter) > 2 || Math.abs(audit.bridgeRight - audit.pageGutter) > 2) {
+        errors.push(`bridge_gutter_mismatch:${audit.bridgeLeft}/${audit.bridgeRight}/expected:${audit.pageGutter}`);
+      }
+      if (audit.bridgeHeight < 52 || audit.bridgeHeight > 72) {
+        errors.push(`bridge_height_mismatch:${audit.bridgeHeight}`);
+      }
     }
     if (audit.finalPath === '/ibkr_config.html' && audit.configGap != null && audit.configGap > 28) {
       errors.push(`config_bridge_gap:${audit.configGap}`);

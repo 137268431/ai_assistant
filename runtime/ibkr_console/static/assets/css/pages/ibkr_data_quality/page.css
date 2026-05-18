@@ -21,7 +21,6 @@
     }
 
     .page-shell {
-      max-width: 1440px;
       margin: 0 auto;
       padding: 20px 18px 120px;
     }
@@ -587,7 +586,7 @@
 
 /* Data quality density tune. */
 .page-shell {
-    padding: 14px 14px 96px;
+    padding: 16px 16px 96px;
 }
 
 .hero,

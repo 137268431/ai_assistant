@@ -890,17 +890,15 @@
   }
 }
 
-/* Card-density pass: cap sparse config and cron cards instead of stretching them edge to edge. */
+/* Fluid density pass: let config and cron cards occupy the full desktop shell. */
 @media (min-width: 901px) {
   .config-grid {
-    grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 360px));
-    justify-content: start;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
     align-items: stretch;
   }
 
   .cron-grid {
-    grid-template-columns: repeat(auto-fill, minmax(min(100%, 292px), 350px));
-    justify-content: start;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 292px), 1fr));
     align-items: stretch;
   }
 

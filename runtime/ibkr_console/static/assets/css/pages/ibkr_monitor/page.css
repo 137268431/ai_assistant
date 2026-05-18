@@ -1149,7 +1149,7 @@
 
 /* Monitor density tune. */
 .page-shell {
-    padding: 0 14px 84px;
+    padding: 0 16px 84px;
 }
 
 .hero {
@@ -1223,8 +1223,7 @@
 }
 
 .market-monitor-cards {
-    grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 360px));
-    justify-content: start;
+    grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
     gap: 9px;
 }
 
@@ -1313,13 +1312,11 @@
 }
 
 .sample-grid {
-    grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 360px));
-    justify-content: start;
+    grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
 }
 
 .split-grid {
-    grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 460px));
-    justify-content: start;
+    grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
     align-items: start;
     gap: 12px;
 }
@@ -1388,8 +1385,7 @@
     }
 
     .split-grid {
-        grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 440px));
-        justify-content: start;
+        grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
     }
 
     .split-grid .section > .section-body > .metric-grid {

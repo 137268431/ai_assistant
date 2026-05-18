@@ -21,8 +21,8 @@ body {
 }
 
 .lifecycle-shell {
-  width: min(100%, var(--page-shell-max-wide, 1560px));
-  max-width: var(--page-shell-max-wide, 1560px);
+  width: min(100%, var(--page-shell-max-wide, 100%));
+  max-width: var(--page-shell-max-wide, 100%);
   padding-top: 14px;
 }
 

@@ -1,6 +1,6 @@
 // ── 通用 CSS 样式 ──
 function getCommonStyles() {
-  return '<link rel="stylesheet" href="/assets/css/common.css">';
+  return '<link rel="stylesheet" href="/assets/css/common.css?v=20260518-bridge-align">';
 }
 
 // ── 全局 Loading 遮罩层 ──

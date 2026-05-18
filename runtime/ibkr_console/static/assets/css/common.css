@@ -14,7 +14,7 @@
         --rejected:  #718096;
         --failed:    #FC8181;
         --page-gutter: 16px;
-        --page-shell-max: 1480px;
+        --page-shell-max: 100%;
         --font-body: 'Sora', sans-serif;
         --font-mono: 'JetBrains Mono', monospace;
         --radius-xs: 6px;
@@ -28,7 +28,7 @@
         --space-4: 16px;
         --space-5: 18px;
         --space-6: 22px;
-        --page-shell-max-wide: 1560px;
+        --page-shell-max-wide: 100%;
         --card-padding: 12px;
         --card-padding-compact: 10px;
         --panel-min-height: 260px;

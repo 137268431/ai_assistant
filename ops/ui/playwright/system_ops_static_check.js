@@ -21,6 +21,23 @@ function readStatic(relativePath) {
   return fs.readFileSync(path.join(staticRoot, relativePath), 'utf8');
 }
 
+function listStaticFiles(relativeDir, extension) {
+  const root = path.join(staticRoot, relativeDir);
+  const files = [];
+  function walk(dir) {
+    fs.readdirSync(dir, { withFileTypes: true }).forEach((entry) => {
+      const abs = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(abs);
+      } else if (entry.isFile() && entry.name.endsWith(extension)) {
+        files.push(path.relative(staticRoot, abs));
+      }
+    });
+  }
+  walk(root);
+  return files;
+}
+
 function readPageScriptBundle(htmlRelativePath, scriptPrefix, fallbackRelativePath) {
   const html = readStatic(htmlRelativePath);
   const matches = Array.from(html.matchAll(/<script\s+[^>]*src="([^"]+)"[^>]*><\/script>/g));
@@ -99,6 +116,13 @@ try {
 const commonCss = readStatic('assets/css/common.css');
 assert(!commonCss.includes('var(--nav-count, 7)'), 'common_css_legacy_nav_default_7');
 assert(commonCss.includes('var(--nav-count, 6)'), 'common_css_missing_nav_default_6');
+assert(/--page-shell-max:\s*100%;/.test(commonCss), 'common_css_page_shell_not_fluid');
+assert(/--page-shell-max-wide:\s*100%;/.test(commonCss), 'common_css_page_shell_wide_not_fluid');
+const fixedShellMaxWidth = /\.(?:page-shell|home-shell|content|lifecycle-shell|account-shell)(?![-\w])[^{}]*\{[^}]*max-width\s*:\s*\d+px/gs;
+listStaticFiles('assets/css', '.css').forEach((relativePath) => {
+  const fixedMatches = Array.from(readStatic(relativePath).matchAll(fixedShellMaxWidth));
+  assert(fixedMatches.length === 0, `fixed_shell_max_width:${relativePath}:${fixedMatches.length}`);
+});
 
 const indexHtml = readStatic('index.html');
 assert(indexHtml.includes('id="actionConfigLink"'), 'home_missing_config_entry');
@@ -108,6 +132,10 @@ const systemHtml = readStatic('ibkr_system.html');
 const systemJs = readStatic('assets/js/pages/ibkr_system/page.js');
 assert(systemHtml.includes('运维摘要'), 'system_missing_ops_summary_section');
 assert(systemJs.includes('ops-summary-link') && systemJs.includes('/ibkr_monitor.html'), 'system_summary_missing_monitor_link');
+
+const screenerCss = readStatic('assets/css/pages/ibkr_screener/page.css');
+assert(!/screener-domain-bridge[\s\S]{0,240}page-bridge-copy[\s\S]{0,80}display:\s*none/.test(screenerCss), 'screener_bridge_copy_hidden');
+assert(!/screener-domain-tab\.page-bridge-link[\s\S]{0,120}min-height:\s*42px/.test(screenerCss), 'screener_bridge_compact_height');
 
 const runtimeHtml = readStatic('ibkr_runtime.html');
 const runtimeJs = readPageScriptBundle(
@@ -136,7 +164,7 @@ assert(runtimeUnexpectedStaticActions.length === 0, `runtime_unexpected_static_a
 const monitorHtml = readStatic('ibkr_monitor.html');
 assert(monitorHtml.includes('ops-route-panel'), 'monitor_missing_ops_route_panel');
 assert(includesAll(monitorHtml, ['监控大盘', '预热', '数据质量', '历史重建']), 'monitor_ops_route_missing_labels');
-assert(includesAll(monitorHtml, ['大盘行情雷达', '关键监控指标带', 'marketOverviewGrid', 'criticalMetricsGrid']), 'monitor_missing_market_or_critical_metrics');
+assert(includesAll(monitorHtml, ['其它市场监控', '关键监控指标带', 'marketOverviewGrid', 'criticalMetricsGrid']), 'monitor_missing_market_or_critical_metrics');
 
 const warmupHtml = readStatic('ibkr_warmup.html');
 assert(warmupHtml.includes('warmup-guide-section'), 'warmup_missing_guide_section');
@@ -158,4 +186,4 @@ if (issues.length) {
   process.exit(1);
 }
 
-console.log(JSON.stringify({ ok: true, checks: 36, staticRoot }, null, 2));
+console.log(JSON.stringify({ ok: true, checks: 40, staticRoot }, null, 2));
