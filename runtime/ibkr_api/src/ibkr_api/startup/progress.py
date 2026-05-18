@@ -110,9 +110,14 @@ def apply_legacy_auth_patch(steps: dict[str, dict[str, Any]], patch: dict[str, A
         apply_startup_step_patch(steps, "card_ready", {"status": "running", "detail": detail or "正在确认是否需要进入手动 2FA。"})
         return
     if status == "done":
-        apply_startup_step_patch(steps, "card_ready", {"status": "done", "detail": "2FA 卡片阶段已完成。"})
-        apply_startup_step_patch(steps, "manual_trigger", {"status": "done", "detail": "人工触发步骤已完成。"})
-        apply_startup_step_patch(steps, "manual_confirm", {"status": "done", "detail": detail or "当前 2FA 验证已完成。"})
+        if trigger_login:
+            apply_startup_step_patch(steps, "card_ready", {"status": "done", "detail": "2FA 卡片阶段已完成。"})
+            apply_startup_step_patch(steps, "manual_trigger", {"status": "done", "detail": "人工触发步骤已完成。"})
+            apply_startup_step_patch(steps, "manual_confirm", {"status": "done", "detail": detail or "当前 2FA 验证已完成。"})
+            return
+        apply_startup_step_patch(steps, "card_ready", {"status": "skipped", "detail": "已复用现有认证会话，本轮无需准备新的 2FA 卡片。"})
+        apply_startup_step_patch(steps, "manual_trigger", {"status": "skipped", "detail": "Session 已认证，本轮无需在飞书手动触发 2FA。"})
+        apply_startup_step_patch(steps, "manual_confirm", {"status": "skipped", "detail": detail or "Session 已认证，本轮无需完成新的 2FA 验证。"})
         return
     if status == "failed":
         target_key = "manual_confirm" if trigger_login else "manual_trigger"

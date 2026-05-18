@@ -124,6 +124,7 @@ def register_startup_progress_routes(app, *, deps: StartupDeps, exports: dict[st
             next_state["steps"] = merge_startup_steps(
                 next_state.get("steps"),
                 {
+                    "auth": {"status": "done", "detail": "Session 已认证，Runtime 可以继续完成启动。"},
                     "runtime_resume": {"status": "done", "detail": "认证恢复后 Runtime 已回到可运行状态。"},
                     "health_check": {"status": "done", "detail": "启动后健康检查已通过。"},
                 },

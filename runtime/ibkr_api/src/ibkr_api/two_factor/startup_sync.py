@@ -15,7 +15,21 @@ MergeStartupSteps = Callable[[Any, Any, bool], dict[str, dict[str, Any]]]
 DeliverStartupProgressCard = Callable[[dict[str, Any], str], dict[str, Any]]
 
 
-def _step_patch(status: str, state_data: dict[str, Any]) -> tuple[str, str, str, dict[str, dict[str, Any]]]:
+def _startup_step_status(startup_state: dict[str, Any], key: str) -> str:
+    steps = startup_state.get("steps") if isinstance(startup_state, dict) else {}
+    step = steps.get(key) if isinstance(steps, dict) else {}
+    return str((step or {}).get("status") or "").strip().lower()
+
+
+def _manual_2fa_flow_started(startup_state: dict[str, Any]) -> bool:
+    return (
+        bool((startup_state or {}).get("trigger_login"))
+        or _startup_step_status(startup_state, "manual_trigger") == "done"
+        or _startup_step_status(startup_state, "manual_confirm") in {"waiting", "running", "done", "failed"}
+    )
+
+
+def _step_patch(status: str, state_data: dict[str, Any], *, manual_flow_started: bool = False) -> tuple[str, str, str, dict[str, dict[str, Any]]]:
     challenge_code = str(state_data.get("challenge_code") or "").strip()
     if status == "requested":
         return (
@@ -68,6 +82,19 @@ def _step_patch(status: str, state_data: dict[str, Any]) -> tuple[str, str, str,
             },
         )
     if status == "success":
+        if not manual_flow_started:
+            return (
+                "runtime_resume",
+                "Session 已认证，未新开 2FA",
+                "等待系统继续装载订阅、线程和预热",
+                {
+                    "service_boot": {"status": "done", "detail": "Gateway 已启动并进入当前恢复流程。"},
+                    "card_ready": {"status": "skipped", "detail": "已复用现有认证会话，本轮无需准备新的 2FA 卡片。"},
+                    "manual_trigger": {"status": "skipped", "detail": "Session 已认证，本轮无需在飞书手动触发 2FA。"},
+                    "manual_confirm": {"status": "skipped", "detail": "Session 已认证，本轮无需完成新的 2FA 验证。"},
+                    "runtime_resume": {"status": "running", "detail": "认证已恢复，正在继续恢复 Runtime。"},
+                },
+            )
         return (
             "runtime_resume",
             "2FA 已完成，等待 Runtime 继续启动",
@@ -87,7 +114,9 @@ def _step_patch(status: str, state_data: dict[str, Any]) -> tuple[str, str, str,
             "等待系统继续静默探测；当前不会自动触发新的 2FA",
             {
                 "service_boot": {"status": "done", "detail": "Gateway 已启动并进入当前验证流程。"},
-                "card_ready": {"status": "done", "detail": "当前不会自动新开 2FA 卡片。"},
+                "card_ready": {"status": "skipped", "detail": "当前不会自动新开 2FA 卡片。"},
+                "manual_trigger": {"status": "skipped", "detail": "静默恢复期间不会在飞书手动触发 2FA。"},
+                "manual_confirm": {"status": "skipped", "detail": "静默恢复期间无需完成新的 2FA 验证。"},
                 "runtime_resume": {"status": "running", "detail": str(state_data.get("last_result") or state_data.get("message") or "系统正在静默恢复当前会话。")},
             },
         )
@@ -127,7 +156,11 @@ def sync_startup_auth_progress(
         return {"ok": True, "skipped": True, "reason": "no_active_startup_cycle"}
 
     normalized_status = normalize_two_factor_status(status)
-    current_step, current_blocker, operator_action, patch_steps = _step_patch(normalized_status, state)
+    current_step, current_blocker, operator_action, patch_steps = _step_patch(
+        normalized_status,
+        state,
+        manual_flow_started=_manual_2fa_flow_started(current_data),
+    )
     next_state = {
         **current_data,
         "summary": str(state.get("message") or state.get("last_result") or current_data.get("summary") or ""),
