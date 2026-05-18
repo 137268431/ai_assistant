@@ -20,6 +20,8 @@ API = cfg["api_local_url"].rstrip("/")
 SCHEDULER = cfg["scheduler_local_url"].rstrip("/")
 CONSOLE = cfg["console_local_url"].rstrip("/")
 ENVIRONMENT = cfg["environment"]
+CONFIGURED_DATA_ENVIRONMENT = str(os.environ.get("IBKR_DATA_ENVIRONMENT") or "live").strip().lower() or "live"
+DATA_ENVIRONMENT = "backtest" if str(ENVIRONMENT).strip().lower() == "backtest" else ("live" if CONFIGURED_DATA_ENVIRONMENT == "paper" else CONFIGURED_DATA_ENVIRONMENT)
 BAR_STALE_MIN = int(cfg["bar_stale_min"])
 INDICATOR_STALE_MIN = int(cfg["indicator_stale_min"])
 INDICATOR_MISSING_GRACE_SEC = int(cfg.get("indicator_missing_grace_sec") or 90)
@@ -614,19 +616,19 @@ local_http = {
 }
 
 conn = open_db()
-latest_bar_5m = latest_row(conn, "ibkr_bars", ENVIRONMENT, "interval=?", ("5m",))
+latest_bar_5m = latest_row(conn, "ibkr_bars", DATA_ENVIRONMENT, "interval=?", ("5m",))
 latest_indicator_5m = latest_row(
     conn,
     "ibkr_indicators",
-    ENVIRONMENT,
+    DATA_ENVIRONMENT,
     "interval in (?, ?)",
     ("5", "5m"),
     indexed_by="idx_ibkr_indicators_bartimems",
 )
-latest_signal = latest_signal_row(conn, ENVIRONMENT)
-targets = latest_targets(conn, ENVIRONMENT)
-bars_by_interval = interval_freshness(conn, "ibkr_bars", ENVIRONMENT)
-indicators_by_interval = interval_freshness(conn, "ibkr_indicators", ENVIRONMENT)
+latest_signal = latest_signal_row(conn, DATA_ENVIRONMENT)
+targets = latest_targets(conn, DATA_ENVIRONMENT)
+bars_by_interval = interval_freshness(conn, "ibkr_bars", DATA_ENVIRONMENT)
+indicators_by_interval = interval_freshness(conn, "ibkr_indicators", DATA_ENVIRONMENT)
 conn.close()
 
 for item in (latest_bar_5m, latest_indicator_5m, latest_signal):
@@ -842,6 +844,7 @@ if targets.get("eligible_count", 0) > 0 and active_target_count == 0:
 report = {
     "ok": len(failures) == 0,
     "environment": ENVIRONMENT,
+    "data_environment": DATA_ENVIRONMENT,
     "strict_runtime": STRICT_RUNTIME,
     "thresholds": {
         "bar_stale_min": BAR_STALE_MIN,

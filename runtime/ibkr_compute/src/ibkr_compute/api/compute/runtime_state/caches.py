@@ -2,9 +2,112 @@ from __future__ import annotations
 
 import time
 import traceback
+from datetime import date, datetime, timedelta
 
 from ibkr_compute.api.compute.runtime_state.runtime import _api_app
+from ibkr_compute.core.time_utils import ET
 from ibkr_compute.market.timeframe_utils import interval_to_ms, ms_to_et
+
+
+RECENT_INTRADAY_CLOSE_LOOKBACK_DAYS = 14
+MAX_REGULAR_CLOSE_FALLBACK_PAGES = 20
+
+
+def _escape_filter_value(value) -> str:
+    return str(value or "").replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _parse_date(value: str) -> date | None:
+    try:
+        return date.fromisoformat(str(value or "")[:10])
+    except ValueError:
+        return None
+
+
+def _et_midnight_ms(value: date) -> int:
+    return int(datetime(value.year, value.month, value.day, tzinfo=ET).timestamp() * 1000)
+
+
+def _coerce_positive_float(value) -> float:
+    try:
+        parsed = float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return parsed if parsed > 0 else 0.0
+
+
+def _coerce_bar_ms(value) -> int:
+    try:
+        return int(float(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _sorted_daily_rows(rows: list[dict]) -> list[dict]:
+    return sorted(
+        [row for row in rows if row.get("date") and _coerce_bar_ms(row.get("bar_time_ms")) > 0],
+        key=lambda row: _coerce_bar_ms(row.get("bar_time_ms")),
+    )
+
+
+def _regular_intraday_close_rows(api_app, environment: str, symbol: str, rows: list[dict], current_date: str) -> list[dict]:
+    current_day = _parse_date(current_date)
+    pb = getattr(api_app, "pb", None)
+    if current_day is None or pb is None or not hasattr(pb, "get_all_records"):
+        return rows
+
+    latest_day = _parse_date(rows[-1]["date"]) if rows else None
+    if latest_day is not None and (current_day - latest_day).days <= 3:
+        return rows
+
+    current_start_ms = _et_midnight_ms(current_day)
+    if latest_day is None:
+        start_ms = _et_midnight_ms(current_day - timedelta(days=RECENT_INTRADAY_CLOSE_LOOKBACK_DAYS))
+    else:
+        start_ms = _et_midnight_ms(latest_day + timedelta(days=1))
+    if start_ms >= current_start_ms:
+        return rows
+
+    environment_filter = api_app.build_bar_environment_filter(environment, include_legacy_empty=True)
+    filter_text = (
+        f'symbol = "{_escape_filter_value(symbol)}" && '
+        'interval = "5m" && '
+        'session_type = "regular" && '
+        f'{environment_filter} && '
+        f"bar_time_ms >= {max(0, start_ms)} && "
+        f"bar_time_ms < {current_start_ms}"
+    )
+    try:
+        intraday_rows = pb.get_all_records(
+            "ibkr_bars",
+            filter=filter_text,
+            sort="bar_time_ms",
+            max_pages=MAX_REGULAR_CLOSE_FALLBACK_PAGES,
+        ) or []
+    except Exception:
+        return rows
+
+    by_date: dict[str, dict] = {str(row.get("date")): dict(row) for row in rows if row.get("date")}
+    for row in intraday_rows:
+        bar_ms = _coerce_bar_ms((row or {}).get("bar_time_ms"))
+        close = _coerce_positive_float((row or {}).get("close"))
+        if bar_ms <= 0 or close <= 0:
+            continue
+        if str((row or {}).get("session_type") or "").strip().lower() not in {"", "regular"}:
+            continue
+        row_date = ms_to_et(bar_ms).strftime("%Y-%m-%d")
+        if row_date >= current_date:
+            continue
+        existing = by_date.get(row_date)
+        if existing is None or bar_ms >= _coerce_bar_ms(existing.get("bar_time_ms")):
+            by_date[row_date] = {
+                "bar_time_ms": bar_ms,
+                "date": row_date,
+                "close": close,
+                "source": "regular_5m_fallback",
+            }
+
+    return _sorted_daily_rows(list(by_date.values()))
 
 
 def refresh_symbol_metadata(force: bool = False):
@@ -114,8 +217,11 @@ def reset_daily_runtime_state(environments=None, reason: str = "new_day") -> dic
 def get_daily_change_fields(environment: str, symbol: str, current_close: float, bar_time_ms: int):
     api_app = _api_app()
     env_cache = api_app.daily_close_cache.get(environment, {})
-    rows = env_cache.get(symbol.upper(), [])
+    normalized_symbol = symbol.upper()
+    rows = _sorted_daily_rows(env_cache.get(normalized_symbol, []))
     current_date = ms_to_et(bar_time_ms).strftime("%Y-%m-%d")
+    rows = _regular_intraday_close_rows(api_app, environment, normalized_symbol, rows, current_date)
+    api_app.daily_close_cache.setdefault(environment, {})[normalized_symbol] = rows
     history = [row for row in rows if row["date"] < current_date]
 
     prev_close = history[-1]["close"] if len(history) >= 1 else 0.0
