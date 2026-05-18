@@ -45,6 +45,14 @@
       return payload;
     }
 
+    function requestCachedJson(path, requestOptions = {}, cacheOptions = {}) {
+      const method = String(requestOptions.method || 'GET').toUpperCase();
+      if (method === 'GET' && typeof cachedCustomJson === 'function') {
+        return cachedCustomJson(path, '', requestOptions, cacheOptions);
+      }
+      return requestJson(path, requestOptions);
+    }
+
     async function deleteRecord(collection, recordId) {
       const token = getToken();
       const headers = {};

@@ -20,8 +20,8 @@ API = cfg["api_local_url"].rstrip("/")
 SCHEDULER = cfg["scheduler_local_url"].rstrip("/")
 CONSOLE = cfg["console_local_url"].rstrip("/")
 ENVIRONMENT = cfg["environment"]
-CONFIGURED_DATA_ENVIRONMENT = str(os.environ.get("IBKR_DATA_ENVIRONMENT") or "live").strip().lower() or "live"
-DATA_ENVIRONMENT = "backtest" if str(ENVIRONMENT).strip().lower() == "backtest" else ("live" if CONFIGURED_DATA_ENVIRONMENT == "paper" else CONFIGURED_DATA_ENVIRONMENT)
+CONFIGURED_MARKET_DATA_MODE = str(os.environ.get("IBKR_MARKET_DATA_MODE") or "live").strip().lower() or "live"
+DATA_ENVIRONMENT = "backtest" if str(ENVIRONMENT).strip().lower() == "backtest" else CONFIGURED_MARKET_DATA_MODE
 BAR_STALE_MIN = int(cfg["bar_stale_min"])
 INDICATOR_STALE_MIN = int(cfg["indicator_stale_min"])
 INDICATOR_MISSING_GRACE_SEC = int(cfg.get("indicator_missing_grace_sec") or 90)

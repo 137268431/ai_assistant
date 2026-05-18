@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import threading
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite, upsert_bars
 from ibkr_compute.market.timeframe_builder import TimeframeBarBuilder
@@ -10,6 +12,9 @@ from ibkr_compute.market.timeframe_utils import bucket_start_ms, interval_to_ms,
 from ibkr_compute.api.compute.runtime_state.runtime import _api_app
 from ibkr_compute.api.compute.runtime_state.timing import get_fetch_since_ms
 from .materialize import reset_compute_state_for_symbols
+
+
+_ROLLUP_WRITE_LOCK = threading.Lock()
 
 
 BAR_COLUMNS = """
@@ -62,6 +67,16 @@ def _cfg_float(api_app, key: str, environment: str, default: float) -> float:
     return float(default)
 
 
+def _cfg_int(api_app, key: str, environment: str, default: int) -> int:
+    cfg = getattr(api_app, "cfg", None)
+    if cfg is not None and hasattr(cfg, "get_int_for_environment"):
+        try:
+            return int(cfg.get_int_for_environment(key, environment, default))
+        except Exception:
+            return int(default)
+    return int(default)
+
+
 def _direct_sqlite_read_enabled(api_app, environment: str) -> bool:
     return _cfg_bool(api_app, "ibkr_bar_direct_sqlite_read_enabled", environment, True)
 
@@ -85,6 +100,15 @@ def _direct_sqlite_read_timeout(api_app, environment: str) -> float:
 
 def _direct_sqlite_write_timeout(api_app, environment: str) -> float:
     return max(1.0, _cfg_float(api_app, "ibkr_bar_direct_sqlite_timeout_sec", environment, 30.0))
+
+
+def _rollup_parallel_enabled(api_app, environment: str) -> bool:
+    return _cfg_bool(api_app, "ibkr_rollup_parallel_enabled", environment, True)
+
+
+def _rollup_max_workers(api_app, environment: str, target_intervals: list[str]) -> int:
+    configured = _cfg_int(api_app, "ibkr_rollup_max_workers", environment, 5)
+    return max(1, min(5, len(target_intervals or []), int(configured or 1)))
 
 
 def _bar_environment_sql(environment: str, *, include_legacy_empty: bool = True) -> tuple[str, list]:
@@ -327,10 +351,124 @@ def has_interval_bars(environment: str, interval: str, symbols=None) -> bool:
         return False
 
 
+def _flush_rollup_batch(api_app, environment: str, batch: list[dict], *, use_write_lock: bool) -> dict:
+    if not batch:
+        return {"ok": True, "created": 0, "updated": 0, "skipped": 0}
+    if use_write_lock:
+        with _ROLLUP_WRITE_LOCK:
+            return _write_rollup_batch(api_app, environment, batch)
+    return _write_rollup_batch(api_app, environment, batch)
+
+
+def _rollup_rows_for_intervals(
+    api_app,
+    environment: str,
+    rows: list[dict],
+    target_intervals: list[str],
+    *,
+    use_write_lock: bool = False,
+) -> dict:
+    builder = TimeframeBarBuilder(target_intervals=target_intervals)
+    batch = []
+    written = 0
+    errors = 0
+
+    def flush_batch():
+        nonlocal written, errors, batch
+        if not batch:
+            return
+        try:
+            result = _flush_rollup_batch(api_app, environment, batch, use_write_lock=use_write_lock)
+            if result.get("ok", False):
+                written += int(result.get("created", 0) or 0) + int(result.get("updated", 0) or 0)
+            else:
+                errors += len(batch)
+        except Exception:
+            errors += len(batch)
+            traceback.print_exc()
+        batch = []
+
+    for row in rows:
+        for derived_bar in builder.consume(row):
+            batch.append(api_app.normalize_bar_environment(derived_bar, environment))
+            if len(batch) >= api_app.ROLLUP_BATCH_SIZE:
+                flush_batch()
+
+    flush_batch()
+    return {
+        "processed_5m": len(rows),
+        "written": written,
+        "errors": errors,
+        "intervals": list(target_intervals),
+    }
+
+
+def _parallel_rollup_rows_by_interval(
+    api_app,
+    environment: str,
+    rows: list[dict],
+    target_intervals: list[str],
+    worker_count: int,
+) -> dict:
+    interval_results = {}
+    written = 0
+    errors = 0
+
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="rollup-interval") as executor:
+        future_map = {
+            executor.submit(
+                _rollup_rows_for_intervals,
+                api_app,
+                environment,
+                rows,
+                [interval],
+                use_write_lock=True,
+            ): interval
+            for interval in target_intervals
+        }
+        for future in as_completed(future_map):
+            interval = future_map[future]
+            try:
+                result = future.result()
+            except Exception as exc:
+                traceback.print_exc()
+                result = {
+                    "processed_5m": len(rows),
+                    "written": 0,
+                    "errors": 1,
+                    "intervals": [interval],
+                    "error": str(exc),
+                }
+            interval_results[interval] = result
+            written += int(result.get("written", 0) or 0)
+            errors += int(result.get("errors", 0) or 0)
+
+    return {
+        "processed_5m": len(rows),
+        "written": written,
+        "errors": errors,
+        "parallel": True,
+        "workers": worker_count,
+        "interval_results": {interval: interval_results.get(interval, {}) for interval in target_intervals},
+    }
+
+
 def rebuild_higher_timeframe_bars(environment: str, symbols=None, intervals=None, since_ms: int | None = None) -> dict:
     api_app = _api_app()
     normalized_symbols = api_app.normalize_symbols(symbols)
     target_intervals = _normalize_target_intervals(api_app, intervals)
+    if not target_intervals:
+        return {
+            "processed_5m": 0,
+            "written": 0,
+            "errors": 0,
+            "symbols": normalized_symbols,
+            "intervals": [],
+            "since_ms": int(since_ms or 0),
+            "parallel": False,
+            "workers": 0,
+            "interval_results": {},
+        }
     base_rows = []
     read_from_api = not _direct_sqlite_read_enabled(api_app, environment)
     if not read_from_api:
@@ -366,49 +504,47 @@ def rebuild_higher_timeframe_bars(environment: str, symbols=None, intervals=None
             "symbols": normalized_symbols,
             "intervals": target_intervals,
             "since_ms": int(since_ms or 0),
+            "parallel": False,
+            "workers": 0,
+            "interval_results": {},
         }
 
-    builder = TimeframeBarBuilder(target_intervals=target_intervals)
-    batch = []
-    written = 0
-    errors = 0
+    rows = [
+        api_app.normalize_bar_environment(row, environment)
+        for row in sorted(
+            base_rows,
+            key=lambda item: (int(item.get("bar_time_ms", 0) or 0), str(item.get("symbol", "")).upper()),
+        )
+    ]
 
-    rows = sorted(
-        base_rows,
-        key=lambda item: (int(item.get("bar_time_ms", 0) or 0), str(item.get("symbol", "")).upper()),
+    worker_count = _rollup_max_workers(api_app, environment, target_intervals)
+    use_parallel = (
+        len(target_intervals) > 1
+        and worker_count > 1
+        and _rollup_parallel_enabled(api_app, environment)
     )
+    if use_parallel:
+        result = _parallel_rollup_rows_by_interval(api_app, environment, rows, target_intervals, worker_count)
+    else:
+        result = _rollup_rows_for_intervals(
+            api_app,
+            environment,
+            rows,
+            target_intervals,
+            use_write_lock=False,
+        )
+        result["parallel"] = False
+        result["workers"] = 1 if target_intervals else 0
+        result["interval_results"] = {}
 
-    def flush_batch():
-        nonlocal written, errors, batch
-        if not batch:
-            return
-        try:
-            result = _write_rollup_batch(api_app, environment, batch)
-            if result.get("ok", False):
-                written += int(result.get("created", 0) or 0) + int(result.get("updated", 0) or 0)
-            else:
-                errors += len(batch)
-        except Exception:
-            errors += len(batch)
-            traceback.print_exc()
-        batch = []
-
-    for row in rows:
-        base_bar = api_app.normalize_bar_environment(row, environment)
-        for derived_bar in builder.consume(base_bar):
-            batch.append(api_app.normalize_bar_environment(derived_bar, environment))
-            if len(batch) >= api_app.ROLLUP_BATCH_SIZE:
-                flush_batch()
-
-    flush_batch()
-    return {
-        "processed_5m": len(rows),
-        "written": written,
-        "errors": errors,
-        "symbols": normalized_symbols,
-        "intervals": target_intervals,
-        "since_ms": int(since_ms or 0),
-    }
+    result.update(
+        {
+            "symbols": normalized_symbols,
+            "intervals": target_intervals,
+            "since_ms": int(since_ms or 0),
+        }
+    )
+    return result
 
 
 def ensure_higher_timeframe_bars(

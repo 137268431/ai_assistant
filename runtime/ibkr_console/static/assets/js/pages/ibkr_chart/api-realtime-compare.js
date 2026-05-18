@@ -2,7 +2,9 @@
             let lastError = null;
             for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
                 try {
-                    return await apiFetch(collection, params);
+                    return typeof cachedApiFetch === 'function'
+                        ? await cachedApiFetch(collection, params, { ttlMs: 15000, ttl: 15000 })
+                        : await apiFetch(collection, params);
                 } catch (error) {
                     lastError = error;
                     const message = String(error?.message || error || '');

@@ -79,7 +79,7 @@ class SignalExpiryBuildersTest(unittest.TestCase):
 
         payload, status_code = build_signal_expiry_response(
             pb,
-            payload={"environment": "live"},
+            payload={"broker_mode": "live", "market_data_mode": "live"},
             normalize_environment=self.normalize_environment,
             escape_filter_string=self.escape_filter_string,
             config_value=lambda key, default, environment: "30",
@@ -98,6 +98,50 @@ class SignalExpiryBuildersTest(unittest.TestCase):
         self.assertEqual(row["extra"]["expiry_reference"], "bar_time_ms")
         self.assertEqual(row["extra"]["feishu_signal_message_id"], "msg-old")
         self.assertEqual(row["extra"]["feishu_signal_notify_last_action"], "expired")
+
+    def test_signal_expiry_marks_paper_broker_expired_without_live_top_level_status(self):
+        sent_cards = []
+        pb = _FakePB(
+            signal_rows=[
+                {
+                    "id": "sig-row-1",
+                    "signal_id": "sig-1",
+                    "environment": "live",
+                    "symbol": "AAPL",
+                    "status": "pending",
+                    "note": "paper:history_repair_pending",
+                    "bar_time_ms": 1713797700000,
+                    "us_time": "2026-04-22 09:35:00",
+                    "extra": {"broker_mode": "paper"},
+                }
+            ]
+        )
+
+        payload, status_code = build_signal_expiry_response(
+            pb,
+            payload={"broker_mode": "paper", "market_data_mode": "live"},
+            normalize_environment=self.normalize_environment,
+            escape_filter_string=self.escape_filter_string,
+            config_value=lambda key, default, environment: "30",
+            send_interactive=lambda card, *_args, **_kwargs: sent_cards.append(card) or {"success": True, "message_id": "msg-new"},
+            update_interactive=lambda *_args, **_kwargs: {"success": True, "message_id": "msg-old"},
+            signal_chat_id_fn=self.signal_chat_id_fn,
+            console_base_url="https://console.example.com",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["broker_mode"], "paper")
+        self.assertEqual(payload["market_data_mode"], "live")
+        row = pb.signals["sig-row-1"]
+        self.assertEqual(row["status"], "pending")
+        self.assertEqual(row["note"], "paper:signal_expired")
+        self.assertEqual(row["extra"]["execution_by_mode"]["paper"]["status"], "expired")
+        self.assertEqual(row["extra"]["execution_by_mode"]["paper"]["note"], "signal_expired")
+        content = sent_cards[0]["elements"][0]["content"]
+        self.assertIn("**状态**: 已过期", content)
+        self.assertIn("**原因**: signal_expired", content)
+        self.assertNotIn("paper:history_repair_pending", content)
 
     def test_signal_expiry_repairs_signal_to_submitted_when_orders_exist(self):
         pb = _FakePB(
@@ -126,7 +170,7 @@ class SignalExpiryBuildersTest(unittest.TestCase):
 
         payload, status_code = build_signal_expiry_response(
             pb,
-            payload={"environment": "live"},
+            payload={"broker_mode": "live", "market_data_mode": "live"},
             normalize_environment=self.normalize_environment,
             escape_filter_string=self.escape_filter_string,
             config_value=lambda key, default, environment: "30",
@@ -188,7 +232,7 @@ class SignalExpiryBuildersTest(unittest.TestCase):
 
         payload, status_code = build_signal_expiry_response(
             pb,
-            payload={"environment": "live"},
+            payload={"broker_mode": "live", "market_data_mode": "live"},
             normalize_environment=self.normalize_environment,
             escape_filter_string=self.escape_filter_string,
             config_value=lambda key, default, environment: "30",

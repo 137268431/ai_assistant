@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from ibkr_api.modes import request_broker_mode
+
 from .auth_issue import (
     build_auth_immediate_issue,
     build_waiting_response_advice,
@@ -171,7 +173,7 @@ def build_auth_edge_guard_response(
     emit_system_event: EmitSystemEvent,
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
-    environment = normalize_environment(request_payload.get("environment"), "live")
+    environment = request_broker_mode(request_payload)
     runtime_result = fetch_runtime_status(environment)
     runtime_payload = _as_dict(runtime_result.get("payload"))
     now = time_strings()

@@ -104,7 +104,7 @@ def build_platform_route_deps(
             **kwargs,
         ),
         "build_cron_payload": globals_dict["build_cron_payload"],
-        "scheduler_status": lambda environment: globals_dict["_scheduler_status"](environment),
+        "scheduler_status": lambda environment, **kwargs: globals_dict["_scheduler_status"](environment, **kwargs),
         "build_scheduler_summary": lambda environment, payload: globals_dict["_build_scheduler_summary"](environment, payload),
         "augment_scheduler_summary": lambda summary, items: globals_dict["_augment_scheduler_summary"](summary, items),
         "build_system_monitor_payload": lambda environment: globals_dict["_build_system_monitor_payload"](environment),

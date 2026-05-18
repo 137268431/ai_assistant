@@ -1,4 +1,4 @@
-let currentEnvironment = getCurrentRuntimeEnvironment();
+let currentEnvironment = getCurrentBrokerMode();
         let refreshTimer = null;
         let refreshMode = 'steady';
         let refreshBoostStartedAt = 0;

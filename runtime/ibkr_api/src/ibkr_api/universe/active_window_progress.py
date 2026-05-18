@@ -34,19 +34,7 @@ def build_active_window_items_for_symbols(
         for symbol, row in (target_by_symbol or {}).items()
         if to_text(symbol).upper()
     }
-    empty_summary = {
-        "total": 0,
-        "active_count": 0,
-        "candidate_count": 0,
-        "with_live_bar_count": 0,
-        "window_active_count": 0,
-        "window_valid_count": 0,
-        "candidate_signal_count": 0,
-        "blocked_count": 0,
-        "near_expiry_count": 0,
-        "confirmed_count": 0,
-        "trace_error_count": 0,
-    }
+    empty_summary = _empty_active_window_summary(market_start_ms=market_start_ms, market_end_ms=market_end_ms)
     if not ordered_symbols:
         return {"summary": empty_summary, "items": [], "returned_count": 0}
 
@@ -95,16 +83,31 @@ def build_active_window_items_for_symbols(
     window_active_count = 0
     window_valid_count = 0
     candidate_signal_count = 0
+    current_candidate_signal_count = 0
     blocked_count = 0
     near_expiry_count = 0
     confirmed_count = 0
     trace_error_count = 0
+    trace_stage_counts: dict[str, int] = {}
+    window_status_counts: dict[str, int] = {}
+    symbols_with_bars_count = 0
+    symbols_with_today_bars_count = 0
+    today_bar_count = 0
+    warmup_bar_count = 0
+    latest_today_bar_times: list[int] = []
 
     for symbol in ordered_symbols:
         target = targets.get(symbol) or {}
         target_extra = parse_json_object(target.get("extra"))
         symbol_bars = bars_by_symbol.get(symbol, [])
         today_bars = [row for row in symbol_bars if market_start_ms <= to_int(row.get("bar_time_ms"), 0) < market_end_ms]
+        if symbol_bars:
+            symbols_with_bars_count += 1
+        if today_bars:
+            symbols_with_today_bars_count += 1
+            latest_today_bar_times.append(to_int(today_bars[-1].get("bar_time_ms"), 0))
+        today_bar_count += len(today_bars)
+        warmup_bar_count += max(0, len(symbol_bars) - len(today_bars))
         latest_bar = today_bars[-1] if today_bars else (symbol_bars[-1] if symbol_bars else {})
         trace_result = _build_trace_for_symbol(
             environment=runtime_environment,
@@ -133,8 +136,12 @@ def build_active_window_items_for_symbols(
             reason_text = to_text(reason)
             if reason_text and reason_text not in filter_reasons:
                 filter_reasons.append(reason_text)
+        candidate_signal_source = ""
         candidate_signal = dict(signal_state.get("signal_payload") or {}) if signal_state.get("signal_payload") else None
+        if candidate_signal:
+            candidate_signal_source = "trace"
         if not candidate_signal and latest_signal:
+            candidate_signal_source = "stored_signal"
             candidate_signal = {
                 "signal_id": to_text(latest_signal.get("signal_id")),
                 "direction": to_text(latest_signal.get("direction")),
@@ -213,6 +220,8 @@ def build_active_window_items_for_symbols(
             "trace_stage": to_text(signal_state.get("stage")) or "none",
             "trace_error": trace_error,
         }
+        if candidate_signal_source:
+            item["candidate_signal_source"] = candidate_signal_source
         items.append(item)
 
         if target_status == "active":
@@ -227,6 +236,8 @@ def build_active_window_items_for_symbols(
             window_valid_count += 1
         if candidate_signal:
             candidate_signal_count += 1
+        if to_text(item.get("trace_stage")).lower() == "candidate":
+            current_candidate_signal_count += 1
         if status == "blocked":
             blocked_count += 1
         if status == "near_expiry":
@@ -235,20 +246,46 @@ def build_active_window_items_for_symbols(
             confirmed_count += 1
         if trace_error:
             trace_error_count += 1
+        _increment_count(trace_stage_counts, item.get("trace_stage"))
+        _increment_count(window_status_counts, status)
 
     summary.update(
         {
             "total": len(items),
             "active_count": active_count,
             "candidate_count": candidate_count,
+            "target_active_count": active_count,
+            "target_candidate_count": candidate_count,
             "with_live_bar_count": with_live_bar_count,
             "window_active_count": window_active_count,
             "window_valid_count": window_valid_count,
             "candidate_signal_count": candidate_signal_count,
+            "current_candidate_signal_count": current_candidate_signal_count,
             "blocked_count": blocked_count,
             "near_expiry_count": near_expiry_count,
             "confirmed_count": confirmed_count,
             "trace_error_count": trace_error_count,
+            "trace_stage_counts": trace_stage_counts,
+            "window_status_counts": window_status_counts,
+            "timeline_data": {
+                "market_start_ms": max(0, int(market_start_ms or 0)),
+                "market_end_ms": max(0, int(market_end_ms or 0)),
+                "warmup_bars_per_symbol": TIMELINE_WARMUP_BARS,
+                "symbols_requested": len(ordered_symbols),
+                "symbols_with_bars_count": symbols_with_bars_count,
+                "symbols_with_today_bars_count": symbols_with_today_bars_count,
+                "symbols_with_no_bars": [
+                    symbol for symbol in ordered_symbols
+                    if not any(market_start_ms <= to_int(row.get("bar_time_ms"), 0) < market_end_ms for row in bars_by_symbol.get(symbol, []))
+                ],
+                "symbols_with_no_bars_count": len(ordered_symbols) - symbols_with_today_bars_count,
+                "today_bar_count": today_bar_count,
+                "warmup_bar_count": warmup_bar_count,
+                "latest_bar_time_max_ms": max(latest_today_bar_times) if latest_today_bar_times else 0,
+                "latest_bar_time_max_us": format_et_datetime(max(latest_today_bar_times)) if latest_today_bar_times else "",
+                "latest_bar_time_min_ms": min(latest_today_bar_times) if latest_today_bar_times else 0,
+                "latest_bar_time_min_us": format_et_datetime(min(latest_today_bar_times)) if latest_today_bar_times else "",
+            },
         }
     )
     return {"summary": summary, "items": items, "returned_count": len(items)}
@@ -317,19 +354,7 @@ def build_active_window_progress_response(
         if len(ordered_symbols) >= limit:
             break
 
-    empty_summary = {
-        "total": 0,
-        "active_count": 0,
-        "candidate_count": 0,
-        "with_live_bar_count": 0,
-        "window_active_count": 0,
-        "window_valid_count": 0,
-        "candidate_signal_count": 0,
-        "blocked_count": 0,
-        "near_expiry_count": 0,
-        "confirmed_count": 0,
-        "trace_error_count": 0,
-    }
+    empty_summary = _empty_active_window_summary(market_start_ms=market_start_ms, market_end_ms=market_end_ms)
     if not ordered_symbols:
         return {
             "ok": True,
@@ -395,16 +420,31 @@ def build_active_window_progress_response(
     window_active_count = 0
     window_valid_count = 0
     candidate_signal_count = 0
+    current_candidate_signal_count = 0
     blocked_count = 0
     near_expiry_count = 0
     confirmed_count = 0
     trace_error_count = 0
+    trace_stage_counts: dict[str, int] = {}
+    window_status_counts: dict[str, int] = {}
+    symbols_with_bars_count = 0
+    symbols_with_today_bars_count = 0
+    today_bar_count = 0
+    warmup_bar_count = 0
+    latest_today_bar_times: list[int] = []
 
     for symbol in ordered_symbols:
         target = target_by_symbol.get(symbol) or {}
         target_extra = parse_json_object(target.get("extra"))
         symbol_bars = bars_by_symbol.get(symbol, [])
         today_bars = [row for row in symbol_bars if market_start_ms <= to_int(row.get("bar_time_ms"), 0) < market_end_ms]
+        if symbol_bars:
+            symbols_with_bars_count += 1
+        if today_bars:
+            symbols_with_today_bars_count += 1
+            latest_today_bar_times.append(to_int(today_bars[-1].get("bar_time_ms"), 0))
+        today_bar_count += len(today_bars)
+        warmup_bar_count += max(0, len(symbol_bars) - len(today_bars))
         latest_bar = today_bars[-1] if today_bars else (symbol_bars[-1] if symbol_bars else {})
         trace_result = _build_trace_for_symbol(
             environment=runtime_environment,
@@ -433,8 +473,12 @@ def build_active_window_progress_response(
             reason_text = to_text(reason)
             if reason_text and reason_text not in filter_reasons:
                 filter_reasons.append(reason_text)
+        candidate_signal_source = ""
         candidate_signal = dict(signal_state.get("signal_payload") or {}) if signal_state.get("signal_payload") else None
+        if candidate_signal:
+            candidate_signal_source = "trace"
         if not candidate_signal and latest_signal:
+            candidate_signal_source = "stored_signal"
             candidate_signal = {
                 "signal_id": to_text(latest_signal.get("signal_id")),
                 "direction": to_text(latest_signal.get("direction")),
@@ -521,6 +565,8 @@ def build_active_window_progress_response(
             "trace_stage": to_text(signal_state.get("stage")) or "none",
             "trace_error": trace_error,
         }
+        if candidate_signal_source:
+            item["candidate_signal_source"] = candidate_signal_source
         items.append(item)
 
         if target_status == "active":
@@ -535,6 +581,8 @@ def build_active_window_progress_response(
             window_valid_count += 1
         if candidate_signal:
             candidate_signal_count += 1
+        if to_text(item.get("trace_stage")).lower() == "candidate":
+            current_candidate_signal_count += 1
         if status == "blocked":
             blocked_count += 1
         if status == "near_expiry":
@@ -543,20 +591,46 @@ def build_active_window_progress_response(
             confirmed_count += 1
         if trace_error:
             trace_error_count += 1
+        _increment_count(trace_stage_counts, item.get("trace_stage"))
+        _increment_count(window_status_counts, status)
 
     summary.update(
         {
             "total": len(items),
             "active_count": active_count,
             "candidate_count": candidate_count,
+            "target_active_count": active_count,
+            "target_candidate_count": candidate_count,
             "with_live_bar_count": with_live_bar_count,
             "window_active_count": window_active_count,
             "window_valid_count": window_valid_count,
             "candidate_signal_count": candidate_signal_count,
+            "current_candidate_signal_count": current_candidate_signal_count,
             "blocked_count": blocked_count,
             "near_expiry_count": near_expiry_count,
             "confirmed_count": confirmed_count,
             "trace_error_count": trace_error_count,
+            "trace_stage_counts": trace_stage_counts,
+            "window_status_counts": window_status_counts,
+            "timeline_data": {
+                "market_start_ms": max(0, int(market_start_ms or 0)),
+                "market_end_ms": max(0, int(market_end_ms or 0)),
+                "warmup_bars_per_symbol": TIMELINE_WARMUP_BARS,
+                "symbols_requested": len(ordered_symbols),
+                "symbols_with_bars_count": symbols_with_bars_count,
+                "symbols_with_today_bars_count": symbols_with_today_bars_count,
+                "symbols_with_no_bars": [
+                    symbol for symbol in ordered_symbols
+                    if not any(market_start_ms <= to_int(row.get("bar_time_ms"), 0) < market_end_ms for row in bars_by_symbol.get(symbol, []))
+                ],
+                "symbols_with_no_bars_count": len(ordered_symbols) - symbols_with_today_bars_count,
+                "today_bar_count": today_bar_count,
+                "warmup_bar_count": warmup_bar_count,
+                "latest_bar_time_max_ms": max(latest_today_bar_times) if latest_today_bar_times else 0,
+                "latest_bar_time_max_us": format_et_datetime(max(latest_today_bar_times)) if latest_today_bar_times else "",
+                "latest_bar_time_min_ms": min(latest_today_bar_times) if latest_today_bar_times else 0,
+                "latest_bar_time_min_us": format_et_datetime(min(latest_today_bar_times)) if latest_today_bar_times else "",
+            },
         }
     )
 

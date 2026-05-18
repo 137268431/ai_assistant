@@ -94,7 +94,7 @@
         let hasMore = false;
         let allDetails = [];
         let searchDebounceTimer = null;
-        let currentEnvironment = getCurrentRuntimeEnvironment();
+        let currentEnvironment = getCurrentBrokerMode();
 
         function getOrderDetailsModeLabel() {
             if (queryMode === 'list') return '列表模式';

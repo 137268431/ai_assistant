@@ -24,11 +24,18 @@ def build_scheduler_status(
     scheduler_base_url: str,
     support: Callable[..., dict[str, Any]],
 ):
-    def _scheduler_status(environment: str = "live") -> dict[str, Any]:
+    def _scheduler_status(
+        environment: str = "live",
+        *,
+        broker_mode: str = "",
+        market_data_mode: str = "",
+    ) -> dict[str, Any]:
         return support(
             environment,
             request_json=globals_dict["_request_json"],
             scheduler_base_url=scheduler_base_url,
+            broker_mode=broker_mode,
+            market_data_mode=market_data_mode,
         )
 
     return _scheduler_status

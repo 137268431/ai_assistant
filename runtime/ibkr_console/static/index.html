@@ -432,6 +432,13 @@
             return payload;
         }
 
+        function requestCachedJson(path, cacheOptions = {}) {
+            if (typeof cachedCustomJson === 'function') {
+                return cachedCustomJson(path, '', {}, cacheOptions);
+            }
+            return requestJson(path);
+        }
+
         function renderOverviewMeta(marketDate) {
             setPageContextMeta([
                 { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
@@ -627,7 +634,11 @@
 
             try {
                 cardEl.dataset.ready = 'loading';
-                const payload = await requestJson(`/api/custom/system/summaryz?lite=1&environment=${encodeURIComponent(currentEnvironment)}`);
+                const payload = await requestCachedJson(`/api/custom/system/summaryz?lite=1&environment=${encodeURIComponent(currentEnvironment)}`, {
+                    ttlMs: 10000,
+                    swrMs: 10000,
+                    tags: ['home', 'system-summary', currentEnvironment]
+                });
                 renderHomeStackOverview(payload || {});
             } catch (error) {
                 console.error('加载 split stack 摘要失败:', error);
@@ -785,7 +796,11 @@
                 const marketDate = getUsDate();
                 document.getElementById('todayTargetsMeta').textContent = '正在加载目标池...';
                 renderTodayTargetsTimeTip({ market_date: marketDate });
-                const payload = await requestJson(`/api/custom/ibkr/today-targets?environment=${encodeURIComponent(currentEnvironment)}&market_date=${encodeURIComponent(marketDate)}`);
+                const payload = await requestCachedJson(`/api/custom/ibkr/today-targets?environment=${encodeURIComponent(currentEnvironment)}&market_date=${encodeURIComponent(marketDate)}`, {
+                    ttlMs: 30000,
+                    swrMs: 30000,
+                    tags: ['home', 'today-targets', currentEnvironment]
+                });
                 renderTodayTargets(payload || { items: [], summary: {}, market_date: marketDate });
             } catch (error) {
                 console.error('加载今日标的失败:', error);
@@ -1304,12 +1319,20 @@
         }
 
         async function fetchConfiguredMarketMonitorSymbols() {
-            const summary = await requestJson(`/api/custom/system/summaryz?lite=1&environment=${encodeURIComponent(currentEnvironment)}`)
+            const summary = await requestCachedJson(`/api/custom/system/summaryz?lite=1&environment=${encodeURIComponent(currentEnvironment)}`, {
+                ttlMs: 30000,
+                swrMs: 30000,
+                tags: ['home', 'market-monitor', currentEnvironment]
+            })
                 .catch(() => ({}));
             const summarySymbols = normalizeSymbolList(summary?.config?.ibkr_market_ws_symbols);
             if (summarySymbols.length) return summarySymbols;
 
-            const monitor = await requestJson(`/api/custom/system/monitorz?environment=${encodeURIComponent(currentEnvironment)}`)
+            const monitor = await requestCachedJson(`/api/custom/system/monitorz?environment=${encodeURIComponent(currentEnvironment)}`, {
+                ttlMs: 15000,
+                swrMs: 15000,
+                tags: ['home', 'market-monitor', currentEnvironment]
+            })
                 .catch(() => ({}));
             const runtimeSymbols = normalizeSymbolList(monitor?.runtime?.market_universe?.market_ws_symbols);
             if (runtimeSymbols.length) return runtimeSymbols;
@@ -1374,11 +1397,15 @@
                     : `(environment = "${escapeQueryValue(currentEnvironment)}" || environment = "global")`;
 
                 const [watchlistResp, configuredSymbols] = await Promise.all([
-                    apiFetch('watchlist', {
+                    (typeof cachedApiFetch === 'function' ? cachedApiFetch('watchlist', {
                         filter: `${scopeFilter} && symbol_role = "market_monitor"`,
                         sort: '-updated',
                         perPage: 100
-                    }).catch(() => ({ items: [] })),
+                    }, { ttlMs: 30000, ttl: 30000 }) : apiFetch('watchlist', {
+                        filter: `${scopeFilter} && symbol_role = "market_monitor"`,
+                        sort: '-updated',
+                        perPage: 100
+                    })).catch(() => ({ items: [] })),
                     fetchConfiguredMarketMonitorSymbols()
                 ]);
 
@@ -1431,21 +1458,33 @@
                     try {
                         const envFilter = `environment = "${escapeQueryValue(currentEnvironment)}" && symbol = "${escapeQueryValue(symbol)}"`;
                         const [indicatorResp, barResp, dailyResp] = await Promise.all([
-                            apiFetch('ibkr_indicators', {
+                            (typeof cachedApiFetch === 'function' ? cachedApiFetch('ibkr_indicators', {
                                 filter: `${envFilter} && (interval = "5" || interval = "5m")`,
                                 sort: '-bar_time_ms',
                                 perPage: 1
-                            }).catch(() => ({ items: [] })),
-                            apiFetch('ibkr_bars', {
+                            }, { ttlMs: 15000, ttl: 15000 }) : apiFetch('ibkr_indicators', {
+                                filter: `${envFilter} && (interval = "5" || interval = "5m")`,
+                                sort: '-bar_time_ms',
+                                perPage: 1
+                            })).catch(() => ({ items: [] })),
+                            (typeof cachedApiFetch === 'function' ? cachedApiFetch('ibkr_bars', {
                                 filter: `${envFilter} && interval = "5m"`,
                                 sort: '-bar_time_ms',
                                 perPage: 1
-                            }).catch(() => ({ items: [] })),
-                            apiFetch('ibkr_bars', {
+                            }, { ttlMs: 15000, ttl: 15000 }) : apiFetch('ibkr_bars', {
+                                filter: `${envFilter} && interval = "5m"`,
+                                sort: '-bar_time_ms',
+                                perPage: 1
+                            })).catch(() => ({ items: [] })),
+                            (typeof cachedApiFetch === 'function' ? cachedApiFetch('ibkr_bars', {
                                 filter: `${envFilter} && interval = "1d"`,
                                 sort: '-bar_time_ms',
                                 perPage: 8
-                            }).catch(() => ({ items: [] }))
+                            }, { ttlMs: 60000, ttl: 60000 }) : apiFetch('ibkr_bars', {
+                                filter: `${envFilter} && interval = "1d"`,
+                                sort: '-bar_time_ms',
+                                perPage: 8
+                            })).catch(() => ({ items: [] }))
                         ]);
 
                         return {

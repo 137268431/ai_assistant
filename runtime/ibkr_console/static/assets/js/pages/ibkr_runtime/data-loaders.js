@@ -16,22 +16,34 @@
             }
             try {
                 const envFilter = buildEnvironmentFilter();
+                const readApiFetch = (collection, params, cacheOptions = {}) => (
+                    typeof cachedApiFetch === 'function'
+                        ? cachedApiFetch(collection, params, cacheOptions)
+                        : apiFetch(collection, params)
+                );
+                const readCustomJson = (path, options = {}, cacheOptions = {}) => (
+                    typeof cachedCustomJson === 'function'
+                        ? cachedCustomJson(path, currentEnvironment, options, cacheOptions)
+                        : requestIbkrEnvironmentJson(path, currentEnvironment, options)
+                );
+                const coreCache = { ttlMs: 10000, ttl: 10000, force: Boolean(showToastOnSuccess) };
+                const listCache = { ttlMs: 15000, ttl: 15000, force: Boolean(showToastOnSuccess) };
                 const [health, status, summary, monitorResp, cronResp, twoFactorResp, startupResp, runtimeConfigResp, signalsResp, ordersResp, eventsResp] = await Promise.all([
-                    requestIbkrEnvironmentJson('/api/custom/ibkr/healthz', currentEnvironment, { retryAttempts: 3 }),
-                    requestIbkrEnvironmentJson('/api/custom/ibkr/statusz?lite=1', currentEnvironment, { retryAttempts: 3 }),
-                    requestIbkrEnvironmentJson('/api/custom/system/summaryz?lite=1', currentEnvironment, { retryAttempts: 3 }),
+                    readCustomJson('/api/custom/ibkr/healthz', { retryAttempts: 3 }, coreCache),
+                    readCustomJson('/api/custom/ibkr/statusz?lite=1', { retryAttempts: 3 }, coreCache),
+                    readCustomJson('/api/custom/system/summaryz?lite=1', { retryAttempts: 3 }, coreCache),
                     withTimeout(
-                        requestIbkrEnvironmentJson('/api/custom/system/monitorz', currentEnvironment, { retryAttempts: 2 }),
+                        readCustomJson('/api/custom/system/monitorz', { retryAttempts: 2 }, coreCache),
                         9000,
                         'system/monitorz'
                     ).catch(() => ({ service_monitor: { services: {} } })),
-                    requestIbkrEnvironmentJson('/api/custom/system/cronz', currentEnvironment, { retryAttempts: 3 }).catch(() => ({ items: [] })),
-                    requestIbkrEnvironmentJson('/api/custom/ibkr/2fa/status', currentEnvironment, { retryAttempts: 3 }),
-                    requestIbkrEnvironmentJson('/api/custom/ibkr/startup/status', currentEnvironment, { retryAttempts: 3 }).catch(() => ({ state: {} })),
-                    requestIbkrEnvironmentJson('/api/custom/ibkr/runtime/config', currentEnvironment, { retryAttempts: 3 }),
-                    apiFetch('ibkr_signals', { filter: envFilter, sort: '-created', perPage: 8 }),
-                    apiFetch('orders', { filter: envFilter, sort: '-created', perPage: 8 }),
-                    apiFetch('system_events', { filter: envFilter, sort: '-created', perPage: 8 })
+                    readCustomJson('/api/custom/system/cronz', { retryAttempts: 3 }, { ttlMs: 300000, ttl: 300000, force: Boolean(showToastOnSuccess) }).catch(() => ({ items: [] })),
+                    readCustomJson('/api/custom/ibkr/2fa/status', { retryAttempts: 3 }, coreCache),
+                    readCustomJson('/api/custom/ibkr/startup/status', { retryAttempts: 3 }, coreCache).catch(() => ({ state: {} })),
+                    readCustomJson('/api/custom/ibkr/runtime/config', { retryAttempts: 3 }, { ttlMs: 300000, ttl: 300000, force: Boolean(showToastOnSuccess) }),
+                    readApiFetch('ibkr_signals', { filter: envFilter, sort: '-created', perPage: 8 }, listCache),
+                    readApiFetch('orders', { filter: envFilter, sort: '-created', perPage: 8 }, listCache),
+                    readApiFetch('system_events', { filter: envFilter, sort: '-created', perPage: 8 }, listCache)
                 ]);
                 if (loadId !== latestRuntimeLoadId) return;
 
@@ -91,19 +103,19 @@
 
                 const recentMarketDate = resolveRuntimeMarketDate(status);
                 const recentRecordFilter = `created >= "${escapeQueryValue(`${recentMarketDate} 00:00:00`)}" && ${envFilter}`;
-                const barsPromise = apiFetch('ibkr_bars', {
+                const barsPromise = readApiFetch('ibkr_bars', {
                     filter: recentRecordFilter,
                     sort: '-bar_time_ms',
                     perPage: 8,
-                }).catch((error) => {
+                }, listCache).catch((error) => {
                     console.warn('加载最近 bars 失败:', error);
                     return { items: [] };
                 });
-                const indicatorsPromise = apiFetch('ibkr_indicators', {
+                const indicatorsPromise = readApiFetch('ibkr_indicators', {
                     filter: recentRecordFilter,
                     sort: '-bar_time_ms',
                     perPage: 8,
-                }).catch((error) => {
+                }, listCache).catch((error) => {
                     console.warn('加载最近 indicators 失败:', error);
                     return { items: [] };
                 });
@@ -145,4 +157,3 @@
                 scheduleRuntimeRefresh();
             }
         }
-

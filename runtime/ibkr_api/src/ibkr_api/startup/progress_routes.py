@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ibkr_api.modes import request_broker_mode
+
 from flask import Response, jsonify, request
 
 
@@ -29,7 +31,7 @@ def register_startup_progress_routes(app, *, deps: StartupDeps, exports: dict[st
     @app.route("/api/custom/ibkr/startup/progress", methods=["POST"])
     def custom_ibkr_startup_progress() -> Response:
         payload = request.get_json(silent=True) or {}
-        environment = normalize_environment(payload.get("environment"), "live")
+        environment = request_broker_mode(payload)
         times = time_strings()
         action = str(payload.get("action") or "update").strip().lower() or "update"
         create_if_missing = bool(payload.get("create_if_missing") is True)

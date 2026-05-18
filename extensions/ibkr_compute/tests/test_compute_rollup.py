@@ -2,6 +2,8 @@ import json
 import os
 import sqlite3
 import sys
+import threading
+import time
 import types
 import unittest
 from pathlib import Path
@@ -51,11 +53,15 @@ from ibkr_compute.api.compute.runtime_state import timing as compute_timing
 
 
 class _FakeConfig:
-    def __init__(self, bools=None):
+    def __init__(self, bools=None, ints=None):
         self.bools = dict(bools or {})
+        self.ints = dict(ints or {})
 
     def get_bool_for_environment(self, key, environment, fallback):
         return self.bools.get(key, fallback)
+
+    def get_int_for_environment(self, key, environment, fallback):
+        return self.ints.get(key, fallback)
 
     def get_float_for_environment(self, key, environment, fallback):
         return fallback
@@ -201,6 +207,48 @@ def _base_bar(symbol="AAPL", bar_time_ms=1713797100000):
         "bar_time_ms": bar_time_ms,
         "extra": {},
     }
+
+
+def _base_bar_series(symbols=("AAPL",), start_ms=1713796800000, count=12):
+    rows = []
+    for index in range(count):
+        for symbol in symbols:
+            price = 100.0 + index
+            rows.append(
+                {
+                    **_base_bar(symbol, start_ms + (index * 5 * 60 * 1000)),
+                    "open": price,
+                    "high": price + 1.0,
+                    "low": price - 1.0,
+                    "close": price + 0.5,
+                    "volume": 1000 + index,
+                }
+            )
+    return rows
+
+
+def _compact_written_bars(batches):
+    rows = [bar for batch in batches for bar in batch]
+    compact = []
+    for bar in rows:
+        extra = dict(bar.get("extra") or {})
+        compact.append(
+            (
+                str(bar.get("symbol") or ""),
+                str(bar.get("interval") or ""),
+                int(bar.get("bar_time_ms", 0) or 0),
+                float(bar.get("open", 0) or 0),
+                float(bar.get("high", 0) or 0),
+                float(bar.get("low", 0) or 0),
+                float(bar.get("close", 0) or 0),
+                float(bar.get("volume", 0) or 0),
+                extra.get("source"),
+                extra.get("component_interval"),
+                int(extra.get("component_count", 0) or 0),
+                int(extra.get("last_component_bar_time_ms", 0) or 0),
+            )
+        )
+    return sorted(compact)
 
 
 class ComputeRollupPlanTest(unittest.TestCase):
@@ -506,6 +554,127 @@ class RollupDirectSqliteTest(unittest.TestCase):
             fake_app.pb.upsert_bars.assert_not_called()
         finally:
             read_conn.close()
+
+    def test_parallel_rollup_matches_serial_output(self):
+        intervals = ["15m", "30m", "1h", "4h", "1d"]
+        rows = _base_bar_series(symbols=("AAPL", "MSFT"), count=600)
+        read_conn = _sqlite_bars(rows)
+
+        def run_rebuild(parallel_enabled):
+            fake_app = _build_fake_app()
+            fake_app.ROLLUP_BATCH_SIZE = 50
+            fake_app.cfg = _FakeConfig(
+                bools={"ibkr_rollup_parallel_enabled": parallel_enabled},
+                ints={"ibkr_rollup_max_workers": 5},
+            )
+            written_batches = []
+            readonly_calls = 0
+
+            def fake_open_pb_sqlite(*, readonly=False, timeout=30.0):
+                nonlocal readonly_calls
+                if readonly:
+                    readonly_calls += 1
+                    return _ReusableSqliteConn(read_conn)
+                return _FakeConn()
+
+            def fake_upsert_bars(conn, batch):
+                written_batches.append(list(batch))
+                return len(batch)
+
+            with mock.patch.object(compute_rollup, "_api_app", return_value=fake_app), \
+                    mock.patch.object(compute_rollup, "open_pb_sqlite", side_effect=fake_open_pb_sqlite), \
+                    mock.patch.object(compute_rollup, "upsert_bars", side_effect=fake_upsert_bars):
+                result = compute_rollup.rebuild_higher_timeframe_bars(
+                    "live",
+                    symbols=["AAPL", "MSFT"],
+                    intervals=intervals,
+                )
+            return result, written_batches, readonly_calls
+
+        try:
+            serial_result, serial_batches, serial_reads = run_rebuild(False)
+            parallel_result, parallel_batches, parallel_reads = run_rebuild(True)
+        finally:
+            read_conn.close()
+
+        self.assertFalse(serial_result["parallel"])
+        self.assertTrue(parallel_result["parallel"])
+        self.assertEqual(parallel_result["workers"], 5)
+        self.assertEqual(serial_reads, 1)
+        self.assertEqual(parallel_reads, 1)
+        self.assertEqual(parallel_result["processed_5m"], serial_result["processed_5m"])
+        self.assertEqual(parallel_result["written"], serial_result["written"])
+        self.assertEqual(parallel_result["errors"], 0)
+        self.assertEqual(
+            _compact_written_bars(parallel_batches),
+            _compact_written_bars(serial_batches),
+        )
+
+    def test_parallel_rollup_serializes_writes(self):
+        fake_app = _build_fake_app()
+        fake_app.ROLLUP_BATCH_SIZE = 20
+        fake_app.cfg = _FakeConfig(ints={"ibkr_rollup_max_workers": 5})
+        read_conn = _sqlite_bars(_base_bar_series(count=600))
+        active_writes = 0
+        max_active_writes = 0
+        write_count = 0
+        active_lock = threading.Lock()
+
+        def fake_open_pb_sqlite(*, readonly=False, timeout=30.0):
+            return _ReusableSqliteConn(read_conn) if readonly else _FakeConn()
+
+        def fake_upsert_bars(conn, batch):
+            nonlocal active_writes, max_active_writes, write_count
+            with active_lock:
+                active_writes += 1
+                max_active_writes = max(max_active_writes, active_writes)
+            try:
+                time.sleep(0.002)
+                write_count += 1
+                return len(batch)
+            finally:
+                with active_lock:
+                    active_writes -= 1
+
+        try:
+            with mock.patch.object(compute_rollup, "_api_app", return_value=fake_app), \
+                    mock.patch.object(compute_rollup, "open_pb_sqlite", side_effect=fake_open_pb_sqlite), \
+                    mock.patch.object(compute_rollup, "upsert_bars", side_effect=fake_upsert_bars):
+                result = compute_rollup.rebuild_higher_timeframe_bars(
+                    "live",
+                    symbols=["AAPL"],
+                    intervals=["15m", "30m", "1h", "4h", "1d"],
+                )
+        finally:
+            read_conn.close()
+
+        self.assertTrue(result["parallel"])
+        self.assertGreater(write_count, 1)
+        self.assertEqual(max_active_writes, 1)
+
+    def test_single_interval_rollup_stays_serial(self):
+        fake_app = _build_fake_app()
+        fake_app.cfg = _FakeConfig(ints={"ibkr_rollup_max_workers": 5})
+        read_conn = _sqlite_bars(_base_bar_series(count=12))
+
+        def fake_open_pb_sqlite(*, readonly=False, timeout=30.0):
+            return _ReusableSqliteConn(read_conn) if readonly else _FakeConn()
+
+        try:
+            with mock.patch.object(compute_rollup, "_api_app", return_value=fake_app), \
+                    mock.patch.object(compute_rollup, "open_pb_sqlite", side_effect=fake_open_pb_sqlite), \
+                    mock.patch.object(compute_rollup, "upsert_bars", return_value=1):
+                result = compute_rollup.rebuild_higher_timeframe_bars(
+                    "live",
+                    symbols=["AAPL"],
+                    intervals=["15m"],
+                )
+        finally:
+            read_conn.close()
+
+        self.assertFalse(result["parallel"])
+        self.assertEqual(result["workers"], 1)
+        self.assertEqual(result["interval_results"], {})
 
     def test_rebuild_falls_back_to_pb_when_direct_sqlite_read_fails(self):
         fake_app = _build_fake_app()

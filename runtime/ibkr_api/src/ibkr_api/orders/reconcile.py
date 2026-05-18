@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ibkr_api.modes import request_broker_mode
 from ibkr_api.orders.reconcile_support import (
     append_reconciled_detail,
     build_repair_context,
@@ -18,7 +19,7 @@ def build_orders_reconcile_response(
     normalize_environment: Callable[[Any, str], str],
     escape_filter_string: Callable[[Any], str],
 ) -> tuple[dict[str, Any], int]:
-    environment = normalize_environment(payload.get("environment"), "live")
+    environment = request_broker_mode(payload)
     only_missing = parse_boolean(payload.get("only_missing"), True)
     dry_run = parse_boolean(payload.get("dry_run"), False)
     suppress_notification = parse_boolean(payload.get("suppress_notification"), True)

@@ -52,9 +52,8 @@ class SignalRouter:
             "protection_incomplete",
         }:
             return True
-        # Backward compatibility: legacy LIVE signals used only the top-level status.
-        legacy_status = str(row.get("status") or "").strip().lower()
-        if self.broker_mode == self.environment and legacy_status and legacy_status != "pending":
+        top_level_status = str(row.get("status") or "").strip().lower()
+        if self.broker_mode == self.environment and top_level_status and top_level_status != "pending":
             return True
         return False
 

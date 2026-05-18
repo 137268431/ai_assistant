@@ -1,7 +1,7 @@
 const { chromium, devices } = require("playwright");
 
 const CONSOLE_BASE = process.env.CONSOLE_BASE_URL || process.env.QUANT_BASE_URL || process.env.PB_PAGE_BASE_URL || process.env.PB_BASE || 'https://quant.lzw-glory.top';
-const ENVIRONMENT = process.env.IBKR_ENVIRONMENT || "live";
+const ENVIRONMENT = process.env.IBKR_MARKET_DATA_MODE || "live";
 
 async function login(page) {
   await page.goto(`${CONSOLE_BASE}/login.html`, { waitUntil: "domcontentloaded" });

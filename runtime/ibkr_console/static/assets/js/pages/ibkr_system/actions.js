@@ -18,7 +18,11 @@ async function loadSystemData(showToastOnSuccess = false) {
         const secondaryErrors = [];
         const safeRequestSystemJson = async (bucket, label, path, fallback = {}, timeoutMs = coreTimeoutMs, options = {}) => {
             try {
-                return await withTimeout(requestIbkrEnvironmentJson(path, currentEnvironment, options), timeoutMs, label);
+                const cacheOptions = { ttlMs: 10000, ttl: 10000, force: Boolean(showToastOnSuccess) };
+                const request = typeof cachedCustomJson === 'function'
+                    ? cachedCustomJson(path, currentEnvironment, options, cacheOptions)
+                    : requestIbkrEnvironmentJson(path, currentEnvironment, options);
+                return await withTimeout(request, timeoutMs, label);
             } catch (error) {
                 bucket.push(`${label}: ${error.message || error}`);
                 return fallback;
@@ -26,7 +30,10 @@ async function loadSystemData(showToastOnSuccess = false) {
         };
         const safeApiFetch = async (bucket, label, collection, params, fallback = { items: [] }, timeoutMs = secondaryTimeoutMs) => {
             try {
-                return await withTimeout(apiFetch(collection, params), timeoutMs, label);
+                const request = typeof cachedApiFetch === 'function'
+                    ? cachedApiFetch(collection, params, { ttlMs: 15000, ttl: 15000, force: Boolean(showToastOnSuccess) })
+                    : apiFetch(collection, params);
+                return await withTimeout(request, timeoutMs, label);
             } catch (error) {
                 bucket.push(`${label}: ${error.message || error}`);
                 return fallback;
@@ -34,11 +41,15 @@ async function loadSystemData(showToastOnSuccess = false) {
         };
         const safeCountFetch = async (bucket, label, collection, filter, timeoutMs = secondaryTimeoutMs) => {
             try {
-                const payload = await withTimeout(apiFetch(collection, {
-                    filter,
-                    perPage: 1,
-                    page: 1
-                }), timeoutMs, label);
+                const request = typeof cachedCountFetch === 'function'
+                    ? cachedCountFetch(collection, filter, { ttlMs: 30000, ttl: 30000, force: Boolean(showToastOnSuccess) })
+                    : apiFetch(collection, {
+                        filter,
+                        perPage: 1,
+                        page: 1
+                    });
+                const payload = await withTimeout(request, timeoutMs, label);
+                if (typeof payload === 'number') return payload;
                 const totalItems = Number(payload?.totalItems);
                 if (Number.isFinite(totalItems)) return totalItems;
                 return Array.isArray(payload?.items) ? payload.items.length : 0;

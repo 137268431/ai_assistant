@@ -4,7 +4,7 @@ from typing import Any
 
 from flask import Response, jsonify, request
 
-from ibkr_compute.core.broker_mode import resolve_data_environment
+from ibkr_api.modes import request_market_data_mode
 from ibkr_api.storage.helpers import prepare_bar_row
 
 
@@ -13,7 +13,6 @@ StorageDeps = dict[str, Any]
 
 def register_storage_bar_routes(app, *, deps: StorageDeps, exports: dict[str, Any]) -> dict[str, Any]:
     pb = deps["pb"]
-    normalize_environment = deps["normalize_environment"]
     parse_boolean = deps["parse_boolean"]
     config_value = deps["config_value"]
 
@@ -24,9 +23,8 @@ def register_storage_bar_routes(app, *, deps: StorageDeps, exports: dict[str, An
         if not isinstance(bars, list) or not bars:
             return jsonify({"ok": False, "error": "Empty bars array"}), 400
 
-        broker_mode = normalize_environment(payload.get("environment"), "live")
-        default_environment = resolve_data_environment(broker_mode)
-        enabled_value = config_value("ibkr_bar_publish_enabled", "true", broker_mode)
+        default_environment = request_market_data_mode(payload)
+        enabled_value = config_value("ibkr_bar_publish_enabled", "true", default_environment)
         if not parse_boolean(enabled_value, True):
             return jsonify(
                 {
@@ -41,8 +39,12 @@ def register_storage_bar_routes(app, *, deps: StorageDeps, exports: dict[str, An
         errors = 0
         for item in bars:
             item_payload = dict(item) if isinstance(item, dict) else {}
-            item_broker_mode = normalize_environment(item_payload.get("environment"), broker_mode)
-            item_payload["environment"] = resolve_data_environment(item_broker_mode)
+            item_payload["environment"] = request_market_data_mode(
+                {
+                    "market_data_mode": item_payload.get("market_data_mode"),
+                    "data_environment": item_payload.get("data_environment") or default_environment,
+                }
+            )
             row, error = prepare_bar_row(item_payload, default_environment)
             if row is None:
                 errors += 1

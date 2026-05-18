@@ -36,12 +36,16 @@ def _definition(
     window_label: str = "",
     hook_file: str = "",
     runner_kind: str = "compatibility_pending",
+    mode_scope: str,
     cron_timezone: str = "UTC",
     family: str = "",
     schedules: list[dict[str, Any]] | None = None,
     deprecated_aliases: list[str] | None = None,
     deprecated_config_keys: list[str] | None = None,
 ) -> dict[str, Any]:
+    normalized_mode_scope = str(mode_scope or "").strip().lower()
+    if normalized_mode_scope not in {"broker", "market_data"}:
+        raise ValueError(f"invalid mode_scope for {cron_id}: {mode_scope!r}")
     schedule_items = schedules or [
         _schedule("default", cron_expr, cron_timezone=cron_timezone, label=cycle_label)
     ]
@@ -73,7 +77,8 @@ def _definition(
         "et_cycle_label": et_cycle_label,
         "window_label": window_label,
         "function_summary": function_summary,
-        "scope_label": "按环境执行",
+        "mode_scope": normalized_mode_scope,
+        "scope_label": "Broker Mode" if normalized_mode_scope == "broker" else "Market Data Mode",
         "note": note,
         "hook_file": hook_file,
         "runner_kind": runner_kind,
@@ -93,6 +98,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         "当前由 ibkr-scheduler 触发 ibkr-api 原生信号过期处理；PB 仅保留兼容壳。",
         hook_file="ibkr_signal_scheduler.pb.js",
         runner_kind="native_api_http",
+        mode_scope="broker",
         family="trade_maintenance",
     ),
     _definition(
@@ -107,6 +113,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         "当前由 ibkr-scheduler 触发 ibkr-api 原生订单过期处理；PB 仅保留兼容壳。",
         hook_file="order_scheduler.pb.js",
         runner_kind="native_api_http",
+        mode_scope="broker",
         family="trade_maintenance",
     ),
     _definition(
@@ -121,6 +128,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         "当前由 ibkr-scheduler 触发 ibkr-api 原生订单明细巡检；PB 仅保留兼容壳。",
         hook_file="order_scheduler.pb.js",
         runner_kind="native_api_http",
+        mode_scope="broker",
         family="trade_maintenance",
     ),
     _definition(
@@ -138,6 +146,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         window_label="游标驱动",
         hook_file="ibkr_system_monitor.pb.js",
         runner_kind="native_compute_dispatch",
+        mode_scope="market_data",
         family="compute_dispatch",
     ),
     _definition(
@@ -152,6 +161,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         "已迁到 ibkr-api + ibkr-scheduler；PocketBase 不再注册对应 cron。",
         hook_file="ibkr_system_monitor.pb.js",
         runner_kind="native_api_http",
+        mode_scope="market_data",
         family="system_monitor",
     ),
     _definition(
@@ -166,6 +176,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         "已迁到 ibkr-api + ibkr-scheduler；PocketBase 不再注册对应 cron。",
         hook_file="ibkr_system_monitor.pb.js",
         runner_kind="native_api_http",
+        mode_scope="market_data",
         family="system_monitor",
     ),
     _definition(
@@ -180,6 +191,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         "已迁到 ibkr-api + ibkr-scheduler；PocketBase 不再注册对应 cron。",
         hook_file="ibkr_system_monitor.pb.js",
         runner_kind="native_api_http",
+        mode_scope="market_data",
         family="system_monitor",
     ),
     _definition(
@@ -197,6 +209,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         window_label="09:20 ET 日筛",
         hook_file="ibkr_system_monitor.pb.js",
         runner_kind="native_http",
+        mode_scope="market_data",
         cron_timezone="America/New_York",
         family="target_universe",
     ),
@@ -215,6 +228,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         window_label="08:05 ET 基础数据刷新",
         hook_file="ibkr_system_monitor.pb.js",
         runner_kind="native_api_http",
+        mode_scope="market_data",
         cron_timezone="America/New_York",
         family="target_universe",
     ),
@@ -233,6 +247,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         window_label="09:30-10:30 ET 早盘扩池",
         hook_file="ibkr_system_monitor.pb.js",
         runner_kind="native_api_http",
+        mode_scope="market_data",
         cron_timezone="America/New_York",
         family="target_universe",
         schedules=[
@@ -266,6 +281,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         window_label="09:35-15:55 ET 盘中窗口入池",
         hook_file="ibkr_system_monitor.pb.js",
         runner_kind="native_api_http",
+        mode_scope="market_data",
         cron_timezone="America/New_York",
         family="target_universe",
     ),
@@ -281,6 +297,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         "当前由 ibkr-scheduler 触发 ibkr-api 原生 2FA 边沿巡检；PB 仅保留兼容壳。",
         hook_file="ibkr_system_monitor.pb.js",
         runner_kind="native_api_http",
+        mode_scope="broker",
         family="auth_monitor",
     ),
     _definition(
@@ -295,6 +312,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         "当前由 ibkr-scheduler 触发 ibkr-api 原生 2FA 长时间未恢复巡检；PB 仅保留兼容壳。",
         hook_file="ibkr_system_monitor.pb.js",
         runner_kind="native_api_http",
+        mode_scope="broker",
         family="auth_monitor",
     ),
     _definition(
@@ -309,6 +327,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         "当前由 ibkr-scheduler 触发 ibkr-api 原生数据缺口巡检；PB 仅保留兼容壳。",
         hook_file="ibkr_system_monitor.pb.js",
         runner_kind="native_api_http",
+        mode_scope="market_data",
         family="system_monitor",
     ),
     _definition(
@@ -323,6 +342,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         "统一管理开盘前和收盘后两次 sweep；兼容原 open_sweep / close_sweep 开关。",
         hook_file="ibkr_system_monitor.pb.js",
         runner_kind="native_http",
+        mode_scope="market_data",
         family="data_quality",
         schedules=[
             _schedule("open_sweep", "40 9 * * 1-5", label="工作日 UTC 09:40"),
@@ -349,6 +369,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         "统一管理盘前上一交易日审计和盘后当天审计；使用 America/New_York 时区匹配，自动覆盖 DST。",
         hook_file="ibkr_system_monitor.pb.js",
         runner_kind="native_http",
+        mode_scope="market_data",
         cron_timezone="America/New_York",
         family="data_quality",
         schedules=[
@@ -385,6 +406,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         "当前由 ibkr-scheduler 触发 ibkr-api 原生周验证提醒；PB 仅保留兼容壳。",
         hook_file="ibkr_system_monitor.pb.js",
         runner_kind="native_api_http",
+        mode_scope="broker",
         family="auth_monitor",
     ),
     _definition(
@@ -399,6 +421,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         "当前由 ibkr-scheduler 触发 ibkr-api 原生周验证补提醒；PB 仅保留兼容壳。",
         hook_file="ibkr_system_monitor.pb.js",
         runner_kind="native_api_http",
+        mode_scope="broker",
         family="auth_monitor",
     ),
     _definition(
@@ -413,6 +436,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         "当前由 ibkr-scheduler 触发 ibkr-api 原生 2FA 每小时提醒；PB 仅保留兼容壳。",
         hook_file="ibkr_system_monitor.pb.js",
         runner_kind="native_api_http",
+        mode_scope="broker",
         family="auth_monitor",
     ),
     _definition(
@@ -427,6 +451,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         "当前由 ibkr-scheduler 触发 ibkr-api 原生开盘交易摘要；PB 仅保留兼容壳。",
         hook_file="ibkr_system_monitor.pb.js",
         runner_kind="native_api_http",
+        mode_scope="market_data",
         family="system_monitor",
         deprecated_aliases=["system_scan_summary"],
         deprecated_config_keys=["pb_cron_system_scan_summary_enabled"],
@@ -443,6 +468,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         "当前由 ibkr-scheduler 触发 ibkr-api 原生系统日报；PB 仅保留兼容壳。",
         hook_file="ibkr_system_monitor.pb.js",
         runner_kind="native_api_http",
+        mode_scope="market_data",
         family="system_monitor",
     ),
     _definition(
@@ -457,6 +483,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         "兼容读取 pb_scheduler_enabled 和原有 pb_cron_* 开关。",
         hook_file="ibkr_system_monitor.pb.js",
         runner_kind="native_http",
+        mode_scope="market_data",
         family="storage_maintenance",
     ),
     _definition(
@@ -474,6 +501,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         window_label="低峰存储治理",
         hook_file="ibkr_system_monitor.pb.js",
         runner_kind="native_http",
+        mode_scope="market_data",
         cron_timezone="America/New_York",
         family="storage_maintenance",
     ),
@@ -561,6 +589,19 @@ def get_schedule(definition: dict[str, Any], schedule_id: str = "") -> dict[str,
     )
 
 
+def mode_scope(definition: dict[str, Any]) -> str:
+    scope = str((definition or {}).get("mode_scope") or "").strip().lower()
+    if scope not in {"broker", "market_data"}:
+        raise ValueError(f"invalid mode_scope for {str((definition or {}).get('id') or '')}: {scope!r}")
+    return scope
+
+
+def mode_for_scope(definition: dict[str, Any], broker_mode: str, market_data_mode: str) -> str:
+    scope = mode_scope(definition)
+    selected = broker_mode if scope == "broker" else market_data_mode
+    return str(selected or "live").strip().lower() or "live"
+
+
 def is_truthy_config_value(value: Any, default: str = "TRUE") -> bool:
     text = str(value if value not in (None, "") else default).strip().lower()
     return text in {"true", "1", "yes", "on"}
@@ -645,6 +686,29 @@ def build_cron_payload(config, environment: str, job_states: dict[str, Any] | No
         build_effective_cron_definition(definition, config, environment, state_map.get(definition["id"]))
         for definition in CRON_DEFINITIONS
     ]
+    return sorted(items, key=lambda item: (float(item.get("sort_order", 0) or 0), str(item.get("id") or "")))
+
+
+def build_cron_payload_for_modes(
+    config,
+    *,
+    broker_mode: str,
+    market_data_mode: str,
+    job_states: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    state_map = job_states if isinstance(job_states, dict) else {}
+    normalized_broker_mode = str(broker_mode or "live").strip().lower() or "live"
+    normalized_market_data_mode = str(market_data_mode or "live").strip().lower() or "live"
+    items = []
+    for definition in CRON_DEFINITIONS:
+        runtime_mode = mode_for_scope(definition, normalized_broker_mode, normalized_market_data_mode)
+        items.append(
+            {
+                **build_effective_cron_definition(definition, config, runtime_mode, state_map.get(definition["id"])),
+                "broker_mode": normalized_broker_mode,
+                "market_data_mode": normalized_market_data_mode,
+            }
+        )
     return sorted(items, key=lambda item: (float(item.get("sort_order", 0) or 0), str(item.get("id") or "")))
 
 

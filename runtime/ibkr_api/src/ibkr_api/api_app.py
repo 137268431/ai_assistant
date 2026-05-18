@@ -902,7 +902,7 @@ _compat_route_handlers = register_compat_proxy_routes(
         build_service_topology=build_service_topology,
         config=config,
         normalize_environment=_normalize_environment,
-        scheduler_status=lambda environment: _scheduler_status(environment),
+        scheduler_status=lambda environment, **kwargs: _scheduler_status(environment, **kwargs),
         scheduler_job_states=lambda environment="live": _scheduler_job_states(environment),
         build_cron_payload=build_cron_payload,
         build_scheduler_summary=lambda environment, payload: _build_scheduler_summary(environment, payload),

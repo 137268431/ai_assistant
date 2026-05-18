@@ -49,7 +49,8 @@ if (typeof window !== 'undefined') {
 }
 const ENVIRONMENT_STORAGE_KEY = 'pb_environment';
 const PENDING_ENVIRONMENT_WINDOW_KEY = '__pb_pending_environment';
-const RUNTIME_ENVIRONMENTS = ['live', 'paper', 'backtest'];
+const BROKER_MODES = ['paper', 'live'];
+const RUNTIME_ENVIRONMENTS = ['live', 'backtest'];
 const CONFIG_ENVIRONMENTS = ['global', 'live', 'paper', 'backtest'];
 const ENVIRONMENT_LABELS = {
   live: 'LIVE',
@@ -74,18 +75,32 @@ function normalizeRuntimeEnvironment(value, fallback = 'live') {
   const aliases = {
     prod: 'live',
     production: 'live',
-    sim: 'paper',
-    simulated: 'paper',
-    simulation: 'paper',
+    sim: 'live',
+    simulated: 'live',
+    simulation: 'live',
     test: 'backtest'
   };
   const normalized = aliases[text] || text;
   return RUNTIME_ENVIRONMENTS.includes(normalized) ? normalized : fallback;
 }
 
+function normalizeBrokerMode(value, fallback = 'paper') {
+  const text = String(value || '').trim().toLowerCase();
+  const aliases = {
+    prod: 'live',
+    production: 'live',
+    sim: 'paper',
+    simulated: 'paper',
+    simulation: 'paper'
+  };
+  const normalized = aliases[text] || text;
+  return BROKER_MODES.includes(normalized) ? normalized : fallback;
+}
+
 function normalizeConfigEnvironment(value, fallback = 'global') {
   const text = String(value || '').trim().toLowerCase();
   if (text === 'global') return 'global';
+  if (CONFIG_ENVIRONMENTS.includes(text)) return text;
   return normalizeRuntimeEnvironment(text, fallback === 'global' ? 'live' : fallback);
 }
 
@@ -99,18 +114,29 @@ function setStoredEnvironment(environment) {
 
 function getCurrentRuntimeEnvironment() {
   const fromUrl = new URLSearchParams(window.location.search).get('environment') || '';
-  const contextEnvironment = (
-    window.__ibkrBrokerModeContext?.broker_mode
-    || RUNTIME_CONFIG.BROKER_MODE
-    || RUNTIME_CONFIG.IBKR_ENVIRONMENT
+  const urlMarketDataMode = new URLSearchParams(window.location.search).get('market_data_mode') || '';
+  const contextMarketDataMode = (
+    window.__ibkrBrokerModeContext?.market_data_mode
+    || window.__ibkrBrokerModeContext?.data_environment
+    || RUNTIME_CONFIG.MARKET_DATA_MODE
     || ''
   );
   const runtimeEnvironment = normalizeRuntimeEnvironment(
-    contextEnvironment || (normalizeRuntimeEnvironment(fromUrl, '') === 'backtest' ? 'backtest' : 'live'),
+    contextMarketDataMode || urlMarketDataMode || (normalizeRuntimeEnvironment(fromUrl, '') === 'backtest' ? 'backtest' : 'live'),
     'live'
   );
   setStoredEnvironment(runtimeEnvironment);
   return runtimeEnvironment;
+}
+
+function getCurrentBrokerMode() {
+  const params = new URLSearchParams(window.location.search);
+  const contextBrokerMode = (
+    window.__ibkrBrokerModeContext?.broker_mode
+    || RUNTIME_CONFIG.BROKER_MODE
+    || ''
+  );
+  return normalizeBrokerMode(contextBrokerMode || params.get('broker_mode') || params.get('environment') || 'paper', 'paper');
 }
 
 function getCurrentConfigEnvironment() {
@@ -131,9 +157,9 @@ function getBrokerModeContext() {
   const context = (typeof window !== 'undefined' && window.__ibkrBrokerModeContext && typeof window.__ibkrBrokerModeContext === 'object')
     ? window.__ibkrBrokerModeContext
     : {};
-  const brokerMode = normalizeRuntimeEnvironment(
-    context.broker_mode || context.environment || getCurrentRuntimeEnvironment(),
-    'live'
+  const brokerMode = normalizeBrokerMode(
+    context.broker_mode || getCurrentBrokerMode(),
+    'paper'
   );
   const dataEnvironment = normalizeRuntimeEnvironment(
     context.data_environment || context.market_data_environment || 'live',
@@ -151,9 +177,9 @@ function getBrokerModeContext() {
 
 function setBrokerModeContext(payload = {}) {
   const source = payload && typeof payload === 'object' ? payload : {};
-  const brokerMode = normalizeRuntimeEnvironment(
-    source.broker_mode || source.actual_runtime_environment || source.environment || getCurrentRuntimeEnvironment(),
-    'live'
+  const brokerMode = normalizeBrokerMode(
+    source.broker_mode || source.actual_runtime_environment || getCurrentBrokerMode(),
+    'paper'
   );
   const dataEnvironment = normalizeRuntimeEnvironment(
     source.data_environment || source.market_data_environment || 'live',
@@ -520,6 +546,156 @@ async function apiFetch(collection, params = {}) {
   return res.json();
 }
 
+function getSharedDataCenter() {
+  return (typeof window !== 'undefined' && window.IbkrDataCenter)
+    ? window.IbkrDataCenter
+    : null;
+}
+
+function getSharedDataCacheKey(namespace, payload) {
+  if (typeof buildDataCacheKey === 'function') {
+    return buildDataCacheKey(namespace, payload);
+  }
+  return `${namespace}:${JSON.stringify(payload || {})}`;
+}
+
+function getCachedValue(key, loader, cacheOptions = {}) {
+  const dataCenter = getSharedDataCenter();
+  if (!dataCenter || typeof dataCenter.get !== 'function') {
+    return loader();
+  }
+  return dataCenter.get(key, loader, cacheOptions);
+}
+
+function cachedApiFetch(collection, params = {}, cacheOptions = {}) {
+  const key = getSharedDataCacheKey('apiFetch', { collection, params });
+  return getCachedValue(key, () => apiFetch(collection, params), {
+    tags: ['apiFetch', collection].concat(cacheOptions.tags || []),
+    ...cacheOptions
+  });
+}
+
+function buildCustomJsonRequestPath(path, environment) {
+  const sourcePath = String(path || '');
+  if (!environment) return sourcePath;
+  return buildPageUrl(sourcePath, {}, { environment });
+}
+
+async function customJsonFetch(path, environment = '', requestOptions = {}) {
+  const token = getToken();
+  const headers = {
+    ...(requestOptions.headers || {})
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const requestPath = buildCustomJsonRequestPath(path, environment);
+  const response = await fetchWithRetry(
+    `${BASE_URL}${requestPath}`,
+    {
+      ...requestOptions,
+      method: requestOptions.method || 'GET',
+      headers
+    },
+    {
+      attempts: requestOptions.retryAttempts || 3,
+      retryDelayMs: requestOptions.retryDelayMs || 500
+    }
+  );
+  if (response.status === 401 || response.status === 403) {
+    handleAuthError();
+    throw new Error('Authentication failed');
+  }
+  const payload = await response.json();
+  if (!response.ok || payload?.ok === false) {
+    throw new Error(payload?.error || payload?.message || `Request failed (${response.status})`);
+  }
+  return payload;
+}
+
+function isCustomJsonRequestOptions(options) {
+  if (!options || typeof options !== 'object') return false;
+  return ['headers', 'method', 'body', 'retryAttempts', 'retryDelayMs'].some((key) => Object.prototype.hasOwnProperty.call(options, key));
+}
+
+function getCustomJsonCacheRequestKey(requestOptions = {}) {
+  const method = String(requestOptions.method || 'GET').toUpperCase();
+  const keyOptions = { method };
+  if (requestOptions.body != null) keyOptions.body = requestOptions.body;
+  if (requestOptions.headers && typeof requestOptions.headers === 'object') keyOptions.headers = requestOptions.headers;
+  return keyOptions;
+}
+
+function cachedCustomJson(path, environment = '', requestOptionsOrCacheOptions = {}, maybeCacheOptions = undefined) {
+  let requestOptions = {};
+  let cacheOptions = {};
+  if (maybeCacheOptions !== undefined) {
+    requestOptions = requestOptionsOrCacheOptions || {};
+    cacheOptions = maybeCacheOptions || {};
+  } else if (isCustomJsonRequestOptions(requestOptionsOrCacheOptions)) {
+    requestOptions = requestOptionsOrCacheOptions || {};
+  } else {
+    cacheOptions = requestOptionsOrCacheOptions || {};
+  }
+  const key = getSharedDataCacheKey('customJson', {
+    path,
+    environment,
+    request: getCustomJsonCacheRequestKey(requestOptions)
+  });
+  return getCachedValue(key, () => customJsonFetch(path, environment, requestOptions), {
+    tags: ['customJson'].concat(cacheOptions.tags || []),
+    ...cacheOptions
+  });
+}
+
+async function fetchCollectionFullList(collection, options = {}) {
+  const perPage = Math.max(1, Math.min(Number(options.perPage || 200), 200));
+  const maxPages = Math.max(1, Number(options.maxPages || 20));
+  const startPage = Math.max(1, Number(options.startPage || 1));
+  const items = [];
+
+  for (let page = startPage; page <= maxPages; page += 1) {
+    const result = await apiFetch(collection, {
+      filter: options.filter || '',
+      sort: options.sort || '',
+      fields: options.fields || '',
+      skipTotal: options.skipTotal,
+      perPage,
+      page
+    });
+    const pageItems = Array.isArray(result?.items) ? result.items : [];
+    items.push(...pageItems);
+    if (pageItems.length < perPage) break;
+  }
+
+  return items;
+}
+
+function fetchCollectionFullListCached(collection, options = {}, cacheOptions = {}) {
+  const key = getSharedDataCacheKey('collectionFullList', { collection, options });
+  return getCachedValue(key, () => fetchCollectionFullList(collection, options), {
+    tags: ['apiFetch', 'collectionFullList', collection].concat(cacheOptions.tags || []),
+    ...cacheOptions
+  });
+}
+
+async function countFetch(collection, filter = '', options = {}) {
+  const result = await apiFetch(collection, {
+    filter: filter || '',
+    perPage: 1,
+    page: 1,
+    skipTotal: false,
+    fields: options.fields || 'id'
+  });
+  return Number(result?.totalItems || 0);
+}
+
+function cachedCountFetch(collection, filter = '', cacheOptions = {}) {
+  const key = getSharedDataCacheKey('countFetch', { collection, filter });
+  return getCachedValue(key, () => countFetch(collection, filter), {
+    tags: ['apiFetch', 'countFetch', collection].concat(cacheOptions.tags || []),
+    ...cacheOptions
+  });
+}
+
 let realtimeQuoteCache = {};
 let realtimeQuoteCacheUpdatedAt = 0;
 const DEFAULT_REALTIME_QUOTE_MAX_AGE_S = 600;
@@ -613,7 +789,7 @@ async function fetchRealtimeQuotes(symbols = [], { reset = false } = {}) {
   return payload;
 }
 
-async function fetchRealtimeQuotesIfNeeded(symbols = [], { reset = false, maxAgeMs = 15000 } = {}) {
+async function fetchRealtimeQuotesIfNeeded(symbols = [], { reset = false, force = false, maxAgeMs = 15000, swrMs = 15000 } = {}) {
   const uniqueSymbols = [...new Set((Array.isArray(symbols) ? symbols : [])
     .map((symbol) => String(symbol || '').trim().toUpperCase())
     .filter(Boolean))];
@@ -626,8 +802,8 @@ async function fetchRealtimeQuotesIfNeeded(symbols = [], { reset = false, maxAge
     return { ok: true, count: 0, items: [], cached: true };
   }
 
-  if (reset) {
-    return fetchRealtimeQuotes(uniqueSymbols, { reset: true });
+  if (reset || force) {
+    return fetchRealtimeQuotes(uniqueSymbols, { reset });
   }
 
   const cacheAgeMs = getRealtimeQuoteCacheAgeMs();
@@ -646,7 +822,32 @@ async function fetchRealtimeQuotesIfNeeded(symbols = [], { reset = false, maxAge
   }
 
   const fetchSymbols = cacheIsFresh ? missingSymbols : uniqueSymbols;
-  return fetchRealtimeQuotes(fetchSymbols, { reset: false });
+  const dataCenter = getSharedDataCenter();
+  if (!dataCenter || typeof dataCenter.get !== 'function') {
+    return fetchRealtimeQuotes(fetchSymbols, { reset: false });
+  }
+
+  const key = getSharedDataCacheKey('realtimeQuotes', { symbols: fetchSymbols.slice().sort() });
+  const payload = await dataCenter.get(
+    key,
+    () => fetchRealtimeQuotes(fetchSymbols, { reset: false }),
+    {
+      ttlMs: boundedMaxAgeMs,
+      swrMs,
+      tags: ['realtimeQuotes'],
+      onRefresh: (freshPayload) => {
+        cacheRealtimeQuoteItems(freshPayload?.items || [], {
+          reset: false,
+          requestedSymbols: fetchSymbols
+        });
+      }
+    }
+  );
+  cacheRealtimeQuoteItems(payload?.items || [], {
+    reset: false,
+    requestedSymbols: fetchSymbols
+  });
+  return payload;
 }
 
 function mergeIndicatorWithRealtimeQuote(indicator, realtimeQuoteOverride = null) {
@@ -668,4 +869,20 @@ function mergeIndicatorWithRealtimeQuote(indicator, realtimeQuoteOverride = null
   merged.display_change_7d = merged.change_7d;
   merged.realtime_quote_age_s = quote.quote_age_s;
   return merged;
+}
+
+if (typeof window !== 'undefined') {
+  window.normalizeBrokerMode = normalizeBrokerMode;
+  window.getCurrentBrokerMode = getCurrentBrokerMode;
+  window.apiFetch = apiFetch;
+  window.cachedApiFetch = cachedApiFetch;
+  window.cachedCustomJson = cachedCustomJson;
+  window.fetchCollectionFullList = window.fetchCollectionFullList || fetchCollectionFullList;
+  window.fetchCollectionFullListCached = fetchCollectionFullListCached;
+  window.cachedCountFetch = cachedCountFetch;
+  window.fetchRealtimeQuotes = fetchRealtimeQuotes;
+  window.fetchRealtimeQuotesIfNeeded = fetchRealtimeQuotesIfNeeded;
+  window.getRealtimeQuote = getRealtimeQuote;
+  window.isFreshRealtimeQuote = isFreshRealtimeQuote;
+  window.mergeIndicatorWithRealtimeQuote = mergeIndicatorWithRealtimeQuote;
 }

@@ -6,7 +6,11 @@ from typing import Any, Callable
 from ibkr_api.orders.values import to_text
 from ibkr_api.signals.notifications import SendInteractive, UpdateInteractive, sync_signal_status_notification
 from ibkr_api.signals.values import get_signal_extra
-from ibkr_compute.core.broker_mode import resolve_data_environment
+from ibkr_compute.core.broker_mode import (
+    configured_broker_mode,
+    normalize_broker_mode,
+    resolve_market_data_mode,
+)
 
 
 NormalizeEnvironment = Callable[[Any, str], str]
@@ -68,6 +72,21 @@ def _validity_minutes(config_value: ConfigValue | None, environment: str) -> int
     except Exception:
         raw = 30
     return raw if raw > 0 else 30
+
+
+def _request_broker_mode(payload: dict[str, Any], normalize_environment: NormalizeEnvironment) -> str:
+    configured = configured_broker_mode()
+    if "broker_mode" in payload:
+        return normalize_broker_mode(payload.get("broker_mode"), configured)
+    return configured
+
+
+def _request_market_data_mode(payload: dict[str, Any]) -> str:
+    if "market_data_mode" in payload:
+        return resolve_market_data_mode(payload.get("market_data_mode"))
+    if "data_environment" in payload:
+        return resolve_market_data_mode(payload.get("data_environment"))
+    return resolve_market_data_mode(None)
 
 
 def _order_status(row: dict[str, Any]) -> str:
@@ -138,12 +157,14 @@ def _with_broker_execution(
         "status": status,
         "note": note,
         "data_environment": data_environment,
+        "market_data_mode": data_environment,
         "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "source": "signal_expiry_check",
     }
     merged["execution_by_mode"] = execution_by_mode
     merged["broker_mode"] = broker_mode
     merged["data_environment"] = data_environment
+    merged["market_data_mode"] = data_environment
     return merged
 
 
@@ -168,8 +189,9 @@ def build_signal_expiry_response(
     signal_chat_id_fn: SignalChatId | None = None,
     console_base_url: str = "",
 ) -> tuple[dict[str, Any], int]:
-    environment = normalize_environment((payload or {}).get("environment"), "live")
-    data_environment = resolve_data_environment(environment)
+    request_payload = payload or {}
+    environment = _request_broker_mode(request_payload, normalize_environment)
+    data_environment = _request_market_data_mode(request_payload)
     validity_minutes = _validity_minutes(config_value, environment)
     cutoff_ms = int(datetime.now(timezone.utc).timestamp() * 1000) - validity_minutes * 60 * 1000
     candidate_limit = max(1, int((payload or {}).get("limit") or 100))
@@ -331,6 +353,7 @@ def build_signal_expiry_response(
                 "ok": True,
                 "environment": environment,
                 "broker_mode": environment,
+                "market_data_mode": data_environment,
                 "data_environment": data_environment,
                 "validity_minutes": validity_minutes,
                 "candidate_count": len(candidates),
@@ -344,4 +367,12 @@ def build_signal_expiry_response(
             200,
         )
     except Exception as exc:
-        return {"ok": False, "environment": environment, "error": str(exc), "source": "ibkr-api"}, 500
+        return {
+            "ok": False,
+            "environment": environment,
+            "broker_mode": environment,
+            "market_data_mode": data_environment,
+            "data_environment": data_environment,
+            "error": str(exc),
+            "source": "ibkr-api",
+        }, 500

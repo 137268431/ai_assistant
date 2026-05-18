@@ -3,6 +3,8 @@ from __future__ import annotations
 import time
 from typing import Any, Callable
 
+from ibkr_api.modes import request_market_data_mode
+
 
 NormalizeEnvironment = Callable[[Any, str], str]
 TimeStrings = Callable[[], dict[str, str]]
@@ -448,7 +450,7 @@ def build_early_expansion_topup_response(
     upsert_state: UpsertState | None = None,
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
-    environment = normalize_environment(request_payload.get("environment"), "live")
+    environment = request_market_data_mode(request_payload)
     times = time_strings()
     market_date = _to_text(request_payload.get("market_date") or request_payload.get("date") or times.get("date"))
     scan_payload = {

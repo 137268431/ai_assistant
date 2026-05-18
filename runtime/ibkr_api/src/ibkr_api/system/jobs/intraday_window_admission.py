@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from typing import Any, Callable
 
+from ibkr_api.modes import request_market_data_mode
 from ibkr_api.orders.values import first_defined, parse_boolean, to_float, to_int, to_text
 from ibkr_api.universe.active_window_progress import build_active_window_items_for_symbols
 from ibkr_api.universe.maintenance import (
@@ -34,7 +35,6 @@ from ibkr_compute.api.market.screener.scoring import (
     TRADABILITY_OPERABLE_MIN_SCORE,
     build_tradability_assessment,
 )
-from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_compute.core.active_window_admission import is_active_window_admitted
 from ibkr_compute.market.timeframe_utils import normalize_interval
 
@@ -614,10 +614,10 @@ def build_intraday_window_admission_response(
     write_system_event_record: WriteSystemEventRecord | None = None,
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload if isinstance(payload, dict) else {}
-    environment = normalize_environment(request_payload.get("environment"), LIVE_ENVIRONMENT)
+    environment = request_market_data_mode(request_payload)
     if environment not in SUPPORTED_ENVIRONMENTS:
         return {"ok": False, "error": "unsupported_environment", "environment": environment, "source": "ibkr-api"}, 400
-    data_environment = resolve_data_environment(environment)
+    data_environment = environment
 
     interval = normalize_interval(to_text(request_payload.get("interval")) or "5m")
     if interval != "5m":

@@ -4,7 +4,7 @@ const CONSOLE_BASE = (process.env.CONSOLE_BASE_URL || process.env.QUANT_BASE_URL
 const PB_BASE = (process.env.PB_AUTH_BASE_URL || process.env.PB_BASE_URL || 'https://pb.lzw-glory.top').replace(/\/+$/, '');
 const EMAIL = process.env.PB_EMAIL || '137268431@qq.com';
 const PASSWORD = process.env.PB_PASSWORD || 'Asd@2750066';
-const ENVIRONMENT = process.env.PB_ENVIRONMENT || process.env.IBKR_ENVIRONMENT || 'live';
+const ENVIRONMENT = process.env.IBKR_MARKET_DATA_MODE || 'live';
 
 const ANALYTICS_BRIDGE_SOURCES = [
   '/ibkr_indicators.html',

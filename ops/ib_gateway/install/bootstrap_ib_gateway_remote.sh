@@ -341,7 +341,8 @@ password = data.get("IBKR_PASSWORD", "").strip()
 if not username or not password:
     raise SystemExit("IBKR_USERNAME and IBKR_PASSWORD must exist in the remote .env before bootstrap")
 
-trading_mode = (data.get("IBKR_GATEWAY_TRADING_MODE") or data.get("IBKR_ENVIRONMENT") or "live").strip() or "live"
+broker_mode = (data.get("IBKR_BROKER_MODE") or "paper").strip() or "paper"
+trading_mode = (data.get("IBKR_GATEWAY_MODE") or broker_mode).strip() or broker_mode
 twofa_action = (data.get("IBKR_2FA_TIMEOUT_ACTION") or "exit").strip() or "exit"
 gateway_tz = (data.get("IBKR_GATEWAY_TZ") or "America/New_York").strip() or "America/New_York"
 auto_restart_time = data.get("IBKR_AUTO_RESTART_TIME", "08:05 PM")
@@ -374,13 +375,18 @@ updates = {
     "IBKR_TWS_MAJOR_VERSION": detected_tws_version,
     "IBKR_GATEWAY_TZ": gateway_tz,
     "IBKR_AUTO_RESTART_TIME": auto_restart_time,
-    "IBKR_GATEWAY_TRADING_MODE": trading_mode,
+    "IBKR_BROKER_MODE": broker_mode,
+    "IBKR_MARKET_DATA_MODE": (data.get("IBKR_MARKET_DATA_MODE") or "live").strip() or "live",
+    "IBKR_GATEWAY_MODE": trading_mode,
     "IBKR_2FA_TIMEOUT_ACTION": twofa_action,
     "IBKR_GATEWAY_JAVA_HOME": java_home,
     "IBKR_GATEWAY_LOG_DIR": log_dir,
 }
 
 remove_keys = {
+    "IBKR_" + "ENVIRONMENT",
+    "IBKR_" + "DATA_ENVIRONMENT",
+    "IBKR_GATEWAY_" + "TRADING_MODE",
     "IBKR_GATEWAY_URL",
     "IBKR_GATEWAY_DIR",
     "IBKR_GATEWAY_CONF",
@@ -397,7 +403,8 @@ preferred_order = [
     "IBKR_PASSWORD",
     "IBKR_ACCOUNT_ID",
     "IBKR_PAPER_ACCOUNT_ID",
-    "IBKR_ENVIRONMENT",
+    "IBKR_BROKER_MODE",
+    "IBKR_MARKET_DATA_MODE",
     "IBKR_LOGIN_TIMEOUT",
     "IBKR_2FA_WAIT",
     "IBKR_EOD_KEEP_SYMBOLS",
@@ -417,7 +424,7 @@ preferred_order = [
     "IBKR_TWS_MAJOR_VERSION",
     "IBKR_GATEWAY_TZ",
     "IBKR_AUTO_RESTART_TIME",
-    "IBKR_GATEWAY_TRADING_MODE",
+    "IBKR_GATEWAY_MODE",
     "IBKR_2FA_TIMEOUT_ACTION",
     "IBKR_GATEWAY_JAVA_HOME",
     "IBKR_GATEWAY_LOG_DIR",
@@ -465,7 +472,8 @@ password = data.get("IBKR_PASSWORD", "").strip()
 if not username or not password:
     raise SystemExit("IBKR_USERNAME and IBKR_PASSWORD must exist before writing config.ini")
 
-trading_mode = (data.get("IBKR_GATEWAY_TRADING_MODE") or data.get("IBKR_ENVIRONMENT") or "live").strip() or "live"
+broker_mode = (data.get("IBKR_BROKER_MODE") or "paper").strip() or "paper"
+trading_mode = (data.get("IBKR_GATEWAY_MODE") or broker_mode).strip() or broker_mode
 second_factor_timeout = (data.get("IBKR_2FA_WAIT") or "180").strip() or "180"
 api_port = (data.get("IBGW_PORT") or "4001").strip() or "4001"
 user_dir = (data.get("IBKR_TWS_SETTINGS_PATH") or data.get("IBKR_IBG_USER_DIR") or "").strip()

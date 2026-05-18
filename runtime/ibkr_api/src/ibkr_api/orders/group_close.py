@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ibkr_api.modes import request_broker_mode
 from ibkr_api.orders.group_common import CLOSE_GROUP_ACTION, append_group_order_detail, load_order_action_context, normalize_order_row
 from ibkr_api.orders.group_common import build_group_status_patch
 from ibkr_api.orders.values import to_text
@@ -51,7 +52,7 @@ def build_order_close_group_response(
     normalize_environment: Callable[[Any, str], str],
     escape_filter_string: Callable[[Any], str],
 ) -> tuple[dict[str, Any], int]:
-    environment = normalize_environment(payload.get("environment"), "live")
+    environment = request_broker_mode(payload)
     context = load_order_action_context(
         pb,
         payload=payload,

@@ -14,6 +14,7 @@ from ibkr_compute.api.shared.service_status import get_service_status_snapshot
 from ibkr_compute.api.service_topology import is_runtime_remote_mode
 from ibkr_compute.core.payload_compact import compact_json_payload
 from ibkr_compute.core.time_utils import ET
+from ibkr_compute.core.broker_mode import resolve_market_data_mode
 from ibkr_compute.workflows.daily_scanner import DEFAULT_SCAN_TIME_ET, DAILY_SCAN_MODE_SEED, DailyScanner
 
 
@@ -192,7 +193,7 @@ def _persist_scan_attempt_state(api_app, state: dict) -> None:
         pass
 
 
-def _persist_legacy_daily_scan_state(api_app, state: dict) -> None:
+def _persist_latest_daily_scan_state(api_app, state: dict) -> None:
     pb = getattr(api_app, "pb", None)
     if pb is None or not hasattr(pb, "upsert_state"):
         return
@@ -244,7 +245,7 @@ def _set_scan_attempt_state(api_app, state: dict) -> dict:
         store["by_run_id"][run_id] = dict(next_state)
     _persist_scan_attempt_state(api_app, next_state)
     if _scan_terminal_status(str(next_state.get("status") or "")):
-        _persist_legacy_daily_scan_state(api_app, next_state)
+        _persist_latest_daily_scan_state(api_app, next_state)
     return dict(next_state)
 
 
@@ -346,7 +347,7 @@ def _execute_async_scan(api_app, initial_state: dict, enabled_environments: list
 
 def _build_async_scan_response(api_app, *, payload: dict, enabled_environments: list[str], force_scan: bool, scan_windows: list[dict]):
     date_str = api_app.current_market_date()
-    environment = str((payload.get("environment") or (enabled_environments[0] if enabled_environments else "live")) or "live").strip().lower() or "live"
+    environment = str((enabled_environments[0] if enabled_environments else "live") or "live").strip().lower() or "live"
     scan_mode = _normalize_scan_mode(payload.get("mode"))
     existing = _get_scan_attempt_state(api_app, environment, date_str, mode=scan_mode)
     if existing and not _scan_terminal_status(str(existing.get("status") or "")):
@@ -413,7 +414,12 @@ def _build_async_scan_response(api_app, *, payload: dict, enabled_environments: 
 
 def build_scan_status_response():
     api_app = _api_app()
-    environment = str(request.args.get("environment") or "live").strip().lower() or "live"
+    environment = resolve_market_data_mode(
+        request.args.get("market_data_mode")
+        or request.args.get("data_environment")
+        or request.args.get("environment")
+        or "live"
+    )
     date_str = str(request.args.get("date") or request.args.get("market_date") or api_app.current_market_date()).strip()
     run_id = str(request.args.get("run_id") or "").strip()
     scan_mode = _normalize_scan_mode(request.args.get("mode"))
@@ -484,7 +490,7 @@ def build_scan_response(payload=None):
         "result": result,
         **result,
     }
-    _persist_legacy_daily_scan_state(api_app, response_payload)
+    _persist_latest_daily_scan_state(api_app, response_payload)
 
     return jsonify(response_payload)
 

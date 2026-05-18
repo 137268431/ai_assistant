@@ -11,6 +11,8 @@ import threading
 import time
 from typing import Dict
 
+from ibkr_compute.core.broker_mode import configured_market_data_mode
+
 from .pocketbase_sqlite import normalize_exchange_value, open_pb_sqlite, upsert_bars
 from .timeframe_utils import (
     build_bar_close_timestamps,
@@ -29,7 +31,7 @@ def _env_bool(name: str, default: bool) -> bool:
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
-DEFAULT_ENVIRONMENT = os.environ.get("IBKR_ENVIRONMENT", "live")
+DEFAULT_ENVIRONMENT = configured_market_data_mode()
 BAR_BATCH_SIZE = max(1, int(os.environ.get("IBKR_BAR_BATCH_SIZE", "40")))
 BAR_FLUSH_INTERVAL_SECONDS = max(0.5, float(os.environ.get("IBKR_BAR_FLUSH_INTERVAL", "2.0")))
 BAR_FLUSH_RETRY_ATTEMPTS = max(1, int(os.environ.get("IBKR_BAR_FLUSH_RETRY_ATTEMPTS", "4")))
@@ -458,7 +460,9 @@ class DataWriter:
 
         return {
             "symbol": str(bar["symbol"]).upper(),
-            "environment": str(bar.get("environment") or DEFAULT_ENVIRONMENT).strip().lower() or DEFAULT_ENVIRONMENT,
+            # Market data is stored in the writer's canonical data environment;
+            # incoming bars may carry the broker mode (for example "paper").
+            "environment": self.environment,
             "exchange": normalize_exchange_value(
                 bar.get("exchange") or base_extra.get("exchange"),
                 default="SMART",

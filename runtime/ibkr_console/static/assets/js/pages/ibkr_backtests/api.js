@@ -64,14 +64,17 @@
                 payload = await requestBacktestJson(`/api/custom/ibkr/backtest/batches?environment=${encodeURIComponent(currentEnvironment)}&limit=30`);
             } catch (error) {
                 console.warn('fast batch list failed, falling back to PocketBase:', error);
-                payload = await apiFetch('ibkr_backtest_batches', {
+                const params = {
                     filter,
                     sort: '-created',
                     perPage: 30,
                     page: 1,
                     fields: BACKTEST_BATCH_LIST_FIELDS,
                     skipTotal: 1,
-                });
+                };
+                payload = typeof cachedApiFetch === 'function'
+                    ? await cachedApiFetch('ibkr_backtest_batches', params, { ttlMs: 60000, ttl: 60000, force: !preserveSelection })
+                    : await apiFetch('ibkr_backtest_batches', params);
             }
             batchList = toItems(payload).map(normalizeBatchRecord);
             if (!preserveSelection || !batchList.some((batch) => batch.id === selectedBatchId)) {
@@ -88,14 +91,17 @@
                 payload = await requestBacktestJson(`/api/custom/ibkr/backtest/runs?environment=${encodeURIComponent(currentEnvironment)}&limit=40`);
             } catch (error) {
                 console.warn('fast run list failed, falling back to PocketBase:', error);
-                payload = await apiFetch('ibkr_backtest_runs', {
+                const params = {
                     filter,
                     sort: '-created',
                     perPage: 40,
                     page: 1,
                     fields: BACKTEST_RUN_LIST_FIELDS,
                     skipTotal: 1,
-                });
+                };
+                payload = typeof cachedApiFetch === 'function'
+                    ? await cachedApiFetch('ibkr_backtest_runs', params, { ttlMs: 60000, ttl: 60000, force: !preserveSelection })
+                    : await apiFetch('ibkr_backtest_runs', params);
             }
             runList = toItems(payload).map(normalizeRunRecord);
             if (!preserveSelection || !runList.some((run) => run.id === selectedRunId)) {
@@ -275,7 +281,9 @@
                     page,
                 };
                 if (options.skipTotal) fetchParams.skipTotal = 1;
-                const payload = await apiFetch(collection, fetchParams);
+                const payload = typeof cachedApiFetch === 'function'
+                    ? await cachedApiFetch(collection, fetchParams, { ttlMs: 120000, ttl: 120000, force: !append })
+                    : await apiFetch(collection, fetchParams);
                 if (selectedRunId !== activeRunId) return [];
                 const normalizedRows = toItems(payload).map(options.normalize || ((row) => row));
                 assignBacktestRows(key, normalizedRows, { append });

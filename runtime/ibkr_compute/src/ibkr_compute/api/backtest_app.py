@@ -34,6 +34,7 @@ from ibkr_compute.api.service_topology import (
 from ibkr_compute.api.shared.route_runtime import register_app_module_context
 from ibkr_compute.api.support.symbols import normalize_symbol_csv, normalize_symbols
 from ibkr_compute.backtest import BacktestService
+from ibkr_compute.core.broker_mode import configured_broker_mode
 from ibkr_compute.core.config import Config
 from ibkr_compute.integrations.pb_client import PBClient
 
@@ -80,7 +81,7 @@ def _maybe_restore_ibkr_service(*_args, **_kwargs):
 
 
 def _ibkr_service_environment(_service=None) -> str:
-    return _normalize_runtime_environment_name(os.environ.get("IBKR_ENVIRONMENT"), "live")
+    return _normalize_runtime_environment_name(configured_broker_mode(), "paper")
 
 
 def _backtest_account_snapshot_provider(environment: str = "live") -> dict:

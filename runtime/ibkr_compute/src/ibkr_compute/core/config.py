@@ -337,6 +337,8 @@ class Config:
         "ibkr_daily_scan_rollup_enabled": "true",
         "ibkr_daily_scan_rollup_incremental": "true",
         "ibkr_daily_scan_rollup_intervals": "15m,30m,1h,4h,1d",
+        "ibkr_rollup_parallel_enabled": "true",
+        "ibkr_rollup_max_workers": "5",
         "ibkr_daily_scan_materialize_enabled": "true",
         "ibkr_daily_scan_materialize_intervals": "5m,15m,30m,1h",
         "ibkr_timeframe_param_profiles_json": (

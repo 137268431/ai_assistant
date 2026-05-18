@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ibkr_api.modes import request_broker_mode
+
 
 NormalizeEnvironment = Callable[[Any, str], str]
 LabelTitleWithEnvironment = Callable[[Any, str], str]
@@ -16,7 +18,7 @@ def build_health_report_response(
     label_title_with_environment: LabelTitleWithEnvironment,
     add_environment_to_detail: AddEnvironmentToDetail,
 ) -> tuple[dict[str, Any], int]:
-    environment = normalize_environment(payload.get("environment"), "live")
+    environment = request_broker_mode(payload)
     persisted = False
     error = ""
     record_payload = {

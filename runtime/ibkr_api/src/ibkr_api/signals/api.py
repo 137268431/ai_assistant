@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from ibkr_api.modes import request_broker_mode, request_market_data_mode
 from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_api.orders.upsert import build_order_upsert_response
 from ibkr_api.orders.values import ensure_object
@@ -47,8 +48,8 @@ def _signal_consumed_for_broker(
     broker_status = _broker_execution_status(extra, broker_mode)
     if broker_status in _BROKER_SIGNAL_FINAL_STATUSES:
         return True
-    legacy_status = str((record or {}).get("status") or "").strip().lower()
-    return broker_mode == data_environment and bool(legacy_status and legacy_status != "pending")
+    top_level_status = str((record or {}).get("status") or "").strip().lower()
+    return broker_mode == data_environment and bool(top_level_status and top_level_status != "pending")
 
 
 def _with_broker_execution(
@@ -277,9 +278,9 @@ def build_signals_ack_response(
     signal_chat_id_fn: Callable[[str], str] | None = None,
     console_base_url: str = "",
 ) -> tuple[dict[str, Any], int]:
-    environment = normalize_environment(payload.get("environment"), "live")
-    broker_mode = environment
-    data_environment = resolve_data_environment(broker_mode)
+    broker_mode = request_broker_mode(payload)
+    environment = broker_mode
+    data_environment = request_market_data_mode(payload)
     signal_id = str(payload.get("signal_id") or "").strip()
     status = str(payload.get("status") or "submitted").strip() or "submitted"
     note = str(payload.get("note") or "")

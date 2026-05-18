@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable
 
+from ibkr_api.modes import request_broker_mode
 from ibkr_api.orders.details import build_order_detail_payload
 from ibkr_api.orders.relationships import get_order_status_transition_text, resolve_order_relationship
 from ibkr_api.orders.timestamps import resolve_order_status_event_times
@@ -192,7 +193,7 @@ def build_order_upsert_response(
     normalize_environment: Callable[[Any, str], str],
     escape_filter_string: Callable[[Any], str],
 ) -> tuple[dict[str, Any], int]:
-    environment = normalize_environment(payload.get("environment"), "live")
+    environment = request_broker_mode(payload)
     unique_id = to_text(payload.get("unique_id"))
     order_type = to_text(payload.get("order_type"))
     symbol = to_text(payload.get("symbol"))

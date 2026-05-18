@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ibkr_compute.api.route_request import get_json_payload
-from ibkr_compute.core.broker_mode import resolve_data_environment
+from ibkr_compute.core.broker_mode import resolve_market_data_mode
 
 
 def _api_app():
@@ -78,18 +78,20 @@ def get_requested_environments(payload=None, defaults=None):
     payload = payload if isinstance(payload, dict) else get_json_payload()
     requested = payload.get("environments")
     if requested is None:
-        requested = payload.get("environment")
+        requested = payload.get("market_data_modes")
+    if requested is None:
+        requested = payload.get("market_data_mode")
+    if requested is None:
+        requested = payload.get("data_environment")
     if isinstance(requested, str):
         requested = [requested]
 
     if isinstance(requested, list):
         environments = []
         for value in requested:
-            environment = str(value or "").strip().lower()
+            environment = resolve_market_data_mode(value)
             if environment in api_app.SUPPORTED_COMPUTE_ENVIRONMENTS and environment not in environments:
-                data_environment = resolve_data_environment(environment)
-                if data_environment not in environments:
-                    environments.append(data_environment)
+                environments.append(environment)
         if environments:
             return environments
 
@@ -131,7 +133,7 @@ def is_environment_compute_enabled(environment: str) -> bool:
     runtime_environment = str(environment or "").strip().lower()
     if runtime_environment == "backtest" and not api_app.cfg.has_environment_override("ibkr_compute_enabled", runtime_environment):
         return False
-    default_enabled = runtime_environment in ("live", "paper")
+    default_enabled = runtime_environment == "live"
     return api_app.cfg.get_bool_for_environment("ibkr_compute_enabled", runtime_environment, default_enabled)
 
 

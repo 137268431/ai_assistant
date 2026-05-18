@@ -462,10 +462,15 @@
       try {
         showLoading('正在聚合筛选器数据...');
         const rulesPromise = loadRulesSummary();
-        const payload = await requestJson(`/api/custom/ibkr/screener${buildQuery({
+        const payload = await requestCachedJson(`/api/custom/ibkr/screener${buildQuery({
           environment: currentEnvironment,
           market_date: marketDate
-        })}`);
+        })}`, {}, {
+          ttlMs: 30000,
+          swrMs: 30000,
+          force,
+          tags: ['screener', 'universe', currentEnvironment]
+        });
         const items = Array.isArray(payload?.items) ? payload.items : [];
         screenerPayload = {
           ...(payload || { items: [], summary: {}, filters: {} }),

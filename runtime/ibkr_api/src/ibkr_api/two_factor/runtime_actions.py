@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ibkr_api.modes import request_broker_mode
+
 from ibkr_api.two_factor.state import apply_runtime_state, load_two_factor_state
 
 
@@ -74,7 +76,7 @@ def _build_runtime_action_response(
     extra_fields: dict[str, Any] | None = None,
     timeout: float,
 ) -> tuple[dict[str, Any], int]:
-    environment = normalize_environment(payload.get("environment"), "live")
+    environment = request_broker_mode(payload)
     environment_info = inspect_runtime_environment(environment)
     if bool(environment_info.get("runtime_environment_mismatch")):
         return build_runtime_environment_mismatch_payload(environment_info, route_path), 409
@@ -128,7 +130,7 @@ def build_two_factor_takeover_response(
     inspect_runtime_environment: InspectRuntimeEnvironment,
     build_runtime_environment_mismatch_payload: BuildMismatchPayload,
 ) -> tuple[dict[str, Any], int]:
-    environment = normalize_environment(payload.get("environment"), "live")
+    environment = request_broker_mode(payload)
     enabled = _parse_bool(payload.get("enabled"), True)
     return _build_runtime_action_response(
         pb,
@@ -171,7 +173,7 @@ def build_two_factor_probe_response(
     inspect_runtime_environment: InspectRuntimeEnvironment,
     build_runtime_environment_mismatch_payload: BuildMismatchPayload,
 ) -> tuple[dict[str, Any], int]:
-    environment = normalize_environment(payload.get("environment"), "live")
+    environment = request_broker_mode(payload)
     return _build_runtime_action_response(
         pb,
         payload=payload,
@@ -206,7 +208,7 @@ def build_two_factor_panic_reset_response(
     inspect_runtime_environment: InspectRuntimeEnvironment,
     build_runtime_environment_mismatch_payload: BuildMismatchPayload,
 ) -> tuple[dict[str, Any], int]:
-    environment = normalize_environment(payload.get("environment"), "live")
+    environment = request_broker_mode(payload)
     return _build_runtime_action_response(
         pb,
         payload=payload,

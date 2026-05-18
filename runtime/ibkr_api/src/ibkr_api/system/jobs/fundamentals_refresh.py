@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
+from ibkr_api.modes import request_market_data_mode
 from ibkr_api.orders.values import parse_boolean, to_int, to_text
 from ibkr_api.universe.fundamentals import (
     DEFAULT_PROVIDER,
@@ -138,7 +139,7 @@ def build_fundamentals_refresh_job_response(
     write_system_event_record: WriteSystemEventRecord | None = None,
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload if isinstance(payload, dict) else {}
-    environment = normalize_environment(request_payload.get("environment"), "live")
+    environment = request_market_data_mode(request_payload)
     provider = to_text(request_payload.get("provider") or DEFAULT_PROVIDER).lower() or DEFAULT_PROVIDER
     if not _config_bool(config_value, "ibkr_fundamentals_enabled", True, environment):
         return {

@@ -134,6 +134,25 @@ class DataWriterQueueTest(unittest.TestCase):
                 finally:
                     writer.close()
 
+    def test_writer_environment_overrides_bar_broker_environment(self):
+        pb = _FakePBClient()
+        config = _FakeConfig({"ibkr_bar_direct_sqlite_enabled": False})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(data_writer_mod, "BAR_PENDING_QUEUE_DIR", tmpdir):
+                writer = data_writer_mod.DataWriter(pb, config=config, environment="live")
+                try:
+                    row = _bar("AAPL", 1713797700000)
+                    row["environment"] = "paper"
+                    self.assertTrue(writer.write_bar(row))
+                    self.assertTrue(writer.flush())
+                    self.assertEqual(pb.batches[0][0]["environment"], "live")
+                    cursor = pb.state[(data_writer_mod.BAR_INGEST_CURSOR_STATE_KEY, "live", "global")]["data"]
+                    self.assertEqual(cursor["environment"], "live")
+                    self.assertNotIn((data_writer_mod.BAR_INGEST_CURSOR_STATE_KEY, "paper", "global"), pb.state)
+                finally:
+                    writer.close()
+
     def test_reloads_pending_and_inflight_items_from_disk(self):
         pb = _FakePBClient()
         config = _FakeConfig({"ibkr_bar_direct_sqlite_enabled": False})

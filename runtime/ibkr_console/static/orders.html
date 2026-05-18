@@ -85,7 +85,7 @@
         let currentInterval = 30;
         let currentPage = 1;
         const itemsPerPage = 6;
-        let currentEnvironment = getCurrentRuntimeEnvironment();
+        let currentEnvironment = getCurrentBrokerMode();
         let filterSignalId = '';
         let filterTradeGroupId = '';
         let resolvedLegacySearch = '';
@@ -128,12 +128,15 @@
             if (cached && cached.expiresAt > Date.now()) {
                 return cached.value;
             }
-            const result = await apiFetch('config', {
+            const params = {
                 filter: `key = "${escapeFilterValue(key)}" && (environment = "${currentEnvironment}" || environment = "global" || environment = "")`,
                 sort: '-updated',
                 perPage: 200,
                 page: 1
-            });
+            };
+            const result = typeof cachedApiFetch === 'function'
+                ? await cachedApiFetch('config', params, { ttlMs: CONFIG_CACHE_TTL_MS, ttl: CONFIG_CACHE_TTL_MS })
+                : await apiFetch('config', params);
             const value = pickConfigValue(Array.isArray(result?.items) ? result.items : [], fallbackValue);
             configValueCache[cacheKey] = {
                 value,
@@ -148,13 +151,20 @@
             const startPage = Math.max(1, Number(options.startPage || 1));
             const items = [];
 
+            if (typeof fetchCollectionFullListCached === 'function' && startPage === 1 && !options.requestId) {
+                return fetchCollectionFullListCached(collection, options, { ttlMs: 15000, ttl: 15000, force: Boolean(options.force) });
+            }
+
             for (let page = startPage; page <= maxPages; page += 1) {
-                const result = await apiFetch(collection, {
+                const params = {
                     filter: options.filter || '',
                     sort: options.sort || '',
                     perPage,
                     page
-                });
+                };
+                const result = typeof cachedApiFetch === 'function'
+                    ? await cachedApiFetch(collection, params, { ttlMs: 15000, ttl: 15000, force: Boolean(options.force) })
+                    : await apiFetch(collection, params);
                 if (options.requestId && options.requestId !== currentOrdersRequestId) {
                     return null;
                 }
@@ -1963,12 +1973,15 @@
                 }
 
                 if (shouldUseStagedLoad) {
-                    const firstPage = await apiFetch('orders', {
+                    const firstPageParams = {
                         filter: baseFilter,
                         sort: '-bar_time_ms,-created',
                         perPage: ORDERS_FETCH_PAGE_SIZE,
                         page: 1
-                    });
+                    };
+                    const firstPage = typeof cachedApiFetch === 'function'
+                        ? await cachedApiFetch('orders', firstPageParams, { ttlMs: 15000, ttl: 15000, force: Boolean(showLoadingState) })
+                        : await apiFetch('orders', firstPageParams);
                     if (requestId !== currentOrdersRequestId) return;
 
                     const firstPageItems = Array.isArray(firstPage?.items) ? firstPage.items : [];

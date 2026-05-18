@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ibkr_api.modes import request_broker_mode, request_market_data_mode
 from ibkr_api.orders.values import parse_boolean, to_text
 from ibkr_api.signals.ingest_active_policy import (
     BROKER_CONTROLLED_SIGNAL_STATUSES,
@@ -35,7 +36,6 @@ from ibkr_api.signals.notifications import (
     sync_signal_status_notification,
 )
 from ibkr_api.signals.values import get_signal_extra
-from ibkr_compute.core.broker_mode import resolve_data_environment
 
 
 NormalizeEnvironment = Callable[[Any, str], str]
@@ -471,8 +471,8 @@ def build_signal_ingest_response(
     signal_chat_id_fn: SignalChatId | None = None,
     console_base_url: str = "",
 ) -> tuple[dict[str, Any], int]:
-    broker_mode = normalize_environment((payload or {}).get("environment"), "live")
-    environment = resolve_data_environment(broker_mode)
+    broker_mode = request_broker_mode(payload)
+    environment = request_market_data_mode(payload)
     prepared, error = build_signal_record_payload(payload or {}, environment)
     if not prepared:
         return {"ok": False, "error": error or "invalid_signal_payload"}, 400
@@ -578,8 +578,8 @@ def build_signals_ingest_response(
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
     items = request_payload.get("items") if isinstance(request_payload.get("items"), list) else []
-    default_broker_mode = normalize_environment(request_payload.get("environment"), "live")
-    default_environment = resolve_data_environment(default_broker_mode)
+    default_broker_mode = request_broker_mode(request_payload)
+    default_environment = request_market_data_mode(request_payload)
     if not items:
         return {"ok": False, "error": "Empty signals array"}, 400
 
@@ -590,9 +590,15 @@ def build_signals_ingest_response(
     errors = 0
     for item in items:
         try:
-            broker_mode = normalize_environment((item or {}).get("environment"), default_broker_mode)
-            environment = resolve_data_environment(broker_mode)
-            prepared, error = build_signal_record_payload(item or {}, environment)
+            item_payload = item if isinstance(item, dict) else {}
+            broker_mode = request_broker_mode({"broker_mode": item_payload.get("broker_mode") or default_broker_mode})
+            environment = request_market_data_mode(
+                {
+                    "market_data_mode": item_payload.get("market_data_mode"),
+                    "data_environment": item_payload.get("data_environment") or default_environment,
+                }
+            )
+            prepared, error = build_signal_record_payload(item_payload, environment)
             if not prepared:
                 errors += 1
                 continue

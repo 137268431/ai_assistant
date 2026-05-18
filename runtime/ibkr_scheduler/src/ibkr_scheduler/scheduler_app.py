@@ -4,7 +4,7 @@ import os
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
 import requests
@@ -17,12 +17,19 @@ from ibkr_scheduler.cron_registry import (
     NATIVE_HTTP_JOB_ENDPOINTS,
     build_cron_families,
     build_cron_payload,
+    build_cron_payload_for_modes,
     get_schedule,
+    mode_for_scope,
     resolve_cron_job,
 )
 from ibkr_scheduler.jobs.compute_dispatch import build_compute_dispatch_runner
 from ibkr_scheduler.jobs.upstream_http import run_upstream_http_job
 from ibkr_scheduler.schedule import cron_matches_minute, cron_slot_token
+from ibkr_compute.core.broker_mode import (
+    mode_context,
+    normalize_broker_mode,
+    normalize_market_data_mode,
+)
 from ibkr_compute.core.config import Config
 from ibkr_compute.core.payload_compact import compact_json_payload
 from ibkr_compute.integrations.pb_client import PBClient
@@ -51,6 +58,34 @@ def _compact_scheduler_payload(payload: Any) -> Any:
         max_string_length=1200,
         max_depth=8,
     )
+
+
+def _mapping_value(source: Mapping[str, Any] | None, key: str) -> Any:
+    if not source:
+        return None
+    getter = getattr(source, "get", None)
+    if callable(getter):
+        return getter(key)
+    return None
+
+
+def _scheduler_mode_context(
+    source: Mapping[str, Any] | None = None,
+    *,
+    env: Mapping[str, Any] | None = None,
+) -> dict[str, str]:
+    context = mode_context(
+        requested_broker_mode=_mapping_value(source, "broker_mode"),
+        requested_market_data_mode=_mapping_value(source, "market_data_mode"),
+        requested_gateway_mode=_mapping_value(source, "gateway_mode"),
+        env=env,
+    )
+    return {
+        "broker_mode": str(context.get("broker_mode") or "paper"),
+        "market_data_mode": str(context.get("market_data_mode") or "live"),
+        "gateway_mode": str(context.get("gateway_mode") or context.get("broker_mode") or "paper"),
+    }
+
 
 app = Flask(__name__)
 pb = PBClient(base_url=PB_BASE_URL)
@@ -163,6 +198,39 @@ class SchedulerService:
         return state
 
     @staticmethod
+    def _job_runtime_context(
+        job: dict[str, Any],
+        *,
+        broker_mode: Any = None,
+        market_data_mode: Any = None,
+    ) -> dict[str, str]:
+        mode_defaults = _scheduler_mode_context(
+            {"broker_mode": broker_mode, "market_data_mode": market_data_mode}
+        )
+        job_mode_scope = str((job or {}).get("mode_scope") or "").strip().lower()
+        normalized_broker_mode = mode_defaults["broker_mode"]
+        normalized_market_data_mode = mode_defaults["market_data_mode"]
+        runtime_environment = mode_for_scope(job, normalized_broker_mode, normalized_market_data_mode)
+        return {
+            "environment": runtime_environment,
+            "broker_mode": normalized_broker_mode,
+            "market_data_mode": normalized_market_data_mode,
+            "mode_scope": job_mode_scope,
+        }
+
+    def job_states_for_modes(self, broker_mode: str, market_data_mode: str) -> dict[str, Any]:
+        normalized_broker_mode = normalize_broker_mode(broker_mode, "paper")
+        normalized_market_data_mode = normalize_market_data_mode(market_data_mode, "live")
+        states_by_mode: dict[str, dict[str, Any]] = {}
+        state_map: dict[str, Any] = {}
+        for job in CRON_DEFINITIONS:
+            runtime_environment = mode_for_scope(job, normalized_broker_mode, normalized_market_data_mode)
+            if runtime_environment not in states_by_mode:
+                states_by_mode[runtime_environment] = self.job_states(runtime_environment)
+            state_map[job["id"]] = states_by_mode[runtime_environment].get(job["id"], {})
+        return state_map
+
+    @staticmethod
     def _previous_us_business_date(now_et: datetime | None = None) -> str:
         current = now_et.astimezone(US_TZ) if isinstance(now_et, datetime) else datetime.now(US_TZ)
         candidate = current.date() - timedelta(days=1)
@@ -194,24 +262,48 @@ class SchedulerService:
             }
         return {}
 
-    def _run_native_http_job(self, job_id: str, environment: str, schedule: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _run_native_http_job(
+        self,
+        job_id: str,
+        environment: str,
+        schedule: dict[str, Any] | None = None,
+        *,
+        broker_mode: str,
+        market_data_mode: str,
+        mode_scope: str,
+    ) -> dict[str, Any]:
         method, path = NATIVE_HTTP_JOB_ENDPOINTS[job_id]
         return run_upstream_http_job(
             method=method,
             base_url=COMPUTE_BASE_URL,
             path=path,
             environment=environment,
+            broker_mode=broker_mode,
+            market_data_mode=market_data_mode,
+            mode_scope=mode_scope,
             timeout_seconds=60,
             payload=self._native_http_job_payload(job_id, schedule),
         )
 
-    def _run_native_api_job(self, job_id: str, environment: str, schedule: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _run_native_api_job(
+        self,
+        job_id: str,
+        environment: str,
+        schedule: dict[str, Any] | None = None,
+        *,
+        broker_mode: str,
+        market_data_mode: str,
+        mode_scope: str,
+    ) -> dict[str, Any]:
         method, path = NATIVE_API_HTTP_JOB_ENDPOINTS[job_id]
         return run_upstream_http_job(
             method=method,
             base_url=API_BASE_URL,
             path=path,
             environment=environment,
+            broker_mode=broker_mode,
+            market_data_mode=market_data_mode,
+            mode_scope=mode_scope,
             timeout_seconds=90,
             payload={
                 "schedule_id": str((schedule or {}).get("id") or "").strip(),
@@ -222,8 +314,9 @@ class SchedulerService:
     def run_job(
         self,
         job_id: str,
-        environment: str,
         *,
+        broker_mode: str = "",
+        market_data_mode: str = "",
         trigger_source: str = "scheduler_loop",
         scheduled_slot: str = "",
         schedule_id: str = "",
@@ -231,7 +324,26 @@ class SchedulerService:
         requested_job_id = str(job_id or "").strip()
         job, canonical_job_id, alias_job_id, resolved_schedule_id = resolve_cron_job(requested_job_id, schedule_id)
         if not job:
-            return {"ok": False, "error": "unknown_job", "job_id": requested_job_id, "environment": environment}
+            fallback_context = _scheduler_mode_context(
+                {"broker_mode": broker_mode, "market_data_mode": market_data_mode}
+            )
+            return {
+                "ok": False,
+                "error": "unknown_job",
+                "job_id": requested_job_id,
+                "environment": fallback_context["market_data_mode"],
+                "broker_mode": fallback_context["broker_mode"],
+                "market_data_mode": fallback_context["market_data_mode"],
+            }
+        runtime_context = self._job_runtime_context(
+            job,
+            broker_mode=broker_mode,
+            market_data_mode=market_data_mode,
+        )
+        environment = runtime_context["environment"]
+        broker_mode = runtime_context["broker_mode"]
+        market_data_mode = runtime_context["market_data_mode"]
+        job_mode_scope = runtime_context["mode_scope"]
         schedule = get_schedule(job, resolved_schedule_id)
         effective_schedule_id = str(schedule.get("id") or resolved_schedule_id or "default").strip() or "default"
 
@@ -251,6 +363,9 @@ class SchedulerService:
                 "alias_job_id": alias_job_id,
                 "schedule_id": effective_schedule_id,
                 "environment": environment,
+                "broker_mode": broker_mode,
+                "market_data_mode": market_data_mode,
+                "mode_scope": job_mode_scope,
                 "scheduled_slot": slot_token,
             }
             self._save_job_state(canonical_job_id, environment, {
@@ -293,6 +408,9 @@ class SchedulerService:
                     "alias_job_id": alias_job_id,
                     "schedule_id": effective_schedule_id,
                     "environment": environment,
+                    "broker_mode": broker_mode,
+                    "market_data_mode": market_data_mode,
+                    "mode_scope": job_mode_scope,
                     "scheduled_slot": slot_token,
                 }
             running_last_runs = dict(last_runs)
@@ -321,9 +439,23 @@ class SchedulerService:
             if canonical_job_id == "ibkr_compute_runtime":
                 result = self._run_compute_dispatch(environment)
             elif canonical_job_id in NATIVE_API_HTTP_JOB_ENDPOINTS:
-                result = self._run_native_api_job(canonical_job_id, environment, schedule)
+                result = self._run_native_api_job(
+                    canonical_job_id,
+                    environment,
+                    schedule,
+                    broker_mode=broker_mode,
+                    market_data_mode=market_data_mode,
+                    mode_scope=job_mode_scope,
+                )
             elif canonical_job_id in NATIVE_HTTP_JOB_ENDPOINTS:
-                result = self._run_native_http_job(canonical_job_id, environment, schedule)
+                result = self._run_native_http_job(
+                    canonical_job_id,
+                    environment,
+                    schedule,
+                    broker_mode=broker_mode,
+                    market_data_mode=market_data_mode,
+                    mode_scope=job_mode_scope,
+                )
             else:
                 result = {
                     "ok": True,
@@ -331,6 +463,9 @@ class SchedulerService:
                     "reason": "compatibility_pending",
                     "job_id": canonical_job_id,
                     "environment": environment,
+                    "broker_mode": broker_mode,
+                    "market_data_mode": market_data_mode,
+                    "mode_scope": job_mode_scope,
                 }
             result = {
                 **(result if isinstance(result, dict) else {"ok": False, "error": "invalid_job_result"}),
@@ -339,6 +474,10 @@ class SchedulerService:
                 "canonical_job_id": canonical_job_id,
                 "alias_job_id": alias_job_id,
                 "schedule_id": effective_schedule_id,
+                "environment": environment,
+                "broker_mode": broker_mode,
+                "market_data_mode": market_data_mode,
+                "mode_scope": job_mode_scope,
                 "scheduled_slot": slot_token,
             }
             status = "ok" if result.get("ok", False) and not result.get("skipped") else "idle"
@@ -399,6 +538,9 @@ class SchedulerService:
                 "alias_job_id": alias_job_id,
                 "schedule_id": effective_schedule_id,
                 "environment": environment,
+                "broker_mode": broker_mode,
+                "market_data_mode": market_data_mode,
+                "mode_scope": job_mode_scope,
                 "scheduled_slot": slot_token,
             }
             latest_state = self.job_states(environment).get(canonical_job_id) or {}
@@ -452,7 +594,18 @@ class SchedulerService:
             if str(definition.get("runner_kind") or "").strip().lower().startswith("native_")
         ]
 
-    def run_due_jobs(self, when_utc: datetime, environment: str) -> list[dict[str, Any]]:
+    def run_due_jobs(
+        self,
+        when_utc: datetime,
+        *,
+        broker_mode: str = "",
+        market_data_mode: str = "",
+    ) -> list[dict[str, Any]]:
+        mode_defaults = _scheduler_mode_context(
+            {"broker_mode": broker_mode, "market_data_mode": market_data_mode}
+        )
+        normalized_broker_mode = mode_defaults["broker_mode"]
+        normalized_market_data_mode = mode_defaults["market_data_mode"]
         slot_token = cron_slot_token(when_utc)
         results: list[dict[str, Any]] = []
         for definition in self._scheduled_jobs():
@@ -467,7 +620,8 @@ class SchedulerService:
                 results.append(
                     self.run_job(
                         str(definition.get("id") or ""),
-                        environment,
+                        broker_mode=normalized_broker_mode,
+                        market_data_mode=normalized_market_data_mode,
                         trigger_source="scheduler_loop",
                         scheduled_slot=slot_token,
                         schedule_id=str((schedule or {}).get("id") or "default"),
@@ -476,11 +630,15 @@ class SchedulerService:
         return results
 
     def _loop(self) -> None:
-        environment = str(os.environ.get("IBKR_ENVIRONMENT") or "live").strip().lower() or "live"
         while not self._stop_event.is_set():
             now_utc = datetime.now(timezone.utc)
             try:
-                self.run_due_jobs(now_utc, environment)
+                scheduler_modes = _scheduler_mode_context()
+                self.run_due_jobs(
+                    now_utc,
+                    broker_mode=scheduler_modes["broker_mode"],
+                    market_data_mode=scheduler_modes["market_data_mode"],
+                )
             except Exception:
                 pass
             if self._stop_event.wait(LOOP_INTERVAL_SECONDS):
@@ -494,37 +652,53 @@ if str(os.environ.get("IBKR_SCHEDULER_AUTOSTART") or "true").strip().lower() not
 
 @app.route("/health", methods=["GET"])
 def health():
-    environment = str(request.args.get("environment") or os.environ.get("IBKR_ENVIRONMENT") or "live").strip().lower() or "live"
+    mode_context = _scheduler_mode_context(request.args)
+    broker_mode = mode_context["broker_mode"]
+    market_data_mode = mode_context["market_data_mode"]
+    jobs = scheduler.job_states_for_modes(broker_mode, market_data_mode)
     return jsonify(
         {
             "ok": True,
             "status": "running",
             "service_profile": str(os.environ.get("IBKR_SERVICE_PROFILE") or "scheduler"),
-            "environment": environment,
+            "environment": market_data_mode,
+            "broker_mode": broker_mode,
+            "market_data_mode": market_data_mode,
+            "gateway_mode": mode_context["gateway_mode"],
             "loop_interval_seconds": LOOP_INTERVAL_SECONDS,
-            "ingest_cursor": scheduler._get_ingest_cursor(environment),
-            "compute_dispatch_cursor": scheduler._get_dispatch_cursor(environment),
+            "ingest_cursor": scheduler._get_ingest_cursor(market_data_mode),
+            "compute_dispatch_cursor": scheduler._get_dispatch_cursor(market_data_mode),
             "service_topology": build_service_topology(),
-            "jobs": scheduler.job_states(environment),
+            "jobs": jobs,
         }
     )
 
 
 @app.route("/status", methods=["GET"])
 def status():
-    environment = str(request.args.get("environment") or os.environ.get("IBKR_ENVIRONMENT") or "live").strip().lower() or "live"
+    mode_context = _scheduler_mode_context(request.args)
+    broker_mode = mode_context["broker_mode"]
+    market_data_mode = mode_context["market_data_mode"]
     config.refresh()
-    jobs = scheduler.job_states(environment)
-    items = build_cron_payload(config, environment, jobs)
+    jobs = scheduler.job_states_for_modes(broker_mode, market_data_mode)
+    items = build_cron_payload_for_modes(
+        config,
+        broker_mode=broker_mode,
+        market_data_mode=market_data_mode,
+        job_states=jobs,
+    )
     return jsonify(
         {
             "ok": True,
             "status": "running",
             "service_profile": str(os.environ.get("IBKR_SERVICE_PROFILE") or "scheduler"),
-            "environment": environment,
+            "environment": market_data_mode,
+            "broker_mode": broker_mode,
+            "market_data_mode": market_data_mode,
+            "gateway_mode": mode_context["gateway_mode"],
             "loop_interval_seconds": LOOP_INTERVAL_SECONDS,
-            "ingest_cursor": scheduler._get_ingest_cursor(environment),
-            "compute_dispatch_cursor": scheduler._get_dispatch_cursor(environment),
+            "ingest_cursor": scheduler._get_ingest_cursor(market_data_mode),
+            "compute_dispatch_cursor": scheduler._get_dispatch_cursor(market_data_mode),
             "service_topology": build_service_topology(),
             "jobs": jobs,
             "items": items,
@@ -536,13 +710,24 @@ def status():
 @app.route("/jobs/run/<job_id>", methods=["POST"])
 def run_job(job_id: str):
     request_payload = request.get_json(silent=True) or {}
-    environment = str(request_payload.get("environment") or os.environ.get("IBKR_ENVIRONMENT") or "live").strip().lower() or "live"
+    if not isinstance(request_payload, dict):
+        request_payload = {}
+    if "environment" in request_payload:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "environment_not_supported",
+                "message": "Use broker_mode/market_data_mode or omit mode so scheduler selects by job mode_scope.",
+            }
+        ), 400
+    mode_context = _scheduler_mode_context(request_payload)
     trigger_source = str(request_payload.get("trigger_source") or "api_manual").strip() or "api_manual"
     scheduled_slot = str(request_payload.get("scheduled_slot") or "").strip()
     schedule_id = str(request_payload.get("schedule_id") or "").strip()
     result = scheduler.run_job(
         job_id,
-        environment,
+        broker_mode=mode_context["broker_mode"],
+        market_data_mode=mode_context["market_data_mode"],
         trigger_source=trigger_source,
         scheduled_slot=scheduled_slot,
         schedule_id=schedule_id,

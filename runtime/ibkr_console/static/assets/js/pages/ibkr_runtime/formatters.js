@@ -3,6 +3,7 @@
         }
 
         function getTotalItems(payload, fallback = 0) {
+            if (typeof payload === 'number' && Number.isFinite(payload)) return payload;
             const total = Number(payload?.totalItems);
             if (Number.isFinite(total)) return total;
             if (Array.isArray(payload?.items)) return payload.items.length;

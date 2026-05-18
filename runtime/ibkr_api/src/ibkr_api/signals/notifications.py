@@ -103,6 +103,23 @@ def _data_badge(data_environment: Any) -> str:
     return f"Data {normalized.upper()}" if normalized else "Shared Data"
 
 
+def _broker_execution_payload(record_or_data: Any, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    signal_extra = extra if isinstance(extra, dict) else get_signal_extra(record_or_data)
+    execution_by_mode = signal_extra.get("execution_by_mode")
+    if not isinstance(execution_by_mode, dict):
+        return {}
+    broker_mode = _signal_broker_mode(record_or_data, signal_extra)
+    payload = execution_by_mode.get(broker_mode)
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _effective_signal_status(record_or_data: Any, extra: dict[str, Any] | None = None) -> str:
+    signal_extra = extra if isinstance(extra, dict) else get_signal_extra(record_or_data)
+    broker_payload = _broker_execution_payload(record_or_data, signal_extra)
+    broker_status = to_text(broker_payload.get("status")).lower()
+    return broker_status or to_text(record_value(record_or_data, "status")).lower() or "pending"
+
+
 def _format_percent(value: Any) -> str:
     parsed = to_float(value)
     if parsed is None:
@@ -259,12 +276,22 @@ def _buying_power_lines(record_or_data: Any) -> list[str]:
 
 def _status_reason(record_or_data: Any) -> str:
     extra = get_signal_extra(record_or_data)
-    return to_text(
-        extra.get("status_reason")
+    status = _effective_signal_status(record_or_data, extra)
+    broker_payload = _broker_execution_payload(record_or_data, extra)
+    reason = to_text(
+        broker_payload.get("status_reason")
+        or broker_payload.get("note")
+        or extra.get("status_reason")
         or extra.get("initial_status_reason")
         or extra.get("expired_reason")
         or record_value(record_or_data, "note")
     )
+    if status == "expired" and ":" in reason:
+        _scope, scoped_reason = reason.split(":", 1)
+        if scoped_reason in {"signal_expired", "confirm_too_late"}:
+            return scoped_reason
+        return ""
+    return reason
 
 
 def _page_url(console_base_url: str, path: str, **params: Any) -> str:
@@ -460,12 +487,12 @@ def _confirmation_action_elements(console_base_url: str, *, environment: str, si
 
 
 def build_signal_notification_card(record_or_data: Any, *, console_base_url: str = "") -> dict[str, Any]:
-    status = to_text(record_value(record_or_data, "status")).lower() or "pending"
+    extra = get_signal_extra(record_or_data)
+    status = _effective_signal_status(record_or_data, extra)
     symbol = to_text(record_value(record_or_data, "symbol") or record_value(record_or_data, "signal_id") or "SIGNAL")
     direction = to_text(record_value(record_or_data, "direction")).lower()
     signal_id = to_text(record_value(record_or_data, "signal_id") or record_value(record_or_data, "id"))
     status_reason = _status_reason(record_or_data)
-    extra = get_signal_extra(record_or_data)
     environment = _signal_broker_mode(record_or_data, extra)
     data_environment = _signal_data_environment(record_or_data, extra)
     broker_badge = _broker_badge(environment)
@@ -538,7 +565,7 @@ def _notification_key(action: str, record_or_data: Any) -> str:
             "signal_notify_v1",
             to_text(action),
             to_text(record_value(record_or_data, "signal_id") or record_value(record_or_data, "id")),
-            to_text(record_value(record_or_data, "status")),
+            _effective_signal_status(record_or_data),
         ]
     )
 
@@ -556,7 +583,7 @@ def _build_notification_patch(
     success = bool(result.get("success"))
     patch = {
         "feishu_signal_notify_last_action": to_text(action),
-        "feishu_signal_notify_last_status": to_text(record_value(record_or_data, "status")),
+        "feishu_signal_notify_last_status": _effective_signal_status(record_or_data),
         "feishu_signal_notify_last_result": "success" if success else "failed",
         "feishu_signal_notify_last_at_ms": now_ms,
         "feishu_signal_notify_error": "" if success else to_text(result.get("error") or "unknown_error"),
@@ -616,11 +643,11 @@ def send_signal_notification(
 
 
 def build_signal_status_card(record_or_data: Any, *, message: str = "", console_base_url: str = "") -> dict[str, Any]:
-    status = to_text(record_value(record_or_data, "status")).lower() or "pending"
+    extra = get_signal_extra(record_or_data)
+    status = _effective_signal_status(record_or_data, extra)
     meta = _status_meta(status)
     symbol = to_text(record_value(record_or_data, "symbol") or record_value(record_or_data, "signal_id") or "SIGNAL")
     direction = to_text(record_value(record_or_data, "direction")).lower()
-    extra = get_signal_extra(record_or_data)
     environment = _signal_broker_mode(record_or_data, extra)
     data_environment = _signal_data_environment(record_or_data, extra)
     broker_badge = _broker_badge(environment)

@@ -48,18 +48,71 @@ class ControlPlaneSplitStackDataGapGuardTest(unittest.TestCase):
         pb = FakeGapPB()
         payload, status_code = build_data_gap_guard_response(
             pb,
-            payload={"environment": "paper"},
+            payload={"broker_mode": "paper", "market_data_mode": "live"},
             normalize_environment=lambda value, default="live": str(value or default),
             time_strings=lambda: {"us": "2026-04-23 09:50:00", "cn": "2026-04-23 21:50:00", "date": "2026-04-23"},
             emit_system_event=lambda **kwargs: {"ok": True, "notified": True},
         )
 
         self.assertEqual(status_code, 200)
-        self.assertEqual(payload["environment"], "paper")
+        self.assertEqual(payload["environment"], "live")
         self.assertEqual(payload["summary"]["data_environment"], "live")
         self.assertEqual(payload["summary"]["target_count"], 1)
         self.assertTrue(any(collection == "ibkr_targets" and 'environment = "live"' in filter_expr for collection, filter_expr in pb.filters))
         self.assertFalse(any(collection == "ibkr_targets" and 'environment = "paper"' in filter_expr for collection, filter_expr in pb.filters))
+
+    def test_data_gap_guard_alerts_cross_environment_bar_pollution(self):
+        class FakeGapPB:
+            def __init__(self):
+                self.states = {}
+
+            def get_state(self, state_key, environment, date="global"):
+                return self.states.get((state_key, environment, date))
+
+            def upsert_state(self, state_key, environment, data, date="global"):
+                self.states[(state_key, environment, date)] = {"data": dict(data)}
+                return self.states[(state_key, environment, date)]
+
+            def get_records(self, collection, filter=None, sort=None, per_page=200, page=1):
+                filter_text = str(filter or "")
+                if collection == "watchlist":
+                    return [{"symbol": "AAPL", "environment": "live"}]
+                if collection == "ibkr_targets":
+                    return [{"symbol": "AAPL", "status": "active", "environment": "live"}]
+                if collection == "ibkr_bars" and 'environment != "live"' in filter_text:
+                    return [
+                        {
+                            "environment": "paper",
+                            "symbol": "AAPL",
+                            "interval": "5m",
+                            "bar_time_ms": 1713881100000,
+                            "us_time": "2026-04-23 09:45:00",
+                            "session_type": "regular",
+                        }
+                    ]
+                if collection in {"ibkr_bars", "ibkr_indicators"}:
+                    return []
+                return []
+
+        events = []
+        payload, status_code = build_data_gap_guard_response(
+            FakeGapPB(),
+            payload={"environment": "paper"},
+            normalize_environment=lambda value, default="live": str(value or default),
+            time_strings=lambda: {"us": "2026-04-23 09:50:00", "cn": "2026-04-23 21:50:00", "date": "2026-04-23"},
+            emit_system_event=lambda **kwargs: events.append(kwargs) or {"ok": True, "notified": True},
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["summary"]["data_environment"], "live")
+        self.assertFalse(payload["summary"]["market_activity_detected"])
+        self.assertTrue(payload["summary"]["has_issue"])
+        self.assertEqual(payload["summary"]["cross_environment_bar_count"], 1)
+        self.assertEqual(payload["summary"]["cross_environment_environments"], {"paper": 1})
+        self.assertTrue(events)
+        detail = events[0]["detail"]
+        self.assertEqual(detail["跨环境bars"], "1")
+        self.assertIn("paper/AAPL 2026-04-23 09:45:00", detail["跨环境样本"])
 
     def test_data_gap_guard_ignores_vix_bar_gap(self):
         class FakeGapPB:

@@ -28,7 +28,7 @@ STARTUP_STEP_STATUS_META = {
     "failed": {"icon": "❌", "text": "失败"},
     "skipped": {"icon": "➖", "text": "非阻塞"},
 }
-STARTUP_LEGACY_STEP_KEY_MAP = {
+STARTUP_STEP_ALIAS_MAP = {
     "gateway": "service_boot",
     "subscriptions": "runtime_resume",
     "core_threads": "runtime_resume",
@@ -87,7 +87,7 @@ def apply_startup_step_patch(steps: dict[str, dict[str, Any]], key: str, patch: 
 
 
 
-def apply_legacy_auth_patch(steps: dict[str, dict[str, Any]], patch: dict[str, Any], trigger_login: bool) -> None:
+def apply_auth_step_patch(steps: dict[str, dict[str, Any]], patch: dict[str, Any], trigger_login: bool) -> None:
     if not isinstance(patch, dict):
         return
     status = normalize_startup_step_status(patch.get("status"))
@@ -135,7 +135,7 @@ def merge_startup_steps(existing_steps: Any, patch_steps: Any, trigger_login: bo
         if key in merged:
             apply_startup_step_patch(merged, key, raw_patch)
             continue
-        mapped_key = STARTUP_LEGACY_STEP_KEY_MAP.get(key)
+        mapped_key = STARTUP_STEP_ALIAS_MAP.get(key)
         if mapped_key:
             apply_startup_step_patch(merged, mapped_key, raw_patch)
     if not isinstance(patch_steps, dict):
@@ -148,9 +148,9 @@ def merge_startup_steps(existing_steps: Any, patch_steps: Any, trigger_login: bo
             apply_startup_step_patch(merged, key, raw_patch)
             continue
         if key == "auth":
-            apply_legacy_auth_patch(merged, raw_patch, trigger_login)
+            apply_auth_step_patch(merged, raw_patch, trigger_login)
             continue
-        mapped_key = STARTUP_LEGACY_STEP_KEY_MAP.get(key)
+        mapped_key = STARTUP_STEP_ALIAS_MAP.get(key)
         if not mapped_key:
             continue
         normalized_status = normalize_startup_step_status(raw_patch.get("status"))
@@ -244,7 +244,7 @@ def normalize_startup_state(
 
 def resolve_startup_step_label(state: dict[str, Any]) -> str:
     key = str((state or {}).get("current_step") or "").strip()
-    mapped = STARTUP_LEGACY_STEP_KEY_MAP.get(key, key)
+    mapped = STARTUP_STEP_ALIAS_MAP.get(key, key)
     if mapped in STARTUP_STEP_LABELS:
         return STARTUP_STEP_LABELS[mapped]
     return mapped or "-"
@@ -285,7 +285,7 @@ def build_startup_card(
     current_step = resolve_startup_step_label(normalized)
     manual_trigger = normalized["steps"].get("manual_trigger") if isinstance(normalized.get("steps"), dict) else {}
     show_trigger = bool(normalized.get("active")) and (
-        STARTUP_LEGACY_STEP_KEY_MAP.get(str(normalized.get("current_step") or ""), str(normalized.get("current_step") or "")) == "manual_trigger"
+        STARTUP_STEP_ALIAS_MAP.get(str(normalized.get("current_step") or ""), str(normalized.get("current_step") or "")) == "manual_trigger"
         or normalize_startup_step_status((manual_trigger or {}).get("status")) in {"waiting", "failed"}
     )
     header_template = "green" if normalized.get("status") == "completed" else ("red" if normalized.get("status") == "failed" else "blue")

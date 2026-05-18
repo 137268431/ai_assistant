@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from ibkr_api.modes import request_market_data_mode
+
 
 MONITOR_ALERT_STATE_KEY = "system_monitor_alert"
 MONITOR_ALERT_COOLDOWN_MS = 15 * 60 * 1000
@@ -159,7 +161,7 @@ def build_system_monitor_alert_guard_response(
     upsert_state: UpsertState,
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
-    environment = normalize_environment(request_payload.get("environment"), "live")
+    environment = request_market_data_mode(request_payload)
     times = time_strings()
     monitor_payload = _as_dict(build_system_monitor_payload(environment))
     flags = _alert_flags(monitor_payload)

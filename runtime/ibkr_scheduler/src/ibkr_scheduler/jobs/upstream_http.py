@@ -11,14 +11,25 @@ def run_upstream_http_job(
     base_url: str,
     path: str,
     environment: str,
+    broker_mode: str = "",
+    market_data_mode: str = "",
+    mode_scope: str = "",
     timeout_seconds: int = 60,
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    selected_mode = str(environment or "").strip().lower()
+    normalized_broker_mode = str(broker_mode or "").strip().lower() or selected_mode
+    normalized_market_data_mode = str(market_data_mode or "").strip().lower() or selected_mode
+    normalized_scope = str(mode_scope or "").strip().lower()
     response = requests.request(
         method=method,
         url=f"{str(base_url or '').rstrip('/')}{path}",
         json={
-            "environment": environment,
+            "broker_mode": normalized_broker_mode,
+            "market_data_mode": normalized_market_data_mode,
+            "data_environment": normalized_market_data_mode,
+            "mode_scope": normalized_scope,
+            "selected_mode": selected_mode,
             "source": "ibkr_scheduler",
             **(payload or {}),
         },

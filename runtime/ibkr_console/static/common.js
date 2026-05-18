@@ -1,9 +1,10 @@
 // Shared compatibility entrypoint.
 // Source-of-truth browser modules now live under /assets/js/shared and /assets/css.
 (function loadSharedCommonBundle() {
-  const sharedBundleVersion = '20260518-bridge-align';
+  const sharedBundleVersion = '20260518-data-center';
   const sharedScriptPaths = [
     `/assets/js/shared/runtime-config.js?v=${sharedBundleVersion}`,
+    `/assets/js/shared/data-center.js?v=${sharedBundleVersion}`,
     `/assets/js/shared/base.js?v=${sharedBundleVersion}`,
     `/assets/js/shared/ui-toast-nav.js?v=${sharedBundleVersion}`,
     `/assets/js/shared/ui-time-indicator.js?v=${sharedBundleVersion}`,
@@ -41,6 +42,17 @@
       requireAuth: (...args) => pick('requireAuth')(...args),
       fetchWithRetry: (...args) => pick('fetchWithRetry')(...args),
       apiFetch: (...args) => pick('apiFetch')(...args),
+      get IbkrDataCenter() { return pick('IbkrDataCenter'); },
+      buildDataCacheKey: (...args) => pick('buildDataCacheKey')(...args),
+      cachedApiFetch: (...args) => pick('cachedApiFetch')(...args),
+      cachedCustomJson: (...args) => pick('cachedCustomJson')(...args),
+      fetchCollectionFullListCached: (...args) => pick('fetchCollectionFullListCached')(...args),
+      cachedCountFetch: (...args) => pick('cachedCountFetch')(...args),
+      fetchRealtimeQuotes: (...args) => pick('fetchRealtimeQuotes')(...args),
+      fetchRealtimeQuotesIfNeeded: (...args) => pick('fetchRealtimeQuotesIfNeeded')(...args),
+      getRealtimeQuote: (...args) => pick('getRealtimeQuote')(...args),
+      isFreshRealtimeQuote: (...args) => pick('isFreshRealtimeQuote')(...args),
+      mergeIndicatorWithRealtimeQuote: (...args) => pick('mergeIndicatorWithRealtimeQuote')(...args),
       showToast: (...args) => pick('showToast')(...args),
       renderNav: (...args) => pick('renderNav')(...args),
       renderDatePicker: (...args) => pick('renderDatePicker')(...args),

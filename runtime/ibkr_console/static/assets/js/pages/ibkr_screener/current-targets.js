@@ -260,23 +260,173 @@
       }
       return [value];
     }
+    const WINDOW_PROGRESS_STALE_MINUTES = 30;
+
+    function getWindowProgressObject(row, key) {
+      const value = row?.[key];
+      if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+      if (typeof parseMaybeObject === 'function') return parseMaybeObject(value);
+      return {};
+    }
+
+    function getWindowSignalState(row) {
+      return getWindowProgressObject(row, 'signal_state');
+    }
+
+    function getWindowProgressTraceStage(row) {
+      const signalState = getWindowSignalState(row);
+      return String(coalesceValue({
+        ...row,
+        signal_stage: signalState.stage,
+        signal_status: signalState.status,
+      }, [
+        'trace_stage',
+        'signal_stage',
+        'signal_state_stage',
+        'candidate_signal_stage',
+        'stage',
+        'signal_status',
+      ], '') || '').trim().toLowerCase();
+    }
+
+    function getWindowProgressWindowStatus(row) {
+      return String(coalesceValue(row, ['window_status', 'status', 'state', 'window_state'], '') || '').trim().toLowerCase();
+    }
+
+    function getWindowProgressFreshness(row) {
+      const value = Number(coalesceValue(row, ['freshness_min', 'freshness_minutes', 'latest_bar_age_min'], NaN));
+      return Number.isFinite(value) ? value : NaN;
+    }
+
+    function hasWindowProgressLatestBar(row) {
+      return Boolean(coalesceValue(row, [
+        'latest_5m_bar',
+        'latest_bar_us',
+        'latest_us_time',
+        'bar_time_us',
+        'latest_bar_time',
+        'latest_bar_time_ms',
+      ], ''));
+    }
+
+    function isWindowProgressStale(row) {
+      const explicit = String(coalesceValue(row, ['freshness_status', 'data_status', 'timeline_status'], '') || '').trim().toLowerCase();
+      if (['stale', 'missing', 'no_bar', 'no_live_bar'].includes(explicit)) return true;
+      if (row?.stale || row?.is_stale || row?.needs_backfill) return true;
+      if (!hasWindowProgressLatestBar(row)) return true;
+      const freshness = getWindowProgressFreshness(row);
+      return Number.isFinite(freshness) && freshness > WINDOW_PROGRESS_STALE_MINUTES;
+    }
+
+    function getWindowProgressFilterReasons(row) {
+      const signalState = getWindowSignalState(row);
+      return normalizeWindowProgressList(coalesceValue({
+        ...row,
+        signal_filter_reason: signalState.filter_reason,
+        signal_blockers: signalState.blockers,
+        signal_reasons: signalState.filter_reasons,
+      }, [
+        'filter_reasons',
+        'filter_reason',
+        'blocked_reasons',
+        'block_reason',
+        'blocked_reason',
+        'signal_filter_reason',
+        'signal_blockers',
+        'signal_reasons',
+      ], []));
+    }
+
+    function hasWindowDirectionConflict(row) {
+      if (row?.direction_conflict || row?.has_direction_conflict) return true;
+      const stage = getWindowProgressTraceStage(row);
+      const status = getWindowProgressWindowStatus(row);
+      if (stage === 'direction_conflict' || status === 'direction_conflict') return true;
+      return getWindowProgressFilterReasons(row).some((item) => {
+        const text = String(item || '').trim().toLowerCase();
+        return text.includes('direction_conflict')
+          || text.includes('target_direction_mismatch')
+          || text.includes('direction_mismatch');
+      });
+    }
+
+    function isWindowProgressConfirmed(row) {
+      const stage = getWindowProgressTraceStage(row);
+      const status = getWindowProgressWindowStatus(row);
+      return row?.confirmed || row?.is_confirmed || stage === 'confirmed' || status === 'confirmed';
+    }
+
+    function hasWindowProgressBlockers(row) {
+      const stage = getWindowProgressTraceStage(row);
+      const status = getWindowProgressWindowStatus(row);
+      if (row?.blocked || row?.is_blocked || stage === 'blocked' || status === 'blocked') return true;
+      return getWindowProgressFilterReasons(row).length > 0 || getFailedGates(row).length > 0;
+    }
+
+    function isWindowProgressNearExpiry(row) {
+      const status = getWindowProgressWindowStatus(row);
+      if (row?.near_expiry || row?.is_near_expiry || status === 'near_expiry') return true;
+      const barsRemaining = Number(coalesceValue(row, ['bars_remaining', 'remaining_bars'], NaN));
+      return Number.isFinite(barsRemaining) && barsRemaining >= 0 && barsRemaining <= 2 && (row?.sd_upper_active || row?.sd_lower_active);
+    }
+
+    function isWindowProgressTargetCandidate(row) {
+      return String(coalesceValue(row, ['target_status', 'status_in_pool', 'pool_status'], '') || '').trim().toLowerCase() === 'candidate';
+    }
+
+    function getWindowCandidateSignalObject(row) {
+      const candidate = getWindowProgressObject(row, 'candidate_signal');
+      if (Object.keys(candidate).length) return candidate;
+      return getWindowProgressObject(row, 'signal_candidate');
+    }
+
+    function isWindowProgressSignalCandidate(row) {
+      const stage = getWindowProgressTraceStage(row);
+      const status = getWindowProgressWindowStatus(row);
+      const candidateSignal = getWindowCandidateSignalObject(row);
+      const rawCandidateSignal = coalesceValue(row, ['candidate_signal', 'signal_candidate'], '');
+      const source = getWindowCandidateSignalSource(row).toLowerCase();
+      const hasCandidatePayload = Boolean(
+        Object.keys(candidateSignal || {}).length
+        || coalesceValue(row, ['candidate_signal_label', 'signal_label'], '')
+        || (rawCandidateSignal && typeof rawCandidateSignal !== 'object')
+      );
+      const traceCandidate = ['candidate', 'signal_candidate', 'candidate_signal', 'ready_to_signal'].includes(stage)
+        || ['candidate', 'signal_candidate', 'candidate_signal'].includes(status);
+      const candidateStage = traceCandidate
+        || row?.signal_candidate === true
+        || row?.is_signal_candidate === true
+        || hasCandidatePayload;
+      if (!candidateStage) return false;
+      if (source === 'stored_signal' && !traceCandidate) return false;
+      return !isWindowProgressConfirmed(row) && !hasWindowProgressBlockers(row) && !hasWindowDirectionConflict(row) && !isWindowProgressStale(row);
+    }
+
+    function matchesWindowProgressStatusTab(row, tabKey) {
+      const key = normalizeWindowProgressStatusTab(tabKey);
+      if (key === 'all') return true;
+      if (key === 'signal_candidate') return isWindowProgressSignalCandidate(row);
+      if (key === 'confirmed') return isWindowProgressConfirmed(row);
+      if (key === 'blocked') return hasWindowProgressBlockers(row) && !hasWindowDirectionConflict(row);
+      if (key === 'direction_conflict') return hasWindowDirectionConflict(row);
+      if (key === 'near_expiry') return isWindowProgressNearExpiry(row) && !isWindowProgressStale(row);
+      if (key === 'stale') return isWindowProgressStale(row);
+      if (key === 'target_candidate') return isWindowProgressTargetCandidate(row);
+      return false;
+    }
+
 
     function getWindowProgressStatus(row) {
-      const signalState = row?.signal_state && typeof row.signal_state === 'object' ? row.signal_state : {};
-      const windowFlags = row?.window_flags && typeof row.window_flags === 'object' ? row.window_flags : {};
-      const explicit = String(coalesceValue({
-        ...row,
-        signal_state_stage: signalState.stage,
-        signal_state_status: signalState.status,
-        signal_state_raw: typeof row?.signal_state === 'string' ? row.signal_state : '',
-      }, ['status', 'window_status', 'state', 'stage', 'signal_state_stage', 'signal_state_status', 'signal_state_raw'], '') || '').trim().toLowerCase();
+      const windowFlags = getWindowProgressObject(row, 'window_flags');
+      const explicit = getWindowProgressWindowStatus(row);
       if (explicit) return explicit;
-      if (row?.confirmed || row?.is_confirmed) return 'confirmed';
-      if (row?.candidate || row?.is_candidate || coalesceValue(row, ['candidate_signal', 'signal_candidate'], '')) return 'candidate';
-      if (row?.blocked || row?.is_blocked || normalizeWindowProgressList(coalesceValue(row, ['filter_reasons', 'filter_reason', 'blocked_reasons'], [])).length) return 'blocked';
+      if (isWindowProgressConfirmed(row)) return 'confirmed';
+      if (isWindowProgressSignalCandidate(row)) return 'signal_candidate';
+      if (hasWindowDirectionConflict(row)) return 'direction_conflict';
+      if (hasWindowProgressBlockers(row)) return 'blocked';
       if (row?.used || row?.window_used) return 'used';
       if (row?.expired || row?.window_expired) return 'expired';
-      if (row?.near_expiry || row?.is_near_expiry) return 'near_expiry';
+      if (isWindowProgressNearExpiry(row)) return 'near_expiry';
       const upperActive = Boolean(coalesceValue({
         ...row,
         flag_upper_active: windowFlags.sd_upper_active ?? windowFlags.upper_active,
@@ -292,21 +442,20 @@
     }
 
     function getWindowProgressStatusTabForRow(row) {
-      const status = getWindowProgressStatus(row);
-      if (['candidate', 'blocked', 'near_expiry', 'no_window'].includes(status)) return status;
-      if (['upper_active', 'lower_active', 'both_active'].includes(status)) return 'active';
-      return 'other';
+      return WINDOW_PROGRESS_STATUS_TABS.find((tab) => tab.key !== 'all' && matchesWindowProgressStatusTab(row, tab.key))?.key || 'all';
     }
 
     function getWindowProgressStatusCounts(rows = getSortedWindowProgressRows()) {
       const counts = WINDOW_PROGRESS_STATUS_TABS.reduce((acc, tab) => {
-        acc[tab.key] = 0;
+        acc[tab.key] = tab.key === 'all' ? rows.length : 0;
         return acc;
       }, {});
-      counts.all = rows.length;
       rows.forEach((row) => {
-        const tab = getWindowProgressStatusTabForRow(row);
-        counts[tab] = (counts[tab] || 0) + 1;
+        WINDOW_PROGRESS_STATUS_TABS.forEach((tab) => {
+          if (tab.key !== 'all' && matchesWindowProgressStatusTab(row, tab.key)) {
+            counts[tab.key] = (counts[tab.key] || 0) + 1;
+          }
+        });
       });
       return counts;
     }
@@ -314,7 +463,7 @@
     function getFilteredWindowProgressRows(rows = getSortedWindowProgressRows()) {
       const selectedStatus = normalizeWindowProgressStatusTab(activeWindowProgressStatus);
       if (selectedStatus === 'all') return rows;
-      return rows.filter((row) => getWindowProgressStatusTabForRow(row) === selectedStatus);
+      return rows.filter((row) => matchesWindowProgressStatusTab(row, selectedStatus));
     }
 
     function renderWindowProgressStatusTabs(rows = getSortedWindowProgressRows()) {
@@ -342,28 +491,34 @@
         expired: 'expired',
         used: 'used',
         candidate: 'candidate',
+        signal_candidate: 'signal_candidate',
+        target_candidate: 'target_candidate',
+        direction_conflict: 'direction_conflict',
         blocked: 'blocked',
         confirmed: 'confirmed',
+        stale: 'stale',
       };
       const key = String(value || '').trim().toLowerCase();
       return labels[key] || (key || '--');
     }
 
     function getWindowProgressPriority(row) {
+      if (isWindowProgressSignalCandidate(row)) return 0;
+      if (isWindowProgressConfirmed(row)) return 1;
+      if (hasWindowDirectionConflict(row)) return 2;
+      if (hasWindowProgressBlockers(row)) return 3;
+      if (isWindowProgressNearExpiry(row)) return 4;
+      if (isWindowProgressStale(row)) return 8;
       const status = getWindowProgressStatus(row);
       const rank = {
-        candidate: 0,
-        blocked: 1,
-        near_expiry: 2,
-        confirmed: 3,
-        both_active: 4,
-        upper_active: 5,
-        lower_active: 5,
-        no_window: 6,
-        expired: 7,
-        used: 8,
+        both_active: 5,
+        upper_active: 6,
+        lower_active: 6,
+        no_window: 7,
+        expired: 9,
+        used: 10,
       };
-      return rank[status] ?? 9;
+      return rank[status] ?? 11;
     }
 
     function getWindowProgressNumber(row, keys, fallback = 0) {
@@ -544,7 +699,7 @@
     }
 
     function getWindowCandidateLabel(row) {
-      const signalState = row?.signal_state && typeof row.signal_state === 'object' ? row.signal_state : {};
+      const signalState = getWindowSignalState(row);
       const candidate = coalesceValue({
         ...row,
         signal_state_label: signalState.label,
@@ -554,10 +709,103 @@
         return String(candidate.signal || candidate.label || candidate.direction || candidate.status || '--');
       }
       if (candidate) return String(candidate);
+      const candidatePayload = getWindowCandidateSignalObject(row);
+      const payloadLabel = coalesceValue(candidatePayload, ['signal', 'label', 'direction', 'status'], '');
+      if (payloadLabel) return String(payloadLabel);
       const direction = String(coalesceValue(row, ['candidate_direction', 'signal_direction', 'direction'], '') || '').trim().toUpperCase();
       const status = getWindowProgressStatus(row);
       if (direction) return direction;
-      return ['candidate', 'confirmed', 'blocked'].includes(status) ? status : '--';
+      return ['candidate', 'signal_candidate', 'confirmed', 'blocked'].includes(status) ? status : '--';
+    }
+
+    function getWindowSignalStage(row) {
+      if (isWindowProgressSignalCandidate(row)) return 'signal_candidate';
+      if (isWindowProgressConfirmed(row)) return 'confirmed';
+      if (hasWindowDirectionConflict(row)) return 'direction_conflict';
+      if (hasWindowProgressBlockers(row)) return 'blocked';
+      if (isWindowProgressStale(row)) return 'stale';
+      return getWindowProgressTraceStage(row) || getWindowProgressStatus(row) || 'watch';
+    }
+
+    function formatWindowSignalStageLabel(row) {
+      const labels = {
+        signal_candidate: 'signal_candidate',
+        candidate: 'signal_candidate',
+        confirmed: 'confirmed',
+        blocked: 'blocked',
+        direction_conflict: 'direction_conflict',
+        stale: 'stale',
+        no_window: 'watch',
+        upper_active: 'watch',
+        lower_active: 'watch',
+        both_active: 'watch',
+      };
+      const stage = getWindowSignalStage(row);
+      return labels[stage] || stage || '--';
+    }
+
+    function getWindowCandidateSignalSource(row) {
+      const signalState = getWindowSignalState(row);
+      const candidatePayload = getWindowCandidateSignalObject(row);
+      return String(coalesceValue({
+        ...row,
+        state_source: signalState.source,
+        payload_source: candidatePayload.source,
+      }, ['candidate_signal_source', 'signal_source', 'state_source', 'payload_source'], '') || '').trim();
+    }
+
+    function buildWindowSignalCell(row) {
+      const stage = getWindowSignalStage(row);
+      const candidateLabel = getWindowCandidateLabel(row);
+      const source = getWindowCandidateSignalSource(row);
+      const candidatePayload = getWindowCandidateSignalObject(row);
+      const signalState = getWindowSignalState(row);
+      const direction = String(coalesceValue({
+        ...row,
+        candidate_payload_direction: candidatePayload.direction,
+        signal_state_direction: signalState.direction,
+      }, ['candidate_direction', 'signal_direction', 'direction', 'candidate_payload_direction', 'signal_state_direction'], '') || '').trim().toUpperCase();
+      return `
+        <div class="window-signal-stack">
+          <div class="pill-row">
+            ${statusChip(formatWindowSignalStageLabel(row), stage)}
+            ${direction ? statusChip(direction, String(direction).toLowerCase() === 'short' ? 'short' : 'long') : ''}
+          </div>
+          <div class="muted mono window-progress-subline">${escapeHtml(candidateLabel || '--')}${source ? ` · ${escapeHtml(source)}` : ''}</div>
+        </div>
+      `;
+    }
+
+    function buildWindowLatestCell(row) {
+      const latestBar = coalesceValue(row, ['latest_5m_bar', 'latest_bar_us', 'latest_us_time', 'bar_time_us', 'latest_bar_time'], '--');
+      const freshness = getWindowProgressFreshness(row);
+      const freshnessTone = isWindowProgressStale(row) ? 'stale' : (Number.isFinite(freshness) && freshness <= WINDOW_PROGRESS_STALE_MINUTES ? 'active' : 'candidate');
+      const timeline = getWindowProgressObject(row, 'timeline_data');
+      const price = coalesceValue({ ...row, timeline_price: timeline.close ?? timeline.price }, ['price', 'display_price', 'timeline_price'], '');
+      return `
+        <div class="window-latest-stack">
+          <span class="mono">${escapeHtml(latestBar || '--')}</span>
+          <div class="pill-row">
+            ${statusChip(formatFreshness(freshness), freshnessTone)}
+            ${price !== '' ? statusChip(formatPrice(price), 'neutral') : ''}
+          </div>
+        </div>
+      `;
+    }
+
+    function buildWindowActions(row, marketDate, { compact = false } = {}) {
+      const traceUrl = getWindowTraceUrl(row, marketDate);
+      const signalUrl = buildSignalUrl(row.symbol || '', marketDate);
+      const flowUrl = buildLifecycleFlowUrl(row, marketDate);
+      const chartText = compact ? 'Trace' : 'Chart Trace';
+      const lifecycleText = compact ? 'Lifecycle' : 'Lifecycle';
+      return `
+        <div class="row-actions window-row-actions">
+          <a class="mini-link" href="${signalUrl}">Signals</a>
+          <a class="mini-link" href="${traceUrl}">${chartText}</a>
+          ${flowUrl ? `<a class="mini-link" href="${flowUrl}">${lifecycleText}</a>` : ''}
+        </div>
+      `;
     }
 
     function renderWindowProgressCards(rows, marketDate, emptyMessage = '当前没有窗口进度记录。') {
@@ -571,7 +819,7 @@
       mount.innerHTML = rows.map((row) => {
         const status = getWindowProgressStatus(row);
         const latestBar = coalesceValue(row, ['latest_5m_bar', 'latest_bar_us', 'latest_us_time', 'bar_time_us', 'latest_bar_time'], '--');
-        const components = row?.components && typeof row.components === 'object' ? row.components : {};
+        const components = getWindowProgressObject(row, 'components');
         const collected = coalesceValue({
           ...row,
           nested_collected_components: components.collected ?? components.ready,
@@ -580,45 +828,42 @@
           ...row,
           nested_missing_components: components.missing,
         }, ['missing_components', 'components_missing', 'nested_missing_components'], []);
-        const filterReasons = coalesceValue(row, ['filter_reasons', 'filter_reason', 'blocked_reasons', 'block_reason'], []);
-        const traceUrl = getWindowTraceUrl(row, marketDate);
-        const flowUrl = buildLifecycleFlowUrl(row, marketDate);
+        const filterReasons = getWindowProgressFilterReasons(row);
         return `
           <article class="mobile-data-card window-progress-card">
-            <div class="mobile-data-head">
+            <div class="mobile-data-head window-progress-mobile-head">
               <div>
                 <a class="mobile-data-symbol" href="${buildChartUrl(row.symbol || '')}">${escapeHtml(row.symbol || '--')}</a>
-                <div class="mobile-data-time">${escapeHtml(latestBar || '--')}</div>
+                <div class="mobile-chip-row window-mobile-stage-row">
+                  ${statusChip(formatWindowSignalStageLabel(row), getWindowSignalStage(row))}
+                  ${isWindowProgressTargetCandidate(row) ? statusChip('target_candidate', 'target_candidate') : statusChip(row.target_status || 'active', row.target_status || 'active')}
+                </div>
+                <div class="mobile-data-time">Latest 5m · ${escapeHtml(latestBar || '--')}</div>
               </div>
-              <div class="mobile-chip-row">
-                ${statusChip(getWindowProgressStatusLabel(status), status)}
+              <div class="window-mobile-actions">
+                ${buildWindowActions(row, marketDate, { compact: true })}
               </div>
             </div>
 
             <div class="mobile-chip-row">
-              ${statusChip(formatFreshness(coalesceValue(row, ['freshness_min', 'freshness_minutes'], NaN)), Number(coalesceValue(row, ['freshness_min', 'freshness_minutes'], NaN)) <= 30 ? 'active' : 'candidate')}
+              ${statusChip(getWindowProgressStatusLabel(status), status)}
+              ${statusChip(formatFreshness(getWindowProgressFreshness(row)), isWindowProgressStale(row) ? 'stale' : 'active')}
               ${statusChip(`progress ${formatWindowComponentProgress(row)}`, 'config')}
-              ${statusChip(`left ${formatWindowProgressCount(coalesceValue(row, ['bars_remaining', 'remaining_bars'], NaN))}`, Number(coalesceValue(row, ['bars_remaining', 'remaining_bars'], NaN)) <= 2 ? 'near_expiry' : 'neutral')}
+              ${statusChip(`left ${formatWindowProgressCount(coalesceValue(row, ['bars_remaining', 'remaining_bars'], NaN))}`, isWindowProgressNearExpiry(row) ? 'near_expiry' : 'neutral')}
+              ${hasWindowDirectionConflict(row) ? statusChip('direction_conflict', 'direction_conflict') : ''}
               ${renderAdmissionScoreChip(row)}
               ${renderNeedsBackfillChip(row)}
             </div>
 
             <div class="mobile-data-grid">
-              ${buildMobileMetricCard('上轨窗口', formatWindowSide(row, 'upper'))}
-              ${buildMobileMetricCard('下轨窗口', formatWindowSide(row, 'lower'))}
+              ${buildMobileMetricCard('Signal', buildWindowSignalCell(row))}
+              ${buildMobileMetricCard('Window', `${formatWindowSide(row, 'upper')}<div class="window-progress-subline"></div>${formatWindowSide(row, 'lower')}`)}
             </div>
 
             ${buildMobileSection('已收集组件', buildWindowComponentGroupColumn(row, 'present', collected, '暂无'))}
             ${buildMobileSection('缺失组件', buildWindowComponentGroupColumn(row, 'missing', missing, '无缺失'))}
-            ${buildMobileSection('候选信号', escapeHtml(getWindowCandidateLabel(row)))}
-            ${buildMobileSection('过滤原因', buildWindowListPills(filterReasons, '未触发过滤'))}
+            ${buildMobileSection('Blockers', buildWindowListPills(filterReasons, '未触发过滤'))}
             ${getFailedGates(row).length ? buildMobileSection('Failed gates', renderFailedGatesPills(row)) : ''}
-
-            <div class="mobile-data-actions">
-              <a class="mini-link" href="${traceUrl}">Trace</a>
-              ${flowUrl ? `<a class="mini-link" href="${flowUrl}">流程图</a>` : ''}
-              <a class="mini-link" href="${buildChartUrl(row.symbol || '')}">Chart</a>
-            </div>
           </article>
         `;
       }).join('');
@@ -636,31 +881,30 @@
       const selectedStatus = normalizeWindowProgressStatusTab(activeWindowProgressStatus);
       const selectedLabel = WINDOW_PROGRESS_STATUS_TABS.find((tab) => tab.key === selectedStatus)?.label || '全部';
       renderWindowProgressStatusTabs(allRows);
+      const compactCounts = `signal ${counts.signal_candidate || 0} · confirmed ${counts.confirmed || 0} · blocked ${counts.blocked || 0} · conflict ${counts.direction_conflict || 0} · stale ${counts.stale || 0} · target ${counts.target_candidate || 0}`;
       meta.textContent = selectedStatus === 'all'
-        ? `${allRows.length} 条 · candidate ${counts.candidate || 0} · blocked ${counts.blocked || 0} · near_expiry ${counts.near_expiry || 0} · active ${counts.active || 0}`
-        : `${rows.length}/${allRows.length} 条 · 当前 ${selectedLabel} · candidate ${counts.candidate || 0} · blocked ${counts.blocked || 0} · near_expiry ${counts.near_expiry || 0} · active ${counts.active || 0}`;
+        ? `${allRows.length} 条 · ${compactCounts}`
+        : `${rows.length}/${allRows.length} 条 · 当前 ${selectedLabel} · ${compactCounts}`;
       metaSecondary.textContent = windowProgressPayload.computed_at_us
-        ? `计算时间 ${windowProgressPayload.computed_at_us}。筛选: ${selectedLabel}。排序: candidate/blocked/near_expiry, bars_remaining asc, component_progress desc, freshness_min asc, target_score desc。`
-        : `筛选: ${selectedLabel}。排序: candidate/blocked/near_expiry, bars_remaining asc, component_progress desc, freshness_min asc, target_score desc。`;
+        ? `计算时间 ${windowProgressPayload.computed_at_us}。筛选: ${selectedLabel}。排序: signal_candidate/confirmed/blockers/near_expiry, bars_remaining asc, component_progress desc, freshness_min asc, target_score desc。`
+        : `筛选: ${selectedLabel}。排序: signal_candidate/confirmed/blockers/near_expiry, bars_remaining asc, component_progress desc, freshness_min asc, target_score desc。`;
 
       if (!allRows.length) {
-        tbody.innerHTML = '<tr><td colspan="11" class="empty-state">当前没有窗口进度记录。</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-state">当前没有窗口进度记录。</td></tr>';
         renderWindowProgressCards([], marketDate);
         return;
       }
       if (!rows.length) {
         const emptyMessage = `当前没有${selectedLabel}状态的窗口进度记录。`;
-        tbody.innerHTML = `<tr><td colspan="11" class="empty-state">${escapeHtml(emptyMessage)}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="6" class="empty-state">${escapeHtml(emptyMessage)}</td></tr>`;
         renderWindowProgressCards([], marketDate, emptyMessage);
         return;
       }
 
       tbody.innerHTML = rows.map((row) => {
         const status = getWindowProgressStatus(row);
-        const latestBar = coalesceValue(row, ['latest_5m_bar', 'latest_bar_us', 'latest_us_time', 'bar_time_us', 'latest_bar_time'], '--');
-        const freshness = coalesceValue(row, ['freshness_min', 'freshness_minutes'], NaN);
         const barsRemaining = coalesceValue(row, ['bars_remaining', 'remaining_bars'], NaN);
-        const components = row?.components && typeof row.components === 'object' ? row.components : {};
+        const components = getWindowProgressObject(row, 'components');
         const collected = coalesceValue({
           ...row,
           nested_collected_components: components.collected ?? components.ready,
@@ -669,38 +913,42 @@
           ...row,
           nested_missing_components: components.missing,
         }, ['missing_components', 'components_missing', 'nested_missing_components'], []);
-        const filterReasons = coalesceValue(row, ['filter_reasons', 'filter_reason', 'blocked_reasons', 'block_reason'], []);
-        const traceUrl = getWindowTraceUrl(row, marketDate);
-        const flowUrl = buildLifecycleFlowUrl(row, marketDate);
+        const filterReasons = getWindowProgressFilterReasons(row);
         return `
           <tr>
             <td>
               <a class="symbol-link" href="${buildChartUrl(row.symbol || '')}">${escapeHtml(row.symbol || '--')}</a><br>
-              ${statusChip(getWindowProgressStatusLabel(status), status)}<br>
+              <div class="pill-row window-symbol-pills">
+                ${statusChip(getWindowProgressStatusLabel(status), status)}
+                ${isWindowProgressTargetCandidate(row) ? statusChip('target_candidate', 'target_candidate') : statusChip(row.target_status || 'active', row.target_status || 'active')}
+                ${statusChip(row.direction_bias || 'neutral', row.direction_bias || 'neutral')}
+              </div>
               <span class="muted">target ${escapeHtml(formatNumber(coalesceValue(row, ['target_score', 'score'], 0), 1))}</span>
               ${renderAdmissionControlRow(row)}
             </td>
-            <td><span class="mono">${escapeHtml(latestBar || '--')}</span></td>
-            <td>${statusChip(formatFreshness(freshness), Number(freshness) <= 30 ? 'active' : 'candidate')}</td>
-            <td>${formatWindowSide(row, 'upper')}</td>
-            <td>${formatWindowSide(row, 'lower')}</td>
+            <td>${buildWindowLatestCell(row)}</td>
+            <td>${buildWindowSignalCell(row)}</td>
             <td>
-              <span class="mono">${escapeHtml(formatWindowProgressCount(barsRemaining))}</span><br>
-              <span class="muted">progress ${escapeHtml(formatWindowComponentProgress(row))}</span>
+              <div class="window-side-grid">
+                <div>${formatWindowSide(row, 'upper')}</div>
+                <div>${formatWindowSide(row, 'lower')}</div>
+              </div>
+              <div class="window-progress-subline muted mono">left ${escapeHtml(formatWindowProgressCount(barsRemaining))} · progress ${escapeHtml(formatWindowComponentProgress(row))}</div>
+              <details class="window-components-details">
+                <summary>组件明细</summary>
+                <div class="window-components-detail-grid">
+                  <div>${buildWindowComponentGroupColumn(row, 'present', collected, '暂无')}</div>
+                  <div>${buildWindowComponentGroupColumn(row, 'missing', missing, '无缺失')}</div>
+                </div>
+              </details>
             </td>
-            <td>${buildWindowComponentGroupColumn(row, 'present', collected, '暂无')}</td>
-            <td>${buildWindowComponentGroupColumn(row, 'missing', missing, '无缺失')}</td>
-            <td>${escapeHtml(getWindowCandidateLabel(row))}</td>
             <td>
               ${buildWindowListPills(filterReasons, '未触发过滤')}
+              ${hasWindowDirectionConflict(row) ? `<div style="margin-top:8px;">${statusChip('direction_conflict', 'direction_conflict')}</div>` : ''}
+              ${row.trace_error ? `<div class="muted mono window-progress-subline">trace_error: ${escapeHtml(row.trace_error)}</div>` : ''}
               ${getFailedGates(row).length ? `<div style="margin-top:8px;">${renderFailedGatesPills(row)}</div>` : ''}
             </td>
-            <td>
-              <div class="row-actions">
-                <a class="mini-link" href="${traceUrl}">Trace</a>
-                ${flowUrl ? `<a class="mini-link" href="${flowUrl}">流程图</a>` : ''}
-              </div>
-            </td>
+            <td>${buildWindowActions(row, marketDate)}</td>
           </tr>
         `;
       }).join('');
@@ -1152,7 +1400,12 @@
       renderCurrentTargetPagination();
 
       try {
-        const payload = await requestJson(`/api/custom/ibkr/today-targets${buildQuery(getCurrentTargetRequestParams(marketDate))}`);
+        const payload = await requestCachedJson(`/api/custom/ibkr/today-targets${buildQuery(getCurrentTargetRequestParams(marketDate))}`, {}, {
+          ttlMs: 30000,
+          swrMs: 30000,
+          force: Boolean(showToastOnSuccess),
+          tags: ['screener', 'today-targets', currentEnvironment]
+        });
         if (requestToken !== currentTargetState.requestToken) return;
         runtimeCurrentMarketDate = String(payload?.current_market_date || payload?.market_date || runtimeCurrentMarketDate || '').trim();
         const items = Array.isArray(payload?.items) ? payload.items : [];
@@ -1186,7 +1439,7 @@
     async function loadWindowProgress(showToastOnSuccess = false, { force = false } = {}) {
       if (!initAuth()) return;
       const marketDate = document.getElementById('marketDate').value || getDailyTargetDate() || getUsDate();
-      const loadKey = `${currentEnvironment}::${marketDate}`;
+      const loadKey = `${currentEnvironment}::${marketDate}::all::200`;
       if (!force && windowProgressState.loadedKey === loadKey && Array.isArray(windowProgressPayload.items)) {
         renderWindowProgressTable();
         setPageRefreshTime();
@@ -1200,15 +1453,22 @@
       const meta = document.getElementById('windowProgressMeta');
       const metaSecondary = document.getElementById('windowProgressMetaSecondary');
       if (meta) meta.textContent = '正在加载窗口进度...';
-      if (metaSecondary) metaSecondary.textContent = '正在读取 active window progress...';
-      if (table) table.innerHTML = '<tr><td colspan="11" class="empty-state">加载中...</td></tr>';
+      if (metaSecondary) metaSecondary.textContent = '正在读取 all window progress (limit 200)...';
+      if (table) table.innerHTML = '<tr><td colspan="6" class="empty-state">加载中...</td></tr>';
       renderMobileCardState('windowProgressCards', '正在加载窗口进度...');
 
       try {
-        const payload = await requestJson(`/api/custom/ibkr/active-window-progress${buildQuery({
+        const payload = await requestCachedJson(`/api/custom/ibkr/active-window-progress${buildQuery({
           environment: currentEnvironment,
-          market_date: marketDate
-        })}`);
+          market_date: marketDate,
+          status: 'all',
+          limit: 200
+        })}`, {}, {
+          ttlMs: 30000,
+          swrMs: 30000,
+          force,
+          tags: ['screener', 'active-window-progress', currentEnvironment]
+        });
         if (requestToken !== windowProgressState.requestToken) return windowProgressPayload;
         const items = Array.isArray(payload?.items)
           ? payload.items
@@ -1230,7 +1490,7 @@
         windowProgressState.loadedKey = '';
         if (meta) meta.textContent = `加载失败: ${error.message || error}`;
         if (metaSecondary) metaSecondary.textContent = '窗口进度加载失败。';
-        if (table) table.innerHTML = `<tr><td colspan="11" class="empty-state">${escapeHtml(error.message || error)}</td></tr>`;
+        if (table) table.innerHTML = `<tr><td colspan="6" class="empty-state">${escapeHtml(error.message || error)}</td></tr>`;
         renderMobileCardState('windowProgressCards', error.message || error);
         if (activeTab === 'screener' && activeScreenerView === 'window-progress') updateHero();
         return windowProgressPayload;

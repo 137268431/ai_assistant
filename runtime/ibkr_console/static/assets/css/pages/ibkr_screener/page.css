@@ -1373,9 +1373,16 @@
       color: var(--screen-muted);
     }
 
-    .status-chip.candidate {
+    .status-chip.candidate,
+    .status-chip.target_candidate {
       background: rgba(246, 173, 85, 0.16);
       color: var(--screen-accent);
+    }
+
+    .status-chip.signal_candidate {
+      background: rgba(79, 209, 197, 0.16);
+      color: var(--screen-accent-2);
+      border: 1px solid rgba(79, 209, 197, 0.24);
     }
 
     .status-chip.active,
@@ -1400,10 +1407,16 @@
     .status-chip.submitted,
     .status-chip.protection_incomplete,
     .status-chip.ready_no_signal,
-    .status-chip.near_expiry,
-    .status-chip.blocked {
+    .status-chip.near_expiry {
       background: rgba(246, 173, 85, 0.16);
       color: var(--screen-accent);
+    }
+
+    .status-chip.blocked,
+    .status-chip.direction_conflict {
+      background: rgba(252, 129, 129, 0.14);
+      color: var(--screen-bad);
+      border: 1px solid rgba(252, 129, 129, 0.18);
     }
 
     .status-chip.short {
@@ -1713,7 +1726,7 @@
     }
 
     .window-progress-table {
-      min-width: 1360px;
+      min-width: 1080px;
     }
 
     .window-progress-table th,
@@ -1722,14 +1735,19 @@
       line-height: 1.35;
     }
 
-    .window-progress-table th:nth-child(7),
-    .window-progress-table th:nth-child(8),
-    .window-progress-table th:nth-child(10),
-    .window-progress-table td:nth-child(7),
-    .window-progress-table td:nth-child(8),
-    .window-progress-table td:nth-child(10) {
-      min-width: 150px;
-      max-width: 220px;
+    .window-progress-table th:nth-child(3),
+    .window-progress-table th:nth-child(4),
+    .window-progress-table th:nth-child(5),
+    .window-progress-table td:nth-child(3),
+    .window-progress-table td:nth-child(4),
+    .window-progress-table td:nth-child(5) {
+      min-width: 170px;
+      max-width: 360px;
+    }
+
+    .window-progress-table th:nth-child(6),
+    .window-progress-table td:nth-child(6) {
+      min-width: 126px;
     }
 
     .window-progress-subline {
@@ -1740,6 +1758,67 @@
 
     .window-progress-pill-wrap {
       align-items: flex-start;
+    }
+
+
+    .window-symbol-pills,
+    .window-signal-stack,
+    .window-latest-stack,
+    .window-side-grid {
+      display: grid;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .window-symbol-pills,
+    .window-latest-stack .pill-row,
+    .window-signal-stack .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .window-side-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      align-items: start;
+    }
+
+    .window-components-details {
+      margin-top: 8px;
+      color: var(--screen-muted);
+    }
+
+    .window-components-details summary {
+      cursor: pointer;
+      color: var(--screen-accent-2);
+      font-size: 10.5px;
+      font-weight: 800;
+      user-select: none;
+    }
+
+    .window-components-detail-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 8px;
+    }
+
+    .window-row-actions {
+      align-items: flex-start;
+      gap: 6px;
+    }
+
+    .window-progress-mobile-head {
+      align-items: flex-start;
+    }
+
+    .window-mobile-actions .window-row-actions {
+      justify-content: flex-end;
+      max-width: 160px;
+    }
+
+    .window-mobile-stage-row {
+      margin-top: 5px;
     }
 
     .window-component-groups {

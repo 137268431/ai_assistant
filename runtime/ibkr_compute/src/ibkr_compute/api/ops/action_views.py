@@ -32,6 +32,7 @@ from ibkr_compute.api.service_topology import (
     get_runtime_mode,
 )
 from ibkr_compute.api.shared.service_status import get_service_status_snapshot
+from ibkr_compute.core.broker_mode import resolve_market_data_mode
 from ibkr_compute.backtest.execution_fills import (
     DEFAULT_PROFILE_STATE_KEY,
     build_calibrated_execution_cost_profile,
@@ -849,7 +850,9 @@ def build_ibkr_data_quality_truth_audit_response():
     symbols = _resolve_data_quality_symbols(service, payload)
     persist = coerce_request_bool(payload.get("persist"), True)
     chunk_size = coerce_request_int(payload.get("chunk_size"), 20, minimum=1)
-    runtime_environment = app_mod._ibkr_service_environment(service)
+    runtime_environment = resolve_market_data_mode(
+        payload.get("market_data_mode") or payload.get("data_environment")
+    )
     market_date = str(payload.get("market_date") or getattr(service, "_bar_integrity_market_date", lambda: app_mod.current_market_date())()).strip()
     if not market_date:
         market_date = app_mod.current_market_date()

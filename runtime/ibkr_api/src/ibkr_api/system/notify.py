@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ibkr_api.modes import request_broker_mode
+
 
 NormalizeEnvironment = Callable[[Any, str], str]
 EmitSystemEvent = Callable[..., dict[str, Any]]
@@ -22,7 +24,7 @@ def build_notify_response(
     normalize_environment: NormalizeEnvironment,
     emit_system_event: EmitSystemEvent,
 ) -> tuple[dict[str, Any], int]:
-    environment = normalize_environment(payload.get("environment"), "live")
+    environment = request_broker_mode(payload)
     detail = payload.get("data") if payload.get("data") is not None else payload.get("detail")
     try:
         result = emit_system_event(

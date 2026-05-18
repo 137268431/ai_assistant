@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from ibkr_api.modes import request_broker_mode
+
 from .auth_shared import (
     ET,
     FetchRuntimeStatus,
@@ -41,7 +43,7 @@ def build_two_factor_hourly_check_response(
     request_two_factor_approval: RequestTwoFactorApproval,
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
-    environment = normalize_environment(request_payload.get("environment"), "live")
+    environment = request_broker_mode(request_payload)
     runtime_result = fetch_runtime_status(environment)
     runtime_payload = _as_dict(runtime_result.get("payload"))
     now_ms = int(datetime.now(tz=ET).timestamp() * 1000)
@@ -140,7 +142,7 @@ def build_weekly_reauth_followup_response(
     request_two_factor_approval: RequestTwoFactorApproval,
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
-    environment = normalize_environment(request_payload.get("environment"), "live")
+    environment = request_broker_mode(request_payload)
     runtime_result = fetch_runtime_status(environment)
     runtime_payload = _as_dict(runtime_result.get("payload"))
     auth = load_auth_attention_summary(
@@ -214,7 +216,7 @@ def build_weekly_reauth_reminder_response(
     request_two_factor_approval: RequestTwoFactorApproval,
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
-    environment = normalize_environment(request_payload.get("environment"), "live")
+    environment = request_broker_mode(request_payload)
     runtime_result = fetch_runtime_status(environment)
     runtime_payload = _as_dict(runtime_result.get("payload"))
     auth = load_auth_attention_summary(

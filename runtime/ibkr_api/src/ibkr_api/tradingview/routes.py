@@ -4,6 +4,8 @@ from typing import Any
 
 from flask import Response, jsonify, request
 
+from ibkr_api.modes import request_market_data_mode
+
 
 def register_tradingview_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     upsert_tv_indicator = deps["upsert_tv_indicator"]
@@ -16,7 +18,7 @@ def register_tradingview_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     @app.route("/webhook/tv", methods=["POST"])
     def webhook_tv() -> Response:
         payload = request.get_json(silent=True) or {}
-        environment = normalize_environment(payload.get("environment"), "live")
+        environment = request_market_data_mode(payload)
         enabled_value = config_value("tv_webhook_ingest_enabled", "TRUE", environment)
         if not parse_boolean(enabled_value, True):
             return jsonify(

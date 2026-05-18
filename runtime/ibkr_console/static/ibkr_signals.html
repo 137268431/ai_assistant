@@ -93,6 +93,8 @@
         let signalValidityMinutes = 30;
         let realtimeLatencySnapshot = null;
         const CONFIG_CACHE_TTL_MS = 5 * 60 * 1000;
+        const SIGNALS_FAST_CACHE_TTL_MS = 15000;
+        const SIGNALS_DETAIL_CACHE_TTL_MS = 30000;
         const configValueCache = {};
 
         function pickConfigValue(records, fallbackValue) {
@@ -112,18 +114,36 @@
             return bestRecord?.value ?? fallbackValue;
         }
 
-        async function loadConfigValue(key, fallbackValue) {
-            const cacheKey = `${currentEnvironment}:${key}`;
-            const cached = configValueCache[cacheKey];
-            if (cached && cached.expiresAt > Date.now()) {
-                return cached.value;
-            }
+        async function resolveConfigValue(key, fallbackValue) {
             const result = await fetchCollectionFullList('config', {
                 filter: `key = "${escapeFilterValue(key)}" && (environment = "${currentEnvironment}" || environment = "global" || environment = "")`,
                 sort: '-updated',
-                maxPages: 2
+                maxPages: 2,
+                cacheTtlMs: CONFIG_CACHE_TTL_MS
             });
-            const value = pickConfigValue(result, fallbackValue);
+            return pickConfigValue(result, fallbackValue);
+        }
+
+        async function loadConfigValue(key, fallbackValue, { force = false } = {}) {
+            const dataCenter = window.IbkrDataCenter;
+            const sharedCacheKey = typeof buildDataCacheKey === 'function'
+                ? buildDataCacheKey('signalsConfigValue', { environment: currentEnvironment, key, fallbackValue })
+                : `signalsConfigValue:${currentEnvironment}:${key}:${fallbackValue}`;
+            if (dataCenter && typeof dataCenter.get === 'function') {
+                return dataCenter.get(sharedCacheKey, () => resolveConfigValue(key, fallbackValue), {
+                    ttlMs: CONFIG_CACHE_TTL_MS,
+                    swrMs: CONFIG_CACHE_TTL_MS,
+                    force,
+                    tags: ['config', 'signals-page', currentEnvironment]
+                });
+            }
+
+            const cacheKey = `${currentEnvironment}:${key}`;
+            const cached = configValueCache[cacheKey];
+            if (!force && cached && cached.expiresAt > Date.now()) {
+                return cached.value;
+            }
+            const value = await resolveConfigValue(key, fallbackValue);
             configValueCache[cacheKey] = {
                 value,
                 expiresAt: Date.now() + CONFIG_CACHE_TTL_MS,
@@ -131,18 +151,54 @@
             return value;
         }
 
+        function getSignalsCollectionCacheTtl(collection) {
+            if (collection === 'config') return CONFIG_CACHE_TTL_MS;
+            if (collection === 'ibkr_reverse_signals') return SIGNALS_DETAIL_CACHE_TTL_MS;
+            return SIGNALS_FAST_CACHE_TTL_MS;
+        }
+
+        function getSignalsCacheOptions(collection, options = {}) {
+            const ttlMs = Number(options.cacheTtlMs || options.ttlMs || getSignalsCollectionCacheTtl(collection));
+            return {
+                ttlMs,
+                swrMs: ttlMs,
+                force: Boolean(options.force),
+                tags: ['signals-page', collection, currentEnvironment]
+            };
+        }
+
         async function fetchCollectionFullList(collection, options = {}) {
             const perPage = Math.max(1, Math.min(Number(options.perPage || 200), 200));
             const maxPages = Math.max(1, Number(options.maxPages || 20));
+            const startPage = Math.max(1, Number(options.startPage || 1));
+            const listOptions = {
+                filter: options.filter || '',
+                sort: options.sort || '',
+                fields: options.fields || '',
+                skipTotal: options.skipTotal,
+                perPage,
+                maxPages,
+                startPage
+            };
+            const cacheOptions = getSignalsCacheOptions(collection, options);
+            if (!options.noCache && startPage === 1 && typeof fetchCollectionFullListCached === 'function') {
+                return fetchCollectionFullListCached(collection, listOptions, cacheOptions);
+            }
+
             const items = [];
 
-            for (let page = 1; page <= maxPages; page += 1) {
-                const result = await apiFetch(collection, {
-                    filter: options.filter || '',
-                    sort: options.sort || '',
+            for (let page = startPage; page <= maxPages; page += 1) {
+                const params = {
+                    filter: listOptions.filter,
+                    sort: listOptions.sort,
+                    fields: listOptions.fields,
+                    skipTotal: listOptions.skipTotal,
                     perPage,
                     page
-                });
+                };
+                const result = !options.noCache && typeof cachedApiFetch === 'function'
+                    ? await cachedApiFetch(collection, params, cacheOptions)
+                    : await apiFetch(collection, params);
                 const pageItems = Array.isArray(result?.items) ? result.items : [];
                 items.push(...pageItems);
                 if (pageItems.length < perPage) break;
@@ -158,6 +214,18 @@
                 chunks.push(items.slice(index, index + chunkSize));
             }
             return chunks;
+        }
+
+        async function loadSignalRealtimeQuotes(symbols, { force = false } = {}) {
+            const loader = typeof fetchRealtimeQuotesIfNeeded === 'function'
+                ? fetchRealtimeQuotesIfNeeded
+                : fetchRealtimeQuotes;
+            return loader(symbols, {
+                reset: false,
+                force,
+                maxAgeMs: SIGNALS_FAST_CACHE_TTL_MS,
+                swrMs: SIGNALS_FAST_CACHE_TTL_MS
+            });
         }
 
         function buildSignalsPageUrl(overrides = {}) {
@@ -306,6 +374,11 @@
             const num = toFiniteNumber(value);
             if (num === null || Math.abs(num) < 0.005) return 'flat';
             return num > 0 ? 'positive' : 'negative';
+        }
+
+        function formatTargetPriceWithPnlHtml(priceText, pnlText, tone) {
+            if (!pnlText) return escapeHtml(priceText);
+            return `${escapeHtml(priceText)} <span class="target-pnl-inline ${escapeHtml(tone || '')}">${escapeHtml(pnlText)}</span>`;
         }
 
         function formatSignedPercentHtml(value) {
@@ -613,7 +686,7 @@
 
         function getIndicatorEmptyState(signal, latestIndicator) {
             if (latestIndicator) return '数据缺失';
-            const status = String(signal?.status || '').trim().toLowerCase();
+            const status = getEffectiveSignalStatus(signal);
             if (status === 'expired') return '已过期';
             if (['awaiting_confirm', 'pending', 'submitted'].includes(status)) return '等待数据';
             return '数据缺失';
@@ -641,7 +714,57 @@
         }
 
         function getSignalExtra(signal) {
-            return signal && signal.extra && typeof signal.extra === 'object' ? signal.extra : {};
+            if (!signal?.extra) return {};
+            if (typeof signal.extra === 'object') return signal.extra;
+            if (typeof signal.extra === 'string') {
+                try {
+                    const parsed = JSON.parse(signal.extra);
+                    return parsed && typeof parsed === 'object' ? parsed : {};
+                } catch (_) {
+                    return {};
+                }
+            }
+            return {};
+        }
+
+        function getEffectiveSignalStatus(signal) {
+            const extra = getSignalExtra(signal);
+            const byMode = extra.execution_by_mode && typeof extra.execution_by_mode === 'object'
+                ? extra.execution_by_mode
+                : {};
+            const envKeys = [
+                currentEnvironment,
+                String(currentEnvironment || '').toLowerCase(),
+                String(currentEnvironment || '').toUpperCase(),
+            ].filter(Boolean);
+            for (const key of envKeys) {
+                const modeStatus = String(byMode[key]?.status || '').trim().toLowerCase();
+                if (modeStatus) return modeStatus;
+            }
+            return String(signal?.status || 'pending').trim().toLowerCase() || 'pending';
+        }
+
+        function getStatusClassName(status) {
+            return String(status || 'pending').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '_') || 'pending';
+        }
+
+        function shouldShowSignalNote(note) {
+            const normalized = String(note || '').trim().toLowerCase();
+            if (!normalized) return false;
+            const internalNotes = new Set([
+                'history_repair_pending',
+                'paper:history_repair_pending',
+                'signal_expired',
+                'confirm_too_late',
+                'order_expired',
+                'manual_rejected',
+            ]);
+            if (internalNotes.has(normalized)) return false;
+            if (/^(paper|live):history_repair_pending$/.test(normalized)) return false;
+            if (normalized.includes('history_repair_pending')) return false;
+            if (normalized.includes('signal_expired')) return false;
+            if (normalized.includes('confirm_too_late') || normalized.includes('order_expired')) return false;
+            return true;
         }
 
         function getSignalTradeGroupId(signal) {
@@ -929,7 +1052,7 @@
         }
 
         function buildSignalPnlPanelHtml(signal, closedPnl, expectedProfitText, expectedLossText) {
-            const isClosed = String(signal?.status || '').trim().toLowerCase() === 'closed';
+            const isClosed = getEffectiveSignalStatus(signal) === 'closed';
             if (isClosed) {
                 const valueText = closedPnl ? formatSignedMoney(closedPnl.value) : '数据缺失';
                 const tone = closedPnl ? pnlToneClass(closedPnl.value) : 'flat';
@@ -951,19 +1074,7 @@
                     </div>
                 `;
             }
-            return `
-                <div class="signal-item full-width shares-amount">
-                    <div class="shares-amount-left">
-                        <div class="signal-label">预计盈利</div>
-                        <div class="signal-value" style="color:var(--long);">${escapeHtml(expectedProfitText)}</div>
-                    </div>
-                    <div class="shares-amount-divider"></div>
-                    <div class="shares-amount-right">
-                        <div class="signal-label">预计亏损</div>
-                        <div class="signal-value" style="color:var(--short);">${escapeHtml(expectedLossText)}</div>
-                    </div>
-                </div>
-            `;
+            return '';
         }
 
         function averageLatency(signals, getter) {
@@ -1093,12 +1204,19 @@
                 barConditions.push(`symbol = "${escapeFilterValue(focusSymbol)}"`);
             }
 
-            const barResp = await apiFetch('ibkr_bars', {
+            const barParams = {
                 filter: barConditions.join(' && '),
                 sort: '-bar_time_ms,-created',
                 perPage: 1,
                 page: 1
-            });
+            };
+            const barResp = typeof cachedApiFetch === 'function'
+                ? await cachedApiFetch('ibkr_bars', barParams, {
+                    ttlMs: SIGNALS_FAST_CACHE_TTL_MS,
+                    swrMs: SIGNALS_FAST_CACHE_TTL_MS,
+                    tags: ['signals-page', 'latency', currentEnvironment]
+                })
+                : await apiFetch('ibkr_bars', barParams);
             if (requestId && requestId !== currentSignalsRequestId) return;
 
             const latestBar = Array.isArray(barResp?.items) ? barResp.items[0] : null;
@@ -1120,12 +1238,19 @@
             };
 
             if (snapshot.symbol && snapshot.barTimeMs) {
-                const indicatorResp = await apiFetch('ibkr_indicators', {
+                const indicatorParams = {
                     filter: `environment = "${currentEnvironment}" && symbol = "${escapeFilterValue(snapshot.symbol)}" && bar_time_ms = ${snapshot.barTimeMs} && (interval = "5" || interval = "5m")`,
                     sort: '-created',
                     perPage: 1,
                     page: 1
-                });
+                };
+                const indicatorResp = typeof cachedApiFetch === 'function'
+                    ? await cachedApiFetch('ibkr_indicators', indicatorParams, {
+                        ttlMs: SIGNALS_FAST_CACHE_TTL_MS,
+                        swrMs: SIGNALS_FAST_CACHE_TTL_MS,
+                        tags: ['signals-page', 'latency', currentEnvironment]
+                    })
+                    : await apiFetch('ibkr_indicators', indicatorParams);
                 if (requestId && requestId !== currentSignalsRequestId) return;
                 const latestIndicator = Array.isArray(indicatorResp?.items) ? indicatorResp.items[0] : null;
                 if (latestIndicator) {
@@ -1165,7 +1290,7 @@
         // 防止重复加载的标志
         let isLoadingSignals = false;
 
-        async function loadSignals({ refreshCounts = true, showLoadingState = true } = {}) {
+        async function loadSignals({ refreshCounts = true, showLoadingState = true, force = false } = {}) {
             // 防止重复调用
             if (isLoadingSignals) return;
             normalizeSignalFocusFromState();
@@ -1179,7 +1304,7 @@
             try {
                 // Load signal validity configuration from config table
                 try {
-                    const configValue = await loadConfigValue('signal_validity_minutes', '30');
+                    const configValue = await loadConfigValue('signal_validity_minutes', '30', { force });
                     signalValidityMinutes = parseInt(configValue, 10) || 30;
                     console.log('[Signals] signal_validity_minutes 配置值:', signalValidityMinutes, 'environment=', currentEnvironment);
                 } catch (e) {
@@ -1195,10 +1320,7 @@
                     conditions.push(`signal_id = "${escapeFilterValue(filterSignalId)}"`);
                 }
 
-                // 状态筛选
-                if (currentStatus !== 'all') {
-                    conditions.push(`status = "${currentStatus}"`);
-                }
+                // 状态筛选需要使用 broker/environment-specific effective status，保留给客户端过滤。
 
                 // 方向筛选
                 if (currentDirection !== 'all') {
@@ -1220,19 +1342,35 @@
                 if (showLoadingState) {
                     showLoading('加载中...');
                 }
-                const result = await apiFetch('ibkr_signals', {
-                    filter,
-                    sort: '-created',
-                    perPage,
-                    page
-                });
-                if (requestId !== currentSignalsRequestId) return;
-
-                allSignals = result.items;
+                let loadedViaEffectiveStatus = false;
+                let result = null;
+                if (currentStatus !== 'all') {
+                    loadedViaEffectiveStatus = true;
+                    signalTabCountRecords = await loadSignalsForTabCounts();
+                    if (requestId !== currentSignalsRequestId) return;
+                    allSignals = signalTabCountRecords;
+                } else {
+                    const signalParams = {
+                        filter,
+                        sort: '-created',
+                        perPage,
+                        page
+                    };
+                    result = typeof cachedApiFetch === 'function'
+                        ? await cachedApiFetch('ibkr_signals', signalParams, {
+                            ttlMs: SIGNALS_FAST_CACHE_TTL_MS,
+                            swrMs: SIGNALS_FAST_CACHE_TTL_MS,
+                            force,
+                            tags: ['signals-page', currentEnvironment]
+                        })
+                        : await apiFetch('ibkr_signals', signalParams);
+                    if (requestId !== currentSignalsRequestId) return;
+                    allSignals = Array.isArray(result?.items) ? result.items : [];
+                }
                 signalIndicatorsMap = {};
                 reverseSignalsMap = {};
                 ordersMap = {};
-                await fetchRealtimeQuotes(allSignals.map((signal) => signal.symbol), { reset: true }).catch((error) => {
+                await loadSignalRealtimeQuotes(allSignals.map((signal) => signal.symbol), { force }).catch((error) => {
                     console.warn('加载实时行情失败:', error);
                 });
                 await loadOrdersMap().catch((error) => {
@@ -1240,8 +1378,8 @@
                 });
 
                 // 更新分页状态
-                hasMore = result.items.length === perPage;
-                totalItems = result.totalItems;
+                hasMore = loadedViaEffectiveStatus ? false : allSignals.length === perPage;
+                totalItems = loadedViaEffectiveStatus ? getFilteredSignals().length : result.totalItems;
                 displayedSignals = allSignals;
 
                 renderSignalsPageChrome();
@@ -1249,6 +1387,10 @@
                 renderSignals();
                 updateLoadMoreButton();
                 setPageRefreshTime();
+                if (loadedViaEffectiveStatus) {
+                    updateStatusTabCounts();
+                    updateDirectionTabCounts();
+                }
 
                 loadRealtimeLatencySnapshot(requestId)
                     .catch((error) => {
@@ -1267,7 +1409,7 @@
                     });
 
                 // Tab 数量仍保留，但不再跟随每次自动刷新全量重查。
-                if (refreshCounts) {
+                if (refreshCounts && !loadedViaEffectiveStatus) {
                     loadSignalsForTabCounts()
                         .then((records) => {
                             if (requestId !== currentSignalsRequestId) return;
@@ -1352,12 +1494,19 @@
                 const chunkLatestByPair = {};
 
                 for (let page = 1; page <= 2; page += 1) {
-                    const result = await apiFetch('ibkr_indicators', {
+                    const indicatorParams = {
                         filter: `environment = "${currentEnvironment}" && (${pairFilter}) && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
                         sort: '-bar_time_ms,-created',
                         perPage,
                         page
-                    });
+                    };
+                    const result = typeof cachedApiFetch === 'function'
+                        ? await cachedApiFetch('ibkr_indicators', indicatorParams, {
+                            ttlMs: SIGNALS_DETAIL_CACHE_TTL_MS,
+                            swrMs: SIGNALS_DETAIL_CACHE_TTL_MS,
+                            tags: ['signals-page', 'signal-indicators', currentEnvironment]
+                        })
+                        : await apiFetch('ibkr_indicators', indicatorParams);
                     if (requestId && requestId !== currentSignalsRequestId) return;
 
                     const rows = Array.isArray(result?.items) ? result.items : [];
@@ -1572,7 +1721,7 @@
                         return;
                     }
                     counts['all']++;
-                    const status = String(signal.status || 'pending');
+                    const status = getEffectiveSignalStatus(signal);
                     if (counts[status] !== undefined) counts[status]++;
                 });
             } catch (e) {
@@ -1581,7 +1730,7 @@
                 counts['all'] = allSignals.length;
                 statuses.forEach(s => counts[s] = 0);
                 allSignals.forEach(signal => {
-                    const st = signal.status || 'pending';
+                    const st = getEffectiveSignalStatus(signal);
                     if (counts[st] !== undefined) counts[st]++;
                 });
             }
@@ -1612,7 +1761,7 @@
                     counts[dir] = 0;
                 });
                 records.forEach(signal => {
-                    if (currentStatus !== 'all' && signal.status !== currentStatus) {
+                    if (currentStatus !== 'all' && getEffectiveSignalStatus(signal) !== currentStatus) {
                         return;
                     }
                     counts['all']++;
@@ -1642,7 +1791,7 @@
         function getFilteredSignals() {
             let filtered = allSignals;
             if (currentStatus !== 'all') {
-                filtered = filtered.filter(s => s.status === currentStatus);
+                filtered = filtered.filter(s => getEffectiveSignalStatus(s) === currentStatus);
             }
             if (currentDirection !== 'all') {
                 filtered = filtered.filter(s => s.direction === currentDirection);
@@ -1710,7 +1859,7 @@
             }
 
             // 波动率 (从 latestIndicator 获取)
-            const signalExtra = signal.extra || {};
+            const signalExtra = getSignalExtra(signal);
             const atrPct = latestIndicator?.atr_pct || signalExtra.atr_pct || 0;
             if (atrPct > 0) {
                 const atrVolLevel = atrPct >= 3 ? 'high' : atrPct >= 1.5 ? 'medium' : 'low';
@@ -1726,7 +1875,7 @@
 
         // 构建大盘关联徽章
         function buildMarketIndexBadges(signal) {
-            const signalExtra = signal.extra || {};
+            const signalExtra = getSignalExtra(signal);
 
             // 解析 market_indexes 和 market_relation
             let marketIndexes = signalExtra.market_indexes;
@@ -1756,7 +1905,7 @@
                 badges.push(`<span class="indicator-badge badge-change-down" title="${escapeHtml(marketRelationText)}">⚠️ 逆势</span>`);
             }
 
-            if (marketSentiment) {
+            if (marketSentiment && marketSentiment !== 'unknown') {
                 const sentimentLabels = {
                     risk_on: 'Risk-On',
                     risk_off: 'Risk-Off',
@@ -1775,11 +1924,20 @@
             // 显示大盘涨跌幅
             (marketIndexes || []).forEach(mi => {
                 if (mi && mi.symbol) {
+                    const symbol = String(mi.symbol || '').trim().toUpperCase();
+                    if (!['VIX', 'SPY', 'QQQ'].includes(symbol)) return;
                     const pct = Number(mi.change_pct);
                     const hasPct = Number.isFinite(pct);
-                    const colorClass = hasPct && pct > 0 ? 'badge-change-up' : (hasPct && pct < 0 ? 'badge-change-down' : 'badge-div');
+                    const colorClass = symbol === 'VIX'
+                        ? (hasPct && pct < 0 ? 'badge-change-up' : (hasPct && pct > 0 ? 'badge-change-down' : 'badge-div'))
+                        : (hasPct && pct > 0 ? 'badge-change-up' : (hasPct && pct < 0 ? 'badge-change-down' : 'badge-div'));
                     const pctText = hasPct ? `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%` : (mi.stale ? '已过期' : '数据缺失');
-                    badges.push(`<span class="indicator-badge ${colorClass}" title="${escapeHtml(mi.source || '')}">${mi.symbol} ${pctText}</span>`);
+                    const titleParts = ['信号时快照'];
+                    if (mi.source) titleParts.push(`source=${mi.source}`);
+                    const timeText = mi.time || mi.ts || mi.timestamp || mi.updated || mi.updated_at || mi.bar_time || '';
+                    if (timeText) titleParts.push(`time=${timeText}`);
+                    if (mi.stale) titleParts.push('stale=true');
+                    badges.push(`<span class="indicator-badge ${colorClass}" title="${escapeHtml(titleParts.join(' · '))}">${escapeHtml(symbol)}快照 ${pctText}</span>`);
                 }
             });
 
@@ -1809,10 +1967,7 @@
                     conditions.push(`signal_id = "${escapeFilterValue(filterSignalId)}"`);
                 }
 
-                // 状态筛选
-                if (currentStatus !== 'all') {
-                    conditions.push(`status = "${currentStatus}"`);
-                }
+                // 状态筛选需要使用 broker/environment-specific effective status，保留给客户端过滤。
 
                 // 方向筛选
                 if (currentDirection !== 'all') {
@@ -1827,16 +1982,23 @@
 
                 const filter = conditions.join(' && ');
 
-                const result = await apiFetch('ibkr_signals', {
+                const signalParams = {
                     filter,
                     sort: '-created',
                     perPage: itemsPerPage,
                     page: currentPage
-                });
+                };
+                const result = typeof cachedApiFetch === 'function'
+                    ? await cachedApiFetch('ibkr_signals', signalParams, {
+                        ttlMs: SIGNALS_FAST_CACHE_TTL_MS,
+                        swrMs: SIGNALS_FAST_CACHE_TTL_MS,
+                        tags: ['signals-page', currentEnvironment]
+                    })
+                    : await apiFetch('ibkr_signals', signalParams);
                 const newSignals = Array.isArray(result?.items) ? result.items : [];
 
                 allSignals = [...allSignals, ...newSignals];
-                await fetchRealtimeQuotes(allSignals.map((signal) => signal.symbol), { reset: true }).catch((error) => {
+                await loadSignalRealtimeQuotes(allSignals.map((signal) => signal.symbol)).catch((error) => {
                     console.warn('加载实时行情失败:', error);
                 });
                 await loadOrdersMap().catch((error) => {
@@ -2037,13 +2199,13 @@
         }
 
         function buildSignalMergePanel(signal) {
-            const extra = safeObject(signal?.extra);
+            const extra = getSignalExtra(signal);
             const mergedIds = uniqueStrings(extra.merged_signal_ids, extra.followup_signal_ids);
             const latestId = String(extra.latest_followup_signal_id || extra.latest_merged_signal_id || '').trim();
             if (latestId && !mergedIds.includes(latestId)) mergedIds.push(latestId);
             if (!mergedIds.length && !latestId) return '';
 
-            const status = String(signal?.status || '').trim().toLowerCase();
+            const status = getEffectiveSignalStatus(signal);
             const requiresReconfirm = status === 'awaiting_confirm' && Boolean(extra.followup_requires_reconfirm || extra.confirmation_stale);
             const brokerLocked = ['submitted', 'protected_active', 'executed', 'protection_incomplete'].includes(status);
             const changedFields = uniqueStrings(extra.reconfirm_changed_fields);
@@ -2203,8 +2365,8 @@
         }
 
         function buildProtectionIncompletePanel(signal) {
-            if (String(signal?.status || '').trim().toLowerCase() !== 'protection_incomplete') return '';
-            const extra = safeObject(signal?.extra);
+            if (getEffectiveSignalStatus(signal) !== 'protection_incomplete') return '';
+            const extra = getSignalExtra(signal);
             const diagnostic = safeObject(extra.protection_incomplete_diagnostic);
             const pbStatuses = normalizeProtectionStatusMap(extra.protection_order_statuses || diagnostic.protection_order_statuses);
             const liveStatuses = normalizeProtectionStatusMap(extra.protection_live_order_statuses || diagnostic.protection_live_order_statuses);
@@ -2294,11 +2456,12 @@
             container.innerHTML = filtered.map(signal => {
                 const directionIcon = signal.direction === 'long' ? '📈' : '📉';
                 const directionClass = signal.direction === 'long' ? 'long' : 'short';
-                const statusClass = signal.status || 'pending';
-                const statusText = formatSignalStatusLabel(statusClass);
+                const effectiveStatus = getEffectiveSignalStatus(signal);
+                const statusClass = getStatusClassName(effectiveStatus);
+                const statusText = formatSignalStatusLabel(effectiveStatus);
 
-                const isAwaitingConfirm = signal.status === 'awaiting_confirm';
-                const isPending = signal.status === 'pending';
+                const isAwaitingConfirm = effectiveStatus === 'awaiting_confirm';
+                const isPending = effectiveStatus === 'pending';
                 const showCountdown = isAwaitingConfirm || isPending;
 
                 // 计算开仓金额
@@ -2317,7 +2480,7 @@
 
                 // ATR波动率数据（优先从 latestIndicator 获取，没有则从 signal.extra 获取）
                 const latestIndicator = mergeIndicatorWithRealtimeQuote(signalIndicatorsMap[signal.id] || null) || signalIndicatorsMap[signal.id] || null;
-                const signalExtra = signal.extra || {};
+                const signalExtra = getSignalExtra(signal);
                 const closeTimeMs = getSignalCloseTimeMs(signal);
                 const createdMs = getSignalCreatedMs(signal);
                 const computedAtMs = getSignalComputedAtMs(signal);
@@ -2361,14 +2524,20 @@
                 const selectedStyle = isSelected ? 'border-color:rgba(59,130,246,0.85);box-shadow:0 0 0 1px rgba(59,130,246,0.35),0 20px 50px rgba(59,130,246,0.18);' : '';
                 const entryText = formatSignalPrice(signal.entry);
                 const currentPriceText = formatCurrentPrice(latestIndicator, signal);
-                const takeProfitText = formatSignalPrice(signal.take_profit);
-                const stopLossText = formatSignalPrice(signal.stop_loss);
+                const takeProfitBaseText = formatSignalPrice(signal.take_profit);
+                const stopLossBaseText = formatSignalPrice(signal.stop_loss);
                 const rrText = signal.rr || '数据缺失';
                 const sharesAmountText = `${formatQuantityLabel(signal.shares)} / ${formatPositionSizeLabel(signal.entry, signal.shares)}`;
                 const signalIdText = signal.signal_id || '数据缺失';
                 const usTimeText = signal.us_time || '等待数据';
                 const expectedProfitText = hasTradePrices ? formatPrice(expectedProfit) : '数据缺失';
                 const expectedLossText = hasTradePrices ? formatPrice(expectedLoss) : '数据缺失';
+                const takeProfitHtml = hasTradePrices && effectiveStatus !== 'closed'
+                    ? formatTargetPriceWithPnlHtml(takeProfitBaseText, formatSignedMoney(expectedProfit), 'positive')
+                    : escapeHtml(takeProfitBaseText);
+                const stopLossHtml = hasTradePrices && effectiveStatus !== 'closed'
+                    ? formatTargetPriceWithPnlHtml(stopLossBaseText, `-${formatPrice(Math.abs(expectedLoss))}`, 'negative')
+                    : escapeHtml(stopLossBaseText);
                 const relatedOrders = getRelatedOrdersForSignal(signal);
                 const closedPnl = buildClosedSignalPnl(signal, latestIndicator, relatedOrders);
                 const pnlPanelHtml = buildSignalPnlPanelHtml(signal, closedPnl, expectedProfitText, expectedLossText);
@@ -2380,7 +2549,7 @@
                 const directionText = String(signal.direction || 'unknown').toUpperCase();
                 const signalIdLiteral = escapeHtml(toJsStringLiteral(signal.signal_id || ''));
                 const recordIdLiteral = escapeHtml(toJsStringLiteral(signal.id || ''));
-                const isProtectionIncomplete = String(statusClass || '').trim().toLowerCase() === 'protection_incomplete';
+                const isProtectionIncomplete = effectiveStatus === 'protection_incomplete';
                 const mergePanelHtml = buildSignalMergePanel(signal);
                 const protectionAlertHtml = buildProtectionIncompletePanel(signal);
                 const orderButtonClass = isProtectionIncomplete ? ' btn-protection' : '';
@@ -2419,11 +2588,11 @@
                             </div>
                             <div class="signal-item">
                                 <div class="signal-label">Take Profit</div>
-                                <div class="signal-value">${escapeHtml(takeProfitText)}</div>
+                                <div class="signal-value">${takeProfitHtml}</div>
                             </div>
                             <div class="signal-item">
                                 <div class="signal-label">Stop Loss</div>
-                                <div class="signal-value">${escapeHtml(stopLossText)}</div>
+                                <div class="signal-value">${stopLossHtml}</div>
                             </div>
                             <div class="signal-item">
                                 <div class="signal-label">风险回报比</div>
@@ -2459,7 +2628,7 @@
                             </div>
                         </div>
 
-                        ${signal.note ? `<div class="signal-note signal-note-highlight"><strong>📋 备注:</strong> ${escapeHtml(signal.note)}</div>` : ''}
+                        ${shouldShowSignalNote(signal.note) ? `<div class="signal-note signal-note-highlight"><strong>📋 备注:</strong> ${escapeHtml(signal.note)}</div>` : ''}
                         ${signal.reason ? `<div class="signal-note"><strong>📊 原因:</strong> ${escapeHtml(signal.reason)}</div>` : ''}
                         ${mergePanelHtml}
                         ${protectionAlertHtml}
@@ -2592,8 +2761,9 @@
             try {
                 const signal = findSignalRecord(id);
                 if (!signal) throw new Error('找不到信号记录');
-                if (signal.status !== 'awaiting_confirm') {
-                    throw new Error(`当前状态不可确认: ${signal.status || 'unknown'}`);
+                const effectiveStatus = getEffectiveSignalStatus(signal);
+                if (effectiveStatus !== 'awaiting_confirm') {
+                    throw new Error(`当前状态不可确认: ${formatSignalStatusLabel(effectiveStatus)}`);
                 }
 
                 const nextExtra = {
@@ -2629,8 +2799,9 @@
             try {
                 const signal = findSignalRecord(id);
                 if (!signal) throw new Error('找不到信号记录');
-                if (signal.status !== 'awaiting_confirm') {
-                    throw new Error(`当前状态不可拒绝: ${signal.status || 'unknown'}`);
+                const effectiveStatus = getEffectiveSignalStatus(signal);
+                if (effectiveStatus !== 'awaiting_confirm') {
+                    throw new Error(`当前状态不可拒绝: ${formatSignalStatusLabel(effectiveStatus)}`);
                 }
 
                 const nextExtra = {
@@ -2716,7 +2887,7 @@
 
         function manualRefresh() {
             spinPageRefreshButton('refreshBtn');
-            loadSignals({ refreshCounts: true, showLoadingState: false });
+            loadSignals({ refreshCounts: true, showLoadingState: false, force: true });
         }
 
         function changeRefreshInterval(seconds) {

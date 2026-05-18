@@ -66,6 +66,16 @@
     function normalizeWindowProgressStatusTab(value) {
       const normalized = String(value || '').trim().toLowerCase().replace(/-/g, '_');
       if (normalized === 'all' || normalized === '') return 'all';
+      const aliases = {
+        candidate: 'signal_candidate',
+        signal: 'signal_candidate',
+        confirmed_signal: 'confirmed',
+        conflict: 'direction_conflict',
+        direction_mismatch: 'direction_conflict',
+        target: 'target_candidate',
+        pool_candidate: 'target_candidate',
+      };
+      if (aliases[normalized]) return aliases[normalized];
       if (WINDOW_PROGRESS_STATUS_TABS.some((tab) => tab.key === normalized)) return normalized;
       return 'all';
     }
@@ -159,12 +169,15 @@
     }
 
     async function loadConfigRecordValue(key, fallbackValue = '') {
-      const result = await apiFetch('config', {
+      const params = {
         filter: `key = "${escapeFilterValue(key)}" && (environment = "${escapeFilterValue(currentEnvironment)}" || environment = "global" || environment = "")`,
         sort: '-updated',
         perPage: 20,
         page: 1
-      });
+      };
+      const result = typeof cachedApiFetch === 'function'
+        ? await cachedApiFetch('config', params, { ttlMs: 300000, ttl: 300000 })
+        : await apiFetch('config', params);
       const record = pickScopedConfigRecord(Array.isArray(result?.items) ? result.items : []);
       return {
         value: record?.value ?? fallbackValue,
@@ -245,4 +258,3 @@
         </div>
       `;
     }
-

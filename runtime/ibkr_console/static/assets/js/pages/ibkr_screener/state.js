@@ -54,12 +54,13 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
     };
     const WINDOW_PROGRESS_STATUS_TABS = [
       { key: 'all', label: '全部' },
-      { key: 'candidate', label: '候选' },
-      { key: 'blocked', label: '阻塞' },
-      { key: 'near_expiry', label: '临期' },
-      { key: 'active', label: '活跃' },
-      { key: 'no_window', label: '无窗口' },
-      { key: 'other', label: '其他' },
+      { key: 'signal_candidate', label: '候选信号' },
+      { key: 'confirmed', label: '已确认' },
+      { key: 'blocked', label: '已阻塞' },
+      { key: 'direction_conflict', label: '方向冲突' },
+      { key: 'near_expiry', label: '临期窗口' },
+      { key: 'stale', label: 'Stale' },
+      { key: 'target_candidate', label: '目标池候选' },
     ];
     const manualDailyScanState = {
       running: false,

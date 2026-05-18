@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
+from ibkr_api.modes import request_market_data_mode
 from ibkr_api.system.jobs.market_calendar import is_nyse_non_trading_day
 
 
@@ -641,7 +642,7 @@ def build_system_open_report_response(
     load_market_snapshots: LoadMarketSnapshots | None = None,
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
-    environment = normalize_environment(request_payload.get("environment"), "live")
+    environment = request_market_data_mode(request_payload)
     times = time_strings()
     target_time_et = _to_text(request_payload.get("target_time_et")) or DEFAULT_OPEN_REPORT_TIME_ET
     window_minutes = _to_int(request_payload.get("window_minutes"), DEFAULT_OPEN_REPORT_WINDOW_MINUTES)

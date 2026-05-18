@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import os
 from typing import Dict, List, Optional, Sequence
 
+from ibkr_compute.core.broker_mode import configured_market_data_mode
 from ibkr_compute.core.time_utils import ET
 
 from .timeframe_utils import (
@@ -15,7 +16,7 @@ from .timeframe_utils import (
     normalize_interval,
 )
 
-ENVIRONMENT = os.environ.get("IBKR_ENVIRONMENT", "live")
+ENVIRONMENT = configured_market_data_mode()
 
 PERIOD_MAP = {
     "5m": ("4d", "5min"),

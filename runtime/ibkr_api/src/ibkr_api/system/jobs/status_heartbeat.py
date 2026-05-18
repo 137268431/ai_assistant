@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from ibkr_api.modes import request_market_data_mode
+
 
 HEARTBEAT_STATE_KEY = "system_notify_heartbeat"
 HEARTBEAT_ALERT_COOLDOWN_MS = 30 * 60 * 1000
@@ -897,7 +899,7 @@ def build_system_heartbeat_response(
     upsert_state: UpsertState,
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
-    environment = normalize_environment(request_payload.get("environment"), "live")
+    environment = request_market_data_mode(request_payload)
     emit_nominal_ok = _truthy(request_payload.get("emit_nominal_ok"), default=False)
     times = time_strings()
     state = _as_dict(get_state_payload(HEARTBEAT_STATE_KEY, environment).get("data"))
@@ -1025,7 +1027,7 @@ def build_system_status_reminder_response(
     build_active_window_progress_response: BuildActiveWindowProgressResponse | None = None,
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
-    environment = normalize_environment(request_payload.get("environment"), "live")
+    environment = request_market_data_mode(request_payload)
     times = time_strings()
     if _matches_open_report_time_window(
         times.get("us", ""),

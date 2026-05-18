@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ibkr_api.modes import request_broker_mode
+
 from ibkr_api.two_factor.messages import build_request_response_message
 from ibkr_api.two_factor.state import load_two_factor_state
 
@@ -45,7 +47,7 @@ def build_two_factor_request_response(
     merge_startup_steps: MergeStartupSteps,
     deliver_startup_progress_card: DeliverStartupProgressCard,
 ) -> tuple[dict[str, Any], int]:
-    environment = normalize_environment(payload.get("environment"), "live")
+    environment = request_broker_mode(payload)
     force_reset = parse_bool(payload.get("force_reset"))
     force_new = parse_bool(payload.get("force_new"))
     trigger_now = parse_bool(payload.get("trigger_now"))

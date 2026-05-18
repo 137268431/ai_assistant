@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import inspect
 import logging
-import os
 
 from ibkr_compute.core.broker_mode import broker_mode_payload
 
@@ -101,7 +100,7 @@ def _build_minimal_runtime_status(service, error: Exception | None = None) -> di
         trade_universe_status = "no_trade_symbols"
     active_subscription_set = set(active_subscription_symbols)
     market_ws_symbols_ready = len([symbol for symbol in market_ws_symbols if symbol in active_subscription_set])
-    mode_payload = broker_mode_payload(os.environ.get("IBKR_ENVIRONMENT"))
+    mode_payload = broker_mode_payload()
     status = {
         "gateway_control_available": True,
         "starting": starting,

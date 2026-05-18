@@ -729,7 +729,7 @@ class IntradaySdV1CoreTest(unittest.TestCase):
             normalize_watchlist_symbol_role=lambda role: str(role or "").strip().lower(),
         )
 
-        with mock.patch.dict(os.environ, {"IBKR_DATA_ENVIRONMENT": "live"}, clear=False), mock.patch.object(
+        with mock.patch.dict(os.environ, {"IBKR_MARKET_DATA_MODE": "live"}, clear=False), mock.patch.object(
             universe_mod,
             "_api_app",
             return_value=fake_app,

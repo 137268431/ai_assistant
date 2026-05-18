@@ -37,7 +37,7 @@ const mockWindowProgressPayload = {
   environment: 'live',
   market_date: '2026-05-04',
   computed_at_us: '2026-05-04 10:31:00',
-  summary: { total: 6, active_count: 1, candidate_count: 1, blocked_count: 1, near_expiry_count: 1 },
+  summary: { total: 6, active_count: 5, candidate_count: 1, candidate_signal_count: 1, blocked_count: 1, near_expiry_count: 1, confirmed_count: 1, with_live_bar_count: 6 },
   items: [
     {
       symbol: 'MOCK',
@@ -210,6 +210,7 @@ async function main() {
   });
   const page = await context.newPage();
   const errors = [];
+  const windowProgressRequests = [];
 
   page.on('pageerror', (error) => errors.push(`pageerror:${error.message}`));
   page.on('console', (message) => {
@@ -225,11 +226,16 @@ async function main() {
       return;
     }
     if (url.includes('/api/custom/ibkr/active-window-progress')) {
+      windowProgressRequests.push(new URL(url));
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(mockWindowProgressPayload) });
       return;
     }
     if (url.includes('fonts.googleapis.com') || url.includes('fonts.gstatic.com')) {
       await route.fulfill({ status: 204, body: '' });
+      return;
+    }
+    if (url.includes('/api/')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, items: [] }) });
       return;
     }
     if (url.startsWith(CONSOLE_BASE)) {
@@ -244,7 +250,7 @@ async function main() {
     timeout: 20000,
   });
 
-  await page.waitForSelector('#windowProgressViewPanel.active #windowProgressTable .window-component-group', {
+  await page.waitForSelector('#windowProgressViewPanel.active #windowProgressTable tr', {
     timeout: 20000,
   });
 
@@ -287,14 +293,14 @@ async function main() {
     url: window.location.href,
   }));
 
-  await page.goto(`${CONSOLE_BASE}/ibkr_screener.html?environment=live&tab=screener&view=window-progress&window_status=active`, {
+  await page.goto(`${CONSOLE_BASE}/ibkr_screener.html?environment=live&tab=screener&view=window-progress&window_status=signal_candidate`, {
     waitUntil: 'domcontentloaded',
     timeout: 20000,
   });
   await page.waitForFunction(() => {
     const active = document.querySelector('#windowProgressStatusTabs .window-progress-status-tab.active')?.getAttribute('data-window-status');
     const text = document.querySelector('#windowProgressTable')?.textContent || '';
-    return active === 'active' && text.includes('ACTV') && !text.includes('BLKD');
+    return active === 'signal_candidate' && text.includes('CAND') && !text.includes('BLKD');
   });
 
   const deepLinkResult = await page.evaluate(() => ({
@@ -315,7 +321,16 @@ async function main() {
   if (!result.hasCollectedByPath) failures.push('type4_collected_missing');
   if (!result.hasMissingByPath) failures.push('type2_missing_missing');
   if (result.defaultRowCount !== 6) failures.push(`unexpected_default_row_count:${result.defaultRowCount}`);
-  const expectedCounts = { all: '6', candidate: '1', blocked: '1', near_expiry: '1', active: '1', no_window: '1', other: '1' };
+  const expectedCounts = {
+    all: '6',
+    signal_candidate: '1',
+    confirmed: '1',
+    blocked: '1',
+    direction_conflict: '0',
+    near_expiry: '1',
+    stale: '0',
+    target_candidate: '1',
+  };
   for (const [status, expected] of Object.entries(expectedCounts)) {
     if (result.tabCounts[status] !== expected) failures.push(`bad_tab_count:${status}:${result.tabCounts[status]}`);
   }
@@ -326,16 +341,23 @@ async function main() {
   if (!blockedResult.cardText.includes('BLKD') || blockedResult.cardText.includes('CAND') || blockedResult.cardText.includes('MOCK')) {
     failures.push('blocked_mobile_filter_failed');
   }
-  if (!blockedResult.metaText.includes('1/6 条') || !blockedResult.metaText.includes('当前 阻塞')) {
+  if (!blockedResult.metaText.includes('1/6 条') || !blockedResult.metaText.includes('当前 已阻塞')) {
     failures.push(`blocked_meta_bad:${blockedResult.metaText}`);
   }
   if (!blockedResult.url.includes('window_status=blocked')) failures.push(`blocked_url_missing:${blockedResult.url}`);
-  if (deepLinkResult.activeStatus !== 'active') failures.push(`deeplink_active_tab_bad:${deepLinkResult.activeStatus}`);
-  if (!deepLinkResult.tableText.includes('ACTV') || deepLinkResult.tableText.includes('BLKD')) {
-    failures.push('deeplink_active_filter_failed');
+  if (deepLinkResult.activeStatus !== 'signal_candidate') failures.push(`deeplink_signal_candidate_tab_bad:${deepLinkResult.activeStatus}`);
+  if (!deepLinkResult.tableText.includes('CAND') || deepLinkResult.tableText.includes('BLKD')) {
+    failures.push('deeplink_signal_candidate_filter_failed');
   }
-  if (!deepLinkResult.cardText.includes('ACTV') || deepLinkResult.cardText.includes('BLKD')) {
-    failures.push('deeplink_active_mobile_filter_failed');
+  if (!deepLinkResult.cardText.includes('CAND') || deepLinkResult.cardText.includes('BLKD')) {
+    failures.push('deeplink_signal_candidate_mobile_filter_failed');
+  }
+  const firstWindowRequest = windowProgressRequests[0];
+  if (!firstWindowRequest || firstWindowRequest.searchParams.get('status') !== 'all') {
+    failures.push(`window_progress_status_param_bad:${firstWindowRequest && firstWindowRequest.search}`);
+  }
+  if (!firstWindowRequest || firstWindowRequest.searchParams.get('limit') !== '200') {
+    failures.push(`window_progress_limit_param_bad:${firstWindowRequest && firstWindowRequest.search}`);
   }
 
   const output = { ok: failures.length === 0, failures, result, blockedResult, deepLinkResult };

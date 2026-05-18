@@ -1058,6 +1058,40 @@ class SignalIngressBuildersTest(unittest.TestCase):
         self.assertIn("保护单已生效", card["header"]["title"]["content"])
         self.assertIn("保护单已生效", card["elements"][0]["content"])
 
+    def test_signal_status_card_uses_effective_broker_expired_and_filters_internal_note(self):
+        record = {
+            "id": "sig-row-1",
+            "signal_id": "sig-paper-expired",
+            "symbol": "AAPL",
+            "direction": "long",
+            "environment": "live",
+            "status": "pending",
+            "note": "paper:history_repair_pending",
+            "extra": {
+                "broker_mode": "paper",
+                "data_environment": "live",
+                "execution_by_mode": {
+                    "paper": {
+                        "status": "expired",
+                        "note": "signal_expired",
+                        "status_reason": "signal_expired",
+                    }
+                },
+            },
+        }
+
+        card = build_signal_status_card(
+            record,
+            message="信号超时自动失效",
+            console_base_url="https://console.example.com",
+        )
+        content = card["elements"][0]["content"]
+
+        self.assertIn("已过期", card["header"]["title"]["content"])
+        self.assertIn("**状态**: 已过期", content)
+        self.assertIn("**原因**: signal_expired", content)
+        self.assertNotIn("paper:history_repair_pending", content)
+
     def test_reconfirm_cards_are_not_labeled_as_new_independent_signal(self):
         record = {
             "id": "sig-row-1",

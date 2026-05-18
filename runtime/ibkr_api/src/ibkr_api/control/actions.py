@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 from typing import Any, Callable
 
+from ibkr_api.modes import request_broker_mode, request_market_data_mode
 from ibkr_api.control.config_records import upsert_config_value
 
 
@@ -56,6 +57,13 @@ _RECOVER_CONFIG_ACTIONS = {
         ("pb_scheduler_enabled", "TRUE", "PB 调度开关", "恢复 PB cron 调度"),
         ("ibkr_bar_publish_enabled", "TRUE", "IBKR K线发布开关", "恢复 bars 写入 PocketBase"),
     ],
+}
+
+_CONFIG_KEY_MODE_SCOPE = {
+    "ibkr_trading_enabled": "broker",
+    "ibkr_compute_enabled": "market_data",
+    "pb_scheduler_enabled": "market_data",
+    "ibkr_bar_publish_enabled": "market_data",
 }
 
 _SERVICE_ACTIONS = {"start", "stop", "restart"}
@@ -212,15 +220,18 @@ def _upstream_payload(result: dict[str, Any], *, as_dict: AsDict, default_ok: bo
     return normalized
 
 
-def _apply_config_action(
+def _apply_config_action_for_modes(
     pb: Any,
     action_rows: list[tuple[str, str, str, str]],
-    environment: str,
     *,
+    broker_mode: str,
+    market_data_mode: str,
     escape_filter_string: EscapeFilterString,
 ) -> list[dict[str, Any]]:
     updated: list[dict[str, Any]] = []
     for key, value, display_name, description in action_rows:
+        mode_scope = _CONFIG_KEY_MODE_SCOPE.get(str(key), "market_data")
+        environment = broker_mode if mode_scope == "broker" else market_data_mode
         record = upsert_config_value(
             pb,
             key,
@@ -235,6 +246,8 @@ def _apply_config_action(
             {
                 "key": str(key),
                 "value": str(value),
+                "environment": environment,
+                "mode_scope": mode_scope,
                 "id": str(record.get("id") or "") if isinstance(record, dict) else "",
             }
         )
@@ -254,21 +267,24 @@ def build_emergency_stop_response(
     emit_system_event: EmitSystemEvent | None,
     as_dict: AsDict,
 ) -> tuple[dict[str, Any], int]:
-    environment = normalize_environment(payload.get("environment"), "live")
+    broker_mode = request_broker_mode(payload)
+    market_data_mode = request_market_data_mode(payload)
+    environment = broker_mode
     action = _normalize_action(payload.get("action"), "all")
     selected = _EMERGENCY_CONFIG_ACTIONS.get(action)
     if selected is None:
-        return {"ok": False, "environment": environment, "error": "Unsupported emergency action", "action": action, "source": "ibkr-api"}, 400
+        return {"ok": False, "environment": environment, "broker_mode": broker_mode, "market_data_mode": market_data_mode, "error": "Unsupported emergency action", "action": action, "source": "ibkr-api"}, 400
 
     if action in {"runtime", "compute", "all"}:
         environment_info = inspect_runtime_environment(environment)
         if bool(environment_info.get("runtime_environment_mismatch")):
             return build_runtime_environment_mismatch_payload(environment_info, "/api/custom/ibkr/emergency-stop"), 409
 
-    updated = _apply_config_action(
+    updated = _apply_config_action_for_modes(
         pb,
         selected,
-        environment,
+        broker_mode=broker_mode,
+        market_data_mode=market_data_mode,
         escape_filter_string=escape_filter_string,
     )
 
@@ -306,6 +322,8 @@ def build_emergency_stop_response(
     return {
         "ok": runtime_stop.get("ok") is not False,
         "environment": environment,
+        "broker_mode": broker_mode,
+        "market_data_mode": market_data_mode,
         "action": action,
         "updated": updated,
         "runtime_stop": runtime_stop,
@@ -321,16 +339,19 @@ def build_recover_response(
     escape_filter_string: EscapeFilterString,
     emit_system_event: EmitSystemEvent | None,
 ) -> tuple[dict[str, Any], int]:
-    environment = normalize_environment(payload.get("environment"), "live")
+    broker_mode = request_broker_mode(payload)
+    market_data_mode = request_market_data_mode(payload)
+    environment = broker_mode
     action = _normalize_action(payload.get("action"), "all")
     selected = _RECOVER_CONFIG_ACTIONS.get(action)
     if selected is None:
-        return {"ok": False, "environment": environment, "error": "Unsupported recover action", "action": action, "source": "ibkr-api"}, 400
+        return {"ok": False, "environment": environment, "broker_mode": broker_mode, "market_data_mode": market_data_mode, "error": "Unsupported recover action", "action": action, "source": "ibkr-api"}, 400
 
-    updated = _apply_config_action(
+    updated = _apply_config_action_for_modes(
         pb,
         selected,
-        environment,
+        broker_mode=broker_mode,
+        market_data_mode=market_data_mode,
         escape_filter_string=escape_filter_string,
     )
 
@@ -353,6 +374,8 @@ def build_recover_response(
     return {
         "ok": True,
         "environment": environment,
+        "broker_mode": broker_mode,
+        "market_data_mode": market_data_mode,
         "action": action,
         "updated": updated,
         "source": "ibkr-api",
@@ -370,7 +393,7 @@ def build_service_action_response(
     emit_system_event: EmitSystemEvent | None,
     as_dict: AsDict,
 ) -> tuple[dict[str, Any], int]:
-    environment = normalize_environment(payload.get("environment"), "live")
+    environment = request_broker_mode(payload)
     service = _normalize_service_name(payload.get("service"))
     action = _normalize_action(payload.get("action"), "")
     source = str(payload.get("source") or "ibkr-api").strip() or "ibkr-api"
@@ -485,7 +508,7 @@ def build_reauth_response(
     build_runtime_environment_mismatch_payload: BuildMismatchPayload,
     as_dict: AsDict,
 ) -> tuple[dict[str, Any], int]:
-    environment = normalize_environment(payload.get("environment"), "live")
+    environment = request_broker_mode(payload)
     environment_info = inspect_runtime_environment(environment)
     if bool(environment_info.get("runtime_environment_mismatch")):
         return build_runtime_environment_mismatch_payload(environment_info, "/api/custom/ibkr/reauth"), 409

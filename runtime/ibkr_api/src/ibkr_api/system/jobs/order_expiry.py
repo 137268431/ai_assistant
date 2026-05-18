@@ -19,6 +19,11 @@ from ibkr_api.orders.group_common import (
 from ibkr_api.orders.values import to_text
 from ibkr_api.signals.notifications import SendInteractive, UpdateInteractive, sync_signal_status_notification
 from ibkr_api.signals.values import get_signal_extra, merge_signal_extra
+from ibkr_compute.core.broker_mode import (
+    configured_broker_mode,
+    normalize_broker_mode,
+    resolve_market_data_mode,
+)
 
 
 ConfigValue = Callable[[str, str, str], str]
@@ -41,6 +46,21 @@ def _validity_minutes(config_value: ConfigValue | None, environment: str) -> int
     except Exception:
         raw = DEFAULT_VALIDITY_MINUTES
     return max(1, raw)
+
+
+def _request_broker_mode(payload: dict[str, Any], normalize_environment: NormalizeEnvironment) -> str:
+    configured = configured_broker_mode()
+    if "broker_mode" in payload:
+        return normalize_broker_mode(payload.get("broker_mode"), configured)
+    return configured
+
+
+def _request_market_data_mode(payload: dict[str, Any]) -> str:
+    if "market_data_mode" in payload:
+        return resolve_market_data_mode(payload.get("market_data_mode"))
+    if "data_environment" in payload:
+        return resolve_market_data_mode(payload.get("data_environment"))
+    return resolve_market_data_mode(None)
 
 
 def _query_order_rows(pb: Any, filter_value: str) -> list[dict[str, Any]]:
@@ -99,11 +119,45 @@ def _apply_signal_notification_patch(pb: Any, row: dict[str, Any], notify_result
     return dict(updated) if isinstance(updated, dict) else {**dict(row or {}), "extra": extra_patch}
 
 
+def _with_broker_execution(
+    signal_row: dict[str, Any],
+    extra_patch: dict[str, Any],
+    *,
+    broker_mode: str,
+    market_data_mode: str,
+    status: str,
+    note: str,
+    updated_at: str,
+) -> dict[str, Any]:
+    merged = merge_signal_extra(signal_row, extra_patch)
+    execution_by_mode = merged.get("execution_by_mode")
+    if not isinstance(execution_by_mode, dict):
+        execution_by_mode = {}
+    broker_payload = execution_by_mode.get(broker_mode)
+    if not isinstance(broker_payload, dict):
+        broker_payload = {}
+    execution_by_mode[broker_mode] = {
+        **broker_payload,
+        "status": status,
+        "note": note,
+        "data_environment": market_data_mode,
+        "market_data_mode": market_data_mode,
+        "source": "order_expiry_check",
+        "updated_at": updated_at,
+    }
+    merged["execution_by_mode"] = execution_by_mode
+    merged["broker_mode"] = broker_mode
+    merged["data_environment"] = market_data_mode
+    merged["market_data_mode"] = market_data_mode
+    return merged
+
+
 def _expire_signal_for_order_group(
     pb: Any,
     signal_row: dict[str, Any] | None,
     *,
     environment: str,
+    market_data_mode: str,
     trade_group_id: str,
     validity_minutes: int,
     cutoff_ms: int,
@@ -122,7 +176,7 @@ def _expire_signal_for_order_group(
         return {"status": "skipped", "reason": f"signal_status_{current_status or 'unknown'}", "signal_id": signal_id}
 
     now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    extra_patch = merge_signal_extra(
+    extra_patch = _with_broker_execution(
         signal_row,
         {
             "expired_by": "order_expiry_check",
@@ -135,17 +189,26 @@ def _expire_signal_for_order_group(
             "order_expiry_updated_record_ids": [item for item in updated_order_ids if item],
             "order_expiry_cancelled_broker_order_id": cancelled_order_id,
         },
+        broker_mode=environment,
+        market_data_mode=market_data_mode,
+        status="expired",
+        note="order_expired",
+        updated_at=now_iso,
     )
+    update_payload = {
+        "note": "order_expired" if environment == market_data_mode == "live" else f"{environment}:order_expired",
+        "extra": extra_patch,
+    }
+    if environment == market_data_mode == "live":
+        update_payload["status"] = "expired"
     updated = pb.update_record(
         "ibkr_signals",
         to_text(signal_row.get("id")),
-        {
-            "status": "expired",
-            "note": "order_expired",
-            "extra": extra_patch,
-        },
+        update_payload,
     )
-    updated_row = dict(updated) if isinstance(updated, dict) else {**signal_row, "status": "expired", "note": "order_expired", "extra": extra_patch}
+    updated_row = dict(updated) if isinstance(updated, dict) else {**signal_row, **update_payload}
+    updated_row["status"] = "expired"
+    updated_row["note"] = "order_expired"
     notify_result = sync_signal_status_notification(
         updated_row,
         action="expired",
@@ -297,7 +360,8 @@ def build_order_expiry_response(
     console_base_url: str = "",
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
-    environment = normalize_environment(request_payload.get("environment"), "live")
+    environment = _request_broker_mode(request_payload, normalize_environment)
+    market_data_mode = _request_market_data_mode(request_payload)
     validity_minutes = _validity_minutes(config_value, environment)
     cutoff_ms = int(datetime.now(timezone.utc).timestamp() * 1000) - validity_minutes * 60 * 1000
 
@@ -318,6 +382,9 @@ def build_order_expiry_response(
             {
                 "ok": True,
                 "environment": environment,
+                "broker_mode": environment,
+                "market_data_mode": market_data_mode,
+                "data_environment": market_data_mode,
                 "processed_count": 0,
                 "expired_group_count": 0,
                 "cancelled_order_ids": [],
@@ -438,13 +505,14 @@ def build_order_expiry_response(
             signal_row = _load_signal_for_order_group(
                 pb,
                 related_rows,
-                environment=environment,
+                environment=market_data_mode,
                 escape_filter_string=escape_filter_string,
             )
             signal_result = _expire_signal_for_order_group(
                 pb,
                 signal_row,
                 environment=environment,
+                market_data_mode=market_data_mode,
                 trade_group_id=trade_group_id,
                 validity_minutes=validity_minutes,
                 cutoff_ms=cutoff_ms,
@@ -461,6 +529,9 @@ def build_order_expiry_response(
     response_payload = {
         "ok": not failed_groups,
         "environment": environment,
+        "broker_mode": environment,
+        "market_data_mode": market_data_mode,
+        "data_environment": market_data_mode,
         "processed_count": processed_count,
         "expired_group_count": processed_group_count,
         "cancelled_order_ids": [item for item in cancelled_order_ids if item],

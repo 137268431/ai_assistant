@@ -122,7 +122,7 @@ class ControlPlaneSplitStackSchedulerJobsTest(unittest.TestCase):
         scheduler = SchedulerService(pb, _FakeConfig())
 
         with mock.patch("ibkr_scheduler.scheduler_app.requests.post", return_value=_FakeResponse({"ok": True, "processed": 3})):
-            result = scheduler.run_job("ibkr_compute_runtime", "live", trigger_source="api_manual")
+            result = scheduler.run_job("ibkr_compute_runtime", market_data_mode="live", trigger_source="api_manual")
 
         self.assertTrue(result["ok"])
         dispatch = pb.states[(COMPUTE_DISPATCH_CURSOR_STATE_KEY, "live", "global")]["data"]

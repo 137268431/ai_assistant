@@ -4,7 +4,7 @@ from typing import Any
 
 from flask import Response, jsonify, request
 
-from ibkr_compute.core.broker_mode import resolve_data_environment
+from ibkr_api.modes import request_market_data_mode
 from ibkr_api.storage.helpers import batch_upsert_records, prepare_indicator_row
 
 
@@ -13,12 +13,10 @@ StorageDeps = dict[str, Any]
 
 def register_storage_indicator_routes(app, *, deps: StorageDeps, exports: dict[str, Any]) -> dict[str, Any]:
     pb = deps["pb"]
-    normalize_environment = deps["normalize_environment"]
-
     @app.route("/api/custom/ibkr/indicator", methods=["POST"])
     def custom_ibkr_indicator() -> Response:
         payload = request.get_json(silent=True) or {}
-        environment = resolve_data_environment(normalize_environment(payload.get("environment"), "live"))
+        environment = request_market_data_mode(payload)
         row, error = prepare_indicator_row(payload, environment)
         if row is None:
             return jsonify({"ok": False, "error": error or "invalid_indicator_payload"}), 400
@@ -48,12 +46,18 @@ def register_storage_indicator_routes(app, *, deps: StorageDeps, exports: dict[s
         items = payload.get("items")
         if not isinstance(items, list) or not items:
             return jsonify({"ok": False, "error": "Empty indicators array"}), 400
-        default_environment = resolve_data_environment(normalize_environment(payload.get("environment"), "live"))
+        default_environment = request_market_data_mode(payload)
         prepared_rows: list[dict[str, Any]] = []
         errors = 0
         for item in items:
-            environment = resolve_data_environment(normalize_environment((item or {}).get("environment"), default_environment))
-            row, error = prepare_indicator_row(item if isinstance(item, dict) else {}, environment)
+            item_payload = item if isinstance(item, dict) else {}
+            environment = request_market_data_mode(
+                {
+                    "market_data_mode": item_payload.get("market_data_mode"),
+                    "data_environment": item_payload.get("data_environment") or default_environment,
+                }
+            )
+            row, error = prepare_indicator_row(item_payload, environment)
             if row is None:
                 errors += 1
                 continue

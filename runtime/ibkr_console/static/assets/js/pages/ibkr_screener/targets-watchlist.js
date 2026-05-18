@@ -411,11 +411,14 @@
       document.getElementById('dailyTargetDate').value = dailyTargetsState.selectedDate;
 
       try {
-        const response = await apiFetch('ibkr_targets', {
+        const params = {
           filter: `environment = "${escapeFilterValue(currentEnvironment)}" && date = "${escapeFilterValue(dailyTargetsState.selectedDate)}"`,
           sort: '-updated',
           perPage: 200
-        });
+        };
+        const response = typeof cachedApiFetch === 'function'
+          ? await cachedApiFetch('ibkr_targets', params, { ttlMs: 30000, ttl: 30000, force: Boolean(showToastOnSuccess) })
+          : await apiFetch('ibkr_targets', params);
         dailyTargetsState.items = Array.isArray(response.items) ? response.items : [];
         dailyTargetsState.loaded = true;
         dailyTargetsState.loadedDate = dailyTargetsState.selectedDate;
@@ -874,11 +877,14 @@
 
     async function loadWatchlist(showToastOnSuccess = false) {
       try {
-        const response = await apiFetch('watchlist', {
+        const params = {
           filter: buildWatchlistFilter(),
           sort: '-updated',
           perPage: 200
-        });
+        };
+        const response = typeof cachedApiFetch === 'function'
+          ? await cachedApiFetch('watchlist', params, { ttlMs: 30000, ttl: 30000, force: Boolean(showToastOnSuccess) })
+          : await apiFetch('watchlist', params);
         const collectionItems = Array.isArray(response.items) ? response.items : [];
         const configItems = getWatchlistRoleForTab() === 'market_monitor'
           ? await loadConfiguredMarketMonitorItems(collectionItems)

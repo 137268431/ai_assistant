@@ -218,6 +218,17 @@ class SchedulerJobsTest(unittest.TestCase):
             )
         )
 
+    def test_scheduler_loop_uses_configured_data_environment(self):
+        scheduler = SchedulerService(_FakePB(), _FakeConfig())
+        seen_environments = []
+        scheduler.run_due_jobs = lambda _when_utc, **kwargs: seen_environments.append(kwargs.get("market_data_mode")) or []
+        scheduler._stop_event = SimpleNamespace(is_set=lambda: False, wait=lambda _seconds: True)
+
+        with mock.patch.dict(os.environ, {"IBKR_BROKER_MODE": "paper", "IBKR_MARKET_DATA_MODE": "live"}):
+            scheduler._loop()
+
+        self.assertEqual(seen_environments, ["live"])
+
     def test_storage_governor_cron_matches_low_peak_et(self):
         definition = next(item for item in scheduler_app_mod.CRON_DEFINITIONS if item["id"] == "ibkr_storage_governor")
 
@@ -308,7 +319,7 @@ class SchedulerJobsTest(unittest.TestCase):
             return_value=_FakeResponse({"ok": True, "compute_startup_preload": {"status": "completed", "running": False}}),
         ):
             with mock.patch("ibkr_scheduler.jobs.compute_dispatch.requests.post", return_value=_FakeResponse({"ok": True, "processed": 3})) as post_mock:
-                result = scheduler.run_job("ibkr_compute_runtime", "live", trigger_source="api_manual")
+                result = scheduler.run_job("ibkr_compute_runtime", market_data_mode="live", trigger_source="api_manual")
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["latest_dispatched_bar_time_ms"], 1713797100000)
@@ -345,7 +356,7 @@ class SchedulerJobsTest(unittest.TestCase):
                         _FakeResponse({"ok": True, "processed": 3}),
                     ],
                 ) as post_mock:
-                    result = scheduler.run_job("ibkr_compute_runtime", "live", trigger_source="api_manual")
+                    result = scheduler.run_job("ibkr_compute_runtime", market_data_mode="live", trigger_source="api_manual")
 
         self.assertTrue(result["ok"])
         self.assertFalse(result["skipped"])
@@ -375,7 +386,7 @@ class SchedulerJobsTest(unittest.TestCase):
                     "ibkr_scheduler.jobs.compute_dispatch.requests.post",
                     return_value=_FakeResponse({"ok": False, "error": "compute_busy", "retryable": True}, status_code=503),
                 ) as post_mock:
-                    result = scheduler.run_job("ibkr_compute_runtime", "live", trigger_source="api_manual")
+                    result = scheduler.run_job("ibkr_compute_runtime", market_data_mode="live", trigger_source="api_manual")
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "compute_busy")
@@ -406,7 +417,7 @@ class SchedulerJobsTest(unittest.TestCase):
 
         with mock.patch("ibkr_scheduler.jobs.compute_dispatch.requests.get") as get_mock:
             with mock.patch("ibkr_scheduler.jobs.compute_dispatch.requests.post") as post_mock:
-                result = scheduler.run_job("ibkr_compute_runtime", "live", trigger_source="api_manual")
+                result = scheduler.run_job("ibkr_compute_runtime", market_data_mode="live", trigger_source="api_manual")
 
         self.assertTrue(result["ok"])
         self.assertTrue(result["skipped"])
@@ -452,7 +463,7 @@ class SchedulerJobsTest(unittest.TestCase):
             return_value=_FakeResponse({"ok": True, "compute_startup_preload": {"status": "completed", "running": False}}),
         ):
             with mock.patch("ibkr_scheduler.jobs.compute_dispatch.requests.post", return_value=_FakeResponse({"ok": True, "processed": 2})) as post_mock:
-                result = scheduler.run_job("ibkr_compute_runtime", "live", trigger_source="api_manual")
+                result = scheduler.run_job("ibkr_compute_runtime", market_data_mode="live", trigger_source="api_manual")
 
         self.assertTrue(result["ok"])
         self.assertFalse(result["skipped"])
@@ -507,7 +518,7 @@ class SchedulerJobsTest(unittest.TestCase):
             return_value=_FakeResponse({"ok": True, "compute_startup_preload": {"status": "completed", "running": False}}),
         ):
             with mock.patch("ibkr_scheduler.jobs.compute_dispatch.requests.post", return_value=_FakeResponse({"ok": True, "processed": 2})) as post_mock:
-                result = scheduler.run_job("ibkr_compute_runtime", "live", trigger_source="api_manual")
+                result = scheduler.run_job("ibkr_compute_runtime", market_data_mode="live", trigger_source="api_manual")
 
         self.assertTrue(result["ok"])
         self.assertFalse(result["skipped"])
@@ -548,7 +559,7 @@ class SchedulerJobsTest(unittest.TestCase):
             return_value=_FakeResponse({"ok": True, "compute_startup_preload": {"status": "completed", "running": False}}),
         ):
             with mock.patch("ibkr_scheduler.jobs.compute_dispatch.requests.post", return_value=_FakeResponse({"ok": True, "processed": 3})) as post_mock:
-                result = scheduler.run_job("ibkr_compute_runtime", "live", trigger_source="api_manual")
+                result = scheduler.run_job("ibkr_compute_runtime", market_data_mode="live", trigger_source="api_manual")
 
         self.assertTrue(result["ok"])
         self.assertFalse(result["skipped"])
@@ -600,7 +611,7 @@ class SchedulerJobsTest(unittest.TestCase):
             return_value=_FakeResponse({"ok": True, "compute_startup_preload": {"status": "completed", "running": False}}),
         ):
             with mock.patch("ibkr_scheduler.jobs.compute_dispatch.requests.post") as post_mock:
-                result = scheduler.run_job("ibkr_compute_runtime", "live", trigger_source="api_manual")
+                result = scheduler.run_job("ibkr_compute_runtime", market_data_mode="live", trigger_source="api_manual")
 
         self.assertTrue(result["ok"])
         self.assertFalse(result["skipped"])
@@ -643,7 +654,7 @@ class SchedulerJobsTest(unittest.TestCase):
             return_value=_FakeResponse({"ok": True, "compute_startup_preload": {"status": "completed", "running": False}}),
         ):
             with mock.patch("ibkr_scheduler.jobs.compute_dispatch.requests.post", return_value=_FakeResponse({"ok": True, "processed": 2})) as post_mock:
-                result = scheduler.run_job("ibkr_compute_runtime", "live", trigger_source="api_manual")
+                result = scheduler.run_job("ibkr_compute_runtime", market_data_mode="live", trigger_source="api_manual")
 
         self.assertTrue(result["ok"])
         self.assertFalse(result["skipped"])
@@ -693,7 +704,7 @@ class SchedulerJobsTest(unittest.TestCase):
             ],
         ):
             with mock.patch("ibkr_scheduler.jobs.compute_dispatch.requests.post") as post_mock:
-                result = scheduler.run_job("ibkr_compute_runtime", "live", trigger_source="api_manual")
+                result = scheduler.run_job("ibkr_compute_runtime", market_data_mode="live", trigger_source="api_manual")
 
         self.assertTrue(result["ok"])
         self.assertTrue(result["skipped"])
@@ -736,7 +747,7 @@ class SchedulerJobsTest(unittest.TestCase):
             return_value=_FakeResponse({"ok": True, "compute_startup_preload": {"status": "completed", "running": False}}),
         ):
             with mock.patch("ibkr_scheduler.jobs.compute_dispatch.requests.post", return_value=_FakeResponse({"ok": True, "processed": 1})) as post_mock:
-                result = scheduler.run_job("ibkr_compute_runtime", "live", trigger_source="api_manual")
+                result = scheduler.run_job("ibkr_compute_runtime", market_data_mode="live", trigger_source="api_manual")
 
         self.assertTrue(result["ok"])
         self.assertFalse(result["skipped"])
@@ -780,7 +791,7 @@ class SchedulerJobsTest(unittest.TestCase):
                             _FakeResponse({"ok": True, "processed": 1}),
                         ],
                     ) as post_mock:
-                        result = scheduler.run_job("ibkr_compute_runtime", "live", trigger_source="api_manual")
+                        result = scheduler.run_job("ibkr_compute_runtime", market_data_mode="live", trigger_source="api_manual")
 
         self.assertTrue(result["ok"])
         self.assertFalse(result["skipped"])
@@ -822,7 +833,7 @@ class SchedulerJobsTest(unittest.TestCase):
                 "ibkr_scheduler.jobs.compute_dispatch.requests.post",
                 return_value=_FakeResponse({"ok": False, "error": "compute_failed"}, status_code=500),
             ) as post_mock:
-                result = scheduler.run_job("ibkr_compute_runtime", "live", trigger_source="api_manual")
+                result = scheduler.run_job("ibkr_compute_runtime", market_data_mode="live", trigger_source="api_manual")
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "compute_failed")
@@ -849,7 +860,7 @@ class SchedulerJobsTest(unittest.TestCase):
                 "ibkr_scheduler.jobs.compute_dispatch.requests.post",
                 return_value=_FakeResponse({"ok": True, "errors": 2, "processed": 1}),
             ):
-                result = scheduler.run_job("ibkr_compute_runtime", "live", trigger_source="api_manual")
+                result = scheduler.run_job("ibkr_compute_runtime", market_data_mode="live", trigger_source="api_manual")
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "compute_errors")
@@ -872,7 +883,7 @@ class SchedulerJobsTest(unittest.TestCase):
             return_value=_FakeResponse({"ok": True, "compute_startup_preload": {"status": "running", "running": True}}),
         ) as get_mock:
             with mock.patch("ibkr_scheduler.jobs.compute_dispatch.requests.post") as post_mock:
-                result = scheduler.run_job("ibkr_compute_runtime", "live", trigger_source="api_manual")
+                result = scheduler.run_job("ibkr_compute_runtime", market_data_mode="live", trigger_source="api_manual")
 
         self.assertTrue(result["ok"])
         self.assertTrue(result["skipped"])
@@ -900,7 +911,7 @@ class SchedulerJobsTest(unittest.TestCase):
             return_value=_FakeResponse({"ok": True, "compute_startup_preload": {"status": "completed", "running": False}}),
         ):
             with mock.patch("ibkr_scheduler.jobs.compute_dispatch.requests.post", return_value=_FakeResponse({"ok": True, "processed": 3})) as post_mock:
-                result = scheduler.run_job("ibkr_compute_runtime", "live", trigger_source="api_manual")
+                result = scheduler.run_job("ibkr_compute_runtime", market_data_mode="live", trigger_source="api_manual")
 
         self.assertTrue(result["ok"])
         self.assertFalse(result["skipped"])
@@ -918,7 +929,8 @@ class SchedulerJobsTest(unittest.TestCase):
         ) as request_mock:
             result = scheduler.run_job(
                 "signal_expiry_check",
-                "live",
+                broker_mode="live",
+                market_data_mode="live",
                 trigger_source="api_manual",
                 scheduled_slot="2026-04-23T10:00Z",
             )
@@ -941,7 +953,8 @@ class SchedulerJobsTest(unittest.TestCase):
         ) as request_mock:
             result = scheduler.run_job(
                 "system_scan_summary",
-                "live",
+                broker_mode="live",
+                market_data_mode="live",
                 trigger_source="api_manual",
                 scheduled_slot="2026-04-23T13:30Z",
             )
@@ -963,7 +976,8 @@ class SchedulerJobsTest(unittest.TestCase):
         ) as request_mock:
             result = scheduler.run_job(
                 "ibkr_early_expansion_topup_late",
-                "live",
+                broker_mode="live",
+                market_data_mode="live",
                 trigger_source="api_manual",
                 scheduled_slot="2026-04-23T14:30Z",
             )
@@ -987,7 +1001,8 @@ class SchedulerJobsTest(unittest.TestCase):
         ) as request_mock:
             result = scheduler.run_job(
                 "ibkr_data_quality_premarket_truth_audit",
-                "live",
+                broker_mode="live",
+                market_data_mode="live",
                 trigger_source="api_manual",
                 scheduled_slot="2026-04-23T12:20Z",
             )
@@ -998,7 +1013,9 @@ class SchedulerJobsTest(unittest.TestCase):
         self.assertEqual(result["schedule_id"], "premarket_previous_business_day")
         request_mock.assert_called_once()
         request_payload = request_mock.call_args.kwargs["json"]
-        self.assertEqual(request_payload["environment"], "live")
+        self.assertNotIn("environment", request_payload)
+        self.assertEqual(request_payload["market_data_mode"], "live")
+        self.assertEqual(request_payload["selected_mode"], "live")
         self.assertEqual(request_payload["source"], "ibkr_scheduler")
         self.assertEqual(request_payload["scan_scope"], "watchlist_full")
         self.assertTrue(request_payload["persist"])
@@ -1015,7 +1032,8 @@ class SchedulerJobsTest(unittest.TestCase):
         ) as request_mock:
             result = scheduler.run_job(
                 "ibkr_data_quality_truth_audit",
-                "live",
+                broker_mode="live",
+                market_data_mode="live",
                 trigger_source="api_manual",
                 scheduled_slot="2026-04-23T20:20Z",
             )
@@ -1041,7 +1059,8 @@ class SchedulerJobsTest(unittest.TestCase):
         ) as request_mock:
             result = scheduler.run_job(
                 "ibkr_storage_governor",
-                "live",
+                broker_mode="live",
+                market_data_mode="live",
                 trigger_source="api_manual",
                 scheduled_slot="2026-04-23T07:20Z",
             )
@@ -1050,7 +1069,9 @@ class SchedulerJobsTest(unittest.TestCase):
         request_mock.assert_called_once()
         request_payload = request_mock.call_args.kwargs["json"]
         self.assertEqual(request_mock.call_args.kwargs["url"], "http://127.0.0.1:5100/storage/cleanup")
-        self.assertEqual(request_payload["environment"], "live")
+        self.assertNotIn("environment", request_payload)
+        self.assertEqual(request_payload["market_data_mode"], "live")
+        self.assertEqual(request_payload["selected_mode"], "live")
         self.assertEqual(request_payload["source"], "ibkr_scheduler")
         self.assertEqual(request_payload["profile"], "balanced_50g")
         self.assertFalse(request_payload["dry_run"])
@@ -1070,7 +1091,8 @@ class SchedulerJobsTest(unittest.TestCase):
         with mock.patch("ibkr_scheduler.jobs.upstream_http.requests.request") as request_mock:
             result = scheduler.run_job(
                 "signal_expiry_check",
-                "live",
+                broker_mode="live",
+                market_data_mode="live",
                 trigger_source="scheduler_loop",
                 scheduled_slot="2026-04-23T10:00Z",
             )
@@ -1097,7 +1119,8 @@ class SchedulerJobsTest(unittest.TestCase):
         ) as request_mock:
             result = scheduler.run_job(
                 "signal_expiry_check",
-                "live",
+                broker_mode="live",
+                market_data_mode="live",
                 trigger_source="api_manual",
                 scheduled_slot="2026-04-23T10:00Z",
             )
@@ -1113,7 +1136,8 @@ class SchedulerJobsTest(unittest.TestCase):
 
         result = scheduler.run_job(
             "signal_expiry_check",
-            "live",
+            broker_mode="live",
+            market_data_mode="live",
             trigger_source="scheduler_loop",
             scheduled_slot="2026-04-23T10:00Z",
         )
@@ -1131,7 +1155,7 @@ class SchedulerJobsTest(unittest.TestCase):
         when_utc = datetime(2026, 4, 20, 9, 40, tzinfo=timezone.utc)
 
         with mock.patch.object(scheduler, "run_job", return_value={"ok": True}) as run_job_mock:
-            results = scheduler.run_due_jobs(when_utc, "live")
+            results = scheduler.run_due_jobs(when_utc, market_data_mode="live")
 
         self.assertEqual(len(results), run_job_mock.call_count)
         called_job_ids = {call.args[0] for call in run_job_mock.call_args_list}
@@ -1151,7 +1175,7 @@ class SchedulerJobsTest(unittest.TestCase):
 
     def test_manual_run_route_uses_scheduler_service(self):
         sentinel = {"ok": True, "job_id": "signal_expiry_check"}
-        with mock.patch.object(scheduler_app_mod.request, "get_json", return_value={"environment": "paper", "scheduled_slot": "2026-04-23T10:00Z"}):
+        with mock.patch.object(scheduler_app_mod.request, "get_json", return_value={"broker_mode": "paper", "market_data_mode": "live", "scheduled_slot": "2026-04-23T10:00Z"}):
             with mock.patch.object(scheduler_app_mod.scheduler, "run_job", return_value=sentinel) as run_job_mock:
                 payload, status_code = scheduler_app_mod.run_job("signal_expiry_check")
 
@@ -1159,7 +1183,8 @@ class SchedulerJobsTest(unittest.TestCase):
         self.assertEqual(payload["job_id"], "signal_expiry_check")
         run_job_mock.assert_called_once_with(
             "signal_expiry_check",
-            "paper",
+            broker_mode="paper",
+            market_data_mode="live",
             trigger_source="api_manual",
             scheduled_slot="2026-04-23T10:00Z",
             schedule_id="",

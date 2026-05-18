@@ -5,7 +5,7 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from ibkr_api.orders.values import parse_boolean
-from ibkr_compute.core.broker_mode import resolve_data_environment
+from ibkr_compute.core.broker_mode import resolve_market_data_mode
 
 
 BAR_INTERVAL_MS = 5 * 60 * 1000
@@ -246,6 +246,138 @@ def _load_recent_rows_by_symbol(pb: Any, collection: str, environment: str, inte
     return _rows_by_symbol_payload(list(rows or []))
 
 
+def _empty_cross_environment_bar_payload() -> dict[str, Any]:
+    return {
+        "count": 0,
+        "environments": {},
+        "symbols": [],
+        "latest_us_time": "",
+        "samples": [],
+    }
+
+
+def _cross_environment_bar_payload(rows: list[dict[str, Any]], samples: list[dict[str, Any]]) -> dict[str, Any]:
+    environments: dict[str, int] = {}
+    symbols: set[str] = set()
+    latest_ms = 0
+    latest_us_time = ""
+    total = 0
+    for row in rows or []:
+        env = _to_text(_as_dict(row).get("environment")).lower()
+        count = _to_int(_as_dict(row).get("count"), 0)
+        if not env or count <= 0:
+            continue
+        environments[env] = environments.get(env, 0) + count
+        total += count
+        row_latest_ms = _to_int(_as_dict(row).get("latest_bar_time_ms"), 0)
+        if row_latest_ms >= latest_ms:
+            latest_ms = row_latest_ms
+            latest_us_time = _to_text(_as_dict(row).get("latest_us_time"))
+    sample_rows: list[dict[str, Any]] = []
+    for row in samples or []:
+        item = _as_dict(row)
+        symbol = _to_text(item.get("symbol")).upper()
+        if symbol:
+            symbols.add(symbol)
+        sample_rows.append(
+            {
+                "environment": _to_text(item.get("environment")).lower(),
+                "symbol": symbol,
+                "us_time": _to_text(item.get("us_time")),
+            }
+        )
+    return {
+        "count": total,
+        "environments": environments,
+        "symbols": sorted(symbols),
+        "latest_us_time": latest_us_time,
+        "samples": sample_rows,
+    }
+
+
+def _load_cross_environment_bars_sqlite(environment: str, interval: str, today_start: str, limit: int) -> dict[str, Any] | None:
+    data_environment = _to_text(environment).lower()
+    if data_environment not in {"live", "paper"}:
+        return _empty_cross_environment_bar_payload()
+    try:
+        from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite
+
+        start_ms, end_ms = _today_bounds_ms(today_start)
+        sample_limit = max(1, min(12, int(limit or 12)))
+        with open_pb_sqlite(readonly=True, timeout=2.0) as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    environment,
+                    COUNT(*) AS count,
+                    MAX(bar_time_ms) AS latest_bar_time_ms,
+                    MAX(us_time) AS latest_us_time
+                FROM ibkr_bars
+                WHERE environment IN ('live', 'paper')
+                  AND environment != ?
+                  AND interval = ?
+                  AND bar_time_ms >= ?
+                  AND bar_time_ms < ?
+                GROUP BY environment
+                """,
+                (data_environment, interval, start_ms, end_ms),
+            ).fetchall()
+            samples = conn.execute(
+                """
+                SELECT environment, symbol, us_time
+                FROM ibkr_bars
+                WHERE environment IN ('live', 'paper')
+                  AND environment != ?
+                  AND interval = ?
+                  AND bar_time_ms >= ?
+                  AND bar_time_ms < ?
+                ORDER BY bar_time_ms DESC, symbol ASC
+                LIMIT ?
+                """,
+                (data_environment, interval, start_ms, end_ms, sample_limit),
+            ).fetchall()
+        return _cross_environment_bar_payload([dict(row) for row in rows], [dict(row) for row in samples])
+    except Exception:
+        return None
+
+
+def _load_cross_environment_bars(pb: Any, environment: str, interval: str, today_start: str, limit: int) -> dict[str, Any]:
+    sqlite_payload = _load_cross_environment_bars_sqlite(environment, interval, today_start, limit)
+    if sqlite_payload is not None:
+        return sqlite_payload
+    data_environment = _to_text(environment).lower()
+    if data_environment not in {"live", "paper"}:
+        return _empty_cross_environment_bar_payload()
+    rows = pb.get_records(
+        "ibkr_bars",
+        filter=(
+            '(environment = "live" || environment = "paper") && '
+            f'environment != "{_pb_filter_quote(data_environment)}" && '
+            f'interval = "{_pb_filter_quote(interval)}" && '
+            f'us_time >= "{today_start}"'
+        ),
+        sort="-bar_time_ms",
+        per_page=max(1, limit),
+        page=1,
+    )
+    sample_rows = []
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in rows or []:
+        item = _as_dict(row)
+        env = _to_text(item.get("environment")).lower()
+        if not env or env == data_environment or env not in {"live", "paper"}:
+            continue
+        bucket = grouped.setdefault(env, {"environment": env, "count": 0, "latest_bar_time_ms": 0, "latest_us_time": ""})
+        bucket["count"] += 1
+        bar_ms = _to_int(item.get("bar_time_ms"), 0)
+        if bar_ms >= _to_int(bucket.get("latest_bar_time_ms"), 0):
+            bucket["latest_bar_time_ms"] = bar_ms
+            bucket["latest_us_time"] = _to_text(item.get("us_time"))
+        if len(sample_rows) < max(1, min(12, int(limit or 12))):
+            sample_rows.append(item)
+    return _cross_environment_bar_payload(list(grouped.values()), sample_rows)
+
+
 def _build_gap_fingerprint(summary: dict[str, Any]) -> str:
     return str(
         {
@@ -253,6 +385,8 @@ def _build_gap_fingerprint(summary: dict[str, Any]) -> str:
             "bar_lag_symbols": list(summary.get("bar_lag_symbols") or [])[:12],
             "indicator_lag_symbols": list(summary.get("indicator_lag_symbols") or [])[:12],
             "sequence_gap_examples": list(summary.get("sequence_gap_examples") or [])[:6],
+            "cross_environment_bar_count": summary.get("cross_environment_bar_count") or 0,
+            "cross_environment_environments": summary.get("cross_environment_environments") or {},
         }
     )
 
@@ -325,6 +459,7 @@ def load_data_gap_summary(
     }
     bars = _load_recent_rows_by_symbol(pb, "ibkr_bars", environment, "5m", today_start, 1200)
     indicators = _load_recent_rows_by_symbol(pb, "ibkr_indicators", environment, "5", today_start, 1200)
+    cross_environment_bars = _load_cross_environment_bars(pb, environment, "5m", today_start, 12)
     latest_bar_by_symbol = _as_dict(bars.get("latest_by_symbol"))
     latest_indicator_by_symbol = _as_dict(indicators.get("latest_by_symbol"))
     monitored_symbols = target_symbols or list(latest_bar_by_symbol.keys())
@@ -449,9 +584,20 @@ def load_data_gap_summary(
         "max_bar_lag_min": round(max_bar_lag_ms / 60000) if max_bar_lag_ms else 0,
         "max_indicator_lag_min": round(max_indicator_lag_ms / 60000) if max_indicator_lag_ms else 0,
         "market_activity_detected": latest_bar_time_ms > 0,
+        "cross_environment_bar_count": _to_int(cross_environment_bars.get("count"), 0),
+        "cross_environment_environments": _as_dict(cross_environment_bars.get("environments")),
+        "cross_environment_symbols": list(cross_environment_bars.get("symbols") or []),
+        "cross_environment_latest_us_time": _to_text(cross_environment_bars.get("latest_us_time")),
+        "cross_environment_samples": list(cross_environment_bars.get("samples") or []),
     }
     summary["indicator_lag_reason_hint"] = _build_indicator_lag_reason_hint(indicator_lag_details)
-    summary["has_issue"] = bool(summary["market_activity_detected"] and (summary["bar_lag_count"] or summary["indicator_lag_count"] or summary["sequence_gap_count"]))
+    summary["has_issue"] = bool(
+        summary["cross_environment_bar_count"]
+        or (
+            summary["market_activity_detected"]
+            and (summary["bar_lag_count"] or summary["indicator_lag_count"] or summary["sequence_gap_count"])
+        )
+    )
     summary["fingerprint"] = _build_gap_fingerprint(summary)
     return summary
 
@@ -466,8 +612,8 @@ def build_data_gap_guard_response(
     config_value: ConfigValue | None = None,
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
-    environment = normalize_environment(request_payload.get("environment"), "live")
-    data_environment = resolve_data_environment(environment)
+    data_environment = resolve_market_data_mode(request_payload.get("market_data_mode"))
+    environment = data_environment
     times = time_strings()
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     today_start = f"{times['date']} 00:00:00"
@@ -513,7 +659,7 @@ def build_data_gap_guard_response(
     current_state = _get_state_data(pb, GAP_MONITOR_STATE_KEY, environment, times["date"])
     event_result: dict[str, Any] = {}
 
-    if not gaps.get("market_activity_detected") or not gaps.get("has_issue"):
+    if not gaps.get("has_issue"):
         next_state["last_gap_issue_at"] = ""
         pb.upsert_state(GAP_MONITOR_STATE_KEY, environment, next_state, date=times["date"])
         return {
@@ -544,6 +690,22 @@ def build_data_gap_guard_response(
             "指标最大滞后": _format_max_indicator_lag(gaps),
             "序列缺口数": str(gaps.get("sequence_gap_count") or 0),
         }
+        cross_environment_count = _to_int(gaps.get("cross_environment_bar_count"), 0)
+        if cross_environment_count > 0:
+            detail["跨环境bars"] = str(cross_environment_count)
+            cross_envs = _as_dict(gaps.get("cross_environment_environments"))
+            if cross_envs:
+                detail["跨环境来源"] = ", ".join(f"{key}:{cross_envs[key]}" for key in sorted(cross_envs))
+            if _to_text(gaps.get("cross_environment_latest_us_time")):
+                detail["跨环境最新bar"] = _to_text(gaps.get("cross_environment_latest_us_time"))
+            samples = [_as_dict(item) for item in list(gaps.get("cross_environment_samples") or [])[:6]]
+            if samples:
+                detail["跨环境样本"] = "; ".join(
+                    f"{_to_text(item.get('environment'))}/{_to_text(item.get('symbol'))} {_to_text(item.get('us_time'))}"
+                    for item in samples
+                    if _to_text(item.get("environment")) and _to_text(item.get("symbol"))
+                )
+            detail["跨环境说明"] = "共享行情应只落到 data_environment；若 broker=paper 但 data_environment=live，paper bars 代表落库环境被 broker mode 污染。"
         target_status_counts = _as_dict(gaps.get("target_status_counts"))
         if target_status_counts:
             detail["目标范围"] = ", ".join(

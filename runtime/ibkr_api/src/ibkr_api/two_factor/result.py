@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ibkr_api.modes import request_broker_mode
+
 from ibkr_api.runtime.two_factor import normalize_two_factor_status
 from ibkr_api.two_factor.deadlines import parse_et_time_ms
 from ibkr_api.two_factor.delivery import deliver_two_factor_card
@@ -61,7 +63,7 @@ def build_two_factor_result_response(
     merge_startup_steps: MergeStartupSteps,
     deliver_startup_progress_card: DeliverStartupProgressCard,
 ) -> tuple[dict[str, Any], int]:
-    environment = normalize_environment(payload.get("environment"), "live")
+    environment = request_broker_mode(payload)
     status = normalize_two_factor_status(payload.get("status") or "requested")
     if status not in SUPPORTED_STATUSES:
         status = "failed"

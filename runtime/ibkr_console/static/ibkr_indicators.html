@@ -401,12 +401,15 @@
         }
 
         async function fetchIndicatorsPage(page) {
-            return apiFetch('ibkr_indicators', {
+            const params = {
                 filter: buildIndicatorFilter(),
                 sort: '-bar_time_ms,-created',
                 perPage: itemsPerPage,
                 page,
-            });
+            };
+            return typeof cachedApiFetch === 'function'
+                ? cachedApiFetch('ibkr_indicators', params, { ttlMs: 30000, ttl: 30000, force: page === 1 })
+                : apiFetch('ibkr_indicators', params);
         }
 
         function refreshRealtimeQuotesForIndicators() {
@@ -1665,8 +1668,12 @@
                         startMs: rangeStartMs,
                         endMs: cappedMs,
                     }),
-                    apiFetch('ibkr_bars', { filter: baseFilter, sort: '-bar_time_ms', perPage }).catch(() => ({ items: [] })),
-                    apiFetch('ibkr_indicators', { filter: baseFilter, sort: '-bar_time_ms', perPage }).catch(() => ({ items: [] })),
+                    (typeof cachedApiFetch === 'function'
+                        ? cachedApiFetch('ibkr_bars', { filter: baseFilter, sort: '-bar_time_ms', perPage }, { ttlMs: 120000, ttl: 120000 })
+                        : apiFetch('ibkr_bars', { filter: baseFilter, sort: '-bar_time_ms', perPage })).catch(() => ({ items: [] })),
+                    (typeof cachedApiFetch === 'function'
+                        ? cachedApiFetch('ibkr_indicators', { filter: baseFilter, sort: '-bar_time_ms', perPage }, { ttlMs: 120000, ttl: 120000 })
+                        : apiFetch('ibkr_indicators', { filter: baseFilter, sort: '-bar_time_ms', perPage })).catch(() => ({ items: [] })),
                 ]);
                 if (loadToken !== indicatorChartLoadToken) return;
 
@@ -1676,7 +1683,7 @@
                     : [];
                 let archiveSignals = [];
                 if (normalizeChartInterval(indicator.interval) === '5m') {
-                    const signalsResp = await apiFetch('ibkr_signals', {
+                    const signalParams = {
                         filter: buildIndicatorHistoryFilter({
                             environment: currentEnvironment,
                             symbol: indicator.symbol,
@@ -1686,7 +1693,10 @@
                         }),
                         sort: 'bar_time_ms',
                         perPage
-                    }).catch(() => ({ items: [] }));
+                    };
+                    const signalsResp = await (typeof cachedApiFetch === 'function'
+                        ? cachedApiFetch('ibkr_signals', signalParams, { ttlMs: 120000, ttl: 120000 })
+                        : apiFetch('ibkr_signals', signalParams)).catch(() => ({ items: [] }));
                     if (loadToken !== indicatorChartLoadToken) return;
                     archiveSignals = Array.isArray(signalsResp?.items) ? signalsResp.items : [];
                 }

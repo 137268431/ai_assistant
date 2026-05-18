@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ibkr_api.modes import request_broker_mode
 from ibkr_api.orders.group_common import (
     CANCEL_GROUP_ACTION,
     append_group_order_detail,
@@ -94,7 +95,7 @@ def build_order_cancel_group_response(
     escape_filter_string: Callable[[Any], str],
     cancel_broker_order: CancelBrokerOrder,
 ) -> tuple[dict[str, Any], int]:
-    environment = normalize_environment(payload.get("environment"), "live")
+    environment = request_broker_mode(payload)
     context = load_order_action_context(
         pb,
         payload=payload,

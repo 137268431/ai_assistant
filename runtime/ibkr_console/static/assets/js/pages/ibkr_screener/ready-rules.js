@@ -364,9 +364,14 @@
         rulesLoadError = '';
         renderRulesBoard();
         try {
-          rulesPayload = await requestJson(`/api/custom/ibkr/rules${buildQuery({
+          rulesPayload = await requestCachedJson(`/api/custom/ibkr/rules${buildQuery({
             environment: currentEnvironment
-          })}`);
+          })}`, {}, {
+            ttlMs: 300000,
+            swrMs: 300000,
+            force,
+            tags: ['screener', 'rules', currentEnvironment]
+          });
           rulesLoaded = true;
         } catch (error) {
           console.error('loadRulesSummary failed:', error);
@@ -387,4 +392,3 @@
         }
       }
     }
-

@@ -8,6 +8,13 @@ import time
 import requests
 from typing import Dict, Any, List, Optional
 
+from ibkr_compute.core.broker_mode import (
+    configured_broker_mode,
+    configured_market_data_mode,
+    normalize_broker_mode,
+    resolve_market_data_mode,
+)
+
 PB_RETRY_ATTEMPTS = max(1, int(os.environ.get("PB_RETRY_ATTEMPTS", "7")))
 PB_RETRY_BACKOFF_SECONDS = max(0.2, float(os.environ.get("PB_RETRY_BACKOFF_SECONDS", "0.5")))
 PB_RETRY_STATUS_CODES = {502, 503, 504}
@@ -367,7 +374,7 @@ class PBClient:
             item = dict(bar)
             item["symbol"] = str(item.get("symbol") or "").strip().upper()
             item["interval"] = str(item.get("interval") or "").strip().lower()
-            item["environment"] = str(item.get("environment") or os.environ.get("IBKR_ENVIRONMENT", "live")).strip().lower() or "live"
+            item["environment"] = str(item.get("environment") or configured_market_data_mode()).strip().lower() or "live"
             normalized.append(item)
         return self._batch_upsert_records(
             "ibkr_bars",
@@ -417,7 +424,7 @@ class PBClient:
             if not isinstance(item, dict):
                 continue
             payload = dict(item)
-            payload["environment"] = str(payload.get("environment") or os.environ.get("IBKR_ENVIRONMENT", "live")).strip().lower() or "live"
+            payload["environment"] = str(payload.get("environment") or configured_broker_mode()).strip().lower() or "paper"
             payload["account"] = str(payload.get("account") or "").strip()
             payload["exec_id"] = str(payload.get("exec_id") or "").strip()
             payload["symbol"] = str(payload.get("symbol") or "").strip().upper()
@@ -441,7 +448,7 @@ class PBClient:
 
     def upsert_order(self, data: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(data or {})
-        payload.setdefault("environment", os.environ.get("IBKR_ENVIRONMENT", "live"))
+        payload.setdefault("environment", configured_broker_mode())
         return self.call_custom_api("ibkr/orders/upsert", method="POST", data=payload)
 
     def ack_ibkr_signal(
@@ -453,7 +460,7 @@ class PBClient:
         child_orders: Optional[List[Dict[str, Any]]] = None,
         environment: Optional[str] = None,
     ) -> Dict[str, Any]:
-        runtime_environment = environment or os.environ.get("IBKR_ENVIRONMENT", "live")
+        runtime_environment = normalize_broker_mode(environment, configured_broker_mode())
         payload: Dict[str, Any] = {
             "signal_id": signal_id,
             "status": status,
@@ -469,10 +476,8 @@ class PBClient:
             return self.call_custom_api("ibkr/signals/ack", method="POST", data=payload, timeout=15)
         except Exception:
             # Fallback: ensure the signal is not left pending if the custom hook is temporarily unavailable.
-            from ibkr_compute.core.broker_mode import resolve_data_environment
-
             safe_signal_id = str(signal_id or "").replace('"', '\\"')
-            data_environment = resolve_data_environment(runtime_environment)
+            data_environment = resolve_market_data_mode(None)
             safe_environment = str(data_environment or "live").replace('"', '\\"')
             record = self.get_first_record(
                 "ibkr_signals",
@@ -485,7 +490,7 @@ class PBClient:
                 raise
 
             patch: Dict[str, Any] = {
-                "note": note if data_environment == runtime_environment == "live" else f"{runtime_environment}:{status}",
+                "note": note if data_environment == runtime_environment == "live" else f"{runtime_environment}:{note or status}",
             }
             if data_environment == runtime_environment == "live":
                 patch["status"] = status
@@ -511,6 +516,16 @@ class PBClient:
                 "source": "ibkr_compute_fallback",
                 "updated_at_ms": int(time.time() * 1000),
             }
+            expired_fallback = status == "expired" and note == "signal_expired"
+            if expired_fallback:
+                expired_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                execution_by_mode[runtime_environment].update(
+                    {
+                        "expired_by": "ibkr_compute_validation_fallback",
+                        "expired_at": expired_at,
+                        "status_reason": "signal_expired",
+                    }
+                )
             patch["extra"] = {
                 **existing_extra,
                 "execution_by_mode": execution_by_mode,
@@ -519,6 +534,14 @@ class PBClient:
                 "signal_ack_fallback_broker_mode": runtime_environment,
                 "signal_ack_fallback_data_environment": data_environment,
             }
+            if expired_fallback:
+                patch["extra"].update(
+                    {
+                        "expired_by": "ibkr_compute_validation_fallback",
+                        "expired_at": execution_by_mode[runtime_environment]["expired_at"],
+                        "status_reason": "signal_expired",
+                    }
+                )
             updated = self.update_record("ibkr_signals", record["id"], patch)
             return {
                 "success": True,
@@ -605,7 +628,7 @@ class PBClient:
             "type": notify_type,
             "title": title,
             "detail": detail or {},
-            "environment": environment or os.environ.get("IBKR_ENVIRONMENT", "live"),
+            "environment": environment or configured_broker_mode(),
         }
         return self.call_custom_api("ibkr/notify", method="POST", data=payload, timeout=5)
 
@@ -626,7 +649,7 @@ class PBClient:
             "event_type": event_type,
             "level": level,
             "source": source,
-            "environment": environment or os.environ.get("IBKR_ENVIRONMENT", "live"),
+            "environment": environment or configured_broker_mode(),
         }
         if message_id:
             payload["message_id"] = message_id
@@ -660,7 +683,7 @@ class PBClient:
     ) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
             "action": action,
-            "environment": environment or os.environ.get("IBKR_ENVIRONMENT", "live"),
+            "environment": environment or configured_broker_mode(),
             "status": status,
             "title": title,
             "summary": summary,
@@ -699,7 +722,7 @@ class PBClient:
             "reason": reason,
             "detail": detail or {},
             "source": source,
-            "environment": environment or os.environ.get("IBKR_ENVIRONMENT", "live"),
+            "environment": environment or configured_broker_mode(),
             "message": message,
             "force_reset": force_reset,
             "force_new": force_new,
@@ -711,7 +734,7 @@ class PBClient:
         environment: Optional[str] = None,
     ) -> Dict[str, Any]:
         params = {
-            "environment": environment or os.environ.get("IBKR_ENVIRONMENT", "live"),
+            "environment": environment or configured_broker_mode(),
         }
         return self.call_custom_api("ibkr/2fa/status", method="GET", params=params, timeout=8)
 
@@ -726,7 +749,7 @@ class PBClient:
             "response_code": response_code,
             "challenge_code": challenge_code,
             "source": source,
-            "environment": environment or os.environ.get("IBKR_ENVIRONMENT", "live"),
+            "environment": environment or configured_broker_mode(),
         }
         return self.call_custom_api("ibkr/2fa/respond", method="POST", data=payload, timeout=8)
 
@@ -745,7 +768,7 @@ class PBClient:
             "status": status,
             "detail": detail or {},
             "source": source,
-            "environment": environment or os.environ.get("IBKR_ENVIRONMENT", "live"),
+            "environment": environment or configured_broker_mode(),
             "message": message,
             "last_result": last_result,
             "error": error,

@@ -1387,6 +1387,22 @@
             color: var(--muted);
         }
 
+        .target-pnl-inline {
+            display: inline-block;
+            margin-left: 4px;
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            white-space: nowrap;
+        }
+
+        .target-pnl-inline.positive {
+            color: var(--long);
+        }
+
+        .target-pnl-inline.negative {
+            color: var(--short);
+        }
+
         .signal-pnl-detail {
             margin-top: 2px;
             font-size: 10px;

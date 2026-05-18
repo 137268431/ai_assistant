@@ -43,8 +43,8 @@ TimeStrings = Callable[[], dict[str, str]]
 DEFAULT_SIGNAL_WINDOW_MAX_BARS = 12
 DEFAULT_LIMIT = 80
 TIMELINE_WARMUP_BARS = 300
-TIMELINE_TODAY_MAX_PAGES = 4
-TIMELINE_WARMUP_MAX_PAGES = 2
+TIMELINE_TODAY_MAX_PAGES = 20
+TIMELINE_WARMUP_MAX_PAGES = 10
 SUPPORTED_ENVIRONMENTS = {"live", "paper"}
 SUPPORTED_STATUSES = {"active", "candidate", "all"}
 
@@ -154,6 +154,212 @@ def _dedupe_timeline_rows(rows: list[dict[str, Any]], runtime_environment: str) 
     }
 
 
+def _empty_active_window_summary(*, market_start_ms: int = 0, market_end_ms: int = 0) -> dict[str, Any]:
+    return {
+        "total": 0,
+        "active_count": 0,
+        "candidate_count": 0,
+        "target_active_count": 0,
+        "target_candidate_count": 0,
+        "with_live_bar_count": 0,
+        "window_active_count": 0,
+        "window_valid_count": 0,
+        "candidate_signal_count": 0,
+        "current_candidate_signal_count": 0,
+        "blocked_count": 0,
+        "near_expiry_count": 0,
+        "confirmed_count": 0,
+        "trace_error_count": 0,
+        "trace_stage_counts": {},
+        "window_status_counts": {},
+        "timeline_data": {
+            "market_start_ms": max(0, int(market_start_ms or 0)),
+            "market_end_ms": max(0, int(market_end_ms or 0)),
+            "warmup_bars_per_symbol": TIMELINE_WARMUP_BARS,
+            "symbols_requested": 0,
+            "symbols_with_bars_count": 0,
+            "symbols_with_today_bars_count": 0,
+            "today_bar_count": 0,
+            "warmup_bar_count": 0,
+            "latest_bar_time_max_ms": 0,
+            "latest_bar_time_max_us": "",
+            "latest_bar_time_min_ms": 0,
+            "latest_bar_time_min_us": "",
+            "symbols_with_no_bars": [],
+            "symbols_with_no_bars_count": 0,
+        },
+    }
+
+
+def _increment_count(counts: dict[str, int], key: Any) -> None:
+    normalized_key = to_text(key) or "none"
+    counts[normalized_key] = int(counts.get(normalized_key, 0) or 0) + 1
+
+
+def _timeline_environment_values(environment: str) -> list[str]:
+    normalized = to_text(environment).lower() or LIVE_ENVIRONMENT
+    values = [normalized]
+    if normalized == LIVE_ENVIRONMENT:
+        values.append("")
+    return values
+
+
+def _open_pb_sqlite_readonly() -> Callable[..., Any]:
+    from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite
+
+    return open_pb_sqlite
+
+
+def _load_timeline_bars_by_symbol_sqlite(
+    *,
+    environment: str,
+    symbols: list[str],
+    interval: str,
+    market_start_ms: int,
+    market_end_ms: int,
+) -> dict[str, list[dict[str, Any]]] | None:
+    normalized_symbols = normalize_symbols(symbols)
+    normalized_interval = normalize_interval(to_text(interval) or "5m")
+    if not normalized_symbols or normalized_interval != "5m":
+        return {}
+    env_values = _timeline_environment_values(environment)
+    symbol_placeholders = ", ".join("?" for _ in normalized_symbols)
+    env_placeholders = ", ".join("?" for _ in env_values)
+    columns = (
+        "id, symbol, exchange, interval, open, high, low, close, volume, "
+        "session_type, us_time, cn_time, bar_time_ms, extra, environment, created, updated"
+    )
+    env_rank_expr = "CASE WHEN environment = ? THEN 2 WHEN environment = '' THEN 0 ELSE -1 END"
+    try:
+        open_pb_sqlite = _open_pb_sqlite_readonly()
+        with open_pb_sqlite(readonly=True, timeout=30.0) as conn:
+            today_rows = conn.execute(
+                f"""
+                WITH candidates AS (
+                    SELECT
+                        {columns},
+                        ROW_NUMBER() OVER (
+                            PARTITION BY symbol, bar_time_ms
+                            ORDER BY {env_rank_expr} DESC, updated DESC
+                        ) AS env_rank
+                    FROM ibkr_bars
+                    WHERE interval = ?
+                      AND symbol IN ({symbol_placeholders})
+                      AND environment IN ({env_placeholders})
+                      AND bar_time_ms >= ?
+                      AND bar_time_ms < ?
+                )
+                SELECT {columns}
+                FROM candidates
+                WHERE env_rank = 1
+                ORDER BY symbol ASC, bar_time_ms ASC
+                """,
+                (
+                    to_text(environment).lower() or LIVE_ENVIRONMENT,
+                    normalized_interval,
+                    *normalized_symbols,
+                    *env_values,
+                    int(market_start_ms or 0),
+                    int(market_end_ms or 0),
+                ),
+            ).fetchall()
+            warmup_rows = conn.execute(
+                f"""
+                WITH candidates AS (
+                    SELECT
+                        {columns},
+                        ROW_NUMBER() OVER (
+                            PARTITION BY symbol, bar_time_ms
+                            ORDER BY {env_rank_expr} DESC, updated DESC
+                        ) AS env_rank
+                    FROM ibkr_bars
+                    WHERE interval = ?
+                      AND symbol IN ({symbol_placeholders})
+                      AND environment IN ({env_placeholders})
+                      AND bar_time_ms < ?
+                ),
+                deduped AS (
+                    SELECT {columns}
+                    FROM candidates
+                    WHERE env_rank = 1
+                ),
+                numbered AS (
+                    SELECT
+                        {columns},
+                        ROW_NUMBER() OVER (
+                            PARTITION BY symbol
+                            ORDER BY bar_time_ms DESC
+                        ) AS symbol_rank
+                    FROM deduped
+                )
+                SELECT {columns}
+                FROM numbered
+                WHERE symbol_rank <= ?
+                ORDER BY symbol ASC, bar_time_ms ASC
+                """,
+                (
+                    to_text(environment).lower() or LIVE_ENVIRONMENT,
+                    normalized_interval,
+                    *normalized_symbols,
+                    *env_values,
+                    int(market_start_ms or 0),
+                    TIMELINE_WARMUP_BARS,
+                ),
+            ).fetchall()
+    except Exception:
+        return None
+
+    grouped = _dedupe_timeline_rows([dict(row) for row in [*warmup_rows, *today_rows]], environment)
+    return {symbol: grouped.get(symbol, []) for symbol in normalized_symbols}
+
+
+def _load_timeline_bars_for_symbol_pb(
+    pb: Any,
+    *,
+    environment: str,
+    symbol: str,
+    market_start_ms: int,
+    market_end_ms: int,
+) -> list[dict[str, Any]]:
+    filter_symbol = f'symbol = "{escape_filter(symbol)}"'
+    today_records = pb.get_all_records(
+        "ibkr_bars",
+        filter=" && ".join(
+            [
+                'interval = "5m"',
+                build_bar_environment_filter(environment),
+                f"bar_time_ms >= {market_start_ms}",
+                f"bar_time_ms < {market_end_ms}",
+                filter_symbol,
+            ]
+        ),
+        sort="bar_time_ms",
+        max_pages=TIMELINE_TODAY_MAX_PAGES,
+    ) or []
+    warmup_records = pb.get_all_records(
+        "ibkr_bars",
+        filter=" && ".join(
+            [
+                'interval = "5m"',
+                build_bar_environment_filter(environment),
+                f"bar_time_ms < {market_start_ms}",
+                filter_symbol,
+            ]
+        ),
+        sort="-bar_time_ms",
+        max_pages=TIMELINE_WARMUP_MAX_PAGES,
+    ) or []
+    warmup = _dedupe_timeline_rows(
+        [dict(row) for row in warmup_records if isinstance(row, dict)],
+        environment,
+    ).get(symbol, [])[-TIMELINE_WARMUP_BARS:]
+    today = _dedupe_timeline_rows(
+        [dict(row) for row in today_records if isinstance(row, dict)],
+        environment,
+    ).get(symbol, [])
+    return [*warmup, *today]
+
+
 def _load_timeline_bars_by_symbol(
     pb: Any,
     *,
@@ -168,39 +374,25 @@ def _load_timeline_bars_by_symbol(
     if not normalized_symbols or normalized_interval != "5m":
         return {}
 
-    today_records = load_records_for_symbols(
-        pb,
-        "ibkr_bars",
-        base_filter_parts=[
-            'interval = "5m"',
-            build_bar_environment_filter(environment),
-            f"bar_time_ms >= {market_start_ms}",
-            f"bar_time_ms < {market_end_ms}",
-        ],
+    sqlite_result = _load_timeline_bars_by_symbol_sqlite(
+        environment=environment,
         symbols=normalized_symbols,
-        sort="bar_time_ms",
-        max_pages=TIMELINE_TODAY_MAX_PAGES,
+        interval=normalized_interval,
+        market_start_ms=market_start_ms,
+        market_end_ms=market_end_ms,
     )
-    warmup_records = load_records_for_symbols(
-        pb,
-        "ibkr_bars",
-        base_filter_parts=[
-            'interval = "5m"',
-            build_bar_environment_filter(environment),
-            f"bar_time_ms < {market_start_ms}",
-        ],
-        symbols=normalized_symbols,
-        sort="-bar_time_ms",
-        max_pages=TIMELINE_WARMUP_MAX_PAGES,
-    )
+    if sqlite_result is not None:
+        return sqlite_result
 
-    warmup_by_symbol = _dedupe_timeline_rows(warmup_records, environment)
-    today_by_symbol = _dedupe_timeline_rows(today_records, environment)
     result: dict[str, list[dict[str, Any]]] = {}
     for symbol in normalized_symbols:
-        warmup = warmup_by_symbol.get(symbol, [])[-TIMELINE_WARMUP_BARS:]
-        today = today_by_symbol.get(symbol, [])
-        result[symbol] = [*warmup, *today]
+        result[symbol] = _load_timeline_bars_for_symbol_pb(
+            pb,
+            environment=environment,
+            symbol=symbol,
+            market_start_ms=market_start_ms,
+            market_end_ms=market_end_ms,
+        )
     return result
 
 

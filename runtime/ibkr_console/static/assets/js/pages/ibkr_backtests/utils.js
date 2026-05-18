@@ -157,8 +157,14 @@
             const allItems = [];
             const perPage = Number(params.perPage || 200);
             const maxPages = Number(params.maxPages || 8);
+            if (typeof fetchCollectionFullListCached === 'function') {
+                return fetchCollectionFullListCached(collection, { ...params, perPage, maxPages }, { ttlMs: 120000, ttl: 120000 });
+            }
             for (let page = 1; page <= maxPages; page += 1) {
-                const payload = await apiFetch(collection, { ...params, page, perPage });
+                const fetchParams = { ...params, page, perPage };
+                const payload = typeof cachedApiFetch === 'function'
+                    ? await cachedApiFetch(collection, fetchParams, { ttlMs: 120000, ttl: 120000 })
+                    : await apiFetch(collection, fetchParams);
                 const items = toItems(payload);
                 allItems.push(...items);
                 if (items.length < perPage) break;

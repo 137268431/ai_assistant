@@ -1047,7 +1047,16 @@
             return deltas;
         }
 
-        async function requestMonitorJson(path) {
+        async function requestMonitorJson(path, cacheOptions = {}) {
+            if (typeof cachedCustomJson === 'function') {
+                const ttlMs = Number(cacheOptions.ttlMs || 10000);
+                return cachedCustomJson(path, currentEnvironment, {}, {
+                    ttlMs,
+                    swrMs: Number(cacheOptions.swrMs || ttlMs),
+                    force: Boolean(cacheOptions.force),
+                    tags: ['monitor', currentEnvironment].concat(cacheOptions.tags || [])
+                });
+            }
             const response = await fetchWithRetry(buildPageUrl(path, {}, { environment: currentEnvironment }), {
                 headers: getAuthHeaders()
             }, {
@@ -1071,9 +1080,9 @@
             return data;
         }
 
-        async function requestOptionalMonitorJson(path) {
+        async function requestOptionalMonitorJson(path, cacheOptions = {}) {
             try {
-                return await requestMonitorJson(path);
+                return await requestMonitorJson(path, cacheOptions);
             } catch (error) {
                 return { ok: false, error: error?.message || String(error || 'request_failed') };
             }
@@ -2223,8 +2232,18 @@
             setRefreshState(true);
             try {
                 const [payload, twoFactorPayload] = await Promise.all([
-                    requestMonitorJson('/api/custom/system/monitorz'),
-                    requestOptionalMonitorJson('/api/custom/ibkr/2fa/status')
+                    requestMonitorJson('/api/custom/system/monitorz', {
+                        ttlMs: 10000,
+                        swrMs: 10000,
+                        force: Boolean(showToastOnSuccess),
+                        tags: ['system-monitor']
+                    }),
+                    requestOptionalMonitorJson('/api/custom/ibkr/2fa/status', {
+                        ttlMs: 10000,
+                        swrMs: 10000,
+                        force: Boolean(showToastOnSuccess),
+                        tags: ['2fa']
+                    })
                 ]);
                 payload.two_factor = getTwoFactorState(twoFactorPayload);
                 if (loadId !== latestMonitorLoadId) return;

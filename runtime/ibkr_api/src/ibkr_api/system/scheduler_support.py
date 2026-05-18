@@ -2,11 +2,17 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ibkr_compute.core.broker_mode import (
+    configured_broker_mode,
+    normalize_broker_mode,
+    resolve_market_data_mode,
+)
+
 RequestJson = Callable[..., dict[str, Any]]
 RequestJsonRequest = Callable[..., dict[str, Any]]
 SchedulerStatusFn = Callable[[str], dict[str, Any]]
 
-MANUAL_SCHEDULER_JOB_ALLOWLIST = {"ibkr_scan_runtime"}
+MANUAL_SCHEDULER_JOB_ALLOWLIST = {"ibkr_compute_runtime", "ibkr_scan_runtime"}
 NON_COMPUTE_DISPATCH_SOURCES = {
     "backfill",
     "history_backfill",
@@ -95,14 +101,14 @@ def _resolve_compute_ingest_cursor(ingest_5m: dict[str, Any], latest_dispatched_
             "latest_compute_ingest_sources": [],
             "dispatch_lag_compute_relevant": False,
             "dispatch_lag_reason": "non_compute_ingest_source",
-            "compute_ingest_source_policy": "legacy_non_compute_source_filter",
+            "compute_ingest_source_policy": "non_compute_source_filter",
         }
     return {
         "latest_compute_ingested_bar_time_ms": raw_latest,
         "latest_compute_ingest_sources": raw_sources,
         "dispatch_lag_compute_relevant": True,
         "dispatch_lag_reason": "",
-        "compute_ingest_source_policy": "legacy_ingest_cursor",
+        "compute_ingest_source_policy": "ingest_cursor",
     }
 
 
@@ -230,11 +236,18 @@ def scheduler_status(
     *,
     request_json: RequestJson,
     scheduler_base_url: str,
+    broker_mode: str = "",
+    market_data_mode: str = "",
 ) -> dict[str, Any]:
+    normalized_broker_mode = normalize_broker_mode(broker_mode, configured_broker_mode())
+    normalized_market_data_mode = resolve_market_data_mode(market_data_mode or environment)
     result = request_json(
         scheduler_base_url,
         "/status",
-        params=[("environment", environment)],
+        params=[
+            ("broker_mode", normalized_broker_mode),
+            ("market_data_mode", normalized_market_data_mode),
+        ],
         timeout=5,
     )
     payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
@@ -251,7 +264,9 @@ def scheduler_status(
     return {
         "ok": False,
         "status": "unknown",
-        "environment": environment,
+        "environment": normalized_market_data_mode,
+        "broker_mode": normalized_broker_mode,
+        "market_data_mode": normalized_market_data_mode,
         "jobs": {},
         "ingest_cursor": {},
         "compute_dispatch_cursor": {},
@@ -266,19 +281,24 @@ def scheduler_status(
 def run_scheduler_job(
     *,
     job_id: str,
-    environment: str,
+    environment: str = "",
+    broker_mode: str = "",
+    market_data_mode: str = "",
     trigger_source: str,
     request_json_request: RequestJsonRequest,
     scheduler_base_url: str,
 ) -> tuple[dict[str, Any], int]:
     normalized_job_id = str(job_id or "").strip()
-    runtime_environment = str(environment or "live").strip().lower() or "live"
+    normalized_broker_mode = normalize_broker_mode(broker_mode, configured_broker_mode())
+    normalized_market_data_mode = resolve_market_data_mode(market_data_mode or environment)
     normalized_trigger_source = str(trigger_source or "api_manual").strip() or "api_manual"
 
     if normalized_job_id not in MANUAL_SCHEDULER_JOB_ALLOWLIST:
         return {
             "ok": False,
-            "environment": runtime_environment,
+            "environment": normalized_market_data_mode,
+            "broker_mode": normalized_broker_mode,
+            "market_data_mode": normalized_market_data_mode,
             "job_id": normalized_job_id,
             "error": "unsupported_scheduler_job",
             "allowed_jobs": sorted(MANUAL_SCHEDULER_JOB_ALLOWLIST),
@@ -290,7 +310,8 @@ def run_scheduler_job(
         scheduler_base_url,
         f"/jobs/run/{normalized_job_id}",
         json_body={
-            "environment": runtime_environment,
+            "broker_mode": normalized_broker_mode,
+            "market_data_mode": normalized_market_data_mode,
             "trigger_source": normalized_trigger_source,
         },
         timeout=120,
@@ -303,7 +324,9 @@ def run_scheduler_job(
 
     response_payload = {
         "ok": ok,
-        "environment": runtime_environment,
+        "environment": normalized_market_data_mode,
+        "broker_mode": normalized_broker_mode,
+        "market_data_mode": normalized_market_data_mode,
         "job_id": normalized_job_id,
         "trigger_source": normalized_trigger_source,
         "scheduler_result": scheduler_result,

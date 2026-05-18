@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ibkr_api.modes import request_broker_mode
+
 from ibkr_api.two_factor.delivery import deliver_two_factor_card
 from ibkr_api.two_factor.startup_sync import sync_startup_auth_progress
 from ibkr_api.two_factor.state import is_terminal_status, load_two_factor_state, save_two_factor_state, time_strings
@@ -37,7 +39,7 @@ def build_two_factor_respond_response(
     merge_startup_steps: MergeStartupSteps,
     deliver_startup_progress_card: DeliverStartupProgressCard,
 ) -> tuple[dict[str, Any], int]:
-    environment = normalize_environment(payload.get("environment"), "live")
+    environment = request_broker_mode(payload)
     environment_info = inspect_runtime_environment(environment)
     if bool(environment_info.get("runtime_environment_mismatch")):
         return build_runtime_environment_mismatch_payload(environment_info, "/api/custom/ibkr/2fa/respond"), 409

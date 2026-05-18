@@ -170,6 +170,17 @@ class TradingServiceSignalsMixin:
 
                 valid, reason = self.signal_processor.validate_signal(sig)
                 if not valid:
+                    if reason == "signal_expired":
+                        service_mod.logger.info(
+                            "Signal expired before runtime submission: %s %s - %s",
+                            sig.get("symbol"),
+                            sig.get("direction"),
+                            reason,
+                        )
+                        self._mark_signal_validation_expired(sig)
+                        self.signal_router.mark_processed(signal_id)
+                        finalized = True
+                        continue
                     if (
                         str(reason or "").startswith("warmup")
                         or reason in {"session_unauthenticated", "runtime_stopped", "no_trade_symbols"}
@@ -1078,6 +1089,71 @@ class TradingServiceSignalsMixin:
                 "Failed to mark signal validation-rejected: signal_id=%s reason=%s error=%s",
                 signal_id,
                 reason,
+                exc,
+            )
+
+    def _mark_signal_validation_expired(self, sig: dict):
+        service_mod = _service_mod()
+        if not self.pb:
+            return
+
+        signal_id = str(sig.get("signal_id") or "").strip()
+        if not signal_id:
+            return
+
+        ack = getattr(self.pb, "ack_ibkr_signal", None)
+        if callable(ack):
+            try:
+                ack(
+                    signal_id=signal_id,
+                    status="expired",
+                    note="signal_expired",
+                    environment=service_mod.ENVIRONMENT,
+                )
+                return
+            except Exception as exc:
+                service_mod.logger.warning(
+                    "Canonical signal-expired ack failed; using fallback patch: signal_id=%s error=%s",
+                    signal_id,
+                    exc,
+                )
+
+        try:
+            record, existing_extra = self._load_signal_record_and_extra(sig)
+            if not record:
+                return
+            expired_at = self._now_iso()
+            patch = self._signal_broker_patch(
+                "expired",
+                "signal_expired",
+                existing_extra,
+                {
+                    "status_reason": "signal_expired",
+                    "expired_by": "ibkr_compute_validation_fallback",
+                    "expired_at": expired_at,
+                    "validation_expired": True,
+                    "validation_expired_at": expired_at,
+                },
+            )
+            broker_mode = str(service_mod.ENVIRONMENT or "live").strip().lower() or "live"
+            execution_by_mode = patch["extra"].get("execution_by_mode")
+            broker_execution = execution_by_mode.get(broker_mode) if isinstance(execution_by_mode, dict) else {}
+            if not isinstance(broker_execution, dict):
+                broker_execution = {}
+            execution_by_mode[broker_mode] = {
+                **broker_execution,
+                "status": "expired",
+                "note": "signal_expired",
+                "expired_by": "ibkr_compute_validation_fallback",
+                "expired_at": expired_at,
+                "status_reason": "signal_expired",
+            }
+            patch["extra"]["execution_by_mode"] = execution_by_mode
+            self.pb.update_record("ibkr_signals", record["id"], patch)
+        except Exception as exc:
+            service_mod.logger.error(
+                "Failed to mark signal validation-expired: signal_id=%s error=%s",
+                signal_id,
                 exc,
             )
 

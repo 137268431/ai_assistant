@@ -290,6 +290,11 @@
             const marketDate = resolveRuntimeMarketDate(status);
             const todayFilterBase = `created >= "${escapeQueryValue(`${marketDate} 00:00:00`)}" && ${envFilter}`;
             const targetDateFilter = `date = "${escapeQueryValue(marketDate)}" && ${envFilter}`;
+            const readCountFetch = (collection, filter) => (
+                typeof cachedCountFetch === 'function'
+                    ? cachedCountFetch(collection, filter, { ttlMs: 30000, ttl: 30000 })
+                    : apiFetch(collection, { filter, perPage: 1, page: 1 })
+            );
 
             const [
                 barsCountResp,
@@ -299,12 +304,12 @@
                 eventsCountResp,
                 targetsCountResp,
             ] = await Promise.all([
-                apiFetch('ibkr_bars', { filter: todayFilterBase, perPage: 1, page: 1 }).catch(() => null),
-                apiFetch('ibkr_indicators', { filter: todayFilterBase, perPage: 1, page: 1 }).catch(() => null),
-                apiFetch('ibkr_signals', { filter: todayFilterBase, perPage: 1, page: 1 }).catch(() => null),
-                apiFetch('orders', { filter: todayFilterBase, perPage: 1, page: 1 }).catch(() => null),
-                apiFetch('system_events', { filter: todayFilterBase, perPage: 1, page: 1 }).catch(() => null),
-                apiFetch('ibkr_targets', { filter: targetDateFilter, perPage: 1, page: 1 }).catch(() => null),
+                readCountFetch('ibkr_bars', todayFilterBase).catch(() => null),
+                readCountFetch('ibkr_indicators', todayFilterBase).catch(() => null),
+                readCountFetch('ibkr_signals', todayFilterBase).catch(() => null),
+                readCountFetch('orders', todayFilterBase).catch(() => null),
+                readCountFetch('system_events', todayFilterBase).catch(() => null),
+                readCountFetch('ibkr_targets', targetDateFilter).catch(() => null),
             ]);
 
             return {

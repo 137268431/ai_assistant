@@ -318,6 +318,8 @@ const CONFIG_META = {
   ibkr_runtime_direct_topup_enabled: meta('高周期 Direct Topup', '动态准入 / Fundamentals', 660.25, 'FALSE', '盘中默认关闭高周期直接拉 IBKR historical；高周期主路径由 official 5m rollup 生成'),
   ibkr_runtime_direct_topup_close_delay_sec: meta('高周期 Close 安全等待秒数', '动态准入 / Fundamentals', 660.3, '8', '15m/30m/1h/4h/1d direct topup 在周期 close 后等待多少秒再拉 IBKR 历史 bars'),
   ibkr_runtime_direct_topup_parallel_enabled: meta('高周期批量追新', '动态准入 / Fundamentals', 660.35, 'FALSE', '开启后同一轮把所有已到期高周期按优先级批量拉取；默认关闭，避免抢占 official 5m historical 通道'),
+  ibkr_rollup_parallel_enabled: meta('Rollup 周期并行', '动态准入 / Fundamentals', 660.37, 'TRUE', '多周期 rollup 从同一批 5m bars 按目标周期一一并行生成；单周期仍串行'),
+  ibkr_rollup_max_workers: meta('Rollup 最大并发', '动态准入 / Fundamentals', 660.38, '5', 'Rollup 周期级最大 worker 数；默认 5，对应 15m/30m/1h/4h/1d'),
   ibkr_watchlist_idle_topup_stale_min: meta('动态回补滞后分钟', '动态准入 / Fundamentals', 661, '20', '非活跃标的最近 5m bar 超过该分钟数未更新时才进入动态回补候选'),
   ibkr_watchlist_idle_topup_materialize_5m: meta('回补后物化 5m', '动态准入 / Fundamentals', 662, 'TRUE', '回补后默认物化 5m 指标；同一批可仅为 active targets 持久化信号，普通 watchlist 只补 bars/指标'),
   ibkr_watchlist_idle_topup_progress_warn_sec: meta('回补进度提醒秒数', '动态准入 / Fundamentals', 663, '7200', '长时间无底池回补进展时用于状态提示，便于发现 IBKR 历史链路卡住'),
@@ -571,6 +573,14 @@ function applyPbCronConfigMeta(definitions) {
 
 async function loadPbCronDefinitions() {
   try {
+    if (typeof cachedCustomJson === 'function') {
+      const payload = await cachedCustomJson('/api/custom/system/cronz', '', {}, {
+        ttlMs: 300000,
+        swrMs: 300000,
+        tags: ['config', 'cron', configEnvironment]
+      })
+      return Array.isArray(payload?.items) ? payload.items : []
+    }
     const token = getToken()
     const headers = { 'Content-Type': 'application/json' }
     if (token) headers.Authorization = `Bearer ${token}`
@@ -753,13 +763,27 @@ function renderTabs(tabs) {
 }
 
 // ── 加载配置 ──
-async function load() {
+function invalidateConfigDataCache() {
+  if (window.IbkrDataCenter && typeof window.IbkrDataCenter.invalidate === 'function') {
+    window.IbkrDataCenter.invalidate(['config'])
+  }
+}
+
+async function load({ force = false } = {}) {
   try {
+    const configParams = {
+      perPage: 500,
+      sort: 'key,-updated'
+    }
     const [data, cronDefs] = await Promise.all([
-      apiFetch('config', {
-        perPage: 500,
-        sort: 'key,-updated'
-      }),
+      typeof cachedApiFetch === 'function'
+        ? cachedApiFetch('config', configParams, {
+          ttlMs: 300000,
+          swrMs: 300000,
+          force,
+          tags: ['config', configEnvironment]
+        })
+        : apiFetch('config', configParams),
       loadPbCronDefinitions()
     ])
 
@@ -976,7 +1000,7 @@ function renderCronOverview() {
 window.setConfigTab = async function(tabId) {
   activeTab = tabId
   localStorage.setItem('config_active_tab', activeTab)
-  await load()
+  await load({ force: true })
 }
 
 // ── 渲染控件 ──
@@ -1156,6 +1180,7 @@ async function saveAll() {
   }
 
   modifiedKeys.clear()
+  invalidateConfigDataCache()
 
   if (failed === 0) {
     showToast(`✅ 成功保存 ${success} 项配置`)
@@ -1251,12 +1276,13 @@ async function resetAll() {
     showToast(`⚠️ 重置完成: 成功 ${success}, 失败 ${failed}`)
   }
 
-render()
+  invalidateConfigDataCache()
+  render()
 }
 
 function manualReloadConfig() {
   spinPageRefreshButton('configRefreshBtn')
-  return load()
+  return load({ force: true })
 }
 
 // ── 初始加载 ──

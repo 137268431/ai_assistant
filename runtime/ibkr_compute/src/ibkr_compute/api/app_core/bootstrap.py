@@ -161,7 +161,7 @@ def build_runtime_state_bundle() -> dict:
 def build_constant_bundle() -> dict:
     return {
         "INTERVALS": list(COMPUTE_INTERVALS),
-        "SUPPORTED_COMPUTE_ENVIRONMENTS": ["live", "paper", "backtest"],
+        "SUPPORTED_COMPUTE_ENVIRONMENTS": ["live", "backtest"],
         "DEFAULT_COMPUTE_ENVIRONMENTS": ["live"],
         "IBKR_SCRIPT_TAG": os.environ.get("IBKR_SCRIPT_TAG", "IBKR_SAC_v1_20260403"),
         "BOOTSTRAP_LOOKBACK_BARS": {

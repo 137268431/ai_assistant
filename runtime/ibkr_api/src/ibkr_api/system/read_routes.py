@@ -4,6 +4,7 @@ from typing import Any
 
 from flask import Response, jsonify, request
 
+from ibkr_api.modes import request_broker_mode, request_market_data_mode
 from ibkr_api.system.scheduler_support import run_scheduler_job
 
 
@@ -26,18 +27,32 @@ def register_system_read_routes(app, *, deps: SystemDeps, exports: dict[str, Any
     request_json_request = deps["request_json_request"]
     scheduler_base_url = deps["scheduler_base_url"]
 
+    def _request_modes_from_args() -> tuple[str, str]:
+        payload = {
+            "broker_mode": request.args.get("broker_mode"),
+            "market_data_mode": request.args.get("market_data_mode") or request.args.get("environment"),
+        }
+        return request_broker_mode(payload), request_market_data_mode(payload)
+
     @app.route("/api/custom/system/cronz", methods=["GET"])
     def custom_system_cronz() -> Response:
-        environment = normalize_environment(request.args.get("environment"), "live")
+        broker_mode, market_data_mode = _request_modes_from_args()
         config.refresh()
-        scheduler_payload = scheduler_status(environment)
+        scheduler_payload = scheduler_status(
+            market_data_mode,
+            broker_mode=broker_mode,
+            market_data_mode=market_data_mode,
+        )
         scheduler_jobs = scheduler_payload.get("jobs") if isinstance(scheduler_payload.get("jobs"), dict) else {}
-        items = build_cron_payload(config, environment, scheduler_jobs)
+        items = scheduler_payload.get("items") if isinstance(scheduler_payload.get("items"), list) else build_cron_payload(config, market_data_mode, scheduler_jobs)
         return jsonify(
             {
                 "ok": True,
                 "items": items,
-                "scheduler": augment_scheduler_summary(build_scheduler_summary(environment, scheduler_payload), items),
+                "scheduler": augment_scheduler_summary(build_scheduler_summary(market_data_mode, scheduler_payload), items),
+                "environment": market_data_mode,
+                "broker_mode": broker_mode,
+                "market_data_mode": market_data_mode,
                 "source": "ibkr-api",
                 "service_topology": build_service_topology(),
             }
@@ -68,17 +83,23 @@ def register_system_read_routes(app, *, deps: SystemDeps, exports: dict[str, Any
 
     @app.route("/api/custom/system/schedulerz", methods=["GET"])
     def custom_system_schedulerz() -> Response:
-        environment = normalize_environment(request.args.get("environment"), "live")
+        broker_mode, market_data_mode = _request_modes_from_args()
         config.refresh()
-        scheduler_payload = scheduler_status(environment)
+        scheduler_payload = scheduler_status(
+            market_data_mode,
+            broker_mode=broker_mode,
+            market_data_mode=market_data_mode,
+        )
         scheduler_jobs = scheduler_payload.get("jobs") if isinstance(scheduler_payload.get("jobs"), dict) else {}
-        items = build_cron_payload(config, environment, scheduler_jobs)
-        summary = augment_scheduler_summary(build_scheduler_summary(environment, scheduler_payload), items)
+        items = scheduler_payload.get("items") if isinstance(scheduler_payload.get("items"), list) else build_cron_payload(config, market_data_mode, scheduler_jobs)
+        summary = augment_scheduler_summary(build_scheduler_summary(market_data_mode, scheduler_payload), items)
         return jsonify(
             {
                 "ok": bool(scheduler_payload.get("ok", False)),
                 "status": str(summary.get("status") or "offline"),
-                "environment": environment,
+                "environment": market_data_mode,
+                "broker_mode": broker_mode,
+                "market_data_mode": market_data_mode,
                 "scheduler": summary,
                 "items": items,
                 "source": "ibkr-api",
@@ -91,10 +112,21 @@ def register_system_read_routes(app, *, deps: SystemDeps, exports: dict[str, Any
     @app.route("/api/custom/system/scheduler/jobs/run", methods=["POST"])
     def custom_system_scheduler_job_run() -> Response:
         payload = request.get_json(silent=True) or {}
-        environment = normalize_environment(payload.get("environment"), "live")
+        if "environment" in payload:
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": "environment_not_supported",
+                    "message": "Use broker_mode/market_data_mode or omit mode so scheduler selects by job mode_scope.",
+                    "source": "ibkr-api",
+                }
+            ), 400
+        broker_mode = request_broker_mode(payload)
+        market_data_mode = request_market_data_mode(payload)
         response_payload, status_code = run_scheduler_job(
             job_id=str(payload.get("job_id") or "").strip(),
-            environment=environment,
+            broker_mode=broker_mode,
+            market_data_mode=market_data_mode,
             trigger_source=str(payload.get("trigger_source") or "api_manual").strip() or "api_manual",
             request_json_request=request_json_request,
             scheduler_base_url=scheduler_base_url,

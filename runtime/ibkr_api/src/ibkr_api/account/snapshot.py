@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ibkr_api.modes import request_broker_mode
 from ibkr_api.orders.values import ensure_object, to_float, to_int, to_text
 from ibkr_api.account.snapshot_live_orders import build_managed_order_context, normalize_live_order
 from ibkr_api.account.snapshot_relations import build_relation_context
@@ -212,7 +213,7 @@ def build_account_snapshot_response(
     request_json_request: RequestJsonRequest,
     runtime_base_url: str,
 ) -> tuple[dict[str, Any], int]:
-    environment = normalize_environment(payload.get("environment"), "live")
+    environment = request_broker_mode(payload)
     result = request_json_request(
         "GET",
         runtime_base_url,

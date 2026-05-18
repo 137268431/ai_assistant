@@ -4,6 +4,7 @@ from datetime import date
 from typing import Any, Callable
 
 from ibkr_api.orders.values import ensure_object, to_text
+from ibkr_compute.core.broker_mode import resolve_data_environment
 
 RequestJsonRequest = Callable[..., dict[str, Any]]
 NormalizeEnvironment = Callable[[Any, str], str]
@@ -40,7 +41,7 @@ def build_screener_proxy_response(
     request_json_request: RequestJsonRequest,
     compute_base_url: str,
 ) -> tuple[dict[str, Any], int]:
-    environment = normalize_environment(payload.get("environment"), "live")
+    environment = resolve_data_environment(payload.get("market_data_mode") or payload.get("data_environment") or payload.get("environment"))
     market_date = to_text(payload.get("market_date") or payload.get("date"))
     symbols = _normalize_symbols(payload.get("symbols"))
     limit = _parse_limit(payload.get("limit"))

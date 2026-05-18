@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ibkr_api.modes import request_broker_mode
 from ibkr_api.orders.group_cancel import CancelBrokerOrder, build_order_cancel_group_response
 from ibkr_api.orders.group_close import build_order_close_group_response
 from ibkr_api.orders.group_common import load_order_action_context, normalize_order_row
@@ -137,7 +138,7 @@ def build_order_cancel_webhook_response(
     if not target_id:
         return _fail_response("参数错误", "缺少订单ID", status_code=400, action="cancel_group")
 
-    environment = normalize_environment((payload or {}).get("environment"), "live")
+    environment = request_broker_mode(payload)
     context_summary = _resolve_context_summary(
         pb,
         payload={**dict(payload or {}), "id": target_id},
@@ -184,7 +185,7 @@ def build_order_close_webhook_response(
     if not target_id:
         return _fail_response("参数错误", "缺少订单ID", status_code=400, action="close_group")
 
-    environment = normalize_environment((payload or {}).get("environment"), "live")
+    environment = request_broker_mode(payload)
     context_summary = _resolve_context_summary(
         pb,
         payload={**dict(payload or {}), "id": target_id},

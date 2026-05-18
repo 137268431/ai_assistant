@@ -7,6 +7,14 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from ibkr_compute.broker import ib_gateway
+from ibkr_compute.core.broker_mode import (
+    broker_mode_payload,
+    configured_broker_mode,
+    configured_gateway_mode,
+    configured_market_data_mode,
+    resolve_data_environment,
+    resolve_market_data_mode,
+)
 from ibkr_compute.order.order_placer import OrderPlacer
 from ibkr_compute.orchestration.signals import TradingServiceSignalsMixin
 from ibkr_compute.signal.signal_router import SignalRouter
@@ -98,6 +106,12 @@ class FakeSignalPBClient:
     def notify_system_event(self, title, detail=None, **kwargs):
         self.events.append({"title": title, "detail": dict(detail or {}), **kwargs})
         return {"ok": True}
+
+
+class FakeFailingAckSignalPBClient(FakeSignalPBClient):
+    def ack_ibkr_signal(self, **kwargs):
+        self.acks.append(dict(kwargs))
+        raise RuntimeError("ack_unavailable")
 
 
 class FakeBracketBroker:
@@ -297,6 +311,38 @@ class FakeSignalService(TradingServiceSignalsMixin):
 
     def _now_iso(self):
         return "2026-05-13T10:00:00-04:00"
+
+
+class BrokerModeResolverTest(unittest.TestCase):
+    def test_mode_defaults_ignore_removed_environment_variables(self):
+        old_env = {
+            "IBKR_" + "ENVIRONMENT": "live",
+            "IBKR_" + "DATA_ENVIRONMENT": "backtest",
+            "IBKR_GATEWAY_" + "TRADING_MODE": "live",
+        }
+
+        self.assertEqual(configured_broker_mode(old_env), "paper")
+        self.assertEqual(configured_market_data_mode(old_env), "live")
+        self.assertEqual(configured_gateway_mode(old_env), "paper")
+        self.assertEqual(resolve_market_data_mode(None, old_env), "live")
+        self.assertEqual(resolve_data_environment("paper", old_env), "live")
+
+    def test_mode_payload_uses_new_mode_variables(self):
+        env = {
+            "IBKR_BROKER_MODE": "live",
+            "IBKR_MARKET_DATA_MODE": "backtest",
+            "IBKR_GATEWAY_MODE": "broker",
+        }
+
+        payload = broker_mode_payload(env=env)
+
+        self.assertEqual(payload["broker_mode"], "live")
+        self.assertEqual(payload["market_data_mode"], "backtest")
+        self.assertEqual(payload["gateway_mode"], "live")
+        self.assertEqual(payload["data_environment"], "backtest")
+        self.assertEqual(payload["broker_mode_source"], "IBKR_BROKER_MODE")
+        self.assertEqual(payload["market_data_mode_source"], "IBKR_MARKET_DATA_MODE")
+        self.assertEqual(payload["gateway_mode_source"], "IBKR_GATEWAY_MODE")
 
 
 class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
@@ -684,6 +730,25 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertEqual("pending", pb.updates[-1][2]["status"])
         self.assertEqual("strategy_capacity_full", pb.updates[-1][2]["extra"]["status_reason"])
         self.assertEqual("waiting_for_capacity", pb.updates[-1][2]["extra"]["execution_state"])
+
+    def test_signal_expired_validation_marks_expired_not_rejected(self):
+        signal = self._signal("AAPL")
+        pb = FakeFailingAckSignalPBClient({"id": "row-aapl", "extra": {"source": "ibkr_compute"}})
+        service = FakeSignalService(signal, lifecycle=FakeLifecycle(), pb=pb)
+        service.signal_processor.validate_signal = lambda _signal: (False, "signal_expired")
+
+        service._process_signals()
+
+        self.assertEqual(["sig-aapl"], service.signal_router.processed)
+        self.assertEqual([], service.signal_router.released)
+        self.assertEqual([], service.order_placer.calls)
+        self.assertEqual("expired", pb.updates[-1][2]["status"])
+        self.assertEqual("signal_expired", pb.updates[-1][2]["note"])
+        extra = pb.updates[-1][2]["extra"]
+        self.assertEqual("signal_expired", extra["status_reason"])
+        self.assertEqual("ibkr_compute_validation_fallback", extra["expired_by"])
+        self.assertEqual("expired", extra["execution_by_mode"]["live"]["status"])
+        self.assertEqual("signal_expired", extra["execution_by_mode"]["live"]["note"])
 
     def test_fixed_symbol_is_blocked_and_marked_processed(self):
         signal = self._signal("BOXX")
