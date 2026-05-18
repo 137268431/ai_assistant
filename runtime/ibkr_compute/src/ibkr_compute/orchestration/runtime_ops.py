@@ -5,6 +5,8 @@ import time
 from datetime import datetime
 from typing import Any
 
+import requests
+
 
 def _service_mod():
     from . import trading_service as service_mod
@@ -1278,6 +1280,43 @@ class TradingServiceRuntimeOpsMixin:
         if symbol and not has_parent:
             self.signal_processor.remove_position(symbol)
 
+    def _scheduler_retention_handled_current_hour(self, et_now: datetime) -> bool:
+        service_mod = _service_mod()
+        try:
+            from ibkr_compute.api.service_topology import get_scheduler_internal_url
+
+            response = requests.get(
+                f"{get_scheduler_internal_url()}/status",
+                params={"environment": service_mod.ENVIRONMENT},
+                timeout=2.0,
+            )
+            if not response.ok:
+                return False
+            payload = response.json()
+        except Exception:
+            return False
+        if not isinstance(payload, dict) or str(payload.get("status") or "").strip().lower() != "running":
+            return False
+        jobs = payload.get("jobs") if isinstance(payload.get("jobs"), dict) else {}
+        state = jobs.get("ibkr_history_retention") if isinstance(jobs.get("ibkr_history_retention"), dict) else {}
+        if not state:
+            return False
+
+        def same_hour(timestamp_ms) -> bool:
+            try:
+                timestamp = int(timestamp_ms or 0)
+                if timestamp <= 0:
+                    return False
+                handled_at = datetime.fromtimestamp(timestamp / 1000.0, service_mod.ET)
+            except Exception:
+                return False
+            return handled_at.strftime("%Y-%m-%d %H") == et_now.strftime("%Y-%m-%d %H")
+
+        status = str(state.get("status") or "").strip().lower()
+        if status == "running" and same_hour(state.get("last_run_started_at_ms")):
+            return True
+        return same_hour(state.get("last_success_at_ms"))
+
     def _schedule_retention(self):
         service_mod = _service_mod()
 
@@ -1287,6 +1326,15 @@ class TradingServiceRuntimeOpsMixin:
                 et_now = datetime.now(service_mod.ET)
                 hour_key = et_now.strftime("%Y-%m-%d %H")
                 if et_now.minute == 12 and hour_key != last_handled_hour:
+                    if self._scheduler_retention_handled_current_hour(et_now):
+                        service_mod.logger.info(
+                            "Skip runtime retention cleanup because scheduler handled current hour: environment=%s hour=%s",
+                            service_mod.ENVIRONMENT,
+                            hour_key,
+                        )
+                        last_handled_hour = hour_key
+                        time.sleep(30)
+                        continue
                     result = self.data_retention.cleanup(source="runtime_thread")
                     env_result = (result.get("environments") or [{}])[0]
                     service_mod.logger.info(

@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import unittest
 from datetime import datetime, timezone
@@ -50,6 +51,7 @@ from ibkr_scheduler.scheduler_app import (
     SCHEDULER_JOB_STATE_PREFIX,
     SchedulerService,
 )
+from ibkr_compute.core.config import Config
 
 
 class _FakeConfig:
@@ -170,13 +172,16 @@ class SchedulerJobsTest(unittest.TestCase):
         )
 
     def test_early_expansion_topup_crons_match_0930_to_1030_et(self):
-        early = next(item for item in scheduler_app_mod.CRON_DEFINITIONS if item["id"] == "ibkr_early_expansion_topup")
-        late = next(item for item in scheduler_app_mod.CRON_DEFINITIONS if item["id"] == "ibkr_early_expansion_topup_late")
+        definition = next(item for item in scheduler_app_mod.CRON_DEFINITIONS if item["id"] == "ibkr_early_expansion_topup")
+        schedules = {item["id"]: item for item in definition["schedules"]}
+        early = schedules["early_0930_0950"]
+        late = schedules["early_1000_1030"]
 
         self.assertEqual(early["cron_expr"], "30,40,50 9 * * 1-5")
         self.assertEqual(late["cron_expr"], "0,10,20,30 10 * * 1-5")
         self.assertEqual(early["cron_timezone"], "America/New_York")
         self.assertEqual(late["cron_timezone"], "America/New_York")
+        self.assertIn("ibkr_early_expansion_topup_late", definition["deprecated_aliases"])
         self.assertTrue(cron_matches_minute(early["cron_expr"], datetime(2026, 4, 20, 13, 30, tzinfo=timezone.utc), early["cron_timezone"]))
         self.assertTrue(cron_matches_minute(late["cron_expr"], datetime(2026, 4, 20, 14, 30, tzinfo=timezone.utc), late["cron_timezone"]))
         self.assertFalse(cron_matches_minute(early["cron_expr"], datetime(2026, 4, 20, 13, 20, tzinfo=timezone.utc), early["cron_timezone"]))
@@ -234,6 +239,57 @@ class SchedulerJobsTest(unittest.TestCase):
                 definition["cron_expr"],
                 datetime(2026, 4, 20, 7, 10, tzinfo=timezone.utc),
                 definition["cron_timezone"],
+            )
+        )
+
+    def test_data_quality_jobs_are_collapsed_to_multi_schedule_jobs(self):
+        repair = next(item for item in scheduler_app_mod.CRON_DEFINITIONS if item["id"] == "ibkr_data_quality_repair_sweep")
+        truth = next(item for item in scheduler_app_mod.CRON_DEFINITIONS if item["id"] == "ibkr_data_quality_truth_audit_cycle")
+
+        self.assertNotIn("ibkr_data_quality_open_sweep", {item["id"] for item in scheduler_app_mod.CRON_DEFINITIONS})
+        self.assertEqual({item["id"] for item in repair["schedules"]}, {"open_sweep", "close_sweep"})
+        self.assertIn("ibkr_data_quality_open_sweep", repair["deprecated_aliases"])
+        self.assertIn("ibkr_data_quality_close_sweep", repair["deprecated_aliases"])
+        self.assertEqual(
+            {item["payload_mode"] for item in truth["schedules"]},
+            {"previous_business_day", "current_day"},
+        )
+
+    def test_config_defaults_cover_seed_defaults_without_mismatch(self):
+        seed_path = Path(__file__).resolve().parents[3] / "extensions" / "pocketbase" / "seeds" / "import.js"
+        seed_text = seed_path.read_text()
+        seed_defaults = {
+            key: default
+            for key, _value, default in re.findall(
+                r"cfg\('([^']+)'\s*,\s*'([^']*)'\s*,\s*'([^']*)'",
+                seed_text,
+            )
+        }
+        seed_only = sorted(set(seed_defaults) - set(Config.DEFAULTS))
+        mismatches = [
+            key
+            for key in sorted(set(seed_defaults) & set(Config.DEFAULTS))
+            if str(seed_defaults[key]).lower() != str(Config.DEFAULTS[key]).lower()
+        ]
+
+        self.assertEqual(seed_only, [])
+        self.assertEqual(mismatches, [])
+        self.assertIn("CONFIG_ALIAS_FALLBACKS", seed_text)
+        self.assertIn("payload.value = aliasRecord.value ?? payload.value", seed_text)
+
+    def test_config_deprecated_aliases_are_used_for_canonical_reads(self):
+        cfg = Config()
+        cfg._records_by_key = {
+            "pb_cron_system_scan_summary_enabled": [
+                {"key": "pb_cron_system_scan_summary_enabled", "value": "FALSE", "environment": "global"}
+            ],
+        }
+
+        self.assertFalse(
+            cfg.get_bool_for_environment(
+                "pb_cron_system_market_open_reminder_enabled",
+                "live",
+                True,
             )
         )
 
@@ -875,6 +931,52 @@ class SchedulerJobsTest(unittest.TestCase):
         self.assertEqual(job_state["last_scheduled_slot"], "2026-04-23T10:00Z")
         self.assertTrue(any(collection == "system_events" for collection, _ in pb.records))
 
+    def test_system_scan_summary_alias_runs_market_open_canonical_job(self):
+        pb = _FakePB()
+        scheduler = SchedulerService(pb, _FakeConfig())
+
+        with mock.patch(
+            "ibkr_scheduler.jobs.upstream_http.requests.request",
+            return_value=_FakeResponse({"ok": True, "sent": True}),
+        ) as request_mock:
+            result = scheduler.run_job(
+                "system_scan_summary",
+                "live",
+                trigger_source="api_manual",
+                scheduled_slot="2026-04-23T13:30Z",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["canonical_job_id"], "system_market_open_reminder")
+        self.assertEqual(result["alias_job_id"], "system_scan_summary")
+        self.assertEqual(request_mock.call_args.kwargs["url"], "http://127.0.0.1:5102/api/custom/system/jobs/market_open_reminder")
+        self.assertIn((f"{SCHEDULER_JOB_STATE_PREFIX}system_market_open_reminder", "live", "global"), pb.states)
+        self.assertNotIn((f"{SCHEDULER_JOB_STATE_PREFIX}system_scan_summary", "live", "global"), pb.states)
+
+    def test_late_topup_alias_uses_canonical_schedule_state(self):
+        pb = _FakePB()
+        scheduler = SchedulerService(pb, _FakeConfig())
+
+        with mock.patch(
+            "ibkr_scheduler.jobs.upstream_http.requests.request",
+            return_value=_FakeResponse({"ok": True, "added": 1}),
+        ) as request_mock:
+            result = scheduler.run_job(
+                "ibkr_early_expansion_topup_late",
+                "live",
+                trigger_source="api_manual",
+                scheduled_slot="2026-04-23T14:30Z",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["canonical_job_id"], "ibkr_early_expansion_topup")
+        self.assertEqual(result["alias_job_id"], "ibkr_early_expansion_topup_late")
+        self.assertEqual(result["schedule_id"], "early_1000_1030")
+        request_payload = request_mock.call_args.kwargs["json"]
+        self.assertEqual(request_payload["schedule_id"], "early_1000_1030")
+        job_state = pb.states[(f"{SCHEDULER_JOB_STATE_PREFIX}ibkr_early_expansion_topup", "live", "global")]["data"]
+        self.assertIn("early_1000_1030", job_state["last_runs"])
+
     def test_premarket_truth_audit_cron_scans_full_watchlist(self):
         pb = _FakePB()
         scheduler = SchedulerService(pb, _FakeConfig())
@@ -891,12 +993,16 @@ class SchedulerJobsTest(unittest.TestCase):
             )
 
         self.assertTrue(result["ok"])
+        self.assertEqual(result["canonical_job_id"], "ibkr_data_quality_truth_audit_cycle")
+        self.assertEqual(result["alias_job_id"], "ibkr_data_quality_premarket_truth_audit")
+        self.assertEqual(result["schedule_id"], "premarket_previous_business_day")
         request_mock.assert_called_once()
         request_payload = request_mock.call_args.kwargs["json"]
         self.assertEqual(request_payload["environment"], "live")
         self.assertEqual(request_payload["source"], "ibkr_scheduler")
         self.assertEqual(request_payload["scan_scope"], "watchlist_full")
         self.assertTrue(request_payload["persist"])
+        self.assertEqual(request_payload["payload_mode"], "previous_business_day")
         self.assertIn("market_date", request_payload)
 
     def test_postmarket_truth_audit_cron_scans_full_watchlist(self):
@@ -915,10 +1021,14 @@ class SchedulerJobsTest(unittest.TestCase):
             )
 
         self.assertTrue(result["ok"])
+        self.assertEqual(result["canonical_job_id"], "ibkr_data_quality_truth_audit_cycle")
+        self.assertEqual(result["alias_job_id"], "ibkr_data_quality_truth_audit")
+        self.assertEqual(result["schedule_id"], "postmarket_current_day")
         request_mock.assert_called_once()
         request_payload = request_mock.call_args.kwargs["json"]
         self.assertEqual(request_payload["scan_scope"], "watchlist_full")
         self.assertTrue(request_payload["persist"])
+        self.assertEqual(request_payload["payload_mode"], "current_day")
         self.assertIn("market_date", request_payload)
 
     def test_storage_governor_dispatches_balanced_profile(self):
@@ -1052,6 +1162,7 @@ class SchedulerJobsTest(unittest.TestCase):
             "paper",
             trigger_source="api_manual",
             scheduled_slot="2026-04-23T10:00Z",
+            schedule_id="",
         )
 
 

@@ -15,7 +15,10 @@ from ibkr_scheduler.cron_registry import (
     CRON_DEFINITIONS,
     NATIVE_API_HTTP_JOB_ENDPOINTS,
     NATIVE_HTTP_JOB_ENDPOINTS,
+    build_cron_families,
     build_cron_payload,
+    get_schedule,
+    resolve_cron_job,
 )
 from ibkr_scheduler.jobs.compute_dispatch import build_compute_dispatch_runner
 from ibkr_scheduler.jobs.upstream_http import run_upstream_http_job
@@ -36,8 +39,7 @@ SCHEDULER_JOB_STATE_PREFIX = "ibkr_scheduler_job_state:"
 US_TZ = ZoneInfo("America/New_York")
 CN_TZ = ZoneInfo("Asia/Shanghai")
 BAR_TRUTH_AUDIT_JOB_IDS = {
-    "ibkr_data_quality_premarket_truth_audit",
-    "ibkr_data_quality_truth_audit",
+    "ibkr_data_quality_truth_audit_cycle",
 }
 
 
@@ -168,18 +170,20 @@ class SchedulerService:
             candidate -= timedelta(days=1)
         return candidate.isoformat()
 
-    def _native_http_job_payload(self, job_id: str) -> dict[str, Any]:
+    def _native_http_job_payload(self, job_id: str, schedule: dict[str, Any] | None = None) -> dict[str, Any]:
         if job_id in BAR_TRUTH_AUDIT_JOB_IDS:
             now_et = datetime.now(US_TZ)
+            payload_mode = str((schedule or {}).get("payload_mode") or "").strip().lower()
             market_date = (
                 self._previous_us_business_date(now_et)
-                if job_id == "ibkr_data_quality_premarket_truth_audit"
+                if payload_mode == "previous_business_day"
                 else now_et.date().isoformat()
             )
             return {
                 "scan_scope": "watchlist_full",
                 "persist": True,
                 "market_date": market_date,
+                "payload_mode": payload_mode or "current_day",
             }
         if job_id == "ibkr_storage_governor":
             return {
@@ -190,7 +194,7 @@ class SchedulerService:
             }
         return {}
 
-    def _run_native_http_job(self, job_id: str, environment: str) -> dict[str, Any]:
+    def _run_native_http_job(self, job_id: str, environment: str, schedule: dict[str, Any] | None = None) -> dict[str, Any]:
         method, path = NATIVE_HTTP_JOB_ENDPOINTS[job_id]
         return run_upstream_http_job(
             method=method,
@@ -198,10 +202,10 @@ class SchedulerService:
             path=path,
             environment=environment,
             timeout_seconds=60,
-            payload=self._native_http_job_payload(job_id),
+            payload=self._native_http_job_payload(job_id, schedule),
         )
 
-    def _run_native_api_job(self, job_id: str, environment: str) -> dict[str, Any]:
+    def _run_native_api_job(self, job_id: str, environment: str, schedule: dict[str, Any] | None = None) -> dict[str, Any]:
         method, path = NATIVE_API_HTTP_JOB_ENDPOINTS[job_id]
         return run_upstream_http_job(
             method=method,
@@ -209,6 +213,10 @@ class SchedulerService:
             path=path,
             environment=environment,
             timeout_seconds=90,
+            payload={
+                "schedule_id": str((schedule or {}).get("id") or "").strip(),
+                "schedule_payload_mode": str((schedule or {}).get("payload_mode") or "").strip(),
+            } if schedule else None,
         )
 
     def run_job(
@@ -218,120 +226,209 @@ class SchedulerService:
         *,
         trigger_source: str = "scheduler_loop",
         scheduled_slot: str = "",
+        schedule_id: str = "",
     ) -> dict[str, Any]:
-        job = next((item for item in CRON_DEFINITIONS if item["id"] == job_id), None)
+        requested_job_id = str(job_id or "").strip()
+        job, canonical_job_id, alias_job_id, resolved_schedule_id = resolve_cron_job(requested_job_id, schedule_id)
         if not job:
-            return {"ok": False, "error": "unknown_job", "job_id": job_id, "environment": environment}
+            return {"ok": False, "error": "unknown_job", "job_id": requested_job_id, "environment": environment}
+        schedule = get_schedule(job, resolved_schedule_id)
+        effective_schedule_id = str(schedule.get("id") or resolved_schedule_id or "default").strip() or "default"
 
-        existing_state = self.job_states(environment).get(job_id) or {}
+        existing_state = self.job_states(environment).get(canonical_job_id) or {}
         self.cfg.refresh()
         effective_items = build_cron_payload(self.cfg, environment, self.job_states(environment))
-        effective_job = next((item for item in effective_items if item["id"] == job_id), None) or job
+        effective_job = next((item for item in effective_items if item["id"] == canonical_job_id), None) or job
         slot_token = str(scheduled_slot or "").strip()
         if not effective_job.get("effective_enabled", False):
             result = {
                 "ok": True,
                 "skipped": True,
                 "reason": "disabled",
-                "job_id": job_id,
+                "job_id": canonical_job_id,
+                "requested_job_id": requested_job_id,
+                "canonical_job_id": canonical_job_id,
+                "alias_job_id": alias_job_id,
+                "schedule_id": effective_schedule_id,
                 "environment": environment,
                 "scheduled_slot": slot_token,
             }
-            self._save_job_state(job_id, environment, {
+            self._save_job_state(canonical_job_id, environment, {
                 "status": "disabled",
                 "last_result": result,
                 "last_run_started_at_ms": int(time.time() * 1000),
                 "last_run_finished_at_ms": int(time.time() * 1000),
                 "last_scheduled_slot": slot_token or str(existing_state.get("last_scheduled_slot") or ""),
+                "last_schedule_id": effective_schedule_id,
             })
             return result
 
         started_at_ms = int(time.time() * 1000)
         with self._lock:
-            latest_state = self.job_states(environment).get(job_id) or {}
+            latest_state = self.job_states(environment).get(canonical_job_id) or {}
             latest_result = latest_state.get("last_result") if isinstance(latest_state.get("last_result"), dict) else {}
-            same_completed_slot = slot_token and str(latest_state.get("last_scheduled_slot") or "").strip() == slot_token
+            last_runs = latest_state.get("last_runs") if isinstance(latest_state.get("last_runs"), dict) else {}
+            latest_schedule_state = last_runs.get(effective_schedule_id) if isinstance(last_runs.get(effective_schedule_id), dict) else {}
+            schedule_result = latest_schedule_state.get("last_result") if isinstance(latest_schedule_state.get("last_result"), dict) else {}
+            same_completed_slot = slot_token and (
+                str(latest_schedule_state.get("last_scheduled_slot") or "").strip() == slot_token
+                or (
+                    not latest_schedule_state
+                    and str(latest_state.get("last_scheduled_slot") or "").strip() == slot_token
+                    and str(latest_state.get("last_schedule_id") or effective_schedule_id).strip() == effective_schedule_id
+                )
+            )
             if same_completed_slot and (
-                str(latest_state.get("status") or "").strip().lower() in {"running", "ok", "idle"}
-                or latest_result.get("ok") is True
+                str(latest_schedule_state.get("status") or latest_state.get("status") or "").strip().lower() in {"running", "ok", "idle"}
+                or schedule_result.get("ok") is True
+                or (not schedule_result and latest_result.get("ok") is True)
             ):
                 return {
                     "ok": True,
                     "skipped": True,
                     "reason": "already_triggered_for_slot",
-                    "job_id": job_id,
+                    "job_id": canonical_job_id,
+                    "requested_job_id": requested_job_id,
+                    "canonical_job_id": canonical_job_id,
+                    "alias_job_id": alias_job_id,
+                    "schedule_id": effective_schedule_id,
                     "environment": environment,
                     "scheduled_slot": slot_token,
                 }
+            running_last_runs = dict(last_runs)
+            running_last_runs[effective_schedule_id] = {
+                **latest_schedule_state,
+                "status": "running",
+                "last_run_started_at_ms": started_at_ms,
+                "last_scheduled_slot": slot_token or str(latest_schedule_state.get("last_scheduled_slot") or ""),
+                "last_trigger_source": trigger_source,
+            }
             self._save_job_state(
-                job_id,
+                canonical_job_id,
                 environment,
                 {
                     "status": "running",
                     "last_run_started_at_ms": started_at_ms,
                     "last_scheduled_slot": slot_token or str(existing_state.get("last_scheduled_slot") or ""),
+                    "last_schedule_id": effective_schedule_id,
                     "last_trigger_source": trigger_source,
+                    "last_runs": running_last_runs,
+                    "canonical_job_id": canonical_job_id,
+                    "alias_job_id": alias_job_id,
                 },
             )
         try:
-            if job_id == "ibkr_compute_runtime":
+            if canonical_job_id == "ibkr_compute_runtime":
                 result = self._run_compute_dispatch(environment)
-            elif job_id in NATIVE_API_HTTP_JOB_ENDPOINTS:
-                result = self._run_native_api_job(job_id, environment)
-            elif job_id in NATIVE_HTTP_JOB_ENDPOINTS:
-                result = self._run_native_http_job(job_id, environment)
+            elif canonical_job_id in NATIVE_API_HTTP_JOB_ENDPOINTS:
+                result = self._run_native_api_job(canonical_job_id, environment, schedule)
+            elif canonical_job_id in NATIVE_HTTP_JOB_ENDPOINTS:
+                result = self._run_native_http_job(canonical_job_id, environment, schedule)
             else:
                 result = {
                     "ok": True,
                     "skipped": True,
                     "reason": "compatibility_pending",
-                    "job_id": job_id,
+                    "job_id": canonical_job_id,
                     "environment": environment,
                 }
+            result = {
+                **(result if isinstance(result, dict) else {"ok": False, "error": "invalid_job_result"}),
+                "job_id": canonical_job_id,
+                "requested_job_id": requested_job_id,
+                "canonical_job_id": canonical_job_id,
+                "alias_job_id": alias_job_id,
+                "schedule_id": effective_schedule_id,
+                "scheduled_slot": slot_token,
+            }
             status = "ok" if result.get("ok", False) and not result.get("skipped") else "idle"
             if result.get("skipped") and result.get("reason") == "disabled":
                 status = "disabled"
-            state_patch = {
+            latest_state = self.job_states(environment).get(canonical_job_id) or {}
+            last_runs = latest_state.get("last_runs") if isinstance(latest_state.get("last_runs"), dict) else {}
+            schedule_patch = {
+                **(last_runs.get(effective_schedule_id) if isinstance(last_runs.get(effective_schedule_id), dict) else {}),
                 "status": status,
-                "last_result": result,
+                "last_result": _compact_scheduler_payload(result),
                 "last_run_finished_at_ms": int(time.time() * 1000),
                 "last_scheduled_slot": slot_token or str(existing_state.get("last_scheduled_slot") or ""),
                 "last_trigger_source": trigger_source,
             }
             if result.get("ok", False) and not result.get("skipped"):
+                schedule_patch["last_success_at_ms"] = int(time.time() * 1000)
+            next_last_runs = dict(last_runs)
+            next_last_runs[effective_schedule_id] = schedule_patch
+            state_patch = {
+                "status": status,
+                "last_result": result,
+                "last_run_finished_at_ms": int(time.time() * 1000),
+                "last_scheduled_slot": slot_token or str(existing_state.get("last_scheduled_slot") or ""),
+                "last_schedule_id": effective_schedule_id,
+                "last_trigger_source": trigger_source,
+                "last_runs": next_last_runs,
+                "canonical_job_id": canonical_job_id,
+                "alias_job_id": alias_job_id,
+            }
+            if result.get("ok", False) and not result.get("skipped"):
                 state_patch["last_success_at_ms"] = int(time.time() * 1000)
-            self._save_job_state(job_id, environment, state_patch)
+            self._save_job_state(canonical_job_id, environment, state_patch)
             if not result.get("ok", False):
                 self._write_system_event(
-                    job_id=job_id,
+                    job_id=canonical_job_id,
                     environment=environment,
                     level="error",
-                    title=f"Scheduler job failed: {job_id}",
+                    title=f"Scheduler job failed: {canonical_job_id}",
                     detail={"result": result, "trigger_source": trigger_source},
                 )
             elif not result.get("skipped") and trigger_source != "scheduler_loop":
                 self._write_system_event(
-                    job_id=job_id,
+                    job_id=canonical_job_id,
                     environment=environment,
                     level="info",
-                    title=f"Scheduler job completed: {job_id}",
+                    title=f"Scheduler job completed: {canonical_job_id}",
                     detail={"result": result, "trigger_source": trigger_source},
                 )
             return result
         except Exception as exc:
-            result = {"ok": False, "error": str(exc), "job_id": job_id, "environment": environment}
-            self._save_job_state(job_id, environment, {
+            result = {
+                "ok": False,
+                "error": str(exc),
+                "job_id": canonical_job_id,
+                "requested_job_id": requested_job_id,
+                "canonical_job_id": canonical_job_id,
+                "alias_job_id": alias_job_id,
+                "schedule_id": effective_schedule_id,
+                "environment": environment,
+                "scheduled_slot": slot_token,
+            }
+            latest_state = self.job_states(environment).get(canonical_job_id) or {}
+            last_runs = latest_state.get("last_runs") if isinstance(latest_state.get("last_runs"), dict) else {}
+            schedule_patch = {
+                **(last_runs.get(effective_schedule_id) if isinstance(last_runs.get(effective_schedule_id), dict) else {}),
+                "status": "error",
+                "last_result": _compact_scheduler_payload(result),
+                "last_run_finished_at_ms": int(time.time() * 1000),
+                "last_scheduled_slot": slot_token or str(existing_state.get("last_scheduled_slot") or ""),
+                "last_trigger_source": trigger_source,
+            }
+            next_last_runs = dict(last_runs)
+            next_last_runs[effective_schedule_id] = schedule_patch
+            self._save_job_state(canonical_job_id, environment, {
                 "status": "error",
                 "last_result": result,
                 "last_run_finished_at_ms": int(time.time() * 1000),
                 "last_scheduled_slot": slot_token or str(existing_state.get("last_scheduled_slot") or ""),
+                "last_schedule_id": effective_schedule_id,
                 "last_trigger_source": trigger_source,
+                "last_runs": next_last_runs,
+                "canonical_job_id": canonical_job_id,
+                "alias_job_id": alias_job_id,
             })
             self._write_system_event(
-                job_id=job_id,
+                job_id=canonical_job_id,
                 environment=environment,
                 level="error",
-                title=f"Scheduler job crashed: {job_id}",
+                title=f"Scheduler job crashed: {canonical_job_id}",
                 detail={"result": result, "trigger_source": trigger_source},
             )
             return result
@@ -359,20 +456,23 @@ class SchedulerService:
         slot_token = cron_slot_token(when_utc)
         results: list[dict[str, Any]] = []
         for definition in self._scheduled_jobs():
-            if not cron_matches_minute(
-                str(definition.get("cron_expr") or ""),
-                when_utc,
-                str(definition.get("cron_timezone") or "UTC"),
-            ):
-                continue
-            results.append(
-                self.run_job(
-                    str(definition.get("id") or ""),
-                    environment,
-                    trigger_source="scheduler_loop",
-                    scheduled_slot=slot_token,
+            schedules = definition.get("schedules") if isinstance(definition.get("schedules"), list) else []
+            for schedule in schedules or [get_schedule(definition)]:
+                if not cron_matches_minute(
+                    str((schedule or {}).get("cron_expr") or ""),
+                    when_utc,
+                    str((schedule or {}).get("cron_timezone") or definition.get("cron_timezone") or "UTC"),
+                ):
+                    continue
+                results.append(
+                    self.run_job(
+                        str(definition.get("id") or ""),
+                        environment,
+                        trigger_source="scheduler_loop",
+                        scheduled_slot=slot_token,
+                        schedule_id=str((schedule or {}).get("id") or "default"),
+                    )
                 )
-            )
         return results
 
     def _loop(self) -> None:
@@ -415,6 +515,7 @@ def status():
     environment = str(request.args.get("environment") or os.environ.get("IBKR_ENVIRONMENT") or "live").strip().lower() or "live"
     config.refresh()
     jobs = scheduler.job_states(environment)
+    items = build_cron_payload(config, environment, jobs)
     return jsonify(
         {
             "ok": True,
@@ -426,7 +527,8 @@ def status():
             "compute_dispatch_cursor": scheduler._get_dispatch_cursor(environment),
             "service_topology": build_service_topology(),
             "jobs": jobs,
-            "items": build_cron_payload(config, environment, jobs),
+            "items": items,
+            "families": build_cron_families(items),
         }
     )
 
@@ -437,5 +539,12 @@ def run_job(job_id: str):
     environment = str(request_payload.get("environment") or os.environ.get("IBKR_ENVIRONMENT") or "live").strip().lower() or "live"
     trigger_source = str(request_payload.get("trigger_source") or "api_manual").strip() or "api_manual"
     scheduled_slot = str(request_payload.get("scheduled_slot") or "").strip()
-    result = scheduler.run_job(job_id, environment, trigger_source=trigger_source, scheduled_slot=scheduled_slot)
+    schedule_id = str(request_payload.get("schedule_id") or "").strip()
+    result = scheduler.run_job(
+        job_id,
+        environment,
+        trigger_source=trigger_source,
+        scheduled_slot=scheduled_slot,
+        schedule_id=schedule_id,
+    )
     return jsonify(result), (200 if result.get("ok", False) else 500)

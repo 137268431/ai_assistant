@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import requests
+
 from ibkr_compute.market.pocketbase_sqlite import normalize_exchange_value
 
 from .market_universe_support import *
@@ -348,6 +350,59 @@ class TradingServiceMarketUniverseTargetsMixin:
         now_et = datetime.now(service_mod.ET)
         return (now_et.hour, now_et.minute) >= (hour, minute)
 
+    def _scheduler_daily_scan_primary_active(self, market_date: str) -> bool:
+        service_mod = _service_mod()
+        try:
+            from ibkr_compute.api.service_topology import get_scheduler_internal_url
+
+            response = requests.get(
+                f"{get_scheduler_internal_url()}/status",
+                params={"environment": service_mod.ENVIRONMENT},
+                timeout=2.0,
+            )
+            if not response.ok:
+                return False
+            payload = response.json()
+        except Exception:
+            return False
+        if not isinstance(payload, dict) or str(payload.get("status") or "").lower() != "running":
+            return False
+
+        items = payload.get("items") if isinstance(payload.get("items"), list) else []
+        scan_item = next((item for item in items if isinstance(item, dict) and item.get("id") == "ibkr_scan_runtime"), {})
+        if scan_item and not bool(scan_item.get("effective_enabled")):
+            return False
+
+        jobs = payload.get("jobs") if isinstance(payload.get("jobs"), dict) else {}
+        scan_state = jobs.get("ibkr_scan_runtime") if isinstance(jobs.get("ibkr_scan_runtime"), dict) else {}
+
+        def same_market_date(timestamp_ms) -> bool:
+            try:
+                timestamp = int(timestamp_ms or 0)
+                if timestamp <= 0:
+                    return False
+                return datetime.fromtimestamp(timestamp / 1000.0, service_mod.ET).date().isoformat() == market_date
+            except Exception:
+                return False
+
+        if same_market_date(scan_state.get("last_success_at_ms")):
+            return True
+        if str(scan_state.get("status") or "").strip().lower() == "running" and same_market_date(scan_state.get("last_run_started_at_ms")):
+            return True
+
+        start_hour, start_minute = self._scan_schedule_start()
+        now_et = datetime.now(service_mod.ET)
+        start_et = now_et.replace(hour=start_hour, minute=start_minute, second=0, microsecond=0)
+        grace_seconds = max(
+            60,
+            self.config.get_int_for_environment(
+                "ibkr_daily_scan_runtime_fallback_grace_sec",
+                service_mod.ENVIRONMENT,
+                8 * 60,
+            ),
+        )
+        return start_et <= now_et and (now_et - start_et).total_seconds() <= grace_seconds
+
     def _run_daily_scan_if_due(self, reason: str = "poll") -> dict:
         service_mod = _service_mod()
         self._refresh_watchlist_pool()
@@ -358,6 +413,8 @@ class TradingServiceMarketUniverseTargetsMixin:
 
         if not self._scan_window_open():
             return {"ok": True, "skipped": True, "reason": "scan_window_not_open", "state": state}
+        if str(reason or "").strip().lower() == "poll" and self._scheduler_daily_scan_primary_active(market_date):
+            return {"ok": True, "skipped": True, "reason": "scheduler_primary_active", "state": state}
         state_status = str(state.get("status") or "").strip().lower()
         if state_status == "retry_wait":
             if self._daily_scan_retry_wait_pending(state):

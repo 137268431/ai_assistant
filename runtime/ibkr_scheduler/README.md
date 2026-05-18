@@ -14,13 +14,12 @@
   - `ibkr_auth_pending_guard`
   - `system_data_gap_guard`
   - `ibkr_history_retention`
-  - `ibkr_data_quality_open_sweep`
-  - `ibkr_data_quality_close_sweep`
-  - `ibkr_data_quality_premarket_truth_audit`
-  - `ibkr_data_quality_truth_audit`
+  - `ibkr_data_quality_repair_sweep` (open/close schedules)
+  - `ibkr_data_quality_truth_audit_cycle` (premarket/postmarket schedules)
   - `ibkr_2fa_hourly_check`
   - `ibkr_weekly_reauth_reminder`
   - `ibkr_weekly_reauth_followup`
   - `system_market_open_reminder`
   - `system_daily_report`
+- Duplicate legacy ids such as `system_scan_summary`, `ibkr_early_expansion_topup_late`, and the old data-quality split jobs now resolve to canonical scheduler jobs through aliases.
 - PocketBase no longer owns business cron. The repo `pb_hooks/` tree is now only an empty placeholder directory, and all live job scheduling, cursor advancement, and scheduler health ownership now stays in `ibkr_scheduler`.

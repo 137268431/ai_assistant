@@ -138,7 +138,8 @@ class ControlPlaneSplitStackSchedulerJobsTest(unittest.TestCase):
         self.assertIn("system_heartbeat", item_ids)
         self.assertIn("system_monitor_alert_guard", item_ids)
         self.assertIn("system_status_reminder", item_ids)
-        self.assertIn("system_scan_summary", item_ids)
+        market_open = next(item for item in items if item["id"] == "system_market_open_reminder")
+        self.assertIn("system_scan_summary", market_open["deprecated_aliases"])
 
     def test_system_heartbeat_job_persists_issue_state(self):
         states = {}

@@ -2,12 +2,63 @@
 配置管理 — 从 PB config 表读取配置
 """
 
+from ibkr_compute.core.config_registry import build_config_registry, deprecated_aliases_for
 from ibkr_compute.integrations.pb_client import PBClient
 
 
 class Config:
     DEFAULTS = {
         "ibkr_compute_enabled": "true",
+        "pb_scheduler_enabled": "true",
+        "pb_cron_signal_expiry_enabled": "true",
+        "pb_cron_order_expiry_enabled": "true",
+        "pb_cron_order_detail_integrity_guard_enabled": "true",
+        "pb_cron_ibkr_compute_runtime_enabled": "true",
+        "pb_cron_system_heartbeat_enabled": "true",
+        "pb_cron_system_monitor_alert_guard_enabled": "true",
+        "pb_cron_system_status_reminder_enabled": "true",
+        "pb_cron_ibkr_scan_runtime_enabled": "true",
+        "pb_cron_system_scan_summary_enabled": "true",
+        "pb_cron_ibkr_early_expansion_topup_enabled": "true",
+        "pb_cron_ibkr_intraday_window_admission_enabled": "true",
+        "pb_cron_ibkr_auth_edge_guard_enabled": "true",
+        "pb_cron_ibkr_auth_pending_guard_enabled": "true",
+        "pb_cron_system_data_gap_guard_enabled": "true",
+        "pb_cron_ibkr_data_quality_repair_sweep_enabled": "true",
+        "pb_cron_ibkr_data_quality_open_sweep_enabled": "true",
+        "pb_cron_ibkr_data_quality_close_sweep_enabled": "true",
+        "pb_cron_ibkr_data_quality_premarket_truth_audit_enabled": "true",
+        "pb_cron_ibkr_data_quality_truth_audit_enabled": "true",
+        "pb_cron_ibkr_weekly_reauth_reminder_enabled": "true",
+        "pb_cron_ibkr_weekly_reauth_followup_enabled": "true",
+        "pb_cron_ibkr_2fa_hourly_check_enabled": "true",
+        "pb_cron_system_market_open_reminder_enabled": "true",
+        "pb_cron_system_daily_report_enabled": "true",
+        "pb_cron_ibkr_history_retention_enabled": "true",
+        "pb_cron_ibkr_storage_governor_enabled": "true",
+        "status_notify_enabled": "true",
+        "daily_summary_notify_enabled": "true",
+        "health_check_notify_enabled": "true",
+        "inspection_notify_enabled": "true",
+        "manual_stop_notify_enabled": "true",
+        "system_monitor_host_load_consecutive_count": "2",
+        "signal_chat_id": "oc_edb26dcc52938b7833ac9f32ae6b1620",
+        "order_chat_id": "oc_5ca4585e1fd108c2c662dfc358684945",
+        "reverse_chat_id": "oc_2931e2b8501df3a9d869d7aebceb8fe2",
+        "status_chat_id": "oc_b7b52fc28816d90e27ce50ca7922a9ac",
+        "system_status_chat_id": "oc_b7b52fc28816d90e27ce50ca7922a9ac",
+        "system_startup_chat_id": "oc_cc5d0a950797b1c2c010953e14bceeff",
+        "system_alert_chat_id": "oc_91aa4f84bc6fedb125b1a263d91d4104",
+        "system_2fa_chat_id": "oc_c48c10447685e80cfea0c003864aa51f",
+        "backtest_chat_id": "oc_8c4831630f2121ffe5ff9c7f72ec9e1e",
+        "pb_public_url": "https://quant.lzw-glory.top",
+        "pb_auth_public_url": "https://pb.lzw-glory.top",
+        "ibkr_api_public_url": "https://quant.lzw-glory.top",
+        "ibkr_console_public_url": "https://quant.lzw-glory.top",
+        "ibkr_api_internal_url": "http://127.0.0.1:5102",
+        "ibkr_compute_internal_url": "http://127.0.0.1:5100",
+        "ibkr_runtime_internal_url": "http://127.0.0.1:5101",
+        "ibkr_scheduler_internal_url": "http://127.0.0.1:5103",
         "ibkr_bar_publish_enabled": "true",
         "ibkr_market_ws_enabled": "true",
         "ibkr_market_ws_symbols": "SPY,QQQ,VIX",
@@ -210,6 +261,7 @@ class Config:
         "atr_stop_deviation_threshold": "0.30",
         "atr_stop_min_change": "0.01",
         "reverse_flip_enabled": "false",
+        "reverse_signal_threshold": "6",
         "trade_window_start_time": "09:35",
         "trade_window_end_time": "15:30",
         "order_window_end_time": "15:00",
@@ -224,9 +276,11 @@ class Config:
         "ibkr_buying_power_notify_cooldown_sec": "1800",
         "fixed_position_symbols": "BOXX,IBKR",
         "consecutive_stop_loss_limit": "3",
+        "order_validity_minutes": "30",
         "eod_close_time": "15:55",
-        "eod_keep_symbols": "",
+        "eod_keep_symbols": "BOXX,IBKR",
         "signal_poll_interval_sec": "5",
+        "tv_webhook_ingest_enabled": "true",
         "ibkr_bar_batch_size": "40",
         "ibkr_bar_flush_interval": "2.0",
         "ibkr_bar_flush_retry_attempts": "4",
@@ -248,6 +302,7 @@ class Config:
         "ibkr_order_question_suppress_enabled": "false",
         "ibkr_order_question_suppress_message_ids": "",
         "ibkr_scan_schedule": "09:20-10:00",
+        "watchlist_interval_min": "5",
         "ibkr_daily_scan_time_et": "09:20",
         "ibkr_daily_scan_min_avg_10d_volume": "100000",
         "ibkr_daily_scan_min_atr_pct": "0.15",
@@ -276,6 +331,7 @@ class Config:
         "ibkr_daily_scan_data_completeness_blocking_intervals": "5m",
         "ibkr_daily_scan_runtime_topup_wait_sec": "20",
         "ibkr_daily_scan_runtime_topup_poll_sec": "2",
+        "ibkr_daily_scan_runtime_fallback_grace_sec": "480",
         "ibkr_daily_scan_indicator_snapshot_enabled": "true",
         "ibkr_daily_scan_indicator_snapshot_intervals": "5m,15m,30m,1h,4h,1d",
         "ibkr_daily_scan_rollup_enabled": "true",
@@ -309,6 +365,7 @@ class Config:
         "system_data_gap_alert_cooldown_min": "30",
         "system_data_gap_indicator_requires_targets": "true",
     }
+    REGISTRY = build_config_registry(DEFAULTS)
 
     def __init__(self, pb_client: PBClient = None):
         self.pb_client = pb_client
@@ -337,7 +394,21 @@ class Config:
             print(f"[Config] refresh error: {e}")
 
     def get(self, key: str, default: str = None) -> str:
-        return self._cache.get(key, default or self.DEFAULTS.get(key, ""))
+        fallback = default or self.DEFAULTS.get(key, "")
+        best_value = self._record_value_for_environment(key, "")
+        if best_value is None:
+            for alias_key in deprecated_aliases_for(self.REGISTRY, key):
+                best_value = self._record_value_for_environment(alias_key, "")
+                if best_value is not None:
+                    break
+        if best_value is not None:
+            return best_value
+        if key in self._cache:
+            return self._cache.get(key, fallback)
+        for alias_key in deprecated_aliases_for(self.REGISTRY, key):
+            if alias_key in self._cache:
+                return self._cache.get(alias_key, fallback)
+        return fallback
 
     def get_bool(self, key: str, default: bool = False) -> bool:
         val = self.get(key, str(default).lower())
@@ -364,9 +435,21 @@ class Config:
             for record in self._records_by_key.get(key, [])
         )
 
-    def get_for_environment(self, key: str, environment: str, default: str = None) -> str:
+    def has_value_for_environment(self, key: str, environment: str) -> bool:
         runtime_environment = str(environment or "").strip().lower()
-        fallback = default if default is not None else self.DEFAULTS.get(key, "")
+        if not key:
+            return False
+        for record in self._records_by_key.get(key, []):
+            value = record.get("value", "")
+            if value in (None, ""):
+                continue
+            record_environment = str(record.get("environment", "") or "").strip().lower()
+            if record_environment == runtime_environment or record_environment in ("", "global"):
+                return True
+        return False
+
+    def _record_value_for_environment(self, key: str, environment: str) -> str | None:
+        runtime_environment = str(environment or "").strip().lower()
         records = self._records_by_key.get(key, [])
         best_value = None
         best_rank = -1
@@ -381,6 +464,16 @@ class Config:
                 best_rank = rank
                 best_value = value
 
+        return best_value
+
+    def get_for_environment(self, key: str, environment: str, default: str = None) -> str:
+        fallback = default if default is not None else self.DEFAULTS.get(key, "")
+        best_value = self._record_value_for_environment(key, environment)
+        if best_value is None:
+            for alias_key in deprecated_aliases_for(self.REGISTRY, key):
+                best_value = self._record_value_for_environment(alias_key, environment)
+                if best_value is not None:
+                    break
         return best_value if best_value is not None else fallback
 
     def get_bool_for_environment(self, key: str, environment: str, default: bool = False) -> bool:

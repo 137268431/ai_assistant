@@ -20,6 +20,15 @@ function cfg(key, value, defaultValue, displayName, groupName, sortOrder, descri
   };
 }
 
+const CONFIG_ALIAS_FALLBACKS = {
+  pb_cron_system_market_open_reminder_enabled: ['pb_cron_system_scan_summary_enabled'],
+  pb_cron_ibkr_data_quality_repair_sweep_enabled: [
+    'pb_cron_ibkr_data_quality_open_sweep_enabled',
+    'pb_cron_ibkr_data_quality_close_sweep_enabled'
+  ],
+  pb_cron_ibkr_data_quality_truth_audit_enabled: ['pb_cron_ibkr_data_quality_premarket_truth_audit_enabled']
+};
+
 const configData = [
   cfg('ibkr_trading_enabled', 'TRUE', 'TRUE', '交易总开关', '运行总控', 100, 'OFF 时不下新单；仍执行信号拉取、取消确认、手动操作轮询与状态同步'),
   cfg('ibkr_compute_enabled', 'TRUE', 'TRUE', 'Compute 调度开关', '运行总控', 110, '控制自动 compute / scan 调度；关闭后不再自动计算指标和执行盘前扫描'),
@@ -28,11 +37,22 @@ const configData = [
   cfg('pb_cron_order_expiry_enabled', 'TRUE', 'TRUE', '订单过期取消', 'Scheduler 调度(兼容 key)', 131, '扫描 Init / Submitted 订单，超时后自动标记为 Canceled。Cron: */5 * * * *；周期: 每 5 分钟；时间窗口: 全天。受 Scheduler 总开关和本开关共同控制。'),
   cfg('pb_cron_order_detail_integrity_guard_enabled', 'TRUE', 'TRUE', '订单明细自愈', 'Scheduler 调度(兼容 key)', 131.5, '巡检 orders 与 ibkr_order_details 的当前状态是否一致，缺失时自动回补当前状态明细。Cron: */10 * * * *；周期: 每 10 分钟；时间窗口: 全天。受 Scheduler 总开关和本开关共同控制；默认静默补齐，不发送订单通知卡片。'),
   cfg('pb_cron_ibkr_compute_runtime_enabled', 'TRUE', 'TRUE', 'Compute + 状态摘要', 'Scheduler 调度(兼容 key)', 132, '触发 compute 调度。Cron: */5 * * * *；周期: 每 5 分钟检查一次；执行条件: 仅当已落库 5m bar ingest cursor 超过 compute dispatch cursor 时才调用 compute；空转时只比较 PB state 游标，覆盖盘前、盘中、盘后和 DST 切换。'),
+  cfg('pb_cron_system_heartbeat_enabled', 'TRUE', 'TRUE', '系统心跳', 'Scheduler 调度(兼容 key)', 132.1, '基于 ibkr-api 的 summaryz / monitorz 生成原生系统心跳与恢复通知。Cron: */5 4-20 * * 1-5；周期: 工作日 UTC 04:00-20:55 每 5 分钟。'),
+  cfg('pb_cron_system_monitor_alert_guard_enabled', 'TRUE', 'TRUE', '系统监控告警', 'Scheduler 调度(兼容 key)', 132.2, '读取 monitorz flags 和故障域状态，生成系统监控告警。Cron: */5 4-20 * * 1-5；周期: 工作日 UTC 04:00-20:55 每 5 分钟。'),
+  cfg('pb_cron_system_status_reminder_enabled', 'TRUE', 'TRUE', '系统状态摘要', 'Scheduler 调度(兼容 key)', 132.3, '定时发送 split stack 的系统状态摘要。Cron: 0,30 4-20 * * 1-5；周期: 工作日 UTC 04:00-20:30 每 30 分钟。'),
   cfg('pb_cron_ibkr_scan_runtime_enabled', 'TRUE', 'TRUE', '盘前 Scan', 'Scheduler 调度(兼容 key)', 133, '按 09:20 ET 触发盘前 daily scan，刷新当天 candidate / active 目标池。Cron: 20 9 * * 1-5；时区: America/New_York；周期: 美东工作日 09:20；时间窗口: 09:20 ET 日筛。受 Scheduler 总开关、Compute 开关和本开关共同控制。'),
+  cfg('pb_cron_ibkr_fundamentals_refresh_enabled', 'TRUE', 'TRUE', 'Fundamentals 刷新', 'Scheduler 调度(兼容 key)', 133.05, '盘前小批量刷新 trade watchlist 的股票基础数据。Cron: 5 8 * * 1-5；时区: America/New_York；周期: 工作日 ET 08:05。'),
+  cfg('pb_cron_system_scan_summary_enabled', 'TRUE', 'TRUE', '09:30 开盘交易摘要旧别名', 'Scheduler 调度(Deprecated)', 133.1, '旧日筛摘要开关；已并入 pb_cron_system_market_open_reminder_enabled，仅作为兼容 alias 保留。'),
   cfg('pb_cron_ibkr_early_expansion_topup_enabled', 'TRUE', 'TRUE', '早盘扩池补充', 'Scheduler 调度(兼容 key)', 133.2, '09:20 主池后，在 09:30-10:30 ET 每 10 分钟执行增量扩池；只增加新可操作标的并按需提醒。Cron: 30,40,50 9 * * 1-5 与 0,10,20,30 10 * * 1-5；时区: America/New_York。受 Scheduler 总开关、本开关和 status_notify_enabled 共同控制。'),
+  cfg('pb_cron_ibkr_intraday_window_admission_enabled', 'TRUE', 'TRUE', '盘中窗口入池', 'Scheduler 调度(兼容 key)', 133.25, '扫描 trade 观察池中已有新鲜 5m bars 的非 active 标的，按窗口与质量门槛自动加入 active 目标池。Cron: */5 9-15 * * 1-5；时区: America/New_York。'),
   cfg('pb_cron_ibkr_auth_edge_guard_enabled', 'TRUE', 'TRUE', '2FA 即时巡检', 'Scheduler 调度(兼容 key)', 134, '巡检 Session / 2FA 的边沿变化，并在会话失效、401 或进入待验证状态时立即告警。Cron: */1 4-20 * * 1-5；周期: 工作日 UTC 04:00-20:59 每 1 分钟；时间窗口: 盘前到盘后。受 Scheduler 总开关和本开关共同控制；长时间未恢复仍由 2FA 长时间未恢复巡检继续补报。'),
   cfg('pb_cron_ibkr_auth_pending_guard_enabled', 'TRUE', 'TRUE', '2FA 长时间未恢复巡检', 'Scheduler 调度(兼容 key)', 135, '巡检 Session / 2FA 长时间未恢复状态，并在需要时发出系统告警。Cron: */10 4-20 * * 1-5；周期: 工作日 UTC 04:00-20:50 每 10 分钟；时间窗口: 盘前到盘后。受 Scheduler 总开关和本开关共同控制。'),
   cfg('pb_cron_system_data_gap_guard_enabled', 'TRUE', 'TRUE', '数据缺口巡检', 'Scheduler 调度(兼容 key)', 136, '巡检 bars / indicators / 序列缺口，并在检测到市场活动异常时发出告警。Cron: */10 4-20 * * 1-5；周期: 工作日 UTC 04:00-20:50 每 10 分钟；时间窗口: 盘前到盘后。受 Scheduler 总开关、Compute 开关和本开关共同控制。'),
+  cfg('pb_cron_ibkr_data_quality_repair_sweep_enabled', 'TRUE', 'TRUE', '全观察池 Sweep', 'Scheduler 调度(兼容 key)', 136.2, '统一控制开盘前和收盘后两次全观察池 5m 一致性 sweep。Cron: 40 9 * * 1-5 与 10 20 * * 1-5；时区: UTC。'),
+  cfg('pb_cron_ibkr_data_quality_open_sweep_enabled', 'TRUE', 'TRUE', '开盘前 Sweep 旧别名', 'Scheduler 调度(Deprecated)', 136.21, '旧开盘前 sweep 开关；已并入 pb_cron_ibkr_data_quality_repair_sweep_enabled，仅作为兼容 alias 保留。'),
+  cfg('pb_cron_ibkr_data_quality_close_sweep_enabled', 'TRUE', 'TRUE', '收盘后 Sweep 旧别名', 'Scheduler 调度(Deprecated)', 136.22, '旧收盘后 sweep 开关；已并入 pb_cron_ibkr_data_quality_repair_sweep_enabled，仅作为兼容 alias 保留。'),
+  cfg('pb_cron_ibkr_data_quality_premarket_truth_audit_enabled', 'TRUE', 'TRUE', '盘前真值审计旧别名', 'Scheduler 调度(Deprecated)', 136.35, '旧盘前 truth audit 开关；已并入 pb_cron_ibkr_data_quality_truth_audit_enabled，仅作为兼容 alias 保留。'),
+  cfg('pb_cron_ibkr_data_quality_truth_audit_enabled', 'TRUE', 'TRUE', 'IBKR 真值审计', 'Scheduler 调度(兼容 key)', 136.4, '统一控制盘前上一交易日和盘后当天 IBKR authoritative history 真值审计。Cron: 20 8 * * 1-5 与 20 16 * * 1-5；时区: America/New_York。'),
   cfg('pb_cron_ibkr_weekly_reauth_reminder_enabled', 'TRUE', 'TRUE', '周验证提醒', 'Scheduler 调度(兼容 key)', 137, '每周发送一张周验证提醒卡片；只提醒，不自动触发 Gateway 登录。Cron: 0 5 * * 1；周期: 每周一 UTC 05:00；时间窗口: 北京时间周一 13:00 / 美东周一 01:00(EDT) 或 00:00(EST)。受 Scheduler 总开关和本开关共同控制。'),
   cfg('pb_cron_ibkr_weekly_reauth_followup_enabled', 'TRUE', 'TRUE', '周验证补提醒', 'Scheduler 调度(兼容 key)', 137.5, '若周验证仍停在待手动触发阶段，则补发一张飞书验证卡片提醒。Cron: 30 7 * * 1；周期: 每周一 UTC 07:30；时间窗口: 北京时间周一 15:30 / 美东周一 03:30(EDT) 或 02:30(EST)。受 Scheduler 总开关和本开关共同控制。'),
   cfg('pb_cron_ibkr_2fa_hourly_check_enabled', 'TRUE', 'TRUE', '2FA 每小时提醒', 'Scheduler 调度(兼容 key)', 138, '若 2FA 仍未恢复，则按小时补发飞书验证卡片提醒。Cron: 5 4-20 * * 1-5；周期: 工作日 UTC 每小时 05 分；时间窗口: 盘前到盘后。受 Scheduler 总开关和本开关共同控制。'),
@@ -97,7 +117,7 @@ const configData = [
   cfg('cooldown_bars_after_sl', '6', '6', '止损后冷却K线数', '交易风控', 405, '同标的止损后冷却多少根 5m K线，冷却期间不再开新仓'),
   cfg('cooldown_bars_after_reverse', '3', '3', '反向退出后冷却K线数', '交易风控', 406, '同标的反向信号平仓后冷却多少根 5m K线，冷却期间不再开新仓'),
   cfg('atr_dynamic_stop_enabled', 'TRUE', 'TRUE', 'ATR动态止损', '交易风控', 407, '开启后仅允许按 ATR 收紧止损，不放宽风险，不调整 TP'),
-  cfg('live_exit_policy_stop_update_enabled', 'TRUE', 'TRUE', '实盘追踪止盈调止损', '交易风控', 407.5, '开启后实盘按完成的 5m bar 使用共享 exit policy 计算，只允许收紧 stop，不放宽风险'),
+  cfg('live_exit_policy_stop_update_enabled', 'FALSE', 'FALSE', '实盘追踪止盈调止损', '交易风控', 407.5, '开启后实盘按完成的 5m bar 使用共享 exit policy 计算，只允许收紧 stop，不放宽风险'),
   cfg('atr_stop_min_profit_r', '0.3', '0.3', 'ATR调止损最小盈利R', '交易风控', 408, '持仓至少达到该 R 倍盈利后才允许 ATR 动态收紧止损'),
   cfg('atr_stop_deviation_threshold', '0.30', '0.30', 'ATR调止损变化阈值', '交易风控', 408.2, '当前 ATR 相对上次记录 ATR 变化超过该比例才触发收紧评估'),
   cfg('atr_stop_min_change', '0.01', '0.01', 'ATR调止损最小价差', '交易风控', 408.4, '新旧止损价差至少达到该值才尝试改单'),
@@ -393,6 +413,18 @@ async function importData(collection, data, uniqueField = null) {
       const resolvedUniqueField = collection === 'watchlist' && uniqueField === 'ticker' ? 'symbol' : uniqueField;
       const uniqueValue = resolvedUniqueField ? payload[resolvedUniqueField] : null;
       const existing = resolvedUniqueField ? await findExistingRecord(collection, resolvedUniqueField, uniqueValue) : null;
+      if (collection === 'config' && existing) {
+        payload.value = existing.value ?? payload.value;
+      } else if (collection === 'config') {
+        const aliases = CONFIG_ALIAS_FALLBACKS[payload.key] || [];
+        for (const aliasKey of aliases) {
+          const aliasRecord = await findExistingRecord(collection, resolvedUniqueField, aliasKey);
+          if (aliasRecord) {
+            payload.value = aliasRecord.value ?? payload.value;
+            break;
+          }
+        }
+      }
       const method = existing ? 'PATCH' : 'POST';
       const endpoint = existing
         ? `${BASE_URL}/api/collections/${collection}/records/${existing.id}`
