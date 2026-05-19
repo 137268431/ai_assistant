@@ -20,7 +20,7 @@
     display: grid;
     grid-template-columns: repeat(4, 1fr);
     gap: 8px;
-    padding: 0 16px 6px;
+    padding: 0 0 6px;
 }
 
 .status-bar.page-top-section {
@@ -92,7 +92,7 @@
 .dot-gray { background: #64748b; }
 
 .section {
-    margin: 0 16px 10px;
+    margin: 0 0 10px;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 12px;
@@ -116,7 +116,7 @@
     display: grid;
     grid-template-columns: minmax(0, 1.3fr) minmax(320px, 0.9fr);
     gap: 10px;
-    padding: 0 16px 10px;
+    padding: 0 0 10px;
     align-items: start;
 }
 .overview-column {

@@ -84,7 +84,14 @@ async function loadSystemData(showToastOnSuccess = false) {
         const cronDefinitions = Array.isArray(cronResp?.items) ? cronResp.items : [];
         const coreCompute = buildSystemComputeSummary(computeHealth, computeStatus, summaryLite?.ibkr_compute || {});
         const coreFreshnessItems = [];
-        renderStatus(buildSystemHealthSnapshot(computeHealth, computeStatus, coreFreshnessItems, summaryLite?.ibkr_compute || {}, cronResp?.scheduler || {}));
+        renderStatus(buildSystemHealthSnapshot(
+            computeHealth,
+            computeStatus,
+            coreFreshnessItems,
+            summaryLite?.ibkr_compute || {},
+            cronResp?.scheduler || {},
+            { preserveIbkrData: true, loadingOnMissingIbkrData: true }
+        ));
         renderFreshness(coreFreshnessItems);
         renderEngines(coreCompute);
         renderConfig(summaryLite || {}, cronDefinitions);
@@ -164,7 +171,15 @@ async function loadSystemData(showToastOnSuccess = false) {
             };
         });
 
-        renderStatus(buildSystemHealthSnapshot(computeHealth, computeStatus, freshnessItems, summaryLite?.ibkr_compute || {}, cronResp?.scheduler || {}));
+        const freshnessLoadHadErrors = secondaryErrors.some((item) => String(item || '').startsWith('freshness:'));
+        renderStatus(buildSystemHealthSnapshot(
+            computeHealth,
+            computeStatus,
+            freshnessItems,
+            summaryLite?.ibkr_compute || {},
+            cronResp?.scheduler || {},
+            { preserveIbkrData: freshnessLoadHadErrors }
+        ));
         renderTodayStats(todayStats);
         renderFreshness(freshnessItems);
         renderEngines(buildSystemComputeSummary(computeHealth, computeStatus, summaryLite?.ibkr_compute || {}));

@@ -3,6 +3,27 @@ let currentEnvironment = getCurrentRuntimeEnvironment();
 let currentFocus = '';
 let hasLoadedSystemData = false;
 let latestSystemLoadId = 0;
+let lastStableIbkrDataHealth = null;
+
+function cloneIbkrDataHealth(dataHealth = {}) {
+    if (!dataHealth || typeof dataHealth !== 'object') return null;
+    return {
+        ...dataHealth,
+        pending_symbols: Array.isArray(dataHealth.pending_symbols) ? dataHealth.pending_symbols.slice() : dataHealth.pending_symbols,
+    };
+}
+
+function isStableIbkrDataHealth(dataHealth = {}) {
+    const status = String(dataHealth?.status || '').trim().toLowerCase();
+    return Boolean(status && !['unknown', 'loading'].includes(status));
+}
+
+function rememberStableIbkrDataHealth(dataHealth = {}) {
+    if (isStableIbkrDataHealth(dataHealth)) {
+        lastStableIbkrDataHealth = cloneIbkrDataHealth(dataHealth);
+    }
+    return dataHealth;
+}
 
 function buildSystemComputeSummary(healthPayload = {}, statusPayload = {}, fallbackPayload = {}) {
     const statusCompute = statusPayload?.compute || {};
@@ -263,7 +284,7 @@ function buildRuntimeBarDataHealth(runtime = {}, latest5m = null) {
     };
 }
 
-function buildSystemHealthSnapshot(healthPayload = {}, statusPayload = {}, freshnessItems = [], fallbackCompute = {}, schedulerPayload = {}) {
+function buildSystemHealthSnapshot(healthPayload = {}, statusPayload = {}, freshnessItems = [], fallbackCompute = {}, schedulerPayload = {}, options = {}) {
     const runtime = statusPayload?.runtime || healthPayload?.runtime || {};
     const compute = buildSystemComputeSummary(healthPayload, statusPayload, fallbackCompute);
     const freshnessList = normalizeFreshnessItems(freshnessItems);
@@ -275,6 +296,12 @@ function buildSystemHealthSnapshot(healthPayload = {}, statusPayload = {}, fresh
             symbol: latest5m.symbol || '',
             noDataStatus: 'unknown'
         });
+    } else if (isStableIbkrDataHealth(dataHealth)) {
+        dataHealth = cloneIbkrDataHealth(dataHealth) || dataHealth;
+    } else if (options?.preserveIbkrData && lastStableIbkrDataHealth) {
+        dataHealth = cloneIbkrDataHealth(lastStableIbkrDataHealth) || { status: 'loading' };
+    } else if (options?.preserveIbkrData && options?.loadingOnMissingIbkrData) {
+        dataHealth = { status: 'loading' };
     } else if (!dataHealth || !dataHealth.status) {
         dataHealth = { status: 'unknown' };
     }
@@ -285,6 +312,7 @@ function buildSystemHealthSnapshot(healthPayload = {}, statusPayload = {}, fresh
             ...runtimeBarDataHealth,
         };
     }
+    dataHealth = rememberStableIbkrDataHealth(dataHealth);
 
     return {
         ibkr_data: dataHealth,

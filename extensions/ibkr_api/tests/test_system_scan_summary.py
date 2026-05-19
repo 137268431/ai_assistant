@@ -14,6 +14,7 @@ for src_root in SRC_ROOTS:
 from ibkr_api.system.jobs.scan_summary import build_system_scan_summary_response
 from ibkr_api.system.jobs.status_heartbeat import (
     _active_window_summary,
+    build_system_heartbeat_response,
     build_system_status_reminder_response,
 )
 from ibkr_api.system.jobs import open_report as open_report_mod
@@ -345,6 +346,97 @@ class SystemScanSummaryTest(unittest.TestCase):
         self.assertTrue(payload["skipped"])
         self.assertEqual(payload["reason"], "open_report_window")
         self.assertEqual(emitted, [])
+
+    def test_status_reminder_labels_paper_broker_with_shared_live_data(self):
+        emitted = []
+        summary_calls = []
+        monitor_calls = []
+        target_payloads = []
+        window_payloads = []
+
+        payload, status_code = build_system_status_reminder_response(
+            payload={"broker_mode": "paper", "market_data_mode": "live"},
+            normalize_environment=lambda value, default: str(value or default).strip().lower() or default,
+            time_strings=lambda: {"us": "2026-04-28 10:00:01", "cn": "2026-04-28 22:00:01", "date": "2026-04-28"},
+            build_system_summary_payload=lambda environment, lite_mode=False: summary_calls.append((environment, lite_mode)) or {
+                "status": "running",
+                "today": {"ibkr_bars": 10, "ibkr_signals": 0, "main_orders": 0},
+                "ibkr_compute": {"status": "running"},
+                "ibkr_runtime": {"status": "running"},
+                "daily_scan": {"status": "completed"},
+            },
+            build_system_monitor_payload=lambda environment: monitor_calls.append(environment) or {
+                "status": "ok",
+                "runtime": {
+                    "status": "running",
+                    "gateway": {"running": True},
+                    "session": {"authenticated": True},
+                    "websocket": {"connected": True},
+                },
+                "scheduler": {"status": "running", "latest_ingested_bar_time_ms": 1, "dispatch_lag_min": 0},
+                "service_monitor": {"status_counts": {"running": 6}},
+            },
+            emit_system_event=lambda **kwargs: emitted.append(kwargs) or {"notified": True},
+            build_today_targets_response=lambda *, payload: target_payloads.append(payload) or ({"summary": {}, "items": []}, 200),
+            build_active_window_progress_response=lambda *, payload: window_payloads.append(payload) or ({"summary": {}, "items": []}, 200),
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["environment"], "paper")
+        self.assertEqual(payload["broker_mode"], "paper")
+        self.assertEqual(payload["market_data_mode"], "live")
+        self.assertEqual(payload["data_environment"], "live")
+        self.assertEqual(summary_calls, [("paper", True)])
+        self.assertEqual(monitor_calls, ["paper"])
+        self.assertEqual(emitted[0]["environment"], "paper")
+        self.assertEqual(target_payloads[0]["environment"], "live")
+        self.assertEqual(target_payloads[0]["broker_mode"], "paper")
+        self.assertEqual(target_payloads[0]["market_data_mode"], "live")
+        self.assertEqual(window_payloads[0]["environment"], "live")
+        self.assertEqual(window_payloads[0]["broker_mode"], "paper")
+
+    def test_heartbeat_labels_paper_broker_with_shared_live_data(self):
+        emitted = []
+        state_writes = []
+
+        payload, status_code = build_system_heartbeat_response(
+            payload={"broker_mode": "paper", "market_data_mode": "live", "emit_nominal_ok": True},
+            normalize_environment=lambda value, default: str(value or default).strip().lower() or default,
+            time_strings=lambda: {"us": "2026-04-28 10:00:01", "cn": "2026-04-28 22:00:01", "date": "2026-04-28"},
+            build_system_summary_payload=lambda environment, lite_mode=False: {
+                "status": "running",
+                "today": {"ibkr_bars": 10, "ibkr_signals": 0, "main_orders": 0},
+                "ibkr_compute": {"status": "running"},
+                "ibkr_runtime": {"status": "running"},
+                "daily_scan": {"status": "completed"},
+            },
+            build_system_monitor_payload=lambda environment: {
+                "status": "ok",
+                "runtime": {
+                    "status": "running",
+                    "gateway": {"running": True},
+                    "session": {"authenticated": True},
+                    "websocket": {"connected": True},
+                },
+                "scheduler": {"status": "running", "latest_ingested_bar_time_ms": 1, "dispatch_lag_min": 0},
+                "service_monitor": {"status_counts": {"running": 6}},
+            },
+            emit_system_event=lambda **kwargs: emitted.append(kwargs) or {"notified": True},
+            get_state_payload=lambda state_key, environment: {"data": {}},
+            upsert_state=lambda key, environment, data, date: state_writes.append(
+                {"key": key, "environment": environment, "data": data, "date": date}
+            ) or data,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["environment"], "paper")
+        self.assertEqual(payload["broker_mode"], "paper")
+        self.assertEqual(payload["market_data_mode"], "live")
+        self.assertEqual(payload["data_environment"], "live")
+        self.assertEqual(emitted[0]["environment"], "paper")
+        self.assertEqual(state_writes[0]["environment"], "paper")
 
     def test_active_window_summary_hides_normal_no_window_items(self):
         detail = _active_window_summary(

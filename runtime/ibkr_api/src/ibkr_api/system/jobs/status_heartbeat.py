@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from ibkr_api.modes import request_market_data_mode
+from ibkr_api.modes import request_broker_mode, request_market_data_mode
 
 
 HEARTBEAT_STATE_KEY = "system_notify_heartbeat"
@@ -823,7 +823,8 @@ def _active_window_summary(active_window_payload: dict[str, Any], targets_payloa
 
 def _load_today_targets_payload(
     *,
-    environment: str,
+    broker_mode: str,
+    data_environment: str,
     market_date: str,
     build_today_targets_response: BuildTodayTargetsResponse | None,
 ) -> dict[str, Any]:
@@ -832,7 +833,10 @@ def _load_today_targets_payload(
     try:
         payload, _ = build_today_targets_response(
             payload={
-                "environment": environment,
+                "environment": data_environment,
+                "broker_mode": broker_mode,
+                "market_data_mode": data_environment,
+                "data_environment": data_environment,
                 "market_date": market_date,
                 "date": market_date,
                 "per_page": 200,
@@ -848,7 +852,8 @@ def _load_today_targets_payload(
 
 def _load_active_window_payload(
     *,
-    environment: str,
+    broker_mode: str,
+    data_environment: str,
     market_date: str,
     build_active_window_progress_response: BuildActiveWindowProgressResponse | None,
 ) -> dict[str, Any]:
@@ -857,7 +862,10 @@ def _load_active_window_payload(
     try:
         payload, _ = build_active_window_progress_response(
             payload={
-                "environment": environment,
+                "environment": data_environment,
+                "broker_mode": broker_mode,
+                "market_data_mode": data_environment,
+                "data_environment": data_environment,
                 "market_date": market_date,
                 "date": market_date,
                 "status": "all",
@@ -899,12 +907,13 @@ def build_system_heartbeat_response(
     upsert_state: UpsertState,
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
-    environment = request_market_data_mode(request_payload)
+    broker_mode = request_broker_mode(request_payload)
+    data_environment = request_market_data_mode(request_payload)
     emit_nominal_ok = _truthy(request_payload.get("emit_nominal_ok"), default=False)
     times = time_strings()
-    state = _as_dict(get_state_payload(HEARTBEAT_STATE_KEY, environment).get("data"))
+    state = _as_dict(get_state_payload(HEARTBEAT_STATE_KEY, broker_mode).get("data"))
     snapshot = _runtime_health_snapshot(
-        environment=environment,
+        environment=broker_mode,
         build_system_summary_payload=build_system_summary_payload,
         build_system_monitor_payload=build_system_monitor_payload,
     )
@@ -940,7 +949,7 @@ def build_system_heartbeat_response(
                     recovered_codes=recovered_codes,
                     remaining_codes=current_issue_codes,
                 ),
-                environment=environment,
+                environment=broker_mode,
             )
             next_state["last_partial_recovery_at"] = times["us"]
             next_state["last_partial_recovery_codes"] = recovered_codes
@@ -960,7 +969,7 @@ def build_system_heartbeat_response(
                 source="ibkr-api",
                 title=_heartbeat_title(snapshot, reminder=False),
                 detail=_heartbeat_detail(snapshot, timestamp_us=times["us"]),
-                environment=environment,
+                environment=broker_mode,
             )
     else:
         had_issue = bool(last_issue_hash)
@@ -978,7 +987,7 @@ def build_system_heartbeat_response(
                 source="ibkr-api",
                 title="IBKR 系统状态已恢复",
                 detail=_heartbeat_detail(snapshot, timestamp_us=times["us"]),
-                environment=environment,
+                environment=broker_mode,
             )
             next_state["last_recovery_at"] = times["us"]
         elif _to_text(times.get("us"))[14:16] == "00" and _to_text(state.get("last_ok_hour")) != current_hour:
@@ -989,17 +998,20 @@ def build_system_heartbeat_response(
                     source="ibkr-api",
                     title="IBKR 系统心跳（native）",
                     detail=_heartbeat_detail(snapshot, timestamp_us=times["us"]),
-                    environment=environment,
+                    environment=broker_mode,
                 )
                 next_state["last_ok_hour"] = current_hour
             else:
                 nominal_ok_suppressed = True
                 next_state["last_ok_suppressed_hour"] = current_hour
 
-    upsert_state(HEARTBEAT_STATE_KEY, environment, next_state, times["date"])
+    upsert_state(HEARTBEAT_STATE_KEY, broker_mode, next_state, times["date"])
     return {
         "ok": True,
-        "environment": environment,
+        "environment": broker_mode,
+        "broker_mode": broker_mode,
+        "market_data_mode": data_environment,
+        "data_environment": data_environment,
         "job_id": "system_heartbeat",
         "unhealthy": bool(snapshot.get("unhealthy")),
         "severity": _to_text(snapshot.get("severity")) or "warning",
@@ -1027,7 +1039,8 @@ def build_system_status_reminder_response(
     build_active_window_progress_response: BuildActiveWindowProgressResponse | None = None,
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
-    environment = request_market_data_mode(request_payload)
+    broker_mode = request_broker_mode(request_payload)
+    data_environment = request_market_data_mode(request_payload)
     times = time_strings()
     if _matches_open_report_time_window(
         times.get("us", ""),
@@ -1036,24 +1049,29 @@ def build_system_status_reminder_response(
     ):
         return {
             "ok": True,
-            "environment": environment,
+            "environment": broker_mode,
+            "broker_mode": broker_mode,
+            "market_data_mode": data_environment,
+            "data_environment": data_environment,
             "job_id": "system_status_reminder",
             "skipped": True,
             "reason": "open_report_window",
             "source": "ibkr-api",
         }, 200
     snapshot = _runtime_health_snapshot(
-        environment=environment,
+        environment=broker_mode,
         build_system_summary_payload=build_system_summary_payload,
         build_system_monitor_payload=build_system_monitor_payload,
     )
     targets_payload = _load_today_targets_payload(
-        environment=environment,
+        broker_mode=broker_mode,
+        data_environment=data_environment,
         market_date=times["date"],
         build_today_targets_response=build_today_targets_response,
     )
     active_window_payload = _load_active_window_payload(
-        environment=environment,
+        broker_mode=broker_mode,
+        data_environment=data_environment,
         market_date=times["date"],
         build_active_window_progress_response=build_active_window_progress_response,
     )
@@ -1069,11 +1087,14 @@ def build_system_status_reminder_response(
         source="ibkr-api",
         title=title,
         detail=detail,
-        environment=environment,
+        environment=broker_mode,
     )
     return {
         "ok": True,
-        "environment": environment,
+        "environment": broker_mode,
+        "broker_mode": broker_mode,
+        "market_data_mode": data_environment,
+        "data_environment": data_environment,
         "job_id": "system_status_reminder",
         "summary_status": _to_text(snapshot.get("summary_status")) or "unknown",
         "monitor_status": _to_text(snapshot.get("monitor_status")) or "unknown",

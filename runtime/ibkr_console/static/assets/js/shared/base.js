@@ -732,7 +732,7 @@ function cachedCustomJson(path, environment = '', requestOptionsOrCacheOptions =
   });
 }
 
-async function fetchCollectionFullList(collection, options = {}) {
+async function fetchCollectionFullListUncached(collection, options = {}) {
   const perPage = Math.max(1, Math.min(Number(options.perPage || 200), 200));
   const maxPages = Math.max(1, Number(options.maxPages || 20));
   const startPage = Math.max(1, Number(options.startPage || 1));
@@ -755,9 +755,13 @@ async function fetchCollectionFullList(collection, options = {}) {
   return items;
 }
 
+async function fetchCollectionFullList(collection, options = {}) {
+  return fetchCollectionFullListUncached(collection, options);
+}
+
 function fetchCollectionFullListCached(collection, options = {}, cacheOptions = {}) {
   const key = getSharedDataCacheKey('collectionFullList', { collection, options });
-  return getCachedValue(key, () => fetchCollectionFullList(collection, options), {
+  return getCachedValue(key, () => fetchCollectionFullListUncached(collection, options), {
     tags: ['apiFetch', 'collectionFullList', collection].concat(cacheOptions.tags || []),
     ...cacheOptions
   });

@@ -132,14 +132,19 @@ assert(indexHtml.includes('/ibkr_config.html'), 'home_config_entry_missing_href'
 assert(includesAll(indexHtml, ["services['ibkr-backtest']", "name: 'Backtest'"]), 'home_stack_missing_backtest_service_row');
 
 const systemHtml = readStatic('ibkr_system.html');
+const systemCss = readStatic('assets/css/pages/ibkr_system/page.css');
 const systemJs = readPageScriptBundle(
   'ibkr_system.html',
   'assets/js/pages/ibkr_system/',
   'assets/js/pages/ibkr_system/page.js',
 );
 assert(systemHtml.includes('运维摘要'), 'system_missing_ops_summary_section');
+assert(/\.status-bar\s*\{[^}]*padding:\s*0 0 6px;/.test(systemCss), 'system_status_bar_has_extra_horizontal_gutter');
+assert(/\.section\s*\{[^}]*margin:\s*0 0 10px;/.test(systemCss), 'system_section_has_extra_horizontal_gutter');
+assert(/\.overview-columns\s*\{[^}]*padding:\s*0 0 10px;/.test(systemCss), 'system_overview_columns_has_extra_horizontal_gutter');
 assert(systemJs.includes('ops-summary-link') && systemJs.includes('/ibkr_monitor.html'), 'system_summary_missing_monitor_link');
 assert(includesAll(systemJs, ["'ibkr-backtest'", 'Backtest Service', 'backtestIdle', 'IB client', 'IB Clients']), 'system_summary_missing_backtest_idle_or_client_copy');
+assert(includesAll(systemJs, ['lastStableIbkrDataHealth', 'preserveIbkrData', 'loadingOnMissingIbkrData', "status: 'loading'"]), 'system_missing_ibkr_data_stable_cache');
 
 const screenerCss = readStatic('assets/css/pages/ibkr_screener/page.css');
 assert(!/screener-domain-bridge[\s\S]{0,240}page-bridge-copy[\s\S]{0,80}display:\s*none/.test(screenerCss), 'screener_bridge_copy_hidden');
@@ -198,4 +203,4 @@ if (issues.length) {
   process.exit(1);
 }
 
-console.log(JSON.stringify({ ok: true, checks: 44, staticRoot }, null, 2));
+console.log(JSON.stringify({ ok: true, checks: 48, staticRoot }, null, 2));
