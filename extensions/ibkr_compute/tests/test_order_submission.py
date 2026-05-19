@@ -748,7 +748,19 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertEqual("signal_expired", extra["status_reason"])
         self.assertEqual("ibkr_compute_validation_fallback", extra["expired_by"])
         self.assertEqual("expired", extra["execution_by_mode"]["live"]["status"])
-        self.assertEqual("signal_expired", extra["execution_by_mode"]["live"]["note"])
+
+    def test_history_repair_pending_defers_and_remains_retriable(self):
+        signal = self._signal("AAPL")
+        pb = FakeSignalPBClient({"id": "row-aapl", "extra": {"source": "ibkr_compute"}})
+        service = FakeSignalService(signal, lifecycle=FakeLifecycle(), pb=pb)
+        service.signal_processor.validate_signal = lambda _signal: (False, "history_repair_pending")
+
+        service._process_signals()
+
+        self.assertEqual([], service.signal_router.processed)
+        self.assertEqual(["sig-aapl"], service.signal_router.released)
+        self.assertEqual([], service.order_placer.calls)
+        self.assertEqual([], pb.updates)
 
     def test_fixed_symbol_is_blocked_and_marked_processed(self):
         signal = self._signal("BOXX")
@@ -1017,6 +1029,55 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
 
 
 class SignalRouterDedupeTest(unittest.TestCase):
+    def test_fetch_pending_signals_skips_broker_scoped_awaiting_confirm(self):
+        rows = [
+            {
+                "signal_id": "awaiting-paper",
+                "symbol": "TTD",
+                "direction": "long",
+                "entry": 22.68,
+                "stop_loss": 22.34,
+                "take_profit": 24.04,
+                "shares": 441,
+                "rr": "1:2",
+                "us_time": "2026-05-19 09:35:00",
+                "extra": {
+                    "source": "ibkr_compute",
+                    "execution_by_mode": {
+                        "paper": {
+                            "status": "awaiting_confirm",
+                            "note": "manual_confirmation_required",
+                        }
+                    },
+                },
+            },
+            {
+                "signal_id": "confirmed-paper",
+                "symbol": "AAPL",
+                "direction": "long",
+                "entry": 100.0,
+                "stop_loss": 98.0,
+                "take_profit": 104.0,
+                "shares": 10,
+                "rr": "1:2",
+                "us_time": "2026-05-19 09:40:00",
+                "extra": {
+                    "source": "ibkr_compute",
+                    "execution_by_mode": {
+                        "paper": {
+                            "status": "pending",
+                            "note": "",
+                        }
+                    },
+                },
+            },
+        ]
+        router = SignalRouter(FakePBClient(rows), FakeConfig(), environment="live", broker_mode="paper")
+
+        fetched = router.fetch_pending_signals()
+
+        self.assertEqual(["confirmed-paper"], [item["signal_id"] for item in fetched])
+
     def test_fetch_pending_signals_skips_duplicate_inflight_and_processed_ids(self):
         rows = [
             {

@@ -334,7 +334,7 @@ def add_public_checks(payload: dict, args: argparse.Namespace) -> dict:
         "pb_api_health": fetch_url(f"{pb_base_url}/api/health", expect_json=True),
         "pb_root_page": fetch_url(f"{pb_base_url}/"),
         "api_public_health": fetch_url(f"{api_public_url}/health", expect_json=True),
-        "api_public_status": fetch_url(f"{api_public_url}/status", expect_json=True),
+        "api_public_status": fetch_url(f"{api_public_url}/status?lite=1", expect_json=True),
         "console_home_page": fetch_url(
             f"{args.console_base_url.rstrip('/')}/index.html?environment={args.environment}"
         ),
@@ -353,7 +353,7 @@ def add_public_checks(payload: dict, args: argparse.Namespace) -> dict:
             expect_json=True,
         ),
         "api_system_monitorz": fetch_url(
-            f"{api_public_url}/api/custom/system/monitorz?environment={args.environment}",
+            f"{api_public_url}/api/custom/system/monitorz?lite=1&environment={args.environment}",
             expect_json=True,
         ),
         "compute_public_health": (

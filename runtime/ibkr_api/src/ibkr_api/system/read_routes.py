@@ -34,11 +34,49 @@ def register_system_read_routes(app, *, deps: SystemDeps, exports: dict[str, Any
         }
         return request_broker_mode(payload), request_market_data_mode(payload)
 
+    def _scheduler_status_lite(environment: str, *, broker_mode: str, market_data_mode: str) -> dict[str, Any]:
+        try:
+            return scheduler_status(
+                environment,
+                broker_mode=broker_mode,
+                market_data_mode=market_data_mode,
+                lite=True,
+            )
+        except TypeError as exc:
+            if "lite" not in str(exc):
+                raise
+            return scheduler_status(
+                environment,
+                broker_mode=broker_mode,
+                market_data_mode=market_data_mode,
+            )
+
     @app.route("/api/custom/system/cronz", methods=["GET"])
     def custom_system_cronz() -> Response:
         broker_mode, market_data_mode = _request_modes_from_args()
+        if parse_boolean(request.args.get("lite"), False):
+            return jsonify(
+                {
+                    "ok": True,
+                    "items": [],
+                    "scheduler": {
+                        "ok": True,
+                        "status": "running",
+                        "environment": market_data_mode,
+                        "broker_mode": broker_mode,
+                        "market_data_mode": market_data_mode,
+                        "lite": True,
+                    },
+                    "environment": market_data_mode,
+                    "broker_mode": broker_mode,
+                    "market_data_mode": market_data_mode,
+                    "source": "ibkr-api",
+                    "service_topology": build_service_topology(),
+                    "lite": True,
+                }
+            )
         config.refresh()
-        scheduler_payload = scheduler_status(
+        scheduler_payload = _scheduler_status_lite(
             market_data_mode,
             broker_mode=broker_mode,
             market_data_mode=market_data_mode,
@@ -88,7 +126,7 @@ def register_system_read_routes(app, *, deps: SystemDeps, exports: dict[str, Any
     def custom_system_schedulerz() -> Response:
         broker_mode, market_data_mode = _request_modes_from_args()
         config.refresh()
-        scheduler_payload = scheduler_status(
+        scheduler_payload = _scheduler_status_lite(
             market_data_mode,
             broker_mode=broker_mode,
             market_data_mode=market_data_mode,
@@ -194,6 +232,22 @@ def register_system_read_routes(app, *, deps: SystemDeps, exports: dict[str, Any
     @app.route("/api/custom/system/monitorz", methods=["GET"])
     def custom_system_monitorz() -> Response:
         environment, _market_data_mode = _request_modes_from_args()
+        if parse_boolean(request.args.get("lite"), False):
+            summary = build_system_summary_payload(environment, lite_mode=True)
+            return jsonify(
+                {
+                    "ok": bool(summary.get("ok", False)),
+                    "status": str(summary.get("status") or "offline"),
+                    "environment": summary.get("environment") or environment,
+                    "broker_mode": environment,
+                    "data_environment": summary.get("data_environment") or _market_data_mode,
+                    "market_data_environment": summary.get("data_environment") or _market_data_mode,
+                    "service_topology": summary.get("service_topology") if isinstance(summary.get("service_topology"), dict) else build_service_topology(),
+                    "service_monitor": summary.get("service_monitor") if isinstance(summary.get("service_monitor"), dict) else {},
+                    "source": "ibkr-api",
+                    "lite": True,
+                }
+            )
         return jsonify(build_system_monitor_payload(environment))
 
     exports["custom_system_monitorz"] = custom_system_monitorz

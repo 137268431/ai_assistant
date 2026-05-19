@@ -156,6 +156,7 @@ def _with_broker_execution(
         **broker_payload,
         "status": status,
         "note": note,
+        "status_reason": note,
         "data_environment": data_environment,
         "market_data_mode": data_environment,
         "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),

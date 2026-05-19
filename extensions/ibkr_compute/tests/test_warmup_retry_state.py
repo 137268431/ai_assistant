@@ -2,6 +2,7 @@ import sys
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "src"
 if str(SRC_ROOT) not in sys.path:
@@ -210,6 +211,84 @@ class WarmupRetryStateTest(unittest.TestCase):
         self.assertEqual(state["integrity_pending_symbols"], ["QQQ"])
         self.assertEqual(state["symbols_total"], 4)
         self.assertEqual(state["monitor_symbols_total"], 3)
+
+    def test_trade_readiness_uses_current_compute_when_startup_snapshot_is_stale(self):
+        service = DummyWarmupRetryState()
+        service._running = True
+        service.session_keeper = type("Session", (), {"is_authenticated": True})()
+        service._warmup_state.update(
+            {
+                "phase": "degraded",
+                "trading_gate_open": False,
+                "trading_gate_reason": "history_repair_pending",
+                "symbols": ["AAPL"],
+                "subscription_symbols": ["AAPL"],
+                "trade_symbols": ["AAPL"],
+                "monitor_symbols": [],
+                "trade_symbols_total": 1,
+                "ready_trade_symbols": 0,
+            }
+        )
+        service._warmup_uses_remote_compute_service = lambda: True
+        readiness = {
+            "environment": "live",
+            "status": "ready",
+            "hard_gate_interval": "5m",
+            "symbols_total": 1,
+            "intervals": {
+                "5m": {
+                    "status": "ready",
+                    "missing_ready_symbols": [],
+                    "missing_ready_symbols_total": 0,
+                }
+            },
+        }
+
+        with mock.patch("ibkr_compute.api.compute_status_client.get_remote_compute_status", return_value={"multi_timeframe_readiness": readiness}):
+            state = service._trade_readiness_snapshot()
+
+        self.assertTrue(state["open"])
+        self.assertEqual(state["reason"], "ready")
+        self.assertEqual(state["source"], "runtime_multi_timeframe_readiness")
+
+    def test_trade_readiness_reports_missing_trade_symbol_reason(self):
+        service = DummyWarmupRetryState()
+        service._running = True
+        service.session_keeper = type("Session", (), {"is_authenticated": True})()
+        service._warmup_state.update(
+            {
+                "phase": "degraded",
+                "trading_gate_open": False,
+                "trading_gate_reason": "history_repair_pending",
+                "symbols": ["AAPL", "SPY"],
+                "subscription_symbols": ["AAPL", "SPY"],
+                "trade_symbols": ["AAPL"],
+                "monitor_symbols": ["SPY"],
+                "trade_symbols_total": 1,
+                "ready_trade_symbols": 0,
+            }
+        )
+        service._warmup_uses_remote_compute_service = lambda: True
+        readiness = {
+            "environment": "live",
+            "status": "blocked",
+            "hard_gate_interval": "5m",
+            "symbols_total": 2,
+            "intervals": {
+                "5m": {
+                    "status": "blocked",
+                    "missing_ready_symbols": ["AAPL"],
+                    "missing_ready_symbols_total": 1,
+                }
+            },
+        }
+
+        with mock.patch("ibkr_compute.api.compute_status_client.get_remote_compute_status", return_value={"multi_timeframe_readiness": readiness}):
+            state = service._trade_readiness_snapshot()
+
+        self.assertFalse(state["open"])
+        self.assertEqual(state["reason"], "missing_trade_symbols")
+        self.assertEqual(state["symbols"], ["AAPL"])
 
 
 if __name__ == "__main__":

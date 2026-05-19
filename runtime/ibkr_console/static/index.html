@@ -528,8 +528,18 @@
             const rowsEl = document.getElementById('overviewServiceRows');
             if (!cardEl || !summaryEl || !rowsEl) return;
 
-            const topology = summary?.service_topology || {};
-            const services = topology?.services || {};
+            const rawTopology = summary?.service_topology || {};
+            const monitorServices = summary?.service_monitor?.services && typeof summary.service_monitor.services === 'object'
+                ? summary.service_monitor.services
+                : {};
+            const services = {
+                ...(rawTopology?.services || {}),
+                ...monitorServices,
+            };
+            const topology = {
+                ...rawTopology,
+                services,
+            };
             const runtimeService = services['ibkr-runtime'] || {};
             const computeService = services['ibkr-compute'] || {};
             const backtestService = services['ibkr-backtest'] || {};
@@ -544,6 +554,7 @@
             const runtimeRunning = normalizeHomeServiceStatus(runtimeService.status) === 'running';
             const gatewayRunning = normalizeHomeServiceStatus(gatewayService.status) === 'running';
             const runtimeAuthenticated = runtimeService.session_authenticated === true;
+            const runtimeOperational = (runtimeRunning || runtimeAuthenticated) && gatewayRunning;
             const computeStatusSource = computeService.status || computeSummary.status || 'unknown';
             const computeStatus = normalizeHomeServiceStatus(computeStatusSource);
             const computeReadinessPhase = String(computeService.readiness_phase || '').trim().toLowerCase();
@@ -565,7 +576,7 @@
                     label: runtimeAuthenticated
                         ? 'AUTH'
                         : (runtimeRunning ? 'WAIT' : getHomeServiceLabel(runtimeService.status || summary?.ibkr_runtime?.status || 'unknown')),
-                    tone: runtimeRunning && runtimeAuthenticated && gatewayRunning
+                    tone: runtimeOperational && runtimeAuthenticated
                         ? 'running'
                         : (runtimeRunning ? 'warning' : getHomeServiceTone(runtimeService.status || summary?.ibkr_runtime?.status || 'unknown'))
                 },
@@ -589,7 +600,11 @@
                         if (workerStatus && workerStatus !== 'READY' && workerStatus !== 'UNKNOWN') return workerStatus;
                         return getHomeServiceLabel(backtestService.status || 'unknown');
                     })(),
-                    tone: getHomeServiceTone(backtestService.status || 'unknown')
+                    tone: (() => {
+                        const workerStatus = String(backtestService.worker_status || backtestService.readiness_phase || '').trim().toLowerCase();
+                        if (workerStatus === 'idle') return 'neutral';
+                        return getHomeServiceTone(backtestService.status || 'unknown');
+                    })()
                 },
                 {
                     name: 'API',

@@ -234,20 +234,31 @@ function getIbkrSchedulerSummary(payload = {}, environment = '') {
     const jobStatusCounts = source.job_status_counts && typeof source.job_status_counts === 'object'
         ? source.job_status_counts
         : {};
+    const meta = source._meta && typeof source._meta === 'object' ? source._meta : {};
+    const stale = source.stale === true || meta.from_cache === true;
+    const staleAgeSeconds = Number(source.stale_age_s || meta.stale_age_s || 0) || 0;
+    const metaError = String(meta.error || source.error || '').trim();
     const statusCountSummary = Object.entries(jobStatusCounts)
         .filter(([, count]) => Number(count || 0) > 0)
         .sort((left, right) => String(left[0]).localeCompare(String(right[0])))
         .map(([key, count]) => `${String(key).toUpperCase()} ${Number(count || 0)}`);
+    const jobCount = Number(source.job_count || 0) || 0;
 
     return {
         ok: Boolean(source.ok),
         status,
-        tone: getIbkrServiceHealthTone(status, 'neutral'),
+        tone: stale ? 'warn' : getIbkrServiceHealthTone(status, 'neutral'),
+        stale,
+        staleAgeSeconds,
+        staleAgeLabel: staleAgeSeconds > 0 ? formatIbkrLagMinutesLabel(staleAgeSeconds / 60) : '--',
+        meta,
+        metaError,
         environment: String(source.environment || environment || '').trim().toLowerCase(),
         environmentLabel: getEnvironmentLabel(source.environment || environment || ''),
         loopIntervalSeconds,
         loopIntervalLabel: loopIntervalSeconds > 0 ? `${Math.round(loopIntervalSeconds)}s` : '--',
-        jobCount: Number(source.job_count || 0) || 0,
+        jobCount,
+        hasJobState: jobCount > 0 || statusCountSummary.length > 0,
         enabledJobCount: Number(source.enabled_job_count || 0) || 0,
         nativeJobCount: Number(source.native_job_count || 0) || 0,
         compatibilityJobCount: Number(source.compatibility_job_count || 0) || 0,
@@ -262,19 +273,20 @@ function getIbkrSchedulerSummary(payload = {}, environment = '') {
         ingestCursor: source.ingest_cursor && typeof source.ingest_cursor === 'object' ? source.ingest_cursor : {},
         computeDispatchCursor: source.compute_dispatch_cursor && typeof source.compute_dispatch_cursor === 'object' ? source.compute_dispatch_cursor : {},
         jobStatusCounts,
-        statusCountSummary: statusCountSummary.length ? statusCountSummary.join(' · ') : '暂无 job state',
+        statusCountSummary: statusCountSummary.length ? statusCountSummary.join(' · ') : (metaError ? '状态同步中' : '暂无 job state'),
     };
 }
 
 function getIbkrSchedulerJobCardData(definition = {}, environment = '') {
     const state = definition?.job_state && typeof definition.job_state === 'object' ? definition.job_state : {};
+    const hasJobState = Object.keys(state).length > 0;
     const runnerKind = String(definition.runner_kind || '').trim().toLowerCase() || 'compatibility_pending';
     const stateStatus = String(state.status || '').trim().toLowerCase();
     const effectiveEnabled = Boolean(definition.effective_enabled);
-    const status = !effectiveEnabled ? 'disabled' : (stateStatus || 'idle');
+    const status = !effectiveEnabled ? 'disabled' : (hasJobState ? (stateStatus || 'idle') : 'syncing');
     const tone = !effectiveEnabled
         ? 'warn'
-        : (getIbkrServiceHealthTone(status, runnerKind.startsWith('native_') ? 'ok' : 'neutral'));
+        : (status === 'syncing' ? 'warn' : getIbkrServiceHealthTone(status, runnerKind.startsWith('native_') ? 'ok' : 'neutral'));
     const modeLabel = runnerKind === 'compatibility_pending'
         ? 'COMPAT'
         : (runnerKind === 'native_compute_dispatch' ? 'NATIVE DISPATCH' : 'NATIVE');
@@ -286,6 +298,7 @@ function getIbkrSchedulerJobCardData(definition = {}, environment = '') {
         title: definition.display_name || definition.config_display_name || definition.id || 'Scheduler Job',
         configKey: definition.config_key || definition.id || '-',
         effectiveEnabled,
+        hasJobState,
         schedulerEnabled: Boolean(definition.scheduler_enabled),
         cronEnabled: Boolean(definition.cron_enabled),
         functionSummary: definition.function_summary || '--',

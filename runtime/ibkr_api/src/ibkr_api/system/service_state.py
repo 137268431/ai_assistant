@@ -184,6 +184,7 @@ def derive_runtime_state(runtime: dict[str, Any], *, observed_at: str) -> dict[s
     )
     auth_active = _auth_recovery_active(payload)
     warmup_active = _warmup_active(payload)
+    core_ready = gateway_ready and session_ready and websocket_ready
 
     if not payload:
         status = "offline"
@@ -195,6 +196,11 @@ def derive_runtime_state(runtime: dict[str, Any], *, observed_at: str) -> dict[s
         phase = runtime_phase
         ready = False
         detail = f"phase {runtime_phase}"
+    elif core_ready:
+        status = "running"
+        phase = "ready"
+        ready = True
+        detail = f"phase {runtime_phase or 'running'}"
     elif startup_incomplete or auth_active or warmup_active:
         status = "starting"
         ready = False

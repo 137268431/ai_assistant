@@ -1009,28 +1009,73 @@
             };
         }
 
+        function describeGateReason(reason) {
+            const normalized = String(reason || '').trim().toLowerCase();
+            const map = {
+                ready: '当前 live readiness 已通过',
+                background_repair: '后台修复仍在进行，但交易标的已可用',
+                non_trade_readiness_pending: '仅 monitor / 非交易标的未就绪，不阻塞交易',
+                history_repair_pending: '启动快照仍标记历史修复中',
+                missing_trade_symbols: '交易标的 readiness 缺失',
+                remote_compute_status_unavailable: '无法确认 compute readiness',
+                remote_compute_status_missing: 'compute readiness 返回缺失',
+                session_unauthenticated: 'IBKR session 未认证',
+                runtime_stopped: 'runtime 已停止',
+                no_trade_symbols: '当前没有交易标的，关闭是预期状态',
+                live_not_ready: '当前 live readiness 未就绪',
+                warmup_incomplete: '预热尚未完成'
+            };
+            return map[normalized] || (normalized ? normalized.replace(/_/g, ' ') : '原因缺失');
+        }
+
+        function summarizeGateBlockers(blockers) {
+            const items = Array.isArray(blockers) ? blockers.filter((item) => item && typeof item === 'object') : [];
+            if (!items.length) return '';
+            return items.map((item) => {
+                const code = String(item.code || '').trim() || 'blocker';
+                const total = Number(item.symbols_total || 0) || 0;
+                const sample = Array.isArray(item.symbols_sample) && item.symbols_sample.length
+                    ? ` ${item.symbols_sample.slice(0, 5).join(',')}${total > 5 ? '…' : ''}`
+                    : '';
+                return `${code}${total ? ` ${total}` : ''}${sample}`;
+            }).join(' / ');
+        }
+
         function deriveTradingGateStatus(payload) {
+            const effectiveGate = payload?.effective_trading_gate || payload?.runtime?.effective_trading_gate || null;
             const processor = payload?.runtime?.signal_processor || {};
             const marketSession = payload?.runtime?.market_session || {};
-            const gateOpen = Boolean(processor?.trading_gate_open);
+            const gateOpen = effectiveGate && typeof effectiveGate === 'object'
+                ? Boolean(effectiveGate.open)
+                : Boolean(processor?.trading_gate_open);
             const activePositions = Number(processor?.active_positions || 0) || 0;
-            const reason = String(processor?.trading_gate_reason || '').trim() || '--';
+            const reason = String(
+                effectiveGate?.reason
+                || processor?.trading_gate_reason
+                || ''
+            ).trim();
+            const source = String(effectiveGate?.source || 'signal_processor').trim() || 'signal_processor';
+            const message = String(effectiveGate?.message || describeGateReason(reason)).trim();
+            const blockers = summarizeGateBlockers(effectiveGate?.blockers);
+            const rawSignal = effectiveGate?.raw_signal_gate || {};
+            const rawSignalClosed = gateOpen && rawSignal && rawSignal.open === false;
             if (gateOpen) {
                 return {
                     tone: 'chip-ok',
                     label: 'OPEN',
                     value: 'OPEN',
-                    copy: `positions ${activePositions} · window ${processor?.trade_window_start_time || '--'}-${processor?.trade_window_end_time || '--'}`,
-                    summary: `gate open · pos ${activePositions}`,
+                    copy: `${message} · source ${source}${rawSignalClosed ? ' · raw signal closed but not blocking' : ''}`,
+                    summary: `gate open · ${source} · pos ${activePositions}`,
                 };
             }
             const offHours = marketSession?.is_open === false || String(marketSession?.kind || '').toLowerCase() === 'closed';
+            const missingReason = !reason || reason === '--';
             return {
-                tone: offHours ? 'chip-muted' : 'chip-warn',
+                tone: missingReason ? 'chip-error' : (offHours || reason === 'no_trade_symbols' ? 'chip-muted' : 'chip-warn'),
                 label: 'CLOSED',
                 value: 'CLOSED',
-                copy: `reason ${reason} · positions ${activePositions}`,
-                summary: `gate closed · ${reason}`,
+                copy: `reason ${reason || 'missing'} · ${message}${blockers ? ` · blockers ${blockers}` : ''}`,
+                summary: `gate closed · ${reason || 'reason_missing'}`,
             };
         }
 
@@ -2059,7 +2104,7 @@
                 {
                     label: 'Signal Positions',
                     value: formatInteger(runtime?.signal_processor?.active_positions || 0),
-                    copy: `gate ${runtime?.signal_processor?.trading_gate_open ? 'OPEN' : (runtime?.signal_processor?.trading_gate_reason || 'CLOSED')}`,
+                    copy: `gate ${tradingGateStatus.value} · ${tradingGateStatus.copy}`,
                 },
                 {
                     label: 'Active Tick Lag',

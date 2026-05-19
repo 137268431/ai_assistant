@@ -15,11 +15,26 @@ function getSchedulerStatusCardModel(summary = {}) {
     const lagLabel = scheduler.dispatchLagLabel && scheduler.dispatchLagLabel !== '--'
         ? `lag ${scheduler.dispatchLagLabel}`
         : '等待 bar cursor';
+    const cacheLabel = scheduler.stale ? `缓存 ${scheduler.staleAgeLabel}` : '';
     if (!scheduler.ok && scheduler.status === 'offline') {
         return {
             dotClass: 'dot-red',
             mainText: 'OFFLINE',
             subText: scheduler.statusCountSummary || 'scheduler status 不可用',
+        };
+    }
+    if (!scheduler.ok && scheduler.status === 'unknown') {
+        return {
+            dotClass: 'dot-yellow',
+            mainText: 'UNKNOWN',
+            subText: scheduler.metaError || scheduler.statusCountSummary || 'scheduler status 同步中',
+        };
+    }
+    if (scheduler.stale) {
+        return {
+            dotClass: 'dot-yellow',
+            mainText: `${String(scheduler.status || 'running').toUpperCase()} CACHE`,
+            subText: [cacheLabel, lagLabel, scheduler.statusCountSummary].filter(Boolean).join(' · '),
         };
     }
     if (scheduler.status === 'degraded' || scheduler.dispatchLagMin >= 10) {
@@ -591,12 +606,24 @@ function renderSchedulerOverview(cronPayload = {}, summary = {}) {
     const scheduler = getIbkrSchedulerSummary(cronPayload?.scheduler || {}, currentEnvironment);
     const configMap = buildIbkrConfigMap(summary);
     const cards = definitions.map((definition) => getIbkrSchedulerJobCardData(definition, currentEnvironment));
+    const enabledDefinitionCount = cards.filter((card) => card.effectiveEnabled).length;
+    const coverageDenominator = scheduler.hasJobState ? (scheduler.jobCount || definitions.length || 0) : (definitions.length || 0);
+    const coverageNumerator = scheduler.hasJobState ? (scheduler.enabledJobCount || enabledDefinitionCount || 0) : null;
+    const schedulerStateValue = `${String(scheduler.status || '--').toUpperCase()}${scheduler.stale ? ' CACHE' : ''}`;
+    const schedulerStateCopy = [
+        `loop ${scheduler.loopIntervalLabel}`,
+        scheduler.environmentLabel,
+        scheduler.stale ? `缓存 ${scheduler.staleAgeLabel}` : '',
+    ].filter(Boolean).join(' · ');
+    const jobCoverageCopy = scheduler.hasJobState
+        ? `native ${scheduler.nativeJobCount || 0} · compat ${scheduler.compatibilityJobCount || 0}`
+        : (scheduler.metaError || '状态同步中 · 暂无 job state');
 
     const summaryCards = [
         {
             label: 'Scheduler State',
-            value: String(scheduler.status || '--').toUpperCase(),
-            copy: `loop ${scheduler.loopIntervalLabel} · ${scheduler.environmentLabel}`,
+            value: schedulerStateValue,
+            copy: schedulerStateCopy,
             tone: scheduler.tone,
         },
         {
@@ -607,15 +634,15 @@ function renderSchedulerOverview(cronPayload = {}, summary = {}) {
         },
         {
             label: 'Job Coverage',
-            value: `${scheduler.enabledJobCount || 0}/${scheduler.jobCount || 0}`,
-            copy: `native ${scheduler.nativeJobCount || 0} · compat ${scheduler.compatibilityJobCount || 0}`,
-            tone: scheduler.compatibilityJobCount > 0 ? 'warn' : 'ok',
+            value: coverageNumerator == null ? `--/${coverageDenominator || '--'}` : `${coverageNumerator}/${coverageDenominator || 0}`,
+            copy: jobCoverageCopy,
+            tone: scheduler.hasJobState ? (scheduler.compatibilityJobCount > 0 ? 'warn' : 'ok') : 'warn',
         },
         {
             label: 'Last Dispatch',
             value: scheduler.lastDispatchLabel,
             copy: scheduler.statusCountSummary,
-            tone: scheduler.ok ? 'ok' : 'error',
+            tone: scheduler.ok ? (scheduler.stale ? 'warn' : 'ok') : 'error',
         },
     ];
 
@@ -636,7 +663,7 @@ function renderSchedulerOverview(cronPayload = {}, summary = {}) {
                                 <div class="cron-card-title">${escapeHtml(card.title)}</div>
                                 <div class="cron-card-key">${escapeHtml(card.configKey)}</div>
                             </div>
-                            <span class="cron-state ${card.effectiveEnabled ? 'on' : 'off'}">${escapeHtml(card.statusLabel)}</span>
+                            <span class="cron-state ${card.effectiveEnabled && card.status !== 'syncing' ? 'on' : 'off'}">${escapeHtml(card.statusLabel)}</span>
                         </div>
                         <div class="cron-copy">${escapeHtml(card.functionSummary)}</div>
                         <div class="cron-meta">

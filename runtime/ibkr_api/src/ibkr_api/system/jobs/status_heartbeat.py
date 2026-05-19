@@ -10,6 +10,7 @@ HEARTBEAT_STATE_KEY = "system_notify_heartbeat"
 HEARTBEAT_ALERT_COOLDOWN_MS = 30 * 60 * 1000
 DEFAULT_OPEN_REPORT_TIME_ET = "09:30"
 DEFAULT_OPEN_REPORT_WINDOW_MINUTES = 10
+DEFAULT_STATUS_REMINDER_ACTIVE_WINDOW_LIMIT = 50
 ALERT_FLAG_SEVERITIES = {"warning", "error"}
 CONNECTION_ISSUE_CODES = {"gateway_offline", "session_unauthenticated", "websocket_not_ready"}
 DEGRADED_SERVICE_STATUSES = {"degraded", "warning"}
@@ -855,10 +856,12 @@ def _load_active_window_payload(
     broker_mode: str,
     data_environment: str,
     market_date: str,
+    limit: int = DEFAULT_STATUS_REMINDER_ACTIVE_WINDOW_LIMIT,
     build_active_window_progress_response: BuildActiveWindowProgressResponse | None,
 ) -> dict[str, Any]:
     if not callable(build_active_window_progress_response):
         return {}
+    bounded_limit = max(1, min(200, _to_int(limit, DEFAULT_STATUS_REMINDER_ACTIVE_WINDOW_LIMIT)))
     try:
         payload, _ = build_active_window_progress_response(
             payload={
@@ -870,7 +873,7 @@ def _load_active_window_payload(
                 "date": market_date,
                 "status": "all",
                 "interval": "5m",
-                "limit": 200,
+                "limit": bounded_limit,
             }
         )
     except Exception as exc:
@@ -1073,6 +1076,10 @@ def build_system_status_reminder_response(
         broker_mode=broker_mode,
         data_environment=data_environment,
         market_date=times["date"],
+        limit=_to_int(
+            request_payload.get("active_window_limit"),
+            DEFAULT_STATUS_REMINDER_ACTIVE_WINDOW_LIMIT,
+        ),
         build_active_window_progress_response=build_active_window_progress_response,
     )
     detail = _enrich_status_detail_with_targets(

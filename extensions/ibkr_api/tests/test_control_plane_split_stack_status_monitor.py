@@ -69,9 +69,10 @@ class ControlPlaneSplitStackStatusMonitorTest(unittest.TestCase):
             "jobs": {"ibkr_compute_runtime": {"status": "ok"}},
         }
         with mock.patch.object(api_app_mod.config, "refresh", return_value=None):
-            with mock.patch.object(api_app_mod, "_scheduler_status", return_value=scheduler_payload):
+            with mock.patch.object(api_app_mod, "_scheduler_status", return_value=scheduler_payload) as scheduler_status:
                 payload = api_app_mod.status()
         self.assertTrue(payload["ok"])
+        scheduler_status.assert_called_once_with("live", lite=True)
         self.assertIn("ibkr/2fa/request", payload["compatibility"]["native_custom_routes"])
         self.assertIn("ibkr/2fa/respond", payload["compatibility"]["native_custom_routes"])
         self.assertIn("ibkr/2fa/result", payload["compatibility"]["native_custom_routes"])
@@ -151,6 +152,48 @@ class ControlPlaneSplitStackStatusMonitorTest(unittest.TestCase):
         self.assertFalse(payload["compatibility"]["fallback_to_pocketbase_webhooks"])
         self.assertEqual(payload["compatibility"]["unmatched_custom_route_behavior"], "404_from_ibkr_api")
         self.assertEqual(payload["compatibility"]["unmatched_webhook_route_behavior"], "404_from_ibkr_api")
+
+    def test_monitorz_lite_returns_summary_without_full_monitor(self):
+        summary_payload = {
+            "ok": True,
+            "status": "running",
+            "environment": "paper",
+            "data_environment": "live",
+            "service_topology": {"services": {"ibkr-api": {"status": "running"}}},
+            "service_monitor": {"services": {"ibkr-api": {"status": "running"}}},
+        }
+        with mock.patch.object(api_app_mod, "_build_system_summary_payload", return_value=summary_payload) as summary_builder:
+            with mock.patch.object(api_app_mod, "_build_system_monitor_payload") as monitor_builder:
+                with mock.patch.object(api_app_mod.request, "args", {"broker_mode": "paper", "market_data_mode": "live", "lite": "1"}):
+                    payload = api_app_mod.custom_system_monitorz()
+
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["lite"])
+        self.assertEqual(payload["status"], "running")
+        self.assertEqual(payload["data_environment"], "live")
+        summary_builder.assert_called_once_with("paper", lite_mode=True)
+        monitor_builder.assert_not_called()
+
+    def test_api_status_lite_skips_scheduler_payload(self):
+        with mock.patch.object(api_app_mod, "_scheduler_status") as scheduler_status:
+            with mock.patch.object(api_app_mod.request, "args", {"environment": "live", "lite": "1"}):
+                payload = api_app_mod.status()
+
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["lite"])
+        self.assertIn("ibkr-api", payload["service_topology"]["services"])
+        scheduler_status.assert_not_called()
+
+    def test_cronz_lite_skips_scheduler_payload(self):
+        with mock.patch.object(api_app_mod, "_scheduler_status") as scheduler_status:
+            with mock.patch.object(api_app_mod.request, "args", {"broker_mode": "paper", "market_data_mode": "live", "lite": "1"}):
+                payload = api_app_mod.custom_system_cronz()
+
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["lite"])
+        self.assertEqual(payload["items"], [])
+        self.assertEqual(payload["scheduler"]["market_data_mode"], "live")
+        scheduler_status.assert_not_called()
 
     def test_generic_custom_proxy_rejects_unmatched_routes_in_api(self):
         payload, status_code = api_app_mod.custom_proxy("ibkr/legacy_fallback")
@@ -578,6 +621,54 @@ class ControlPlaneSplitStackStatusMonitorTest(unittest.TestCase):
         self.assertTrue(live["gate_open"])
         self.assertTrue(live["trade_allowed"])
         self.assertEqual(live["gate_reason"], "ready")
+
+    def test_effective_gate_opens_when_live_readiness_supersedes_stale_snapshot(self):
+        compute_payload = _sample_compute_status_payload()
+        compute_payload["engines"] = {}
+        compute_payload["multi_timeframe_readiness"] = {
+            "symbols_total": 1,
+            "hard_gate_interval": "5m",
+            "intervals": {
+                "5m": {
+                    "status": "ready",
+                    "symbols_total": 1,
+                    "missing_ready_symbols_total": 0,
+                    "missing_ready_symbols": [],
+                }
+            },
+        }
+        runtime_payload = _sample_runtime_status_payload(authenticated=True)
+        runtime_payload["signal_processor"] = {
+            "active_positions": 0,
+            "trading_gate_open": False,
+            "trading_gate_reason": "history_repair_pending",
+        }
+        runtime_payload["warmup"].update(
+            {
+                "phase": "degraded",
+                "trading_gate_open": False,
+                "trading_gate_reason": "history_repair_pending",
+                "ready_trade_symbols": 0,
+                "pending_symbols": ["AAPL"],
+                "integrity_pending_symbols": ["AAPL"],
+                "integrity_repair_reasons": {"AAPL": "bars<212"},
+            }
+        )
+        runtime_payload["multi_timeframe_readiness"] = compute_payload["multi_timeframe_readiness"]
+
+        live = api_app_mod._build_statusz_live_readiness(compute_payload, runtime_payload)
+        runtime_view = api_app_mod._build_statusz_runtime_payload(
+            runtime_payload,
+            True,
+            live_readiness=live,
+        )
+
+        gate = runtime_view["effective_trading_gate"]
+        self.assertTrue(gate["open"])
+        self.assertEqual(gate["reason"], "ready")
+        self.assertTrue(gate["snapshot_differs"])
+        self.assertFalse(gate["raw_signal_gate"]["open"])
+        self.assertFalse(gate["raw_startup_snapshot"]["open"])
 
     def test_statusz_route_canonicalizes_reboot_starting_runtime_state(self):
         compute_result = {"ok": True, "payload": _sample_compute_status_payload(), "error": ""}

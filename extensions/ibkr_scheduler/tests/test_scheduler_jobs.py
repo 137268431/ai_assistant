@@ -114,6 +114,72 @@ class _FakeResponse:
 
 
 class SchedulerJobsTest(unittest.TestCase):
+    def test_status_lite_omits_heavy_items_and_families(self):
+        class _FakeScheduler:
+            def job_states_for_modes(self, broker_mode, market_data_mode):
+                return {"system_heartbeat": {"status": "ok", "last_success_at_ms": 1}}
+
+            def _get_ingest_cursor(self, market_data_mode):
+                return {"latest_ingested_bar_time_ms": 1}
+
+            def _get_dispatch_cursor(self, market_data_mode):
+                return {"latest_dispatched_bar_time_ms": 1}
+
+        fake_config = _FakeConfig()
+        with mock.patch.object(scheduler_app_mod, "scheduler", _FakeScheduler()), mock.patch.object(
+            scheduler_app_mod,
+            "config",
+            fake_config,
+        ):
+            if hasattr(scheduler_app_mod.app, "test_client"):
+                with scheduler_app_mod.app.test_client() as client:
+                    response = client.get("/status?broker_mode=paper&market_data_mode=live&lite=1")
+                    payload = response.get_json()
+            else:
+                with mock.patch.object(
+                    scheduler_app_mod,
+                    "request",
+                    SimpleNamespace(args={"broker_mode": "paper", "market_data_mode": "live", "lite": "1"}),
+                ):
+                    payload = scheduler_app_mod.status()
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual("paper", payload["broker_mode"])
+        self.assertEqual("live", payload["market_data_mode"])
+        self.assertIn("jobs", payload)
+        self.assertNotIn("items", payload)
+        self.assertNotIn("families", payload)
+
+    def test_long_running_native_jobs_use_per_job_timeouts(self):
+        scheduler = SchedulerService(_FakePB(), _FakeConfig())
+
+        with mock.patch.object(scheduler_app_mod, "run_upstream_http_job", return_value={"ok": True}) as run_mock:
+            scheduler._run_native_http_job(
+                "ibkr_scan_runtime",
+                "live",
+                broker_mode="paper",
+                market_data_mode="live",
+                mode_scope="market_data",
+            )
+            scheduler._run_native_http_job(
+                "ibkr_data_quality_truth_audit_cycle",
+                "live",
+                broker_mode="paper",
+                market_data_mode="live",
+                mode_scope="market_data",
+            )
+            scheduler._run_native_api_job(
+                "system_status_reminder",
+                "live",
+                broker_mode="paper",
+                market_data_mode="live",
+                mode_scope="market_data",
+            )
+
+        self.assertEqual(run_mock.call_args_list[0].kwargs["timeout_seconds"], 180)
+        self.assertEqual(run_mock.call_args_list[1].kwargs["timeout_seconds"], 300)
+        self.assertEqual(run_mock.call_args_list[2].kwargs["timeout_seconds"], 150)
+
     def test_cron_matches_minute_supports_ranges_steps_and_weekdays(self):
         monday = datetime(2026, 4, 20, 9, 40, tzinfo=timezone.utc)
         weekend = datetime(2026, 4, 19, 9, 40, tzinfo=timezone.utc)

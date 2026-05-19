@@ -43,6 +43,129 @@ class ControlPlaneSplitStackSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(payload["scheduler"]["dispatch_lag_min"], 5.0)
         self.assertIn("ibkr-scheduler", payload["service_topology"]["services"])
 
+    def test_scheduler_status_returns_stale_cache_when_upstream_times_out(self):
+        from ibkr_api.system import scheduler_support as scheduler_support_mod
+
+        scheduler_support_mod._SCHEDULER_STATUS_CACHE.clear()
+        calls = []
+
+        def fake_request_json(base_url, path, params=None, timeout=5):
+            calls.append({"base_url": base_url, "path": path, "params": params, "timeout": timeout})
+            if len(calls) == 1:
+                return {
+                    "ok": True,
+                    "status_code": 200,
+                    "target_url": "http://scheduler/status",
+                    "error": "",
+                    "payload": {
+                        "ok": True,
+                        "status": "running",
+                        "environment": "live",
+                        "loop_interval_seconds": 30,
+                        "jobs": {"ibkr_compute_runtime": {"status": "ok"}},
+                        "ingest_cursor": {},
+                        "compute_dispatch_cursor": {},
+                    },
+                }
+            return {
+                "ok": False,
+                "status_code": 0,
+                "target_url": "http://scheduler/status",
+                "error": "Read timed out",
+                "payload": {},
+            }
+
+        first = scheduler_support_mod.scheduler_status(
+            "live",
+            request_json=fake_request_json,
+            scheduler_base_url="http://scheduler",
+            broker_mode="paper",
+            market_data_mode="live",
+        )
+        second = scheduler_support_mod.scheduler_status(
+            "live",
+            request_json=fake_request_json,
+            scheduler_base_url="http://scheduler",
+            broker_mode="paper",
+            market_data_mode="live",
+        )
+
+        self.assertFalse(first["stale"])
+        self.assertTrue(second["stale"])
+        self.assertTrue(second["_meta"]["from_cache"])
+        self.assertEqual(second["jobs"]["ibkr_compute_runtime"]["status"], "ok")
+        self.assertEqual(calls[0]["timeout"], scheduler_support_mod.SCHEDULER_STATUS_TIMEOUT_SECONDS)
+
+    def test_scheduler_status_reports_unknown_when_no_cache_exists(self):
+        from ibkr_api.system import scheduler_support as scheduler_support_mod
+
+        scheduler_support_mod._SCHEDULER_STATUS_CACHE.clear()
+        payload = scheduler_support_mod.scheduler_status(
+            "live",
+            request_json=lambda *args, **kwargs: {
+                "ok": False,
+                "status_code": 0,
+                "target_url": "http://scheduler/status",
+                "error": "Read timed out",
+                "payload": {},
+            },
+            scheduler_base_url="http://scheduler",
+            broker_mode="paper",
+            market_data_mode="live",
+        )
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["status"], "unknown")
+        self.assertEqual(payload["_meta"]["error"], "Read timed out")
+
+    def test_summaryz_lite_includes_backtest_service_health(self):
+        from ibkr_api.system.summary_support import build_system_summary_payload
+
+        payload = build_system_summary_payload(
+            "paper",
+            lite_mode=True,
+            normalize_environment=lambda value, default="paper": str(value or default),
+            load_effective_config_map=lambda environment, keys=None: {"ibkr_compute_enabled": "TRUE"},
+            is_enabled_text=lambda value: str(value).upper() == "TRUE",
+            fetch_compute_health=lambda environment: {"ok": True, "payload": {"status": "running"}},
+            fetch_compute_status=lambda environment: {"ok": True, "payload": _sample_compute_status_payload()},
+            fetch_runtime_status=lambda environment: {"ok": True, "payload": _sample_runtime_status_payload(environment="paper")},
+            fetch_backtest_health=lambda environment: {
+                "ok": True,
+                "status_code": 200,
+                "payload": {
+                    "ok": True,
+                    "status": "running",
+                    "service": "ibkr-backtest",
+                    "backtest": {"status": "idle", "active_runs": 0, "queue_depth": 0},
+                    "ib_gateway_client_id": 81,
+                },
+            },
+            as_dict=api_app_mod._as_dict,
+            merge_service_topology=api_app_mod._merge_service_topology,
+            load_recent_system_events=lambda environment, limit: [],
+            time_strings=lambda: {"us": "2026-05-19 10:00:00", "cn": "2026-05-19 22:00:00", "date": "2026-05-19"},
+            load_today_counts=lambda environment, market_date: {},
+            collect_storage_health=lambda environment, config_map: {"ok": True, "status": "ok"},
+        )
+
+        backtest = payload["service_monitor"]["services"]["ibkr-backtest"]
+        self.assertEqual(backtest["status"], "running")
+        self.assertEqual(backtest["worker_status"], "idle")
+        self.assertIn("client 81", backtest["detail"])
+
+    def test_authenticated_warmup_runtime_is_reported_running(self):
+        from ibkr_api.system.service_state import derive_runtime_state
+
+        runtime_payload = _sample_runtime_status_payload(authenticated=True)
+        runtime_payload["warmup"]["phase"] = "running"
+        runtime_payload["warmup"]["trading_gate_open"] = True
+        state = derive_runtime_state(runtime_payload, observed_at="2026-05-19T14:00:00+00:00")
+
+        self.assertEqual(state["status"], "running")
+        self.assertEqual(state["readiness_phase"], "ready")
+        self.assertTrue(state["ready"])
+
     def test_manual_scheduler_scan_job_route_proxies_allowlisted_job(self):
         calls = []
 
@@ -79,7 +202,8 @@ class ControlPlaneSplitStackSchedulerJobsTest(unittest.TestCase):
             api_app_mod.request,
             "get_json",
             return_value={
-                "environment": "live",
+                "broker_mode": "paper",
+                "market_data_mode": "live",
                 "job_id": "ibkr_scan_runtime",
                 "trigger_source": "console_manual_daily_scan",
             },
@@ -100,7 +224,8 @@ class ControlPlaneSplitStackSchedulerJobsTest(unittest.TestCase):
             api_app_mod.request,
             "get_json",
             return_value={
-                "environment": "live",
+                "broker_mode": "paper",
+                "market_data_mode": "live",
                 "job_id": "system_daily_report",
             },
         ):
@@ -109,7 +234,7 @@ class ControlPlaneSplitStackSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(status_code, 400)
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["error"], "unsupported_scheduler_job")
-        self.assertEqual(payload["allowed_jobs"], ["ibkr_scan_runtime"])
+        self.assertEqual(payload["allowed_jobs"], ["ibkr_compute_runtime", "ibkr_scan_runtime"])
 
     def test_scheduler_dispatches_only_new_persisted_bars_and_updates_cursor(self):
         pb = _FakePB()

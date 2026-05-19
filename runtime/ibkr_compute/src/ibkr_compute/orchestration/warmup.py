@@ -471,12 +471,164 @@ class TradingServiceWarmupMixin:
             ),
         }
 
+    def _trade_readiness_scope_snapshot(self, state: dict) -> dict:
+        snapshot = {
+            "symbols": self._normalize_symbol_list(state.get("symbols") or []),
+            "trade_symbols": self._normalize_symbol_list(state.get("trade_symbols") or []),
+            "monitor_symbols": self._normalize_symbol_list(state.get("monitor_symbols") or []),
+            "subscription_symbols": self._normalize_symbol_list(state.get("subscription_symbols") or []),
+        }
+        if snapshot["trade_symbols"] or snapshot["subscription_symbols"] or snapshot["symbols"]:
+            return snapshot
+        try:
+            return self._warmup_snapshot_from_subscriptions()
+        except Exception:
+            return snapshot
+
+    def _trade_readiness_from_current_compute(self, state: dict) -> dict | None:
+        service_mod = _service_mod()
+        snapshot = self._trade_readiness_scope_snapshot(state)
+        trade_symbols = self._normalize_symbol_list(snapshot.get("trade_symbols") or [])
+        if not trade_symbols:
+            return {"open": False, "reason": "no_trade_symbols", "source": "current_readiness"}
+
+        requested_symbols = self._normalize_symbol_list(
+            snapshot.get("subscription_symbols")
+            or list(trade_symbols) + list(snapshot.get("monitor_symbols") or [])
+            or snapshot.get("symbols")
+            or []
+        )
+        if not requested_symbols:
+            requested_symbols = trade_symbols
+
+        required_interval = getattr(service_mod, "DEFAULT_WARMUP_REQUIRED_INTERVAL", "5m")
+        readiness = {}
+        source = "local_multi_timeframe_readiness"
+        try:
+            uses_remote = False
+            uses_remote_fn = getattr(self, "_warmup_uses_remote_compute_service", None)
+            if callable(uses_remote_fn):
+                uses_remote = bool(uses_remote_fn())
+            if uses_remote:
+                from ibkr_compute.api.compute_status_client import get_remote_compute_status
+
+                chunk_size = 30
+                missing_symbols: list[str] = []
+                latest_bar_time_ms = 0
+                latest_indicator_time_ms = 0
+                storage_checked = False
+                unknown = False
+                for index in range(0, len(requested_symbols), chunk_size):
+                    chunk = requested_symbols[index:index + chunk_size]
+                    payload = get_remote_compute_status(
+                        force_refresh=False,
+                        symbols=chunk,
+                        include_engines=False,
+                    )
+                    candidate = dict(payload.get("multi_timeframe_readiness") or {}) if isinstance(payload, dict) else {}
+                    intervals = candidate.get("intervals") if isinstance(candidate.get("intervals"), dict) else {}
+                    interval = intervals.get(required_interval) if isinstance(intervals.get(required_interval), dict) else {}
+                    if not interval:
+                        unknown = True
+                        missing_symbols.extend(chunk)
+                        continue
+                    storage_checked = storage_checked or bool(interval.get("storage_checked"))
+                    latest_bar_time_ms = max(latest_bar_time_ms, int(interval.get("latest_bar_time_ms", 0) or 0))
+                    latest_indicator_time_ms = max(
+                        latest_indicator_time_ms,
+                        int(interval.get("latest_indicator_time_ms", 0) or 0),
+                    )
+                    missing_symbols.extend(self._normalize_symbol_list(interval.get("missing_ready_symbols") or []))
+                missing_symbols = self._normalize_symbol_list(missing_symbols)
+                readiness = {
+                    "environment": service_mod.DATA_ENVIRONMENT,
+                    "status": "unknown" if unknown else ("blocked" if missing_symbols else "ready"),
+                    "hard_gate_interval": required_interval,
+                    "symbols_total": len(requested_symbols),
+                    "intervals": {
+                        required_interval: {
+                            "status": "blocked" if missing_symbols else "ready",
+                            "storage_checked": storage_checked,
+                            "symbols_total": len(requested_symbols),
+                            "missing_ready_symbols": missing_symbols[:50],
+                            "missing_ready_symbols_total": len(missing_symbols),
+                            "latest_bar_time_ms": latest_bar_time_ms,
+                            "latest_indicator_time_ms": latest_indicator_time_ms,
+                        }
+                    },
+                }
+                source = "runtime_multi_timeframe_readiness"
+            else:
+                from ibkr_compute.api.compute.prime import build_multi_timeframe_readiness
+
+                readiness = build_multi_timeframe_readiness(
+                    environment=service_mod.DATA_ENVIRONMENT,
+                    symbols=requested_symbols,
+                    intervals=[required_interval],
+                    use_cache=True,
+                    include_storage=True,
+                )
+        except Exception:
+            readiness = {}
+
+        intervals = readiness.get("intervals") if isinstance(readiness.get("intervals"), dict) else {}
+        hard_interval = str(readiness.get("hard_gate_interval") or required_interval or "5m").strip() or "5m"
+        interval = intervals.get(hard_interval) if isinstance(intervals.get(hard_interval), dict) else {}
+        if not interval:
+            if bool(state.get("trading_gate_open")):
+                return {"open": True, "reason": str(state.get("trading_gate_reason") or "ready"), "source": "previous_warmup_snapshot"}
+            return {"open": False, "reason": "remote_compute_status_unavailable", "source": source}
+
+        status = str(interval.get("status") or "").strip().lower()
+        missing_ready_symbols = self._normalize_symbol_list(interval.get("missing_ready_symbols") or [])
+        try:
+            missing_ready_total = int(interval.get("missing_ready_symbols_total", len(missing_ready_symbols)) or 0)
+        except (TypeError, ValueError):
+            missing_ready_total = len(missing_ready_symbols)
+        missing_trade_symbols = sorted(set(missing_ready_symbols).intersection(trade_symbols))
+
+        if status == "ready" and missing_ready_total == 0:
+            return {"open": True, "reason": "ready", "source": source}
+        if missing_ready_total > 0 and missing_ready_symbols and not missing_trade_symbols:
+            return {"open": True, "reason": "non_trade_readiness_pending", "source": source}
+        if missing_trade_symbols:
+            return {
+                "open": False,
+                "reason": "missing_trade_symbols",
+                "source": source,
+                "symbols": missing_trade_symbols[:20],
+            }
+        if bool(state.get("trading_gate_open")):
+            return {"open": True, "reason": str(state.get("trading_gate_reason") or "ready"), "source": "previous_warmup_snapshot"}
+        return {"open": False, "reason": "remote_compute_status_missing", "source": source}
+
     def _trade_readiness_snapshot(self) -> dict:
         if not self._running:
             return {"open": False, "reason": "runtime_stopped"}
         if not self.session_keeper.is_authenticated:
             return {"open": False, "reason": "session_unauthenticated"}
         state = self._copy_warmup_state()
+        current = self._trade_readiness_from_current_compute(state)
+        if current and current.get("open"):
+            return {
+                "open": True,
+                "reason": str(current.get("reason") or "ready"),
+                "phase": state.get("phase"),
+                "source": str(current.get("source") or "current_readiness"),
+            }
+        if current and str(current.get("reason") or "") in {
+            "missing_trade_symbols",
+            "no_trade_symbols",
+            "remote_compute_status_unavailable",
+            "remote_compute_status_missing",
+        }:
+            return {
+                "open": False,
+                "reason": str(current.get("reason") or "warmup_incomplete"),
+                "phase": state.get("phase"),
+                "source": str(current.get("source") or "current_readiness"),
+                "symbols": list(current.get("symbols") or []),
+            }
         if state.get("trading_gate_open"):
             return {
                 "open": True,

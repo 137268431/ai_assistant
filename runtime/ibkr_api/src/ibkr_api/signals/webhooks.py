@@ -134,6 +134,7 @@ def _broker_scoped_execution_patch(
         "note": note,
         "broker_mode": broker_mode,
         "data_environment": data_environment,
+        "status_reason": to_text(extra_update.get("status_reason") or note),
         "updated_at": extra_update.get("confirmed_at")
         or extra_update.get("rejected_at")
         or extra_update.get("expired_at")

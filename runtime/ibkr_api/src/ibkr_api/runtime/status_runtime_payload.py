@@ -17,6 +17,7 @@ from .status_runtime_sections import (
 )
 from .status_runtime_warmup import build_runtime_warmup_payload
 from .status_types import AsDict, NormalizeSymbolList, TrimArray, TrimObjectEntries
+from .effective_gate import build_effective_trading_gate
 
 
 def _resolve_daily_scan(payload: dict[str, Any], fallback: dict[str, Any], *, as_dict: AsDict) -> dict[str, Any]:
@@ -61,8 +62,16 @@ def build_statusz_runtime_payload(
     fallback = as_dict(fallback_state)
     daily_scan = _resolve_daily_scan(payload, fallback, as_dict=as_dict)
     market_universe = _resolve_market_universe(payload, fallback, daily_scan, as_dict=as_dict)
+    live = as_dict(live_readiness)
+    warmup = build_runtime_warmup_payload(
+        payload.get("warmup"),
+        include_warmup_details,
+        as_dict=as_dict,
+        normalize_symbol_list=normalize_symbol_list,
+        trim_array=trim_array,
+    )
 
-    return {
+    runtime_view = {
         "ok": payload.get("ok") if payload else None,
         "starting": bool(payload.get("starting")),
         "startup_complete": bool(payload.get("startup_complete")),
@@ -79,7 +88,7 @@ def build_statusz_runtime_payload(
         "service_topology": as_dict(payload.get("service_topology")),
         "market_session": as_dict(payload.get("market_session")),
         "warmup_details_included": bool(include_warmup_details),
-        "live_readiness": as_dict(live_readiness),
+        "live_readiness": live,
         "gateway": build_gateway_payload(payload.get("gateway"), as_dict=as_dict),
         "session": build_session_payload(payload.get("session"), as_dict=as_dict),
         "auth_recovery": build_auth_recovery_summary(payload.get("auth_recovery"), as_dict=as_dict),
@@ -92,13 +101,7 @@ def build_statusz_runtime_payload(
         ),
         "data_backfill": build_data_backfill_payload(payload.get("data_backfill"), as_dict=as_dict),
         "order_tracker": build_order_tracker_payload(payload.get("order_tracker"), as_dict=as_dict),
-        "warmup": build_runtime_warmup_payload(
-            payload.get("warmup"),
-            include_warmup_details,
-            as_dict=as_dict,
-            normalize_symbol_list=normalize_symbol_list,
-            trim_array=trim_array,
-        ),
+        "warmup": warmup,
         "realtime_compute": build_realtime_compute_payload(payload.get("realtime_compute"), as_dict=as_dict),
         "daily_scan": build_daily_scan_payload(daily_scan, as_dict=as_dict),
         "market_universe": build_market_universe_payload(
@@ -109,6 +112,10 @@ def build_statusz_runtime_payload(
         ),
         "runtime_control": as_dict(payload.get("runtime_control")),
     }
+    runtime_view["signal_processor"] = as_dict(payload.get("signal_processor"))
+    runtime_view["multi_timeframe_readiness"] = as_dict(payload.get("multi_timeframe_readiness"))
+    runtime_view["effective_trading_gate"] = build_effective_trading_gate(runtime_view, live_readiness=live)
+    return runtime_view
 
 
 __all__ = ["build_statusz_runtime_payload"]

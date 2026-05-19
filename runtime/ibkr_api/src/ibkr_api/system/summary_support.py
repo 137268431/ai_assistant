@@ -78,6 +78,7 @@ def build_system_summary_payload(
     fetch_compute_health: FetchPayload,
     fetch_compute_status: FetchPayload,
     fetch_runtime_status: FetchPayload,
+    fetch_backtest_health: FetchPayload | None = None,
     as_dict: AsDict,
     merge_service_topology: MergeServiceTopology,
     load_recent_system_events: LoadRecentSystemEvents,
@@ -99,10 +100,16 @@ def build_system_summary_payload(
     compute_health = fetch_compute_health(data_environment)
     compute_status = fetch_compute_status(data_environment)
     runtime_status = fetch_runtime_status(runtime_environment)
+    backtest_health = fetch_backtest_health(data_environment) if fetch_backtest_health is not None else {}
 
     compute_health_payload = as_dict(compute_health.get("payload"))
     compute_status_payload = as_dict(compute_status.get("payload"))
     runtime_payload = as_dict(runtime_status.get("payload"))
+    backtest_health_payload = as_dict(backtest_health.get("payload")) if isinstance(backtest_health, dict) else {}
+    backtest_service = {
+        **(backtest_health if isinstance(backtest_health, dict) else {}),
+        "payload": backtest_health_payload,
+    }
 
     compute_summary = {
         "ok": bool(compute_health.get("ok")) or bool(compute_status.get("ok")) or bool(compute_health_payload) or bool(compute_status_payload),
@@ -133,7 +140,7 @@ def build_system_summary_payload(
             part for part in (str(compute_health.get("error") or ""), str(compute_status.get("error") or "")) if part
         )
 
-    merged_topology = merge_service_topology(compute_summary, runtime_payload)
+    merged_topology = merge_service_topology(compute_summary, runtime_payload, backtest_health_payload, backtest_service)
     service_monitor = build_service_monitor_from_topology(runtime_environment, merged_topology)
     runtime_summary = {
         "ok": bool(runtime_status.get("ok")) or bool(runtime_payload),
@@ -197,6 +204,7 @@ def build_system_summary_payload(
         "today_market_date": market_date,
         "ibkr_compute": compute_summary,
         "ibkr_runtime": runtime_summary,
+        "backtest_service": backtest_service,
         "service_topology": merged_topology,
         "service_monitor": service_monitor,
         "storage_health": storage_health,

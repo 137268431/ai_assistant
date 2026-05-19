@@ -41,6 +41,8 @@ class SignalRouter:
 
     def _already_handled_for_broker(self, row: Dict, extra: dict) -> bool:
         status = self._execution_status_for_mode(extra, self.broker_mode)
+        if status in {"awaiting_confirm", "confirm_pending"}:
+            return True
         if status in {
             "submitted",
             "rejected",

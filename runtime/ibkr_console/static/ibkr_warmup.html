@@ -365,6 +365,9 @@
         }
         function normalizeLiveReadiness(status, warmup) {
             const live = status && typeof status.live_readiness === 'object' && status.live_readiness ? status.live_readiness : {};
+            const effectiveGate = status && typeof status.effective_trading_gate === 'object' && status.effective_trading_gate
+                ? status.effective_trading_gate
+                : null;
             const blockingPendingTotal = Number(
                 live.blocking_pending_symbols_total != null
                     ? live.blocking_pending_symbols_total
@@ -375,13 +378,14 @@
             return {
                 available: Boolean(live.available),
                 engine_snapshot_available: Boolean(live.engine_snapshot_available),
-                source: String(live.source || '').trim()
+                source: String(effectiveGate?.source || live.source || '').trim()
                     || (Boolean(live.engine_snapshot_available)
                         ? 'compute_engines'
                         : (Boolean(live.available) ? 'runtime_warmup_snapshot' : 'unavailable')),
                 phase: String(live.phase || 'idle').trim().toLowerCase() || 'idle',
-                gate_open: Boolean(live.gate_open),
-                gate_reason: String(live.gate_reason || '').trim() || '--',
+                gate_open: effectiveGate ? Boolean(effectiveGate.open) : Boolean(live.gate_open),
+                gate_reason: String(effectiveGate?.reason || live.gate_reason || '').trim() || '--',
+                gate_message: String(effectiveGate?.message || '').trim(),
                 required_interval: String(live.required_interval || warmup.required_interval || '5m').trim() || '5m',
                 symbols_total: Number(live.symbols_total || 0) || 0,
                 trade_symbols_total: Number(live.trade_symbols_total || 0) || 0,
@@ -392,7 +396,7 @@
                 pending_symbols_total: Number(live.pending_symbols_total || 0) || 0,
                 blocking_pending_symbols_total: blockingPendingTotal,
                 monitor_pending_symbols_total: monitorPendingTotal,
-                snapshot_differs: Boolean(live.snapshot_differs),
+                snapshot_differs: Boolean(effectiveGate?.snapshot_differs || live.snapshot_differs),
                 snapshot_phase: String(live.snapshot_phase || warmup.phase || 'idle').trim().toLowerCase() || 'idle',
                 snapshot_finished_at: live.snapshot_finished_at || warmup.finished_at || '',
                 computed_at: live.computed_at || ''
@@ -508,6 +512,24 @@
             return String(gateReason || '').trim().toLowerCase() === 'no_trade_symbols'
                 || (Number(tradeSymbolsTotal || 0) || 0) <= 0;
         }
+        function describeGateReason(reason) {
+            const normalized = String(reason || '').trim().toLowerCase();
+            const map = {
+                ready: '当前 live readiness 已通过',
+                background_repair: '后台修复仍在进行，但交易标的已可用',
+                non_trade_readiness_pending: '仅 monitor / 非交易标的未就绪，不阻塞交易',
+                history_repair_pending: '启动快照仍标记历史修复中',
+                missing_trade_symbols: '交易标的 readiness 缺失',
+                remote_compute_status_unavailable: '无法确认 compute readiness',
+                remote_compute_status_missing: 'compute readiness 返回缺失',
+                session_unauthenticated: 'IBKR session 未认证',
+                runtime_stopped: 'runtime 已停止',
+                no_trade_symbols: '当前没有交易标的，关闭是预期状态',
+                live_not_ready: '当前 live readiness 未就绪',
+                warmup_incomplete: '预热尚未完成'
+            };
+            return map[normalized] || (normalized ? normalized.replace(/_/g, ' ') : '原因缺失');
+        }
         function renderHero(status, warmup, live) {
             const runtimePhase = String(status?.runtime_phase || 'unknown').trim().toLowerCase() || 'unknown';
             const runtimeTone = getRuntimeTone(status);
@@ -555,7 +577,9 @@
                 {
                     label: 'Trading Gate',
                     value: gateOpen ? 'OPEN' : 'CLOSED',
-                    copy: gateExpectedClosed ? 'no trade symbols · closed is expected' : gateReason,
+                    copy: gateExpectedClosed
+                        ? 'no trade symbols · closed is expected'
+                        : (live.gate_message || describeGateReason(gateReason)),
                     tone: gateTone
                 },
                 {
@@ -570,14 +594,18 @@
                     label: 'Startup Snapshot',
                     value: String(warmup.phase || 'idle').toUpperCase(),
                     copy: live.available
-                        ? (live.snapshot_differs ? 'differs from live readiness' : 'matches live readiness')
+                        ? (live.snapshot_differs
+                            ? (gateOpen ? 'stale diagnostic only · live gate open' : 'differs from live readiness')
+                            : 'matches live readiness')
                         : `source ${describeLiveReadinessSource(live)}`,
                     tone: live.available && live.snapshot_differs ? 'warn' : warmupTone
                 }
             ].map(renderHeroReadinessCard).join('');
             if (live.available && live.snapshot_differs) {
                 document.getElementById('heroCopy').textContent =
-                    `当前 live 与 startup snapshot 存在差异：trade ${live.ready_trade_symbols}/${live.trade_symbols_total} vs ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total}，monitor ${live.ready_monitor_symbols}/${live.monitor_symbols_total} vs ${warmup.ready_monitor_symbols}/${warmup.monitor_symbols_total}。Monitor 单独展示，不参与交易门判定。`;
+                    gateOpen
+                        ? `当前 live gate 已打开，startup snapshot 仍是旧诊断快照，不阻塞交易：trade ${live.ready_trade_symbols}/${live.trade_symbols_total} vs ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total}。原因 ${live.gate_message || describeGateReason(gateReason)}。`
+                        : `当前 live 与 startup snapshot 存在差异：trade ${live.ready_trade_symbols}/${live.trade_symbols_total} vs ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total}，monitor ${live.ready_monitor_symbols}/${live.monitor_symbols_total} vs ${warmup.ready_monitor_symbols}/${warmup.monitor_symbols_total}。Monitor 单独展示，不参与交易门判定。`;
             } else if (live.available && live.source === 'runtime_warmup_snapshot') {
                 document.getElementById('heroCopy').textContent = gateExpectedClosed
                     ? '当前无 trade symbols，Trading Gate 保持 closed 属于预期；live readiness 直接回退到 runtime warmup snapshot。'
@@ -676,7 +704,9 @@
                     value: `${warmup.ready_trade_symbols} / ${warmup.trade_symbols_total}`,
                     progress: progressPct(warmup.ready_trade_symbols, warmup.trade_symbols_total),
                     copy: live.snapshot_differs
-                        ? `snapshot ${String(warmup.phase || 'idle').toUpperCase()} · differs from live`
+                        ? (live.gate_open
+                            ? `snapshot ${String(warmup.phase || 'idle').toUpperCase()} · diagnostic only, not blocking`
+                            : `snapshot ${String(warmup.phase || 'idle').toUpperCase()} · differs from live`)
                         : `snapshot ${String(warmup.phase || 'idle').toUpperCase()} · target ${warmup.target_date}`,
                     tone: live.snapshot_differs
                         ? 'warn'
@@ -710,7 +740,7 @@
                 [
                     'Live Gate',
                     live.available ? (live.gate_open ? 'OPEN' : 'CLOSED') : '--',
-                    live.available ? live.gate_reason : 'waiting for live engine readiness',
+                    live.available ? (live.gate_message || describeGateReason(live.gate_reason)) : 'waiting for live engine readiness',
                     live.available ? (live.gate_open ? 'ok' : (liveGateExpectedClosed ? 'info' : 'warn')) : 'muted'
                 ],
                 [
@@ -726,7 +756,9 @@
                     live.available ? (live.snapshot_differs ? 'YES' : 'NO') : '--',
                     live.available
                         ? (live.snapshot_differs
-                            ? `trade ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total} · monitor ${warmup.ready_monitor_symbols}/${warmup.monitor_symbols_total}`
+                            ? (live.gate_open
+                                ? `startup snapshot stale · live gate open · not blocking`
+                                : `trade ${warmup.ready_trade_symbols}/${warmup.trade_symbols_total} · monitor ${warmup.ready_monitor_symbols}/${warmup.monitor_symbols_total}`)
                             : 'snapshot trade/monitor counts match live')
                         : 'live readiness unavailable',
                     live.available ? (live.snapshot_differs ? 'warn' : 'ok') : 'muted'

@@ -18,6 +18,12 @@ def _service_mod():
 
 class TradingServiceSignalsMixin:
     CAPACITY_DEFER_REASONS = {"strategy_capacity_full"}
+    READINESS_DEFER_REASONS = {
+        "history_repair_pending",
+        "session_unauthenticated",
+        "runtime_stopped",
+        "no_trade_symbols",
+    }
 
     @staticmethod
     def _is_protection_incomplete_result(result: dict) -> bool:
@@ -183,7 +189,7 @@ class TradingServiceSignalsMixin:
                         continue
                     if (
                         str(reason or "").startswith("warmup")
-                        or reason in {"session_unauthenticated", "runtime_stopped", "no_trade_symbols"}
+                        or reason in self.READINESS_DEFER_REASONS
                         or reason in self.CAPACITY_DEFER_REASONS
                     ):
                         service_mod.logger.info(
@@ -907,6 +913,7 @@ class TradingServiceSignalsMixin:
             **broker_execution,
             "status": status_text,
             "note": note_text,
+            "status_reason": str((extra or {}).get("status_reason") or note_text).strip() or status_text,
             "data_environment": data_environment,
             "updated_at": self._now_iso(),
             "source": "ibkr_compute",

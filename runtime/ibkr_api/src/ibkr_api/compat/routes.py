@@ -144,9 +144,20 @@ def register_compat_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     proxy_webhook_to_pb = deps["proxy_webhook_to_pb"]
     exports: dict[str, Any] = {}
 
+    def scheduler_status_lite(environment: str) -> dict[str, Any]:
+        try:
+            return scheduler_status(environment, lite=True)
+        except TypeError as exc:
+            if "lite" not in str(exc):
+                raise
+            return scheduler_status(environment)
+
     @app.route("/health", methods=["GET"])
     def health() -> Response:
-        scheduler_jobs = scheduler_job_states()
+        scheduler_payload = scheduler_status_lite("live")
+        scheduler_jobs = scheduler_payload.get("jobs") if isinstance(scheduler_payload, dict) else {}
+        if not isinstance(scheduler_jobs, dict):
+            scheduler_jobs = {}
         service_topology, service_monitor = canonicalize_topology("live", build_service_topology())
         return jsonify(
             {
@@ -170,7 +181,21 @@ def register_compat_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     @app.route("/status", methods=["GET"])
     def status() -> Response:
         environment = normalize_environment(request.args.get("environment"), "live")
-        scheduler_payload = scheduler_status(environment)
+        lite = str(request.args.get("lite") or "").strip().lower() in {"1", "true", "yes", "on"}
+        if lite:
+            service_topology, service_monitor = canonicalize_topology(environment, build_service_topology())
+            return jsonify(
+                {
+                    "ok": True,
+                    "status": "running",
+                    "service_profile": str(os.environ.get("IBKR_SERVICE_PROFILE") or "api"),
+                    "environment": environment,
+                    "service_topology": service_topology,
+                    "service_monitor": service_monitor,
+                    "lite": True,
+                }
+            )
+        scheduler_payload = scheduler_status_lite(environment)
         scheduler_jobs = scheduler_payload.get("jobs") if isinstance(scheduler_payload.get("jobs"), dict) else {}
         config.refresh()
         scheduler_items = build_cron_payload(config, environment, scheduler_jobs)

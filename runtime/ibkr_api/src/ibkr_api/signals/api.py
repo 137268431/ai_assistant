@@ -83,6 +83,7 @@ def _with_broker_execution(
         **broker_payload,
         "status": status,
         "note": note,
+        "status_reason": note,
         "data_environment": data_environment,
         "updated_at": _utc_now_iso(),
         "source": "ibkr-api",

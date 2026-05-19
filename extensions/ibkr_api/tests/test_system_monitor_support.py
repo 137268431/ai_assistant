@@ -197,6 +197,25 @@ class SystemMonitorSupportTest(unittest.TestCase):
         self.assertIn("awaiting bars", scheduler["detail"])
         self.assertIn("jobs 0", scheduler["detail"])
 
+    def test_scheduler_status_lite_adds_lite_query_param(self):
+        calls = []
+
+        payload = scheduler_status(
+            "live",
+            request_json=lambda *args, **kwargs: calls.append((args, kwargs)) or {
+                "ok": True,
+                "status_code": 200,
+                "payload": {"ok": True, "status": "running", "jobs": {}},
+            },
+            scheduler_base_url="http://scheduler.internal:5103",
+            broker_mode="paper",
+            market_data_mode="live",
+            lite=True,
+        )
+
+        self.assertTrue(payload["ok"])
+        self.assertIn(("lite", "1"), calls[0][1]["params"])
+
     def test_scheduler_lag_is_not_degraded_when_compute_job_deferred_by_preload(self):
         service_monitor = derive_monitor_service_map(
             "live",

@@ -45,6 +45,13 @@ COMPUTE_DISPATCH_CURSOR_STATE_KEY = "ibkr_compute_dispatch_cursor"
 SCHEDULER_JOB_STATE_PREFIX = "ibkr_scheduler_job_state:"
 US_TZ = ZoneInfo("America/New_York")
 CN_TZ = ZoneInfo("Asia/Shanghai")
+DEFAULT_NATIVE_HTTP_TIMEOUT_SECONDS = 60
+DEFAULT_NATIVE_API_HTTP_TIMEOUT_SECONDS = 90
+JOB_TIMEOUT_SECONDS = {
+    "system_status_reminder": 150,
+    "ibkr_scan_runtime": 180,
+    "ibkr_data_quality_truth_audit_cycle": 300,
+}
 BAR_TRUTH_AUDIT_JOB_IDS = {
     "ibkr_data_quality_truth_audit_cycle",
 }
@@ -67,6 +74,18 @@ def _mapping_value(source: Mapping[str, Any] | None, key: str) -> Any:
     if callable(getter):
         return getter(key)
     return None
+
+
+def _job_timeout_seconds(job_id: str, default: int) -> int:
+    normalized_job_id = str(job_id or "").strip()
+    env_key = f"IBKR_SCHEDULER_JOB_TIMEOUT_{normalized_job_id.upper().replace('-', '_')}_SEC"
+    raw_value = os.environ.get(env_key)
+    if raw_value is None:
+        raw_value = JOB_TIMEOUT_SECONDS.get(normalized_job_id, default)
+    try:
+        return max(1, int(float(raw_value)))
+    except (TypeError, ValueError):
+        return max(1, int(default))
 
 
 def _scheduler_mode_context(
@@ -281,7 +300,7 @@ class SchedulerService:
             broker_mode=broker_mode,
             market_data_mode=market_data_mode,
             mode_scope=mode_scope,
-            timeout_seconds=60,
+            timeout_seconds=_job_timeout_seconds(job_id, DEFAULT_NATIVE_HTTP_TIMEOUT_SECONDS),
             payload=self._native_http_job_payload(job_id, schedule),
         )
 
@@ -304,7 +323,7 @@ class SchedulerService:
             broker_mode=broker_mode,
             market_data_mode=market_data_mode,
             mode_scope=mode_scope,
-            timeout_seconds=90,
+            timeout_seconds=_job_timeout_seconds(job_id, DEFAULT_NATIVE_API_HTTP_TIMEOUT_SECONDS),
             payload={
                 "schedule_id": str((schedule or {}).get("id") or "").strip(),
                 "schedule_payload_mode": str((schedule or {}).get("payload_mode") or "").strip(),
@@ -682,35 +701,35 @@ def status():
     mode_context = _scheduler_mode_context(request.args)
     broker_mode = mode_context["broker_mode"]
     market_data_mode = mode_context["market_data_mode"]
+    lite = str(request.args.get("lite") or "").strip().lower() in {"1", "true", "yes", "on"}
     config.refresh()
     jobs = scheduler.job_states_for_modes(broker_mode, market_data_mode)
-    items = build_cron_payload_for_modes(
-        config,
-        broker_mode=broker_mode,
-        market_data_mode=market_data_mode,
-        job_states=jobs,
-    )
-    return jsonify(
-        {
-            "ok": True,
-            "status": "running",
-            "service_profile": str(os.environ.get("IBKR_SERVICE_PROFILE") or "scheduler"),
-            "environment": market_data_mode,
-            "broker_mode": broker_mode,
-            "market_data_mode": market_data_mode,
-            "data_environment": market_data_mode,
-            "market_data_environment": market_data_mode,
-            "shared_market_data": market_data_mode == "live",
-            "gateway_mode": mode_context["gateway_mode"],
-            "loop_interval_seconds": LOOP_INTERVAL_SECONDS,
-            "ingest_cursor": scheduler._get_ingest_cursor(market_data_mode),
-            "compute_dispatch_cursor": scheduler._get_dispatch_cursor(market_data_mode),
-            "service_topology": build_service_topology(),
-            "jobs": jobs,
-            "items": items,
-            "families": build_cron_families(items),
-        }
-    )
+    payload = {
+        "ok": True,
+        "status": "running",
+        "service_profile": str(os.environ.get("IBKR_SERVICE_PROFILE") or "scheduler"),
+        "environment": market_data_mode,
+        "broker_mode": broker_mode,
+        "market_data_mode": market_data_mode,
+        "data_environment": market_data_mode,
+        "market_data_environment": market_data_mode,
+        "shared_market_data": market_data_mode == "live",
+        "gateway_mode": mode_context["gateway_mode"],
+        "loop_interval_seconds": LOOP_INTERVAL_SECONDS,
+        "ingest_cursor": scheduler._get_ingest_cursor(market_data_mode),
+        "compute_dispatch_cursor": scheduler._get_dispatch_cursor(market_data_mode),
+        "service_topology": build_service_topology(),
+        "jobs": jobs,
+    }
+    if not lite:
+        items = build_cron_payload_for_modes(
+            config,
+            broker_mode=broker_mode,
+            market_data_mode=market_data_mode,
+            job_states=jobs,
+        )
+        payload.update({"items": items, "families": build_cron_families(items)})
+    return jsonify(payload)
 
 
 @app.route("/jobs/run/<job_id>", methods=["POST"])

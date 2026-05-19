@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import copy
+import os
+import threading
+import time
 from typing import Any, Callable
 
 from ibkr_compute.core.broker_mode import (
@@ -21,6 +25,78 @@ NON_COMPUTE_DISPATCH_SOURCES = {
     "ibkr_history_backfill",
     "ibkr_history_rebuild",
 }
+SCHEDULER_STATUS_TIMEOUT_SECONDS = max(
+    1.0,
+    float(os.environ.get("IBKR_SCHEDULER_STATUS_TIMEOUT_SEC", "12") or "12"),
+)
+SCHEDULER_STATUS_CACHE_TTL_SECONDS = max(
+    0.0,
+    float(os.environ.get("IBKR_SCHEDULER_STATUS_CACHE_TTL_SEC", "180") or "180"),
+)
+_SCHEDULER_STATUS_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
+_SCHEDULER_STATUS_CACHE_LOCK = threading.Lock()
+
+
+def _scheduler_cache_key(broker_mode: str, market_data_mode: str) -> tuple[str, str]:
+    return (str(broker_mode or "").strip().lower(), str(market_data_mode or "").strip().lower())
+
+
+def _scheduler_result_meta(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "target_url": result.get("target_url"),
+        "status_code": result.get("status_code"),
+        "error": result.get("error") or "",
+    }
+
+
+def _is_complete_scheduler_payload(payload: dict[str, Any]) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    status = str(payload.get("status") or "").strip().lower()
+    jobs = payload.get("jobs")
+    return bool(payload.get("ok", False)) and status not in {"", "unknown", "offline", "error"} and isinstance(jobs, dict) and bool(jobs)
+
+
+def _store_scheduler_status_cache(key: tuple[str, str], payload: dict[str, Any]) -> None:
+    if SCHEDULER_STATUS_CACHE_TTL_SECONDS <= 0:
+        return
+    with _SCHEDULER_STATUS_CACHE_LOCK:
+        _SCHEDULER_STATUS_CACHE[key] = {
+            "stored_at": time.time(),
+            "payload": copy.deepcopy(payload),
+        }
+
+
+def _cached_scheduler_status_payload(key: tuple[str, str], result: dict[str, Any]) -> dict[str, Any]:
+    if SCHEDULER_STATUS_CACHE_TTL_SECONDS <= 0:
+        return {}
+    now = time.time()
+    with _SCHEDULER_STATUS_CACHE_LOCK:
+        cached = _SCHEDULER_STATUS_CACHE.get(key)
+        if not cached:
+            return {}
+        age_s = max(0.0, now - float(cached.get("stored_at") or 0.0))
+        if age_s > SCHEDULER_STATUS_CACHE_TTL_SECONDS:
+            _SCHEDULER_STATUS_CACHE.pop(key, None)
+            return {}
+        payload = copy.deepcopy(cached.get("payload") if isinstance(cached.get("payload"), dict) else {})
+    if not payload:
+        return {}
+    meta = dict(payload.get("_meta") if isinstance(payload.get("_meta"), dict) else {})
+    meta.update(
+        {
+            "from_cache": True,
+            "stale_age_s": round(age_s, 3),
+            "cache_stored_at_ms": int(float(cached.get("stored_at") or now) * 1000),
+            "target_url": result.get("target_url") or meta.get("target_url"),
+            "status_code": result.get("status_code") or meta.get("status_code"),
+            "error": result.get("error") or meta.get("error") or "scheduler_status_unavailable",
+        }
+    )
+    payload["_meta"] = meta
+    payload["stale"] = True
+    payload["stale_age_s"] = round(age_s, 3)
+    return payload
 
 
 def extract_cursor_interval(cursor_payload: dict[str, Any], interval: str = "5m") -> dict[str, Any]:
@@ -238,29 +314,41 @@ def scheduler_status(
     scheduler_base_url: str,
     broker_mode: str = "",
     market_data_mode: str = "",
+    lite: bool = False,
 ) -> dict[str, Any]:
     normalized_broker_mode = normalize_broker_mode(broker_mode, configured_broker_mode())
     normalized_market_data_mode = resolve_market_data_mode(market_data_mode or environment)
+    cache_key = _scheduler_cache_key(normalized_broker_mode, normalized_market_data_mode)
+    params = [
+        ("broker_mode", normalized_broker_mode),
+        ("market_data_mode", normalized_market_data_mode),
+    ]
+    if lite:
+        params.append(("lite", "1"))
     result = request_json(
         scheduler_base_url,
         "/status",
-        params=[
-            ("broker_mode", normalized_broker_mode),
-            ("market_data_mode", normalized_market_data_mode),
-        ],
-        timeout=5,
+        params=params,
+        timeout=SCHEDULER_STATUS_TIMEOUT_SECONDS,
     )
     payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
     if payload:
-        return {
+        payload_with_meta = {
             **payload,
             "ok": bool(payload.get("ok", result.get("ok", False))),
-            "_meta": {
-                "target_url": result.get("target_url"),
-                "status_code": result.get("status_code"),
-                "error": result.get("error") or "",
-            },
+            "stale": bool(payload.get("stale", False)),
+            "_meta": _scheduler_result_meta(result),
         }
+        if _is_complete_scheduler_payload(payload_with_meta):
+            _store_scheduler_status_cache(cache_key, payload_with_meta)
+            return payload_with_meta
+        cached_payload = _cached_scheduler_status_payload(cache_key, result)
+        if cached_payload:
+            return cached_payload
+        return payload_with_meta
+    cached_payload = _cached_scheduler_status_payload(cache_key, result)
+    if cached_payload:
+        return cached_payload
     return {
         "ok": False,
         "status": "unknown",
@@ -270,9 +358,9 @@ def scheduler_status(
         "jobs": {},
         "ingest_cursor": {},
         "compute_dispatch_cursor": {},
+        "stale": False,
         "_meta": {
-            "target_url": result.get("target_url"),
-            "status_code": result.get("status_code"),
+            **_scheduler_result_meta(result),
             "error": result.get("error") or "scheduler_unavailable",
         },
     }

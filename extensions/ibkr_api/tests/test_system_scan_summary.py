@@ -395,6 +395,7 @@ class SystemScanSummaryTest(unittest.TestCase):
         self.assertEqual(target_payloads[0]["market_data_mode"], "live")
         self.assertEqual(window_payloads[0]["environment"], "live")
         self.assertEqual(window_payloads[0]["broker_mode"], "paper")
+        self.assertEqual(window_payloads[0]["limit"], 50)
 
     def test_heartbeat_labels_paper_broker_with_shared_live_data(self):
         emitted = []

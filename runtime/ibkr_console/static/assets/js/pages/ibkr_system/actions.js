@@ -13,6 +13,7 @@ async function loadSystemData(showToastOnSuccess = false) {
         const freshnessIntervals = ['5m', '15m', '30m', '1h', '4h', '1d'];
         const envFilterBase = `environment = "${escapeQueryValue(currentEnvironment)}"`;
         const coreTimeoutMs = isInitialLoad ? 15000 : 10000;
+        const schedulerTimeoutMs = isInitialLoad ? 22000 : 18000;
         const secondaryTimeoutMs = isInitialLoad ? 20000 : 12000;
         const coreErrors = [];
         const secondaryErrors = [];
@@ -76,7 +77,7 @@ async function loadSystemData(showToastOnSuccess = false) {
                 config: {},
                 lite_mode: true,
             }, coreTimeoutMs, { retryAttempts: 2 }),
-            safeRequestSystemJson(coreErrors, 'cronz', '/api/custom/system/cronz', { items: [] }, coreTimeoutMs),
+            safeRequestSystemJson(coreErrors, 'cronz', '/api/custom/system/cronz', { items: [] }, schedulerTimeoutMs),
         ]);
 
         if (loadId !== latestSystemLoadId) return;

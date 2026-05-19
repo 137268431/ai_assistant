@@ -29,6 +29,7 @@ def build_scheduler_status(
         *,
         broker_mode: str = "",
         market_data_mode: str = "",
+        lite: bool = False,
     ) -> dict[str, Any]:
         return support(
             environment,
@@ -36,6 +37,7 @@ def build_scheduler_status(
             scheduler_base_url=scheduler_base_url,
             broker_mode=broker_mode,
             market_data_mode=market_data_mode,
+            lite=lite,
         )
 
     return _scheduler_status
@@ -66,6 +68,7 @@ def build_system_summary_payload(*, globals_dict: dict[str, Any], support: Calla
             fetch_compute_health=globals_dict["_fetch_compute_health"],
             fetch_compute_status=globals_dict["_fetch_compute_status"],
             fetch_runtime_status=globals_dict["_fetch_runtime_status"],
+            fetch_backtest_health=globals_dict.get("_fetch_backtest_health"),
             as_dict=globals_dict["_as_dict"],
             merge_service_topology=globals_dict["_merge_service_topology"],
             load_recent_system_events=globals_dict["_load_recent_system_events"],

@@ -162,6 +162,48 @@ class SignalWebhookBuildersTest(unittest.TestCase):
         self.assertEqual(notify_calls[0][0], "pending")
         self.assertEqual(notify_calls[0][2]["message"], "信号已确认，等待执行")
 
+    def test_confirm_webhook_overwrites_stale_broker_status_reason(self):
+        pb = _FakePB(
+            [
+                {
+                    "id": "sig-row-1",
+                    "signal_id": "sig-1",
+                    "environment": "live",
+                    "symbol": "TTD",
+                    "status": "pending",
+                    "note": "paper:history_repair_pending",
+                    "extra": {
+                        "execution_by_mode": {
+                            "paper": {
+                                "status": "awaiting_confirm",
+                                "note": "manual_confirmation_required",
+                                "status_reason": "manual_confirmation_required",
+                            }
+                        }
+                    },
+                }
+            ]
+        )
+
+        page, status_code = build_signal_confirm_webhook_response(
+            pb,
+            payload={"id": "sig-1", "broker_mode": "paper", "market_data_mode": "live"},
+            normalize_environment=self.normalize_environment,
+            escape_filter_string=self.escape_filter_string,
+            now_provider=self.now_provider,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(page["page_kind"], "ok")
+        row = pb.signals["sig-row-1"]
+        self.assertEqual("pending", row["status"])
+        self.assertEqual("", row["note"])
+        paper = row["extra"]["execution_by_mode"]["paper"]
+        self.assertEqual("pending", paper["status"])
+        self.assertEqual("", paper["note"])
+        self.assertEqual("confirmed_by_user", paper["status_reason"])
+        self.assertEqual("confirmed_by_user", row["extra"]["status_reason"])
+
     def test_confirm_webhook_clears_followup_reconfirm_flags(self):
         pb = _FakePB(
             [

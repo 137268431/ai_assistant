@@ -6,6 +6,7 @@ from typing import Any, Callable
 import requests
 
 from ibkr_compute.core.broker_mode import configured_broker_mode, normalize_broker_mode, resolve_data_environment
+from ibkr_api.runtime.effective_gate import build_effective_trading_gate
 from ibkr_api.system.service_state import (
     apply_service_monitor_to_topology,
     derive_backtest_state,
@@ -20,7 +21,7 @@ NormalizeEnvironment = Callable[[Any, str], str]
 FetchPayload = Callable[[str], dict[str, Any]]
 AsDict = Callable[[Any], dict[str, Any]]
 ConfigRefresh = Callable[[], None]
-SchedulerStatus = Callable[[str], dict[str, Any]]
+SchedulerStatus = Callable[..., dict[str, Any]]
 BuildCronPayload = Callable[[Any, str, dict[str, Any]], list[dict[str, Any]]]
 BuildSchedulerSummary = Callable[[str, dict[str, Any]], dict[str, Any]]
 AugmentSchedulerSummary = Callable[[dict[str, Any], list[dict[str, Any]]], dict[str, Any]]
@@ -89,6 +90,15 @@ def _fallback_scheduler_summary(environment: str) -> dict[str, Any]:
     }
 
 
+def _call_scheduler_status_lite(scheduler_status: SchedulerStatus, environment: str) -> dict[str, Any]:
+    try:
+        return scheduler_status(environment, lite=True)
+    except TypeError as exc:
+        if "lite" not in str(exc):
+            raise
+        return scheduler_status(environment)
+
+
 def _fallback_service_monitor(environment: str, topology: dict[str, Any]) -> dict[str, Any]:
     services = topology.get("services") if isinstance(topology.get("services"), dict) else {}
     service_map: dict[str, dict[str, Any]] = {}
@@ -125,6 +135,39 @@ def _merge_monitor_builder_flags(existing_flags: Any, errors: list[dict[str, str
             continue
         seen.add(code)
         merged.append(flag)
+    return merged
+
+
+def _append_effective_gate_flag(existing_flags: Any, gate: dict[str, Any]) -> list[dict[str, Any]]:
+    merged = [dict(item) for item in existing_flags if isinstance(item, dict)] if isinstance(existing_flags, list) else []
+    codes = {str(item.get("code") or "").strip() for item in merged if isinstance(item, dict)}
+    raw_signal = gate.get("raw_signal_gate") if isinstance(gate.get("raw_signal_gate"), dict) else {}
+    raw_snapshot = gate.get("raw_startup_snapshot") if isinstance(gate.get("raw_startup_snapshot"), dict) else {}
+    if bool(gate.get("open")) and (raw_signal.get("open") is False or raw_snapshot.get("open") is False):
+        code = "trading_gate_snapshot_stale"
+        if code not in codes:
+            merged.append(
+                {
+                    "severity": "warning",
+                    "code": code,
+                    "title": "Trading gate display uses live readiness",
+                    "detail": (
+                        "Effective gate is open from current readiness; stale signal/startup snapshot "
+                        "is diagnostic only and does not block trading."
+                    ),
+                }
+            )
+    if not bool(gate.get("open")) and not gate.get("reason"):
+        code = "trading_gate_reason_missing"
+        if code not in codes:
+            merged.append(
+                {
+                    "severity": "error",
+                    "code": code,
+                    "title": "Trading gate closed without reason",
+                    "detail": "Effective gate is closed but no reason was provided.",
+                }
+            )
     return merged
 
 
@@ -479,7 +522,7 @@ def build_system_monitor_payload(
     except Exception as exc:
         builder_errors.append(_monitor_builder_error("config_refresh", exc))
     try:
-        scheduler_payload = scheduler_status(data_environment)
+        scheduler_payload = _call_scheduler_status_lite(scheduler_status, data_environment)
     except Exception as exc:
         builder_errors.append(_monitor_builder_error("scheduler_status", exc))
         scheduler_payload = _fallback_scheduler_payload(data_environment)
@@ -636,6 +679,19 @@ def build_system_monitor_payload(
         merged_payload.get("service_topology") if isinstance(merged_payload.get("service_topology"), dict) else {},
         merged_payload["service_monitor"],
     )
+    try:
+        runtime_section = as_dict(merged_payload.get("runtime"))
+        gate = build_effective_trading_gate(
+            runtime_section,
+            live_readiness=as_dict(merged_payload.get("live_readiness")),
+        )
+        merged_payload["effective_trading_gate"] = gate
+        if runtime_section:
+            runtime_section["effective_trading_gate"] = gate
+            merged_payload["runtime"] = runtime_section
+        merged_payload["flags"] = _append_effective_gate_flag(merged_payload.get("flags"), gate)
+    except Exception as exc:
+        builder_errors.append(_monitor_builder_error("effective_trading_gate", exc))
     if builder_errors:
         merged_payload["monitor_builder_errors"] = builder_errors
         merged_payload["flags"] = _merge_monitor_builder_flags(merged_payload.get("flags"), builder_errors)
