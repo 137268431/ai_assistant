@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from ibkr_api.modes import request_market_data_mode
+from ibkr_api.modes import request_broker_mode, request_market_data_mode
 from ibkr_api.system.jobs.market_calendar import is_nyse_non_trading_day
 
 
@@ -339,7 +339,8 @@ def _report_url(console_base_url: str, environment: str, market_date: str, page:
 
 def _build_close_report_card(
     *,
-    environment: str,
+    broker_mode: str,
+    data_environment: str,
     times: dict[str, str],
     summary: dict[str, Any],
     monitor: dict[str, Any],
@@ -351,7 +352,7 @@ def _build_close_report_card(
     daily_scan = _as_dict(context.get("daily_scan"))
     services = _as_dict(context.get("services"))
     market_date = _to_text(targets_payload.get("market_date")) or _to_text(daily_scan.get("market_date")) or _to_text(times.get("date"))
-    issue_lines, blocking = _close_issue_lines(summary, monitor, targets_payload, environment)
+    issue_lines, blocking = _close_issue_lines(summary, monitor, targets_payload, data_environment)
     issue_text = "；".join(issue_lines) if issue_lines else "无"
     elements: list[dict[str, Any]] = [
         {
@@ -389,8 +390,8 @@ def _build_close_report_card(
         },
     ]
     actions = []
-    system_url = _report_url(console_base_url, environment, market_date, "system")
-    screener_url = _report_url(console_base_url, environment, market_date, "screener")
+    system_url = _report_url(console_base_url, broker_mode, market_date, "system")
+    screener_url = _report_url(console_base_url, data_environment, market_date, "screener")
     if system_url:
         actions.append(
             {
@@ -414,7 +415,7 @@ def _build_close_report_card(
     return {
         "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"tag": "plain_text", "content": f"IBKR 16:05 收盘汇总 · Broker {environment.upper()}"},
+            "title": {"tag": "plain_text", "content": f"IBKR 16:05 收盘汇总 · Broker {broker_mode.upper()}"},
             "template": _close_report_template(issue_lines, blocking),
         },
         "elements": elements,
@@ -427,13 +428,13 @@ def _close_event_detail(
     summary: dict[str, Any],
     monitor: dict[str, Any],
     targets_payload: dict[str, Any],
-    environment: str,
+    data_environment: str,
 ) -> dict[str, Any]:
     context = _close_context(summary, monitor, targets_payload)
     today = _as_dict(context.get("today"))
     daily_scan = _as_dict(context.get("daily_scan"))
     services = _as_dict(context.get("services"))
-    issue_lines, blocking = _close_issue_lines(summary, monitor, targets_payload, environment)
+    issue_lines, blocking = _close_issue_lines(summary, monitor, targets_payload, data_environment)
     detail = {
         "阶段": "close",
         "检查时间": _to_text(times.get("us")),
@@ -471,14 +472,18 @@ def build_system_market_open_reminder_response(
     upsert_state: UpsertState,
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
-    environment = request_market_data_mode(request_payload)
+    broker_mode = request_broker_mode(request_payload)
+    data_environment = request_market_data_mode(request_payload)
     times = time_strings()
     target_time_et = _to_text(request_payload.get("target_time_et")) or DEFAULT_MARKET_OPEN_REMINDER_TIME_ET
     window_minutes = _to_int(request_payload.get("window_minutes"), DEFAULT_MARKET_OPEN_REMINDER_WINDOW_MINUTES)
     if not _matches_time_window(times["us"], target_time_et, window_minutes=window_minutes):
         return {
             "ok": True,
-            "environment": environment,
+            "environment": broker_mode,
+            "broker_mode": broker_mode,
+            "market_data_mode": data_environment,
+            "data_environment": data_environment,
             "skipped": True,
             "reason": "outside_time_window",
             "target_time_et": target_time_et,
@@ -487,9 +492,19 @@ def build_system_market_open_reminder_response(
             "job_id": "system_market_open_reminder",
         }, 200
 
-    current_state = _as_dict(get_state_payload(DAILY_REMINDER_STATE_KEY, environment).get("data"))
+    current_state = _as_dict(get_state_payload(DAILY_REMINDER_STATE_KEY, broker_mode).get("data"))
     if _to_text(current_state.get("open_sent_at")):
-        return {"ok": True, "environment": environment, "skipped": True, "reason": "already_sent", "source": "ibkr-api", "job_id": "system_market_open_reminder"}, 200
+        return {
+            "ok": True,
+            "environment": broker_mode,
+            "broker_mode": broker_mode,
+            "market_data_mode": data_environment,
+            "data_environment": data_environment,
+            "skipped": True,
+            "reason": "already_sent",
+            "source": "ibkr-api",
+            "job_id": "system_market_open_reminder",
+        }, 200
     market_date = _to_text(times.get("date"))
     if is_nyse_non_trading_day(market_date):
         next_state = {
@@ -506,10 +521,13 @@ def build_system_market_open_reminder_response(
             "open_error": "",
             "open_sent_at": times["us"],
         }
-        upsert_state(DAILY_REMINDER_STATE_KEY, environment, next_state, times["date"])
+        upsert_state(DAILY_REMINDER_STATE_KEY, broker_mode, next_state, times["date"])
         return {
             "ok": True,
-            "environment": environment,
+            "environment": broker_mode,
+            "broker_mode": broker_mode,
+            "market_data_mode": data_environment,
+            "data_environment": data_environment,
             "notified": False,
             "persisted": False,
             "message_id": "",
@@ -522,8 +540,8 @@ def build_system_market_open_reminder_response(
             "source": "ibkr-api",
             "job_id": "system_market_open_reminder",
         }, 200
-    summary = build_system_summary_payload(environment)
-    monitor = build_system_monitor_payload(environment)
+    summary = build_system_summary_payload(broker_mode)
+    monitor = build_system_monitor_payload(broker_mode)
     level = "warning" if _to_text(summary.get("status")).lower() not in {"running", "ok"} else "info"
     event_result = _as_dict(emit_system_event(
         event_type="status_change",
@@ -531,7 +549,7 @@ def build_system_market_open_reminder_response(
         source="ibkr_api",
         title="IBKR 09:30 开盘系统检查",
         detail=_summary_detail(summary, monitor, phase="open", timestamp_us=times["us"]),
-        environment=environment,
+        environment=broker_mode,
     ))
     finalized = _event_delivery_finalized(event_result)
     open_error = _event_result_error(event_result)
@@ -550,10 +568,13 @@ def build_system_market_open_reminder_response(
     }
     if finalized:
         next_state["open_sent_at"] = times["us"]
-    upsert_state(DAILY_REMINDER_STATE_KEY, environment, next_state, times["date"])
+    upsert_state(DAILY_REMINDER_STATE_KEY, broker_mode, next_state, times["date"])
     return {
         "ok": finalized,
-        "environment": environment,
+        "environment": broker_mode,
+        "broker_mode": broker_mode,
+        "market_data_mode": data_environment,
+        "data_environment": data_environment,
         "notified": bool(event_result.get("notified")),
         "persisted": bool(event_result.get("persisted")),
         "message_id": _to_text(event_result.get("message_id")),
@@ -583,13 +604,17 @@ def build_system_daily_report_response(
     build_today_targets_response: BuildTodayTargetsResponse,
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
-    environment = request_market_data_mode(request_payload)
+    broker_mode = request_broker_mode(request_payload)
+    data_environment = request_market_data_mode(request_payload)
     times = time_strings()
     target_time_et = _to_text(request_payload.get("target_time_et")) or DEFAULT_DAILY_REPORT_TIME_ET
     if not _matches_time_window(times["us"], target_time_et):
         return {
             "ok": True,
-            "environment": environment,
+            "environment": broker_mode,
+            "broker_mode": broker_mode,
+            "market_data_mode": data_environment,
+            "data_environment": data_environment,
             "skipped": True,
             "reason": "outside_time_window",
             "target_time_et": target_time_et,
@@ -597,9 +622,19 @@ def build_system_daily_report_response(
             "job_id": "system_daily_report",
         }, 200
 
-    current_state = _as_dict(get_state_payload(DAILY_REMINDER_STATE_KEY, environment).get("data"))
+    current_state = _as_dict(get_state_payload(DAILY_REMINDER_STATE_KEY, broker_mode).get("data"))
     if _to_text(current_state.get("close_sent_at")):
-        return {"ok": True, "environment": environment, "skipped": True, "reason": "already_sent", "source": "ibkr-api", "job_id": "system_daily_report"}, 200
+        return {
+            "ok": True,
+            "environment": broker_mode,
+            "broker_mode": broker_mode,
+            "market_data_mode": data_environment,
+            "data_environment": data_environment,
+            "skipped": True,
+            "reason": "already_sent",
+            "source": "ibkr-api",
+            "job_id": "system_daily_report",
+        }, 200
 
     market_date = _to_text(times.get("date"))
     if is_nyse_non_trading_day(market_date):
@@ -620,10 +655,13 @@ def build_system_daily_report_response(
             "close_daily_scan_status": "non_trading_day",
             "close_sent_at": times["us"],
         }
-        upsert_state(DAILY_REMINDER_STATE_KEY, environment, next_state, times["date"])
+        upsert_state(DAILY_REMINDER_STATE_KEY, broker_mode, next_state, times["date"])
         return {
             "ok": True,
-            "environment": environment,
+            "environment": broker_mode,
+            "broker_mode": broker_mode,
+            "market_data_mode": data_environment,
+            "data_environment": data_environment,
             "notified": False,
             "persisted": False,
             "message_id": "",
@@ -638,7 +676,7 @@ def build_system_daily_report_response(
             "job_id": "system_daily_report",
         }, 200
 
-    if not _truthy(config_value("daily_summary_notify_enabled", "TRUE", environment)):
+    if not _truthy(config_value("daily_summary_notify_enabled", "TRUE", broker_mode)):
         next_state = {
             **current_state,
             "close_title": "IBKR 16:05 收盘汇总",
@@ -653,10 +691,13 @@ def build_system_daily_report_response(
             "close_error": "",
             "close_sent_at": times["us"],
         }
-        upsert_state(DAILY_REMINDER_STATE_KEY, environment, next_state, times["date"])
+        upsert_state(DAILY_REMINDER_STATE_KEY, broker_mode, next_state, times["date"])
         return {
             "ok": True,
-            "environment": environment,
+            "environment": broker_mode,
+            "broker_mode": broker_mode,
+            "market_data_mode": data_environment,
+            "data_environment": data_environment,
             "notified": False,
             "persisted": False,
             "message_id": "",
@@ -669,12 +710,15 @@ def build_system_daily_report_response(
             "job_id": "system_daily_report",
         }, 200
 
-    summary = build_system_summary_payload(environment, lite_mode=True)
-    monitor = build_system_monitor_payload(environment)
+    summary = build_system_summary_payload(broker_mode, lite_mode=True)
+    monitor = build_system_monitor_payload(broker_mode)
     try:
         targets_payload, _ = build_today_targets_response(
             payload={
-                "environment": environment,
+                "broker_mode": broker_mode,
+                "market_data_mode": data_environment,
+                "data_environment": data_environment,
+                "environment": data_environment,
                 "market_date": times["date"],
                 "date": times["date"],
                 "per_page": 5,
@@ -691,17 +735,18 @@ def build_system_daily_report_response(
             "daily_scan": {"status": "unknown", "last_error": f"targets_summary_error:{exc}", "market_date": times["date"]},
             "items": [],
         }
-    issue_lines, blocking = _close_issue_lines(summary, monitor, targets_payload, environment)
+    issue_lines, blocking = _close_issue_lines(summary, monitor, targets_payload, data_environment)
     level = "error" if blocking else ("warning" if issue_lines else "info")
     card = _build_close_report_card(
-        environment=environment,
+        broker_mode=broker_mode,
+        data_environment=data_environment,
         times=times,
         summary=summary,
         monitor=monitor,
         targets_payload=targets_payload,
         console_base_url=console_base_url(),
     )
-    result = _as_dict(feishu_send_interactive(card, startup_chat_id(environment), environment))
+    result = _as_dict(feishu_send_interactive(card, startup_chat_id(broker_mode), broker_mode))
     notified = bool(result.get("success")) and not bool(result.get("suppressed"))
     finalized = bool(notified or result.get("skipped") or result.get("suppressed"))
     close_error = "" if finalized else (_to_text(result.get("error")) or _to_text(result.get("reason")) or "send_failed")
@@ -710,8 +755,8 @@ def build_system_daily_report_response(
         level,
         "ibkr-api",
         "IBKR 16:05 收盘汇总",
-        _close_event_detail(times=times, summary=summary, monitor=monitor, targets_payload=targets_payload, environment=environment),
-        environment,
+        _close_event_detail(times=times, summary=summary, monitor=monitor, targets_payload=targets_payload, data_environment=data_environment),
+        broker_mode,
         notified,
     )
     persisted = bool(event_record)
@@ -733,10 +778,13 @@ def build_system_daily_report_response(
     }
     if finalized:
         next_state["close_sent_at"] = times["us"]
-    upsert_state(DAILY_REMINDER_STATE_KEY, environment, next_state, times["date"])
+    upsert_state(DAILY_REMINDER_STATE_KEY, broker_mode, next_state, times["date"])
     return {
         "ok": finalized,
-        "environment": environment,
+        "environment": broker_mode,
+        "broker_mode": broker_mode,
+        "market_data_mode": data_environment,
+        "data_environment": data_environment,
         "notified": notified,
         "persisted": persisted,
         "message_id": _to_text(result.get("message_id")),

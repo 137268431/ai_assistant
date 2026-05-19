@@ -135,7 +135,9 @@ class SignalExpiryBuildersTest(unittest.TestCase):
         self.assertEqual(payload["market_data_mode"], "live")
         row = pb.signals["sig-row-1"]
         self.assertEqual(row["status"], "pending")
-        self.assertEqual(row["note"], "paper:signal_expired")
+        self.assertEqual(row["note"], "")
+        self.assertEqual(row["extra"]["broker_mode"], "paper")
+        self.assertEqual(row["extra"]["data_environment"], "live")
         self.assertEqual(row["extra"]["execution_by_mode"]["paper"]["status"], "expired")
         self.assertEqual(row["extra"]["execution_by_mode"]["paper"]["note"], "signal_expired")
         content = sent_cards[0]["elements"][0]["content"]

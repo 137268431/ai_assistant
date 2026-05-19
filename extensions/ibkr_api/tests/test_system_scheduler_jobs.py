@@ -793,6 +793,60 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(sent[0]["chat_id"], "startup-chat-live")
         self.assertEqual(events[0][0], "early_expansion_topup")
 
+    def test_early_expansion_topup_labels_paper_broker_with_shared_live_data(self):
+        sent = []
+        events = []
+        scan_payloads = []
+
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            self.assertEqual(method, "POST")
+            self.assertEqual(path, "/scan")
+            scan_payloads.append(dict(json_body or {}))
+            return {
+                "ok": True,
+                "status_code": 200,
+                "payload": {
+                    "ok": True,
+                    "scanned": 1,
+                    "eligible": 1,
+                    "new_active": 1,
+                    "new_candidates": 0,
+                    "new_targets": [{"symbol": "NVDA", "status": "active", "direction_bias": "long", "score": 18}],
+                },
+            }
+
+        payload, status_code = build_early_expansion_topup_response(
+            payload={"broker_mode": "paper", "market_data_mode": "live"},
+            normalize_environment=lambda value, default: str(value or default).strip().lower() or default,
+            time_strings=lambda: {"us": "2026-04-23 09:40:00", "cn": "2026-04-23 21:40:00", "date": "2026-04-23"},
+            request_json_request=request_json_request,
+            compute_base_url="http://compute",
+            feishu_send_interactive=lambda card, chat_id, environment: sent.append(
+                {"card": card, "chat_id": chat_id, "environment": environment}
+            ) or {"success": True, "message_id": "msg-topup"},
+            write_system_event_record=lambda *args, **kwargs: events.append(args) or {"id": "event-1"},
+            config_value=lambda key, default, environment: default,
+            console_base_url=lambda: "https://quant.lzw-glory.top",
+            startup_chat_id=lambda environment: f"startup-chat-{environment}",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["environment"], "paper")
+        self.assertEqual(payload["broker_mode"], "paper")
+        self.assertEqual(payload["data_environment"], "live")
+        self.assertEqual(scan_payloads[0]["environment"], "live")
+        self.assertEqual(scan_payloads[0]["broker_mode"], "paper")
+        self.assertEqual(sent[0]["chat_id"], "startup-chat-paper")
+        self.assertEqual(sent[0]["environment"], "paper")
+        self.assertIn("Broker PAPER", sent[0]["card"]["header"]["title"]["content"])
+        card_text = "\n".join(element.get("content", "") for element in sent[0]["card"]["elements"] if element.get("tag") == "markdown")
+        self.assertIn("**数据**: Shared Data", card_text)
+        self.assertIn("environment=live", sent[0]["card"]["elements"][-1]["actions"][0]["multi_url"]["url"])
+        self.assertEqual(events[0][5], "paper")
+        self.assertEqual(events[0][4]["broker_mode"], "paper")
+        self.assertEqual(events[0][4]["data_environment"], "live")
+
     def test_early_expansion_topup_skips_notification_without_new_targets(self):
         sent = []
 
@@ -1307,6 +1361,46 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         card_text = "\n".join(element.get("content", "") for element in sent[0]["card"]["elements"] if element.get("tag") == "markdown")
         self.assertIn("**今日止盈/止损**: 止盈成交 2 | 止损成交 1", card_text)
         self.assertIn("**今日盈亏**: 净 +$123.45 | 盈利 2/+$200.00 | 亏损 1/-$76.55 | PnL缺失 1", card_text)
+
+    def test_daily_report_labels_paper_broker_with_shared_live_data(self):
+        pb = _ReminderPB()
+        sent = []
+        summary_calls = []
+        target_payloads = []
+        deps = self._reminder_deps(pb, sent, now_us="2026-04-23 16:05:00", daily=True)
+        base_summary = deps["build_system_summary_payload"]
+        base_targets = deps["build_today_targets_response"]
+
+        def build_system_summary_payload(environment, lite_mode=False):
+            summary_calls.append(environment)
+            return base_summary(environment, lite_mode=lite_mode)
+
+        def build_today_targets_response(*, payload):
+            target_payloads.append(payload)
+            return base_targets(payload=payload)
+
+        deps["build_system_summary_payload"] = build_system_summary_payload
+        deps["build_today_targets_response"] = build_today_targets_response
+
+        payload, status_code = build_system_daily_report_response(
+            payload={"broker_mode": "paper", "market_data_mode": "live"},
+            **deps,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["environment"], "paper")
+        self.assertEqual(payload["broker_mode"], "paper")
+        self.assertEqual(payload["data_environment"], "live")
+        self.assertEqual(sent[0]["chat_id"], "startup-chat-paper")
+        self.assertEqual(sent[0]["environment"], "paper")
+        self.assertIn("Broker PAPER", sent[0]["card"]["header"]["title"]["content"])
+        self.assertEqual(summary_calls, ["paper"])
+        self.assertEqual(target_payloads[0]["broker_mode"], "paper")
+        self.assertEqual(target_payloads[0]["market_data_mode"], "live")
+        self.assertEqual(target_payloads[0]["environment"], "live")
+        state = pb.states[("system_notify_daily", "paper", "2026-04-23")]["data"]
+        self.assertEqual(state["close_message_id"], "msg-1")
 
     def test_daily_report_does_not_mark_sent_when_notification_fails(self):
         pb = _ReminderPB()

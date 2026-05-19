@@ -338,11 +338,9 @@ def build_signals_ack_response(
             "last_ack_status": status,
             "last_ack_note": note,
             "last_ack_source": "ibkr-api",
+            "last_ack_broker_mode": broker_mode,
+            "last_ack_data_environment": data_environment,
         }
-        store_broker_execution = broker_mode != data_environment or broker_mode != "live"
-        if store_broker_execution:
-            signal_extra["last_ack_broker_mode"] = broker_mode
-            signal_extra["last_ack_data_environment"] = data_environment
         order_input = ensure_object(payload.get("order"))
         order_extra = ensure_object(order_input.get("extra"))
         if "protection_complete" in order_extra:
@@ -445,16 +443,15 @@ def build_signals_ack_response(
                     int(response_status_code or 500 or 500),
                 )
 
-        if store_broker_execution:
-            signal_extra = _with_broker_execution(
-                signal_extra,
-                broker_mode=broker_mode,
-                data_environment=data_environment,
-                status=status,
-                note=note,
-                order_results=order_results,
-                primary_order_status=primary_status or "Init",
-            )
+        signal_extra = _with_broker_execution(
+            signal_extra,
+            broker_mode=broker_mode,
+            data_environment=data_environment,
+            status=status,
+            note=note,
+            order_results=order_results,
+            primary_order_status=primary_status or "Init",
+        )
         notification_result: dict[str, Any] = {}
         existing_message_id = str(signal_extra.get("feishu_signal_message_id") or "").strip()
         if existing_message_id and callable(update_interactive):

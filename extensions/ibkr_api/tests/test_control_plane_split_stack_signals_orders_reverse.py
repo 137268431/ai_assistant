@@ -265,20 +265,20 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
                         payload = api_app_mod.custom_ibkr_signals_ack()
 
         self.assertEqual(call_order, ["order_upsert", "order_upsert", "order_upsert", "signal_patch"])
-        update_mock.assert_called_once_with(
-            "ibkr_signals",
-            "sig-row-1",
-            {
-                "status": "submitted",
-                "note": "broker_ack",
-                "extra": {
-                    "last_ack_status": "submitted",
-                    "last_ack_note": "broker_ack",
-                    "last_ack_source": "ibkr-api",
-                    "protection_complete": True,
-                },
-            },
-        )
+        update_mock.assert_called_once()
+        self.assertEqual(update_mock.call_args.args[:2], ("ibkr_signals", "sig-row-1"))
+        patch = update_mock.call_args.args[2]
+        self.assertEqual(patch["status"], "submitted")
+        self.assertEqual(patch["note"], "broker_ack")
+        self.assertEqual(patch["extra"]["last_ack_status"], "submitted")
+        self.assertEqual(patch["extra"]["last_ack_note"], "broker_ack")
+        self.assertEqual(patch["extra"]["last_ack_source"], "ibkr-api")
+        self.assertEqual(patch["extra"]["last_ack_broker_mode"], "live")
+        self.assertEqual(patch["extra"]["last_ack_data_environment"], "live")
+        self.assertTrue(patch["extra"]["protection_complete"])
+        self.assertEqual(patch["extra"]["execution_by_mode"]["live"]["status"], "submitted")
+        self.assertEqual(patch["extra"]["execution_by_mode"]["live"]["note"], "broker_ack")
+        self.assertEqual(patch["extra"]["execution_by_mode"]["live"]["data_environment"], "live")
         self.assertEqual(req_mock.call_count, 3)
         self.assertTrue(payload["success"])
         self.assertEqual(payload["signal_id"], "sig-1")
@@ -331,6 +331,60 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
         patch = update_mock.call_args.args[2]
         self.assertEqual(patch["status"], "submitted")
         self.assertEqual(patch["extra"]["last_ack_status"], "submitted")
+        self.assertEqual(patch["extra"]["last_ack_broker_mode"], "live")
+        self.assertEqual(patch["extra"]["execution_by_mode"]["live"]["status"], "submitted")
+        self.assertTrue(payload["success"])
+
+    def test_signals_ack_route_records_paper_execution_with_shared_live_data(self):
+        signal_row = {
+            "id": "sig-row-1",
+            "signal_id": "sig-1",
+            "symbol": "AAPL",
+            "direction": "long",
+            "shares": 10,
+            "entry": 180.0,
+            "stop_loss": 178.0,
+            "take_profit": 184.0,
+            "environment": "live",
+            "status": "pending",
+            "extra": {"broker_mode": "live", "data_environment": "live"},
+        }
+        request_payload = {
+            "broker_mode": "paper",
+            "market_data_mode": "live",
+            "data_environment": "live",
+            "signal_id": "sig-1",
+            "status": "submitted",
+            "note": "broker_ack",
+            "order": {
+                "unique_id": "sig-1_entry",
+                "order_type": "Entry",
+                "status": "Submitted",
+                "direction": "long",
+                "quantity": 10,
+                "limit_price": 180.1,
+            },
+        }
+        upsert_result = (
+            {"success": True, "order": {"unique_id": "sig-1_entry", "status": "Submitted"}},
+            200,
+        )
+
+        with mock.patch.object(api_app_mod.request, "get_json", return_value=request_payload):
+            with mock.patch.object(api_app_mod.pb, "get_first_record", return_value=signal_row):
+                with mock.patch.object(api_app_mod.pb, "update_record", return_value={"id": "sig-row-1"}) as update_mock:
+                    with mock.patch.object(api_app_mod, "build_order_upsert_response", return_value=upsert_result) as upsert_mock:
+                        payload = api_app_mod.custom_ibkr_signals_ack()
+
+        patch = update_mock.call_args.args[2]
+        self.assertNotIn("status", patch)
+        self.assertEqual(patch["extra"]["last_ack_broker_mode"], "paper")
+        self.assertEqual(patch["extra"]["last_ack_data_environment"], "live")
+        self.assertEqual(patch["extra"]["execution_by_mode"]["paper"]["status"], "submitted")
+        self.assertEqual(patch["extra"]["execution_by_mode"]["paper"]["data_environment"], "live")
+        self.assertEqual(upsert_mock.call_args.kwargs["payload"]["environment"], "paper")
+        self.assertEqual(payload["broker_mode"], "paper")
+        self.assertEqual(payload["data_environment"], "live")
         self.assertTrue(payload["success"])
 
     def test_signals_ack_route_records_partial_when_order_upsert_fails(self):
@@ -379,6 +433,8 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
         self.assertEqual(patch["note"], "order_upsert_failed")
         self.assertTrue(patch["extra"]["ack_partial"])
         self.assertEqual(patch["extra"]["ack_partial_status"], "ack_partial")
+        self.assertEqual(patch["extra"]["last_ack_broker_mode"], "live")
+        self.assertEqual(patch["extra"]["execution_by_mode"]["live"]["status"], "protection_incomplete")
         self.assertTrue(patch["extra"]["order_upsert_failed"])
         self.assertEqual(patch["extra"]["order_upsert_error"], "pb write failed")
         self.assertEqual(payload["status"], "protection_incomplete")

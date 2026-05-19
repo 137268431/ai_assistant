@@ -124,6 +124,11 @@ def _apply_signal_strength(prepared: dict[str, Any]) -> dict[str, Any]:
     return prepared
 
 
+def _request_signal_broker_mode(payload: dict[str, Any] | None) -> str:
+    request_payload = payload if isinstance(payload, dict) else {}
+    return request_broker_mode({"broker_mode": request_payload.get("broker_mode")})
+
+
 def _apply_broker_metadata(prepared: dict[str, Any], broker_mode: str, data_environment: str) -> dict[str, Any]:
     extra = get_signal_extra(prepared)
     prepared["extra"] = {
@@ -508,7 +513,7 @@ def build_signal_ingest_response(
     signal_chat_id_fn: SignalChatId | None = None,
     console_base_url: str = "",
 ) -> tuple[dict[str, Any], int]:
-    broker_mode = request_broker_mode(payload)
+    broker_mode = _request_signal_broker_mode(payload)
     environment = request_market_data_mode(payload)
     prepared, error = build_signal_record_payload(payload or {}, environment)
     if not prepared:
@@ -595,7 +600,7 @@ def build_signal_ingest_response(
                 "target": "ibkr_signals",
                 "id": to_text(saved_row.get("id")),
                 "action": action,
-                "status": to_text(saved_row.get("status") or prepared["status"]),
+                "status": to_text(lifecycle.get("next_status") or saved_row.get("status") or prepared["status"]),
                 "broker_mode": broker_mode,
                 "data_environment": environment,
             },
@@ -619,7 +624,7 @@ def build_signals_ingest_response(
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
     items = request_payload.get("items") if isinstance(request_payload.get("items"), list) else []
-    default_broker_mode = request_broker_mode(request_payload)
+    default_broker_mode = _request_signal_broker_mode(request_payload)
     default_environment = request_market_data_mode(request_payload)
     if not items:
         return {"ok": False, "error": "Empty signals array"}, 400

@@ -237,6 +237,57 @@ class SystemScanSummaryTest(unittest.TestCase):
         self.assertEqual(states[("system_notify_daily", "live")]["open_sent_at"], "2026-04-28 09:30:17")
         self.assertEqual(events[0][0][0], "open_report")
 
+    def test_open_report_labels_paper_broker_with_shared_live_data(self):
+        sent = []
+        states = {}
+        summary_calls = []
+        target_payloads = []
+        snapshot_calls = []
+
+        def build_today_targets_response(*, payload):
+            target_payloads.append(payload)
+            return {
+                "market_date": payload["market_date"],
+                "computed_at_ms": 1777383000000,
+                "daily_scan": {"status": "completed", "market_date": payload["market_date"]},
+                "summary": {"total": 0},
+                "items": [],
+            }, 200
+
+        payload, status_code = build_system_open_report_response(
+            payload={"broker_mode": "paper", "market_data_mode": "live"},
+            normalize_environment=lambda value, default: str(value or default).strip().lower(),
+            time_strings=lambda: {"us": "2026-04-28 09:30:17", "cn": "2026-04-28 21:30:17", "date": "2026-04-28"},
+            build_today_targets_response=build_today_targets_response,
+            build_system_summary_payload=lambda environment, lite_mode=False: summary_calls.append(environment) or {"status": "running"},
+            build_system_monitor_payload=lambda environment: {"runtime": {}, "scheduler": {}, "service_monitor": {"status_counts": {"running": 1}}},
+            feishu_send_interactive=lambda card, chat_id, environment: sent.append(
+                {"card": card, "chat_id": chat_id, "environment": environment}
+            ) or {"success": True, "message_id": "om-paper"},
+            write_system_event_record=lambda *args, **kwargs: {},
+            get_state_payload=lambda state_key, environment: {"data": states.get((state_key, environment), {})},
+            upsert_state=lambda key, environment, data, date: states.update({(key, environment): data}) or data,
+            config_value=lambda key, default, environment: default,
+            console_base_url=lambda: "https://quant.lzw-glory.top",
+            startup_chat_id=lambda environment: f"startup-chat-{environment}",
+            load_market_snapshots=lambda environment, symbols, market_date, computed_at_ms: snapshot_calls.append(environment) or [],
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["environment"], "paper")
+        self.assertEqual(payload["broker_mode"], "paper")
+        self.assertEqual(payload["data_environment"], "live")
+        self.assertEqual(sent[0]["chat_id"], "startup-chat-paper")
+        self.assertEqual(sent[0]["environment"], "paper")
+        self.assertIn("Broker PAPER", sent[0]["card"]["header"]["title"]["content"])
+        self.assertEqual(target_payloads[0]["broker_mode"], "paper")
+        self.assertEqual(target_payloads[0]["market_data_mode"], "live")
+        self.assertEqual(target_payloads[0]["environment"], "live")
+        self.assertEqual(summary_calls, ["paper"])
+        self.assertEqual(snapshot_calls, ["live"])
+        self.assertEqual(states[("system_notify_daily", "paper")]["open_message_id"], "om-paper")
+
     def test_scan_summary_reports_daily_scan_failure(self):
         sent = []
         states = {}

@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from typing import Any, Callable
 
-from ibkr_api.modes import request_market_data_mode
+from ibkr_api.modes import request_broker_mode, request_market_data_mode
 
 
 NormalizeEnvironment = Callable[[Any, str], str]
@@ -207,16 +207,21 @@ def _target_line(item: dict[str, Any], index: int) -> str:
     return f"{index}. {symbol} | {status}/{direction} | score {score:.1f} | {reason}"
 
 
-def _report_url(console_base_url: str, environment: str, market_date: str) -> str:
+def _report_url(console_base_url: str, data_environment: str, market_date: str) -> str:
     base = _to_text(console_base_url).rstrip("/")
     if not base:
         return ""
-    return f"{base}/ibkr_screener.html?environment={environment}&tab=screener&view=current&date={market_date}&market_date={market_date}"
+    return f"{base}/ibkr_screener.html?environment={data_environment}&tab=screener&view=current&date={market_date}&market_date={market_date}"
+
+
+def _data_badge(data_environment: str) -> str:
+    return "Shared Data" if _to_text(data_environment).lower() == "live" else f"Data {_to_text(data_environment).upper()}"
 
 
 def _build_card(
     *,
-    environment: str,
+    broker_mode: str,
+    data_environment: str,
     market_date: str,
     times: dict[str, str],
     result: dict[str, Any],
@@ -237,6 +242,7 @@ def _build_card(
             "tag": "markdown",
             "content": (
                 f"**交易日**: {market_date}\n"
+                f"**数据**: {_data_badge(data_environment)}\n"
                 f"**检查时间**: 美东 {scan_time} | 北京 {_to_text(times.get('cn')) or 'n/a'}\n"
                 f"**本轮新增**: active {active} | candidate {candidates}\n"
                 f"**扫描统计**: scanned {_to_int(result.get('scanned'))} | eligible {_to_int(result.get('eligible'))} | errors {_to_int(result.get('errors'))}"
@@ -244,7 +250,7 @@ def _build_card(
         },
         {"tag": "markdown", "content": "**新增可操作标的**:\n" + "\n".join(lines)},
     ]
-    url = _report_url(console_base_url, environment, market_date)
+    url = _report_url(console_base_url, data_environment, market_date)
     if url:
         elements.append(
             {
@@ -262,18 +268,25 @@ def _build_card(
     return {
         "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"tag": "plain_text", "content": f"IBKR 早盘扩池新增 · Broker {environment.upper()}"},
+            "title": {"tag": "plain_text", "content": f"IBKR 早盘扩池新增 · Broker {broker_mode.upper()}"},
             "template": "green",
         },
         "elements": elements,
     }
 
 
-def _build_failure_card(*, environment: str, market_date: str, times: dict[str, str], error: str) -> dict[str, Any]:
+def _build_failure_card(
+    *,
+    broker_mode: str,
+    data_environment: str,
+    market_date: str,
+    times: dict[str, str],
+    error: str,
+) -> dict[str, Any]:
     return {
         "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"tag": "plain_text", "content": f"IBKR 早盘扩池失败 · Broker {environment.upper()}"},
+            "title": {"tag": "plain_text", "content": f"IBKR 早盘扩池失败 · Broker {broker_mode.upper()}"},
             "template": "red",
         },
         "elements": [
@@ -281,6 +294,7 @@ def _build_failure_card(*, environment: str, market_date: str, times: dict[str, 
                 "tag": "markdown",
                 "content": (
                     f"**交易日**: {market_date}\n"
+                    f"**数据**: {_data_badge(data_environment)}\n"
                     f"**检查时间**: 美东 {_to_text(times.get('us')) or 'n/a'} | 北京 {_to_text(times.get('cn')) or 'n/a'}\n"
                     f"**错误**: {error or 'unknown_error'}"
                 ),
@@ -291,7 +305,8 @@ def _build_failure_card(*, environment: str, market_date: str, times: dict[str, 
 
 def _deliver_new_targets_notification(
     *,
-    environment: str,
+    broker_mode: str,
+    data_environment: str,
     market_date: str,
     times: dict[str, str],
     result: dict[str, Any],
@@ -305,16 +320,17 @@ def _deliver_new_targets_notification(
     notified = False
     message_id = ""
     send_result: dict[str, Any] = {}
-    notify_enabled = _truthy(config_value("status_notify_enabled", "TRUE", environment))
+    notify_enabled = _truthy(config_value("status_notify_enabled", "TRUE", broker_mode))
     if notify_enabled:
         card = _build_card(
-            environment=environment,
+            broker_mode=broker_mode,
+            data_environment=data_environment,
             market_date=market_date,
             times=times,
             result={**result, "new_targets": new_targets},
             console_base_url=console_base_url(),
         )
-        send_result = _as_dict(feishu_send_interactive(card, startup_chat_id(environment), environment))
+        send_result = _as_dict(feishu_send_interactive(card, startup_chat_id(broker_mode), broker_mode))
         notified = bool(send_result.get("success")) and not bool(send_result.get("suppressed"))
         message_id = _to_text(send_result.get("message_id"))
 
@@ -325,11 +341,13 @@ def _deliver_new_targets_notification(
         "IBKR 早盘扩池新增",
         {
             "market_date": market_date,
+            "broker_mode": broker_mode,
+            "data_environment": data_environment,
             "new_active": _to_int(result.get("new_active")),
             "new_candidates": _to_int(result.get("new_candidates")),
             "symbols": [_to_text(item.get("symbol")) for item in new_targets[:20]],
         },
-        environment,
+        broker_mode,
         notified,
     )
     finalized = (
@@ -355,7 +373,8 @@ def _notify_completed_async_scan(
     *,
     status_payload: dict[str, Any],
     result: dict[str, Any],
-    environment: str,
+    broker_mode: str,
+    data_environment: str,
     market_date: str,
     times: dict[str, str],
     feishu_send_interactive: FeishuSendInteractive,
@@ -370,8 +389,8 @@ def _notify_completed_async_scan(
     if not new_targets:
         return {"checked": True, "skipped": True, "reason": "no_new_targets", "notified": False}
 
-    state = _load_notify_state(get_state_payload, environment)
-    notify_key = _notify_key(status_payload, result, environment, market_date)
+    state = _load_notify_state(get_state_payload, broker_mode)
+    notify_key = _notify_key(status_payload, result, broker_mode, market_date)
     if notify_key and notify_key in _notified_keys(state):
         return {
             "checked": True,
@@ -383,7 +402,8 @@ def _notify_completed_async_scan(
         }
 
     delivered = _deliver_new_targets_notification(
-        environment=environment,
+        broker_mode=broker_mode,
+        data_environment=data_environment,
         market_date=market_date,
         times=times,
         result=result,
@@ -396,7 +416,7 @@ def _notify_completed_async_scan(
     if delivered.get("finalized"):
         _record_notify_state(
             upsert_state=upsert_state,
-            environment=environment,
+            environment=broker_mode,
             market_date=market_date,
             state=state,
             notify_key=notify_key,
@@ -450,11 +470,15 @@ def build_early_expansion_topup_response(
     upsert_state: UpsertState | None = None,
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
-    environment = request_market_data_mode(request_payload)
+    broker_mode = request_broker_mode(request_payload)
+    data_environment = request_market_data_mode(request_payload)
     times = time_strings()
     market_date = _to_text(request_payload.get("market_date") or request_payload.get("date") or times.get("date"))
     scan_payload = {
-        "environment": environment,
+        "environment": data_environment,
+        "broker_mode": broker_mode,
+        "market_data_mode": data_environment,
+        "data_environment": data_environment,
         "mode": "topup",
         "force": True,
         "async": True,
@@ -466,7 +490,7 @@ def build_early_expansion_topup_response(
         existing_scan = _fetch_completed_or_pending_scan(
             request_json_request=request_json_request,
             compute_base_url=compute_base_url,
-            environment=environment,
+            environment=data_environment,
             market_date=market_date,
         )
         existing_payload = _as_dict(existing_scan.get("payload"))
@@ -476,7 +500,8 @@ def build_early_expansion_topup_response(
             completed_notification = _notify_completed_async_scan(
                 status_payload=existing_payload,
                 result=existing_result,
-                environment=environment,
+                broker_mode=broker_mode,
+                data_environment=data_environment,
                 market_date=market_date,
                 times=times,
                 feishu_send_interactive=feishu_send_interactive,
@@ -490,7 +515,10 @@ def build_early_expansion_topup_response(
             if completed_notification.get("error"):
                 return {
                     "ok": False,
-                    "environment": environment,
+                    "environment": broker_mode,
+                    "broker_mode": broker_mode,
+                    "market_data_mode": data_environment,
+                    "data_environment": data_environment,
                     "market_date": market_date,
                     "job_id": "ibkr_early_expansion_topup",
                     "status": "notification_failed",
@@ -504,7 +532,10 @@ def build_early_expansion_topup_response(
         elif bool(existing_scan.get("ok")) and _is_pending_scan_status(existing_status):
             return {
                 "ok": True,
-                "environment": environment,
+                "environment": broker_mode,
+                "broker_mode": broker_mode,
+                "market_data_mode": data_environment,
+                "data_environment": data_environment,
                 "market_date": market_date,
                 "job_id": "ibkr_early_expansion_topup",
                 "status": _submission_status(existing_payload),
@@ -548,7 +579,10 @@ def build_early_expansion_topup_response(
         )
         return {
             "ok": True,
-            "environment": environment,
+            "environment": broker_mode,
+            "broker_mode": broker_mode,
+            "market_data_mode": data_environment,
+            "data_environment": data_environment,
             "market_date": market_date,
             "job_id": "ibkr_early_expansion_topup",
             "status": status,
@@ -577,7 +611,10 @@ def build_early_expansion_topup_response(
         )
         return {
             "ok": True,
-            "environment": environment,
+            "environment": broker_mode,
+            "broker_mode": broker_mode,
+            "market_data_mode": data_environment,
+            "data_environment": data_environment,
             "market_date": market_date,
             "job_id": "ibkr_early_expansion_topup",
             "status": status,
@@ -605,9 +642,15 @@ def build_early_expansion_topup_response(
         )
         notified = False
         message_id = ""
-        if _truthy(config_value("status_notify_enabled", "TRUE", environment)):
-            card = _build_failure_card(environment=environment, market_date=market_date, times=times, error=error)
-            send_result = _as_dict(feishu_send_interactive(card, startup_chat_id(environment), environment))
+        if _truthy(config_value("status_notify_enabled", "TRUE", broker_mode)):
+            card = _build_failure_card(
+                broker_mode=broker_mode,
+                data_environment=data_environment,
+                market_date=market_date,
+                times=times,
+                error=error,
+            )
+            send_result = _as_dict(feishu_send_interactive(card, startup_chat_id(broker_mode), broker_mode))
             notified = bool(send_result.get("success")) and not bool(send_result.get("suppressed"))
             message_id = _to_text(send_result.get("message_id"))
         write_system_event_record(
@@ -615,13 +658,23 @@ def build_early_expansion_topup_response(
             "error",
             "ibkr_api",
             "IBKR 早盘扩池失败",
-            {"market_date": market_date, "error": error or "scan_failed", "elapsed_s": elapsed_s, "upstream": upstream},
-            environment,
+            {
+                "market_date": market_date,
+                "broker_mode": broker_mode,
+                "data_environment": data_environment,
+                "error": error or "scan_failed",
+                "elapsed_s": elapsed_s,
+                "upstream": upstream,
+            },
+            broker_mode,
             notified,
         )
         return {
             "ok": False,
-            "environment": environment,
+            "environment": broker_mode,
+            "broker_mode": broker_mode,
+            "market_data_mode": data_environment,
+            "data_environment": data_environment,
             "market_date": market_date,
             "job_id": "ibkr_early_expansion_topup",
             "status": status,
@@ -638,7 +691,10 @@ def build_early_expansion_topup_response(
     if not new_targets:
         return {
             "ok": True,
-            "environment": environment,
+            "environment": broker_mode,
+            "broker_mode": broker_mode,
+            "market_data_mode": data_environment,
+            "data_environment": data_environment,
             "market_date": market_date,
             "job_id": "ibkr_early_expansion_topup",
             "status": "success",
@@ -657,8 +713,8 @@ def build_early_expansion_topup_response(
             "source": "ibkr-api",
         }, 200
 
-    notify_key = _notify_key({"run_id": result.get("run_id")}, result, environment, market_date)
-    state = _load_notify_state(get_state_payload, environment)
+    notify_key = _notify_key({"run_id": result.get("run_id")}, result, broker_mode, market_date)
+    state = _load_notify_state(get_state_payload, broker_mode)
     if notify_key and notify_key in _notified_keys(state):
         delivered = {
             "notified": False,
@@ -672,7 +728,8 @@ def build_early_expansion_topup_response(
         }
     else:
         delivered = _deliver_new_targets_notification(
-            environment=environment,
+            broker_mode=broker_mode,
+            data_environment=data_environment,
             market_date=market_date,
             times=times,
             result=result,
@@ -685,7 +742,7 @@ def build_early_expansion_topup_response(
         if delivered.get("finalized"):
             _record_notify_state(
                 upsert_state=upsert_state,
-                environment=environment,
+                environment=broker_mode,
                 market_date=market_date,
                 state=state,
                 notify_key=notify_key,
@@ -696,7 +753,10 @@ def build_early_expansion_topup_response(
     if delivered.get("error"):
         return {
             "ok": False,
-            "environment": environment,
+            "environment": broker_mode,
+            "broker_mode": broker_mode,
+            "market_data_mode": data_environment,
+            "data_environment": data_environment,
             "market_date": market_date,
             "job_id": "ibkr_early_expansion_topup",
             "status": "notification_failed",
@@ -728,7 +788,10 @@ def build_early_expansion_topup_response(
     }
     return {
         "ok": True,
-        "environment": environment,
+        "environment": broker_mode,
+        "broker_mode": broker_mode,
+        "market_data_mode": data_environment,
+        "data_environment": data_environment,
         "market_date": market_date,
         "job_id": "ibkr_early_expansion_topup",
         "status": "success",

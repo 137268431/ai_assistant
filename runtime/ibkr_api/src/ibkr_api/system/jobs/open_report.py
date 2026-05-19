@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
-from ibkr_api.modes import request_market_data_mode
+from ibkr_api.modes import request_broker_mode, request_market_data_mode
 from ibkr_api.system.jobs.market_calendar import is_nyse_non_trading_day
 
 
@@ -524,7 +524,8 @@ def _report_url(console_base_url: str, environment: str, market_date: str, page:
 
 def _build_open_report_card(
     *,
-    environment: str,
+    broker_mode: str,
+    data_environment: str,
     times: dict[str, str],
     summary: dict[str, Any],
     monitor: dict[str, Any],
@@ -565,8 +566,8 @@ def _build_open_report_card(
             }
         )
     actions = []
-    system_url = _report_url(console_base_url, environment, market_date, "system")
-    screener_url = _report_url(console_base_url, environment, market_date, "screener")
+    system_url = _report_url(console_base_url, broker_mode, market_date, "system")
+    screener_url = _report_url(console_base_url, data_environment, market_date, "screener")
     if system_url:
         actions.append(
             {
@@ -590,7 +591,7 @@ def _build_open_report_card(
     return {
         "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"tag": "plain_text", "content": f"IBKR 09:30 开盘交易摘要 · Broker {environment.upper()}"},
+            "title": {"tag": "plain_text", "content": f"IBKR 09:30 开盘交易摘要 · Broker {broker_mode.upper()}"},
             "template": _report_template(level, targets_payload),
         },
         "elements": elements,
@@ -642,14 +643,18 @@ def build_system_open_report_response(
     load_market_snapshots: LoadMarketSnapshots | None = None,
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
-    environment = request_market_data_mode(request_payload)
+    broker_mode = request_broker_mode(request_payload)
+    data_environment = request_market_data_mode(request_payload)
     times = time_strings()
     target_time_et = _to_text(request_payload.get("target_time_et")) or DEFAULT_OPEN_REPORT_TIME_ET
     window_minutes = _to_int(request_payload.get("window_minutes"), DEFAULT_OPEN_REPORT_WINDOW_MINUTES)
     if not _matches_time_window(times.get("us", ""), target_time_et, window_minutes=window_minutes):
         return {
             "ok": True,
-            "environment": environment,
+            "environment": broker_mode,
+            "broker_mode": broker_mode,
+            "market_data_mode": data_environment,
+            "data_environment": data_environment,
             "job_id": "system_open_report",
             "skipped": True,
             "reason": "outside_time_window",
@@ -658,11 +663,14 @@ def build_system_open_report_response(
             "source": "ibkr-api",
         }, 200
 
-    state = _as_dict(get_state_payload(OPEN_REPORT_STATE_KEY, environment).get("data"))
+    state = _as_dict(get_state_payload(OPEN_REPORT_STATE_KEY, broker_mode).get("data"))
     if _to_text(state.get("open_sent_at")):
         return {
             "ok": True,
-            "environment": environment,
+            "environment": broker_mode,
+            "broker_mode": broker_mode,
+            "market_data_mode": data_environment,
+            "data_environment": data_environment,
             "job_id": "system_open_report",
             "skipped": True,
             "reason": "already_sent",
@@ -688,10 +696,13 @@ def build_system_open_report_response(
             "open_daily_scan_status": "non_trading_day",
             "open_sent_at": times["us"],
         }
-        upsert_state(OPEN_REPORT_STATE_KEY, environment, next_state, times["date"])
+        upsert_state(OPEN_REPORT_STATE_KEY, broker_mode, next_state, times["date"])
         return {
             "ok": True,
-            "environment": environment,
+            "environment": broker_mode,
+            "broker_mode": broker_mode,
+            "market_data_mode": data_environment,
+            "data_environment": data_environment,
             "job_id": "system_open_report",
             "skipped": True,
             "reason": "non_trading_day",
@@ -704,12 +715,15 @@ def build_system_open_report_response(
             "source": "ibkr-api",
         }, 200
 
-    if not _truthy(config_value("status_notify_enabled", "TRUE", environment)):
+    if not _truthy(config_value("status_notify_enabled", "TRUE", broker_mode)):
         next_state = {**state, "open_skipped_at": times["us"], "open_skipped_reason": "status_notify_disabled"}
-        upsert_state(OPEN_REPORT_STATE_KEY, environment, next_state, times["date"])
+        upsert_state(OPEN_REPORT_STATE_KEY, broker_mode, next_state, times["date"])
         return {
             "ok": True,
-            "environment": environment,
+            "environment": broker_mode,
+            "broker_mode": broker_mode,
+            "market_data_mode": data_environment,
+            "data_environment": data_environment,
             "job_id": "system_open_report",
             "skipped": True,
             "reason": "status_notify_disabled",
@@ -719,7 +733,10 @@ def build_system_open_report_response(
 
     targets_payload, _ = build_today_targets_response(
         payload={
-            "environment": environment,
+            "broker_mode": broker_mode,
+            "market_data_mode": data_environment,
+            "data_environment": data_environment,
+            "environment": data_environment,
             "market_date": times["date"],
             "date": times["date"],
             "per_page": 5,
@@ -730,22 +747,23 @@ def build_system_open_report_response(
     )
     targets_payload = _as_dict(targets_payload)
     computed_at_ms = _to_int(targets_payload.get("computed_at_ms"), 0) or _parse_us_time_ms(times.get("us"))
-    market_symbols = _normalize_symbols(config_value("ibkr_market_ws_symbols", DEFAULT_MARKET_SYMBOLS, environment)) or _normalize_symbols(DEFAULT_MARKET_SYMBOLS)
+    market_symbols = _normalize_symbols(config_value("ibkr_market_ws_symbols", DEFAULT_MARKET_SYMBOLS, data_environment)) or _normalize_symbols(DEFAULT_MARKET_SYMBOLS)
     market_snapshots: list[dict[str, Any]] = []
     if load_market_snapshots:
         try:
             market_snapshots = load_market_snapshots(
-                environment,
+                data_environment,
                 market_symbols,
                 _to_text(targets_payload.get("market_date")) or _to_text(times.get("date")),
                 computed_at_ms,
             )
         except Exception as exc:
             market_snapshots = [{"symbol": symbol, "status": f"snapshot_error:{exc}"} for symbol in market_symbols]
-    summary = _as_dict(build_system_summary_payload(environment, lite_mode=True))
-    monitor = _as_dict(build_system_monitor_payload(environment))
+    summary = _as_dict(build_system_summary_payload(broker_mode, lite_mode=True))
+    monitor = _as_dict(build_system_monitor_payload(broker_mode))
     card = _build_open_report_card(
-        environment=environment,
+        broker_mode=broker_mode,
+        data_environment=data_environment,
         times=times,
         summary=summary,
         monitor=monitor,
@@ -753,7 +771,7 @@ def build_system_open_report_response(
         market_snapshots=market_snapshots,
         console_base_url=console_base_url(),
     )
-    result = _as_dict(feishu_send_interactive(card, startup_chat_id(environment), environment))
+    result = _as_dict(feishu_send_interactive(card, startup_chat_id(broker_mode), broker_mode))
     notified = bool(result.get("success")) and not bool(result.get("suppressed"))
     finalized = bool(notified or result.get("skipped") or result.get("suppressed"))
     level = _report_level(summary, monitor, targets_payload)
@@ -763,7 +781,7 @@ def build_system_open_report_response(
         "ibkr-api",
         "IBKR 09:30 开盘交易摘要",
         _event_detail(times=times, summary=summary, monitor=monitor, targets_payload=targets_payload, market_snapshots=market_snapshots),
-        environment,
+        broker_mode,
         notified,
     )
     persisted = bool(event_record)
@@ -785,10 +803,13 @@ def build_system_open_report_response(
     }
     if finalized:
         next_state["open_sent_at"] = times["us"]
-    upsert_state(OPEN_REPORT_STATE_KEY, environment, next_state, times["date"])
+    upsert_state(OPEN_REPORT_STATE_KEY, broker_mode, next_state, times["date"])
     return {
         "ok": finalized,
-        "environment": environment,
+        "environment": broker_mode,
+        "broker_mode": broker_mode,
+        "market_data_mode": data_environment,
+        "data_environment": data_environment,
         "job_id": "system_open_report",
         "notified": notified,
         "persisted": persisted,

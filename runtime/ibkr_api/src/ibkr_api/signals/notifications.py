@@ -58,24 +58,51 @@ def _broker_badge(environment: Any) -> str:
     return normalized.upper() if normalized else "Broker LIVE"
 
 
+def _normalized_broker_candidate(value: Any) -> str:
+    normalized = to_text(value).lower()
+    return normalized if normalized in {"live", "paper"} else ""
+
+
+def _execution_broker_mode(signal_extra: dict[str, Any]) -> str:
+    execution_by_mode = signal_extra.get("execution_by_mode")
+    if not isinstance(execution_by_mode, dict):
+        return ""
+    scored: list[tuple[int, int, str]] = []
+    final_statuses = {
+        "submitted",
+        "protected_active",
+        "protection_incomplete",
+        "executed",
+        "rejected",
+        "expired",
+        "closed",
+    }
+    for index, mode in enumerate(("paper", "live")):
+        payload = execution_by_mode.get(mode)
+        if not isinstance(payload, dict):
+            continue
+        status = to_text(payload.get("status")).lower()
+        score = 2 if status in final_statuses else 1 if status else 0
+        scored.append((score, -index, mode))
+    if not scored:
+        return ""
+    return max(scored)[2]
+
+
 def _signal_broker_mode(record_or_data: Any, extra: dict[str, Any] | None = None) -> str:
     signal_extra = extra if isinstance(extra, dict) else get_signal_extra(record_or_data)
     candidates = (
-        record_value(record_or_data, "broker_mode"),
         signal_extra.get("last_ack_broker_mode"),
         signal_extra.get("last_runtime_broker_mode"),
         signal_extra.get("signal_ack_fallback_broker_mode"),
+        _execution_broker_mode(signal_extra),
+        record_value(record_or_data, "broker_mode"),
         signal_extra.get("broker_mode"),
     )
     for candidate in candidates:
-        normalized = to_text(candidate).lower()
-        if normalized in {"live", "paper"}:
+        normalized = _normalized_broker_candidate(candidate)
+        if normalized:
             return normalized
-    execution_by_mode = signal_extra.get("execution_by_mode")
-    if isinstance(execution_by_mode, dict):
-        for mode in ("live", "paper"):
-            if isinstance(execution_by_mode.get(mode), dict):
-                return mode
     record_environment = to_text(record_value(record_or_data, "environment")).lower()
     if record_environment == "paper":
         return "paper"

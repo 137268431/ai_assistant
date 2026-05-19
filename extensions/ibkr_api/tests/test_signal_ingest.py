@@ -164,14 +164,18 @@ class SignalIngressBuildersTest(unittest.TestCase):
         self.assertEqual(payload["status"], "awaiting_confirm")
         row = pb.signals["ibkr_signals-1"]
         self.assertEqual(row["symbol"], "AAPL")
-        self.assertEqual(row["status"], "awaiting_confirm")
-        self.assertEqual(row["note"], "manual_confirmation_required")
+        self.assertEqual(row["status"], "pending")
+        self.assertEqual(row["note"], "")
         self.assertEqual(row["extra"]["signal_confirmation_required"], True)
         self.assertEqual(row["extra"]["signal_confirmation_mode"], "manual")
         self.assertEqual(row["extra"]["status_reason"], "manual_confirmation_required")
+        self.assertEqual(row["extra"]["execution_by_mode"]["paper"]["status"], "awaiting_confirm")
+        self.assertEqual(row["extra"]["execution_by_mode"]["paper"]["note"], "manual_confirmation_required")
         self.assertEqual(row["extra"]["signal_source"], "tradingview_webhook")
         self.assertEqual(row["extra"]["source"], "tv")
-        self.assertEqual(row["extra"]["feishu_signal_message_id"], "signal-chat-live:live")
+        self.assertEqual(row["extra"]["broker_mode"], "paper")
+        self.assertEqual(row["extra"]["data_environment"], "live")
+        self.assertEqual(row["extra"]["feishu_signal_message_id"], "signal-chat-paper:paper")
         self.assertEqual(row["extra"]["feishu_signal_card_version"], 1)
 
     def test_signal_notification_failure_records_feishu_error_detail(self):
@@ -258,10 +262,26 @@ class SignalIngressBuildersTest(unittest.TestCase):
         self.assertEqual(
             [action.get("value") for action in request_actions],
             [
-                {"action": "confirm", "signal_id": "sig-url", "environment": "live"},
-                {"action": "reject", "signal_id": "sig-url", "environment": "live"},
+                {
+                    "action": "confirm",
+                    "signal_id": "sig-url",
+                    "broker_mode": "paper",
+                    "market_data_mode": "live",
+                    "data_environment": "live",
+                },
+                {
+                    "action": "reject",
+                    "signal_id": "sig-url",
+                    "broker_mode": "paper",
+                    "market_data_mode": "live",
+                    "data_environment": "live",
+                },
             ],
         )
+        card_text = "\n".join(element.get("content", "") for element in card["elements"] if element.get("tag") == "markdown")
+        self.assertIn("Broker PAPER", card["header"]["title"]["content"])
+        self.assertIn("**Broker**: Broker PAPER", card_text)
+        self.assertIn("**数据**: Shared Data", card_text)
         action_urls = [action.get("multi_url", {}).get("url", "") for action in actions]
         self.assertFalse(any("/webhook/signal/confirm" in url for url in action_urls))
         self.assertFalse(any("/webhook/signal/cancel" in url for url in action_urls))
@@ -393,7 +413,7 @@ class SignalIngressBuildersTest(unittest.TestCase):
         self.assertTrue(
             any(
                 "/ibkr_lifecycle_flow.html" in url
-                and "environment=paper" in url
+                and "broker_mode=paper" in url
                 and "signal_id=sig-order" in url
                 and "trade_group_id=tg-order" in url
                 and "order_id=12345" in url
@@ -654,6 +674,7 @@ class SignalIngressBuildersTest(unittest.TestCase):
             pb,
             payload={
                 "environment": "live",
+                "broker_mode": "live",
                 "symbol": "AAPL",
                 "signal_id": "sig-followup",
                 "direction": "long",
@@ -708,6 +729,7 @@ class SignalIngressBuildersTest(unittest.TestCase):
             pb,
             payload={
                 "environment": "live",
+                "broker_mode": "live",
                 "symbol": "AAPL",
                 "signal_id": "sig-followup",
                 "direction": "long",
@@ -777,6 +799,7 @@ class SignalIngressBuildersTest(unittest.TestCase):
             pb,
             payload={
                 "environment": "live",
+                "broker_mode": "live",
                 "symbol": "AAPL",
                 "signal_id": "sig-followup",
                 "direction": "long",
@@ -830,6 +853,7 @@ class SignalIngressBuildersTest(unittest.TestCase):
             pb,
             payload={
                 "environment": "live",
+                "broker_mode": "live",
                 "symbol": "AAPL",
                 "signal_id": "sig-followup",
                 "direction": "long",
@@ -875,6 +899,7 @@ class SignalIngressBuildersTest(unittest.TestCase):
             pb,
             payload={
                 "environment": "live",
+                "broker_mode": "live",
                 "symbol": "AAPL",
                 "signal_id": "sig-weak-short",
                 "direction": "short",
@@ -918,6 +943,7 @@ class SignalIngressBuildersTest(unittest.TestCase):
             pb,
             payload={
                 "environment": "live",
+                "broker_mode": "live",
                 "symbol": "AAPL",
                 "signal_id": "sig-strong-short",
                 "direction": "short",
@@ -969,6 +995,7 @@ class SignalIngressBuildersTest(unittest.TestCase):
             pb,
             payload={
                 "environment": "live",
+                "broker_mode": "live",
                 "symbol": "AAPL",
                 "signal_id": "sig-strong-short",
                 "direction": "short",
@@ -1017,6 +1044,7 @@ class SignalIngressBuildersTest(unittest.TestCase):
             pb,
             payload={
                 "environment": "live",
+                "broker_mode": "live",
                 "symbol": "AAPL",
                 "signal_id": "sig-strong-short",
                 "direction": "short",
@@ -1091,6 +1119,49 @@ class SignalIngressBuildersTest(unittest.TestCase):
         self.assertIn("**状态**: 已过期", content)
         self.assertIn("**原因**: signal_expired", content)
         self.assertNotIn("paper:history_repair_pending", content)
+
+    def test_signal_status_card_prefers_actual_ack_broker_over_stale_extra_mode(self):
+        record = {
+            "id": "sig-row-1",
+            "signal_id": "sig-paper-submitted",
+            "symbol": "AAPL",
+            "direction": "long",
+            "environment": "live",
+            "status": "pending",
+            "extra": {
+                "broker_mode": "live",
+                "data_environment": "live",
+                "last_ack_broker_mode": "paper",
+                "last_ack_data_environment": "live",
+                "execution_by_mode": {
+                    "paper": {
+                        "status": "submitted",
+                        "note": "broker_ack",
+                        "data_environment": "live",
+                    }
+                },
+            },
+        }
+
+        card = build_signal_status_card(
+            record,
+            message="订单已提交",
+            console_base_url="https://console.example.com",
+        )
+        content = card["elements"][0]["content"]
+        actions = [
+            action
+            for element in card["elements"]
+            if element.get("tag") == "action"
+            for action in element.get("actions", [])
+        ]
+
+        self.assertIn("Broker PAPER", card["header"]["title"]["content"])
+        self.assertIn("**Broker**: Broker PAPER", content)
+        self.assertIn("**数据**: Shared Data", content)
+        self.assertTrue(
+            any("broker_mode=paper" in action.get("multi_url", {}).get("url", "") for action in actions)
+        )
 
     def test_reconfirm_cards_are_not_labeled_as_new_independent_signal(self):
         record = {
