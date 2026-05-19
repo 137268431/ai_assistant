@@ -1,4 +1,4 @@
-        async function fetchWithRetry(collection, params, maxRetries = 2) {
+        async function fetchCollectionWithRetry(collection, params, maxRetries = 2) {
             let lastError = null;
             for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
                 try {
@@ -131,10 +131,10 @@
             const requestBounds = getChartRequestBounds({ previewBar });
             const response = await requestChartJson('/api/custom/ibkr/proxy', {
                 method: 'POST',
-                body: {
-                    action: 'chart/timeline',
-                    environment: currentEnvironment,
-                    symbol: currentSymbol,
+                    body: {
+                        action: 'chart/timeline',
+                        ...buildModePayload({}, { brokerMode: currentBrokerMode, dataEnvironment: currentEnvironment }),
+                        symbol: currentSymbol,
                     interval: currentInterval,
                     start_ms: requestBounds.startMs,
                     end_ms: requestBounds.endMs,
@@ -533,7 +533,7 @@
 
             if (currentIndicatorId) {
                 try {
-                    const indicatorResp = await fetchWithRetry('ibkr_indicators', {
+                    const indicatorResp = await fetchCollectionWithRetry('ibkr_indicators', {
                         filter: `id = ${quoteFilterValue(currentIndicatorId)} && environment = ${quoteFilterValue(currentEnvironment)}`,
                         perPage: 1
                     });
@@ -550,7 +550,7 @@
 
             if (currentSymbol) return;
 
-            const latestBarResp = await fetchWithRetry('ibkr_bars', {
+            const latestBarResp = await fetchCollectionWithRetry('ibkr_bars', {
                 filter: `environment = ${quoteFilterValue(currentEnvironment)} && ${buildIntervalFilterExpression('5m', ['interval'])}`,
                 sort: '-bar_time_ms',
                 perPage: 1

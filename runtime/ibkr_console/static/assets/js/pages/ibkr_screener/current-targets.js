@@ -1150,7 +1150,9 @@
       const filters = getCurrentTargetFilters();
       currentTargetState.perPage = getCurrentTargetPageSize();
       return {
-        environment: currentEnvironment,
+        broker_mode: currentBrokerMode,
+        market_data_mode: currentEnvironment,
+        data_environment: currentEnvironment,
         market_date: marketDate,
         search: filters.search,
         technical_state: filters.technical_state,
@@ -1459,7 +1461,9 @@
 
       try {
         const payload = await requestCachedJson(`/api/custom/ibkr/active-window-progress${buildQuery({
-          environment: currentEnvironment,
+          broker_mode: currentBrokerMode,
+          market_data_mode: currentEnvironment,
+          data_environment: currentEnvironment,
           market_date: marketDate,
           status: 'all',
           limit: 200

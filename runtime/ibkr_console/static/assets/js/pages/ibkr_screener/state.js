@@ -1,4 +1,5 @@
-let currentEnvironment = getCurrentRuntimeEnvironment();
+let currentEnvironment = getSharedDataEnvironment();
+    let currentBrokerMode = getCurrentBrokerMode();
     let activeTab = 'screener';
     let activeScreenerView = 'current';
     let screenerPayload = { items: [], summary: {}, filters: {} };

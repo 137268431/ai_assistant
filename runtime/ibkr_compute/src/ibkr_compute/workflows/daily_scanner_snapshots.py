@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_compute.market.timeframe_utils import COMPUTE_INTERVALS, normalize_interval
 
 from .daily_scanner_constants import DEFAULT_INDICATOR_SNAPSHOT_INTERVALS
@@ -53,7 +54,7 @@ class DailyScannerStoredSnapshotsMixin:
         return list(dict.fromkeys(aliases))
 
     def _load_stored_indicator_snapshots(self, environment: str, symbols: list[str]) -> dict[str, dict[str, dict]]:
-        runtime_environment = str(environment or "live").strip().lower() or "live"
+        runtime_environment = resolve_data_environment(environment)
         normalized_symbols = sorted({str(symbol or "").strip().upper() for symbol in symbols or [] if str(symbol or "").strip()})
         if not normalized_symbols or not self._stored_indicator_snapshots_enabled(runtime_environment):
             return {}

@@ -145,6 +145,7 @@ def build_two_factor_takeover_response(
         route_path="/api/custom/ibkr/2fa/takeover",
         runtime_path="/ibkr/2fa/takeover",
         runtime_body={
+            "broker_mode": environment,
             "environment": environment,
             "enabled": enabled,
             "ttl_sec": int(payload.get("ttl_sec") or 0) or 600,
@@ -187,6 +188,7 @@ def build_two_factor_probe_response(
         route_path="/api/custom/ibkr/2fa/probe",
         runtime_path="/ibkr/2fa/probe",
         runtime_body={
+            "broker_mode": environment,
             "environment": environment,
             "reason": str(payload.get("reason") or "manual_probe"),
             "source": str(payload.get("source") or "runtime_page"),
@@ -222,6 +224,7 @@ def build_two_factor_panic_reset_response(
         route_path="/api/custom/ibkr/2fa/panic-reset",
         runtime_path="/ibkr/panic-reset",
         runtime_body={
+            "broker_mode": environment,
             "environment": environment,
             "restart_gateway": _parse_bool(payload.get("restart_gateway"), True),
             "restart_runtime": _parse_bool(payload.get("restart_runtime"), True),

@@ -4,6 +4,8 @@ from typing import Any
 
 from flask import Response, jsonify, request
 
+from ibkr_api.modes import request_broker_mode, request_market_data_mode
+
 
 def register_signal_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     pb = deps["pb"]
@@ -61,9 +63,15 @@ def register_signal_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
 
     @app.route("/api/custom/ibkr/signals/pending", methods=["GET"])
     def custom_ibkr_signals_pending() -> Response:
+        mode_payload = {
+            "broker_mode": request.args.get("broker_mode") or request.args.get("environment"),
+            "market_data_mode": request.args.get("market_data_mode"),
+            "data_environment": request.args.get("data_environment"),
+        }
         payload, status_code = build_signals_pending_response(
             pb,
-            environment=request.args.get("environment"),
+            environment=request_broker_mode(mode_payload),
+            data_environment=request_market_data_mode(mode_payload),
             date_str=request.args.get("date") or "",
             normalize_environment=normalize_environment,
             escape_filter_string=escape_filter_string,
@@ -97,6 +105,9 @@ def register_signal_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             payload={
                 "id": request.args.get("id") or "",
                 "environment": request.args.get("environment") or "",
+                "broker_mode": request.args.get("broker_mode") or "",
+                "market_data_mode": request.args.get("market_data_mode") or "",
+                "data_environment": request.args.get("data_environment") or "",
             },
             normalize_environment=normalize_environment,
             escape_filter_string=escape_filter_string,
@@ -114,6 +125,9 @@ def register_signal_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             payload={
                 "id": request.args.get("id") or "",
                 "environment": request.args.get("environment") or "",
+                "broker_mode": request.args.get("broker_mode") or "",
+                "market_data_mode": request.args.get("market_data_mode") or "",
+                "data_environment": request.args.get("data_environment") or "",
             },
             normalize_environment=normalize_environment,
             escape_filter_string=escape_filter_string,

@@ -49,7 +49,7 @@ class TradingServiceIntegrityMixin:
                 rows = build_range_daily_coverage(
                     conn,
                     symbols=normalized_symbols,
-                    environment=service_mod.ENVIRONMENT,
+                    environment=service_mod.DATA_ENVIRONMENT,
                     date_from=target_from,
                     date_to=target_to,
                     interval=interval,
@@ -123,7 +123,7 @@ class TradingServiceIntegrityMixin:
         authenticated = bool(self.session_keeper.is_authenticated)
         runtime_active = bool(
             self._running
-            and service_mod.ENVIRONMENT in service_mod.REALTIME_PRIORITY_ENVIRONMENTS
+            and service_mod.DATA_ENVIRONMENT in service_mod.REALTIME_PRIORITY_ENVIRONMENTS
             and authenticated
             and websocket_connected
             and active_subscription_count > 0
@@ -221,7 +221,9 @@ class TradingServiceIntegrityMixin:
 
         latest_stored_ms = int(snapshot.get("latest_stored_ms", 0) or 0)
         return {
-            "environment": service_mod.ENVIRONMENT,
+            "environment": service_mod.DATA_ENVIRONMENT,
+            "broker_mode": service_mod.ENVIRONMENT,
+            "data_environment": service_mod.DATA_ENVIRONMENT,
             "market_date": self._bar_integrity_market_date(),
             "symbol": symbol,
             "interval": "5m",
@@ -460,7 +462,7 @@ class TradingServiceIntegrityMixin:
             60,
             self.config.get_int_for_environment(
                 "ibkr_history_repair_min_bars_5m",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 260,
             ),
         )
@@ -468,13 +470,13 @@ class TradingServiceIntegrityMixin:
             20,
             self.config.get_int_for_environment(
                 "ibkr_history_repair_gap_lookback",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 80,
             ),
         )
         rollup_repair_enabled = self.config.get_bool_for_environment(
             "ibkr_history_repair_rollup_enabled",
-            service_mod.ENVIRONMENT,
+            service_mod.DATA_ENVIRONMENT,
             True,
         )
 
@@ -578,14 +580,14 @@ class TradingServiceIntegrityMixin:
         service_mod = _service_mod()
         if not symbols:
             return {}
-        if not self.config.get_bool_for_environment("ibkr_history_repair_enabled", service_mod.ENVIRONMENT, True):
+        if not self.config.get_bool_for_environment("ibkr_history_repair_enabled", service_mod.DATA_ENVIRONMENT, True):
             return {}
 
         min_bars = max(
             60,
             self.config.get_int_for_environment(
                 "ibkr_history_repair_min_bars_5m",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 260,
             ),
         )
@@ -593,13 +595,13 @@ class TradingServiceIntegrityMixin:
             20,
             self.config.get_int_for_environment(
                 "ibkr_history_repair_gap_lookback",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 80,
             ),
         )
         rollup_repair_enabled = self.config.get_bool_for_environment(
             "ibkr_history_repair_rollup_enabled",
-            service_mod.ENVIRONMENT,
+            service_mod.DATA_ENVIRONMENT,
             True,
         )
         plan = {}
@@ -623,7 +625,7 @@ class TradingServiceIntegrityMixin:
         service_mod = _service_mod()
         if not symbols:
             return {}
-        if not self.config.get_bool_for_environment("ibkr_history_repair_enabled", service_mod.ENVIRONMENT, True):
+        if not self.config.get_bool_for_environment("ibkr_history_repair_enabled", service_mod.DATA_ENVIRONMENT, True):
             return {}
 
         plan = {}
@@ -717,7 +719,7 @@ class TradingServiceIntegrityMixin:
 
     def _build_bar_environment_filter(self) -> str:
         service_mod = _service_mod()
-        runtime_environment = str(service_mod.ENVIRONMENT or "").strip().lower() or "live"
+        runtime_environment = str(service_mod.DATA_ENVIRONMENT or "live").strip().lower() or "live"
         clauses = [f'environment = "{runtime_environment}"']
         if runtime_environment == "live":
             clauses.append('environment = ""')
@@ -734,7 +736,7 @@ class TradingServiceIntegrityMixin:
             from ibkr_compute.api import server as compute_server
 
             result = compute_server.repair_symbol_pipeline_from_storage(
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 normalized_symbols,
             )
             self._last_pipeline_repair_at = time.time()

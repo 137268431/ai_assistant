@@ -13,6 +13,7 @@ from ibkr_compute.api.runtime.common import (
 )
 from ibkr_compute.api.runtime.restore import _maybe_restore_ibkr_service
 from ibkr_compute.api.service_topology import build_service_topology, get_runtime_mode, get_service_profile
+from ibkr_compute.core.broker_mode import normalize_broker_mode
 
 
 def _coerce_symbol_list(value) -> list[str]:
@@ -151,7 +152,10 @@ def _build_ibkr_universe_reconcile_response(payload: dict | None = None) -> tupl
     _maybe_restore_ibkr_service(service)
     payload = payload if isinstance(payload, dict) else {}
     runtime_environment = _ibkr_service_environment(service)
-    requested_environment = str(payload.get("environment") or runtime_environment).strip().lower() or runtime_environment
+    requested_environment = normalize_broker_mode(
+        payload.get("broker_mode") or payload.get("environment"),
+        runtime_environment,
+    )
     if requested_environment != runtime_environment:
         return {
             "ok": False,

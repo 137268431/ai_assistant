@@ -34,7 +34,7 @@ from ibkr_compute.api.service_topology import (
 from ibkr_compute.api.shared.route_runtime import register_app_module_context
 from ibkr_compute.api.support.symbols import normalize_symbol_csv, normalize_symbols
 from ibkr_compute.backtest import BacktestService
-from ibkr_compute.core.broker_mode import configured_broker_mode
+from ibkr_compute.core.broker_mode import configured_broker_mode, normalize_broker_mode, resolve_data_environment
 from ibkr_compute.core.config import Config
 from ibkr_compute.integrations.pb_client import PBClient
 
@@ -44,8 +44,8 @@ PORT = int(os.environ.get("PORT", "5105"))
 PB_BASE_URL = os.environ.get("PB_BASE_URL", "http://127.0.0.1:8090")
 CONSOLE_BASE_URL = get_console_base_url()
 PB_PUBLIC_URL = CONSOLE_BASE_URL
-SUPPORTED_COMPUTE_ENVIRONMENTS = ["live", "paper", "backtest"]
-DEFAULT_COMPUTE_ENVIRONMENTS = ["live", "paper"]
+SUPPORTED_COMPUTE_ENVIRONMENTS = ["live", "backtest"]
+DEFAULT_COMPUTE_ENVIRONMENTS = ["live"]
 
 pb = PBClient(base_url=PB_BASE_URL)
 cfg = Config(pb_client=pb)
@@ -65,10 +65,10 @@ def _service_profile() -> str:
 
 
 def _normalize_runtime_environment_name(value, default: str = "live") -> str:
-    normalized = str(value or "").strip().lower() or str(default or "live").strip().lower() or "live"
+    normalized = resolve_data_environment(value or default)
     if normalized in SUPPORTED_COMPUTE_ENVIRONMENTS:
         return normalized
-    fallback = str(default or "live").strip().lower() or "live"
+    fallback = resolve_data_environment(default or "live")
     return fallback if fallback in SUPPORTED_COMPUTE_ENVIRONMENTS else "live"
 
 
@@ -81,11 +81,11 @@ def _maybe_restore_ibkr_service(*_args, **_kwargs):
 
 
 def _ibkr_service_environment(_service=None) -> str:
-    return _normalize_runtime_environment_name(configured_broker_mode(), "paper")
+    return configured_broker_mode()
 
 
-def _backtest_account_snapshot_provider(environment: str = "live") -> dict:
-    runtime_environment = _normalize_runtime_environment_name(environment, "live")
+def _backtest_account_snapshot_provider(environment: str = "") -> dict:
+    runtime_environment = normalize_broker_mode(environment, configured_broker_mode())
     errors = []
     for base_url, path in (
         (get_runtime_internal_url(), "/ibkr/account"),

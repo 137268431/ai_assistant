@@ -6,6 +6,7 @@ import json
 from datetime import datetime, timedelta
 
 from ibkr_compute.core.payload_compact import compact_json_payload
+from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_compute.core.time_utils import ET
 from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite
 from ibkr_compute.market.timeframe_utils import format_cn_time, format_us_time, interval_to_chart_tf
@@ -71,7 +72,7 @@ class DailyScannerRunMixin:
         }
 
         scan_mode = _normalize_scan_mode(mode)
-        runtime_environments = environments or ["live", "paper"]
+        runtime_environments = list(dict.fromkeys(resolve_data_environment(item) for item in (environments or ["live"])))
 
         for environment in runtime_environments:
             result = self._run_environment_scan(date, environment, mode=scan_mode)
@@ -165,7 +166,7 @@ class DailyScannerRunMixin:
         }
 
     def _run_environment_scan(self, date: str, environment: str, *, mode: str = DAILY_SCAN_MODE_SEED) -> dict:
-        runtime_environment = str(environment or "live").strip().lower() or "live"
+        runtime_environment = resolve_data_environment(environment)
         scan_mode = _normalize_scan_mode(mode)
         scan_stage = DAILY_SCAN_TOPUP_STAGE if scan_mode == DAILY_SCAN_MODE_TOPUP else DAILY_SCAN_STAGE
         settings = self._load_scan_settings(runtime_environment)
@@ -578,7 +579,7 @@ class DailyScannerRunMixin:
             return
         start_ms, end_ms = self._scan_date_bounds_ms(date)
         placeholders = ", ".join("?" for _ in symbols)
-        runtime_environment = str(environment or "live").strip().lower() or "live"
+        runtime_environment = resolve_data_environment(environment)
         env_clause = "(environment = ? OR environment = '')" if runtime_environment == "live" else "environment = ?"
         params = [runtime_environment, start_ms, end_ms, *symbols]
         with open_pb_sqlite(readonly=True, timeout=8.0) as conn:
@@ -635,7 +636,7 @@ class DailyScannerRunMixin:
         chart_tf = interval_to_chart_tf("5m")
         interval_values = list(dict.fromkeys([chart_tf, "5m"]))
         interval_placeholders = ", ".join("?" for _ in interval_values)
-        runtime_environment = str(environment or "live").strip().lower() or "live"
+        runtime_environment = resolve_data_environment(environment)
         params = [runtime_environment, *interval_values, start_ms, end_ms, *normalized_symbols]
         with open_pb_sqlite(readonly=True, timeout=8.0) as conn:
             rows = conn.execute(

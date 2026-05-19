@@ -5,6 +5,7 @@ import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite, upsert_bars
 from ibkr_compute.market.timeframe_builder import TimeframeBarBuilder
 from ibkr_compute.market.timeframe_utils import bucket_start_ms, interval_to_ms, normalize_interval
@@ -44,7 +45,7 @@ def _build_rollup_filter(api_app, environment: str, normalized_symbols, since_ms
 
 
 def _runtime_environment(environment: str) -> str:
-    return str(environment or "live").strip().lower() or "live"
+    return resolve_data_environment(environment)
 
 
 def _cfg_bool(api_app, key: str, environment: str, default: bool) -> bool:
@@ -255,6 +256,7 @@ def _write_rollup_batch(api_app, environment: str, batch: list[dict]) -> dict:
 
 def _latest_targeted_5m_bar_ms(environment: str, normalized_symbols) -> int:
     api_app = _api_app()
+    environment = _runtime_environment(environment)
     interval_key = (environment, "5m")
     cached_ms = int(api_app.last_interval_fetch_ms.get(interval_key, 0) or 0)
     if cached_ms > 0:
@@ -292,6 +294,7 @@ def _latest_targeted_5m_bar_ms(environment: str, normalized_symbols) -> int:
 
 def _recent_rollup_since_ms(environment: str, normalized_symbols, intervals=None) -> int:
     api_app = _api_app()
+    environment = _runtime_environment(environment)
     target_intervals = _normalize_target_intervals(api_app, intervals)
     if not target_intervals:
         return 0
@@ -321,6 +324,7 @@ def _incremental_due_intervals(latest_5m_ms: int, intervals=None) -> list[str]:
 
 def has_interval_bars(environment: str, interval: str, symbols=None) -> bool:
     api_app = _api_app()
+    environment = _runtime_environment(environment)
     normalized_interval = normalize_interval(interval)
     if _direct_sqlite_read_enabled(api_app, environment):
         try:
@@ -455,6 +459,7 @@ def _parallel_rollup_rows_by_interval(
 
 def rebuild_higher_timeframe_bars(environment: str, symbols=None, intervals=None, since_ms: int | None = None) -> dict:
     api_app = _api_app()
+    environment = _runtime_environment(environment)
     normalized_symbols = api_app.normalize_symbols(symbols)
     target_intervals = _normalize_target_intervals(api_app, intervals)
     if not target_intervals:
@@ -558,7 +563,7 @@ def ensure_higher_timeframe_bars(
     normalized_symbols = api_app.normalize_symbols(symbols)
     target_intervals = _normalize_target_intervals(api_app, intervals)
     results = {}
-    for environment in environments:
+    for environment in [_runtime_environment(item) for item in (environments or [])]:
         if not target_intervals:
             results[environment] = {
                 "skipped": True,
@@ -646,6 +651,7 @@ def ensure_higher_timeframe_bars(
 
 def fetch_interval_bars(environment: str, interval: str, symbols=None, full_scan: bool = False):
     api_app = _api_app()
+    environment = _runtime_environment(environment)
     normalized_interval = normalize_interval(interval)
     since_ms = None if full_scan else get_fetch_since_ms(environment, normalized_interval)
     rows = []
@@ -701,7 +707,7 @@ def fetch_interval_bars(environment: str, interval: str, symbols=None, full_scan
 
 def repair_symbol_pipeline_from_storage(environment: str, symbols) -> dict:
     api_app = _api_app()
-    runtime_environment = str(environment or "live").strip().lower() or "live"
+    runtime_environment = _runtime_environment(environment)
     normalized_symbols = api_app.normalize_symbols(symbols)
     if not normalized_symbols:
         return {"ok": True, "symbols": [], "rollup": {}, "compute": {}, "reset": {}}

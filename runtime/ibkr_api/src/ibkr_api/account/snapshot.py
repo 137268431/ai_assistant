@@ -82,6 +82,8 @@ def _is_broker_confirmed_live_order(order: dict[str, Any]) -> bool:
 def enrich_account_snapshot(pb: Any, payload: dict[str, Any], environment: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return payload
+    payload["environment"] = environment
+    payload["broker_mode"] = environment
     _enrich_buying_power_summary(payload)
     positions = list(payload.get("positions") or [])
     broker_orders = list(payload.get("orders") or [])
@@ -106,7 +108,7 @@ def enrich_account_snapshot(pb: Any, payload: dict[str, Any], environment: str) 
         if quantity == 0:
             flat_count += 1
             relation = {
-                "status": "flat_legacy",
+                "status": "flat_broker_position",
                 "reason": "gateway_flat_position_record",
                 "signal_id": to_text(active_group.get("signal_id")),
                 "signal_status": to_text(related_signal.get("status")),
@@ -218,7 +220,7 @@ def build_account_snapshot_response(
         "GET",
         runtime_base_url,
         "/ibkr/account",
-        params=[("environment", environment)],
+        params=[("broker_mode", environment), ("environment", environment)],
         timeout=20.0,
     )
     status_code = int(result.get("status_code") or 200)

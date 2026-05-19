@@ -58,7 +58,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
         try:
             self.pb.upsert_state(
                 service_mod.BAR_INTEGRITY_STATE_KEY,
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 self._bar_integrity_cursor_payload(),
                 date=service_mod.BAR_INTEGRITY_STATE_DATE,
             )
@@ -70,7 +70,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
         try:
             record = self.pb.get_state(
                 service_mod.BAR_INTEGRITY_STATE_KEY,
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 date=service_mod.BAR_INTEGRITY_STATE_DATE,
             )
         except Exception as exc:
@@ -102,7 +102,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             1,
             self.config.get_int_for_environment(
                 "ibkr_watchlist_integrity_batch_size",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 service_mod.DEFAULT_WATCHLIST_INTEGRITY_BATCH_SIZE,
             ),
         )
@@ -121,7 +121,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
         if not pool:
             return []
 
-        batch_size = max(1, self.config.get_int_for_environment("ibkr_watchlist_backfill_batch_size", service_mod.ENVIRONMENT, 12))
+        batch_size = max(1, self.config.get_int_for_environment("ibkr_watchlist_backfill_batch_size", service_mod.DATA_ENVIRONMENT, 12))
         start = self._watchlist_backfill_cursor % len(pool)
         ordered = pool[start:] + pool[:start]
         self._watchlist_backfill_cursor = (start + batch_size) % max(len(pool), 1)
@@ -207,7 +207,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
         service_mod = _service_mod()
         return self.config.get_bool_for_environment(
             "ibkr_watchlist_idle_topup_enabled",
-            service_mod.ENVIRONMENT,
+            service_mod.DATA_ENVIRONMENT,
             True,
         )
 
@@ -215,7 +215,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
         service_mod = _service_mod()
         return self.config.get_bool_for_environment(
             "ibkr_watchlist_idle_topup_dynamic_enabled",
-            service_mod.ENVIRONMENT,
+            service_mod.DATA_ENVIRONMENT,
             True,
         )
 
@@ -223,7 +223,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
         service_mod = _service_mod()
         return self.config.get_bool_for_environment(
             "ibkr_watchlist_idle_topup_active_first_enabled",
-            service_mod.ENVIRONMENT,
+            service_mod.DATA_ENVIRONMENT,
             True,
         )
 
@@ -234,7 +234,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
                 1,
                 self.config.get_int_for_environment(
                     "ibkr_watchlist_idle_topup_dynamic_loop_interval_sec",
-                    service_mod.ENVIRONMENT,
+                    service_mod.DATA_ENVIRONMENT,
                     2,
                 ),
             )
@@ -242,7 +242,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             1,
             self.config.get_int_for_environment(
                 "ibkr_watchlist_idle_topup_loop_interval_sec",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 2,
             ),
         )
@@ -253,7 +253,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             value = float(
                 self.config.get_for_environment(
                     "ibkr_watchlist_idle_topup_fast_retry_sec",
-                    service_mod.ENVIRONMENT,
+                    service_mod.DATA_ENVIRONMENT,
                     "0.25",
                 )
             )
@@ -323,7 +323,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
                 WATCHLIST_IDLE_TOPUP_MAX_SYMBOLS_HARD_CAP,
                 self.config.get_int_for_environment(
                     "ibkr_watchlist_idle_topup_dynamic_max_symbols_per_cycle",
-                    service_mod.ENVIRONMENT,
+                    service_mod.DATA_ENVIRONMENT,
                     160,
                 ),
             ),
@@ -335,7 +335,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             0,
             self.config.get_int_for_environment(
                 "ibkr_watchlist_idle_topup_max_estimated_bars_per_cycle",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 0,
             ),
         )
@@ -346,7 +346,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             0,
             self.config.get_int_for_environment(
                 "ibkr_watchlist_idle_topup_max_symbols_per_cycle",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 0,
             ),
         )
@@ -359,7 +359,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
                 WATCHLIST_IDLE_TOPUP_MAX_SYMBOLS_HARD_CAP,
                 self.config.get_int_for_environment(
                     "ibkr_watchlist_idle_topup_batch_size",
-                    service_mod.ENVIRONMENT,
+                    service_mod.DATA_ENVIRONMENT,
                     160,
                 ),
             ),
@@ -379,7 +379,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
                 10,
                 self.config.get_int_for_environment(
                     "ibkr_history_max_concurrency",
-                    service_mod.ENVIRONMENT,
+                    service_mod.DATA_ENVIRONMENT,
                     8,
                 ),
             ),
@@ -397,7 +397,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             value = float(
                 self.config.get_for_environment(
                     "ibkr_history_request_spacing",
-                    service_mod.ENVIRONMENT,
+                    service_mod.DATA_ENVIRONMENT,
                     "0.05",
                 )
             )
@@ -482,7 +482,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
         service_mod = _service_mod()
         value = self.config.get_for_environment(
             "ibkr_watchlist_idle_topup_request_period",
-            service_mod.ENVIRONMENT,
+            service_mod.DATA_ENVIRONMENT,
             "1d",
         )
         return str(value or "1d").strip() or "1d"
@@ -493,7 +493,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             5,
             self.config.get_int_for_environment(
                 "ibkr_watchlist_idle_topup_stale_min",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 20,
             ),
         )
@@ -506,7 +506,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
         except Exception:
             delay_seconds = self.config.get_int_for_environment(
                 "ibkr_official_5m_close_delay_sec",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 DEFAULT_CLOSE_DELAY_SECONDS,
             )
         return int(
@@ -538,7 +538,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             0,
             self.config.get_int_for_environment(
                 "ibkr_watchlist_active_due_guard_sec",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 180,
             ),
         )
@@ -780,7 +780,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             if scan_size_override is not None
             else self.config.get_int_for_environment(
                     "ibkr_watchlist_idle_topup_candidate_scan_size",
-                    service_mod.ENVIRONMENT,
+                    service_mod.DATA_ENVIRONMENT,
                     24,
                 ),
         )
@@ -1278,7 +1278,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
                         batch_written
                         and self.config.get_bool_for_environment(
                             "ibkr_watchlist_idle_topup_materialize_5m",
-                            service_mod.ENVIRONMENT,
+                            service_mod.DATA_ENVIRONMENT,
                             True,
                         )
                     ):

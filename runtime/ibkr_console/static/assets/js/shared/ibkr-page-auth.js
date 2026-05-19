@@ -642,48 +642,45 @@ function getIbkrRuntimeAuthGuidanceRequestTarget({
         ? 'weekly_reauth'
         : 'manual_start';
 
-    if (safeKind === 'reauth') {
-        return {
-            path: '/api/custom/ibkr/2fa/request',
-            body: {
-                environment: safeEnvironment,
-                reason: normalizedReason,
-                source: safeSource,
-                force_reset: true,
-                message: normalizedReason === 'weekly_reauth'
-                    ? '本周重登等待你在飞书手动点开始验证。'
-                    : '启动验证等待你在飞书手动点开始验证。'
-            }
-        };
-    }
+	    if (safeKind === 'reauth') {
+	        return {
+	            path: '/api/custom/ibkr/2fa/request',
+	            body: buildModePayload({
+	                reason: normalizedReason,
+	                source: safeSource,
+	                force_reset: true,
+	                message: normalizedReason === 'weekly_reauth'
+	                    ? '本周重登等待你在飞书手动点开始验证。'
+	                    : '启动验证等待你在飞书手动点开始验证。'
+	            }, { brokerMode: safeEnvironment, dataEnvironment: getSharedDataEnvironment() })
+	        };
+	    }
 
-    if (safeKind === 'reauth_force_new') {
-        return {
-            path: '/api/custom/ibkr/2fa/request',
-            body: {
-                environment: safeEnvironment,
-                reason: normalizedReason,
-                source: safeSource,
-                force_reset: true,
+	    if (safeKind === 'reauth_force_new') {
+	        return {
+	            path: '/api/custom/ibkr/2fa/request',
+	            body: buildModePayload({
+	                reason: normalizedReason,
+	                source: safeSource,
+	                force_reset: true,
                 force_restart: true,
-                trigger_now: true,
-                force_new: true,
-                message: '已开始新一轮 2FA，请查看手机。'
-            }
-        };
-    }
+	                trigger_now: true,
+	                force_new: true,
+	                message: '已开始新一轮 2FA，请查看手机。'
+	            }, { brokerMode: safeEnvironment, dataEnvironment: getSharedDataEnvironment() })
+	        };
+	    }
 
-    if (safeKind === 'start') {
-        return {
-            path: '/api/custom/ibkr/start',
-            body: {
-                environment: safeEnvironment,
-                trigger_login: false,
-                reason: 'manual_start',
-                source: safeSource
-            }
-        };
-    }
+	    if (safeKind === 'start') {
+	        return {
+	            path: '/api/custom/ibkr/start',
+	            body: buildModePayload({
+	                trigger_login: false,
+	                reason: 'manual_start',
+	                source: safeSource
+	            }, { brokerMode: safeEnvironment, dataEnvironment: getSharedDataEnvironment() })
+	        };
+	    }
 
     return null;
 }

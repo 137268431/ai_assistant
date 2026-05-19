@@ -1,4 +1,6 @@
-let currentEnvironment = getCurrentBrokerMode();
+let currentBrokerMode = getCurrentBrokerMode();
+let currentDataEnvironment = getSharedDataEnvironment();
+let currentEnvironment = currentBrokerMode;
         let refreshTimer = null;
         let refreshMode = 'steady';
         let refreshBoostStartedAt = 0;

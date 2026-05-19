@@ -151,7 +151,7 @@ def build_order_cancel_webhook_response(
     action_payload = {
         **dict(payload or {}),
         "id": target_id,
-        "environment": environment,
+        "broker_mode": environment,
         "source": to_text((payload or {}).get("source")) or "webhook/order/cancel",
         "reason": to_text((payload or {}).get("reason")) or "页面取消主单",
     }
@@ -204,7 +204,7 @@ def build_order_close_webhook_response(
         payload={
             **dict(payload or {}),
             "id": target_id,
-            "environment": environment,
+            "broker_mode": environment,
             "source": to_text((payload or {}).get("source")) or "webhook/order/close",
             "reason": reason,
         },

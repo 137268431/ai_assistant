@@ -125,10 +125,9 @@ def configured_data_environment(env: Mapping[str, Any] | None = None) -> str:
 
 
 def resolve_data_environment(requested_environment: Any = None, env: Mapping[str, Any] | None = None) -> str:
-    requested = normalize_runtime_environment(requested_environment, configured_broker_mode(env))
-    if requested == "backtest":
-        return "backtest"
-    return resolve_market_data_mode(None, env)
+    if requested_environment is None or str(requested_environment).strip() == "":
+        return resolve_market_data_mode(None, env)
+    return normalize_market_data_mode(requested_environment, configured_market_data_mode(env))
 
 
 def _mode_source(

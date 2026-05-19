@@ -85,11 +85,12 @@ def register_order_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
 
     @app.route("/webhook/order/cancel", methods=["GET"])
     def webhook_order_cancel() -> Response:
+        broker_mode = request.args.get("broker_mode") or request.args.get("environment") or ""
         payload, status_code = build_order_cancel_webhook_response(
             pb,
             payload={
                 "id": request.args.get("id") or "",
-                "environment": request.args.get("environment") or "",
+                "broker_mode": broker_mode,
             },
             normalize_environment=normalize_environment,
             escape_filter_string=escape_filter_string,
@@ -100,11 +101,12 @@ def register_order_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
 
     @app.route("/webhook/order/close", methods=["GET"])
     def webhook_order_close() -> Response:
+        broker_mode = request.args.get("broker_mode") or request.args.get("environment") or ""
         payload, status_code = build_order_close_webhook_response(
             pb,
             payload={
                 "id": request.args.get("id") or "",
-                "environment": request.args.get("environment") or "",
+                "broker_mode": broker_mode,
             },
             normalize_environment=normalize_environment,
             escape_filter_string=escape_filter_string,

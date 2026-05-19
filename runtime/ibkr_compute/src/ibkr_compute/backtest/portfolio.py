@@ -560,7 +560,7 @@ class BacktestPortfolioMixin:
         if request.get("_account_model_prepared"):
             return request
 
-        resolved = self._resolve_account_buying_power_snapshot(request.get("source_environment") or "live")
+        resolved = self._resolve_account_buying_power_snapshot(request.get("broker_mode") or "paper")
         snapshot = resolved.get("snapshot") if isinstance(resolved.get("snapshot"), dict) else {}
         summary = snapshot.get("summary") if isinstance(snapshot.get("summary"), dict) else {}
         net_liquidation = self._coerce_float_value(summary.get("net_liquidation"), 0.0)
@@ -607,7 +607,7 @@ class BacktestPortfolioMixin:
             if account_snapshot:
                 buying_power = self._coerce_float_value(account_summary.get("buying_power"), 0.0)
             else:
-                resolved = self._resolve_account_buying_power_snapshot(request.get("source_environment") or "live")
+                resolved = self._resolve_account_buying_power_snapshot(request.get("broker_mode") or "paper")
                 account_snapshot = resolved.get("snapshot") or {}
                 account_summary = account_snapshot.get("summary") if isinstance(account_snapshot.get("summary"), dict) else {}
                 account_snapshot_ok = bool(resolved.get("ok"))

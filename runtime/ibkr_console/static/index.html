@@ -266,7 +266,8 @@
     <script src="https://cdn.jsdelivr.net/npm/pocketbase@0.26.8/dist/pocketbase.umd.min.js"></script>
     <script>
         const pb = createPocketBaseClient();
-        let currentEnvironment = getCurrentRuntimeEnvironment();
+        let currentEnvironment = getSharedDataEnvironment();
+        let currentBrokerMode = getConsoleBrokerMode();
         let latestTodayTargetsPayload = null;
         let responsiveListenerBound = false;
 
@@ -441,7 +442,8 @@
 
         function renderOverviewMeta(marketDate) {
             setPageContextMeta([
-                { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
+                { label: 'Broker', value: getEnvironmentLabel(currentBrokerMode), tone: currentBrokerMode },
+                { label: 'Data', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
                 { label: '交易日', value: marketDate || '--' },
                 { label: '视图', value: '首页总览' },
             ]);
@@ -634,10 +636,10 @@
 
             try {
                 cardEl.dataset.ready = 'loading';
-                const payload = await requestCachedJson(`/api/custom/system/summaryz?lite=1&environment=${encodeURIComponent(currentEnvironment)}`, {
+                const payload = await requestCachedJson(`/api/custom/system/summaryz?lite=1&broker_mode=${encodeURIComponent(currentBrokerMode)}&market_data_mode=${encodeURIComponent(currentEnvironment)}&data_environment=${encodeURIComponent(currentEnvironment)}`, {
                     ttlMs: 10000,
                     swrMs: 10000,
-                    tags: ['home', 'system-summary', currentEnvironment]
+                    tags: ['home', 'system-summary', currentBrokerMode, currentEnvironment]
                 });
                 renderHomeStackOverview(payload || {});
             } catch (error) {
@@ -677,9 +679,10 @@
             return buildPageUrl('/ibkr_signals.html', {
                 search: symbol || '',
                 date: marketDate
-            }, {
-                environment: currentEnvironment
-            });
+	            }, {
+	                brokerMode: currentBrokerMode,
+	                dataEnvironment: currentEnvironment
+	            });
         }
 
         function renderTodayTargetsTimeTip(payload = {}) {
@@ -717,9 +720,10 @@
                 tab: 'targets',
                 date: marketDate,
                 market_date: marketDate
-            }, {
-                environment: currentEnvironment
-            });
+	            }, {
+	                brokerMode: currentBrokerMode,
+	                dataEnvironment: currentEnvironment
+	            });
 
             document.getElementById('todayTargetsLink').href = todayTargetsUrl;
             renderTargetSummary(summary, marketDate, todayTargetsUrl);
@@ -744,9 +748,10 @@
                 const chartUrl = buildPageUrl('/ibkr_chart.html', {
                     symbol: row.symbol || '',
                     interval: '5m'
-                }, {
-                    environment: currentEnvironment
-                });
+	                }, {
+	                brokerMode: currentBrokerMode,
+	                dataEnvironment: currentEnvironment
+	            });
                 const signalUrl = buildTargetSignalUrl(row.symbol || '', marketDate);
                 return `
                     <article class="home-target-card">
@@ -796,7 +801,7 @@
                 const marketDate = getUsDate();
                 document.getElementById('todayTargetsMeta').textContent = '正在加载目标池...';
                 renderTodayTargetsTimeTip({ market_date: marketDate });
-                const payload = await requestCachedJson(`/api/custom/ibkr/today-targets?environment=${encodeURIComponent(currentEnvironment)}&market_date=${encodeURIComponent(marketDate)}`, {
+	                const payload = await requestCachedJson(`/api/custom/ibkr/today-targets?broker_mode=${encodeURIComponent(currentBrokerMode)}&market_data_mode=${encodeURIComponent(currentEnvironment)}&data_environment=${encodeURIComponent(currentEnvironment)}&market_date=${encodeURIComponent(marketDate)}`, {
                     ttlMs: 30000,
                     swrMs: 30000,
                     tags: ['home', 'today-targets', currentEnvironment]
@@ -992,7 +997,7 @@
             if (activity.type === 'signal') {
                 return buildPageUrl('/ibkr_signals.html', params, { environment: currentEnvironment });
             }
-            return buildPageUrl('/orders.html', params, { environment: currentEnvironment });
+            return buildPageUrl('/orders.html', params, { environment: currentBrokerMode });
         }
 
         function renderRecentActivity(ibkrSignals, orders) {
@@ -1059,17 +1064,17 @@
                         $autoCancel: false
                     }),
                     pb.collection('ibkr_reverse_signals').getFullList({
-                        filter: `environment = "${currentEnvironment}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                        filter: `environment = "${currentBrokerMode}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
                         sort: '-created',
                         $autoCancel: false
                     }),
                     pb.collection('orders').getFullList({
-                        filter: `environment = "${currentEnvironment}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                        filter: `environment = "${currentBrokerMode}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
                         sort: '-created',
                         $autoCancel: false
                     }),
                     pb.collection('orders').getFullList({
-                        filter: `environment = "${currentEnvironment}" && status = "Filled" && order_type = "Entry"`,
+                        filter: `environment = "${currentBrokerMode}" && status = "Filled" && order_type = "Entry"`,
                         sort: '-created',
                         $autoCancel: false
                     })
@@ -1319,19 +1324,19 @@
         }
 
         async function fetchConfiguredMarketMonitorSymbols() {
-            const summary = await requestCachedJson(`/api/custom/system/summaryz?lite=1&environment=${encodeURIComponent(currentEnvironment)}`, {
+            const summary = await requestCachedJson(`/api/custom/system/summaryz?lite=1&broker_mode=${encodeURIComponent(currentBrokerMode)}&market_data_mode=${encodeURIComponent(currentEnvironment)}&data_environment=${encodeURIComponent(currentEnvironment)}`, {
                 ttlMs: 30000,
                 swrMs: 30000,
-                tags: ['home', 'market-monitor', currentEnvironment]
+                tags: ['home', 'market-monitor', currentBrokerMode, currentEnvironment]
             })
                 .catch(() => ({}));
             const summarySymbols = normalizeSymbolList(summary?.config?.ibkr_market_ws_symbols);
             if (summarySymbols.length) return summarySymbols;
 
-            const monitor = await requestCachedJson(`/api/custom/system/monitorz?environment=${encodeURIComponent(currentEnvironment)}`, {
+            const monitor = await requestCachedJson(`/api/custom/system/monitorz?broker_mode=${encodeURIComponent(currentBrokerMode)}&market_data_mode=${encodeURIComponent(currentEnvironment)}&data_environment=${encodeURIComponent(currentEnvironment)}`, {
                 ttlMs: 15000,
                 swrMs: 15000,
-                tags: ['home', 'market-monitor', currentEnvironment]
+                tags: ['home', 'market-monitor', currentBrokerMode, currentEnvironment]
             })
                 .catch(() => ({}));
             const runtimeSymbols = normalizeSymbolList(monitor?.runtime?.market_universe?.market_ws_symbols);
@@ -1567,9 +1572,10 @@
                     const chartUrl = buildPageUrl('/ibkr_chart.html', {
                         symbol,
                         interval: '5m'
-                    }, {
-                        environment: currentEnvironment
-                    });
+	                    }, {
+	                        brokerMode: currentBrokerMode,
+	                        dataEnvironment: currentEnvironment
+	                    });
 
                     html += `
                         <a class="home-market-card ${vixClass}" href="${chartUrl}">
@@ -1647,6 +1653,7 @@
 
         window.onEnvironmentChange = function(environment) {
             currentEnvironment = environment;
+            currentBrokerMode = getConsoleBrokerMode();
             location.href = buildPageUrl('/index.html', {}, { environment: currentEnvironment });
         };
     </script>

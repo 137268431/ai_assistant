@@ -3,14 +3,18 @@ from __future__ import annotations
 from flask import jsonify
 
 from ibkr_compute.api.route_request import coerce_request_bool, coerce_request_int, get_json_payload
+from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_compute.market.timeframe_utils import COMPUTE_INTERVALS, normalize_interval
 
 
 def load_chart_request_payload() -> dict:
     payload = get_json_payload()
     preview_bar = payload.get("preview_bar")
+    data_environment = resolve_data_environment(
+        payload.get("market_data_mode") or payload.get("data_environment") or payload.get("environment")
+    )
     return {
-        "environment": str(payload.get("environment") or "live").strip().lower() or "live",
+        "environment": data_environment,
         "symbol": str(payload.get("symbol") or "").strip().upper(),
         "interval": normalize_interval(payload.get("interval") or "5m"),
         "start_ms": coerce_request_int(payload.get("start_ms"), 0, minimum=0),

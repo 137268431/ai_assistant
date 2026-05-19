@@ -4,6 +4,7 @@ import time
 from typing import Any, Callable
 
 from ibkr_api.orders.values import parse_boolean, to_int, to_text
+from ibkr_api.modes import request_broker_mode
 from ibkr_api.storage.helpers import normalize_exchange_value
 from ibkr_api.universe.maintenance import (
     WATCHLIST_ROLE_MARKET_MONITOR,
@@ -19,11 +20,18 @@ from ibkr_api.universe.maintenance import (
     upsert_record,
 )
 from ibkr_api.universe.watchlist_eligibility import build_watchlist_eligibility_response
+from ibkr_compute.core.broker_mode import resolve_data_environment
 
 RequestJsonRequest = Callable[..., dict[str, Any]]
 TimeStrings = Callable[[], dict[str, str]]
 NormalizeEnvironment = Callable[[Any, str], str]
 EscapeFilterString = Callable[[Any], str]
+
+
+def _payload_data_environment(payload: dict[str, Any]) -> str:
+    return resolve_data_environment(
+        payload.get("market_data_mode") or payload.get("data_environment") or payload.get("environment")
+    )
 
 
 def build_watchlist_upsert_response(
@@ -36,10 +44,11 @@ def build_watchlist_upsert_response(
     request_json_request: RequestJsonRequest,
     compute_base_url: str,
 ) -> tuple[dict[str, Any], int]:
-    runtime_environment = normalize_environment(payload.get("environment"), "live")
+    runtime_environment = request_broker_mode(payload)
+    data_environment = _payload_data_environment(payload)
     record_environment = normalize_record_environment(
-        payload.get("scope") or payload.get("target_environment") or payload.get("environment"),
-        runtime_environment=runtime_environment,
+        payload.get("scope") or payload.get("target_environment") or payload.get("data_environment") or data_environment,
+        runtime_environment=data_environment,
     )
     symbol = to_text(payload.get("symbol")).upper()
     if not symbol:
@@ -83,7 +92,7 @@ def build_watchlist_upsert_response(
             eligibility_result, _ = build_watchlist_eligibility_response(
                 pb,
                 payload={
-                    "environment": runtime_environment,
+                    "data_environment": data_environment,
                     "symbols": [symbol],
                     "window_trading_days": payload.get("window_trading_days"),
                 },
@@ -134,10 +143,11 @@ def build_watchlist_upsert_response(
     runtime_reconcile: dict[str, Any] | None
     try:
         reconcile = call_universe_reconcile(
-            runtime_environment,
+            data_environment,
             {
                 "source": source,
                 "reason": "watchlist_upsert",
+                "broker_mode": runtime_environment,
                 "prime_symbols": [symbol],
                 "emit_signals": False,
             },
@@ -159,6 +169,8 @@ def build_watchlist_upsert_response(
             "id": to_text((result.get("record") or {}).get("id")),
             "symbol": symbol,
             "environment": record_environment,
+            "broker_mode": runtime_environment,
+            "data_environment": data_environment,
             "symbol_role": symbol_role,
             "manual_member": manual_member,
             "force_trade_add": force_trade_add,
@@ -181,16 +193,17 @@ def build_watchlist_remove_response(
     request_json_request: RequestJsonRequest,
     compute_base_url: str,
 ) -> tuple[dict[str, Any], int]:
-    runtime_environment = normalize_environment(payload.get("environment"), "live")
+    runtime_environment = request_broker_mode(payload)
+    data_environment = _payload_data_environment(payload)
     record_environment = normalize_record_environment(
-        payload.get("scope") or payload.get("target_environment") or payload.get("environment"),
-        runtime_environment=runtime_environment,
+        payload.get("scope") or payload.get("target_environment") or payload.get("data_environment") or data_environment,
+        runtime_environment=data_environment,
     )
     record_id = to_text(payload.get("record_id") or payload.get("id"))
     symbol_hint = to_text(payload.get("symbol")).upper()
     remove_current_day_targets = parse_boolean(payload.get("remove_current_day_targets"), True)
     market_date = to_text(payload.get("market_date")) or get_runtime_market_date(
-        runtime_environment,
+        data_environment,
         request_json_request=request_json_request,
         compute_base_url=compute_base_url,
         time_strings=time_strings,
@@ -221,7 +234,7 @@ def build_watchlist_remove_response(
         target_rows = list_active_today_targets(
             pb,
             symbol,
-            runtime_environment,
+            record_environment,
             market_date,
             escape_filter_string=escape_filter_string,
         )
@@ -238,14 +251,14 @@ def build_watchlist_remove_response(
     keep_watchlist = has_effective_watchlist_member(
         pb,
         symbol,
-        runtime_environment,
+        record_environment,
         escape_filter_string=escape_filter_string,
     )
     keep_targets = bool(
         list_active_today_targets(
             pb,
             symbol,
-            runtime_environment,
+            record_environment,
             market_date,
             escape_filter_string=escape_filter_string,
         )
@@ -255,10 +268,11 @@ def build_watchlist_remove_response(
     if symbol and not keep_watchlist and not keep_targets:
         try:
             reconcile = call_universe_reconcile(
-                runtime_environment,
+                data_environment,
                 {
                     "source": to_text(payload.get("source") or "manual_page_remove").lower() or "manual_page_remove",
                     "reason": "watchlist_remove",
+                    "broker_mode": runtime_environment,
                     "cleanup_symbols": [symbol],
                 },
                 request_json_request=request_json_request,
@@ -278,7 +292,9 @@ def build_watchlist_remove_response(
             "action": "deleted",
             "id": actual_record_id,
             "symbol": symbol,
-            "environment": runtime_environment,
+            "environment": record_environment,
+            "broker_mode": runtime_environment,
+            "data_environment": data_environment,
             "removed_target_count": removed_target_count,
             "runtime_reconcile": runtime_reconcile,
             "source": "ibkr-api",

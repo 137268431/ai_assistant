@@ -23,6 +23,41 @@ def _now_iso_utc() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _broker_scoped(broker_mode: str, data_environment: str) -> bool:
+    return bool(broker_mode and data_environment and not (broker_mode == data_environment == "live"))
+
+
+def _with_broker_execution(
+    extra: dict[str, Any],
+    *,
+    broker_mode: str,
+    data_environment: str,
+    status: str,
+    note: str,
+    source: str,
+) -> dict[str, Any]:
+    merged = dict(extra if isinstance(extra, dict) else {})
+    execution_by_mode = merged.get("execution_by_mode") if isinstance(merged.get("execution_by_mode"), dict) else {}
+    broker_payload = execution_by_mode.get(broker_mode) if isinstance(execution_by_mode, dict) else {}
+    if not isinstance(broker_payload, dict):
+        broker_payload = {}
+    execution_by_mode = dict(execution_by_mode)
+    execution_by_mode[broker_mode] = {
+        **broker_payload,
+        "status": status,
+        "note": note,
+        "broker_mode": broker_mode,
+        "data_environment": data_environment,
+        "status_reason": note,
+        "updated_at": _now_iso_utc(),
+        "source": source,
+    }
+    merged["execution_by_mode"] = execution_by_mode
+    merged["last_runtime_broker_mode"] = broker_mode
+    merged["last_runtime_data_environment"] = data_environment
+    return merged
+
+
 def _to_number(value: Any) -> float | None:
     return to_float(value)
 
@@ -184,8 +219,21 @@ def calculate_signal_strength(signal_payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _active_sort_key(row: dict[str, Any]) -> tuple[int, int, str]:
-    status = to_text(row.get("status")).lower()
+def effective_broker_signal_status(row: dict[str, Any], broker_mode: str, data_environment: str) -> str:
+    extra = get_signal_extra(row)
+    execution_by_mode = extra.get("execution_by_mode") if isinstance(extra, dict) else {}
+    broker_execution = execution_by_mode.get(broker_mode) if isinstance(execution_by_mode, dict) else {}
+    broker_status = to_text(broker_execution.get("status") if isinstance(broker_execution, dict) else "").lower()
+    if broker_status:
+        return broker_status
+    top_level_status = to_text(row.get("status")).lower()
+    if broker_mode == data_environment == "live":
+        return top_level_status
+    return top_level_status if top_level_status in MUTABLE_SIGNAL_STATUSES else ""
+
+
+def _active_sort_key(row: dict[str, Any], broker_mode: str, data_environment: str) -> tuple[int, int, str]:
+    status = effective_broker_signal_status(row, broker_mode, data_environment)
     status_weight = 3 if status in BROKER_CONTROLLED_SIGNAL_STATUSES else 2 if status in MUTABLE_SIGNAL_STATUSES else 1
     return (
         status_weight,
@@ -199,11 +247,13 @@ def find_active_symbol_signal(
     data: dict[str, Any],
     environment: str,
     *,
+    broker_mode: str | None = None,
     escape_filter_string: EscapeFilterString,
 ) -> dict[str, Any] | None:
     symbol = to_text(data.get("symbol")).upper()
     signal_id = to_text(data.get("signal_id"))
     runtime_environment = to_text(environment or data.get("environment") or "live").lower() or "live"
+    runtime_broker_mode = to_text(broker_mode or data.get("broker_mode") or runtime_environment).lower() or runtime_environment
     if not symbol:
         return None
 
@@ -222,74 +272,101 @@ def find_active_symbol_signal(
         record = dict(row) if isinstance(row, dict) else {}
         if signal_id and to_text(record.get("signal_id")) == signal_id:
             continue
-        status = to_text(record.get("status")).lower()
+        status = effective_broker_signal_status(record, runtime_broker_mode, runtime_environment)
         if status in INACTIVE_SIGNAL_STATUSES or status not in ACTIVE_SIGNAL_STATUSES:
             continue
         candidates.append(record)
     if not candidates:
         return None
-    candidates.sort(key=_active_sort_key, reverse=True)
+    candidates.sort(key=lambda row: _active_sort_key(row, runtime_broker_mode, runtime_environment), reverse=True)
     return candidates[0]
 
 
-def build_active_signal_refresh_payload(existing: dict[str, Any], incoming: dict[str, Any], environment: str) -> dict[str, Any]:
+def build_active_signal_refresh_payload(
+    existing: dict[str, Any],
+    incoming: dict[str, Any],
+    environment: str,
+    *,
+    broker_mode: str = "",
+) -> dict[str, Any]:
     existing_extra = get_signal_extra(existing)
     incoming_extra = ensure_object(incoming.get("extra"))
     incoming_signal_id = to_text(incoming.get("signal_id"))
     refreshed_ids = _append_unique(existing_extra.get("merged_signal_ids"), incoming_signal_id)
     now_text = _now_iso_utc()
+    next_extra = {
+        **existing_extra,
+        **incoming_extra,
+        "environment": environment,
+        "merged_signal_ids": refreshed_ids,
+        "latest_merged_signal_id": incoming_signal_id,
+        "latest_merged_at": now_text,
+        "merge_policy": "same_symbol_same_direction_refresh_before_broker_submit",
+        "status_reason": to_text(existing_extra.get("status_reason") or existing.get("note") or incoming.get("note")),
+    }
     return {
         **incoming,
         "signal_id": to_text(existing.get("signal_id")) or incoming_signal_id,
         "status": to_text(existing.get("status") or incoming.get("status")),
         "note": to_text(existing.get("note") or incoming.get("note")),
-        "extra": {
-            **existing_extra,
-            **incoming_extra,
-            "environment": environment,
-            "merged_signal_ids": refreshed_ids,
-            "latest_merged_signal_id": incoming_signal_id,
-            "latest_merged_at": now_text,
-            "merge_policy": "same_symbol_same_direction_refresh_before_broker_submit",
-            "status_reason": to_text(existing_extra.get("status_reason") or existing.get("note") or incoming.get("note")),
-        },
+        "extra": next_extra,
     }
 
 
-def build_confirmed_signal_reconfirm_payload(existing: dict[str, Any], incoming: dict[str, Any], environment: str) -> dict[str, Any]:
+def build_confirmed_signal_reconfirm_payload(
+    existing: dict[str, Any],
+    incoming: dict[str, Any],
+    environment: str,
+    *,
+    broker_mode: str = "",
+) -> dict[str, Any]:
     existing_extra = get_signal_extra(existing)
     incoming_extra = ensure_object(incoming.get("extra"))
     incoming_signal_id = to_text(incoming.get("signal_id"))
     changed_fields = changed_execution_fields(existing, incoming)
     now_text = _now_iso_utc()
+    next_extra = {
+        **existing_extra,
+        **incoming_extra,
+        "environment": environment,
+        "merged_signal_ids": _append_unique(existing_extra.get("merged_signal_ids"), incoming_signal_id),
+        "followup_signal_ids": _append_unique(existing_extra.get("followup_signal_ids"), incoming_signal_id),
+        "latest_merged_signal_id": incoming_signal_id,
+        "latest_merged_at": now_text,
+        "latest_followup_signal_id": incoming_signal_id,
+        "latest_followup_at": now_text,
+        "latest_followup_entry": incoming.get("entry"),
+        "latest_followup_take_profit": incoming.get("take_profit"),
+        "latest_followup_stop_loss": incoming.get("stop_loss"),
+        "latest_followup_bar_time_ms": incoming.get("bar_time_ms"),
+        "latest_followup_extra": incoming_extra,
+        "followup_requires_reconfirm": True,
+        "confirmation_stale": True,
+        "reconfirm_reason": "same_direction_followup_changed_execution_params",
+        "reconfirm_changed_fields": changed_fields,
+        "previous_confirmed_snapshot": _execution_snapshot(existing),
+        "merge_policy": "same_symbol_same_direction_reconfirm_after_manual_confirm",
+        "status_reason": "followup_requires_reconfirm",
+    }
+    top_level_status = "awaiting_confirm"
+    top_level_note = "followup_requires_reconfirm"
+    if _broker_scoped(to_text(broker_mode), environment):
+        next_extra = _with_broker_execution(
+            next_extra,
+            broker_mode=to_text(broker_mode),
+            data_environment=environment,
+            status="awaiting_confirm",
+            note="followup_requires_reconfirm",
+            source="ingest_followup_reconfirm",
+        )
+        top_level_status = to_text(existing.get("status") or incoming.get("status") or "pending")
+        top_level_note = to_text(existing.get("note"))
     return {
         **incoming,
         "signal_id": to_text(existing.get("signal_id")) or incoming_signal_id,
-        "status": "awaiting_confirm",
-        "note": "followup_requires_reconfirm",
-        "extra": {
-            **existing_extra,
-            **incoming_extra,
-            "environment": environment,
-            "merged_signal_ids": _append_unique(existing_extra.get("merged_signal_ids"), incoming_signal_id),
-            "followup_signal_ids": _append_unique(existing_extra.get("followup_signal_ids"), incoming_signal_id),
-            "latest_merged_signal_id": incoming_signal_id,
-            "latest_merged_at": now_text,
-            "latest_followup_signal_id": incoming_signal_id,
-            "latest_followup_at": now_text,
-            "latest_followup_entry": incoming.get("entry"),
-            "latest_followup_take_profit": incoming.get("take_profit"),
-            "latest_followup_stop_loss": incoming.get("stop_loss"),
-            "latest_followup_bar_time_ms": incoming.get("bar_time_ms"),
-            "latest_followup_extra": incoming_extra,
-            "followup_requires_reconfirm": True,
-            "confirmation_stale": True,
-            "reconfirm_reason": "same_direction_followup_changed_execution_params",
-            "reconfirm_changed_fields": changed_fields,
-            "previous_confirmed_snapshot": _execution_snapshot(existing),
-            "merge_policy": "same_symbol_same_direction_reconfirm_after_manual_confirm",
-            "status_reason": "followup_requires_reconfirm",
-        },
+        "status": top_level_status,
+        "note": top_level_note,
+        "extra": next_extra,
     }
 
 
@@ -340,52 +417,96 @@ def build_reverse_suppressed_patch(existing: dict[str, Any], incoming: dict[str,
     }
 
 
-def build_stale_active_close_patch(existing: dict[str, Any], incoming: dict[str, Any], *, reason: str) -> dict[str, Any]:
+def build_stale_active_close_patch(
+    existing: dict[str, Any],
+    incoming: dict[str, Any],
+    *,
+    reason: str,
+    broker_mode: str = "",
+    data_environment: str = "",
+) -> dict[str, Any]:
     existing_extra = get_signal_extra(existing)
     incoming_signal_id = to_text(incoming.get("signal_id"))
     strength = calculate_signal_strength(incoming)
     now_text = _now_iso_utc()
+    next_extra = {
+        **existing_extra,
+        "status_reason": reason,
+        "closed_reason": reason,
+        "closed_at": now_text,
+        "reverse_policy": "skip_stale_active_without_order_trace",
+        "latest_suppressed_reverse_signal_id": incoming_signal_id,
+        "latest_suppressed_reverse_at": now_text,
+        "latest_suppressed_reverse_reason": reason,
+        "latest_suppressed_reverse_direction": to_text(incoming.get("direction")).lower(),
+        "suppressed_reason": reason,
+        "signal_strength_score": strength["score"],
+        "signal_strength_level": strength["level"],
+    }
+    if _broker_scoped(to_text(broker_mode), to_text(data_environment)):
+        return {
+            "extra": _with_broker_execution(
+                next_extra,
+                broker_mode=to_text(broker_mode),
+                data_environment=to_text(data_environment),
+                status="closed",
+                note=reason,
+                source="ingest_stale_active_close",
+            )
+        }
     return {
         "status": "closed",
         "note": reason,
-        "extra": {
-            **existing_extra,
-            "status_reason": reason,
-            "closed_reason": reason,
-            "closed_at": now_text,
-            "reverse_policy": "skip_stale_active_without_order_trace",
-            "latest_suppressed_reverse_signal_id": incoming_signal_id,
-            "latest_suppressed_reverse_at": now_text,
-            "latest_suppressed_reverse_reason": reason,
-            "latest_suppressed_reverse_direction": to_text(incoming.get("direction")).lower(),
-            "suppressed_reason": reason,
-            "signal_strength_score": strength["score"],
-            "signal_strength_level": strength["level"],
-        },
+        "extra": next_extra,
     }
 
 
-def build_superseded_patch(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+def build_superseded_patch(
+    existing: dict[str, Any],
+    incoming: dict[str, Any],
+    *,
+    broker_mode: str = "",
+    data_environment: str = "",
+) -> dict[str, Any]:
     existing_extra = get_signal_extra(existing)
     incoming_signal_id = to_text(incoming.get("signal_id"))
+    next_extra = {
+        **existing_extra,
+        "status_reason": "superseded_by_strong_reverse_signal",
+        "superseded_by_signal_id": incoming_signal_id,
+        "superseded_at": _now_iso_utc(),
+        "reverse_policy": "supersede_unsubmitted_signal",
+    }
+    if _broker_scoped(to_text(broker_mode), to_text(data_environment)):
+        return {
+            "extra": _with_broker_execution(
+                next_extra,
+                broker_mode=to_text(broker_mode),
+                data_environment=to_text(data_environment),
+                status="expired",
+                note="superseded_by_strong_reverse_signal",
+                source="ingest_superseded",
+            )
+        }
     return {
         "status": "expired",
         "note": "superseded_by_strong_reverse_signal",
-        "extra": {
-            **existing_extra,
-            "status_reason": "superseded_by_strong_reverse_signal",
-            "superseded_by_signal_id": incoming_signal_id,
-            "superseded_at": _now_iso_utc(),
-            "reverse_policy": "supersede_unsubmitted_signal",
-        },
+        "extra": next_extra,
     }
 
 
-def build_reverse_record_payload(existing: dict[str, Any], incoming: dict[str, Any], environment: str) -> dict[str, Any]:
+def build_reverse_record_payload(
+    existing: dict[str, Any],
+    incoming: dict[str, Any],
+    environment: str,
+    *,
+    data_environment: str = "live",
+    active_status: str = "",
+) -> dict[str, Any]:
     existing_extra = get_signal_extra(existing)
     incoming_extra = ensure_object(incoming.get("extra"))
     strength = calculate_signal_strength(incoming)
-    existing_status = to_text(existing.get("status")).lower()
+    existing_status = to_text(active_status or existing.get("status")).lower()
     action_type = "close" if existing_status in {"protected_active", "executed"} else "cancel"
     target_state = "filled_position" if action_type == "close" else "pending_entry"
     trade_group_id = to_text(
@@ -412,6 +533,9 @@ def build_reverse_record_payload(existing: dict[str, Any], incoming: dict[str, A
         "cn_time": incoming.get("cn_time") or existing.get("cn_time") or "",
         "extra": {
             "environment": environment,
+            "broker_mode": environment,
+            "data_environment": data_environment,
+            "shared_market_data": data_environment == "live",
             "reverse_kind": "signal_conflict",
             "target_state": target_state,
             "reverse_policy": "full_auto_reverse",
@@ -456,6 +580,7 @@ __all__ = [
     "build_superseded_patch",
     "calculate_signal_strength",
     "changed_execution_fields",
+    "effective_broker_signal_status",
     "find_active_symbol_signal",
     "has_order_trace",
     "map_signal_strength",

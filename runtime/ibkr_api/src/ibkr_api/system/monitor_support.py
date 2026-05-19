@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 import requests
 
+from ibkr_compute.core.broker_mode import configured_broker_mode, normalize_broker_mode, resolve_data_environment
 from ibkr_api.system.service_state import (
     apply_service_monitor_to_topology,
     derive_backtest_state,
@@ -461,9 +462,10 @@ def build_system_monitor_payload(
     build_service_topology: BuildServiceTopology,
     service_profile: str = "api",
 ) -> dict[str, Any]:
-    runtime_environment = normalize_environment(environment, "live")
+    runtime_environment = normalize_broker_mode(environment, configured_broker_mode())
+    data_environment = resolve_data_environment(runtime_environment)
     builder_errors: list[dict[str, str]] = []
-    base_monitor_result = fetch_compute_monitor(runtime_environment)
+    base_monitor_result = fetch_compute_monitor(data_environment)
     base_payload = as_dict(base_monitor_result.get("payload"))
     if (not bool(base_monitor_result.get("ok"))) and (
         str(base_monitor_result.get("error") or "").strip() or int(base_monitor_result.get("status_code") or 0) >= 400
@@ -477,10 +479,10 @@ def build_system_monitor_payload(
     except Exception as exc:
         builder_errors.append(_monitor_builder_error("config_refresh", exc))
     try:
-        scheduler_payload = scheduler_status(runtime_environment)
+        scheduler_payload = scheduler_status(data_environment)
     except Exception as exc:
         builder_errors.append(_monitor_builder_error("scheduler_status", exc))
-        scheduler_payload = _fallback_scheduler_payload(runtime_environment)
+        scheduler_payload = _fallback_scheduler_payload(data_environment)
     else:
         scheduler_meta = as_dict(scheduler_payload.get("_meta")) if isinstance(scheduler_payload, dict) else {}
         scheduler_status_text = str((scheduler_payload or {}).get("status") or "").strip().lower()
@@ -496,15 +498,15 @@ def build_system_monitor_payload(
             builder_errors.append(_monitor_builder_error("scheduler_status", detail, severity=severity))
     scheduler_jobs = scheduler_payload.get("jobs") if isinstance(scheduler_payload.get("jobs"), dict) else {}
     try:
-        scheduler_items = build_cron_payload(config, runtime_environment, scheduler_jobs)
+        scheduler_items = build_cron_payload(config, data_environment, scheduler_jobs)
     except Exception as exc:
         builder_errors.append(_monitor_builder_error("scheduler_cronz", exc))
         scheduler_items = []
     try:
-        scheduler_summary = augment_scheduler_summary(build_scheduler_summary(runtime_environment, scheduler_payload), scheduler_items)
+        scheduler_summary = augment_scheduler_summary(build_scheduler_summary(data_environment, scheduler_payload), scheduler_items)
     except Exception as exc:
         builder_errors.append(_monitor_builder_error("scheduler_summary", exc))
-        scheduler_summary = _fallback_scheduler_summary(runtime_environment)
+        scheduler_summary = _fallback_scheduler_summary(data_environment)
     try:
         pb_health = request_json(pb_base_url, "/api/health", timeout=5)
     except Exception as exc:
@@ -518,7 +520,7 @@ def build_system_monitor_payload(
         }
     if str(backtest_base_url or "").strip():
         try:
-            backtest_health = request_json(backtest_base_url, "/health", params=[("environment", runtime_environment)], timeout=5)
+            backtest_health = request_json(backtest_base_url, "/health", params=[("environment", data_environment)], timeout=5)
         except Exception as exc:
             builder_errors.append(_monitor_builder_error("backtest_health", exc))
             backtest_health = {
@@ -553,14 +555,24 @@ def build_system_monitor_payload(
         merged_payload.get("status") or ("offline" if merged_payload.get("ok") is False else "ok")
     ).strip().lower() or "ok"
     actual_runtime_environment = normalize_environment(
-        merged_payload.get("environment") or as_dict(merged_payload.get("runtime")).get("environment") or runtime_environment,
+        merged_payload.get("broker_mode")
+        or as_dict(merged_payload.get("runtime")).get("broker_mode")
+        or merged_payload.get("environment")
+        or as_dict(merged_payload.get("runtime")).get("environment")
+        or runtime_environment,
         runtime_environment,
     )
     merged_payload["requested_environment"] = runtime_environment
+    merged_payload["broker_mode"] = runtime_environment
+    merged_payload["data_environment"] = data_environment
+    merged_payload["market_data_environment"] = data_environment
+    merged_payload["shared_market_data"] = data_environment == "live"
     merged_payload["actual_runtime_environment"] = actual_runtime_environment
     merged_payload["runtime_environment_mismatch"] = actual_runtime_environment != runtime_environment
     try:
-        merged_payload["config"] = load_effective_config_map(runtime_environment, monitor_config_keys)
+        broker_config = load_effective_config_map(runtime_environment, monitor_config_keys)
+        data_config = load_effective_config_map(data_environment, monitor_config_keys)
+        merged_payload["config"] = {**data_config, **broker_config}
     except Exception as exc:
         builder_errors.append(_monitor_builder_error("config_map", exc))
         merged_payload["config"] = {}

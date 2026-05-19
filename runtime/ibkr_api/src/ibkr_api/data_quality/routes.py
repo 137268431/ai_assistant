@@ -16,16 +16,20 @@ from ibkr_api.data_quality.queries import (
     paginate,
 )
 from ibkr_api.orders.values import parse_boolean, parse_integer, to_text
+from ibkr_compute.core.broker_mode import resolve_data_environment
+
+
+def _request_data_environment(args: Any) -> str:
+    return resolve_data_environment(args.get("market_data_mode") or args.get("data_environment") or args.get("environment"))
 
 
 def register_data_quality_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     pb = deps["pb"]
-    normalize_environment = deps["normalize_environment"]
     exports: dict[str, Any] = {}
 
     @app.route("/api/custom/ibkr/data_quality/summary", methods=["GET"])
     def custom_ibkr_data_quality_summary() -> Response:
-        environment = normalize_environment(request.args.get("environment"), "live")
+        environment = _request_data_environment(request.args)
         market_date = to_text(request.args.get("market_date"))
         scan_scope = to_text(request.args.get("scan_scope"))
         try:
@@ -46,7 +50,7 @@ def register_data_quality_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]
 
     @app.route("/api/custom/ibkr/data_quality/truth_summary", methods=["GET"])
     def custom_ibkr_data_quality_truth_summary() -> Response:
-        environment = normalize_environment(request.args.get("environment"), "live")
+        environment = _request_data_environment(request.args)
         market_date = to_text(request.args.get("market_date"))
         try:
             truth_items = load_truth_items(pb, environment, market_date=market_date)
@@ -60,7 +64,7 @@ def register_data_quality_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]
 
     @app.route("/api/custom/ibkr/data_quality/list", methods=["GET"])
     def custom_ibkr_data_quality_list() -> Response:
-        environment = normalize_environment(request.args.get("environment"), "live")
+        environment = _request_data_environment(request.args)
         market_date = to_text(request.args.get("market_date"))
         scan_scope = to_text(request.args.get("scan_scope"))
         status = to_text(request.args.get("status")).lower()
@@ -98,7 +102,7 @@ def register_data_quality_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]
 
     @app.route("/api/custom/ibkr/data_quality/daily_summary", methods=["GET"])
     def custom_ibkr_data_quality_daily_summary() -> Response:
-        environment = normalize_environment(request.args.get("environment"), "live")
+        environment = _request_data_environment(request.args)
         market_date = to_text(request.args.get("market_date"))
         date_from = to_text(request.args.get("date_from"))
         date_to = to_text(request.args.get("date_to"))
@@ -129,7 +133,7 @@ def register_data_quality_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]
 
     @app.route("/api/custom/ibkr/data_quality/daily_list", methods=["GET"])
     def custom_ibkr_data_quality_daily_list() -> Response:
-        environment = normalize_environment(request.args.get("environment"), "live")
+        environment = _request_data_environment(request.args)
         market_date = to_text(request.args.get("market_date"))
         date_from = to_text(request.args.get("date_from"))
         date_to = to_text(request.args.get("date_to"))
@@ -175,7 +179,7 @@ def register_data_quality_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]
 
     @app.route("/api/custom/ibkr/data_quality/truth_list", methods=["GET"])
     def custom_ibkr_data_quality_truth_list() -> Response:
-        environment = normalize_environment(request.args.get("environment"), "live")
+        environment = _request_data_environment(request.args)
         market_date = to_text(request.args.get("market_date"))
         status = to_text(request.args.get("status")).lower()
         symbol = to_text(request.args.get("symbol")).upper()

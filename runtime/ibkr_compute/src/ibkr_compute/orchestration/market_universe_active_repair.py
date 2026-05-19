@@ -42,7 +42,7 @@ class TradingServiceMarketUniverseActiveRepairMixin:
             except Exception as exc:
                 service_mod.logger.error("Active target repair loop error: %s", exc)
 
-            sleep_seconds = max(300, self.config.get_int_for_environment("ibkr_active_repair_interval_min", service_mod.ENVIRONMENT, 5) * 60)
+            sleep_seconds = max(300, self.config.get_int_for_environment("ibkr_active_repair_interval_min", service_mod.DATA_ENVIRONMENT, 5) * 60)
             for _ in range(sleep_seconds):
                 if not self._running:
                     break
@@ -166,7 +166,7 @@ class TradingServiceMarketUniverseActiveRepairMixin:
             300,
             self.config.get_int_for_environment(
                 "ibkr_watchlist_backfill_interval_min",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 30,
             ) * 60,
         )
@@ -196,7 +196,7 @@ class TradingServiceMarketUniverseActiveRepairMixin:
             service_mod.logger.info("Watchlist backfill skipped: no non-target symbols in pool")
             return topup_state
 
-        stale_minutes = max(5, self.config.get_int_for_environment("ibkr_watchlist_backfill_stale_min", service_mod.ENVIRONMENT, 20))
+        stale_minutes = max(5, self.config.get_int_for_environment("ibkr_watchlist_backfill_stale_min", service_mod.DATA_ENVIRONMENT, 20))
         now_ms = int(time.time() * 1000)
         stale_ms = stale_minutes * 60 * 1000
         eligible = []
@@ -219,7 +219,7 @@ class TradingServiceMarketUniverseActiveRepairMixin:
                 self._last_backfill_at = time.time()
                 self._last_backfill_symbols = sorted(conid_map.keys())
 
-        if not self.config.get_bool_for_environment("ibkr_watchlist_integrity_enabled", service_mod.ENVIRONMENT, True):
+        if not self.config.get_bool_for_environment("ibkr_watchlist_integrity_enabled", service_mod.DATA_ENVIRONMENT, True):
             return topup_state
 
         integrity_candidates = self._watchlist_integrity_candidates()

@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ibkr_compute.core.broker_mode import configured_broker_mode, normalize_broker_mode, resolve_data_environment
+
 from ibkr_api.reverse.shared import (
     DEFAULT_REVERSE_THRESHOLD,
     INDICATORS_COLLECTION,
     ensure_object,
     escape_filter_string,
-    normalize_environment_value,
     parse_integer,
     record_value,
     to_float,
@@ -58,7 +59,7 @@ def load_latest_indicator_record(
     escape_filter: Callable[[Any], str] = escape_filter_string,
 ) -> Any:
     normalized_symbol = to_text(symbol).upper()
-    runtime_environment = normalize_environment_value(environment)
+    runtime_environment = resolve_data_environment(environment)
     if not normalized_symbol:
         return None
     return pb.get_first_record(
@@ -125,7 +126,7 @@ def build_indicator_analysis(
 
 
 def load_reverse_signal_threshold(pb: Any, environment: str, default: int = DEFAULT_REVERSE_THRESHOLD) -> int:
-    runtime_environment = normalize_environment_value(environment)
+    runtime_environment = normalize_broker_mode(environment, configured_broker_mode())
     getter = getattr(pb, "get_runtime_config", None)
     if callable(getter):
         try:

@@ -274,11 +274,10 @@
         showLoading('正在写入今日 targets...');
         const payload = await requestJson('/api/custom/ibkr/screener/targets', {
           method: 'POST',
-          body: {
-            environment: currentEnvironment,
+          body: buildModePayload({
             market_date: marketDate,
             items
-          }
+          }, { brokerMode: currentBrokerMode, dataEnvironment: currentEnvironment })
         });
         showToast(`写入完成: created ${payload.created || 0}, updated ${payload.updated || 0}, skipped ${payload.skipped || 0}`);
         await loadScreener(false, { force: true });
@@ -389,11 +388,10 @@
         showLoading('正在补跑今日日筛...');
         const payload = await requestJson('/api/custom/system/scheduler/jobs/run', {
           method: 'POST',
-          body: {
-            environment: currentEnvironment,
+          body: buildModePayload({
             job_id: 'ibkr_scan_runtime',
             trigger_source: 'console_manual_daily_scan'
-          }
+          }, { brokerMode: currentBrokerMode, dataEnvironment: currentEnvironment })
         });
         manualDailyScanState.lastResult = payload;
         const resultMessage = summarizeManualDailyScanResult(payload);
@@ -463,7 +461,9 @@
         showLoading('正在聚合筛选器数据...');
         const rulesPromise = loadRulesSummary();
         const payload = await requestCachedJson(`/api/custom/ibkr/screener${buildQuery({
-          environment: currentEnvironment,
+          broker_mode: currentBrokerMode,
+          market_data_mode: currentEnvironment,
+          data_environment: currentEnvironment,
           market_date: marketDate
         })}`, {}, {
           ttlMs: 30000,

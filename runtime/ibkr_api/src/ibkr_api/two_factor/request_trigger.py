@@ -131,7 +131,13 @@ def trigger_two_factor_flow(
     )
 
     try:
-        request_json_request("POST", runtime_base_url, "/ibkr/stop", json_body={"environment": environment}, timeout=30)
+        request_json_request(
+            "POST",
+            runtime_base_url,
+            "/ibkr/stop",
+            json_body={"broker_mode": environment, "environment": environment},
+            timeout=30,
+        )
     except Exception:
         pass
     start_result = request_json_request(
@@ -139,6 +145,7 @@ def trigger_two_factor_flow(
         runtime_base_url,
         "/ibkr/start",
         json_body={
+            "broker_mode": environment,
             "environment": environment,
             "trigger_login": True,
             "source": source or "ibkr-api",

@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 from ibkr_api.orders.values import first_defined, to_float, to_text
 from ibkr_api.signals.values import get_signal_extra, merge_signal_extra, record_value
+from ibkr_compute.core.broker_mode import configured_broker_mode, normalize_broker_mode
 
 
 SendInteractive = Callable[[dict[str, Any], str, str], dict[str, Any]]
@@ -65,7 +66,6 @@ def _signal_broker_mode(record_or_data: Any, extra: dict[str, Any] | None = None
         signal_extra.get("last_runtime_broker_mode"),
         signal_extra.get("signal_ack_fallback_broker_mode"),
         signal_extra.get("broker_mode"),
-        record_value(record_or_data, "environment"),
     )
     for candidate in candidates:
         normalized = to_text(candidate).lower()
@@ -76,7 +76,10 @@ def _signal_broker_mode(record_or_data: Any, extra: dict[str, Any] | None = None
         for mode in ("live", "paper"):
             if isinstance(execution_by_mode.get(mode), dict):
                 return mode
-    return "live"
+    record_environment = to_text(record_value(record_or_data, "environment")).lower()
+    if record_environment == "paper":
+        return "paper"
+    return normalize_broker_mode(configured_broker_mode(), "paper")
 
 
 def _signal_data_environment(record_or_data: Any, extra: dict[str, Any] | None = None) -> str:
@@ -340,6 +343,7 @@ def _lifecycle_page_url(
     console_base_url: str,
     *,
     environment: str,
+    data_environment: str,
     signal_id: str = "",
     symbol: str = "",
     trade_group_id: str = "",
@@ -352,7 +356,9 @@ def _lifecycle_page_url(
         console_base_url,
         "ibkr_lifecycle_flow.html",
         mode="auto",
-        environment=environment,
+        broker_mode=environment,
+        market_data_mode=data_environment,
+        data_environment=data_environment,
         date=date,
         symbol=to_text(symbol).upper(),
         signal_id=signal_id,
@@ -361,18 +367,40 @@ def _lifecycle_page_url(
     )
 
 
-def _callback_button(label: str, button_type: str, callback_url: str, *, action: str, signal_id: str, environment: str) -> dict[str, Any]:
+def _callback_button(
+    label: str,
+    button_type: str,
+    callback_url: str,
+    *,
+    action: str,
+    signal_id: str,
+    environment: str,
+    data_environment: str,
+) -> dict[str, Any]:
     return {
         "tag": "button",
         "type": button_type,
         "text": {"tag": "plain_text", "content": label},
         "action_type": "request",
         "url": callback_url,
-        "value": {"action": action, "signal_id": signal_id, "environment": environment},
+        "value": {
+            "action": action,
+            "signal_id": signal_id,
+            "broker_mode": environment,
+            "market_data_mode": data_environment,
+            "data_environment": data_environment,
+        },
     }
 
 
-def _view_buttons(console_base_url: str, *, environment: str, signal_id: str, record_or_data: Any | None = None) -> list[dict[str, Any]]:
+def _view_buttons(
+    console_base_url: str,
+    *,
+    environment: str,
+    data_environment: str,
+    signal_id: str,
+    record_or_data: Any | None = None,
+) -> list[dict[str, Any]]:
     buttons: list[dict[str, Any]] = []
     source = record_or_data or {}
     resolved_symbol = to_text(_record_or_extra_value(source, "symbol"))
@@ -382,19 +410,22 @@ def _view_buttons(console_base_url: str, *, environment: str, signal_id: str, re
     signals_url = _page_url(
         console_base_url,
         "ibkr_signals.html",
-        environment=environment,
+        broker_mode=environment,
+        market_data_mode=data_environment,
+        data_environment=data_environment,
         signal_id=signal_id,
     )
     orders_url = _page_url(
         console_base_url,
         "orders.html",
-        environment=environment,
+        broker_mode=environment,
         signal_id=signal_id,
         symbol=resolved_symbol,
     )
     lifecycle_url = _lifecycle_page_url(
         console_base_url,
         environment=environment,
+        data_environment=data_environment,
         signal_id=signal_id,
         symbol=resolved_symbol,
         trade_group_id=resolved_trade_group_id,
@@ -433,7 +464,7 @@ def _source_lines(record_or_data: Any) -> list[str]:
 
 def _reconfirm_required(record_or_data: Any) -> bool:
     extra = get_signal_extra(record_or_data)
-    status = to_text(record_value(record_or_data, "status")).lower()
+    status = _effective_signal_status(record_or_data, extra)
     return status == "awaiting_confirm" and bool(extra.get("followup_requires_reconfirm") or extra.get("confirmation_stale"))
 
 
@@ -473,14 +504,40 @@ def _followup_lines(record_or_data: Any) -> list[str]:
     return lines
 
 
-def _confirmation_action_elements(console_base_url: str, *, environment: str, signal_id: str) -> list[dict[str, Any]]:
+def _confirmation_action_elements(
+    console_base_url: str,
+    *,
+    environment: str,
+    data_environment: str,
+    signal_id: str,
+) -> list[dict[str, Any]]:
     if not signal_id:
         return []
     callback_url = _webhook_url(console_base_url, "webhook/feishu/callback")
     actions: list[dict[str, Any]] = []
     if callback_url:
-        actions.append(_callback_button("确认", "primary", callback_url, action="confirm", signal_id=signal_id, environment=environment))
-        actions.append(_callback_button("拒绝", "danger", callback_url, action="reject", signal_id=signal_id, environment=environment))
+        actions.append(
+            _callback_button(
+                "确认",
+                "primary",
+                callback_url,
+                action="confirm",
+                signal_id=signal_id,
+                environment=environment,
+                data_environment=data_environment,
+            )
+        )
+        actions.append(
+            _callback_button(
+                "拒绝",
+                "danger",
+                callback_url,
+                action="reject",
+                signal_id=signal_id,
+                environment=environment,
+                data_environment=data_environment,
+            )
+        )
     if actions:
         return [{"tag": "action", "actions": actions}]
     return [{"tag": "markdown", "content": "**人工确认** · 飞书回调未配置，请到 Signals 页面处理"}]
@@ -522,7 +579,14 @@ def build_signal_notification_card(record_or_data: Any, *, console_base_url: str
         {"tag": "hr"},
     ]
     if status == "awaiting_confirm" and signal_id:
-        elements.extend(_confirmation_action_elements(console_base_url, environment=environment, signal_id=signal_id))
+        elements.extend(
+            _confirmation_action_elements(
+                console_base_url,
+                environment=environment,
+                data_environment=data_environment,
+                signal_id=signal_id,
+            )
+        )
     else:
         elements.append(
             {
@@ -531,7 +595,13 @@ def build_signal_notification_card(record_or_data: Any, *, console_base_url: str
             }
         )
 
-    buttons = _view_buttons(console_base_url, environment=environment, signal_id=signal_id, record_or_data=record_or_data)
+    buttons = _view_buttons(
+        console_base_url,
+        environment=environment,
+        data_environment=data_environment,
+        signal_id=signal_id,
+        record_or_data=record_or_data,
+    )
     if buttons:
         elements.extend(
             [
@@ -683,8 +753,21 @@ def build_signal_status_card(record_or_data: Any, *, message: str = "", console_
     ]
     if status == "awaiting_confirm" and signal_id:
         elements.append({"tag": "hr"})
-        elements.extend(_confirmation_action_elements(console_base_url, environment=environment, signal_id=signal_id))
-    buttons = _view_buttons(console_base_url, environment=environment, signal_id=signal_id, record_or_data=record_or_data)
+        elements.extend(
+            _confirmation_action_elements(
+                console_base_url,
+                environment=environment,
+                data_environment=data_environment,
+                signal_id=signal_id,
+            )
+        )
+    buttons = _view_buttons(
+        console_base_url,
+        environment=environment,
+        data_environment=data_environment,
+        signal_id=signal_id,
+        record_or_data=record_or_data,
+    )
     if buttons:
         elements.extend(
             [

@@ -448,7 +448,9 @@ class PBClient:
 
     def upsert_order(self, data: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(data or {})
-        payload.setdefault("environment", configured_broker_mode())
+        broker_mode = normalize_broker_mode(payload.get("broker_mode") or payload.get("environment"), configured_broker_mode())
+        payload.setdefault("environment", broker_mode)
+        payload["broker_mode"] = broker_mode
         return self.call_custom_api("ibkr/orders/upsert", method="POST", data=payload)
 
     def ack_ibkr_signal(
@@ -461,11 +463,14 @@ class PBClient:
         environment: Optional[str] = None,
     ) -> Dict[str, Any]:
         runtime_environment = normalize_broker_mode(environment, configured_broker_mode())
+        data_environment = resolve_market_data_mode(None)
         payload: Dict[str, Any] = {
             "signal_id": signal_id,
             "status": status,
             "note": note,
-            "environment": runtime_environment,
+            "broker_mode": runtime_environment,
+            "market_data_mode": data_environment,
+            "data_environment": data_environment,
         }
         if order:
             payload["order"] = order
@@ -477,7 +482,6 @@ class PBClient:
         except Exception:
             # Fallback: ensure the signal is not left pending if the custom hook is temporarily unavailable.
             safe_signal_id = str(signal_id or "").replace('"', '\\"')
-            data_environment = resolve_market_data_mode(None)
             safe_environment = str(data_environment or "live").replace('"', '\\"')
             record = self.get_first_record(
                 "ibkr_signals",

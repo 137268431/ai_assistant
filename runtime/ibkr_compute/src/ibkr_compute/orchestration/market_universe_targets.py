@@ -88,7 +88,7 @@ class TradingServiceMarketUniverseTargetsMixin:
 
     def _refresh_watchlist_pool(self, force: bool = False):
         service_mod = _service_mod()
-        refresh_minutes = max(1, self.config.get_int_for_environment("watchlist_interval_min", service_mod.ENVIRONMENT, 5))
+        refresh_minutes = max(1, self.config.get_int_for_environment("watchlist_interval_min", service_mod.DATA_ENVIRONMENT, 5))
         now = time.time()
         if (
             not force
@@ -161,11 +161,11 @@ class TradingServiceMarketUniverseTargetsMixin:
 
     def _get_target_subscription_limit(self) -> int:
         service_mod = _service_mod()
-        return max(0, self.config.get_int_for_environment("ibkr_target_subscription_limit", service_mod.ENVIRONMENT, 80))
+        return max(0, self.config.get_int_for_environment("ibkr_target_subscription_limit", service_mod.DATA_ENVIRONMENT, 80))
 
     def _get_total_subscription_limit(self) -> int:
         service_mod = _service_mod()
-        return max(0, self.config.get_int_for_environment("ibkr_total_subscription_limit", service_mod.ENVIRONMENT, 80))
+        return max(0, self.config.get_int_for_environment("ibkr_total_subscription_limit", service_mod.DATA_ENVIRONMENT, 80))
 
     def _get_trade_subscription_budget(self) -> int | None:
         target_limit = self._get_target_subscription_limit()
@@ -347,12 +347,12 @@ class TradingServiceMarketUniverseTargetsMixin:
     def _scan_schedule_start(self) -> tuple[int, int]:
         service_mod = _service_mod()
         preferred = self._parse_hhmm(
-            self.config.get_for_environment("ibkr_daily_scan_time_et", service_mod.ENVIRONMENT, "09:20")
+            self.config.get_for_environment("ibkr_daily_scan_time_et", service_mod.DATA_ENVIRONMENT, "09:20")
         )
         if preferred:
             return preferred
         raw_schedule = str(
-            self.config.get_for_environment("ibkr_scan_schedule", service_mod.ENVIRONMENT, "09:20-10:00") or ""
+            self.config.get_for_environment("ibkr_scan_schedule", service_mod.DATA_ENVIRONMENT, "09:20-10:00") or ""
         ).strip()
         start_text = raw_schedule.split("-", 1)[0].strip() or "09:20"
         scheduled = self._parse_hhmm(start_text)
@@ -373,7 +373,7 @@ class TradingServiceMarketUniverseTargetsMixin:
 
             response = requests.get(
                 f"{get_scheduler_internal_url()}/status",
-                params={"environment": service_mod.ENVIRONMENT},
+                params={"broker_mode": service_mod.ENVIRONMENT, "market_data_mode": service_mod.DATA_ENVIRONMENT},
                 timeout=2.0,
             )
             if not response.ok:
@@ -413,7 +413,7 @@ class TradingServiceMarketUniverseTargetsMixin:
             60,
             self.config.get_int_for_environment(
                 "ibkr_daily_scan_runtime_fallback_grace_sec",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 8 * 60,
             ),
         )
@@ -523,7 +523,9 @@ class TradingServiceMarketUniverseTargetsMixin:
                     "errors": 0,
                     "rejection_summary": {},
                     "rejection_examples": [],
-                    "environments": [service_mod.ENVIRONMENT],
+                    "environments": [service_mod.DATA_ENVIRONMENT],
+                    "broker_mode": service_mod.ENVIRONMENT,
+                    "data_environment": service_mod.DATA_ENVIRONMENT,
                 },
             )
             self._notify_daily_scan_recovered(completed_state)
@@ -531,7 +533,7 @@ class TradingServiceMarketUniverseTargetsMixin:
             return {"ok": True, "ran": True, "state": completed_state}
 
         attempt_count = _safe_int(state.get("attempt_count"), 0) + 1
-        run_id = f"daily-scan-{service_mod.ENVIRONMENT}-{market_date}-{uuid.uuid4().hex[:10]}"
+        run_id = f"daily-scan-{service_mod.DATA_ENVIRONMENT}-{market_date}-{uuid.uuid4().hex[:10]}"
         try:
             from ibkr_compute.api.service_topology import uses_remote_compute_service
 
@@ -572,7 +574,9 @@ class TradingServiceMarketUniverseTargetsMixin:
                     result={},
                 )
                 scan_payload = {
-                    "environment": service_mod.ENVIRONMENT,
+                    "environment": service_mod.DATA_ENVIRONMENT,
+                    "broker_mode": service_mod.ENVIRONMENT,
+                    "data_environment": service_mod.DATA_ENVIRONMENT,
                     "async": True,
                     "run_id": run_id,
                     "trigger_source": reason,
@@ -604,7 +608,9 @@ class TradingServiceMarketUniverseTargetsMixin:
                 if not result.get("ok"):
                     status_payload = get_remote_scan_status(
                         {
-                            "environment": service_mod.ENVIRONMENT,
+                            "environment": service_mod.DATA_ENVIRONMENT,
+                            "broker_mode": service_mod.ENVIRONMENT,
+                            "data_environment": service_mod.DATA_ENVIRONMENT,
                             "date": market_date,
                             "run_id": run_id,
                         }
@@ -656,7 +662,11 @@ class TradingServiceMarketUniverseTargetsMixin:
                     last_error="",
                     result={},
                 )
-                scan_payload = {"environment": service_mod.ENVIRONMENT}
+                scan_payload = {
+                    "environment": service_mod.DATA_ENVIRONMENT,
+                    "broker_mode": service_mod.ENVIRONMENT,
+                    "data_environment": service_mod.DATA_ENVIRONMENT,
+                }
                 from ibkr_compute.api import server as compute_server
 
                 result = compute_server._run_internal_scan(scan_payload) or {}
@@ -683,7 +693,7 @@ class TradingServiceMarketUniverseTargetsMixin:
             60,
             self.config.get_int_for_environment(
                 "ibkr_realtime_quote_stale_resubscribe_sec",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 600,
             ),
         )
@@ -694,7 +704,7 @@ class TradingServiceMarketUniverseTargetsMixin:
             30,
             self.config.get_int_for_environment(
                 "ibkr_realtime_quote_resubscribe_cooldown_sec",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 300,
             ),
         )
@@ -721,11 +731,11 @@ class TradingServiceMarketUniverseTargetsMixin:
 
         batch_size = max(
             1,
-            self.config.get_int_for_environment("ibkr_ws_resubscribe_batch_size", service_mod.ENVIRONMENT, 8),
+            self.config.get_int_for_environment("ibkr_ws_resubscribe_batch_size", service_mod.DATA_ENVIRONMENT, 8),
         )
         gap_ms = max(
             0,
-            self.config.get_int_for_environment("ibkr_ws_resubscribe_gap_ms", service_mod.ENVIRONMENT, 150),
+            self.config.get_int_for_environment("ibkr_ws_resubscribe_gap_ms", service_mod.DATA_ENVIRONMENT, 150),
         )
         resubscribed = []
         skipped_cooldown = []
@@ -895,7 +905,7 @@ class TradingServiceMarketUniverseTargetsMixin:
     def _refresh_target_subscriptions(self, force: bool = False, reason: str = "loop"):
         service_mod = _service_mod()
         self._reset_for_new_market_day(force=False)
-        refresh_seconds = max(15, self.config.get_int_for_environment("ibkr_target_refresh_sec", service_mod.ENVIRONMENT, 60))
+        refresh_seconds = max(15, self.config.get_int_for_environment("ibkr_target_refresh_sec", service_mod.DATA_ENVIRONMENT, 60))
         now = time.time()
         if not force and (now - self._last_target_refresh_at) < refresh_seconds:
             return
@@ -952,7 +962,7 @@ class TradingServiceMarketUniverseTargetsMixin:
             except Exception as exc:
                 service_mod.logger.error("Target subscription loop error: %s", exc)
 
-            sleep_seconds = max(15, self.config.get_int_for_environment("ibkr_target_refresh_sec", service_mod.ENVIRONMENT, 60))
+            sleep_seconds = max(15, self.config.get_int_for_environment("ibkr_target_refresh_sec", service_mod.DATA_ENVIRONMENT, 60))
             for _ in range(sleep_seconds):
                 if not self._running:
                     break
@@ -1047,7 +1057,7 @@ class TradingServiceMarketUniverseTargetsMixin:
             from ibkr_compute.api import server as compute_server
 
             reset_result = compute_server.reset_daily_runtime_state(
-                [service_mod.ENVIRONMENT],
+                [service_mod.DATA_ENVIRONMENT],
                 reason="market_day_reset",
             )
             service_mod.logger.info("Compute daily reset result: %s", reset_result)

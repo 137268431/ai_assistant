@@ -99,12 +99,12 @@ def build_trading_route_deps(
             action,
             environment,
         ),
-        "dispatch_feishu_order_callback": lambda action, order_id, environment: globals_dict[
+        "dispatch_feishu_order_callback": lambda action, order_id, environment, data_environment="": globals_dict[
             "_dispatch_feishu_order_callback"
-        ](action, order_id, environment),
-        "dispatch_feishu_signal_callback": lambda action, signal_id, environment: globals_dict[
+        ](action, order_id, environment, data_environment),
+        "dispatch_feishu_signal_callback": lambda action, signal_id, environment, data_environment="": globals_dict[
             "_dispatch_feishu_signal_callback"
-        ](action, signal_id, environment),
+        ](action, signal_id, environment, data_environment),
         "callback_toast": globals_dict["_callback_toast"],
         "callback_response": globals_dict["_feishu_callback_response"],
     }

@@ -20,7 +20,7 @@
             }
 
             const reasons = [];
-            if (String(currentEnvironment || '').trim().toLowerCase() === 'live') {
+            if (String(currentDataEnvironment || '').trim().toLowerCase() === 'live') {
                 reasons.push('美股已收盘、休市或盘后，live 5m bars 预期不会继续推进。');
             }
             if (!runtimeStatus?.gatewayActive) {
@@ -209,7 +209,7 @@
                 signalsCountLabel: formatCompactNumber(summary?.today?.ibkr_signals || 0),
                 latestIndicator,
                 latestSignal,
-                environment: currentEnvironment,
+                environment: currentDataEnvironment,
             });
 
             const topologyServices = getOrderedTopologyServices(status?.service_topology || {});
@@ -539,7 +539,8 @@
                 { label: `Trading ${summary?.ibkr_trading_enabled ? 'ON' : 'OFF'}`, tone: summary?.ibkr_trading_enabled ? 'chip-ok' : 'chip-error' },
                 { label: `Compute ${summary?.compute_enabled ? 'ON' : 'OFF'}`, tone: summary?.compute_enabled ? 'chip-ok' : 'chip-error' },
                 { label: `运行位置 ${formatRuntimeModeLabel(runtimeMode, { compact: true })}`, tone: runtimeModeChipTone(runtimeMode) },
-                { label: formatEnvironmentLabel(currentEnvironment), tone: environmentChipTone(currentEnvironment) }
+                { label: `Broker ${formatEnvironmentLabel(currentBrokerMode)}`, tone: environmentChipTone(currentBrokerMode) },
+                { label: 'Shared Data LIVE', tone: 'chip-ok' }
             ];
             document.getElementById('heroBadges').innerHTML = chips.map(renderHeroStatusChip).join('');
 
@@ -578,7 +579,8 @@
                 ? `${authSummary} · ${startup.startup_label}`
                 : authSummary;
             setPageContextMeta([
-                { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
+                { label: 'Broker', value: getEnvironmentLabel(currentBrokerMode), tone: currentBrokerMode },
+                { label: 'Data', value: getEnvironmentLabel(currentDataEnvironment), tone: currentDataEnvironment },
                 { label: 'Market Date', value: String(status?.market_universe?.market_date || '--') },
                 { label: '运行位置', value: formatRuntimeModeLabel(status?.service_topology?.runtime_mode, { compact: true }) },
                 { label: 'Session', value: sessionAuthenticated ? 'AUTHED' : 'PENDING', tone: sessionAuthenticated ? 'ok' : 'warn' },
@@ -811,7 +813,7 @@
 
         function renderCronSummary(definitions, configMap) {
             const cronCards = Array.isArray(definitions)
-                ? definitions.map((definition) => getIbkrSchedulerJobCardData(definition, currentEnvironment))
+                ? definitions.map((definition) => getIbkrSchedulerJobCardData(definition, currentDataEnvironment))
                 : [];
             if (!cronCards.length) {
                 return renderEmpty('暂无 IBKR Scheduler job 定义');
@@ -881,7 +883,7 @@
         function renderConfigDetail(summary, runtimeConfig, schedulerPayload) {
             const configMap = buildIbkrConfigMap(summary, runtimeConfig);
             const cronDefinitions = Array.isArray(schedulerPayload?.items) ? schedulerPayload.items : [];
-            const scheduler = getIbkrSchedulerSummary(schedulerPayload?.scheduler || {}, currentEnvironment);
+            const scheduler = getIbkrSchedulerSummary(schedulerPayload?.scheduler || {}, currentDataEnvironment);
             const chips = getOrderedIbkrConfigEntries(configMap)
                 .map((entry) => `
                     <span class="mini-tag"><span class="mini-label">${escapeHtml(entry.key)}</span>${escapeHtml(String(entry.value))}</span>

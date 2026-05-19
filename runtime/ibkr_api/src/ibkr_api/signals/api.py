@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from ibkr_api.modes import request_broker_mode, request_market_data_mode
-from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_api.orders.upsert import build_order_upsert_response
 from ibkr_api.orders.values import ensure_object
 from ibkr_api.signals.ack import build_signal_ack_orders
@@ -48,8 +47,20 @@ def _signal_consumed_for_broker(
     broker_status = _broker_execution_status(extra, broker_mode)
     if broker_status in _BROKER_SIGNAL_FINAL_STATUSES:
         return True
-    top_level_status = str((record or {}).get("status") or "").strip().lower()
-    return broker_mode == data_environment and bool(top_level_status and top_level_status != "pending")
+    top_level_status = str((record or {}).get("status") or "pending").strip().lower() or "pending"
+    return broker_mode == data_environment == "live" and bool(
+        top_level_status and top_level_status not in {"pending", "awaiting_confirm"}
+    )
+
+
+def _effective_pending_status(record: dict[str, Any], extra: dict[str, Any], broker_mode: str, data_environment: str) -> str:
+    broker_status = _broker_execution_status(extra, broker_mode)
+    if broker_status:
+        return broker_status
+    top_level_status = str((record or {}).get("status") or "pending").strip().lower() or "pending"
+    if broker_mode == data_environment == "live":
+        return top_level_status
+    return top_level_status if top_level_status in {"pending", "awaiting_confirm"} else ""
 
 
 def _with_broker_execution(
@@ -83,6 +94,13 @@ def _with_broker_execution(
     merged["last_ack_broker_mode"] = broker_mode
     merged["last_ack_data_environment"] = data_environment
     return merged
+
+
+def _clear_scoped_note_payload(record: dict[str, Any], broker_mode: str) -> dict[str, str]:
+    note = str((record or {}).get("note") or "").strip().lower()
+    if note.startswith(f"{broker_mode}:") or "history_repair_pending" in note:
+        return {"note": ""}
+    return {}
 
 
 def _normalize_indicator_snapshot(
@@ -192,13 +210,14 @@ def build_signals_pending_response(
     pb: Any,
     *,
     environment: str,
+    data_environment: str | None = None,
     date_str: str,
     normalize_environment: Callable[[Any, str], str],
     escape_filter_string: Callable[[Any], str],
     as_dict: Callable[[Any], dict[str, Any]],
 ) -> tuple[dict[str, Any], int]:
-    broker_mode = normalize_environment(environment, "live")
-    data_environment = resolve_data_environment(broker_mode)
+    broker_mode = request_broker_mode({"broker_mode": environment})
+    data_environment = request_market_data_mode({"data_environment": data_environment})
     normalized_date = str(date_str or "").strip()
     if not normalized_date:
         return {"error": "缺少 date 参数"}, 400
@@ -207,7 +226,7 @@ def build_signals_pending_response(
         records = pb.get_records(
             "ibkr_signals",
             filter=(
-                f'status = "pending" && date = "{escape_filter_string(normalized_date)}" && '
+                f'date = "{escape_filter_string(normalized_date)}" && '
                 f'environment = "{escape_filter_string(data_environment)}"'
             ),
             sort="-bar_time_ms",
@@ -217,6 +236,8 @@ def build_signals_pending_response(
         ibkr_signals = []
         for record in records or []:
             record_extra = as_dict(record.get("extra"))
+            if _effective_pending_status(record, record_extra, broker_mode, data_environment) != "pending":
+                continue
             if _signal_consumed_for_broker(record, record_extra, broker_mode, data_environment):
                 continue
             latest_indicator = _find_latest_indicator_snapshot(
@@ -317,9 +338,11 @@ def build_signals_ack_response(
             "last_ack_status": status,
             "last_ack_note": note,
             "last_ack_source": "ibkr-api",
-            "last_ack_broker_mode": broker_mode,
-            "last_ack_data_environment": data_environment,
         }
+        store_broker_execution = broker_mode != data_environment or broker_mode != "live"
+        if store_broker_execution:
+            signal_extra["last_ack_broker_mode"] = broker_mode
+            signal_extra["last_ack_data_environment"] = data_environment
         order_input = ensure_object(payload.get("order"))
         order_extra = ensure_object(order_input.get("extra"))
         if "protection_complete" in order_extra:
@@ -356,7 +379,7 @@ def build_signals_ack_response(
             )
             update_payload = {
                 "extra": diagnostic_extra,
-                "note": f"{broker_mode}:order_upsert_failed",
+                **_clear_scoped_note_payload(signal_record, broker_mode),
             }
             if broker_mode == data_environment == "live":
                 update_payload.update({"status": failure_status, "note": "order_upsert_failed"})
@@ -422,43 +445,28 @@ def build_signals_ack_response(
                     int(response_status_code or 500 or 500),
                 )
 
-        signal_extra = _with_broker_execution(
-            signal_extra,
-            broker_mode=broker_mode,
-            data_environment=data_environment,
-            status=status,
-            note=note,
-            order_results=order_results,
-            primary_order_status=primary_status or "Init",
-        )
-        update_payload = {
-            "extra": signal_extra,
-            "note": f"{broker_mode}:{status}",
-        }
-        if broker_mode == data_environment == "live":
-            update_payload.update({"status": status, "note": note})
-        updated_signal = pb.update_record(
-            "ibkr_signals",
-            str(signal_record.get("id")),
-            update_payload,
-        )
+        if store_broker_execution:
+            signal_extra = _with_broker_execution(
+                signal_extra,
+                broker_mode=broker_mode,
+                data_environment=data_environment,
+                status=status,
+                note=note,
+                order_results=order_results,
+                primary_order_status=primary_status or "Init",
+            )
         notification_result: dict[str, Any] = {}
-        if callable(update_interactive) or callable(send_interactive):
+        existing_message_id = str(signal_extra.get("feishu_signal_message_id") or "").strip()
+        if existing_message_id and callable(update_interactive):
             signal_chat_id = signal_chat_id_fn(broker_mode) if callable(signal_chat_id_fn) else ""
-            notification_signal = (
-                dict(updated_signal)
-                if isinstance(updated_signal, dict)
-                else {**signal_record, "extra": signal_extra}
-            )
-            notification_signal.update(
-                {
-                    "status": status,
-                    "note": note,
-                    "broker_mode": broker_mode,
-                    "data_environment": data_environment,
-                    "extra": signal_extra,
-                }
-            )
+            notification_signal = {
+                **dict(signal_record),
+                "status": status,
+                "note": note,
+                "broker_mode": broker_mode,
+                "data_environment": data_environment,
+                "extra": signal_extra,
+            }
             notification_result = sync_signal_status_notification(
                 notification_signal,
                 action=status,
@@ -471,11 +479,17 @@ def build_signals_ack_response(
             notification_extra = ensure_object(notification_result.get("extra_patch"))
             if notification_extra:
                 signal_extra = notification_extra
-                updated_signal = pb.update_record(
-                    "ibkr_signals",
-                    str(signal_record.get("id")),
-                    {"extra": signal_extra},
-                )
+        update_payload = {
+            "extra": signal_extra,
+            **_clear_scoped_note_payload(signal_record, broker_mode),
+        }
+        if broker_mode == data_environment == "live":
+            update_payload.update({"status": status, "note": note})
+        pb.update_record(
+            "ibkr_signals",
+            str(signal_record.get("id")),
+            update_payload,
+        )
 
         return (
             {

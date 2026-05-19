@@ -4,6 +4,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta
 from typing import Any
 
+from ibkr_compute.core.broker_mode import configured_broker_mode, normalize_broker_mode, resolve_data_environment
 from ibkr_compute.core.indicator_engine import DEFAULT_PARAMS
 from ibkr_compute.backtest import constants
 
@@ -156,6 +157,7 @@ def build_variant_request(base_request: dict, variant: dict, variant_index: int)
         "strategy_params": deepcopy(variant.get("strategy_params") or base_request["params"]["strategy_params"]),
         "strategy_tag": request["strategy_tag"],
         "source_environment": base_request["source_environment"],
+        "broker_mode": base_request.get("broker_mode") or configured_broker_mode(),
         "session_mode": base_request["session_mode"],
     }
     for key in (
@@ -178,7 +180,17 @@ def normalize_request(payload: dict) -> dict:
     now = datetime.now(constants.ET)
     latest_complete_date = (now.date() - timedelta(days=1)).strftime("%Y-%m-%d")
     name = str(payload.get("name") or "").strip() or f"Backtest {now.strftime('%Y-%m-%d %H:%M')}"
-    source_environment = str(payload.get("source_environment") or "live").strip().lower() or "live"
+    source_environment = resolve_data_environment(
+        payload.get("market_data_mode")
+        or payload.get("data_environment")
+        or payload.get("source_environment")
+        or payload.get("environment")
+        or "live"
+    )
+    broker_mode = normalize_broker_mode(
+        payload.get("broker_mode"),
+        configured_broker_mode(),
+    )
     machine_profile = str(payload.get("machine_profile") or payload.get("resource_profile") or "").strip().lower()
     symbol_source = str(payload.get("symbol_source") or "manual").strip().lower() or "manual"
     if symbol_source not in constants.SYMBOL_SOURCE_VALUES:
@@ -513,6 +525,7 @@ def normalize_request(payload: dict) -> dict:
     return {
         "name": name,
         "source_environment": source_environment,
+        "broker_mode": broker_mode,
         "machine_profile": machine_profile,
         "symbol_source": effective_symbol_source,
         "requested_symbol_source": symbol_source,
@@ -607,6 +620,7 @@ def normalize_request(payload: dict) -> dict:
             "strategy_params": strategy_params,
             "strategy_tag": strategy_tag,
             "source_environment": source_environment,
+            "broker_mode": broker_mode,
             "machine_profile": machine_profile,
             "session_mode": session_mode,
             "account_model_mode": account_model_mode,

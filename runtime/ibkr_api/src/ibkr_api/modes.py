@@ -11,17 +11,21 @@ from ibkr_compute.core.broker_mode import (
 
 def request_broker_mode(payload: dict[str, Any] | None) -> str:
     request_payload = payload if isinstance(payload, dict) else {}
-    if "broker_mode" in request_payload:
-        return normalize_broker_mode(request_payload.get("broker_mode"), configured_broker_mode())
+    requested = request_payload.get("broker_mode") or request_payload.get("environment")
+    if requested is not None and str(requested).strip() != "":
+        return normalize_broker_mode(requested, configured_broker_mode())
     return configured_broker_mode()
 
 
 def request_market_data_mode(payload: dict[str, Any] | None) -> str:
     request_payload = payload if isinstance(payload, dict) else {}
-    if "market_data_mode" in request_payload:
-        return resolve_market_data_mode(request_payload.get("market_data_mode"))
-    if "data_environment" in request_payload:
-        return resolve_market_data_mode(request_payload.get("data_environment"))
+    requested = (
+        request_payload.get("market_data_mode")
+        or request_payload.get("data_environment")
+        or request_payload.get("environment")
+    )
+    if requested is not None and str(requested).strip() != "":
+        return resolve_market_data_mode(requested)
     return resolve_market_data_mode(None)
 
 

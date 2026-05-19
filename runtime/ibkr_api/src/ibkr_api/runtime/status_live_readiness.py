@@ -34,7 +34,13 @@ def _resolve_live_symbols(
     engine_map = compute.get("engines") if isinstance(compute.get("engines"), dict) else {}
     warmup = as_dict(runtime.get("warmup"))
     market_universe = as_dict(runtime.get("market_universe"))
-    environment = normalize_environment(runtime.get("environment") or compute.get("environment"), "live")
+    environment = normalize_environment(
+        runtime.get("data_environment")
+        or runtime.get("market_data_environment")
+        or compute.get("data_environment")
+        or compute.get("environment"),
+        "live",
+    )
     required_interval = str(warmup.get("required_interval") or "5m").strip() or "5m"
 
     trade_symbols = normalize_symbol_list(

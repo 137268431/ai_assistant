@@ -9,6 +9,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
+from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_compute.core.config import Config
 from ibkr_compute.integrations.pb_client import PBClient
 from ibkr_compute.market.data_backfill import DataBackfill
@@ -198,7 +199,7 @@ class HistoryRebuildManager:
             return deepcopy(self._status)
 
     def status(self, environment: str | None = None) -> dict:
-        requested_environment = str(environment or self._status.get("environment") or "live").strip().lower() or "live"
+        requested_environment = resolve_data_environment(environment or self._status.get("environment") or "live")
         with self._lock:
             if not self.is_running():
                 persisted = self._load_persisted_status(requested_environment)
@@ -211,7 +212,9 @@ class HistoryRebuildManager:
             return payload
 
     def _normalize_request(self, payload: dict) -> dict:
-        environment = str(payload.get("environment") or "live").strip().lower() or "live"
+        environment = resolve_data_environment(
+            payload.get("market_data_mode") or payload.get("data_environment") or payload.get("environment") or "live"
+        )
         try:
             lookback_days = int(payload.get("lookback_days") or DEFAULT_LOOKBACK_DAYS)
         except (TypeError, ValueError):
@@ -311,16 +314,24 @@ class HistoryRebuildManager:
 
         gateway = payload.get("gateway") or {}
         websocket = payload.get("websocket") or {}
-        actual_environment = str(payload.get("environment") or environment).strip().lower() or environment
-        same_environment = actual_environment == environment
+        actual_environment = str(payload.get("broker_mode") or payload.get("environment") or "").strip().lower()
+        actual_data_environment = resolve_data_environment(
+            payload.get("market_data_mode")
+            or payload.get("market_data_environment")
+            or payload.get("data_environment")
+            or actual_environment
+            or environment
+        )
+        same_environment = actual_data_environment == environment
         busy = same_environment and (bool(payload.get("starting")) or bool(payload.get("startup_complete")))
         busy = busy or bool(gateway.get("running")) or bool(websocket.get("running"))
         busy = same_environment and busy
         return {
             "busy": busy,
             "environment": environment,
-            "actual_environment": actual_environment,
-            "environment_mismatch": actual_environment != environment,
+            "actual_environment": actual_environment or actual_data_environment,
+            "actual_data_environment": actual_data_environment,
+            "environment_mismatch": actual_data_environment != environment,
             "starting": bool(payload.get("starting")),
             "startup_complete": bool(payload.get("startup_complete")),
             "gateway_running": bool(gateway.get("running")),

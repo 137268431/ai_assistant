@@ -912,12 +912,12 @@ class TradingServiceSignalsMixin:
             "source": "ibkr_compute",
         }
         merged_extra["execution_by_mode"] = execution_by_mode
-        patch = {
-            "note": note_text if broker_mode == data_environment == "live" else f"{broker_mode}:{note_text}",
-            "extra": merged_extra,
-        }
+        patch = {"extra": merged_extra}
+        existing_note = str((existing_extra or {}).get("note") or "").strip().lower()
+        if existing_note.startswith(f"{broker_mode}:") or "history_repair_pending" in existing_note:
+            patch["note"] = ""
         if broker_mode == data_environment == "live":
-            patch["status"] = status_text
+            patch.update({"status": status_text, "note": note_text})
         return patch
 
     def _mark_signal_waiting_for_capacity(self, sig: dict, capacity: dict):

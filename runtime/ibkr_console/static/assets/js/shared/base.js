@@ -48,6 +48,8 @@ if (typeof window !== 'undefined') {
   window.createPocketBaseAuthClient = createPocketBaseAuthClient;
 }
 const ENVIRONMENT_STORAGE_KEY = 'pb_environment';
+const BROKER_MODE_STORAGE_KEY = 'ibkr_broker_mode';
+const MARKET_DATA_MODE_STORAGE_KEY = 'ibkr_market_data_mode';
 const PENDING_ENVIRONMENT_WINDOW_KEY = '__pb_pending_environment';
 const BROKER_MODES = ['paper', 'live'];
 const RUNTIME_ENVIRONMENTS = ['live', 'backtest'];
@@ -105,16 +107,27 @@ function normalizeConfigEnvironment(value, fallback = 'global') {
 }
 
 function getStoredEnvironment() {
-  return localStorage.getItem(ENVIRONMENT_STORAGE_KEY) || '';
+  return localStorage.getItem(MARKET_DATA_MODE_STORAGE_KEY) || localStorage.getItem(ENVIRONMENT_STORAGE_KEY) || '';
 }
 
 function setStoredEnvironment(environment) {
   localStorage.setItem(ENVIRONMENT_STORAGE_KEY, environment);
 }
 
+function setStoredBrokerMode(brokerMode) {
+  const normalized = normalizeBrokerMode(brokerMode, 'paper');
+  localStorage.setItem(BROKER_MODE_STORAGE_KEY, normalized);
+  localStorage.setItem(ENVIRONMENT_STORAGE_KEY, normalized);
+}
+
+function setStoredMarketDataMode(marketDataMode) {
+  localStorage.setItem(MARKET_DATA_MODE_STORAGE_KEY, normalizeRuntimeEnvironment(marketDataMode, 'live'));
+}
+
 function getCurrentRuntimeEnvironment() {
-  const fromUrl = new URLSearchParams(window.location.search).get('environment') || '';
-  const urlMarketDataMode = new URLSearchParams(window.location.search).get('market_data_mode') || '';
+  const params = new URLSearchParams(window.location.search);
+  const fromUrl = params.get('environment') || '';
+  const urlMarketDataMode = params.get('market_data_mode') || params.get('data_environment') || '';
   const contextMarketDataMode = (
     window.__ibkrBrokerModeContext?.market_data_mode
     || window.__ibkrBrokerModeContext?.data_environment
@@ -125,7 +138,7 @@ function getCurrentRuntimeEnvironment() {
     contextMarketDataMode || urlMarketDataMode || (normalizeRuntimeEnvironment(fromUrl, '') === 'backtest' ? 'backtest' : 'live'),
     'live'
   );
-  setStoredEnvironment(runtimeEnvironment);
+  setStoredMarketDataMode(runtimeEnvironment);
   return runtimeEnvironment;
 }
 
@@ -136,7 +149,12 @@ function getCurrentBrokerMode() {
     || RUNTIME_CONFIG.BROKER_MODE
     || ''
   );
-  return normalizeBrokerMode(contextBrokerMode || params.get('broker_mode') || params.get('environment') || 'paper', 'paper');
+  const brokerMode = normalizeBrokerMode(
+    contextBrokerMode || params.get('broker_mode') || localStorage.getItem(BROKER_MODE_STORAGE_KEY) || 'paper',
+    'paper'
+  );
+  setStoredBrokerMode(brokerMode);
+  return brokerMode;
 }
 
 function getCurrentConfigEnvironment() {
@@ -147,9 +165,12 @@ function getCurrentConfigEnvironment() {
 }
 
 function getEnvironmentLabel(environment, allowGlobal = false) {
+  const text = String(environment || '').trim().toLowerCase();
   const normalized = allowGlobal
     ? normalizeConfigEnvironment(environment, 'global')
-    : normalizeRuntimeEnvironment(environment, 'live');
+    : (BROKER_MODES.includes(text)
+        ? normalizeBrokerMode(environment, 'paper')
+        : normalizeRuntimeEnvironment(environment, 'live'));
   return ENVIRONMENT_LABELS[normalized] || normalized.toUpperCase();
 }
 
@@ -175,6 +196,39 @@ function getBrokerModeContext() {
   };
 }
 
+function getCurrentDataEnvironment() {
+  return getCurrentRuntimeEnvironment();
+}
+
+function getCurrentMarketDataMode() {
+  return getCurrentRuntimeEnvironment();
+}
+
+function getSharedDataEnvironment() {
+  return 'live';
+}
+
+function getConsoleBrokerMode() {
+  return getCurrentBrokerMode();
+}
+
+function buildModePayload(payload = {}, options = {}) {
+  const brokerMode = normalizeBrokerMode(
+    options.brokerMode || payload.broker_mode || getCurrentBrokerMode(),
+    'paper'
+  );
+  const dataEnvironment = normalizeRuntimeEnvironment(
+    options.dataEnvironment || payload.market_data_mode || payload.data_environment || getSharedDataEnvironment(),
+    getSharedDataEnvironment()
+  );
+  return {
+    ...(payload || {}),
+    broker_mode: brokerMode,
+    market_data_mode: dataEnvironment,
+    data_environment: dataEnvironment,
+  };
+}
+
 function setBrokerModeContext(payload = {}) {
   const source = payload && typeof payload === 'object' ? payload : {};
   const brokerMode = normalizeBrokerMode(
@@ -194,7 +248,8 @@ function setBrokerModeContext(payload = {}) {
     market_data_environment: dataEnvironment,
     shared_market_data: source.shared_market_data !== false && dataEnvironment === 'live',
   };
-  setStoredEnvironment(brokerMode);
+  setStoredBrokerMode(brokerMode);
+  setStoredMarketDataMode(dataEnvironment);
   document.querySelectorAll('[data-broker-mode-badge]').forEach((node) => {
     node.className = `env-badge broker-badge broker-${brokerMode} env-${brokerMode}`;
     node.textContent = `Broker ${getEnvironmentLabel(brokerMode)}`;
@@ -256,19 +311,44 @@ function buildPageUrl(path, params = {}, options = {}) {
   const {
     allowGlobal = false,
     includeEnvironment = true,
-    environment: explicitEnvironment = ''
+    includeModeParams = true,
+    environment: explicitEnvironment = '',
+    brokerMode: explicitBrokerMode = '',
+    dataEnvironment: explicitDataEnvironment = ''
   } = options;
   const url = new URL(path, window.location.origin);
-  const currentEnvironment = allowGlobal ? getCurrentConfigEnvironment() : getCurrentRuntimeEnvironment();
+  const explicitText = String(explicitEnvironment || '').trim().toLowerCase();
+  const explicitIsBrokerMode = explicitText === 'paper';
+  const currentEnvironment = allowGlobal
+    ? getCurrentConfigEnvironment()
+    : (explicitIsBrokerMode ? getCurrentBrokerMode() : getCurrentRuntimeEnvironment());
   const normalizedExplicitEnvironment = explicitEnvironment
     ? (allowGlobal
         ? normalizeConfigEnvironment(explicitEnvironment, 'global')
-        : normalizeRuntimeEnvironment(explicitEnvironment, 'live'))
+        : (explicitIsBrokerMode
+            ? normalizeBrokerMode(explicitEnvironment, 'paper')
+            : normalizeRuntimeEnvironment(explicitEnvironment, 'live')))
     : '';
   const environment = normalizedExplicitEnvironment || getPendingEnvironment(allowGlobal) || currentEnvironment;
 
   if (includeEnvironment && environment) {
     url.searchParams.set('environment', environment);
+  }
+
+  if (!allowGlobal && includeModeParams) {
+    const brokerMode = explicitBrokerMode
+      ? normalizeBrokerMode(explicitBrokerMode, getCurrentBrokerMode())
+      : explicitIsBrokerMode
+      ? normalizeBrokerMode(explicitEnvironment, getCurrentBrokerMode())
+      : getCurrentBrokerMode();
+    const dataEnvironment = explicitDataEnvironment
+      ? normalizeRuntimeEnvironment(explicitDataEnvironment, getSharedDataEnvironment())
+      : explicitIsBrokerMode
+      ? getSharedDataEnvironment()
+      : normalizeRuntimeEnvironment(environment, getCurrentRuntimeEnvironment());
+    url.searchParams.set('broker_mode', brokerMode);
+    url.searchParams.set('market_data_mode', dataEnvironment);
+    url.searchParams.set('data_environment', dataEnvironment);
   }
 
   Object.entries(params).forEach(([key, value]) => {
@@ -472,7 +552,7 @@ async function refreshBrokerModeContext() {
     const token = typeof getToken === 'function' ? getToken() : '';
     if (token) headers.Authorization = `Bearer ${token}`;
     const response = await fetchWithRetry(
-      `${BASE_URL}/api/custom/ibkr/runtime/config?environment=live`,
+      `${BASE_URL}${buildPageUrl('/api/custom/ibkr/runtime/config', {}, { environment: getCurrentBrokerMode() })}`,
       { method: 'GET', headers },
       { attempts: 1 }
     );
@@ -577,7 +657,6 @@ function cachedApiFetch(collection, params = {}, cacheOptions = {}) {
 
 function buildCustomJsonRequestPath(path, environment) {
   const sourcePath = String(path || '');
-  if (!environment) return sourcePath;
   return buildPageUrl(sourcePath, {}, { environment });
 }
 
@@ -587,11 +666,18 @@ async function customJsonFetch(path, environment = '', requestOptions = {}) {
     ...(requestOptions.headers || {})
   };
   if (token) headers.Authorization = `Bearer ${token}`;
+  const requestBody = requestOptions.body && typeof requestOptions.body === 'object'
+    ? JSON.stringify(requestOptions.body)
+    : requestOptions.body;
+  if (requestOptions.body && typeof requestOptions.body === 'object' && !headers['Content-Type'] && !headers['content-type']) {
+    headers['Content-Type'] = 'application/json';
+  }
   const requestPath = buildCustomJsonRequestPath(path, environment);
   const response = await fetchWithRetry(
     `${BASE_URL}${requestPath}`,
     {
       ...requestOptions,
+      body: requestBody,
       method: requestOptions.method || 'GET',
       headers
     },
@@ -874,6 +960,10 @@ function mergeIndicatorWithRealtimeQuote(indicator, realtimeQuoteOverride = null
 if (typeof window !== 'undefined') {
   window.normalizeBrokerMode = normalizeBrokerMode;
   window.getCurrentBrokerMode = getCurrentBrokerMode;
+  window.getCurrentDataEnvironment = getCurrentDataEnvironment;
+  window.getCurrentMarketDataMode = getCurrentMarketDataMode;
+  window.getSharedDataEnvironment = getSharedDataEnvironment;
+  window.getConsoleBrokerMode = getConsoleBrokerMode;
   window.apiFetch = apiFetch;
   window.cachedApiFetch = cachedApiFetch;
   window.cachedCustomJson = cachedCustomJson;

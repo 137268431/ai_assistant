@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ibkr_compute.core.broker_mode import configured_broker_mode, normalize_broker_mode, resolve_data_environment
 from ibkr_api.system.service_state import build_service_monitor_from_topology
 
 NormalizeEnvironment = Callable[[Any, str], str]
@@ -84,17 +85,19 @@ def build_system_summary_payload(
     load_today_counts: LoadTodayCounts,
     collect_storage_health: CollectStorageHealth | None = None,
 ) -> dict[str, Any]:
-    runtime_environment = normalize_environment(environment, "live")
+    runtime_environment = normalize_broker_mode(environment, configured_broker_mode())
+    data_environment = resolve_data_environment(runtime_environment)
     times = time_strings()
     market_date = str(times.get("date") or "").strip()
     config_map = load_effective_config_map(runtime_environment)
-    compute_enabled = runtime_environment != "backtest" and is_enabled_text(config_map.get("ibkr_compute_enabled", "TRUE"))
-    trading_enabled = runtime_environment != "backtest" and is_enabled_text(
+    data_config_map = load_effective_config_map(data_environment)
+    compute_enabled = data_environment != "backtest" and is_enabled_text(data_config_map.get("ibkr_compute_enabled", "TRUE"))
+    trading_enabled = is_enabled_text(
         config_map.get("ibkr_trading_enabled", config_map.get("trading_enabled", "TRUE"))
     )
 
-    compute_health = fetch_compute_health(runtime_environment)
-    compute_status = fetch_compute_status(runtime_environment)
+    compute_health = fetch_compute_health(data_environment)
+    compute_status = fetch_compute_status(data_environment)
     runtime_status = fetch_runtime_status(runtime_environment)
 
     compute_health_payload = as_dict(compute_health.get("payload"))
@@ -135,7 +138,10 @@ def build_system_summary_payload(
     runtime_summary = {
         "ok": bool(runtime_status.get("ok")) or bool(runtime_payload),
         "status": str(runtime_payload.get("status") or ("running" if runtime_payload else "offline")).strip().lower() or "offline",
-        "environment": normalize_environment(runtime_payload.get("environment") or runtime_environment, runtime_environment),
+        "environment": normalize_environment(
+            runtime_payload.get("broker_mode") or runtime_payload.get("environment") or runtime_environment,
+            runtime_environment,
+        ),
         "service_topology": merged_topology,
         "proxy_upstream": runtime_status.get("selected_upstream") or runtime_status.get("proxy_upstream") or "",
     }
@@ -145,21 +151,21 @@ def build_system_summary_payload(
     actual_runtime_environment = normalize_environment(runtime_summary.get("environment") or runtime_environment, runtime_environment)
     today_errors: dict[str, Any] = {}
     try:
-        today_counts, today_errors = _coerce_today_counts(load_today_counts(runtime_environment, market_date))
+        today_counts, today_errors = _coerce_today_counts(load_today_counts(data_environment, market_date))
     except Exception as exc:
         today_counts = _empty_today_counts()
         today_errors = {"_summary": str(exc)}
     storage_health: dict[str, Any] = {}
     if collect_storage_health is not None:
         try:
-            storage_health = collect_storage_health(runtime_environment, config_map)
+            storage_health = collect_storage_health(data_environment, data_config_map)
         except TypeError:
-            storage_health = collect_storage_health(runtime_environment, None)
+            storage_health = collect_storage_health(data_environment, None)
         except Exception as exc:
             storage_health = {
                 "ok": False,
                 "status": "unavailable",
-                "environment": runtime_environment,
+                "environment": data_environment,
                 "source": "ibkr-api",
                 "flags": [
                     {
@@ -178,11 +184,15 @@ def build_system_summary_payload(
         "timestamp": times["us"],
         "environment": runtime_environment,
         "requested_environment": runtime_environment,
+        "broker_mode": runtime_environment,
+        "data_environment": data_environment,
+        "market_data_environment": data_environment,
+        "shared_market_data": data_environment == "live",
         "actual_runtime_environment": actual_runtime_environment,
         "runtime_environment_mismatch": actual_runtime_environment != runtime_environment,
         "compute_enabled": compute_enabled,
         "ibkr_trading_enabled": trading_enabled,
-        "config": config_map,
+        "config": {**data_config_map, **config_map},
         "today": today_counts,
         "today_market_date": market_date,
         "ibkr_compute": compute_summary,

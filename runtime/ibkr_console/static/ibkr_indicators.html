@@ -74,7 +74,8 @@
         const itemsPerPage = 10;
         let hasMore = false;
         let totalItems = 0;
-        let currentEnvironment = getCurrentRuntimeEnvironment();
+	        let currentEnvironment = getSharedDataEnvironment();
+	        let currentBrokerMode = getCurrentBrokerMode();
         let currentIndicatorViewMode = 'cards';
         let currentIndicatorSortKey = 'latest';
         let indicatorEvolutionCache = new Map();
@@ -191,7 +192,10 @@
                         headers: getIndicatorAuthHeaders(body ? { 'Content-Type': 'application/json' } : {})
                     };
                     if (body) options.body = JSON.stringify(body);
-                    const response = await fetch(buildPageUrl(path, {}, { environment: currentEnvironment }), options);
+	                    const response = await fetch(buildPageUrl(path, {}, {
+	                        brokerMode: currentBrokerMode,
+	                        dataEnvironment: currentEnvironment,
+	                    }), options);
                     if (response.status === 401 || response.status === 403) {
                         clearToken();
                         location.href = `/login.html?from=${encodeURIComponent(`${location.pathname}${location.search}`)}`;
@@ -966,10 +970,10 @@
         async function requestIndicatorTimeline({ symbol, interval, startMs, endMs }) {
             const response = await requestIndicatorJson('/api/custom/ibkr/proxy', {
                 method: 'POST',
-                body: {
-                    action: 'chart/timeline',
-                    environment: currentEnvironment,
-                    symbol,
+	                body: {
+	                    action: 'chart/timeline',
+	                    ...buildModePayload({}, { brokerMode: currentBrokerMode, dataEnvironment: currentEnvironment }),
+	                    symbol,
                     interval: normalizeChartInterval(interval || '5m'),
                     start_ms: Math.max(0, Number(startMs || 0)),
                     end_ms: Math.max(0, Number(endMs || 0)),

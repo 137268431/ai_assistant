@@ -33,7 +33,7 @@ class RuntimePipelineOfficial5mMixin:
 
     def _official_5m_enabled(self) -> bool:
             service_mod = _service_mod()
-            return self.config.get_bool_for_environment("ibkr_official_5m_enabled", service_mod.ENVIRONMENT, True)
+            return self.config.get_bool_for_environment("ibkr_official_5m_enabled", service_mod.DATA_ENVIRONMENT, True)
 
     def _official_5m_close_delay_sec(self) -> int:
             service_mod = _service_mod()
@@ -41,7 +41,7 @@ class RuntimePipelineOfficial5mMixin:
                 1,
                 self.config.get_int_for_environment(
                     "ibkr_official_5m_close_delay_sec",
-                    service_mod.ENVIRONMENT,
+                    service_mod.DATA_ENVIRONMENT,
                     service_mod.DEFAULT_OFFICIAL_5M_CLOSE_DELAY_SECONDS,
                 ),
             )
@@ -51,7 +51,7 @@ class RuntimePipelineOfficial5mMixin:
             return str(
                 self.config.get_for_environment(
                     "ibkr_official_5m_request_period",
-                    service_mod.ENVIRONMENT,
+                    service_mod.DATA_ENVIRONMENT,
                     service_mod.DEFAULT_OFFICIAL_5M_REQUEST_PERIOD,
                 )
                 or service_mod.DEFAULT_OFFICIAL_5M_REQUEST_PERIOD
@@ -61,7 +61,7 @@ class RuntimePipelineOfficial5mMixin:
             service_mod = _service_mod()
             return self.config.get_bool_for_environment(
                 "ibkr_official_5m_parallel_enabled",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 True,
             )
 
@@ -73,7 +73,7 @@ class RuntimePipelineOfficial5mMixin:
                     10,
                     self.config.get_int_for_environment(
                         "ibkr_official_5m_max_concurrency",
-                        service_mod.ENVIRONMENT,
+                        service_mod.DATA_ENVIRONMENT,
                         8,
                     ),
                 ),
@@ -289,7 +289,7 @@ class RuntimePipelineOfficial5mMixin:
             max_written_ms = 0
             for row in (rows or []):
                 payload = dict(row)
-                payload["environment"] = service_mod.ENVIRONMENT
+                payload["environment"] = service_mod.DATA_ENVIRONMENT
                 payload["exchange"] = exchange
                 payload["source"] = "ibkr_history_close"
                 extra = dict(payload.get("extra") or {})
@@ -595,7 +595,7 @@ class RuntimePipelineOfficial5mMixin:
                 due_symbols = [
                     symbol
                     for symbol in self._official_5m_due_compute_symbols(
-                        service_mod.ENVIRONMENT,
+                        service_mod.DATA_ENVIRONMENT,
                         candidates,
                         due_bucket_ms,
                     )
@@ -862,7 +862,7 @@ class RuntimePipelineOfficial5mMixin:
                 and symbol not in queued_compute_symbols
             ]
             due_compute_symbols = self._official_5m_due_compute_symbols(
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 compute_symbols,
                 due_bucket_ms,
             )

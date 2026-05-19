@@ -515,7 +515,7 @@
             const text = String(status || '').toLowerCase();
             if (text === 'system_managed') return 'SYSTEM';
             if (text === 'external_position') return 'EXTERNAL';
-            if (text === 'flat_legacy') return 'FLAT';
+            if (text === 'flat_broker_position') return 'FLAT';
             return 'UNKNOWN';
         }
 
@@ -2533,7 +2533,10 @@
             if (actionBusy) return;
             setActionState(true);
             try {
-                const payload = await requestAccountJson(path, { method: 'POST', body: { ...body, environment: currentEnvironment } });
+                const payload = await requestAccountJson(path, {
+                    method: 'POST',
+                    body: buildModePayload(body, { brokerMode: currentEnvironment, dataEnvironment: getSharedDataEnvironment() })
+                });
                 latestSnapshot = payload.snapshot || latestSnapshot;
                 if (payload.snapshot) {
                     renderBlocker(payload.snapshot);
@@ -2664,15 +2667,14 @@
             );
             if (!actionPayload || !localCloseGroupId) return;
             try {
-                await requestAccountJson('/api/custom/ibkr/orders/close_group', {
-                    method: 'POST',
-                    body: {
-                        id: localCloseGroupId,
-                        environment: currentEnvironment,
-                        source: 'account_market_close',
-                        reason: '账户页真实市价平仓后关闭交易组',
-                    },
-                });
+	                await requestAccountJson('/api/custom/ibkr/orders/close_group', {
+	                    method: 'POST',
+	                    body: buildModePayload({
+	                        id: localCloseGroupId,
+	                        source: 'account_market_close',
+	                        reason: '账户页真实市价平仓后关闭交易组',
+	                    }, { brokerMode: currentEnvironment, dataEnvironment: getSharedDataEnvironment() }),
+	                });
                 showToast(`${position.symbol} 本地交易组已关闭`);
                 setTimeout(() => loadAccountSnapshot(false), 800);
             } catch (error) {

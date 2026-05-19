@@ -62,13 +62,16 @@ def register_system_read_routes(app, *, deps: SystemDeps, exports: dict[str, Any
 
     @app.route("/api/custom/system/healthz", methods=["GET"])
     def custom_system_healthz() -> Response:
-        environment = normalize_environment(request.args.get("environment"), "live")
+        environment, market_data_mode = _request_modes_from_args()
         payload = build_system_monitor_payload(environment)
         return jsonify(
             {
                 "ok": bool(payload.get("ok", False)),
                 "status": str(payload.get("status") or "offline"),
                 "environment": environment,
+                "broker_mode": environment,
+                "data_environment": market_data_mode,
+                "market_data_environment": market_data_mode,
                 "requested_environment": payload.get("requested_environment") or environment,
                 "actual_runtime_environment": payload.get("actual_runtime_environment") or environment,
                 "runtime_environment_mismatch": bool(payload.get("runtime_environment_mismatch")),
@@ -138,7 +141,7 @@ def register_system_read_routes(app, *, deps: SystemDeps, exports: dict[str, Any
 
     @app.route("/api/custom/system/summaryz", methods=["GET"])
     def custom_system_summaryz() -> Response:
-        environment = normalize_environment(request.args.get("environment"), "live")
+        environment, _market_data_mode = _request_modes_from_args()
         lite_mode = parse_boolean(request.args.get("lite"), False)
         return jsonify(build_system_summary_payload(environment, lite_mode=lite_mode))
 
@@ -146,7 +149,7 @@ def register_system_read_routes(app, *, deps: SystemDeps, exports: dict[str, Any
 
     @app.route("/api/custom/system/storagez", methods=["GET"])
     def custom_system_storagez() -> Response:
-        environment = normalize_environment(request.args.get("environment"), "live")
+        _broker_mode, environment = _request_modes_from_args()
         if collect_storage_health is None:
             return jsonify(
                 {
@@ -190,7 +193,7 @@ def register_system_read_routes(app, *, deps: SystemDeps, exports: dict[str, Any
 
     @app.route("/api/custom/system/monitorz", methods=["GET"])
     def custom_system_monitorz() -> Response:
-        environment = normalize_environment(request.args.get("environment"), "live")
+        environment, _market_data_mode = _request_modes_from_args()
         return jsonify(build_system_monitor_payload(environment))
 
     exports["custom_system_monitorz"] = custom_system_monitorz

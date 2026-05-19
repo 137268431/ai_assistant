@@ -5,6 +5,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Sequence
 
+from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_compute.market.timeframe_utils import latest_safe_closed_bucket_ms, normalize_interval
 from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite
 
@@ -59,7 +60,7 @@ def _log_direct_sqlite_read_fallback(api_app, message: str, *args) -> None:
 
 
 def _bar_environment_sql(environment: str, *, include_legacy_empty: bool = True) -> tuple[str, list[Any]]:
-    runtime_environment = str(environment or "live").strip().lower() or "live"
+    runtime_environment = resolve_data_environment(environment)
     values = [runtime_environment]
     if include_legacy_empty and runtime_environment == "live":
         values.append("")
@@ -211,7 +212,7 @@ def bootstrap_engine_state(
     hydrate_signal_state: bool = True,
 ):
     api_app = _api_app()
-    runtime_environment = str(environment or "live").strip().lower() or "live"
+    runtime_environment = resolve_data_environment(environment)
     normalized_interval = normalize_interval(interval)
     key = (runtime_environment, symbol, normalized_interval)
     engine = get_or_create_engine(runtime_environment, symbol, normalized_interval)
@@ -339,7 +340,7 @@ def materialize_engines_from_storage(
     persist_latest_indicator: bool = False,
 ) -> dict:
     api_app = _api_app()
-    runtime_environment = str(environment or "live").strip().lower() or "live"
+    runtime_environment = resolve_data_environment(environment)
     normalized_interval = normalize_interval(interval)
     normalized_symbols = api_app.normalize_symbols(symbols)
     if not normalized_symbols:
@@ -530,7 +531,7 @@ def materialize_engines_from_storage(
 
 def reset_compute_state_for_symbols(environment: str, symbols, intervals=None) -> dict:
     api_app = _api_app()
-    runtime_environment = str(environment or "live").strip().lower() or "live"
+    runtime_environment = resolve_data_environment(environment)
     normalized_symbols = set(api_app.normalize_symbols(symbols))
     interval_filter = {normalize_interval(interval) for interval in (intervals or api_app.INTERVALS)}
     removed = {"engines": 0, "signal_gens": 0, "cursors": 0, "bootstraps": 0, "signal_bootstraps": 0}

@@ -103,7 +103,7 @@ def _lifecycle_url(console_base_url: str, order_record: Any, *, environment: str
         console_base_url,
         "ibkr_lifecycle_flow.html",
         mode="auto",
-        environment=environment,
+        broker_mode=environment,
         date=_record_date(order_record),
         symbol=symbol,
         signal_id=signal_id,
@@ -124,7 +124,7 @@ def order_view_buttons(console_base_url: str, order_record: Any) -> list[dict[st
             _page_url(
                 console_base_url,
                 "orders.html",
-                environment=environment,
+                broker_mode=environment,
                 symbol=symbol,
                 signal_id=signal_id,
                 trade_group_id=trade_group_id,

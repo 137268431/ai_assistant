@@ -25,13 +25,13 @@ def run_upstream_http_job(
         method=method,
         url=f"{str(base_url or '').rstrip('/')}{path}",
         json={
+            **(payload or {}),
             "broker_mode": normalized_broker_mode,
             "market_data_mode": normalized_market_data_mode,
             "data_environment": normalized_market_data_mode,
             "mode_scope": normalized_scope,
             "selected_mode": selected_mode,
             "source": "ibkr_scheduler",
-            **(payload or {}),
         },
         timeout=timeout_seconds,
     )

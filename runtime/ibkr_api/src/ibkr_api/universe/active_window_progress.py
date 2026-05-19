@@ -298,8 +298,10 @@ def build_active_window_progress_response(
     normalize_environment: NormalizeEnvironment,
     time_strings: TimeStrings,
 ) -> tuple[dict[str, Any], int]:
-    runtime_environment = normalize_environment(payload.get("environment"), LIVE_ENVIRONMENT)
-    data_environment = resolve_data_environment(runtime_environment)
+    data_environment = resolve_data_environment(
+        payload.get("market_data_mode") or payload.get("data_environment") or payload.get("environment")
+    )
+    runtime_environment = data_environment
     if runtime_environment not in SUPPORTED_ENVIRONMENTS:
         return {"ok": False, "error": "unsupported_environment", "environment": runtime_environment}, 400
 

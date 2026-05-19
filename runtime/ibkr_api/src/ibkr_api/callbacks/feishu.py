@@ -3,10 +3,10 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from ibkr_api.orders.group_common import load_order_action_context
+from ibkr_api.modes import request_broker_mode, request_market_data_mode
 from ibkr_api.orders.notifications import build_order_status_card
 from ibkr_api.signals.notifications import build_signal_status_card
 from ibkr_api.signals.values import load_signal_record, signal_status
-from ibkr_compute.core.broker_mode import resolve_data_environment
 
 
 def callback_toast(toast_type: str, content: str, *, card: Any = None) -> dict[str, Any]:
@@ -32,7 +32,7 @@ def dispatch_feishu_2fa_callback(
         pb_base_url,
         "/api/custom/ibkr/2fa/request",
         json_body={
-            "environment": environment,
+            "broker_mode": environment,
             "source": "feishu_callback",
             "reason": "manual_reauth",
             "trigger_now": True,
@@ -95,7 +95,7 @@ def _order_callback_card(
     try:
         context = load_order_action_context(
             pb,
-            payload={"id": order_id, "environment": environment},
+            payload={"id": order_id, "broker_mode": environment},
             environment=environment,
             escape_filter_string=escape_filter_string,
         )
@@ -112,6 +112,7 @@ def dispatch_feishu_signal_callback(
     signal_id: str,
     environment: str,
     *,
+    data_environment: str = "",
     pb: Any,
     normalize_environment: Callable[[Any, str], str],
     escape_filter_string: Callable[[Any], str],
@@ -123,8 +124,16 @@ def dispatch_feishu_signal_callback(
     console_base_url: str = "",
     config_value: Callable[[str, str, str], str] | None = None,
 ) -> tuple[dict[str, Any], int]:
-    runtime_environment = normalize_environment(environment, "live")
-    action_payload = {"id": signal_id, "environment": runtime_environment}
+    runtime_environment = request_broker_mode({"broker_mode": environment})
+    runtime_data_environment = request_market_data_mode(
+        {"market_data_mode": data_environment, "data_environment": data_environment}
+    )
+    action_payload = {
+        "id": signal_id,
+        "broker_mode": runtime_environment,
+        "market_data_mode": runtime_data_environment,
+        "data_environment": runtime_data_environment,
+    }
     if action == "confirm":
         payload, status_code = build_signal_confirm_webhook_response_fn(
             pb,
@@ -151,10 +160,18 @@ def dispatch_feishu_signal_callback(
     latest_record = load_signal_record(
         pb,
         signal_id,
-        resolve_data_environment(runtime_environment),
+        runtime_data_environment,
         escape_filter=escape_filter_string,
     )
-    latest_record = latest_record if isinstance(latest_record, dict) else None
+    latest_record = (
+        {
+            **latest_record,
+            "broker_mode": runtime_environment,
+            "data_environment": runtime_data_environment,
+        }
+        if isinstance(latest_record, dict)
+        else None
+    )
     message = _signal_callback_message(action, payload, latest_record)
     card = _signal_callback_card(latest_record, message=message, console_base_url=console_base_url)
     toast_type = _signal_callback_toast_type(action, payload, int(status_code or 200))
@@ -167,6 +184,7 @@ def dispatch_feishu_order_callback(
     order_id: str,
     environment: str,
     *,
+    data_environment: str = "",
     pb: Any,
     normalize_environment: Callable[[Any, str], str],
     escape_filter_string: Callable[[Any], str],
@@ -178,8 +196,8 @@ def dispatch_feishu_order_callback(
 ) -> tuple[dict[str, Any], int]:
     payload: dict[str, Any]
     status_code: int
-    runtime_environment = normalize_environment(environment, "live")
-    action_payload = {"id": order_id, "environment": runtime_environment}
+    runtime_environment = request_broker_mode({"broker_mode": environment})
+    action_payload = {"id": order_id, "broker_mode": runtime_environment}
     if action == "cancel":
         payload, status_code = build_order_cancel_group_response_fn(
             pb,
@@ -223,8 +241,8 @@ def handle_feishu_callback(
     as_dict: Callable[[Any], dict[str, Any]],
     normalize_environment: Callable[[Any, str], str],
     dispatch_feishu_2fa_callback_fn: Callable[[str, str], dict[str, Any]],
-    dispatch_feishu_order_callback_fn: Callable[[str, str, str], tuple[dict[str, Any], int]],
-    dispatch_feishu_signal_callback_fn: Callable[[str, str, str], tuple[dict[str, Any], int]],
+    dispatch_feishu_order_callback_fn: Callable[..., tuple[dict[str, Any], int]],
+    dispatch_feishu_signal_callback_fn: Callable[..., tuple[dict[str, Any], int]],
     callback_toast_fn: Callable[..., dict[str, Any]],
     callback_response_fn: Callable[..., Any],
 ):
@@ -238,7 +256,13 @@ def handle_feishu_callback(
     action = str(value.get("action") or body.get("action") or "").strip()
     signal_id = str(value.get("signal_id") or body.get("signal_id") or "").strip()
     order_id = str(value.get("order_id") or body.get("order_id") or "").strip()
-    environment = normalize_environment(value.get("environment") or body.get("environment"), "live")
+    environment = request_broker_mode({"broker_mode": value.get("broker_mode") or body.get("broker_mode") or value.get("environment") or body.get("environment")})
+    data_environment = request_market_data_mode(
+        {
+            "market_data_mode": value.get("market_data_mode") or body.get("market_data_mode"),
+            "data_environment": value.get("data_environment") or body.get("data_environment"),
+        }
+    )
 
     try:
         if action.startswith("ibkr_2fa_"):
@@ -248,11 +272,11 @@ def handle_feishu_callback(
             )
 
         if order_id:
-            payload, status_code = dispatch_feishu_order_callback_fn(action, order_id, environment)
+            payload, status_code = dispatch_feishu_order_callback_fn(action, order_id, environment, data_environment)
             return callback_response_fn(payload, update_token=update_token, status_code=status_code)
 
         if signal_id:
-            payload, status_code = dispatch_feishu_signal_callback_fn(action, signal_id, environment)
+            payload, status_code = dispatch_feishu_signal_callback_fn(action, signal_id, environment, data_environment)
             return callback_response_fn(payload, update_token=update_token, status_code=status_code)
 
         return callback_response_fn(

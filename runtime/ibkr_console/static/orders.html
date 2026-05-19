@@ -2230,10 +2230,10 @@
                     {
                         method: 'POST',
                         headers: getOrderActionHeaders({ 'Content-Type': 'application/json' }),
-                        body: JSON.stringify({
-                            ...payload,
-                            environment: currentEnvironment
-                        })
+	                        body: JSON.stringify({
+	                            ...payload,
+	                            ...buildModePayload({}, { brokerMode: currentEnvironment, dataEnvironment: getSharedDataEnvironment() })
+	                        })
                     },
                     { attempts: 2, retryDelayMs: 400 }
                 )
@@ -2335,11 +2335,11 @@
                     {
                         method: 'POST',
                         headers: getOrderActionHeaders({ 'Content-Type': 'application/json' }),
-                        body: JSON.stringify({
-                            ...extraPayload,
-                            id: decodeURIComponent(uniqueId),
-                            environment: currentEnvironment
-                        })
+	                        body: JSON.stringify({
+	                            ...extraPayload,
+	                            id: decodeURIComponent(uniqueId),
+	                            ...buildModePayload({}, { brokerMode: currentEnvironment, dataEnvironment: getSharedDataEnvironment() })
+	                        })
                     },
                     { attempts: 2, retryDelayMs: 400 }
                 )
@@ -2352,12 +2352,12 @@
                 {
                     method: 'POST',
                     headers: getOrderActionHeaders({ 'Content-Type': 'application/json' }),
-                    body: JSON.stringify({
-                        id: decodeURIComponent(targetId || ''),
-                        order_id: decodeURIComponent(brokerOrderId || ''),
-                        broker_order_id: decodeURIComponent(brokerOrderId || ''),
-                        environment: currentEnvironment
-                    })
+	                    body: JSON.stringify({
+	                        id: decodeURIComponent(targetId || ''),
+	                        order_id: decodeURIComponent(brokerOrderId || ''),
+	                        broker_order_id: decodeURIComponent(brokerOrderId || ''),
+	                        ...buildModePayload({}, { brokerMode: currentEnvironment, dataEnvironment: getSharedDataEnvironment() })
+	                    })
                 },
                 { attempts: 2, retryDelayMs: 400 }
             );

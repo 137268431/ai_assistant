@@ -273,7 +273,15 @@
         }
 
         function buildEnvironmentFilter() {
-            return `environment = "${escapeQueryValue(currentEnvironment)}"`;
+            return buildBrokerEnvironmentFilter();
+        }
+
+        function buildBrokerEnvironmentFilter() {
+            return `environment = "${escapeQueryValue(currentBrokerMode || currentEnvironment)}"`;
+        }
+
+        function buildDataEnvironmentFilter() {
+            return `environment = "${escapeQueryValue(currentDataEnvironment || getSharedDataEnvironment())}"`;
         }
 
         function resolveRuntimeMarketDate(status) {
@@ -286,10 +294,12 @@
         }
 
         async function loadRuntimeTodayCounts(status) {
-            const envFilter = buildEnvironmentFilter();
+            const dataEnvFilter = buildDataEnvironmentFilter();
+            const brokerEnvFilter = buildBrokerEnvironmentFilter();
             const marketDate = resolveRuntimeMarketDate(status);
-            const todayFilterBase = `created >= "${escapeQueryValue(`${marketDate} 00:00:00`)}" && ${envFilter}`;
-            const targetDateFilter = `date = "${escapeQueryValue(marketDate)}" && ${envFilter}`;
+            const dataTodayFilterBase = `created >= "${escapeQueryValue(`${marketDate} 00:00:00`)}" && ${dataEnvFilter}`;
+            const brokerTodayFilterBase = `created >= "${escapeQueryValue(`${marketDate} 00:00:00`)}" && ${brokerEnvFilter}`;
+            const targetDateFilter = `date = "${escapeQueryValue(marketDate)}" && ${dataEnvFilter}`;
             const readCountFetch = (collection, filter) => (
                 typeof cachedCountFetch === 'function'
                     ? cachedCountFetch(collection, filter, { ttlMs: 30000, ttl: 30000 })
@@ -304,11 +314,11 @@
                 eventsCountResp,
                 targetsCountResp,
             ] = await Promise.all([
-                readCountFetch('ibkr_bars', todayFilterBase).catch(() => null),
-                readCountFetch('ibkr_indicators', todayFilterBase).catch(() => null),
-                readCountFetch('ibkr_signals', todayFilterBase).catch(() => null),
-                readCountFetch('orders', todayFilterBase).catch(() => null),
-                readCountFetch('system_events', todayFilterBase).catch(() => null),
+                readCountFetch('ibkr_bars', dataTodayFilterBase).catch(() => null),
+                readCountFetch('ibkr_indicators', dataTodayFilterBase).catch(() => null),
+                readCountFetch('ibkr_signals', dataTodayFilterBase).catch(() => null),
+                readCountFetch('orders', brokerTodayFilterBase).catch(() => null),
+                readCountFetch('system_events', brokerTodayFilterBase).catch(() => null),
                 readCountFetch('ibkr_targets', targetDateFilter).catch(() => null),
             ]);
 
@@ -323,7 +333,7 @@
         }
 
         function getRuntimeEnvironmentMismatch(status = latestRuntimeStatus, twoFactorState = latestTwoFactorState) {
-            const requested = String(currentEnvironment || '').trim().toLowerCase() || 'live';
+            const requested = String(currentBrokerMode || currentEnvironment || '').trim().toLowerCase() || 'paper';
             const actual = String(
                 status?.actual_runtime_environment
                 || status?.environment

@@ -50,16 +50,16 @@ def _validity_minutes(config_value: ConfigValue | None, environment: str) -> int
 
 def _request_broker_mode(payload: dict[str, Any], normalize_environment: NormalizeEnvironment) -> str:
     configured = configured_broker_mode()
-    if "broker_mode" in payload:
-        return normalize_broker_mode(payload.get("broker_mode"), configured)
+    requested = payload.get("broker_mode") or payload.get("environment")
+    if requested:
+        return normalize_broker_mode(requested, configured)
     return configured
 
 
 def _request_market_data_mode(payload: dict[str, Any]) -> str:
-    if "market_data_mode" in payload:
-        return resolve_market_data_mode(payload.get("market_data_mode"))
-    if "data_environment" in payload:
-        return resolve_market_data_mode(payload.get("data_environment"))
+    requested = payload.get("market_data_mode") or payload.get("data_environment") or payload.get("environment")
+    if requested:
+        return resolve_market_data_mode(requested)
     return resolve_market_data_mode(None)
 
 
@@ -152,6 +152,13 @@ def _with_broker_execution(
     return merged
 
 
+def _clear_scoped_signal_note_payload(signal_row: dict[str, Any], broker_mode: str) -> dict[str, str]:
+    note = to_text((signal_row or {}).get("note")).lower()
+    if note.startswith(f"{broker_mode}:") or "history_repair_pending" in note:
+        return {"note": ""}
+    return {}
+
+
 def _expire_signal_for_order_group(
     pb: Any,
     signal_row: dict[str, Any] | None,
@@ -196,11 +203,11 @@ def _expire_signal_for_order_group(
         updated_at=now_iso,
     )
     update_payload = {
-        "note": "order_expired" if environment == market_data_mode == "live" else f"{environment}:order_expired",
         "extra": extra_patch,
+        **_clear_scoped_signal_note_payload(signal_row, environment),
     }
     if environment == market_data_mode == "live":
-        update_payload["status"] = "expired"
+        update_payload.update({"status": "expired", "note": "order_expired"})
     updated = pb.update_record(
         "ibkr_signals",
         to_text(signal_row.get("id")),

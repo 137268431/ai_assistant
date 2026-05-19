@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ibkr_compute.core.broker_mode import configured_broker_mode, normalize_broker_mode
+
 from ibkr_api.reverse.shared import (
     ACTIVE_ENTRY_ORDER_LIMIT,
     ORDERS_COLLECTION,
     ensure_object,
     escape_filter_string,
     first_non_empty,
-    normalize_environment_value,
     record_value,
     to_float,
     to_text,
@@ -61,7 +62,7 @@ def build_order_context(order_record: Any, *, default_environment: str = "live")
     )
 
     return {
-        "environment": normalize_environment_value(
+        "environment": normalize_broker_mode(
             record_value(order_record, "environment") or order_extra.get("environment") or default_environment,
             default_environment,
         ),
@@ -113,7 +114,7 @@ def find_latest_active_entry_order(
 ) -> Any:
     normalized_symbol = to_text(symbol).upper()
     normalized_direction = to_text(direction).lower()
-    runtime_environment = normalize_environment_value(environment)
+    runtime_environment = normalize_broker_mode(environment, configured_broker_mode())
     records = list(
         pb.get_records(
             ORDERS_COLLECTION,

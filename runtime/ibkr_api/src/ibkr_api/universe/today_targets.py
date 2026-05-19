@@ -61,8 +61,10 @@ def build_today_targets_response(
     normalize_environment: NormalizeEnvironment,
     time_strings: TimeStrings,
 ) -> tuple[dict[str, Any], int]:
-    runtime_environment = normalize_environment(payload.get("environment"), LIVE_ENVIRONMENT)
-    data_environment = resolve_data_environment(runtime_environment)
+    data_environment = resolve_data_environment(
+        payload.get("market_data_mode") or payload.get("data_environment") or payload.get("environment")
+    )
+    runtime_environment = data_environment
     current_date = current_market_date(time_strings)
     requested_market_date = to_text(first_defined(payload.get("marketDate"), payload.get("market_date"), payload.get("date"))) or current_date
     try:

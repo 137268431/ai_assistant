@@ -4,6 +4,7 @@ import time
 from typing import Any, Callable
 
 from ibkr_api.orders.values import ensure_object, parse_boolean, to_float, to_int, to_text
+from ibkr_api.modes import request_broker_mode
 from ibkr_api.universe.maintenance import (
     call_universe_reconcile,
     ensure_target_watchlist_record,
@@ -33,6 +34,12 @@ def _normalize_extra(value: Any) -> dict[str, Any]:
     return parse_json_object(value)
 
 
+def _payload_data_environment(payload: dict[str, Any]) -> str:
+    return resolve_data_environment(
+        payload.get("market_data_mode") or payload.get("data_environment") or payload.get("environment")
+    )
+
+
 def _pick_score(item: dict[str, Any], existing: dict[str, Any] | None = None) -> float:
     candidates = [
         to_float(item.get("target_score")),
@@ -56,14 +63,14 @@ def build_target_upsert_response(
     request_json_request: RequestJsonRequest,
     compute_base_url: str,
 ) -> tuple[dict[str, Any], int]:
-    environment = normalize_environment(payload.get("environment"), "live")
-    data_environment = resolve_data_environment(environment)
+    environment = request_broker_mode(payload)
+    data_environment = _payload_data_environment(payload)
     symbol = to_text(payload.get("symbol")).upper()
     times = time_strings() or {}
     target_date = to_text(payload.get("date") or times.get("date"))
     source = to_text(payload.get("source") or "manual_page_add").lower() or "manual_page_add"
     current_market_date = get_runtime_market_date(
-        environment,
+        data_environment,
         request_json_request=request_json_request,
         compute_base_url=compute_base_url,
         time_strings=time_strings,
@@ -164,10 +171,11 @@ def build_target_upsert_response(
         )
         try:
             reconcile = call_universe_reconcile(
-                environment,
+                data_environment,
                 {
                     "source": source,
                     "reason": "target_upsert",
+                    "broker_mode": environment,
                     "prime_symbols": [symbol],
                     "emit_signals": True,
                 },
@@ -203,10 +211,11 @@ def build_target_upsert_response(
         ):
             try:
                 reconcile = call_universe_reconcile(
-                    environment,
+                    data_environment,
                     {
                         "source": source or "manual_page_edit",
                         "reason": "target_mark_removed",
+                        "broker_mode": environment,
                         "cleanup_symbols": [symbol],
                     },
                     request_json_request=request_json_request,
@@ -248,8 +257,8 @@ def build_target_remove_response(
     request_json_request: RequestJsonRequest,
     compute_base_url: str,
 ) -> tuple[dict[str, Any], int]:
-    fallback_environment = normalize_environment(payload.get("environment"), "live")
-    data_environment = resolve_data_environment(fallback_environment)
+    fallback_environment = request_broker_mode(payload)
+    data_environment = _payload_data_environment(payload)
     record_id = to_text(payload.get("record_id") or payload.get("id"))
     symbol_hint = to_text(payload.get("symbol")).upper()
     filter_expr = ""
@@ -271,7 +280,7 @@ def build_target_remove_response(
     environment = fallback_environment
     symbol = to_text(record.get("symbol") or symbol_hint).upper()
     current_market_date = get_runtime_market_date(
-        environment,
+        data_environment,
         request_json_request=request_json_request,
         compute_base_url=compute_base_url,
         time_strings=time_strings,
@@ -306,10 +315,11 @@ def build_target_remove_response(
     if symbol and not keep_watchlist and not keep_targets:
         try:
             reconcile = call_universe_reconcile(
-                environment,
+                data_environment,
                 {
                     "source": to_text(payload.get("source") or "manual_page_remove").lower() or "manual_page_remove",
                     "reason": "target_remove",
+                    "broker_mode": environment,
                     "cleanup_symbols": [symbol],
                 },
                 request_json_request=request_json_request,
@@ -348,8 +358,8 @@ def build_screener_targets_upsert_response(
     escape_filter_string: EscapeFilterString,
 ) -> tuple[dict[str, Any], int]:
     items = payload.get("items") if isinstance(payload.get("items"), list) else []
-    environment = normalize_environment(payload.get("environment"), "live")
-    data_environment = resolve_data_environment(environment)
+    environment = request_broker_mode(payload)
+    data_environment = _payload_data_environment(payload)
     market_date = to_text(payload.get("market_date") or payload.get("date"))
     if not market_date:
         return {"ok": False, "error": "Missing market_date", "source": "ibkr-api"}, 400

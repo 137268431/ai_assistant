@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ibkr_api.modes import request_broker_mode, request_market_data_mode
 from ibkr_api.reverse.common import (
     ALLOWED_REVERSE_ACTION_TYPES,
     DEFAULT_REVERSE_PRIORITY,
@@ -11,7 +12,6 @@ from ibkr_api.reverse.common import (
     load_reverse_signal_threshold,
     find_latest_active_entry_order,
     map_strength,
-    normalize_environment_value,
     normalize_reverse_record,
     parse_triggered_signals,
     record_value,
@@ -131,9 +131,14 @@ def _build_extra_data(
     order_context: dict[str, Any],
     direction: str,
     forced_action_type: str,
+    broker_mode: str,
+    data_environment: str,
 ) -> dict[str, Any]:
     return {
         **dict(analysis.get("indicator_extra") or {}),
+        "broker_mode": broker_mode,
+        "data_environment": data_environment,
+        "shared_market_data": data_environment == "live",
         "current_direction": direction,
         "reverse_kind": "indicator_conflict",
         "target_state": order_context.get("target_state") or "",
@@ -191,7 +196,13 @@ def build_reverse_calculate_response(
     notify_reverse_signal: Callable[[Any, dict[str, Any]], Any] | None = None,
 ) -> tuple[dict[str, Any], int]:
     data = dict(payload or {})
-    environment = normalize_environment_value(data.get("environment"))
+    broker_mode = request_broker_mode({"broker_mode": data.get("broker_mode") or data.get("environment")})
+    data_environment = request_market_data_mode(
+        {
+            "market_data_mode": data.get("market_data_mode"),
+            "data_environment": data.get("data_environment"),
+        }
+    )
     symbol = to_text(data.get("symbol")).upper()
     direction = to_text(data.get("direction")).lower()
     forced_action_type = to_text(data.get("force_action_type") or data.get("action_type")).lower()
@@ -205,9 +216,9 @@ def build_reverse_calculate_response(
 
     try:
         if escape_filter is None:
-            active_order = active_order_loader(pb, symbol, direction, environment)
+            active_order = active_order_loader(pb, symbol, direction, broker_mode)
         else:
-            active_order = active_order_loader(pb, symbol, direction, environment, escape_filter=escape_filter)
+            active_order = active_order_loader(pb, symbol, direction, broker_mode, escape_filter=escape_filter)
         order_context = order_context_builder(active_order)
 
         if not order_context or (order_context.get("direction") and order_context.get("direction") != direction):
@@ -223,9 +234,9 @@ def build_reverse_calculate_response(
             return {"error": "Action cancel requires pending_entry"}, 400
 
         if escape_filter is None:
-            indicator_record = indicator_loader(pb, symbol, environment)
+            indicator_record = indicator_loader(pb, symbol, data_environment)
         else:
-            indicator_record = indicator_loader(pb, symbol, environment, escape_filter=escape_filter)
+            indicator_record = indicator_loader(pb, symbol, data_environment, escape_filter=escape_filter)
         if not indicator_record:
             return {"error": "No ibkr_indicators found for symbol"}, 404
 
@@ -254,9 +265,13 @@ def build_reverse_calculate_response(
             order_context=order_context,
             direction=direction,
             forced_action_type=forced_action_type,
+            broker_mode=broker_mode,
+            data_environment=data_environment,
         )
         upsert_payload = {
-            "environment": environment,
+            "environment": broker_mode,
+            "broker_mode": broker_mode,
+            "data_environment": data_environment,
             "symbol": symbol,
             "direction": direction,
             "source": "indicator",
@@ -276,7 +291,7 @@ def build_reverse_calculate_response(
             upsert_result = reverse_upsert_builder(pb, upsert_payload)
         else:
             upsert_result = reverse_upsert_builder(pb, upsert_payload, escape_filter=escape_filter)
-        threshold = int(threshold_loader(pb, environment))
+        threshold = int(threshold_loader(pb, broker_mode))
         _notify_if_threshold_met(
             threshold=threshold,
             score=score,

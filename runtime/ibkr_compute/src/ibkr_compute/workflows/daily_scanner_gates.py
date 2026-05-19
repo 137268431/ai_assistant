@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 
+from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_compute.market.timeframe_utils import COMPUTE_INTERVALS, normalize_interval
 
 from .daily_scanner_constants import (
@@ -178,6 +179,7 @@ class DailyScannerDataCompletenessMixin:
         return items, incomplete_symbols, repair_jobs, repair_job_count
 
     def _build_data_completeness_gate(self, environment: str, symbols: list[str]) -> dict:
+        environment = resolve_data_environment(environment)
         normalized_symbols = sorted({str(symbol or "").strip().upper() for symbol in symbols or [] if str(symbol or "").strip()})
         if not normalized_symbols or not self._data_completeness_enabled(environment):
             return {"enabled": False, "items": {}, "incomplete_symbols": [], "repair_jobs": []}

@@ -17,7 +17,7 @@ class WarmupCycleRemoteReadinessMixin:
         from ibkr_compute.api import server as compute_server
 
         with compute_server.compute_lock:
-            return int(compute_server.load_persisted_compute_cursors(service_mod.ENVIRONMENT) or 0)
+            return int(compute_server.load_persisted_compute_cursors(service_mod.DATA_ENVIRONMENT) or 0)
 
     def _materialize_warmup_compute_symbols(
         self,
@@ -32,7 +32,7 @@ class WarmupCycleRemoteReadinessMixin:
         from ibkr_compute.api import server as compute_server
 
         return compute_server.materialize_engines_from_storage(
-            service_mod.ENVIRONMENT,
+            service_mod.DATA_ENVIRONMENT,
             symbols or [],
             service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL,
             hydrate_signal_state=hydrate_signal_state,
@@ -57,7 +57,9 @@ class WarmupCycleRemoteReadinessMixin:
         for index in range(0, len(normalized_symbols), chunk_size):
             chunk = normalized_symbols[index:index + chunk_size]
             result = trigger_remote_prime({
-                "environments": [service_mod.ENVIRONMENT],
+                "environments": [service_mod.DATA_ENVIRONMENT],
+                "market_data_mode": service_mod.DATA_ENVIRONMENT,
+                "broker_mode": service_mod.ENVIRONMENT,
                 "symbols": chunk,
                 "intervals": intervals,
                 "persist_latest_indicator": False,
@@ -95,7 +97,7 @@ class WarmupCycleRemoteReadinessMixin:
             1,
             self.config.get_int_for_environment(
                 "ibkr_warmup_remote_compute_retry_sec",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 5,
             ),
         )
@@ -190,7 +192,7 @@ class WarmupCycleRemoteReadinessMixin:
                     }
                     continue
                 engine_state = dict(
-                    engines.get(f"{service_mod.ENVIRONMENT}/{symbol}/{required_interval}") or {}
+                    engines.get(f"{service_mod.DATA_ENVIRONMENT}/{symbol}/{required_interval}") or {}
                 )
                 if engine_state:
                     status_by_symbol[symbol] = {
@@ -350,7 +352,7 @@ class WarmupCycleRemoteReadinessMixin:
         for symbol in snapshot["symbols"]:
             engine = compute_server.engines.get(
                 (
-                    service_mod.ENVIRONMENT,
+                    service_mod.DATA_ENVIRONMENT,
                     symbol,
                     service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL,
                 )
@@ -369,4 +371,3 @@ class WarmupCycleRemoteReadinessMixin:
             status_by_symbol,
             required_interval=service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL,
         )
-

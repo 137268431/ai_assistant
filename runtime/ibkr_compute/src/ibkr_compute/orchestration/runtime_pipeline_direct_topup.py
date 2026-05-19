@@ -12,7 +12,7 @@ class RuntimePipelineDirectTopupMixin:
             service_mod = _service_mod()
             return self.config.get_bool_for_environment(
                 "ibkr_runtime_direct_topup_enabled",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 False,
             )
 
@@ -21,7 +21,7 @@ class RuntimePipelineDirectTopupMixin:
             raw_value = str(
                 self.config.get_for_environment(
                     "ibkr_runtime_direct_topup_intervals",
-                    service_mod.ENVIRONMENT,
+                    service_mod.DATA_ENVIRONMENT,
                     ",".join(service_mod.DEFAULT_RUNTIME_DIRECT_TOPUP_INTERVALS),
                 )
                 or ""
@@ -42,7 +42,7 @@ class RuntimePipelineDirectTopupMixin:
                 1,
                 self.config.get_int_for_environment(
                     "ibkr_runtime_direct_topup_close_delay_sec",
-                    service_mod.ENVIRONMENT,
+                    service_mod.DATA_ENVIRONMENT,
                     service_mod.DEFAULT_RUNTIME_DIRECT_TOPUP_CLOSE_DELAY_SECONDS,
                 ),
             )
@@ -53,7 +53,7 @@ class RuntimePipelineDirectTopupMixin:
                 1.0,
                 self.config.get_float_for_environment(
                     "ibkr_runtime_direct_topup_loop_interval_sec",
-                    service_mod.ENVIRONMENT,
+                    service_mod.DATA_ENVIRONMENT,
                     service_mod.DEFAULT_RUNTIME_DIRECT_TOPUP_LOOP_INTERVAL_SECONDS,
                 ),
             )
@@ -62,7 +62,7 @@ class RuntimePipelineDirectTopupMixin:
             service_mod = _service_mod()
             return self.config.get_bool_for_environment(
                 "ibkr_runtime_direct_topup_parallel_enabled",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 bool(getattr(service_mod, "DEFAULT_RUNTIME_DIRECT_TOPUP_PARALLEL_ENABLED", False)),
             )
 
@@ -79,7 +79,7 @@ class RuntimePipelineDirectTopupMixin:
             raw_value = str(
                 self.config.get_for_environment(
                     "ibkr_runtime_direct_topup_interval_priority",
-                    service_mod.ENVIRONMENT,
+                    service_mod.DATA_ENVIRONMENT,
                     ",".join(fallback),
                 )
                 or ""
@@ -116,7 +116,7 @@ class RuntimePipelineDirectTopupMixin:
             return str(
                 self.config.get_for_environment(
                     f"ibkr_runtime_direct_topup_period_{normalized}",
-                    service_mod.ENVIRONMENT,
+                    service_mod.DATA_ENVIRONMENT,
                     fallback,
                 )
                 or fallback
@@ -379,7 +379,7 @@ class RuntimePipelineDirectTopupMixin:
                             freshness = planner.plan_symbol(
                                 symbol,
                                 [normalized_interval],
-                                environment=service_mod.ENVIRONMENT,
+                                environment=service_mod.DATA_ENVIRONMENT,
                                 required_bars=0,
                             )
                             interval_payload = (freshness.get("intervals") or {}).get(normalized_interval) or {}
@@ -603,7 +603,7 @@ class RuntimePipelineDirectTopupMixin:
                             freshness = planner.plan_symbol(
                                 symbol,
                                 interval_list,
-                                environment=service_mod.ENVIRONMENT,
+                                environment=service_mod.DATA_ENVIRONMENT,
                                 required_bars=0,
                             )
                             intervals_payload = freshness.get("intervals") or {}

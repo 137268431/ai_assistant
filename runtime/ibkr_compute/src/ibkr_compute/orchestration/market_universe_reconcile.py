@@ -110,7 +110,9 @@ class TradingServiceMarketUniverseReconcileMixin:
             signal_id = str(payload.get("signal_id") or "").strip()
             if not signal_id:
                 continue
-            payload["environment"] = service_mod.ENVIRONMENT
+            payload["environment"] = service_mod.DATA_ENVIRONMENT
+            payload["broker_mode"] = service_mod.ENVIRONMENT
+            payload["data_environment"] = service_mod.DATA_ENVIRONMENT
             try:
                 result = self.pb.upsert_signal(payload)
                 persisted.append(
@@ -185,7 +187,7 @@ class TradingServiceMarketUniverseReconcileMixin:
             if coordinator is not None and hasattr(coordinator, "enqueue"):
                 backtest_preload_result = coordinator.enqueue(
                     normalized_symbols,
-                    environment=service_mod.ENVIRONMENT,
+                    environment=service_mod.DATA_ENVIRONMENT,
                     trigger=str(source or "universe_prime"),
                     reason="new_universe_symbol_default_backtest_preload",
                     source_payload={
@@ -216,7 +218,9 @@ class TradingServiceMarketUniverseReconcileMixin:
                 compute_result = compute_server._run_internal_compute(
                     {
                         "source": "targeted_recompute",
-                        "environments": [service_mod.ENVIRONMENT],
+                        "environments": [service_mod.DATA_ENVIRONMENT],
+                        "broker_mode": service_mod.ENVIRONMENT,
+                        "data_environment": service_mod.DATA_ENVIRONMENT,
                         "symbols": normalized_symbols,
                         "force_rollup": True,
                         "persist_signals": False,
@@ -297,10 +301,10 @@ class TradingServiceMarketUniverseReconcileMixin:
 
             with compute_server.compute_lock:
                 compute_reset = compute_server.reset_compute_state_for_symbols(
-                    service_mod.ENVIRONMENT,
+                    service_mod.DATA_ENVIRONMENT,
                     normalized_symbols,
                 )
-                compute_server.persist_compute_cursors(service_mod.ENVIRONMENT)
+                compute_server.persist_compute_cursors(service_mod.DATA_ENVIRONMENT)
         except Exception as exc:
             compute_reset = {"ok": False, "error": str(exc)}
 
@@ -309,7 +313,7 @@ class TradingServiceMarketUniverseReconcileMixin:
             from ibkr_compute.market.pocketbase_sqlite import delete_symbol_runtime_data, open_pb_sqlite
 
             with open_pb_sqlite(readonly=False) as conn:
-                sqlite_result = delete_symbol_runtime_data(conn, service_mod.ENVIRONMENT, normalized_symbols)
+                sqlite_result = delete_symbol_runtime_data(conn, service_mod.DATA_ENVIRONMENT, normalized_symbols)
                 conn.commit()
         except Exception as exc:
             sqlite_result = {"ok": False, "error": str(exc), "symbols": normalized_symbols}
@@ -380,7 +384,9 @@ class TradingServiceMarketUniverseReconcileMixin:
 
         return {
             "ok": bool(target_refresh.get("ok", True)) and bool(prime_result.get("ok", True)) and bool(cleanup_result.get("ok", True)),
-            "environment": service_mod.ENVIRONMENT,
+            "environment": service_mod.DATA_ENVIRONMENT,
+            "broker_mode": service_mod.ENVIRONMENT,
+            "data_environment": service_mod.DATA_ENVIRONMENT,
             "market_date": str(self._current_market_date or self._market_date()),
             "source": str(source or "runtime_api"),
             "reason": str(reason or "manual_reconcile"),

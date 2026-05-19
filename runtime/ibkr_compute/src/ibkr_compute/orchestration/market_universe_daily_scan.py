@@ -56,7 +56,7 @@ class TradingServiceMarketUniverseDailyScanMixin:
         try:
             state = self.pb.get_state(
                 service_mod.DAILY_SCAN_STATE_KEY,
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 date=service_mod.DAILY_SCAN_STATE_DATE,
             )
         except Exception:
@@ -86,7 +86,7 @@ class TradingServiceMarketUniverseDailyScanMixin:
             try:
                 self.pb.upsert_state(
                     service_mod.DAILY_SCAN_STATE_KEY,
-                    service_mod.ENVIRONMENT,
+                    service_mod.DATA_ENVIRONMENT,
                     next_state,
                     date=service_mod.DAILY_SCAN_STATE_DATE,
                 )
@@ -99,7 +99,7 @@ class TradingServiceMarketUniverseDailyScanMixin:
         config = getattr(self, "config", None)
         if config is not None and hasattr(config, "get_bool_for_environment"):
             try:
-                return bool(config.get_bool_for_environment(key, service_mod.ENVIRONMENT, default))
+                return bool(config.get_bool_for_environment(key, service_mod.DATA_ENVIRONMENT, default))
             except Exception:
                 return bool(default)
         return bool(default)
@@ -109,7 +109,7 @@ class TradingServiceMarketUniverseDailyScanMixin:
         config = getattr(self, "config", None)
         if config is not None and hasattr(config, "get_int_for_environment"):
             try:
-                return int(config.get_int_for_environment(key, service_mod.ENVIRONMENT, default))
+                return int(config.get_int_for_environment(key, service_mod.DATA_ENVIRONMENT, default))
             except Exception:
                 return int(default)
         return int(default)
@@ -119,7 +119,7 @@ class TradingServiceMarketUniverseDailyScanMixin:
         config = getattr(self, "config", None)
         if config is not None and hasattr(config, "get_for_environment"):
             try:
-                return str(config.get_for_environment(key, service_mod.ENVIRONMENT, default) or default)
+                return str(config.get_for_environment(key, service_mod.DATA_ENVIRONMENT, default) or default)
             except Exception:
                 return str(default or "")
         return str(default or "")
@@ -310,7 +310,9 @@ class TradingServiceMarketUniverseDailyScanMixin:
 
             payload = get_remote_scan_status(
                 {
-                    "environment": service_mod.ENVIRONMENT,
+                    "environment": service_mod.DATA_ENVIRONMENT,
+                    "broker_mode": service_mod.ENVIRONMENT,
+                    "data_environment": service_mod.DATA_ENVIRONMENT,
                     "date": market_date,
                     "run_id": run_id,
                 }

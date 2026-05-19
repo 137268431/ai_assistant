@@ -3,7 +3,7 @@ from __future__ import annotations
 from flask import redirect
 
 from ibkr_compute.api.route_response import build_json_pair_response, build_json_request_response
-from ibkr_compute.api.route_runtime import get_app_module, get_requested_environment
+from ibkr_compute.api.route_runtime import get_app_module, get_requested_broker_mode
 from ibkr_compute.api.runtime_proxy import register_runtime_proxy_route, should_proxy_runtime_requests
 from ibkr_compute.api.runtime.views import (
     _build_ibkr_2fa_probe_response,
@@ -68,7 +68,7 @@ def register_runtime_routes(app):
 
     @app.route("/ibkr/monitor", methods=["GET"])
     def ibkr_monitor():
-        requested_environment = get_requested_environment("live")
+        requested_environment = get_requested_broker_mode()
         return build_json_pair_response(_build_ibkr_monitor_response, requested_environment)
 
     @app.route("/ibkr/universe/reconcile", methods=["POST"])

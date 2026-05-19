@@ -1,5 +1,7 @@
         window.onEnvironmentChange = function(environment) {
-            currentEnvironment = environment;
+            currentBrokerMode = normalizeBrokerMode(environment, getCurrentBrokerMode());
+            currentEnvironment = currentBrokerMode;
+            currentDataEnvironment = getSharedDataEnvironment();
             window.location.href = buildPageUrl('/ibkr_runtime.html', {}, { environment: currentEnvironment });
         };
 
@@ -18,6 +20,6 @@
             document.getElementById('nav').innerHTML = renderNav('/ibkr_runtime.html');
             document.getElementById('contextBar').innerHTML = renderPageContextBar('🎛️ IBKR 运行时', { subtitle: '控制 / 调度 / 链路' });
             document.getElementById('pageBridge').innerHTML = renderSystemBridge('/ibkr_runtime.html');
-            document.getElementById('configLink').href = buildPageUrl('/ibkr_config.html', {}, { allowGlobal: true, environment: currentEnvironment });
+            document.getElementById('configLink').href = buildPageUrl('/ibkr_config.html', {}, { allowGlobal: true });
             await loadRuntimeData(false);
         });

@@ -3,7 +3,7 @@
 
   const PAGE_PATH = '/ibkr_lifecycle_flow.html';
   const ENDPOINT_PATH = '/api/custom/ibkr/lifecycle-flow';
-  const QUERY_KEYS = ['mode', 'environment', 'date', 'symbol', 'signal_id', 'trade_group_id', 'order_id', 'run_id', 'backtest_date'];
+  const QUERY_KEYS = ['mode', 'environment', 'broker_mode', 'market_data_mode', 'data_environment', 'date', 'symbol', 'signal_id', 'trade_group_id', 'order_id', 'run_id', 'backtest_date'];
   const RUNTIME_ENVS = ['live', 'paper', 'backtest'];
   const STORAGE_DATE_KEY = 'ibkr_lifecycle_flow_last_date';
 
@@ -334,11 +334,23 @@
     return RUNTIME_ENVS.includes(text) ? text : 'live';
   }
 
+  function normalizeBrokerEnvironment(value) {
+    const normalized = normalizeEnvironment(value);
+    return normalized === 'paper' ? 'paper' : 'live';
+  }
+
   function currentBrokerEnvironment() {
     if (typeof getBrokerModeContext === 'function') {
-      return normalizeEnvironment(getBrokerModeContext().broker_mode);
+      return normalizeBrokerEnvironment(getBrokerModeContext().broker_mode);
     }
-    return normalizeEnvironment(typeof getCurrentRuntimeEnvironment === 'function' ? getCurrentRuntimeEnvironment() : 'live');
+    return normalizeBrokerEnvironment(typeof getCurrentBrokerMode === 'function' ? getCurrentBrokerMode() : 'paper');
+  }
+
+  function currentDataEnvironment() {
+    const value = typeof getSharedDataEnvironment === 'function'
+      ? getSharedDataEnvironment()
+      : (typeof getCurrentRuntimeEnvironment === 'function' ? getCurrentRuntimeEnvironment() : 'live');
+    return normalizeEnvironment(value) === 'backtest' ? 'live' : normalizeEnvironment(value);
   }
 
   function normalizeFillSource(value) {
@@ -1192,11 +1204,17 @@
     const params = new URLSearchParams(window.location.search);
     const urlMode = normalizeText(params.get('mode'), 'auto');
     const urlEnvironment = normalizeEnvironment(params.get('environment'));
+    const isBacktest = urlMode === 'backtest' || urlEnvironment === 'backtest' || normalizeText(params.get('run_id'));
+    const brokerMode = normalizeBrokerEnvironment(params.get('broker_mode') || (urlEnvironment === 'paper' ? 'paper' : '') || currentBrokerEnvironment());
+    const dataEnvironment = isBacktest
+      ? 'backtest'
+      : normalizeEnvironment(params.get('market_data_mode') || params.get('data_environment') || currentDataEnvironment());
     return {
       mode: urlMode,
-      environment: (urlMode === 'backtest' || urlEnvironment === 'backtest' || normalizeText(params.get('run_id')))
-        ? 'backtest'
-        : currentBrokerEnvironment(),
+      environment: isBacktest ? 'backtest' : dataEnvironment,
+      broker_mode: brokerMode,
+      market_data_mode: dataEnvironment,
+      data_environment: dataEnvironment,
       date: params.get('date') || getDefaultDate(),
       symbol: normalizeText(params.get('symbol')).toUpperCase(),
       signal_id: normalizeText(params.get('signal_id')),
@@ -1209,9 +1227,14 @@
 
   function getFiltersFromForm() {
     const mode = normalizeText($('modeInput')?.value, 'auto');
+    const isBacktest = mode === 'backtest';
+    const dataEnvironment = isBacktest ? 'backtest' : currentDataEnvironment();
     return {
       mode,
-      environment: mode === 'backtest' ? 'backtest' : currentBrokerEnvironment(),
+      environment: dataEnvironment,
+      broker_mode: currentBrokerEnvironment(),
+      market_data_mode: dataEnvironment,
+      data_environment: dataEnvironment,
       date: normalizeText($('dateInput')?.value),
       symbol: normalizeText($('symbolInput')?.value).toUpperCase(),
       signal_id: normalizeText($('signalIdInput')?.value),
@@ -1242,24 +1265,40 @@
       query[key] = key === 'symbol' ? value.toUpperCase() : value;
     });
     if (!query.mode && query.run_id) query.mode = 'backtest';
-    if (!query.environment) query.environment = normalizeEnvironment(filters.environment || currentBrokerEnvironment());
+    const mode = normalizeText(query.mode || filters.mode, 'auto').toLowerCase();
+    const isBacktest = mode === 'backtest' || normalizeEnvironment(filters.environment) === 'backtest' || normalizeText(filters.run_id);
+    const dataEnvironment = isBacktest
+      ? 'backtest'
+      : normalizeEnvironment(filters.data_environment || filters.market_data_mode || currentDataEnvironment());
+    query.environment = isBacktest ? 'backtest' : dataEnvironment;
+    query.broker_mode = normalizeBrokerEnvironment(filters.broker_mode || currentBrokerEnvironment());
+    query.market_data_mode = dataEnvironment;
+    query.data_environment = dataEnvironment;
     return query;
   }
 
   function buildEndpointUrl(filters) {
     const params = compactQuery(filters);
-    return buildPageUrl(ENDPOINT_PATH, params, { environment: normalizeEnvironment(filters.environment) });
+    return buildPageUrl(ENDPOINT_PATH, params, {
+      environment: params.environment,
+      brokerMode: params.broker_mode,
+      dataEnvironment: params.data_environment
+    });
   }
 
   function buildPageStateUrl(filters) {
     const params = compactQuery(filters);
-    return buildPageUrl(PAGE_PATH, params, { environment: normalizeEnvironment(filters.environment) });
+    return buildPageUrl(PAGE_PATH, params, {
+      environment: params.environment,
+      brokerMode: params.broker_mode,
+      dataEnvironment: params.data_environment
+    });
   }
 
   function effectiveMode(filters) {
     const mode = normalizeText(filters?.mode, 'auto').toLowerCase();
     if (mode === 'backtest' || normalizeEnvironment(filters?.environment) === 'backtest' || normalizeText(filters?.run_id)) return 'backtest';
-    if (mode === 'paper' || normalizeEnvironment(filters?.environment) === 'paper') return 'paper';
+    if (mode === 'paper' || normalizeBrokerEnvironment(filters?.broker_mode) === 'paper') return 'paper';
     return 'live';
   }
 
@@ -1413,6 +1452,8 @@
       setPageContextMeta([
         { label: '交易日', value: filters.date || '--' },
         { label: 'Mode', value: filters.mode || 'auto' },
+        { label: 'Broker', value: filters.broker_mode || currentBrokerEnvironment() },
+        { label: 'Data', value: filters.data_environment || filters.market_data_mode || currentDataEnvironment() },
         { label: 'Symbol', value: filters.symbol || '--' }
       ]);
     }
@@ -1953,10 +1994,14 @@
   }
 
   function resetFilters() {
-    const environment = currentBrokerEnvironment();
+    const brokerMode = currentBrokerEnvironment();
+    const dataEnvironment = currentDataEnvironment();
     setFiltersToForm({
       mode: 'auto',
-      environment,
+      environment: dataEnvironment,
+      broker_mode: brokerMode,
+      market_data_mode: dataEnvironment,
+      data_environment: dataEnvironment,
       date: typeof getCurrentEtDateString === 'function' ? getCurrentEtDateString() : new Date().toISOString().slice(0, 10),
       symbol: '',
       signal_id: '',
@@ -2017,7 +2062,12 @@
 
   window.onEnvironmentChange = function onEnvironmentChange(environment) {
     const filters = getFiltersFromForm();
-    filters.environment = normalizeEnvironment(environment);
+    const brokerMode = normalizeBrokerEnvironment(environment);
+    const dataEnvironment = currentDataEnvironment();
+    filters.environment = dataEnvironment;
+    filters.broker_mode = brokerMode;
+    filters.market_data_mode = dataEnvironment;
+    filters.data_environment = dataEnvironment;
     setFiltersToForm(filters);
     loadLifecycle({ updateUrl: true });
   };

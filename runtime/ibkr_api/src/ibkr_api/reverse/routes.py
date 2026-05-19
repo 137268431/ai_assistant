@@ -4,6 +4,8 @@ from typing import Any
 
 from flask import Response, jsonify, request
 
+from ibkr_api.modes import request_broker_mode, request_market_data_mode
+
 
 def register_reverse_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     pb = deps["pb"]
@@ -18,9 +20,15 @@ def register_reverse_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
 
     @app.route("/api/custom/ibkr/reverse/list", methods=["GET"])
     def custom_ibkr_reverse_list() -> Response:
+        mode_payload = {
+            "broker_mode": request.args.get("broker_mode") or request.args.get("environment"),
+            "market_data_mode": request.args.get("market_data_mode"),
+            "data_environment": request.args.get("data_environment"),
+        }
         payload, status_code = build_reverse_list_response(
             pb,
-            environment=request.args.get("environment"),
+            environment=request_broker_mode(mode_payload),
+            data_environment=request_market_data_mode(mode_payload),
             date_str=request.args.get("date") or "",
             symbol=request.args.get("symbol") or "",
             statuses=request.args.get("status") or "",
@@ -45,9 +53,15 @@ def register_reverse_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
 
     @app.route("/api/custom/ibkr/reverse/pending", methods=["GET"])
     def custom_ibkr_reverse_pending() -> Response:
+        mode_payload = {
+            "broker_mode": request.args.get("broker_mode") or request.args.get("environment"),
+            "market_data_mode": request.args.get("market_data_mode"),
+            "data_environment": request.args.get("data_environment"),
+        }
         payload, status_code = build_reverse_pending_response(
             pb,
-            environment=request.args.get("environment"),
+            environment=request_broker_mode(mode_payload),
+            data_environment=request_market_data_mode(mode_payload),
             limit=request.args.get("limit"),
             normalize_environment=normalize_environment,
             escape_filter=escape_filter_string,

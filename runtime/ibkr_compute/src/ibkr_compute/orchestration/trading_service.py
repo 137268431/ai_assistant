@@ -459,7 +459,7 @@ class IBKRTradingService(
 
         configured_monitors = [
             item.strip().upper()
-            for item in str(self.config.get_for_environment("ibkr_market_ws_symbols", ENVIRONMENT, "SPY,QQQ,VIX") or "").split(",")
+            for item in str(self.config.get_for_environment("ibkr_market_ws_symbols", DATA_ENVIRONMENT, "SPY,QQQ,VIX") or "").split(",")
             if item.strip()
         ]
         market_monitors = {
@@ -467,8 +467,8 @@ class IBKRTradingService(
             for symbol in (list(self._watchlist_monitor_symbols or []) + configured_monitors)
             if str(symbol or "").strip()
         }
-        target_limit = max(0, int(self.config.get_int_for_environment("ibkr_target_subscription_limit", ENVIRONMENT, 80) or 0))
-        total_limit = max(0, int(self.config.get_int_for_environment("ibkr_total_subscription_limit", ENVIRONMENT, 80) or 0))
+        target_limit = max(0, int(self.config.get_int_for_environment("ibkr_target_subscription_limit", DATA_ENVIRONMENT, 80) or 0))
+        total_limit = max(0, int(self.config.get_int_for_environment("ibkr_total_subscription_limit", DATA_ENVIRONMENT, 80) or 0))
         trade_budget = target_limit if target_limit > 0 else None
         if total_limit > 0:
             remaining = max(0, total_limit - len(market_monitors))

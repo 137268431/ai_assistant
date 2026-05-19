@@ -54,7 +54,8 @@
         let currentSearch = '';
         let refreshTimer = null;
         let currentInterval = 30;
-        let currentEnvironment = getCurrentRuntimeEnvironment();
+        let currentEnvironment = getSharedDataEnvironment();
+        let currentBrokerMode = getConsoleBrokerMode();
 
         let currentPage = 1;
         const itemsPerPage = 10;
@@ -108,8 +109,14 @@
         function buildApiUrl(path, params = {}) {
             const baseUrl = window.API_BASE_URL || location.origin;
             const url = new URL(path, baseUrl);
-            if (currentEnvironment && !Object.prototype.hasOwnProperty.call(params, 'environment')) {
-                url.searchParams.set('environment', currentEnvironment);
+            if (currentBrokerMode && !Object.prototype.hasOwnProperty.call(params, 'broker_mode')) {
+                url.searchParams.set('broker_mode', currentBrokerMode);
+            }
+            if (currentEnvironment && !Object.prototype.hasOwnProperty.call(params, 'market_data_mode')) {
+                url.searchParams.set('market_data_mode', currentEnvironment);
+            }
+            if (currentEnvironment && !Object.prototype.hasOwnProperty.call(params, 'data_environment')) {
+                url.searchParams.set('data_environment', currentEnvironment);
             }
             Object.entries(params).forEach(([key, value]) => {
                 if (value !== undefined && value !== null && value !== '') {
@@ -179,7 +186,8 @@
                 ? `search=${summarizeHeaderValue(currentSearch, 26)}`
                 : '无附加过滤';
             setPageContextMeta([
-                { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
+                { label: 'Broker', value: getEnvironmentLabel(currentBrokerMode), tone: currentBrokerMode },
+                { label: 'Data', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
                 { label: '交易日', value: currentDate || '--' },
                 { label: '范围', value: scopeText },
             ]);
@@ -206,7 +214,7 @@
         }
 
         function renderFilterNote() {
-            const notes = [`env=${getEnvironmentLabel(currentEnvironment)}`];
+            const notes = [`broker=${getEnvironmentLabel(currentBrokerMode)}`, `data=${getEnvironmentLabel(currentEnvironment)}`];
             if (currentSearch) notes.push(`search=${currentSearch}`);
             document.getElementById('filterNote').innerHTML = `<div class="filter-note">当前过滤: ${escapeHtml(notes.join(' · '))}</div>`;
         }
@@ -298,7 +306,7 @@
         async function loadSignals() {
             try {
                 const result = await reverseRequest('/api/custom/ibkr/reverse/list', {
-                    params: { date: currentDate, limit: 300, environment: currentEnvironment }
+                    params: { date: currentDate, limit: 300, broker_mode: currentBrokerMode, data_environment: currentEnvironment }
                 });
                 allSignals = (result.ibkr_signals || []).map(normalizeSignal);
                 resetPagination();
@@ -703,7 +711,8 @@
                         reverse_id: id,
                         action,
                         reason,
-                        environment: currentEnvironment
+                        broker_mode: currentBrokerMode,
+                        data_environment: currentEnvironment
                     }
                 });
                 showToast(action === 'cancel' ? '✓ 已取消反转信号' : '✓ 已提交执行请求');
@@ -875,6 +884,7 @@
 
         window.onEnvironmentChange = function(environment) {
             currentEnvironment = environment;
+            currentBrokerMode = getConsoleBrokerMode();
             location.href = buildPageUrl('/ibkr_reverse_signals.html', { date: currentDate });
         };
     </script>

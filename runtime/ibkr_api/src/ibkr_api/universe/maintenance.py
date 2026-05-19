@@ -45,11 +45,13 @@ def is_default_market_context_symbol(value: Any) -> bool:
 
 def normalize_record_environment(value: Any, *, runtime_environment: str) -> str:
     normalized = to_text(value).lower()
+    if normalized == "paper":
+        normalized = "live"
     if normalized in {"global", runtime_environment}:
         return normalized
     if normalized in {"", "all", "default"}:
         return runtime_environment
-    return normalized or runtime_environment
+    return runtime_environment
 
 
 def normalize_direction_bias(value: Any, *, default: str = "neutral") -> str:
@@ -74,7 +76,10 @@ def get_runtime_market_date(
         "GET",
         compute_base_url,
         "/ibkr/status",
-        params=[("environment", environment)],
+        params=[
+            ("market_data_mode", environment),
+            ("data_environment", environment),
+        ],
         timeout=8.0,
     )
     payload = ensure_object(result.get("payload"))
@@ -92,7 +97,8 @@ def call_universe_reconcile(
 ) -> dict[str, Any]:
     request_body = {
         **(dict(payload or {}) if isinstance(payload, dict) else {}),
-        "environment": environment,
+        "market_data_mode": environment,
+        "data_environment": environment,
     }
     result = request_json_request(
         "POST",

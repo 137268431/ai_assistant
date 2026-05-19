@@ -11,6 +11,9 @@ ExecStartPre=/bin/sh -lc 'for i in $(seq 1 ${IBKR_WAIT_RUNTIME_ATTEMPTS:-90}); d
 ExecStart=/opt/ibkr_compute/venv/bin/python -m ibkr_compute.api.server
 EnvironmentFile=/opt/ibkr_compute/.env
 Environment=PYTHONPATH=/opt/ibkr_compute/src
+Environment=FLASK_SKIP_DOTENV=1
+Environment=PORT=5100
+Environment=IBKR_COMPUTE_PORT=5100
 Environment=IBKR_SERVICE_PROFILE=compute
 Environment=IBKR_RUNTIME_MODE=remote
 Environment=IBGW_COMPUTE_CLIENT_ID=51

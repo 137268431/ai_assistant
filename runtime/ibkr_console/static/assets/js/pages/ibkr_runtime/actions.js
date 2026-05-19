@@ -1,3 +1,10 @@
+        function runtimeModePayload(payload = {}) {
+            return buildModePayload(payload, {
+                brokerMode: currentBrokerMode,
+                dataEnvironment: currentDataEnvironment || getSharedDataEnvironment(),
+            });
+        }
+
         async function submitTwoFactorResponse() {
             if (!ensureIbkrPageAuth()) return;
             const runtimeMismatch = getRuntimeEnvironmentMismatch();
@@ -39,12 +46,11 @@
             try {
                 const payload = await requestIbkrEnvironmentJson('/api/custom/ibkr/2fa/respond', currentEnvironment, {
                     method: 'POST',
-                    body: {
-                        environment: currentEnvironment,
+                    body: runtimeModePayload({
                         response_code: responseCode,
                         challenge_code: challengeCode,
                         source: 'runtime_page'
-                    },
+                    }),
                     retryAttempts: 3
                 });
                 if (input) input.value = '';
@@ -65,36 +71,32 @@
             return {
                 start: {
                     path: '/api/custom/ibkr/start',
-                    body: {
-                        environment: currentEnvironment,
+                    body: runtimeModePayload({
                         trigger_login: false,
                         reason: 'manual_start',
                         source: 'runtime_page'
-                    }
+                    })
                 },
                 gateway_restart: {
                     path: '/api/custom/ibkr/gateway/restart',
-                    body: {
-                        environment: currentEnvironment,
+                    body: runtimeModePayload({
                         reason: 'manual_gateway_restart',
                         source: 'runtime_page'
-                    }
+                    })
                 },
-                stop: { path: '/api/custom/ibkr/stop', body: { environment: currentEnvironment } },
+                stop: { path: '/api/custom/ibkr/stop', body: runtimeModePayload({}) },
                 reauth: {
                     path: '/api/custom/ibkr/2fa/request',
-                    body: {
-                        environment: currentEnvironment,
+                    body: runtimeModePayload({
                         reason: 'manual_reauth',
                         source: 'runtime_page',
                         force_reset: true,
                         message: '已请求 2FA 卡片；请在飞书验证。'
-                    }
+                    })
                 },
                 reauth_force_new: {
                     path: '/api/custom/ibkr/2fa/request',
-                    body: {
-                        environment: currentEnvironment,
+                    body: runtimeModePayload({
                         reason: 'manual_reauth',
                         source: 'runtime_page',
                         force_reset: true,
@@ -102,30 +104,28 @@
                         trigger_now: true,
                         force_new: true,
                         message: '已开始新一轮 2FA，请查看手机。'
-                    }
+                    })
                 },
                 probe: {
                     path: '/api/custom/ibkr/2fa/probe',
-                    body: {
-                        environment: currentEnvironment,
+                    body: runtimeModePayload({
                         reason: 'manual_probe',
                         source: 'runtime_page'
-                    }
+                    })
                 },
                 panic_reset_2fa: {
                     path: '/api/custom/ibkr/2fa/panic-reset',
-                    body: {
-                        environment: currentEnvironment,
+                    body: runtimeModePayload({
                         restart_gateway: true,
                         restart_runtime: true,
                         trigger_login: true,
                         reason: 'panic_reset_2fa',
                         source: 'runtime_page'
-                    }
+                    })
                 },
-                compute: { path: '/api/custom/ibkr/proxy', body: { action: 'compute', environment: currentEnvironment } },
-                emergency_all: { path: '/api/custom/ibkr/emergency-stop', body: { action: 'all', environment: currentEnvironment } },
-                recover_all: { path: '/api/custom/ibkr/recover', body: { action: 'all', environment: currentEnvironment } }
+                compute: { path: '/api/custom/ibkr/proxy', body: runtimeModePayload({ action: 'compute' }) },
+                emergency_all: { path: '/api/custom/ibkr/emergency-stop', body: runtimeModePayload({ action: 'all' }) },
+                recover_all: { path: '/api/custom/ibkr/recover', body: runtimeModePayload({ action: 'all' }) }
             };
         }
 
@@ -250,6 +250,7 @@
             if (!await confirmServiceAction(moduleDef.service, normalizedAction)) return;
             if (!ensureIbkrPageAuth()) return;
 
+            const label = getServiceActionLabel(normalizedAction);
             actionPendingLabel = `执行中：${moduleDef.service} ${label}`;
             setActionState(true);
             const pendingMessage = actionPendingLabel;
@@ -258,12 +259,11 @@
             try {
                 const payload = await requestIbkrEnvironmentJson('/api/custom/ibkr/services/action', currentEnvironment, {
                     method: 'POST',
-                    body: {
-                        environment: currentEnvironment,
+                    body: runtimeModePayload({
                         service: moduleDef.service,
                         action: normalizedAction,
                         source: 'runtime_page'
-                    },
+                    }),
                     retryAttempts: 1
                 });
                 latestServiceActionStates = {

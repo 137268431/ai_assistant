@@ -13,6 +13,7 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+from ibkr_compute.core.broker_mode import configured_broker_mode, normalize_broker_mode
 from ibkr_compute.core.time_utils import ET
 
 logger = logging.getLogger(__name__)
@@ -47,14 +48,14 @@ REVERSE_CONFIRM_POLL_SECONDS = max(0.0, float(os.environ.get("IBKR_REVERSE_CONFI
 class ReverseSignalHandler:
     def __init__(self, pb_client, order_placer=None, order_modifier=None,
                  order_lifecycle=None, signal_processor=None,
-                 conid_resolver=None, environment: str = "live"):
+                 conid_resolver=None, environment: str = ""):
         self.pb_client = pb_client
         self.order_placer = order_placer
         self.order_modifier = order_modifier
         self.order_lifecycle = order_lifecycle
         self.signal_processor = signal_processor
         self.conid_resolver = conid_resolver
-        self.environment = environment
+        self.environment = normalize_broker_mode(environment, configured_broker_mode())
         self._processed_ids = set()
 
     def check_and_process(self):
@@ -349,7 +350,7 @@ class ReverseSignalHandler:
 
         self._mark_origin_signal_resolved(signal, detail)
         signal_id = str(payload.get("signal_id") or "").strip()
-        environment = str(payload.get("environment") or self.environment or "live").strip() or "live"
+        environment = normalize_broker_mode(payload.get("broker_mode") or payload.get("environment"), self.environment)
         if not signal_id:
             return {"submitted": False, "blocked": True, "reason": "reentry_signal_id_missing"}
 
@@ -430,7 +431,7 @@ class ReverseSignalHandler:
         updater = getattr(self.pb_client, "update_record", None)
         if not callable(getter) or not callable(updater):
             return
-        environment = str(self._signal_value(signal, "environment", self.environment) or self.environment or "live").strip() or "live"
+        environment = normalize_broker_mode(self._signal_value(signal, "broker_mode") or self._signal_value(signal, "environment"), self.environment)
         try:
             record = getter(
                 "ibkr_signals",
@@ -685,7 +686,7 @@ class ReverseSignalHandler:
             return self._mark_blocked(detail, "cancel_dependency_missing")
 
         self._append_state(detail, "cancel_old_order")
-        runtime_environment = str(self._signal_value(signal, "environment", self.environment) or self.environment or "live").strip() or "live"
+        runtime_environment = normalize_broker_mode(self._signal_value(signal, "broker_mode") or self._signal_value(signal, "environment"), self.environment)
         trade_group_id = self._related_trade_group_id(signal)
         seed_order_ids = self._related_order_ids_from_signal(signal)
         orders = self._fetch_related_orders(

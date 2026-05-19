@@ -106,7 +106,9 @@ class RuntimePipelineSupportMixin:
                                 chunk = normalized_symbols[index:index + service_mod.STARTUP_BACKGROUND_PRIME_CHUNK_SIZE]
                                 result = trigger_remote_prime(
                                     {
-                                        "environments": [service_mod.ENVIRONMENT],
+                                        "environments": [service_mod.DATA_ENVIRONMENT],
+                                        "market_data_mode": service_mod.DATA_ENVIRONMENT,
+                                        "broker_mode": service_mod.ENVIRONMENT,
                                         "symbols": chunk,
                                         "intervals": [interval],
                                         "persist_latest_indicator": False,
@@ -129,7 +131,7 @@ class RuntimePipelineSupportMixin:
 
                     try:
                         with compute_server.compute_lock:
-                            compute_server.load_persisted_compute_cursors(service_mod.ENVIRONMENT)
+                            compute_server.load_persisted_compute_cursors(service_mod.DATA_ENVIRONMENT)
                     except Exception as exc:
                         service_mod.logger.warning("Interval prime cursor preload failed: %s", exc)
 
@@ -146,7 +148,7 @@ class RuntimePipelineSupportMixin:
                             chunk = normalized_symbols[index:index + service_mod.STARTUP_BACKGROUND_PRIME_CHUNK_SIZE]
                             with compute_server.compute_lock:
                                 compute_server.materialize_engines_from_storage(
-                                    service_mod.ENVIRONMENT,
+                                    service_mod.DATA_ENVIRONMENT,
                                     chunk,
                                     interval,
                                     persist_latest_indicator=False,
@@ -193,7 +195,12 @@ class RuntimePipelineSupportMixin:
         ) -> dict:
             service_mod = _service_mod()
             try:
-                payload = {"source": source, "environments": [service_mod.ENVIRONMENT]}
+                payload = {
+                    "source": source,
+                    "environments": [service_mod.DATA_ENVIRONMENT],
+                    "market_data_mode": service_mod.DATA_ENVIRONMENT,
+                    "broker_mode": service_mod.ENVIRONMENT,
+                }
                 if persist_signals is not None:
                     payload["persist_signals"] = bool(persist_signals)
                 if persist_signal_symbols is not None:

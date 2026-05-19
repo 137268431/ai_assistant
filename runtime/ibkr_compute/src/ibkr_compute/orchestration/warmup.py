@@ -81,11 +81,11 @@ class TradingServiceWarmupMixin:
 
     def _configured_market_ws_symbols(self) -> list[str]:
         service_mod = _service_mod()
-        if not self.config.get_bool_for_environment("ibkr_market_ws_enabled", service_mod.ENVIRONMENT, True):
+        if not self.config.get_bool_for_environment("ibkr_market_ws_enabled", service_mod.DATA_ENVIRONMENT, True):
             return []
         raw_value = self.config.get_for_environment(
             "ibkr_market_ws_symbols",
-            service_mod.ENVIRONMENT,
+            service_mod.DATA_ENVIRONMENT,
             ",".join(service_mod.DEFAULT_MARKET_WS_SYMBOLS),
         )
         return self._normalize_symbol_list(str(raw_value or "").replace("\n", ",").split(","))
@@ -97,7 +97,7 @@ class TradingServiceWarmupMixin:
 
     def _live_warmup_days(self) -> int:
         service_mod = _service_mod()
-        return max(1, self.config.get_int_for_environment("ibkr_live_warmup_days", service_mod.ENVIRONMENT, 14))
+        return max(1, self.config.get_int_for_environment("ibkr_live_warmup_days", service_mod.DATA_ENVIRONMENT, 14))
 
     def _multi_timeframe_warmup_intervals(self) -> list[str]:
         service_mod = _service_mod()
@@ -107,7 +107,7 @@ class TradingServiceWarmupMixin:
         ]
         configured = self.config.get_for_environment(
             "ibkr_warmup_indicator_intervals",
-            service_mod.ENVIRONMENT,
+            service_mod.DATA_ENVIRONMENT,
             ",".join(default_intervals),
         )
         intervals = []
@@ -129,7 +129,7 @@ class TradingServiceWarmupMixin:
             60,
             self.config.get_int_for_environment(
                 "ibkr_warmup_indicator_regular_minutes_per_day",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 390,
             ),
         )
@@ -137,7 +137,7 @@ class TradingServiceWarmupMixin:
             1.0,
             self.config.get_float_for_environment(
                 "ibkr_warmup_indicator_calendar_multiplier",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 1.4,
             ),
         )
@@ -145,7 +145,7 @@ class TradingServiceWarmupMixin:
             0,
             self.config.get_int_for_environment(
                 "ibkr_warmup_indicator_buffer_days",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 5,
             ),
         )
@@ -153,7 +153,7 @@ class TradingServiceWarmupMixin:
             base_days,
             self.config.get_int_for_environment(
                 "ibkr_warmup_indicator_max_days",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 60,
             ),
         )
@@ -174,7 +174,7 @@ class TradingServiceWarmupMixin:
         service_mod = _service_mod()
         period = self.config.get_for_environment(
             "ibkr_warmup_required_5m_period",
-            service_mod.ENVIRONMENT,
+            service_mod.DATA_ENVIRONMENT,
             "4d",
         )
         return str(period or "4d").strip() or "4d"
@@ -189,7 +189,7 @@ class TradingServiceWarmupMixin:
 
     def _restart_overlap_days(self) -> int:
         service_mod = _service_mod()
-        return max(1, self.config.get_int_for_environment("ibkr_restart_overlap_days", service_mod.ENVIRONMENT, 1))
+        return max(1, self.config.get_int_for_environment("ibkr_restart_overlap_days", service_mod.DATA_ENVIRONMENT, 1))
 
     def _data_universe_symbols(self) -> list[str]:
         return self._normalize_symbol_list(list(self._watchlist_symbols) + list(self._market_ws_symbols()))

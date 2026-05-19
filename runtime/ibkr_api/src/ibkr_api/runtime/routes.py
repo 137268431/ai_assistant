@@ -4,7 +4,7 @@ from typing import Any
 
 from flask import Response, jsonify, request
 
-from ibkr_compute.core.broker_mode import resolve_data_environment
+from ibkr_api.modes import request_broker_mode, request_market_data_mode
 from ibkr_api.system.service_state import canonicalize_topology
 
 
@@ -37,6 +37,13 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     backtest_base_url = deps["backtest_base_url"]
     exports: dict[str, Any] = {}
 
+    def requested_mode_payload() -> dict[str, Any]:
+        return {
+            "broker_mode": request.args.get("broker_mode"),
+            "market_data_mode": request.args.get("market_data_mode") or request.args.get("data_environment") or request.args.get("environment"),
+            "data_environment": request.args.get("data_environment"),
+        }
+
     def safe_storage_health(environment: str) -> dict[str, Any]:
         if collect_storage_health is None:
             return {}
@@ -53,8 +60,10 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
 
     @app.route("/api/custom/ibkr/runtime/config", methods=["GET"])
     def custom_ibkr_runtime_config() -> Response:
-        requested_environment = normalize_environment(request.args.get("environment"), "live")
+        mode_payload = requested_mode_payload()
+        requested_environment = request_broker_mode(mode_payload)
         environment = requested_environment
+        data_environment = request_market_data_mode(mode_payload)
         runtime_payload: dict[str, Any] = {}
         try:
             runtime_result = fetch_runtime_status(requested_environment)
@@ -66,7 +75,6 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
                 )
         except Exception:
             runtime_payload = {}
-        data_environment = resolve_data_environment(environment)
         scope = str(request.args.get("scope") or "").strip().lower() or "effective"
         rows = pb.get_runtime_config(scope="all", environment=environment)
         if scope != "all":
@@ -92,10 +100,11 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
 
     @app.route("/api/custom/ibkr/healthz", methods=["GET"])
     def custom_ibkr_healthz() -> Response:
-        environment = normalize_environment(request.args.get("environment"), "live")
-        data_environment = resolve_data_environment(environment)
-        compute_result = fetch_compute_health(environment)
-        backtest_result = fetch_backtest_health(environment)
+        mode_payload = requested_mode_payload()
+        environment = request_broker_mode(mode_payload)
+        data_environment = request_market_data_mode(mode_payload)
+        compute_result = fetch_compute_health(data_environment)
+        backtest_result = fetch_backtest_health(data_environment)
         runtime_result = fetch_runtime_health(environment)
         compute_payload = as_dict(compute_result.get("payload"))
         backtest_payload = as_dict(backtest_result.get("payload"))
@@ -128,7 +137,7 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             }.items()
             if value
         }
-        storage_health = safe_storage_health(environment)
+        storage_health = safe_storage_health(data_environment)
         return jsonify(
             {
                 "ok": ok,
@@ -139,7 +148,9 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
                 "market_data_environment": data_environment,
                 "shared_market_data": data_environment == "live",
                 "requested_environment": environment,
-                "actual_runtime_environment": normalize_environment(runtime_payload.get("environment") or environment, environment),
+                "requested_broker_mode": environment,
+                "requested_market_data_mode": data_environment,
+                "actual_runtime_environment": normalize_environment(runtime_payload.get("broker_mode") or runtime_payload.get("environment") or environment, environment),
                 "compute": compute_payload,
                 "backtest_service": backtest_service_payload,
                 "backtest": as_dict(backtest_payload.get("backtest")),
@@ -160,8 +171,9 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
 
     @app.route("/api/custom/ibkr/statusz", methods=["GET"])
     def custom_ibkr_statusz() -> Response:
-        environment = normalize_environment(request.args.get("environment"), "live")
-        data_environment = resolve_data_environment(environment)
+        mode_payload = requested_mode_payload()
+        environment = request_broker_mode(mode_payload)
+        data_environment = request_market_data_mode(mode_payload)
         include_engines = parse_boolean(request.args.get("full"), False) or not parse_boolean(request.args.get("lite"), True)
         include_warmup_details = (
             parse_boolean(request.args.get("warmup"), False)
@@ -169,9 +181,9 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             or include_engines
         )
 
-        compute_result = fetch_compute_status(environment, include_engines=include_engines)
-        backtest_health_result = fetch_backtest_health(environment)
-        backtest_status_result = fetch_backtest_status(environment)
+        compute_result = fetch_compute_status(data_environment, include_engines=include_engines)
+        backtest_health_result = fetch_backtest_health(data_environment)
+        backtest_status_result = fetch_backtest_status(data_environment)
         runtime_result = fetch_runtime_status(environment)
         compute_payload = as_dict(compute_result.get("payload"))
         backtest_health_payload = as_dict(backtest_health_result.get("payload"))
@@ -181,9 +193,9 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             "payload": backtest_health_payload,
         }
         runtime_payload = as_dict(runtime_result.get("payload"))
-        persisted_daily_scan = load_daily_scan_state(environment)
+        persisted_daily_scan = load_daily_scan_state(data_environment)
         fallback_active_target_date = str(persisted_daily_scan.get("market_date") or "").strip()
-        fallback_active_target_count = count_active_today_targets(environment, fallback_active_target_date) if fallback_active_target_date else 0
+        fallback_active_target_count = count_active_today_targets(data_environment, fallback_active_target_date) if fallback_active_target_date else 0
 
         compute_data = build_statusz_compute_payload(compute_payload, include_engines)
         live_readiness = build_statusz_live_readiness(compute_payload, runtime_payload)
@@ -218,7 +230,7 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             }.items()
             if value
         }
-        storage_health = safe_storage_health(environment)
+        storage_health = safe_storage_health(data_environment)
         ok = (
             not errors
             and compute_data.get("ok") is not False
@@ -244,6 +256,8 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
                 "storage_health": storage_health,
                 "warmup_details_included": bool(include_warmup_details),
                 "requested_environment": environment,
+                "requested_broker_mode": environment,
+                "requested_market_data_mode": data_environment,
                 "broker_mode": runtime_data.get("broker_mode") or actual_runtime_environment,
                 "gateway_mode": runtime_data.get("gateway_mode") or "",
                 "data_environment": runtime_data.get("data_environment") or data_environment,
@@ -271,7 +285,7 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
 
     @app.route("/api/custom/ibkr/2fa/status", methods=["GET"])
     def custom_ibkr_two_factor_status() -> Response:
-        environment = normalize_environment(request.args.get("environment"), "live")
+        environment = request_broker_mode(requested_mode_payload())
         payload = get_state_payload(ibkr_2fa_state_key, environment, date=ibkr_2fa_state_date)
         state = as_dict(payload.get("data"))
         if not str(state.get("status") or "").strip():
@@ -283,7 +297,7 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
         runtime_payload = as_dict(runtime_result.get("payload"))
         if runtime_payload:
             state = normalize_two_factor_state_with_runtime(state, runtime_payload)
-            actual_runtime_environment = normalize_environment(runtime_payload.get("environment") or environment, environment)
+            actual_runtime_environment = normalize_environment(runtime_payload.get("broker_mode") or runtime_payload.get("environment") or environment, environment)
             state["requested_environment"] = environment
             state["actual_runtime_environment"] = actual_runtime_environment
             state["runtime_environment_mismatch"] = actual_runtime_environment != environment
@@ -299,7 +313,8 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
         return jsonify(
             {
                 "ok": True,
-                "environment": payload.get("environment") or environment,
+                "environment": environment,
+                "broker_mode": environment,
                 "date": payload.get("date") or ibkr_2fa_state_date,
                 "state": state,
                 "source": "ibkr-api",

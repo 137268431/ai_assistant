@@ -32,7 +32,12 @@ from ibkr_compute.api.service_topology import (
     get_runtime_mode,
 )
 from ibkr_compute.api.shared.service_status import get_service_status_snapshot
-from ibkr_compute.core.broker_mode import resolve_market_data_mode
+from ibkr_compute.core.broker_mode import (
+    configured_broker_mode,
+    normalize_broker_mode,
+    resolve_data_environment,
+    resolve_market_data_mode,
+)
 from ibkr_compute.backtest.execution_fills import (
     DEFAULT_PROFILE_STATE_KEY,
     build_calibrated_execution_cost_profile,
@@ -269,9 +274,15 @@ def build_backtest_preload_status_response():
         payload = get_json_payload()
         symbols = payload.get("symbols") or payload.get("symbols_text") or payload.get("symbol") or ""
         if request.method == "POST" and symbols:
+            environment = resolve_data_environment(
+                payload.get("market_data_mode")
+                or payload.get("data_environment")
+                or payload.get("environment")
+                or get_requested_environment("live")
+            )
             result = coordinator.enqueue(
                 symbols,
-                environment=str(payload.get("environment") or get_requested_environment("live")).strip().lower() or "live",
+                environment=environment,
                 trigger=str(payload.get("trigger") or "api_status_post").strip() or "api_status_post",
                 reason=str(payload.get("reason") or "manual_preload").strip() or "manual_preload",
                 date_from=str(payload.get("date_from") or "").strip() or None,
@@ -445,10 +456,13 @@ def build_backtest_cleanup_response():
 
 
 def _execution_payload_environment(payload: dict) -> str:
-    text = str((payload or {}).get("environment") or "").strip().lower()
-    if text in {"live", "paper", "backtest"}:
-        return text
-    return get_requested_environment("live")
+    return normalize_broker_mode(
+        (payload or {}).get("broker_mode")
+        or get_query_arg_text("broker_mode")
+        or (payload or {}).get("environment")
+        or get_query_arg_text("environment"),
+        configured_broker_mode(),
+    )
 
 
 def _execution_payload_symbols(payload: dict) -> list[str]:
@@ -570,7 +584,7 @@ def build_backtest_execution_cost_import_response():
 def _fetch_recent_fills_from_runtime(environment: str, days: int) -> dict:
     response = requests.get(
         f"{get_runtime_internal_url().rstrip('/')}/ibkr/orders/history",
-        params={"environment": environment, "days": max(1, int(days or 1))},
+        params={"broker_mode": environment, "environment": environment, "days": max(1, int(days or 1))},
         timeout=30,
     )
     payload = response.json() if response.content else {}

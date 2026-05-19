@@ -9,7 +9,8 @@ const SUPPORTED_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
             { key: 'custom', shortLabel: '自定义', longLabel: '自定义范围', durationMs: null },
             { key: 'all', shortLabel: 'ALL', longLabel: '全部历史', durationMs: 0 },
         ];
-        let currentEnvironment = getCurrentRuntimeEnvironment();
+        let currentBrokerMode = getCurrentBrokerMode();
+        let currentEnvironment = getSharedDataEnvironment();
         let currentSymbol = '';
         let currentInterval = '5m';
         let currentRangeKey = '1d';

@@ -12,6 +12,7 @@ from ibkr_api.universe.dynamic_admission import (
     evaluate_dynamic_admission_gates,
 )
 from ibkr_api.universe.fundamentals import load_fundamentals_cache_by_symbol
+from ibkr_compute.core.broker_mode import resolve_data_environment
 
 
 RequestJsonRequest = Callable[..., dict[str, Any]]
@@ -508,7 +509,9 @@ def build_watchlist_eligibility_response(
     request_json_request: RequestJsonRequest,
     compute_base_url: str,
 ) -> tuple[dict[str, Any], int]:
-    environment = normalize_environment(payload.get("environment"), "live")
+    environment = resolve_data_environment(
+        payload.get("market_data_mode") or payload.get("data_environment") or payload.get("environment")
+    )
     symbols = _normalize_symbols(payload.get("symbols") or payload.get("symbol"))
     window_trading_days = max(
         1,

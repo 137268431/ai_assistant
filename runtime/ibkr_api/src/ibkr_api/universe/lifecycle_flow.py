@@ -4,6 +4,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from ibkr_api.modes import request_broker_mode, request_market_data_mode
 from ibkr_api.orders.values import first_defined, to_float, to_int, to_text
 from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_api.reverse.normalize import normalize_reverse_record
@@ -22,7 +23,7 @@ NormalizeEnvironment = Callable[[Any, str], str]
 TimeStrings = Callable[[], dict[str, str]]
 
 SUPPORTED_LIVE_ENVIRONMENTS = {"live", "paper"}
-SUPPORTED_MODES = {"live", "paper", "backtest"}
+SUPPORTED_MODES = {"auto", "live", "paper", "backtest"}
 
 LANE_DEFINITIONS = [
     {"key": "selection", "label": "选股入选", "copy": "为什么进入候选池 / 今日标的"},
@@ -1160,8 +1161,15 @@ def _load_live_sources(
     }
 
 
-def _build_live_events(pb: Any, *, environment: str, payload: dict[str, Any], market_date: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
-    data_environment = resolve_data_environment(environment)
+def _build_live_events(
+    pb: Any,
+    *,
+    environment: str,
+    data_environment: str,
+    payload: dict[str, Any],
+    market_date: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    data_environment = resolve_data_environment(data_environment)
     sources, warnings, context = _load_live_sources(
         pb,
         environment=environment,
@@ -2122,24 +2130,37 @@ def build_lifecycle_flow_response(
     normalize_environment: NormalizeEnvironment,
     time_strings: TimeStrings,
 ) -> tuple[dict[str, Any], int]:
-    requested_mode = _lower(payload.get("mode")) or _lower(payload.get("environment")) or "live"
+    requested_mode = _lower(payload.get("mode")) or "auto"
     if requested_mode not in SUPPORTED_MODES:
         return {"ok": False, "error": "unsupported_mode", "mode": requested_mode, "supported_modes": sorted(SUPPORTED_MODES)}, 400
 
-    if requested_mode == "backtest":
+    requested_environment = _lower(payload.get("environment"))
+    has_backtest_context = bool(_safe_text(payload.get("run_id")))
+    if requested_mode == "backtest" or requested_environment == "backtest" or has_backtest_context:
+        requested_mode = "backtest"
         environment = "backtest"
         data_environment = "backtest"
         events, warnings, context, source_summary = _build_backtest_events(pb, payload=payload)
     else:
-        default_environment = "paper" if requested_mode == "paper" else LIVE_ENVIRONMENT
-        environment = normalize_environment(payload.get("environment"), default_environment)
-        data_environment = resolve_data_environment(environment)
+        mode_payload = {
+            **payload,
+            "broker_mode": payload.get("broker_mode") or (requested_mode if requested_mode in {"live", "paper"} else payload.get("environment")),
+            "market_data_mode": payload.get("market_data_mode") or payload.get("data_environment") or payload.get("environment"),
+            "data_environment": payload.get("data_environment"),
+        }
+        environment = request_broker_mode(mode_payload)
+        data_environment = request_market_data_mode(mode_payload)
         if environment not in SUPPORTED_LIVE_ENVIRONMENTS:
             return {"ok": False, "error": "unsupported_environment", "environment": environment, "supported_environments": sorted(SUPPORTED_LIVE_ENVIRONMENTS)}, 400
-        mode = environment
         requested_market_date = _safe_text(first_defined(payload.get("market_date"), payload.get("date"))) or current_market_date(time_strings)
-        events, warnings, context, source_summary = _build_live_events(pb, environment=environment, payload=payload, market_date=requested_market_date)
-        requested_mode = mode
+        events, warnings, context, source_summary = _build_live_events(
+            pb,
+            environment=environment,
+            data_environment=data_environment,
+            payload=payload,
+            market_date=requested_market_date,
+        )
+        requested_mode = environment
 
     ordered_events = _sort_events(_append_lifecycle_endpoints(events))
     nodes, edges = _events_to_graph(ordered_events, warnings)

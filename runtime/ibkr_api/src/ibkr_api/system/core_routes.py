@@ -6,6 +6,7 @@ from flask import Response, jsonify, request
 
 from ibkr_api.system.health_report import build_health_report_response
 from ibkr_api.system.notify import build_notify_response
+from ibkr_api.modes import request_broker_mode
 
 
 SystemDeps = dict[str, Any]
@@ -51,7 +52,7 @@ def register_system_core_routes(app, *, deps: SystemDeps, exports: dict[str, Any
     @app.route("/api/custom/system/event", methods=["POST"])
     def custom_system_event() -> Response:
         payload = request.get_json(silent=True) or {}
-        environment = normalize_environment(payload.get("environment"), "live")
+        environment = request_broker_mode(payload)
         raw_title = str(payload.get("title") or "").strip()
         raw_detail = payload.get("detail") if payload.get("detail") is not None else {}
         event_type = str(payload.get("event_type") or "status_change").strip() or "status_change"

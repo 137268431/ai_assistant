@@ -3,13 +3,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from ibkr_api.modes import request_broker_mode, request_market_data_mode
 from ibkr_api.orders.group_cancel import CancelBrokerOrder
 from ibkr_api.orders.values import to_text
 from ibkr_api.signals.notifications import SignalStatusNotifier, apply_signal_status_notification, sync_signal_status_notification
 from ibkr_api.signals.order_cancel import OrderStatusNotifier, build_signal_cancel_order_summary, cancel_signal_related_orders
 from ibkr_api.signals.values import get_signal_extra, load_signal_record, merge_signal_extra, now_iso_utc, signal_status, signal_symbol
 from ibkr_api.webhooks.pages import fail_page, ok_page, warn_page
-from ibkr_compute.core.broker_mode import resolve_data_environment
 
 
 HTML_CONTENT_TYPE = "text/html; charset=utf-8"
@@ -82,6 +82,103 @@ def _status_hint_response(action: str, page_kind: str, title: str, detail: str, 
         page_kind=page_kind,
         action=action,
     )
+
+
+def _request_modes(payload: dict[str, Any] | None) -> tuple[str, str]:
+    request_payload = payload if isinstance(payload, dict) else {}
+    broker_mode = request_broker_mode(
+        {"broker_mode": request_payload.get("broker_mode") or request_payload.get("environment")}
+    )
+    data_environment = request_market_data_mode(
+        {
+            "market_data_mode": request_payload.get("market_data_mode"),
+            "data_environment": request_payload.get("data_environment"),
+        }
+    )
+    return broker_mode, data_environment
+
+
+def _effective_signal_status(record: Any, broker_mode: str, data_environment: str) -> str:
+    extra = get_signal_extra(record)
+    execution_by_mode = extra.get("execution_by_mode") if isinstance(extra, dict) else {}
+    broker_execution = execution_by_mode.get(broker_mode) if isinstance(execution_by_mode, dict) else {}
+    broker_status = to_text(broker_execution.get("status") if isinstance(broker_execution, dict) else "").lower()
+    if broker_status:
+        return broker_status
+    top_level_status = signal_status(record).lower()
+    if broker_mode == data_environment == "live":
+        return top_level_status
+    if top_level_status in {"pending", "awaiting_confirm"}:
+        return top_level_status
+    return "pending"
+
+
+def _broker_scoped_execution_patch(
+    record: dict[str, Any],
+    *,
+    broker_mode: str,
+    data_environment: str,
+    status: str,
+    note: str,
+    extra_update: dict[str, Any],
+) -> dict[str, Any]:
+    extra_patch = merge_signal_extra(record, extra_update)
+    execution_by_mode = extra_patch.get("execution_by_mode") if isinstance(extra_patch.get("execution_by_mode"), dict) else {}
+    broker_payload = execution_by_mode.get(broker_mode) if isinstance(execution_by_mode, dict) else {}
+    if not isinstance(broker_payload, dict):
+        broker_payload = {}
+    execution_by_mode = dict(execution_by_mode)
+    execution_by_mode[broker_mode] = {
+        **broker_payload,
+        "status": status,
+        "note": note,
+        "broker_mode": broker_mode,
+        "data_environment": data_environment,
+        "updated_at": extra_update.get("confirmed_at")
+        or extra_update.get("rejected_at")
+        or extra_update.get("expired_at")
+        or now_iso_utc(),
+        "source": "signal_webhook",
+    }
+    extra_patch["execution_by_mode"] = execution_by_mode
+    extra_patch["last_runtime_broker_mode"] = broker_mode
+    extra_patch["last_runtime_data_environment"] = data_environment
+    return extra_patch
+
+
+def _signal_status_update_payload(
+    record: dict[str, Any],
+    *,
+    broker_mode: str,
+    data_environment: str,
+    status: str,
+    note: str,
+    extra_update: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    extra_patch = _broker_scoped_execution_patch(
+        record,
+        broker_mode=broker_mode,
+        data_environment=data_environment,
+        status=status,
+        note=note,
+        extra_update=extra_update,
+    )
+    update_payload: dict[str, Any] = {"extra": extra_patch}
+    existing_note = to_text(record.get("note")).lower()
+    if broker_mode != data_environment or broker_mode != "live":
+        if existing_note.startswith(f"{broker_mode}:") or "history_repair_pending" in existing_note:
+            update_payload["note"] = ""
+    notification_row = {
+        **dict(record),
+        "status": status,
+        "note": note,
+        "broker_mode": broker_mode,
+        "data_environment": data_environment,
+        "extra": extra_patch,
+    }
+    if broker_mode == data_environment == "live":
+        update_payload.update({"status": status, "note": note})
+    return update_payload, notification_row
 
 
 def _parse_timestamp_ms(value: Any) -> int:
@@ -208,13 +305,12 @@ def build_signal_confirm_webhook_response(
     if not signal_id:
         return _fail_response("参数错误", "缺少信号ID", status_code=400, action="signal_confirm")
 
-    environment = normalize_environment((payload or {}).get("environment"), "live")
-    data_environment = resolve_data_environment(environment)
+    environment, data_environment = _request_modes(payload)
     record = load_signal_record(pb, signal_id, data_environment, escape_filter=escape_filter_string)
     if not record or not record.get("id"):
         return _fail_response("信号不存在", "找不到信号", signal_id, status_code=404, action="signal_confirm")
 
-    current_status = signal_status(record)
+    current_status = _effective_signal_status(record, environment, data_environment)
     symbol = signal_symbol(record, signal_id)
     if current_status not in {"pending", "awaiting_confirm"}:
         page_kind, title, detail = _CONFIRM_STATUS_HINTS.get(
@@ -225,27 +321,28 @@ def build_signal_confirm_webhook_response(
 
     validity_minutes = _signal_validity_minutes(config_value, environment)
     if _signal_is_expired(record, validity_minutes=validity_minutes, clock=now_provider or clock):
-        extra_patch = merge_signal_extra(
+        extra_update = {
+            "expired_by": "signal_confirm_webhook",
+            "expired_at": now_iso_utc(now_provider or clock),
+            "status_reason": "confirm_too_late",
+            "signal_validity_minutes": validity_minutes,
+            "broker_mode": environment,
+            "data_environment": data_environment,
+        }
+        update_payload, updated_row = _signal_status_update_payload(
             record,
-            {
-                "expired_by": "signal_confirm_webhook",
-                "expired_at": now_iso_utc(now_provider or clock),
-                "status_reason": "confirm_too_late",
-                "signal_validity_minutes": validity_minutes,
-                "broker_mode": environment,
-                "data_environment": data_environment,
-            },
+            broker_mode=environment,
+            data_environment=data_environment,
+            status="expired",
+            note="confirm_too_late",
+            extra_update=extra_update,
         )
         updated_record = pb.update_record(
             "ibkr_signals",
             str(record.get("id")),
-            {
-                "status": "expired",
-                "note": "confirm_too_late",
-                "extra": extra_patch,
-            },
+            update_payload,
         )
-        updated_row = updated_record if isinstance(updated_record, dict) else {**dict(record), "status": "expired", "note": "confirm_too_late", "extra": extra_patch}
+        updated_row = updated_record if isinstance(updated_record, dict) else updated_row
         try:
             _sync_signal_notification(
                 pb,
@@ -285,20 +382,20 @@ def build_signal_confirm_webhook_response(
                 "reconfirm_resolution": "confirmed_by_user",
             }
         )
-    extra_patch = merge_signal_extra(
+    update_payload, updated_row = _signal_status_update_payload(
         record,
-        extra_update,
+        broker_mode=environment,
+        data_environment=data_environment,
+        status="pending",
+        note="",
+        extra_update=extra_update,
     )
     updated_record = pb.update_record(
         "ibkr_signals",
         str(record.get("id")),
-        {
-            "status": "pending",
-            "note": "",
-            "extra": extra_patch,
-        },
+        update_payload,
     )
-    updated_row = updated_record if isinstance(updated_record, dict) else {**dict(record), "status": "pending", "note": "", "extra": extra_patch}
+    updated_row = updated_record if isinstance(updated_record, dict) else updated_row
     try:
         _sync_signal_notification(
             pb,
@@ -341,13 +438,12 @@ def build_signal_cancel_webhook_response(
     if not signal_id:
         return _fail_response("参数错误", "缺少信号ID", status_code=400, action="signal_cancel")
 
-    environment = normalize_environment((payload or {}).get("environment"), "live")
-    data_environment = resolve_data_environment(environment)
+    environment, data_environment = _request_modes(payload)
     record = load_signal_record(pb, signal_id, data_environment, escape_filter=escape_filter_string)
     if not record or not record.get("id"):
         return _fail_response("信号不存在", "找不到信号", signal_id, status_code=404, action="signal_cancel")
 
-    current_status = signal_status(record)
+    current_status = _effective_signal_status(record, environment, data_environment)
     symbol = signal_symbol(record, signal_id)
     if current_status not in {"pending", "awaiting_confirm"}:
         page_kind, title, detail = _CANCEL_STATUS_HINTS.get(
@@ -389,28 +485,29 @@ def build_signal_cancel_webhook_response(
 
     failure_count = len(cancel_summary.get("failed_order_ids") or [])
     rejection_note = "manual_rejected" if cancel_summary.get("ok") else f"manual_rejected_with_cancel_failures:{failure_count}"
-    extra_patch = merge_signal_extra(
+    extra_update = {
+        "rejected_by": "manual",
+        "rejected_at": now_iso_utc(now_provider or clock),
+        "status_reason": "manual_rejected" if cancel_summary.get("ok") else "manual_rejected_with_cancel_failures",
+        "cancel_order_failures": list(cancel_summary.get("failed_order_ids") or []),
+        "cancelled_order_ids": list(cancel_summary.get("cancelled_order_ids") or []),
+        "broker_mode": environment,
+        "data_environment": data_environment,
+    }
+    update_payload, updated_row = _signal_status_update_payload(
         record,
-        {
-            "rejected_by": "manual",
-            "rejected_at": now_iso_utc(now_provider or clock),
-            "status_reason": "manual_rejected" if cancel_summary.get("ok") else "manual_rejected_with_cancel_failures",
-            "cancel_order_failures": list(cancel_summary.get("failed_order_ids") or []),
-            "cancelled_order_ids": list(cancel_summary.get("cancelled_order_ids") or []),
-            "broker_mode": environment,
-            "data_environment": data_environment,
-        },
+        broker_mode=environment,
+        data_environment=data_environment,
+        status="rejected",
+        note=rejection_note,
+        extra_update=extra_update,
     )
     updated_record = pb.update_record(
         "ibkr_signals",
         str(record.get("id")),
-        {
-            "status": "rejected",
-            "note": rejection_note,
-            "extra": extra_patch,
-        },
+        update_payload,
     )
-    updated_row = updated_record if isinstance(updated_record, dict) else {**dict(record), "status": "rejected", "note": rejection_note, "extra": extra_patch}
+    updated_row = updated_record if isinstance(updated_record, dict) else updated_row
     try:
         _sync_signal_notification(
             pb,

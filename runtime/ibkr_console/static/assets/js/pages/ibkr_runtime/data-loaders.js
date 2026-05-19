@@ -11,11 +11,12 @@
                 setIbkrPageLoading(
                     true,
                     '控制台加载中',
-                    `正在拉取 ${getEnvironmentLabel(currentEnvironment)} 环境的 runtime、2FA、配置与最近链路数据。`
+                    `正在拉取 Broker ${getEnvironmentLabel(currentBrokerMode)} / Shared Data 的 runtime、2FA、配置与最近链路数据。`
                 );
             }
             try {
-                const envFilter = buildEnvironmentFilter();
+                const dataEnvFilter = buildDataEnvironmentFilter();
+                const brokerEnvFilter = buildBrokerEnvironmentFilter();
                 const readApiFetch = (collection, params, cacheOptions = {}) => (
                     typeof cachedApiFetch === 'function'
                         ? cachedApiFetch(collection, params, cacheOptions)
@@ -23,8 +24,8 @@
                 );
                 const readCustomJson = (path, options = {}, cacheOptions = {}) => (
                     typeof cachedCustomJson === 'function'
-                        ? cachedCustomJson(path, currentEnvironment, options, cacheOptions)
-                        : requestIbkrEnvironmentJson(path, currentEnvironment, options)
+                        ? cachedCustomJson(path, currentBrokerMode, options, cacheOptions)
+                        : requestIbkrEnvironmentJson(path, currentBrokerMode, options)
                 );
                 const coreCache = { ttlMs: 10000, ttl: 10000, force: Boolean(showToastOnSuccess) };
                 const listCache = { ttlMs: 15000, ttl: 15000, force: Boolean(showToastOnSuccess) };
@@ -41,9 +42,9 @@
                     readCustomJson('/api/custom/ibkr/2fa/status', { retryAttempts: 3 }, coreCache),
                     readCustomJson('/api/custom/ibkr/startup/status', { retryAttempts: 3 }, coreCache).catch(() => ({ state: {} })),
                     readCustomJson('/api/custom/ibkr/runtime/config', { retryAttempts: 3 }, { ttlMs: 300000, ttl: 300000, force: Boolean(showToastOnSuccess) }),
-                    readApiFetch('ibkr_signals', { filter: envFilter, sort: '-created', perPage: 8 }, listCache),
-                    readApiFetch('orders', { filter: envFilter, sort: '-created', perPage: 8 }, listCache),
-                    readApiFetch('system_events', { filter: envFilter, sort: '-created', perPage: 8 }, listCache)
+                    readApiFetch('ibkr_signals', { filter: dataEnvFilter, sort: '-created', perPage: 8 }, listCache),
+                    readApiFetch('orders', { filter: brokerEnvFilter, sort: '-created', perPage: 8 }, listCache),
+                    readApiFetch('system_events', { filter: brokerEnvFilter, sort: '-created', perPage: 8 }, listCache)
                 ]);
                 if (loadId !== latestRuntimeLoadId) return;
 
@@ -102,7 +103,7 @@
                 if (showToastOnSuccess) showToast('Runtime 数据已刷新');
 
                 const recentMarketDate = resolveRuntimeMarketDate(status);
-                const recentRecordFilter = `created >= "${escapeQueryValue(`${recentMarketDate} 00:00:00`)}" && ${envFilter}`;
+                const recentRecordFilter = `created >= "${escapeQueryValue(`${recentMarketDate} 00:00:00`)}" && ${dataEnvFilter}`;
                 const barsPromise = readApiFetch('ibkr_bars', {
                     filter: recentRecordFilter,
                     sort: '-bar_time_ms',

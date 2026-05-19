@@ -18,6 +18,7 @@ from ibkr_api.signals.ingest_active_policy import (
     build_superseded_patch,
     calculate_signal_strength,
     changed_execution_fields,
+    effective_broker_signal_status,
     find_active_symbol_signal,
     has_order_trace,
 )
@@ -48,12 +49,14 @@ def _sync_signal_notification_after_upsert(
     record: dict[str, Any],
     *,
     previous_status: str,
+    broker_mode: str,
+    data_environment: str,
     send_interactive: SendInteractive | None,
     update_interactive: UpdateInteractive | None,
     signal_chat_id: str,
     console_base_url: str,
 ) -> dict[str, Any]:
-    current_status = to_text(record.get("status")).lower()
+    current_status = effective_broker_signal_status(record, broker_mode, data_environment)
     if current_status not in {"awaiting_confirm", "pending", "rejected"}:
         return {}
     extra = get_signal_extra(record)
@@ -177,13 +180,15 @@ def _active_signal_has_order_trace(
 def _sync_refreshed_signal_card(
     record: dict[str, Any],
     *,
+    broker_mode: str,
+    data_environment: str,
     send_interactive: SendInteractive | None,
     update_interactive: UpdateInteractive | None,
     signal_chat_id: str,
     console_base_url: str,
 ) -> dict[str, Any]:
     extra = get_signal_extra(record)
-    status = to_text(record.get("status")).lower()
+    status = effective_broker_signal_status(record, broker_mode, data_environment)
     requires_reconfirm = status == "awaiting_confirm" and bool(extra.get("followup_requires_reconfirm"))
     if not to_text(extra.get("feishu_signal_message_id")) and not requires_reconfirm:
         return {}
@@ -215,6 +220,7 @@ def _handle_active_symbol_policy(
         pb,
         prepared,
         environment,
+        broker_mode=broker_mode,
         escape_filter_string=escape_filter_string,
     )
     if not active:
@@ -222,16 +228,18 @@ def _handle_active_symbol_policy(
 
     incoming_direction = to_text(prepared.get("direction")).lower()
     active_direction = to_text(active.get("direction")).lower()
-    active_status = to_text(active.get("status")).lower()
+    active_status = effective_broker_signal_status(active, broker_mode, environment)
     incoming_signal_id = to_text(prepared.get("signal_id"))
     active_signal_id = to_text(active.get("signal_id"))
 
     if incoming_direction and incoming_direction == active_direction:
         if active_status == "awaiting_confirm":
-            refresh_payload = build_active_signal_refresh_payload(active, prepared, environment)
+            refresh_payload = build_active_signal_refresh_payload(active, prepared, environment, broker_mode=broker_mode)
             saved_row = _update_signal_row(pb, active, refresh_payload)
             notify_result = _sync_refreshed_signal_card(
                 saved_row,
+                broker_mode=broker_mode,
+                data_environment=environment,
                 send_interactive=send_interactive,
                 update_interactive=update_interactive,
                 signal_chat_id=signal_chat_id,
@@ -258,10 +266,17 @@ def _handle_active_symbol_policy(
             changed_fields = changed_execution_fields(active, prepared)
             order_trace_active = _active_signal_has_order_trace(pb, active, broker_mode, escape_filter_string)
             if manual_confirm_enabled and changed_fields and not order_trace_active:
-                reconfirm_payload = build_confirmed_signal_reconfirm_payload(active, prepared, environment)
+                reconfirm_payload = build_confirmed_signal_reconfirm_payload(
+                    active,
+                    prepared,
+                    environment,
+                    broker_mode=broker_mode,
+                )
                 saved_row = _update_signal_row(pb, active, reconfirm_payload)
                 notify_result = _sync_refreshed_signal_card(
                     saved_row,
+                    broker_mode=broker_mode,
+                    data_environment=environment,
                     send_interactive=send_interactive,
                     update_interactive=update_interactive,
                     signal_chat_id=signal_chat_id,
@@ -286,10 +301,12 @@ def _handle_active_symbol_policy(
                 )
 
             if not manual_confirm_enabled and changed_fields and not order_trace_active:
-                refresh_payload = build_active_signal_refresh_payload(active, prepared, environment)
+                refresh_payload = build_active_signal_refresh_payload(active, prepared, environment, broker_mode=broker_mode)
                 saved_row = _update_signal_row(pb, active, refresh_payload)
                 notify_result = _sync_refreshed_signal_card(
                     saved_row,
+                    broker_mode=broker_mode,
+                    data_environment=environment,
                     send_interactive=send_interactive,
                     update_interactive=update_interactive,
                     signal_chat_id=signal_chat_id,
@@ -400,7 +417,17 @@ def _handle_active_symbol_policy(
         escape_filter_string,
     ):
         reason = "stale_active_signal_without_order_trace"
-        _update_signal_row(pb, active, build_stale_active_close_patch(active, prepared, reason=reason))
+        _update_signal_row(
+            pb,
+            active,
+            build_stale_active_close_patch(
+                active,
+                prepared,
+                reason=reason,
+                broker_mode=broker_mode,
+                data_environment=environment,
+            ),
+        )
         prepared["extra"] = {
             **get_signal_extra(prepared),
             "reverse_policy": "skip_stale_active_without_order_trace",
@@ -410,7 +437,11 @@ def _handle_active_symbol_policy(
         return None, None, prepared
 
     if active_status in MUTABLE_SIGNAL_STATUSES:
-        _update_signal_row(pb, active, build_superseded_patch(active, prepared))
+        _update_signal_row(
+            pb,
+            active,
+            build_superseded_patch(active, prepared, broker_mode=broker_mode, data_environment=environment),
+        )
         prepared["extra"] = {
             **get_signal_extra(prepared),
             "reverse_policy": "supersede_unsubmitted_signal",
@@ -419,7 +450,13 @@ def _handle_active_symbol_policy(
         return None, None, prepared
 
     if active_status in BROKER_CONTROLLED_SIGNAL_STATUSES:
-        reverse_payload = build_reverse_record_payload(active, prepared, broker_mode)
+        reverse_payload = build_reverse_record_payload(
+            active,
+            prepared,
+            broker_mode,
+            data_environment=environment,
+            active_status=active_status,
+        )
         reverse_record = _create_or_update_reverse_record(pb, reverse_payload, escape_filter_string)
         active_extra = get_signal_extra(active)
         reverse_id = to_text(reverse_record.get("id"))
@@ -532,12 +569,16 @@ def build_signal_ingest_response(
             prepared,
             existing_row,
             manual_confirm_enabled=manual_confirm_enabled,
+            broker_mode=broker_mode,
+            data_environment=environment,
         )
         saved_row, action = upsert_signal_record(pb, existing_row, prepared)
         if action != "skipped":
             notify_result = _sync_signal_notification_after_upsert(
                 saved_row,
                 previous_status=lifecycle["previous_status"],
+                broker_mode=broker_mode,
+                data_environment=environment,
                 send_interactive=send_interactive,
                 update_interactive=update_interactive,
                 signal_chat_id=_signal_chat_id(signal_chat_id_fn, broker_mode),
@@ -651,6 +692,8 @@ def build_signals_ingest_response(
                 prepared,
                 existing_row,
                 manual_confirm_enabled=manual_confirm_enabled,
+                broker_mode=broker_mode,
+                data_environment=environment,
             )
             saved_row, action = upsert_signal_record(pb, existing_row, prepared)
             if action == "created":
@@ -664,6 +707,8 @@ def build_signals_ingest_response(
                 notify_result = _sync_signal_notification_after_upsert(
                     saved_row,
                     previous_status=lifecycle["previous_status"],
+                    broker_mode=broker_mode,
+                    data_environment=environment,
                     send_interactive=send_interactive,
                     update_interactive=update_interactive,
                     signal_chat_id=_signal_chat_id(signal_chat_id_fn, broker_mode),

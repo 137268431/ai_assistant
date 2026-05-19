@@ -4,12 +4,13 @@ from typing import Any
 
 from flask import Response, jsonify, request
 
+from ibkr_api.modes import request_broker_mode
+
 
 StartupDeps = dict[str, Any]
 
 
 def register_startup_status_routes(app, *, deps: StartupDeps, exports: dict[str, Any]) -> dict[str, Any]:
-    normalize_environment = deps["normalize_environment"]
     get_state_payload = deps["get_state_payload"]
     ibkr_startup_state_key = deps["ibkr_startup_state_key"]
     ibkr_startup_state_date = deps["ibkr_startup_state_date"]
@@ -17,7 +18,7 @@ def register_startup_status_routes(app, *, deps: StartupDeps, exports: dict[str,
 
     @app.route("/api/custom/ibkr/startup/status", methods=["GET"])
     def custom_ibkr_startup_status() -> Response:
-        environment = normalize_environment(request.args.get("environment"), "live")
+        environment = request_broker_mode({"broker_mode": request.args.get("broker_mode")})
         payload = get_state_payload(ibkr_startup_state_key, environment, date=ibkr_startup_state_date)
         raw_state = as_dict(payload.get("data"))
         state = {
@@ -37,7 +38,8 @@ def register_startup_status_routes(app, *, deps: StartupDeps, exports: dict[str,
         return jsonify(
             {
                 "ok": True,
-                "environment": payload.get("environment") or environment,
+                "environment": environment,
+                "broker_mode": environment,
                 "date": payload.get("date") or ibkr_startup_state_date,
                 "startup_label": state.get("startup_label") or "",
                 "state": state,

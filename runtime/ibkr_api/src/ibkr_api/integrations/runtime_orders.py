@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ibkr_compute.core.broker_mode import configured_broker_mode, normalize_broker_mode
+
 
 def cancel_broker_order_via_runtime(
     environment: str,
@@ -18,9 +20,10 @@ def cancel_broker_order_via_runtime(
         runtime_base_url,
         "/ibkr/orders/cancel",
         json_body={
-            "order_id": str(order_id or "").strip(),
-            "environment": normalize_environment(environment, "live"),
             **(as_dict(payload) if isinstance(payload, dict) else {}),
+            "order_id": str(order_id or "").strip(),
+            "broker_mode": normalize_broker_mode(environment, configured_broker_mode()),
+            "environment": normalize_broker_mode(environment, configured_broker_mode()),
         },
         timeout=20,
     )

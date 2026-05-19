@@ -76,16 +76,16 @@ def _validity_minutes(config_value: ConfigValue | None, environment: str) -> int
 
 def _request_broker_mode(payload: dict[str, Any], normalize_environment: NormalizeEnvironment) -> str:
     configured = configured_broker_mode()
-    if "broker_mode" in payload:
-        return normalize_broker_mode(payload.get("broker_mode"), configured)
+    requested = payload.get("broker_mode") or payload.get("environment")
+    if requested:
+        return normalize_broker_mode(requested, configured)
     return configured
 
 
 def _request_market_data_mode(payload: dict[str, Any]) -> str:
-    if "market_data_mode" in payload:
-        return resolve_market_data_mode(payload.get("market_data_mode"))
-    if "data_environment" in payload:
-        return resolve_market_data_mode(payload.get("data_environment"))
+    requested = payload.get("market_data_mode") or payload.get("data_environment") or payload.get("environment")
+    if requested:
+        return resolve_market_data_mode(requested)
     return resolve_market_data_mode(None)
 
 
@@ -166,6 +166,13 @@ def _with_broker_execution(
     merged["data_environment"] = data_environment
     merged["market_data_mode"] = data_environment
     return merged
+
+
+def _clear_scoped_note_payload(row: dict[str, Any], broker_mode: str) -> dict[str, str]:
+    note = to_text((row or {}).get("note")).lower()
+    if note.startswith(f"{broker_mode}:") or "history_repair_pending" in note:
+        return {"note": ""}
+    return {}
 
 
 def _apply_notification_patch(pb: Any, row: dict[str, Any], notify_result: dict[str, Any]) -> dict[str, Any]:
@@ -267,10 +274,10 @@ def build_signal_expiry_response(
                 )
                 update_payload = {
                     "extra": repaired_extra,
-                    "note": repair_reason if environment == data_environment == "live" else f"{environment}:{repair_reason}",
+                    **_clear_scoped_note_payload(row, environment),
                 }
                 if environment == data_environment == "live":
-                    update_payload["status"] = repair_status
+                    update_payload.update({"status": repair_status, "note": repair_reason})
                 updated = pb.update_record(
                     "ibkr_signals",
                     to_text(row.get("id")),
@@ -316,10 +323,10 @@ def build_signal_expiry_response(
             )
             update_payload = {
                 "extra": expired_extra,
-                "note": "signal_expired" if environment == data_environment == "live" else f"{environment}:signal_expired",
+                **_clear_scoped_note_payload(row, environment),
             }
             if environment == data_environment == "live":
-                update_payload["status"] = "expired"
+                update_payload.update({"status": "expired", "note": "signal_expired"})
             updated = pb.update_record(
                 "ibkr_signals",
                 to_text(row.get("id")),

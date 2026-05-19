@@ -49,7 +49,7 @@
                     method: 'POST',
                     body: {
                         action: 'chart/timeline',
-                        environment: currentEnvironment,
+                        ...buildModePayload({}, { brokerMode: currentBrokerMode, dataEnvironment: currentEnvironment }),
                         symbol: currentSymbol,
                         interval: currentInterval,
                         start_ms: requestBounds.startMs,
@@ -149,7 +149,7 @@
                     method: 'POST',
                     body: {
                         action: 'chart/compare',
-                        environment: currentEnvironment,
+                        ...buildModePayload({}, { brokerMode: currentBrokerMode, dataEnvironment: currentEnvironment }),
                         symbol: currentSymbol,
                         interval: currentInterval,
                         start_ms: requestBounds.startMs,
@@ -525,7 +525,8 @@
         }
 
         window.onEnvironmentChange = async function(environment) {
-            currentEnvironment = environment;
+            currentEnvironment = normalizeRuntimeEnvironment(environment, getSharedDataEnvironment());
+            currentBrokerMode = getCurrentBrokerMode();
             currentAnchorMs = 0;
             pendingFocusBarTimeMs = 0;
             currentIndicatorId = '';

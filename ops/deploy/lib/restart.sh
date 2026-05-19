@@ -305,6 +305,73 @@ prepare_pocketbase_root_if_needed() {
   "
 }
 
+prepare_compute_root_if_needed() {
+  local units=( "$@" )
+  local unit
+  local needs_compute_root=0
+  local compute_root="${IBKR_REMOTE_ROOT:-/opt/ibkr_compute}"
+
+  for unit in "${units[@]-}"; do
+    case "$unit" in
+      ibkr_src|ibkr_requirements|ibkr_systemd)
+        needs_compute_root=1
+        break
+        ;;
+    esac
+  done
+
+  [[ "$needs_compute_root" -eq 1 ]] || return 0
+
+  ssh_run "
+    set -e
+    mkdir -p '$compute_root' '$compute_root/src'
+    if [ ! -f '$compute_root/.env' ]; then
+      : > '$compute_root/.env'
+    fi
+    python3 - '$compute_root/.env' <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding='utf-8', errors='ignore') if path.exists() else ''
+updates = {
+    'PORT': '5100',
+    'IBKR_COMPUTE_PORT': '5100',
+    'IBKR_SERVICE_PROFILE': 'compute',
+    'IBKR_RUNTIME_MODE': 'remote',
+    'IBKR_COMPUTE_INTERNAL_URL': 'http://127.0.0.1:5100',
+    'IBKR_RUNTIME_INTERNAL_URL': 'http://127.0.0.1:5101',
+    'IBKR_API_INTERNAL_URL': 'http://127.0.0.1:5102',
+    'IBKR_SCHEDULER_INTERNAL_URL': 'http://127.0.0.1:5103',
+    'IBKR_BACKTEST_INTERNAL_URL': 'http://127.0.0.1:5105',
+    'CONSOLE_BASE_URL': 'https://quant.lzw-glory.top',
+}
+
+output_lines = []
+seen = set()
+for raw_line in text.splitlines():
+    line = raw_line.rstrip('\n')
+    stripped = line.strip()
+    if not stripped or stripped.startswith('#') or '=' not in line:
+        output_lines.append(line)
+        continue
+    key, _ = line.split('=', 1)
+    key = key.strip()
+    if key in updates:
+        output_lines.append(f'{key}={updates[key]}')
+        seen.add(key)
+    else:
+        output_lines.append(line)
+
+for key, value in updates.items():
+    if key not in seen:
+        output_lines.append(f'{key}={value}')
+
+path.write_text('\n'.join(output_lines).rstrip() + '\n', encoding='utf-8')
+PY
+  "
+}
+
 prepare_runtime_root_if_needed() {
   local units=( "$@" )
   local unit
@@ -642,6 +709,7 @@ perform_post_actions_for_units() {
   local restart_groups=()
   local wait_groups=()
   prepare_pocketbase_root_if_needed "${units[@]}"
+  prepare_compute_root_if_needed "${units[@]}"
   prepare_runtime_root_if_needed "${units[@]}"
   prepare_backtest_root_if_needed "${units[@]}"
   prepare_api_root_if_needed "${units[@]}"

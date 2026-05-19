@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ibkr_compute.core.broker_mode import configured_broker_mode, normalize_broker_mode, resolve_data_environment
+
 from ibkr_api.reverse.normalize import normalize_reverse_record
 from ibkr_api.reverse.shared import (
     DEFAULT_REVERSE_PRIORITY,
@@ -13,7 +15,6 @@ from ibkr_api.reverse.shared import (
     first_non_empty,
     get_reverse_extra,
     merge_record_patch,
-    normalize_environment_value,
     parse_integer,
     parse_triggered_signals,
     record_value,
@@ -44,8 +45,12 @@ def build_reverse_duplicate_criteria(payload: dict[str, Any] | None) -> dict[str
     data = payload or {}
     extra = ensure_object(data.get("extra"))
     source = to_text(data.get("source") or extra.get("source") or "indicator")
+    broker_mode = normalize_broker_mode(
+        data.get("broker_mode") or data.get("environment") or extra.get("broker_mode") or extra.get("environment"),
+        configured_broker_mode(),
+    )
     return {
-        "environment": normalize_environment_value(data.get("environment") or extra.get("environment"), LIVE_ENVIRONMENT),
+        "environment": broker_mode,
         "symbol": to_text(data.get("symbol")).upper(),
         "direction": to_text(data.get("direction")).lower(),
         "reverse_kind": to_text(first_non_empty(extra.get("reverse_kind"), "signal_conflict" if source == "signal" else "indicator_conflict")),
@@ -68,7 +73,7 @@ def find_pending_reverse_duplicate(
     symbol = to_text(lookup.get("symbol")).upper()
     if not symbol:
         return None
-    environment = normalize_environment_value(lookup.get("environment"), LIVE_ENVIRONMENT)
+    environment = normalize_broker_mode(lookup.get("environment"), configured_broker_mode())
     records = list(
         pb.get_records(
             REVERSE_SIGNALS_COLLECTION,
@@ -136,6 +141,9 @@ def upsert_reverse_record(
             **existing_extra,
             **extra,
             "environment": criteria["environment"],
+            "broker_mode": criteria["environment"],
+            "data_environment": resolve_data_environment(data.get("data_environment") or extra.get("data_environment")),
+            "shared_market_data": resolve_data_environment(data.get("data_environment") or extra.get("data_environment")) == "live",
             "reverse_kind": criteria["reverse_kind"],
             "target_state": criteria["target_state"],
             "triggered_signals": triggered_signals,

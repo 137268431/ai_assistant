@@ -51,19 +51,20 @@
     }
 
     async function searchBestContract(symbol) {
-      const payload = await requestJson(`/api/custom/ibkr/contracts/search${buildQuery({
-        environment: currentEnvironment,
-        q: symbol,
+	      const payload = await requestJson(`/api/custom/ibkr/contracts/search${buildQuery({
+	        broker_mode: currentBrokerMode,
+	        market_data_mode: currentEnvironment,
+	        data_environment: currentEnvironment,
+	        q: symbol,
         limit: 6
       })}`);
       return pickBestCandidate(payload.items, symbol);
     }
 
-    function buildWatchlistBody(item, scope, noteOverride) {
-      const secTypes = Array.isArray(item.sec_types) ? item.sec_types : [];
-      return {
-        environment: currentEnvironment,
-        source: 'manual_page_add',
+	    function buildWatchlistBody(item, scope, noteOverride) {
+	      const secTypes = Array.isArray(item.sec_types) ? item.sec_types : [];
+	      return buildModePayload({
+	        source: 'manual_page_add',
         scope,
         manual_member: true,
         symbol_role: getWatchlistRoleForTab(),
@@ -73,9 +74,9 @@
         asset_class: item.asset_class || '',
         sec_types: secTypes,
         description: item.description || '',
-        note: noteOverride != null ? String(noteOverride || '').trim() : String(item.note || '').trim()
-      };
-    }
+	        note: noteOverride != null ? String(noteOverride || '').trim() : String(item.note || '').trim()
+	      }, { brokerMode: currentBrokerMode, dataEnvironment: currentEnvironment });
+	    }
 
     const WATCHLIST_ELIGIBILITY_WINDOW_DAYS = 10;
     const WATCHLIST_ELIGIBILITY_PENDING_SYMBOLS = new Set();
@@ -171,9 +172,9 @@
       if (!normalizedSymbols.length) return {};
       const payload = await requestJson('/api/custom/ibkr/watchlist/eligibility', {
         method: 'POST',
-        body: {
-          environment: currentEnvironment,
-          symbols: normalizedSymbols,
+	        body: {
+	          ...buildModePayload({}, { brokerMode: currentBrokerMode, dataEnvironment: currentEnvironment }),
+	          symbols: normalizedSymbols,
           window_trading_days: WATCHLIST_ELIGIBILITY_WINDOW_DAYS
         }
       });
@@ -262,10 +263,9 @@
       return dailyTargetsState.items.find((item) => String(item.symbol || '').trim().toUpperCase() === normalized) || null;
     }
 
-    function buildDailyTargetBody(item, draft) {
-      return {
-        environment: currentEnvironment,
-        source: 'manual_page_add',
+	    function buildDailyTargetBody(item, draft) {
+	      return buildModePayload({
+	        source: 'manual_page_add',
         symbol: item.symbol,
         exchange: item.exchange || '',
         date: draft.date,
@@ -281,9 +281,9 @@
           asset_class: item.asset_class || '',
           sec_types: Array.isArray(item.sec_types) ? item.sec_types : [],
           is_us: Boolean(item.is_us)
-        }
-      };
-    }
+	        }
+	      }, { brokerMode: currentBrokerMode, dataEnvironment: currentEnvironment });
+	    }
 
     function getDailyTargetDraft() {
       const scoreValue = Number(document.getElementById('dailyTargetScoreInput').value || 0);
@@ -391,9 +391,11 @@
       document.getElementById('dailyTargetSearchMeta').textContent = `正在查询 ${keyword} ...`;
       document.getElementById('dailyTargetSearchResults').innerHTML = '<div class="empty-state">搜索中...</div>';
       try {
-        const payload = await requestJson(`/api/custom/ibkr/contracts/search${buildQuery({
-          environment: currentEnvironment,
-          q: keyword,
+	        const payload = await requestJson(`/api/custom/ibkr/contracts/search${buildQuery({
+	          broker_mode: currentBrokerMode,
+	          market_data_mode: currentEnvironment,
+	          data_environment: currentEnvironment,
+	          q: keyword,
           limit: 12
         })}`);
         dailyTargetsState.searchResults = Array.isArray(payload.items) ? payload.items : [];
@@ -495,18 +497,17 @@
       try {
         const payload = await requestJson('/api/custom/ibkr/targets/upsert', {
           method: 'POST',
-          body: {
-            environment: currentEnvironment,
-            source: 'manual_page_edit',
-            symbol: item.symbol,
+	          body: buildModePayload({
+	            source: 'manual_page_edit',
+	            symbol: item.symbol,
             exchange: item.exchange || '',
             date: item.date || dailyTargetsState.selectedDate,
             direction_bias: String(nextDirection || '').trim(),
             score: nextScore,
             scan_reason: String(nextReason || '').trim(),
             status: String(nextStatus || '').trim(),
-            extra: item.extra && typeof item.extra === 'object' ? item.extra : {}
-          }
+	            extra: item.extra && typeof item.extra === 'object' ? item.extra : {}
+	          }, { brokerMode: currentBrokerMode, dataEnvironment: currentEnvironment })
         });
         showToast(`${item.symbol} 已更新`);
         const warning = getRuntimeWarning(payload) || getWatchlistSyncWarning(payload);
@@ -523,12 +524,11 @@
       try {
         const payload = await requestJson('/api/custom/ibkr/targets/remove', {
           method: 'POST',
-          body: {
-            environment: currentEnvironment,
-            source: 'manual_page_remove',
-            record_id: recordId,
-            symbol
-          }
+	          body: buildModePayload({
+	            source: 'manual_page_remove',
+	            record_id: recordId,
+	            symbol
+	          }, { brokerMode: currentBrokerMode, dataEnvironment: currentEnvironment })
         });
         showToast(`${symbol} 已删除`);
         const warning = getRuntimeWarning(payload) || getWatchlistSyncWarning(payload);
@@ -591,12 +591,11 @@
         try {
           await requestJson('/api/custom/ibkr/targets/remove', {
             method: 'POST',
-            body: {
-              environment: currentEnvironment,
-              source: 'manual_page_remove',
-              record_id: item.id,
-              symbol: item.symbol || ''
-            }
+	            body: buildModePayload({
+	              source: 'manual_page_remove',
+	              record_id: item.id,
+	              symbol: item.symbol || ''
+	            }, { brokerMode: currentBrokerMode, dataEnvironment: currentEnvironment })
           });
           deleted += 1;
         } catch (_) {
@@ -859,9 +858,11 @@
       document.getElementById('searchMeta').textContent = `正在查询 ${keyword} ...`;
       document.getElementById('searchResults').innerHTML = '<div class="empty-state">搜索中...</div>';
       try {
-        const payload = await requestJson(`/api/custom/ibkr/contracts/search${buildQuery({
-          environment: currentEnvironment,
-          q: keyword,
+	        const payload = await requestJson(`/api/custom/ibkr/contracts/search${buildQuery({
+	          broker_mode: currentBrokerMode,
+	          market_data_mode: currentEnvironment,
+	          data_environment: currentEnvironment,
+	          q: keyword,
           limit: 12
         })}`);
         watchlistState.searchResults = Array.isArray(payload.items) ? payload.items : [];
@@ -981,17 +982,16 @@
       }
 
       try {
-        const body = applyTradeEligibilityDecision({
-          environment: currentEnvironment,
-          source: 'manual_page_edit',
-          scope: nextScope,
+	        const body = buildModePayload(applyTradeEligibilityDecision({
+	          source: 'manual_page_edit',
+	          scope: nextScope,
           manual_member: true,
           symbol_role: normalizedNextRole,
           symbol: item.symbol,
           exchange: String(nextExchange || '').trim().toUpperCase(),
           industry: String(nextIndustry || '').trim(),
-          note: String(nextNote || '').trim()
-        }, eligibilityDecision, normalizedNextRole);
+	          note: String(nextNote || '').trim()
+	        }, eligibilityDecision, normalizedNextRole), { brokerMode: currentBrokerMode, dataEnvironment: currentEnvironment });
         const payload = await requestJson('/api/custom/ibkr/watchlist/upsert', {
           method: 'POST',
           body
@@ -999,13 +999,12 @@
         if ((nextScope !== originalScope || !rawScope) && recordId) {
           await requestJson('/api/custom/ibkr/watchlist/remove', {
             method: 'POST',
-            body: {
-              environment: currentEnvironment,
-              source: 'manual_page_scope_move',
-              record_id: recordId,
-              symbol: item.symbol,
-              remove_current_day_targets: false
-            }
+	            body: buildModePayload({
+	              source: 'manual_page_scope_move',
+	              record_id: recordId,
+	              symbol: item.symbol,
+	              remove_current_day_targets: false
+	            }, { brokerMode: currentBrokerMode, dataEnvironment: currentEnvironment })
           });
         }
         showToast(`${item.symbol} 已更新`);
@@ -1029,12 +1028,11 @@
       try {
         const payload = await requestJson('/api/custom/ibkr/watchlist/remove', {
           method: 'POST',
-          body: {
-            environment: currentEnvironment,
-            source: 'manual_page_remove',
-            record_id: recordId,
-            symbol
-          }
+	          body: buildModePayload({
+	            source: 'manual_page_remove',
+	            record_id: recordId,
+	            symbol
+	          }, { brokerMode: currentBrokerMode, dataEnvironment: currentEnvironment })
         });
         showToast(`${symbol} 已删除`);
         const warning = getRuntimeWarning(payload);
@@ -1158,12 +1156,11 @@
         try {
           await requestJson('/api/custom/ibkr/watchlist/remove', {
             method: 'POST',
-            body: {
-              environment: currentEnvironment,
-              source: 'manual_page_remove',
-              record_id: item.id,
-              symbol: item.symbol || ''
-            }
+	            body: buildModePayload({
+	              source: 'manual_page_remove',
+	              record_id: item.id,
+	              symbol: item.symbol || ''
+	            }, { brokerMode: currentBrokerMode, dataEnvironment: currentEnvironment })
           });
           deleted += 1;
         } catch (_) {

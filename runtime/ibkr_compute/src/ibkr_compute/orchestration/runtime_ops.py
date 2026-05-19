@@ -828,10 +828,11 @@ class TradingServiceRuntimeOpsMixin:
             or ""
         ).strip()
         order_id = str(order.get("orderId") or order.get("order_id") or "").strip()
-        runtime_environment = str(service_mod.ENVIRONMENT or "live").strip().lower() or "live"
+        broker_environment = str(service_mod.ENVIRONMENT or "paper").strip().lower() or "paper"
+        data_environment = str(service_mod.DATA_ENVIRONMENT or "live").strip().lower() or "live"
 
         try:
-            signal_id = self._resolve_signal_id_for_order(order, runtime_environment)
+            signal_id = self._resolve_signal_id_for_order(order, broker_environment)
             if not signal_id:
                 return ""
 
@@ -839,7 +840,7 @@ class TradingServiceRuntimeOpsMixin:
                 "ibkr_signals",
                 filter=(
                     f'signal_id = "{self._escape_filter_value(signal_id)}" && '
-                    f'environment = "{self._escape_filter_value(runtime_environment)}"'
+                    f'environment = "{self._escape_filter_value(data_environment)}"'
                 ),
             )
             if not signal_record or not signal_record.get("id"):
@@ -858,7 +859,7 @@ class TradingServiceRuntimeOpsMixin:
             closed_role = self._reconcile_signal_exit_fill(
                 signal_record=signal_record,
                 signal_id=signal_id,
-                environment=runtime_environment,
+                environment=broker_environment,
                 symbol=symbol,
                 trade_group_id=trade_group_id,
                 trigger_order=order,
@@ -869,7 +870,7 @@ class TradingServiceRuntimeOpsMixin:
                 return ""
             protection_status = self._signal_protection_status(
                 signal_id=signal_id,
-                environment=runtime_environment,
+                environment=broker_environment,
                 trade_group_id=trade_group_id,
             )
             actual_fill_price = self._first_positive_order_float(
@@ -885,7 +886,7 @@ class TradingServiceRuntimeOpsMixin:
                 row
                 for row in self._signal_order_rows(
                     signal_id=signal_id,
-                    environment=runtime_environment,
+                    environment=broker_environment,
                     trade_group_id=trade_group_id,
                 )
                 if self._normalize_order_role(self._order_role(row)) == "entry"
@@ -960,7 +961,7 @@ class TradingServiceRuntimeOpsMixin:
                 order=order,
                 signal_record=signal_record,
                 signal_id=signal_id,
-                environment=runtime_environment,
+                environment=broker_environment,
                 trade_group_id=trade_group_id,
                 actual_fill_price=actual_fill_price,
             )
@@ -1088,7 +1089,8 @@ class TradingServiceRuntimeOpsMixin:
         service_mod = _service_mod()
         if not getattr(self, "pb", None):
             return True
-        runtime_environment = str(service_mod.ENVIRONMENT or "live").strip().lower() or "live"
+        broker_environment = str(service_mod.ENVIRONMENT or "paper").strip().lower() or "paper"
+        data_environment = str(service_mod.DATA_ENVIRONMENT or "live").strip().lower() or "live"
         normalized_role = self._normalize_order_role(role)
         if normalized_role not in {"stop_loss", "take_profit", "close"}:
             normalized_role = "take_profit"
@@ -1113,7 +1115,7 @@ class TradingServiceRuntimeOpsMixin:
         )
 
         try:
-            signal_id = self._resolve_signal_id_for_order(order, runtime_environment)
+            signal_id = self._resolve_signal_id_for_order(order, broker_environment)
             if not signal_id:
                 return True
 
@@ -1122,14 +1124,14 @@ class TradingServiceRuntimeOpsMixin:
                     "ibkr_signals",
                     filter=(
                         f'signal_id = "{self._escape_filter_value(signal_id)}" && '
-                        f'environment = "{self._escape_filter_value(runtime_environment)}"'
+                        f'environment = "{self._escape_filter_value(data_environment)}"'
                     ),
                 )
             if not signal_record or not signal_record.get("id"):
                 return True
             current_status = str(signal_record.get("status") or "").strip().lower()
             existing_extra = self._safe_extra(signal_record.get("extra"))
-            pb_exit_order = self._load_pb_order_for_event(order, runtime_environment)
+            pb_exit_order = self._load_pb_order_for_event(order, broker_environment)
             exit_order_for_pnl = {**pb_exit_order, **order} if pb_exit_order else order
             if pb_exit_order:
                 merged_extra = {
@@ -1144,7 +1146,7 @@ class TradingServiceRuntimeOpsMixin:
                     signal_record=signal_record,
                     exit_order=exit_order_for_pnl,
                     signal_id=signal_id,
-                    environment=runtime_environment,
+                    environment=broker_environment,
                     trade_group_id=trade_group_id,
                 )
                 self._patch_exit_order_pnl(exit_order_for_pnl, pnl_result)
@@ -1175,7 +1177,7 @@ class TradingServiceRuntimeOpsMixin:
                 signal_record=signal_record,
                 exit_order=exit_order_for_pnl,
                 signal_id=signal_id,
-                environment=runtime_environment,
+                environment=broker_environment,
                 trade_group_id=trade_group_id,
             )
             self._patch_exit_order_pnl(exit_order_for_pnl, pnl_result)
@@ -1287,7 +1289,11 @@ class TradingServiceRuntimeOpsMixin:
 
             response = requests.get(
                 f"{get_scheduler_internal_url()}/status",
-                params={"environment": service_mod.ENVIRONMENT},
+                params={
+                    "broker_mode": service_mod.ENVIRONMENT,
+                    "market_data_mode": service_mod.DATA_ENVIRONMENT,
+                    "data_environment": service_mod.DATA_ENVIRONMENT,
+                },
                 timeout=2.0,
             )
             if not response.ok:
@@ -1329,7 +1335,7 @@ class TradingServiceRuntimeOpsMixin:
                     if self._scheduler_retention_handled_current_hour(et_now):
                         service_mod.logger.info(
                             "Skip runtime retention cleanup because scheduler handled current hour: environment=%s hour=%s",
-                            service_mod.ENVIRONMENT,
+                            service_mod.DATA_ENVIRONMENT,
                             hour_key,
                         )
                         last_handled_hour = hour_key
@@ -1339,7 +1345,7 @@ class TradingServiceRuntimeOpsMixin:
                     env_result = (result.get("environments") or [{}])[0]
                     service_mod.logger.info(
                         "Runtime retention cleanup finished: environment=%s deleted=%s errors=%s skipped=%s reason=%s",
-                        service_mod.ENVIRONMENT,
+                        service_mod.DATA_ENVIRONMENT,
                         int(result.get("total_deleted", 0) or 0),
                         int(result.get("total_errors", 0) or 0),
                         bool(env_result.get("skipped")),

@@ -365,7 +365,9 @@
         renderRulesBoard();
         try {
           rulesPayload = await requestCachedJson(`/api/custom/ibkr/rules${buildQuery({
-            environment: currentEnvironment
+            broker_mode: currentBrokerMode,
+            market_data_mode: currentEnvironment,
+            data_environment: currentEnvironment
           })}`, {}, {
             ttlMs: 300000,
             swrMs: 300000,

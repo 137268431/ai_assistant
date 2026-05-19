@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ibkr_api.modes import request_broker_mode, request_market_data_mode
 from ibkr_api.reverse.common import (
     DEFAULT_REVERSE_LIST_LIMIT,
     REVERSE_SIGNALS_COLLECTION,
@@ -55,6 +56,7 @@ def build_reverse_list_response(
     pb: Any,
     *,
     environment: str,
+    data_environment: str | None = None,
     date_str: str = "",
     symbol: str = "",
     statuses: Any = None,
@@ -62,7 +64,8 @@ def build_reverse_list_response(
     normalize_environment: Callable[[Any, str], str] = normalize_environment_value,
     escape_filter: Callable[[Any], str] = escape_filter_string,
 ) -> tuple[dict[str, Any], int]:
-    runtime_environment = normalize_environment(environment, "live")
+    runtime_environment = request_broker_mode({"broker_mode": environment})
+    data_environment = request_market_data_mode({"data_environment": data_environment})
     normalized_symbol = str(symbol or "").strip().upper()
     allowed_statuses = set(normalize_status_filters(statuses))
     per_page = clamp_reverse_limit(limit)
@@ -83,7 +86,11 @@ def build_reverse_list_response(
             signals = [signal for signal in signals if signal.get("symbol") == normalized_symbol]
         if allowed_statuses:
             signals = [signal for signal in signals if signal.get("status") in allowed_statuses]
-        return {"ibkr_signals": signals}, 200
+        return {
+            "ibkr_signals": signals,
+            "broker_mode": runtime_environment,
+            "data_environment": data_environment,
+        }, 200
     except Exception as exc:
         return {"error": str(exc)}, 500
 
@@ -92,11 +99,13 @@ def build_reverse_pending_response(
     pb: Any,
     *,
     environment: str,
+    data_environment: str | None = None,
     limit: Any = DEFAULT_REVERSE_LIST_LIMIT,
     normalize_environment: Callable[[Any, str], str] = normalize_environment_value,
     escape_filter: Callable[[Any], str] = escape_filter_string,
 ) -> tuple[dict[str, Any], int]:
-    runtime_environment = normalize_environment(environment, "live")
+    runtime_environment = request_broker_mode({"broker_mode": environment})
+    data_environment = request_market_data_mode({"data_environment": data_environment})
     per_page = clamp_reverse_limit(limit)
 
     try:
@@ -114,7 +123,9 @@ def build_reverse_pending_response(
             "ibkr_signals": [
                 normalize_reverse_record(record, default_environment=runtime_environment)
                 for record in records
-            ]
+            ],
+            "broker_mode": runtime_environment,
+            "data_environment": data_environment,
         }, 200
     except Exception as exc:
         return {"error": str(exc)}, 500

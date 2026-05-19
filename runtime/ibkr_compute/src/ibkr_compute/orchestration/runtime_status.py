@@ -321,7 +321,7 @@ class TradingServiceRuntimeStatusMixin:
                 ),
                 "active_repair_interval_min": self.config.get_int_for_environment(
                     "ibkr_active_repair_interval_min",
-                    service_mod.ENVIRONMENT,
+                    service_mod.DATA_ENVIRONMENT,
                     5,
                 ),
                 "last_active_repair": (
@@ -332,17 +332,17 @@ class TradingServiceRuntimeStatusMixin:
                 "last_active_repair_reasons": dict(self._last_active_repair_reasons),
                 "watchlist_backfill_interval_min": self.config.get_int_for_environment(
                     "ibkr_watchlist_backfill_interval_min",
-                    service_mod.ENVIRONMENT,
+                    service_mod.DATA_ENVIRONMENT,
                     30,
                 ),
                 "watchlist_integrity_enabled": self.config.get_bool_for_environment(
                     "ibkr_watchlist_integrity_enabled",
-                    service_mod.ENVIRONMENT,
+                    service_mod.DATA_ENVIRONMENT,
                     True,
                 ),
                 "watchlist_integrity_batch_size": self.config.get_int_for_environment(
                     "ibkr_watchlist_integrity_batch_size",
-                    service_mod.ENVIRONMENT,
+                    service_mod.DATA_ENVIRONMENT,
                     service_mod.DEFAULT_WATCHLIST_INTEGRITY_BATCH_SIZE,
                 ),
                 "last_watchlist_backfill": (

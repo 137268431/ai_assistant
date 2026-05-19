@@ -127,7 +127,7 @@ class TradingServiceSupportMixin:
             return self._quote_prev_close_cache.get(normalized_symbol)
 
         safe_symbol = normalized_symbol.replace('"', '\\"')
-        safe_environment = str(service_mod.ENVIRONMENT or "live").strip().lower().replace('"', '\\"')
+        safe_environment = str(service_mod.DATA_ENVIRONMENT or "live").strip().lower().replace('"', '\\"')
         environment_filter = f'(environment = "{safe_environment}"'
         if safe_environment == "live":
             environment_filter += ' || environment = "")'

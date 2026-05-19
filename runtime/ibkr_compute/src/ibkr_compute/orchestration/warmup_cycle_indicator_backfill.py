@@ -10,13 +10,13 @@ class WarmupCycleIndicatorBackfillMixin:
         service_mod = _service_mod()
         if not self.config.get_bool_for_environment(
             "ibkr_warmup_indicator_backfill_enabled",
-            service_mod.ENVIRONMENT,
+            service_mod.DATA_ENVIRONMENT,
             True,
         ):
             return []
         configured = self.config.get_for_environment(
             "ibkr_warmup_indicator_backfill_intervals",
-            service_mod.ENVIRONMENT,
+            service_mod.DATA_ENVIRONMENT,
             ",".join(
                 interval
                 for interval in self._multi_timeframe_warmup_intervals()
@@ -105,7 +105,7 @@ class WarmupCycleIndicatorBackfillMixin:
             60,
             self.config.get_int_for_environment(
                 "ibkr_warmup_indicator_regular_minutes_per_day",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 390,
             ),
         )
@@ -113,7 +113,7 @@ class WarmupCycleIndicatorBackfillMixin:
             1.0,
             self.config.get_float_for_environment(
                 "ibkr_warmup_indicator_calendar_multiplier",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 1.4,
             ),
         )
@@ -121,7 +121,7 @@ class WarmupCycleIndicatorBackfillMixin:
             0,
             self.config.get_int_for_environment(
                 "ibkr_warmup_indicator_buffer_days",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 5,
             ),
         )
@@ -129,7 +129,7 @@ class WarmupCycleIndicatorBackfillMixin:
             base_days,
             self.config.get_int_for_environment(
                 "ibkr_warmup_indicator_max_days",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 60,
             ),
         )
@@ -147,7 +147,7 @@ class WarmupCycleIndicatorBackfillMixin:
             0,
             self.config.get_int_for_environment(
                 "ibkr_warmup_indicator_prime_retries",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 3,
             ),
         )
@@ -155,7 +155,7 @@ class WarmupCycleIndicatorBackfillMixin:
             0,
             self.config.get_int_for_environment(
                 "ibkr_warmup_indicator_prime_retry_delay_sec",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 5,
             ),
         )
@@ -181,7 +181,9 @@ class WarmupCycleIndicatorBackfillMixin:
                     if not chunk:
                         continue
                     payload = {
-                        "environments": [service_mod.ENVIRONMENT],
+                        "environments": [service_mod.DATA_ENVIRONMENT],
+                        "market_data_mode": service_mod.DATA_ENVIRONMENT,
+                        "broker_mode": service_mod.ENVIRONMENT,
                         "symbols": chunk,
                         "intervals": [interval],
                         "persist_latest_indicator": False,
@@ -202,7 +204,7 @@ class WarmupCycleIndicatorBackfillMixin:
         for interval, symbols in sorted(plan.items()):
             with compute_server.compute_lock:
                 prime_result[interval] = compute_server.materialize_engines_from_storage(
-                    service_mod.ENVIRONMENT,
+                    service_mod.DATA_ENVIRONMENT,
                     self._normalize_symbol_list(symbols),
                     interval,
                     persist_latest_indicator=False,
@@ -216,7 +218,7 @@ class WarmupCycleIndicatorBackfillMixin:
             1,
             self.config.get_int_for_environment(
                 "ibkr_warmup_indicator_backfill_passes",
-                service_mod.ENVIRONMENT,
+                service_mod.DATA_ENVIRONMENT,
                 2,
             ),
         )
@@ -314,4 +316,3 @@ class WarmupCycleIndicatorBackfillMixin:
             "prime": prime,
             "reason": "bar_missing_only",
         }
-

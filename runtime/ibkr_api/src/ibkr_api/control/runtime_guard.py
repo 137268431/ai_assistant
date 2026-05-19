@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ibkr_compute.core.broker_mode import configured_broker_mode, normalize_broker_mode
+
 
 AsDict = Callable[[Any], dict[str, Any]]
 NormalizeEnvironment = Callable[[Any, str], str]
@@ -15,11 +17,11 @@ def inspect_requested_runtime_environment(
     fetch_runtime_status: FetchRuntimeStatus,
     as_dict: AsDict,
 ) -> dict[str, Any]:
-    requested_environment = normalize_environment(environment, "live")
+    requested_environment = normalize_broker_mode(environment, configured_broker_mode())
     runtime_result = fetch_runtime_status(requested_environment)
     runtime_payload = as_dict(runtime_result.get("payload"))
-    actual_runtime_environment = normalize_environment(
-        runtime_payload.get("environment") or requested_environment,
+    actual_runtime_environment = normalize_broker_mode(
+        runtime_payload.get("broker_mode") or runtime_payload.get("environment") or requested_environment,
         requested_environment,
     )
     return {

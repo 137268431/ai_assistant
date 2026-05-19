@@ -295,7 +295,7 @@ def build_emergency_stop_response(
                 "POST",
                 runtime_base_url,
                 "/ibkr/stop",
-                json_body={"environment": environment},
+                json_body={"broker_mode": broker_mode, "environment": broker_mode},
                 timeout=20,
             ),
             as_dict=as_dict,
@@ -517,14 +517,14 @@ def build_reauth_response(
         "POST",
         runtime_base_url,
         "/ibkr/stop",
-        json_body={"environment": environment},
+        json_body={"broker_mode": environment, "environment": environment},
         timeout=30,
     )
     start_result = request_json_request(
         "POST",
         runtime_base_url,
         "/ibkr/start",
-        json_body={"environment": environment},
+        json_body={"broker_mode": environment, "environment": environment},
         timeout=30,
     )
 

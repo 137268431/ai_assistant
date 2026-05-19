@@ -2,7 +2,7 @@
             const engines = getSortedEngineEntries(status?.engines);
             const readySummary = `${status?.ready_engines || 0}/${status?.total_engines || 0} ready`;
             const environmentReadySummary = buildIbkrEngineEnvironmentReadySummary(status?.engines, {
-                preferredOrder: [currentEnvironment],
+                preferredOrder: [currentDataEnvironment],
             });
             const hasEngineSummaryOnly = Boolean(status?.engines_available) && !Boolean(status?.engines_included);
             document.getElementById('engineHint').textContent = hasEngineSummaryOnly
@@ -16,7 +16,7 @@
                 return;
             }
             const rows = engines.slice(0, 20).map(([key, engine]) => {
-                const model = getIbkrEngineViewModel(key, engine, currentEnvironment);
+                const model = getIbkrEngineViewModel(key, engine, currentDataEnvironment);
                 return `
                     <tr>
                         <td class="mono">${escapeHtml(model.key)}</td>
@@ -45,7 +45,7 @@
             }
 
             try {
-                const fullStatus = await requestIbkrEnvironmentJson('/api/custom/ibkr/statusz?full=1', currentEnvironment, { retryAttempts: 3 });
+                const fullStatus = await requestIbkrEnvironmentJson('/api/custom/ibkr/statusz?full=1', currentBrokerMode, { retryAttempts: 3 });
                 if (loadId !== latestRuntimeLoadId) return;
                 renderEngineTable(fullStatus);
             } catch (error) {
@@ -196,4 +196,3 @@
                 </table>
             `;
         }
-

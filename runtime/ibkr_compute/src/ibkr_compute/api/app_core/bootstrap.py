@@ -7,7 +7,7 @@ import time
 
 from ibkr_compute.backtest import BacktestService
 from ibkr_compute.core.config import Config
-from ibkr_compute.core.broker_mode import resolve_data_environment, startup_broker_mode
+from ibkr_compute.core.broker_mode import normalize_broker_mode, resolve_data_environment, startup_broker_mode
 from ibkr_compute.integrations.pb_client import PBClient
 from ibkr_compute.market.bar_freshness import BarFreshnessPlanner
 from ibkr_compute.market.bar_repair import BarRepairCoordinator
@@ -46,14 +46,14 @@ def build_service_bundle(
     pb_client = PBClient(base_url=pb_base_url)
     config = Config(pb_client=pb_client)
 
-    def _backtest_account_snapshot_provider(environment: str = "live") -> dict:
+    def _backtest_account_snapshot_provider(environment: str = "") -> dict:
         import requests
 
         from ibkr_compute.api.account.snapshot_builder import _build_ibkr_account_snapshot
         from ibkr_compute.api.runtime.common import get_ibkr_service
         from ibkr_compute.api.service_topology import get_api_internal_url, get_runtime_internal_url
 
-        runtime_environment = str(environment or "live").strip().lower() or "live"
+        runtime_environment = normalize_broker_mode(environment, startup_broker_mode())
 
         service = get_ibkr_service()
         if service is not None:

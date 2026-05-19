@@ -28,11 +28,17 @@ def build_dispatch_feishu_signal_callback(
     pb: Any,
     support: Callable[..., tuple[dict[str, Any], int]],
 ):
-    def _dispatch_feishu_signal_callback(action: str, signal_id: str, environment: str) -> tuple[dict[str, Any], int]:
+    def _dispatch_feishu_signal_callback(
+        action: str,
+        signal_id: str,
+        environment: str,
+        data_environment: str = "",
+    ) -> tuple[dict[str, Any], int]:
         return support(
             action,
             signal_id,
             environment,
+            data_environment=data_environment,
             pb=pb,
             normalize_environment=globals_dict["_normalize_environment"],
             escape_filter_string=globals_dict["_escape_filter_string"],
@@ -54,11 +60,17 @@ def build_dispatch_feishu_order_callback(
     pb: Any,
     support: Callable[..., tuple[dict[str, Any], int]],
 ):
-    def _dispatch_feishu_order_callback(action: str, order_id: str, environment: str) -> tuple[dict[str, Any], int]:
+    def _dispatch_feishu_order_callback(
+        action: str,
+        order_id: str,
+        environment: str,
+        data_environment: str = "",
+    ) -> tuple[dict[str, Any], int]:
         return support(
             action,
             order_id,
             environment,
+            data_environment=data_environment,
             pb=pb,
             normalize_environment=globals_dict["_normalize_environment"],
             escape_filter_string=globals_dict["_escape_filter_string"],
