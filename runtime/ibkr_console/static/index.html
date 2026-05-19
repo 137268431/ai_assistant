@@ -544,9 +544,17 @@
             const runtimeRunning = normalizeHomeServiceStatus(runtimeService.status) === 'running';
             const gatewayRunning = normalizeHomeServiceStatus(gatewayService.status) === 'running';
             const runtimeAuthenticated = runtimeService.session_authenticated === true;
-            const computeRunning = normalizeHomeServiceStatus(computeService.status || computeSummary.status) === 'running';
-            const computeFullyReady = computeRunning && totalEngines > 0 && readyEngines >= totalEngines;
-            const computeWarming = computeRunning && totalEngines > 0 && readyEngines < totalEngines;
+            const computeStatusSource = computeService.status || computeSummary.status || 'unknown';
+            const computeStatus = normalizeHomeServiceStatus(computeStatusSource);
+            const computeReadinessPhase = String(computeService.readiness_phase || '').trim().toLowerCase();
+            const computePreloadActive = preloadState.status === 'running'
+                || preloadState.status === 'scheduled'
+                || computeReadinessPhase === 'preload'
+                || computeStatus === 'starting';
+            const computeHasNoReadyEngines = computeStatus === 'running' && totalEngines > 0 && readyEngines <= 0;
+            const computeFullyReady = computeStatus === 'running' && totalEngines > 0 && readyEngines >= totalEngines;
+            const computeReady = computeStatus === 'running' && !computeHasNoReadyEngines;
+            const computeWarming = computePreloadActive || computeHasNoReadyEngines;
 
             summaryEl.textContent = buildHomeStackSummary(topology, preloadState, computeSummary);
 
@@ -563,15 +571,15 @@
                 },
                 {
                     name: 'Compute',
-                    status: computeService.status || computeSummary.status || 'unknown',
+                    status: computeStatusSource,
                     label: preloadState.status === 'failed'
                         ? 'FAILED'
                         : computeFullyReady
                         ? 'READY'
-                        : (computeWarming ? 'WARMING' : getHomeServiceLabel(computeService.status || computeSummary.status || 'unknown')),
+                        : (computeWarming ? 'WARMING' : getHomeServiceLabel(computeStatusSource)),
                     tone: preloadState.status === 'failed'
                         ? 'warning'
-                        : (computeWarming ? 'warning' : getHomeServiceTone(computeService.status || computeSummary.status || 'unknown'))
+                        : (computeWarming ? 'warning' : (computeReady ? 'running' : getHomeServiceTone(computeStatusSource)))
                 },
                 {
                     name: 'Backtest',
