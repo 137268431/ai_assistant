@@ -260,6 +260,7 @@ def build_compute_response(payload=None):
                 symbols=plan["requested_symbols"] if plan["targeted_rollup"] else None,
                 incremental=plan["incremental_rollup"],
                 intervals=plan["rollup_intervals"],
+                since_ms=plan.get("rollup_since_ms") or None,
             )
         errors += sum(int(result.get("errors", 0) or 0) for result in rollup_results.values())
         with record_stage("daily_close_refresh"):

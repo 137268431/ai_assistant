@@ -13,6 +13,7 @@ from .timeframe_utils import (
     classify_session,
     format_cn_time,
     format_us_time,
+    interval_to_ms,
 )
 
 
@@ -47,8 +48,9 @@ class TimeframeBarBuilder:
         current = self._current.get(key)
 
         if current is None:
-            self._current[key] = self._init_bucket(interval, bucket_ms, base_bar)
-            return None
+            current = self._init_bucket(interval, bucket_ms, base_bar)
+            self._current[key] = current
+            return self._finalize_if_closed(key, current, base_bar)
 
         if int(current["bar_time_ms"]) != bucket_ms:
             closed = self._finalize_bucket(current, base_bar)
@@ -56,7 +58,7 @@ class TimeframeBarBuilder:
             return closed
 
         self._merge_bucket(current, base_bar)
-        return None
+        return self._finalize_if_closed(key, current, base_bar)
 
     def _init_bucket(self, interval: str, bucket_ms: int, base_bar: dict) -> dict:
         extra = dict(base_bar.get("extra") or {})
@@ -95,11 +97,20 @@ class TimeframeBarBuilder:
         extra["last_component_bar_time_ms"] = int(base_bar["bar_time_ms"])
         extra["last_component_close"] = float(base_bar["close"])
 
-    def _finalize_bucket(self, current: dict, closing_bar: dict) -> dict:
+    def _finalize_if_closed(self, key: Tuple[str, str], current: dict, base_bar: dict):
+        interval = str(current.get("interval") or key[1])
+        bucket_end_ms = int(current["bar_time_ms"]) + interval_to_ms(interval)
+        base_close_ms = int(base_bar["bar_time_ms"]) + interval_to_ms("5m")
+        if base_close_ms < bucket_end_ms:
+            return None
+        self._current.pop(key, None)
+        return self._finalize_bucket(current, base_bar, closed_by_bar_time_ms=bucket_end_ms)
+
+    def _finalize_bucket(self, current: dict, closing_bar: dict, *, closed_by_bar_time_ms: int | None = None) -> dict:
         extra = dict(current.get("extra") or {})
         extra.update(build_runtime_timestamps())
         extra["source"] = "ibkr_5m_rollup"
-        extra["closed_by_bar_time_ms"] = int(closing_bar["bar_time_ms"])
+        extra["closed_by_bar_time_ms"] = int(closed_by_bar_time_ms or closing_bar["bar_time_ms"])
         current["extra"] = extra
         current["session_type"] = current.get("session_type") or classify_session(
             us_time=current.get("us_time", "")

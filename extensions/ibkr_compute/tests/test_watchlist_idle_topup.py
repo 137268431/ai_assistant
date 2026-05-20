@@ -619,7 +619,7 @@ class WatchlistIdleTopupCycleTest(unittest.TestCase):
         self.assertEqual(call["persist_signals"], True)
         self.assertEqual(call["persist_signal_symbols"], ["AAPL"])
         self.assertEqual(call["intervals"], ["5m"])
-        self.assertEqual(call["rollup_intervals"], [])
+        self.assertEqual(call["rollup_intervals"], ["15m", "30m", "1h", "4h"])
         for symbol in ("MSFT", "NVDA", "TSLA"):
             self.assertNotIn(symbol, call["persist_signal_symbols"])
 

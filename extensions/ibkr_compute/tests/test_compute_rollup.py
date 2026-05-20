@@ -6,6 +6,7 @@ import threading
 import time
 import types
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
@@ -50,6 +51,8 @@ except ModuleNotFoundError:
 from ibkr_compute.api.compute import request as compute_request
 from ibkr_compute.api.compute import rollup as compute_rollup
 from ibkr_compute.api.compute.runtime_state import timing as compute_timing
+from ibkr_compute.core.time_utils import ET
+from ibkr_compute.market.timeframe_builder import TimeframeBarBuilder
 
 
 class _FakeConfig:
@@ -209,6 +212,10 @@ def _base_bar(symbol="AAPL", bar_time_ms=1713797100000):
     }
 
 
+def _et_ms(year, month, day, hour, minute):
+    return int(datetime(year, month, day, hour, minute, tzinfo=ET).timestamp() * 1000)
+
+
 def _base_bar_series(symbols=("AAPL",), start_ms=1713796800000, count=12):
     rows = []
     for index in range(count):
@@ -282,6 +289,54 @@ class ComputeRollupPlanTest(unittest.TestCase):
         self.assertTrue(plan["incremental_rollup"])
         self.assertEqual(plan["rollup_intervals"], ["15m", "30m", "1h", "4h"])
 
+    def test_watchlist_idle_topup_uses_incremental_rollup_for_targeted_symbols(self):
+        fake_app = mock.Mock()
+        fake_app.SUPPORTED_COMPUTE_ENVIRONMENTS = ["live", "paper", "backtest"]
+        fake_app.DEFAULT_COMPUTE_ENVIRONMENTS = ["live", "paper"]
+        fake_app.HIGHER_INTERVALS = ["15m", "30m", "1h", "4h", "1d"]
+        fake_app.INTERVALS = ["5m", "15m", "30m", "1h", "4h", "1d"]
+        fake_app.SIGNAL_SUPPRESSED_COMPUTE_SOURCES = set()
+        fake_app.normalize_symbols.return_value = ["AAPL", "MSFT"]
+        fake_app.cfg.has_environment_override.return_value = False
+        fake_app.cfg.get_bool_for_environment.return_value = True
+
+        with mock.patch.object(compute_request, "_api_app", return_value=fake_app):
+            plan = compute_request.build_compute_execution_plan(
+                {
+                    "source": "watchlist_idle_topup",
+                    "environments": ["live"],
+                    "symbols": ["AAPL", "MSFT"],
+                }
+            )
+
+        self.assertTrue(plan["targeted_rollup"])
+        self.assertTrue(plan["force_rollup"])
+        self.assertTrue(plan["incremental_rollup"])
+        self.assertEqual(plan["rollup_intervals"], ["15m", "30m", "1h", "4h"])
+
+    def test_rollup_since_ms_is_parsed_for_bounded_repairs(self):
+        fake_app = mock.Mock()
+        fake_app.SUPPORTED_COMPUTE_ENVIRONMENTS = ["live", "paper", "backtest"]
+        fake_app.DEFAULT_COMPUTE_ENVIRONMENTS = ["live", "paper"]
+        fake_app.HIGHER_INTERVALS = ["15m", "30m", "1h", "4h", "1d"]
+        fake_app.INTERVALS = ["5m", "15m", "30m", "1h", "4h", "1d"]
+        fake_app.SIGNAL_SUPPRESSED_COMPUTE_SOURCES = set()
+        fake_app.normalize_symbols.return_value = ["AAPL"]
+        fake_app.cfg.has_environment_override.return_value = False
+        fake_app.cfg.get_bool_for_environment.return_value = True
+
+        with mock.patch.object(compute_request, "_api_app", return_value=fake_app):
+            plan = compute_request.build_compute_execution_plan(
+                {
+                    "source": "targeted_recompute",
+                    "environments": ["live"],
+                    "symbols": ["AAPL"],
+                    "rollup_since_ms": "1779181500000",
+                }
+            )
+
+        self.assertEqual(plan["rollup_since_ms"], 1779181500000)
+
     def test_history_repair_keeps_full_targeted_rollup(self):
         fake_app = mock.Mock()
         fake_app.SUPPORTED_COMPUTE_ENVIRONMENTS = ["live", "paper", "backtest"]
@@ -346,6 +401,39 @@ class ComputeRollupPlanTest(unittest.TestCase):
 
 
 class IncrementalRollupWindowTest(unittest.TestCase):
+    def test_timeframe_builder_flushes_closed_15m_on_latest_5m_close_boundary(self):
+        builder = TimeframeBarBuilder(target_intervals=["15m"])
+        written = []
+
+        for minute in (0, 5, 10):
+            written.extend(builder.consume(_base_bar("AAPL", _et_ms(2026, 4, 17, 12, minute))))
+
+        self.assertEqual(len(written), 1)
+        self.assertEqual(written[0]["interval"], "15m")
+        self.assertEqual(written[0]["bar_time_ms"], _et_ms(2026, 4, 17, 12, 0))
+        self.assertEqual(written[0]["extra"]["component_count"], 3)
+        self.assertEqual(written[0]["extra"]["last_component_bar_time_ms"], _et_ms(2026, 4, 17, 12, 10))
+        self.assertEqual(written[0]["extra"]["closed_by_bar_time_ms"], _et_ms(2026, 4, 17, 12, 15))
+
+        self.assertEqual(builder.consume(_base_bar("AAPL", _et_ms(2026, 4, 17, 12, 15))), [])
+
+    def test_timeframe_builder_flushes_all_due_intervals_on_boundaries(self):
+        builder = TimeframeBarBuilder(target_intervals=["15m", "30m", "1h"])
+        written = []
+
+        for minute in (0, 5, 10, 15, 20, 25):
+            written.extend(builder.consume(_base_bar("AAPL", _et_ms(2026, 4, 17, 12, minute))))
+
+        compact = sorted((row["interval"], row["bar_time_ms"]) for row in written)
+        self.assertEqual(
+            compact,
+            [
+                ("15m", _et_ms(2026, 4, 17, 12, 0)),
+                ("15m", _et_ms(2026, 4, 17, 12, 15)),
+                ("30m", _et_ms(2026, 4, 17, 12, 0)),
+            ],
+        )
+
     def test_fetch_since_falls_back_to_processed_cursor_when_interval_fetch_empty(self):
         fake_app = mock.Mock()
         fake_app.last_interval_fetch_ms = {}
@@ -364,9 +452,9 @@ class IncrementalRollupWindowTest(unittest.TestCase):
     def test_recent_rollup_respects_selected_intervals(self):
         fake_app = mock.Mock()
         fake_app.HIGHER_INTERVALS = ["15m", "30m", "1h", "4h", "1d"]
-        fake_app.last_interval_fetch_ms = {("live", "5m"): 1776278100000}
 
-        with mock.patch.object(compute_rollup, "_api_app", return_value=fake_app):
+        with mock.patch.object(compute_rollup, "_api_app", return_value=fake_app), \
+                mock.patch.object(compute_rollup, "_latest_targeted_5m_bar_ms", return_value=1776278100000):
             since_ms = compute_rollup._recent_rollup_since_ms(
                 "live",
                 ["AAPL", "MSFT"],
@@ -382,21 +470,28 @@ class IncrementalRollupWindowTest(unittest.TestCase):
         with mock.patch.object(compute_rollup, "_api_app", return_value=fake_app):
             self.assertEqual(
                 compute_rollup._incremental_due_intervals(
-                    1776794700000,
+                    _et_ms(2026, 4, 17, 12, 5),
                     intervals=["15m", "30m", "1h", "4h"],
                 ),
                 [],
             )
             self.assertEqual(
                 compute_rollup._incremental_due_intervals(
-                    1776795300000,
+                    _et_ms(2026, 4, 17, 12, 10),
                     intervals=["15m", "30m", "1h", "4h"],
                 ),
                 ["15m"],
             )
             self.assertEqual(
                 compute_rollup._incremental_due_intervals(
-                    1776798000000,
+                    _et_ms(2026, 4, 17, 12, 25),
+                    intervals=["15m", "30m", "1h", "4h"],
+                ),
+                ["15m", "30m"],
+            )
+            self.assertEqual(
+                compute_rollup._incremental_due_intervals(
+                    _et_ms(2026, 4, 17, 12, 55),
                     intervals=["15m", "30m", "1h", "4h"],
                 ),
                 ["15m", "30m", "1h"],
@@ -408,7 +503,7 @@ class IncrementalRollupWindowTest(unittest.TestCase):
         fake_app.normalize_symbols.return_value = ["AAPL"]
 
         with mock.patch.object(compute_rollup, "_api_app", return_value=fake_app), \
-                mock.patch.object(compute_rollup, "_latest_targeted_5m_bar_ms", return_value=1776794700000), \
+                mock.patch.object(compute_rollup, "_latest_targeted_5m_bar_ms", return_value=_et_ms(2026, 4, 17, 12, 5)), \
                 mock.patch.object(compute_rollup, "rebuild_higher_timeframe_bars") as rebuild:
             results = compute_rollup.ensure_higher_timeframe_bars(
                 ["live"],
@@ -436,7 +531,7 @@ class IncrementalRollupWindowTest(unittest.TestCase):
         fake_app.normalize_symbols.return_value = ["AAPL", "MSFT"]
 
         with mock.patch.object(compute_rollup, "_api_app", return_value=fake_app), \
-                mock.patch.object(compute_rollup, "_latest_targeted_5m_bar_ms", return_value=1776795300000), \
+                mock.patch.object(compute_rollup, "_latest_targeted_5m_bar_ms", return_value=_et_ms(2026, 4, 17, 12, 10)), \
                 mock.patch.object(compute_rollup, "_recent_rollup_since_ms", return_value=1776793500000) as since_mock, \
                 mock.patch.object(
                     compute_rollup,
@@ -465,8 +560,56 @@ class IncrementalRollupWindowTest(unittest.TestCase):
         self.assertTrue(results["live"]["targeted"])
         self.assertTrue(results["live"]["incremental"])
 
+    def test_non_incremental_targeted_rollup_can_be_bounded_by_since_ms(self):
+        fake_app = mock.Mock()
+        fake_app.HIGHER_INTERVALS = ["15m", "30m", "1h", "4h", "1d"]
+        fake_app.normalize_symbols.return_value = ["AAPL", "MSFT"]
+
+        with mock.patch.object(compute_rollup, "_api_app", return_value=fake_app), \
+                mock.patch.object(
+                    compute_rollup,
+                    "rebuild_higher_timeframe_bars",
+                    return_value={"processed_5m": 24, "written": 8, "errors": 0},
+                ) as rebuild:
+            results = compute_rollup.ensure_higher_timeframe_bars(
+                ["live"],
+                force=True,
+                symbols=["AAPL", "MSFT"],
+                incremental=False,
+                intervals=["15m", "30m"],
+                since_ms=1779181500000,
+            )
+
+        rebuild.assert_called_once_with(
+            "live",
+            symbols=["AAPL", "MSFT"],
+            intervals=["15m", "30m"],
+            since_ms=1779181500000,
+        )
+        self.assertTrue(results["live"]["targeted"])
+        self.assertFalse(results["live"]["incremental"])
+
 
 class RollupDirectSqliteTest(unittest.TestCase):
+    def test_latest_targeted_5m_ignores_stale_global_fetch_cache(self):
+        fake_app = _build_fake_app()
+        fake_app.last_interval_fetch_ms = {("live", "5m"): _et_ms(2026, 4, 17, 12, 20)}
+        conn = _sqlite_bars(
+            [
+                _base_bar("AAPL", _et_ms(2026, 4, 17, 12, 25)),
+                _base_bar("MSFT", _et_ms(2026, 4, 17, 12, 10)),
+            ]
+        )
+
+        try:
+            with mock.patch.object(compute_rollup, "_api_app", return_value=fake_app), \
+                    mock.patch.object(compute_rollup, "open_pb_sqlite", return_value=_ReusableSqliteConn(conn)):
+                latest_ms = compute_rollup._latest_targeted_5m_bar_ms("live", ["AAPL"])
+
+            self.assertEqual(latest_ms, _et_ms(2026, 4, 17, 12, 25))
+        finally:
+            conn.close()
+
     def test_latest_and_interval_reads_prefer_direct_sqlite(self):
         fake_app = _build_fake_app()
         fake_app.pb.get_records.side_effect = AssertionError("PB API should not be used")
@@ -521,9 +664,9 @@ class RollupDirectSqliteTest(unittest.TestCase):
         fake_app.pb.upsert_bars.side_effect = AssertionError("PB API write should not be used")
         read_conn = _sqlite_bars(
             [
-                _base_bar("AAPL", 1713796800000),
-                _base_bar("AAPL", 1713797100000),
-                _base_bar("AAPL", 1713797700000),
+                _base_bar("AAPL", _et_ms(2026, 4, 17, 12, 0)),
+                _base_bar("AAPL", _et_ms(2026, 4, 17, 12, 5)),
+                _base_bar("AAPL", _et_ms(2026, 4, 17, 12, 10)),
             ]
         )
         written_batches = []

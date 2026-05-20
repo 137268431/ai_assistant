@@ -27,6 +27,15 @@ def _coerce_payload_bool(value, default: bool = False) -> bool:
     return bool(value)
 
 
+def _coerce_payload_int(value, default: int = 0) -> int:
+    if value is None:
+        return int(default or 0)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default or 0)
+
+
 def should_persist_compute_signals(payload: dict) -> bool:
     api_app = _api_app()
     if "persist_signals" in payload:
@@ -51,10 +60,9 @@ def get_rollup_intervals_for_source(source: str) -> list[str]:
         if interval and interval not in normalized:
             normalized.append(interval)
 
-    if source == "canonical_close":
+    if source in {"canonical_close", "watchlist_idle_topup"}:
         # Daily rollup only closes when the trading day rolls over. Recomputing it
-        # on every intraday canonical close turns each 5m compute cycle into a
-        # multi-day rebuild for every symbol.
+        # on every intraday 5m refresh turns each cycle into a multi-day rebuild.
         normalized = [interval for interval in normalized if interval != "1d"]
 
     return normalized
@@ -167,15 +175,18 @@ def build_compute_execution_plan(payload=None) -> dict:
         "recompute",
         "targeted_recompute",
         "canonical_close",
+        "watchlist_idle_topup",
     }
     force_rollup = _coerce_payload_bool(payload.get("force_rollup"), False) or source in {
         "recompute",
         "history_repair",
         "targeted_recompute",
         "canonical_close",
+        "watchlist_idle_topup",
     }
     requested_intervals = _normalize_requested_intervals(payload.get("intervals"), api_app.INTERVALS)
     requested_rollup_intervals = _normalize_requested_intervals(payload.get("rollup_intervals"), api_app.HIGHER_INTERVALS)
+    rollup_since_ms = max(0, _coerce_payload_int(payload.get("rollup_since_ms"), 0))
     default_intervals = ["5m"] if source == "ibkr_scheduler" and "intervals" not in payload else api_app.INTERVALS
     default_rollup_intervals = [] if source == "ibkr_scheduler" and "rollup_intervals" not in payload else get_rollup_intervals_for_source(source)
     return {
@@ -189,9 +200,10 @@ def build_compute_execution_plan(payload=None) -> dict:
         "enabled_environments": enabled_environments,
         "targeted_rebuild": targeted_rebuild,
         "targeted_rollup": targeted_rollup,
-        "incremental_rollup": bool(requested_symbols) and source == "canonical_close",
+        "incremental_rollup": bool(requested_symbols) and source in {"canonical_close", "watchlist_idle_topup"},
         "skip_persisted_cursor": source in {"recompute", "history_repair", "history_rebuild", "targeted_recompute"},
         "force_rollup": force_rollup,
+        "rollup_since_ms": rollup_since_ms,
         "rollup_intervals": requested_rollup_intervals if "rollup_intervals" in payload else default_rollup_intervals,
         "intervals": requested_intervals if "intervals" in payload else default_intervals,
     }

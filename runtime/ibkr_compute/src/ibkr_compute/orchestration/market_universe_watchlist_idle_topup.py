@@ -23,6 +23,7 @@ from . import market_universe_support as _market_universe_support
 
 WATCHLIST_IDLE_TOPUP_MAX_SYMBOLS_HARD_CAP = 200
 WATCHLIST_IDLE_TOPUP_SIGNAL_BLOCKED_SYMBOLS = {"BOXX", "IBKR"}
+WATCHLIST_IDLE_TOPUP_ROLLUP_INTERVALS = ["15m", "30m", "1h", "4h"]
 
 
 def _service_mod():
@@ -1298,7 +1299,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
                                 persist_signals=bool(persist_signal_symbols),
                                 persist_signal_symbols=persist_signal_symbols,
                                 intervals=["5m"],
-                                rollup_intervals=[],
+                                rollup_intervals=list(WATCHLIST_IDLE_TOPUP_ROLLUP_INTERVALS),
                             )
 
                 batch_duration_s = round(max(0.0, time.perf_counter() - batch_started), 3)

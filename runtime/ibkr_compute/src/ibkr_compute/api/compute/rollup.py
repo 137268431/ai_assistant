@@ -257,10 +257,12 @@ def _write_rollup_batch(api_app, environment: str, batch: list[dict]) -> dict:
 def _latest_targeted_5m_bar_ms(environment: str, normalized_symbols) -> int:
     api_app = _api_app()
     environment = _runtime_environment(environment)
-    interval_key = (environment, "5m")
-    cached_ms = int(api_app.last_interval_fetch_ms.get(interval_key, 0) or 0)
-    if cached_ms > 0:
-        return cached_ms
+    normalized_symbols = api_app.normalize_symbols(normalized_symbols)
+    if not normalized_symbols:
+        interval_key = (environment, "5m")
+        cached_ms = int(api_app.last_interval_fetch_ms.get(interval_key, 0) or 0)
+        if cached_ms > 0:
+            return cached_ms
 
     if _direct_sqlite_read_enabled(api_app, environment):
         try:
@@ -315,9 +317,10 @@ def _incremental_due_intervals(latest_5m_ms: int, intervals=None) -> list[str]:
     if latest_5m_ms <= 0:
         return []
 
+    latest_5m_close_ms = int(latest_5m_ms) + interval_to_ms("5m")
     due_intervals = []
     for interval in target_intervals:
-        if bucket_start_ms(latest_5m_ms, interval) == int(latest_5m_ms):
+        if bucket_start_ms(latest_5m_close_ms, interval) == latest_5m_close_ms:
             due_intervals.append(interval)
     return due_intervals
 
@@ -558,10 +561,12 @@ def ensure_higher_timeframe_bars(
     symbols=None,
     incremental: bool = False,
     intervals=None,
+    since_ms: int | None = None,
 ):
     api_app = _api_app()
     normalized_symbols = api_app.normalize_symbols(symbols)
     target_intervals = _normalize_target_intervals(api_app, intervals)
+    requested_since_ms = int(since_ms or 0)
     results = {}
     for environment in [_runtime_environment(item) for item in (environments or [])]:
         if not target_intervals:
@@ -576,6 +581,7 @@ def ensure_higher_timeframe_bars(
 
         if normalized_symbols:
             effective_intervals = list(target_intervals)
+            effective_since_ms = requested_since_ms if requested_since_ms > 0 else None
             if incremental:
                 latest_5m_ms = _latest_targeted_5m_bar_ms(environment, normalized_symbols)
                 if latest_5m_ms <= 0:
@@ -600,21 +606,19 @@ def ensure_higher_timeframe_bars(
                         "intervals": [],
                     }
                     continue
-                since_ms = _recent_rollup_since_ms(
+                effective_since_ms = _recent_rollup_since_ms(
                     environment,
                     normalized_symbols,
                     intervals=effective_intervals,
                 )
-            else:
-                since_ms = None
             rollup_result = rebuild_higher_timeframe_bars(
                 environment,
                 symbols=normalized_symbols,
                 intervals=effective_intervals,
-                since_ms=since_ms,
+                since_ms=effective_since_ms,
             )
             rollup_result["targeted"] = True
-            rollup_result["incremental"] = bool(incremental and since_ms)
+            rollup_result["incremental"] = bool(incremental and effective_since_ms)
             results[environment] = rollup_result
             continue
 
