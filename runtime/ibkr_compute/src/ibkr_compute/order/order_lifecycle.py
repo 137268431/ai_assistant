@@ -338,6 +338,13 @@ class OrderLifecycle:
             logger.warning("Failed to get account snapshot: %s", exc)
             return {}
 
+    def get_account_pnl(self, acct_id: str = None) -> Dict:
+        try:
+            return dict(self.broker.get_account_pnl(account=acct_id) or {})
+        except Exception as exc:
+            logger.warning("Failed to get account PnL: %s", exc)
+            return {"ok": False, "error": str(exc)}
+
     def eod_close_all(self, acct_id: str = None) -> Dict:
         positions = self.get_positions(acct_id)
         closed = 0

@@ -52,6 +52,33 @@ class AccountSnapshotOrderFilteringTest(unittest.TestCase):
             summary["account_today_pnl"],
         )
 
+    def test_snapshot_summary_prefers_req_pnl_daily_pnl(self):
+        summary = _build_snapshot_summary(
+            {
+                "AccountCode": {"value": "U13281777"},
+                "Currency": {"value": "USD"},
+                "DailyPnL": {"value": "-12.34", "currency": "USD"},
+                "RealizedPnL": {"value": "-5.00", "currency": "USD"},
+                "UnrealizedPnL": {"value": "-7.34", "currency": "USD"},
+            },
+            "U13281777",
+            [],
+            {
+                "daily_pnl": "-22.22",
+                "realized_pnl": "-8.00",
+                "unrealized_pnl": "-14.22",
+                "source": "reqPnL",
+            },
+        )
+
+        self.assertTrue(summary["daily_pnl_available"])
+        self.assertEqual(-22.22, summary["daily_pnl"])
+        self.assertEqual(-22.22, summary["today_pnl"])
+        self.assertEqual("broker_req_pnl", summary["account_today_pnl"]["source"])
+        self.assertEqual("reqPnL.dailyPnL", summary["account_today_pnl"]["raw_field"])
+        self.assertEqual(-8.0, summary["account_today_pnl"]["realized"])
+        self.assertEqual(-14.22, summary["account_today_pnl"]["unrealized"])
+
     def test_snapshot_summary_falls_through_day_pnl_then_pnl(self):
         day_summary = _build_snapshot_summary(
             {"DayPnL": {"value": "4.25", "currency": "USD"}},

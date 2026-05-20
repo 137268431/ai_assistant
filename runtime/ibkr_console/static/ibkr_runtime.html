@@ -8,7 +8,7 @@
     <script src="common.js"></script>
     <script>document.write(getCommonStyles());</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-    <link rel="stylesheet" href="/assets/css/pages/ibkr_runtime/page.css?v=20260521-mode-switch">
+    <link rel="stylesheet" href="/assets/css/pages/ibkr_runtime/page.css?v=20260521-login-priority">
 </head>
 <body>
     <div class="page-loading-overlay" id="pageLoading">
@@ -50,6 +50,21 @@
             </div>
 
             <div class="runtime-control-panel" aria-label="Runtime controls">
+                <section class="runtime-control-group runtime-control-login" id="appLoginHandoffSection">
+                    <div class="runtime-control-head">
+                        <div>
+                            <div class="runtime-control-kicker">Session Handoff</div>
+                            <div class="runtime-control-title">IBKR App 登录准备</div>
+                        </div>
+                        <div class="runtime-control-copy">优先确认 Gateway 当前占用，再选择 PAPER / LIVE App 登录目标。</div>
+                    </div>
+                    <button id="appLoginHandoffButton" class="action-btn action-accent action-login-primary" data-action="app_login_handoff" onclick="handleRuntimeAction('app_login_handoff')">
+                        <span class="action-kicker">Critical first step</span>
+                        <span class="action-label">准备登录 IBKR App</span>
+                        <span class="action-copy">先判断当前 Gateway 占用 PAPER / LIVE，再决定是否需要让出会话。</span>
+                    </button>
+                </section>
+
                 <section class="runtime-control-group runtime-control-mode" id="brokerModeSwitchSection">
                     <div class="runtime-control-head">
                         <div>
@@ -85,28 +100,20 @@
                             <div class="runtime-control-kicker">Runtime Flow</div>
                             <div class="runtime-control-title">主运行流程</div>
                         </div>
-                        <div class="runtime-control-copy">业务线程一键启动/停止、认证检查与手动刷新。</div>
+                        <div class="runtime-control-copy">业务线程一键启动/停止；低频检查与刷新降级到次级操作。</div>
                     </div>
                     <div class="runtime-note runtime-note-strategy" id="startupStrategyInfo">
                         启动策略加载中...
                     </div>
-                    <div class="action-section">
+                    <div class="action-section runtime-primary-actions">
                         <button id="runtimeFlowToggleButton" class="action-btn action-primary" data-action="start" onclick="handleRuntimeAction(this.dataset.action || 'start')">
                             <span class="action-label">启动 Runtime 线程</span>
                             <span class="action-copy">启动 runtime 内部交易/行情线程；是否重启 Gateway 由启动策略决定。</span>
                         </button>
-                        <button class="action-btn action-accent" data-action="probe" onclick="handleRuntimeAction('probe')">
-                            <span class="action-label">检查当前认证</span>
-                            <span class="action-copy">只在你已经完成手机确认或 Response 后使用；不 stop/start，不新开 2FA，只检查 Gateway 会话是否已恢复。</span>
-                        </button>
-                        <button id="appLoginHandoffButton" class="action-btn action-accent" data-action="app_login_handoff" onclick="handleRuntimeAction('app_login_handoff')">
-                            <span class="action-label">准备登录 IBKR App</span>
-                            <span class="action-copy">先判断当前 Gateway 占用 PAPER / LIVE，再决定是否需要让出会话。</span>
-                        </button>
-                        <button class="action-btn" onclick="loadRuntimeData(true)">
-                            <span class="action-label">手动刷新</span>
-                            <span class="action-copy">重新抓取 healthz / statusz / summaryz 与最近几张表的数据。</span>
-                        </button>
+                    </div>
+                    <div class="runtime-secondary-actions" aria-label="Runtime secondary actions">
+                        <button class="runtime-secondary-action" data-action="probe" onclick="handleRuntimeAction('probe')">检查当前认证</button>
+                        <button class="runtime-secondary-action" onclick="loadRuntimeData(true)">手动刷新状态</button>
                     </div>
                 </section>
 
@@ -285,7 +292,7 @@
     <script src="/assets/js/shared/ibkr-page.js?v=20260507-shared-split"></script>
     <script src="/assets/js/pages/ibkr_runtime/state.js?v=20260521-mode-switch"></script>
     <script src="/assets/js/pages/ibkr_runtime/formatters.js?v=20260513-status-labels-v2"></script>
-    <script src="/assets/js/pages/ibkr_runtime/models.js?v=20260521-mode-switch"></script>
+    <script src="/assets/js/pages/ibkr_runtime/models.js?v=20260521-login-priority"></script>
     <script src="/assets/js/pages/ibkr_runtime/auth-confirm.js?v=20260521-mode-switch"></script>
     <script src="/assets/js/pages/ibkr_runtime/renderers.js?v=20260521-mode-switch"></script>
     <script src="/assets/js/pages/ibkr_runtime/tables.js?v=20260507-split"></script>

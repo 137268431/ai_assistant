@@ -5,9 +5,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 def fetch_snapshot_sources(service, account_id: str) -> dict:
     summary_raw = {}
+    pnl_raw = {}
     positions_raw = []
     orders_raw = []
     summary_error = ""
+    pnl_error = ""
     positions_error = ""
     orders_error = ""
     account_snapshot_requested = False
@@ -21,6 +23,9 @@ def fetch_snapshot_sources(service, account_id: str) -> dict:
         else:
             fetchers["summary"] = lambda: service.order_lifecycle.get_account_summary(account_id)
             fetchers["positions"] = lambda: service.order_lifecycle.get_positions(account_id)
+        pnl_getter = getattr(service.order_lifecycle, "get_account_pnl", None)
+        if callable(pnl_getter):
+            fetchers["pnl"] = lambda: pnl_getter(account_id)
     if hasattr(service, "order_tracker") and service.order_tracker:
         fetchers["orders"] = service.order_tracker.get_live_orders
 
@@ -42,6 +47,8 @@ def fetch_snapshot_sources(service, account_id: str) -> dict:
                         summary_error = str(exc)
                     elif name == "positions":
                         positions_error = str(exc)
+                    elif name == "pnl":
+                        pnl_error = str(exc)
                     else:
                         orders_error = str(exc)
                     continue
@@ -54,6 +61,13 @@ def fetch_snapshot_sources(service, account_id: str) -> dict:
                     summary_raw = value if isinstance(value, dict) else {}
                 elif name == "positions":
                     positions_raw = value if isinstance(value, list) else []
+                elif name == "pnl":
+                    payload = value if isinstance(value, dict) else {}
+                    if payload.get("error") and not bool(payload.get("ok", True)):
+                        pnl_error = str(payload.get("error") or "")
+                        pnl_raw = {}
+                    else:
+                        pnl_raw = payload
                 else:
                     orders_raw = value if isinstance(value, list) else []
 
@@ -76,10 +90,12 @@ def fetch_snapshot_sources(service, account_id: str) -> dict:
 
     return {
         "summary_raw": summary_raw,
+        "pnl_raw": pnl_raw,
         "positions_raw": positions_raw,
         "orders_raw": orders_raw,
         "errors": {
             "summary": summary_error,
+            "pnl": pnl_error,
             "positions": positions_error,
             "orders": orders_error,
         },

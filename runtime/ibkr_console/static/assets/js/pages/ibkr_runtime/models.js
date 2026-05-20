@@ -707,7 +707,7 @@
         }
 
         function syncActionLocks() {
-            document.querySelectorAll('.action-btn').forEach((button) => {
+            document.querySelectorAll('.action-btn, .runtime-secondary-action').forEach((button) => {
                 const action = String(button?.dataset?.action || '').trim();
                 const lockReason = actionPending ? '' : getTwoFactorActionLockReason(action);
                 let probeReason = '';

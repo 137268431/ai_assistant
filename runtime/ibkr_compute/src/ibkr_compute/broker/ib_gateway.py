@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import math
 import threading
 import time
 from datetime import datetime, timedelta
@@ -303,6 +304,18 @@ class _IBGatewayApp(EWrapper, EClient):
             return capture
         return None
 
+    @staticmethod
+    def _pnl_value(value: Any) -> float | None:
+        if isinstance(value, bool) or value is None:
+            return None
+        try:
+            number = float(value)
+        except Exception:
+            return None
+        if not math.isfinite(number) or abs(number) >= 1e100:
+            return None
+        return number
+
     def _emit_tick(self, ticker_id: int):
         payload = dict(self._ticker_payloads.get(ticker_id) or {})
         if not payload:
@@ -535,6 +548,21 @@ class _IBGatewayApp(EWrapper, EClient):
     def accountSummaryEnd(self, reqId: int):  # noqa: N802
         ctx = self._pending_requests.get(int(reqId))
         if ctx:
+            ctx.event.set()
+
+    def pnl(self, reqId: int, dailyPnL: float, unrealizedPnL: float, realizedPnL: float):  # noqa: N802
+        ctx = self._pending_requests.get(int(reqId))
+        payload = {
+            "daily_pnl": self._pnl_value(dailyPnL),
+            "unrealized_pnl": self._pnl_value(unrealizedPnL),
+            "realized_pnl": self._pnl_value(realizedPnL),
+            "source": "reqPnL",
+            "updated_at": _iso_now(),
+        }
+        with self._state_lock:
+            self._last_message_at = time.time()
+        if ctx is not None:
+            ctx.items = [payload]
             ctx.event.set()
 
     def updateAccountValue(self, key: str, val: str, currency: str, accountName: str):  # noqa: N802
@@ -829,6 +857,43 @@ class _IBGatewayApp(EWrapper, EClient):
                 with self._account_updates_lock:
                     if self._account_updates_capture is capture:
                         self._account_updates_capture = None
+
+    def request_account_pnl(
+        self,
+        *,
+        account: str = "",
+        model_code: str = "",
+        timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS,
+    ) -> Dict[str, Any]:
+        self._ensure_ready(timeout, "request_account_pnl")
+        requested_account = str(account or "").strip()
+        if not requested_account and self._managed_accounts:
+            requested_account = self._managed_accounts.split(",", 1)[0].strip()
+        if not requested_account:
+            raise RuntimeError("missing_managed_account")
+        if not callable(getattr(self, "reqPnL", None)):
+            raise RuntimeError("req_pnl_unavailable")
+
+        req_id, ctx = self._next_request("account_pnl")
+        subscribed = False
+        try:
+            self.reqPnL(req_id, requested_account, str(model_code or ""))
+            subscribed = True
+            items = self._await(req_id, ctx, timeout)
+            payload = dict(items[0] or {}) if items else {}
+            if not payload:
+                return {}
+            payload.setdefault("source", "reqPnL")
+            payload["account"] = requested_account
+            payload["model_code"] = str(model_code or "")
+            return payload
+        finally:
+            self._pending_requests.pop(req_id, None)
+            if subscribed:
+                try:
+                    self.cancelPnL(req_id)
+                except Exception:
+                    logger.debug("cancelPnL failed for req_id=%s account=%s", req_id, requested_account, exc_info=True)
 
     def request_executions(self, timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS) -> List[dict]:
         self._ensure_ready(timeout, "request_executions")
@@ -1529,6 +1594,9 @@ class BrokerAdapter:
 
     def get_account_snapshot(self, account: str = "") -> Dict[str, Any]:
         return self.client.request_account_updates(account=account)
+
+    def get_account_pnl(self, account: str = "", model_code: str = "") -> Dict[str, Any]:
+        return self.client.request_account_pnl(account=account, model_code=model_code)
 
     def list_open_orders(self, *, include_all: bool = False) -> List[dict]:
         return self.client.request_open_orders(include_all=include_all)

@@ -169,9 +169,9 @@ assert(runtimeJs.includes('/api/custom/ibkr/services/action'), 'runtime_missing_
 assert(includesAll(runtimeJs, ['ibkr-runtime', 'ibkr-gateway', 'ibkr-compute', 'ibkr-backtest', 'ibkr-scheduler']), 'runtime_service_control_missing_core_services');
 assert(includesAll(runtimeJs, ["service: 'ibkr-backtest'", 'Backtest Service']), 'runtime_service_control_missing_backtest_card');
 assert(includesAll(runtimeJs, ['shouldShowServiceStopAction', '停止服务', "'stop'"]), 'runtime_service_control_missing_stop_action');
-assert(includesAll(runtimeHtml, ['runtimeFlowToggleButton', '全部急停', '恢复运行开关', 'runtime-control-danger']), 'runtime_trimmed_controls_missing');
+assert(includesAll(runtimeHtml, ['appLoginHandoffSection', 'action-login-primary', 'runtimeFlowToggleButton', 'runtime-secondary-actions', '全部急停', '恢复运行开关', 'runtime-control-danger']), 'runtime_trimmed_controls_missing');
 assert(runtimeJs.includes('recover_all') && runtimeJs.includes('/api/custom/ibkr/recover'), 'runtime_missing_recover_action');
-const runtimeExpectedStaticActions = ['start', 'probe', 'compute', 'emergency_all', 'recover_all'];
+const runtimeExpectedStaticActions = ['app_login_handoff', 'start', 'probe', 'compute', 'emergency_all', 'recover_all'];
 const runtimeUnexpectedStaticActions = collectDataActions(runtimeHtml).filter((action) => !runtimeExpectedStaticActions.includes(action));
 assert(runtimeUnexpectedStaticActions.length === 0, `runtime_unexpected_static_actions:${runtimeUnexpectedStaticActions.join(',')}`);
 ['刷新飞书 2FA 卡片', '开始人工接管', '结束人工接管', '执行 Scan', '重算历史缓存', '急停运行线程', '停止 IB Gateway 服务', '关闭计算调度', '关闭 Bars 写入', '关闭 Scheduler', '关闭交易执行', '放弃当前轮次并干净重开'].forEach((label) => {

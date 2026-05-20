@@ -1672,7 +1672,7 @@
         function renderBlocker(snapshot) {
             const blocker = document.getElementById('blocker');
             const errors = snapshot?.errors || {};
-            const hasFetchError = Boolean(errors.summary || errors.positions || errors.orders);
+            const hasFetchError = Boolean(errors.summary || errors.positions || errors.orders || errors.pnl);
             const sessionAuthenticated = Boolean(snapshot?.session_authenticated);
             const serviceRunning = Boolean(snapshot?.service_running || snapshot?.service_starting);
             const bpGuard = getBuyingPowerGuard(snapshot);
@@ -1690,6 +1690,7 @@
             if (errors.summary) lines.push(`summary error: ${errors.summary}`);
             if (errors.positions) lines.push(`positions error: ${errors.positions}`);
             if (errors.orders) lines.push(`orders error: ${errors.orders}`);
+            if (errors.pnl) lines.push(`pnl error: ${errors.pnl}`);
             const serviceHtml = lines.length ? `<div class="blocker">${lines.map((line) => `<div>${escapeHtml(line)}</div>`).join('')}</div>` : '';
             const bpHtml = hasBuyingPowerIssue ? `
                 <div class="bp-guard-banner ${bpState === 'blocked' ? 'danger' : 'warn'}">
@@ -1707,8 +1708,9 @@
             const accountTodayPnl = summary.account_today_pnl || {};
             const todayPnlOk = Boolean(accountTodayPnl.ok);
             const todayRawField = accountTodayPnl.raw_field || 'DailyPnL';
+            const todayPnlSource = accountTodayPnl.source || '';
             const todayPnlSub = todayPnlOk
-                ? `IBKR Daily PnL · ${todayRawField}`
+                ? `${todayPnlSource === 'broker_req_pnl' ? 'IBKR PnL stream' : 'IBKR Daily PnL'} · ${todayRawField}`
                 : (accountTodayPnl.message || 'IBKR Daily PnL unavailable');
             const cards = [
                 { label: 'Today P&L', value: todayPnlOk ? formatSignedNullableMoney(accountTodayPnl.net) : '--', sub: todayPnlSub, toneValue: todayPnlOk ? accountTodayPnl.net : null },

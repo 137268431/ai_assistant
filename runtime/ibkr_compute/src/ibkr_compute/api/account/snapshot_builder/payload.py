@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 
 from ibkr_compute.api.account.buying_power_guard import (
@@ -97,10 +98,36 @@ def _summary_currency(raw_value: dict | None, fallback: str) -> str:
     return fallback or "USD"
 
 
-def _build_account_today_pnl(summary_map: dict, currency: str) -> dict:
-    daily_pnl, raw_field, raw_value = _summary_number_optional(summary_map, "DailyPnL", "DayPnL", "PnL")
+def _pnl_raw_number(pnl_raw: dict | None, key: str) -> float | None:
+    if not isinstance(pnl_raw, dict):
+        return None
+    number = _coerce_float(pnl_raw.get(key))
+    if number is None:
+        return None
+    if not math.isfinite(float(number)) or abs(float(number)) >= 1e100:
+        return None
+    return float(number)
+
+
+def _build_account_today_pnl(summary_map: dict, currency: str, pnl_raw: dict | None = None) -> dict:
+    stream_daily_pnl = _pnl_raw_number(pnl_raw, "daily_pnl")
     realized_pnl, _, _ = _summary_number_optional(summary_map, "RealizedPnL")
     unrealized_pnl, _, _ = _summary_number_optional(summary_map, "UnrealizedPnL")
+    stream_realized_pnl = _pnl_raw_number(pnl_raw, "realized_pnl")
+    stream_unrealized_pnl = _pnl_raw_number(pnl_raw, "unrealized_pnl")
+    if stream_daily_pnl is not None:
+        return {
+            "ok": True,
+            "net": stream_daily_pnl,
+            "currency": currency or "USD",
+            "source": "broker_req_pnl",
+            "raw_field": "reqPnL.dailyPnL",
+            "realized": stream_realized_pnl if stream_realized_pnl is not None else realized_pnl,
+            "unrealized": stream_unrealized_pnl if stream_unrealized_pnl is not None else unrealized_pnl,
+            "message": "",
+        }
+
+    daily_pnl, raw_field, raw_value = _summary_number_optional(summary_map, "DailyPnL", "DayPnL", "PnL")
     if daily_pnl is None:
         return {
             "ok": False,
@@ -124,12 +151,17 @@ def _build_account_today_pnl(summary_map: dict, currency: str) -> dict:
     }
 
 
-def _build_snapshot_summary(summary_raw: dict, account_id: str, positions: list[dict]) -> dict:
+def _build_snapshot_summary(
+    summary_raw: dict,
+    account_id: str,
+    positions: list[dict],
+    pnl_raw: dict | None = None,
+) -> dict:
     summary_map = _summary_lookup(summary_raw)
     total_unrealized = sum(float(item.get("unrealized_pnl", 0) or 0) for item in positions)
     total_market_value = sum(abs(float(item.get("market_value", 0) or 0)) for item in positions)
     currency = _extract_summary_text(summary_map, "currency", "basecurrency") or "USD"
-    account_today_pnl = _build_account_today_pnl(summary_map, currency)
+    account_today_pnl = _build_account_today_pnl(summary_map, currency, pnl_raw)
     summary = {
         "account_code": _extract_summary_text(summary_map, "accountcode") or account_id,
         "account_type": _extract_summary_text(summary_map, "accounttype"),
@@ -192,7 +224,12 @@ def _build_ibkr_account_snapshot(service) -> dict:
         fallback_ids,
     )
 
-    summary = _build_snapshot_summary(snapshot_sources["summary_raw"], context["account_id"], positions)
+    summary = _build_snapshot_summary(
+        snapshot_sources["summary_raw"],
+        context["account_id"],
+        positions,
+        snapshot_sources.get("pnl_raw") if isinstance(snapshot_sources.get("pnl_raw"), dict) else {},
+    )
     payload = {
         "ok": True,
         "environment": context["runtime_environment"],
@@ -209,6 +246,7 @@ def _build_ibkr_account_snapshot(service) -> dict:
             environment=context["runtime_environment"],
         ),
         "summary_raw": snapshot_sources["summary_raw"] if isinstance(snapshot_sources["summary_raw"], dict) else {},
+        "pnl_raw": snapshot_sources.get("pnl_raw") if isinstance(snapshot_sources.get("pnl_raw"), dict) else {},
         "positions": positions,
         "orders": orders,
         "live_open_orders": live_open_orders,
