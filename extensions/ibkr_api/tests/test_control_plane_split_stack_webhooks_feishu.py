@@ -9,7 +9,8 @@ class ControlPlaneSplitStackWebhooksFeishuTest(unittest.TestCase):
                 "build_order_cancel_webhook_response",
                 return_value=({"body": "<html>cancel</html>", "content_type": "text/html; charset=utf-8"}, 200),
             ) as builder_mock:
-                response = api_app_mod.webhook_order_cancel()
+                with mock.patch.object(api_app_mod.pb, "get_records", return_value=[]):
+                    response = api_app_mod.webhook_order_cancel()
         self.assertEqual(response[0], "<html>cancel</html>")
         self.assertEqual(response[1], 200)
         self.assertEqual(response[2]["Content-Type"], "text/html; charset=utf-8")
@@ -22,7 +23,8 @@ class ControlPlaneSplitStackWebhooksFeishuTest(unittest.TestCase):
                 "build_order_close_webhook_response",
                 return_value=({"body": "<html>close</html>", "content_type": "text/html; charset=utf-8"}, 200),
             ) as builder_mock:
-                response = api_app_mod.webhook_order_close()
+                with mock.patch.object(api_app_mod.pb, "get_records", return_value=[]):
+                    response = api_app_mod.webhook_order_close()
         self.assertEqual(response[0], "<html>close</html>")
         self.assertEqual(response[1], 200)
         self.assertEqual(response[2]["Content-Type"], "text/html; charset=utf-8")
@@ -136,5 +138,4 @@ class ControlPlaneSplitStackWebhooksFeishuTest(unittest.TestCase):
             with mock.patch.object(api_app_mod, "_dispatch_feishu_signal_callback", return_value=(callback_result, 200)) as dispatch_mock:
                 payload = api_app_mod.webhook_feishu_callback()
         self.assertEqual(payload["toast"]["type"], "success")
-        dispatch_mock.assert_called_once_with("confirm", "sig-1", "live")
-
+        dispatch_mock.assert_called_once_with("confirm", "sig-1", "live", "live")

@@ -11,6 +11,7 @@ if str(SERVICE_SRC_ROOT) not in sys.path:
 from ibkr_api.two_factor.request import build_two_factor_request_response
 from ibkr_api.two_factor.respond import build_two_factor_respond_response
 from ibkr_api.two_factor.result import build_two_factor_result_response
+from ibkr_api.two_factor.delivery import build_two_factor_card
 from ibkr_api.runtime.two_factor import normalize_two_factor_state_with_runtime
 from ibkr_api.two_factor.deadlines import parse_et_time_ms
 from ibkr_api.two_factor.runtime_actions import (
@@ -77,6 +78,27 @@ class TwoFactorBuildersTest(unittest.TestCase):
         self.emit_system_event = lambda **kwargs: {"ok": True, "message_id": "evt-1"}
         self.merge_startup_steps = lambda existing, patch, trigger_login: dict(existing or {}) | dict(patch or {})
         self.deliver_startup_progress_card = lambda state, environment: {"success": True, "message_id": "startup-1"}
+
+    def test_two_factor_card_uses_vertical_compact_action_rows(self):
+        card = build_two_factor_card(
+            {
+                "status": "success",
+                "reason": "manual_start",
+                "requested_at": "2026-05-20 12:19:21",
+                "result_at": "2026-05-20 12:19:27",
+                "last_result": "会话恢复成功。",
+            },
+            "paper",
+            normalize_environment=self.normalize_environment,
+            console_base_url=self.console_base_url,
+        )
+
+        action_blocks = [element for element in card["elements"] if element.get("tag") == "action"]
+        actions = [block["actions"][0] for block in action_blocks]
+
+        self.assertEqual(["查看 Runtime", "查看 System"], [action["text"]["content"] for action in actions])
+        self.assertTrue(all(len(block.get("actions", [])) == 1 for block in action_blocks))
+        self.assertFalse(any("width" in action for action in actions))
 
     def test_request_builder_reuses_active_card(self):
         pb = _FakePB(

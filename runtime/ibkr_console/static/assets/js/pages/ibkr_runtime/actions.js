@@ -113,6 +113,13 @@
                         source: 'runtime_page'
                     })
                 },
+                app_login_handoff: {
+                    path: '/api/custom/ibkr/gateway/stop',
+                    body: runtimeModePayload({
+                        reason: 'app_login_handoff',
+                        source: 'runtime_page_session_handoff'
+                    })
+                },
                 panic_reset_2fa: {
                     path: '/api/custom/ibkr/2fa/panic-reset',
                     body: runtimeModePayload({
@@ -127,6 +134,180 @@
                 emergency_all: { path: '/api/custom/ibkr/emergency-stop', body: runtimeModePayload({ action: 'all' }) },
                 recover_all: { path: '/api/custom/ibkr/recover', body: runtimeModePayload({ action: 'all' }) }
             };
+        }
+
+        function ensureAppLoginHandoffDialog() {
+            let dialog = document.getElementById('appLoginHandoffDialog');
+            if (dialog) return dialog;
+            dialog = document.createElement('div');
+            dialog.id = 'appLoginHandoffDialog';
+            dialog.className = 'runtime-confirm-overlay tone-warn';
+            dialog.innerHTML = `
+                <div class="runtime-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="appLoginHandoffTitle">
+                    <div class="runtime-confirm-kicker">Session Handoff</div>
+                    <div class="runtime-confirm-title" id="appLoginHandoffTitle">准备登录 IBKR App</div>
+                    <div class="runtime-confirm-message" id="appLoginHandoffMessage"></div>
+                    <div class="runtime-confirm-actions">
+                        <button class="runtime-confirm-btn secondary" type="button" id="appLoginHandoffCancel">取消</button>
+                        <button class="runtime-confirm-btn quick" type="button" id="appLoginHandoffPaper">我要登录 PAPER App</button>
+                        <button class="runtime-confirm-btn primary" type="button" id="appLoginHandoffLive">我要登录 LIVE App</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(dialog);
+            return dialog;
+        }
+
+        function showAppLoginHandoffDialog() {
+            return new Promise((resolve) => {
+                const dialog = ensureAppLoginHandoffDialog();
+                const messageEl = dialog.querySelector('#appLoginHandoffMessage');
+                const cancelButton = dialog.querySelector('#appLoginHandoffCancel');
+                const paperButton = dialog.querySelector('#appLoginHandoffPaper');
+                const liveButton = dialog.querySelector('#appLoginHandoffLive');
+                const session = getGatewaySessionModeModel(latestRuntimeStatus);
+                const gatewayText = session.running
+                    ? `${session.label}${session.managedAccounts ? ` · account ${session.managedAccounts}` : ''}`
+                    : '未占用 App 登录 session';
+                const dataText = formatEnvironmentLabel(currentDataEnvironment);
+                const brokerText = formatEnvironmentLabel(currentBrokerMode);
+                let settled = false;
+
+                const cleanup = (targetMode) => {
+                    if (settled) return;
+                    settled = true;
+                    dialog.classList.remove('show');
+                    document.removeEventListener('keydown', onKeydown);
+                    cancelButton.removeEventListener('click', onCancel);
+                    paperButton.removeEventListener('click', onPaper);
+                    liveButton.removeEventListener('click', onLive);
+                    dialog.removeEventListener('click', onBackdrop);
+                    resolve(targetMode || '');
+                };
+                const onCancel = () => cleanup('');
+                const onPaper = () => cleanup('paper');
+                const onLive = () => cleanup('live');
+                const onBackdrop = (event) => {
+                    if (event.target === dialog) cleanup('');
+                };
+                const onKeydown = (event) => {
+                    if (event.key === 'Escape') {
+                        event.preventDefault();
+                        cleanup('');
+                    }
+                };
+
+                dialog.classList.remove('tone-danger', 'tone-warn', 'tone-info');
+                dialog.classList.add(session.running && session.mode === 'live' ? 'tone-danger' : 'tone-warn');
+                if (messageEl) {
+                    messageEl.textContent = [
+                        `当前 Gateway 占用：${gatewayText}`,
+                        `当前下单：${brokerText}`,
+                        `当前行情：${dataText}`,
+                        '请选择你准备在 IBKR App 登录哪个 session。只有和 Gateway 占用一致时，页面才会停止 Runtime + Gateway。'
+                    ].join('\n');
+                }
+                cancelButton.addEventListener('click', onCancel);
+                paperButton.addEventListener('click', onPaper);
+                liveButton.addEventListener('click', onLive);
+                dialog.addEventListener('click', onBackdrop);
+                document.addEventListener('keydown', onKeydown);
+                dialog.classList.add('show');
+                paperButton.focus();
+            });
+        }
+
+        function buildAppLoginHandoffDecision(targetMode) {
+            const target = normalizeBrokerSessionMode(targetMode);
+            const session = getGatewaySessionModeModel(latestRuntimeStatus);
+            const targetLabel = formatAppLoginModeLabel(target);
+            const gatewayLabel = session.running ? session.label : '未占用';
+            if (!target) {
+                return {
+                    shouldStop: false,
+                    tone: 'warn',
+                    message: '未选择要登录的 IBKR App session。',
+                };
+            }
+            if (!session.running) {
+                return {
+                    shouldStop: false,
+                    tone: 'ok',
+                    message: `当前 Gateway 未占用登录 session，可以直接登录 IBKR App ${targetLabel}。`,
+                };
+            }
+            if (session.mode !== 'unknown' && session.mode !== target) {
+                return {
+                    shouldStop: false,
+                    tone: 'ok',
+                    message: `当前 Gateway 占用 ${gatewayLabel}，你要登录 ${targetLabel}，通常不冲突；本次不停止 Gateway。`,
+                };
+            }
+            if (session.mode === 'unknown') {
+                return {
+                    shouldStop: true,
+                    tone: 'warn',
+                    confirmText: '停止GATEWAY',
+                    title: `无法判断 Gateway session · 准备登录 ${targetLabel}`,
+                    message: [
+                        `当前 Gateway 正在运行，但无法判断占用 PAPER 还是 LIVE。`,
+                        `你准备登录：${targetLabel}`,
+                        '继续会停止 Runtime 业务线程和 ibkr-gateway，让出所有 Gateway 登录占用；不会切换交易模式，也不会触发新的 2FA。'
+                    ].join('\n'),
+                    body: {
+                        app_login_target: target,
+                        gateway_session_mode: 'unknown',
+                    },
+                };
+            }
+            return {
+                shouldStop: true,
+                tone: target === 'live' ? 'danger' : 'warn',
+                confirmText: target === 'live' ? '登录LIVE' : '登录PAPER',
+                title: `确认让出 ${targetLabel} Gateway 会话`,
+                message: [
+                    `当前 Gateway 占用：${gatewayLabel}`,
+                    `你准备登录：${targetLabel}`,
+                    '这会停止 Runtime 业务线程和 ibkr-gateway，避免 App 与 Gateway 抢同一个 session。',
+                    '不会切换交易模式，不会启用实盘下单，也不会触发新的 2FA。完成 App 操作后，请手动点击“启动 Runtime 线程”恢复。'
+                ].join('\n'),
+                body: {
+                    app_login_target: target,
+                    gateway_session_mode: session.mode,
+                },
+            };
+        }
+
+        async function handleAppLoginHandoffAction() {
+            const targetMode = await showAppLoginHandoffDialog();
+            const decision = buildAppLoginHandoffDecision(targetMode);
+            if (!targetMode) {
+                return;
+            }
+            if (!decision.shouldStop) {
+                document.getElementById('lastAction').textContent = `最近动作：${decision.message}`;
+                setAuthActionFeedback(`最近动作：${decision.message}`, decision.tone || 'info');
+                showToast(decision.message);
+                return;
+            }
+            const confirmed = await showRuntimeConfirm({
+                title: decision.title,
+                message: decision.message,
+                confirmText: decision.confirmText,
+                inputLabel: `输入 ${decision.confirmText}`,
+                confirmLabel: '让出会话',
+                tone: decision.tone || 'warn',
+            });
+            if (!confirmed) return;
+            if (!ensureIbkrPageAuth()) return;
+            await executeRuntimeAction('app_login_handoff', {
+                path: '/api/custom/ibkr/gateway/stop',
+                body: runtimeModePayload({
+                    ...(decision.body || {}),
+                    reason: 'app_login_handoff',
+                    source: 'runtime_page_session_handoff'
+                })
+            });
         }
 
         async function executeRuntimeAction(action, overrideTarget = null) {
@@ -148,11 +329,11 @@
                     25000,
                     `动作 ${action}`
                 );
-                const message = summarizeAction(action, payload);
+                const message = summarizeAction(action, payload, target);
                 document.getElementById('lastAction').textContent = `最近动作：${message}`;
                 setAuthActionFeedback(`最近动作：${message}`, payload?.ok === false ? 'error' : 'ok');
                 showToast(message);
-                if (payload?.accepted === true || Number(payload?.status_code || 0) === 202 || ['start', 'gateway_restart', 'reauth', 'reauth_force_new', 'probe', 'panic_reset_2fa'].includes(action)) {
+                if (payload?.accepted === true || Number(payload?.status_code || 0) === 202 || ['start', 'gateway_restart', 'reauth', 'reauth_force_new', 'probe', 'panic_reset_2fa', 'app_login_handoff'].includes(action)) {
                     boostRuntimeRefresh();
                 }
                 // The action is complete once the POST returns; don't keep buttons locked while a follow-up refresh waits on slow status APIs.
@@ -161,7 +342,7 @@
             } catch (error) {
                 const rawMessage = String(error?.message || error || '');
                 const timedOut = rawMessage.includes('timed out');
-                const likelySubmitted = ['start', 'gateway_restart', 'reauth', 'reauth_force_new', 'probe', 'panic_reset_2fa'].includes(action);
+                const likelySubmitted = ['start', 'gateway_restart', 'reauth', 'reauth_force_new', 'probe', 'panic_reset_2fa', 'app_login_handoff'].includes(action);
                 const message = timedOut && likelySubmitted
                     ? `动作响应超时：${action} · 已解除按钮锁并继续刷新；请先观察最新状态，避免重复触发。`
                     : `动作失败：${action} · ${rawMessage}`;
@@ -328,12 +509,16 @@
 
         async function handleRuntimeAction(action, overrideTarget = null) {
             if (actionPending) return;
-            const guardedActions = new Set(['start', 'stop', 'gateway_restart', 'reauth', 'reauth_force_new', 'probe', 'panic_reset_2fa', 'emergency_all', 'recover_all']);
+            const guardedActions = new Set(['start', 'stop', 'gateway_restart', 'reauth', 'reauth_force_new', 'probe', 'app_login_handoff', 'panic_reset_2fa', 'emergency_all', 'recover_all']);
             const runtimeMismatch = getRuntimeEnvironmentMismatch();
             if (runtimeMismatch && guardedActions.has(action)) {
                 document.getElementById('lastAction').textContent = runtimeMismatch.message;
                 setAuthActionFeedback(runtimeMismatch.message, 'error');
                 showToast(runtimeMismatch.message);
+                return;
+            }
+            if (action === 'app_login_handoff') {
+                await handleAppLoginHandoffAction();
                 return;
             }
             const actionLockReason = getTwoFactorActionLockReason(action);

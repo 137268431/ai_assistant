@@ -166,6 +166,39 @@ const mockSnapshot = enrichAccountSnapshot(
         account: 'U1234567',
         currency: 'USD',
         asset_class: 'STK',
+        relation: {
+          status: 'system_managed',
+          signal_id: 'sig-1',
+          trade_group_id: 'tg-1',
+          entry_order_unique_id: 'coid-1',
+          last_order_status: 'Filled',
+          order_updated: '2026-04-10T09:31:30Z',
+        },
+        raw: {},
+      },
+      {
+        symbol: 'ABNB',
+        conid: 459530964,
+        quantity: 0,
+        direction: 'flat',
+        avg_cost: 0,
+        avg_price: 0,
+        market_price: 134.4,
+        market_value: 0,
+        unrealized_pnl: 0,
+        realized_pnl: -141.06,
+        account: 'U1234567',
+        currency: 'USD',
+        asset_class: 'STK',
+        relation: {
+          status: 'flat_broker_position',
+          reason: 'gateway_flat_position_record',
+          signal_id: 'sig-flat',
+          trade_group_id: 'tg-flat',
+          entry_order_unique_id: 'coid-flat',
+          last_order_status: 'Filled',
+          order_updated: '2026-04-10T09:42:00Z',
+        },
         raw: {},
       },
     ],
@@ -330,6 +363,10 @@ const mockSnapshot = enrichAccountSnapshot(
       },
     ],
     counts: {
+      open_positions: 1,
+      system_managed_positions: 1,
+      external_positions: 0,
+      flat_positions: 1,
       open_orders: 4,
       cancelable_orders: 4,
       editable_orders: 3,
@@ -427,7 +464,14 @@ html = html.replace(/<link href="https:\/\/fonts\.googleapis\.com[^"]+" rel="sty
   page.on('pageerror', (err) => pageErrors.push(err.message));
   page.on('console', (msg) => consoleMessages.push(`${msg.type()}: ${msg.text()}`));
 
-  await page.setContent(html, { waitUntil: 'load' });
+  await page.route('**/*', async (route) => {
+    if (route.request().resourceType() === 'document') {
+      await route.fulfill({ status: 200, contentType: 'text/html', body: html });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: 'text/plain', body: '' });
+  });
+  await page.goto('http://local.ibkr-account.test/ibkr_account.html?environment=live&broker_mode=paper', { waitUntil: 'load' });
   try {
     await page.waitForFunction(() => {
       const text = document.getElementById('ordersMeta')?.textContent || '';
@@ -447,8 +491,10 @@ html = html.replace(/<link href="https:\/\/fonts\.googleapis\.com[^"]+" rel="sty
 
   const result = await page.evaluate(() => ({
     ordersMeta: document.getElementById('ordersMeta')?.textContent || '',
+    positionsMeta: document.getElementById('positionsMeta')?.textContent || '',
     accountSummaryText: document.getElementById('summaryGrid')?.innerText || '',
     positionsText: document.getElementById('positionsArea')?.innerText || '',
+    flatSectionText: document.querySelector('.flat-position-section')?.innerText || '',
     summaryText: document.getElementById('ordersSummary')?.innerText || '',
     areaText: document.getElementById('ordersArea')?.innerText || '',
     sectionTitles: Array.from(document.querySelectorAll('.orders-section-card .section-title')).map((el) => el.textContent.trim()),
@@ -456,6 +502,7 @@ html = html.replace(/<link href="https:\/\/fonts\.googleapis\.com[^"]+" rel="sty
     chainRowCount: document.querySelectorAll('.order-chain-row').length,
     legRowCount: document.querySelectorAll('.order-leg-row').length,
     diagnosticsCount: document.querySelectorAll('.order-diagnostics').length,
+    flatCloseButtonCount: document.querySelectorAll('.flat-position-section .action-btn.close').length,
   }));
 
   const screenshot = '/tmp/local_ibkr_account_render_check.png';
@@ -473,7 +520,13 @@ html = html.replace(/<link href="https:\/\/fonts\.googleapis\.com[^"]+" rel="sty
     && result.areaText.includes('PB Stale / Needs Repair Chains')
     && result.areaText.includes('missing_client_order_id')
     && result.accountSummaryText.includes('Remaining BP')
+    && result.positionsMeta.includes('1 open · 1 flat rows')
     && result.positionsText.includes('Unrealized %')
+    && result.flatSectionText.includes('今日已闭合 / FLAT')
+    && result.flatSectionText.includes('ABNB')
+    && result.flatSectionText.includes('不是当前 IBKR live open order')
+    && result.flatSectionText.includes('订单页')
+    && result.flatCloseButtonCount === 0
     && result.tableCount >= 3
     && result.chainRowCount >= 3
     && result.legRowCount >= 4

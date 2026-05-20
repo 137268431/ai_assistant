@@ -28,6 +28,7 @@ let currentEnvironment = currentBrokerMode;
             reauth: '刷新飞书卡片（不触发手机）',
             reauth_force_new: '开始 2FA（触发手机）',
             probe: '立即探测认证状态',
+            app_login_handoff: '准备登录 IBKR App',
             panic_reset_2fa: '重开 2FA',
             compute: '运行 Compute',
             emergency_all: '全部急停',

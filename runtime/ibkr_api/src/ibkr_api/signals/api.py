@@ -299,6 +299,7 @@ def build_signals_ack_response(
     update_interactive: Callable[..., dict[str, Any]] | None = None,
     signal_chat_id_fn: Callable[[str], str] | None = None,
     console_base_url: str = "",
+    notify_order_status: Callable[[str, dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], int]:
     broker_mode = request_broker_mode(payload)
     environment = broker_mode
@@ -405,6 +406,7 @@ def build_signals_ack_response(
                     payload=order_payload,
                     normalize_environment=normalize_environment,
                     escape_filter_string=escape_filter_string,
+                    notify_order_status=notify_order_status,
                 )
             except Exception as exc:
                 response_payload = {"error": str(exc)}

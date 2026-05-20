@@ -192,6 +192,7 @@ def build_order_upsert_response(
     payload: dict[str, Any],
     normalize_environment: Callable[[Any, str], str],
     escape_filter_string: Callable[[Any], str],
+    notify_order_status: Callable[[str, dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], int]:
     environment = request_broker_mode(payload)
     unique_id = to_text(payload.get("unique_id"))
@@ -234,6 +235,24 @@ def build_order_upsert_response(
         detail_row = {}
 
     response_order = saved_order if isinstance(saved_order, dict) else next_payload
+    notification_result: dict[str, Any] = {}
+    if not is_idempotent and callable(notify_order_status):
+        transition_text = get_order_status_transition_text(previous_status, status)
+        message = "订单已提交" if status == "Submitted" else transition_text
+        try:
+            notification_result = dict(
+                notify_order_status(
+                    status,
+                    response_order,
+                    {
+                        "message": message,
+                        "message_id": to_text(ensure_object(response_order.get("extra")).get("feishu_order_message_id")),
+                    },
+                )
+                or {}
+            )
+        except Exception as exc:
+            notification_result = {"success": False, "error": str(exc), "skipped": True}
     return (
         {
             "success": True,
@@ -242,7 +261,8 @@ def build_order_upsert_response(
             "previous_status": previous_status,
             "detail_created": not is_idempotent,
             "detail_record_id": str((detail_row or {}).get("id") or ""),
-            "notification_mode": "pending_migration",
+            "notification_mode": "order_group_card",
+            "notification": notification_result,
             "order": {
                 "id": response_order.get("id") or "",
                 "unique_id": response_order.get("unique_id") or unique_id,

@@ -6,6 +6,16 @@ from typing import Any
 ORDER_INTERNAL_EXTRA_KEYS = {
     "feishu_order_message_id": True,
     "feishu_order_card_version": True,
+    "feishu_order_notify_key": True,
+    "feishu_order_notify_last_action": True,
+    "feishu_order_notify_last_status": True,
+    "feishu_order_notify_last_result": True,
+    "feishu_order_notify_last_at_ms": True,
+    "feishu_order_notify_error": True,
+    "feishu_order_notify_http_status": True,
+    "feishu_order_notify_api_code": True,
+    "feishu_order_notify_api_message": True,
+    "feishu_order_notify_response_body": True,
 }
 
 ORDER_STATUS_TEXT_MAP = {

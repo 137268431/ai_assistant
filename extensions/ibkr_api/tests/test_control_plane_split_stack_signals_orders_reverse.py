@@ -1,4 +1,5 @@
 from control_plane_split_stack_helpers import *
+from ibkr_api.orders.notifications import sync_order_status_notification
 
 
 class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
@@ -83,7 +84,8 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
         sentinel = {"ok": True, "source": "ibkr-api"}
         with mock.patch.object(api_app_mod.request, "get_json", return_value={"id": "sig-1_entry", "environment": "live"}):
             with mock.patch.object(api_app_mod, "build_order_cancel_group_response", return_value=(sentinel, 200)) as builder_mock:
-                payload = api_app_mod.custom_ibkr_orders_cancel_group()
+                with mock.patch.object(api_app_mod.pb, "get_records", return_value=[]):
+                    payload = api_app_mod.custom_ibkr_orders_cancel_group()
         self.assertEqual(payload["source"], "ibkr-api")
         builder_mock.assert_called_once()
 
@@ -91,7 +93,8 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
         sentinel = {"ok": True, "source": "ibkr-api"}
         with mock.patch.object(api_app_mod.request, "get_json", return_value={"id": "sig-1_entry", "environment": "live"}):
             with mock.patch.object(api_app_mod, "build_order_close_group_response", return_value=(sentinel, 200)) as builder_mock:
-                payload = api_app_mod.custom_ibkr_orders_close_group()
+                with mock.patch.object(api_app_mod.pb, "get_records", return_value=[]):
+                    payload = api_app_mod.custom_ibkr_orders_close_group()
         self.assertEqual(payload["source"], "ibkr-api")
         builder_mock.assert_called_once()
 
@@ -123,6 +126,7 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
             "extra": {"reason": "entry submitted"},
         }
         created = []
+        send_calls = []
 
         def fake_create_record(collection, data):
             row = dict(data)
@@ -134,11 +138,24 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
             with mock.patch.object(api_app_mod.pb, "get_first_record", return_value=None):
                 with mock.patch.object(api_app_mod.pb, "get_records", return_value=[]):
                     with mock.patch.object(api_app_mod.pb, "create_record", side_effect=fake_create_record):
-                        payload = api_app_mod.custom_ibkr_orders_upsert()
+                        with mock.patch.object(api_app_mod.pb, "update_record", return_value={"id": "orders-1"}):
+                            with mock.patch.object(api_app_mod, "_order_chat_id", return_value="order-chat-test"):
+                                with mock.patch.object(
+                                    api_app_mod,
+                                    "_feishu_send_interactive",
+                                    side_effect=lambda card, chat_id, environment: send_calls.append(
+                                        {"card": card, "chat_id": chat_id, "environment": environment}
+                                    )
+                                    or {"success": True, "message_id": "order-msg-1"},
+                                ):
+                                    payload = api_app_mod.custom_ibkr_orders_upsert()
 
         self.assertTrue(payload["success"])
         self.assertEqual(payload["order"]["unique_id"], "sig-1_entry")
         self.assertEqual(payload["order"]["status"], "Submitted")
+        self.assertEqual(payload["notification_mode"], "order_group_card")
+        self.assertEqual(payload["notification"]["message_id"], "order-msg-1")
+        self.assertEqual(send_calls[0]["chat_id"], "order-chat-test")
         self.assertEqual(created[0][0], "orders")
         self.assertEqual(created[1][0], "ibkr_order_details")
         self.assertEqual(created[1][1]["order_id"], "sig-1_entry")
@@ -280,6 +297,7 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
         self.assertEqual(patch["extra"]["execution_by_mode"]["live"]["note"], "broker_ack")
         self.assertEqual(patch["extra"]["execution_by_mode"]["live"]["data_environment"], "live")
         self.assertEqual(req_mock.call_count, 3)
+        self.assertTrue(all(call.kwargs.get("notify_order_status") for call in req_mock.call_args_list))
         self.assertTrue(payload["success"])
         self.assertEqual(payload["signal_id"], "sig-1")
         self.assertEqual(payload["status"], "Submitted")
@@ -586,17 +604,167 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
         fake_pb.get_records = mock.Mock(return_value=[])
         fake_pb.update_record = mock.Mock()
         fake_pb.create_record = mock.Mock()
+        notify_order_status = mock.Mock(return_value={"success": True, "message_id": "unused"})
 
         payload, status_code = build_order_upsert_response(
             fake_pb,
             payload=request_payload,
             normalize_environment=api_app_mod._normalize_environment,
             escape_filter_string=api_app_mod._escape_filter_string,
+            notify_order_status=notify_order_status,
         )
         self.assertEqual(status_code, 200)
         self.assertTrue(payload["idempotent"])
         fake_pb.update_record.assert_not_called()
         fake_pb.create_record.assert_not_called()
+        notify_order_status.assert_not_called()
+
+    def test_build_order_upsert_response_notifies_on_non_idempotent_submit(self):
+        request_payload = {
+            "environment": "live",
+            "unique_id": "sig-1_entry",
+            "order_type": "Entry",
+            "symbol": "AAPL",
+            "direction": "long",
+            "quantity": 10,
+            "limit_price": 180.1,
+            "status": "Submitted",
+            "trade_group_id": "sig-1_entry",
+            "entry_order_unique_id": "sig-1_entry",
+            "role": "entry",
+            "signal_id": "sig-1",
+            "us_time": "2026-04-22 09:35:00",
+            "cn_time": "2026-04-22 21:35:00",
+            "bar_time_ms": 1713797700000,
+            "extra": {"reason": "entry submitted"},
+        }
+        fake_pb = _FakePB()
+        fake_pb.get_first_record = mock.Mock(return_value=None)
+        fake_pb.get_records = mock.Mock(return_value=[])
+        fake_pb.create_record = mock.Mock(side_effect=lambda collection, data: {**data, "id": f"{collection}-1"})
+        fake_pb.update_record = mock.Mock()
+        notify_calls = []
+
+        payload, status_code = build_order_upsert_response(
+            fake_pb,
+            payload=request_payload,
+            normalize_environment=api_app_mod._normalize_environment,
+            escape_filter_string=api_app_mod._escape_filter_string,
+            notify_order_status=lambda status, order_row, options: notify_calls.append((status, order_row, options))
+            or {"success": True, "message_id": "order-msg-1"},
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["success"])
+        self.assertFalse(payload["idempotent"])
+        self.assertEqual(payload["notification_mode"], "order_group_card")
+        self.assertEqual(payload["notification"]["message_id"], "order-msg-1")
+        self.assertEqual(len(notify_calls), 1)
+        self.assertEqual(notify_calls[0][0], "Submitted")
+        self.assertEqual(notify_calls[0][1]["id"], "orders-1")
+        self.assertEqual(notify_calls[0][2]["message"], "订单已提交")
+        fake_pb.update_record.assert_not_called()
+
+    def test_sync_order_status_notification_sends_then_updates_group_card(self):
+        class _OrderNotifyPB:
+            def __init__(self):
+                self.orders = {
+                    "order-entry": {
+                        "id": "order-entry",
+                        "unique_id": "sig-1_entry",
+                        "order_type": "Entry",
+                        "symbol": "AAPL",
+                        "environment": "live",
+                        "status": "Submitted",
+                        "role": "entry",
+                        "order_id": "101",
+                        "broker_order_id": "101",
+                        "trade_group_id": "sig-1_entry",
+                        "entry_order_unique_id": "sig-1_entry",
+                        "signal_id": "sig-1",
+                        "direction": "long",
+                        "quantity": 10,
+                        "filled_qty": 0,
+                        "limit_price": 180.1,
+                        "us_time": "2026-04-22 09:35:00",
+                        "extra": {"environment": "live", "role": "entry", "trade_group_id": "sig-1_entry"},
+                    },
+                    "order-tp": {
+                        "id": "order-tp",
+                        "unique_id": "sig-1_tp",
+                        "order_type": "TakeProfit",
+                        "symbol": "AAPL",
+                        "environment": "live",
+                        "status": "Submitted",
+                        "role": "take_profit",
+                        "order_id": "102",
+                        "broker_order_id": "102",
+                        "trade_group_id": "sig-1_entry",
+                        "entry_order_unique_id": "sig-1_entry",
+                        "parent_order_unique_id": "sig-1_entry",
+                        "signal_id": "sig-1",
+                        "direction": "long",
+                        "quantity": 10,
+                        "filled_qty": 0,
+                        "limit_price": 184.0,
+                        "us_time": "2026-04-22 09:35:00",
+                        "extra": {"environment": "live", "role": "take_profit", "trade_group_id": "sig-1_entry"},
+                    },
+                }
+                self.updated = []
+
+            def get_records(self, collection, filter=None, sort=None, per_page=200, page=1):
+                assert collection == "orders"
+                return [dict(row) for row in self.orders.values()]
+
+            def update_record(self, collection, record_id, patch):
+                assert collection == "orders"
+                current = {**self.orders[record_id], **patch}
+                self.orders[record_id] = current
+                self.updated.append((collection, record_id, patch))
+                return dict(current)
+
+        pb = _OrderNotifyPB()
+        send_calls = []
+        update_calls = []
+
+        first = sync_order_status_notification(
+            pb,
+            pb.orders["order-entry"],
+            action="Submitted",
+            message="订单已提交",
+            send_interactive=lambda card, chat_id, environment: send_calls.append((card, chat_id, environment))
+            or {"success": True, "message_id": "order-msg-1"},
+            update_interactive=lambda *args, **kwargs: update_calls.append((args, kwargs)) or {"success": True},
+            order_chat_id="order-chat-test",
+            console_base_url="https://console.example.com",
+        )
+        pb.orders["order-tp"]["status"] = "Filled"
+        pb.orders["order-tp"]["filled_qty"] = 10
+        pb.orders["order-tp"]["fill_price"] = 184.0
+        pb.orders["order-tp"]["extra"] = {**pb.orders["order-tp"]["extra"], "current_status": "Filled"}
+
+        second = sync_order_status_notification(
+            pb,
+            pb.orders["order-tp"],
+            action="Filled",
+            message="止盈成交，交易组已关闭",
+            send_interactive=lambda *args, **kwargs: send_calls.append((args, kwargs)) or {"success": True},
+            update_interactive=lambda message_id, card, environment: update_calls.append((message_id, card, environment))
+            or {"success": True, "message_id": message_id},
+            order_chat_id="order-chat-test",
+            console_base_url="https://console.example.com",
+        )
+
+        self.assertEqual(first["message_id"], "order-msg-1")
+        self.assertEqual(second["message_id"], "order-msg-1")
+        self.assertEqual(len(send_calls), 1)
+        self.assertEqual(send_calls[0][1], "order-chat-test")
+        self.assertEqual(len(update_calls), 1)
+        self.assertEqual(update_calls[0][0], "order-msg-1")
+        self.assertEqual(second["group_status"], "Closed")
+        self.assertEqual(pb.orders["order-entry"]["extra"]["feishu_order_message_id"], "order-msg-1")
+        self.assertEqual(pb.orders["order-entry"]["extra"]["feishu_order_notify_last_status"], "Closed")
 
     def test_build_order_upsert_keeps_existing_stop_price_when_live_stp_price_is_zero(self):
         existing_row = {

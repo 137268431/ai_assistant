@@ -1,4 +1,4 @@
-        function summarizeAction(action, payload) {
+        function summarizeAction(action, payload, target = null) {
             if (!payload || typeof payload !== 'object') {
                 return `${action} 已执行。`;
             }
@@ -23,6 +23,15 @@
             if (action === 'gateway_restart') {
                 if (payload.message) return payload.message;
                 return 'systemd ibkr-gateway 重启动作已执行。';
+            }
+            if (action === 'app_login_handoff') {
+                const targetMode = normalizeBrokerSessionMode(target?.body?.app_login_target || payload?.app_login_target || '');
+                const gatewayMode = normalizeBrokerSessionMode(target?.body?.gateway_session_mode || payload?.gateway_session_mode || '');
+                const gatewayLabel = gatewayMode ? `${formatAppLoginModeLabel(gatewayMode)} Gateway` : '当前 Gateway';
+                if (payload.ok === false) {
+                    return payload.message || `让出 ${gatewayLabel} 会话失败。`;
+                }
+                return `已让出 ${gatewayLabel} 会话，现在可以登录 IBKR App ${formatAppLoginModeLabel(targetMode || gatewayMode)}。完成后点“启动 Runtime 线程”恢复。`;
             }
             if (action === 'probe' || action === 'panic_reset_2fa') {
                 if (payload.message) return payload.message;

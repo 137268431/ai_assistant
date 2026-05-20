@@ -68,7 +68,6 @@ def _open_button(label: str, url: str, button_type: str = "default") -> dict[str
     return {
         "tag": "button",
         "type": button_type,
-        "width": "fill",
         "text": {"tag": "plain_text", "content": label},
         "multi_url": {"url": url, "pc_url": url, "ios_url": url, "android_url": url},
     }
@@ -78,12 +77,18 @@ def _request_button(label: str, callback_url: str, environment: str) -> dict[str
     return {
         "tag": "button",
         "type": "primary",
-        "width": "fill",
         "text": {"tag": "plain_text", "content": label},
         "action_type": "request",
         "url": callback_url,
         "value": {"action": "ibkr_2fa_start", "environment": environment, "force_restart": False},
     }
+
+
+def _append_action_rows(elements: list[dict[str, Any]], actions: list[dict[str, Any]]) -> None:
+    if not actions:
+        return
+    elements.append({"tag": "hr"})
+    elements.extend({"tag": "action", "actions": [action]} for action in actions)
 
 
 def build_two_factor_card(
@@ -170,11 +175,7 @@ def build_two_factor_card(
         actions.append(_open_button("查看 Runtime", runtime_url))
     if system_url:
         actions.append(_open_button("查看 System", system_url))
-    if actions:
-        elements.extend([
-            {"tag": "hr"},
-            {"tag": "action", "actions": actions},
-        ])
+    _append_action_rows(elements, actions)
     return {
         "config": {"wide_screen_mode": True, "update_multi": True},
         "header": {

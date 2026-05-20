@@ -213,6 +213,7 @@ def cancel_signal_related_orders(
                     else "交易组已取消",
                     "message_id": current_message_id,
                     "messageId": current_message_id,
+                    "related_rows": related_rows,
                 },
             )
             or {}
@@ -221,6 +222,8 @@ def cancel_signal_related_orders(
         return summary
 
     next_message_id = to_text(first_defined(result.get("message_id"), result.get("messageId")))
+    if isinstance(result.get("extra_patch"), dict) and result.get("extra_patch"):
+        return summary
     if not bool(result.get("success") or result.get("ok")) or not next_message_id or next_message_id == current_message_id:
         return summary
 

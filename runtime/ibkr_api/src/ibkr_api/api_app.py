@@ -34,6 +34,7 @@ from ibkr_api.app_core.presentation import (
     environment_tag as _environment_tag_support,
     is_enabled_text as _is_enabled_text_support,
     label_title_with_environment as _label_title_with_environment_support,
+    order_chat_id as _order_chat_id_support,
     signal_chat_id as _signal_chat_id_support,
     system_page_url as _system_page_url_support,
     system_status_chat_id as _system_status_chat_id_support,
@@ -87,6 +88,7 @@ from ibkr_api.orders.daily_stats import build_daily_order_stats, empty_daily_ord
 from ibkr_api.orders.group_cancel import build_order_cancel_group_response
 from ibkr_api.orders.group_close import build_order_close_group_response
 from ibkr_api.orders.integrity import build_order_detail_integrity_response
+from ibkr_api.orders.notifications import sync_order_status_notification
 from ibkr_api.orders.webhooks import build_order_cancel_webhook_response, build_order_close_webhook_response
 from ibkr_api.orders.upsert import build_order_upsert_response
 from ibkr_api.orders.reconcile import build_orders_reconcile_response
@@ -187,6 +189,7 @@ DEFAULT_FEISHU_2FA_CHAT_ID = str(os.environ.get("FEISHU_2FA_CHAT_ID") or "oc_c48
 DEFAULT_FEISHU_ALERT_CHAT_ID = str(os.environ.get("FEISHU_ALERT_CHAT_ID") or "oc_91aa4f84bc6fedb125b1a263d91d4104").strip()
 DEFAULT_FEISHU_STARTUP_CHAT_ID = str(os.environ.get("FEISHU_STARTUP_CHAT_ID") or "oc_cc5d0a950797b1c2c010953e14bceeff").strip()
 DEFAULT_FEISHU_SIGNAL_CHAT_ID = str(os.environ.get("FEISHU_SIGNAL_CHAT_ID") or "oc_edb26dcc52938b7833ac9f32ae6b1620").strip()
+DEFAULT_FEISHU_ORDER_CHAT_ID = str(os.environ.get("FEISHU_ORDER_CHAT_ID") or "oc_5ca4585e1fd108c2c662dfc358684945").strip()
 MONITOR_CONFIG_KEYS = (
     "ibkr_target_subscription_limit",
     "ibkr_history_request_spacing",
@@ -514,6 +517,14 @@ def _signal_chat_id(environment: str) -> str:
     )
 
 
+def _order_chat_id(environment: str) -> str:
+    return _order_chat_id_support(
+        environment,
+        config_value_fn=_config_value,
+        default_chat_id=DEFAULT_FEISHU_ORDER_CHAT_ID,
+    )
+
+
 def _system_status_chat_id(environment: str) -> str:
     return _system_status_chat_id_support(
         environment,
@@ -552,6 +563,25 @@ _build_startup_label = _system_bootstrap["_build_startup_label"]
 _build_startup_cycle_id = _system_bootstrap["_build_startup_cycle_id"]
 _normalize_startup_state = _system_bootstrap["_normalize_startup_state"]
 _deliver_startup_progress_card = _system_bootstrap["_deliver_startup_progress_card"]
+
+
+def _notify_order_status(status: str, order_row: dict[str, Any], options: dict[str, Any] | None = None) -> dict[str, Any]:
+    data = options if isinstance(options, dict) else {}
+    extra = (order_row or {}).get("extra") if isinstance((order_row or {}).get("extra"), dict) else {}
+    raw_environment = (order_row or {}).get("environment") or extra.get("environment") or data.get("environment") or "live"
+    environment = str(raw_environment).strip() or "live"
+    return sync_order_status_notification(
+        pb,
+        order_row,
+        action=status,
+        message=str(data.get("message") or ""),
+        message_id=str(data.get("message_id") or data.get("messageId") or ""),
+        related_rows=data.get("related_rows") if isinstance(data.get("related_rows"), list) else None,
+        send_interactive=_feishu_send_interactive,
+        update_interactive=_feishu_update_interactive,
+        order_chat_id=_order_chat_id(environment),
+        console_base_url=_console_base_url(),
+    )
 
 
 def _emit_system_event(

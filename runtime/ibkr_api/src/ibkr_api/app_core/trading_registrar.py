@@ -25,6 +25,7 @@ def register_trading_routes(app, deps: dict[str, Any]) -> dict[str, Any]:
                 "as_dict": deps["as_dict"],
                 "console_base_url": deps["console_base_url"],
                 "signal_chat_id": deps["signal_chat_id"],
+                "notify_order_status": deps["notify_order_status"],
                 "feishu_send_interactive": deps["feishu_send_interactive"],
                 "feishu_update_interactive": deps["feishu_update_interactive"],
                 "cancel_broker_order": deps["cancel_broker_order"],
@@ -67,6 +68,7 @@ def register_trading_routes(app, deps: dict[str, Any]) -> dict[str, Any]:
                 "build_order_close_group_response": deps["build_order_close_group_response"],
                 "build_order_cancel_webhook_response": deps["build_order_cancel_webhook_response"],
                 "build_order_close_webhook_response": deps["build_order_close_webhook_response"],
+                "notify_order_status": deps["notify_order_status"],
             },
         )
     )

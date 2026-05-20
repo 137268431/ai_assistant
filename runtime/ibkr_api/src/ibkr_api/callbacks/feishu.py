@@ -5,6 +5,7 @@ from typing import Any, Callable
 from ibkr_api.orders.group_common import load_order_action_context
 from ibkr_api.modes import request_broker_mode, request_market_data_mode
 from ibkr_api.orders.notifications import build_order_status_card
+from ibkr_api.orders.values import ensure_object, to_text
 from ibkr_api.signals.notifications import build_signal_status_card
 from ibkr_api.signals.values import load_signal_record, signal_status
 
@@ -33,6 +34,7 @@ def dispatch_feishu_2fa_callback(
         "/api/custom/ibkr/2fa/request",
         json_body={
             "broker_mode": environment,
+            "environment": environment,
             "source": "feishu_callback",
             "reason": "manual_reauth",
             "trigger_now": True,
@@ -107,6 +109,58 @@ def _order_callback_card(
     return build_order_status_card(row, message=message, console_base_url=console_base_url)
 
 
+def _notify_order_callback_action(
+    pb: Any,
+    *,
+    action: str,
+    order_id: str,
+    environment: str,
+    result_payload: dict[str, Any],
+    status_code: int,
+    escape_filter_string: Callable[[Any], str],
+    notify_order_status: Callable[[str, dict[str, Any], dict[str, Any]], dict[str, Any]] | None,
+    message: str,
+) -> dict[str, Any]:
+    if int(status_code or 0) >= 400 or bool((result_payload or {}).get("warning")) or not callable(notify_order_status):
+        return {}
+    target_id = to_text(
+        (result_payload or {}).get("target_id")
+        or (result_payload or {}).get("trade_group_id")
+        or order_id
+    )
+    if not target_id:
+        return {}
+    try:
+        context = load_order_action_context(
+            pb,
+            payload={"id": target_id, "broker_mode": environment},
+            environment=environment,
+            escape_filter_string=escape_filter_string,
+        )
+    except Exception:
+        context = {}
+    primary_row = context.get("primary_row") or context.get("action_row")
+    if not isinstance(primary_row, dict) or not primary_row.get("id"):
+        return {}
+    current_message_id = to_text(ensure_object(primary_row.get("extra")).get("feishu_order_message_id"))
+    try:
+        return dict(
+            notify_order_status(
+                "closed" if action == "close" else "canceled",
+                primary_row,
+                {
+                    "message": message,
+                    "message_id": current_message_id,
+                    "messageId": current_message_id,
+                    "related_rows": context.get("related_rows") or [],
+                },
+            )
+            or {}
+        )
+    except Exception as exc:
+        return {"success": False, "error": str(exc), "skipped": True}
+
+
 def dispatch_feishu_signal_callback(
     action: str,
     signal_id: str,
@@ -121,6 +175,7 @@ def dispatch_feishu_signal_callback(
     build_signal_cancel_webhook_response_fn: Callable[..., tuple[dict[str, Any], int]],
     callback_toast_fn: Callable[..., dict[str, Any]],
     update_signal_card: Callable[[str, dict[str, Any], str], dict[str, Any]] | None = None,
+    notify_order_status: Callable[[str, dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None,
     console_base_url: str = "",
     config_value: Callable[[str, str, str], str] | None = None,
 ) -> tuple[dict[str, Any], int]:
@@ -151,6 +206,7 @@ def dispatch_feishu_signal_callback(
             normalize_environment=normalize_environment,
             escape_filter_string=escape_filter_string,
             cancel_broker_order=cancel_broker_order,
+            notify_order_status=notify_order_status,
             update_signal_card=update_signal_card,
             console_base_url=console_base_url,
         )
@@ -192,6 +248,7 @@ def dispatch_feishu_order_callback(
     build_order_cancel_group_response_fn: Callable[..., tuple[dict[str, Any], int]],
     build_order_close_group_response_fn: Callable[..., tuple[dict[str, Any], int]],
     callback_toast_fn: Callable[..., dict[str, Any]],
+    notify_order_status: Callable[[str, dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None,
     console_base_url: str = "",
 ) -> tuple[dict[str, Any], int]:
     payload: dict[str, Any]
@@ -219,6 +276,19 @@ def dispatch_feishu_order_callback(
         return callback_toast_fn("error", f"未知操作: {action}"), 400
 
     message = str(payload.get("message") or payload.get("error") or success_message or "订单操作完成")
+    notification = _notify_order_callback_action(
+        pb,
+        action=action,
+        order_id=order_id,
+        environment=runtime_environment,
+        result_payload=payload,
+        status_code=status_code,
+        escape_filter_string=escape_filter_string,
+        notify_order_status=notify_order_status,
+        message=message,
+    )
+    if notification:
+        payload["notification"] = notification
     card = _order_callback_card(
         pb,
         order_id=order_id,

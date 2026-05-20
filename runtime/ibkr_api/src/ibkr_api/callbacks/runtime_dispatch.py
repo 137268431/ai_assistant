@@ -47,6 +47,7 @@ def build_dispatch_feishu_signal_callback(
             build_signal_cancel_webhook_response_fn=globals_dict["build_signal_cancel_webhook_response"],
             callback_toast_fn=globals_dict["_callback_toast"],
             update_signal_card=globals_dict["_feishu_update_interactive"],
+            notify_order_status=globals_dict["_notify_order_status"],
             console_base_url=globals_dict["_console_base_url"](),
             config_value=lambda key, default, env: globals_dict["_config_value"](key, default, env),
         )
@@ -78,6 +79,7 @@ def build_dispatch_feishu_order_callback(
             build_order_cancel_group_response_fn=globals_dict["build_order_cancel_group_response"],
             build_order_close_group_response_fn=globals_dict["build_order_close_group_response"],
             callback_toast_fn=globals_dict["_callback_toast"],
+            notify_order_status=globals_dict["_notify_order_status"],
             console_base_url=globals_dict["_console_base_url"](),
         )
 

@@ -267,6 +267,12 @@ def build_startup_checklist_markdown(steps: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _append_action_rows(elements: list[dict[str, Any]], actions: list[dict[str, Any]]) -> None:
+    if not actions:
+        return
+    elements.append({"tag": "hr"})
+    elements.extend({"tag": "action", "actions": [action]} for action in actions)
+
 
 def build_startup_card(
     state: dict[str, Any],
@@ -325,7 +331,6 @@ def build_startup_card(
                 {
                     "tag": "button",
                     "type": "primary",
-                    "width": "fill",
                     "text": {"tag": "plain_text", "content": "开始 2FA 验证"},
                     "action_type": "request",
                     "url": callback_url,
@@ -337,7 +342,6 @@ def build_startup_card(
             {
                 "tag": "button",
                 "type": "default",
-                "width": "fill",
                 "text": {"tag": "plain_text", "content": "查看 Runtime"},
                 "multi_url": {"url": current_runtime_url, "pc_url": current_runtime_url, "ios_url": current_runtime_url, "android_url": current_runtime_url},
             }
@@ -347,13 +351,11 @@ def build_startup_card(
             {
                 "tag": "button",
                 "type": "default",
-                "width": "fill",
                 "text": {"tag": "plain_text", "content": "查看 System"},
                 "multi_url": {"url": current_system_url, "pc_url": current_system_url, "ios_url": current_system_url, "android_url": current_system_url},
             }
         )
-    if actions:
-        elements.extend([{"tag": "hr"}, {"tag": "action", "actions": actions}])
+    _append_action_rows(elements, actions)
     return {
         "config": {"wide_screen_mode": True, "update_multi": True},
         "header": {

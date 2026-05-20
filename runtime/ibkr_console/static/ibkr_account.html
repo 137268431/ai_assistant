@@ -1762,47 +1762,107 @@
             window.location.href = buildPageUrl('/orders.html', { signal_id: normalized }, { environment: currentEnvironment });
         }
 
+        function renderFlatPositionRow(position) {
+            const relation = position?.relation || {};
+            const tradeGroupId = String(relation.trade_group_id || '').trim();
+            const signalId = String(relation.signal_id || '').trim();
+            const orderStatus = String(relation.last_order_status || 'Closed').trim();
+            const groupCopy = tradeGroupId ? `group=${tradeGroupId}` : 'group=--';
+            const signalCopy = signalId ? `signal=${signalId}` : 'signal=--';
+            const orderCopy = `order=${orderStatus || '--'} · updated=${formatTimeLabel(relation.order_updated)}`;
+            return `
+                <div class="flat-position-row">
+                    <div class="flat-position-main">
+                        <div class="badge-row">
+                            <span class="flat-position-symbol">${escapeHtml(position.symbol || '--')}</span>
+                            <span class="badge neutral">FLAT</span>
+                            <span class="badge closed">CLOSED</span>
+                        </div>
+                        <div class="summary-sub mono">${escapeHtml(groupCopy)}</div>
+                        <div class="summary-sub mono">${escapeHtml(signalCopy)}</div>
+                        <div class="summary-sub mono">${escapeHtml(orderCopy)}</div>
+                    </div>
+                    <div class="flat-position-metrics">
+                        <div class="metric-item"><div class="metric-label">Quantity</div><div class="metric-value">${escapeHtml(formatQty(position.quantity))}</div></div>
+                        <div class="metric-item"><div class="metric-label">Realized</div><div class="metric-value ${valueClass(position.realized_pnl)}">${escapeHtml(formatSignedMoney(position.realized_pnl))}</div></div>
+                        <div class="metric-item"><div class="metric-label">Market Value</div><div class="metric-value">${escapeHtml(formatMoney(position.market_value))}</div></div>
+                    </div>
+                    <div class="record-actions compact-actions">
+                        ${tradeGroupId ? `<button class="action-btn view" type="button" onclick="viewTradeGroup(${escapeHtml(toJsStringLiteral(tradeGroupId))}, ${escapeHtml(toJsStringLiteral(signalId))})">订单页</button>` : ''}
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderFlatPositionsSection(flatPositions) {
+            if (!flatPositions.length) return '';
+            const sortedFlat = flatPositions.slice().sort((a, b) => {
+                const aRelation = a?.relation || {};
+                const bRelation = b?.relation || {};
+                const timeDiff = parseTimeValue(bRelation.order_updated) - parseTimeValue(aRelation.order_updated);
+                if (timeDiff) return timeDiff;
+                return String(a?.symbol || '').localeCompare(String(b?.symbol || ''));
+            });
+            return `
+                <div class="surface-card flat-position-section">
+                    <div class="record-head">
+                        <div>
+                            <div class="section-title">今日已闭合 / FLAT</div>
+                            <div class="section-note">这些是 Gateway 返回的 quantity=0 记录：代表今天订单组已经闭合，不是当前 IBKR live open order，也不提供市价平仓。</div>
+                        </div>
+                        <div class="badge-row">
+                            <span class="badge neutral">${escapeHtml(String(sortedFlat.length))} FLAT ROWS</span>
+                        </div>
+                    </div>
+                    <div class="flat-position-list">${sortedFlat.map(renderFlatPositionRow).join('')}</div>
+                </div>
+            `;
+        }
+
         function renderPositions(snapshot) {
             const allPositions = Array.isArray(snapshot?.positions) ? snapshot.positions.slice() : [];
             const positions = allPositions.filter((position) => Number(position?.quantity || 0) !== 0);
+            const flatPositions = allPositions.filter((position) => (
+                Number(position?.quantity || 0) === 0
+                && String(position?.relation?.status || '').toLowerCase() === 'flat_broker_position'
+            ));
             positions.sort((a, b) => Math.abs(Number(b.market_value || 0)) - Math.abs(Number(a.market_value || 0)));
-            document.getElementById('positionsMeta').textContent = `${positions.length} open · Gateway snapshot`;
+            document.getElementById('positionsMeta').textContent = `${positions.length} open · ${flatPositions.length} flat rows · Gateway snapshot`;
             const area = document.getElementById('positionsArea');
-            if (!positions.length) {
-                area.innerHTML = '<div class="empty-state">当前没有打开仓位。这里显示的是 Gateway 直接返回的真实仓位。</div>';
-                return;
-            }
-            area.innerHTML = `<div class="position-grid">${positions.map((position) => `
-                <div class="surface-card">
-                    <div class="record-head">
-                        <div>
-                            <div class="record-symbol">${escapeHtml(position.symbol || '--')}</div>
-                            <div class="summary-sub mono">conid=${escapeHtml(String(position.conid || '--'))} · acct=${escapeHtml(position.account || '--')}</div>
-                            <div class="summary-sub mono">${escapeHtml(relationCopy(position))}</div>
+            const openPositionsHtml = positions.length
+                ? `<div class="position-grid">${positions.map((position) => `
+                    <div class="surface-card">
+                        <div class="record-head">
+                            <div>
+                                <div class="record-symbol">${escapeHtml(position.symbol || '--')}</div>
+                                <div class="summary-sub mono">conid=${escapeHtml(String(position.conid || '--'))} · acct=${escapeHtml(position.account || '--')}</div>
+                                <div class="summary-sub mono">${escapeHtml(relationCopy(position))}</div>
+                            </div>
+                            <div class="badge-row">
+                                <span class="${badgeClass(position.direction)}">${escapeHtml(String(position.direction || 'flat').toUpperCase())}</span>
+                                <span class="badge neutral">${escapeHtml(position.asset_class || 'ASSET')}</span>
+                                <span class="${relationBadgeClass(position?.relation?.status)}">${escapeHtml(relationLabel(position?.relation?.status))}</span>
+                            </div>
                         </div>
-                        <div class="badge-row">
-                            <span class="${badgeClass(position.direction)}">${escapeHtml(String(position.direction || 'flat').toUpperCase())}</span>
-                            <span class="badge neutral">${escapeHtml(position.asset_class || 'ASSET')}</span>
-                            <span class="${relationBadgeClass(position?.relation?.status)}">${escapeHtml(relationLabel(position?.relation?.status))}</span>
+                        <div class="metric-grid">
+                            <div class="metric-item"><div class="metric-label">Quantity</div><div class="metric-value">${escapeHtml(formatQty(position.quantity))}</div></div>
+                            <div class="metric-item"><div class="metric-label">Avg Cost</div><div class="metric-value">${escapeHtml(formatMoney(position.avg_cost))}</div></div>
+                            <div class="metric-item"><div class="metric-label">Market Price</div><div class="metric-value">${escapeHtml(formatMoney(position.market_price))}</div></div>
+                            <div class="metric-item"><div class="metric-label">Market Value</div><div class="metric-value">${escapeHtml(formatMoney(position.market_value))}</div></div>
+                            <div class="metric-item"><div class="metric-label">Unrealized</div><div class="metric-value ${valueClass(position.unrealized_pnl)}">${escapeHtml(formatSignedMoney(position.unrealized_pnl))}</div></div>
+                            <div class="metric-item"><div class="metric-label">Unrealized %</div><div class="metric-value ${valueClass(positionUnrealizedPct(position))}">${escapeHtml(positionUnrealizedPct(position) === null ? '--' : formatPercent(positionUnrealizedPct(position), 2))}</div></div>
+                            <div class="metric-item"><div class="metric-label">Realized</div><div class="metric-value ${valueClass(position.realized_pnl)}">${escapeHtml(formatSignedMoney(position.realized_pnl))}</div></div>
+                        </div>
+                        <div class="record-actions">
+                            <button class="action-btn view" type="button" onclick="openAccountChart(${escapeHtml(toJsStringLiteral(position.symbol || ''))})">图表页</button>
+                            ${position?.relation?.signal_id ? `<button class="action-btn view" type="button" onclick="viewSignal(${escapeHtml(toJsStringLiteral(position.relation.signal_id))})">信号页</button>` : ''}
+                            ${position?.relation?.trade_group_id ? `<button class="action-btn view" type="button" onclick="viewTradeGroup(${escapeHtml(toJsStringLiteral(position.relation.trade_group_id))}, ${escapeHtml(toJsStringLiteral(position?.relation?.signal_id || ''))})">订单页</button>` : ''}
+                            <button class="action-btn close" type="button" onclick='closePosition(${JSON.stringify({ symbol: position.symbol, conid: position.conid, quantity: position.quantity, direction: position.direction, relation: position.relation || {} }).replace(/'/g, "&#39;")})'>市价平仓</button>
                         </div>
                     </div>
-                    <div class="metric-grid">
-                        <div class="metric-item"><div class="metric-label">Quantity</div><div class="metric-value">${escapeHtml(formatQty(position.quantity))}</div></div>
-                        <div class="metric-item"><div class="metric-label">Avg Cost</div><div class="metric-value">${escapeHtml(formatMoney(position.avg_cost))}</div></div>
-                        <div class="metric-item"><div class="metric-label">Market Price</div><div class="metric-value">${escapeHtml(formatMoney(position.market_price))}</div></div>
-                        <div class="metric-item"><div class="metric-label">Market Value</div><div class="metric-value">${escapeHtml(formatMoney(position.market_value))}</div></div>
-                        <div class="metric-item"><div class="metric-label">Unrealized</div><div class="metric-value ${valueClass(position.unrealized_pnl)}">${escapeHtml(formatSignedMoney(position.unrealized_pnl))}</div></div>
-                        <div class="metric-item"><div class="metric-label">Unrealized %</div><div class="metric-value ${valueClass(positionUnrealizedPct(position))}">${escapeHtml(positionUnrealizedPct(position) === null ? '--' : formatPercent(positionUnrealizedPct(position), 2))}</div></div>
-                        <div class="metric-item"><div class="metric-label">Realized</div><div class="metric-value ${valueClass(position.realized_pnl)}">${escapeHtml(formatSignedMoney(position.realized_pnl))}</div></div>
-                    </div>
-                    <div class="record-actions">
-                        <button class="action-btn view" type="button" onclick="openAccountChart('${escapeHtml(position.symbol || '')}')">图表页</button>
-                        ${position?.relation?.signal_id ? `<button class="action-btn view" type="button" onclick="viewSignal('${escapeHtml(position.relation.signal_id)}')">信号页</button>` : ''}
-                        ${position?.relation?.trade_group_id ? `<button class="action-btn view" type="button" onclick="viewTradeGroup('${escapeHtml(position.relation.trade_group_id)}', '${escapeHtml(position?.relation?.signal_id || '')}')">订单页</button>` : ''}
-                        <button class="action-btn close" type="button" onclick='closePosition(${JSON.stringify({ symbol: position.symbol, conid: position.conid, quantity: position.quantity, direction: position.direction, relation: position.relation || {} }).replace(/'/g, "&#39;")})'>市价平仓</button>
-                    </div>
-                </div>
-            `).join('')}</div>`;
+                `).join('')}</div>`
+                : '<div class="empty-state">当前没有打开仓位。这里显示的是 Gateway 直接返回的真实仓位。</div>';
+            area.innerHTML = `<div class="positions-stack">${openPositionsHtml}${renderFlatPositionsSection(flatPositions)}</div>`;
         }
 
         function countOrdersInGroups(groups) {

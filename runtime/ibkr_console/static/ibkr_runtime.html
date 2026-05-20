@@ -86,6 +86,10 @@
                             <span class="action-label">检查当前认证</span>
                             <span class="action-copy">只在你已经完成手机确认或 Response 后使用；不 stop/start，不新开 2FA，只检查 Gateway 会话是否已恢复。</span>
                         </button>
+                        <button id="appLoginHandoffButton" class="action-btn action-accent" data-action="app_login_handoff" onclick="handleRuntimeAction('app_login_handoff')">
+                            <span class="action-label">准备登录 IBKR App</span>
+                            <span class="action-copy">先判断当前 Gateway 占用 PAPER / LIVE，再决定是否需要让出会话。</span>
+                        </button>
                         <button class="action-btn" onclick="loadRuntimeData(true)">
                             <span class="action-label">手动刷新</span>
                             <span class="action-copy">重新抓取 healthz / statusz / summaryz 与最近几张表的数据。</span>
@@ -266,14 +270,14 @@
     <script src="/assets/js/shared/ibkr-page-auth.js?v=20260507-shared-split"></script>
     <script src="/assets/js/shared/ibkr-page-config.js?v=20260507-shared-split"></script>
     <script src="/assets/js/shared/ibkr-page.js?v=20260507-shared-split"></script>
-    <script src="/assets/js/pages/ibkr_runtime/state.js?v=20260511-action-labels"></script>
+    <script src="/assets/js/pages/ibkr_runtime/state.js?v=20260521-app-login"></script>
     <script src="/assets/js/pages/ibkr_runtime/formatters.js?v=20260513-status-labels-v2"></script>
-    <script src="/assets/js/pages/ibkr_runtime/models.js?v=20260511-action-labels"></script>
-    <script src="/assets/js/pages/ibkr_runtime/auth-confirm.js?v=20260513-quick-confirm"></script>
-    <script src="/assets/js/pages/ibkr_runtime/renderers.js?v=20260513-status-tooltips-v2"></script>
+    <script src="/assets/js/pages/ibkr_runtime/models.js?v=20260521-app-login"></script>
+    <script src="/assets/js/pages/ibkr_runtime/auth-confirm.js?v=20260521-app-login"></script>
+    <script src="/assets/js/pages/ibkr_runtime/renderers.js?v=20260521-app-login"></script>
     <script src="/assets/js/pages/ibkr_runtime/tables.js?v=20260507-split"></script>
     <script src="/assets/js/pages/ibkr_runtime/data-loaders.js?v=20260507-split"></script>
-    <script src="/assets/js/pages/ibkr_runtime/actions.js?v=20260511-action-labels"></script>
+    <script src="/assets/js/pages/ibkr_runtime/actions.js?v=20260521-app-login"></script>
     <script src="/assets/js/pages/ibkr_runtime/page.js?v=20260507-split"></script>
 </body>
 </html>

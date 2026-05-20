@@ -344,6 +344,7 @@
 
         function renderRuntimeFlowPrimaryAction(status = latestRuntimeStatus, twoFactorState = latestTwoFactorState) {
             const button = document.getElementById('runtimeFlowToggleButton');
+            renderAppLoginHandoffButton(status);
             if (!button) return;
             const action = getRuntimeFlowPrimaryAction(status, twoFactorState);
             const isStop = action === 'stop';
@@ -357,6 +358,32 @@
                 copy.textContent = isStop
                     ? '停止 runtime 内部交易/行情线程，不直接停止 Gateway systemd 服务。'
                     : '启动 runtime 内部交易/行情线程；是否重启 Gateway 由启动策略决定。';
+            }
+        }
+
+        function renderAppLoginHandoffButton(status = latestRuntimeStatus) {
+            const button = document.getElementById('appLoginHandoffButton');
+            if (!button) return;
+            const session = getGatewaySessionModeModel(status);
+            const label = button.querySelector('.action-label');
+            const copy = button.querySelector('.action-copy');
+            const modeText = session.running ? session.compactLabel : '未占用';
+            const dataText = formatEnvironmentLabel(currentDataEnvironment, { compact: true });
+            const brokerText = formatEnvironmentLabel(currentBrokerMode, { compact: true });
+            button.classList.toggle('action-danger', session.running && session.mode === 'live');
+            button.classList.toggle('action-accent', !(session.running && session.mode === 'live'));
+            button.title = session.running
+                ? `当前 Gateway 占用 ${modeText}；选择 App 登录目标后自动判断是否需要停止 Gateway。`
+                : '当前 Gateway 未占用 App 登录 session，可以直接登录 IBKR App。';
+            if (label) {
+                label.textContent = session.running
+                    ? `准备登录 IBKR App · Gateway ${modeText}`
+                    : '准备登录 IBKR App · Gateway 未占用';
+            }
+            if (copy) {
+                copy.textContent = session.running
+                    ? `当前下单 ${brokerText} · 行情 ${dataText}；选择 PAPER / LIVE 后判断是否冲突。`
+                    : `当前下单 ${brokerText} · 行情 ${dataText}；Gateway 未运行时不会执行停止动作。`;
             }
         }
 

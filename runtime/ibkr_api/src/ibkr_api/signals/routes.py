@@ -25,6 +25,7 @@ def register_signal_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     build_signal_confirm_webhook_response = deps["build_signal_confirm_webhook_response"]
     build_signal_cancel_webhook_response = deps["build_signal_cancel_webhook_response"]
     config_value = deps["config_value"]
+    notify_order_status = deps.get("notify_order_status")
     exports: dict[str, Any] = {}
 
     @app.route("/api/custom/ibkr/signal", methods=["POST"])
@@ -93,6 +94,7 @@ def register_signal_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             update_interactive=feishu_update_interactive,
             signal_chat_id_fn=signal_chat_id,
             console_base_url=console_base_url(),
+            notify_order_status=notify_order_status,
         )
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
@@ -132,6 +134,7 @@ def register_signal_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             normalize_environment=normalize_environment,
             escape_filter_string=escape_filter_string,
             cancel_broker_order=cancel_broker_order,
+            notify_order_status=notify_order_status,
             update_signal_card=feishu_update_interactive,
             console_base_url=console_base_url(),
         )

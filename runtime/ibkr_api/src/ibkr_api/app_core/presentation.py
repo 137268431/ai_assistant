@@ -79,5 +79,9 @@ def signal_chat_id(environment: str, *, config_value_fn, default_chat_id: str) -
     return config_value_fn("signal_chat_id", default_chat_id, environment)
 
 
+def order_chat_id(environment: str, *, config_value_fn, default_chat_id: str) -> str:
+    return config_value_fn("order_chat_id", default_chat_id, environment)
+
+
 def system_status_chat_id(environment: str, *, config_value_fn, default_chat_id: str) -> str:
     return config_value_fn("system_status_chat_id", default_chat_id, environment)

@@ -16,6 +16,8 @@ def build_trading_route_deps(
         "as_dict": globals_dict["_as_dict"],
         "console_base_url": globals_dict["_console_base_url"],
         "signal_chat_id": globals_dict["_signal_chat_id"],
+        "order_chat_id": globals_dict["_order_chat_id"],
+        "notify_order_status": globals_dict["_notify_order_status"],
         "feishu_send_interactive": globals_dict["_feishu_send_interactive"],
         "feishu_update_interactive": globals_dict["_feishu_update_interactive"],
         "cancel_broker_order": lambda environment, order_id, payload=None: globals_dict["_cancel_broker_order_via_runtime"](

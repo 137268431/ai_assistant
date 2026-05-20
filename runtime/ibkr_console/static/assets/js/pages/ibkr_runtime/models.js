@@ -348,6 +348,78 @@
             };
         }
 
+        function normalizeBrokerSessionMode(value) {
+            const text = String(value || '').trim().toLowerCase();
+            if (!text) return '';
+            if (['prod', 'production', 'live'].includes(text)) return 'live';
+            if (['paper', 'sim', 'simulated', 'simulation'].includes(text)) return 'paper';
+            return '';
+        }
+
+        function formatAppLoginModeLabel(mode, options = {}) {
+            const key = normalizeBrokerSessionMode(mode);
+            const compact = Boolean(options.compact);
+            if (key === 'paper') return compact ? 'PAPER' : 'PAPER 模拟账户';
+            if (key === 'live') return compact ? 'LIVE' : 'LIVE 真实账户';
+            if (String(mode || '').trim().toLowerCase() === 'offline') return compact ? 'OFFLINE' : '未占用';
+            return compact ? 'UNKNOWN' : '未知 session';
+        }
+
+        function deriveBrokerSessionModeFromAccounts(accounts) {
+            const tokens = String(accounts || '')
+                .split(/[,\s]+/)
+                .map((item) => item.trim().toUpperCase())
+                .filter(Boolean);
+            const hasPaper = tokens.some((item) => item.startsWith('DU'));
+            const hasLive = tokens.some((item) => item.startsWith('U') && !item.startsWith('DU'));
+            if (hasPaper && !hasLive) return 'paper';
+            if (hasLive && !hasPaper) return 'live';
+            return '';
+        }
+
+        function getGatewaySessionModeModel(status = latestRuntimeStatus) {
+            const gateway = status?.gateway && typeof status.gateway === 'object' ? status.gateway : {};
+            const broker = gateway?.broker && typeof gateway.broker === 'object' ? gateway.broker : {};
+            const running = Boolean(
+                gateway.running
+                || gateway.reachable
+                || Number(gateway.pid || 0) > 0
+            );
+            if (!running) {
+                return {
+                    running: false,
+                    mode: 'offline',
+                    label: formatAppLoginModeLabel('offline'),
+                    compactLabel: formatAppLoginModeLabel('offline', { compact: true }),
+                    managedAccounts: String(broker.managed_accounts || '').trim(),
+                    statusCode: Number(gateway.status_code || broker.status_code || 0) || 0,
+                };
+            }
+
+            const explicitMode = [
+                status?.gateway_mode,
+                gateway?.gateway_mode,
+                broker?.gateway_mode,
+                status?.broker_mode,
+                gateway?.broker_mode,
+                broker?.broker_mode,
+            ].map(normalizeBrokerSessionMode).find(Boolean);
+            const accountMode = deriveBrokerSessionModeFromAccounts(broker.managed_accounts);
+            const fallbackMode = [
+                status?.environment,
+                status?.actual_runtime_environment,
+            ].map(normalizeBrokerSessionMode).find(Boolean);
+            const mode = explicitMode || accountMode || fallbackMode || 'unknown';
+            return {
+                running: true,
+                mode,
+                label: formatAppLoginModeLabel(mode),
+                compactLabel: formatAppLoginModeLabel(mode, { compact: true }),
+                managedAccounts: String(broker.managed_accounts || '').trim(),
+                statusCode: Number(gateway.status_code || broker.status_code || 0) || 0,
+            };
+        }
+
         function getRuntimeStarted(status = latestRuntimeStatus) {
             return getIbkrRuntimeStarted(status);
         }

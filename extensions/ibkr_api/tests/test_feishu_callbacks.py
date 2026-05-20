@@ -182,6 +182,7 @@ class FeishuCallbacksTest(unittest.TestCase):
         self.assertEqual(payload["toast"]["content"], "cancelled")
 
     def test_dispatch_feishu_order_callback_card_includes_lifecycle_button(self):
+        notify_calls = []
         pb = _FakePB(
             order_rows=[
                 {
@@ -213,11 +214,17 @@ class FeishuCallbacksTest(unittest.TestCase):
             build_order_cancel_group_response_fn=lambda *args, **kwargs: ({"message": "cancelled"}, 200),
             build_order_close_group_response_fn=lambda *args, **kwargs: ({"message": "closed"}, 200),
             callback_toast_fn=callback_toast,
+            notify_order_status=lambda status, order_row, options: notify_calls.append((status, order_row["id"], options))
+            or {"success": True, "message_id": "order-msg-1"},
             console_base_url="https://console.example.com",
         )
 
         self.assertEqual(status_code, 200)
         self.assertIn("card", payload)
+        self.assertEqual(len(notify_calls), 1)
+        self.assertEqual(notify_calls[0][0], "canceled")
+        self.assertEqual(notify_calls[0][1], "order-row-1")
+        self.assertEqual(notify_calls[0][2]["message"], "cancelled")
         actions = [
             action
             for element in payload["card"]["data"]["elements"]
@@ -241,8 +248,8 @@ class FeishuCallbacksTest(unittest.TestCase):
             as_dict=self.as_dict,
             normalize_environment=self.normalize_environment,
             dispatch_feishu_2fa_callback_fn=lambda action, environment: {"toast": {"type": "success"}},
-            dispatch_feishu_order_callback_fn=lambda action, order_id, environment: order_calls.append((action, order_id, environment)) or ({"ok": True}, 200),
-            dispatch_feishu_signal_callback_fn=lambda action, signal_id, environment: signal_calls.append((action, signal_id, environment)) or ({"ok": True}, 200),
+            dispatch_feishu_order_callback_fn=lambda action, order_id, environment, data_environment="": order_calls.append((action, order_id, environment)) or ({"ok": True}, 200),
+            dispatch_feishu_signal_callback_fn=lambda action, signal_id, environment, data_environment="": signal_calls.append((action, signal_id, environment)) or ({"ok": True}, 200),
             callback_toast_fn=callback_toast,
             callback_response_fn=lambda payload, update_token="", status_code=200: {"payload": payload, "token": update_token, "status_code": status_code},
         )
