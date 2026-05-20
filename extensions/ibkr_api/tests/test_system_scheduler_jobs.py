@@ -1274,6 +1274,43 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertTrue(payload["skipped"])
         self.assertEqual(payload["reason"], "outside_time_window")
         self.assertEqual(payload["target_time_et"], "16:05")
+        self.assertEqual(payload["window_minutes"], 30)
+        self.assertEqual(len(sent), 0)
+        self.assertEqual(pb.states, {})
+
+    def test_daily_report_allows_delayed_scheduler_within_window(self):
+        pb = _ReminderPB()
+        sent = []
+
+        payload, status_code = build_system_daily_report_response(
+            payload={"environment": "live"},
+            **self._reminder_deps(pb, sent, now_us="2026-04-23 16:20:00", daily=True),
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["skipped"])
+        self.assertTrue(payload["notified"])
+        self.assertEqual(len(sent), 1)
+        state = pb.states[("system_notify_daily", "live", "2026-04-23")]["data"]
+        self.assertEqual(state["close_sent_at"], "2026-04-23 16:20:00")
+        self.assertEqual(state["close_message_id"], "msg-1")
+
+    def test_daily_report_skips_after_expanded_window_boundary(self):
+        pb = _ReminderPB()
+        sent = []
+
+        payload, status_code = build_system_daily_report_response(
+            payload={"environment": "live"},
+            **self._reminder_deps(pb, sent, now_us="2026-04-23 16:35:00", daily=True),
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["skipped"])
+        self.assertEqual(payload["reason"], "outside_time_window")
+        self.assertEqual(payload["target_time_et"], "16:05")
+        self.assertEqual(payload["window_minutes"], 30)
         self.assertEqual(len(sent), 0)
         self.assertEqual(pb.states, {})
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -8,6 +9,9 @@ from ibkr_api.modes import request_broker_mode, request_market_data_mode
 
 HEARTBEAT_STATE_KEY = "system_notify_heartbeat"
 HEARTBEAT_ALERT_COOLDOWN_MS = 30 * 60 * 1000
+DEFAULT_MONITOR_SOURCE_DEBOUNCE_COUNT = 2
+DEFAULT_MONITOR_SOURCE_DEBOUNCE_MS = 90 * 1000
+MONITOR_SOURCE_DEBOUNCE_ISSUE_BASES = {"monitor", "monitor_builder_compute_monitor"}
 DEFAULT_OPEN_REPORT_TIME_ET = "09:30"
 DEFAULT_OPEN_REPORT_WINDOW_MINUTES = 10
 DEFAULT_STATUS_REMINDER_ACTIVE_WINDOW_LIMIT = 50
@@ -45,6 +49,35 @@ def _to_int(value: Any, default: int = 0) -> int:
         return int(value)
     except Exception:
         return int(default)
+
+
+def _env_int(name: str, default: int, *, minimum: int = 0, maximum: int | None = None) -> int:
+    try:
+        value = int(str(os.environ.get(name, "") or default).strip())
+    except Exception:
+        value = int(default)
+    value = max(int(minimum), value)
+    if maximum is not None:
+        value = min(int(maximum), value)
+    return value
+
+
+def _monitor_source_debounce_count() -> int:
+    return _env_int(
+        "IBKR_HEARTBEAT_MONITOR_SOURCE_DEBOUNCE_COUNT",
+        DEFAULT_MONITOR_SOURCE_DEBOUNCE_COUNT,
+        minimum=1,
+        maximum=10,
+    )
+
+
+def _monitor_source_debounce_ms() -> int:
+    return _env_int(
+        "IBKR_HEARTBEAT_MONITOR_SOURCE_DEBOUNCE_SEC",
+        DEFAULT_MONITOR_SOURCE_DEBOUNCE_MS // 1000,
+        minimum=0,
+        maximum=1800,
+    ) * 1000
 
 
 def _time_window_minutes(value: Any) -> int | None:
@@ -257,11 +290,14 @@ def _runtime_health_snapshot(
 ) -> dict[str, Any]:
     summary = _as_dict(build_system_summary_payload(environment, lite_mode=True))
     monitor = _as_dict(build_system_monitor_payload(environment))
-    runtime = {**_as_dict(summary.get("ibkr_runtime")), **_as_dict(monitor.get("runtime"))}
+    monitor_runtime = _as_dict(monitor.get("runtime"))
+    runtime = {**_as_dict(summary.get("ibkr_runtime")), **monitor_runtime}
     compute = _as_dict(summary.get("ibkr_compute") or monitor.get("compute"))
     scheduler = _as_dict(monitor.get("scheduler"))
     service_monitor = _as_dict(monitor.get("service_monitor"))
     services = _as_dict(service_monitor.get("services"))
+    upstream_monitor = _as_dict(monitor.get("upstream_monitor"))
+    monitor_source_unavailable = bool(monitor.get("monitor_source_unavailable") or upstream_monitor.get("source_unavailable"))
     flags = [
         _as_dict(item)
         for item in (monitor.get("flags") or [])
@@ -276,6 +312,12 @@ def _runtime_health_snapshot(
     session = _as_dict(runtime.get("session"))
     websocket = _as_dict(runtime.get("websocket"))
     gateway = _as_dict(runtime.get("gateway"))
+    connection_snapshot_available = bool(
+        monitor_runtime
+        or "gateway" in runtime
+        or "session" in runtime
+        or "websocket" in runtime
+    )
     daily_scan = _as_dict(runtime.get("daily_scan") or summary.get("daily_scan"))
     today = _as_dict(summary.get("today"))
     issue_codes: list[str] = []
@@ -301,12 +343,13 @@ def _runtime_health_snapshot(
         issue_codes.append(f"summary:{summary_status}")
     if runtime_status not in {"ok", "running"}:
         issue_codes.append(f"runtime:{runtime_status}")
-    if not bool(session.get("authenticated")):
-        issue_codes.append("session_unauthenticated")
-    if not bool(websocket.get("connected") or websocket.get("ready")):
-        issue_codes.append("websocket_not_ready")
-    if not bool(gateway.get("running") or gateway.get("reachable")):
-        issue_codes.append("gateway_offline")
+    if connection_snapshot_available:
+        if not bool(session.get("authenticated")):
+            issue_codes.append("session_unauthenticated")
+        if not bool(websocket.get("connected") or websocket.get("ready")):
+            issue_codes.append("websocket_not_ready")
+        if not bool(gateway.get("running") or gateway.get("reachable")):
+            issue_codes.append("gateway_offline")
     if actionable_degraded_count > 0:
         issue_codes.append(f"services_degraded:{actionable_degraded_count}")
     if offline_count > 0:
@@ -320,7 +363,7 @@ def _runtime_health_snapshot(
         deduped_issue_codes.append(item)
     unhealthy = bool(deduped_issue_codes)
     severity = "warning"
-    if monitor_status in {"offline", "error"} or offline_count > 0:
+    if (monitor_status in {"offline", "error"} and not monitor_source_unavailable) or offline_count > 0:
         severity = "error"
     elif any(_normalized_status(flag.get("severity")) == "error" for flag in flags):
         severity = "error"
@@ -341,6 +384,8 @@ def _runtime_health_snapshot(
         "session": session,
         "websocket": websocket,
         "gateway": gateway,
+        "connection_snapshot_available": connection_snapshot_available,
+        "monitor_source_unavailable": monitor_source_unavailable,
         "summary_status": summary_status,
         "monitor_status": monitor_status,
         "runtime_status": runtime_status,
@@ -352,15 +397,106 @@ def _runtime_health_snapshot(
 
 def _heartbeat_fingerprint(snapshot: dict[str, Any]) -> str:
     scheduler = _as_dict(snapshot.get("scheduler"))
+    upstream_monitor = _as_dict(_as_dict(snapshot.get("monitor")).get("upstream_monitor"))
     return str(
         {
             "monitor_status": snapshot.get("monitor_status"),
             "summary_status": snapshot.get("summary_status"),
             "runtime_status": snapshot.get("runtime_status"),
+            "monitor_source_unavailable": bool(snapshot.get("monitor_source_unavailable")),
+            "upstream_monitor_status_code": _to_int(upstream_monitor.get("status_code"), 0),
+            "upstream_monitor_target": _to_text(upstream_monitor.get("target_url")),
             "issue_codes": list(snapshot.get("issue_codes") or []),
             "dispatch_lag_min": round(float(scheduler.get("dispatch_lag_min") or 0.0), 2),
         }
     )
+
+
+def _monitor_source_debounce_hash(snapshot: dict[str, Any]) -> str:
+    upstream_monitor = _as_dict(_as_dict(snapshot.get("monitor")).get("upstream_monitor"))
+    return str(
+        {
+            "monitor_source_unavailable": bool(snapshot.get("monitor_source_unavailable")),
+            "monitor_status": snapshot.get("monitor_status"),
+            "upstream_monitor_status_code": _to_int(upstream_monitor.get("status_code"), 0),
+            "upstream_monitor_target": _to_text(upstream_monitor.get("target_url")),
+            "issue_codes": [
+                _to_text(item)
+                for item in snapshot.get("issue_codes") or []
+                if _issue_base_code(item) in MONITOR_SOURCE_DEBOUNCE_ISSUE_BASES
+            ],
+        }
+    )
+
+
+def _should_debounce_monitor_source(snapshot: dict[str, Any]) -> bool:
+    if not bool(snapshot.get("monitor_source_unavailable")):
+        return False
+    bases = _issue_code_set(snapshot)
+    return bool(bases) and bases.issubset(MONITOR_SOURCE_DEBOUNCE_ISSUE_BASES)
+
+
+def _monitor_source_debounce_snapshot(
+    *,
+    snapshot: dict[str, Any],
+    state: dict[str, Any],
+    current_ms: int,
+    timestamp_us: str,
+) -> tuple[bool, dict[str, Any]]:
+    if not _should_debounce_monitor_source(snapshot):
+        return False, {}
+
+    threshold_count = _monitor_source_debounce_count()
+    threshold_ms = _monitor_source_debounce_ms()
+    pending_hash = _monitor_source_debounce_hash(snapshot)
+    previous_hash = _to_text(state.get("pending_monitor_source_hash"))
+    previous_first_ms = _to_int(state.get("pending_monitor_source_first_ms"), 0)
+    same_pending = bool(previous_hash) and previous_hash == pending_hash and previous_first_ms > 0
+    first_ms = previous_first_ms if same_pending else current_ms
+    first_at = _to_text(state.get("pending_monitor_source_first_at")) if same_pending else timestamp_us
+    count = (_to_int(state.get("pending_monitor_source_count"), 0) if same_pending else 0) + 1
+    elapsed_ms = max(0, current_ms - first_ms)
+    suppressed = count < threshold_count and elapsed_ms < threshold_ms
+    debounce = {
+        "suppressed": suppressed,
+        "count": count,
+        "threshold_count": threshold_count,
+        "first_ms": first_ms,
+        "first_at": first_at,
+        "last_ms": current_ms,
+        "last_at": timestamp_us,
+        "elapsed_ms": elapsed_ms,
+        "threshold_ms": threshold_ms,
+        "hash": pending_hash,
+    }
+    snapshot["monitor_debounce"] = debounce
+    return suppressed, debounce
+
+
+def _apply_monitor_source_debounce_state(next_state: dict[str, Any], debounce: dict[str, Any]) -> None:
+    if debounce:
+        next_state.update(
+            {
+                "pending_monitor_source_hash": _to_text(debounce.get("hash")),
+                "pending_monitor_source_first_ms": _to_int(debounce.get("first_ms"), 0),
+                "pending_monitor_source_first_at": _to_text(debounce.get("first_at")),
+                "pending_monitor_source_last_ms": _to_int(debounce.get("last_ms"), 0),
+                "pending_monitor_source_last_at": _to_text(debounce.get("last_at")),
+                "pending_monitor_source_count": _to_int(debounce.get("count"), 0),
+                "last_monitor_source_debounce_suppressed": bool(debounce.get("suppressed")),
+            }
+        )
+        return
+    for key in (
+        "pending_monitor_source_hash",
+        "pending_monitor_source_first_ms",
+        "pending_monitor_source_first_at",
+        "pending_monitor_source_last_ms",
+        "pending_monitor_source_last_at",
+        "pending_monitor_source_count",
+    ):
+        next_state.pop(key, None)
+    next_state["last_monitor_source_debounce_suppressed"] = False
 
 
 def _status_overview(snapshot: dict[str, Any]) -> tuple[str, str]:
@@ -380,13 +516,16 @@ def _status_overview(snapshot: dict[str, Any]) -> tuple[str, str]:
     if backtest_line:
         service_parts.append(backtest_line)
     service_line = " | ".join(service_parts)
-    connection_line = " | ".join(
-        [
-            f"Gateway {'running' if gateway.get('running') or gateway.get('reachable') else 'offline'}",
-            f"Session {'authenticated' if session.get('authenticated') else 'pending'}",
-            f"WebSocket {'connected' if websocket.get('connected') or websocket.get('ready') else 'offline'}",
-        ]
-    )
+    if not bool(snapshot.get("connection_snapshot_available", True)):
+        connection_line = "Gateway unknown | Session unknown | WebSocket unknown"
+    else:
+        connection_line = " | ".join(
+            [
+                f"Gateway {'running' if gateway.get('running') or gateway.get('reachable') else 'offline'}",
+                f"Session {'authenticated' if session.get('authenticated') else 'pending'}",
+                f"WebSocket {'connected' if websocket.get('connected') or websocket.get('ready') else 'offline'}",
+            ]
+        )
     return service_line, connection_line
 
 
@@ -396,6 +535,13 @@ def _human_issue_detail(snapshot: dict[str, Any]) -> dict[str, str]:
     reasons: list[str] = []
     advice: list[str] = []
     connection_issue = bool(codes & CONNECTION_ISSUE_CODES)
+    monitor_source_unavailable = bool(snapshot.get("monitor_source_unavailable"))
+
+    if monitor_source_unavailable:
+        upstream = _as_dict(_as_dict(snapshot.get("monitor")).get("upstream_monitor"))
+        _append_unique(impacts, "监控聚合暂时无法确认完整 IBKR 链路状态")
+        _append_unique(reasons, f"监控源请求失败或超时: {_to_text(upstream.get('error')) or 'compute_monitor_unavailable'}")
+        _append_unique(advice, "等待下一轮检测；若连续超时，再检查 ibkr-compute / ibkr-runtime monitor 耗时")
 
     if "gateway_offline" in codes:
         _append_unique(impacts, "实时行情、信号生成和自动下单会暂停")
@@ -513,6 +659,18 @@ def _heartbeat_detail(snapshot: dict[str, Any], *, timestamp_us: str) -> dict[st
         detail["Backtest"] = f"{backtest_line} | independent non-blocking"
     if client_ids_line:
         detail["IB ClientID"] = client_ids_line
+    upstream_monitor = _as_dict(_as_dict(snapshot.get("monitor")).get("upstream_monitor"))
+    if upstream_monitor.get("elapsed_ms") is not None:
+        detail["检测耗时"] = f"{float(upstream_monitor.get('elapsed_ms') or 0):.1f}ms"
+    if upstream_monitor.get("timeout_s") is not None:
+        detail["检测超时阈值"] = f"{float(upstream_monitor.get('timeout_s') or 0):.1f}s"
+    if snapshot.get("monitor_source_unavailable"):
+        detail["监控源"] = "compute_monitor unavailable"
+    debounce = _as_dict(snapshot.get("monitor_debounce"))
+    if debounce:
+        detail["是否去抖中"] = "yes" if debounce.get("suppressed") else "no"
+        detail["连续异常次数"] = str(_to_int(debounce.get("count"), 0))
+        detail["去抖窗口"] = f"{_to_int(debounce.get('elapsed_ms'), 0) / 1000:.1f}s/{_to_int(debounce.get('threshold_ms'), 0) / 1000:.1f}s"
     if snapshot.get("unhealthy"):
         offline_text = _format_service_items([_as_dict(item) for item in snapshot.get("offline_services") or []])
         degraded_text = _format_service_items([_as_dict(item) for item in snapshot.get("actionable_degraded_services") or []])
@@ -937,9 +1095,20 @@ def build_system_heartbeat_response(
     last_issue_ms = _to_int(state.get("last_issue_ms"), 0)
     current_hour = _to_text(times.get("us"))[:13]
     nominal_ok_suppressed = False
+    event_suppressed_by_debounce, monitor_debounce = _monitor_source_debounce_snapshot(
+        snapshot=snapshot,
+        state=state,
+        current_ms=current_ms,
+        timestamp_us=times["us"],
+    )
+    _apply_monitor_source_debounce_state(next_state, monitor_debounce)
 
     if snapshot.get("unhealthy"):
-        recovered_codes = _recovered_issue_codes(previous_issue_codes, current_issue_codes)
+        recovered_codes = (
+            []
+            if snapshot.get("monitor_source_unavailable")
+            else _recovered_issue_codes(previous_issue_codes, current_issue_codes)
+        )
         if recovered_codes:
             recovery_event = emit_system_event(
                 event_type="alert",
@@ -957,15 +1126,16 @@ def build_system_heartbeat_response(
             next_state["last_partial_recovery_at"] = times["us"]
             next_state["last_partial_recovery_codes"] = recovered_codes
         should_notify = fingerprint != last_issue_hash or last_issue_ms <= 0 or (current_ms - last_issue_ms) >= HEARTBEAT_ALERT_COOLDOWN_MS
-        next_state.update(
-            {
-                "last_issue_hash": fingerprint,
-                "last_issue_ms": current_ms,
-                "last_issue_at": times["us"],
-                "last_recovery_at": "",
-            }
-        )
-        if should_notify:
+        if not event_suppressed_by_debounce:
+            next_state.update(
+                {
+                    "last_issue_hash": fingerprint,
+                    "last_issue_ms": current_ms,
+                    "last_issue_at": times["us"],
+                    "last_recovery_at": "",
+                }
+            )
+        if should_notify and not event_suppressed_by_debounce:
             issue_event = emit_system_event(
                 event_type="heartbeat",
                 level=_to_text(snapshot.get("severity")) or "warning",
@@ -1024,6 +1194,8 @@ def build_system_heartbeat_response(
         "event": issue_event,
         "recovery_event": recovery_event,
         "partial_recovery": bool(recovery_event),
+        "event_suppressed_by_debounce": event_suppressed_by_debounce,
+        "monitor_debounce": monitor_debounce,
         "nominal_ok_suppressed": nominal_ok_suppressed,
         "state": next_state,
         "source": "ibkr-api",

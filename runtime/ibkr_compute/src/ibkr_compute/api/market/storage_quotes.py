@@ -1,8 +1,20 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import time
 from typing import Any, Iterable
+
+
+logger = logging.getLogger(__name__)
+
+
+def _slow_log_threshold_seconds() -> float:
+    try:
+        return max(0.0, float(os.environ.get("IBKR_COMPUTE_STORAGE_QUOTE_SLOW_LOG_SEC", "2.0") or 0.0))
+    except Exception:
+        return 2.0
 
 
 def _coerce_float(value: Any) -> float | None:
@@ -226,16 +238,30 @@ def fetch_storage_quote_snapshots(
     safe_ms = max(0, int(safe_upper_ms or 0))
     now_ms = int(time.time() * 1000)
     snapshots: dict[str, dict[str, Any]] = {}
-    with open_pb_sqlite(readonly=True, timeout=_direct_sqlite_timeout(api_app, runtime_environment)) as conn:
-        for symbol in normalized_symbols:
-            indicator_rows = _fetch_indicator_rows(conn, symbol, runtime_environment, chart_tf, safe_ms)
-            bar_rows = _fetch_bar_rows(conn, symbol, runtime_environment, interval, safe_ms)
-            snapshot = _choose_best_snapshot(
-                _snapshot_from_rows(symbol=symbol, source="indicator", rows=indicator_rows, now_ms=now_ms),
-                _snapshot_from_rows(symbol=symbol, source="bar", rows=bar_rows, now_ms=now_ms),
+    started = time.monotonic()
+    query_count = len(normalized_symbols) * 2
+    try:
+        with open_pb_sqlite(readonly=True, timeout=_direct_sqlite_timeout(api_app, runtime_environment)) as conn:
+            for symbol in normalized_symbols:
+                indicator_rows = _fetch_indicator_rows(conn, symbol, runtime_environment, chart_tf, safe_ms)
+                bar_rows = _fetch_bar_rows(conn, symbol, runtime_environment, interval, safe_ms)
+                snapshot = _choose_best_snapshot(
+                    _snapshot_from_rows(symbol=symbol, source="indicator", rows=indicator_rows, now_ms=now_ms),
+                    _snapshot_from_rows(symbol=symbol, source="bar", rows=bar_rows, now_ms=now_ms),
+                )
+                if snapshot:
+                    snapshots[symbol] = snapshot
+    finally:
+        elapsed_ms = round((time.monotonic() - started) * 1000.0, 1)
+        threshold_s = _slow_log_threshold_seconds()
+        if threshold_s > 0 and elapsed_ms >= threshold_s * 1000.0:
+            logger.warning(
+                "Storage quote snapshot fetch slow: environment=%s symbols=%d query_count=%d elapsed_ms=%.1f",
+                runtime_environment,
+                len(normalized_symbols),
+                query_count,
+                elapsed_ms,
             )
-            if snapshot:
-                snapshots[symbol] = snapshot
     return snapshots
 
 

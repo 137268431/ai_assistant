@@ -463,7 +463,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         "系统日报",
         139.5,
         "*/5 * * * *",
-        "每 5 分钟轮询一次；内部按 ET 16:05 仅发送一次",
+        "每 5 分钟轮询一次；内部按 ET 16:05 起 30 分钟内仅发送一次",
         "仅 NYSE 交易日汇总当日信号、订单、bars、targets 和系统事件，并在收盘后发送日报。",
         "当前由 ibkr-scheduler 触发 ibkr-api 原生系统日报；PB 仅保留兼容壳。",
         hook_file="ibkr_system_monitor.pb.js",

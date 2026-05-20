@@ -1,3 +1,4 @@
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -26,6 +27,37 @@ from ibkr_api.system.jobs.open_report import (
 
 
 class SystemScanSummaryTest(unittest.TestCase):
+    def _run_heartbeat_for_test(
+        self,
+        *,
+        monitor_payload,
+        summary_payload=None,
+        states=None,
+        emitted=None,
+        time_us="2026-05-19 15:41:18",
+    ):
+        states = states if states is not None else {}
+        emitted = emitted if emitted is not None else []
+        summary = summary_payload or {
+            "status": "running",
+            "today": {"ibkr_bars": 10, "ibkr_signals": 0, "main_orders": 0},
+            "ibkr_compute": {"status": "running"},
+            "ibkr_runtime": {"status": "running"},
+            "daily_scan": {"status": "completed"},
+        }
+
+        payload, status_code = build_system_heartbeat_response(
+            payload={"broker_mode": "paper", "market_data_mode": "live"},
+            normalize_environment=lambda value, default: str(value or default).strip().lower() or default,
+            time_strings=lambda: {"us": time_us, "cn": "2026-05-20 03:41:18", "date": "2026-05-19"},
+            build_system_summary_payload=lambda environment, lite_mode=False: summary,
+            build_system_monitor_payload=lambda environment: monitor_payload,
+            emit_system_event=lambda **kwargs: emitted.append(kwargs) or {"notified": True},
+            get_state_payload=lambda state_key, environment: {"data": states.get((state_key, environment), {})},
+            upsert_state=lambda key, environment, data, date: states.update({(key, environment): dict(data)}) or data,
+        )
+        return payload, status_code, states, emitted
+
     def test_open_report_window_is_0930_to_before_0940(self):
         self.assertFalse(matches_open_report_time_window("2026-04-28 09:29:59"))
         self.assertTrue(matches_open_report_time_window("2026-04-28 09:30:00"))
@@ -438,6 +470,134 @@ class SystemScanSummaryTest(unittest.TestCase):
         self.assertEqual(payload["data_environment"], "live")
         self.assertEqual(emitted[0]["environment"], "paper")
         self.assertEqual(state_writes[0]["environment"], "paper")
+
+    def test_heartbeat_debounces_first_monitor_source_timeout(self):
+        monitor_payload = {
+            "ok": False,
+            "status": "warning",
+            "monitor_source_unavailable": True,
+            "runtime": {},
+            "compute": {},
+            "scheduler": {"status": "running", "latest_ingested_bar_time_ms": 1, "dispatch_lag_min": 0.0},
+            "service_monitor": {
+                "status_counts": {"running": 4, "unknown": 3},
+                "services": {
+                    "ibkr-compute": {"status": "unknown"},
+                    "ibkr-runtime": {"status": "unknown"},
+                    "ibkr-gateway": {"status": "unknown"},
+                },
+            },
+            "upstream_monitor": {
+                "ok": False,
+                "status_code": 0,
+                "target_url": "http://compute.internal:5100/ibkr/monitor",
+                "error": "Read timed out",
+                "elapsed_ms": 20001.0,
+                "timeout_s": 20.0,
+                "source_unavailable": True,
+            },
+            "flags": [{"code": "monitor_builder_compute_monitor", "severity": "warning", "detail": "Read timed out"}],
+        }
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "IBKR_HEARTBEAT_MONITOR_SOURCE_DEBOUNCE_COUNT": "2",
+                "IBKR_HEARTBEAT_MONITOR_SOURCE_DEBOUNCE_SEC": "90",
+            },
+        ):
+            payload, status_code, states, emitted = self._run_heartbeat_for_test(monitor_payload=monitor_payload)
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["unhealthy"])
+        self.assertTrue(payload["event_suppressed_by_debounce"])
+        self.assertEqual(payload["event"], {})
+        self.assertEqual(emitted, [])
+        self.assertNotIn("gateway_offline", payload["issue_codes"])
+        self.assertNotIn("session_unauthenticated", payload["issue_codes"])
+        self.assertNotIn("websocket_not_ready", payload["issue_codes"])
+        state = states[("system_notify_heartbeat", "paper")]
+        self.assertEqual(state["pending_monitor_source_count"], 1)
+        self.assertFalse(state.get("last_issue_hash"))
+
+    def test_heartbeat_alerts_on_second_monitor_source_timeout(self):
+        states = {}
+        emitted = []
+        monitor_payload = {
+            "ok": False,
+            "status": "warning",
+            "monitor_source_unavailable": True,
+            "runtime": {},
+            "compute": {},
+            "scheduler": {"status": "running", "latest_ingested_bar_time_ms": 1, "dispatch_lag_min": 0.0},
+            "service_monitor": {"status_counts": {"running": 4, "unknown": 3}, "services": {}},
+            "upstream_monitor": {
+                "ok": False,
+                "status_code": 0,
+                "target_url": "http://compute.internal:5100/ibkr/monitor",
+                "error": "Read timed out",
+                "elapsed_ms": 20001.0,
+                "timeout_s": 20.0,
+                "source_unavailable": True,
+            },
+            "flags": [{"code": "monitor_builder_compute_monitor", "severity": "warning", "detail": "Read timed out"}],
+        }
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "IBKR_HEARTBEAT_MONITOR_SOURCE_DEBOUNCE_COUNT": "2",
+                "IBKR_HEARTBEAT_MONITOR_SOURCE_DEBOUNCE_SEC": "90",
+            },
+        ):
+            self._run_heartbeat_for_test(monitor_payload=monitor_payload, states=states, emitted=emitted)
+            payload, status_code, states, emitted = self._run_heartbeat_for_test(
+                monitor_payload=monitor_payload,
+                states=states,
+                emitted=emitted,
+                time_us="2026-05-19 15:42:18",
+            )
+
+        self.assertEqual(status_code, 200)
+        self.assertFalse(payload["event_suppressed_by_debounce"])
+        self.assertEqual(payload["monitor_debounce"]["count"], 2)
+        self.assertEqual(len(emitted), 1)
+        self.assertEqual(emitted[0]["title"], "IBKR 系统心跳异常")
+        self.assertNotEqual(emitted[0]["title"], "IBKR 连接链路未就绪")
+        self.assertIn("监控源", emitted[0]["detail"])
+        self.assertNotIn("gateway_offline", payload["issue_codes"])
+        self.assertNotIn("session_unauthenticated", payload["issue_codes"])
+        self.assertTrue(states[("system_notify_heartbeat", "paper")]["last_issue_hash"])
+
+    def test_heartbeat_alerts_immediately_for_explicit_connection_issue(self):
+        emitted = []
+        monitor_payload = {
+            "ok": False,
+            "status": "warning",
+            "runtime": {
+                "status": "degraded",
+                "gateway": {"running": False, "reachable": False},
+                "session": {"authenticated": False},
+                "websocket": {"connected": False, "ready": False},
+            },
+            "compute": {"status": "running"},
+            "scheduler": {"status": "running", "latest_ingested_bar_time_ms": 1, "dispatch_lag_min": 0.0},
+            "service_monitor": {"status_counts": {"running": 4}, "services": {}},
+            "flags": [],
+        }
+
+        payload, status_code, _states, emitted = self._run_heartbeat_for_test(
+            monitor_payload=monitor_payload,
+            emitted=emitted,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertFalse(payload["event_suppressed_by_debounce"])
+        self.assertEqual(len(emitted), 1)
+        self.assertEqual(emitted[0]["title"], "IBKR 连接链路未就绪")
+        self.assertIn("gateway_offline", payload["issue_codes"])
+        self.assertIn("session_unauthenticated", payload["issue_codes"])
+        self.assertIn("websocket_not_ready", payload["issue_codes"])
 
     def test_active_window_summary_hides_normal_no_window_items(self):
         detail = _active_window_summary(

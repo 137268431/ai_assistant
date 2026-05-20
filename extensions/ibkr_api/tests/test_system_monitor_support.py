@@ -608,6 +608,87 @@ class SystemMonitorSupportTest(unittest.TestCase):
         self.assertEqual(pocketbase["status"], "offline")
         self.assertFalse(pocketbase["ready"])
 
+    def test_monitor_source_unavailable_keeps_ibkr_link_unknown_not_offline(self):
+        service_monitor = derive_monitor_service_map(
+            "paper",
+            {
+                "ok": False,
+                "status": "warning",
+                "monitor_source_unavailable": True,
+                "runtime": {},
+                "compute": {},
+                "service_topology": {"services": {}},
+            },
+            {"status": "running", "loop_interval_seconds": 30, "job_count": 12},
+            console_probe={"ok": True, "status_code": 200, "target_url": "https://quant.lzw-glory.top/index.html"},
+            pb_health={"ok": True, "status_code": 200},
+            build_service_topology=lambda: {"services": {}},
+        )
+
+        services = service_monitor["services"]
+        self.assertEqual(services["ibkr-compute"]["status"], "unknown")
+        self.assertEqual(services["ibkr-runtime"]["status"], "unknown")
+        self.assertEqual(services["ibkr-gateway"]["status"], "unknown")
+        self.assertIn("monitor source unavailable", services["ibkr-compute"]["detail"])
+        self.assertEqual(0, service_monitor["status_counts"].get("offline", 0))
+
+    def test_monitor_payload_marks_empty_compute_monitor_timeout_as_source_unavailable(self):
+        payload = build_system_monitor_payload(
+            "paper",
+            normalize_environment=lambda value, default="paper": str(value or default).strip().lower() or default,
+            fetch_compute_monitor=lambda environment: {
+                "ok": False,
+                "status_code": 0,
+                "payload": {},
+                "error": "Read timed out",
+                "target_url": "http://compute.internal:5100/ibkr/monitor",
+                "elapsed_ms": 20001.0,
+                "timeout_s": 20.0,
+            },
+            as_dict=lambda value: dict(value) if isinstance(value, dict) else {},
+            config_refresh=lambda: None,
+            scheduler_status=lambda environment: {"ok": True, "status": "running", "environment": environment, "jobs": {}},
+            build_cron_payload=lambda config, environment, jobs: [],
+            config=object(),
+            build_scheduler_summary=lambda environment, scheduler_payload: {
+                "status": "running",
+                "loop_interval_seconds": 30,
+                "job_count": 0,
+            },
+            augment_scheduler_summary=lambda summary, items: summary,
+            request_json=lambda *args, **kwargs: {"ok": True, "status_code": 200, "payload": {}},
+            pb_base_url="http://127.0.0.1:8090",
+            console_base_url="https://quant.lzw-glory.top",
+            probe_console_status=lambda *_args, **_kwargs: {
+                "ok": True,
+                "status_code": 200,
+                "target_url": "https://quant.lzw-glory.top/index.html",
+                "error": "",
+            },
+            load_effective_config_map=lambda *args, **kwargs: {},
+            monitor_config_keys=("ibkr_target_refresh_sec",),
+            load_recent_system_events=lambda *args, **kwargs: [],
+            enrich_monitor_payload_with_pocketbase_disk=lambda payload: payload,
+            derive_monitor_service_map=derive_monitor_service_map,
+            merge_service_topology=lambda *payloads: {"services": {}},
+            build_service_topology=lambda: {"services": {}},
+            service_profile="api",
+        )
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["status"], "warning")
+        self.assertTrue(payload["monitor_source_unavailable"])
+        self.assertEqual(payload["upstream_monitor"]["elapsed_ms"], 20001.0)
+        self.assertEqual(payload["upstream_monitor"]["timeout_s"], 20.0)
+        compute = payload["service_monitor"]["services"]["ibkr-compute"]
+        runtime = payload["service_monitor"]["services"]["ibkr-runtime"]
+        gateway = payload["service_monitor"]["services"]["ibkr-gateway"]
+        self.assertEqual(compute["status"], "unknown")
+        self.assertEqual(runtime["status"], "unknown")
+        self.assertEqual(gateway["status"], "unknown")
+        errors = {item["stage"]: item for item in payload["monitor_builder_errors"]}
+        self.assertEqual(errors["compute_monitor"]["severity"], "warning")
+
     def test_monitor_payload_accepts_zero_arg_console_probe_wrapper(self):
         payload = build_system_monitor_payload(
             "live",

@@ -232,6 +232,7 @@ def derive_monitor_service_map(
     gateway = runtime.get("gateway") if isinstance(runtime.get("gateway"), dict) else {}
     compute = base_payload.get("compute") if isinstance(base_payload.get("compute"), dict) else {}
     monitor_status = str(base_payload.get("status") or "").strip().lower()
+    monitor_source_unavailable = bool(base_payload.get("monitor_source_unavailable"))
 
     def _normalize_service_status(raw_status: Any, *, fallback_running: bool) -> str:
         text = str(raw_status or "").strip().lower()
@@ -329,10 +330,12 @@ def derive_monitor_service_map(
     total_engines = int(compute.get("total_engines") or 0)
     if total_engines > 0 and ready_engines < total_engines and compute_status == "running":
         compute_status = "degraded"
+    if monitor_source_unavailable and not compute:
+        compute_status = "unknown"
     if not compute and monitor_status in {"warning", "warn", "degraded"}:
-        compute_status = "degraded"
+        compute_status = "unknown" if monitor_source_unavailable else "degraded"
     if not compute and monitor_status in {"offline", "error"}:
-        compute_status = "offline"
+        compute_status = "unknown" if monitor_source_unavailable else "offline"
 
     runtime_status = _normalize_service_status(runtime.get("status"), fallback_running=bool(runtime))
     runtime_phase = str(runtime.get("runtime_phase") or "").strip().lower()
@@ -346,10 +349,16 @@ def derive_monitor_service_map(
             runtime_status = "degraded" if gateway_reachable or session_authenticated or websocket_ready else "offline"
         elif not gateway_reachable or not session_authenticated or not websocket_ready:
             runtime_status = "degraded"
+    elif monitor_source_unavailable:
+        runtime_status = "unknown"
     elif compute_status != "running":
         runtime_status = "offline"
 
-    gateway_status = "running" if bool(gateway.get("running") or gateway.get("reachable")) else "offline"
+    gateway_status = (
+        "running"
+        if bool(gateway.get("running") or gateway.get("reachable"))
+        else ("unknown" if monitor_source_unavailable and not gateway else "offline")
+    )
     scheduler_status = str(scheduler_summary.get("status") or "").strip().lower() or "unknown"
     scheduler_unavailable = scheduler_status == "unknown" and not bool(scheduler_summary.get("ok", True))
     compute_preload_active = _compute_startup_preload_active() or _scheduler_compute_preload_deferred()
@@ -418,6 +427,7 @@ def derive_monitor_service_map(
             **_topology_meta("ibkr-compute"),
             "status": compute_status,
             "detail": _detail_parts(
+                "monitor source unavailable" if monitor_source_unavailable and not compute else "",
                 f"engines {int(compute.get('ready_engines') or 0)}/{int(compute.get('total_engines') or 0)}",
                 f"compute {int(compute.get('compute_count') or 0)}",
                 f"tracked {int(compute.get('tracked_cursors') or 0)}",
@@ -431,18 +441,20 @@ def derive_monitor_service_map(
             **_topology_meta("ibkr-runtime"),
             "status": runtime_status,
             "detail": _detail_parts(
-                f"phase {runtime.get('runtime_phase') or '--'}",
-                f"session {'AUTHED' if ((runtime.get('session') or {}).get('authenticated')) else 'PENDING'}",
-                f"ws {'READY' if ((runtime.get('websocket') or {}).get('connected')) else 'PENDING'}",
+                "monitor source unavailable" if monitor_source_unavailable and not runtime else "",
+                f"phase {runtime.get('runtime_phase') or '--'}" if runtime else "",
+                f"session {'AUTHED' if ((runtime.get('session') or {}).get('authenticated')) else 'PENDING'}" if runtime else "",
+                f"ws {'READY' if ((runtime.get('websocket') or {}).get('connected')) else 'PENDING'}" if runtime else "",
             ),
         },
         "ibkr-gateway": {
             **_topology_meta("ibkr-gateway"),
             "status": gateway_status,
             "detail": _detail_parts(
-                f"managed_by {gateway.get('managed_by') or '--'}",
+                "monitor source unavailable" if monitor_source_unavailable and not gateway else "",
+                f"managed_by {gateway.get('managed_by') or '--'}" if gateway else "",
                 f"pid {int(gateway.get('pid') or 0)}" if gateway.get("pid") else "",
-                "reachable" if gateway.get("reachable") else "not reachable",
+                ("reachable" if gateway.get("reachable") else "not reachable") if gateway else "",
             ),
         },
         "pocketbase": {
@@ -510,13 +522,16 @@ def build_system_monitor_payload(
     builder_errors: list[dict[str, str]] = []
     base_monitor_result = fetch_compute_monitor(data_environment)
     base_payload = as_dict(base_monitor_result.get("payload"))
+    base_monitor_ok = bool(base_monitor_result.get("ok"))
+    monitor_source_unavailable = bool(not base_monitor_ok and not base_payload)
     if (not bool(base_monitor_result.get("ok"))) and (
         str(base_monitor_result.get("error") or "").strip() or int(base_monitor_result.get("status_code") or 0) >= 400
     ):
         detail = str(base_monitor_result.get("error") or "").strip() or (
             f"upstream_status={int(base_monitor_result.get('status_code') or 0)} target={base_monitor_result.get('target_url') or ''}"
         )
-        builder_errors.append(_monitor_builder_error("compute_monitor", detail, severity="error"))
+        severity = "warning" if monitor_source_unavailable else "error"
+        builder_errors.append(_monitor_builder_error("compute_monitor", detail, severity=severity))
     try:
         config_refresh()
     except Exception as exc:
@@ -593,9 +608,13 @@ def build_system_monitor_payload(
         }
 
     merged_payload = dict(base_payload)
-    merged_payload.setdefault("ok", bool(base_monitor_result.get("ok", False)))
+    merged_payload.setdefault("ok", base_monitor_ok)
+    if monitor_source_unavailable:
+        merged_payload["monitor_source_unavailable"] = True
+        merged_payload["monitor_source_error"] = str(base_monitor_result.get("error") or "").strip()
     merged_payload["status"] = str(
-        merged_payload.get("status") or ("offline" if merged_payload.get("ok") is False else "ok")
+        merged_payload.get("status")
+        or ("warning" if monitor_source_unavailable else ("offline" if merged_payload.get("ok") is False else "ok"))
     ).strip().lower() or "ok"
     actual_runtime_environment = normalize_environment(
         merged_payload.get("broker_mode")
@@ -626,10 +645,13 @@ def build_system_monitor_payload(
         merged_payload["recent_events"] = []
     merged_payload["source"] = "ibkr-api"
     merged_payload["upstream_monitor"] = {
-        "ok": bool(base_monitor_result.get("ok", False)),
+        "ok": base_monitor_ok,
         "status_code": int(base_monitor_result.get("status_code") or 0),
         "target_url": base_monitor_result.get("target_url") or "",
         "error": base_monitor_result.get("error") or "",
+        "elapsed_ms": base_monitor_result.get("elapsed_ms"),
+        "timeout_s": base_monitor_result.get("timeout_s"),
+        "source_unavailable": monitor_source_unavailable,
     }
     merged_payload["scheduler"] = scheduler_summary
     merged_payload["backtest_service"] = {

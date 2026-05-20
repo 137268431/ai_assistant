@@ -192,6 +192,9 @@ class MonitorSnapshotTest(unittest.TestCase):
 
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["environment"], "live")
+        self.assertIn("monitor_build", payload["diagnostics"])
+        self.assertIn("total_ms", payload["diagnostics"]["monitor_build"])
+        self.assertIn("stages_ms", payload["diagnostics"]["monitor_build"])
         self.assertEqual(payload["api_utilization"]["active_subscription_count"], 2)
         self.assertEqual(payload["api_utilization"]["subscription_limit"], 10)
         self.assertEqual(payload["api_utilization"]["utilization_pct"], 20.0)

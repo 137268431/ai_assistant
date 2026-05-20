@@ -10,10 +10,22 @@ from ibkr_api.system.service_state import canonicalize_topology
 from .status_types import AsDict, BuildServiceTopology, RequestJson
 
 
+def _env_float(name: str, default: float, *, minimum: float = 0.0, maximum: float | None = None) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)) or default)
+    except Exception:
+        value = float(default)
+    value = max(float(minimum), value)
+    if maximum is not None:
+        value = min(float(maximum), value)
+    return value
+
+
 UPSTREAM_CACHE_TTL_SECONDS = max(
     0.0,
-    float(os.environ.get("IBKR_API_UPSTREAM_STATUS_CACHE_TTL_SEC", "60.0")),
+    _env_float("IBKR_API_UPSTREAM_STATUS_CACHE_TTL_SEC", 60.0),
 )
+COMPUTE_MONITOR_TIMEOUT_SECONDS = _env_float("IBKR_API_COMPUTE_MONITOR_TIMEOUT_SEC", 20.0, minimum=5.0, maximum=60.0)
 
 _upstream_cache_lock = threading.Lock()
 _upstream_success_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
@@ -103,6 +115,7 @@ def fetch_compute_monitor(environment: str, *, request_json: RequestJson, comput
         "/ibkr/monitor",
         environment,
         request_json=request_json,
+        timeout=int(COMPUTE_MONITOR_TIMEOUT_SECONDS),
     )
 
 

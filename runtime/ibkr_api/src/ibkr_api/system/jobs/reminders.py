@@ -10,6 +10,7 @@ DAILY_REMINDER_STATE_KEY = "system_notify_daily"
 DEFAULT_MARKET_OPEN_REMINDER_TIME_ET = "09:30"
 DEFAULT_MARKET_OPEN_REMINDER_WINDOW_MINUTES = 10
 DEFAULT_DAILY_REPORT_TIME_ET = "16:05"
+DEFAULT_DAILY_REPORT_WINDOW_MINUTES = 30
 
 NormalizeEnvironment = Callable[[Any, str], str]
 TimeStrings = Callable[[], dict[str, str]]
@@ -608,7 +609,8 @@ def build_system_daily_report_response(
     data_environment = request_market_data_mode(request_payload)
     times = time_strings()
     target_time_et = _to_text(request_payload.get("target_time_et")) or DEFAULT_DAILY_REPORT_TIME_ET
-    if not _matches_time_window(times["us"], target_time_et):
+    window_minutes = _to_int(request_payload.get("window_minutes"), DEFAULT_DAILY_REPORT_WINDOW_MINUTES)
+    if not _matches_time_window(times["us"], target_time_et, window_minutes=window_minutes):
         return {
             "ok": True,
             "environment": broker_mode,
@@ -618,6 +620,7 @@ def build_system_daily_report_response(
             "skipped": True,
             "reason": "outside_time_window",
             "target_time_et": target_time_et,
+            "window_minutes": window_minutes,
             "source": "ibkr-api",
             "job_id": "system_daily_report",
         }, 200
