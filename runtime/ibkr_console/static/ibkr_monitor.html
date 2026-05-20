@@ -2030,6 +2030,7 @@
             const pushStatus = deriveWebSocketPushStatus(payload);
             const historyStatus = deriveHistoryFetchStatus(payload);
             const watchlistStatus = deriveWatchlistTopupStatus(payload);
+            const tradingGateStatus = deriveTradingGateStatus(payload);
             const activeBars = Array.isArray(samples.active_bar_symbols) ? samples.active_bar_symbols : [];
             const realtime = runtime?.realtime_compute || {};
             const lastBarCloseMs = parseIsoMs(realtime.last_bar_close);

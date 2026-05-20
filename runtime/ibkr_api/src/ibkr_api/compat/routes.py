@@ -154,10 +154,6 @@ def register_compat_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
 
     @app.route("/health", methods=["GET"])
     def health() -> Response:
-        scheduler_payload = scheduler_status_lite("live")
-        scheduler_jobs = scheduler_payload.get("jobs") if isinstance(scheduler_payload, dict) else {}
-        if not isinstance(scheduler_jobs, dict):
-            scheduler_jobs = {}
         service_topology, service_monitor = canonicalize_topology("live", build_service_topology())
         return jsonify(
             {
@@ -173,7 +169,8 @@ def register_compat_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
                     "runtime": runtime_base_url,
                     "scheduler": scheduler_base_url,
                 },
-                "scheduler_job_count": len(scheduler_jobs),
+                "scheduler_job_count": None,
+                "scheduler_job_count_source": "omitted_fast_health",
             }
         )
     exports["health"] = health
