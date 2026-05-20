@@ -10,6 +10,61 @@ function buildStatusCardMarkup(dotClass, mainText, subText = '') {
     `;
 }
 
+function formatFreshnessPercent(value) {
+    if (value === null || value === undefined || value === '') return '--';
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return '--';
+    const clamped = Math.max(0, Math.min(100, numeric));
+    return `${clamped % 1 === 0 ? clamped.toFixed(0) : clamped.toFixed(1)}%`;
+}
+
+function getSystemIbkrDataStatusCardModel(dataHealth = {}) {
+    if (!dataHealth?.freshness_aggregate) {
+        return getIbkrDataStatusCardModel(dataHealth || {});
+    }
+
+    let dotClass = 'dot-gray';
+    let mainText = '数据状态';
+    if (dataHealth.status === 'online') {
+        dotClass = 'dot-green';
+        mainText = '在线';
+    } else if (dataHealth.status === 'delayed') {
+        dotClass = 'dot-yellow';
+        mainText = '延迟';
+    } else if (dataHealth.status === 'offline') {
+        dotClass = 'dot-red';
+        mainText = '超时';
+    } else if (dataHealth.status === 'loading') {
+        mainText = '加载中';
+    }
+
+    const readyPct = formatFreshnessPercent(dataHealth.ready_pct);
+    if (readyPct !== '--') mainText += ` · ${readyPct}`;
+
+    const metaParts = [];
+    const due = Number(dataHealth.due_checks ?? dataHealth.due_symbols ?? 0) || 0;
+    const total = Number(dataHealth.total_checks ?? dataHealth.total_symbols ?? 0) || 0;
+    if (total || due) metaParts.push(`due ${due}/${total || '--'}`);
+    const counts = [];
+    if (Number(dataHealth.ready || 0) > 0) counts.push(`ready ${Number(dataHealth.ready || 0)}`);
+    if (Number(dataHealth.overdue || 0) > 0) counts.push(`overdue ${Number(dataHealth.overdue || 0)}`);
+    if (Number(dataHealth.missing || 0) > 0) counts.push(`missing ${Number(dataHealth.missing || 0)}`);
+    if (Number(dataHealth.waiting_5m || 0) > 0) counts.push(`waiting5m ${Number(dataHealth.waiting_5m || 0)}`);
+    if (Number(dataHealth.not_due || 0) > 0) counts.push(`not due ${Number(dataHealth.not_due || 0)}`);
+    if (Number(dataHealth.quiet_extended || 0) > 0) counts.push(`quiet ${Number(dataHealth.quiet_extended || 0)}`);
+    if (counts.length) metaParts.push(counts.join(' · '));
+    const coveragePct = formatFreshnessPercent(dataHealth.coverage_pct);
+    if (coveragePct !== '--') metaParts.push(`coverage ${coveragePct}`);
+    const expectedLabel = dataHealth.expected_close_us
+        || (dataHealth.expected_close_ms ? formatTimeLabel(dataHealth.expected_close_ms) : '');
+    if (expectedLabel) metaParts.push(`expected ${expectedLabel}`);
+    if (Array.isArray(dataHealth.sample_lag_symbols) && dataHealth.sample_lag_symbols.length) {
+        metaParts.push(`samples ${formatSymbolPreview(dataHealth.sample_lag_symbols, 4)}`);
+    }
+
+    return { dotClass, mainText, subText: metaParts.join(' · ') };
+}
+
 function getSchedulerStatusCardModel(summary = {}) {
     const scheduler = getIbkrSchedulerSummary(summary, currentEnvironment);
     const lagLabel = scheduler.dispatchLagLabel && scheduler.dispatchLagLabel !== '--'
@@ -60,7 +115,7 @@ function getSchedulerStatusCardModel(summary = {}) {
 
 function renderStatus(health) {
     const dataEl = document.getElementById('dataStatus');
-    const dataStatusModel = getIbkrDataStatusCardModel(health.ibkr_data || {});
+    const dataStatusModel = getSystemIbkrDataStatusCardModel(health.ibkr_data || {});
     dataEl.innerHTML = buildStatusCardMarkup(dataStatusModel.dotClass, dataStatusModel.mainText, dataStatusModel.subText);
 
     const compEl = document.getElementById('computeStatus');
@@ -280,20 +335,77 @@ function renderTodayStats(today) {
     `).join('');
 }
 
-function renderFreshness(data) {
-    const el = document.getElementById('freshnessArea');
+function getFreshnessAggregateVisual(item = {}) {
+    const status = String(item?.status || '').trim().toLowerCase();
+    const hasReadyPct = item?.ready_pct !== null && item?.ready_pct !== undefined && item?.ready_pct !== '';
+    const readyPct = hasReadyPct ? Number(item.ready_pct) : NaN;
+    const overdue = Number(item?.overdue || 0) || 0;
+    const missing = Number(item?.missing || 0) || 0;
+    const waiting5m = Number(item?.waiting_5m || 0) || 0;
+    const due = Number(item?.due_symbols || 0) || 0;
+    const total = Number(item?.total_symbols || 0) || 0;
+    const notDue = Number(item?.not_due || 0) || 0;
+    const quiet = Number(item?.quiet_extended || 0) || 0;
+    const pct = Number.isFinite(readyPct) ? Math.max(0, Math.min(100, readyPct)) : 0;
+
+    if (!item || (!total && !due && !status && !Number.isFinite(readyPct))) {
+        return { color: '#64748b', pct: 0, chipClass: 'is-empty', stateText: '暂无', chipText: '--' };
+    }
+    if (status === 'not_due' || (total > 0 && notDue >= total && due === 0)) {
+        return { color: '#38bdf8', pct: 0, chipClass: 'is-idle', stateText: '未到周期', chipText: 'NOT DUE' };
+    }
+    if (status === 'quiet_extended' || (total > 0 && quiet >= total && due === 0)) {
+        return { color: '#94a3b8', pct: 0, chipClass: 'is-idle', stateText: '扩展静默', chipText: 'QUIET' };
+    }
+    if (status === 'waiting_5m' || (waiting5m > 0 && due === 0)) {
+        return { color: '#38bdf8', pct, chipClass: 'is-idle', stateText: '等待 5m', chipText: 'WAIT 5M' };
+    }
+    if (overdue > 0 || missing > 0 || ['stale', 'overdue', 'missing', 'offline', 'error', 'critical', 'rollup_lag'].includes(status)) {
+        return { color: '#ef4444', pct, chipClass: 'is-stale', stateText: '超时', chipText: formatFreshnessPercent(readyPct) };
+    }
+    if (['warn', 'warning', 'delayed', 'degraded', 'partial'].includes(status) || (Number.isFinite(readyPct) && readyPct < 95)) {
+        return { color: '#f59e0b', pct, chipClass: 'is-warn', stateText: '部分延迟', chipText: formatFreshnessPercent(readyPct) };
+    }
+    return { color: '#22c55e', pct: Number.isFinite(readyPct) ? pct : 100, chipClass: 'is-fresh', stateText: '正常', chipText: formatFreshnessPercent(readyPct) };
+}
+
+function getFreshnessExpectedLabel(item = {}) {
+    if (item?.expected_close_us) return String(item.expected_close_us);
+    if (item?.expected_close_ms) return formatTimeLabel(item.expected_close_ms);
+    return '--';
+}
+
+function renderFreshnessReasonPills(item = {}) {
+    const reasons = [
+        ['due', `${Number(item.due_symbols || 0) || 0}/${Number(item.total_symbols || 0) || 0}`],
+        ['ready', Number(item.ready || 0) || 0],
+        ['overdue', Number(item.overdue || 0) || 0],
+        ['missing', Number(item.missing || 0) || 0],
+        ['waiting5m', Number(item.waiting_5m || 0) || 0],
+        ['not due', Number(item.not_due || 0) || 0],
+        ['quiet', Number(item.quiet_extended || 0) || 0],
+    ];
+    return reasons
+        .filter(([, value], index) => index < 2 || Number(value || 0) > 0)
+        .map(([label, value]) => `<span class="freshness-reason"><strong>${escapeHtml(label)}</strong>${escapeHtml(String(value))}</span>`)
+        .join('');
+}
+
+function renderLegacyFreshness(data) {
     const byInterval = Array.isArray(data)
         ? data.reduce((acc, item) => {
-            if (item && item.interval) acc[item.interval] = item;
+            if (item && item.interval) acc[normalizeIbkrInterval(item.interval, item.interval)] = item;
             return acc;
         }, {})
-        : (data || {});
+        : normalizeFreshnessItems(data).reduce((acc, item) => {
+            if (item && item.interval) acc[item.interval] = item;
+            return acc;
+        }, {});
     if (!byInterval || Object.keys(byInterval).length === 0) {
-        el.innerHTML = '<div class="loading-text">暂无数据</div>';
-        return;
+        return '<div class="loading-text">暂无数据</div>';
     }
-    const tfs = ['5m', '15m', '30m', '1h', '4h', '1d'];
-    const cards = tfs.map((tf) => {
+
+    const cards = IBKR_FRESHNESS_INTERVALS.map((tf) => {
         const item = byInterval[tf];
         if (!item) {
             const freshnessVisual = getIbkrFreshnessVisualState(null);
@@ -336,7 +448,77 @@ function renderFreshness(data) {
             <div class="freshness-bar-bg"><div class="freshness-bar-fill" style="width:${freshnessVisual.pct}%;background:${freshnessVisual.color}"></div></div>
         </div>`;
     });
-    el.innerHTML = `<div class="freshness-grid">${cards.join('')}</div>`;
+    return `<div class="freshness-grid">${cards.join('')}</div>`;
+}
+
+function renderFreshness(data) {
+    const el = document.getElementById('freshnessArea');
+    const normalized = normalizeFreshnessPayload(data);
+    if (!normalized.aggregate) {
+        el.innerHTML = renderLegacyFreshness(data);
+        return;
+    }
+
+    const byInterval = normalized.intervals.reduce((acc, item) => {
+        if (item && item.interval) acc[item.interval] = item;
+        return acc;
+    }, {});
+    const overall = normalized.overall || {};
+    const overallVisual = getFreshnessAggregateVisual(overall);
+    const cards = IBKR_FRESHNESS_INTERVALS.map((tf) => {
+        const item = byInterval[tf] || normalizeFreshnessIntervalItem({ interval: tf }, tf);
+        const visual = getFreshnessAggregateVisual(item);
+        const expectedLabel = getFreshnessExpectedLabel(item);
+        const coverageLabel = formatFreshnessPercent(item.coverage_pct);
+        const sampleText = Array.isArray(item.sample_lag_symbols) && item.sample_lag_symbols.length
+            ? formatSymbolPreview(item.sample_lag_symbols, 5)
+            : '';
+
+        return `<div class="freshness-card ${visual.chipClass}">
+            <div class="freshness-card-head">
+                <span class="freshness-label">${escapeHtml(tf)}</span>
+                <span class="freshness-chip ${visual.chipClass}">${escapeHtml(visual.chipText)}</span>
+            </div>
+            <div class="freshness-meta">
+                <div class="freshness-meta-top">
+                    <span class="freshness-percent">${escapeHtml(formatFreshnessPercent(item.ready_pct))}</span>
+                    <span class="freshness-state" style="color:${visual.color}">${escapeHtml(visual.stateText)}</span>
+                </div>
+                <div class="freshness-time freshness-expected">应更新 ${escapeHtml(expectedLabel)}</div>
+                <div class="freshness-time">覆盖 ${escapeHtml(coverageLabel)}</div>
+            </div>
+            <div class="freshness-bar-bg"><div class="freshness-bar-fill" style="width:${visual.pct}%;background:${visual.color}"></div></div>
+            <div class="freshness-reasons">${renderFreshnessReasonPills(item)}</div>
+            ${sampleText ? `<div class="freshness-samples">异常样例 ${escapeHtml(sampleText)}</div>` : ''}
+        </div>`;
+    });
+
+    const overallDue = Number(overall.due_checks ?? overall.due_symbols ?? 0) || 0;
+    const overallTotal = Number(overall.total_checks ?? overall.total_symbols ?? 0) || 0;
+    const overallMeta = [
+        `due ${overallDue}/${overallTotal}`,
+        `ready ${Number(overall.ready || 0) || 0}`,
+        `overdue ${Number(overall.overdue || 0) || 0}`,
+        `missing ${Number(overall.missing || 0) || 0}`,
+        Number(overall.waiting_5m || 0) > 0 ? `waiting5m ${Number(overall.waiting_5m || 0)}` : '',
+        Number(overall.not_due || 0) > 0 ? `not due ${Number(overall.not_due || 0)}` : '',
+        Number(overall.quiet_extended || 0) > 0 ? `quiet ${Number(overall.quiet_extended || 0)}` : '',
+    ].filter(Boolean);
+
+    el.innerHTML = `<div class="freshness-overall ${overallVisual.chipClass}">
+            <div>
+                <div class="freshness-overall-kicker">Aggregate Freshness</div>
+                <div class="freshness-overall-title">
+                    <span>${escapeHtml(formatFreshnessPercent(overall.ready_pct))}</span>
+                    <span class="freshness-state" style="color:${overallVisual.color}">${escapeHtml(overallVisual.stateText)}</span>
+                </div>
+            </div>
+            <div class="freshness-overall-meta">
+                <span>coverage ${escapeHtml(formatFreshnessPercent(overall.coverage_pct))}</span>
+                ${overallMeta.map((item) => `<span>${escapeHtml(item)}</span>`).join('')}
+            </div>
+        </div>
+        <div class="freshness-grid">${cards.join('')}</div>`;
 }
 
 function formatStorageBytes(value) {

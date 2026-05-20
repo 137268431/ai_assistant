@@ -75,6 +75,8 @@ def build_system_summary_payload(*, globals_dict: dict[str, Any], support: Calla
             time_strings=globals_dict["_time_strings"],
             load_today_counts=globals_dict["_load_today_counts"],
             collect_storage_health=globals_dict.get("_collect_storage_health"),
+            pb_client=globals_dict.get("pb"),
+            config=globals_dict.get("config"),
         )
 
     return _build_system_summary_payload

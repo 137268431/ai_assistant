@@ -10,7 +10,6 @@ async function loadSystemData(showToastOnSuccess = false) {
         );
     }
     try {
-        const freshnessIntervals = ['5m', '15m', '30m', '1h', '4h', '1d'];
         const envFilterBase = `environment = "${escapeQueryValue(currentEnvironment)}"`;
         const coreTimeoutMs = isInitialLoad ? 15000 : 10000;
         const schedulerTimeoutMs = isInitialLoad ? 22000 : 18000;
@@ -84,16 +83,16 @@ async function loadSystemData(showToastOnSuccess = false) {
 
         const cronDefinitions = Array.isArray(cronResp?.items) ? cronResp.items : [];
         const coreCompute = buildSystemComputeSummary(computeHealth, computeStatus, summaryLite?.ibkr_compute || {});
-        const coreFreshnessItems = [];
+        const coreFreshnessPayload = summaryLite?.data_freshness || [];
         renderStatus(buildSystemHealthSnapshot(
             computeHealth,
             computeStatus,
-            coreFreshnessItems,
+            coreFreshnessPayload,
             summaryLite?.ibkr_compute || {},
             cronResp?.scheduler || {},
             { preserveIbkrData: true, loadingOnMissingIbkrData: true }
         ));
-        renderFreshness(coreFreshnessItems);
+        renderFreshness(coreFreshnessPayload);
         renderEngines(coreCompute);
         renderConfig(summaryLite || {}, cronDefinitions);
         renderSchedulerOverview(cronResp || {}, summaryLite || {});
@@ -125,7 +124,7 @@ async function loadSystemData(showToastOnSuccess = false) {
         const todayFilterBase = `created >= "${escapeQueryValue(todayStart)}" && ${envFilterBase}`;
         const targetDateFilter = `date = "${escapeQueryValue(todayDate)}" && ${envFilterBase}`;
 
-        const [eventsResp, signalCount, indicatorCount, orderCount, barCount, targetCount, eventCount, ...restResponses] = await Promise.all([
+        const [eventsResp, signalCount, indicatorCount, orderCount, barCount, targetCount, eventCount, backtestBatchResp, backtestRunsResp] = await Promise.all([
             safeApiFetch(secondaryErrors, 'system_events', 'system_events', { filter: envFilterBase, sort: '-created', perPage: 8 }, { items: [] }, secondaryTimeoutMs),
             safeCountFetch(secondaryErrors, 'count:ibkr_signals', 'ibkr_signals', todayFilterBase),
             safeCountFetch(secondaryErrors, 'count:ibkr_indicators', 'ibkr_indicators', todayFilterBase),
@@ -133,22 +132,12 @@ async function loadSystemData(showToastOnSuccess = false) {
             safeCountFetch(secondaryErrors, 'count:ibkr_bars', 'ibkr_bars', todayFilterBase),
             safeCountFetch(secondaryErrors, 'count:ibkr_targets', 'ibkr_targets', targetDateFilter),
             safeCountFetch(secondaryErrors, 'count:system_events', 'system_events', todayFilterBase),
-            ...freshnessIntervals.map((interval) =>
-                safeApiFetch(secondaryErrors, `freshness:${interval}`, 'ibkr_bars', {
-                    filter: `${envFilterBase} && interval = "${escapeQueryValue(interval)}"`,
-                    sort: '-bar_time_ms',
-                    perPage: 1
-                }, { items: [] }, secondaryTimeoutMs)
-            ),
             safeApiFetch(secondaryErrors, 'ibkr_backtest_batches', 'ibkr_backtest_batches', { filter: envFilterBase, sort: '-updated', perPage: 1 }, { items: [] }, secondaryTimeoutMs),
             safeApiFetch(secondaryErrors, 'ibkr_backtest_runs', 'ibkr_backtest_runs', { filter: envFilterBase, sort: '-updated', perPage: 2 }, { items: [] }, secondaryTimeoutMs)
         ]);
 
         if (loadId !== latestSystemLoadId) return;
 
-        const freshnessResponses = restResponses.slice(0, freshnessIntervals.length);
-        const backtestBatchResp = restResponses[freshnessIntervals.length] || {};
-        const backtestRunsResp = restResponses[freshnessIntervals.length + 1] || {};
         const summaryToday = summaryLite?.today && typeof summaryLite.today === 'object' ? summaryLite.today : {};
         const mainOrderCount = summaryToday.main_orders == null
             ? (summaryToday.order_groups == null ? orderCount : Number(summaryToday.order_groups || 0))
@@ -161,28 +150,18 @@ async function loadSystemData(showToastOnSuccess = false) {
             ibkr_targets: targetCount,
             events: eventCount,
         };
-        const freshnessItems = freshnessIntervals.map((interval, index) => {
-            const latest = Array.isArray(freshnessResponses[index]?.items) ? freshnessResponses[index].items[0] : null;
-            const lastBarTimeMs = Number(latest?.bar_time_ms || 0) || 0;
-            return {
-                interval,
-                last_bar_time_ms: lastBarTimeMs,
-                age_min: lastBarTimeMs ? Math.max(0, Math.round((Date.now() - lastBarTimeMs) / 60000)) : null,
-                symbol: latest?.symbol || ''
-            };
-        });
+        const freshnessPayload = summaryLite?.data_freshness || [];
 
-        const freshnessLoadHadErrors = secondaryErrors.some((item) => String(item || '').startsWith('freshness:'));
         renderStatus(buildSystemHealthSnapshot(
             computeHealth,
             computeStatus,
-            freshnessItems,
+            freshnessPayload,
             summaryLite?.ibkr_compute || {},
             cronResp?.scheduler || {},
-            { preserveIbkrData: freshnessLoadHadErrors }
+            { preserveIbkrData: !summaryLite?.data_freshness }
         ));
         renderTodayStats(todayStats);
-        renderFreshness(freshnessItems);
+        renderFreshness(freshnessPayload);
         renderEngines(buildSystemComputeSummary(computeHealth, computeStatus, summaryLite?.ibkr_compute || {}));
         renderConfig(summaryLite || {}, cronDefinitions);
         renderSchedulerOverview(cronResp || {}, summaryLite || {});

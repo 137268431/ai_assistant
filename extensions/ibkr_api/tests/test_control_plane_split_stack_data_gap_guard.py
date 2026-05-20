@@ -549,9 +549,9 @@ class ControlPlaneSplitStackDataGapGuardTest(unittest.TestCase):
         self.assertTrue(events)
         detail = events[0]["detail"]
         self.assertEqual(detail["指标周期"], "5m")
-        self.assertEqual(detail["指标滞后判定"], "缺当日5m指标 或 5m指标落后最新5m bar >30分钟")
+        self.assertEqual(detail["指标滞后判定"], "缺当日到期指标 或 指标 close 落后对应周期 bar close >30分钟")
         self.assertEqual(detail["指标最大滞后"], "35分钟")
-        self.assertIn("AU(active): 35分钟 09:10->09:45", detail["指标滞后明细"])
+        self.assertIn("AU(active/5m): 35分钟 09:15->09:50", detail["指标滞后明细"])
 
     def test_data_gap_guard_alerts_candidate_indicator_missing_with_reason(self):
         class FakeGapPB:
@@ -603,9 +603,222 @@ class ControlPlaneSplitStackDataGapGuardTest(unittest.TestCase):
         self.assertIn("candidate", payload["summary"]["indicator_lag_reason_hint"])
         self.assertTrue(events)
         detail = events[0]["detail"]
-        self.assertEqual(detail["指标最大滞后"], "缺当日5m指标 1")
-        self.assertIn("AAPL(candidate): 缺当日5m指标，bar 09:45", detail["指标滞后明细"])
+        self.assertEqual(detail["指标最大滞后"], "缺当日到期指标 1")
+        self.assertIn("AAPL(candidate/5m): 缺当日指标，bar close 09:50", detail["指标滞后明细"])
         self.assertIn("candidate", detail["排查提示"])
+
+    def test_data_gap_guard_uses_extra_close_time_for_indicator_lag(self):
+        class FakeGapPB:
+            def __init__(self):
+                self.states = {}
+
+            def get_state(self, state_key, environment, date="global"):
+                return self.states.get((state_key, environment, date))
+
+            def upsert_state(self, state_key, environment, data, date="global"):
+                self.states[(state_key, environment, date)] = {"data": dict(data)}
+                return self.states[(state_key, environment, date)]
+
+            def get_records(self, collection, filter=None, sort=None, per_page=200, page=1):
+                if collection == "watchlist":
+                    return []
+                if collection == "ibkr_targets":
+                    return [{"symbol": "AU", "status": "active"}]
+                if collection == "ibkr_bars":
+                    return [
+                        {
+                            "environment": "live",
+                            "symbol": "AU",
+                            "interval": "5m",
+                            "bar_time_ms": 1776951900000,
+                            "us_time": "2026-04-23 09:45:00",
+                            "session_type": "regular",
+                            "extra": {
+                                "bar_close_time_ms": 1776952200000,
+                                "bar_close_us_time": "2026-04-23 09:50:00",
+                            },
+                        },
+                    ]
+                if collection == "ibkr_indicators":
+                    return [
+                        {
+                            "environment": "live",
+                            "symbol": "AU",
+                            "interval": "5",
+                            "bar_time_ms": 1776949800000,
+                            "us_time": "2026-04-23 09:10:00",
+                            "session_type": "regular",
+                            "extra": '{"bar_close_time_ms":1776950700000,"bar_close_us_time":"2026-04-23 09:25:00"}',
+                        }
+                    ]
+                return []
+
+        events = []
+        payload, status_code = build_data_gap_guard_response(
+            FakeGapPB(),
+            payload={"environment": "live"},
+            normalize_environment=lambda value, default="live": str(value or default),
+            time_strings=lambda: {"us": "2026-04-23 09:50:00", "cn": "2026-04-23 21:50:00", "date": "2026-04-23"},
+            emit_system_event=lambda **kwargs: events.append(kwargs) or {"ok": True, "notified": True},
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertFalse(payload["summary"]["has_issue"])
+        self.assertEqual(payload["summary"]["indicator_lag_symbols"], [])
+        self.assertEqual(payload["summary"]["latest_bar_us_time"], "2026-04-23 09:50:00")
+        self.assertFalse(events)
+
+    def test_data_gap_guard_high_interval_waits_for_5m_before_alerting(self):
+        class FakeGapPB:
+            def __init__(self):
+                self.states = {}
+
+            def get_state(self, state_key, environment, date="global"):
+                return self.states.get((state_key, environment, date))
+
+            def upsert_state(self, state_key, environment, data, date="global"):
+                self.states[(state_key, environment, date)] = {"data": dict(data)}
+                return self.states[(state_key, environment, date)]
+
+            def get_records(self, collection, filter=None, sort=None, per_page=200, page=1):
+                filter_text = str(filter or "")
+                if collection == "watchlist":
+                    return []
+                if collection == "ibkr_targets":
+                    return [{"symbol": "AAPL", "status": "active"}]
+                if collection == "ibkr_bars" and 'interval = "5m"' in filter_text:
+                    return [
+                        {
+                            "environment": "live",
+                            "symbol": "AAPL",
+                            "interval": "5m",
+                            "bar_time_ms": 1776951300000,
+                            "us_time": "2026-04-23 09:35:00",
+                            "session_type": "regular",
+                            "extra": {"bar_close_time_ms": 1776951600000, "bar_close_us_time": "2026-04-23 09:40:00"},
+                        }
+                    ]
+                if collection == "ibkr_bars" and 'interval = "15m"' in filter_text:
+                    return [
+                        {
+                            "environment": "live",
+                            "symbol": "AAPL",
+                            "interval": "15m",
+                            "bar_time_ms": 1776950100000,
+                            "us_time": "2026-04-23 09:15:00",
+                            "session_type": "regular",
+                            "extra": {"bar_close_time_ms": 1776951000000, "bar_close_us_time": "2026-04-23 09:30:00"},
+                        }
+                    ]
+                if collection == "ibkr_indicators" and ('interval = "5"' in filter_text or 'interval = "5m"' in filter_text):
+                    return [
+                        {
+                            "environment": "live",
+                            "symbol": "AAPL",
+                            "interval": "5",
+                            "bar_time_ms": 1776951300000,
+                            "us_time": "2026-04-23 09:35:00",
+                            "session_type": "regular",
+                            "extra": {"bar_close_time_ms": 1776951600000, "bar_close_us_time": "2026-04-23 09:40:00"},
+                        }
+                    ]
+                return []
+
+        events = []
+        payload, status_code = build_data_gap_guard_response(
+            FakeGapPB(),
+            payload={"environment": "live"},
+            normalize_environment=lambda value, default="live": str(value or default),
+            time_strings=lambda: {"us": "2026-04-23 09:50:00", "cn": "2026-04-23 21:50:00", "date": "2026-04-23"},
+            emit_system_event=lambda **kwargs: events.append(kwargs) or {"ok": True, "notified": True},
+            config_value=lambda key, default, environment: {
+                "system_data_gap_intervals": "5m,15m",
+                "system_data_gap_bar_lag_alert_min": "1",
+            }.get(key, default),
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertFalse(payload["summary"]["has_issue"])
+        self.assertTrue(payload["summary"]["interval_summaries"]["15m"]["waiting_5m"])
+        self.assertEqual(payload["summary"]["bar_lag_symbols"], [])
+        self.assertFalse(events)
+
+    def test_data_gap_guard_alerts_high_interval_after_5m_boundary_matures(self):
+        class FakeGapPB:
+            def __init__(self):
+                self.states = {}
+
+            def get_state(self, state_key, environment, date="global"):
+                return self.states.get((state_key, environment, date))
+
+            def upsert_state(self, state_key, environment, data, date="global"):
+                self.states[(state_key, environment, date)] = {"data": dict(data)}
+                return self.states[(state_key, environment, date)]
+
+            def get_records(self, collection, filter=None, sort=None, per_page=200, page=1):
+                filter_text = str(filter or "")
+                if collection == "watchlist":
+                    return []
+                if collection == "ibkr_targets":
+                    return [{"symbol": "AAPL", "status": "active"}]
+                if collection == "ibkr_bars" and 'interval = "5m"' in filter_text:
+                    return [
+                        {
+                            "environment": "live",
+                            "symbol": "AAPL",
+                            "interval": "5m",
+                            "bar_time_ms": 1776951900000,
+                            "us_time": "2026-04-23 09:45:00",
+                            "session_type": "regular",
+                            "extra": {"bar_close_time_ms": 1776952200000, "bar_close_us_time": "2026-04-23 09:50:00"},
+                        }
+                    ]
+                if collection == "ibkr_bars" and 'interval = "15m"' in filter_text:
+                    return [
+                        {
+                            "environment": "live",
+                            "symbol": "AAPL",
+                            "interval": "15m",
+                            "bar_time_ms": 1776950100000,
+                            "us_time": "2026-04-23 09:15:00",
+                            "session_type": "regular",
+                            "extra": {"bar_close_time_ms": 1776951000000, "bar_close_us_time": "2026-04-23 09:30:00"},
+                        }
+                    ]
+                if collection == "ibkr_indicators" and ('interval = "5"' in filter_text or 'interval = "5m"' in filter_text):
+                    return [
+                        {
+                            "environment": "live",
+                            "symbol": "AAPL",
+                            "interval": "5",
+                            "bar_time_ms": 1776951900000,
+                            "us_time": "2026-04-23 09:45:00",
+                            "session_type": "regular",
+                            "extra": {"bar_close_time_ms": 1776952200000, "bar_close_us_time": "2026-04-23 09:50:00"},
+                        }
+                    ]
+                return []
+
+        events = []
+        payload, status_code = build_data_gap_guard_response(
+            FakeGapPB(),
+            payload={"environment": "live"},
+            normalize_environment=lambda value, default="live": str(value or default),
+            time_strings=lambda: {"us": "2026-04-23 09:50:00", "cn": "2026-04-23 21:50:00", "date": "2026-04-23"},
+            emit_system_event=lambda **kwargs: events.append(kwargs) or {"ok": True, "notified": True},
+            config_value=lambda key, default, environment: {
+                "system_data_gap_intervals": "5m,15m",
+                "system_data_gap_bar_lag_alert_min": "1",
+            }.get(key, default),
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["summary"]["has_issue"])
+        self.assertEqual(payload["summary"]["bar_lag_symbols"], ["AAPL"])
+        self.assertEqual(payload["summary"]["bar_lag_intervals"], ["15m"])
+        self.assertEqual(payload["summary"]["interval_summaries"]["15m"]["expected_close_us_time"], "2026-04-23 09:45:00")
+        self.assertTrue(events)
+        self.assertEqual(events[0]["detail"]["bars异常周期"], "15m")
 
 
 if __name__ == "__main__":

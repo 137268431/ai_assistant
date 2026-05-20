@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from ibkr_compute.core.broker_mode import configured_broker_mode, normalize_broker_mode, resolve_data_environment
+from ibkr_compute.market.freshness_evaluator import build_data_freshness_summary
 from ibkr_api.system.service_state import build_service_monitor_from_topology
 
 NormalizeEnvironment = Callable[[Any, str], str]
@@ -85,6 +86,8 @@ def build_system_summary_payload(
     time_strings: TimeStrings,
     load_today_counts: LoadTodayCounts,
     collect_storage_health: CollectStorageHealth | None = None,
+    pb_client: Any | None = None,
+    config: Any | None = None,
 ) -> dict[str, Any]:
     runtime_environment = normalize_broker_mode(environment, configured_broker_mode())
     data_environment = resolve_data_environment(runtime_environment)
@@ -183,6 +186,38 @@ def build_system_summary_payload(
                     }
                 ],
             }
+    try:
+        data_freshness = build_data_freshness_summary(
+            pb_client=pb_client,
+            runtime_payload=runtime_payload,
+            environment=data_environment,
+            market_date=market_date,
+            config=config,
+            now_us=str(times.get("us") or ""),
+        )
+    except Exception as exc:
+        data_freshness = {
+            "ok": False,
+            "status": "unavailable",
+            "environment": data_environment,
+            "market_date": market_date,
+            "error": str(exc),
+            "overall": {
+                "status": "unavailable",
+                "ready_pct": 0.0,
+                "coverage_pct": 0.0,
+                "total_checks": 0,
+                "due_checks": 0,
+                "ready": 0,
+                "overdue": 0,
+                "missing": 0,
+                "waiting_5m": 0,
+                "not_due": 0,
+                "quiet_extended": 0,
+            },
+            "intervals": [],
+            "source": "ibkr-api",
+        }
     ok = bool(compute_summary.get("ok")) and (bool(runtime_summary.get("ok")) or not runtime_payload)
     degraded = bool(compute_summary.get("ok")) or bool(runtime_summary.get("ok")) or bool(runtime_payload)
     payload = {
@@ -209,7 +244,7 @@ def build_system_summary_payload(
         "service_monitor": service_monitor,
         "storage_health": storage_health,
         "recent_events": load_recent_system_events(runtime_environment, 20),
-        "data_freshness": [],
+        "data_freshness": data_freshness,
         "lite_mode": bool(lite_mode),
         "source": "ibkr-api",
     }

@@ -514,6 +514,70 @@
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 12px;
 }
+.freshness-overall {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    min-width: 0;
+    margin-bottom: 12px;
+    padding: 14px;
+    border-radius: 16px;
+    background: linear-gradient(135deg, rgba(15,23,42,0.96), rgba(8,13,24,0.98));
+    border: 1px solid rgba(255,255,255,0.08);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+}
+.freshness-overall.is-fresh {
+    border-color: rgba(34,197,94,0.2);
+    background: linear-gradient(135deg, rgba(14,46,34,0.92), rgba(8,13,24,0.98));
+}
+.freshness-overall.is-warn {
+    border-color: rgba(245,158,11,0.22);
+    background: linear-gradient(135deg, rgba(50,32,14,0.94), rgba(8,13,24,0.98));
+}
+.freshness-overall.is-stale {
+    border-color: rgba(239,68,68,0.24);
+    background: linear-gradient(135deg, rgba(50,18,24,0.94), rgba(8,13,24,0.98));
+}
+.freshness-overall.is-idle {
+    border-color: rgba(56,189,248,0.18);
+    background: linear-gradient(135deg, rgba(12,33,48,0.92), rgba(8,13,24,0.98));
+}
+.freshness-overall-kicker {
+    color: var(--muted);
+    font-size: 9px;
+    font-family: 'JetBrains Mono', monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 4px;
+}
+.freshness-overall-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--text);
+    font-size: 24px;
+    font-weight: 800;
+    line-height: 1;
+}
+.freshness-overall-meta {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+    min-width: 0;
+    color: var(--muted);
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+}
+.freshness-overall-meta span {
+    display: inline-flex;
+    align-items: center;
+    padding: 5px 8px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.06);
+}
 .freshness-card {
     display: grid;
     gap: 10px;
@@ -538,6 +602,10 @@
 .freshness-card.is-stale {
     border-color: rgba(239,68,68,0.2);
     background: linear-gradient(180deg, rgba(46,20,24,0.92), rgba(10,16,28,0.98));
+}
+.freshness-card.is-idle {
+    border-color: rgba(56,189,248,0.16);
+    background: linear-gradient(180deg, rgba(12,33,48,0.9), rgba(10,16,28,0.98));
 }
 .freshness-card-head {
     display: flex;
@@ -583,6 +651,11 @@
 .freshness-chip.is-empty {
     color: var(--muted);
     background: rgba(255,255,255,0.04);
+}
+.freshness-chip.is-idle {
+    color: #38bdf8;
+    border-color: rgba(56,189,248,0.24);
+    background: rgba(56,189,248,0.1);
 }
 .freshness-meta {
     display: grid;
@@ -639,6 +712,18 @@
     border-color: rgba(239,68,68,0.24);
     background: rgba(239,68,68,0.12);
 }
+.freshness-card.is-idle .freshness-state {
+    color: #38bdf8;
+    border-color: rgba(56,189,248,0.22);
+    background: rgba(56,189,248,0.1);
+}
+.freshness-percent {
+    color: var(--text);
+    font-size: 22px;
+    font-weight: 800;
+    line-height: 1;
+    letter-spacing: -0.03em;
+}
 .freshness-link {
     color: var(--accent);
     text-decoration: none;
@@ -654,6 +739,39 @@
 }
 .freshness-time {
     color: var(--muted);
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    line-height: 1.45;
+    word-break: break-word;
+}
+.freshness-expected {
+    color: var(--text-muted, var(--muted));
+}
+.freshness-reasons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    min-width: 0;
+}
+.freshness-reason {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 7px;
+    border-radius: 8px;
+    background: rgba(255,255,255,0.045);
+    border: 1px solid rgba(255,255,255,0.055);
+    color: var(--muted);
+    font-size: 9px;
+    font-family: 'JetBrains Mono', monospace;
+    line-height: 1;
+}
+.freshness-reason strong {
+    color: var(--text);
+    font-weight: 700;
+}
+.freshness-samples {
+    color: #fca5a5;
     font-size: 10px;
     font-family: 'JetBrains Mono', monospace;
     line-height: 1.45;
@@ -1293,6 +1411,13 @@
 }
 
 @media (max-width: 720px) {
+    .freshness-overall {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+    .freshness-overall-meta {
+        justify-content: flex-start;
+    }
     .backtest-grid {
         grid-template-columns: 1fr;
     }

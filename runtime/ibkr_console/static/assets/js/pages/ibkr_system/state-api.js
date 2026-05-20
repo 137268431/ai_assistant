@@ -164,24 +164,166 @@ function buildStartupPreloadDetail(preload) {
     return envLines.join(' | ');
 }
 
-function normalizeFreshnessItems(freshnessPayload = []) {
+const IBKR_FRESHNESS_INTERVALS = ['5m', '15m', '30m', '1h', '4h', '1d'];
+const IBKR_FRESHNESS_COUNT_KEYS = [
+    'total_symbols',
+    'due_symbols',
+    'total_checks',
+    'due_checks',
+    'ready',
+    'overdue',
+    'missing',
+    'waiting_5m',
+    'not_due',
+    'quiet_extended',
+];
+
+function normalizeFreshnessNumber(value, fallback = 0) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function normalizeFreshnessPercent(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return null;
+    return Math.max(0, Math.min(100, numeric));
+}
+
+function normalizeFreshnessSamples(values) {
+    if (!Array.isArray(values)) return [];
+    const seen = new Set();
+    const samples = [];
+    values.forEach((item) => {
+        const symbol = typeof item === 'object' && item !== null
+            ? String(item.symbol || item.ticker || item.name || '').trim().toUpperCase()
+            : String(item || '').trim().toUpperCase();
+        if (!symbol || seen.has(symbol)) return;
+        seen.add(symbol);
+        samples.push(symbol);
+    });
+    return samples;
+}
+
+function normalizeFreshnessIntervalItem(item = {}, intervalFallback = '') {
+    const source = item && typeof item === 'object' ? item : {};
+    const normalized = {
+        ...source,
+        interval: normalizeIbkrInterval(source.interval || intervalFallback, intervalFallback),
+        status: String(source.status || '').trim().toLowerCase(),
+        ready_pct: normalizeFreshnessPercent(source.ready_pct),
+        coverage_pct: normalizeFreshnessPercent(source.coverage_pct),
+        expected_close_ms: normalizeFreshnessNumber(source.expected_close_ms, 0) || 0,
+        expected_close_us: String(source.expected_close_us || '').trim(),
+        sample_lag_symbols: normalizeFreshnessSamples(source.sample_lag_symbols),
+        last_bar_time_ms: normalizeFreshnessNumber(source.last_bar_time_ms, 0) || 0,
+        age_min: Number.isFinite(Number(source.age_min)) ? Number(source.age_min) : null,
+        symbol: source.symbol || '',
+    };
+    IBKR_FRESHNESS_COUNT_KEYS.forEach((key) => {
+        normalized[key] = Math.max(0, Math.round(normalizeFreshnessNumber(source[key], 0)));
+    });
+    normalized.has_aggregate_counts = IBKR_FRESHNESS_COUNT_KEYS.some((key) => source[key] != null)
+        || source.ready_pct != null
+        || source.coverage_pct != null
+        || source.expected_close_ms != null
+        || source.expected_close_us != null
+        || source.status != null;
+    return normalized;
+}
+
+function normalizeFreshnessOverall(overall = {}) {
+    const source = overall && typeof overall === 'object' ? overall : {};
+    const normalized = {
+        ...source,
+        status: String(source.status || '').trim().toLowerCase(),
+        ready_pct: normalizeFreshnessPercent(source.ready_pct),
+        coverage_pct: normalizeFreshnessPercent(source.coverage_pct),
+        expected_close_ms: normalizeFreshnessNumber(source.expected_close_ms, 0) || 0,
+        expected_close_us: String(source.expected_close_us || '').trim(),
+        checked_at_ms: normalizeFreshnessNumber(source.checked_at_ms, 0) || 0,
+        sample_lag_symbols: normalizeFreshnessSamples(source.sample_lag_symbols),
+    };
+    IBKR_FRESHNESS_COUNT_KEYS.forEach((key) => {
+        normalized[key] = Math.max(0, Math.round(normalizeFreshnessNumber(source[key], 0)));
+    });
+    if (source.total_checks == null) normalized.total_checks = normalized.total_symbols;
+    if (source.due_checks == null) normalized.due_checks = normalized.due_symbols;
+    normalized.has_aggregate_counts = IBKR_FRESHNESS_COUNT_KEYS.some((key) => source[key] != null)
+        || source.ready_pct != null
+        || source.coverage_pct != null
+        || source.status != null;
+    return normalized;
+}
+
+function aggregateFreshnessIntervals(intervals = []) {
+    const overall = normalizeFreshnessOverall({});
+    if (!Array.isArray(intervals) || !intervals.length) return overall;
+    intervals.forEach((item) => {
+        IBKR_FRESHNESS_COUNT_KEYS.forEach((key) => {
+            overall[key] += Math.max(0, Math.round(normalizeFreshnessNumber(item?.[key], 0)));
+        });
+    });
+    if (!overall.total_checks) overall.total_checks = overall.total_symbols;
+    if (!overall.due_checks) overall.due_checks = overall.due_symbols;
+    if (overall.due_symbols > 0) {
+        overall.ready_pct = Math.round((overall.ready / overall.due_symbols) * 1000) / 10;
+    } else {
+        const readyPctValues = intervals
+            .map((item) => item?.ready_pct)
+            .filter((value) => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)));
+        overall.ready_pct = readyPctValues.length
+            ? Math.round((readyPctValues.reduce((sum, value) => sum + Number(value), 0) / readyPctValues.length) * 10) / 10
+            : null;
+    }
+    if (overall.total_symbols > 0) {
+        overall.coverage_pct = Math.round((overall.due_symbols / overall.total_symbols) * 1000) / 10;
+    }
+    overall.has_aggregate_counts = intervals.some((item) => item?.has_aggregate_counts);
+    return overall;
+}
+
+function normalizeFreshnessPayload(freshnessPayload = []) {
     if (Array.isArray(freshnessPayload)) {
-        return freshnessPayload
+        const intervals = freshnessPayload
             .filter((item) => item && item.interval)
-            .map((item) => ({
-                ...item,
-                interval: normalizeIbkrInterval(item.interval, item.interval),
-            }));
+            .map((item) => normalizeFreshnessIntervalItem(item, item.interval));
+        return {
+            overall: aggregateFreshnessIntervals(intervals),
+            intervals,
+            aggregate: intervals.some((item) => item.has_aggregate_counts),
+        };
     }
     if (!freshnessPayload || typeof freshnessPayload !== 'object') {
-        return [];
+        return { overall: normalizeFreshnessOverall({}), intervals: [], aggregate: false };
     }
-    return Object.entries(freshnessPayload).map(([interval, item]) => ({
-        interval: normalizeIbkrInterval(interval, interval),
-        last_bar_time_ms: Number(item?.last_bar_time_ms || 0) || 0,
-        age_min: Number.isFinite(Number(item?.age_min)) ? Number(item.age_min) : null,
-        symbol: item?.symbol || '',
-    }));
+
+    let intervalEntries = [];
+    if (Array.isArray(freshnessPayload.intervals)) {
+        intervalEntries = freshnessPayload.intervals.map((item) => [item?.interval, item]);
+    } else if (freshnessPayload.intervals && typeof freshnessPayload.intervals === 'object') {
+        intervalEntries = Object.entries(freshnessPayload.intervals);
+    } else {
+        intervalEntries = Object.entries(freshnessPayload)
+            .filter(([key]) => !['overall', 'thresholds', 'checked_at_ms'].includes(String(key || '').toLowerCase()));
+    }
+
+    const intervals = intervalEntries
+        .map(([interval, item]) => normalizeFreshnessIntervalItem(item, interval))
+        .filter((item) => item.interval);
+    let overall = normalizeFreshnessOverall(freshnessPayload.overall || {});
+    if (!overall.has_aggregate_counts && intervals.some((item) => item.has_aggregate_counts)) {
+        overall = aggregateFreshnessIntervals(intervals);
+    }
+    const aggregate = Boolean(freshnessPayload.overall || freshnessPayload.intervals)
+        || overall.has_aggregate_counts
+        || intervals.some((item) => item.has_aggregate_counts);
+
+    return { overall, intervals, aggregate };
+}
+
+function normalizeFreshnessItems(freshnessPayload = []) {
+    return normalizeFreshnessPayload(freshnessPayload).intervals;
 }
 
 function getUsClockParts(date = new Date()) {
@@ -284,14 +426,70 @@ function buildRuntimeBarDataHealth(runtime = {}, latest5m = null) {
     };
 }
 
+function getDataHealthStatusFromFreshness(overall = {}) {
+    const status = String(overall?.status || '').trim().toLowerCase();
+    if (['ready', 'fresh', 'ok', 'online', 'healthy', 'not_due', 'quiet_extended', 'closed_session'].includes(status)) {
+        return 'online';
+    }
+    if (['warn', 'warning', 'delayed', 'degraded', 'partial', 'waiting_5m'].includes(status)) {
+        return 'delayed';
+    }
+    if (['stale', 'overdue', 'missing', 'offline', 'error', 'critical', 'rollup_lag'].includes(status)) {
+        return 'offline';
+    }
+
+    const readyPct = normalizeFreshnessPercent(overall?.ready_pct);
+    if (readyPct == null) return 'unknown';
+    if (readyPct >= 95) return 'online';
+    if (readyPct >= 80) return 'delayed';
+    return 'offline';
+}
+
+function buildIbkrDataHealthFromFreshness(freshnessPayload = {}) {
+    const normalized = normalizeFreshnessPayload(freshnessPayload);
+    if (!normalized.aggregate) return null;
+    const overall = normalized.overall || {};
+    const sampleSymbols = normalizeFreshnessSamples(overall.sample_lag_symbols);
+    const readyPct = normalizeFreshnessPercent(overall.ready_pct);
+    const coveragePct = normalizeFreshnessPercent(overall.coverage_pct);
+    const dataHealth = {
+        status: getDataHealthStatusFromFreshness(overall),
+        freshness_aggregate: true,
+        freshness_status: String(overall.status || '').trim().toLowerCase(),
+        ready_pct: readyPct,
+        coverage_pct: coveragePct,
+        total_symbols: Math.max(0, Math.round(normalizeFreshnessNumber(overall.total_symbols, 0))),
+        due_symbols: Math.max(0, Math.round(normalizeFreshnessNumber(overall.due_symbols, 0))),
+        total_checks: Math.max(0, Math.round(normalizeFreshnessNumber(overall.total_checks, overall.total_symbols || 0))),
+        due_checks: Math.max(0, Math.round(normalizeFreshnessNumber(overall.due_checks, overall.due_symbols || 0))),
+        ready: Math.max(0, Math.round(normalizeFreshnessNumber(overall.ready, 0))),
+        overdue: Math.max(0, Math.round(normalizeFreshnessNumber(overall.overdue, 0))),
+        missing: Math.max(0, Math.round(normalizeFreshnessNumber(overall.missing, 0))),
+        waiting_5m: Math.max(0, Math.round(normalizeFreshnessNumber(overall.waiting_5m, 0))),
+        not_due: Math.max(0, Math.round(normalizeFreshnessNumber(overall.not_due, 0))),
+        quiet_extended: Math.max(0, Math.round(normalizeFreshnessNumber(overall.quiet_extended, 0))),
+        expected_close_ms: normalizeFreshnessNumber(overall.expected_close_ms, 0) || 0,
+        expected_close_us: String(overall.expected_close_us || '').trim(),
+        checked_at_ms: normalizeFreshnessNumber(overall.checked_at_ms, 0) || 0,
+        sample_lag_symbols: sampleSymbols,
+    };
+    if (!dataHealth.total_symbols && !dataHealth.due_symbols && !normalized.intervals.length) {
+        dataHealth.status = 'unknown';
+    }
+    return dataHealth;
+}
+
 function buildSystemHealthSnapshot(healthPayload = {}, statusPayload = {}, freshnessItems = [], fallbackCompute = {}, schedulerPayload = {}, options = {}) {
     const runtime = statusPayload?.runtime || healthPayload?.runtime || {};
     const compute = buildSystemComputeSummary(healthPayload, statusPayload, fallbackCompute);
     const freshnessList = normalizeFreshnessItems(freshnessItems);
     const latest5m = freshnessList.find((item) => item && item.interval === '5m' && Number(item.last_bar_time_ms || 0) > 0);
+    const aggregateDataHealth = buildIbkrDataHealthFromFreshness(freshnessItems);
 
     let dataHealth = healthPayload?.ibkr_data || {};
-    if (latest5m) {
+    if (aggregateDataHealth) {
+        dataHealth = aggregateDataHealth;
+    } else if (latest5m) {
         dataHealth = buildIbkrDataHealth(latest5m.last_bar_time_ms, {
             symbol: latest5m.symbol || '',
             noDataStatus: 'unknown'
@@ -305,7 +503,7 @@ function buildSystemHealthSnapshot(healthPayload = {}, statusPayload = {}, fresh
     } else if (!dataHealth || !dataHealth.status) {
         dataHealth = { status: 'unknown' };
     }
-    const runtimeBarDataHealth = buildRuntimeBarDataHealth(runtime, latest5m);
+    const runtimeBarDataHealth = aggregateDataHealth ? null : buildRuntimeBarDataHealth(runtime, latest5m);
     if (runtimeBarDataHealth) {
         dataHealth = {
             ...dataHealth,

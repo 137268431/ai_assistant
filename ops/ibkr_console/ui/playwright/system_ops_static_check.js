@@ -145,6 +145,11 @@ assert(/\.overview-columns\s*\{[^}]*padding:\s*0 0 10px;/.test(systemCss), 'syst
 assert(systemJs.includes('ops-summary-link') && systemJs.includes('/ibkr_monitor.html'), 'system_summary_missing_monitor_link');
 assert(includesAll(systemJs, ["'ibkr-backtest'", 'Backtest Service', 'backtestIdle', 'IB client', 'IB Clients']), 'system_summary_missing_backtest_idle_or_client_copy');
 assert(includesAll(systemJs, ['lastStableIbkrDataHealth', 'preserveIbkrData', 'loadingOnMissingIbkrData', "status: 'loading'"]), 'system_missing_ibkr_data_stable_cache');
+assert(systemJs.includes('summaryLite?.data_freshness'), 'system_freshness_not_using_summary_lite_payload');
+assert(includesAll(systemJs, ['ready_pct', 'coverage_pct', 'waiting_5m', 'not_due', 'quiet_extended', 'sample_lag_symbols']), 'system_freshness_missing_aggregate_fields');
+assert(!systemJs.includes('freshnessIntervals.map'), 'system_freshness_still_fetches_interval_rows');
+assert(!systemJs.includes('freshness:'), 'system_freshness_still_has_pb_fetch_labels');
+assert(includesAll(systemJs, ['freshness-overall', 'freshness-reasons', '应更新', '异常样例']), 'system_freshness_missing_aggregate_rendering');
 
 const screenerCss = readStatic('assets/css/pages/ibkr_screener/page.css');
 assert(!/screener-domain-bridge[\s\S]{0,240}page-bridge-copy[\s\S]{0,80}display:\s*none/.test(screenerCss), 'screener_bridge_copy_hidden');
@@ -203,4 +208,4 @@ if (issues.length) {
   process.exit(1);
 }
 
-console.log(JSON.stringify({ ok: true, checks: 48, staticRoot }, null, 2));
+console.log(JSON.stringify({ ok: true, checks: 53, staticRoot }, null, 2));
