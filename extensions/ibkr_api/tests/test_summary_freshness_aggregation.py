@@ -7,7 +7,8 @@ from unittest import mock
 
 from control_plane_split_stack_helpers import *
 from ibkr_compute.core.time_utils import ET
-from ibkr_compute.market.freshness_evaluator import build_data_freshness_summary
+from ibkr_compute.market.freshness_evaluator import build_data_freshness_summary, extract_bar_close_time_ms
+from ibkr_compute.market.timeframe_utils import build_bar_close_timestamps
 
 
 def _ms(us_time: str) -> int:
@@ -125,14 +126,39 @@ class SummaryFreshnessAggregationTest(unittest.TestCase):
 
         freshness = payload["data_freshness"]
         intervals = {item["interval"]: item for item in freshness["intervals"]}
+        scopes = freshness["scopes"]
         self.assertEqual(freshness["universe_source"], "runtime_market_universe")
         self.assertEqual(freshness["total_symbols"], 2)
+        self.assertEqual(freshness["primary_scope"], "active_trading")
+        self.assertEqual(freshness["display_overall"]["total_checks"], 10)
+        self.assertEqual(scopes["realtime_5m"]["overall"]["ready"], 2)
+        self.assertEqual(scopes["active_higher_timeframes"]["overall"]["overdue"], 1)
         self.assertEqual(intervals["15m"]["expected_close_us"], "2026-05-19 10:15:00")
         self.assertEqual(intervals["15m"]["ready"], 1)
         self.assertEqual(intervals["15m"]["overdue"], 1)
         self.assertEqual(intervals["15m"]["status"], "overdue")
         self.assertEqual(intervals["1d"]["expected_close_us"], "2026-05-18 16:00:00")
         self.assertEqual(intervals["1d"]["not_due"], 2)
+
+    def test_daily_close_timestamp_uses_regular_close_not_next_midnight(self):
+        start_ms = _ms("2026-05-15 00:00:00")
+        row = {
+            "symbol": "AAPL",
+            "interval": "1d",
+            "bar_time_ms": start_ms,
+            "extra": json.dumps(
+                {
+                    "bar_close_time_ms": _ms("2026-05-16 00:00:00"),
+                    "bar_close_us_time": "2026-05-16 00:00:00",
+                }
+            ),
+        }
+
+        self.assertEqual(extract_bar_close_time_ms(row, "1d"), _ms("2026-05-15 16:00:00"))
+        self.assertEqual(
+            build_bar_close_timestamps(start_ms, "1d")["bar_close_us_time"],
+            "2026-05-15 16:00:00",
+        )
 
     def test_high_interval_waits_for_missing_5m_boundary(self):
         bars = [

@@ -373,6 +373,7 @@ class Official5mCloseFlushTest(unittest.TestCase):
         )
         return SimpleNamespace(
             ENVIRONMENT="live",
+            DATA_ENVIRONMENT="live",
             logger=logger,
             DEFAULT_RUNTIME_DIRECT_TOPUP_INTERVALS=("15m", "30m", "1h", "4h", "1d"),
             DEFAULT_RUNTIME_DIRECT_TOPUP_CLOSE_DELAY_SECONDS=30,
@@ -867,7 +868,7 @@ class Official5mCloseFlushTest(unittest.TestCase):
         state = pipeline._copy_direct_topup_state()
         self.assertEqual(state["last_error"], "canonical_5m_not_current")
 
-    def test_runtime_direct_topup_yields_when_watchlist_5m_is_pending(self):
+    def test_runtime_direct_topup_can_yield_when_watchlist_5m_guard_is_enabled(self):
         due_5m_ms = int(datetime(2026, 4, 17, 10, 45, tzinfo=ET).timestamp() * 1000)
         due_15m_ms = int(datetime(2026, 4, 17, 10, 30, tzinfo=ET).timestamp() * 1000)
         writer = _FakeWriter()
@@ -885,7 +886,12 @@ class Official5mCloseFlushTest(unittest.TestCase):
                 "unobserved": 0,
             },
         )
-        pipeline.config = _FakeConfig({"ibkr_runtime_direct_topup_enabled": "true"})
+        pipeline.config = _FakeConfig(
+            {
+                "ibkr_runtime_direct_topup_enabled": "true",
+                "ibkr_runtime_direct_topup_wait_for_watchlist_5m_enabled": "true",
+            }
+        )
         pipeline._direct_topup_due_ms = due_15m_ms
 
         with mock.patch("ibkr_compute.orchestration.runtime_pipeline._service_mod", return_value=self._service_mod()):
@@ -895,6 +901,43 @@ class Official5mCloseFlushTest(unittest.TestCase):
         self.assertEqual(pipeline.compute_triggers, [])
         state = pipeline._copy_direct_topup_state()
         self.assertEqual(state["last_error"], "watchlist_5m_pending")
+
+    def test_runtime_direct_topup_does_not_wait_for_non_active_watchlist_5m_by_default(self):
+        due_5m_ms = int(datetime(2026, 4, 17, 10, 45, tzinfo=ET).timestamp() * 1000)
+        due_15m_ms = int(datetime(2026, 4, 17, 10, 30, tzinfo=ET).timestamp() * 1000)
+        writer = _FakeWriter()
+        backfill = _FakeBackfill(writer)
+        pipeline = _DummyPipeline(
+            due_bucket_ms=due_5m_ms,
+            last_completed_bucket_ms=due_5m_ms,
+            data_writer=writer,
+            data_backfill=backfill,
+            watchlist_completion={
+                "total": 3,
+                "fresh": 2,
+                "stale": 1,
+                "missing": 0,
+                "unobserved": 0,
+            },
+            snapshot={
+                "symbols": ["AAPL", "MSFT"],
+                "trade_symbols": ["AAPL"],
+                "monitor_symbols": ["MSFT"],
+                "conid_map": {"AAPL": 1, "MSFT": 2},
+                "symbol_meta": {"AAPL": {"exchange": "NASDAQ"}, "MSFT": {"exchange": "NASDAQ"}},
+            },
+        )
+        pipeline.config = _FakeConfig({"ibkr_runtime_direct_topup_enabled": "true"})
+        pipeline._direct_topup_due_ms = due_15m_ms
+
+        with mock.patch("ibkr_compute.orchestration.runtime_pipeline._service_mod", return_value=self._service_mod()):
+            pipeline._run_runtime_direct_topup_cycle(["15m"])
+
+        self.assertEqual(len(backfill.backfill_all_calls), 1)
+        self.assertEqual(backfill.backfill_all_calls[0]["conid_map"], {"AAPL": 1})
+        state = pipeline._copy_direct_topup_state()
+        self.assertEqual(state["last_error"], "")
+        self.assertEqual(state["intervals_state"]["15m"]["status"], "completed")
 
     def test_runtime_direct_topup_is_disabled_by_default(self):
         due_5m_ms = int(datetime(2026, 4, 17, 10, 45, tzinfo=ET).timestamp() * 1000)

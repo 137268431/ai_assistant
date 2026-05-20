@@ -100,7 +100,11 @@ def format_cn_time(bar_time_ms: int) -> str:
 
 
 def bar_close_ms(bar_time_ms: int, interval: str) -> int:
-    return int(bar_time_ms) + interval_to_ms(interval)
+    normalized = normalize_interval(interval)
+    if normalized == "1d":
+        close_dt = ms_to_et(bar_time_ms).replace(hour=16, minute=0, second=0, microsecond=0)
+        return int(close_dt.timestamp() * 1000)
+    return int(bar_time_ms) + interval_to_ms(normalized)
 
 
 def build_bar_close_timestamps(bar_time_ms: int, interval: str) -> Dict[str, object]:

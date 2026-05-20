@@ -280,6 +280,8 @@ def _fallback_bar_close_time_ms(row: dict[str, Any], interval: str) -> int:
 def _bar_close_time_ms(row: dict[str, Any], interval: str) -> int:
     item = _as_dict(row)
     normalized = _normalize_interval(item.get("interval") or interval)
+    if normalized == "1d":
+        return _fallback_bar_close_time_ms(item, normalized)
     extra = _parse_extra(item.get("extra"))
     for key in ("bar_close_time_ms", "close_time_ms", "close_ms"):
         close_ms = _to_int(extra.get(key), 0)
@@ -297,6 +299,9 @@ def _bar_close_time_ms(row: dict[str, Any], interval: str) -> int:
 
 def _bar_close_us_time(row: dict[str, Any], interval: str) -> str:
     item = _as_dict(row)
+    if _normalize_interval(item.get("interval") or interval) == "1d":
+        close_ms = _bar_close_time_ms(item, interval)
+        return _format_us_time_ms(close_ms) if close_ms > 0 else _to_text(item.get("us_time"))
     extra = _parse_extra(item.get("extra"))
     close_us = _to_text(extra.get("bar_close_us_time") or extra.get("close_us_time"))
     if close_us:

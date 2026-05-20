@@ -434,6 +434,18 @@ class IncrementalRollupWindowTest(unittest.TestCase):
             ],
         )
 
+    def test_timeframe_builder_flushes_daily_at_regular_close(self):
+        builder = TimeframeBarBuilder(target_intervals=["1d"])
+
+        self.assertEqual(builder.consume(_base_bar("AAPL", _et_ms(2026, 4, 17, 15, 50))), [])
+        written = builder.consume(_base_bar("AAPL", _et_ms(2026, 4, 17, 15, 55)))
+
+        self.assertEqual(len(written), 1)
+        self.assertEqual(written[0]["interval"], "1d")
+        self.assertEqual(written[0]["bar_time_ms"], _et_ms(2026, 4, 17, 0, 0))
+        self.assertEqual(written[0]["extra"]["component_count"], 2)
+        self.assertEqual(written[0]["extra"]["closed_by_bar_time_ms"], _et_ms(2026, 4, 17, 16, 0))
+
     def test_fetch_since_falls_back_to_processed_cursor_when_interval_fetch_empty(self):
         fake_app = mock.Mock()
         fake_app.last_interval_fetch_ms = {}

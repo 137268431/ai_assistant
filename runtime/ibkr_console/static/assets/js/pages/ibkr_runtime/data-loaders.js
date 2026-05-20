@@ -29,7 +29,7 @@
                 );
                 const coreCache = { ttlMs: 10000, ttl: 10000, force: Boolean(showToastOnSuccess) };
                 const listCache = { ttlMs: 15000, ttl: 15000, force: Boolean(showToastOnSuccess) };
-                const [health, status, summary, monitorResp, cronResp, twoFactorResp, startupResp, runtimeConfigResp, signalsResp, ordersResp, eventsResp] = await Promise.all([
+                const [health, status, summary, monitorResp, cronResp, twoFactorResp, startupResp, runtimeConfigResp, brokerModeSwitchResp, signalsResp, ordersResp, eventsResp] = await Promise.all([
                     readCustomJson('/api/custom/ibkr/healthz', { retryAttempts: 3 }, coreCache),
                     readCustomJson('/api/custom/ibkr/statusz?lite=1', { retryAttempts: 3 }, coreCache),
                     readCustomJson('/api/custom/system/summaryz?lite=1', { retryAttempts: 3 }, coreCache),
@@ -42,6 +42,18 @@
                     readCustomJson('/api/custom/ibkr/2fa/status', { retryAttempts: 3 }, coreCache),
                     readCustomJson('/api/custom/ibkr/startup/status', { retryAttempts: 3 }, coreCache).catch(() => ({ state: {} })),
                     readCustomJson('/api/custom/ibkr/runtime/config', { retryAttempts: 3 }, { ttlMs: 300000, ttl: 300000, force: Boolean(showToastOnSuccess) }),
+                    readCustomJson('/api/custom/ibkr/broker-mode/switch/preview', { retryAttempts: 2 }, coreCache).catch((error) => ({
+                        ok: false,
+                        allowed: false,
+                        error: error?.message || String(error || 'broker_mode_switch_preview_failed'),
+                        blockers: [
+                            {
+                                code: 'preview_unavailable',
+                                message: `无法读取 Paper / Live 切换预检：${error?.message || error}`,
+                                severity: 'blocker',
+                            },
+                        ],
+                    })),
                     readApiFetch('ibkr_signals', { filter: dataEnvFilter, sort: '-created', perPage: 8 }, listCache),
                     readApiFetch('orders', { filter: brokerEnvFilter, sort: '-created', perPage: 8 }, listCache),
                     readApiFetch('system_events', { filter: brokerEnvFilter, sort: '-created', perPage: 8 }, listCache)
@@ -61,6 +73,7 @@
                 latestTwoFactorState = deriveTwoFactorUiState(twoFactorState);
                 const startupState = startupResp?.state || {};
                 latestStartupState = normalizeStartupUiState(startupState);
+                latestBrokerModeSwitchPreview = brokerModeSwitchResp || {};
                 const signalItems = toArray(signalsResp);
                 let latestBar = latestRuntimeBarsSnapshot[0] || null;
                 const latestSignal = signalItems[0] || null;
@@ -77,6 +90,7 @@
                         renderConfigDetail(resolvedSummary, runtimeConfig, cronResp || {});
                         renderPipelinePanel(resolvedSummary, status, twoFactorState, latestBar, latestIndicator, latestSignal);
                         renderRuntimeFlowPrimaryAction(status, latestTwoFactorState);
+                        renderBrokerModeSwitchPanel(latestBrokerModeSwitchPreview, status, twoFactorState);
                         renderServiceControlPanel(status, latestServiceMonitorPayload);
                         renderIndicatorsTable(indicatorItems, { loading: Boolean(options.dataLoading) && !indicatorItems.length });
                     } finally {

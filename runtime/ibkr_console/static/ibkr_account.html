@@ -248,6 +248,13 @@
             return `${prefix}${formatMoney(num).replace('$', '$')}`;
         }
 
+        function formatSignedNullableMoney(value, fallback = '--') {
+            if (value === null || value === undefined || value === '') return fallback;
+            const num = Number(value);
+            if (!Number.isFinite(num)) return fallback;
+            return formatSignedMoney(num);
+        }
+
         function formatPercent(value, digits = 1) {
             const num = Number(value);
             if (!Number.isFinite(num)) return '--';
@@ -1697,20 +1704,28 @@
             const summary = snapshot?.summary || {};
             const counts = snapshot?.counts || {};
             const bpGuard = getBuyingPowerGuard(snapshot);
+            const accountTodayPnl = summary.account_today_pnl || {};
+            const todayPnlOk = Boolean(accountTodayPnl.ok);
+            const todayRawField = accountTodayPnl.raw_field || 'DailyPnL';
+            const todayPnlSub = todayPnlOk
+                ? `IBKR Daily PnL · ${todayRawField}`
+                : (accountTodayPnl.message || 'IBKR Daily PnL unavailable');
             const cards = [
-                ['Net Liq', formatMoney(summary.net_liquidation), '账户净值'],
-                ['Available', formatMoney(summary.available_funds), '可用资金'],
-                ['Buying Power', formatMoney(summary.buying_power), '购买力'],
-                ['Remaining BP', formatMoney(summary.remaining_buying_power ?? summary.buying_power), `当前剩余购买力 · ${formatPercent(summary.remaining_buying_power_pct_net_liq ?? bpGuard.remaining_pct_net_liq)} NetLiq`],
-                ['Cash', formatMoney(summary.total_cash_value), '现金余额'],
-                ['Gross Exposure', formatMoney(summary.gross_position_value), '持仓市值'],
-                ['Unrealized', formatSignedMoney(summary.unrealized_pnl), `${counts.open_positions || 0} positions`],
+                { label: 'Today P&L', value: todayPnlOk ? formatSignedNullableMoney(accountTodayPnl.net) : '--', sub: todayPnlSub, toneValue: todayPnlOk ? accountTodayPnl.net : null },
+                { label: 'Realized', value: formatSignedNullableMoney(summary.realized_pnl), sub: 'IBKR current realized', toneValue: summary.realized_pnl },
+                { label: 'Floating', value: formatSignedNullableMoney(summary.unrealized_pnl), sub: `${counts.open_positions || 0} open positions`, toneValue: summary.unrealized_pnl },
+                { label: 'Net Liq', value: formatMoney(summary.net_liquidation), sub: '账户净值', toneValue: summary.net_liquidation },
+                { label: 'Available', value: formatMoney(summary.available_funds), sub: '可用资金', toneValue: summary.available_funds },
+                { label: 'Buying Power', value: formatMoney(summary.buying_power), sub: '购买力', toneValue: summary.buying_power },
+                { label: 'Remaining BP', value: formatMoney(summary.remaining_buying_power ?? summary.buying_power), sub: `当前剩余购买力 · ${formatPercent(summary.remaining_buying_power_pct_net_liq ?? bpGuard.remaining_pct_net_liq)} NetLiq`, toneValue: summary.remaining_buying_power ?? summary.buying_power },
+                { label: 'Cash', value: formatMoney(summary.total_cash_value), sub: '现金余额', toneValue: summary.total_cash_value },
+                { label: 'Gross Exposure', value: formatMoney(summary.gross_position_value), sub: '持仓市值', toneValue: summary.gross_position_value },
             ];
-            document.getElementById('summaryGrid').innerHTML = cards.map(([label, value, sub]) => `
-                <div class="summary-card ${label === 'Remaining BP' && bpGuard.state === 'blocked' ? 'danger' : label === 'Remaining BP' && bpGuard.state === 'warning' ? 'warn' : ''}">
-                    <div class="summary-label">${escapeHtml(label)}</div>
-                    <div class="summary-value ${valueClass(value)}">${escapeHtml(String(value))}</div>
-                    <div class="summary-sub">${escapeHtml(sub)}</div>
+            document.getElementById('summaryGrid').innerHTML = cards.map((card) => `
+                <div class="summary-card ${card.label === 'Remaining BP' && bpGuard.state === 'blocked' ? 'danger' : card.label === 'Remaining BP' && bpGuard.state === 'warning' ? 'warn' : ''}">
+                    <div class="summary-label">${escapeHtml(card.label)}</div>
+                    <div class="summary-value ${valueClass(card.toneValue)}">${escapeHtml(String(card.value))}</div>
+                    <div class="summary-sub">${escapeHtml(card.sub)}</div>
                 </div>
             `).join('');
         }

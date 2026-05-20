@@ -66,6 +66,14 @@ class RuntimePipelineDirectTopupMixin:
                 bool(getattr(service_mod, "DEFAULT_RUNTIME_DIRECT_TOPUP_PARALLEL_ENABLED", False)),
             )
 
+    def _runtime_direct_topup_wait_for_watchlist_5m_enabled(self) -> bool:
+            service_mod = _service_mod()
+            return self.config.get_bool_for_environment(
+                "ibkr_runtime_direct_topup_wait_for_watchlist_5m_enabled",
+                service_mod.DATA_ENVIRONMENT,
+                False,
+            )
+
     def _runtime_direct_topup_interval_priority(self) -> list[str]:
             service_mod = _service_mod()
             fallback = tuple(
@@ -131,6 +139,7 @@ class RuntimePipelineDirectTopupMixin:
                 "close_delay_sec": service_mod.DEFAULT_RUNTIME_DIRECT_TOPUP_CLOSE_DELAY_SECONDS,
                 "loop_interval_s": service_mod.DEFAULT_RUNTIME_DIRECT_TOPUP_LOOP_INTERVAL_SECONDS,
                 "parallel_enabled": bool(getattr(service_mod, "DEFAULT_RUNTIME_DIRECT_TOPUP_PARALLEL_ENABLED", False)),
+                "wait_for_watchlist_5m": False,
                 "interval_priority": list(
                     getattr(
                         service_mod,
@@ -673,6 +682,7 @@ class RuntimePipelineDirectTopupMixin:
                     "close_delay_sec": self._runtime_direct_topup_close_delay_sec(),
                     "loop_interval_s": self._runtime_direct_topup_loop_interval_sec(),
                     "parallel_enabled": self._runtime_direct_topup_parallel_enabled(),
+                    "wait_for_watchlist_5m": self._runtime_direct_topup_wait_for_watchlist_5m_enabled(),
                     "interval_priority": self._runtime_direct_topup_interval_priority(),
                 }
             )
@@ -688,7 +698,7 @@ class RuntimePipelineDirectTopupMixin:
                 state["last_error"] = "canonical_5m_not_current"
                 self._set_direct_topup_state(**state)
                 return
-            if self._runtime_direct_topup_watchlist_5m_pending():
+            if self._runtime_direct_topup_wait_for_watchlist_5m_enabled() and self._runtime_direct_topup_watchlist_5m_pending():
                 state["last_error"] = "watchlist_5m_pending"
                 self._set_direct_topup_state(**state)
                 return
@@ -734,6 +744,7 @@ class RuntimePipelineDirectTopupMixin:
                 close_delay_sec=self._runtime_direct_topup_close_delay_sec(),
                 loop_interval_s=self._runtime_direct_topup_loop_interval_sec(),
                 parallel_enabled=self._runtime_direct_topup_parallel_enabled(),
+                wait_for_watchlist_5m=self._runtime_direct_topup_wait_for_watchlist_5m_enabled(),
                 interval_priority=self._runtime_direct_topup_interval_priority(),
                 last_run=self._now_iso(),
                 last_error=last_error,
@@ -756,6 +767,7 @@ class RuntimePipelineDirectTopupMixin:
                         close_delay_sec=self._runtime_direct_topup_close_delay_sec(),
                         loop_interval_s=self._runtime_direct_topup_loop_interval_sec(),
                         parallel_enabled=self._runtime_direct_topup_parallel_enabled(),
+                        wait_for_watchlist_5m=self._runtime_direct_topup_wait_for_watchlist_5m_enabled(),
                         interval_priority=self._runtime_direct_topup_interval_priority(),
                         last_run=self._now_iso(),
                         last_error=str(exc),

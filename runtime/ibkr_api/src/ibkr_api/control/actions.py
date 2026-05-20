@@ -428,26 +428,33 @@ def build_service_action_response(
 
     unit = str(target["unit"])
     delegated_payload: dict[str, Any] | None = None
+    delegated_blocked = False
+    delegated_status_code = 0
     if bool(target.get("delegated_gateway")):
+        gateway_payload = {
+            "environment": environment,
+            "reason": f"service_control_{service}_{action}",
+            "source": source,
+        }
+        if "force_restart" in payload:
+            gateway_payload["force_restart"] = payload.get("force_restart")
         delegated_result = request_json_request(
             "POST",
             runtime_base_url,
             f"/ibkr/gateway/{action}",
-            json_body={
-                "environment": environment,
-                "reason": f"service_control_{service}_{action}",
-                "source": source,
-            },
+            json_body=gateway_payload,
             timeout=60 if action == "restart" else 30,
         )
         action_result = _upstream_payload(delegated_result, as_dict=as_dict, default_ok=False)
         delegated_payload = action_result
-        action_ok = action_result.get("ok") is not False
+        delegated_status_code = int(action_result.get("status_code") or delegated_result.get("status_code") or 0)
+        delegated_blocked = bool(action_result.get("restart_blocked")) or delegated_status_code == 409
+        action_ok = (action_result.get("ok") is not False) and not delegated_blocked
         command_result = {
             "ok": action_ok,
-            "returncode": 0 if action_ok else int(action_result.get("status_code") or 1),
+            "returncode": 0 if action_ok else int(delegated_status_code or 1),
             "stdout": "",
-            "stderr": str(action_result.get("error") or ""),
+            "stderr": str(action_result.get("error") or action_result.get("message") or ""),
         }
     else:
         command_result = _systemctl_action(unit, action)
@@ -495,6 +502,18 @@ def build_service_action_response(
     if delegated_payload is not None:
         response_payload["delegated"] = True
         response_payload["payload"] = delegated_payload
+        if delegated_blocked:
+            response_payload.update(
+                {
+                    "ok": False,
+                    "message": delegated_payload.get("message") or response_payload["message"],
+                    "restart_blocked": bool(delegated_payload.get("restart_blocked", True)),
+                    "blocker_code": delegated_payload.get("blocker_code") or "",
+                    "blocker": delegated_payload.get("blocker") or {},
+                    "error": delegated_payload.get("error") or delegated_payload.get("message") or "",
+                }
+            )
+            return response_payload, 409
     return response_payload, 200 if ok else 502
 
 

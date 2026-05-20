@@ -9,6 +9,7 @@ let currentEnvironment = currentBrokerMode;
         let latestRuntimeStatus = {};
         let latestTwoFactorState = {};
         let latestStartupState = {};
+        let latestBrokerModeSwitchPreview = {};
         let latestServiceMonitorPayload = {};
         let latestServiceActionStates = {};
         let latestNextActionModel = null;
@@ -30,6 +31,7 @@ let currentEnvironment = currentBrokerMode;
             probe: '立即探测认证状态',
             app_login_handoff: '准备登录 IBKR App',
             panic_reset_2fa: '重开 2FA',
+            broker_mode_switch: '切换 Paper / Live',
             compute: '运行 Compute',
             emergency_all: '全部急停',
             recover_all: '恢复运行开关',

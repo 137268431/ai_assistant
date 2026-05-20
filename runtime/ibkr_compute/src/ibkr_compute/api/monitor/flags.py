@@ -2,6 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from ibkr_compute.api.support.market_data_session import (
+    MARKET_DATA_SESSION_CONFLICT_CODE,
+    detect_market_data_session_conflict,
+    is_market_data_session_conflict_text,
+)
+
 
 SESSION_UNAUTHENTICATED_GRACE_SECONDS = 300
 SESSION_UNAUTHENTICATED_LATE_SESSION_GRACE_SECONDS = 480
@@ -412,7 +418,23 @@ def _build_monitor_flags(runtime_status: dict, api_utilization: dict, host_snaps
     last_trace_retry_count = int(api_utilization.get("last_trace_retry_count", 0) or 0)
     last_trace_throttle_count = int(api_utilization.get("last_trace_throttle_count", 0) or 0)
     last_trace_error = str(api_utilization.get("last_trace_error") or "").strip()
-    if last_trace_error or last_trace_retry_count > 0:
+    session_conflict = detect_market_data_session_conflict(runtime_status)
+    data_backfill_present = isinstance(runtime_status.get("data_backfill"), dict) and bool(runtime_status.get("data_backfill"))
+    fallback_session_conflict = is_market_data_session_conflict_text(last_trace_error) and not data_backfill_present
+    if bool(session_conflict.get("active")) or fallback_session_conflict:
+        conflict_detail = str(session_conflict.get("message") or last_trace_error or "").strip()
+        _append_monitor_flag(
+            flags,
+            "error",
+            MARKET_DATA_SESSION_CONFLICT_CODE,
+            "Market data session conflict",
+            (
+                "IBKR 行情/历史数据会话疑似被另一个 IP 占用；"
+                "请退出其他电脑/服务器上的 TWS、IB Gateway 或 IBKR Desktop 后，再重启 Gateway。"
+                f" 原始错误：{conflict_detail or '--'}。"
+            ),
+        )
+    elif last_trace_error or last_trace_retry_count > 0:
         _append_monitor_flag(
             flags,
             "warning",

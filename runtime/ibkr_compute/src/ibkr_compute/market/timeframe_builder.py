@@ -8,6 +8,7 @@ from typing import Dict, List, Tuple
 
 from .timeframe_utils import (
     HIGHER_INTERVALS,
+    bar_close_ms,
     bucket_start_ms,
     build_runtime_timestamps,
     classify_session,
@@ -99,7 +100,11 @@ class TimeframeBarBuilder:
 
     def _finalize_if_closed(self, key: Tuple[str, str], current: dict, base_bar: dict):
         interval = str(current.get("interval") or key[1])
-        bucket_end_ms = int(current["bar_time_ms"]) + interval_to_ms(interval)
+        bucket_end_ms = (
+            bar_close_ms(int(current["bar_time_ms"]), interval)
+            if interval == "1d"
+            else int(current["bar_time_ms"]) + interval_to_ms(interval)
+        )
         base_close_ms = int(base_bar["bar_time_ms"]) + interval_to_ms("5m")
         if base_close_ms < bucket_end_ms:
             return None

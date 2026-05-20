@@ -384,6 +384,32 @@ class MonitorSnapshotTest(unittest.TestCase):
         self.assertIn("history_request_retry_or_error", flag_codes)
         self.assertNotIn("history_throttle_detected", flag_codes)
 
+    def test_market_data_session_conflict_gets_dedicated_error_flag(self):
+        flags = server._build_monitor_flags(
+            {
+                "gateway": {"running": True, "reachable": True},
+                "session": {"authenticated": True},
+                "websocket": {"connected": True, "ready": True},
+            },
+            {
+                "subscription_limit": 70,
+                "active_subscription_count": 2,
+                "utilization_pct": 2.86,
+                "pending_subscription_count": 0,
+                "last_trace_retry_count": 1,
+                "last_trace_throttle_count": 0,
+                "last_trace_error": "Historical Market Data Service error message:Trading TWS session is connected from a different IP address",
+            },
+            {},
+            {},
+        )
+
+        flag_codes = {item["code"] for item in flags}
+        conflict = next(item for item in flags if item["code"] == "market_data_session_conflict")
+        self.assertEqual("error", conflict["severity"])
+        self.assertIn("market_data_session_conflict", flag_codes)
+        self.assertNotIn("history_request_retry_or_error", flag_codes)
+
     def test_no_active_targets_warns_when_trade_watchlist_has_no_active_target(self):
         flags = server._build_monitor_flags(
             {

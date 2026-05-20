@@ -8,7 +8,7 @@
     <script src="common.js"></script>
     <script>document.write(getCommonStyles());</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-    <link rel="stylesheet" href="/assets/css/pages/ibkr_runtime/page.css?v=20260518-bridge-align">
+    <link rel="stylesheet" href="/assets/css/pages/ibkr_runtime/page.css?v=20260521-mode-switch">
 </head>
 <body>
     <div class="page-loading-overlay" id="pageLoading">
@@ -50,6 +50,19 @@
             </div>
 
             <div class="runtime-control-panel" aria-label="Runtime controls">
+                <section class="runtime-control-group runtime-control-mode" id="brokerModeSwitchSection">
+                    <div class="runtime-control-head">
+                        <div>
+                            <div class="runtime-control-kicker">Broker Mode</div>
+                            <div class="runtime-control-title">Paper / Live 一键切换</div>
+                        </div>
+                        <div class="runtime-control-copy">切换真实 runtime 账户模式；执行前强制检查持仓、IBKR 挂单和 PB 订单组。</div>
+                    </div>
+                    <div id="brokerModeSwitchArea">
+                        <div class="table-empty">等待加载 Paper / Live 切换预检...</div>
+                    </div>
+                </section>
+
                 <section class="runtime-control-group runtime-control-services" id="serviceControlSection">
                     <div class="runtime-control-head">
                         <div>
@@ -270,14 +283,14 @@
     <script src="/assets/js/shared/ibkr-page-auth.js?v=20260507-shared-split"></script>
     <script src="/assets/js/shared/ibkr-page-config.js?v=20260507-shared-split"></script>
     <script src="/assets/js/shared/ibkr-page.js?v=20260507-shared-split"></script>
-    <script src="/assets/js/pages/ibkr_runtime/state.js?v=20260521-app-login"></script>
+    <script src="/assets/js/pages/ibkr_runtime/state.js?v=20260521-mode-switch"></script>
     <script src="/assets/js/pages/ibkr_runtime/formatters.js?v=20260513-status-labels-v2"></script>
-    <script src="/assets/js/pages/ibkr_runtime/models.js?v=20260521-app-login"></script>
-    <script src="/assets/js/pages/ibkr_runtime/auth-confirm.js?v=20260521-app-login"></script>
-    <script src="/assets/js/pages/ibkr_runtime/renderers.js?v=20260521-app-login"></script>
+    <script src="/assets/js/pages/ibkr_runtime/models.js?v=20260521-mode-switch"></script>
+    <script src="/assets/js/pages/ibkr_runtime/auth-confirm.js?v=20260521-mode-switch"></script>
+    <script src="/assets/js/pages/ibkr_runtime/renderers.js?v=20260521-mode-switch"></script>
     <script src="/assets/js/pages/ibkr_runtime/tables.js?v=20260507-split"></script>
-    <script src="/assets/js/pages/ibkr_runtime/data-loaders.js?v=20260507-split"></script>
-    <script src="/assets/js/pages/ibkr_runtime/actions.js?v=20260521-app-login"></script>
+    <script src="/assets/js/pages/ibkr_runtime/data-loaders.js?v=20260521-mode-switch"></script>
+    <script src="/assets/js/pages/ibkr_runtime/actions.js?v=20260521-mode-switch"></script>
     <script src="/assets/js/pages/ibkr_runtime/page.js?v=20260507-split"></script>
 </body>
 </html>

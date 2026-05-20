@@ -731,4 +731,9 @@
                 button.disabled = actionPending;
                 button.title = actionPending ? '动作执行中，请稍候。' : '';
             });
+            document.querySelectorAll('.broker-mode-switch-btn').forEach((button) => {
+                const lockReason = String(button?.dataset?.lockReason || '').trim();
+                button.disabled = actionPending || Boolean(lockReason);
+                button.title = actionPending ? '动作执行中，请稍候。' : lockReason;
+            });
         }

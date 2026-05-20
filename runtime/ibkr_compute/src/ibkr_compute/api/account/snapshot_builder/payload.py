@@ -13,6 +13,7 @@ from ibkr_compute.api.account.live import (
     _normalize_live_position,
     _summary_lookup,
 )
+from ibkr_compute.api.runtime.common import _coerce_float
 from ibkr_compute.api.account.snapshot_builder.context import (
     build_snapshot_context,
     load_cached_snapshot,
@@ -68,10 +69,67 @@ def _normalize_snapshot_rows(
     return positions, orders, live_open_orders, live_open_payload
 
 
+def _summary_number_optional(summary_map: dict, *keys: str) -> tuple[float | None, str, dict | None]:
+    for key in keys:
+        lookup_key = str(key).strip().lower()
+        raw_value = summary_map.get(lookup_key)
+        if raw_value is None:
+            continue
+        if isinstance(raw_value, dict):
+            lowered = {str(k).strip().lower(): v for k, v in raw_value.items()}
+            for field in ("amount", "value"):
+                number = _coerce_float(lowered.get(field))
+                if number is not None:
+                    return float(number), key, raw_value
+        else:
+            number = _coerce_float(raw_value)
+            if number is not None:
+                return float(number), key, None
+    return None, "", None
+
+
+def _summary_currency(raw_value: dict | None, fallback: str) -> str:
+    if isinstance(raw_value, dict):
+        lowered = {str(k).strip().lower(): v for k, v in raw_value.items()}
+        currency = str(lowered.get("currency") or "").strip().upper()
+        if currency:
+            return currency
+    return fallback or "USD"
+
+
+def _build_account_today_pnl(summary_map: dict, currency: str) -> dict:
+    daily_pnl, raw_field, raw_value = _summary_number_optional(summary_map, "DailyPnL", "DayPnL", "PnL")
+    realized_pnl, _, _ = _summary_number_optional(summary_map, "RealizedPnL")
+    unrealized_pnl, _, _ = _summary_number_optional(summary_map, "UnrealizedPnL")
+    if daily_pnl is None:
+        return {
+            "ok": False,
+            "net": None,
+            "currency": currency or "USD",
+            "source": "unavailable",
+            "raw_field": "",
+            "realized": realized_pnl,
+            "unrealized": unrealized_pnl,
+            "message": "IBKR did not provide DailyPnL/DayPnL/PnL",
+        }
+    return {
+        "ok": True,
+        "net": daily_pnl,
+        "currency": _summary_currency(raw_value, currency),
+        "source": "broker_daily_pnl",
+        "raw_field": raw_field,
+        "realized": realized_pnl,
+        "unrealized": unrealized_pnl,
+        "message": "",
+    }
+
+
 def _build_snapshot_summary(summary_raw: dict, account_id: str, positions: list[dict]) -> dict:
     summary_map = _summary_lookup(summary_raw)
     total_unrealized = sum(float(item.get("unrealized_pnl", 0) or 0) for item in positions)
     total_market_value = sum(abs(float(item.get("market_value", 0) or 0)) for item in positions)
+    currency = _extract_summary_text(summary_map, "currency", "basecurrency") or "USD"
+    account_today_pnl = _build_account_today_pnl(summary_map, currency)
     summary = {
         "account_code": _extract_summary_text(summary_map, "accountcode") or account_id,
         "account_type": _extract_summary_text(summary_map, "accounttype"),
@@ -86,7 +144,11 @@ def _build_snapshot_summary(summary_raw: dict, account_id: str, positions: list[
         "maintenance_margin": _extract_summary_number(summary_map, "maintmarginreq"),
         "unrealized_pnl": _extract_summary_number(summary_map, "unrealizedpnl") or total_unrealized,
         "realized_pnl": _extract_summary_number(summary_map, "realizedpnl"),
-        "currency": _extract_summary_text(summary_map, "currency", "basecurrency") or "USD",
+        "daily_pnl": account_today_pnl["net"],
+        "today_pnl": account_today_pnl["net"],
+        "daily_pnl_available": bool(account_today_pnl["ok"]),
+        "account_today_pnl": account_today_pnl,
+        "currency": currency,
     }
     return enrich_buying_power_summary(summary)
 

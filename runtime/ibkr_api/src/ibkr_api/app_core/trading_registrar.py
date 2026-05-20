@@ -115,6 +115,10 @@ def register_trading_routes(app, deps: dict[str, Any]) -> dict[str, Any]:
                 "build_runtime_environment_mismatch_payload": deps["build_runtime_environment_mismatch_payload"],
                 "emit_system_event": deps["emit_system_event"],
                 "as_dict": deps["as_dict"],
+                "fetch_runtime_status": deps["fetch_runtime_status"],
+                "get_state_payload": deps["get_state_payload"],
+                "ibkr_2fa_state_key": deps["ibkr_2fa_state_key"],
+                "ibkr_2fa_state_date": deps["ibkr_2fa_state_date"],
             },
         )
     )

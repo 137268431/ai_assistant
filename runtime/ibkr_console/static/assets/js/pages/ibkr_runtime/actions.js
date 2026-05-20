@@ -340,6 +340,18 @@
                 setActionState(false);
                 await loadRuntimeData(false);
             } catch (error) {
+                const blockerPayload = error?.payload || {};
+                if (
+                    action === 'gateway_restart'
+                    && blockerPayload?.restart_blocked === true
+                    && blockerPayload?.blocker_code === 'market_data_session_conflict'
+                ) {
+                    const message = blockerPayload.message || '检测到 IBKR 行情会话被另一个 IP 占用；请退出其他登录后再重启 Gateway。';
+                    document.getElementById('lastAction').textContent = message;
+                    setAuthActionFeedback(message, 'error');
+                    showToast(message);
+                    return;
+                }
                 const rawMessage = String(error?.message || error || '');
                 const timedOut = rawMessage.includes('timed out');
                 const likelySubmitted = ['start', 'gateway_restart', 'reauth', 'reauth_force_new', 'probe', 'panic_reset_2fa', 'app_login_handoff'].includes(action);
@@ -411,6 +423,123 @@
             return `${service} ${actionLabel}已请求${stateText ? ` · ${stateText}` : ''}`;
         }
 
+        function summarizeBrokerModeSwitch(payload, targetBrokerMode) {
+            if (!payload || typeof payload !== 'object') {
+                return `Broker mode 切换到 ${targetBrokerMode.toUpperCase()} 已提交。`;
+            }
+            if (payload.ok === false) {
+                const blocker = Array.isArray(payload.blockers) ? payload.blockers[0] : null;
+                return blocker?.message || payload.message || payload.error || 'Broker mode 切换被拒绝。';
+            }
+            return payload.message || `已写入 ${targetBrokerMode.toUpperCase()} 并开始重启服务；等待恢复后重新完成 2FA。`;
+        }
+
+        async function handleBrokerModeSwitch(targetBrokerMode) {
+            if (actionPending) return;
+            const targetMode = normalizeBrokerMode(targetBrokerMode, getOppositeBrokerMode(currentBrokerMode));
+            const preview = latestBrokerModeSwitchPreview && typeof latestBrokerModeSwitchPreview === 'object'
+                ? latestBrokerModeSwitchPreview
+                : {};
+            const blockers = Array.isArray(preview.blockers) ? preview.blockers : [];
+            if (preview.allowed === false && blockers.length) {
+                const message = blockers[0]?.message || '切换预检未通过。';
+                document.getElementById('lastAction').textContent = `最近动作：${message}`;
+                setAuthActionFeedback(message, 'warn');
+                showToast(message);
+                return;
+            }
+            const confirmText = String(preview.confirm_text || `SWITCH ${targetMode.toUpperCase()}`).trim();
+            const targetLabel = typeof formatBrokerModeSwitchLabel === 'function'
+                ? formatBrokerModeSwitchLabel(targetMode, { compact: true })
+                : getEnvironmentLabel(targetMode);
+            const currentMode = normalizeBrokerMode(preview.current_broker_mode || latestRuntimeStatus?.broker_mode || currentBrokerMode, currentBrokerMode);
+            const currentLabel = typeof formatBrokerModeSwitchLabel === 'function'
+                ? formatBrokerModeSwitchLabel(currentMode, { compact: true })
+                : getEnvironmentLabel(currentMode);
+            const confirmed = await showRuntimeConfirm({
+                title: `确认切换到 ${targetLabel}`,
+                message: [
+                    `即将把真实运行模式从 ${currentLabel} 切换到 ${targetLabel}。`,
+                    '系统会写入运行 .env，并依次停止 runtime、重启 Gateway、Runtime、Compute、Scheduler 和 API。',
+                    '只有当前账户无持仓、无 IBKR 挂单、无 PB active/stale 订单组时才会执行；切换后需要重新完成 2FA。'
+                ].join('\n'),
+                confirmText,
+                inputLabel: `输入 ${confirmText}`,
+                confirmLabel: `切换到 ${targetMode.toUpperCase()}`,
+                tone: targetMode === 'live' ? 'danger' : 'warn',
+            });
+            if (!confirmed) return;
+            if (!ensureIbkrPageAuth()) return;
+
+            actionPendingLabel = `执行中：切换到 ${targetLabel}`;
+            setActionState(true);
+            document.getElementById('lastAction').textContent = actionPendingLabel;
+            setAuthActionFeedback(actionPendingLabel, 'info');
+            try {
+                const payload = await withTimeout(
+                    requestIbkrEnvironmentJson('/api/custom/ibkr/broker-mode/switch', currentEnvironment, {
+                        method: 'POST',
+                        body: runtimeModePayload({
+                            target_broker_mode: targetMode,
+                            confirm_text: confirmText,
+                            source: 'runtime_page',
+                        }),
+                        retryAttempts: 1,
+                    }),
+                    120000,
+                    `切换 Broker mode ${targetMode}`
+                );
+                latestBrokerModeSwitchPreview = payload || {};
+                const message = summarizeBrokerModeSwitch(payload, targetMode);
+                document.getElementById('lastAction').textContent = `最近动作：${message}`;
+                setAuthActionFeedback(`最近动作：${message}`, payload?.ok === false ? 'error' : 'ok');
+                showToast(message, 4000);
+                renderBrokerModeSwitchPanel(latestBrokerModeSwitchPreview, latestRuntimeStatus, latestTwoFactorState);
+                if (payload?.accepted === true || Number(payload?.status_code || 0) === 202 || payload?.status === 'restart_requested') {
+                    if (typeof setStoredBrokerMode === 'function') setStoredBrokerMode(targetMode);
+                    if (typeof syncBrokerModeFromPayload === 'function') {
+                        syncBrokerModeFromPayload({
+                            broker_mode: targetMode,
+                            environment: targetMode,
+                            data_environment: getSharedDataEnvironment(),
+                            market_data_environment: getSharedDataEnvironment(),
+                        });
+                    }
+                    boostRuntimeRefresh();
+                    window.setTimeout(() => {
+                        window.location.href = buildPageUrl('/ibkr_runtime.html', {}, {
+                            environment: targetMode,
+                            brokerMode: targetMode,
+                            dataEnvironment: getSharedDataEnvironment(),
+                        });
+                    }, 6500);
+                } else {
+                    await loadRuntimeData(false);
+                }
+            } catch (error) {
+                const blockerPayload = error?.payload || {};
+                if (blockerPayload && typeof blockerPayload === 'object' && (blockerPayload.blockers || blockerPayload.current_broker_mode)) {
+                    latestBrokerModeSwitchPreview = blockerPayload;
+                    renderBrokerModeSwitchPanel(latestBrokerModeSwitchPreview, latestRuntimeStatus, latestTwoFactorState);
+                }
+                const rawMessage = String(error?.message || error || '');
+                const timedOut = rawMessage.includes('timed out') || rawMessage.includes('Failed to fetch') || rawMessage.includes('NetworkError');
+                const firstBlocker = Array.isArray(blockerPayload.blockers) ? blockerPayload.blockers[0] : null;
+                const message = timedOut
+                    ? `切换请求响应超时：可能已提交，页面会继续刷新；请避免重复点击。`
+                    : (firstBlocker?.message || blockerPayload.message || `切换失败：${rawMessage}`);
+                document.getElementById('lastAction').textContent = message;
+                setAuthActionFeedback(message, timedOut ? 'warn' : 'error');
+                showToast(message, 4000);
+                if (timedOut) {
+                    boostRuntimeRefresh();
+                    scheduleRuntimeRefresh(5000);
+                }
+            } finally {
+                setActionState(false);
+            }
+        }
+
         async function handleServiceAction(serviceName, action) {
             if (actionPending) return;
             const moduleDef = getServiceModuleDef(serviceName);
@@ -458,7 +587,13 @@
                 renderServiceControlPanel(latestRuntimeStatus, latestServiceMonitorPayload);
                 await loadRuntimeData(false);
             } catch (error) {
-                const message = `服务动作失败：${moduleDef.service} ${normalizedAction} · ${error.message || error}`;
+                const blockerPayload = error?.payload || {};
+                const message = (
+                    blockerPayload?.restart_blocked === true
+                    && blockerPayload?.blocker_code === 'market_data_session_conflict'
+                )
+                    ? (blockerPayload.message || '检测到 IBKR 行情会话被另一个 IP 占用；请退出其他登录后再重启 Gateway。')
+                    : `服务动作失败：${moduleDef.service} ${normalizedAction} · ${error.message || error}`;
                 latestServiceActionStates = {
                     ...latestServiceActionStates,
                     [moduleDef.service]: {
@@ -586,6 +721,7 @@
         }
 
         window.handleRuntimeAction = handleRuntimeAction;
+        window.handleBrokerModeSwitch = handleBrokerModeSwitch;
         window.handleServiceAction = handleServiceAction;
         window.runPrimaryAuthAction = runPrimaryAuthAction;
         window.runSecondaryAuthAction = runSecondaryAuthAction;

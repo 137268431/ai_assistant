@@ -68,6 +68,9 @@
             if (!actionPending) actionPendingLabel = '';
             renderRuntimeFlowPrimaryAction(latestRuntimeStatus, latestTwoFactorState);
             syncActionLocks();
+            if (typeof renderBrokerModeSwitchPanel === 'function') {
+                renderBrokerModeSwitchPanel(latestBrokerModeSwitchPreview, latestRuntimeStatus, latestTwoFactorState);
+            }
             renderServiceControlPanel(latestRuntimeStatus, latestServiceMonitorPayload);
             renderAuthActionBanner(latestNextActionModel);
         }

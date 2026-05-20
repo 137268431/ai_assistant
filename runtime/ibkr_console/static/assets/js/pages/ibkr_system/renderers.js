@@ -391,6 +391,49 @@ function renderFreshnessReasonPills(item = {}) {
         .join('');
 }
 
+function renderFreshnessScopeCards(scopes = {}) {
+    const scopeOrder = [
+        'realtime_5m',
+        'active_higher_timeframes',
+        'watchlist_higher_timeframes',
+        'daily_1d',
+    ];
+    const cards = scopeOrder
+        .map((name) => scopes?.[name])
+        .filter((scope) => scope && scope.overall)
+        .map((scope) => {
+            const overall = scope.overall || {};
+            const visual = getFreshnessAggregateVisual(overall);
+            const label = scope.label || scope.name || 'Freshness Scope';
+            const due = Number(overall.due_checks ?? overall.due_symbols ?? 0) || 0;
+            const total = Number(overall.total_checks ?? overall.total_symbols ?? 0) || 0;
+            const subtitle = [
+                scope.best_effort ? 'best-effort' : (scope.critical ? 'critical' : 'monitor'),
+                `due ${due}/${total}`,
+                `ready ${Number(overall.ready || 0) || 0}`,
+                Number(overall.overdue || 0) > 0 ? `overdue ${Number(overall.overdue || 0)}` : '',
+                Number(overall.missing || 0) > 0 ? `missing ${Number(overall.missing || 0)}` : '',
+                Number(scope.symbols_total || overall.total_symbols || 0) > 0 ? `symbols ${Number(scope.symbols_total || overall.total_symbols || 0)}` : '',
+            ].filter(Boolean).join(' · ');
+            return `<div class="freshness-card ${visual.chipClass}">
+                <div class="freshness-card-head">
+                    <span class="freshness-label">${escapeHtml(label)}</span>
+                    <span class="freshness-chip ${visual.chipClass}">${escapeHtml(visual.chipText)}</span>
+                </div>
+                <div class="freshness-meta">
+                    <div class="freshness-meta-top">
+                        <span class="freshness-percent">${escapeHtml(formatFreshnessPercent(overall.ready_pct))}</span>
+                        <span class="freshness-state" style="color:${visual.color}">${escapeHtml(visual.stateText)}</span>
+                    </div>
+                    <div class="freshness-time">${escapeHtml(subtitle || '--')}</div>
+                </div>
+                <div class="freshness-bar-bg"><div class="freshness-bar-fill" style="width:${visual.pct}%;background:${visual.color}"></div></div>
+                <div class="freshness-reasons">${renderFreshnessReasonPills(overall)}</div>
+            </div>`;
+        });
+    return cards.length ? `<div class="freshness-grid">${cards.join('')}</div>` : '';
+}
+
 function renderLegacyFreshness(data) {
     const byInterval = Array.isArray(data)
         ? data.reduce((acc, item) => {
@@ -463,6 +506,8 @@ function renderFreshness(data) {
         if (item && item.interval) acc[item.interval] = item;
         return acc;
     }, {});
+    const scopes = normalized.scopes || {};
+    const scopeCards = renderFreshnessScopeCards(scopes);
     const overall = normalized.overall || {};
     const overallVisual = getFreshnessAggregateVisual(overall);
     const cards = IBKR_FRESHNESS_INTERVALS.map((tf) => {
@@ -507,7 +552,7 @@ function renderFreshness(data) {
 
     el.innerHTML = `<div class="freshness-overall ${overallVisual.chipClass}">
             <div>
-                <div class="freshness-overall-kicker">Aggregate Freshness</div>
+                <div class="freshness-overall-kicker">Realtime Freshness</div>
                 <div class="freshness-overall-title">
                     <span>${escapeHtml(formatFreshnessPercent(overall.ready_pct))}</span>
                     <span class="freshness-state" style="color:${overallVisual.color}">${escapeHtml(overallVisual.stateText)}</span>
@@ -518,6 +563,7 @@ function renderFreshness(data) {
                 ${overallMeta.map((item) => `<span>${escapeHtml(item)}</span>`).join('')}
             </div>
         </div>
+        ${scopeCards}
         <div class="freshness-grid">${cards.join('')}</div>`;
 }
 

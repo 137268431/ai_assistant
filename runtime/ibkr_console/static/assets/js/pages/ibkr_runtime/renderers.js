@@ -414,6 +414,160 @@
             return [actionLabel, systemdLabel, detail].filter(Boolean).join(' · ') || '--';
         }
 
+        function getOppositeBrokerMode(mode) {
+            return normalizeBrokerMode(mode, 'paper') === 'paper' ? 'live' : 'paper';
+        }
+
+        function formatBrokerModeSwitchLabel(mode, options = {}) {
+            const normalized = normalizeBrokerMode(mode, 'paper');
+            const label = typeof formatEnvironmentLabel === 'function'
+                ? formatEnvironmentLabel(normalized, { compact: Boolean(options.compact) })
+                : getEnvironmentLabel(normalized);
+            return label || normalized.toUpperCase();
+        }
+
+        function getBrokerModeSwitchCounts(preview = {}) {
+            const counts = preview?.counts && typeof preview.counts === 'object' ? preview.counts : {};
+            const toCount = (value) => {
+                const number = Number(value || 0);
+                return Number.isFinite(number) ? Math.max(0, Math.round(number)) : 0;
+            };
+            return {
+                openPositions: toCount(counts.open_positions),
+                openOrders: toCount(counts.open_orders),
+                pbBlockingGroups: toCount(counts.pb_blocking_groups),
+                pbActiveGroups: toCount(counts.pb_active_order_groups),
+                staleGroups: toCount(counts.stale_pb_order_groups),
+                pbOnlyGroups: toCount(counts.pb_only_active_order_groups),
+                shadowGroups: toCount(counts.pb_shadow_groups),
+            };
+        }
+
+        function renderBrokerModeSwitchPanel(preview = latestBrokerModeSwitchPreview, status = latestRuntimeStatus, twoFactorState = latestTwoFactorState) {
+            const el = document.getElementById('brokerModeSwitchArea');
+            if (!el) return;
+            const payload = preview && typeof preview === 'object' ? preview : {};
+            const currentMode = normalizeBrokerMode(
+                payload.current_broker_mode || status?.broker_mode || status?.environment || currentBrokerMode,
+                currentBrokerMode || 'paper'
+            );
+            const targetMode = normalizeBrokerMode(
+                payload.target_broker_mode || getOppositeBrokerMode(currentMode),
+                getOppositeBrokerMode(currentMode)
+            );
+            const switchRequired = payload.switch_required === false ? false : targetMode !== currentMode;
+            const blockers = Array.isArray(payload.blockers) ? payload.blockers : [];
+            const allowed = payload.allowed === true && switchRequired && blockers.length === 0;
+            const counts = getBrokerModeSwitchCounts(payload);
+            const account = payload.account && typeof payload.account === 'object' ? payload.account : {};
+            const twoFactor = payload.two_factor && typeof payload.two_factor === 'object' ? payload.two_factor : deriveTwoFactorUiState(twoFactorState || {});
+            const envFiles = Array.isArray(payload.env_files) ? payload.env_files : [];
+            const envReady = envFiles.filter((item) => item?.exists && item?.readable).length;
+            const targetIsLive = targetMode === 'live';
+            const tone = payload.ok === false
+                ? 'error'
+                : (!switchRequired ? 'info' : (allowed ? 'ok' : (blockers.length ? 'warn' : 'info')));
+            const firstBlocker = blockers[0]?.message || payload.error || '';
+            const lockReason = actionPending
+                ? ''
+                : (!switchRequired
+                    ? `当前已经是 ${formatBrokerModeSwitchLabel(targetMode, { compact: true })}。`
+                    : (!allowed ? (firstBlocker || '切换预检未通过。') : ''));
+            const buttonLabel = switchRequired
+                ? `一键切换到 ${targetMode.toUpperCase()}`
+                : `已在 ${targetMode.toUpperCase()}`;
+            const confirmText = String(payload.confirm_text || `SWITCH ${targetMode.toUpperCase()}`).trim();
+            const riskItems = [
+                { label: '持仓', value: counts.openPositions, tone: counts.openPositions > 0 ? 'bad' : 'ok' },
+                { label: 'IBKR 挂单', value: counts.openOrders, tone: counts.openOrders > 0 ? 'bad' : 'ok' },
+                { label: 'PB active/stale', value: counts.pbBlockingGroups, tone: counts.pbBlockingGroups > 0 ? 'bad' : 'ok' },
+                { label: '2FA', value: twoFactor?.active ? 'ACTIVE' : 'IDLE', tone: twoFactor?.active ? 'bad' : 'ok' },
+            ];
+            const restartPlan = Array.isArray(payload.restart_plan) ? payload.restart_plan : [];
+            const blockerHtml = blockers.length
+                ? `
+                    <div class="broker-mode-switch-blockers">
+                        ${blockers.slice(0, 4).map((blocker) => `
+                            <div class="broker-mode-switch-blocker">
+                                <span class="broker-mode-switch-blocker-code">${escapeHtml(blocker.code || 'blocker')}</span>
+                                <span>${escapeHtml(blocker.message || blocker.detail || '预检未通过')}</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                `
+                : `
+                    <div class="broker-mode-switch-ready">
+                        ${switchRequired
+                            ? '预检通过：当前持仓、IBKR 挂单和 PB active/stale 订单组均为 0。'
+                            : '当前 broker mode 与目标一致，无需切换。'}
+                    </div>
+                `;
+            const restartPlanHtml = restartPlan.length
+                ? `
+                    <div class="broker-mode-switch-plan">
+                        ${restartPlan.map((step) => `
+                            <span class="broker-mode-switch-step">${escapeHtml(step.service || '--')} <b>${escapeHtml(String(step.action || '').toUpperCase())}</b></span>
+                        `).join('')}
+                    </div>
+                `
+                : '';
+            const targetHint = targetIsLive
+                ? 'LIVE 是真实账户：必须先确认无持仓、无挂单、无 PB active/stale 订单组。'
+                : 'PAPER 切换会停止当前 runtime 并重启 Gateway，切换后仍需重新完成 2FA。';
+            el.innerHTML = `
+                <div class="broker-mode-switch-card ${escapeHtml(tone)} ${targetIsLive ? 'target-live' : 'target-paper'}">
+                    <div class="broker-mode-switch-route" aria-label="broker mode switch route">
+                        <div class="broker-mode-node current">
+                            <span class="broker-mode-node-kicker">CURRENT</span>
+                            <strong>${escapeHtml(formatBrokerModeSwitchLabel(currentMode, { compact: true }))}</strong>
+                            <small>${escapeHtml(account.current_account_id_masked || '--')}</small>
+                        </div>
+                        <div class="broker-mode-switch-arrow">→</div>
+                        <div class="broker-mode-node target">
+                            <span class="broker-mode-node-kicker">TARGET</span>
+                            <strong>${escapeHtml(formatBrokerModeSwitchLabel(targetMode, { compact: true }))}</strong>
+                            <small>${escapeHtml(account.target_account_id_masked || (account.target_account_present === false ? '未配置' : '--'))}</small>
+                        </div>
+                    </div>
+                    <div class="broker-mode-switch-body">
+                        <div class="broker-mode-switch-main">
+                            <div class="broker-mode-switch-status-row">
+                                <span class="pill ${statusClass(allowed ? 'ready' : (blockers.length ? 'blocked' : 'neutral'))}">
+                                    ${escapeHtml(allowed ? 'READY' : (blockers.length ? 'BLOCKED' : 'CHECK'))}
+                                </span>
+                                <span class="broker-mode-switch-confirm">确认词：${escapeHtml(confirmText)}</span>
+                                <span class="broker-mode-switch-confirm">ENV files ${escapeHtml(String(envReady || 0))}/${escapeHtml(String(envFiles.length || 0))}</span>
+                            </div>
+                            <div class="broker-mode-switch-copy">
+                                ${escapeHtml(targetHint)} 切换会写入运行 .env 并按顺序重启 Gateway / Runtime / Compute / Scheduler / API。
+                            </div>
+                            <div class="broker-mode-switch-risks">
+                                ${riskItems.map((item) => `
+                                    <div class="broker-mode-switch-risk ${escapeHtml(item.tone)}">
+                                        <span>${escapeHtml(item.label)}</span>
+                                        <strong>${escapeHtml(String(item.value))}</strong>
+                                    </div>
+                                `).join('')}
+                            </div>
+                            ${blockerHtml}
+                            ${payload.runtime_status_error ? `<div class="broker-mode-switch-error">${escapeHtml(payload.runtime_status_error)}</div>` : ''}
+                            ${restartPlanHtml}
+                        </div>
+                        <div class="broker-mode-switch-side">
+                            <button
+                                class="broker-mode-switch-btn ${targetIsLive ? 'danger' : 'paper'}"
+                                type="button"
+                                data-lock-reason="${escapeHtml(lockReason)}"
+                                onclick="handleBrokerModeSwitch('${escapeHtml(targetMode)}')"
+                                ${actionPending || Boolean(lockReason) ? 'disabled' : ''}
+                            >${escapeHtml(buttonLabel)}</button>
+                            <div class="broker-mode-switch-hint">按钮会先要求输入 <b>${escapeHtml(confirmText)}</b>，再提交真实 runtime 切换。</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
         function renderServiceControlPanel(status = latestRuntimeStatus, monitorPayload = latestServiceMonitorPayload) {
             const el = document.getElementById('serviceControlGrid');
             if (!el) return;

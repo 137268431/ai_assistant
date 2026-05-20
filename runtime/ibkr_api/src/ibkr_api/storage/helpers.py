@@ -49,7 +49,15 @@ def format_zoned_datetime(ms: int, tz: ZoneInfo) -> str:
 def build_bar_close_meta(bar_time_ms: int, interval_value: Any) -> dict[str, Any]:
     if not isinstance(bar_time_ms, int) or bar_time_ms <= 0:
         return {}
-    close_ms = bar_time_ms + interval_to_ms(interval_value)
+    if normalize_interval_value(interval_value) == "1d":
+        close_ms = int(
+            datetime.fromtimestamp(bar_time_ms / 1000.0, ET)
+            .replace(hour=16, minute=0, second=0, microsecond=0)
+            .timestamp()
+            * 1000
+        )
+    else:
+        close_ms = bar_time_ms + interval_to_ms(interval_value)
     return {
         "bar_time_semantics": "start",
         "bar_close_time_ms": close_ms,

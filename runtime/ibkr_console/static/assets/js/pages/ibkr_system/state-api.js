@@ -283,6 +283,40 @@ function aggregateFreshnessIntervals(intervals = []) {
     return overall;
 }
 
+function normalizeFreshnessScope(scope = {}, fallbackName = '') {
+    const source = scope && typeof scope === 'object' ? scope : {};
+    const intervalSource = Array.isArray(source.intervals)
+        ? source.intervals.map((item) => [item?.interval, item])
+        : (source.intervals && typeof source.intervals === 'object' ? Object.entries(source.intervals) : []);
+    const intervals = intervalSource
+        .map(([interval, item]) => normalizeFreshnessIntervalItem(item, interval))
+        .filter((item) => item.interval);
+    let overall = normalizeFreshnessOverall(source.overall || {});
+    if (!overall.has_aggregate_counts && intervals.some((item) => item.has_aggregate_counts)) {
+        overall = aggregateFreshnessIntervals(intervals);
+    }
+    return {
+        ...source,
+        name: String(source.name || fallbackName || '').trim(),
+        label: String(source.label || source.name || fallbackName || '').trim(),
+        status: String(source.status || overall.status || '').trim().toLowerCase(),
+        critical: source.critical !== false,
+        best_effort: source.best_effort === true,
+        symbols_total: Math.max(0, Math.round(normalizeFreshnessNumber(source.symbols_total, overall.total_symbols || 0))),
+        intervals,
+        overall,
+    };
+}
+
+function normalizeFreshnessScopes(scopesPayload = {}) {
+    if (!scopesPayload || typeof scopesPayload !== 'object' || Array.isArray(scopesPayload)) return {};
+    return Object.entries(scopesPayload).reduce((acc, [name, scope]) => {
+        const normalized = normalizeFreshnessScope(scope, name);
+        if (normalized.name) acc[normalized.name] = normalized;
+        return acc;
+    }, {});
+}
+
 function normalizeFreshnessPayload(freshnessPayload = []) {
     if (Array.isArray(freshnessPayload)) {
         const intervals = freshnessPayload
@@ -291,35 +325,58 @@ function normalizeFreshnessPayload(freshnessPayload = []) {
         return {
             overall: aggregateFreshnessIntervals(intervals),
             intervals,
+            scopes: {},
             aggregate: intervals.some((item) => item.has_aggregate_counts),
         };
     }
     if (!freshnessPayload || typeof freshnessPayload !== 'object') {
-        return { overall: normalizeFreshnessOverall({}), intervals: [], aggregate: false };
+        return { overall: normalizeFreshnessOverall({}), intervals: [], scopes: {}, aggregate: false };
     }
 
+    const scopes = normalizeFreshnessScopes(freshnessPayload.scopes);
     let intervalEntries = [];
     if (Array.isArray(freshnessPayload.intervals)) {
         intervalEntries = freshnessPayload.intervals.map((item) => [item?.interval, item]);
     } else if (freshnessPayload.intervals && typeof freshnessPayload.intervals === 'object') {
         intervalEntries = Object.entries(freshnessPayload.intervals);
     } else {
+        const excluded = new Set([
+            'overall',
+            'display_overall',
+            'thresholds',
+            'checked_at_ms',
+            'scopes',
+            'scope_symbols',
+            'primary_scope',
+            'primary_status',
+        ]);
         intervalEntries = Object.entries(freshnessPayload)
-            .filter(([key]) => !['overall', 'thresholds', 'checked_at_ms'].includes(String(key || '').toLowerCase()));
+            .filter(([key]) => !excluded.has(String(key || '').toLowerCase()));
     }
 
     const intervals = intervalEntries
         .map(([interval, item]) => normalizeFreshnessIntervalItem(item, interval))
         .filter((item) => item.interval);
-    let overall = normalizeFreshnessOverall(freshnessPayload.overall || {});
+    const primaryScope = String(freshnessPayload.primary_scope || '').trim();
+    const displayScope = scopes[primaryScope] || scopes.active_trading || scopes.realtime_5m || null;
+    const displayOverallSource = freshnessPayload.display_overall || displayScope?.overall || freshnessPayload.overall || {};
+    let overall = normalizeFreshnessOverall(displayOverallSource);
     if (!overall.has_aggregate_counts && intervals.some((item) => item.has_aggregate_counts)) {
         overall = aggregateFreshnessIntervals(intervals);
     }
     const aggregate = Boolean(freshnessPayload.overall || freshnessPayload.intervals)
         || overall.has_aggregate_counts
-        || intervals.some((item) => item.has_aggregate_counts);
+        || intervals.some((item) => item.has_aggregate_counts)
+        || Object.keys(scopes).length > 0;
 
-    return { overall, intervals, aggregate };
+    return {
+        overall,
+        legacy_overall: normalizeFreshnessOverall(freshnessPayload.overall || {}),
+        intervals,
+        scopes,
+        primary_scope: primaryScope || displayScope?.name || '',
+        aggregate,
+    };
 }
 
 function normalizeFreshnessItems(freshnessPayload = []) {

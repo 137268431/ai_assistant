@@ -623,6 +623,30 @@ class WatchlistIdleTopupCycleTest(unittest.TestCase):
         for symbol in ("MSFT", "NVDA", "TSLA"):
             self.assertNotIn(symbol, call["persist_signal_symbols"])
 
+    def test_idle_topup_triggers_rollup_even_when_backfill_writes_no_new_5m_bars(self):
+        def zero_write_backfill(conid_map, symbol_meta=None, intervals=None, repair_symbols=None, period_overrides=None, trace_source=""):
+            self.service.data_backfill.backfill_all_calls.append(
+                {
+                    "conid_map": dict(conid_map or {}),
+                    "symbol_meta": dict(symbol_meta or {}),
+                    "intervals": list(intervals or []),
+                    "repair_symbols": list(repair_symbols or []),
+                    "period_overrides": dict(period_overrides or {}),
+                    "trace_source": trace_source,
+                }
+            )
+            return {symbol: {"5m": 0} for symbol in (conid_map or {})}
+
+        self.service.data_backfill.backfill_all = zero_write_backfill
+
+        state = self.service._run_watchlist_idle_topup_cycle()
+
+        self.assertEqual(state["status"], "completed")
+        self.assertEqual(state["last_loaded_bars"], 0)
+        self.assertEqual(len(self.service.realtime_compute_calls), 1)
+        self.assertEqual(self.service.realtime_compute_calls[0]["source"], "watchlist_idle_topup")
+        self.assertEqual(self.service.realtime_compute_calls[0]["rollup_intervals"], ["15m", "30m", "1h", "4h"])
+
     def test_idle_topup_persists_signals_for_unsubscribed_active_targets(self):
         self.service.pb = DummyPB(
             [

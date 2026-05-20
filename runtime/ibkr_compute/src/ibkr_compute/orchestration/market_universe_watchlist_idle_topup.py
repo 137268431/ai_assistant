@@ -1275,14 +1275,22 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
                     self._last_backfill_at = time.time()
                     self._last_backfill_symbols = list(conid_map.keys())
 
-                    if (
-                        batch_written
-                        and self.config.get_bool_for_environment(
-                            "ibkr_watchlist_idle_topup_materialize_5m",
-                            service_mod.DATA_ENVIRONMENT,
-                            True,
-                        )
-                    ):
+                    materialize_enabled = self.config.get_bool_for_environment(
+                        "ibkr_watchlist_idle_topup_materialize_5m",
+                        service_mod.DATA_ENVIRONMENT,
+                        True,
+                    )
+                    rollup_without_new_bars = self.config.get_bool_for_environment(
+                        "ibkr_watchlist_idle_topup_rollup_without_new_bars",
+                        service_mod.DATA_ENVIRONMENT,
+                        True,
+                    )
+                    should_trigger_compute = bool(
+                        conid_map
+                        and materialize_enabled
+                        and (batch_written or rollup_without_new_bars)
+                    )
+                    if should_trigger_compute:
                         admitted_after_write, _ = self._watchlist_idle_topup_admission()
                         if admitted_after_write:
                             active_signal_symbols = self._watchlist_idle_topup_active_signal_symbols()

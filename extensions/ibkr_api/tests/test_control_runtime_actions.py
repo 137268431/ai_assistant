@@ -333,6 +333,53 @@ class ControlRuntimeActionsTest(unittest.TestCase):
         self.assertEqual("restart", payload["action"])
         self.assertEqual("/ibkr/gateway/restart", request_mock.call_args.args[2])
 
+    def test_service_action_preserves_gateway_restart_blocker_from_runtime(self):
+        blocker_payload = {
+            "ok": False,
+            "restart_blocked": True,
+            "blocker_code": "market_data_session_conflict",
+            "message": "检测到 IBKR 行情/历史数据会话被另一个 IP 占用。",
+        }
+        with mock.patch.object(
+            api_app_mod.request,
+            "get_json",
+            return_value={"environment": "live", "service": "ibkr-gateway", "action": "restart", "source": "runtime_page"},
+        ):
+            with mock.patch.object(
+                api_app_mod,
+                "_fetch_runtime_status",
+                return_value={
+                    "payload": {"environment": "live"},
+                    "selected_upstream": "http://runtime/ibkr/status",
+                    "proxy_upstream": "http://compute/ibkr/status",
+                    "error": "",
+                },
+            ):
+                with mock.patch.object(
+                    api_app_mod,
+                    "_request_json_request",
+                    return_value={"ok": False, "status_code": 409, "payload": blocker_payload},
+                ):
+                    with mock.patch(
+                        "ibkr_api.control.actions.subprocess.run",
+                        return_value=mock.Mock(
+                            returncode=0,
+                            stdout="ActiveState=active\nSubState=running\nMainPID=4321\nUnitFileState=enabled\nExecMainStatus=0\nResult=success\n",
+                            stderr="",
+                        ),
+                    ):
+                        with mock.patch.object(api_app_mod, "_deliver_system_event_notification", return_value={"success": True, "message_id": "evt-5"}):
+                            with mock.patch.object(api_app_mod, "_write_system_event_record", return_value=True):
+                                payload, status_code = api_app_mod.custom_ibkr_service_action()
+
+        self.assertEqual(409, status_code)
+        self.assertFalse(payload["ok"])
+        self.assertTrue(payload["delegated"])
+        self.assertTrue(payload["restart_blocked"])
+        self.assertEqual("market_data_session_conflict", payload["blocker_code"])
+        self.assertEqual(409, payload["payload"]["status_code"])
+        self.assertEqual(blocker_payload["blocker_code"], payload["payload"]["blocker_code"])
+
 
 if __name__ == "__main__":
     unittest.main()

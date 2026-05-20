@@ -91,6 +91,8 @@ def build_trading_route_deps(
         "build_runtime_environment_mismatch_payload": globals_dict["build_runtime_environment_mismatch_payload"],
         "emit_system_event": globals_dict["_emit_system_event"],
         "fetch_runtime_status": lambda environment: globals_dict["_fetch_runtime_status"](environment),
+        "ibkr_2fa_state_key": str(globals_dict.get("IBKR_2FA_STATE_KEY") or "ibkr_2fa"),
+        "ibkr_2fa_state_date": str(globals_dict.get("IBKR_2FA_STATE_DATE") or "global"),
         "merge_startup_steps": globals_dict["_merge_startup_steps"],
         "deliver_startup_progress_card": lambda state, environment: globals_dict["_deliver_startup_progress_card"](
             state,

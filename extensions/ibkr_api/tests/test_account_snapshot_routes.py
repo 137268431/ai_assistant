@@ -471,6 +471,15 @@ class AccountSnapshotRoutesTest(unittest.TestCase):
                 "payload": {
                     "ok": True,
                     "environment": "live",
+                    "summary": {
+                        "account_today_pnl": {
+                            "ok": True,
+                            "net": 12.5,
+                            "currency": "USD",
+                            "source": "broker_daily_pnl",
+                            "raw_field": "DailyPnL",
+                        }
+                    },
                     "positions": [{"symbol": "AAPL", "quantity": 100}],
                     "orders": [],
                     "live_open_orders": [],
@@ -484,6 +493,8 @@ class AccountSnapshotRoutesTest(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual("ibkr-api", payload["proxy_source"])
         self.assertEqual("http://127.0.0.1:5101/ibkr/account", payload["proxy_upstream"])
+        self.assertEqual(12.5, payload["summary"]["account_today_pnl"]["net"])
+        self.assertEqual("broker_daily_pnl", payload["summary"]["account_today_pnl"]["source"])
 
 
 if __name__ == "__main__":

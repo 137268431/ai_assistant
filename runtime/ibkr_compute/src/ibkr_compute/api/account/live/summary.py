@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ibkr_compute.api.account.live.runtime import _app_coerce_float
+from ibkr_compute.api.runtime.common import _coerce_float
 
 
 def _summary_lookup(summary: dict) -> dict:
@@ -15,11 +15,11 @@ def _extract_summary_number(summary_map: dict, *keys: str) -> float:
         if isinstance(raw_value, dict):
             lowered = {str(k).strip().lower(): v for k, v in raw_value.items()}
             for field in ("amount", "value"):
-                number = _app_coerce_float(lowered.get(field))
+                number = _coerce_float(lowered.get(field))
                 if number is not None:
                     return float(number)
         else:
-            number = _app_coerce_float(raw_value)
+            number = _coerce_float(raw_value)
             if number is not None:
                 return float(number)
     return 0.0

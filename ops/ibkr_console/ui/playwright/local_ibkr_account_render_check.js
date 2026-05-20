@@ -127,6 +127,21 @@ const mockSnapshot = enrichAccountSnapshot(
       equity_with_loan: 120000,
       gross_position_value: 25000,
       total_cash_value: 95000,
+      realized_pnl: -12.5,
+      unrealized_pnl: 42.25,
+      daily_pnl: 29.75,
+      today_pnl: 29.75,
+      daily_pnl_available: true,
+      account_today_pnl: {
+        ok: true,
+        net: 29.75,
+        currency: 'USD',
+        source: 'broker_daily_pnl',
+        raw_field: 'DailyPnL',
+        realized: -12.5,
+        unrealized: 42.25,
+        message: '',
+      },
       initial_margin: 8000,
       maintenance_margin: 5000,
       sma: 50000,
@@ -531,6 +546,10 @@ html = html.replace(/<link href="https:\/\/fonts\.googleapis\.com[^"]+" rel="sty
     && result.chainRowCount >= 3
     && result.legRowCount >= 4
     && result.diagnosticsCount >= 3
+    && result.accountSummaryText.includes('Today P&L')
+    && result.accountSummaryText.includes('IBKR Daily PnL')
+    && result.accountSummaryText.includes('Realized')
+    && result.accountSummaryText.includes('Floating')
     && pageErrors.length === 0;
 
   const output = {
