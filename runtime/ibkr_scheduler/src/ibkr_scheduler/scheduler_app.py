@@ -31,6 +31,7 @@ from ibkr_compute.core.broker_mode import (
     normalize_market_data_mode,
 )
 from ibkr_compute.core.config import Config
+from ibkr_compute.core.large_operation_alert import emit_large_operation_alert
 from ibkr_compute.core.payload_compact import compact_json_payload
 from ibkr_compute.integrations.pb_client import PBClient
 
@@ -272,6 +273,8 @@ class SchedulerService:
                 "scan_scope": "watchlist_full",
                 "persist": True,
                 "repair": True,
+                "allow_repair_defer": True,
+                "force_repair_now": False,
                 "source": "ibkr_scheduler",
             }
         if job_id in BAR_TRUTH_AUDIT_JOB_IDS:
@@ -333,6 +336,33 @@ class SchedulerService:
         mode_scope: str,
     ) -> dict[str, Any]:
         method, path = NATIVE_HTTP_JOB_ENDPOINTS[job_id]
+        payload = self._native_http_job_payload(job_id, schedule)
+        operation_id = f"scheduler:{job_id}:{str((schedule or {}).get('id') or 'default')}:{int(time.time() * 1000)}"
+        if job_id == "ibkr_data_quality_repair_sweep":
+            payload["operation_id"] = operation_id
+        if job_id == "ibkr_data_quality_repair_sweep":
+            emit_large_operation_alert(
+                self.pb,
+                {
+                    "operation_id": operation_id,
+                    "operation_type": "scheduler_native_http_job",
+                    "job_id": job_id,
+                    "trigger_source": "ibkr_scheduler",
+                    "scan_scope": payload.get("scan_scope"),
+                    "intervals": payload.get("repair_intervals") or [],
+                    "time_budget_s": payload.get("repair_time_budget_s"),
+                    "force_large_operation": True,
+                    "planned_large_reason": "scan_scope=watchlist_full",
+                    "allow_repair_defer": payload.get("allow_repair_defer"),
+                    "force_repair_now": payload.get("force_repair_now"),
+                    "data_environment": market_data_mode,
+                    "broker_mode": broker_mode,
+                },
+                config=self.cfg,
+                stage="start",
+                environment=market_data_mode,
+                broker_mode=broker_mode,
+            )
         result = run_upstream_http_job(
             method=method,
             base_url=COMPUTE_BASE_URL,
@@ -342,9 +372,38 @@ class SchedulerService:
             market_data_mode=market_data_mode,
             mode_scope=mode_scope,
             timeout_seconds=_job_timeout_seconds(job_id, DEFAULT_NATIVE_HTTP_TIMEOUT_SECONDS),
-            payload=self._native_http_job_payload(job_id, schedule),
+            payload=payload,
         )
-        return self._validate_native_http_job_result(job_id, result)
+        validated_result = self._validate_native_http_job_result(job_id, result)
+        if job_id == "ibkr_data_quality_repair_sweep":
+            response_payload = validated_result.get("payload") if isinstance(validated_result.get("payload"), dict) else {}
+            summary = response_payload.get("summary") if isinstance(response_payload.get("summary"), dict) else {}
+            emit_large_operation_alert(
+                self.pb,
+                {
+                    "operation_id": operation_id,
+                    "operation_type": "scheduler_native_http_job",
+                    "job_id": job_id,
+                    "trigger_source": "ibkr_scheduler",
+                    "scan_scope": payload.get("scan_scope"),
+                    "intervals": payload.get("repair_intervals") or summary.get("repair_intervals") or [],
+                    "symbols_total": summary.get("expected_symbols_total") or len(response_payload.get("symbols") or []),
+                    "attempted_repair_symbols": summary.get("attempted_repair_symbols") or [],
+                    "history_fetch_symbols": summary.get("history_fetch_symbols") or [],
+                    "deferred_symbols": summary.get("deferred_symbols") or [],
+                    "deferred": bool(summary.get("deferred")),
+                    "error": str(validated_result.get("error") or response_payload.get("error") or ""),
+                    "force_large_operation": True,
+                    "planned_large_reason": "scan_scope=watchlist_full",
+                    "data_environment": market_data_mode,
+                    "broker_mode": broker_mode,
+                },
+                config=self.cfg,
+                stage="failed" if not bool(validated_result.get("ok")) else ("deferred" if bool(summary.get("deferred")) else "completed"),
+                environment=market_data_mode,
+                broker_mode=broker_mode,
+            )
+        return validated_result
 
     def _run_native_api_job(
         self,

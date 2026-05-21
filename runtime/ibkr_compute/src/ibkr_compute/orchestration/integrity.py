@@ -6,7 +6,7 @@ import time
 from ibkr_compute.market.bar_coverage_daily import build_range_daily_coverage
 from ibkr_compute.market.bar_freshness import expected_closed_ms_from_latest_5m
 from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite, upsert_bar_coverage_daily
-from ibkr_compute.market.timeframe_utils import HIGHER_INTERVALS, format_us_time
+from ibkr_compute.market.timeframe_utils import HIGHER_INTERVALS, format_us_time, normalize_interval
 
 
 def _service_mod():
@@ -55,6 +55,23 @@ def _bar_extra_conid(row: dict) -> int:
         return max(0, int(contract.get("conid") or 0))
     except Exception:
         return 0
+
+
+def _normalize_repair_intervals(intervals) -> list[str]:
+    if intervals is None:
+        return []
+    if isinstance(intervals, str):
+        raw_items = intervals.replace("\n", ",").split(",")
+    elif isinstance(intervals, (list, tuple, set)):
+        raw_items = list(intervals)
+    else:
+        raw_items = []
+    normalized = []
+    for item in raw_items:
+        interval = normalize_interval(item)
+        if interval and interval not in normalized:
+            normalized.append(interval)
+    return normalized
 
 
 class TradingServiceIntegrityMixin:
@@ -312,19 +329,31 @@ class TradingServiceIntegrityMixin:
         allow_defer: bool = True,
         run_pipeline_repair: bool = True,
         history_period_overrides: dict[str, dict] | None = None,
+        repair_intervals: list[str] | None = None,
+        max_repair_symbols_per_run: int | None = None,
+        repair_time_budget_s: int | None = None,
+        force_repair_now: bool = False,
     ) -> dict:
         service_mod = _service_mod()
-        repair_symbols = [
+        started_at = time.monotonic()
+        allowed_intervals = _normalize_repair_intervals(repair_intervals)
+        candidate_repair_symbols = [
             symbol for symbol, snapshot in snapshots.items()
             if bool(snapshot.get("safe_repair"))
         ]
+        repair_symbols = list(candidate_repair_symbols)
+        deferred_limit_symbols: list[str] = []
+        max_symbols = int(max_repair_symbols_per_run or 0)
+        if max_symbols > 0 and not force_repair_now and len(repair_symbols) > max_symbols:
+            deferred_limit_symbols = sorted(repair_symbols[max_symbols:])
+            repair_symbols = repair_symbols[:max_symbols]
         history_symbols = [
             symbol for symbol in repair_symbols
             if bool((snapshots.get(symbol) or {}).get("needs_history_fetch"))
         ]
         per_symbol = {
             symbol: {
-                "attempted": symbol in repair_symbols,
+                "attempted": symbol in candidate_repair_symbols,
                 "result": {
                     "source": source,
                     "history_needed": bool((snapshots.get(symbol) or {}).get("needs_history_fetch"))
@@ -336,15 +365,22 @@ class TradingServiceIntegrityMixin:
             }
             for symbol in snapshots.keys()
         }
+        for symbol in deferred_limit_symbols:
+            per_symbol[symbol]["result"]["deferred"] = True
+            per_symbol[symbol]["result"]["defer_reason"] = "repair_symbol_budget"
+            per_symbol[symbol]["result"]["max_repair_symbols_per_run"] = max_symbols
         if not repair_symbols:
             return {
                 "repair_symbols": [],
                 "history_symbols": [],
+                "deferred_symbols": sorted(deferred_limit_symbols),
+                "deferred": bool(deferred_limit_symbols),
+                "reason": "repair_symbol_budget" if deferred_limit_symbols else "",
                 "per_symbol": per_symbol,
             }
 
         defer_repairs, defer_snapshot = self._should_defer_background_repairs()
-        if allow_defer and defer_repairs:
+        if allow_defer and not force_repair_now and defer_repairs:
             for symbol in repair_symbols:
                 per_symbol[symbol]["result"]["deferred"] = True
                 per_symbol[symbol]["result"]["defer_reason"] = str(
@@ -367,7 +403,7 @@ class TradingServiceIntegrityMixin:
             return {
                 "repair_symbols": [],
                 "history_symbols": [],
-                "deferred_symbols": sorted(repair_symbols),
+                "deferred_symbols": sorted([*repair_symbols, *deferred_limit_symbols]),
                 "deferred": True,
                 "reason": str(defer_snapshot.get("reason") or "realtime_priority_active"),
                 "per_symbol": per_symbol,
@@ -396,9 +432,23 @@ class TradingServiceIntegrityMixin:
                 rollup_intervals_by_symbol[symbol] = list(dict.fromkeys(derived_intervals))
             intervals.extend(derived_intervals)
             intervals = [interval for interval in dict.fromkeys(intervals) if interval]
+            if allowed_intervals:
+                skipped_intervals = [interval for interval in intervals if interval not in allowed_intervals]
+                intervals = [interval for interval in intervals if interval in allowed_intervals]
+                rollup_intervals_by_symbol[symbol] = [
+                    interval for interval in rollup_intervals_by_symbol.get(symbol, [])
+                    if interval in allowed_intervals
+                ]
+                if skipped_intervals:
+                    per_symbol[symbol]["result"]["skipped_repair_intervals"] = skipped_intervals
+                    per_symbol[symbol]["result"]["repair_interval_policy"] = allowed_intervals
             if intervals:
                 intervals_by_symbol[symbol] = intervals
                 per_symbol[symbol]["result"]["api_repair_intervals"] = intervals
+            elif allowed_intervals and symbol in candidate_repair_symbols:
+                per_symbol[symbol]["result"]["deferred"] = True
+                per_symbol[symbol]["result"]["defer_reason"] = "repair_interval_policy"
+                per_symbol[symbol]["result"]["repair_interval_policy"] = allowed_intervals
             if symbol in rollup_intervals_by_symbol:
                 per_symbol[symbol]["result"]["rollup_repair_intervals"] = rollup_intervals_by_symbol[symbol]
 
@@ -432,6 +482,7 @@ class TradingServiceIntegrityMixin:
 
         backfill_result = {}
         unresolved_history = []
+        deferred_budget_symbols: set[str] = set()
         api_repair_symbols = sorted(intervals_by_symbol.keys())
         conid_map = self.conid_resolver.resolve_bulk(api_repair_symbols) if api_repair_symbols else {}
         if api_repair_symbols:
@@ -458,6 +509,14 @@ class TradingServiceIntegrityMixin:
                         if interval in intervals_by_symbol.get(symbol, [])
                     ]
                     if not interval_symbols:
+                        continue
+                    time_budget = int(repair_time_budget_s or 0)
+                    if time_budget > 0 and not force_repair_now and time.monotonic() - started_at >= time_budget:
+                        for symbol in interval_symbols:
+                            deferred_budget_symbols.add(symbol)
+                            per_symbol[symbol]["result"]["deferred"] = True
+                            per_symbol[symbol]["result"]["defer_reason"] = "repair_time_budget"
+                            per_symbol[symbol]["result"]["repair_time_budget_s"] = time_budget
                         continue
                     interval_conids = {symbol: int(conid_map[symbol]) for symbol in interval_symbols}
                     effective_period_overrides = {
@@ -491,12 +550,13 @@ class TradingServiceIntegrityMixin:
             "skipped": not run_pipeline_repair,
             "authoritative_source": "history_api",
         }
-        if run_pipeline_repair and api_repair_symbols:
+        compute_repair_symbols = [symbol for symbol in api_repair_symbols if symbol not in deferred_budget_symbols]
+        if run_pipeline_repair and compute_repair_symbols:
             try:
                 compute_intervals = sorted(
                     {
                         interval
-                        for symbol in api_repair_symbols
+                        for symbol in compute_repair_symbols
                         for interval in intervals_by_symbol.get(symbol, [])
                     },
                     key=lambda value: ("5m", "15m", "30m", "1h", "4h", "1d").index(value)
@@ -505,7 +565,7 @@ class TradingServiceIntegrityMixin:
                 rollup_intervals = sorted(
                     {
                         interval
-                        for symbol in api_repair_symbols
+                        for symbol in compute_repair_symbols
                         for interval in rollup_intervals_by_symbol.get(symbol, [])
                     },
                     key=lambda value: ("15m", "30m", "1h", "4h", "1d").index(value)
@@ -513,7 +573,7 @@ class TradingServiceIntegrityMixin:
                 )
                 compute_result = self._trigger_realtime_compute(
                     source="history_repair",
-                    symbols=api_repair_symbols,
+                    symbols=compute_repair_symbols,
                     persist_signals=False,
                     intervals=compute_intervals,
                     rollup_intervals=rollup_intervals,
@@ -538,6 +598,12 @@ class TradingServiceIntegrityMixin:
             "repair_symbols": sorted(repair_symbols),
             "history_symbols": sorted(api_repair_symbols),
             "unresolved_history_symbols": sorted(unresolved_history),
+            "deferred_symbols": sorted([*deferred_limit_symbols, *deferred_budget_symbols]),
+            "deferred": bool(deferred_limit_symbols or deferred_budget_symbols),
+            "reason": "repair_budget" if deferred_limit_symbols or deferred_budget_symbols else "",
+            "repair_intervals": allowed_intervals,
+            "max_repair_symbols_per_run": max_symbols,
+            "repair_time_budget_s": int(repair_time_budget_s or 0),
             "per_symbol": per_symbol,
         }
 
@@ -548,6 +614,10 @@ class TradingServiceIntegrityMixin:
         persist: bool = True,
         repair: bool = False,
         allow_repair_defer: bool = True,
+        repair_intervals: list[str] | None = None,
+        max_repair_symbols_per_run: int | None = None,
+        repair_time_budget_s: int | None = None,
+        force_repair_now: bool = False,
     ) -> dict:
         service_mod = _service_mod()
         normalized_symbols = sorted(
@@ -604,6 +674,10 @@ class TradingServiceIntegrityMixin:
                 snapshots,
                 source=f"{scan_scope}_integrity",
                 allow_defer=allow_repair_defer,
+                repair_intervals=repair_intervals,
+                max_repair_symbols_per_run=max_repair_symbols_per_run,
+                repair_time_budget_s=repair_time_budget_s,
+                force_repair_now=force_repair_now,
             )
             for symbol in repair_summary.get("repair_symbols") or []:
                 snapshots[symbol] = self._collect_bar_integrity_snapshot(
@@ -656,6 +730,14 @@ class TradingServiceIntegrityMixin:
                 if bool(snapshot.get("needs_manual_review"))
             ),
             "history_fetch_symbols": sorted(repair_summary.get("history_symbols") or []),
+            "deferred_symbols": sorted(repair_summary.get("deferred_symbols") or []),
+            "deferred": bool(repair_summary.get("deferred", False)),
+            "defer_reason": str(repair_summary.get("reason") or ""),
+            "repair_intervals": list(repair_summary.get("repair_intervals") or repair_intervals or []),
+            "max_repair_symbols_per_run": repair_summary.get("max_repair_symbols_per_run") or max_repair_symbols_per_run or 0,
+            "repair_time_budget_s": repair_summary.get("repair_time_budget_s") or repair_time_budget_s or 0,
+            "allow_repair_defer": bool(allow_repair_defer),
+            "force_repair_now": bool(force_repair_now),
             "repair_reasons": {
                 symbol: str((snapshots.get(symbol) or {}).get("repair_reason") or "")
                 for symbol in normalized_symbols

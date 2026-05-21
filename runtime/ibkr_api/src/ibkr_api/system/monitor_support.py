@@ -171,6 +171,27 @@ def _append_effective_gate_flag(existing_flags: Any, gate: dict[str, Any]) -> li
     return merged
 
 
+def _history_backfill_detail(compute: dict[str, Any]) -> str:
+    data_backfill = compute.get("data_backfill") if isinstance(compute.get("data_backfill"), dict) else {}
+    if not data_backfill:
+        return ""
+    parts: list[str] = []
+    active_requests = int(data_backfill.get("active_requests") or 0)
+    active_symbols_total = int(data_backfill.get("active_symbols_total") or 0)
+    if active_requests or active_symbols_total:
+        parts.append(f"history active {active_requests}/{active_symbols_total}")
+    last_trace = data_backfill.get("last_trace") if isinstance(data_backfill.get("last_trace"), dict) else {}
+    if last_trace:
+        source = str(last_trace.get("source") or "history").strip()
+        duration_s = float(last_trace.get("duration_s") or 0)
+        requests = int(last_trace.get("request_count") or 0)
+        retry = int(last_trace.get("retry_count") or 0)
+        throttle = int(last_trace.get("throttle_count") or 0)
+        if duration_s >= 60 or requests >= 100 or retry or throttle:
+            parts.append(f"history last {source} {duration_s:.0f}s req {requests} retry {retry} throttle {throttle}")
+    return " | ".join(parts)
+
+
 def _call_console_probe(probe_console_status: ProbeConsoleStatus, console_base_url: str) -> dict[str, Any]:
     try:
         signature = inspect.signature(probe_console_status)
@@ -334,6 +355,7 @@ def derive_monitor_service_map(
         pb_status = "degraded"
 
     compute_status = _normalize_service_status(compute.get("status"), fallback_running=bool(compute))
+    history_detail = _history_backfill_detail(compute)
     ready_engines = int(compute.get("ready_engines") or 0)
     total_engines = int(compute.get("total_engines") or 0)
     if total_engines > 0 and ready_engines < total_engines and compute_status == "running":
@@ -443,6 +465,7 @@ def derive_monitor_service_map(
                 f"engines {int(compute.get('ready_engines') or 0)}/{int(compute.get('total_engines') or 0)}",
                 f"compute {int(compute.get('compute_count') or 0)}",
                 f"tracked {int(compute.get('tracked_cursors') or 0)}",
+                history_detail,
             ),
         },
         "ibkr-backtest": {
@@ -489,6 +512,11 @@ def derive_monitor_service_map(
             **service_map.get("ibkr-compute", {}),
             **derive_compute_state(compute_state_payload, observed_at=observed_at),
         }
+        if history_detail:
+            service_map["ibkr-compute"]["detail"] = _detail_parts(
+                service_map["ibkr-compute"].get("detail"),
+                history_detail,
+            )
     if runtime:
         service_map["ibkr-runtime"] = {
             **service_map.get("ibkr-runtime", {}),

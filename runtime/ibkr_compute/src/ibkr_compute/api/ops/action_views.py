@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import requests
 from flask import jsonify, request
 
@@ -38,6 +40,7 @@ from ibkr_compute.core.broker_mode import (
     resolve_data_environment,
     resolve_market_data_mode,
 )
+from ibkr_compute.core.large_operation_alert import emit_large_operation_alert
 from ibkr_compute.backtest.execution_fills import (
     DEFAULT_PROFILE_STATE_KEY,
     build_calibrated_execution_cost_profile,
@@ -51,6 +54,7 @@ from ibkr_compute.market.data_retention import DataRetention
 from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite
 from ibkr_compute.market.storage_cleanup import DEFAULT_PROFILE as STORAGE_CLEANUP_DEFAULT_PROFILE
 from ibkr_compute.market.storage_cleanup import StorageCleanup
+from ibkr_compute.market.timeframe_utils import classify_market_session_kind, normalize_interval
 
 
 BACKTEST_RUN_LIST_COLUMNS = [
@@ -808,6 +812,69 @@ def _coerce_session_modes(value) -> list[str]:
     return modes or ["regular"]
 
 
+def _coerce_payload_intervals(value) -> list[str]:
+    if isinstance(value, str):
+        raw_items = value.replace("\n", ",").split(",")
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = list(value)
+    else:
+        raw_items = []
+    intervals = []
+    for item in raw_items:
+        interval = normalize_interval(item)
+        if interval and interval not in intervals:
+            intervals.append(interval)
+    return intervals
+
+
+def _default_repair_limits(service, payload: dict, *, repair: bool) -> dict:
+    if not repair:
+        return {
+            "session_kind": classify_market_session_kind(),
+            "repair_intervals": [],
+            "max_repair_symbols_per_run": 0,
+            "repair_time_budget_s": 0,
+        }
+    session_kind = classify_market_session_kind()
+    intraday = session_kind in {"regular", "close_transition"}
+    requested_intervals = _coerce_payload_intervals(payload.get("repair_intervals"))
+    default_intervals = ["5m"] if intraday else ["5m", "15m", "30m", "1h", "4h", "1d"]
+    config = getattr(service, "config", None)
+    environment = resolve_market_data_mode(payload.get("market_data_mode") or payload.get("data_environment"))
+
+    def _cfg_int(key: str, fallback: int) -> int:
+        getter = getattr(config, "get_int_for_environment", None)
+        if callable(getter):
+            try:
+                return int(getter(key, environment, fallback))
+            except Exception:
+                return int(fallback)
+        return int(fallback)
+
+    max_default = _cfg_int(
+        "ibkr_history_repair_intraday_max_symbols_per_run" if intraday else "ibkr_history_repair_offhours_max_symbols_per_run",
+        8 if intraday else 25,
+    )
+    budget_default = _cfg_int(
+        "ibkr_history_repair_intraday_time_budget_s" if intraday else "ibkr_history_repair_offhours_time_budget_s",
+        60 if intraday else 240,
+    )
+    return {
+        "session_kind": session_kind,
+        "repair_intervals": requested_intervals or default_intervals,
+        "max_repair_symbols_per_run": coerce_request_int(
+            payload.get("max_repair_symbols_per_run", payload.get("repair_max_symbols_per_run")),
+            max_default,
+            minimum=1,
+        ),
+        "repair_time_budget_s": coerce_request_int(
+            payload.get("repair_time_budget_s"),
+            budget_default,
+            minimum=1,
+        ),
+    }
+
+
 def _build_data_quality_response(*, force_repair: bool | None = None):
     _, service, unavailable = require_ibkr_service()
     if unavailable:
@@ -819,27 +886,97 @@ def _build_data_quality_response(*, force_repair: bool | None = None):
     effective_scan_scope = "watchlist" if requested_scan_scope == "watchlist_full" else requested_scan_scope
     persist = coerce_request_bool(payload.get("persist"), True)
     repair = coerce_request_bool(payload.get("repair"), False) if force_repair is None else bool(force_repair)
+    force_repair_now = coerce_request_bool(payload.get("force_repair_now"), False)
     allow_repair_defer = coerce_request_bool(
         payload.get("allow_repair_defer"),
-        False if repair else True,
+        True,
     )
+    if force_repair_now:
+        allow_repair_defer = False
+    repair_limits = _default_repair_limits(service, payload, repair=repair)
+    operation_id = str(payload.get("operation_id") or "").strip()
+    if repair and not operation_id:
+        operation_id = f"data_quality_repair:{requested_scan_scope}:{int(time.time() * 1000)}"
+    if repair:
+        emit_large_operation_alert(
+            getattr(service, "pb", None),
+            {
+                "operation_id": operation_id,
+                "operation_type": "data_quality_repair",
+                "job_id": "ibkr_data_quality_repair",
+                "trigger_source": str(payload.get("source") or "manual"),
+                "scan_scope": requested_scan_scope,
+                "symbols": symbols,
+                "symbols_total": len(symbols),
+                "intervals": repair_limits["repair_intervals"],
+                "time_budget_s": repair_limits["repair_time_budget_s"],
+                "allow_repair_defer": allow_repair_defer,
+                "force_repair_now": force_repair_now,
+                "force_large_operation": requested_scan_scope == "watchlist_full",
+                "planned_large_reason": "scan_scope=watchlist_full" if requested_scan_scope == "watchlist_full" else "",
+                "data_environment": resolve_market_data_mode(payload.get("market_data_mode") or payload.get("data_environment")),
+                "broker_mode": payload.get("broker_mode") or configured_broker_mode(),
+            },
+            config=getattr(service, "config", None),
+            stage="start",
+            environment=resolve_market_data_mode(payload.get("market_data_mode") or payload.get("data_environment")),
+            broker_mode=payload.get("broker_mode") or configured_broker_mode(),
+        )
     result = service.scan_bar_integrity(
         symbols,
         scan_scope=effective_scan_scope,
         persist=persist,
         repair=repair,
         allow_repair_defer=allow_repair_defer,
+        repair_intervals=repair_limits["repair_intervals"],
+        max_repair_symbols_per_run=repair_limits["max_repair_symbols_per_run"],
+        repair_time_budget_s=repair_limits["repair_time_budget_s"],
+        force_repair_now=force_repair_now,
     )
     coverage = _build_data_quality_coverage(symbols, result.get("rows") or [])
     result_summary = dict(result.get("summary") or {})
     result_summary.update(coverage)
     result["summary"] = result_summary
+    if repair:
+        emit_large_operation_alert(
+            getattr(service, "pb", None),
+            {
+                "operation_id": operation_id,
+                "operation_type": "data_quality_repair",
+                "job_id": "ibkr_data_quality_repair",
+                "trigger_source": str(payload.get("source") or "manual"),
+                "scan_scope": requested_scan_scope,
+                "symbols": symbols,
+                "symbols_total": len(symbols),
+                "intervals": result_summary.get("repair_intervals") or repair_limits["repair_intervals"],
+                "attempted_repair_symbols": result_summary.get("attempted_repair_symbols") or [],
+                "history_fetch_symbols": result_summary.get("history_fetch_symbols") or [],
+                "deferred_symbols": result_summary.get("deferred_symbols") or [],
+                "deferred": bool(result_summary.get("deferred")),
+                "allow_repair_defer": allow_repair_defer,
+                "force_repair_now": force_repair_now,
+                "force_large_operation": requested_scan_scope == "watchlist_full",
+                "planned_large_reason": "scan_scope=watchlist_full" if requested_scan_scope == "watchlist_full" else "",
+                "data_environment": resolve_market_data_mode(payload.get("market_data_mode") or payload.get("data_environment")),
+                "broker_mode": payload.get("broker_mode") or configured_broker_mode(),
+            },
+            config=getattr(service, "config", None),
+            stage="deferred" if bool(result_summary.get("deferred")) else "completed",
+            environment=resolve_market_data_mode(payload.get("market_data_mode") or payload.get("data_environment")),
+            broker_mode=payload.get("broker_mode") or configured_broker_mode(),
+        )
     return jsonify(
         {
             "ok": True,
             "symbols": symbols,
             "scan_scope": requested_scan_scope,
             "effective_scan_scope": effective_scan_scope,
+            "operation_id": operation_id,
+            "repair_controls": {
+                "allow_repair_defer": allow_repair_defer,
+                "force_repair_now": force_repair_now,
+                **repair_limits,
+            },
             **result,
         }
     )

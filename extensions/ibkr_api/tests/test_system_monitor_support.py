@@ -379,6 +379,46 @@ class SystemMonitorSupportTest(unittest.TestCase):
         self.assertEqual(compute["readiness_phase"], "preload")
         self.assertFalse(compute["ready"])
 
+    def test_monitor_compute_detail_includes_history_backfill_pressure(self):
+        service_monitor = derive_monitor_service_map(
+            "live",
+            {
+                "status": "ok",
+                "runtime": {
+                    "status": "running",
+                    "runtime_phase": "running",
+                    "gateway": {"running": True, "reachable": True},
+                    "session": {"authenticated": True},
+                    "websocket": {"connected": True, "ready": True},
+                },
+                "compute": {
+                    "status": "running",
+                    "total_engines": 10,
+                    "ready_engines": 10,
+                    "data_backfill": {
+                        "active_requests": 4,
+                        "active_symbols_total": 12,
+                        "last_trace": {
+                            "source": "backfill_all",
+                            "duration_s": 130,
+                            "request_count": 101,
+                            "retry_count": 3,
+                            "throttle_count": 20,
+                        },
+                    },
+                },
+                "service_topology": {"services": {}},
+            },
+            {"status": "running", "loop_interval_seconds": 30, "job_count": 12},
+            console_probe={"ok": True, "status_code": 200, "target_url": "https://quant.lzw-glory.top/index.html"},
+            pb_health={"ok": True, "status_code": 200},
+            build_service_topology=lambda: {"services": {}},
+        )
+
+        compute = service_monitor["services"]["ibkr-compute"]
+        self.assertIn("history active 4/12", compute["detail"])
+        self.assertIn("history last backfill_all 130s req 101 retry 3 throttle 20", compute["detail"])
+
     def test_scheduler_lag_degrades_after_compute_preload_completes(self):
         service_monitor = derive_monitor_service_map(
             "live",

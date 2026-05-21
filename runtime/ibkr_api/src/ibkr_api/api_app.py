@@ -321,18 +321,22 @@ def _sqlite_today_market_count(collection: str, environment: str, market_date: s
         from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite
 
         start_ms, end_ms = _market_date_bounds_ms(market_date)
-        interval = "5m" if collection == "ibkr_bars" else "5"
+        interval_clause = "interval = ?"
+        interval_params: tuple[str, ...] = ("5m",)
+        if collection == "ibkr_indicators":
+            interval_clause = "interval IN (?, ?)"
+            interval_params = ("5", "5m")
         with open_pb_sqlite(readonly=True, timeout=2.0) as conn:
             row = conn.execute(
                 f"""
                 SELECT COUNT(*) AS total
                 FROM {collection}
                 WHERE environment = ?
-                  AND interval = ?
+                  AND {interval_clause}
                   AND bar_time_ms >= ?
                   AND bar_time_ms < ?
                 """,
-                (str(environment or "live"), interval, start_ms, end_ms),
+                (str(environment or "live"), *interval_params, start_ms, end_ms),
             ).fetchone()
         return int((row["total"] if row else 0) or 0)
     except Exception:
@@ -393,7 +397,9 @@ def _load_today_counts(environment: str, market_date: str) -> dict[str, Any]:
         ),
         "ibkr_indicators": (
             "ibkr_indicators",
-            f'environment = "{data_env}" && interval = "5" && us_time >= "{start_us}" && us_time < "{end_us}"',
+            f'environment = "{data_env}" && '
+            f'(interval = "5" || interval = "5m") && '
+            f'us_time >= "{start_us}" && us_time < "{end_us}"',
         ),
         "ibkr_signals": (
             "ibkr_signals",

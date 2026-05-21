@@ -7,6 +7,8 @@ import time
 import uuid
 from typing import Dict, Optional, Sequence
 
+from ibkr_compute.core.large_operation_alert import emit_large_operation_alert
+
 from .timeframe_utils import normalize_interval
 
 logger = logging.getLogger("ibkr_compute.market.data_backfill")
@@ -123,6 +125,7 @@ class DataBackfillTracingMixin:
                 payload["attempt"],
                 payload["error"] or "--",
             )
+        self._maybe_emit_large_operation_progress_alert(trace)
 
     def _record_trace_write(
         self,
@@ -267,7 +270,64 @@ class DataBackfillTracingMixin:
             float(summary["slowest_stage"].get("duration_s", 0) or 0),
             summary["error"] or "--",
         )
+        self._emit_large_operation_terminal_alert(summary)
         return summary
+
+    def _maybe_emit_large_operation_progress_alert(self, trace: Optional[Dict]) -> None:
+        if not trace:
+            return
+        with self._count_lock:
+            request_delta = self._request_count - int(trace.get("request_count_start", 0) or 0)
+            retry_delta = self._retry_count - int(trace.get("retry_count_start", 0) or 0)
+            throttle_delta = self._throttle_count - int(trace.get("throttle_count_start", 0) or 0)
+        emit_large_operation_alert(
+            self.pb_client,
+            {
+                "operation_id": str(trace.get("trace_id") or ""),
+                "operation_type": "history_backfill",
+                "job_id": str(trace.get("source") or "history_backfill"),
+                "source": str(trace.get("source") or "history_backfill"),
+                "symbols": list(trace.get("symbols") or []),
+                "symbols_total": len(trace.get("symbols") or []),
+                "intervals": list(trace.get("intervals") or []),
+                "task_count": len(trace.get("symbols") or []) * max(1, len(trace.get("intervals") or [])),
+                "duration_s": max(0.0, time.time() - float(trace.get("started_at", time.time()) or time.time())),
+                "request_count": int(request_delta or 0),
+                "retry_count": int(retry_delta or 0),
+                "throttle_count": int(throttle_delta or 0),
+                "max_concurrency": trace.get("max_concurrency", self._max_concurrency()),
+                "request_spacing_s": trace.get("request_spacing_s", self._request_spacing()),
+                "data_environment": self.environment,
+            },
+            config=self.config,
+            stage="progress",
+            environment=self.environment,
+        )
+
+    def _emit_large_operation_terminal_alert(self, summary: Dict) -> None:
+        emit_large_operation_alert(
+            self.pb_client,
+            {
+                "operation_id": str(summary.get("trace_id") or ""),
+                "operation_type": "history_backfill",
+                "job_id": str(summary.get("source") or "history_backfill"),
+                "source": str(summary.get("source") or "history_backfill"),
+                "symbols_total": int(summary.get("symbols_total", 0) or 0),
+                "intervals": list(summary.get("intervals") or []),
+                "task_count": int(summary.get("symbols_total", 0) or 0) * max(1, len(summary.get("intervals") or [])),
+                "duration_s": float(summary.get("duration_s", 0) or 0),
+                "request_count": int(summary.get("request_count", 0) or 0),
+                "retry_count": int(summary.get("retry_count", 0) or 0),
+                "throttle_count": int(summary.get("throttle_count", 0) or 0),
+                "written": int(summary.get("written", 0) or 0),
+                "slowest_stage": dict(summary.get("slowest_stage") or {}),
+                "error": str(summary.get("error") or ""),
+                "data_environment": self.environment,
+            },
+            config=self.config,
+            stage="failed" if str(summary.get("error") or "") else "completed",
+            environment=self.environment,
+        )
 
     def status(self) -> dict:
         with self._trace_lock:

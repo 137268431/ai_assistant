@@ -7,6 +7,9 @@ import logging
 import time
 from typing import Dict, List, Optional, Sequence
 
+from ibkr_compute.core.large_operation_alert import emit_large_operation_alert
+
+from .data_backfill_support import PERIOD_MAP
 from .timeframe_utils import normalize_interval
 
 logger = logging.getLogger("ibkr_compute.market.data_backfill")
@@ -156,6 +159,36 @@ class DataBackfillBackfillMixin:
 
         worker_count = min(self._max_concurrency(), len(conid_map))
         trace = self._new_trace(trace_source, list(conid_map.keys()), interval_list)
+        operation_id = str((trace or {}).get("trace_id") or "")
+        periods_by_symbol = {
+            symbol: {
+                interval: str(((period_overrides or {}).get(symbol) or {}).get(interval) or PERIOD_MAP.get(interval, ("", ""))[0])
+                for interval in interval_list
+            }
+            for symbol in conid_map.keys()
+        }
+        if operation_id:
+            emit_large_operation_alert(
+                self.pb_client,
+                {
+                    "operation_id": operation_id,
+                    "operation_type": "history_backfill",
+                    "job_id": trace_source,
+                    "source": trace_source,
+                    "trigger_source": trace_source,
+                    "symbols": sorted(conid_map.keys()),
+                    "symbols_total": len(conid_map),
+                    "intervals": interval_list,
+                    "task_count": len(conid_map) * len(interval_list),
+                    "periods": periods_by_symbol,
+                    "max_concurrency": worker_count,
+                    "request_spacing_s": self._request_spacing(),
+                    "data_environment": self.environment,
+                },
+                config=self.config,
+                stage="start",
+                environment=self.environment,
+            )
         logger.info(
             "Starting history backfill: symbols=%d, tasks=%d, intervals=%s, workers=%d",
             len(conid_map),

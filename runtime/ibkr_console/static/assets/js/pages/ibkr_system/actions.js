@@ -10,7 +10,9 @@ async function loadSystemData(showToastOnSuccess = false) {
         );
     }
     try {
-        const envFilterBase = `environment = "${escapeQueryValue(currentEnvironment)}"`;
+        const currentBrokerMode = typeof getCurrentBrokerMode === 'function' ? getCurrentBrokerMode() : currentEnvironment;
+        const dataEnvFilterBase = `environment = "${escapeQueryValue(currentEnvironment)}"`;
+        const brokerEnvFilterBase = `environment = "${escapeQueryValue(currentBrokerMode)}"`;
         const coreTimeoutMs = isInitialLoad ? 15000 : 10000;
         const schedulerTimeoutMs = isInitialLoad ? 22000 : 18000;
         const secondaryTimeoutMs = isInitialLoad ? 20000 : 12000;
@@ -39,10 +41,19 @@ async function loadSystemData(showToastOnSuccess = false) {
                 return fallback;
             }
         };
-        const safeCountFetch = async (bucket, label, collection, filter, timeoutMs = secondaryTimeoutMs) => {
+        const safeCountFetch = async (bucket, label, collection, filter, timeoutMs = secondaryTimeoutMs, cacheOptions = {}) => {
             try {
+                const countCacheOptions = {
+                    ttlMs: 30000,
+                    ttl: 30000,
+                    swrMs: 30000,
+                    swr: 30000,
+                    ...cacheOptions,
+                    force: Boolean(showToastOnSuccess) || Boolean(cacheOptions.force),
+                    tags: ['system', 'today-stats', collection, currentBrokerMode, currentEnvironment].concat(cacheOptions.tags || []),
+                };
                 const request = typeof cachedCountFetch === 'function'
-                    ? cachedCountFetch(collection, filter, { ttlMs: 30000, ttl: 30000, force: Boolean(showToastOnSuccess) })
+                    ? cachedCountFetch(collection, filter, countCacheOptions)
                     : apiFetch(collection, {
                         filter,
                         perPage: 1,
@@ -84,6 +95,8 @@ async function loadSystemData(showToastOnSuccess = false) {
         const cronDefinitions = Array.isArray(cronResp?.items) ? cronResp.items : [];
         const coreCompute = buildSystemComputeSummary(computeHealth, computeStatus, summaryLite?.ibkr_compute || {});
         const coreFreshnessPayload = summaryLite?.data_freshness || [];
+        const summaryToday = summaryLite?.today && typeof summaryLite.today === 'object' ? summaryLite.today : {};
+        const summaryTodayStats = rememberStableTodayStats(summaryToday);
         renderStatus(buildSystemHealthSnapshot(
             computeHealth,
             computeStatus,
@@ -98,6 +111,7 @@ async function loadSystemData(showToastOnSuccess = false) {
         renderSchedulerOverview(cronResp || {}, summaryLite || {});
         renderServiceTopology(computeStatus?.service_topology || summaryLite?.service_topology || {});
         renderStorageHealth(summaryLite?.storage_health || computeStatus?.storage_health || {});
+        renderTodayStats(summaryTodayStats);
 
         if (isInitialLoad) {
             hasLoadedSystemData = true;
@@ -121,28 +135,33 @@ async function loadSystemData(showToastOnSuccess = false) {
             { label: '视图', value: currentFocus === 'stats' ? '统计聚焦' : '系统总览' },
         ]);
         const todayStart = `${todayDate} 00:00:00`;
-        const todayFilterBase = `created >= "${escapeQueryValue(todayStart)}" && ${envFilterBase}`;
-        const targetDateFilter = `date = "${escapeQueryValue(todayDate)}" && ${envFilterBase}`;
+        const dataTodayFilterBase = `created >= "${escapeQueryValue(todayStart)}" && ${dataEnvFilterBase}`;
+        const brokerTodayFilterBase = `created >= "${escapeQueryValue(todayStart)}" && ${brokerEnvFilterBase}`;
+        const targetDateFilter = `date = "${escapeQueryValue(todayDate)}" && ${dataEnvFilterBase}`;
 
         const [eventsResp, signalCount, indicatorCount, orderCount, barCount, targetCount, eventCount, backtestBatchResp, backtestRunsResp] = await Promise.all([
-            safeApiFetch(secondaryErrors, 'system_events', 'system_events', { filter: envFilterBase, sort: '-created', perPage: 8 }, { items: [] }, secondaryTimeoutMs),
-            safeCountFetch(secondaryErrors, 'count:ibkr_signals', 'ibkr_signals', todayFilterBase),
-            safeCountFetch(secondaryErrors, 'count:ibkr_indicators', 'ibkr_indicators', todayFilterBase),
-            safeCountFetch(secondaryErrors, 'count:orders', 'orders', todayFilterBase),
-            safeCountFetch(secondaryErrors, 'count:ibkr_bars', 'ibkr_bars', todayFilterBase),
+            safeApiFetch(secondaryErrors, 'system_events', 'system_events', { filter: brokerEnvFilterBase, sort: '-created', perPage: 8 }, { items: [] }, secondaryTimeoutMs),
+            safeCountFetch(secondaryErrors, 'count:ibkr_signals', 'ibkr_signals', dataTodayFilterBase),
+            safeCountFetch(secondaryErrors, 'count:ibkr_indicators', 'ibkr_indicators', dataTodayFilterBase, secondaryTimeoutMs, {
+                ttlMs: 120000,
+                ttl: 120000,
+                swrMs: 180000,
+                swr: 180000,
+            }),
+            safeCountFetch(secondaryErrors, 'count:orders', 'orders', brokerTodayFilterBase),
+            safeCountFetch(secondaryErrors, 'count:ibkr_bars', 'ibkr_bars', dataTodayFilterBase),
             safeCountFetch(secondaryErrors, 'count:ibkr_targets', 'ibkr_targets', targetDateFilter),
-            safeCountFetch(secondaryErrors, 'count:system_events', 'system_events', todayFilterBase),
-            safeApiFetch(secondaryErrors, 'ibkr_backtest_batches', 'ibkr_backtest_batches', { filter: envFilterBase, sort: '-updated', perPage: 1 }, { items: [] }, secondaryTimeoutMs),
-            safeApiFetch(secondaryErrors, 'ibkr_backtest_runs', 'ibkr_backtest_runs', { filter: envFilterBase, sort: '-updated', perPage: 2 }, { items: [] }, secondaryTimeoutMs)
+            safeCountFetch(secondaryErrors, 'count:system_events', 'system_events', brokerTodayFilterBase),
+            safeApiFetch(secondaryErrors, 'ibkr_backtest_batches', 'ibkr_backtest_batches', { filter: dataEnvFilterBase, sort: '-updated', perPage: 1 }, { items: [] }, secondaryTimeoutMs),
+            safeApiFetch(secondaryErrors, 'ibkr_backtest_runs', 'ibkr_backtest_runs', { filter: dataEnvFilterBase, sort: '-updated', perPage: 2 }, { items: [] }, secondaryTimeoutMs)
         ]);
 
         if (loadId !== latestSystemLoadId) return;
 
-        const summaryToday = summaryLite?.today && typeof summaryLite.today === 'object' ? summaryLite.today : {};
         const mainOrderCount = summaryToday.main_orders == null
             ? (summaryToday.order_groups == null ? orderCount : Number(summaryToday.order_groups || 0))
             : Number(summaryToday.main_orders || 0);
-        const todayStats = {
+        const secondaryTodayStats = {
             orders: mainOrderCount,
             ibkr_bars: barCount,
             ibkr_indicators: indicatorCount,
@@ -150,6 +169,7 @@ async function loadSystemData(showToastOnSuccess = false) {
             ibkr_targets: targetCount,
             events: eventCount,
         };
+        const todayStats = rememberStableTodayStats(mergeTodayStats(summaryTodayStats, secondaryTodayStats));
         const freshnessPayload = summaryLite?.data_freshness || [];
 
         renderStatus(buildSystemHealthSnapshot(

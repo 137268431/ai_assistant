@@ -4,6 +4,55 @@ let currentFocus = '';
 let hasLoadedSystemData = false;
 let latestSystemLoadId = 0;
 let lastStableIbkrDataHealth = null;
+let lastStableTodayStats = null;
+
+const TODAY_STATS_KEYS = ['orders', 'ibkr_bars', 'ibkr_indicators', 'ibkr_signals', 'ibkr_targets', 'events'];
+
+function normalizeTodayStatValue(value) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric >= 0 ? numeric : null;
+}
+
+function normalizeTodayStatsPayload(payload = {}) {
+    const source = payload && typeof payload === 'object' ? payload : {};
+    const normalized = {};
+    const orderValue = source.main_orders != null
+        ? source.main_orders
+        : (source.order_groups != null ? source.order_groups : source.orders);
+    const orders = normalizeTodayStatValue(orderValue);
+    if (orders !== null) normalized.orders = orders;
+    TODAY_STATS_KEYS.filter((key) => key !== 'orders').forEach((key) => {
+        const value = normalizeTodayStatValue(source[key]);
+        if (value !== null) normalized[key] = value;
+    });
+    return normalized;
+}
+
+function mergeTodayStats(...sources) {
+    return sources.reduce((merged, source) => {
+        const normalized = normalizeTodayStatsPayload(source);
+        TODAY_STATS_KEYS.forEach((key) => {
+            if (normalized[key] !== undefined) merged[key] = normalized[key];
+        });
+        return merged;
+    }, {});
+}
+
+function cloneTodayStats(today = {}) {
+    return mergeTodayStats(today);
+}
+
+function rememberStableTodayStats(today = {}) {
+    const normalized = normalizeTodayStatsPayload(today);
+    if (Object.keys(normalized).length) {
+        lastStableTodayStats = {
+            ...(lastStableTodayStats || {}),
+            ...normalized,
+        };
+        return cloneTodayStats(lastStableTodayStats);
+    }
+    return lastStableTodayStats ? cloneTodayStats(lastStableTodayStats) : {};
+}
 
 function cloneIbkrDataHealth(dataHealth = {}) {
     if (!dataHealth || typeof dataHealth !== 'object') return null;

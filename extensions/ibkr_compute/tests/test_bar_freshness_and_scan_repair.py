@@ -331,6 +331,41 @@ class BarFreshnessAndScanRepairTest(unittest.TestCase):
         self.assertEqual(resolver._cache["DASH"], 459309417)
         self.assertEqual(harness.data_backfill.calls[0]["symbols"], ["DASH"])
 
+    def test_integrity_repair_limits_symbols_and_intervals(self):
+        harness = _IntegrityHarness()
+        snapshots = {
+            f"SYM{index}": {
+                "symbol": f"SYM{index}",
+                "safe_repair": True,
+                "needs_history_fetch": True,
+                "needs_pipeline_repair": True,
+                "derived_sync": {
+                    "missing_intervals": ["4h"],
+                    "stale_intervals": [],
+                    "rollup_repair_enabled": True,
+                },
+            }
+            for index in range(5)
+        }
+
+        result = harness._run_bar_integrity_repairs(
+            snapshots,
+            source="unit_test",
+            allow_defer=False,
+            repair_intervals=["5m"],
+            max_repair_symbols_per_run=2,
+            repair_time_budget_s=60,
+        )
+
+        self.assertEqual(result["repair_symbols"], ["SYM0", "SYM1"])
+        self.assertEqual(result["deferred_symbols"], ["SYM2", "SYM3", "SYM4"])
+        self.assertEqual(harness.data_backfill.calls[0]["symbols"], ["SYM0", "SYM1"])
+        self.assertEqual(harness.data_backfill.calls[0]["intervals"], ["5m"])
+        self.assertEqual(harness.compute_calls[0]["intervals"], ["5m"])
+        self.assertEqual(harness.compute_calls[0]["rollup_intervals"], [])
+        self.assertEqual(result["per_symbol"]["SYM0"]["result"]["skipped_repair_intervals"], ["4h"])
+        self.assertEqual(result["per_symbol"]["SYM2"]["result"]["defer_reason"], "repair_symbol_budget")
+
     def test_daily_scan_repairs_but_does_not_exclude_incomplete_symbol_by_default(self):
         repair = _FakeRepair()
         api_app = SimpleNamespace(

@@ -366,7 +366,20 @@ class SchedulerJobsTest(unittest.TestCase):
         self.assertEqual(request_payload["scan_scope"], "watchlist_full")
         self.assertTrue(request_payload["persist"])
         self.assertTrue(request_payload["repair"])
+        self.assertTrue(request_payload["allow_repair_defer"])
+        self.assertTrue(str(request_payload["operation_id"]).startswith("scheduler:ibkr_data_quality_repair_sweep:"))
+        self.assertNotIn("repair_intervals", request_payload)
+        self.assertNotIn("max_repair_symbols_per_run", request_payload)
+        self.assertNotIn("repair_time_budget_s", request_payload)
+        self.assertFalse(request_payload["force_repair_now"])
         self.assertEqual(request_payload["source"], "ibkr_scheduler")
+        large_events = [
+            payload for collection, payload in pb.records
+            if collection == "system_events" and payload.get("source") == "ibkr_large_operation"
+        ]
+        self.assertEqual(len(large_events), 2)
+        self.assertIn("大规模操作开始", large_events[0]["title"])
+        self.assertIn("大规模操作完成", large_events[1]["title"])
 
     def test_data_quality_repair_sweep_fails_empty_success_payload(self):
         pb = _FakePB()
