@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 
 from ibkr_compute.market.bar_coverage_daily import build_range_daily_coverage
@@ -12,6 +13,48 @@ def _service_mod():
     from . import trading_service as service_mod
 
     return service_mod
+
+
+def _rollup_written_total(rollup_payload: dict) -> int:
+    if not isinstance(rollup_payload, dict):
+        return 0
+    if "written" in rollup_payload:
+        try:
+            return int(rollup_payload.get("written") or 0)
+        except Exception:
+            return 0
+    total = 0
+    for payload in rollup_payload.values():
+        if not isinstance(payload, dict):
+            continue
+        try:
+            total += int(payload.get("written") or 0)
+        except Exception:
+            continue
+    return total
+
+
+def _bar_extra_conid(row: dict) -> int:
+    extra = (row or {}).get("extra")
+    if isinstance(extra, str):
+        try:
+            extra = json.loads(extra) if extra.strip() else {}
+        except Exception:
+            extra = {}
+    if not isinstance(extra, dict):
+        return 0
+    for key in ("conid", "contract_id"):
+        try:
+            conid = int(extra.get(key) or 0)
+        except Exception:
+            conid = 0
+        if conid > 0:
+            return conid
+    contract = extra.get("contract") if isinstance(extra.get("contract"), dict) else {}
+    try:
+        return max(0, int(contract.get("conid") or 0))
+    except Exception:
+        return 0
 
 
 class TradingServiceIntegrityMixin:
@@ -331,24 +374,70 @@ class TradingServiceIntegrityMixin:
             }
 
         intervals_by_symbol = {}
+        rollup_intervals_by_symbol = {}
         for symbol in repair_symbols:
             snapshot = snapshots.get(symbol) or {}
             intervals = []
             if bool(snapshot.get("needs_history_fetch")):
                 intervals.append("5m")
             derived_sync = snapshot.get("derived_sync") or {}
-            intervals.extend(str(item or "").strip() for item in (derived_sync.get("missing_intervals") or []))
-            intervals.extend(str(item or "").strip() for item in (derived_sync.get("stale_intervals") or []))
+            derived_intervals = [
+                str(item or "").strip()
+                for item in [
+                    *(derived_sync.get("missing_intervals") or []),
+                    *(derived_sync.get("stale_intervals") or []),
+                ]
+                if str(item or "").strip()
+            ]
+            if derived_intervals and bool(derived_sync.get("rollup_repair_enabled")):
+                # Higher-timeframe bars are derived from 5m in this stack; backfill
+                # source 5m first so missed rollup windows can be rebuilt.
+                intervals.append("5m")
+                rollup_intervals_by_symbol[symbol] = list(dict.fromkeys(derived_intervals))
+            intervals.extend(derived_intervals)
             intervals = [interval for interval in dict.fromkeys(intervals) if interval]
             if intervals:
                 intervals_by_symbol[symbol] = intervals
                 per_symbol[symbol]["result"]["api_repair_intervals"] = intervals
+            if symbol in rollup_intervals_by_symbol:
+                per_symbol[symbol]["result"]["rollup_repair_intervals"] = rollup_intervals_by_symbol[symbol]
+
+        def _resolve_conids_from_recent_bars(symbols: list[str]) -> dict[str, int]:
+            resolved: dict[str, int] = {}
+            for raw_symbol in symbols:
+                symbol = str(raw_symbol or "").strip().upper()
+                if not symbol:
+                    continue
+                try:
+                    rows = self.pb.get_records(
+                        "ibkr_bars",
+                        filter=(
+                            f'symbol = "{symbol}" && '
+                            f'{self._build_bar_environment_filter()}'
+                        ),
+                        sort="-bar_time_ms",
+                        per_page=40,
+                    )
+                except Exception:
+                    rows = []
+                for row in rows or []:
+                    conid = _bar_extra_conid(row if isinstance(row, dict) else {})
+                    if conid > 0:
+                        resolved[symbol] = conid
+                        cache = getattr(self.conid_resolver, "_cache", None)
+                        if isinstance(cache, dict):
+                            cache[symbol] = conid
+                        break
+            return resolved
 
         backfill_result = {}
         unresolved_history = []
         api_repair_symbols = sorted(intervals_by_symbol.keys())
         conid_map = self.conid_resolver.resolve_bulk(api_repair_symbols) if api_repair_symbols else {}
         if api_repair_symbols:
+            missing_conids = [symbol for symbol in api_repair_symbols if symbol not in conid_map]
+            if missing_conids:
+                conid_map.update(_resolve_conids_from_recent_bars(missing_conids))
             unresolved_history = [symbol for symbol in api_repair_symbols if symbol not in conid_map]
             for symbol in unresolved_history:
                 per_symbol[symbol]["result"]["history_error"] = "conid_unresolved"
@@ -404,22 +493,33 @@ class TradingServiceIntegrityMixin:
         }
         if run_pipeline_repair and api_repair_symbols:
             try:
+                compute_intervals = sorted(
+                    {
+                        interval
+                        for symbol in api_repair_symbols
+                        for interval in intervals_by_symbol.get(symbol, [])
+                    },
+                    key=lambda value: ("5m", "15m", "30m", "1h", "4h", "1d").index(value)
+                    if value in ("5m", "15m", "30m", "1h", "4h", "1d") else 99,
+                )
+                rollup_intervals = sorted(
+                    {
+                        interval
+                        for symbol in api_repair_symbols
+                        for interval in rollup_intervals_by_symbol.get(symbol, [])
+                    },
+                    key=lambda value: ("15m", "30m", "1h", "4h", "1d").index(value)
+                    if value in ("15m", "30m", "1h", "4h", "1d") else 99,
+                )
                 compute_result = self._trigger_realtime_compute(
                     source="history_repair",
                     symbols=api_repair_symbols,
                     persist_signals=False,
-                    intervals=sorted(
-                        {
-                            interval
-                            for symbol in api_repair_symbols
-                            for interval in intervals_by_symbol.get(symbol, [])
-                        },
-                        key=lambda value: ("5m", "15m", "30m", "1h", "4h", "1d").index(value)
-                        if value in ("5m", "15m", "30m", "1h", "4h", "1d") else 99,
-                    ),
-                    rollup_intervals=[],
+                    intervals=compute_intervals,
+                    rollup_intervals=rollup_intervals,
                 )
                 pipeline_result["compute"] = dict(compute_result or {})
+                pipeline_result["rollup"] = dict((compute_result or {}).get("rollup") or {})
                 pipeline_result["ok"] = bool((compute_result or {}).get("ok", True))
             except Exception as exc:
                 pipeline_result["ok"] = False
@@ -430,7 +530,7 @@ class TradingServiceIntegrityMixin:
             per_symbol[symbol]["result"]["pipeline"] = {
                 "processed": int(((pipeline_result.get("compute") or {}).get("processed", 0) or 0)),
                 "errors": int(((pipeline_result.get("compute") or {}).get("errors", 0) or 0)),
-                "rollup_written": int(((pipeline_result.get("rollup") or {}).get("written", 0) or 0)),
+                "rollup_written": _rollup_written_total(pipeline_result.get("rollup") or {}),
                 "skipped": bool(pipeline_result.get("skipped", False)),
             }
 

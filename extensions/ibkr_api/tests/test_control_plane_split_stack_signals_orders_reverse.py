@@ -766,6 +766,204 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
         self.assertEqual(pb.orders["order-entry"]["extra"]["feishu_order_message_id"], "order-msg-1")
         self.assertEqual(pb.orders["order-entry"]["extra"]["feishu_order_notify_last_status"], "Closed")
 
+    def test_sync_order_status_notification_serializes_first_send_race(self):
+        import threading
+        import time
+
+        class _OrderNotifyPB:
+            def __init__(self):
+                self.lock = threading.Lock()
+                self.orders = {
+                    "order-entry": {
+                        "id": "order-entry",
+                        "unique_id": "sig-1_entry",
+                        "order_type": "Entry",
+                        "symbol": "AAPL",
+                        "environment": "live",
+                        "status": "Submitted",
+                        "role": "entry",
+                        "order_id": "101",
+                        "broker_order_id": "101",
+                        "trade_group_id": "sig-1_entry",
+                        "entry_order_unique_id": "sig-1_entry",
+                        "signal_id": "sig-1",
+                        "direction": "long",
+                        "quantity": 10,
+                        "filled_qty": 0,
+                        "limit_price": 180.1,
+                        "us_time": "2026-04-22 09:35:00",
+                        "extra": {"environment": "live", "role": "entry", "trade_group_id": "sig-1_entry"},
+                    },
+                    "order-tp": {
+                        "id": "order-tp",
+                        "unique_id": "sig-1_tp",
+                        "order_type": "TakeProfit",
+                        "symbol": "AAPL",
+                        "environment": "live",
+                        "status": "Submitted",
+                        "role": "take_profit",
+                        "order_id": "102",
+                        "broker_order_id": "102",
+                        "trade_group_id": "sig-1_entry",
+                        "entry_order_unique_id": "sig-1_entry",
+                        "parent_order_unique_id": "sig-1_entry",
+                        "signal_id": "sig-1",
+                        "direction": "long",
+                        "quantity": 10,
+                        "filled_qty": 0,
+                        "limit_price": 184.0,
+                        "us_time": "2026-04-22 09:35:00",
+                        "extra": {"environment": "live", "role": "take_profit", "trade_group_id": "sig-1_entry"},
+                    },
+                }
+
+            def _copy_row(self, row):
+                return {**row, "extra": dict(row.get("extra") or {})}
+
+            def get_records(self, collection, filter=None, sort=None, per_page=200, page=1):
+                assert collection == "orders"
+                with self.lock:
+                    return [self._copy_row(row) for row in self.orders.values()]
+
+            def update_record(self, collection, record_id, patch):
+                assert collection == "orders"
+                with self.lock:
+                    current = {**self.orders[record_id], **patch}
+                    if "extra" in patch:
+                        current["extra"] = dict(patch["extra"] or {})
+                    self.orders[record_id] = current
+                    return self._copy_row(current)
+
+            def mark_target_filled(self):
+                with self.lock:
+                    row = self.orders["order-tp"]
+                    row["status"] = "Filled"
+                    row["filled_qty"] = 10
+                    row["fill_price"] = 184.0
+                    row["extra"] = {**row["extra"], "current_status": "Filled"}
+
+        pb = _OrderNotifyPB()
+        send_started = threading.Event()
+        send_calls = []
+        update_calls = []
+        results = {}
+        errors = []
+
+        def send_interactive(card, chat_id, environment):
+            send_calls.append((card, chat_id, environment))
+            send_started.set()
+            time.sleep(0.05)
+            return {"success": True, "message_id": "order-msg-race"}
+
+        def update_interactive(message_id, card, environment):
+            update_calls.append((message_id, card, environment))
+            return {"success": True, "message_id": message_id}
+
+        def run_entry():
+            try:
+                results["entry"] = sync_order_status_notification(
+                    pb,
+                    pb.orders["order-entry"],
+                    action="Submitted",
+                    message="订单已提交",
+                    send_interactive=send_interactive,
+                    update_interactive=update_interactive,
+                    order_chat_id="order-chat-test",
+                    console_base_url="https://console.example.com",
+                )
+            except Exception as exc:
+                errors.append(exc)
+
+        def run_target():
+            try:
+                results["target"] = sync_order_status_notification(
+                    pb,
+                    pb.orders["order-tp"],
+                    action="Filled",
+                    message="止盈成交，交易组已关闭",
+                    send_interactive=send_interactive,
+                    update_interactive=update_interactive,
+                    order_chat_id="order-chat-test",
+                    console_base_url="https://console.example.com",
+                )
+            except Exception as exc:
+                errors.append(exc)
+
+        entry_thread = threading.Thread(target=run_entry)
+        entry_thread.start()
+        self.assertTrue(send_started.wait(2))
+        pb.mark_target_filled()
+        target_thread = threading.Thread(target=run_target)
+        target_thread.start()
+        entry_thread.join(2)
+        target_thread.join(2)
+
+        self.assertEqual([], errors)
+        self.assertEqual(len(send_calls), 1)
+        self.assertEqual(len(update_calls), 1)
+        self.assertEqual(results["entry"]["message_id"], "order-msg-race")
+        self.assertEqual(results["target"]["message_id"], "order-msg-race")
+        self.assertEqual(results["target"]["group_status"], "Closed")
+        self.assertEqual(update_calls[0][0], "order-msg-race")
+        self.assertEqual(pb.orders["order-entry"]["extra"]["feishu_order_message_id"], "order-msg-race")
+        self.assertEqual(pb.orders["order-entry"]["extra"]["feishu_order_notify_last_status"], "Closed")
+
+    def test_sync_order_status_notification_waits_for_primary_before_child_first_send(self):
+        class _ChildOnlyPB:
+            def __init__(self):
+                self.order = {
+                    "id": "order-tp",
+                    "unique_id": "sig-1_tp",
+                    "order_type": "TakeProfit",
+                    "symbol": "AAPL",
+                    "environment": "live",
+                    "status": "Submitted",
+                    "role": "take_profit",
+                    "order_id": "102",
+                    "broker_order_id": "102",
+                    "trade_group_id": "sig-1_entry",
+                    "entry_order_unique_id": "sig-1_entry",
+                    "parent_order_unique_id": "sig-1_entry",
+                    "signal_id": "sig-1",
+                    "direction": "long",
+                    "quantity": 10,
+                    "filled_qty": 0,
+                    "limit_price": 184.0,
+                    "us_time": "2026-04-22 09:35:00",
+                    "extra": {"environment": "live", "role": "take_profit", "trade_group_id": "sig-1_entry"},
+                }
+                self.updated = []
+
+            def get_records(self, collection, filter=None, sort=None, per_page=200, page=1):
+                assert collection == "orders"
+                return [dict(self.order)]
+
+            def update_record(self, collection, record_id, patch):
+                self.updated.append((collection, record_id, patch))
+                return {**self.order, **patch}
+
+        pb = _ChildOnlyPB()
+        send_calls = []
+        update_calls = []
+
+        result = sync_order_status_notification(
+            pb,
+            pb.order,
+            action="Submitted",
+            message="订单已提交",
+            send_interactive=lambda *args, **kwargs: send_calls.append((args, kwargs)) or {"success": True, "message_id": "unexpected"},
+            update_interactive=lambda *args, **kwargs: update_calls.append((args, kwargs)) or {"success": True},
+            order_chat_id="order-chat-test",
+            console_base_url="https://console.example.com",
+        )
+
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["reason"], "waiting_for_primary_order")
+        self.assertEqual(result["message_id"], "")
+        self.assertEqual(send_calls, [])
+        self.assertEqual(update_calls, [])
+        self.assertEqual(pb.updated, [])
+
     def test_build_order_upsert_keeps_existing_stop_price_when_live_stp_price_is_zero(self):
         existing_row = {
             "id": "order-sl-1",

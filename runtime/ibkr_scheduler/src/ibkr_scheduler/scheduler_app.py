@@ -50,6 +50,7 @@ DEFAULT_NATIVE_API_HTTP_TIMEOUT_SECONDS = 90
 JOB_TIMEOUT_SECONDS = {
     "system_status_reminder": 150,
     "ibkr_scan_runtime": 180,
+    "ibkr_data_quality_repair_sweep": 300,
     "ibkr_data_quality_truth_audit_cycle": 300,
 }
 BAR_TRUTH_AUDIT_JOB_IDS = {
@@ -86,6 +87,13 @@ def _job_timeout_seconds(job_id: str, default: int) -> int:
         return max(1, int(float(raw_value)))
     except (TypeError, ValueError):
         return max(1, int(default))
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default or 0)
 
 
 def _scheduler_mode_context(
@@ -125,6 +133,7 @@ class SchedulerService:
             get_ingest_cursor=self._get_ingest_cursor,
             get_dispatch_cursor=self._get_dispatch_cursor,
             save_dispatch_cursor=self._save_dispatch_cursor,
+            config=self.cfg,
         )
 
     def start(self) -> None:
@@ -258,6 +267,13 @@ class SchedulerService:
         return candidate.isoformat()
 
     def _native_http_job_payload(self, job_id: str, schedule: dict[str, Any] | None = None) -> dict[str, Any]:
+        if job_id == "ibkr_data_quality_repair_sweep":
+            return {
+                "scan_scope": "watchlist_full",
+                "persist": True,
+                "repair": True,
+                "source": "ibkr_scheduler",
+            }
         if job_id in BAR_TRUTH_AUDIT_JOB_IDS:
             now_et = datetime.now(US_TZ)
             payload_mode = str((schedule or {}).get("payload_mode") or "").strip().lower()
@@ -281,6 +297,31 @@ class SchedulerService:
             }
         return {}
 
+    @staticmethod
+    def _validate_native_http_job_result(job_id: str, result: dict[str, Any]) -> dict[str, Any]:
+        if job_id != "ibkr_data_quality_repair_sweep":
+            return result
+        payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        expected_total = _safe_int(summary.get("expected_symbols_total"), -1)
+        scanned_total = _safe_int(summary.get("scanned_symbols_total"), -1)
+        symbols = payload.get("symbols") if isinstance(payload.get("symbols"), list) else []
+        if bool(result.get("ok")) and expected_total == 0 and scanned_total == 0 and not symbols:
+            failed_result = dict(result)
+            failed_payload = dict(payload)
+            failed_payload["ok"] = False
+            failed_payload["error"] = "empty_data_quality_repair_sweep"
+            failed_result.update(
+                {
+                    "ok": False,
+                    "error": "empty_data_quality_repair_sweep",
+                    "empty_repair_sweep": True,
+                    "payload": failed_payload,
+                }
+            )
+            return failed_result
+        return result
+
     def _run_native_http_job(
         self,
         job_id: str,
@@ -292,7 +333,7 @@ class SchedulerService:
         mode_scope: str,
     ) -> dict[str, Any]:
         method, path = NATIVE_HTTP_JOB_ENDPOINTS[job_id]
-        return run_upstream_http_job(
+        result = run_upstream_http_job(
             method=method,
             base_url=COMPUTE_BASE_URL,
             path=path,
@@ -303,6 +344,7 @@ class SchedulerService:
             timeout_seconds=_job_timeout_seconds(job_id, DEFAULT_NATIVE_HTTP_TIMEOUT_SECONDS),
             payload=self._native_http_job_payload(job_id, schedule),
         )
+        return self._validate_native_http_job_result(job_id, result)
 
     def _run_native_api_job(
         self,
@@ -499,7 +541,10 @@ class SchedulerService:
                 "mode_scope": job_mode_scope,
                 "scheduled_slot": slot_token,
             }
-            status = "ok" if result.get("ok", False) and not result.get("skipped") else "idle"
+            if not result.get("ok", False):
+                status = "error"
+            else:
+                status = "ok" if not result.get("skipped") else "idle"
             if result.get("skipped") and result.get("reason") == "disabled":
                 status = "disabled"
             latest_state = self.job_states(environment).get(canonical_job_id) or {}

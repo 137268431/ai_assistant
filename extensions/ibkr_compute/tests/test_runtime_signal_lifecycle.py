@@ -53,6 +53,7 @@ class _FakePB:
         }
         self.updated = []
         self.acked = []
+        self.events = []
 
     def get_records(self, collection, filter=None, sort=None, per_page=100, page=1):
         rows = self.orders if collection == "orders" else []
@@ -135,6 +136,11 @@ class _FakePB:
         self.acked.append(copy.deepcopy(payload))
         return {"status": payload.get("status"), "fallback": False}
 
+    def notify_system_event(self, title, detail=None, **kwargs):
+        event = {"title": title, "detail": copy.deepcopy(detail or {}), **copy.deepcopy(kwargs)}
+        self.events.append(event)
+        return {"ok": True, "notified": True, "persisted": True}
+
     @staticmethod
     def _extract(filter_text, field):
         match = re.search(rf'{re.escape(field)}\s*=\s*"([^"]*)"', filter_text)
@@ -164,6 +170,7 @@ class _FakeOrderLifecycle:
     def __init__(self):
         self.diagnostics = []
         self.sl_count = 0
+        self.sl_limit = 3
         self.reset_count = 0
 
     def handle_protection_incomplete(self, **kwargs):
@@ -188,6 +195,10 @@ class _FakeOrderLifecycle:
 
     def reset_sl_count(self):
         self.reset_count += 1
+
+    @property
+    def is_sl_circuit_breaker(self):
+        return self.sl_count >= self.sl_limit
 
 
 class _FakeOrderTracker:
@@ -703,6 +714,19 @@ class RuntimeSignalLifecycleTest(unittest.TestCase):
         self.assertEqual(["AAPL"], service.signal_processor.removed)
         self.assertEqual(1, service.order_lifecycle.sl_count)
         self.assertEqual([("AAPL", 3, "cooldown_after_stop_loss")], service.signal_processor.cooldowns)
+        self.assertEqual(1, len(service.pb.events))
+        event = service.pb.events[0]
+        self.assertEqual("止损成交报警", event["title"])
+        self.assertEqual("alert", event["event_type"])
+        self.assertEqual("warning", event["level"])
+        self.assertEqual("live", event["environment"])
+        self.assertEqual("AAPL", event["detail"]["标的"])
+        self.assertEqual("SIG_1", event["detail"]["信号ID"])
+        self.assertEqual("1003", event["detail"]["Broker订单ID"])
+        self.assertEqual(1, event["detail"]["连续止损次数"])
+        self.assertEqual(3, event["detail"]["连续止损上限"])
+        self.assertEqual("no", event["detail"]["熔断状态"])
+        self.assertEqual(3, event["detail"]["冷却K线"])
 
     def test_take_profit_fill_closes_protected_active_signal(self):
         service = _FakeService()
@@ -744,6 +768,50 @@ class RuntimeSignalLifecycleTest(unittest.TestCase):
         self.assertEqual(row["extra"]["exit_fill_price"], 105.5)
         self.assertEqual(["AAPL"], service.signal_processor.removed)
         self.assertEqual(1, service.order_lifecycle.reset_count)
+        self.assertEqual([], service.pb.events)
+
+    def test_stop_loss_fill_sends_error_alert_when_circuit_breaker_trips(self):
+        service = _FakeService()
+        service.order_lifecycle.sl_limit = 1
+        service.pb.signals["sig-row-1"]["status"] = "protected_active"
+        service.pb.orders.append(
+            {
+                "id": "order-sl-1",
+                "unique_id": "sl_SIG_1",
+                "entry_order_unique_id": "entry_SIG_1",
+                "order_id": "1003",
+                "broker_order_id": "1003",
+                "signal_id": "SIG_1",
+                "trade_group_id": "group_SIG_1",
+                "role": "stop_loss",
+                "status": "Filled",
+                "environment": "live",
+            }
+        )
+
+        service._on_order_fill(
+            {
+                "orderId": "1003",
+                "ticker": "AAPL",
+                "side": "SELL",
+                "orderType": "STP",
+                "status": "FILLED",
+                "parentId": "1001",
+                "cOID": "sl_SIG_1",
+                "avgPrice": 99.25,
+                "filledQuantity": 10,
+            }
+        )
+
+        self.assertEqual(1, service.order_lifecycle.sl_count)
+        self.assertEqual(1, len(service.pb.events))
+        event = service.pb.events[0]
+        self.assertEqual("连续止损熔断已触发", event["title"])
+        self.assertEqual("error", event["level"])
+        self.assertEqual(1, event["detail"]["连续止损次数"])
+        self.assertEqual(1, event["detail"]["连续止损上限"])
+        self.assertEqual("yes", event["detail"]["熔断状态"])
+        self.assertIn("sl_circuit_breaker", event["detail"]["状态结论"])
 
     def test_market_close_fill_closes_signal_with_realized_pnl_and_commission(self):
         service = _FakeService()
@@ -807,6 +875,7 @@ class RuntimeSignalLifecycleTest(unittest.TestCase):
         self.assertAlmostEqual(close_updates[-1]["extra"]["total_commission"], 0.8)
         self.assertEqual(["AAPL"], service.signal_processor.removed)
         self.assertEqual(1, service.order_lifecycle.reset_count)
+        self.assertEqual([], service.pb.events)
 
     def test_duplicate_stop_loss_fill_does_not_retrigger_cooldown(self):
         service = _FakeService()
@@ -843,6 +912,7 @@ class RuntimeSignalLifecycleTest(unittest.TestCase):
         self.assertEqual(1, service.order_lifecycle.sl_count)
         self.assertEqual([("AAPL", 3, "cooldown_after_stop_loss")], service.signal_processor.cooldowns)
         self.assertEqual(["AAPL"], service.signal_processor.removed)
+        self.assertEqual(1, len(service.pb.events))
 
     def test_entry_fill_reconciles_existing_filled_take_profit(self):
         service = _FakeService()

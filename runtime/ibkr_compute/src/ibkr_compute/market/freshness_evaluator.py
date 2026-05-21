@@ -559,6 +559,54 @@ def _latest_bars_sqlite(
     return payload
 
 
+def _source_5m_bucket_counts_sqlite(
+    symbols: Iterable[str],
+    expected_by_interval: dict[str, dict[str, Any]],
+    environment: str,
+    *,
+    timeout: float,
+) -> dict[str, dict[str, int]]:
+    normalized_symbols = sorted(dict.fromkeys(_normalize_symbols(list(symbols or []))))
+    if not normalized_symbols:
+        return {}
+
+    env_values = [str(environment or "live").strip().lower() or "live"]
+    if env_values[0] == "live":
+        env_values.append("")
+    symbol_placeholders = ", ".join("?" for _ in normalized_symbols)
+    env_placeholders = ", ".join("?" for _ in env_values)
+    payload: dict[str, dict[str, int]] = {}
+    with open_pb_sqlite(readonly=True, timeout=timeout) as conn:
+        for interval, expected in (expected_by_interval or {}).items():
+            normalized = normalize_interval(interval)
+            if normalized in {"5m", "1d"} or not bool((expected or {}).get("current_due")):
+                continue
+            expected_close_ms = _to_int((expected or {}).get("expected_close_ms"), 0)
+            window_start_ms = max(0, expected_close_ms - interval_to_ms(normalized))
+            if expected_close_ms <= 0 or window_start_ms <= 0:
+                continue
+            rows = conn.execute(
+                f"""
+                SELECT symbol, COUNT(*) AS source_count
+                FROM ibkr_bars
+                WHERE interval = '5m'
+                  AND environment IN ({env_placeholders})
+                  AND symbol IN ({symbol_placeholders})
+                  AND bar_time_ms >= ?
+                  AND bar_time_ms < ?
+                GROUP BY symbol
+                """,
+                tuple([*env_values, *normalized_symbols, window_start_ms, expected_close_ms]),
+            ).fetchall()
+            counts = {symbol: 0 for symbol in normalized_symbols}
+            for row in rows:
+                symbol = _normalize_symbol(row["symbol"] if "symbol" in row.keys() else "")
+                if symbol:
+                    counts[symbol] = _to_int(row["source_count"] if "source_count" in row.keys() else 0, 0)
+            payload[normalized] = counts
+    return payload
+
+
 def _latest_bar_pb(pb_client: Any, symbol: str, interval: str, environment: str) -> dict[str, Any]:
     if pb_client is None:
         return {}
@@ -621,6 +669,28 @@ def _load_latest_bars(
     return _latest_bars_pb(pb_client, symbols, intervals, environment), "pocketbase"
 
 
+def _load_5m_source_bucket_counts(
+    *,
+    symbols: list[str],
+    expected_by_interval: dict[str, dict[str, Any]],
+    environment: str,
+    config: Any,
+) -> dict[str, dict[str, int]]:
+    if not symbols or not expected_by_interval:
+        return {}
+    if not _get_bool_setting(config, "ibkr_summary_freshness_direct_sqlite_enabled", environment, True):
+        return {}
+    try:
+        return _source_5m_bucket_counts_sqlite(
+            symbols,
+            expected_by_interval,
+            environment,
+            timeout=_sqlite_timeout_seconds(config, environment),
+        )
+    except Exception:
+        return {}
+
+
 def _evaluate_symbol_interval(
     *,
     symbol: str,
@@ -632,6 +702,7 @@ def _evaluate_symbol_interval(
     session_start_ms: int,
     pending_symbols: set[str],
     now_ms: int,
+    source_5m_count: int | None = None,
 ) -> dict[str, Any]:
     normalized = normalize_interval(interval)
     row_payload = _bar_payload(rows.get(normalized), normalized)
@@ -657,6 +728,14 @@ def _evaluate_symbol_interval(
     elif extended_quiet:
         status = "quiet_extended"
         reason = "quiet_extended"
+    elif (
+        normalized not in {"5m", "1d"}
+        and current_due
+        and source_5m_count == 0
+        and symbol not in pending_symbols
+    ):
+        status = "not_due"
+        reason = "no_source_5m_window"
     elif normalized != "5m" and current_due and latest_5m_close_ms < expected_close_ms:
         status = "waiting_5m"
         reason = "waiting_5m"
@@ -692,6 +771,7 @@ def _evaluate_symbol_interval(
         "latest_start_us": str(row_payload.get("latest_start_us") or ""),
         "latest_5m_close_ms": latest_5m_close_ms,
         "latest_5m_close_us": str(latest_5m.get("latest_close_us") or ""),
+        "source_5m_count": source_5m_count,
         "overdue_ms": overdue_ms,
         "overdue_min": round(overdue_ms / 60000.0, 1) if overdue_ms > 0 else 0.0,
     }
@@ -974,6 +1054,12 @@ def build_data_freshness_summary(
         environment=data_environment,
         config=config,
     )
+    source_5m_bucket_counts = _load_5m_source_bucket_counts(
+        symbols=symbols,
+        expected_by_interval=expected_by_interval,
+        environment=data_environment,
+        config=config,
+    )
     pending_symbols = _runtime_pending_symbols(runtime)
 
     intervals_payload: list[dict[str, Any]] = []
@@ -1005,6 +1091,7 @@ def build_data_freshness_summary(
                 session_start_ms=session_start_ms,
                 pending_symbols=pending_symbols,
                 now_ms=checked_at_ms,
+                source_5m_count=(source_5m_bucket_counts.get(interval) or {}).get(symbol),
             )
             items.append(item)
             interval_items_by_symbol[symbol] = item

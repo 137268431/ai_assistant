@@ -17,6 +17,34 @@ from ibkr_compute.api.service_topology import (
 
 logger = logging.getLogger(__name__)
 RUNTIME_PROXY_TIMEOUT_SECONDS = 60
+RUNTIME_PROXY_LONG_TIMEOUT_SECONDS = 300
+RUNTIME_PROXY_LONG_TIMEOUT_PATHS = {
+    "/ibkr/data-quality/repair",
+    "/ibkr/data-quality/daily-repair",
+}
+
+
+def _coerce_timeout_seconds(env_name: str, default: float) -> float:
+    try:
+        value = float(os.environ.get(env_name, "") or default)
+    except Exception:
+        value = float(default)
+    return max(1.0, value)
+
+
+def _runtime_proxy_timeout_seconds(path: str) -> float:
+    normalized_path = str(path or "").strip()
+    if not normalized_path.startswith("/"):
+        normalized_path = f"/{normalized_path}"
+    if normalized_path in RUNTIME_PROXY_LONG_TIMEOUT_PATHS:
+        return _coerce_timeout_seconds(
+            "IBKR_COMPUTE_RUNTIME_PROXY_REPAIR_TIMEOUT_SEC",
+            RUNTIME_PROXY_LONG_TIMEOUT_SECONDS,
+        )
+    return _coerce_timeout_seconds(
+        "IBKR_COMPUTE_RUNTIME_PROXY_TIMEOUT_SEC",
+        RUNTIME_PROXY_TIMEOUT_SECONDS,
+    )
 
 
 def _runtime_proxy_slow_log_threshold_seconds() -> float:
@@ -39,6 +67,7 @@ def _build_runtime_upstream(path: str) -> str:
 
 def proxy_runtime_request(path: str):
     upstream = _build_runtime_upstream(path)
+    timeout_seconds = _runtime_proxy_timeout_seconds(path)
     params = list(request.args.items(multi=True))
     headers = {}
     for header_name in ("Accept", "Content-Type"):
@@ -54,7 +83,7 @@ def proxy_runtime_request(path: str):
             params=params,
             data=request.get_data(cache=True),
             headers=headers,
-            timeout=RUNTIME_PROXY_TIMEOUT_SECONDS,
+            timeout=timeout_seconds,
             allow_redirects=False,
         )
     except requests.RequestException as exc:
@@ -64,7 +93,7 @@ def proxy_runtime_request(path: str):
             path,
             upstream,
             elapsed_ms,
-            float(RUNTIME_PROXY_TIMEOUT_SECONDS),
+            float(timeout_seconds),
             exc,
         )
         return jsonify(
@@ -87,7 +116,7 @@ def proxy_runtime_request(path: str):
             upstream,
             int(upstream_response.status_code),
             elapsed_ms,
-            float(RUNTIME_PROXY_TIMEOUT_SECONDS),
+            float(timeout_seconds),
         )
 
     response = Response(

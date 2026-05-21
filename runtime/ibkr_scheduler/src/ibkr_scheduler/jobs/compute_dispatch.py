@@ -28,6 +28,9 @@ OFFICIAL_CLOSE_INFLIGHT_GRACE_SECONDS = max(
 COMPUTE_DISPATCH_TARGET_STATUSES = {"active", "candidate"}
 INDICATOR_5M_INTERVALS = {"5", "5m"}
 SIGNAL_DISPATCH_ENVIRONMENTS = {"live", "paper"}
+DEFAULT_MARKET_WS_SYMBOLS = "SPY,QQQ,VIX"
+DEFAULT_SCHEDULER_ROLLUP_INTERVALS = "15m,30m,1h,4h"
+SCHEDULER_ROLLUP_INTERVAL_ORDER = ("15m", "30m", "1h", "4h", "1d")
 
 
 def _extract_compute_startup_preload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -67,6 +70,8 @@ def _sources_are_non_compute_only(sources: list[str]) -> bool:
 
 
 def _normalize_symbols(raw_symbols: Any) -> list[str]:
+    if isinstance(raw_symbols, str):
+        raw_symbols = raw_symbols.replace("\n", ",").split(",")
     if not isinstance(raw_symbols, (list, tuple, set)):
         return []
     symbols = set()
@@ -79,6 +84,40 @@ def _normalize_symbols(raw_symbols: Any) -> list[str]:
 
 def _cursor_symbols(bucket: dict[str, Any], key: str = "latest_compute_ingest_symbols") -> list[str]:
     return _normalize_symbols(bucket.get(key))
+
+
+def _config_value(config: Any, key: str, environment: str, default: str) -> str:
+    if config is not None and hasattr(config, "get_for_environment"):
+        try:
+            return str(config.get_for_environment(key, environment, default) or "")
+        except Exception:
+            return str(default or "")
+    return str(default or "")
+
+
+def _scheduler_market_ws_symbols(config: Any, environment: str) -> list[str]:
+    raw = _config_value(config, "ibkr_market_ws_symbols", environment, DEFAULT_MARKET_WS_SYMBOLS)
+    return _normalize_symbols(raw)
+
+
+def _scheduler_rollup_intervals(config: Any, environment: str) -> list[str]:
+    raw = _config_value(
+        config,
+        "ibkr_scheduler_rollup_intervals",
+        environment,
+        DEFAULT_SCHEDULER_ROLLUP_INTERVALS,
+    )
+    requested = [str(item or "").strip().lower() for item in str(raw or "").replace("\n", ",").split(",")]
+    allowed = set(SCHEDULER_ROLLUP_INTERVAL_ORDER)
+    intervals = []
+    for item in requested:
+        if item and item in allowed and item not in intervals:
+            intervals.append(item)
+    return sorted(
+        intervals,
+        key=lambda value: SCHEDULER_ROLLUP_INTERVAL_ORDER.index(value)
+        if value in SCHEDULER_ROLLUP_INTERVAL_ORDER else 99,
+    )
 
 
 def _payload_error_count(payload: dict[str, Any]) -> int:
@@ -573,6 +612,7 @@ def build_compute_dispatch_runner(
     get_ingest_cursor: Callable[[str], dict[str, Any]],
     get_dispatch_cursor: Callable[[str], dict[str, Any]],
     save_dispatch_cursor: Callable[[str, dict[str, Any]], dict[str, Any]],
+    config: Any = None,
 ) -> Callable[[str], dict[str, Any]]:
     def _native_compute_due(environment: str) -> tuple[bool, dict[str, Any]]:
         ingest = get_ingest_cursor(environment)
@@ -661,21 +701,24 @@ def build_compute_dispatch_runner(
                 **detail,
             }
 
-        compute_payload_base = {
-            "source": "ibkr_scheduler",
-            "environments": [environment],
-            "intervals": ["5m"],
-            "rollup_intervals": [],
-        }
         ingest_cursor = detail.get("ingest_cursor") if isinstance(detail.get("ingest_cursor"), dict) else {}
         ingest_intervals = ingest_cursor.get("intervals") if isinstance(ingest_cursor.get("intervals"), dict) else {}
         latest_5m = dict(ingest_intervals.get("5m") or {})
         dispatch_cursor = detail.get("dispatch_cursor") if isinstance(detail.get("dispatch_cursor"), dict) else {}
         dispatch_5m = dict((dispatch_cursor.get("intervals") or {}).get("5m") or {})
+        market_ws_symbols = _scheduler_market_ws_symbols(config, environment)
         symbols = sorted(
             set(_cursor_symbols(latest_5m))
             | set(_normalize_symbols(detail.get("compute_dispatch_target_symbols")))
+            | set(market_ws_symbols)
         )
+        effective_rollup_intervals = _scheduler_rollup_intervals(config, environment) if symbols else []
+        compute_payload_base = {
+            "source": "ibkr_scheduler",
+            "environments": [environment],
+            "intervals": ["5m"],
+            "rollup_intervals": effective_rollup_intervals,
+        }
         latest_dispatch_ms = int(detail.get("latest_ingested_bar_time_ms") or latest_5m.get("latest_bar_time_ms") or 0)
         target_symbols = _normalize_symbols(detail.get("compute_dispatch_target_symbols"))
         coverage_detail: dict[str, Any] = {}
@@ -802,6 +845,7 @@ def build_compute_dispatch_runner(
             if (
                 coverage_detail.get("indicator_coverage_status") == "covered"
                 and coverage_detail.get("signal_dispatch_status") in {"covered", "not_applicable"}
+                and not effective_rollup_intervals
             ):
                 saved_dispatch_cursor = _save_advanced_dispatch_cursor(
                     source="ibkr_scheduler_indicator_coverage",

@@ -56,7 +56,11 @@ from ibkr_compute.core.config import Config
 
 class _FakeConfig:
     def __init__(self, overrides=None):
-        self.overrides = overrides or {}
+        self.overrides = {
+            "ibkr_market_ws_symbols": "",
+            "ibkr_scheduler_rollup_intervals": "",
+        }
+        self.overrides.update(overrides or {})
 
     def refresh(self):
         return None
@@ -332,6 +336,67 @@ class SchedulerJobsTest(unittest.TestCase):
             {"previous_business_day", "current_day"},
         )
 
+    def test_data_quality_repair_sweep_sends_watchlist_full_payload(self):
+        pb = _FakePB()
+        scheduler = SchedulerService(pb, _FakeConfig())
+
+        with mock.patch(
+            "ibkr_scheduler.jobs.upstream_http.requests.request",
+            return_value=_FakeResponse(
+                {
+                    "ok": True,
+                    "symbols": ["AAPL"],
+                    "summary": {
+                        "expected_symbols_total": 1,
+                        "scanned_symbols_total": 1,
+                    },
+                }
+            ),
+        ) as request_mock:
+            result = scheduler.run_job(
+                "ibkr_data_quality_repair_sweep",
+                market_data_mode="live",
+                trigger_source="api_manual",
+            )
+
+        self.assertTrue(result["ok"])
+        request_mock.assert_called_once()
+        self.assertEqual(request_mock.call_args.kwargs["timeout"], 300)
+        request_payload = request_mock.call_args.kwargs["json"]
+        self.assertEqual(request_payload["scan_scope"], "watchlist_full")
+        self.assertTrue(request_payload["persist"])
+        self.assertTrue(request_payload["repair"])
+        self.assertEqual(request_payload["source"], "ibkr_scheduler")
+
+    def test_data_quality_repair_sweep_fails_empty_success_payload(self):
+        pb = _FakePB()
+        scheduler = SchedulerService(pb, _FakeConfig())
+
+        with mock.patch(
+            "ibkr_scheduler.jobs.upstream_http.requests.request",
+            return_value=_FakeResponse(
+                {
+                    "ok": True,
+                    "symbols": [],
+                    "summary": {
+                        "expected_symbols_total": 0,
+                        "scanned_symbols_total": 0,
+                    },
+                }
+            ),
+        ):
+            result = scheduler.run_job(
+                "ibkr_data_quality_repair_sweep",
+                market_data_mode="live",
+                trigger_source="api_manual",
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "empty_data_quality_repair_sweep")
+        self.assertTrue(result["empty_repair_sweep"])
+        job_state = pb.states[(f"{SCHEDULER_JOB_STATE_PREFIX}ibkr_data_quality_repair_sweep", "live", "global")]["data"]
+        self.assertEqual(job_state["status"], "error")
+
     def test_config_defaults_cover_seed_defaults_without_mismatch(self):
         seed_path = Path(__file__).resolve().parents[3] / "extensions" / "pocketbase" / "seeds" / "import.js"
         seed_text = seed_path.read_text()
@@ -399,6 +464,38 @@ class SchedulerJobsTest(unittest.TestCase):
         self.assertEqual(job_state["status"], "ok")
         self.assertGreater(int(job_state["last_success_at_ms"]), 0)
         self.assertTrue(any(collection == "system_events" for collection, _ in pb.records))
+
+    def test_compute_dispatch_includes_market_monitors_and_rollup_intervals(self):
+        pb = _FakePB()
+        pb.states[(BAR_INGEST_CURSOR_STATE_KEY, "live", "global")] = {
+            "data": {"intervals": {"5m": {"latest_bar_time_ms": 1713797100000}}}
+        }
+        pb.states[(COMPUTE_DISPATCH_CURSOR_STATE_KEY, "live", "global")] = {
+            "data": {"intervals": {"5m": {"latest_bar_time_ms": 1713796800000}}}
+        }
+        scheduler = SchedulerService(
+            pb,
+            _FakeConfig(
+                {
+                    "ibkr_market_ws_symbols": "SPY, QQQ, VIX",
+                    "ibkr_scheduler_rollup_intervals": "15m,30m,1h,4h",
+                }
+            ),
+        )
+
+        with mock.patch(
+            "ibkr_scheduler.jobs.compute_dispatch.requests.get",
+            return_value=_FakeResponse({"ok": True, "compute_startup_preload": {"status": "completed", "running": False}}),
+        ):
+            with mock.patch("ibkr_scheduler.jobs.compute_dispatch.requests.post", return_value=_FakeResponse({"ok": True, "processed": 3})) as post_mock:
+                result = scheduler.run_job("ibkr_compute_runtime", market_data_mode="live", trigger_source="api_manual")
+
+        self.assertTrue(result["ok"])
+        request_payload = post_mock.call_args.kwargs["json"]
+        self.assertEqual(request_payload["symbols"], ["QQQ", "SPY", "VIX"])
+        self.assertEqual(request_payload["rollup_intervals"], ["15m", "30m", "1h", "4h"])
+        dispatch = pb.states[(COMPUTE_DISPATCH_CURSOR_STATE_KEY, "live", "global")]["data"]
+        self.assertEqual(dispatch["intervals"]["5m"]["latest_compute_dispatch_symbols"], ["QQQ", "SPY", "VIX"])
 
     def test_compute_dispatch_retries_transient_compute_busy_before_success(self):
         pb = _FakePB()

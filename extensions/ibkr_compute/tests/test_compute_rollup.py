@@ -516,6 +516,7 @@ class IncrementalRollupWindowTest(unittest.TestCase):
 
         with mock.patch.object(compute_rollup, "_api_app", return_value=fake_app), \
                 mock.patch.object(compute_rollup, "_latest_targeted_5m_bar_ms", return_value=_et_ms(2026, 4, 17, 12, 5)), \
+                mock.patch.object(compute_rollup, "_stale_target_intervals", return_value=[]), \
                 mock.patch.object(compute_rollup, "rebuild_higher_timeframe_bars") as rebuild:
             results = compute_rollup.ensure_higher_timeframe_bars(
                 ["live"],
@@ -537,6 +538,44 @@ class IncrementalRollupWindowTest(unittest.TestCase):
         )
         rebuild.assert_not_called()
 
+    def test_incremental_targeted_rollup_rebuilds_stale_intervals_off_boundary(self):
+        fake_app = mock.Mock()
+        fake_app.HIGHER_INTERVALS = ["15m", "30m", "1h", "4h", "1d"]
+        fake_app.normalize_symbols.return_value = ["DASH"]
+
+        with mock.patch.object(compute_rollup, "_api_app", return_value=fake_app), \
+                mock.patch.object(compute_rollup, "_latest_targeted_5m_bar_ms", return_value=_et_ms(2026, 4, 17, 12, 5)), \
+                mock.patch.object(compute_rollup, "_stale_target_intervals", return_value=["4h"]), \
+                mock.patch.object(compute_rollup, "_recent_rollup_since_ms", return_value=1776793500000) as since_mock, \
+                mock.patch.object(
+                    compute_rollup,
+                    "rebuild_higher_timeframe_bars",
+                    return_value={"processed_5m": 400, "written": 1, "errors": 0},
+                ) as rebuild:
+            results = compute_rollup.ensure_higher_timeframe_bars(
+                ["live"],
+                force=True,
+                symbols=["DASH"],
+                incremental=True,
+                intervals=["15m", "30m", "1h", "4h"],
+            )
+
+        since_mock.assert_called_once_with(
+            "live",
+            ["DASH"],
+            intervals=["4h"],
+        )
+        rebuild.assert_called_once_with(
+            "live",
+            symbols=["DASH"],
+            intervals=["4h"],
+            since_ms=1776793500000,
+        )
+        self.assertEqual(results["live"]["stale_intervals"], ["4h"])
+        self.assertEqual(results["live"]["due_intervals"], [])
+        self.assertTrue(results["live"]["targeted"])
+        self.assertTrue(results["live"]["incremental"])
+
     def test_incremental_targeted_rollup_only_rebuilds_due_intervals(self):
         fake_app = mock.Mock()
         fake_app.HIGHER_INTERVALS = ["15m", "30m", "1h", "4h", "1d"]
@@ -544,6 +583,7 @@ class IncrementalRollupWindowTest(unittest.TestCase):
 
         with mock.patch.object(compute_rollup, "_api_app", return_value=fake_app), \
                 mock.patch.object(compute_rollup, "_latest_targeted_5m_bar_ms", return_value=_et_ms(2026, 4, 17, 12, 10)), \
+                mock.patch.object(compute_rollup, "_stale_target_intervals", return_value=[]), \
                 mock.patch.object(compute_rollup, "_recent_rollup_since_ms", return_value=1776793500000) as since_mock, \
                 mock.patch.object(
                     compute_rollup,
@@ -619,6 +659,34 @@ class RollupDirectSqliteTest(unittest.TestCase):
                 latest_ms = compute_rollup._latest_targeted_5m_bar_ms("live", ["AAPL"])
 
             self.assertEqual(latest_ms, _et_ms(2026, 4, 17, 12, 25))
+        finally:
+            conn.close()
+
+    def test_stale_target_intervals_detects_symbol_missing_current_rollup(self):
+        fake_app = _build_fake_app()
+        latest_5m_ms = _et_ms(2026, 4, 17, 12, 5)
+        expected_15m_ms = compute_rollup.expected_closed_ms_from_latest_5m(latest_5m_ms, "15m")
+        expected_4h_ms = compute_rollup.expected_closed_ms_from_latest_5m(latest_5m_ms, "4h")
+        conn = _sqlite_bars(
+            [
+                {**_base_bar("AAPL", expected_15m_ms), "interval": "15m"},
+                {**_base_bar("DASH", expected_15m_ms), "interval": "15m"},
+                {**_base_bar("AAPL", expected_4h_ms), "interval": "4h"},
+                {**_base_bar("DASH", expected_4h_ms - (4 * 60 * 60 * 1000)), "interval": "4h"},
+            ]
+        )
+
+        try:
+            with mock.patch.object(compute_rollup, "_api_app", return_value=fake_app), \
+                    mock.patch.object(compute_rollup, "open_pb_sqlite", return_value=_ReusableSqliteConn(conn)):
+                stale = compute_rollup._stale_target_intervals(
+                    "live",
+                    ["AAPL", "DASH"],
+                    latest_5m_ms,
+                    intervals=["15m", "4h"],
+                )
+
+            self.assertEqual(stale, ["4h"])
         finally:
             conn.close()
 

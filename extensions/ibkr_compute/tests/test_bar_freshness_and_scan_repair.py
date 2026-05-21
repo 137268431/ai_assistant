@@ -11,6 +11,8 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from ibkr_compute.market.bar_freshness import BarFreshnessPlanner
+from ibkr_compute.market.freshness_evaluator import _evaluate_symbol_interval
+from ibkr_compute.orchestration.integrity import TradingServiceIntegrityMixin
 from ibkr_compute.workflows import daily_scanner as daily_scanner_mod
 from ibkr_compute.workflows.daily_scanner import DailyScanner, REJECTION_BUCKET_DATA_INCOMPLETE
 
@@ -166,6 +168,61 @@ class _FakeWaitCfg(_FakeCfg):
         return default
 
 
+class _FakeResolver:
+    def __init__(self, fail=False):
+        self.fail = fail
+        self._cache = {}
+
+    def resolve_bulk(self, symbols):
+        if self.fail:
+            return {}
+        return {symbol: 1000 + index for index, symbol in enumerate(symbols or [])}
+
+
+class _FakeBackfill:
+    def __init__(self):
+        self.calls = []
+
+    def backfill_all(self, conids, **kwargs):
+        intervals = list(kwargs.get("intervals") or [])
+        symbols = sorted(conids)
+        self.calls.append({"symbols": symbols, "intervals": intervals})
+        return {symbol: {interval: 1 for interval in intervals} for symbol in symbols}
+
+
+class _FakeWriter:
+    def __init__(self):
+        self.flushes = 0
+
+    def flush(self):
+        self.flushes += 1
+
+
+class _IntegrityHarness(TradingServiceIntegrityMixin):
+    def __init__(self, *, resolver=None, pb=None):
+        self.conid_resolver = resolver or _FakeResolver()
+        self.pb = pb or _FakePB()
+        self.data_backfill = _FakeBackfill()
+        self.data_writer = _FakeWriter()
+        self._symbol_meta = {}
+        self.compute_calls = []
+
+    def _should_defer_background_repairs(self):
+        return False, {}
+
+    def _trigger_realtime_compute(self, **kwargs):
+        self.compute_calls.append(dict(kwargs))
+        return {
+            "ok": True,
+            "processed": 1,
+            "errors": 0,
+            "rollup": {"live": {"written": 1}},
+        }
+
+    def _build_bar_environment_filter(self):
+        return 'environment = "live"'
+
+
 class BarFreshnessAndScanRepairTest(unittest.TestCase):
     def test_planner_prefers_direct_sqlite_latest_and_count(self):
         pb = _FakePB(rows=[{"symbol": "SPY", "interval": "5m", "bar_time_ms": _ms(2026, 4, 29, 10, 0)}])
@@ -204,6 +261,75 @@ class BarFreshnessAndScanRepairTest(unittest.TestCase):
         self.assertEqual(interval["status"], "stale")
         self.assertTrue(payload["needs_repair"])
         self.assertEqual(interval["expected_closed_ms"], _ms(2026, 4, 29, 19, 45))
+
+    def test_integrity_repair_backfills_5m_before_higher_timeframe_rollup(self):
+        harness = _IntegrityHarness()
+        snapshots = {
+            "DASH": {
+                "symbol": "DASH",
+                "safe_repair": True,
+                "needs_history_fetch": False,
+                "needs_pipeline_repair": True,
+                "derived_sync": {
+                    "missing_intervals": [],
+                    "stale_intervals": ["4h"],
+                    "rollup_repair_enabled": True,
+                },
+            }
+        }
+
+        result = harness._run_bar_integrity_repairs(
+            snapshots,
+            source="unit_test",
+            allow_defer=False,
+        )
+
+        per_symbol = result["per_symbol"]["DASH"]["result"]
+        self.assertEqual(per_symbol["api_repair_intervals"], ["5m", "4h"])
+        self.assertEqual(per_symbol["rollup_repair_intervals"], ["4h"])
+        self.assertEqual(harness.data_backfill.calls[0]["intervals"], ["5m"])
+        self.assertEqual(harness.data_backfill.calls[1]["intervals"], ["4h"])
+        self.assertEqual(harness.compute_calls[0]["intervals"], ["5m", "4h"])
+        self.assertEqual(harness.compute_calls[0]["rollup_intervals"], ["4h"])
+        self.assertEqual(per_symbol["pipeline"]["rollup_written"], 1)
+
+    def test_integrity_repair_falls_back_to_existing_bar_conid(self):
+        pb = _FakePB(
+            rows=[
+                {
+                    "symbol": "DASH",
+                    "interval": "5m",
+                    "environment": "live",
+                    "bar_time_ms": _ms(2026, 5, 21, 10, 0),
+                    "extra": {"conid": 459309417},
+                }
+            ]
+        )
+        resolver = _FakeResolver(fail=True)
+        harness = _IntegrityHarness(resolver=resolver, pb=pb)
+        snapshots = {
+            "DASH": {
+                "symbol": "DASH",
+                "safe_repair": True,
+                "needs_history_fetch": False,
+                "needs_pipeline_repair": True,
+                "derived_sync": {
+                    "missing_intervals": [],
+                    "stale_intervals": ["4h"],
+                    "rollup_repair_enabled": True,
+                },
+            }
+        }
+
+        result = harness._run_bar_integrity_repairs(
+            snapshots,
+            source="unit_test",
+            allow_defer=False,
+        )
+
+        self.assertNotIn("history_error", result["per_symbol"]["DASH"]["result"])
+        self.assertEqual(resolver._cache["DASH"], 459309417)
+        self.assertEqual(harness.data_backfill.calls[0]["symbols"], ["DASH"])
 
     def test_daily_scan_repairs_but_does_not_exclude_incomplete_symbol_by_default(self):
         repair = _FakeRepair()
@@ -406,6 +532,71 @@ class BarFreshnessAndScanRepairTest(unittest.TestCase):
         self.assertTrue(result["data_completeness"]["runtime_topup_waited"])
         self.assertEqual(result["excluded_incomplete_count"], 0)
         self.assertEqual([row["symbol"] for row in pb.upserts], ["AAPL", "NVDA"])
+
+
+class FreshnessEvaluatorSourceWindowTest(unittest.TestCase):
+    def test_higher_timeframe_without_source_5m_window_is_not_due(self):
+        expected_close_ms = _ms(2026, 5, 21, 8, 0)
+        item = _evaluate_symbol_interval(
+            symbol="DASH",
+            interval="4h",
+            rows={
+                "4h": {
+                    "bar_time_ms": _ms(2026, 5, 20, 16, 0),
+                    "interval": "4h",
+                    "symbol": "DASH",
+                }
+            },
+            expected={
+                "expected_close_ms": expected_close_ms,
+                "expected_close_us": "2026-05-21 08:00:00",
+                "current_due": True,
+            },
+            latest_5m={
+                "latest_close_ms": _ms(2026, 5, 21, 11, 25),
+                "latest_close_us": "2026-05-21 11:25:00",
+            },
+            session="regular",
+            session_start_ms=0,
+            pending_symbols=set(),
+            now_ms=_ms(2026, 5, 21, 11, 30),
+            source_5m_count=0,
+        )
+
+        self.assertEqual(item["status"], "not_due")
+        self.assertEqual(item["reason"], "no_source_5m_window")
+        self.assertEqual(item["source_5m_count"], 0)
+
+    def test_higher_timeframe_with_source_5m_window_stays_overdue(self):
+        expected_close_ms = _ms(2026, 5, 21, 8, 0)
+        item = _evaluate_symbol_interval(
+            symbol="DASH",
+            interval="4h",
+            rows={
+                "4h": {
+                    "bar_time_ms": _ms(2026, 5, 20, 16, 0),
+                    "interval": "4h",
+                    "symbol": "DASH",
+                }
+            },
+            expected={
+                "expected_close_ms": expected_close_ms,
+                "expected_close_us": "2026-05-21 08:00:00",
+                "current_due": True,
+            },
+            latest_5m={
+                "latest_close_ms": _ms(2026, 5, 21, 11, 25),
+                "latest_close_us": "2026-05-21 11:25:00",
+            },
+            session="regular",
+            session_start_ms=0,
+            pending_symbols=set(),
+            now_ms=_ms(2026, 5, 21, 11, 30),
+            source_5m_count=1,
+        )
+
+        self.assertEqual(item["status"], "overdue")
+        self.assertEqual(item["reason"], "overdue")
 
 
 if __name__ == "__main__":

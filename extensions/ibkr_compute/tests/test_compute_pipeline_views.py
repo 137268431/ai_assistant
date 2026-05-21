@@ -37,12 +37,19 @@ if "flask" not in sys.modules:
         values={},
     )
     sys.modules["flask"] = flask_stub
+else:
+    flask_stub = sys.modules["flask"]
+    if not hasattr(flask_stub, "redirect"):
+        flask_stub.redirect = lambda url, code=302: {"redirect": url, "code": code}
+    if hasattr(flask_stub, "Flask") and not hasattr(flask_stub.Flask, "add_url_rule"):
+        flask_stub.Flask.add_url_rule = lambda self, *args, **kwargs: None
 
 SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from ibkr_compute.api.compute import pipeline_views
+from ibkr_compute.api.compute import request as compute_request
 
 
 class _FakeEngine:
@@ -120,6 +127,68 @@ def _base_bar(bar_time_ms=200, symbol="AAPL"):
 
 
 class ComputePipelineGuardTest(unittest.TestCase):
+    def test_scheduler_rollup_payload_is_targeted_and_incremental(self):
+        fake_cfg = SimpleNamespace(
+            has_environment_override=lambda key, environment: False,
+            get_bool_for_environment=lambda key, environment, default=False: default,
+        )
+        fake_app = SimpleNamespace(
+            DEFAULT_COMPUTE_ENVIRONMENTS=["live"],
+            HIGHER_INTERVALS=["15m", "30m", "1h", "4h", "1d"],
+            INTERVALS=["5m", "15m", "30m", "1h", "4h", "1d"],
+            SIGNAL_SUPPRESSED_COMPUTE_SOURCES=set(),
+            SUPPORTED_COMPUTE_ENVIRONMENTS=["live"],
+            cfg=fake_cfg,
+            normalize_symbols=lambda raw: _normalize_csv(raw) if isinstance(raw, str) else sorted({
+                str(item or "").strip().upper()
+                for item in (raw or [])
+                if str(item or "").strip()
+            }),
+        )
+
+        payload = {
+            "source": "ibkr_scheduler",
+            "environments": ["live"],
+            "symbols": ["spy"],
+            "rollup_intervals": ["15m", "30m", "1d"],
+        }
+
+        with mock.patch("ibkr_compute.api.compute.request._api_app", return_value=fake_app):
+            plan = compute_request.build_compute_execution_plan(payload)
+
+        self.assertEqual(plan["requested_symbols"], ["SPY"])
+        self.assertTrue(plan["targeted_rollup"])
+        self.assertTrue(plan["incremental_rollup"])
+        self.assertEqual(plan["rollup_intervals"], ["15m", "30m", "1d"])
+
+    def test_scheduler_empty_rollup_payload_does_not_target_rollup(self):
+        fake_cfg = SimpleNamespace(
+            has_environment_override=lambda key, environment: False,
+            get_bool_for_environment=lambda key, environment, default=False: default,
+        )
+        fake_app = SimpleNamespace(
+            DEFAULT_COMPUTE_ENVIRONMENTS=["live"],
+            HIGHER_INTERVALS=["15m", "30m", "1h", "4h", "1d"],
+            INTERVALS=["5m", "15m", "30m", "1h", "4h", "1d"],
+            SIGNAL_SUPPRESSED_COMPUTE_SOURCES=set(),
+            SUPPORTED_COMPUTE_ENVIRONMENTS=["live"],
+            cfg=fake_cfg,
+            normalize_symbols=lambda raw: _normalize_csv(raw) if isinstance(raw, str) else [],
+        )
+
+        payload = {
+            "source": "ibkr_scheduler",
+            "environments": ["live"],
+            "rollup_intervals": [],
+        }
+
+        with mock.patch("ibkr_compute.api.compute.request._api_app", return_value=fake_app):
+            plan = compute_request.build_compute_execution_plan(payload)
+
+        self.assertFalse(plan["targeted_rollup"])
+        self.assertFalse(plan["incremental_rollup"])
+        self.assertEqual(plan["rollup_intervals"], [])
+
     def test_compute_lock_busy_returns_retryable_error(self):
         lock = threading.Lock()
         lock.acquire()

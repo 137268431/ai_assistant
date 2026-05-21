@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import time
 from typing import Any
 from urllib.parse import urlencode
@@ -32,6 +33,9 @@ ORDER_ROLE_LABELS = {
     "close": "平仓",
 }
 
+_ORDER_GROUP_NOTIFY_LOCKS: dict[str, threading.Lock] = {}
+_ORDER_GROUP_NOTIFY_LOCKS_GUARD = threading.Lock()
+
 
 def _record_value(record_or_data: Any, field_name: str, default: Any = None) -> Any:
     if record_or_data is None:
@@ -56,6 +60,38 @@ def _record_or_extra_value(record_or_data: Any, *fields: str) -> Any:
         if value not in (None, ""):
             return value
     return ""
+
+
+def _order_group_notify_lock(environment: str, group_id: str) -> threading.Lock:
+    lock_key = f"{to_text(environment) or 'live'}:{to_text(group_id) or '-'}"
+    with _ORDER_GROUP_NOTIFY_LOCKS_GUARD:
+        lock = _ORDER_GROUP_NOTIFY_LOCKS.get(lock_key)
+        if lock is None:
+            lock = threading.Lock()
+            _ORDER_GROUP_NOTIFY_LOCKS[lock_key] = lock
+        return lock
+
+
+def _order_group_notify_identity(order_record: dict[str, Any], environment: str) -> str:
+    normalized = normalize_order_row(order_record)
+    return to_text(
+        normalized.get("trade_group_id")
+        or normalized.get("entry_order_unique_id")
+        or normalized.get("unique_id")
+        or _record_or_extra_value(
+            order_record,
+            "trade_group_id",
+            "entry_order_unique_id",
+            "unique_id",
+            "broker_order_id",
+            "order_id",
+            "id",
+        )
+    )
+
+
+def _has_entry_order_row(rows: list[dict[str, Any]]) -> bool:
+    return any(normalize_order_row(row).get("role") == "entry" for row in rows or [])
 
 
 def _format_price(value: Any) -> str:
@@ -426,6 +462,38 @@ def sync_order_status_notification(
         return {"success": False, "skipped": True, "message_id": to_text(message_id), "reason": "missing_order"}
 
     environment = to_text(_record_or_extra_value(order_record, "environment")) or "live"
+    group_identity = _order_group_notify_identity(order_record, environment)
+    notify_lock = _order_group_notify_lock(environment, group_identity or to_text(order_record.get("id")))
+    with notify_lock:
+        return _sync_order_status_notification_locked(
+            pb,
+            order_record,
+            action=action,
+            message=message,
+            message_id=message_id,
+            send_interactive=send_interactive,
+            update_interactive=update_interactive,
+            order_chat_id=order_chat_id,
+            console_base_url=console_base_url,
+            related_rows=related_rows,
+            environment=environment,
+        )
+
+
+def _sync_order_status_notification_locked(
+    pb: Any,
+    order_record: dict[str, Any],
+    *,
+    action: str = "",
+    message: str = "",
+    message_id: str = "",
+    send_interactive: Any = None,
+    update_interactive: Any = None,
+    order_chat_id: str = "",
+    console_base_url: str = "",
+    related_rows: list[dict[str, Any]] | None = None,
+    environment: str = "live",
+) -> dict[str, Any]:
     context = _order_group_context(pb, order_record, environment=environment, related_rows=related_rows)
     rows = context.get("related_rows") or [order_record]
     primary = context.get("primary_row") or pick_primary_order_row(rows, order_record) or order_record
@@ -440,6 +508,19 @@ def sync_order_status_notification(
         environment=environment,
         trade_group_id=trade_group_id or to_text(primary.get("id")),
     )
+
+    if not current_message_id and not _has_entry_order_row(rows):
+        incoming_role = normalize_order_row(order_record).get("role")
+        if incoming_role and incoming_role != "entry":
+            return {
+                "success": False,
+                "skipped": True,
+                "message_id": "",
+                "notify_key": notify_key,
+                "group_status": group_status,
+                "reason": "waiting_for_primary_order",
+                "extra_patch": current_extra,
+            }
 
     if current_extra.get("feishu_order_notify_key") == notify_key and current_extra.get("feishu_order_notify_last_result") == "success":
         return {

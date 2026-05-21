@@ -16,7 +16,14 @@ RequestJson = Callable[..., dict[str, Any]]
 RequestJsonRequest = Callable[..., dict[str, Any]]
 SchedulerStatusFn = Callable[[str], dict[str, Any]]
 
-MANUAL_SCHEDULER_JOB_ALLOWLIST = {"ibkr_compute_runtime", "ibkr_scan_runtime"}
+MANUAL_SCHEDULER_JOB_ALLOWLIST = {
+    "ibkr_compute_runtime",
+    "ibkr_data_quality_repair_sweep",
+    "ibkr_scan_runtime",
+}
+MANUAL_SCHEDULER_JOB_TIMEOUT_SECONDS = {
+    "ibkr_data_quality_repair_sweep": 300,
+}
 NON_COMPUTE_DISPATCH_SOURCES = {
     "backfill",
     "history_backfill",
@@ -415,7 +422,7 @@ def run_scheduler_job(
             "market_data_mode": normalized_market_data_mode,
             "trigger_source": normalized_trigger_source,
         },
-        timeout=120,
+        timeout=MANUAL_SCHEDULER_JOB_TIMEOUT_SECONDS.get(normalized_job_id, 120),
     )
     scheduler_result = result.get("payload") if isinstance(result.get("payload"), dict) else {}
     scheduler_error = str(result.get("error") or "").strip()

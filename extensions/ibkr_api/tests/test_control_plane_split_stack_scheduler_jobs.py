@@ -219,6 +219,53 @@ class ControlPlaneSplitStackSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(calls[0]["json_body"]["trigger_source"], "console_manual_daily_scan")
         self.assertNotIn("scheduled_slot", calls[0]["json_body"])
 
+    def test_manual_scheduler_repair_sweep_route_uses_long_timeout(self):
+        calls = []
+
+        def fake_request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            calls.append(
+                {
+                    "method": method,
+                    "base_url": base_url,
+                    "path": path,
+                    "params": params,
+                    "json_body": json_body,
+                    "timeout": timeout,
+                }
+            )
+            return {
+                "ok": True,
+                "status_code": 200,
+                "target_url": "http://scheduler/jobs/run/ibkr_data_quality_repair_sweep",
+                "error": "",
+                "payload": {
+                    "ok": True,
+                    "status_code": 200,
+                    "payload": {
+                        "ok": True,
+                        "summary": {"expected_symbols_total": 1, "scanned_symbols_total": 1},
+                    },
+                },
+            }
+
+        with mock.patch.object(
+            api_app_mod.request,
+            "get_json",
+            return_value={
+                "broker_mode": "paper",
+                "market_data_mode": "live",
+                "job_id": "ibkr_data_quality_repair_sweep",
+                "trigger_source": "manual_repair_catchup",
+            },
+        ):
+            with mock.patch.object(api_app_mod, "_request_json_request", side_effect=fake_request_json_request):
+                payload = api_app_mod.custom_system_scheduler_job_run()
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["job_id"], "ibkr_data_quality_repair_sweep")
+        self.assertEqual(calls[0]["path"], "/jobs/run/ibkr_data_quality_repair_sweep")
+        self.assertEqual(calls[0]["timeout"], 300)
+
     def test_manual_scheduler_job_route_rejects_non_allowlisted_job(self):
         with mock.patch.object(
             api_app_mod.request,
@@ -234,7 +281,10 @@ class ControlPlaneSplitStackSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(status_code, 400)
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["error"], "unsupported_scheduler_job")
-        self.assertEqual(payload["allowed_jobs"], ["ibkr_compute_runtime", "ibkr_scan_runtime"])
+        self.assertEqual(
+            payload["allowed_jobs"],
+            ["ibkr_compute_runtime", "ibkr_data_quality_repair_sweep", "ibkr_scan_runtime"],
+        )
 
     def test_scheduler_dispatches_only_new_persisted_bars_and_updates_cursor(self):
         pb = _FakePB()

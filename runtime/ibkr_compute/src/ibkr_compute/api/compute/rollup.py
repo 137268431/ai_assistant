@@ -6,6 +6,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from ibkr_compute.core.broker_mode import resolve_data_environment
+from ibkr_compute.market.bar_freshness import expected_closed_ms_from_latest_5m
 from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite, upsert_bars
 from ibkr_compute.market.timeframe_builder import TimeframeBarBuilder
 from ibkr_compute.market.timeframe_utils import bucket_start_ms, interval_to_ms, normalize_interval
@@ -127,6 +128,11 @@ def _symbol_sql(api_app, symbols) -> tuple[str, list]:
     return f"symbol IN ({placeholders})", list(normalized_symbols)
 
 
+def _chunked(items: list[str], size: int = 50) -> list[list[str]]:
+    safe_size = max(1, int(size or 50))
+    return [items[index : index + safe_size] for index in range(0, len(items), safe_size)]
+
+
 def _sqlite_bar_row(row) -> dict:
     payload = dict(row) if row is not None else {}
     extra = payload.get("extra")
@@ -218,6 +224,148 @@ def _has_bars_in_sqlite(api_app, environment: str, interval: str, symbols=None) 
     finally:
         conn.close()
     return row is not None
+
+
+def _current_interval_symbols_from_sqlite(
+    api_app,
+    environment: str,
+    interval: str,
+    symbols,
+    expected_ms: int,
+) -> set[str]:
+    normalized_symbols = api_app.normalize_symbols(symbols)
+    if not normalized_symbols:
+        return set()
+    normalized_interval = normalize_interval(interval)
+    env_sql, env_params = _bar_environment_sql(environment, include_legacy_empty=True)
+    where_parts = [
+        "interval = ?",
+        env_sql,
+        "bar_time_ms >= ?",
+    ]
+    params = [normalized_interval, *env_params, int(expected_ms or 0)]
+    symbol_sql, symbol_params = _symbol_sql(api_app, normalized_symbols)
+    if symbol_sql:
+        where_parts.append(symbol_sql)
+        params.extend(symbol_params)
+
+    conn = open_pb_sqlite(readonly=True, timeout=_direct_sqlite_read_timeout(api_app, environment))
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT DISTINCT symbol
+            FROM ibkr_bars
+            WHERE {' AND '.join(where_parts)}
+            """,
+            tuple(params),
+        ).fetchall()
+    finally:
+        conn.close()
+    current_symbols = set()
+    for row in rows or []:
+        try:
+            symbol_value = row["symbol"] if hasattr(row, "keys") else row[0]
+        except Exception:
+            symbol_value = ""
+        symbol = str(symbol_value or "").strip().upper()
+        if symbol:
+            current_symbols.add(symbol)
+    return current_symbols
+
+
+def _current_interval_symbols_from_api(
+    api_app,
+    environment: str,
+    interval: str,
+    symbols,
+    expected_ms: int,
+) -> set[str]:
+    normalized_symbols = api_app.normalize_symbols(symbols)
+    if not normalized_symbols:
+        return set()
+    pb = getattr(api_app, "pb", None)
+    if pb is None or not hasattr(pb, "get_records"):
+        return set()
+
+    normalized_interval = normalize_interval(interval)
+    current_symbols: set[str] = set()
+    for chunk in _chunked(normalized_symbols):
+        symbol_filter = api_app.build_symbol_filter(chunk)
+        filter_parts = [
+            f'interval = "{normalized_interval}"',
+            api_app.build_bar_environment_filter(environment, include_legacy_empty=True),
+            f"bar_time_ms >= {int(expected_ms or 0)}",
+        ]
+        if symbol_filter:
+            filter_parts.append(symbol_filter)
+        rows = pb.get_records(
+            "ibkr_bars",
+            filter=" && ".join(filter_parts),
+            sort="-bar_time_ms",
+            per_page=max(200, len(chunk) * 2),
+            page=1,
+        )
+        for row in rows or []:
+            symbol = str((row or {}).get("symbol") or "").strip().upper()
+            if symbol:
+                current_symbols.add(symbol)
+    return current_symbols
+
+
+def _all_symbols_current_for_interval(
+    api_app,
+    environment: str,
+    interval: str,
+    symbols,
+    expected_ms: int,
+) -> bool:
+    normalized_symbols = set(api_app.normalize_symbols(symbols))
+    if not normalized_symbols or int(expected_ms or 0) <= 0:
+        return True
+
+    if _direct_sqlite_read_enabled(api_app, environment):
+        try:
+            current_symbols = _current_interval_symbols_from_sqlite(
+                api_app,
+                environment,
+                interval,
+                sorted(normalized_symbols),
+                expected_ms,
+            )
+            return normalized_symbols.issubset(current_symbols)
+        except Exception:
+            if not _direct_sqlite_read_fallback_api_enabled(api_app, environment):
+                return True
+
+    try:
+        current_symbols = _current_interval_symbols_from_api(
+            api_app,
+            environment,
+            interval,
+            sorted(normalized_symbols),
+            expected_ms,
+        )
+        return normalized_symbols.issubset(current_symbols)
+    except Exception:
+        return True
+
+
+def _stale_target_intervals(environment: str, normalized_symbols, latest_5m_ms: int, intervals=None) -> list[str]:
+    api_app = _api_app()
+    environment = _runtime_environment(environment)
+    target_intervals = _normalize_target_intervals(api_app, intervals)
+    symbols = api_app.normalize_symbols(normalized_symbols)
+    if not symbols or int(latest_5m_ms or 0) <= 0:
+        return []
+
+    stale_intervals = []
+    for interval in target_intervals:
+        expected_ms = expected_closed_ms_from_latest_5m(int(latest_5m_ms or 0), interval)
+        if expected_ms <= 0:
+            continue
+        if not _all_symbols_current_for_interval(api_app, environment, interval, symbols, expected_ms):
+            stale_intervals.append(interval)
+    return stale_intervals
 
 
 def _write_rollup_batch(api_app, environment: str, batch: list[dict]) -> dict:
@@ -593,9 +741,23 @@ def ensure_higher_timeframe_bars(
                         "intervals": [],
                     }
                     continue
-                effective_intervals = _incremental_due_intervals(
+                due_intervals = _incremental_due_intervals(
                     latest_5m_ms,
                     intervals=target_intervals,
+                )
+                stale_intervals = _stale_target_intervals(
+                    environment,
+                    normalized_symbols,
+                    latest_5m_ms,
+                    intervals=target_intervals,
+                )
+                combined_intervals = []
+                for interval in [*due_intervals, *stale_intervals]:
+                    if interval not in combined_intervals:
+                        combined_intervals.append(interval)
+                effective_intervals = _normalize_target_intervals(
+                    api_app,
+                    combined_intervals,
                 )
                 if not effective_intervals:
                     results[environment] = {
@@ -619,6 +781,9 @@ def ensure_higher_timeframe_bars(
             )
             rollup_result["targeted"] = True
             rollup_result["incremental"] = bool(incremental and effective_since_ms)
+            if incremental:
+                rollup_result["due_intervals"] = due_intervals
+                rollup_result["stale_intervals"] = stale_intervals
             results[environment] = rollup_result
             continue
 

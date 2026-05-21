@@ -189,6 +189,12 @@ def build_compute_execution_plan(payload=None) -> dict:
     rollup_since_ms = max(0, _coerce_payload_int(payload.get("rollup_since_ms"), 0))
     default_intervals = ["5m"] if source == "ibkr_scheduler" and "intervals" not in payload else api_app.INTERVALS
     default_rollup_intervals = [] if source == "ibkr_scheduler" and "rollup_intervals" not in payload else get_rollup_intervals_for_source(source)
+    scheduler_targeted_rollup = (
+        source == "ibkr_scheduler"
+        and bool(requested_symbols)
+        and "rollup_intervals" in payload
+        and bool(requested_rollup_intervals)
+    )
     return {
         "payload": payload,
         "source": source,
@@ -199,8 +205,11 @@ def build_compute_execution_plan(payload=None) -> dict:
         "requested_environments": requested_environments,
         "enabled_environments": enabled_environments,
         "targeted_rebuild": targeted_rebuild,
-        "targeted_rollup": targeted_rollup,
-        "incremental_rollup": bool(requested_symbols) and source in {"canonical_close", "watchlist_idle_topup"},
+        "targeted_rollup": targeted_rollup or scheduler_targeted_rollup,
+        "incremental_rollup": (
+            scheduler_targeted_rollup
+            or (bool(requested_symbols) and source in {"canonical_close", "watchlist_idle_topup"})
+        ),
         "skip_persisted_cursor": source in {"recompute", "history_repair", "history_rebuild", "targeted_recompute"},
         "force_rollup": force_rollup,
         "rollup_since_ms": rollup_since_ms,

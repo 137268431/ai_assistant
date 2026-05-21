@@ -1225,15 +1225,151 @@ class TradingServiceRuntimeOpsMixin:
             service_mod.logger.error("Failed to close signal after exit fill: %s", exc)
         return True
 
-    def _apply_exit_fill_side_effects(self, symbol: str, role: str) -> None:
+    def _stop_loss_count_snapshot(self) -> tuple[int, int, bool]:
+        lifecycle = getattr(self, "order_lifecycle", None)
+        count = 0
+        limit = 0
+        if lifecycle:
+            status_fn = getattr(lifecycle, "status", None)
+            status: dict[str, Any] = {}
+            if callable(status_fn):
+                try:
+                    raw_status = status_fn()
+                    status = raw_status if isinstance(raw_status, dict) else {}
+                except Exception:
+                    status = {}
+            for attr in ("_daily_sl_count", "daily_sl_count", "sl_count", "consecutive_stop_loss_count"):
+                try:
+                    value = getattr(lifecycle, attr)
+                except Exception:
+                    value = None
+                if value not in (None, ""):
+                    count = int(value)
+                    break
+            else:
+                for key in ("daily_sl_count", "consecutive_stop_loss_count"):
+                    if status.get(key) not in (None, ""):
+                        count = int(status.get(key) or 0)
+                        break
+            limit_fn = getattr(lifecycle, "_consecutive_stop_loss_limit", None)
+            if callable(limit_fn):
+                try:
+                    limit = int(limit_fn() or 0)
+                except Exception:
+                    limit = 0
+            if limit <= 0:
+                for attr in ("consecutive_stop_loss_limit", "sl_limit"):
+                    try:
+                        value = getattr(lifecycle, attr)
+                    except Exception:
+                        value = None
+                    if callable(value):
+                        try:
+                            value = value()
+                        except Exception:
+                            value = None
+                    if value not in (None, ""):
+                        limit = int(value)
+                        break
+            if limit <= 0 and status.get("consecutive_stop_loss_limit") not in (None, ""):
+                limit = int(status.get("consecutive_stop_loss_limit") or 0)
+            try:
+                breaker = bool(getattr(lifecycle, "is_sl_circuit_breaker"))
+            except Exception:
+                breaker = False
+        else:
+            breaker = False
+        if limit > 0 and count >= limit:
+            breaker = True
+        return max(0, count), max(0, limit), breaker
+
+    def _notify_stop_loss_fill(self, symbol: str, order: dict | None = None, *, cooldown_bars: int = 0) -> None:
+        pb = getattr(self, "pb", None)
+        notifier = getattr(pb, "notify_system_event", None)
+        if not callable(notifier):
+            return
+
+        service_mod = _service_mod()
+        order = order if isinstance(order, dict) else {}
+        broker_environment = str(service_mod.ENVIRONMENT or "paper").strip().lower() or "paper"
+        count, limit, breaker = self._stop_loss_count_snapshot()
+        level = "error" if breaker else "warning"
+        title = "连续止损熔断已触发" if breaker else "止损成交报警"
+        signal_id = str(order.get("signal_id") or "").strip()
+        if not signal_id and getattr(self, "pb", None):
+            try:
+                signal_id = self._resolve_signal_id_for_order(order, broker_environment)
+            except Exception:
+                signal_id = ""
+        order_id = str(order.get("broker_order_id") or order.get("order_id") or order.get("orderId") or "").strip()
+        fill_price = self._first_nonempty_order_value(
+            order,
+            "avgPrice",
+            "avgFillPrice",
+            "fill_price",
+            "filled_price",
+            "lastFillPrice",
+            "price",
+        )
+        filled_qty = self._first_nonempty_order_value(
+            order,
+            "filledQuantity",
+            "filled_qty",
+            "filled",
+            "totalSize",
+            "quantity",
+        )
+        conclusion = (
+            "连续止损次数已达到风控上限，系统进入 sl_circuit_breaker，新的开仓信号会被拒绝。"
+            if breaker
+            else "止损保护单已成交，标的已移出活跃持仓并进入止损冷却。"
+        )
+        action = (
+            "暂停追单，检查行情环境、策略质量和最近成交；确认风险后再决定是否重置计数或调参。"
+            if breaker
+            else "检查该标的走势、信号质量和保护单成交价；冷却结束前不要重复开同标的仓位。"
+        )
+        detail = {
+            "状态结论": conclusion,
+            "标的": str(symbol or order.get("ticker") or order.get("symbol") or "").strip().upper() or "-",
+            "信号ID": signal_id or "-",
+            "Broker订单ID": order_id or "-",
+            "成交价": fill_price if fill_price not in (None, "") else "-",
+            "成交数量": filled_qty if filled_qty not in (None, "") else "-",
+            "订单Side": str(order.get("side") or "-"),
+            "订单类型": str(order.get("orderType") or order.get("order_type") or "-"),
+            "连续止损次数": count,
+            "连续止损上限": limit if limit > 0 else "-",
+            "熔断状态": "yes" if breaker else "no",
+            "冷却K线": cooldown_bars if cooldown_bars > 0 else "-",
+            "处理建议": action,
+        }
+        try:
+            notifier(
+                title,
+                detail,
+                event_type="alert",
+                level=level,
+                source="ibkr_compute",
+                environment=broker_environment,
+            )
+        except Exception as exc:
+            service_mod.logger.warning("Stop-loss notification failed: %s", exc)
+
+    def _apply_exit_fill_side_effects(self, symbol: str, role: str, order: dict | None = None) -> None:
         self.signal_processor.remove_position(symbol)
         if role == "stop_loss":
             self.order_lifecycle.increment_sl_count()
+            cooldown_bars = self.signal_processor.cooldown_bars_after_sl()
             self.signal_processor.start_cooldown(
                 symbol,
-                self.signal_processor.cooldown_bars_after_sl(),
+                cooldown_bars,
                 "cooldown_after_stop_loss",
             )
+            try:
+                self._notify_stop_loss_fill(symbol, order, cooldown_bars=cooldown_bars)
+            except Exception as exc:
+                _service_mod().logger.warning("Stop-loss notification failed: %s", exc)
         else:
             self.order_lifecycle.reset_sl_count()
 
@@ -1269,10 +1405,10 @@ class TradingServiceRuntimeOpsMixin:
             )
             closed_role = self._update_signal_after_entry_fill(order, symbol, direction)
             if closed_role:
-                self._apply_exit_fill_side_effects(symbol, closed_role)
+                self._apply_exit_fill_side_effects(symbol, closed_role, order)
             return
         if self._update_signal_after_exit_fill(order, symbol, role):
-            self._apply_exit_fill_side_effects(symbol, role)
+            self._apply_exit_fill_side_effects(symbol, role, order)
 
     def _on_order_cancel(self, order: dict):
         service_mod = _service_mod()
