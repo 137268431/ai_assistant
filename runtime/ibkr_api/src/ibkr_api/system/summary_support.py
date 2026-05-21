@@ -161,7 +161,7 @@ def build_system_summary_payload(
     actual_runtime_environment = normalize_environment(runtime_summary.get("environment") or runtime_environment, runtime_environment)
     today_errors: dict[str, Any] = {}
     try:
-        today_counts, today_errors = _coerce_today_counts(load_today_counts(data_environment, market_date))
+        today_counts, today_errors = _coerce_today_counts(load_today_counts(runtime_environment, market_date))
     except Exception as exc:
         today_counts = _empty_today_counts()
         today_errors = {"_summary": str(exc)}

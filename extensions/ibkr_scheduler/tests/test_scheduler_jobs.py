@@ -780,6 +780,52 @@ class SchedulerJobsTest(unittest.TestCase):
         dispatch = pb.states[(COMPUTE_DISPATCH_CURSOR_STATE_KEY, "live", "global")]["data"]
         self.assertEqual(dispatch["intervals"]["5m"]["latest_bar_time_ms"], 1713796800000)
 
+    def test_compute_dispatch_waits_when_official_close_is_inflight(self):
+        pb = _FakePB()
+        pb.states[(BAR_INGEST_CURSOR_STATE_KEY, "live", "global")] = {
+            "data": {
+                "intervals": {
+                    "5m": {
+                        "latest_bar_time_ms": 1713797100000,
+                        "latest_compute_ingest_symbols": ["AAPL"],
+                    }
+                }
+            }
+        }
+        pb.states[(COMPUTE_DISPATCH_CURSOR_STATE_KEY, "live", "global")] = {
+            "data": {"intervals": {"5m": {"latest_bar_time_ms": 1713796800000}}}
+        }
+        scheduler = SchedulerService(pb, _FakeConfig())
+
+        with mock.patch(
+            "ibkr_scheduler.jobs.compute_dispatch.requests.get",
+            side_effect=[
+                _FakeResponse({"ok": True, "compute_startup_preload": {"status": "completed", "running": False}}),
+                _FakeResponse(
+                    {
+                        "ok": True,
+                        "canonical_5m": {
+                            "running": True,
+                            "phase": "fetching",
+                            "cycle_age_s": 45,
+                            "current_due_bucket_ms": 1713797100000,
+                        },
+                    }
+                ),
+            ],
+        ):
+            with mock.patch("ibkr_scheduler.jobs.compute_dispatch.requests.post") as post_mock:
+                result = scheduler.run_job("ibkr_compute_runtime", market_data_mode="live", trigger_source="api_manual")
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["reason"], "official_5m_close_inflight")
+        self.assertTrue(result["compute_in_progress"])
+        self.assertTrue(result["official_5m_close_in_progress"])
+        post_mock.assert_not_called()
+        dispatch = pb.states[(COMPUTE_DISPATCH_CURSOR_STATE_KEY, "live", "global")]["data"]
+        self.assertEqual(dispatch["intervals"]["5m"]["latest_bar_time_ms"], 1713796800000)
+
     def test_compute_dispatch_repairs_only_missing_indicator_symbols(self):
         pb = _FakePB()
         pb.states[(BAR_INGEST_CURSOR_STATE_KEY, "live", "global")] = {

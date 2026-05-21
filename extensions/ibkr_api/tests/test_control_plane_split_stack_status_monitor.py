@@ -38,6 +38,27 @@ class ControlPlaneSplitStackStatusMonitorTest(unittest.TestCase):
         self.assertEqual(payload["main_orders"], 1)
         self.assertEqual(payload["order_groups"], 1)
 
+    def test_today_counts_uses_broker_environment_for_orders_with_shared_market_data(self):
+        filters = {}
+
+        def fake_count(collection, filter_expr):
+            filters[collection] = filter_expr
+            return 1
+
+        rows = [{"id": "entry-1", "trade_group_id": "tg-1", "role": "entry", "status": "Filled"}]
+        with mock.patch.object(api_app_mod, "_sqlite_today_market_count", return_value=None):
+            with mock.patch.object(api_app_mod, "_pb_count_records", side_effect=fake_count):
+                with mock.patch.object(api_app_mod, "_pb_load_records_for_count", return_value=rows):
+                    payload = api_app_mod._load_today_counts("paper", "2026-05-20")
+
+        self.assertIn('environment = "live"', filters["ibkr_bars"])
+        self.assertIn('environment = "live"', filters["ibkr_signals"])
+        self.assertIn('environment = "live"', filters["ibkr_targets"])
+        self.assertIn('environment = "paper"', filters["orders"])
+        self.assertIn('environment = "paper"', filters["system_events"])
+        self.assertEqual(payload["orders"], 1)
+        self.assertEqual(payload["main_orders"], 1)
+
     def test_runtime_config_route_returns_effective_environment_values(self):
         rows = [
             {"key": "alpha", "value": "global", "environment": "global", "updated": "2026-04-22 00:00:00"},

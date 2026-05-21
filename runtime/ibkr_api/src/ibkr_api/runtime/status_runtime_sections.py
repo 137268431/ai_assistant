@@ -89,6 +89,11 @@ def build_canonical_5m_payload(
     return {
         "enabled": bool(canonical_5m.get("enabled", True)),
         "driver": str(canonical_5m.get("driver") or ""),
+        "running": bool(canonical_5m.get("running")),
+        "phase": str(canonical_5m.get("phase") or ""),
+        "cycle_started_at_ms": int(canonical_5m.get("cycle_started_at_ms") or 0),
+        "cycle_age_s": float(canonical_5m.get("cycle_age_s") or 0),
+        "current_due_bucket_ms": int(canonical_5m.get("current_due_bucket_ms") or 0),
         "close_delay_sec": int(canonical_5m.get("close_delay_sec") or 0),
         "request_period": str(canonical_5m.get("request_period") or ""),
         "last_run": canonical_5m.get("last_run") or "",

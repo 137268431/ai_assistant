@@ -289,8 +289,16 @@ def derive_monitor_service_map(
 
     def _scheduler_close_compute_deferred() -> bool:
         reason = str(scheduler_summary.get("dispatch_lag_reason") or "").strip().lower()
-        in_progress = bool(scheduler_summary.get("compute_in_progress")) or reason == "close_compute_inflight"
-        stalled = bool(scheduler_summary.get("compute_in_progress_stalled") or scheduler_summary.get("inflight_stalled"))
+        in_progress = (
+            bool(scheduler_summary.get("compute_in_progress"))
+            or bool(scheduler_summary.get("official_5m_close_in_progress"))
+            or reason in {"close_compute_inflight", "official_5m_close_inflight"}
+        )
+        stalled = bool(
+            scheduler_summary.get("compute_in_progress_stalled")
+            or scheduler_summary.get("inflight_stalled")
+            or scheduler_summary.get("official_5m_close_stalled")
+        )
         return bool(in_progress and not stalled)
 
     observed_at = utc_timestamp()
@@ -406,9 +414,13 @@ def derive_monitor_service_map(
                 "non-compute ingest" if scheduler_summary.get("dispatch_lag_reason") == "non_compute_ingest_source" else "",
                 "deferred by compute preload" if compute_preload_active else "",
                 (
-                    f"close compute in progress {float(scheduler_summary.get('inflight_age_s') or 0):.1f}s"
-                    if close_compute_deferred
-                    else ""
+                    f"official close in progress {float(scheduler_summary.get('official_5m_close_age_s') or scheduler_summary.get('inflight_age_s') or 0):.1f}s"
+                    if close_compute_deferred and scheduler_summary.get("dispatch_lag_reason") == "official_5m_close_inflight"
+                    else (
+                        f"close compute in progress {float(scheduler_summary.get('inflight_age_s') or 0):.1f}s"
+                        if close_compute_deferred
+                        else ""
+                    )
                 ),
                 (
                     f"missing indicators {int(scheduler_summary.get('missing_indicator_symbol_count') or 0)}"

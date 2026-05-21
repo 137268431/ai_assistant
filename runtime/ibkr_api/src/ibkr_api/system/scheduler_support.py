@@ -229,19 +229,23 @@ def build_scheduler_summary(environment: str, scheduler_payload: dict[str, Any])
         or []
     )
     realtime_compute = last_compute_result.get("realtime_compute") if isinstance(last_compute_result.get("realtime_compute"), dict) else {}
+    canonical_5m = last_compute_result.get("canonical_5m") if isinstance(last_compute_result.get("canonical_5m"), dict) else {}
+    last_reason = str(last_compute_result.get("reason") or "").strip().lower()
     compute_in_progress = bool(
         last_compute_result.get("compute_in_progress")
         or dispatch_5m.get("compute_in_progress")
-        or str(last_compute_result.get("reason") or "").strip().lower() == "close_compute_inflight"
+        or last_compute_result.get("official_5m_close_in_progress")
+        or last_reason in {"close_compute_inflight", "official_5m_close_inflight"}
     )
     inflight_stalled = bool(
         last_compute_result.get("inflight_stalled")
         or last_compute_result.get("compute_in_progress_stalled")
+        or last_compute_result.get("official_5m_close_stalled")
         or (realtime_compute or {}).get("stalled")
     )
     dispatch_lag_reason = str(compute_ingest.get("dispatch_lag_reason") or "")
     if compute_in_progress and dispatch_lag_reason != "non_compute_ingest_source":
-        dispatch_lag_reason = "close_compute_inflight"
+        dispatch_lag_reason = last_reason if last_reason in {"close_compute_inflight", "official_5m_close_inflight"} else "close_compute_inflight"
 
     return {
         "ok": bool(payload.get("ok", False)) if payload else False,
@@ -284,9 +288,14 @@ def build_scheduler_summary(environment: str, scheduler_payload: dict[str, Any])
         ),
         "compute_in_progress": compute_in_progress,
         "compute_in_progress_stalled": inflight_stalled,
-        "inflight_age_s": _coerce_float(last_compute_result.get("inflight_age_s") or dispatch_5m.get("inflight_age_s")),
+        "inflight_age_s": _coerce_float(
+            last_compute_result.get("inflight_age_s")
+            or last_compute_result.get("official_5m_close_age_s")
+            or dispatch_5m.get("inflight_age_s")
+        ),
         "inflight_timeout_threshold_s": _coerce_float(
             last_compute_result.get("inflight_timeout_threshold_s")
+            or last_compute_result.get("official_5m_close_timeout_threshold_s")
             or dispatch_5m.get("inflight_timeout_threshold_s")
         ),
         "inflight_stall_reason": str(
@@ -294,6 +303,10 @@ def build_scheduler_summary(environment: str, scheduler_payload: dict[str, Any])
             or (realtime_compute or {}).get("stall_reason")
             or ""
         ),
+        "official_5m_close_in_progress": bool(last_compute_result.get("official_5m_close_in_progress")),
+        "official_5m_close_stalled": bool(last_compute_result.get("official_5m_close_stalled")),
+        "official_5m_close_age_s": _coerce_float(last_compute_result.get("official_5m_close_age_s")),
+        "canonical_5m": canonical_5m,
         "deferred_compute_busy": bool(dispatch_5m.get("deferred_compute_busy") or last_compute_result.get("deferred_compute_busy")),
         "deferred_busy_symbols": deferred_busy_symbols,
         "deferred_busy_symbol_count": _coerce_int(

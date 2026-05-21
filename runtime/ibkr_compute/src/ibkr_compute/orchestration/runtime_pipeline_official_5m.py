@@ -84,6 +84,12 @@ class RuntimePipelineOfficial5mMixin:
             return {
                 "enabled": True,
                 "driver": "ibkr_history_close",
+                "running": False,
+                "phase": "idle",
+                "cycle_started_at_ms": 0,
+                "cycle_age_s": 0.0,
+                "current_due_bucket_ms": 0,
+                "current_due_bucket_us": "",
                 "close_delay_sec": service_mod.DEFAULT_OFFICIAL_5M_CLOSE_DELAY_SECONDS,
                 "request_period": service_mod.DEFAULT_OFFICIAL_5M_REQUEST_PERIOD,
                 "last_run": "",
@@ -653,10 +659,17 @@ class RuntimePipelineOfficial5mMixin:
                     job["trace"] = history_trace
 
             fetch_workers = self._official_5m_fetch_workers(len(fetch_jobs)) if fetch_jobs else 0
+            cycle_started_at_ms = int(time.time() * 1000)
             self._set_official_5m_state(
                 enabled=self._official_5m_enabled(),
                 close_delay_sec=self._official_5m_close_delay_sec(),
                 request_period=request_period,
+                running=True,
+                phase="fetching",
+                cycle_started_at_ms=cycle_started_at_ms,
+                cycle_age_s=0.0,
+                current_due_bucket_ms=due_bucket_ms,
+                current_due_bucket_us=format_us_time(due_bucket_ms),
                 last_run=self._now_iso(),
                 last_due_bucket_ms=due_bucket_ms,
                 last_due_bucket_us=format_us_time(due_bucket_ms),
@@ -903,6 +916,12 @@ class RuntimePipelineOfficial5mMixin:
                 enabled=self._official_5m_enabled(),
                 close_delay_sec=self._official_5m_close_delay_sec(),
                 request_period=request_period,
+                running=False,
+                phase="idle",
+                cycle_started_at_ms=0,
+                cycle_age_s=0.0,
+                current_due_bucket_ms=0,
+                current_due_bucket_us="",
                 last_run=self._now_iso(),
                 last_due_bucket_ms=due_bucket_ms,
                 last_due_bucket_us=format_us_time(due_bucket_ms),
@@ -963,6 +982,12 @@ class RuntimePipelineOfficial5mMixin:
                         enabled=self._official_5m_enabled(),
                         close_delay_sec=self._official_5m_close_delay_sec(),
                         request_period=self._official_5m_request_period(),
+                        running=False,
+                        phase="error",
+                        cycle_started_at_ms=0,
+                        cycle_age_s=0.0,
+                        current_due_bucket_ms=0,
+                        current_due_bucket_us="",
                         last_run=self._now_iso(),
                         last_error=str(exc),
                     )

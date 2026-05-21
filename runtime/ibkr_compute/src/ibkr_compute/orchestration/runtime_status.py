@@ -73,6 +73,14 @@ class TradingServiceRuntimeStatusMixin:
         direct_history_topup = self._copy_direct_topup_state()
         due_bucket_ms = int(official_5m.get("last_due_bucket_ms", 0) or 0)
         completed_bucket_ms = int(official_5m.get("last_completed_bucket_ms", 0) or 0)
+        cycle_started_at_ms = int(official_5m.get("cycle_started_at_ms", 0) or 0)
+        official_5m_running = bool(official_5m.get("running"))
+        official_5m["cycle_age_s"] = (
+            round(max(0.0, now_ts - (cycle_started_at_ms / 1000.0)), 1)
+            if official_5m_running and cycle_started_at_ms > 0
+            else 0.0
+        )
+        official_5m["running"] = official_5m_running
         official_5m["lag_s"] = (
             round(max(0.0, (due_bucket_ms - completed_bucket_ms) / 1000.0), 1)
             if due_bucket_ms > completed_bucket_ms else 0.0

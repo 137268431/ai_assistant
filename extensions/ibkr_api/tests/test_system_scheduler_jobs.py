@@ -1567,6 +1567,47 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(payload["today"]["commission"], 7.0)
         self.assertNotIn("today_errors", payload)
 
+    def test_system_summary_payload_loads_today_counts_by_broker_mode(self):
+        calls = []
+
+        def load_today_counts(environment, market_date):
+            calls.append((environment, market_date))
+            return {
+                "ibkr_bars": 22134,
+                "ibkr_indicators": 8494,
+                "ibkr_signals": 31,
+                "orders": 27,
+                "main_orders": 8,
+                "order_groups": 8,
+                "events": 9,
+                "ibkr_targets": 46,
+                "take_profit_filled": 0,
+                "stop_loss_filled": 4,
+            }
+
+        payload = build_system_summary_payload(
+            "paper",
+            lite_mode=True,
+            normalize_environment=lambda value, default="live": str(value or default).strip().lower() or default,
+            load_effective_config_map=lambda environment, selected_keys=None: {},
+            is_enabled_text=lambda value: True,
+            fetch_compute_health=lambda environment: {"ok": True, "payload": {"status": "running"}},
+            fetch_compute_status=lambda environment: {"ok": True, "payload": {"status": "running"}},
+            fetch_runtime_status=lambda environment: {"ok": True, "payload": {"status": "running", "environment": environment}},
+            as_dict=lambda value: dict(value) if isinstance(value, dict) else {},
+            merge_service_topology=lambda *payloads: {"services": {}},
+            load_recent_system_events=lambda environment, limit: [],
+            time_strings=lambda now_ts=None: {"us": "2026-05-20 16:05:00", "cn": "2026-05-21 04:05:00", "date": "2026-05-20"},
+            load_today_counts=load_today_counts,
+        )
+
+        self.assertEqual(calls, [("paper", "2026-05-20")])
+        self.assertEqual(payload["broker_mode"], "paper")
+        self.assertEqual(payload["data_environment"], "live")
+        self.assertEqual(payload["today"]["orders"], 27)
+        self.assertEqual(payload["today"]["main_orders"], 8)
+        self.assertEqual(payload["today"]["stop_loss_filled"], 4)
+
     def test_system_summary_payload_preserves_response_when_today_counts_fail(self):
         payload = build_system_summary_payload(
             "live",

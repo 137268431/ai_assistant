@@ -5,7 +5,7 @@ import sys
 import threading as _threading
 import time
 
-from ibkr_compute.market.timeframe_utils import normalize_interval
+from ibkr_compute.market.timeframe_utils import HIGHER_INTERVALS, normalize_interval
 
 
 def _facade_module():
@@ -324,12 +324,18 @@ class RuntimePipelineSupportMixin:
 
                 try:
                     startup_compute = bool(self._starting)
+                    compute_source = str(merged_event.get("source") or "bar_close")
+                    compute_symbols = list(merged_event.get("symbols") or [])
+                    critical_intervals = ["5m"] if compute_source == "canonical_close" else None
+                    critical_rollup_intervals = [] if compute_source == "canonical_close" else None
                     self._last_realtime_compute_started_at = time.time()
                     self.data_writer.flush()
                     result = self._trigger_realtime_compute(
-                        source=str(merged_event.get("source") or "bar_close"),
-                        symbols=list(merged_event.get("symbols") or []),
+                        source=compute_source,
+                        symbols=compute_symbols,
                         persist_signals=False if startup_compute else None,
+                        intervals=critical_intervals,
+                        rollup_intervals=critical_rollup_intervals,
                     )
                     self._realtime_compute_runs += 1
                     self._last_realtime_compute_at = time.time()
@@ -351,6 +357,22 @@ class RuntimePipelineSupportMixin:
                         self._request_watchlist_idle_topup_now(ttl_s=5.0)
                     except Exception:
                         pass
+                    if compute_source == "canonical_close" and compute_symbols:
+                        rollup_intervals = [interval for interval in HIGHER_INTERVALS if interval != "1d"]
+                        if rollup_intervals:
+                            rollup_result = self._trigger_realtime_compute(
+                                source="canonical_close",
+                                symbols=compute_symbols,
+                                persist_signals=False,
+                                intervals=[],
+                                rollup_intervals=rollup_intervals,
+                            )
+                            service_mod.logger.info(
+                                "Canonical close background rollup finished: symbols=%d errors=%s elapsed_s=%s",
+                                len(compute_symbols),
+                                rollup_result.get("errors", 0),
+                                rollup_result.get("elapsed_s", 0),
+                            )
                 except Exception as exc:
                     service_mod.logger.error("Realtime compute loop error: %s", exc)
                 finally:

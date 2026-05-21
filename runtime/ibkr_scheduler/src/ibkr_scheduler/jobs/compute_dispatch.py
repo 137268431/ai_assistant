@@ -21,6 +21,10 @@ NON_COMPUTE_DISPATCH_SOURCES = {
 COMPUTE_DISPATCH_RETRY_BACKOFF_SECONDS = (0.25, 0.5)
 COMPUTE_DISPATCH_RETRYABLE_ERRORS = {"compute_busy"}
 COMPUTE_DISPATCH_RETRYABLE_STATUS_CODES = {503}
+OFFICIAL_CLOSE_INFLIGHT_GRACE_SECONDS = max(
+    60.0,
+    float(os.environ.get("IBKR_OFFICIAL_CLOSE_INFLIGHT_GRACE_SEC", "600") or "600"),
+)
 COMPUTE_DISPATCH_TARGET_STATUSES = {"active", "candidate"}
 INDICATOR_5M_INTERVALS = {"5", "5m"}
 SIGNAL_DISPATCH_ENVIRONMENTS = {"live", "paper"}
@@ -406,6 +410,51 @@ def _runtime_realtime_compute_status(status_payload: dict[str, Any]) -> dict[str
     return {}
 
 
+def _runtime_canonical_5m_status(status_payload: dict[str, Any]) -> dict[str, Any]:
+    payload = status_payload if isinstance(status_payload, dict) else {}
+    candidates: list[dict[str, Any]] = []
+    for item in (
+        payload,
+        payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {},
+        payload.get("compute") if isinstance(payload.get("compute"), dict) else {},
+        payload.get("payload") if isinstance(payload.get("payload"), dict) else {},
+    ):
+        if isinstance(item, dict):
+            candidates.append(item)
+    for item in candidates:
+        canonical = item.get("canonical_5m")
+        if isinstance(canonical, dict) and canonical:
+            return dict(canonical)
+    return {}
+
+
+def _should_wait_for_official_close(
+    status_payload: dict[str, Any],
+    *,
+    target_bar_time_ms: int = 0,
+) -> tuple[bool, dict[str, Any]]:
+    canonical = _runtime_canonical_5m_status(status_payload)
+    running = bool(canonical.get("running"))
+    cycle_age_s = _coerce_float(canonical.get("cycle_age_s"), 0.0)
+    threshold_s = OFFICIAL_CLOSE_INFLIGHT_GRACE_SECONDS
+    current_due_ms = _coerce_int(
+        canonical.get("current_due_bucket_ms")
+        or canonical.get("last_due_bucket_ms")
+    )
+    target_ms = _coerce_int(target_bar_time_ms)
+    relevant = bool(not target_ms or not current_due_ms or current_due_ms >= target_ms)
+    stalled = bool(running and cycle_age_s >= threshold_s)
+    wait = bool(running and relevant and not stalled)
+    return wait, {
+        "official_5m_close_in_progress": bool(running),
+        "official_5m_close_relevant": relevant,
+        "official_5m_close_stalled": stalled,
+        "official_5m_close_age_s": cycle_age_s if running else 0.0,
+        "official_5m_close_timeout_threshold_s": threshold_s,
+        "canonical_5m": canonical,
+    }
+
+
 def _should_wait_for_inflight(status_payload: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
     realtime = _runtime_realtime_compute_status(status_payload)
     inflight = bool(realtime.get("inflight"))
@@ -776,6 +825,20 @@ def build_compute_dispatch_runner(
                 | set(_normalize_symbols(coverage_detail.get("missing_signal_dispatch_symbols")))
             ) or symbols
             runtime_status_payload = _load_runtime_status_payload(compute_base_url, environment)
+            wait_for_official_close, official_close_detail = _should_wait_for_official_close(
+                runtime_status_payload,
+                target_bar_time_ms=latest_dispatch_ms,
+            )
+            if compute_symbols and wait_for_official_close:
+                return {
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "official_5m_close_inflight",
+                    "compute_in_progress": True,
+                    **detail,
+                    **coverage_detail,
+                    **official_close_detail,
+                }
             wait_for_inflight, inflight_detail = _should_wait_for_inflight(runtime_status_payload)
             if compute_symbols and wait_for_inflight:
                 return {
@@ -816,6 +879,7 @@ def build_compute_dispatch_runner(
         chunks = _chunked_symbols(compute_symbols, _compute_dispatch_chunk_size()) if compute_symbols else [[]]
         successful_payloads: list[dict[str, Any]] = []
         deferred_busy_symbols: list[str] = []
+        deferred_busy_details: list[dict[str, Any]] = []
         compute_retry_count = 0
         compute_attempts = 0
         successful_symbols: list[str] = []
@@ -833,6 +897,24 @@ def build_compute_dispatch_runner(
             compute_errors = _payload_error_count(payload)
             if chunk and _is_retryable_compute_failure(response, payload):
                 deferred_busy_symbols.extend(chunk)
+                deferred_busy_details.append(
+                    {
+                        "symbols": _normalize_symbols(chunk),
+                        "symbol_count": len(_normalize_symbols(chunk)),
+                        "status_code": int(getattr(response, "status_code", 0) or 0),
+                        "error": str(payload.get("error") or ""),
+                        "lock_scope": str(payload.get("lock_scope") or ""),
+                        "lock_reason": str(payload.get("lock_reason") or ""),
+                        "blocked_by": list(payload.get("blocked_by") or [])[:8]
+                        if isinstance(payload.get("blocked_by"), list)
+                        else [],
+                        "blocked_by_count": _coerce_int(payload.get("blocked_by_count")),
+                        "conflict_slots": list(payload.get("conflict_slots") or [])[:20]
+                        if isinstance(payload.get("conflict_slots"), list)
+                        else [],
+                        "conflict_slot_count": _coerce_int(payload.get("conflict_slot_count")),
+                    }
+                )
                 continue
             retry_detail = (
                 {
@@ -859,6 +941,7 @@ def build_compute_dispatch_runner(
                 "deferred_compute_busy": True,
                 "deferred_busy_symbols": _normalize_symbols(deferred_busy_symbols),
                 "deferred_busy_symbol_count": len(_normalize_symbols(deferred_busy_symbols)),
+                "deferred_busy_details": deferred_busy_details[:8],
                 "chunks": len(chunks),
                 "successful_chunks": 0,
             }
@@ -878,6 +961,7 @@ def build_compute_dispatch_runner(
                         "deferred_compute_busy": True,
                         "deferred_busy_symbols": _normalize_symbols(deferred_busy_symbols),
                         "deferred_busy_symbol_count": len(_normalize_symbols(deferred_busy_symbols)),
+                        "deferred_busy_details": deferred_busy_details[:8],
                     }
                 )
 
@@ -910,6 +994,7 @@ def build_compute_dispatch_runner(
                     "deferred_compute_busy": True,
                     "deferred_busy_symbols": deferred_symbols,
                     "deferred_busy_symbol_count": len(deferred_symbols),
+                    "deferred_busy_details": deferred_busy_details[:8],
                 },
             )
             return {
@@ -920,6 +1005,7 @@ def build_compute_dispatch_runner(
                 "deferred_compute_busy": True,
                 "deferred_busy_symbols": deferred_symbols,
                 "deferred_busy_symbol_count": len(deferred_symbols),
+                "deferred_busy_details": deferred_busy_details[:8],
                 **(
                     {
                         "compute_dispatch_retry_count": compute_retry_count,
