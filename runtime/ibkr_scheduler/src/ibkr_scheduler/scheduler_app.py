@@ -48,12 +48,24 @@ US_TZ = ZoneInfo("America/New_York")
 CN_TZ = ZoneInfo("Asia/Shanghai")
 DEFAULT_NATIVE_HTTP_TIMEOUT_SECONDS = 60
 DEFAULT_NATIVE_API_HTTP_TIMEOUT_SECONDS = 90
+DEFAULT_ASYNC_SUBMIT_TIMEOUT_SECONDS = 15
 JOB_TIMEOUT_SECONDS = {
     "system_status_reminder": 150,
     "ibkr_scan_runtime": 180,
     "ibkr_data_quality_repair_sweep": 300,
     "ibkr_data_quality_truth_audit_cycle": 300,
 }
+ASYNC_NATIVE_HTTP_JOB_IDS = {
+    "ibkr_scan_runtime",
+    "ibkr_data_quality_repair_sweep",
+    "ibkr_data_quality_truth_audit_cycle",
+}
+ASYNC_RUNNING_STATUSES = {"accepted", "pending", "running", "submitted", "in_progress", "processing"}
+ASYNC_TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
+ASYNC_POLL_MIN_INTERVAL_SECONDS = max(
+    5.0,
+    float(os.environ.get("IBKR_SCHEDULER_ASYNC_POLL_MIN_INTERVAL_SEC", "15") or "15"),
+)
 BAR_TRUTH_AUDIT_JOB_IDS = {
     "ibkr_data_quality_truth_audit_cycle",
 }
@@ -90,11 +102,27 @@ def _job_timeout_seconds(job_id: str, default: int) -> int:
         return max(1, int(default))
 
 
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
     except (TypeError, ValueError):
         return int(default or 0)
+
+
+def _async_operation_status(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _async_operation_terminal(status: Any) -> bool:
+    return _async_operation_status(status) in ASYNC_TERMINAL_STATUSES
+
+
+def _async_operation_running(status: Any) -> bool:
+    return _async_operation_status(status) in ASYNC_RUNNING_STATUSES
 
 
 def _scheduler_mode_context(
@@ -268,6 +296,8 @@ class SchedulerService:
         return candidate.isoformat()
 
     def _native_http_job_payload(self, job_id: str, schedule: dict[str, Any] | None = None) -> dict[str, Any]:
+        if job_id == "ibkr_scan_runtime":
+            return {}
         if job_id == "ibkr_data_quality_repair_sweep":
             return {
                 "scan_scope": "watchlist_full",
@@ -325,6 +355,60 @@ class SchedulerService:
             return failed_result
         return result
 
+    @staticmethod
+    def _async_operation_id(job_id: str, schedule: dict[str, Any] | None, scheduled_slot: str) -> str:
+        schedule_id = str((schedule or {}).get("id") or "default").strip() or "default"
+        slot_token = str(scheduled_slot or "").strip()
+        suffix = slot_token.replace(":", "").replace("-", "").replace("Z", "Z") if slot_token else str(_now_ms())
+        return f"scheduler:{str(job_id or '').strip()}:{schedule_id}:{suffix}"
+
+    @staticmethod
+    def _async_job_kind(job_id: str) -> str:
+        return "scan" if job_id == "ibkr_scan_runtime" else "data_quality"
+
+    @staticmethod
+    def _async_status_path(job_id: str) -> str:
+        return "/scan/status" if job_id == "ibkr_scan_runtime" else "/ibkr/data-quality/operation-status"
+
+    def _async_operation_payload(
+        self,
+        *,
+        job_id: str,
+        schedule: dict[str, Any] | None,
+        operation_id: str,
+        scheduled_slot: str,
+        environment: str,
+        broker_mode: str,
+        market_data_mode: str,
+        mode_scope: str,
+        submit_payload: dict[str, Any],
+        submit_result: dict[str, Any] | None = None,
+        status: str = "accepted",
+    ) -> dict[str, Any]:
+        result_payload = submit_result.get("payload") if isinstance((submit_result or {}).get("payload"), dict) else {}
+        run_id = str(result_payload.get("run_id") or operation_id).strip()
+        date_text = str(result_payload.get("date") or result_payload.get("market_date") or submit_payload.get("date") or submit_payload.get("market_date") or "").strip()
+        async_operation = {
+            "kind": self._async_job_kind(job_id),
+            "job_id": job_id,
+            "operation_id": operation_id,
+            "run_id": run_id,
+            "status": _async_operation_status(result_payload.get("status") or status or "accepted") or "accepted",
+            "status_path": self._async_status_path(job_id),
+            "submitted_at_ms": _now_ms(),
+            "last_polled_at_ms": 0,
+            "schedule_id": str((schedule or {}).get("id") or "default").strip() or "default",
+            "scheduled_slot": str(scheduled_slot or "").strip(),
+            "environment": environment,
+            "broker_mode": broker_mode,
+            "market_data_mode": market_data_mode,
+            "mode_scope": mode_scope,
+        }
+        if date_text:
+            async_operation["date"] = date_text
+            async_operation["market_date"] = date_text
+        return async_operation
+
     def _run_native_http_job(
         self,
         job_id: str,
@@ -334,11 +418,20 @@ class SchedulerService:
         broker_mode: str,
         market_data_mode: str,
         mode_scope: str,
+        scheduled_slot: str = "",
     ) -> dict[str, Any]:
         method, path = NATIVE_HTTP_JOB_ENDPOINTS[job_id]
         payload = self._native_http_job_payload(job_id, schedule)
-        operation_id = f"scheduler:{job_id}:{str((schedule or {}).get('id') or 'default')}:{int(time.time() * 1000)}"
-        if job_id == "ibkr_data_quality_repair_sweep":
+        async_enabled = job_id in ASYNC_NATIVE_HTTP_JOB_IDS
+        operation_id = self._async_operation_id(job_id, schedule, scheduled_slot)
+        if async_enabled:
+            payload["async"] = True
+            payload["operation_id"] = operation_id
+            payload["run_id"] = operation_id
+            payload["trigger_source"] = "ibkr_scheduler"
+            payload["schedule_id"] = str((schedule or {}).get("id") or "default").strip() or "default"
+            payload["scheduled_slot"] = str(scheduled_slot or "").strip()
+        elif job_id == "ibkr_data_quality_repair_sweep":
             payload["operation_id"] = operation_id
         if job_id == "ibkr_data_quality_repair_sweep":
             emit_large_operation_alert(
@@ -363,17 +456,71 @@ class SchedulerService:
                 environment=market_data_mode,
                 broker_mode=broker_mode,
             )
-        result = run_upstream_http_job(
-            method=method,
-            base_url=COMPUTE_BASE_URL,
-            path=path,
-            environment=environment,
-            broker_mode=broker_mode,
-            market_data_mode=market_data_mode,
-            mode_scope=mode_scope,
-            timeout_seconds=_job_timeout_seconds(job_id, DEFAULT_NATIVE_HTTP_TIMEOUT_SECONDS),
-            payload=payload,
-        )
+        try:
+            result = run_upstream_http_job(
+                method=method,
+                base_url=COMPUTE_BASE_URL,
+                path=path,
+                environment=environment,
+                broker_mode=broker_mode,
+                market_data_mode=market_data_mode,
+                mode_scope=mode_scope,
+                timeout_seconds=(
+                    DEFAULT_ASYNC_SUBMIT_TIMEOUT_SECONDS
+                    if async_enabled
+                    else _job_timeout_seconds(job_id, DEFAULT_NATIVE_HTTP_TIMEOUT_SECONDS)
+                ),
+                payload=payload,
+            )
+        except requests.RequestException as exc:
+            if async_enabled:
+                poll_result = self._poll_async_operation(
+                    {
+                        "kind": self._async_job_kind(job_id),
+                        "job_id": job_id,
+                        "operation_id": operation_id,
+                        "run_id": operation_id,
+                        "status_path": self._async_status_path(job_id),
+                        "environment": environment,
+                        "broker_mode": broker_mode,
+                        "market_data_mode": market_data_mode,
+                        "mode_scope": mode_scope,
+                    },
+                    job_id=job_id,
+                    environment=environment,
+                )
+                if poll_result.get("found"):
+                    return poll_result["result"]
+            raise exc
+        if async_enabled:
+            response_payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+            async_status = _async_operation_status(response_payload.get("status") or "accepted")
+            if bool(result.get("ok")) and (
+                response_payload.get("accepted")
+                or response_payload.get("async")
+                or _async_operation_running(async_status)
+            ) and not _async_operation_terminal(async_status):
+                async_operation = self._async_operation_payload(
+                    job_id=job_id,
+                    schedule=schedule,
+                    operation_id=operation_id,
+                    scheduled_slot=scheduled_slot,
+                    environment=environment,
+                    broker_mode=broker_mode,
+                    market_data_mode=market_data_mode,
+                    mode_scope=mode_scope,
+                    submit_payload=payload,
+                    submit_result=result,
+                    status=async_status or "accepted",
+                )
+                return {
+                    "ok": True,
+                    "pending": True,
+                    "async": True,
+                    "status": async_operation["status"],
+                    "async_operation": async_operation,
+                    "payload": response_payload,
+                }
         validated_result = self._validate_native_http_job_result(job_id, result)
         if job_id == "ibkr_data_quality_repair_sweep":
             response_payload = validated_result.get("payload") if isinstance(validated_result.get("payload"), dict) else {}
@@ -404,6 +551,278 @@ class SchedulerService:
                 broker_mode=broker_mode,
             )
         return validated_result
+
+    def _poll_async_operation(
+        self,
+        async_operation: dict[str, Any],
+        *,
+        job_id: str,
+        environment: str,
+    ) -> dict[str, Any]:
+        operation = dict(async_operation or {})
+        kind = str(operation.get("kind") or self._async_job_kind(job_id)).strip().lower()
+        status_path = str(operation.get("status_path") or self._async_status_path(job_id)).strip()
+        params: dict[str, Any] = {
+            "environment": str(operation.get("market_data_mode") or operation.get("environment") or environment).strip().lower() or environment,
+            "broker_mode": str(operation.get("broker_mode") or "").strip().lower(),
+            "market_data_mode": str(operation.get("market_data_mode") or environment).strip().lower() or environment,
+            "data_environment": str(operation.get("market_data_mode") or environment).strip().lower() or environment,
+        }
+        if kind == "scan":
+            params["run_id"] = str(operation.get("run_id") or operation.get("operation_id") or "").strip()
+            if operation.get("date") or operation.get("market_date"):
+                params["date"] = str(operation.get("date") or operation.get("market_date") or "").strip()
+            if operation.get("mode"):
+                params["mode"] = str(operation.get("mode") or "").strip()
+        else:
+            params["operation_id"] = str(operation.get("operation_id") or operation.get("run_id") or "").strip()
+        if not (params.get("run_id") or params.get("operation_id")):
+            return {"found": False, "result": {"ok": False, "error": "missing_async_operation_id"}}
+
+        status_url = f"{COMPUTE_BASE_URL}{status_path}"
+        try:
+            response = requests.get(status_url, params=params, timeout=8)
+            try:
+                payload = response.json() if response.content else {}
+            except Exception:
+                payload = {}
+        except requests.RequestException as exc:
+            updated_operation = {
+                **operation,
+                "status": str(operation.get("status") or "running"),
+                "last_polled_at_ms": _now_ms(),
+                "last_poll_error": str(exc),
+            }
+            return {
+                "found": True,
+                "result": {
+                    "ok": True,
+                    "pending": True,
+                    "async": True,
+                    "status": updated_operation["status"],
+                    "async_operation": updated_operation,
+                    "poll_error": str(exc),
+                },
+            }
+        if int(response.status_code) == 404:
+            return {
+                "found": False,
+                "result": {
+                    "ok": False,
+                    "error": str((payload or {}).get("error") or "async_operation_not_found"),
+                    "payload": payload if isinstance(payload, dict) else {},
+                },
+            }
+        if not isinstance(payload, dict):
+            payload = {}
+        status = _async_operation_status(payload.get("status") or operation.get("status") or ("failed" if not response.ok else "running"))
+        terminal = _async_operation_terminal(status)
+        updated_operation = {
+            **operation,
+            "status": status,
+            "last_polled_at_ms": _now_ms(),
+            "status_code": int(response.status_code),
+        }
+        if payload.get("date") or payload.get("market_date"):
+            updated_operation["date"] = str(payload.get("date") or payload.get("market_date") or "")
+            updated_operation["market_date"] = str(payload.get("market_date") or payload.get("date") or "")
+
+        if not response.ok and not terminal:
+            return {
+                "found": True,
+                "result": {
+                    "ok": True,
+                    "pending": True,
+                    "async": True,
+                    "status": status,
+                    "async_operation": updated_operation,
+                    "payload": payload,
+                    "poll_error": str(payload.get("error") or f"http_{int(response.status_code)}"),
+                },
+            }
+
+        if kind == "scan":
+            error_text = str(payload.get("last_error") or payload.get("error") or "")
+            ok = bool(response.ok and payload.get("ok", True) is not False and status != "failed" and not error_text)
+            pending = not terminal
+            return {
+                "found": True,
+                "result": {
+                    "ok": ok if terminal else True,
+                    "pending": pending,
+                    "async": True,
+                    "status": status,
+                    "async_operation": updated_operation,
+                    "payload": payload,
+                    **({"error": error_text or status} if terminal and not ok else {}),
+                },
+            }
+
+        result_payload = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+        result_ok = bool(response.ok and payload.get("ok", True) is not False and result_payload.get("ok", True) is not False and status != "failed")
+        result = {
+            "ok": result_ok if terminal else True,
+            "pending": not terminal,
+            "async": True,
+            "status": status,
+            "async_operation": updated_operation,
+            "payload": result_payload if terminal else payload,
+            "operation_status": payload,
+            "status_code": int(payload.get("status_code") or response.status_code or 0),
+        }
+        if terminal and not result_ok:
+            result["error"] = str(payload.get("last_error") or payload.get("error") or result_payload.get("error") or status)
+        if terminal and job_id == "ibkr_data_quality_repair_sweep":
+            result = self._validate_native_http_job_result(job_id, result)
+        return {"found": True, "result": result}
+
+    def _emit_repair_async_completion_alert(
+        self,
+        *,
+        result: dict[str, Any],
+        broker_mode: str,
+        market_data_mode: str,
+    ) -> None:
+        async_operation = result.get("async_operation") if isinstance(result.get("async_operation"), dict) else {}
+        response_payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+        summary = response_payload.get("summary") if isinstance(response_payload.get("summary"), dict) else {}
+        emit_large_operation_alert(
+            self.pb,
+            {
+                "operation_id": async_operation.get("operation_id"),
+                "operation_type": "scheduler_native_http_job",
+                "job_id": "ibkr_data_quality_repair_sweep",
+                "trigger_source": "ibkr_scheduler",
+                "scan_scope": response_payload.get("scan_scope"),
+                "intervals": summary.get("repair_intervals") or [],
+                "symbols_total": summary.get("expected_symbols_total") or len(response_payload.get("symbols") or []),
+                "attempted_repair_symbols": summary.get("attempted_repair_symbols") or [],
+                "history_fetch_symbols": summary.get("history_fetch_symbols") or [],
+                "deferred_symbols": summary.get("deferred_symbols") or [],
+                "deferred": bool(summary.get("deferred")),
+                "error": str(result.get("error") or response_payload.get("error") or ""),
+                "force_large_operation": True,
+                "planned_large_reason": "scan_scope=watchlist_full",
+                "data_environment": market_data_mode,
+                "broker_mode": broker_mode,
+            },
+            config=self.cfg,
+            stage="failed" if not bool(result.get("ok")) else ("deferred" if bool(summary.get("deferred")) else "completed"),
+            environment=market_data_mode,
+            broker_mode=broker_mode,
+        )
+
+    def _save_async_poll_result(self, job_id: str, environment: str, result: dict[str, Any]) -> dict[str, Any]:
+        latest_state = self.job_states(environment).get(job_id) or {}
+        async_operation = result.get("async_operation") if isinstance(result.get("async_operation"), dict) else {}
+        schedule_id = str(async_operation.get("schedule_id") or latest_state.get("last_schedule_id") or "default").strip() or "default"
+        scheduled_slot = str(async_operation.get("scheduled_slot") or latest_state.get("last_scheduled_slot") or "").strip()
+        broker_mode = str(async_operation.get("broker_mode") or latest_state.get("broker_mode") or "").strip().lower()
+        market_data_mode = str(async_operation.get("market_data_mode") or environment).strip().lower() or environment
+        mode_scope = str(async_operation.get("mode_scope") or latest_state.get("mode_scope") or "").strip().lower()
+        poll_result = {
+            **result,
+            "job_id": job_id,
+            "requested_job_id": job_id,
+            "canonical_job_id": job_id,
+            "alias_job_id": str(latest_state.get("alias_job_id") or ""),
+            "schedule_id": schedule_id,
+            "environment": environment,
+            "broker_mode": broker_mode,
+            "market_data_mode": market_data_mode,
+            "mode_scope": mode_scope,
+            "scheduled_slot": scheduled_slot,
+        }
+        pending_result = bool(poll_result.get("pending") or (_async_operation_running((async_operation or {}).get("status")) and not _async_operation_terminal((async_operation or {}).get("status"))))
+        if not poll_result.get("ok", False) and not pending_result:
+            status = "error"
+        elif pending_result:
+            status = "running" if _async_operation_status(async_operation.get("status")) == "running" else "pending"
+        else:
+            status = "ok"
+
+        last_runs = latest_state.get("last_runs") if isinstance(latest_state.get("last_runs"), dict) else {}
+        schedule_patch = {
+            **(last_runs.get(schedule_id) if isinstance(last_runs.get(schedule_id), dict) else {}),
+            "status": status,
+            "last_result": _compact_scheduler_payload(poll_result),
+            "last_scheduled_slot": scheduled_slot,
+            "last_trigger_source": "async_poll",
+        }
+        state_patch = {
+            "status": status,
+            "last_result": poll_result,
+            "last_scheduled_slot": scheduled_slot,
+            "last_schedule_id": schedule_id,
+            "last_trigger_source": "async_poll",
+            "canonical_job_id": job_id,
+            "alias_job_id": str(latest_state.get("alias_job_id") or ""),
+        }
+        finished_at_ms = _now_ms()
+        if not pending_result:
+            schedule_patch["last_run_finished_at_ms"] = finished_at_ms
+            state_patch["last_run_finished_at_ms"] = finished_at_ms
+        if poll_result.get("ok", False) and not pending_result:
+            schedule_patch["last_success_at_ms"] = finished_at_ms
+            state_patch["last_success_at_ms"] = finished_at_ms
+        next_last_runs = dict(last_runs)
+        next_last_runs[schedule_id] = schedule_patch
+        state_patch["last_runs"] = next_last_runs
+        saved = self._save_job_state(job_id, environment, state_patch)
+        if not pending_result and job_id == "ibkr_data_quality_repair_sweep":
+            self._emit_repair_async_completion_alert(
+                result=poll_result,
+                broker_mode=broker_mode,
+                market_data_mode=market_data_mode,
+            )
+        if not pending_result and not poll_result.get("ok", False):
+            self._write_system_event(
+                job_id=job_id,
+                environment=environment,
+                level="error",
+                title=f"Scheduler async job failed: {job_id}",
+                detail={"result": poll_result, "trigger_source": "async_poll"},
+            )
+        return saved
+
+    def poll_pending_jobs(
+        self,
+        *,
+        broker_mode: str = "",
+        market_data_mode: str = "",
+        force: bool = False,
+    ) -> list[dict[str, Any]]:
+        mode_defaults = _scheduler_mode_context(
+            {"broker_mode": broker_mode, "market_data_mode": market_data_mode}
+        )
+        normalized_broker_mode = mode_defaults["broker_mode"]
+        normalized_market_data_mode = mode_defaults["market_data_mode"]
+        results: list[dict[str, Any]] = []
+        for definition in self._scheduled_jobs():
+            job_id = str(definition.get("id") or "").strip()
+            if job_id not in ASYNC_NATIVE_HTTP_JOB_IDS:
+                continue
+            runtime_environment = mode_for_scope(definition, normalized_broker_mode, normalized_market_data_mode)
+            state = self.job_states(runtime_environment).get(job_id) or {}
+            state_status = str(state.get("status") or "").strip().lower()
+            last_result = state.get("last_result") if isinstance(state.get("last_result"), dict) else {}
+            async_operation = last_result.get("async_operation") if isinstance(last_result.get("async_operation"), dict) else {}
+            if state_status not in {"pending", "running"} or not async_operation:
+                continue
+            last_polled_at_ms = _safe_int(async_operation.get("last_polled_at_ms"), 0)
+            if (
+                not force
+                and last_polled_at_ms
+                and (_now_ms() - last_polled_at_ms) < int(ASYNC_POLL_MIN_INTERVAL_SECONDS * 1000)
+            ):
+                continue
+            poll = self._poll_async_operation(async_operation, job_id=job_id, environment=runtime_environment)
+            if not poll.get("found"):
+                continue
+            result = poll.get("result") if isinstance(poll.get("result"), dict) else {}
+            self._save_async_poll_result(job_id, runtime_environment, result)
+            results.append(result)
+        return results
 
     def _run_native_api_job(
         self,
@@ -514,7 +933,7 @@ class SchedulerService:
                 )
             )
             if same_completed_slot and (
-                str(latest_schedule_state.get("status") or latest_state.get("status") or "").strip().lower() in {"running", "ok", "idle"}
+                str(latest_schedule_state.get("status") or latest_state.get("status") or "").strip().lower() in {"pending", "running", "ok", "idle"}
                 or schedule_result.get("ok") is True
                 or (not schedule_result and latest_result.get("ok") is True)
             ):
@@ -575,6 +994,7 @@ class SchedulerService:
                     broker_mode=broker_mode,
                     market_data_mode=market_data_mode,
                     mode_scope=job_mode_scope,
+                    scheduled_slot=slot_token,
                 )
             else:
                 result = {
@@ -602,28 +1022,36 @@ class SchedulerService:
             }
             if not result.get("ok", False):
                 status = "error"
+            elif result.get("pending") or result.get("async"):
+                async_status = _async_operation_status(
+                    (result.get("async_operation") if isinstance(result.get("async_operation"), dict) else {}).get("status")
+                    or result.get("status")
+                )
+                status = "running" if async_status == "running" else "pending"
             else:
                 status = "ok" if not result.get("skipped") else "idle"
             if result.get("skipped") and result.get("reason") == "disabled":
                 status = "disabled"
+            pending_result = bool(result.get("pending") or result.get("async"))
+            finished_at_ms = _now_ms()
             latest_state = self.job_states(environment).get(canonical_job_id) or {}
             last_runs = latest_state.get("last_runs") if isinstance(latest_state.get("last_runs"), dict) else {}
             schedule_patch = {
                 **(last_runs.get(effective_schedule_id) if isinstance(last_runs.get(effective_schedule_id), dict) else {}),
                 "status": status,
                 "last_result": _compact_scheduler_payload(result),
-                "last_run_finished_at_ms": int(time.time() * 1000),
                 "last_scheduled_slot": slot_token or str(existing_state.get("last_scheduled_slot") or ""),
                 "last_trigger_source": trigger_source,
             }
-            if result.get("ok", False) and not result.get("skipped"):
-                schedule_patch["last_success_at_ms"] = int(time.time() * 1000)
+            if not pending_result:
+                schedule_patch["last_run_finished_at_ms"] = finished_at_ms
+            if result.get("ok", False) and not result.get("skipped") and not pending_result:
+                schedule_patch["last_success_at_ms"] = finished_at_ms
             next_last_runs = dict(last_runs)
             next_last_runs[effective_schedule_id] = schedule_patch
             state_patch = {
                 "status": status,
                 "last_result": result,
-                "last_run_finished_at_ms": int(time.time() * 1000),
                 "last_scheduled_slot": slot_token or str(existing_state.get("last_scheduled_slot") or ""),
                 "last_schedule_id": effective_schedule_id,
                 "last_trigger_source": trigger_source,
@@ -631,8 +1059,10 @@ class SchedulerService:
                 "canonical_job_id": canonical_job_id,
                 "alias_job_id": alias_job_id,
             }
-            if result.get("ok", False) and not result.get("skipped"):
-                state_patch["last_success_at_ms"] = int(time.time() * 1000)
+            if not pending_result:
+                state_patch["last_run_finished_at_ms"] = finished_at_ms
+            if result.get("ok", False) and not result.get("skipped") and not pending_result:
+                state_patch["last_success_at_ms"] = finished_at_ms
             self._save_job_state(canonical_job_id, environment, state_patch)
             if not result.get("ok", False):
                 self._write_system_event(
@@ -642,7 +1072,7 @@ class SchedulerService:
                     title=f"Scheduler job failed: {canonical_job_id}",
                     detail={"result": result, "trigger_source": trigger_source},
                 )
-            elif not result.get("skipped") and trigger_source != "scheduler_loop":
+            elif not pending_result and not result.get("skipped") and trigger_source != "scheduler_loop":
                 self._write_system_event(
                     job_id=canonical_job_id,
                     environment=environment,
@@ -731,6 +1161,12 @@ class SchedulerService:
         normalized_market_data_mode = mode_defaults["market_data_mode"]
         slot_token = cron_slot_token(when_utc)
         results: list[dict[str, Any]] = []
+        results.extend(
+            self.poll_pending_jobs(
+                broker_mode=normalized_broker_mode,
+                market_data_mode=normalized_market_data_mode,
+            )
+        )
         for definition in self._scheduled_jobs():
             schedules = definition.get("schedules") if isinstance(definition.get("schedules"), list) else []
             for schedule in schedules or [get_schedule(definition)]:

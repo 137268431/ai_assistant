@@ -8,7 +8,7 @@
     <script src="common.js"></script>
     <script>document.write(getCommonStyles());</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-    <link rel="stylesheet" href="/assets/css/pages/index/page.css?v=20260518-bridge-align">
+    <link rel="stylesheet" href="/assets/css/pages/index/page.css?v=20260522-market-compact">
 </head>
 <body data-home-layout="desktop">
     <div class="home-shell">
@@ -93,6 +93,11 @@
                             <div class="home-stat-kicker">PnL</div>
                             <div class="home-stat-value">
                                 <span id="todayPnL">-</span>
+                            </div>
+                            <div class="home-stat-subline" id="todayPnLSummary">
+                                <span class="long">盈利 <span id="todayPnLWinCount">-</span> 次</span>
+                                <span class="home-stat-separator">/</span>
+                                <span class="short">亏损 <span id="todayPnLLossCount">-</span> 次</span>
                             </div>
                             <div class="home-stat-label">今日盈亏</div>
                             <div class="home-stat-foot">已成交 TP / SL 估算</div>
@@ -854,6 +859,8 @@
 
             let totalPnL = 0;
             let exitCount = 0;
+            let winCount = 0;
+            let lossCount = 0;
 
             grouped.forEach((groupOrders) => {
                 const entry = groupOrders.find((order) => isEntryOrder(order));
@@ -890,11 +897,13 @@
                     if (pnl !== null && Number.isFinite(pnl)) {
                         totalPnL += pnl;
                         exitCount += 1;
+                        if (pnl > 0) winCount += 1;
+                        if (pnl < 0) lossCount += 1;
                     }
                 });
             });
 
-            return { total: totalPnL, exitCount };
+            return { total: totalPnL, exitCount, winCount, lossCount };
         }
 
         function orderField(order, fieldName) {
@@ -1123,6 +1132,8 @@
                 document.getElementById('activePositionsShort').textContent = formatNumber(shortPositions, 0);
 
                 const pnlEl = document.getElementById('todayPnL');
+                document.getElementById('todayPnLWinCount').textContent = formatNumber(pnlSummary.winCount || 0, 0);
+                document.getElementById('todayPnLLossCount').textContent = formatNumber(pnlSummary.lossCount || 0, 0);
                 if (pnlSummary.exitCount > 0) {
                     pnlEl.textContent = `${pnl > 0 ? '+' : ''}${formatNumber(pnl, 0)}`;
                 } else {

@@ -350,6 +350,29 @@
             color: #f6ad55;
         }
 
+        .home-stat-subline {
+            display: inline-flex;
+            align-items: baseline;
+            gap: 6px;
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.25;
+            font-family: 'JetBrains Mono', monospace;
+            white-space: nowrap;
+        }
+
+        .home-stat-subline .long {
+            color: var(--long);
+        }
+
+        .home-stat-subline .short {
+            color: var(--short);
+        }
+
+        .home-stat-separator {
+            color: rgba(148, 163, 184, 0.7);
+        }
+
         .home-stat-label {
             font-size: 14px;
             font-weight: 700;
@@ -1157,6 +1180,10 @@
     font-size: clamp(22px, 2.4vw, 28px);
 }
 
+.home-stat-subline {
+    font-size: 10px;
+}
+
 .home-stat-label {
     font-size: 13px;
 }
@@ -1299,6 +1326,12 @@
         flex-wrap: wrap;
         gap: 6px;
     }
+
+    .home-stat-subline {
+        flex-wrap: wrap;
+        gap: 4px;
+        white-space: normal;
+    }
 }
 
 @media (max-width: 360px) {
@@ -1339,5 +1372,40 @@
     .home-target-card,
     .home-targets-more {
         max-width: none;
+    }
+}
+
+/* Keep the market pulse compact when it only has a few monitor symbols. */
+.home-secondary-grid {
+    align-items: start;
+}
+
+.home-secondary-grid .home-panel-scroll {
+    flex: 0 0 auto;
+}
+
+.home-market-grid {
+    width: fit-content;
+    max-width: 100%;
+    grid-template-columns: repeat(auto-fit, minmax(132px, 156px));
+    justify-content: start;
+    align-content: start;
+    align-items: start;
+}
+
+.home-market-card {
+    min-height: 118px;
+}
+
+@media (max-width: 720px) {
+    .home-market-grid {
+        width: 100%;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 360px) {
+    .home-market-grid {
+        grid-template-columns: minmax(0, 1fr);
     }
 }

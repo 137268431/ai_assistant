@@ -29,6 +29,7 @@
             <div class="signals-command-tools">
                 <div class="signals-command-date" id="datePicker"></div>
                 <input class="search-input signals-command-search" id="searchInput" placeholder="🔍 搜索股票/信号ID..." oninput="onSearchChange(this.value)">
+                <a class="mini-link signals-analysis-link" id="signalsAnalysisLink" href="/ibkr_stats.html#signal-rule-analysis">今日分析</a>
                 <div class="signals-command-refresh" id="signalsRefreshControl"></div>
             </div>
         </section>
@@ -583,6 +584,18 @@
                     <span class="status-chip"><span class="dot" style="color:#F6AD55"></span>${escapeHtml(getSignalsStatusLabel())}</span>
                 </div>
             `;
+            }
+            const analysisLink = document.getElementById('signalsAnalysisLink');
+            if (analysisLink) {
+                analysisLink.href = `${buildPageUrl('/ibkr_stats.html', {
+                    date: currentDate,
+                    broker_mode: currentBrokerMode,
+                    data_environment: currentEnvironment,
+                }, {
+                    environment: currentEnvironment,
+                    brokerMode: currentBrokerMode,
+                    dataEnvironment: currentEnvironment,
+                })}#signal-rule-analysis`;
             }
             const legacyTopSection = document.getElementById('pageTopSection');
             if (legacyTopSection) legacyTopSection.innerHTML = '';

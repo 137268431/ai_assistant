@@ -239,6 +239,62 @@
             flex: 0 0 auto;
         }
 
+        .signal-analysis-panel {
+            margin: 0 0 12px;
+            padding: 14px;
+            background:
+                radial-gradient(circle at top left, rgba(59, 130, 246, 0.14), transparent 34%),
+                linear-gradient(135deg, rgba(15, 23, 42, 0.96), rgba(12, 18, 31, 0.92));
+            border: 1px solid rgba(148, 163, 184, 0.24);
+            border-radius: 16px;
+        }
+
+        .signal-analysis-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+            margin-bottom: 10px;
+        }
+
+        .signal-analysis-copy,
+        .signal-analysis-meta,
+        .signal-analysis-card-copy {
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.5;
+        }
+
+        .signal-analysis-meta {
+            margin: -4px 0 10px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .signal-analysis-tools {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .signal-analysis-grid {
+            grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+        }
+
+        .signal-analysis-chart-grid {
+            padding-bottom: 12px;
+        }
+
+        .signal-analysis-table td:first-child {
+            font-weight: 700;
+            color: var(--text);
+        }
+
+        .signal-analysis-error-card {
+            grid-column: 1 / -1;
+        }
+
         /* 手机适配 */
         @media (max-width: 768px) {
             .stats-grid {
@@ -315,6 +371,20 @@
             .stats-toolbar #statsRefreshControl {
                 width: 100%;
                 margin-left: 0;
+            }
+
+            .signal-analysis-panel {
+                padding: 10px;
+                margin-bottom: 8px;
+            }
+
+            .signal-analysis-head {
+                flex-direction: column;
+            }
+
+            .signal-analysis-tools {
+                width: 100%;
+                justify-content: flex-start;
             }
         }
 

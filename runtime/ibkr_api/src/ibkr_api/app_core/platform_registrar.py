@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ibkr_api.account.routes import register_account_routes
+from ibkr_api.analytics.routes import register_analytics_routes
 from ibkr_api.data_quality.routes import register_data_quality_routes
 from ibkr_api.runtime.routes import register_runtime_routes
 from ibkr_api.startup.routes import register_startup_routes
@@ -151,6 +152,18 @@ def register_platform_routes(app, deps: dict[str, Any]) -> dict[str, Any]:
                 "time_strings": deps["time_strings"],
                 "request_json_request": deps["request_json_request"],
                 "compute_base_url": deps["compute_base_url"],
+            },
+        )
+    )
+
+    exports.update(
+        register_analytics_routes(
+            app,
+            deps={
+                "pb": deps["pb"],
+                "normalize_environment": deps["normalize_environment"],
+                "escape_filter_string": deps["escape_filter_string"],
+                "time_strings": deps["time_strings"],
             },
         )
     )

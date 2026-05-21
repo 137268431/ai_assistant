@@ -28,7 +28,11 @@ from ibkr_compute.api.ops.views import (
     build_status_response,
     build_storage_cleanup_response,
 )
-from ibkr_compute.api.runtime_proxy import register_runtime_proxy_route, should_proxy_runtime_requests
+from ibkr_compute.api.runtime_proxy import (
+    build_runtime_async_operation_status_response,
+    register_runtime_proxy_route,
+    should_proxy_runtime_requests,
+)
 
 
 def register_ops_routes(app):
@@ -111,6 +115,10 @@ def register_ops_routes(app):
     @app.route("/ibkr/bar-repair/status", methods=["GET", "POST"])
     def ibkr_bar_repair_status():
         return build_bar_repair_status_response()
+
+    @app.route("/ibkr/data-quality/operation-status", methods=["GET"])
+    def ibkr_data_quality_operation_status():
+        return build_runtime_async_operation_status_response()
 
     @app.route("/ibkr/backtest-preload/status", methods=["GET", "POST"])
     def ibkr_backtest_preload_status():

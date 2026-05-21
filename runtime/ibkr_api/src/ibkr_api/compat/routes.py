@@ -36,6 +36,7 @@ NATIVE_CUSTOM_ROUTES = [
     "ibkr/health-report",
     "ibkr/healthz",
     "ibkr/account_snapshot",
+    "ibkr/analytics/daily-signals",
     "ibkr/notify",
     "ibkr/orders/cancel_group",
     "ibkr/orders/cancel_sync",

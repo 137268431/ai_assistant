@@ -97,6 +97,20 @@ function buildUiSandbox() {
   return sandbox;
 }
 
+function renderSystemFreshnessFixture(freshnessPayload) {
+  const sandbox = buildUiSandbox();
+  const elements = new Map();
+  sandbox.document.getElementById = (id) => {
+    if (!elements.has(id)) elements.set(id, { innerHTML: '' });
+    return elements.get(id);
+  };
+  vm.runInContext(readStatic('assets/js/shared/ibkr-page-core.js'), sandbox, { filename: 'ibkr-page-core.js' });
+  vm.runInContext(readStatic('assets/js/pages/ibkr_system/state-api.js'), sandbox, { filename: 'ibkr_system/state-api.js' });
+  vm.runInContext(readStatic('assets/js/pages/ibkr_system/renderers.js'), sandbox, { filename: 'ibkr_system/renderers.js' });
+  sandbox.renderFreshness(freshnessPayload);
+  return elements.get('freshnessArea').innerHTML;
+}
+
 try {
   const ui = buildUiSandbox();
   const navHtml = ui.renderNav('/ibkr_monitor.html');
@@ -152,6 +166,69 @@ assert(includesAll(systemJs, ['ready_pct', 'coverage_pct', 'waiting_5m', 'not_du
 assert(!systemJs.includes('freshnessIntervals.map'), 'system_freshness_still_fetches_interval_rows');
 assert(!systemJs.includes('freshness:'), 'system_freshness_still_has_pb_fetch_labels');
 assert(includesAll(systemJs, ['freshness-overall', 'freshness-reasons', '应更新', '异常样例']), 'system_freshness_missing_aggregate_rendering');
+try {
+  const idleDailyHtml = renderSystemFreshnessFixture({
+    overall: {
+      status: 'ready',
+      ready_pct: 100,
+      coverage_pct: 100,
+      total_checks: 254,
+      due_checks: 127,
+      total_symbols: 127,
+      ready: 127,
+      not_due: 127,
+    },
+    intervals: {
+      '5m': {
+        interval: '5m',
+        status: 'ready',
+        ready_pct: 100,
+        coverage_pct: 100,
+        total_symbols: 127,
+        due_symbols: 127,
+        ready: 127,
+        expected_close_us: '2026-05-21 13:25:00',
+      },
+      '1d': {
+        interval: '1d',
+        status: 'not_due',
+        ready_pct: 100,
+        coverage_pct: 100,
+        total_symbols: 127,
+        due_symbols: 0,
+        ready: 0,
+        not_due: 127,
+        expected_close_us: '2026-05-20 16:00:00',
+      },
+    },
+    scopes: {
+      daily_1d: {
+        name: 'daily_1d',
+        label: 'Daily 1d',
+        critical: false,
+        symbols_total: 127,
+        overall: {
+          status: 'not_due',
+          ready_pct: 100,
+          coverage_pct: 100,
+          total_checks: 127,
+          due_checks: 0,
+          total_symbols: 127,
+          ready: 0,
+          not_due: 127,
+        },
+      },
+    },
+  });
+  assert((idleDailyHtml.match(/NOT DUE/g) || []).length >= 2, 'system_freshness_idle_1d_missing_not_due');
+  assert(idleDailyHtml.includes('<strong>due</strong>0/127'), 'system_freshness_idle_1d_missing_due_reason');
+  assert(idleDailyHtml.includes('<strong>not due</strong>127'), 'system_freshness_idle_1d_missing_not_due_reason');
+  assert(!/freshness-percent">100%<\/span>\s*<span class="freshness-state"[^>]*>未到周期/.test(idleDailyHtml), 'system_freshness_idle_percent_shows_100');
+  assert(/freshness-percent">--<\/span>\s*<span class="freshness-state"[^>]*>未到周期/.test(idleDailyHtml), 'system_freshness_idle_percent_missing_placeholder');
+  assert(/<span class="freshness-label">5m<\/span>[\s\S]*?<span class="freshness-percent">100%<\/span>[\s\S]*?正常/.test(idleDailyHtml), 'system_freshness_ready_5m_percent_missing');
+} catch (error) {
+  issues.push(`system_freshness_idle_render_failed:${error.message}`);
+}
 
 const screenerCss = readStatic('assets/css/pages/ibkr_screener/page.css');
 assert(!/screener-domain-bridge[\s\S]{0,240}page-bridge-copy[\s\S]{0,80}display:\s*none/.test(screenerCss), 'screener_bridge_copy_hidden');
@@ -210,4 +287,4 @@ if (issues.length) {
   process.exit(1);
 }
 
-console.log(JSON.stringify({ ok: true, checks: 53, staticRoot }, null, 2));
+console.log(JSON.stringify({ ok: true, checks: 59, staticRoot }, null, 2));

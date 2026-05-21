@@ -342,8 +342,7 @@ function getFreshnessAggregateVisual(item = {}) {
     const overdue = Number(item?.overdue || 0) || 0;
     const missing = Number(item?.missing || 0) || 0;
     const waiting5m = Number(item?.waiting_5m || 0) || 0;
-    const due = Number(item?.due_symbols || 0) || 0;
-    const total = Number(item?.total_symbols || 0) || 0;
+    const { due, total } = getFreshnessDueTotal(item);
     const notDue = Number(item?.not_due || 0) || 0;
     const quiet = Number(item?.quiet_extended || 0) || 0;
     const pct = Number.isFinite(readyPct) ? Math.max(0, Math.min(100, readyPct)) : 0;
@@ -367,6 +366,32 @@ function getFreshnessAggregateVisual(item = {}) {
         return { color: '#f59e0b', pct, chipClass: 'is-warn', stateText: '部分延迟', chipText: formatFreshnessPercent(readyPct) };
     }
     return { color: '#22c55e', pct: Number.isFinite(readyPct) ? pct : 100, chipClass: 'is-fresh', stateText: '正常', chipText: formatFreshnessPercent(readyPct) };
+}
+
+function getFreshnessDueTotal(item = {}) {
+    const totalChecks = Number(item?.total_checks || 0) || 0;
+    const dueChecks = Number(item?.due_checks || 0) || 0;
+    if (totalChecks > 0) {
+        return { due: dueChecks, total: totalChecks };
+    }
+    return {
+        due: Number(item?.due_symbols || 0) || 0,
+        total: Number(item?.total_symbols || 0) || 0,
+    };
+}
+
+function isFreshnessIdleAggregate(item = {}) {
+    const status = String(item?.status || '').trim().toLowerCase();
+    if (status === 'not_due' || status === 'quiet_extended') return true;
+
+    const { due, total } = getFreshnessDueTotal(item);
+    const notDue = Number(item?.not_due || 0) || 0;
+    const quiet = Number(item?.quiet_extended || 0) || 0;
+    return total > 0 && due === 0 && (notDue >= total || quiet >= total || notDue + quiet >= total);
+}
+
+function formatFreshnessReadyPercent(item = {}) {
+    return isFreshnessIdleAggregate(item) ? '--' : formatFreshnessPercent(item?.ready_pct);
 }
 
 function getFreshnessExpectedLabel(item = {}) {
@@ -422,7 +447,7 @@ function renderFreshnessScopeCards(scopes = {}) {
                 </div>
                 <div class="freshness-meta">
                     <div class="freshness-meta-top">
-                        <span class="freshness-percent">${escapeHtml(formatFreshnessPercent(overall.ready_pct))}</span>
+                        <span class="freshness-percent">${escapeHtml(formatFreshnessReadyPercent(overall))}</span>
                         <span class="freshness-state" style="color:${visual.color}">${escapeHtml(visual.stateText)}</span>
                     </div>
                     <div class="freshness-time">${escapeHtml(subtitle || '--')}</div>
@@ -526,7 +551,7 @@ function renderFreshness(data) {
             </div>
             <div class="freshness-meta">
                 <div class="freshness-meta-top">
-                    <span class="freshness-percent">${escapeHtml(formatFreshnessPercent(item.ready_pct))}</span>
+                    <span class="freshness-percent">${escapeHtml(formatFreshnessReadyPercent(item))}</span>
                     <span class="freshness-state" style="color:${visual.color}">${escapeHtml(visual.stateText)}</span>
                 </div>
                 <div class="freshness-time freshness-expected">应更新 ${escapeHtml(expectedLabel)}</div>
@@ -554,7 +579,7 @@ function renderFreshness(data) {
             <div>
                 <div class="freshness-overall-kicker">Realtime Freshness</div>
                 <div class="freshness-overall-title">
-                    <span>${escapeHtml(formatFreshnessPercent(overall.ready_pct))}</span>
+                    <span>${escapeHtml(formatFreshnessReadyPercent(overall))}</span>
                     <span class="freshness-state" style="color:${overallVisual.color}">${escapeHtml(overallVisual.stateText)}</span>
                 </div>
             </div>
@@ -917,7 +942,7 @@ function renderSchedulerOverview(cronPayload = {}, summary = {}) {
                             </div>
                             <div class="cron-meta-row cron-meta-row-wide">
                                 <span class="cron-meta-label">结果</span>
-                                <span class="cron-meta-value">${escapeHtml(card.lastError || card.resultReason || '--')}</span>
+                                <span class="cron-meta-value">${escapeHtml(card.resultLabel || card.lastError || card.resultReason || '--')}</span>
                             </div>
                         </div>
                         <div class="cron-tags">

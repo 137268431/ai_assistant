@@ -80,6 +80,54 @@
             </div>
         </div>
 
+        <section class="signal-analysis-panel" id="signal-rule-analysis">
+            <div class="signal-analysis-head">
+                <div>
+                    <div class="section-title">🎯 今日信号规则分析</div>
+                    <div class="signal-analysis-copy">按 live 信号 + 当前 Broker 执行口径聚合规则分布、计划 RR、实际平仓盈亏。</div>
+                </div>
+                <div class="signal-analysis-tools">
+                    <input type="date" class="date-input" id="signalAnalysisDate" title="分析日期">
+                    <button class="apply-date-btn" onclick="loadSignalAnalysis({ force: true })">分析</button>
+                    <a class="mini-link" id="signalAnalysisSignalsLink" href="/ibkr_signals.html">信号列表</a>
+                    <a class="mini-link" id="signalAnalysisOrdersLink" href="/orders.html">订单列表</a>
+                </div>
+            </div>
+            <div class="signal-analysis-meta" id="signalAnalysisMeta">等待加载...</div>
+            <div class="stats-grid signal-analysis-grid" id="signalAnalysisCards"></div>
+            <div class="chart-grid signal-analysis-chart-grid">
+                <div class="chart-container">
+                    <div class="chart-title">🧩 规则分布</div>
+                    <div class="chart-canvas-wrap"><canvas id="signalRuleChart"></canvas></div>
+                </div>
+                <div class="chart-container">
+                    <div class="chart-title">⚖️ RR 分布</div>
+                    <div class="chart-canvas-wrap"><canvas id="signalRrChart"></canvas></div>
+                </div>
+            </div>
+            <div class="data-table-wrap">
+                <table class="data-table signal-analysis-table">
+                    <thead>
+                        <tr>
+                            <th>规则</th>
+                            <th>Family</th>
+                            <th>信号</th>
+                            <th>多/空</th>
+                            <th>Avg RR</th>
+                            <th>Entry</th>
+                            <th>Closed</th>
+                            <th>Win</th>
+                            <th>Net PnL</th>
+                            <th>P/L</th>
+                        </tr>
+                    </thead>
+                    <tbody id="signalRuleTable">
+                        <tr><td colspan="10" class="loading">等待加载...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
         <div class="chart-grid">
             <div class="chart-container">
                 <div class="chart-title">📈 收益曲线</div>
@@ -139,6 +187,8 @@
         let dailyChart = null;
         let signalChart = null;
         let orderChart = null;
+        let signalRuleChart = null;
+        let signalRrChart = null;
         let currentPage = 1;
         const pageSize = 20;
         let allTrades = [];
@@ -148,6 +198,7 @@
         let cachedSignals = null;
         let cachedStartDate = null;
         let cachedEndDate = null;
+        let cachedSignalAnalytics = null;
 
         function getChartHeight() {
             const width = window.innerWidth;
@@ -235,6 +286,221 @@
                 if (!batch.length || (totalPages && page >= totalPages) || batch.length < perPage) break;
             }
             return items;
+        }
+
+        function buildStatsQuery(params) {
+            const query = new URLSearchParams();
+            Object.entries(params || {}).forEach(([key, value]) => {
+                if (value !== undefined && value !== null && value !== '') query.set(key, String(value));
+            });
+            const text = query.toString();
+            return text ? `?${text}` : '';
+        }
+
+        function escapeStatsHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function getSignalAnalysisDate() {
+            return document.getElementById('signalAnalysisDate')?.value || (typeof getCurrentEtDateString === 'function' ? getCurrentEtDateString() : new Date().toISOString().slice(0, 10));
+        }
+
+        function formatStatsNumber(value, digits = 0) {
+            const num = Number(value);
+            if (!Number.isFinite(num)) return '--';
+            return num.toLocaleString('en-US', {
+                minimumFractionDigits: digits,
+                maximumFractionDigits: digits
+            });
+        }
+
+        function formatStatsMoney(value) {
+            const num = Number(value);
+            if (!Number.isFinite(num)) return '--';
+            const sign = num < 0 ? '-' : '';
+            return `${sign}$${Math.abs(num).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        }
+
+        function formatStatsPct(value) {
+            const num = Number(value);
+            if (!Number.isFinite(num)) return '--';
+            return `${num.toFixed(1)}%`;
+        }
+
+        function formatStatsRatio(value, digits = 2) {
+            const num = Number(value);
+            if (!Number.isFinite(num) || num <= 0) return '--';
+            return num.toFixed(digits);
+        }
+
+        function valueToneClass(value) {
+            const num = Number(value);
+            if (!Number.isFinite(num) || Math.abs(num) < 0.005) return '';
+            return num > 0 ? 'positive' : 'negative';
+        }
+
+        async function fetchSignalAnalysisPayload(path, force = false) {
+            if (typeof cachedCustomJson === 'function') {
+                return cachedCustomJson(path, '', {}, {
+                    ttlMs: 30000,
+                    swrMs: 30000,
+                    force,
+                    tags: ['stats', 'daily-signal-analytics', currentEnvironment]
+                });
+            }
+            const token = getToken();
+            const headers = {};
+            if (token) headers.Authorization = `Bearer ${token}`;
+            const response = await fetchWithRetry(`${BASE_URL}${path}`, { method: 'GET', headers }, { attempts: 3, retryDelayMs: 500 });
+            if (response.status === 401 || response.status === 403) {
+                handleAuthError();
+                throw new Error('Authentication failed');
+            }
+            const payload = await response.json();
+            if (!response.ok || payload?.ok === false) throw new Error(payload?.error || payload?.message || `Request failed (${response.status})`);
+            return payload;
+        }
+
+        async function loadSignalAnalysis({ force = false } = {}) {
+            const date = getSignalAnalysisDate();
+            const brokerMode = typeof getConsoleBrokerMode === 'function' ? getConsoleBrokerMode() : getCurrentBrokerMode();
+            const dataEnvironment = typeof getSharedDataEnvironment === 'function' ? getSharedDataEnvironment() : currentEnvironment;
+            const path = `/api/custom/ibkr/analytics/daily-signals${buildStatsQuery({
+                date,
+                broker_mode: brokerMode,
+                data_environment: dataEnvironment
+            })}`;
+            try {
+                const payload = await fetchSignalAnalysisPayload(path, force);
+                cachedSignalAnalytics = payload;
+                renderSignalAnalysis(payload);
+                return payload;
+            } catch (error) {
+                console.error('加载今日信号分析失败:', error);
+                renderSignalAnalysisError(error.message || String(error));
+                return null;
+            }
+        }
+
+        function renderSignalAnalysisError(message) {
+            const cards = document.getElementById('signalAnalysisCards');
+            const table = document.getElementById('signalRuleTable');
+            const meta = document.getElementById('signalAnalysisMeta');
+            if (meta) meta.textContent = `分析加载失败：${message}`;
+            if (cards) cards.innerHTML = `<div class="stat-card signal-analysis-error-card"><div class="stat-label">ERROR</div><div class="stat-value negative">失败</div><div class="signal-analysis-card-copy">${escapeStatsHtml(message)}</div></div>`;
+            if (table) table.innerHTML = `<tr><td colspan="10" class="loading">${escapeStatsHtml(message)}</td></tr>`;
+        }
+
+        function renderAnalysisCard(label, value, copy = '', className = '') {
+            return `
+                <div class="stat-card">
+                    <div class="stat-label">${escapeStatsHtml(label)}</div>
+                    <div class="stat-value ${escapeStatsHtml(className)}">${escapeStatsHtml(String(value))}</div>
+                    <div class="signal-analysis-card-copy">${escapeStatsHtml(copy)}</div>
+                </div>
+            `;
+        }
+
+        function renderSignalAnalysis(payload) {
+            const summary = payload?.summary || {};
+            const realized = summary.realized || {};
+            const topRule = summary.top_rule || {};
+            const date = payload?.date || getSignalAnalysisDate();
+            const brokerMode = payload?.broker_mode || (typeof getConsoleBrokerMode === 'function' ? getConsoleBrokerMode() : 'paper');
+            const dataEnvironment = payload?.data_environment || currentEnvironment;
+            const netPnl = Number(realized.net_pnl || 0);
+            const ratioReason = realized.profit_loss_ratio_reason ? ` · ${realized.profit_loss_ratio_reason}` : '';
+            document.getElementById('signalAnalysisMeta').textContent = `date=${date} · broker=${getEnvironmentLabel(brokerMode)} · data=${getEnvironmentLabel(dataEnvironment)} · ordered ${summary.ordered_signals || 0}/${summary.total_signals || 0}`;
+            const signalUrl = buildPageUrl('/ibkr_signals.html', { date }, { brokerMode, dataEnvironment });
+            const orderUrl = buildPageUrl('/orders.html', { date }, { environment: brokerMode, brokerMode, dataEnvironment });
+            document.getElementById('signalAnalysisSignalsLink').href = signalUrl;
+            document.getElementById('signalAnalysisOrdersLink').href = orderUrl;
+            document.getElementById('signalAnalysisCards').innerHTML = [
+                renderAnalysisCard('SIGNALS', formatStatsNumber(summary.total_signals || 0), `${formatStatsNumber(summary.unique_symbols || 0)} symbols`),
+                renderAnalysisCard('TOP RULE', topRule.key || '--', topRule.count ? `${topRule.count} 条 · ${topRule.family || '--'}` : '暂无规则'),
+                renderAnalysisCard('AVG RR', formatStatsRatio(summary.avg_rr), `median ${formatStatsRatio(summary.median_rr)}`),
+                renderAnalysisCard('PLAN RR', formatStatsRatio(summary.planned_portfolio_rr), `valid ${summary.planned_valid_count || 0} · mismatch ${summary.rr_mismatch_count || 0}`),
+                renderAnalysisCard('NET PNL', formatStatsMoney(netPnl), `${realized.count || 0} closed`, valueToneClass(netPnl)),
+                renderAnalysisCard('WIN / LOSS', `${realized.wins || 0}/${realized.losses || 0}`, `${realized.flat || 0} flat`),
+                renderAnalysisCard('P/L RATIO', formatStatsRatio(realized.profit_loss_ratio), ratioReason || 'avg win / avg loss'),
+                renderAnalysisCard('PROFIT FACTOR', formatStatsRatio(realized.profit_factor), `${formatStatsMoney(realized.gross_profit || 0)} / ${formatStatsMoney(realized.gross_loss || 0)}`),
+            ].join('');
+            renderSignalAnalysisCharts(payload);
+            renderSignalAnalysisTable(payload);
+        }
+
+        function renderSignalAnalysisCharts(payload) {
+            const setupRows = Array.isArray(payload?.setup_rows) ? payload.setup_rows.slice(0, 10) : [];
+            const setupCtx = document.getElementById('signalRuleChart').getContext('2d');
+            if (signalRuleChart) signalRuleChart.destroy();
+            signalRuleChart = new Chart(setupCtx, {
+                type: 'bar',
+                data: {
+                    labels: setupRows.map((row) => row.key || '--'),
+                    datasets: [{
+                        label: '信号数',
+                        data: setupRows.map((row) => Number(row.count || 0)),
+                        backgroundColor: setupRows.map((row) => Number(row.net_pnl || 0) >= 0 ? 'rgba(16,185,129,0.75)' : 'rgba(239,68,68,0.72)')
+                    }]
+                },
+                options: buildChartOptions()
+            });
+
+            const rrRows = (Array.isArray(payload?.distributions?.rr) ? payload.distributions.rr : [])
+                .slice()
+                .sort((left, right) => {
+                    const leftValue = Number(left.key);
+                    const rightValue = Number(right.key);
+                    const safeLeft = Number.isFinite(leftValue) ? leftValue : 999;
+                    const safeRight = Number.isFinite(rightValue) ? rightValue : 999;
+                    return safeLeft - safeRight;
+                });
+            const rrCtx = document.getElementById('signalRrChart').getContext('2d');
+            if (signalRrChart) signalRrChart.destroy();
+            signalRrChart = new Chart(rrCtx, {
+                type: 'bar',
+                data: {
+                    labels: rrRows.map((row) => row.key === 'unknown' ? 'unknown' : `${row.key}:1`),
+                    datasets: [{
+                        label: 'RR 数量',
+                        data: rrRows.map((row) => Number(row.count || 0)),
+                        backgroundColor: 'rgba(59,130,246,0.72)'
+                    }]
+                },
+                options: buildChartOptions()
+            });
+        }
+
+        function renderSignalAnalysisTable(payload) {
+            const rows = Array.isArray(payload?.setup_rows) ? payload.setup_rows : [];
+            const tbody = document.getElementById('signalRuleTable');
+            if (!rows.length) {
+                tbody.innerHTML = '<tr><td colspan="10" class="loading">暂无规则分析数据</td></tr>';
+                return;
+            }
+            tbody.innerHTML = rows.map((row) => {
+                const pnl = Number(row.net_pnl || 0);
+                const ratio = row.profit_loss_ratio || row.profit_factor;
+                return `
+                    <tr>
+                        <td>${escapeStatsHtml(row.key || '--')}</td>
+                        <td>${escapeStatsHtml(row.family || '--')}</td>
+                        <td>${escapeStatsHtml(String(row.count || 0))}</td>
+                        <td>${escapeStatsHtml(String(row.long || 0))}/${escapeStatsHtml(String(row.short || 0))}</td>
+                        <td>${escapeStatsHtml(formatStatsRatio(row.avg_rr))}</td>
+                        <td>${escapeStatsHtml(String(row.entry_filled || 0))}</td>
+                        <td>${escapeStatsHtml(String(row.closed_trades || 0))}</td>
+                        <td>${escapeStatsHtml(formatStatsPct(row.win_rate || 0))}</td>
+                        <td class="${pnl >= 0 ? 'pnl-positive' : 'pnl-negative'}">${escapeStatsHtml(formatStatsMoney(pnl))}</td>
+                        <td>${escapeStatsHtml(formatStatsRatio(ratio))}</td>
+                    </tr>
+                `;
+            }).join('');
         }
 
         async function loadStats() {
@@ -732,10 +998,15 @@
         function manualRefresh() {
             spinPageRefreshButton('statsRefreshBtn');
             loadStats();
+            loadSignalAnalysis({ force: true });
         }
 
         document.addEventListener('DOMContentLoaded', async () => {
             await initAuth();
+            const urlParams = new URLSearchParams(window.location.search);
+            const analysisDate = urlParams.get('date') || (typeof getCurrentEtDateString === 'function' ? getCurrentEtDateString() : new Date().toISOString().slice(0, 10));
+            const analysisDateInput = document.getElementById('signalAnalysisDate');
+            if (analysisDateInput) analysisDateInput.value = analysisDate;
             document.getElementById('statsRefreshControl').innerHTML = renderPageRefreshControl({
                 mode: 'manual',
                 buttonId: 'statsRefreshBtn',
@@ -750,10 +1021,10 @@
             document.getElementById('nav').innerHTML = renderNav('/ibkr_stats.html');
             setChartHeights();
             await withPageLoading(
-                () => loadStats(),
+                () => Promise.all([loadStats(), loadSignalAnalysis()]),
                 {
                     title: '统计页加载中',
-                    copy: '正在同步收益、信号、订单和平仓统计图表。',
+                    copy: '正在同步收益、信号、订单、规则分布和平仓统计图表。',
                 }
             );
 
@@ -767,6 +1038,9 @@
                 setChartHeights();
                 if (cachedOrders && cachedSignals && cachedStartDate && cachedEndDate) {
                     renderCharts(cachedOrders, cachedSignals, cachedStartDate, cachedEndDate);
+                }
+                if (cachedSignalAnalytics) {
+                    renderSignalAnalysisCharts(cachedSignalAnalytics);
                 }
             });
         });

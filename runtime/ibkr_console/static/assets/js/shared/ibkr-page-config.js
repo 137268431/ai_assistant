@@ -291,7 +291,27 @@ function getIbkrSchedulerJobCardData(definition = {}, environment = '') {
         ? 'COMPAT'
         : (runnerKind === 'native_compute_dispatch' ? 'NATIVE DISPATCH' : 'NATIVE');
     const lastResult = state.last_result && typeof state.last_result === 'object' ? state.last_result : {};
+    const asyncOperation = lastResult.async_operation && typeof lastResult.async_operation === 'object'
+        ? lastResult.async_operation
+        : {};
+    const asyncStatus = String(asyncOperation.status || lastResult.status || '').trim().toLowerCase();
+    const asyncId = String(asyncOperation.run_id || asyncOperation.operation_id || '').trim();
     const resultReason = String(lastResult.reason || '').trim();
+    const rawError = String(lastResult.error || '').trim();
+    const terminalAsyncError = asyncStatus && ['failed', 'cancelled'].includes(asyncStatus);
+    const lastError = status === 'error' || terminalAsyncError ? rawError : '';
+    let resultLabel = lastError || resultReason || '--';
+    if (asyncId || asyncStatus) {
+        if (['accepted', 'pending', 'submitted'].includes(asyncStatus)) {
+            resultLabel = `异步已提交${asyncId ? ` · ${asyncId}` : ''}`;
+        } else if (['running', 'in_progress', 'processing'].includes(asyncStatus)) {
+            resultLabel = `运行中 · 轮询中${asyncId ? ` · ${asyncId}` : ''}`;
+        } else if (asyncStatus === 'completed') {
+            resultLabel = `异步完成${asyncId ? ` · ${asyncId}` : ''}`;
+        } else if (terminalAsyncError) {
+            resultLabel = `${lastError || asyncStatus}${asyncId ? ` · ${asyncId}` : ''}`;
+        }
+    }
 
     return {
         id: String(definition.id || '').trim(),
@@ -321,7 +341,8 @@ function getIbkrSchedulerJobCardData(definition = {}, environment = '') {
         lastRunFinishedLabel: state.last_run_finished_at_ms ? formatTimeLabel(state.last_run_finished_at_ms) : '--',
         lastSuccessLabel: state.last_success_at_ms ? formatTimeLabel(state.last_success_at_ms) : '--',
         resultReason: resultReason || '--',
-        lastError: String(lastResult.error || '').trim(),
+        resultLabel,
+        lastError,
         skipped: Boolean(lastResult.skipped),
     };
 }

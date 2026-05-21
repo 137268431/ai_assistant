@@ -154,7 +154,7 @@ class SchedulerJobsTest(unittest.TestCase):
         self.assertNotIn("items", payload)
         self.assertNotIn("families", payload)
 
-    def test_long_running_native_jobs_use_per_job_timeouts(self):
+    def test_long_running_native_jobs_use_short_async_submit_timeout(self):
         scheduler = SchedulerService(_FakePB(), _FakeConfig())
 
         with mock.patch.object(scheduler_app_mod, "run_upstream_http_job", return_value={"ok": True}) as run_mock:
@@ -180,8 +180,8 @@ class SchedulerJobsTest(unittest.TestCase):
                 mode_scope="market_data",
             )
 
-        self.assertEqual(run_mock.call_args_list[0].kwargs["timeout_seconds"], 180)
-        self.assertEqual(run_mock.call_args_list[1].kwargs["timeout_seconds"], 300)
+        self.assertEqual(run_mock.call_args_list[0].kwargs["timeout_seconds"], scheduler_app_mod.DEFAULT_ASYNC_SUBMIT_TIMEOUT_SECONDS)
+        self.assertEqual(run_mock.call_args_list[1].kwargs["timeout_seconds"], scheduler_app_mod.DEFAULT_ASYNC_SUBMIT_TIMEOUT_SECONDS)
         self.assertEqual(run_mock.call_args_list[2].kwargs["timeout_seconds"], 150)
 
     def test_cron_matches_minute_supports_ranges_steps_and_weekdays(self):
@@ -336,6 +336,38 @@ class SchedulerJobsTest(unittest.TestCase):
             {"previous_business_day", "current_day"},
         )
 
+    def test_scan_runtime_submits_async_job(self):
+        pb = _FakePB()
+        scheduler = SchedulerService(pb, _FakeConfig())
+
+        with mock.patch(
+            "ibkr_scheduler.jobs.upstream_http.requests.request",
+            return_value=_FakeResponse(
+                {
+                    "ok": True,
+                    "accepted": True,
+                    "async": True,
+                    "run_id": "scheduler:ibkr_scan_runtime:default:20260521T1320Z",
+                    "status": "accepted",
+                    "date": "2026-05-21",
+                }
+            ),
+        ) as request_mock:
+            result = scheduler.run_job(
+                "ibkr_scan_runtime",
+                market_data_mode="live",
+                trigger_source="scheduler_loop",
+                scheduled_slot="2026-05-21T13:20Z",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["pending"])
+        self.assertEqual("pending", pb.states[(f"{SCHEDULER_JOB_STATE_PREFIX}ibkr_scan_runtime", "live", "global")]["data"]["status"])
+        request_payload = request_mock.call_args.kwargs["json"]
+        self.assertTrue(request_payload["async"])
+        self.assertEqual("scheduler:ibkr_scan_runtime:default:20260521T1320Z", request_payload["run_id"])
+        self.assertEqual("2026-05-21T13:20Z", request_payload["scheduled_slot"])
+
     def test_data_quality_repair_sweep_sends_watchlist_full_payload(self):
         pb = _FakePB()
         scheduler = SchedulerService(pb, _FakeConfig())
@@ -345,11 +377,10 @@ class SchedulerJobsTest(unittest.TestCase):
             return_value=_FakeResponse(
                 {
                     "ok": True,
-                    "symbols": ["AAPL"],
-                    "summary": {
-                        "expected_symbols_total": 1,
-                        "scanned_symbols_total": 1,
-                    },
+                    "accepted": True,
+                    "async": True,
+                    "operation_id": "scheduler:ibkr_data_quality_repair_sweep:default:123",
+                    "status": "accepted",
                 }
             ),
         ) as request_mock:
@@ -360,28 +391,32 @@ class SchedulerJobsTest(unittest.TestCase):
             )
 
         self.assertTrue(result["ok"])
+        self.assertTrue(result["pending"])
         request_mock.assert_called_once()
-        self.assertEqual(request_mock.call_args.kwargs["timeout"], 300)
+        self.assertEqual(request_mock.call_args.kwargs["timeout"], scheduler_app_mod.DEFAULT_ASYNC_SUBMIT_TIMEOUT_SECONDS)
         request_payload = request_mock.call_args.kwargs["json"]
         self.assertEqual(request_payload["scan_scope"], "watchlist_full")
         self.assertTrue(request_payload["persist"])
         self.assertTrue(request_payload["repair"])
+        self.assertTrue(request_payload["async"])
         self.assertTrue(request_payload["allow_repair_defer"])
         self.assertTrue(str(request_payload["operation_id"]).startswith("scheduler:ibkr_data_quality_repair_sweep:"))
+        self.assertEqual(request_payload["run_id"], request_payload["operation_id"])
         self.assertNotIn("repair_intervals", request_payload)
         self.assertNotIn("max_repair_symbols_per_run", request_payload)
         self.assertNotIn("repair_time_budget_s", request_payload)
         self.assertFalse(request_payload["force_repair_now"])
         self.assertEqual(request_payload["source"], "ibkr_scheduler")
+        job_state = pb.states[(f"{SCHEDULER_JOB_STATE_PREFIX}ibkr_data_quality_repair_sweep", "live", "global")]["data"]
+        self.assertEqual(job_state["status"], "pending")
         large_events = [
             payload for collection, payload in pb.records
             if collection == "system_events" and payload.get("source") == "ibkr_large_operation"
         ]
-        self.assertEqual(len(large_events), 2)
+        self.assertEqual(len(large_events), 1)
         self.assertIn("大规模操作开始", large_events[0]["title"])
-        self.assertIn("大规模操作完成", large_events[1]["title"])
 
-    def test_data_quality_repair_sweep_fails_empty_success_payload(self):
+    def test_data_quality_repair_sweep_fails_empty_async_success_payload(self):
         pb = _FakePB()
         scheduler = SchedulerService(pb, _FakeConfig())
 
@@ -390,11 +425,10 @@ class SchedulerJobsTest(unittest.TestCase):
             return_value=_FakeResponse(
                 {
                     "ok": True,
-                    "symbols": [],
-                    "summary": {
-                        "expected_symbols_total": 0,
-                        "scanned_symbols_total": 0,
-                    },
+                    "accepted": True,
+                    "async": True,
+                    "operation_id": "scheduler:ibkr_data_quality_repair_sweep:default:123",
+                    "status": "accepted",
                 }
             ),
         ):
@@ -404,9 +438,31 @@ class SchedulerJobsTest(unittest.TestCase):
                 trigger_source="api_manual",
             )
 
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["error"], "empty_data_quality_repair_sweep")
-        self.assertTrue(result["empty_repair_sweep"])
+        self.assertTrue(result["pending"])
+        with mock.patch(
+            "ibkr_scheduler.scheduler_app.requests.get",
+            return_value=_FakeResponse(
+                {
+                    "ok": True,
+                    "status": "completed",
+                    "operation_id": result["async_operation"]["operation_id"],
+                    "result": {
+                        "ok": True,
+                        "symbols": [],
+                        "summary": {
+                            "expected_symbols_total": 0,
+                            "scanned_symbols_total": 0,
+                        },
+                    },
+                }
+            ),
+        ):
+            poll_results = scheduler.poll_pending_jobs(market_data_mode="live", force=True)
+
+        self.assertEqual(1, len(poll_results))
+        self.assertFalse(poll_results[0]["ok"])
+        self.assertEqual(poll_results[0]["error"], "empty_data_quality_repair_sweep")
+        self.assertTrue(poll_results[0]["empty_repair_sweep"])
         job_state = pb.states[(f"{SCHEDULER_JOB_STATE_PREFIX}ibkr_data_quality_repair_sweep", "live", "global")]["data"]
         self.assertEqual(job_state["status"], "error")
 
