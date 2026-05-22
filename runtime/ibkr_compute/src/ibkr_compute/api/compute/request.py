@@ -60,11 +60,6 @@ def get_rollup_intervals_for_source(source: str) -> list[str]:
         if interval and interval not in normalized:
             normalized.append(interval)
 
-    if source in {"canonical_close", "watchlist_idle_topup"}:
-        # Daily rollup only closes when the trading day rolls over. Recomputing it
-        # on every intraday 5m refresh turns each cycle into a multi-day rebuild.
-        normalized = [interval for interval in normalized if interval != "1d"]
-
     return normalized
 
 

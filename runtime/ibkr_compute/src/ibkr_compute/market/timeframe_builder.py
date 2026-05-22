@@ -10,6 +10,7 @@ from .timeframe_utils import (
     HIGHER_INTERVALS,
     bar_close_ms,
     bucket_start_ms,
+    build_bar_close_timestamps,
     build_runtime_timestamps,
     classify_session,
     format_cn_time,
@@ -54,9 +55,16 @@ class TimeframeBarBuilder:
             return self._finalize_if_closed(key, current, base_bar)
 
         if int(current["bar_time_ms"]) != bucket_ms:
-            closed = self._finalize_bucket(current, base_bar)
+            previous_close_ms = bar_close_ms(int(current["bar_time_ms"]), interval)
+            closed = (
+                self._finalize_bucket(current, base_bar, closed_by_bar_time_ms=previous_close_ms)
+                if int(base_bar["bar_time_ms"]) >= previous_close_ms
+                else None
+            )
             self._current[key] = self._init_bucket(interval, bucket_ms, base_bar)
-            return closed
+            if closed:
+                return closed
+            return self._finalize_if_closed(key, self._current[key], base_bar)
 
         self._merge_bucket(current, base_bar)
         return self._finalize_if_closed(key, current, base_bar)
@@ -73,7 +81,7 @@ class TimeframeBarBuilder:
             "low": float(base_bar["low"]),
             "close": float(base_bar["close"]),
             "volume": float(base_bar.get("volume", 0) or 0),
-            "session_type": classify_session(bar_time_ms=bucket_ms),
+            "session_type": "extended" if interval == "1d" else classify_session(bar_time_ms=bucket_ms),
             "us_time": format_us_time(bucket_ms),
             "cn_time": format_cn_time(bucket_ms),
             "bar_time_ms": bucket_ms,
@@ -81,10 +89,12 @@ class TimeframeBarBuilder:
                 "source": "ibkr_5m_rollup",
                 "component_interval": "5m",
                 "component_count": 1,
+                "first_component_bar_time_ms": int(base_bar["bar_time_ms"]),
                 "last_component_bar_time_ms": int(base_bar["bar_time_ms"]),
                 "last_component_close": float(base_bar["close"]),
                 "base_session_type": base_bar.get("session_type", ""),
                 "base_extra_source": extra.get("source", ""),
+                **({"session_scope": "extended"} if interval == "1d" else {}),
             },
         }
 
@@ -100,11 +110,7 @@ class TimeframeBarBuilder:
 
     def _finalize_if_closed(self, key: Tuple[str, str], current: dict, base_bar: dict):
         interval = str(current.get("interval") or key[1])
-        bucket_end_ms = (
-            bar_close_ms(int(current["bar_time_ms"]), interval)
-            if interval == "1d"
-            else int(current["bar_time_ms"]) + interval_to_ms(interval)
-        )
+        bucket_end_ms = bar_close_ms(int(current["bar_time_ms"]), interval)
         base_close_ms = int(base_bar["bar_time_ms"]) + interval_to_ms("5m")
         if base_close_ms < bucket_end_ms:
             return None
@@ -114,8 +120,12 @@ class TimeframeBarBuilder:
     def _finalize_bucket(self, current: dict, closing_bar: dict, *, closed_by_bar_time_ms: int | None = None) -> dict:
         extra = dict(current.get("extra") or {})
         extra.update(build_runtime_timestamps())
+        extra.update(build_bar_close_timestamps(int(current["bar_time_ms"]), str(current.get("interval") or "")))
         extra["source"] = "ibkr_5m_rollup"
         extra["closed_by_bar_time_ms"] = int(closed_by_bar_time_ms or closing_bar["bar_time_ms"])
+        if str(current.get("interval") or "") == "1d":
+            extra["session_scope"] = "extended"
+            extra["provisional"] = False
         current["extra"] = extra
         current["session_type"] = current.get("session_type") or classify_session(
             us_time=current.get("us_time", "")

@@ -125,6 +125,9 @@ try {
   assert(includesAll(systemBridge, ['总览', '运维', '控制台', '配置']), 'system_bridge_missing_expected_labels');
   const opsBridge = ui.renderOpsBridge('/ibkr_data_quality.html');
   assert(includesAll(opsBridge, ['总览', '运维', '控制台', '配置', '监控大盘', '预热', '数据质量', '历史重建']), 'ops_bridge_missing_expected_labels');
+  const analyticsBridge = ui.renderAnalyticsBridge('/ibkr_chart.html');
+  assert(includesAll(analyticsBridge, ['指标列表', '图表工作台', '统计']), 'analytics_bridge_missing_expected_labels');
+  assert(/page-bridge-link active[\s\S]*图表工作台/.test(analyticsBridge), 'analytics_bridge_chart_not_active');
 } catch (error) {
   issues.push(`ui_render_failed:${error.message}`);
 }
@@ -145,6 +148,16 @@ assert(indexHtml.includes('id="actionConfigLink"'), 'home_missing_config_entry')
 assert(indexHtml.includes('/ibkr_config.html'), 'home_config_entry_missing_href');
 assert(includesAll(indexHtml, ["services['ibkr-backtest']", "name: 'Backtest'"]), 'home_stack_missing_backtest_service_row');
 
+const chartCss = readStatic('assets/css/pages/ibkr_chart/page.css');
+const chartJs = readPageScriptBundle(
+  'ibkr_chart.html',
+  'assets/js/pages/ibkr_chart/',
+  'assets/js/pages/ibkr_chart/page.js',
+);
+assert(chartJs.includes("renderAnalyticsBridge('/ibkr_chart.html')"), 'chart_missing_analytics_bridge_render');
+assert(!chartJs.includes("document.getElementById('pageBridge').innerHTML = ''"), 'chart_still_clears_page_bridge');
+assert(!/(^|})\s*#pageBridge\s*\{\s*display:\s*none;\s*\}/m.test(chartCss), 'chart_page_bridge_hidden_globally');
+
 const systemHtml = readStatic('ibkr_system.html');
 const systemCss = readStatic('assets/css/pages/ibkr_system/page.css');
 const systemJs = readPageScriptBundle(
@@ -160,7 +173,7 @@ assert(systemJs.includes('ops-summary-link') && systemJs.includes('/ibkr_monitor
 assert(includesAll(systemJs, ["'ibkr-backtest'", 'Backtest Service', 'backtestIdle', 'IB client', 'IB Clients']), 'system_summary_missing_backtest_idle_or_client_copy');
 assert(includesAll(systemJs, ['lastStableIbkrDataHealth', 'preserveIbkrData', 'loadingOnMissingIbkrData', "status: 'loading'"]), 'system_missing_ibkr_data_stable_cache');
 assert(includesAll(systemJs, ['lastStableTodayStats', 'rememberStableTodayStats', 'mergeTodayStats', 'summaryTodayStats']), 'system_missing_today_stats_stable_cache');
-assert(includesAll(systemJs, ['dataEnvFilterBase', 'brokerEnvFilterBase', 'count:ibkr_indicators', 'swrMs: 180000']), 'system_today_stats_missing_split_env_or_indicator_cache');
+assert(includesAll(systemJs, ['dataEnvFilterBase', 'brokerEnvFilterBase', 'count:ibkr_indicators', 'swrMs: 300000']), 'system_today_stats_missing_split_env_or_indicator_cache');
 assert(systemJs.includes('summaryLite?.data_freshness'), 'system_freshness_not_using_summary_lite_payload');
 assert(includesAll(systemJs, ['ready_pct', 'coverage_pct', 'waiting_5m', 'not_due', 'quiet_extended', 'sample_lag_symbols']), 'system_freshness_missing_aggregate_fields');
 assert(!systemJs.includes('freshnessIntervals.map'), 'system_freshness_still_fetches_interval_rows');
@@ -198,7 +211,7 @@ try {
         due_symbols: 0,
         ready: 0,
         not_due: 127,
-        expected_close_us: '2026-05-20 16:00:00',
+        expected_close_us: '2026-05-20 20:00:00',
       },
     },
     scopes: {

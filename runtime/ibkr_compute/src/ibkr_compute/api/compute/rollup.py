@@ -9,7 +9,7 @@ from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_compute.market.bar_freshness import expected_closed_ms_from_latest_5m
 from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite, upsert_bars
 from ibkr_compute.market.timeframe_builder import TimeframeBarBuilder
-from ibkr_compute.market.timeframe_utils import bucket_start_ms, interval_to_ms, normalize_interval
+from ibkr_compute.market.timeframe_utils import bar_close_ms, bucket_start_ms, interval_to_ms, normalize_interval
 
 from ibkr_compute.api.compute.runtime_state.runtime import _api_app
 from ibkr_compute.api.compute.runtime_state.timing import get_fetch_since_ms
@@ -453,10 +453,19 @@ def _recent_rollup_since_ms(environment: str, normalized_symbols, intervals=None
     if latest_5m_ms <= 0:
         return 0
 
-    max_interval_ms = max(interval_to_ms(interval) for interval in target_intervals)
-    # Rebuild two full windows so the builder can correctly close the previous bucket
-    # before emitting the next higher-timeframe bar.
-    return max(0, latest_5m_ms - (max_interval_ms * 2))
+    since_candidates = []
+    non_daily_intervals = [interval for interval in target_intervals if normalize_interval(interval) != "1d"]
+    if non_daily_intervals:
+        max_interval_ms = max(interval_to_ms(interval) for interval in non_daily_intervals)
+        # Rebuild two full windows so the builder can correctly close the previous bucket
+        # before emitting the next higher-timeframe bar.
+        since_candidates.append(max(0, latest_5m_ms - (max_interval_ms * 2)))
+    if "1d" in target_intervals:
+        # Daily rollup is synthetic extended-session daily. Start at the expected
+        # daily bucket so a bounded incremental rebuild never overwrites a daily
+        # bar with only the last few 5m components from a previous day.
+        since_candidates.append(expected_closed_ms_from_latest_5m(latest_5m_ms, "1d"))
+    return min([value for value in since_candidates if int(value or 0) > 0] or [0])
 
 
 def _incremental_due_intervals(latest_5m_ms: int, intervals=None) -> list[str]:
@@ -468,7 +477,8 @@ def _incremental_due_intervals(latest_5m_ms: int, intervals=None) -> list[str]:
     latest_5m_close_ms = int(latest_5m_ms) + interval_to_ms("5m")
     due_intervals = []
     for interval in target_intervals:
-        if bucket_start_ms(latest_5m_close_ms, interval) == latest_5m_close_ms:
+        current_bucket_ms = bucket_start_ms(int(latest_5m_ms), interval)
+        if latest_5m_close_ms >= bar_close_ms(current_bucket_ms, interval):
             due_intervals.append(interval)
     return due_intervals
 

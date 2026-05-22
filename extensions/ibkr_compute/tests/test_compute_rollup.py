@@ -287,7 +287,7 @@ class ComputeRollupPlanTest(unittest.TestCase):
         self.assertTrue(plan["targeted_rollup"])
         self.assertTrue(plan["force_rollup"])
         self.assertTrue(plan["incremental_rollup"])
-        self.assertEqual(plan["rollup_intervals"], ["15m", "30m", "1h", "4h"])
+        self.assertEqual(plan["rollup_intervals"], ["15m", "30m", "1h", "4h", "1d"])
 
     def test_watchlist_idle_topup_uses_incremental_rollup_for_targeted_symbols(self):
         fake_app = mock.Mock()
@@ -312,7 +312,7 @@ class ComputeRollupPlanTest(unittest.TestCase):
         self.assertTrue(plan["targeted_rollup"])
         self.assertTrue(plan["force_rollup"])
         self.assertTrue(plan["incremental_rollup"])
-        self.assertEqual(plan["rollup_intervals"], ["15m", "30m", "1h", "4h"])
+        self.assertEqual(plan["rollup_intervals"], ["15m", "30m", "1h", "4h", "1d"])
 
     def test_rollup_since_ms_is_parsed_for_bounded_repairs(self):
         fake_app = mock.Mock()
@@ -434,17 +434,47 @@ class IncrementalRollupWindowTest(unittest.TestCase):
             ],
         )
 
-    def test_timeframe_builder_flushes_daily_at_regular_close(self):
+    def test_timeframe_builder_flushes_daily_at_extended_close(self):
         builder = TimeframeBarBuilder(target_intervals=["1d"])
 
-        self.assertEqual(builder.consume(_base_bar("AAPL", _et_ms(2026, 4, 17, 15, 50))), [])
-        written = builder.consume(_base_bar("AAPL", _et_ms(2026, 4, 17, 15, 55)))
+        self.assertEqual(builder.consume(_base_bar("AAPL", _et_ms(2026, 4, 17, 19, 50))), [])
+        written = builder.consume(_base_bar("AAPL", _et_ms(2026, 4, 17, 19, 55)))
 
         self.assertEqual(len(written), 1)
         self.assertEqual(written[0]["interval"], "1d")
         self.assertEqual(written[0]["bar_time_ms"], _et_ms(2026, 4, 17, 0, 0))
         self.assertEqual(written[0]["extra"]["component_count"], 2)
-        self.assertEqual(written[0]["extra"]["closed_by_bar_time_ms"], _et_ms(2026, 4, 17, 16, 0))
+        self.assertEqual(written[0]["extra"]["closed_by_bar_time_ms"], _et_ms(2026, 4, 17, 20, 0))
+        self.assertEqual(written[0]["extra"]["bar_close_time_ms"], _et_ms(2026, 4, 17, 20, 0))
+        self.assertEqual(written[0]["extra"]["session_scope"], "extended")
+
+    def test_timeframe_builder_flushes_daily_and_4h_at_early_extended_close(self):
+        builder = TimeframeBarBuilder(target_intervals=["4h", "1d"])
+
+        self.assertEqual(builder.consume(_base_bar("AAPL", _et_ms(2025, 7, 3, 16, 50))), [])
+        written = builder.consume(_base_bar("AAPL", _et_ms(2025, 7, 3, 16, 55)))
+
+        compact = sorted((row["interval"], row["bar_time_ms"], row["extra"]["closed_by_bar_time_ms"]) for row in written)
+        self.assertEqual(
+            compact,
+            [
+                ("1d", _et_ms(2025, 7, 3, 0, 0), _et_ms(2025, 7, 3, 17, 0)),
+                ("4h", _et_ms(2025, 7, 3, 16, 0), _et_ms(2025, 7, 3, 17, 0)),
+            ],
+        )
+
+    def test_timeframe_builder_flushes_daily_on_next_day_rollover_without_final_extended_bar(self):
+        builder = TimeframeBarBuilder(target_intervals=["1d"])
+
+        self.assertEqual(builder.consume(_base_bar("VIX", _et_ms(2026, 5, 21, 16, 50))), [])
+        self.assertEqual(builder.consume(_base_bar("VIX", _et_ms(2026, 5, 21, 16, 55))), [])
+        written = builder.consume(_base_bar("VIX", _et_ms(2026, 5, 22, 3, 35)))
+
+        self.assertEqual(len(written), 1)
+        self.assertEqual(written[0]["interval"], "1d")
+        self.assertEqual(written[0]["bar_time_ms"], _et_ms(2026, 5, 21, 0, 0))
+        self.assertEqual(written[0]["extra"]["component_count"], 2)
+        self.assertEqual(written[0]["extra"]["closed_by_bar_time_ms"], _et_ms(2026, 5, 21, 20, 0))
 
     def test_fetch_since_falls_back_to_processed_cursor_when_interval_fetch_empty(self):
         fake_app = mock.Mock()
@@ -474,6 +504,20 @@ class IncrementalRollupWindowTest(unittest.TestCase):
             )
 
         self.assertEqual(since_ms, 1776278100000 - (2 * 4 * 60 * 60 * 1000))
+
+    def test_recent_rollup_for_daily_starts_at_expected_daily_bucket(self):
+        fake_app = mock.Mock()
+        fake_app.HIGHER_INTERVALS = ["15m", "30m", "1h", "4h", "1d"]
+
+        with mock.patch.object(compute_rollup, "_api_app", return_value=fake_app), \
+                mock.patch.object(compute_rollup, "_latest_targeted_5m_bar_ms", return_value=_et_ms(2026, 5, 21, 19, 55)):
+            since_ms = compute_rollup._recent_rollup_since_ms(
+                "live",
+                ["AAPL", "MSFT"],
+                intervals=["1d"],
+            )
+
+        self.assertEqual(since_ms, _et_ms(2026, 5, 21, 0, 0))
 
     def test_incremental_due_intervals_only_keep_closed_higher_timeframes(self):
         fake_app = mock.Mock()
@@ -507,6 +551,20 @@ class IncrementalRollupWindowTest(unittest.TestCase):
                     intervals=["15m", "30m", "1h", "4h"],
                 ),
                 ["15m", "30m", "1h"],
+            )
+            self.assertEqual(
+                compute_rollup._incremental_due_intervals(
+                    _et_ms(2026, 4, 17, 19, 55),
+                    intervals=["15m", "30m", "1h", "4h", "1d"],
+                ),
+                ["15m", "30m", "1h", "4h", "1d"],
+            )
+            self.assertEqual(
+                compute_rollup._incremental_due_intervals(
+                    _et_ms(2025, 7, 3, 16, 55),
+                    intervals=["15m", "30m", "1h", "4h", "1d"],
+                ),
+                ["15m", "30m", "1h", "4h", "1d"],
             )
 
     def test_incremental_targeted_rollup_skips_when_no_higher_interval_closes(self):

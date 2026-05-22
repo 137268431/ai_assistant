@@ -10,16 +10,20 @@ from typing import Any, Iterable
 from ibkr_compute.core.time_utils import ET
 from ibkr_compute.market.timeframe_utils import (
     COMPUTE_INTERVALS,
+    EXTENDED_OPEN_MINUTE,
+    bar_close_ms,
     bucket_start_ms,
+    extended_close_minute_for_date,
+    extended_session_close_ms_for_date,
     format_us_time,
     interval_to_ms,
+    is_nyse_trading_day,
     normalize_interval,
+    previous_intraday_bucket_start_ms,
+    previous_trading_day,
 )
 from ibkr_compute.market.pocketbase_sqlite import count_recent_bars, fetch_latest_bar, open_pb_sqlite
 
-EXTENDED_SESSION_OPEN_MINUTE = 4 * 60
-EXTENDED_SESSION_CLOSE_MINUTE = 20 * 60
-REGULAR_SESSION_CLOSE_MINUTE = 16 * 60
 DEFAULT_CLOSE_DELAY_SECONDS = 3
 DEFAULT_REQUIRED_BARS = 0
 
@@ -56,24 +60,18 @@ def extract_conid_from_bar_row(row: dict | None) -> int:
     return 0
 
 
-def _previous_business_day(value: datetime) -> datetime:
-    cursor = value - timedelta(days=1)
-    while cursor.weekday() >= 5:
-        cursor -= timedelta(days=1)
-    return cursor
-
-
 def _previous_session_last_5m(value: datetime) -> datetime:
-    cursor = _previous_business_day(value)
-    return cursor.replace(hour=19, minute=55, second=0, microsecond=0)
+    cursor = previous_trading_day(value)
+    close_minute = extended_close_minute_for_date(cursor)
+    session_end = datetime(cursor.year, cursor.month, cursor.day, tzinfo=ET) + timedelta(minutes=close_minute)
+    return session_end - timedelta(milliseconds=interval_to_ms("5m"))
 
 
 def latest_expected_extended_5m_ms(*, now_ms: int | None = None, delay_seconds: float = DEFAULT_CLOSE_DELAY_SECONDS) -> int:
     """Return the latest expected closed 5m bucket in US extended-hours time.
 
-    This avoids treating post-20:00 ET or weekend clock time as missing bars.
-    Holiday calendars are intentionally not embedded here; IBKR API repair remains
-    the authority if a holiday creates a false-positive stale diagnosis.
+    This avoids treating post-close, half-day late trading close, holiday, or
+    weekend clock time as missing bars.
     """
 
     if now_ms and int(now_ms) > 0:
@@ -81,19 +79,24 @@ def latest_expected_extended_5m_ms(*, now_ms: int | None = None, delay_seconds: 
     else:
         now = datetime.now(ET)
     effective = now - timedelta(seconds=max(0.0, float(delay_seconds or 0.0)))
-    if effective.weekday() >= 5:
+    if not is_nyse_trading_day(effective):
         return int(_previous_session_last_5m(effective).timestamp() * 1000)
 
     minutes = effective.hour * 60 + effective.minute
-    if minutes < EXTENDED_SESSION_OPEN_MINUTE:
+    extended_close = extended_close_minute_for_date(effective)
+    if minutes < EXTENDED_OPEN_MINUTE:
         return int(_previous_session_last_5m(effective).timestamp() * 1000)
-    if minutes >= EXTENDED_SESSION_CLOSE_MINUTE:
-        end = effective.replace(hour=19, minute=55, second=0, microsecond=0)
+    if minutes >= extended_close:
+        end = (
+            effective.replace(hour=0, minute=0, second=0, microsecond=0)
+            + timedelta(minutes=extended_close)
+            - timedelta(milliseconds=interval_to_ms("5m"))
+        )
         return int(end.timestamp() * 1000)
 
     closed_source = effective - timedelta(milliseconds=interval_to_ms("5m"))
     closed_minutes = closed_source.hour * 60 + closed_source.minute
-    if closed_source.weekday() >= 5 or closed_minutes < EXTENDED_SESSION_OPEN_MINUTE:
+    if not is_nyse_trading_day(closed_source) or closed_minutes < EXTENDED_OPEN_MINUTE:
         return int(_previous_session_last_5m(effective).timestamp() * 1000)
     bucket_minutes = closed_minutes - (closed_minutes % 5)
     bucket = closed_source.replace(
@@ -102,16 +105,13 @@ def latest_expected_extended_5m_ms(*, now_ms: int | None = None, delay_seconds: 
         second=0,
         microsecond=0,
     )
-    if bucket.hour * 60 + bucket.minute < EXTENDED_SESSION_OPEN_MINUTE:
+    if bucket.hour * 60 + bucket.minute < EXTENDED_OPEN_MINUTE:
         return int(_previous_session_last_5m(effective).timestamp() * 1000)
     return int(bucket.timestamp() * 1000)
 
 
 def _previous_bucket_start_ms(bucket_ms: int, interval: str) -> int:
-    interval_ms = interval_to_ms(interval)
-    if bucket_ms <= interval_ms:
-        return 0
-    return bucket_start_ms(bucket_ms - 1, interval)
+    return previous_intraday_bucket_start_ms(bucket_ms, interval)
 
 
 def expected_closed_ms_from_latest_5m(latest_5m_ms: int, interval: str) -> int:
@@ -124,18 +124,17 @@ def expected_closed_ms_from_latest_5m(latest_5m_ms: int, interval: str) -> int:
 
     latest_dt = datetime.fromtimestamp(latest_5m_ms / 1000, ET)
     if normalized == "1d":
-        minutes = latest_dt.hour * 60 + latest_dt.minute
-        if minutes >= REGULAR_SESSION_CLOSE_MINUTE:
-            day = latest_dt
+        latest_5m_close_ms = latest_5m_ms + interval_to_ms("5m")
+        if is_nyse_trading_day(latest_dt) and latest_5m_close_ms >= extended_session_close_ms_for_date(latest_dt):
+            day = latest_dt.date()
         else:
-            day = _previous_business_day(latest_dt)
-        start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+            day = previous_trading_day(latest_dt)
+        start = datetime(day.year, day.month, day.day, tzinfo=ET)
         return int(start.timestamp() * 1000)
 
-    interval_ms = interval_to_ms(normalized)
     current_bucket_ms = bucket_start_ms(latest_5m_ms, normalized)
     latest_5m_close_ms = latest_5m_ms + interval_to_ms("5m")
-    if latest_5m_close_ms >= current_bucket_ms + interval_ms:
+    if latest_5m_close_ms >= bar_close_ms(current_bucket_ms, normalized):
         return current_bucket_ms
     return _previous_bucket_start_ms(current_bucket_ms, normalized)
 

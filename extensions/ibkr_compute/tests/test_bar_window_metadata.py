@@ -27,6 +27,19 @@ class BarWindowMetadataTest(unittest.TestCase):
         self.assertEqual(meta["bar_close_time_ms"], 1776362400000)
         self.assertEqual(meta["bar_close_us_time"], "2026-04-16 14:00:00")
 
+    def test_build_bar_close_timestamps_for_extended_daily_bar(self):
+        meta = build_bar_close_timestamps(1776312000000, "1d")
+
+        self.assertEqual(meta["bar_time_semantics"], "start")
+        self.assertEqual(meta["bar_close_us_time"], "2026-04-16 20:00:00")
+        self.assertEqual(meta["session_scope"], "extended")
+
+    def test_build_bar_close_timestamps_for_early_close_daily_bar(self):
+        meta = build_bar_close_timestamps(1751515200000, "1d")
+
+        self.assertEqual(meta["bar_close_us_time"], "2025-07-03 17:00:00")
+        self.assertEqual(meta["regular_close_us_time"], "2025-07-03 13:00:00")
+
     def test_latest_safe_closed_bucket_ms_applies_close_delay(self):
         safe_ms = latest_safe_closed_bucket_ms(
             "5m",

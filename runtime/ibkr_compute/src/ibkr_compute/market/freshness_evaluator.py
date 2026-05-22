@@ -1,9 +1,9 @@
 """Aggregate bar freshness for system summaries.
 
-The evaluator treats ``bar_time_ms`` as the bar start and uses
-``extra.bar_close_time_ms`` as the authoritative close timestamp whenever it is
-present.  Higher intervals are only considered overdue after their own close
-boundary is reachable from a mature 5m close.
+The evaluator treats ``bar_time_ms`` as the bar start and uses canonical close
+boundaries for synthetic extended-session daily bars.  Other intervals use
+``extra.bar_close_time_ms`` when present.  Higher intervals are only considered
+overdue after their own close boundary is reachable from a mature 5m close.
 """
 
 from __future__ import annotations
@@ -17,16 +17,22 @@ from ibkr_compute.core.time_utils import ET
 from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite
 from ibkr_compute.market.timeframe_utils import (
     COMPUTE_INTERVALS,
+    EXTENDED_OPEN_MINUTE,
+    REGULAR_OPEN_MINUTE,
+    bar_close_ms,
+    bucket_start_ms,
+    extended_close_minute_for_date,
+    extended_session_close_ms_for_date,
     format_us_time,
-    interval_to_minutes,
     interval_to_ms,
+    is_nyse_trading_day,
     normalize_interval,
+    previous_intraday_bucket_start_ms,
+    previous_trading_day,
+    regular_close_minute_for_date,
+    regular_session_close_ms_for_date,
 )
 
-EXTENDED_OPEN_MINUTE = 4 * 60
-REGULAR_OPEN_MINUTE = 9 * 60 + 30
-REGULAR_CLOSE_MINUTE = 16 * 60
-EXTENDED_CLOSE_MINUTE = 20 * 60
 DEFAULT_CLOSE_DELAY_SECONDS = 3
 DEFAULT_SQLITE_TIMEOUT_SECONDS = 2.0
 
@@ -193,40 +199,35 @@ def _ms_from_dt(value: datetime) -> int:
 def _daily_close_time_ms_from_start(start_ms: int) -> int:
     if int(start_ms or 0) <= 0:
         return 0
-    start_dt = _dt_from_ms(start_ms)
-    close_dt = start_dt.replace(hour=16, minute=0, second=0, microsecond=0)
-    return _ms_from_dt(close_dt)
-
-
-def _previous_business_day(value: datetime) -> datetime:
-    cursor = value - timedelta(days=1)
-    while cursor.weekday() >= 5:
-        cursor -= timedelta(days=1)
-    return cursor
+    return extended_session_close_ms_for_date(_dt_from_ms(start_ms))
 
 
 def _previous_extended_close(value: datetime) -> datetime:
-    day = _previous_business_day(value)
-    return day.replace(hour=20, minute=0, second=0, microsecond=0)
+    day = previous_trading_day(value)
+    close_ms = extended_session_close_ms_for_date(day)
+    return _dt_from_ms(close_ms)
 
 
 def _previous_regular_close(value: datetime) -> datetime:
-    day = _previous_business_day(value)
-    return day.replace(hour=16, minute=0, second=0, microsecond=0)
+    day = previous_trading_day(value)
+    close_ms = regular_session_close_ms_for_date(day)
+    return _dt_from_ms(close_ms)
 
 
 def _session_kind(now_ms: int) -> str:
     dt = _dt_from_ms(now_ms)
-    if dt.weekday() >= 5:
+    if not is_nyse_trading_day(dt):
         return "closed"
     minutes = dt.hour * 60 + dt.minute
+    regular_close = regular_close_minute_for_date(dt)
+    extended_close = extended_close_minute_for_date(dt)
     if minutes < EXTENDED_OPEN_MINUTE:
         return "closed"
     if minutes < REGULAR_OPEN_MINUTE:
         return "premarket"
-    if minutes < REGULAR_CLOSE_MINUTE:
+    if minutes < regular_close:
         return "regular"
-    if minutes < EXTENDED_CLOSE_MINUTE:
+    if minutes < extended_close:
         return "afterhours"
     return "closed"
 
@@ -238,7 +239,8 @@ def _session_start_ms(now_ms: int, session: str) -> int:
     elif session == "regular":
         start = dt.replace(hour=9, minute=30, second=0, microsecond=0)
     elif session == "afterhours":
-        start = dt.replace(hour=16, minute=0, second=0, microsecond=0)
+        regular_close = regular_close_minute_for_date(dt)
+        start = dt.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(minutes=regular_close)
     else:
         return 0
     return _ms_from_dt(start)
@@ -252,28 +254,30 @@ def _quiet_extended_start_ms(now_ms: int, session: str) -> int:
         return 0
 
     minutes = dt.hour * 60 + dt.minute
-    if dt.weekday() < 5 and minutes >= EXTENDED_CLOSE_MINUTE:
-        start = dt.replace(hour=16, minute=0, second=0, microsecond=0)
+    extended_close = extended_close_minute_for_date(dt)
+    if is_nyse_trading_day(dt) and minutes >= extended_close:
+        regular_close = regular_close_minute_for_date(dt)
+        start = dt.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(minutes=regular_close)
         return _ms_from_dt(start)
-    if dt.weekday() < 5 and minutes < EXTENDED_OPEN_MINUTE:
+    if is_nyse_trading_day(dt) and minutes < EXTENDED_OPEN_MINUTE:
         return _ms_from_dt(_previous_regular_close(dt))
-    if dt.weekday() >= 5:
+    if not is_nyse_trading_day(dt):
         return _ms_from_dt(_previous_regular_close(dt))
     return 0
 
 
 def _latest_mature_5m_close_ms(now_ms: int, *, delay_seconds: int) -> int:
     effective = _dt_from_ms(now_ms) - timedelta(seconds=max(0, int(delay_seconds or 0)))
-    if effective.weekday() >= 5:
+    if not is_nyse_trading_day(effective):
         return _ms_from_dt(_previous_extended_close(effective))
 
     minutes = effective.hour * 60 + effective.minute
     first_close = EXTENDED_OPEN_MINUTE + 5
     if minutes < first_close:
         return _ms_from_dt(_previous_extended_close(effective))
-    if minutes >= EXTENDED_CLOSE_MINUTE:
-        end = effective.replace(hour=20, minute=0, second=0, microsecond=0)
-        return _ms_from_dt(end)
+    extended_close = extended_close_minute_for_date(effective)
+    if minutes >= extended_close:
+        return extended_session_close_ms_for_date(effective)
 
     close_minutes = minutes - (minutes % 5)
     close_dt = effective.replace(
@@ -287,13 +291,6 @@ def _latest_mature_5m_close_ms(now_ms: int, *, delay_seconds: int) -> int:
     return _ms_from_dt(close_dt)
 
 
-def _floor_close_boundary(dt: datetime, interval: str) -> datetime:
-    minutes = interval_to_minutes(interval)
-    total = dt.hour * 60 + dt.minute
-    boundary = total - (total % minutes)
-    return dt.replace(hour=boundary // 60, minute=boundary % 60, second=0, microsecond=0)
-
-
 def _latest_intraday_expected_close(mature_5m_close_ms: int, interval: str) -> dict[str, Any]:
     normalized = normalize_interval(interval)
     if normalized == "5m":
@@ -304,33 +301,33 @@ def _latest_intraday_expected_close(mature_5m_close_ms: int, interval: str) -> d
             "current_due": True,
         }
 
-    mature_dt = _dt_from_ms(mature_5m_close_ms)
-    interval_minutes = interval_to_minutes(normalized)
-    session_open = mature_dt.replace(hour=4, minute=0, second=0, microsecond=0)
-    first_close = session_open + timedelta(minutes=interval_minutes)
-    boundary = _floor_close_boundary(mature_dt, normalized)
-    if boundary < first_close:
-        previous = _previous_extended_close(mature_dt)
+    latest_5m_start_ms = int(mature_5m_close_ms or 0) - interval_to_ms("5m")
+    current_bucket_ms = bucket_start_ms(latest_5m_start_ms, normalized)
+    current_close_ms = bar_close_ms(current_bucket_ms, normalized)
+    if int(mature_5m_close_ms or 0) < current_close_ms:
+        previous_start_ms = previous_intraday_bucket_start_ms(current_bucket_ms, normalized)
+        previous_close_ms = bar_close_ms(previous_start_ms, normalized)
+        previous = _dt_from_ms(previous_close_ms)
         return {
-            "expected_close_ms": _ms_from_dt(previous),
+            "expected_close_ms": previous_close_ms,
             "expected_close_us": previous.strftime("%Y-%m-%d %H:%M:%S"),
             "current_due": False,
         }
     return {
-        "expected_close_ms": _ms_from_dt(boundary),
-        "expected_close_us": boundary.strftime("%Y-%m-%d %H:%M:%S"),
+        "expected_close_ms": current_close_ms,
+        "expected_close_us": format_us_time(current_close_ms),
         "current_due": True,
     }
 
 
 def _latest_daily_expected_close(mature_5m_close_ms: int) -> dict[str, Any]:
     mature_dt = _dt_from_ms(mature_5m_close_ms)
-    minutes = mature_dt.hour * 60 + mature_dt.minute
-    if mature_dt.weekday() < 5 and minutes >= REGULAR_CLOSE_MINUTE:
-        close_dt = mature_dt.replace(hour=16, minute=0, second=0, microsecond=0)
+    current_close_ms = extended_session_close_ms_for_date(mature_dt)
+    if is_nyse_trading_day(mature_dt) and int(mature_5m_close_ms or 0) >= current_close_ms:
+        close_dt = _dt_from_ms(current_close_ms)
         current_due = True
     else:
-        close_dt = _previous_regular_close(mature_dt)
+        close_dt = _previous_extended_close(mature_dt)
         current_due = False
     return {
         "expected_close_ms": _ms_from_dt(close_dt),
@@ -736,7 +733,7 @@ def _evaluate_symbol_interval(
     ):
         status = "not_due"
         reason = "no_source_5m_window"
-    elif normalized != "5m" and current_due and latest_5m_close_ms < expected_close_ms:
+    elif normalized not in {"5m", "1d"} and current_due and latest_5m_close_ms < expected_close_ms:
         status = "waiting_5m"
         reason = "waiting_5m"
     elif not current_due and latest_close_ms >= expected_close_ms:

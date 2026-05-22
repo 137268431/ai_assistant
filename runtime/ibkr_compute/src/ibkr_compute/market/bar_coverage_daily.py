@@ -10,7 +10,13 @@ import sqlite3
 from typing import Any, Iterable, Sequence
 
 from ibkr_compute.core.time_utils import ET
-from ibkr_compute.market.timeframe_utils import format_us_time, interval_to_ms, ms_to_et, normalize_interval
+from ibkr_compute.market.timeframe_utils import (
+    extended_close_minute_for_date,
+    format_us_time,
+    interval_to_ms,
+    ms_to_et,
+    normalize_interval,
+)
 
 REGULAR_OPEN_MINUTE = 9 * 60 + 30
 REGULAR_CLOSE_MINUTE = 16 * 60
@@ -231,9 +237,10 @@ def expected_bar_times_for_date(market_date: str, interval: str = "5m", session_
     regular_close = regular_close_minute_for_date(day)
     start_dt = datetime(day.year, day.month, day.day, tzinfo=ET)
     expected: list[int] = []
-    for minute in range(EXTENDED_OPEN_MINUTE, EXTENDED_CLOSE_MINUTE, interval_minutes):
+    extended_close = extended_close_minute_for_date(day)
+    for minute in range(EXTENDED_OPEN_MINUTE, extended_close, interval_minutes):
         is_regular = REGULAR_OPEN_MINUTE <= minute < regular_close
-        include = is_regular if session == "regular" else (EXTENDED_OPEN_MINUTE <= minute < EXTENDED_CLOSE_MINUTE and not is_regular)
+        include = is_regular if session == "regular" else (EXTENDED_OPEN_MINUTE <= minute < extended_close and not is_regular)
         if include:
             bucket = start_dt + timedelta(minutes=minute)
             expected.append(int(bucket.timestamp() * 1000))
@@ -245,7 +252,7 @@ def session_mode_for_bar_time(bar_time_ms: int) -> str:
     minutes = minute_of_day(bar_time_ms)
     if REGULAR_OPEN_MINUTE <= minutes < regular_close_minute_for_date(day):
         return "regular"
-    if EXTENDED_OPEN_MINUTE <= minutes < EXTENDED_CLOSE_MINUTE:
+    if EXTENDED_OPEN_MINUTE <= minutes < extended_close_minute_for_date(day):
         return "extended"
     return "closed"
 

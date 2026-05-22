@@ -358,7 +358,7 @@ class RuntimePipelineSupportMixin:
                     except Exception:
                         pass
                     if compute_source == "canonical_close" and compute_symbols:
-                        rollup_intervals = [interval for interval in HIGHER_INTERVALS if interval != "1d"]
+                        rollup_intervals = list(HIGHER_INTERVALS)
                         if rollup_intervals:
                             rollup_result = self._trigger_realtime_compute(
                                 source="canonical_close",

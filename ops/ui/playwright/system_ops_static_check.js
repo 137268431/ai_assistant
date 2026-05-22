@@ -109,6 +109,9 @@ try {
   assert(includesAll(systemBridge, ['总览', '运维', '控制台', '配置']), 'system_bridge_missing_expected_labels');
   const opsBridge = ui.renderOpsBridge('/ibkr_data_quality.html');
   assert(includesAll(opsBridge, ['总览', '运维', '控制台', '配置', '监控大盘', '预热', '数据质量', '历史重建']), 'ops_bridge_missing_expected_labels');
+  const analyticsBridge = ui.renderAnalyticsBridge('/ibkr_chart.html');
+  assert(includesAll(analyticsBridge, ['指标列表', '图表工作台', '统计']), 'analytics_bridge_missing_expected_labels');
+  assert(/page-bridge-link active[\s\S]*图表工作台/.test(analyticsBridge), 'analytics_bridge_chart_not_active');
 } catch (error) {
   issues.push(`ui_render_failed:${error.message}`);
 }
@@ -127,6 +130,16 @@ listStaticFiles('assets/css', '.css').forEach((relativePath) => {
 const indexHtml = readStatic('index.html');
 assert(indexHtml.includes('id="actionConfigLink"'), 'home_missing_config_entry');
 assert(indexHtml.includes('/ibkr_config.html'), 'home_config_entry_missing_href');
+
+const chartCss = readStatic('assets/css/pages/ibkr_chart/page.css');
+const chartJs = readPageScriptBundle(
+  'ibkr_chart.html',
+  'assets/js/pages/ibkr_chart/',
+  'assets/js/pages/ibkr_chart/page.js',
+);
+assert(chartJs.includes("renderAnalyticsBridge('/ibkr_chart.html')"), 'chart_missing_analytics_bridge_render');
+assert(!chartJs.includes("document.getElementById('pageBridge').innerHTML = ''"), 'chart_still_clears_page_bridge');
+assert(!/(^|})\s*#pageBridge\s*\{\s*display:\s*none;\s*\}/m.test(chartCss), 'chart_page_bridge_hidden_globally');
 
 const systemHtml = readStatic('ibkr_system.html');
 const systemCss = readStatic('assets/css/pages/ibkr_system/page.css');

@@ -619,7 +619,7 @@ class WatchlistIdleTopupCycleTest(unittest.TestCase):
         self.assertEqual(call["persist_signals"], True)
         self.assertEqual(call["persist_signal_symbols"], ["AAPL"])
         self.assertEqual(call["intervals"], ["5m"])
-        self.assertEqual(call["rollup_intervals"], ["15m", "30m", "1h", "4h"])
+        self.assertEqual(call["rollup_intervals"], ["15m", "30m", "1h", "4h", "1d"])
         for symbol in ("MSFT", "NVDA", "TSLA"):
             self.assertNotIn(symbol, call["persist_signal_symbols"])
 
@@ -645,7 +645,7 @@ class WatchlistIdleTopupCycleTest(unittest.TestCase):
         self.assertEqual(state["last_loaded_bars"], 0)
         self.assertEqual(len(self.service.realtime_compute_calls), 1)
         self.assertEqual(self.service.realtime_compute_calls[0]["source"], "watchlist_idle_topup")
-        self.assertEqual(self.service.realtime_compute_calls[0]["rollup_intervals"], ["15m", "30m", "1h", "4h"])
+        self.assertEqual(self.service.realtime_compute_calls[0]["rollup_intervals"], ["15m", "30m", "1h", "4h", "1d"])
 
     def test_idle_topup_persists_signals_for_unsubscribed_active_targets(self):
         self.service.pb = DummyPB(

@@ -94,13 +94,13 @@ class SummaryFreshnessAggregationTest(unittest.TestCase):
             _bar("AAPL", "30m", "2026-05-19 09:30:00", "2026-05-19 10:00:00"),
             _bar("AAPL", "1h", "2026-05-19 09:00:00", "2026-05-19 10:00:00"),
             _bar("AAPL", "4h", "2026-05-19 04:00:00", "2026-05-19 08:00:00"),
-            _bar("AAPL", "1d", "2026-05-18 00:00:00", "2026-05-18 16:00:00"),
+            _bar("AAPL", "1d", "2026-05-18 00:00:00", "2026-05-18 20:00:00"),
             _bar("MSFT", "5m", "2026-05-19 10:10:00", "2026-05-19 10:15:00"),
             _bar("MSFT", "15m", "2026-05-19 09:45:00", "2026-05-19 10:00:00"),
             _bar("MSFT", "30m", "2026-05-19 09:30:00", "2026-05-19 10:00:00"),
             _bar("MSFT", "1h", "2026-05-19 09:00:00", "2026-05-19 10:00:00"),
             _bar("MSFT", "4h", "2026-05-19 04:00:00", "2026-05-19 08:00:00"),
-            _bar("MSFT", "1d", "2026-05-18 00:00:00", "2026-05-18 16:00:00"),
+            _bar("MSFT", "1d", "2026-05-18 00:00:00", "2026-05-18 20:00:00"),
         ]
         pb = _FreshnessPB(bars=bars)
         runtime_payload = _sample_runtime_status_payload(authenticated=True)
@@ -141,10 +141,10 @@ class SummaryFreshnessAggregationTest(unittest.TestCase):
         self.assertEqual(intervals["15m"]["ready"], 1)
         self.assertEqual(intervals["15m"]["overdue"], 1)
         self.assertEqual(intervals["15m"]["status"], "overdue")
-        self.assertEqual(intervals["1d"]["expected_close_us"], "2026-05-18 16:00:00")
+        self.assertEqual(intervals["1d"]["expected_close_us"], "2026-05-18 20:00:00")
         self.assertEqual(intervals["1d"]["not_due"], 2)
 
-    def test_daily_close_timestamp_uses_regular_close_not_next_midnight(self):
+    def test_daily_close_timestamp_uses_extended_close_not_next_midnight(self):
         start_ms = _ms("2026-05-15 00:00:00")
         row = {
             "symbol": "AAPL",
@@ -158,10 +158,10 @@ class SummaryFreshnessAggregationTest(unittest.TestCase):
             ),
         }
 
-        self.assertEqual(extract_bar_close_time_ms(row, "1d"), _ms("2026-05-15 16:00:00"))
+        self.assertEqual(extract_bar_close_time_ms(row, "1d"), _ms("2026-05-15 20:00:00"))
         self.assertEqual(
             build_bar_close_timestamps(start_ms, "1d")["bar_close_us_time"],
-            "2026-05-15 16:00:00",
+            "2026-05-15 20:00:00",
         )
 
     def test_high_interval_waits_for_missing_5m_boundary(self):
@@ -193,7 +193,7 @@ class SummaryFreshnessAggregationTest(unittest.TestCase):
         bars = [
             _bar("AAPL", "5m", "2026-05-19 15:55:00", "2026-05-19 16:00:00"),
             _bar("AAPL", "15m", "2026-05-19 15:45:00", "2026-05-19 16:00:00"),
-            _bar("AAPL", "1d", "2026-05-19 00:00:00", "2026-05-19 16:00:00"),
+            _bar("AAPL", "1d", "2026-05-19 00:00:00", "2026-05-19 20:00:00"),
         ]
         runtime_payload = _sample_runtime_status_payload(authenticated=True)
         runtime_payload["market_universe"]["active_trade_symbols"] = ["AAPL"]
@@ -216,6 +216,32 @@ class SummaryFreshnessAggregationTest(unittest.TestCase):
         self.assertEqual(intervals["15m"]["overdue"], 0)
         self.assertEqual(intervals["1d"]["ready"], 1)
         self.assertEqual(payload["overall"]["overdue"], 0)
+
+    def test_early_close_daily_expected_close_uses_17_et_extended_close(self):
+        bars = [
+            _bar("AAPL", "5m", "2025-07-03 16:55:00", "2025-07-03 17:00:00"),
+            _bar("AAPL", "4h", "2025-07-03 16:00:00", "2025-07-03 17:00:00"),
+            _bar("AAPL", "1d", "2025-07-03 00:00:00", "2025-07-03 17:00:00"),
+        ]
+        runtime_payload = _sample_runtime_status_payload(authenticated=True)
+        runtime_payload["market_universe"]["active_trade_symbols"] = ["AAPL"]
+
+        with mock.patch("ibkr_compute.market.freshness_evaluator.open_pb_sqlite", side_effect=FileNotFoundError("no db")):
+            payload = build_data_freshness_summary(
+                pb_client=_FreshnessPB(bars=bars),
+                runtime_payload=runtime_payload,
+                environment="live",
+                market_date="2025-07-03",
+                config=_FreshnessConfig(),
+                now_us="2025-07-03 17:02:00",
+                intervals=["5m", "4h", "1d"],
+            )
+
+        intervals = {item["interval"]: item for item in payload["intervals"]}
+        self.assertEqual(intervals["4h"]["expected_close_us"], "2025-07-03 17:00:00")
+        self.assertEqual(intervals["4h"]["ready"], 1)
+        self.assertEqual(intervals["1d"]["expected_close_us"], "2025-07-03 17:00:00")
+        self.assertEqual(intervals["1d"]["ready"], 1)
 
     def test_empty_runtime_universe_falls_back_to_today_targets_only(self):
         bars = [

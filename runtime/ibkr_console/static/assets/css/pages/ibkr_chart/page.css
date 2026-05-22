@@ -2515,11 +2515,6 @@ body.chart-focus-mode .chart-stage {
     }
 }
 
-/* Chart cleanup pass: one command surface, chart-first canvas, details in Inspector/Tools. */
-#pageBridge {
-    display: none;
-}
-
 .workspace {
     grid-template-columns: minmax(0, 1fr);
     padding: 8px 22px 16px;

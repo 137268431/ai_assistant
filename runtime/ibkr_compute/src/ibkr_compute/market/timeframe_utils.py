@@ -4,8 +4,8 @@ Timeframe and timestamp helpers shared by the IBKR market-data pipeline.
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Dict
+from datetime import date, datetime, timedelta
+from typing import Any, Dict
 
 from ibkr_compute.core.time_utils import CN, ET
 
@@ -20,6 +20,13 @@ INTERVAL_MINUTES = {
     "4h": 240,
     "1d": 1440,
 }
+
+EXTENDED_OPEN_MINUTE = 4 * 60
+REGULAR_OPEN_MINUTE = 9 * 60 + 30
+REGULAR_CLOSE_MINUTE = 16 * 60
+EARLY_CLOSE_MINUTE = 13 * 60
+EXTENDED_CLOSE_MINUTE = 20 * 60
+EARLY_EXTENDED_CLOSE_MINUTE = 17 * 60
 
 CHART_TF_MAP = {
     "5m": "5",
@@ -47,10 +54,205 @@ SIGNAL_SUFFIX_MAP = {
 
 MARKET_SESSION_LABELS = {
     "closed": "closed",
+    "premarket": "premarket",
     "regular": "regular",
     "close_transition": "close_transition",
     "afterhours": "afterhours",
 }
+
+
+def _normalize_market_date(value: Any) -> date:
+    if isinstance(value, datetime):
+        return value.astimezone(ET).date() if value.tzinfo else value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, (int, float)):
+        return ms_to_et(int(value)).date()
+    text = str(value or "").strip()
+    if text:
+        return datetime.strptime(text[:10], "%Y-%m-%d").date()
+    return datetime.now(ET).date()
+
+
+def _nth_weekday(year: int, month: int, weekday: int, nth: int) -> date:
+    cursor = date(year, month, 1)
+    while cursor.weekday() != weekday:
+        cursor += timedelta(days=1)
+    return cursor + timedelta(days=7 * (nth - 1))
+
+
+def _last_weekday(year: int, month: int, weekday: int) -> date:
+    if month == 12:
+        cursor = date(year + 1, 1, 1) - timedelta(days=1)
+    else:
+        cursor = date(year, month + 1, 1) - timedelta(days=1)
+    while cursor.weekday() != weekday:
+        cursor -= timedelta(days=1)
+    return cursor
+
+
+def _observed_fixed_holiday(year: int, month: int, day: int) -> date:
+    actual = date(year, month, day)
+    if actual.weekday() == 5:
+        return actual - timedelta(days=1)
+    if actual.weekday() == 6:
+        return actual + timedelta(days=1)
+    return actual
+
+
+def _easter_date(year: int) -> date:
+    # Anonymous Gregorian algorithm.
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return date(year, month, day)
+
+
+def nyse_holidays(year: int) -> set[date]:
+    holidays: set[date] = set()
+    for observed in (
+        _observed_fixed_holiday(year, 1, 1),
+        _observed_fixed_holiday(year + 1, 1, 1),
+    ):
+        if observed.year == year:
+            holidays.add(observed)
+    holidays.update(
+        {
+            _nth_weekday(year, 1, 0, 3),
+            _nth_weekday(year, 2, 0, 3),
+            _easter_date(year) - timedelta(days=2),
+            _last_weekday(year, 5, 0),
+            _observed_fixed_holiday(year, 7, 4),
+            _nth_weekday(year, 9, 0, 1),
+            _nth_weekday(year, 11, 3, 4),
+            _observed_fixed_holiday(year, 12, 25),
+        }
+    )
+    if year >= 2022:
+        observed_juneteenth = _observed_fixed_holiday(year, 6, 19)
+        if observed_juneteenth.year == year:
+            holidays.add(observed_juneteenth)
+    return holidays
+
+
+def is_nyse_trading_day(value: Any) -> bool:
+    day = _normalize_market_date(value)
+    return day.weekday() < 5 and day not in nyse_holidays(day.year)
+
+
+def is_nyse_early_close_day(value: Any) -> bool:
+    day = _normalize_market_date(value)
+    if not is_nyse_trading_day(day):
+        return False
+    thanksgiving = _nth_weekday(day.year, 11, 3, 4)
+    if day == thanksgiving + timedelta(days=1):
+        return True
+    if day.month == 12 and day.day == 24:
+        return True
+    if day.month == 7 and day.day == 3:
+        return True
+    return False
+
+
+def regular_close_minute_for_date(value: Any) -> int:
+    return EARLY_CLOSE_MINUTE if is_nyse_early_close_day(value) else REGULAR_CLOSE_MINUTE
+
+
+def extended_close_minute_for_date(value: Any) -> int:
+    return EARLY_EXTENDED_CLOSE_MINUTE if is_nyse_early_close_day(value) else EXTENDED_CLOSE_MINUTE
+
+
+def previous_trading_day(value: Any) -> date:
+    cursor = _normalize_market_date(value) - timedelta(days=1)
+    while not is_nyse_trading_day(cursor):
+        cursor -= timedelta(days=1)
+    return cursor
+
+
+def _market_dt_for_minute(day: date, minute: int) -> datetime:
+    return datetime(day.year, day.month, day.day, tzinfo=ET) + timedelta(minutes=int(minute))
+
+
+def market_date_start_ms(value: Any) -> int:
+    day = _normalize_market_date(value)
+    return int(datetime(day.year, day.month, day.day, tzinfo=ET).timestamp() * 1000)
+
+
+def regular_session_close_ms_for_date(value: Any) -> int:
+    day = _normalize_market_date(value)
+    return int(_market_dt_for_minute(day, regular_close_minute_for_date(day)).timestamp() * 1000)
+
+
+def extended_session_open_ms_for_date(value: Any) -> int:
+    day = _normalize_market_date(value)
+    return int(_market_dt_for_minute(day, EXTENDED_OPEN_MINUTE).timestamp() * 1000)
+
+
+def extended_session_close_ms_for_date(value: Any) -> int:
+    day = _normalize_market_date(value)
+    return int(_market_dt_for_minute(day, extended_close_minute_for_date(day)).timestamp() * 1000)
+
+
+def extended_session_close_ms_for_start(bar_time_ms: int) -> int:
+    return extended_session_close_ms_for_date(ms_to_et(int(bar_time_ms or 0)))
+
+
+def latest_closed_daily_bucket_start_ms(now_ms: int) -> int:
+    if int(now_ms or 0) <= 0:
+        return 0
+    current = ms_to_et(int(now_ms))
+    day = current.date()
+    if is_nyse_trading_day(day) and int(now_ms) >= extended_session_close_ms_for_date(day):
+        return market_date_start_ms(day)
+    return market_date_start_ms(previous_trading_day(day))
+
+
+def previous_intraday_bucket_start_ms(bucket_ms: int, interval: str) -> int:
+    normalized = normalize_interval(interval)
+    if normalized == "1d":
+        return market_date_start_ms(previous_trading_day(ms_to_et(int(bucket_ms or 0))))
+
+    interval_minutes = interval_to_minutes(normalized)
+    bucket_dt = ms_to_et(int(bucket_ms or 0))
+    bucket_minute = bucket_dt.hour * 60 + bucket_dt.minute
+    if bucket_minute <= EXTENDED_OPEN_MINUTE:
+        previous_day = previous_trading_day(bucket_dt)
+        previous_close = extended_close_minute_for_date(previous_day)
+        last_start_minute = EXTENDED_OPEN_MINUTE + (
+            max(0, previous_close - EXTENDED_OPEN_MINUTE - 1) // interval_minutes
+        ) * interval_minutes
+        return int(_market_dt_for_minute(previous_day, last_start_minute).timestamp() * 1000)
+    return bucket_start_ms(int(bucket_ms) - 1, normalized)
+
+
+def session_boundaries_for_date(value: Any) -> Dict[str, object]:
+    day = _normalize_market_date(value)
+    early_close = is_nyse_early_close_day(day)
+    regular_close = regular_close_minute_for_date(day)
+    extended_close = extended_close_minute_for_date(day)
+    return {
+        "market_date": day.isoformat(),
+        "trading_day": is_nyse_trading_day(day),
+        "early_close": early_close,
+        "extended_open_minute": EXTENDED_OPEN_MINUTE,
+        "regular_open_minute": REGULAR_OPEN_MINUTE,
+        "regular_close_minute": regular_close,
+        "extended_close_minute": extended_close,
+        "extended_open_ms": extended_session_open_ms_for_date(day),
+        "regular_close_ms": regular_session_close_ms_for_date(day),
+        "extended_close_ms": extended_session_close_ms_for_date(day),
+    }
 
 
 def normalize_interval(value: str) -> str:
@@ -102,20 +304,39 @@ def format_cn_time(bar_time_ms: int) -> str:
 def bar_close_ms(bar_time_ms: int, interval: str) -> int:
     normalized = normalize_interval(interval)
     if normalized == "1d":
-        close_dt = ms_to_et(bar_time_ms).replace(hour=16, minute=0, second=0, microsecond=0)
-        return int(close_dt.timestamp() * 1000)
-    return int(bar_time_ms) + interval_to_ms(normalized)
+        return extended_session_close_ms_for_start(int(bar_time_ms))
+
+    close_ms = int(bar_time_ms) + interval_to_ms(normalized)
+    dt = ms_to_et(int(bar_time_ms))
+    minute = dt.hour * 60 + dt.minute
+    session_close_minute = extended_close_minute_for_date(dt)
+    if EXTENDED_OPEN_MINUTE <= minute < session_close_minute:
+        return min(close_ms, extended_session_close_ms_for_date(dt))
+    return close_ms
 
 
 def build_bar_close_timestamps(bar_time_ms: int, interval: str) -> Dict[str, object]:
     normalized = normalize_interval(interval)
     close_ms = bar_close_ms(bar_time_ms, normalized)
-    return {
+    payload: Dict[str, object] = {
         "bar_time_semantics": "start",
         "bar_close_time_ms": close_ms,
         "bar_close_us_time": format_us_time(close_ms),
         "bar_close_cn_time": format_cn_time(close_ms),
     }
+    if normalized == "1d":
+        regular_close_ms = regular_session_close_ms_for_date(ms_to_et(int(bar_time_ms)))
+        payload.update(
+            {
+                "session_scope": "extended",
+                "session_start_us_time": format_us_time(extended_session_open_ms_for_date(ms_to_et(int(bar_time_ms)))),
+                "regular_close_time_ms": regular_close_ms,
+                "regular_close_us_time": format_us_time(regular_close_ms),
+                "extended_close_time_ms": close_ms,
+                "extended_close_us_time": format_us_time(close_ms),
+            }
+        )
+    return payload
 
 
 def build_runtime_timestamps(now: datetime | None = None) -> Dict[str, object]:
@@ -137,9 +358,13 @@ def classify_session(us_time: str = "", bar_time_ms: int | None = None) -> str:
         dt = datetime.now(ET)
 
     minutes = dt.hour * 60 + dt.minute
-    regular_open = 9 * 60 + 30
-    regular_close = 16 * 60
-    if minutes < regular_open:
+    if not is_nyse_trading_day(dt):
+        return "closed"
+    regular_close = regular_close_minute_for_date(dt)
+    extended_close = extended_close_minute_for_date(dt)
+    if minutes < EXTENDED_OPEN_MINUTE or minutes >= extended_close:
+        return "closed"
+    if minutes < REGULAR_OPEN_MINUTE:
         return "premarket"
     if minutes >= regular_close:
         return "afterhours"
@@ -166,17 +391,21 @@ def classify_market_session_kind(
     bar_time_ms: int | None = None,
 ) -> str:
     dt = _coerce_et_datetime(now, us_time=us_time, bar_time_ms=bar_time_ms)
-    if dt.weekday() >= 5:
+    if not is_nyse_trading_day(dt):
         return "closed"
 
     minutes = dt.hour * 60 + dt.minute
-    if minutes < (9 * 60 + 40):
+    regular_close = regular_close_minute_for_date(dt)
+    extended_close = extended_close_minute_for_date(dt)
+    if minutes < EXTENDED_OPEN_MINUTE:
         return "closed"
-    if minutes < (16 * 60):
+    if minutes < REGULAR_OPEN_MINUTE:
+        return "premarket"
+    if minutes < regular_close:
         return "regular"
-    if minutes < (16 * 60 + 10):
+    if minutes < min(regular_close + 10, extended_close):
         return "close_transition"
-    if minutes < (20 * 60):
+    if minutes < extended_close:
         return "afterhours"
     return "closed"
 
@@ -196,9 +425,9 @@ def build_market_session_snapshot(
         "cn_time": dt.astimezone(CN).strftime("%Y-%m-%d %H:%M:%S"),
         "weekday": dt.weekday(),
         "minutes": dt.hour * 60 + dt.minute,
-        "is_open": kind in {"regular", "close_transition", "afterhours"},
+        "is_open": kind in {"premarket", "regular", "close_transition", "afterhours"},
         "is_late_session": kind in {"close_transition", "afterhours"},
-        "requires_live_5m": kind in {"regular", "close_transition", "afterhours"},
+        "requires_live_5m": kind in {"premarket", "regular", "close_transition", "afterhours"},
     }
 
 
@@ -212,7 +441,9 @@ def bucket_start_ms(bar_time_ms: int, interval: str) -> int:
 
     minutes = interval_to_minutes(normalized)
     total_minutes = dt.hour * 60 + dt.minute
-    bucket_minutes = total_minutes - (total_minutes % minutes)
+    bucket_minutes = EXTENDED_OPEN_MINUTE + (
+        (total_minutes - EXTENDED_OPEN_MINUTE) // minutes
+    ) * minutes
     start = dt.replace(
         hour=bucket_minutes // 60,
         minute=bucket_minutes % 60,
@@ -235,6 +466,8 @@ def latest_safe_closed_bucket_ms(
         current = now.astimezone(ET) if now else datetime.now(ET)
         effective_ms = int(current.timestamp() * 1000)
     effective_ms -= max(0, int(float(delay_seconds or 0.0) * 1000))
+    if normalized == "1d":
+        return latest_closed_daily_bucket_start_ms(effective_ms)
     if effective_ms <= interval_to_ms(normalized):
         return 0
     return bucket_start_ms(effective_ms - interval_to_ms(normalized), normalized)

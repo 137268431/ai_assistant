@@ -544,7 +544,7 @@
         document.addEventListener('DOMContentLoaded', async () => {
             document.getElementById('nav').innerHTML = renderNav('/ibkr_chart.html');
             document.getElementById('contextBar').innerHTML = renderPageContextBar('📉 IBKR 图表', { subtitle: '全屏分析 / 信号叠加' });
-            document.getElementById('pageBridge').innerHTML = '';
+            document.getElementById('pageBridge').innerHTML = renderAnalyticsBridge('/ibkr_chart.html');
 
             document.getElementById('chartSymbolInput').addEventListener('keydown', async (event) => {
                 if (event.key !== 'Enter') return;
