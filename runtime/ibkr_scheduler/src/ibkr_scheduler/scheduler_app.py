@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -81,6 +82,60 @@ def _compact_scheduler_payload(payload: Any) -> Any:
     )
 
 
+def _json_payload_size(payload: Any) -> int:
+    try:
+        return len(json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8"))
+    except Exception:
+        return 0
+
+
+def _compact_scheduler_state_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    state = dict(payload or {})
+    if "last_result" in state:
+        state["last_result"] = _compact_scheduler_payload(state["last_result"])
+    last_runs = state.get("last_runs") if isinstance(state.get("last_runs"), dict) else {}
+    if last_runs:
+        compacted_runs: dict[str, Any] = {}
+        for schedule_id, schedule_state in last_runs.items():
+            schedule_payload = dict(schedule_state) if isinstance(schedule_state, dict) else {"value": schedule_state}
+            if "last_result" in schedule_payload:
+                schedule_payload["last_result"] = _compact_scheduler_payload(schedule_payload["last_result"])
+            compacted_runs[str(schedule_id)] = schedule_payload
+        state["last_runs"] = compacted_runs
+    if _json_payload_size(state) <= 450_000:
+        return state
+    for max_list_items, max_dict_items, max_string_length, max_depth in (
+        (30, 100, 800, 6),
+        (12, 60, 400, 5),
+        (5, 30, 240, 4),
+    ):
+        compacted = compact_json_payload(
+            state,
+            max_list_items=max_list_items,
+            max_dict_items=max_dict_items,
+            max_string_length=max_string_length,
+            max_depth=max_depth,
+        )
+        if isinstance(compacted, dict) and _json_payload_size(compacted) <= 450_000:
+            return compacted
+    return {
+        "job_id": str(state.get("job_id") or ""),
+        "environment": str(state.get("environment") or ""),
+        "status": str(state.get("status") or ""),
+        "updated_at_ms": _safe_int(state.get("updated_at_ms"), _now_ms()),
+        "last_run_started_at_ms": _safe_int(state.get("last_run_started_at_ms"), 0),
+        "last_run_finished_at_ms": _safe_int(state.get("last_run_finished_at_ms"), 0),
+        "last_success_at_ms": _safe_int(state.get("last_success_at_ms"), 0),
+        "last_scheduled_slot": str(state.get("last_scheduled_slot") or ""),
+        "last_schedule_id": str(state.get("last_schedule_id") or ""),
+        "last_trigger_source": str(state.get("last_trigger_source") or ""),
+        "canonical_job_id": str(state.get("canonical_job_id") or state.get("job_id") or ""),
+        "alias_job_id": str(state.get("alias_job_id") or ""),
+        "compacted": True,
+        "compact_reason": "json_size_limit",
+    }
+
+
 def _mapping_value(source: Mapping[str, Any] | None, key: str) -> Any:
     if not source:
         return None
@@ -156,6 +211,13 @@ class SchedulerService:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._job_cache: dict[str, dict[str, Any]] = {}
+        self._loop_iteration = 0
+        self._last_loop_started_at_ms = 0
+        self._last_loop_finished_at_ms = 0
+        self._last_due_slot = ""
+        self._last_due_job_count = 0
+        self._last_loop_error = ""
+        self._startup_reconcile_done = False
         self._run_compute_dispatch = build_compute_dispatch_runner(
             pb=self.pb,
             compute_base_url=COMPUTE_BASE_URL,
@@ -176,6 +238,30 @@ class SchedulerService:
         self._stop_event.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5)
+
+    def loop_status(self) -> dict[str, Any]:
+        now_ms = _now_ms()
+        with self._lock:
+            started_at_ms = int(self._last_loop_started_at_ms or 0)
+            finished_at_ms = int(self._last_loop_finished_at_ms or 0)
+            error = str(self._last_loop_error or "")
+            iteration = int(self._loop_iteration or 0)
+            due_slot = str(self._last_due_slot or "")
+            due_job_count = int(self._last_due_job_count or 0)
+            startup_reconcile_done = bool(self._startup_reconcile_done)
+        running = bool(self._thread and self._thread.is_alive())
+        age_source_ms = finished_at_ms or started_at_ms
+        return {
+            "running": running,
+            "iteration": iteration,
+            "last_started_at_ms": started_at_ms,
+            "last_finished_at_ms": finished_at_ms,
+            "last_age_s": round(max(0, now_ms - age_source_ms) / 1000, 3) if age_source_ms else None,
+            "last_due_slot": due_slot,
+            "last_due_job_count": due_job_count,
+            "last_error": error,
+            "startup_reconcile_done": startup_reconcile_done,
+        }
 
     def _load_job_state(self, job_id: str, environment: str) -> dict[str, Any]:
         try:
@@ -198,7 +284,26 @@ class SchedulerService:
             "environment": environment,
             "updated_at_ms": int(time.time() * 1000),
         }
-        self.pb.upsert_state(f"{SCHEDULER_JOB_STATE_PREFIX}{job_id}", environment, state, date="global")
+        state = _compact_scheduler_state_payload(state)
+        try:
+            self.pb.upsert_state(f"{SCHEDULER_JOB_STATE_PREFIX}{job_id}", environment, state, date="global")
+        except Exception as exc:
+            if "validation_json_size_limit" not in str(exc):
+                raise
+            state = _compact_scheduler_state_payload(
+                {
+                    **state,
+                    "last_result": {
+                        "ok": False,
+                        "error": "scheduler_state_compacted_after_json_size_limit",
+                        "original_error": str(exc),
+                    },
+                    "compacted": True,
+                    "compact_reason": "validation_json_size_limit",
+                    "updated_at_ms": int(time.time() * 1000),
+                }
+            )
+            self.pb.upsert_state(f"{SCHEDULER_JOB_STATE_PREFIX}{job_id}", environment, state, date="global")
         with self._lock:
             self._job_cache[f"{environment}:{job_id}"] = dict(state)
         return state
@@ -1191,15 +1296,51 @@ class SchedulerService:
     def _loop(self) -> None:
         while not self._stop_event.is_set():
             now_utc = datetime.now(timezone.utc)
+            slot_token = cron_slot_token(now_utc)
+            started_at_ms = _now_ms()
+            with self._lock:
+                self._loop_iteration += 1
+                self._last_loop_started_at_ms = started_at_ms
+                self._last_due_slot = slot_token
+                self._last_loop_error = ""
             try:
                 scheduler_modes = _scheduler_mode_context()
-                self.run_due_jobs(
-                    now_utc,
-                    broker_mode=scheduler_modes["broker_mode"],
-                    market_data_mode=scheduler_modes["market_data_mode"],
+                results: list[dict[str, Any]] = []
+                if not self._startup_reconcile_done:
+                    results.append(
+                        self.run_job(
+                            "system_daily_event_reconcile",
+                            broker_mode=scheduler_modes["broker_mode"],
+                            market_data_mode=scheduler_modes["market_data_mode"],
+                            trigger_source="scheduler_startup",
+                            scheduled_slot=slot_token,
+                        )
+                    )
+                    with self._lock:
+                        self._startup_reconcile_done = True
+                results.extend(
+                    self.run_due_jobs(
+                        now_utc,
+                        broker_mode=scheduler_modes["broker_mode"],
+                        market_data_mode=scheduler_modes["market_data_mode"],
+                    )
                 )
-            except Exception:
-                pass
+                with self._lock:
+                    self._last_due_job_count = len(results)
+                    self._last_loop_finished_at_ms = _now_ms()
+            except Exception as exc:
+                mode_context = _scheduler_mode_context()
+                error_text = str(exc)
+                with self._lock:
+                    self._last_loop_error = error_text
+                    self._last_loop_finished_at_ms = _now_ms()
+                self._write_system_event(
+                    job_id="scheduler_loop",
+                    environment=mode_context["market_data_mode"],
+                    level="error",
+                    title="Scheduler loop crashed",
+                    detail={"error": error_text, "slot": slot_token},
+                )
             if self._stop_event.wait(LOOP_INTERVAL_SECONDS):
                 break
 
@@ -1228,6 +1369,7 @@ def health():
             "shared_market_data": market_data_mode == "live",
             "gateway_mode": mode_context["gateway_mode"],
             "loop_interval_seconds": LOOP_INTERVAL_SECONDS,
+            "loop": scheduler.loop_status(),
             "ingest_cursor": scheduler._get_ingest_cursor(market_data_mode),
             "compute_dispatch_cursor": scheduler._get_dispatch_cursor(market_data_mode),
             "service_topology": build_service_topology(),
@@ -1256,6 +1398,7 @@ def status():
         "shared_market_data": market_data_mode == "live",
         "gateway_mode": mode_context["gateway_mode"],
         "loop_interval_seconds": LOOP_INTERVAL_SECONDS,
+        "loop": scheduler.loop_status(),
         "ingest_cursor": scheduler._get_ingest_cursor(market_data_mode),
         "compute_dispatch_cursor": scheduler._get_dispatch_cursor(market_data_mode),
         "service_topology": build_service_topology(),

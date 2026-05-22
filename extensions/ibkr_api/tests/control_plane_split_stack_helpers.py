@@ -48,7 +48,7 @@ from ibkr_api.signal_ack import build_signal_ack_orders
 from ibkr_api.system.jobs.data_gap import build_data_gap_guard_response
 from ibkr_api.system.jobs.monitor_alert import build_system_monitor_alert_guard_response
 from ibkr_api.system.jobs.status_heartbeat import build_system_heartbeat_response, build_system_status_reminder_response
-from ibkr_scheduler.cron_registry import build_cron_payload
+from ibkr_scheduler.cron_registry import NATIVE_API_HTTP_JOB_ENDPOINTS, build_cron_payload
 from ibkr_scheduler.scheduler_app import (
     BAR_INGEST_CURSOR_STATE_KEY,
     COMPUTE_DISPATCH_CURSOR_STATE_KEY,

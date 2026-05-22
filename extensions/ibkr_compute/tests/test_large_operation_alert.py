@@ -103,6 +103,34 @@ class LargeOperationAlertTest(unittest.TestCase):
         self.assertEqual(done_duplicate["reason"], "terminal_already_notified")
         self.assertEqual(len([row for row in pb.records if row[0] == "system_events"]), 3)
 
+    def test_terminal_alert_includes_started_at_and_duration_from_state(self):
+        pb = _FakePB()
+        operation = {
+            "operation_id": "op-duration",
+            "operation_type": "scheduler_native_http_job",
+            "job_id": "ibkr_data_quality_repair_sweep",
+            "symbols_total": 127,
+            "data_environment": "live",
+            "broker_mode": "paper",
+        }
+
+        with mock.patch("ibkr_compute.core.large_operation_alert.time.time", return_value=100.0):
+            emit_large_operation_alert(pb, operation, config=_Config(), stage="start", broker_mode="paper")
+        with mock.patch("ibkr_compute.core.large_operation_alert.time.time", return_value=165.0):
+            done = emit_large_operation_alert(pb, operation, config=_Config(), stage="completed", broker_mode="paper")
+
+        self.assertTrue(done["ok"])
+        terminal_record = pb.records[-1][1]
+        terminal_detail = terminal_record["detail"]
+        self.assertEqual(terminal_detail["started_at_ms"], 100000)
+        self.assertEqual(terminal_detail["started_at_iso"], "1970-01-01T00:01:40Z")
+        self.assertEqual(terminal_detail["alerted_at_ms"], 165000)
+        self.assertEqual(terminal_detail["alerted_at_iso"], "1970-01-01T00:02:45Z")
+        self.assertEqual(terminal_detail["duration_s"], 65.0)
+        self.assertEqual(terminal_detail["duration_human"], "1m 5s")
+        self.assertIn("开始 1970-01-01T00:01:40Z", terminal_record["title"])
+        self.assertIn("耗时 1m 5s", terminal_record["title"])
+
 
 if __name__ == "__main__":
     unittest.main()

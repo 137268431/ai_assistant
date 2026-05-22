@@ -307,14 +307,28 @@ class ControlPlaneSplitStackSchedulerJobsTest(unittest.TestCase):
         self.assertGreater(int(job_state["last_success_at_ms"]), 0)
         self.assertTrue(any(collection == "system_events" for collection, _ in pb.records))
 
+    def test_scheduler_loop_status_has_observability_fields(self):
+        scheduler = SchedulerService(_FakePB(), _FakeConfig())
+        payload = scheduler.loop_status()
+
+        self.assertFalse(payload["running"])
+        self.assertEqual(payload["iteration"], 0)
+        self.assertIn("last_due_slot", payload)
+        self.assertIn("last_error", payload)
+        self.assertFalse(payload["startup_reconcile_done"])
+
     def test_scheduler_cron_payload_includes_native_system_visibility_jobs(self):
         items = build_cron_payload(_FakeConfig(), "live", {})
         item_ids = {item["id"] for item in items}
         self.assertIn("system_heartbeat", item_ids)
         self.assertIn("system_monitor_alert_guard", item_ids)
         self.assertIn("system_status_reminder", item_ids)
+        self.assertIn("system_daily_event_reconcile", item_ids)
         market_open = next(item for item in items if item["id"] == "system_market_open_reminder")
         self.assertIn("system_scan_summary", market_open["deprecated_aliases"])
+        reconcile = next(item for item in items if item["id"] == "system_daily_event_reconcile")
+        self.assertEqual(reconcile["runner_kind"], "native_api_http")
+        self.assertEqual(NATIVE_API_HTTP_JOB_ENDPOINTS["system_daily_event_reconcile"], ("POST", "/api/custom/system/jobs/daily_event_reconcile"))
 
     def test_system_heartbeat_job_persists_issue_state(self):
         states = {}

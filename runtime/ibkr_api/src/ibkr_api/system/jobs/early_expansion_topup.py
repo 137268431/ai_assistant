@@ -14,11 +14,20 @@ WriteSystemEventRecord = Callable[..., dict[str, Any]]
 ConfigValue = Callable[[str, str, str], str]
 ConsoleBaseUrl = Callable[[], str]
 StartupChatId = Callable[[str], str]
-GetStatePayload = Callable[[str, str], dict[str, Any]]
+GetStatePayload = Callable[..., dict[str, Any]]
 UpsertState = Callable[[str, str, dict[str, Any], str], dict[str, Any]]
 
 
 TOPUP_NOTIFY_STATE_KEY = "ibkr_early_expansion_topup_notify"
+
+
+def _notification_title_prefix(source: str) -> str:
+    normalized = _to_text(source).lower()
+    if normalized == "seed":
+        return "IBKR 盘前日筛新增"
+    if normalized == "admission":
+        return "IBKR 盘中入池新增"
+    return "IBKR 早盘扩池新增"
 
 
 def _to_text(value: Any) -> str:
@@ -135,6 +144,7 @@ def _record_notify_state(
     times: dict[str, str],
     result: dict[str, Any],
     message_id: str,
+    source: str = "topup",
 ) -> None:
     if not callable(upsert_state) or not notify_key:
         return
@@ -150,6 +160,7 @@ def _record_notify_state(
         "last_new_active": _to_int(result.get("new_active")),
         "last_new_candidates": _to_int(result.get("new_candidates")),
         "last_symbols": [_to_text(item.get("symbol")) for item in _new_targets(result)[:20]],
+        "last_source": _to_text(source) or "topup",
         "notified_keys": deduped_keys,
         "notified_run_ids": deduped_keys,
     }
@@ -226,6 +237,7 @@ def _build_card(
     times: dict[str, str],
     result: dict[str, Any],
     console_base_url: str,
+    source: str = "topup",
 ) -> dict[str, Any]:
     new_targets = [_as_dict(item) for item in (result.get("new_targets") or []) if isinstance(item, dict)]
     lines = [_target_line(item, index) for index, item in enumerate(new_targets[:8], start=1)]
@@ -268,7 +280,7 @@ def _build_card(
     return {
         "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"tag": "plain_text", "content": f"IBKR 早盘扩池新增 · Broker {broker_mode.upper()}"},
+            "title": {"tag": "plain_text", "content": f"{_notification_title_prefix(source)} · Broker {broker_mode.upper()}"},
             "template": "green",
         },
         "elements": elements,
@@ -315,6 +327,7 @@ def _deliver_new_targets_notification(
     config_value: ConfigValue,
     console_base_url: ConsoleBaseUrl,
     startup_chat_id: StartupChatId,
+    source: str = "topup",
 ) -> dict[str, Any]:
     new_targets = _new_targets(result)
     notified = False
@@ -329,6 +342,7 @@ def _deliver_new_targets_notification(
             times=times,
             result={**result, "new_targets": new_targets},
             console_base_url=console_base_url(),
+            source=source,
         )
         send_result = _as_dict(feishu_send_interactive(card, startup_chat_id(broker_mode), broker_mode))
         notified = bool(send_result.get("success")) and not bool(send_result.get("suppressed"))
@@ -346,6 +360,7 @@ def _deliver_new_targets_notification(
             "new_active": _to_int(result.get("new_active")),
             "new_candidates": _to_int(result.get("new_candidates")),
             "symbols": [_to_text(item.get("symbol")) for item in new_targets[:20]],
+            "notification_source": _to_text(source) or "topup",
         },
         broker_mode,
         notified,
@@ -366,6 +381,7 @@ def _deliver_new_targets_notification(
         "new_targets": new_targets,
         "new_active": _to_int(result.get("new_active")),
         "new_candidates": _to_int(result.get("new_candidates")),
+        "source": _to_text(source) or "topup",
     }
 
 
@@ -384,6 +400,7 @@ def _notify_completed_async_scan(
     startup_chat_id: StartupChatId,
     get_state_payload: GetStatePayload | None,
     upsert_state: UpsertState | None,
+    source: str = "topup",
 ) -> dict[str, Any]:
     new_targets = _new_targets(result)
     if not new_targets:
@@ -398,7 +415,9 @@ def _notify_completed_async_scan(
             "reason": "already_notified",
             "notify_key": notify_key,
             "notified": False,
+            "message_id": _to_text(state.get("last_message_id")),
             "new_targets": new_targets,
+            "source": _to_text(source) or "topup",
         }
 
     delivered = _deliver_new_targets_notification(
@@ -412,6 +431,7 @@ def _notify_completed_async_scan(
         config_value=config_value,
         console_base_url=console_base_url,
         startup_chat_id=startup_chat_id,
+        source=source,
     )
     if delivered.get("finalized"):
         _record_notify_state(
@@ -423,12 +443,48 @@ def _notify_completed_async_scan(
             times=times,
             result=result,
             message_id=_to_text(delivered.get("message_id")),
+            source=source,
         )
     return {
         "checked": True,
         "notify_key": notify_key,
         **delivered,
     }
+
+
+def notify_new_targets_from_scan(
+    *,
+    status_payload: dict[str, Any],
+    result: dict[str, Any],
+    broker_mode: str,
+    data_environment: str,
+    market_date: str,
+    times: dict[str, str],
+    feishu_send_interactive: FeishuSendInteractive,
+    write_system_event_record: WriteSystemEventRecord,
+    config_value: ConfigValue,
+    console_base_url: ConsoleBaseUrl,
+    startup_chat_id: StartupChatId,
+    get_state_payload: GetStatePayload | None,
+    upsert_state: UpsertState | None,
+    source: str = "topup",
+) -> dict[str, Any]:
+    return _notify_completed_async_scan(
+        status_payload=status_payload,
+        result=result,
+        broker_mode=broker_mode,
+        data_environment=data_environment,
+        market_date=market_date,
+        times=times,
+        feishu_send_interactive=feishu_send_interactive,
+        write_system_event_record=write_system_event_record,
+        config_value=config_value,
+        console_base_url=console_base_url,
+        startup_chat_id=startup_chat_id,
+        get_state_payload=get_state_payload,
+        upsert_state=upsert_state,
+        source=source,
+    )
 
 
 def _fetch_completed_or_pending_scan(
@@ -718,13 +774,14 @@ def build_early_expansion_topup_response(
     if notify_key and notify_key in _notified_keys(state):
         delivered = {
             "notified": False,
-            "message_id": "",
+            "message_id": _to_text(state.get("last_message_id")),
             "finalized": True,
             "skipped": True,
             "reason": "already_notified",
             "new_targets": new_targets,
             "new_active": _to_int(result.get("new_active")),
             "new_candidates": _to_int(result.get("new_candidates")),
+            "source": "topup",
         }
     else:
         delivered = _deliver_new_targets_notification(
@@ -738,6 +795,7 @@ def build_early_expansion_topup_response(
             config_value=config_value,
             console_base_url=console_base_url,
             startup_chat_id=startup_chat_id,
+            source="topup",
         )
         if delivered.get("finalized"):
             _record_notify_state(
@@ -749,6 +807,7 @@ def build_early_expansion_topup_response(
                 times=times,
                 result=result,
                 message_id=_to_text(delivered.get("message_id")),
+                source="topup",
             )
     if delivered.get("error"):
         return {
@@ -814,4 +873,4 @@ def build_early_expansion_topup_response(
     }, 200
 
 
-__all__ = ["build_early_expansion_topup_response"]
+__all__ = ["TOPUP_NOTIFY_STATE_KEY", "build_early_expansion_topup_response", "notify_new_targets_from_scan"]

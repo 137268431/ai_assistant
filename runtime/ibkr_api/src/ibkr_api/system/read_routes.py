@@ -8,6 +8,7 @@ from typing import Any
 from flask import Response, jsonify, request
 
 from ibkr_api.modes import request_broker_mode, request_market_data_mode
+from ibkr_api.system.jobs import build_daily_event_ledger_response
 from ibkr_api.system.scheduler_support import run_scheduler_job
 
 
@@ -161,6 +162,9 @@ def register_system_read_routes(app, *, deps: SystemDeps, exports: dict[str, Any
     build_service_topology = deps["build_service_topology"]
     request_json_request = deps["request_json_request"]
     scheduler_base_url = deps["scheduler_base_url"]
+    normalize_environment = deps["normalize_environment"]
+    time_strings = deps["time_strings"]
+    get_state_payload = deps["get_state_payload"]
 
     def _cached_summary_payload(environment: str, *, lite_mode: bool) -> dict[str, Any]:
         ttl_seconds = _control_plane_ttl("summaryz", lite_mode=lite_mode)
@@ -302,6 +306,25 @@ def register_system_read_routes(app, *, deps: SystemDeps, exports: dict[str, Any
         )
 
     exports["custom_system_schedulerz"] = custom_system_schedulerz
+
+    @app.route("/api/custom/system/daily_event_ledger", methods=["GET"])
+    def custom_system_daily_event_ledger() -> Response:
+        args = dict(request.args or {})
+        market_date = str(args.get("market_date") or args.get("date") or time_strings()["date"]).strip()
+        payload, status_code = build_daily_event_ledger_response(
+            payload=args,
+            normalize_environment=normalize_environment,
+            time_strings=time_strings,
+            get_state_payload=lambda state_key, environment, date=None: get_state_payload(
+                state_key,
+                environment,
+                date=date or market_date,
+            ),
+        )
+        response = jsonify(payload)
+        return response if status_code == 200 else (response, status_code)
+
+    exports["custom_system_daily_event_ledger"] = custom_system_daily_event_ledger
 
     @app.route("/api/custom/system/scheduler/jobs/run", methods=["POST"])
     def custom_system_scheduler_job_run() -> Response:

@@ -8,6 +8,7 @@ from ibkr_api.system.jobs import (
     build_auth_edge_guard_response,
     build_auth_pending_guard_response,
     build_data_gap_guard_response,
+    build_daily_event_reconcile_response,
     build_early_expansion_topup_response,
     build_fundamentals_refresh_job_response,
     build_intraday_window_admission_response,
@@ -321,6 +322,43 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
         return response if status_code == 200 else (response, status_code)
 
     exports["custom_system_job_early_expansion_topup"] = custom_system_job_early_expansion_topup
+
+    @app.route("/api/custom/system/jobs/daily_event_reconcile", methods=["POST"])
+    def custom_system_job_daily_event_reconcile() -> Response:
+        request_payload = request.get_json(silent=True) or {}
+        if not isinstance(request_payload, dict):
+            request_payload = {}
+        market_date = str(request_payload.get("market_date") or request_payload.get("date") or time_strings()["date"]).strip()
+        payload, status_code = build_daily_event_reconcile_response(
+            payload=request_payload,
+            normalize_environment=normalize_environment,
+            time_strings=time_strings,
+            build_today_targets_response=lambda payload: build_today_targets_response(payload=payload),
+            build_system_summary_payload=lambda environment, lite_mode=False: build_system_summary_payload(environment, lite_mode=lite_mode),
+            build_system_monitor_payload=build_system_monitor_payload,
+            feishu_send_interactive=feishu_send_interactive,
+            write_system_event_record=write_system_event_record,
+            get_state_payload=lambda state_key, environment, date=None: get_state_payload(
+                state_key,
+                environment,
+                date=date or ("global" if state_key == "ibkr_daily_scan_state" else market_date),
+            ),
+            upsert_state=lambda key, environment, data, date: pb.upsert_state(key, environment, data, date=date),
+            config_value=config_value,
+            console_base_url=console_base_url,
+            startup_chat_id=startup_chat_id,
+            load_market_snapshots=lambda environment, symbols, market_date, computed_at_ms: load_market_snapshots_from_pb(
+                pb,
+                environment,
+                symbols,
+                market_date,
+                computed_at_ms,
+            ),
+        )
+        response = jsonify(payload)
+        return response if status_code == 200 else (response, status_code)
+
+    exports["custom_system_job_daily_event_reconcile"] = custom_system_job_daily_event_reconcile
 
     @app.route("/api/custom/system/jobs/fundamentals_refresh", methods=["POST"])
     def custom_system_job_fundamentals_refresh() -> Response:

@@ -18,7 +18,11 @@ for src_root in SERVICE_SRC_ROOTS:
 os.environ.setdefault("IBKR_SCHEDULER_AUTOSTART", "false")
 
 from ibkr_api.system.jobs.auth import build_auth_immediate_issue, is_operational_2fa_issue
-from ibkr_api.system.jobs.early_expansion_topup import build_early_expansion_topup_response
+from ibkr_api.system.jobs.daily_event_ledger import build_daily_event_reconcile_response
+from ibkr_api.system.jobs.early_expansion_topup import (
+    build_early_expansion_topup_response,
+    notify_new_targets_from_scan,
+)
 from ibkr_api.system.jobs.intraday_window_admission import build_intraday_window_admission_response
 from ibkr_api.system.jobs.order_expiry import build_order_expiry_response
 from ibkr_api.system.jobs.reminders import (
@@ -1050,6 +1054,242 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertFalse(payload["notified"])
         self.assertEqual(payload["completed_notification"]["reason"], "already_notified")
         self.assertEqual(sent, [])
+
+    def test_notify_new_targets_from_seed_scan_records_dedup_state(self):
+        sent = []
+        events = []
+        states = {}
+
+        delivered = notify_new_targets_from_scan(
+            status_payload={"run_id": "seed-run-1", "status": "completed"},
+            result={
+                "run_id": "seed-run-1",
+                "new_active": 1,
+                "new_candidates": 0,
+                "new_targets": [{"symbol": "BX", "status": "active", "score": 22}],
+            },
+            broker_mode="paper",
+            data_environment="live",
+            market_date="2026-05-22",
+            times={"us": "2026-05-22 09:31:00", "cn": "2026-05-22 21:31:00", "date": "2026-05-22"},
+            feishu_send_interactive=lambda card, chat_id, environment: sent.append(
+                {"card": card, "chat_id": chat_id, "environment": environment}
+            ) or {"success": True, "message_id": "msg-seed"},
+            write_system_event_record=lambda *args, **kwargs: events.append(args) or {"id": "event-seed"},
+            config_value=lambda key, default, environment: default,
+            console_base_url=lambda: "https://quant.lzw-glory.top",
+            startup_chat_id=lambda environment: f"startup-chat-{environment}",
+            get_state_payload=lambda state_key, environment, date=None: {
+                "data": states.get((state_key, environment, date or "2026-05-22"), {})
+            },
+            upsert_state=lambda key, environment, data, date: states.update({(key, environment, date): dict(data)}) or data,
+            source="seed",
+        )
+
+        self.assertTrue(delivered["finalized"])
+        self.assertEqual(delivered["notify_key"], "seed-run-1")
+        self.assertEqual(sent[0]["environment"], "paper")
+        self.assertIn("盘前日筛新增", sent[0]["card"]["header"]["title"]["content"])
+        self.assertEqual(events[0][0], "early_expansion_topup")
+        notify_state = states[("ibkr_early_expansion_topup_notify", "paper", "2026-05-22")]
+        self.assertIn("seed-run-1", notify_state["notified_keys"])
+        self.assertEqual(notify_state["last_source"], "seed")
+
+    def _daily_event_reconcile_deps(self, states, sent, events, *, now_us):
+        market_date = now_us[:10]
+
+        def get_state_payload(state_key, environment, date=None):
+            state_date = date or market_date
+            return {"data": dict(states.get((state_key, environment, state_date), {}).get("data") or {})}
+
+        def upsert_state(state_key, environment, data, date):
+            record = {"data": dict(data)}
+            states[(state_key, environment, date)] = record
+            return record
+
+        return {
+            "normalize_environment": lambda value, default: str(value or default).strip().lower() or default,
+            "time_strings": lambda: {"us": now_us, "cn": now_us.replace("09:", "21:").replace("10:", "22:"), "date": market_date},
+            "build_today_targets_response": lambda payload: (
+                {
+                    "market_date": payload.get("market_date") or market_date,
+                    "daily_scan": {"status": "completed", "market_date": payload.get("market_date") or market_date},
+                    "summary": {
+                        "total": 1,
+                        "active_count": 1,
+                        "candidate_count": 0,
+                        "operable_count": 1,
+                        "technical_ready_count": 1,
+                        "signaled_count": 0,
+                    },
+                    "items": [{"symbol": "BX", "status": "active"}],
+                },
+                200,
+            ),
+            "build_system_summary_payload": lambda environment, lite_mode=False: {
+                "status": "running",
+                "today": {"ibkr_bars": 10, "ibkr_signals": 0, "orders": 0, "events": 0},
+                "ibkr_compute": {"status": "running"},
+                "ibkr_runtime": {"status": "running"},
+            },
+            "build_system_monitor_payload": lambda environment: {
+                "runtime": {
+                    "gateway": {"running": True},
+                    "session": {"authenticated": True},
+                    "websocket": {"connected": True},
+                    "daily_scan": {"status": "completed", "market_date": market_date},
+                },
+                "scheduler": {"status": "running"},
+                "service_monitor": {"status_counts": {"running": 6}},
+            },
+            "feishu_send_interactive": lambda card, chat_id, environment: sent.append(
+                {"card": card, "chat_id": chat_id, "environment": environment}
+            ) or {"success": True, "message_id": f"msg-{len(sent)}"},
+            "write_system_event_record": lambda *args, **kwargs: events.append(args) or {"id": f"event-{len(events)}"},
+            "get_state_payload": get_state_payload,
+            "upsert_state": upsert_state,
+            "config_value": lambda key, default, environment: default,
+            "console_base_url": lambda: "https://quant.lzw-glory.top",
+            "startup_chat_id": lambda environment: f"startup-chat-{environment}",
+            "load_market_snapshots": lambda environment, symbols, market_date, computed_at_ms: [],
+        }
+
+    def test_daily_event_reconcile_sends_seed_new_targets_once(self):
+        sent = []
+        events = []
+        states = {
+            ("ibkr_daily_scan_state", "live", "global"): {
+                "data": {
+                    "status": "completed",
+                    "market_date": "2026-05-22",
+                    "run_id": "seed-run-2",
+                    "finished_at": "2026-05-22T13:28:18Z",
+                    "result": {
+                        "active": 5,
+                        "candidates": 0,
+                        "new_active": 5,
+                        "new_candidates": 0,
+                        "new_targets": [{"symbol": symbol, "status": "active"} for symbol in ["BX", "AVGO", "BAC", "BABA", "COHR"]],
+                    },
+                }
+            }
+        }
+
+        payload, status_code = build_daily_event_reconcile_response(
+            payload={"broker_mode": "paper", "market_data_mode": "live", "force_event_id": "new_targets:seed"},
+            **self._daily_event_reconcile_deps(states, sent, events, now_us="2026-05-22 09:40:00"),
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(payload["actions"][0]["action"], "notify_new_targets")
+        event = payload["ledger"]["events"]["new_targets:seed:seed-run-2"]
+        self.assertEqual(event["status"], "completed_late")
+        self.assertEqual(event["detail"]["new_targets"], 5)
+        notify_state = states[("ibkr_early_expansion_topup_notify", "paper", "2026-05-22")]["data"]
+        self.assertIn("seed-run-2", notify_state["notified_keys"])
+
+    def test_daily_event_reconcile_open_report_late_before_cutoff(self):
+        sent = []
+        events = []
+        states = {}
+
+        payload, status_code = build_daily_event_reconcile_response(
+            payload={"broker_mode": "paper", "market_data_mode": "live", "force_event_id": "open_report"},
+            **self._daily_event_reconcile_deps(states, sent, events, now_us="2026-05-22 09:40:00"),
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(payload["actions"][0]["action"], "send_open_report")
+        self.assertEqual(payload["ledger"]["events"]["open_report"]["status"], "completed_late")
+        state = states[("system_notify_daily", "paper", "2026-05-22")]["data"]
+        self.assertEqual(state["open_sent_at"], "2026-05-22 09:40:00")
+
+    def test_daily_event_reconcile_open_report_missed_after_cutoff(self):
+        sent = []
+        events = []
+        states = {}
+
+        payload, status_code = build_daily_event_reconcile_response(
+            payload={"broker_mode": "paper", "market_data_mode": "live", "force_event_id": "open_report"},
+            **self._daily_event_reconcile_deps(states, sent, events, now_us="2026-05-22 10:31:00"),
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(sent, [])
+        self.assertEqual(payload["actions"], [])
+        self.assertEqual(payload["ledger"]["events"]["open_report"]["status"], "missed")
+        self.assertNotIn(("system_notify_daily", "paper", "2026-05-22"), states)
+
+    def test_daily_event_reconcile_does_not_resend_existing_seed_notice(self):
+        sent = []
+        events = []
+        states = {
+            ("ibkr_daily_scan_state", "live", "global"): {
+                "data": {
+                    "status": "completed",
+                    "market_date": "2026-05-22",
+                    "run_id": "seed-run-3",
+                    "result": {
+                        "new_active": 1,
+                        "new_candidates": 0,
+                        "new_targets": [{"symbol": "BX", "status": "active"}],
+                    },
+                }
+            },
+            ("ibkr_early_expansion_topup_notify", "paper", "2026-05-22"): {
+                "data": {"notified_keys": ["seed-run-3"]}
+            },
+        }
+
+        payload, status_code = build_daily_event_reconcile_response(
+            payload={"broker_mode": "paper", "market_data_mode": "live", "force_event_id": "new_targets:seed"},
+            **self._daily_event_reconcile_deps(states, sent, events, now_us="2026-05-22 09:40:00"),
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(sent, [])
+        self.assertEqual(payload["actions"][0]["result"]["reason"], "already_notified")
+        self.assertEqual(payload["ledger"]["events"]["new_targets:seed:seed-run-3"]["status"], "completed_late")
+
+    def test_daily_event_reconcile_can_force_seed_notice_after_cutoff(self):
+        sent = []
+        events = []
+        states = {
+            ("ibkr_daily_scan_state", "live", "global"): {
+                "data": {
+                    "status": "completed",
+                    "market_date": "2026-05-22",
+                    "run_id": "seed-run-4",
+                    "result": {
+                        "new_active": 1,
+                        "new_candidates": 0,
+                        "new_targets": [{"symbol": "BX", "status": "active"}],
+                    },
+                }
+            }
+        }
+
+        payload, status_code = build_daily_event_reconcile_response(
+            payload={
+                "broker_mode": "paper",
+                "market_data_mode": "live",
+                "force_event_id": "new_targets:seed",
+                "allow_after_cutoff": True,
+            },
+            **self._daily_event_reconcile_deps(states, sent, events, now_us="2026-05-22 10:31:00"),
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["allow_after_cutoff"])
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(payload["ledger"]["events"]["new_targets:seed:seed-run-4"]["status"], "completed_late")
 
     def test_early_expansion_topup_read_timeout_stays_pending(self):
         sent = []

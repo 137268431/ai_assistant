@@ -42,6 +42,27 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return float(default or 0.0)
 
 
+def _iso_from_ms(value: Any) -> str:
+    millis = _to_int(value, 0)
+    if millis <= 0:
+        return ""
+    try:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(millis / 1000.0))
+    except Exception:
+        return ""
+
+
+def _format_duration(value: Any) -> str:
+    seconds = max(0, int(round(_to_float(value, 0.0))))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes}m {secs}s"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
 def _config_int(config: Any, key: str, environment: str, default: int) -> int:
     getter = getattr(config, "get_int_for_environment", None)
     if callable(getter):
@@ -379,22 +400,73 @@ def emit_large_operation_alert(
 
     symbols = operation.get("symbols") if isinstance(operation.get("symbols"), (list, tuple, set)) else []
     symbol_sample = [str(item).upper() for item in list(symbols)[:12]]
-    detail = {
-        **dict(operation),
-        "operation_id": operation_id,
-        "alert_stage": normalized_stage,
-        "large_operation": True,
-        "large_reasons": reasons or list(state.get("large_reasons") or []),
-        "data_environment": data_environment,
-        "broker_mode": alert_environment,
-        "symbols_total": _symbols_total(operation),
-        "symbol_sample": symbol_sample,
-        "intervals": _intervals(operation),
-        "alerted_at_ms": now_ms,
-    }
     operation_type = str(operation.get("operation_type") or operation.get("source") or "operation").strip()
     job_id = str(operation.get("job_id") or operation.get("source") or operation_type).strip()
-    title = f"[Broker {alert_environment.upper()}] 大规模操作{_stage_label(normalized_stage)}: {job_id}"
+    operation_started_at_ms = 0
+    for started_at_candidate in (
+        operation.get("started_at_ms"),
+        operation.get("start_time_ms"),
+        operation.get("submitted_at_ms"),
+        state.get("started_at_ms"),
+    ):
+        candidate_ms = _to_int(started_at_candidate, 0)
+        if candidate_ms > 0:
+            operation_started_at_ms = candidate_ms
+            break
+    if normalized_stage == "start" and operation_started_at_ms <= 0:
+        operation_started_at_ms = now_ms
+    explicit_duration_s = _to_float(
+        operation.get("duration_s")
+        or operation.get("elapsed_s")
+        or operation.get("duration_seconds")
+        or state.get("duration_s"),
+        0.0,
+    )
+    if explicit_duration_s > 0:
+        duration_s = explicit_duration_s
+    elif operation_started_at_ms > 0:
+        duration_s = max(0.0, (now_ms - operation_started_at_ms) / 1000.0)
+    else:
+        duration_s = 0.0
+    duration_human = _format_duration(duration_s)
+    started_at_iso = _iso_from_ms(operation_started_at_ms)
+    alerted_at_iso = _iso_from_ms(now_ms)
+    detail = {
+        "operation_id": operation_id,
+        "operation_type": operation_type,
+        "job_id": job_id,
+        "alert_stage": normalized_stage,
+        "started_at_ms": operation_started_at_ms,
+        "started_at_iso": started_at_iso,
+        "duration_s": round(duration_s, 3),
+        "duration_human": duration_human,
+    }
+    for key, value in dict(operation).items():
+        if key not in detail:
+            detail[key] = value
+    detail.update(
+        {
+            "large_operation": True,
+            "large_reasons": reasons or list(state.get("large_reasons") or []),
+            "data_environment": data_environment,
+            "broker_mode": alert_environment,
+            "symbols_total": _symbols_total(operation),
+            "symbol_sample": symbol_sample,
+            "intervals": _intervals(operation),
+            "alerted_at_ms": now_ms,
+            "alerted_at_iso": alerted_at_iso,
+        }
+    )
+    title_suffix = ""
+    if normalized_stage == "start" and started_at_iso:
+        title_suffix = f"（开始 {started_at_iso}）"
+    elif normalized_stage in {"progress", "completed", "failed", "deferred"}:
+        title_suffix = (
+            f"（开始 {started_at_iso}，耗时 {duration_human}）"
+            if started_at_iso
+            else f"（耗时 {duration_human}）"
+        )
+    title = f"[Broker {alert_environment.upper()}] 大规模操作{_stage_label(normalized_stage)}: {job_id}{title_suffix}"
     level = "error" if normalized_stage == "failed" else "warning"
     message_id = str(state.get("message_id") or "") if normalized_stage == "progress" else ""
     notify_result = _notify_system_event(
@@ -414,6 +486,10 @@ def emit_large_operation_alert(
         "data_environment": data_environment,
         "broker_mode": alert_environment,
         "large_reasons": reasons or list(state.get("large_reasons") or []),
+        "started_at_ms": operation_started_at_ms,
+        "started_at_iso": started_at_iso,
+        "duration_s": round(duration_s, 3),
+        "duration_human": duration_human,
         "updated_at_ms": now_ms,
     }
     returned_message_id = str((notify_result or {}).get("message_id") or message_id or state.get("message_id") or "")
