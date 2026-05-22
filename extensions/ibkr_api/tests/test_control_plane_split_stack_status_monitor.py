@@ -65,6 +65,59 @@ class ControlPlaneSplitStackStatusMonitorTest(unittest.TestCase):
         self.assertEqual(payload["orders"], 1)
         self.assertEqual(payload["main_orders"], 1)
 
+    def test_today_counts_classifies_close_with_cross_day_entry(self):
+        today_close = {
+            "id": "close-1",
+            "unique_id": "close-1",
+            "environment": "paper",
+            "role": "close",
+            "order_type": "MKT",
+            "status": "Filled",
+            "trade_group_id": "tg-1",
+            "entry_order_unique_id": "entry-previous",
+            "position_side": "long",
+            "fill_price": 110,
+            "filled_qty": 2,
+            "us_time": "2026-05-21 15:55:00",
+        }
+        previous_entry = {
+            "id": "entry-1",
+            "unique_id": "entry-previous",
+            "environment": "paper",
+            "role": "entry",
+            "status": "Filled",
+            "trade_group_id": "tg-1",
+            "position_side": "long",
+            "fill_price": 100,
+            "filled_qty": 2,
+            "us_time": "2026-05-20 10:00:00",
+        }
+        filters = []
+
+        def fake_count(collection, filter_expr):
+            return 1 if collection == "orders" else 0
+
+        def fake_load(collection, filter_expr, **_kwargs):
+            filters.append(filter_expr)
+            if 'role = "entry"' in str(filter_expr):
+                return [previous_entry]
+            return [today_close]
+
+        with mock.patch.object(api_app_mod, "_sqlite_today_market_count", return_value=None):
+            with mock.patch.object(api_app_mod, "_pb_count_records", side_effect=fake_count):
+                with mock.patch.object(api_app_mod, "_pb_load_records_for_count", side_effect=fake_load):
+                    payload = api_app_mod._load_today_counts("paper", "2026-05-21")
+
+        self.assertEqual(payload["orders"], 1)
+        self.assertEqual(payload["main_orders"], 0)
+        self.assertEqual(payload["take_profit_filled"], 1)
+        self.assertEqual(payload["stop_loss_filled"], 0)
+        self.assertEqual(payload["close_take_profit_filled"], 1)
+        self.assertEqual(payload["close_stop_loss_filled"], 0)
+        self.assertEqual(payload["close_filled"], 1)
+        self.assertEqual(payload["realized_net_pnl"], 20.0)
+        self.assertTrue(any('role = "entry"' in item for item in filters))
+
     def test_runtime_config_route_returns_effective_environment_values(self):
         rows = [
             {"key": "alpha", "value": "global", "environment": "global", "updated": "2026-04-22 00:00:00"},

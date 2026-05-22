@@ -14,12 +14,20 @@ ENTRY_ORDER_TYPES = {"entry", "entryorder"}
 TAKE_PROFIT_ORDER_TYPES = {"takeprofit", "takeprofitorder", "tp"}
 STOP_LOSS_ORDER_TYPES = {"stoploss", "stoplossorder", "sl", "stop"}
 CLOSE_ORDER_TYPES = {"mkt", "market", "marketclose"}
+EPSILON = 0.0000001
 
 
 def empty_daily_order_stats() -> dict[str, Any]:
     return {
         "take_profit_filled": 0,
         "stop_loss_filled": 0,
+        "protective_take_profit_filled": 0,
+        "protective_stop_loss_filled": 0,
+        "close_take_profit_filled": 0,
+        "close_stop_loss_filled": 0,
+        "close_flat_filled": 0,
+        "close_unclassified_filled": 0,
+        "close_filled": 0,
         "manual_close_filled": 0,
         "winning_trades": 0,
         "losing_trades": 0,
@@ -40,6 +48,11 @@ def _extra(row: dict[str, Any] | None) -> dict[str, Any]:
 def _row_value(row: dict[str, Any] | None, field: str) -> Any:
     source = row or {}
     return first_defined(source.get(field), _extra(source).get(field))
+
+
+def _extra_has_value(row: dict[str, Any] | None, field: str) -> bool:
+    extra = _extra(row)
+    return field in extra and extra.get(field) not in (None, "")
 
 
 def _normalized_token(value: Any) -> str:
@@ -184,11 +197,16 @@ def _computed_pnl(exit_order: dict[str, Any], entry_order: dict[str, Any]) -> fl
 def _stored_or_computed_pnl(exit_order: dict[str, Any], entry_order: dict[str, Any]) -> tuple[float | None, bool]:
     raw = _row_value(exit_order, "pnl")
     parsed = to_float(raw)
-    if parsed is not None and abs(parsed) > 0.0000001:
+    if parsed is not None and abs(parsed) > EPSILON:
         return parsed, False
+    stored_gross = _number_from(exit_order, "realized_gross_pnl")
+    if stored_gross is not None and (abs(stored_gross) > EPSILON or _extra_has_value(exit_order, "realized_gross_pnl")):
+        return stored_gross, False
     computed = _computed_pnl(exit_order, entry_order)
     if computed is not None:
         return computed, False
+    if parsed is not None and abs(parsed) <= EPSILON:
+        return None, True
     if raw is not None and raw != "":
         return parsed if parsed is not None else None, parsed is None
     return None, True
@@ -220,20 +238,34 @@ def build_daily_order_stats(rows: list[dict[str, Any]] | None) -> dict[str, Any]
         if not exit_role or not _is_filled(row):
             continue
         if exit_role == "take_profit":
+            stats["protective_take_profit_filled"] += 1
             stats["take_profit_filled"] += 1
         elif exit_role == "stop_loss":
+            stats["protective_stop_loss_filled"] += 1
             stats["stop_loss_filled"] += 1
         elif exit_role == "close":
+            stats["close_filled"] += 1
             stats["manual_close_filled"] += 1
 
         entry_order = _find_entry(row, entry_index)
         gross_pnl, missing = _stored_or_computed_pnl(row, entry_order)
         if missing or gross_pnl is None:
+            if exit_role == "close":
+                stats["close_unclassified_filled"] += 1
             stats["pnl_missing_count"] += 1
             continue
 
         commission = _trade_commission(row, entry_order)
         net_pnl = gross_pnl - commission
+        if exit_role == "close":
+            if net_pnl > 0:
+                stats["close_take_profit_filled"] += 1
+                stats["take_profit_filled"] += 1
+            elif net_pnl < 0:
+                stats["close_stop_loss_filled"] += 1
+                stats["stop_loss_filled"] += 1
+            else:
+                stats["close_flat_filled"] += 1
         stats["realized_gross_pnl"] += gross_pnl
         stats["realized_net_pnl"] += net_pnl
         stats["commission"] += commission

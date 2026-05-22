@@ -151,10 +151,31 @@ def _format_signed_money(value: Any) -> str:
 
 
 def _close_protection_line(today: dict[str, Any]) -> str:
-    return (
-        f"止盈成交 {_to_int(today.get('take_profit_filled'), 0)} | "
-        f"止损成交 {_to_int(today.get('stop_loss_filled'), 0)}"
+    take_profit_total = _to_int(today.get("take_profit_filled"), 0)
+    stop_loss_total = _to_int(today.get("stop_loss_filled"), 0)
+    protective_take_profit = _to_int(today.get("protective_take_profit_filled"), 0)
+    protective_stop_loss = _to_int(today.get("protective_stop_loss_filled"), 0)
+    close_take_profit = _to_int(today.get("close_take_profit_filled"), 0)
+    close_stop_loss = _to_int(today.get("close_stop_loss_filled"), 0)
+    has_breakdown = (
+        protective_take_profit + close_take_profit == take_profit_total
+        and protective_stop_loss + close_stop_loss == stop_loss_total
+        and any((protective_take_profit, close_take_profit, protective_stop_loss, close_stop_loss))
     )
+    if has_breakdown:
+        line = (
+            f"止盈成交 {take_profit_total}（保护 {protective_take_profit} + 平仓 {close_take_profit}） | "
+            f"止损成交 {stop_loss_total}（保护 {protective_stop_loss} + 平仓 {close_stop_loss}）"
+        )
+    else:
+        line = f"止盈成交 {take_profit_total} | 止损成交 {stop_loss_total}"
+    close_flat = _to_int(today.get("close_flat_filled"), 0)
+    close_unclassified = _to_int(today.get("close_unclassified_filled"), 0)
+    if close_flat > 0:
+        line += f" | 平本 {close_flat}"
+    if close_unclassified > 0:
+        line += f" | 未判定 {close_unclassified}"
+    return line
 
 
 def _close_pnl_line(today: dict[str, Any]) -> str:

@@ -344,6 +344,7 @@ def _sqlite_today_market_count(collection: str, environment: str, market_date: s
 
 
 PROTECTIVE_ORDER_ROLES = {"take_profit", "stop_loss", "repair_tp", "repair_sl", "tp", "sl"}
+CLOSE_ORDER_ROLES = {"close", "manual_close", "market_close", "close_order", "reverse_close"}
 ENTRY_ORDER_TYPES = {"entry", "entryorder"}
 
 
@@ -374,6 +375,82 @@ def _is_main_order_row(row: dict[str, Any]) -> bool:
 
 def _count_main_order_rows(rows: list[dict[str, Any]]) -> int:
     return sum(1 for row in rows or [] if isinstance(row, dict) and _is_main_order_row(row))
+
+
+def _is_filled_exit_order_for_stats(row: dict[str, Any]) -> bool:
+    role = _order_field(row, "role").lower()
+    order_type = _order_field(row, "order_type").lower().replace(" ", "").replace("_", "")
+    unique_id = _order_field(row, "unique_id").lower()
+    status = _order_field(row, "status").lower()
+    if status != "filled":
+        return False
+    if role in PROTECTIVE_ORDER_ROLES or role in CLOSE_ORDER_ROLES:
+        return True
+    if order_type in {"takeprofit", "takeprofitorder", "tp", "stoploss", "stoplossorder", "sl", "stop"}:
+        return True
+    return order_type in {"mkt", "market", "marketclose"} and unique_id.startswith("close_")
+
+
+def _chunk_values(values: list[str], size: int = 25) -> list[list[str]]:
+    safe_size = max(1, int(size or 1))
+    return [values[index : index + safe_size] for index in range(0, len(values), safe_size)]
+
+
+def _equals_any_clause(field: str, values: list[str]) -> str:
+    return " || ".join(f'{field} = "{_escape_filter_string(value)}"' for value in values if value)
+
+
+def _load_linked_entry_rows_for_stats(order_rows: list[dict[str, Any]], environment: str) -> list[dict[str, Any]]:
+    unique_ids: set[str] = set()
+    trade_group_ids: set[str] = set()
+    signal_ids: set[str] = set()
+    for row in order_rows or []:
+        if not isinstance(row, dict) or not _is_filled_exit_order_for_stats(row):
+            continue
+        for field in ("entry_order_unique_id", "parent_order_unique_id"):
+            value = _order_field(row, field)
+            if value:
+                unique_ids.add(value)
+        trade_group_id = _order_field(row, "trade_group_id")
+        if trade_group_id:
+            trade_group_ids.add(trade_group_id)
+        signal_id = _order_field(row, "signal_id")
+        if signal_id:
+            signal_ids.add(signal_id)
+
+    filters: list[str] = []
+    for field, values in (
+        ("unique_id", sorted(unique_ids)),
+        ("trade_group_id", sorted(trade_group_ids)),
+        ("signal_id", sorted(signal_ids)),
+    ):
+        for chunk in _chunk_values(values):
+            clause = _equals_any_clause(field, chunk)
+            if clause:
+                filters.append(clause)
+    if not filters:
+        return []
+
+    existing_keys = {
+        str(row.get("id") or row.get("unique_id") or "").strip()
+        for row in order_rows or []
+        if isinstance(row, dict)
+    }
+    entries: list[dict[str, Any]] = []
+    seen = set(existing_keys)
+    env = _escape_filter_string(environment)
+    for clause in filters:
+        entry_filter = f'environment = "{env}" && role = "entry" && ({clause})'
+        for row in _pb_load_records_for_count("orders", entry_filter, max_pages=20):
+            if not isinstance(row, dict) or not _is_main_order_row(row):
+                continue
+            key = str(row.get("id") or row.get("unique_id") or "").strip()
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            entries.append(row)
+    return entries
 
 
 def _load_today_counts(environment: str, market_date: str) -> dict[str, Any]:
@@ -433,7 +510,12 @@ def _load_today_counts(environment: str, market_date: str) -> dict[str, Any]:
         main_orders = _count_main_order_rows(order_rows)
         counts["main_orders"] = main_orders
         counts["order_groups"] = main_orders
-        counts.update(build_daily_order_stats(order_rows))
+        stats_rows = list(order_rows)
+        try:
+            stats_rows.extend(_load_linked_entry_rows_for_stats(order_rows, runtime_environment))
+        except Exception as exc:
+            errors["order_entry_links"] = str(exc)
+        counts.update(build_daily_order_stats(stats_rows))
     except Exception as exc:
         fallback_orders = int(counts.get("orders") or 0)
         counts["main_orders"] = fallback_orders

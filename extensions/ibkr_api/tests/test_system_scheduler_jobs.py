@@ -1382,6 +1382,12 @@ class SystemSchedulerJobsTest(unittest.TestCase):
                     "events": 0,
                     "take_profit_filled": 2,
                     "stop_loss_filled": 1,
+                    "protective_take_profit_filled": 1,
+                    "protective_stop_loss_filled": 1,
+                    "close_take_profit_filled": 1,
+                    "close_stop_loss_filled": 0,
+                    "close_flat_filled": 1,
+                    "close_unclassified_filled": 1,
                     "winning_trades": 2,
                     "losing_trades": 1,
                     "realized_net_pnl": 123.45,
@@ -1396,7 +1402,7 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(status_code, 200)
         self.assertTrue(payload["ok"])
         card_text = "\n".join(element.get("content", "") for element in sent[0]["card"]["elements"] if element.get("tag") == "markdown")
-        self.assertIn("**今日止盈/止损**: 止盈成交 2 | 止损成交 1", card_text)
+        self.assertIn("**今日止盈/止损**: 止盈成交 2（保护 1 + 平仓 1） | 止损成交 1（保护 1 + 平仓 0） | 平本 1 | 未判定 1", card_text)
         self.assertIn("**今日盈亏**: 净 +$123.45 | 盈利 2/+$200.00 | 亏损 1/-$76.55 | PnL缺失 1", card_text)
 
     def test_daily_report_labels_paper_broker_with_shared_live_data(self):
@@ -1536,6 +1542,14 @@ class SystemSchedulerJobsTest(unittest.TestCase):
                 "ibkr_targets": 9,
                 "take_profit_filled": 2,
                 "stop_loss_filled": 1,
+                "protective_take_profit_filled": 1,
+                "protective_stop_loss_filled": 1,
+                "close_take_profit_filled": 1,
+                "close_stop_loss_filled": 0,
+                "close_flat_filled": 1,
+                "close_unclassified_filled": 1,
+                "close_filled": 3,
+                "manual_close_filled": 3,
                 "winning_trades": 2,
                 "losing_trades": 1,
                 "flat_trades": 0,
@@ -1557,6 +1571,14 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(payload["today"]["ibkr_targets"], 9)
         self.assertEqual(payload["today"]["take_profit_filled"], 2)
         self.assertEqual(payload["today"]["stop_loss_filled"], 1)
+        self.assertEqual(payload["today"]["protective_take_profit_filled"], 1)
+        self.assertEqual(payload["today"]["protective_stop_loss_filled"], 1)
+        self.assertEqual(payload["today"]["close_take_profit_filled"], 1)
+        self.assertEqual(payload["today"]["close_stop_loss_filled"], 0)
+        self.assertEqual(payload["today"]["close_flat_filled"], 1)
+        self.assertEqual(payload["today"]["close_unclassified_filled"], 1)
+        self.assertEqual(payload["today"]["close_filled"], 3)
+        self.assertEqual(payload["today"]["manual_close_filled"], 3)
         self.assertEqual(payload["today"]["winning_trades"], 2)
         self.assertEqual(payload["today"]["losing_trades"], 1)
         self.assertEqual(payload["today"]["pnl_missing_count"], 1)
