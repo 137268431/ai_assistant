@@ -82,30 +82,40 @@
 
         <section class="signal-analysis-panel" id="signal-rule-analysis">
             <div class="signal-analysis-head">
-                <div>
-                    <div class="section-title">🎯 今日信号规则分析</div>
+                <div class="signal-analysis-title-block">
+                    <div class="signal-analysis-kicker">LIVE RULE DESK</div>
+                    <div class="section-title signal-analysis-title">今日信号规则分析</div>
                     <div class="signal-analysis-copy">按 live 信号 + 当前 Broker 执行口径聚合规则分布、计划 RR、实际平仓盈亏。</div>
                 </div>
                 <div class="signal-analysis-tools">
-                    <input type="date" class="date-input" id="signalAnalysisDate" title="分析日期">
-                    <button class="apply-date-btn" onclick="loadSignalAnalysis({ force: true })">分析</button>
-                    <a class="mini-link" id="signalAnalysisSignalsLink" href="/ibkr_signals.html">信号列表</a>
-                    <a class="mini-link" id="signalAnalysisOrdersLink" href="/orders.html">订单列表</a>
+                    <label class="signal-analysis-date-field">
+                        <span>日期</span>
+                        <input type="date" class="date-input" id="signalAnalysisDate" title="分析日期">
+                    </label>
+                    <button class="apply-date-btn signal-analysis-primary-btn" onclick="loadSignalAnalysis({ force: true })">分析</button>
+                    <a class="mini-link signal-analysis-link" id="signalAnalysisSignalsLink" href="/ibkr_signals.html">信号列表</a>
+                    <a class="mini-link signal-analysis-link" id="signalAnalysisOrdersLink" href="/orders.html">订单列表</a>
                 </div>
             </div>
             <div class="signal-analysis-meta" id="signalAnalysisMeta">等待加载...</div>
             <div class="stats-grid signal-analysis-grid" id="signalAnalysisCards"></div>
             <div class="chart-grid signal-analysis-chart-grid">
-                <div class="chart-container">
-                    <div class="chart-title">🧩 规则分布</div>
-                    <div class="chart-canvas-wrap"><canvas id="signalRuleChart"></canvas></div>
+                <div class="chart-container signal-analysis-chart-card">
+                    <div class="signal-chart-head">
+                        <div class="chart-title">规则分布</div>
+                        <div class="signal-chart-copy">按 setup key 聚合，颜色跟随该规则净盈亏。</div>
+                    </div>
+                    <div class="chart-canvas-wrap signal-chart-wrap"><canvas id="signalRuleChart"></canvas></div>
                 </div>
-                <div class="chart-container">
-                    <div class="chart-title">⚖️ RR 分布</div>
-                    <div class="chart-canvas-wrap"><canvas id="signalRrChart"></canvas></div>
+                <div class="chart-container signal-analysis-chart-card">
+                    <div class="signal-chart-head">
+                        <div class="chart-title">RR 分布</div>
+                        <div class="signal-chart-copy">计划 RR 桶分布，快速识别当日风险收益结构。</div>
+                    </div>
+                    <div class="chart-canvas-wrap signal-chart-wrap"><canvas id="signalRrChart"></canvas></div>
                 </div>
             </div>
-            <div class="data-table-wrap">
+            <div class="data-table-wrap signal-analysis-table-wrap">
                 <table class="data-table signal-analysis-table">
                     <thead>
                         <tr>
@@ -208,49 +218,90 @@
             return 220;
         }
 
+        function getSignalChartHeight() {
+            const width = window.innerWidth;
+            if (width < 480) return 230;
+            if (width < 768) return 248;
+            if (width < 1200) return 252;
+            return 268;
+        }
+
         function setChartHeights() {
             const height = `${getChartHeight()}px`;
+            const signalHeight = `${getSignalChartHeight()}px`;
             document.querySelectorAll('.chart-canvas-wrap').forEach((node) => {
-                node.style.height = height;
+                node.style.height = node.classList.contains('signal-chart-wrap') ? signalHeight : height;
             });
         }
 
-        function buildChartOptions() {
+        function truncateChartLabel(value, limit) {
+            const label = String(value ?? '');
+            if (label.length <= limit) return label;
+            return `${label.slice(0, Math.max(1, limit - 3))}...`;
+        }
+
+        function buildChartOptions(options = {}) {
             const compact = window.innerWidth < 768;
             const tiny = window.innerWidth < 480;
-            return {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: {
-                        labels: {
-                            color: '#e0e6ed',
-                            boxWidth: tiny ? 8 : 10,
-                            boxHeight: tiny ? 8 : 10,
-                            font: { size: tiny ? 9 : 10 }
-                        }
+            const indexAxis = options.indexAxis || 'x';
+            const categoryLabelLimit = indexAxis === 'y'
+                ? (tiny ? 18 : compact ? 22 : 30)
+                : (tiny ? 10 : 14);
+            const categoryScale = {
+                ticks: {
+                    color: '#9fb0c3',
+                    maxRotation: 0,
+                    autoSkip: indexAxis !== 'y',
+                    maxTicksLimit: options.categoryMaxTicks || (compact ? 6 : 10),
+                    font: { size: tiny ? 9 : 10, family: 'JetBrains Mono' },
+                    callback(value) {
+                        const label = this.getLabelForValue ? this.getLabelForValue(value) : value;
+                        return truncateChartLabel(label, categoryLabelLimit);
                     }
                 },
-                scales: {
-                    x: {
-                        ticks: {
-                            color: '#94a3b8',
-                            maxRotation: 0,
-                            autoSkip: true,
-                            maxTicksLimit: compact ? 6 : 10,
-                            font: { size: tiny ? 9 : 10 }
-                        },
-                        grid: { color: 'rgba(148, 163, 184, 0.1)' }
-                    },
-                    y: {
-                        ticks: {
-                            color: '#94a3b8',
-                            maxTicksLimit: compact ? 5 : 7,
-                            font: { size: tiny ? 9 : 10 }
-                        },
-                        grid: { color: 'rgba(148, 163, 184, 0.1)' }
+                grid: { color: indexAxis === 'y' ? 'rgba(148, 163, 184, 0.06)' : 'rgba(148, 163, 184, 0.1)' }
+            };
+            const valueScale = {
+                beginAtZero: true,
+                ticks: {
+                    color: '#9fb0c3',
+                    maxTicksLimit: options.valueMaxTicks || (compact ? 5 : 7),
+                    font: { size: tiny ? 9 : 10, family: 'JetBrains Mono' }
+                },
+                grid: { color: 'rgba(148, 163, 184, 0.1)' }
+            };
+            const plugins = {
+                legend: {
+                    display: options.showLegend !== false,
+                    labels: {
+                        color: '#e0e6ed',
+                        boxWidth: tiny ? 8 : 10,
+                        boxHeight: tiny ? 8 : 10,
+                        font: { size: tiny ? 9 : 10, family: 'JetBrains Mono' }
                     }
                 }
+            };
+            if (options.tooltipLabel) {
+                plugins.tooltip = {
+                    callbacks: {
+                        title(items) {
+                            return items?.[0]?.label || '';
+                        },
+                        label(context) {
+                            const raw = indexAxis === 'y' ? context.parsed.x : context.parsed.y;
+                            return `${options.tooltipLabel}: ${formatStatsNumber(raw)}`;
+                        }
+                    }
+                };
+            }
+            return {
+                indexAxis,
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins,
+                scales: indexAxis === 'y'
+                    ? { x: valueScale, y: categoryScale }
+                    : { x: categoryScale, y: valueScale }
             };
         }
 
@@ -392,15 +443,33 @@
             const table = document.getElementById('signalRuleTable');
             const meta = document.getElementById('signalAnalysisMeta');
             if (meta) meta.textContent = `分析加载失败：${message}`;
-            if (cards) cards.innerHTML = `<div class="stat-card signal-analysis-error-card"><div class="stat-label">ERROR</div><div class="stat-value negative">失败</div><div class="signal-analysis-card-copy">${escapeStatsHtml(message)}</div></div>`;
+            if (cards) cards.innerHTML = `<div class="stat-card signal-analysis-card signal-analysis-error-card"><div class="stat-label">ERROR</div><div class="stat-value negative signal-analysis-card-value">失败</div><div class="signal-analysis-card-copy">${escapeStatsHtml(message)}</div></div>`;
             if (table) table.innerHTML = `<tr><td colspan="10" class="loading">${escapeStatsHtml(message)}</td></tr>`;
         }
 
-        function renderAnalysisCard(label, value, copy = '', className = '') {
+        function renderSignalAnalysisMeta({ date, brokerMode, dataEnvironment, ordered, total }) {
+            const meta = document.getElementById('signalAnalysisMeta');
+            if (!meta) return;
+            meta.innerHTML = [
+                ['date', date],
+                ['broker', getEnvironmentLabel(brokerMode)],
+                ['data', getEnvironmentLabel(dataEnvironment)],
+                ['ordered', `${ordered}/${total}`],
+            ].map(([label, value]) => `
+                <span class="signal-analysis-meta-pill">
+                    <span>${escapeStatsHtml(label)}</span>
+                    <strong>${escapeStatsHtml(String(value || '--'))}</strong>
+                </span>
+            `).join('');
+        }
+
+        function renderAnalysisCard({ label, value, copy = '', valueClass = '', cardClass = '', title = '' }) {
+            const className = ['stat-card', 'signal-analysis-card', cardClass].filter(Boolean).join(' ');
+            const valueClassName = ['stat-value', 'signal-analysis-card-value', valueClass].filter(Boolean).join(' ');
             return `
-                <div class="stat-card">
+                <div class="${escapeStatsHtml(className)}">
                     <div class="stat-label">${escapeStatsHtml(label)}</div>
-                    <div class="stat-value ${escapeStatsHtml(className)}">${escapeStatsHtml(String(value))}</div>
+                    <div class="${escapeStatsHtml(valueClassName)}" title="${escapeStatsHtml(title || value || '')}">${escapeStatsHtml(String(value))}</div>
                     <div class="signal-analysis-card-copy">${escapeStatsHtml(copy)}</div>
                 </div>
             `;
@@ -414,21 +483,35 @@
             const brokerMode = payload?.broker_mode || (typeof getConsoleBrokerMode === 'function' ? getConsoleBrokerMode() : 'paper');
             const dataEnvironment = payload?.data_environment || currentEnvironment;
             const netPnl = Number(realized.net_pnl || 0);
+            const netPnlTone = valueToneClass(netPnl);
             const ratioReason = realized.profit_loss_ratio_reason ? ` · ${realized.profit_loss_ratio_reason}` : '';
-            document.getElementById('signalAnalysisMeta').textContent = `date=${date} · broker=${getEnvironmentLabel(brokerMode)} · data=${getEnvironmentLabel(dataEnvironment)} · ordered ${summary.ordered_signals || 0}/${summary.total_signals || 0}`;
+            renderSignalAnalysisMeta({
+                date,
+                brokerMode,
+                dataEnvironment,
+                ordered: summary.ordered_signals || 0,
+                total: summary.total_signals || 0
+            });
             const signalUrl = buildPageUrl('/ibkr_signals.html', { date }, { brokerMode, dataEnvironment });
             const orderUrl = buildPageUrl('/orders.html', { date }, { environment: brokerMode, brokerMode, dataEnvironment });
             document.getElementById('signalAnalysisSignalsLink').href = signalUrl;
             document.getElementById('signalAnalysisOrdersLink').href = orderUrl;
             document.getElementById('signalAnalysisCards').innerHTML = [
-                renderAnalysisCard('SIGNALS', formatStatsNumber(summary.total_signals || 0), `${formatStatsNumber(summary.unique_symbols || 0)} symbols`),
-                renderAnalysisCard('TOP RULE', topRule.key || '--', topRule.count ? `${topRule.count} 条 · ${topRule.family || '--'}` : '暂无规则'),
-                renderAnalysisCard('AVG RR', formatStatsRatio(summary.avg_rr), `median ${formatStatsRatio(summary.median_rr)}`),
-                renderAnalysisCard('PLAN RR', formatStatsRatio(summary.planned_portfolio_rr), `valid ${summary.planned_valid_count || 0} · mismatch ${summary.rr_mismatch_count || 0}`),
-                renderAnalysisCard('NET PNL', formatStatsMoney(netPnl), `${realized.count || 0} closed`, valueToneClass(netPnl)),
-                renderAnalysisCard('WIN / LOSS', `${realized.wins || 0}/${realized.losses || 0}`, `${realized.flat || 0} flat`),
-                renderAnalysisCard('P/L RATIO', formatStatsRatio(realized.profit_loss_ratio), ratioReason || 'avg win / avg loss'),
-                renderAnalysisCard('PROFIT FACTOR', formatStatsRatio(realized.profit_factor), `${formatStatsMoney(realized.gross_profit || 0)} / ${formatStatsMoney(realized.gross_loss || 0)}`),
+                renderAnalysisCard({ label: 'SIGNALS', value: formatStatsNumber(summary.total_signals || 0), copy: `${formatStatsNumber(summary.unique_symbols || 0)} symbols` }),
+                renderAnalysisCard({
+                    label: 'TOP RULE',
+                    value: topRule.key || '--',
+                    copy: topRule.count ? `${topRule.count} 条 · ${topRule.family || '--'}` : '暂无规则',
+                    cardClass: 'is-wide',
+                    valueClass: 'is-rule-name',
+                    title: topRule.key || '--'
+                }),
+                renderAnalysisCard({ label: 'AVG RR', value: formatStatsRatio(summary.avg_rr), copy: `median ${formatStatsRatio(summary.median_rr)}` }),
+                renderAnalysisCard({ label: 'PLAN RR', value: formatStatsRatio(summary.planned_portfolio_rr), copy: `valid ${summary.planned_valid_count || 0} · mismatch ${summary.rr_mismatch_count || 0}` }),
+                renderAnalysisCard({ label: 'NET PNL', value: formatStatsMoney(netPnl), copy: `${realized.count || 0} closed`, valueClass: netPnlTone, cardClass: netPnlTone ? `tone-${netPnlTone}` : '' }),
+                renderAnalysisCard({ label: 'WIN / LOSS', value: `${realized.wins || 0}/${realized.losses || 0}`, copy: `${realized.flat || 0} flat` }),
+                renderAnalysisCard({ label: 'P/L RATIO', value: formatStatsRatio(realized.profit_loss_ratio), copy: ratioReason || 'avg win / avg loss' }),
+                renderAnalysisCard({ label: 'PROFIT FACTOR', value: formatStatsRatio(realized.profit_factor), copy: `${formatStatsMoney(realized.gross_profit || 0)} / ${formatStatsMoney(realized.gross_loss || 0)}` }),
             ].join('');
             renderSignalAnalysisCharts(payload);
             renderSignalAnalysisTable(payload);
@@ -445,10 +528,20 @@
                     datasets: [{
                         label: '信号数',
                         data: setupRows.map((row) => Number(row.count || 0)),
-                        backgroundColor: setupRows.map((row) => Number(row.net_pnl || 0) >= 0 ? 'rgba(16,185,129,0.75)' : 'rgba(239,68,68,0.72)')
+                        backgroundColor: setupRows.map((row) => Number(row.net_pnl || 0) >= 0 ? 'rgba(34, 197, 94, 0.72)' : 'rgba(248, 113, 113, 0.74)'),
+                        borderColor: setupRows.map((row) => Number(row.net_pnl || 0) >= 0 ? 'rgba(74, 222, 128, 0.88)' : 'rgba(252, 165, 165, 0.88)'),
+                        borderWidth: 1,
+                        borderRadius: 8,
+                        barPercentage: 0.72,
+                        categoryPercentage: 0.82
                     }]
                 },
-                options: buildChartOptions()
+                options: buildChartOptions({
+                    indexAxis: 'y',
+                    showLegend: false,
+                    tooltipLabel: '信号数',
+                    valueMaxTicks: 6
+                })
             });
 
             const rrRows = (Array.isArray(payload?.distributions?.rr) ? payload.distributions.rr : [])
@@ -469,10 +562,18 @@
                     datasets: [{
                         label: 'RR 数量',
                         data: rrRows.map((row) => Number(row.count || 0)),
-                        backgroundColor: 'rgba(59,130,246,0.72)'
+                        backgroundColor: 'rgba(59, 130, 246, 0.70)',
+                        borderColor: 'rgba(147, 197, 253, 0.88)',
+                        borderWidth: 1,
+                        borderRadius: 8,
+                        barPercentage: 0.68,
+                        categoryPercentage: 0.78
                     }]
                 },
-                options: buildChartOptions()
+                options: buildChartOptions({
+                    showLegend: false,
+                    tooltipLabel: 'RR 数量'
+                })
             });
         }
 
@@ -486,18 +587,23 @@
             tbody.innerHTML = rows.map((row) => {
                 const pnl = Number(row.net_pnl || 0);
                 const ratio = row.profit_loss_ratio || row.profit_factor;
+                const key = row.key || '--';
+                const family = row.family || '--';
                 return `
                     <tr>
-                        <td>${escapeStatsHtml(row.key || '--')}</td>
-                        <td>${escapeStatsHtml(row.family || '--')}</td>
-                        <td>${escapeStatsHtml(String(row.count || 0))}</td>
-                        <td>${escapeStatsHtml(String(row.long || 0))}/${escapeStatsHtml(String(row.short || 0))}</td>
-                        <td>${escapeStatsHtml(formatStatsRatio(row.avg_rr))}</td>
-                        <td>${escapeStatsHtml(String(row.entry_filled || 0))}</td>
-                        <td>${escapeStatsHtml(String(row.closed_trades || 0))}</td>
-                        <td>${escapeStatsHtml(formatStatsPct(row.win_rate || 0))}</td>
-                        <td class="${pnl >= 0 ? 'pnl-positive' : 'pnl-negative'}">${escapeStatsHtml(formatStatsMoney(pnl))}</td>
-                        <td>${escapeStatsHtml(formatStatsRatio(ratio))}</td>
+                        <td class="signal-rule-cell">
+                            <div class="signal-rule-key" title="${escapeStatsHtml(key)}">${escapeStatsHtml(key)}</div>
+                            <div class="signal-rule-sub">${escapeStatsHtml(String(row.count || 0))} signals · ${escapeStatsHtml(String(row.entry_filled || 0))} entries</div>
+                        </td>
+                        <td><span class="signal-family-pill">${escapeStatsHtml(family)}</span></td>
+                        <td class="numeric">${escapeStatsHtml(String(row.count || 0))}</td>
+                        <td class="numeric">${escapeStatsHtml(String(row.long || 0))}/${escapeStatsHtml(String(row.short || 0))}</td>
+                        <td class="numeric">${escapeStatsHtml(formatStatsRatio(row.avg_rr))}</td>
+                        <td class="numeric">${escapeStatsHtml(String(row.entry_filled || 0))}</td>
+                        <td class="numeric">${escapeStatsHtml(String(row.closed_trades || 0))}</td>
+                        <td class="numeric">${escapeStatsHtml(formatStatsPct(row.win_rate || 0))}</td>
+                        <td class="numeric ${pnl >= 0 ? 'pnl-positive' : 'pnl-negative'}">${escapeStatsHtml(formatStatsMoney(pnl))}</td>
+                        <td class="numeric">${escapeStatsHtml(formatStatsRatio(ratio))}</td>
                     </tr>
                 `;
             }).join('');
