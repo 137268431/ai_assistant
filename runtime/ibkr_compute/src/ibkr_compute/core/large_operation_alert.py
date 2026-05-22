@@ -14,6 +14,13 @@ except Exception:  # pragma: no cover - import fallback for isolated tests
 
 ALERT_STATE_PREFIX = "large_operation_notify:"
 HIGH_RISK_INTERVALS = {"4h", "1d"}
+DEFAULT_DURATION_GATE_SOURCES = (
+    "watchlist_idle_topup",
+    "runtime_direct_topup",
+    "runtime_direct_topup_parallel",
+    "bar_repair",
+    "active_repair",
+)
 DEFAULT_THRESHOLDS = {
     "min_symbols": 25,
     "min_tasks": 50,
@@ -26,6 +33,7 @@ DEFAULT_THRESHOLDS = {
     "min_time_budget_s": 120,
     "progress_cooldown_s": 300,
 }
+DEFAULT_DURATION_GATE_SOURCES_CSV = ",".join(DEFAULT_DURATION_GATE_SOURCES)
 
 
 def _to_int(value: Any, default: int = 0) -> int:
@@ -83,6 +91,20 @@ def _config_bool(config: Any, key: str, environment: str, default: bool) -> bool
     return bool(default)
 
 
+def _config_text(config: Any, key: str, environment: str, default: str) -> str:
+    getter = getattr(config, "get_for_environment", None)
+    if callable(getter):
+        try:
+            return str(getter(key, environment, default))
+        except Exception:
+            return str(default)
+    return str(default)
+
+
+def _normalize_source(value: Any) -> str:
+    return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
 def _normalize_interval(value: Any) -> str:
     text = str(value or "").strip().lower().replace(" ", "")
     aliases = {
@@ -112,6 +134,54 @@ def _parse_csv(value: Any) -> list[str]:
         if text:
             parsed.append(text)
     return parsed
+
+
+def _configured_duration_gate_sources(config: Any, environment: str) -> set[str]:
+    raw_sources = _config_text(
+        config,
+        "ibkr_large_operation_duration_gate_sources",
+        environment,
+        DEFAULT_DURATION_GATE_SOURCES_CSV,
+    )
+    return {
+        normalized
+        for normalized in (_normalize_source(item) for item in _parse_csv(raw_sources))
+        if normalized
+    }
+
+
+def _operation_source_tokens(operation: Mapping[str, Any]) -> set[str]:
+    tokens: set[str] = set()
+    for key in ("duration_gate_source", "source", "job_id", "trigger_source", "operation_type"):
+        value = operation.get(key)
+        parsed = _parse_csv(value)
+        if not parsed and value not in (None, "") and not isinstance(value, (list, tuple, set, Mapping)):
+            parsed = [str(value)]
+        for item in parsed:
+            normalized = _normalize_source(item)
+            if normalized:
+                tokens.add(normalized)
+    return tokens
+
+
+def _duration_gate_source(operation: Mapping[str, Any], *, config: Any = None, environment: str = "live") -> str:
+    sources = _configured_duration_gate_sources(config, environment)
+    if not sources:
+        return ""
+    matches = sorted(_operation_source_tokens(operation) & sources)
+    return matches[0] if matches else ""
+
+
+def _duration_gate_threshold_s(config: Any, environment: str) -> int:
+    return max(
+        0,
+        _config_int(
+            config,
+            "ibkr_large_operation_alert_min_duration_s",
+            environment,
+            DEFAULT_THRESHOLDS["min_duration_s"],
+        ),
+    )
 
 
 def _period_days(value: Any) -> int:
@@ -383,6 +453,9 @@ def emit_large_operation_alert(
         return {"ok": True, "skipped": True, "reason": "below_large_operation_threshold", "operation_id": operation_id}
 
     now_ms = int(time.time() * 1000)
+    gate_source = _duration_gate_source(operation, config=config, environment=data_environment)
+    gate_threshold_s = _duration_gate_threshold_s(config, data_environment)
+    gate_elapsed_s = _to_float(operation.get("duration_s"), 0.0)
     cooldown_s = _config_int(
         config,
         "ibkr_large_operation_progress_cooldown_s",
@@ -397,6 +470,27 @@ def emit_large_operation_alert(
             return {"ok": True, "skipped": True, "reason": "progress_cooldown", "operation_id": operation_id}
     if normalized_stage in {"completed", "failed", "deferred"} and bool(state.get("completed_notified")):
         return {"ok": True, "skipped": True, "reason": "terminal_already_notified", "operation_id": operation_id}
+    if gate_source and gate_threshold_s > 0 and normalized_stage == "start":
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "duration_gate_pending",
+            "operation_id": operation_id,
+            "stage": normalized_stage,
+            "duration_gate_source": gate_source,
+            "duration_gate_threshold_s": gate_threshold_s,
+        }
+    if gate_source and gate_threshold_s > 0 and normalized_stage in {"progress", "completed"} and gate_elapsed_s < gate_threshold_s:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "duration_below_gate",
+            "operation_id": operation_id,
+            "stage": normalized_stage,
+            "duration_gate_source": gate_source,
+            "duration_gate_threshold_s": gate_threshold_s,
+            "duration_gate_elapsed_s": gate_elapsed_s,
+        }
 
     symbols = operation.get("symbols") if isinstance(operation.get("symbols"), (list, tuple, set)) else []
     symbol_sample = [str(item).upper() for item in list(symbols)[:12]]
@@ -457,6 +551,15 @@ def emit_large_operation_alert(
             "alerted_at_iso": alerted_at_iso,
         }
     )
+    if gate_source:
+        detail.update(
+            {
+                "duration_gate": True,
+                "duration_gate_source": gate_source,
+                "duration_gate_threshold_s": gate_threshold_s,
+                "duration_gate_elapsed_s": gate_elapsed_s,
+            }
+        )
     title_suffix = ""
     if normalized_stage == "start" and started_at_iso:
         title_suffix = f"（开始 {started_at_iso}）"
@@ -492,6 +595,9 @@ def emit_large_operation_alert(
         "duration_human": duration_human,
         "updated_at_ms": now_ms,
     }
+    if gate_source:
+        next_state["duration_gate_source"] = gate_source
+        next_state["duration_gate_threshold_s"] = gate_threshold_s
     returned_message_id = str((notify_result or {}).get("message_id") or message_id or state.get("message_id") or "")
     if returned_message_id:
         next_state["message_id"] = returned_message_id
@@ -518,6 +624,7 @@ def emit_large_operation_alert(
 
 __all__ = [
     "ALERT_STATE_PREFIX",
+    "DEFAULT_DURATION_GATE_SOURCES",
     "DEFAULT_THRESHOLDS",
     "emit_large_operation_alert",
     "large_operation_reasons",

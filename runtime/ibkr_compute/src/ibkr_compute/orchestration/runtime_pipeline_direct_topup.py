@@ -347,6 +347,7 @@ class RuntimePipelineDirectTopupMixin:
                     intervals=[normalized_interval],
                     repair_symbols=[],
                     period_overrides=period_overrides,
+                    trace_source="runtime_direct_topup",
                 )
                 self.data_writer.flush()
                 for symbol, payload in (results or {}).items():
@@ -560,6 +561,7 @@ class RuntimePipelineDirectTopupMixin:
                     intervals=interval_list,
                     repair_symbols=[],
                     period_overrides=period_overrides,
+                    trace_source="runtime_direct_topup_parallel",
                 )
                 self.data_writer.flush()
                 flushed = True
