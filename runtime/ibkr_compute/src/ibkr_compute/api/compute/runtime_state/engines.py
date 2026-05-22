@@ -53,8 +53,10 @@ def _signal_params_for_symbol(signal_params: dict, symbol: str) -> dict:
     params = dict(signal_params or {})
     if not _bool_value(params.get("target_strategy_policy_enabled"), False):
         return params
+    direction_by_symbol = _parse_object(params.get("target_direction_bias_by_symbol"))
     policy_by_symbol = _parse_object(params.get("target_strategy_policy_by_symbol"))
     profile_by_symbol = _parse_object(params.get("target_symbol_profile_by_symbol"))
+    direction_bias = str(direction_by_symbol.get(normalized_symbol) or "").strip().lower()
     strategy_policy = policy_by_symbol.get(normalized_symbol) if isinstance(policy_by_symbol.get(normalized_symbol), dict) else {}
     symbol_profile = profile_by_symbol.get(normalized_symbol) if isinstance(profile_by_symbol.get(normalized_symbol), dict) else {}
     exit_policy = strategy_policy.get("recommended_exit_policy") if isinstance(strategy_policy.get("recommended_exit_policy"), dict) else {}
@@ -76,6 +78,8 @@ def _signal_params_for_symbol(signal_params: dict, symbol: str) -> dict:
         params["target_strategy_policy"] = dict(strategy_policy)
     if symbol_profile:
         params["target_symbol_profile"] = dict(symbol_profile)
+    if direction_bias:
+        params["target_direction_bias"] = direction_bias
     return params
 
 

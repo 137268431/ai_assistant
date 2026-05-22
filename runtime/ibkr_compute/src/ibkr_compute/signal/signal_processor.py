@@ -124,7 +124,10 @@ class SignalProcessor:
         getter = getattr(self.config, "get_bool_for_environment", None)
         if not callable(getter):
             return False
-        return bool(getter("ibkr_require_target_direction_alignment", self.environment, False))
+        defaults = getattr(self.config, "DEFAULTS", {}) or {}
+        default_text = str(defaults.get("ibkr_require_target_direction_alignment", "false")).strip().lower()
+        default_enabled = default_text in {"1", "true", "yes", "on"}
+        return bool(getter("ibkr_require_target_direction_alignment", self.environment, default_enabled))
 
     def _target_direction_alignment_status(self, symbol: str, direction: str) -> Tuple[bool, str]:
         if not self._target_direction_alignment_enabled():

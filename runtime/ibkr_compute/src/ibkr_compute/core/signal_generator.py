@@ -84,6 +84,8 @@ class SignalGenerator:
         self._prev_sell_signal = False
         self._prev_intraday_raw_key = ""
         self._recent_squeeze_bars = 0
+        self._intraday_last_signal_day_by_key: dict[str, str] = {}
+        self._intraday_last_signal_bar_by_key: dict[str, int] = {}
         self.last_trace = self._empty_trace()
 
     def set_params(self, params: dict = None) -> None:
@@ -312,13 +314,14 @@ class SignalGenerator:
             events.append("多空候选同时触发，阻止本根K线信号")
             self._prev_intraday_raw_key = ""
         elif selected_candidate:
+            candidate_day = self._snapshot_market_date(snapshot) or ""
             raw_key = (
+                f"{candidate_day}:"
                 f"{selected_candidate.get('source', '')}:"
                 f"{selected_candidate.get('direction', '')}:"
                 f"{selected_candidate.get('setup', '')}"
             )
             candidate_once = raw_key != self._prev_intraday_raw_key
-            self._prev_intraday_raw_key = raw_key
             preview_signal = self._build_candidate_signal(
                 snapshot,
                 selected_candidate,
@@ -326,12 +329,15 @@ class SignalGenerator:
                 sd_lower_valid=sd_lower_valid,
             )
             if selected_candidate.get("filters_pass"):
+                self._prev_intraday_raw_key = raw_key
                 stage = "confirmed" if candidate_once else "candidate"
                 if candidate_once:
                     signal = preview_signal
+                    self._mark_intraday_candidate_confirmed(selected_candidate, snapshot)
                     events.append(f"确认 {selected_candidate.get('setup')} setup")
             else:
                 stage = "blocked"
+                self._prev_intraday_raw_key = ""
         else:
             self._prev_intraday_raw_key = ""
 
@@ -598,6 +604,8 @@ class SignalGenerator:
         vwap = float(snapshot.get("vwap", close) or close)
         vwap_upper1 = float(snapshot.get("vwap_upper1", vwap) or vwap)
         vwap_lower1 = float(snapshot.get("vwap_lower1", vwap) or vwap)
+        vwap_pullback_tolerance = self._intraday_vwap_pullback_tolerance(snapshot, vwap)
+        vwap_pullback_require_trend_walk = self._intraday_vwap_pullback_require_trend_walk()
         session_type = str(snapshot.get("session_type") or "regular").lower()
         entry_window_pass = self._intraday_entry_window_pass(snapshot)
         min_rvol_20 = self._intraday_param_float("intraday_min_rvol_20", 0.0)
@@ -627,18 +635,24 @@ class SignalGenerator:
         trend_long_checks = {
             "sd_trend_walk_up": bool(snapshot.get("sd_trend_walk_up", False)),
             "vwap_bullish": bool(snapshot.get("vwap_bullish", close >= vwap)),
-            "pullback_to_vwap_band": low <= max(vwap, vwap_upper1),
+            "pullback_touched_vwap": low <= vwap + vwap_pullback_tolerance,
             "close_above_vwap": close >= vwap,
+            "close_not_extended_above_vwap_band": close <= vwap_upper1,
             "trend_walk_regime": (
-                not self._intraday_param_bool("intraday_vwap_pullback_long_require_trend_walk", False)
+                not vwap_pullback_require_trend_walk
                 or str(snapshot.get("sd_regime", "") or "").strip().lower() == "trend_walk_up"
             ),
         }
         trend_short_checks = {
             "sd_trend_walk_down": bool(snapshot.get("sd_trend_walk_down", False)),
             "vwap_bearish": not bool(snapshot.get("vwap_bullish", close > vwap)),
-            "pullback_to_vwap_band": high >= min(vwap, vwap_lower1),
+            "pullback_touched_vwap": high >= vwap - vwap_pullback_tolerance,
             "close_below_vwap": close <= vwap,
+            "close_not_extended_below_vwap_band": close >= vwap_lower1,
+            "trend_walk_regime": (
+                not vwap_pullback_require_trend_walk
+                or str(snapshot.get("sd_regime", "") or "").strip().lower() == "trend_walk_down"
+            ),
         }
 
         candidates = [
@@ -647,7 +661,7 @@ class SignalGenerator:
                 "long",
                 "breakout",
                 squeeze_long_checks,
-                self._intraday_filter_checks(snapshot, "long", base_filter_checks),
+                self._intraday_filter_checks(snapshot, "long", "sd_squeeze_breakout_long", base_filter_checks),
                 "SD squeeze released upward with price holding above VWAP.",
                 priority=100,
             ),
@@ -656,7 +670,7 @@ class SignalGenerator:
                 "short",
                 "breakout",
                 squeeze_short_checks,
-                self._intraday_filter_checks(snapshot, "short", base_filter_checks),
+                self._intraday_filter_checks(snapshot, "short", "sd_squeeze_breakout_short", base_filter_checks),
                 "SD squeeze released downward with price holding below VWAP.",
                 priority=100,
             ),
@@ -665,7 +679,7 @@ class SignalGenerator:
                 "long",
                 "trend_pullback",
                 trend_long_checks,
-                self._intraday_filter_checks(snapshot, "long", base_filter_checks),
+                self._intraday_filter_checks(snapshot, "long", "vwap_trend_pullback_long", base_filter_checks),
                 "SD trend-walk up remains intact after a pullback into the VWAP band.",
                 priority=80,
             ),
@@ -674,7 +688,7 @@ class SignalGenerator:
                 "short",
                 "trend_pullback",
                 trend_short_checks,
-                self._intraday_filter_checks(snapshot, "short", base_filter_checks),
+                self._intraday_filter_checks(snapshot, "short", "vwap_trend_pullback_short", base_filter_checks),
                 "SD trend-walk down remains intact after a pullback into the VWAP band.",
                 priority=80,
             ),
@@ -946,7 +960,19 @@ class SignalGenerator:
 
     def _intraday_param_float(self, key: str, default: float = 0.0) -> float:
         try:
-            return float(self.params.get(key, default) or default)
+            value = self.params.get(key, default)
+            if value is None or value == "":
+                return default
+            return float(value)
+        except Exception:
+            return default
+
+    def _intraday_param_int(self, key: str, default: int = 0) -> int:
+        try:
+            value = self.params.get(key, default)
+            if value is None or value == "":
+                return default
+            return int(value)
         except Exception:
             return default
 
@@ -963,11 +989,118 @@ class SignalGenerator:
             return False
         return default
 
-    def _intraday_filter_checks(self, snapshot: dict, direction: str, base_filter_checks: dict) -> dict:
+    def _intraday_filter_checks(self, snapshot: dict, direction: str, setup: str, base_filter_checks: dict) -> dict:
         checks = dict(base_filter_checks)
         checks["directional_day_change_max"] = self._intraday_directional_day_change_pass(snapshot, direction)
         checks["trend_mismatch_day_change_guard"] = self._intraday_trend_mismatch_pass(snapshot, direction)
+        checks["target_direction_alignment"] = self._intraday_target_direction_alignment_pass(direction)
+        checks["setup_daily_limit"] = self._intraday_setup_daily_limit_pass(snapshot, setup, direction)
+        checks["setup_cooldown"] = self._intraday_setup_cooldown_pass(snapshot, setup, direction)
         return checks
+
+    def _intraday_vwap_pullback_tolerance(self, snapshot: dict, vwap: float) -> float:
+        atr_basis = self._intraday_value_float(snapshot.get("atr_raw"), 0.0)
+        if atr_basis <= 0:
+            atr_basis = self._intraday_value_float(snapshot.get("atr"), 0.0)
+        atr_mult = self._intraday_param_float("intraday_vwap_pullback_atr_mult", 0.15)
+        max_bps = self._intraday_param_float("intraday_vwap_pullback_max_bps", 10.0)
+        price_ref = abs(vwap) if vwap else abs(self._intraday_value_float(snapshot.get("close"), 0.0))
+        candidates: list[float] = []
+        if atr_basis > 0 and atr_mult > 0:
+            candidates.append(atr_basis * atr_mult)
+        if price_ref > 0 and max_bps > 0:
+            candidates.append(price_ref * max_bps / 10000.0)
+        return max(0.0, min(candidates) if candidates else 0.0)
+
+    def _intraday_vwap_pullback_require_trend_walk(self) -> bool:
+        if "intraday_vwap_pullback_require_trend_walk" in self.params:
+            return self._intraday_param_bool("intraday_vwap_pullback_require_trend_walk", True)
+        return self._intraday_param_bool("intraday_vwap_pullback_long_require_trend_walk", True)
+
+    def _intraday_target_direction_alignment_pass(self, direction: str) -> bool:
+        if not self._intraday_param_bool("intraday_require_target_direction_alignment", False):
+            return True
+        normalized_direction = str(direction or "").strip().lower()
+        if normalized_direction not in {"long", "short"}:
+            return False
+
+        allowed_sides = self._intraday_allowed_target_sides()
+        if allowed_sides and normalized_direction not in allowed_sides:
+            return False
+
+        target_direction = self._intraday_target_direction_bias()
+        if target_direction in {"long", "short"}:
+            return normalized_direction == target_direction
+        return bool(allowed_sides)
+
+    def _intraday_allowed_target_sides(self) -> set[str]:
+        policy = self.params.get("target_strategy_policy")
+        if not isinstance(policy, dict):
+            return set()
+        raw_sides = policy.get("allowed_sides")
+        if not isinstance(raw_sides, (list, tuple, set)):
+            return set()
+        return {
+            str(item or "").strip().lower()
+            for item in raw_sides
+            if str(item or "").strip().lower() in {"long", "short"}
+        }
+
+    def _intraday_target_direction_bias(self) -> str:
+        for source in (
+            self.params,
+            self.params.get("target_symbol_profile") if isinstance(self.params.get("target_symbol_profile"), dict) else {},
+            self.params.get("target_strategy_policy") if isinstance(self.params.get("target_strategy_policy"), dict) else {},
+        ):
+            if not isinstance(source, dict):
+                continue
+            value = str(source.get("target_direction_bias") or source.get("direction_bias") or "").strip().lower()
+            if value:
+                return value
+        return ""
+
+    def _intraday_setup_daily_limit_pass(self, snapshot: dict, setup: str, direction: str) -> bool:
+        limit = self._intraday_param_int("intraday_setup_daily_limit", 1)
+        if limit <= 0:
+            return True
+        day = self._snapshot_market_date(snapshot)
+        if not day:
+            return True
+        key = self._intraday_setup_state_key(setup, direction)
+        return self._intraday_last_signal_day_by_key.get(key) != day
+
+    def _intraday_setup_cooldown_pass(self, snapshot: dict, setup: str, direction: str) -> bool:
+        cooldown_bars = self._intraday_param_int("intraday_setup_cooldown_bars", 6)
+        if cooldown_bars <= 0:
+            return True
+        key = self._intraday_setup_state_key(setup, direction)
+        last_bar = int(self._intraday_last_signal_bar_by_key.get(key, 0) or 0)
+        if last_bar <= 0:
+            return True
+        day = self._snapshot_market_date(snapshot)
+        last_day = self._intraday_last_signal_day_by_key.get(key)
+        if day and last_day and day != last_day:
+            return True
+        return self._bar_index - last_bar > cooldown_bars
+
+    def _mark_intraday_candidate_confirmed(self, candidate: dict, snapshot: dict) -> None:
+        setup = str(candidate.get("setup") or "").strip()
+        direction = str(candidate.get("direction") or "").strip().lower()
+        key = self._intraday_setup_state_key(setup, direction)
+        if not key:
+            return
+        day = self._snapshot_market_date(snapshot)
+        if day:
+            self._intraday_last_signal_day_by_key[key] = day
+        self._intraday_last_signal_bar_by_key[key] = self._bar_index
+
+    @staticmethod
+    def _intraday_setup_state_key(setup: str, direction: str) -> str:
+        normalized_setup = str(setup or "").strip()
+        normalized_direction = str(direction or "").strip().lower()
+        if not normalized_setup or normalized_direction not in {"long", "short"}:
+            return ""
+        return f"{normalized_direction}:{normalized_setup}"
 
     def _intraday_directional_day_change_pass(self, snapshot: dict, direction: str) -> bool:
         threshold = self._intraday_param_float("intraday_max_directional_day_change_pct", 0.0)
@@ -1029,14 +1162,14 @@ class SignalGenerator:
         return self._normalize_hhmm_text(self.params.get("intraday_entry_window_start_time"), "09:35")
 
     def _intraday_entry_window_end_time(self) -> str:
-        return self._normalize_hhmm_text(self.params.get("intraday_entry_window_end_time"), "15:00")
+        return self._normalize_hhmm_text(self.params.get("intraday_entry_window_end_time"), "10:30")
 
     def _intraday_entry_window_pass(self, snapshot: dict) -> bool:
         current = self._snapshot_hhmm_tuple(snapshot)
         if current is None:
             return True
         start = self._parse_hhmm_tuple(self._intraday_entry_window_start_time(), "09:35")
-        end = self._parse_hhmm_tuple(self._intraday_entry_window_end_time(), "15:00")
+        end = self._parse_hhmm_tuple(self._intraday_entry_window_end_time(), "10:30")
         return start <= current <= end
 
     @staticmethod
@@ -1074,6 +1207,19 @@ class SignalGenerator:
             except (OSError, TypeError, ValueError):
                 return None
         return None
+
+    @staticmethod
+    def _snapshot_market_date(snapshot: dict) -> str:
+        us_time = str(snapshot.get("us_time", "") or "").strip()
+        if len(us_time) >= 10:
+            return us_time[:10]
+        bar_time_ms = int(snapshot.get("bar_time_ms", 0) or 0)
+        if bar_time_ms > 0:
+            try:
+                return datetime.fromtimestamp(bar_time_ms / 1000.0, ET).strftime("%Y-%m-%d")
+            except (OSError, TypeError, ValueError):
+                return ""
+        return ""
 
     # ── 信号构建 ──
 
@@ -1393,4 +1539,6 @@ class SignalGenerator:
         self._prev_sell_signal = False
         self._prev_intraday_raw_key = ""
         self._recent_squeeze_bars = 0
+        self._intraday_last_signal_day_by_key.clear()
+        self._intraday_last_signal_bar_by_key.clear()
         self.last_trace = self._empty_trace()

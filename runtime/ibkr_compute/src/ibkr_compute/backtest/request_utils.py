@@ -291,9 +291,10 @@ def normalize_request(payload: dict) -> dict:
         minimum=1,
         maximum=20,
     )
+    target_pool_defaults = effective_symbol_source == "daily_scan_replay"
     portfolio_require_target_direction_alignment = normalize_bool(
         payload.get("portfolio_require_target_direction_alignment"),
-        False,
+        target_pool_defaults,
     )
     portfolio_use_target_strategy_policy = normalize_bool(
         payload.get("portfolio_use_target_strategy_policy"),
@@ -301,13 +302,13 @@ def normalize_request(payload: dict) -> dict:
     )
     portfolio_max_target_rank = normalize_positive_int(
         payload.get("portfolio_max_target_rank"),
-        default=0,
+        default=12 if target_pool_defaults else 0,
         minimum=0,
         maximum=constants.MAX_BACKTEST_SYMBOLS,
     )
     portfolio_min_target_score = normalize_positive_float(
         payload.get("portfolio_min_target_score"),
-        default=0.0,
+        default=10.0 if target_pool_defaults else 0.0,
         minimum=0.0,
         maximum=1000000.0,
     )

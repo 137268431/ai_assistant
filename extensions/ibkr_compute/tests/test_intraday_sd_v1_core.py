@@ -161,7 +161,7 @@ class IntradaySdV1CoreTest(unittest.TestCase):
         self.assertEqual(extra["setup_label"], "SD Squeeze Breakout Long")
         self.assertEqual(extra["signal_mode"], "breakout")
         self.assertEqual(extra["entry_window_start_time"], "09:35")
-        self.assertEqual(extra["entry_window_end_time"], "15:00")
+        self.assertEqual(extra["entry_window_end_time"], "10:30")
 
         trace = gen.get_trace_snapshot()
         self.assertEqual(trace["signal_state"]["setup"], "sd_squeeze_breakout_long")
@@ -352,6 +352,142 @@ class IntradaySdV1CoreTest(unittest.TestCase):
             if item["setup"] == "vwap_trend_pullback_long"
         )
         self.assertFalse(long_candidate["trigger_checks"]["trend_walk_regime"])
+
+    def test_intraday_vwap_pullback_long_requires_real_vwap_touch(self):
+        gen = SignalGenerator("SPY", "5m", {"signal_strategy_profile": "intraday_sd_v1"})
+
+        signal = gen.update(
+            intraday_breakout_snapshot(
+                sd_regime="trend_walk_up",
+                sd_squeeze_active=False,
+                sd_breakout_up=False,
+                sd_trend_walk_up=True,
+                close=100.35,
+                low=100.25,
+                vwap=100.0,
+                vwap_upper1=100.8,
+                atr_raw=1.0,
+            )
+        )
+
+        self.assertIsNone(signal)
+        trace = gen.get_trace_snapshot()
+        long_candidate = next(
+            item for item in trace["setup_state"]["candidates"]
+            if item["setup"] == "vwap_trend_pullback_long"
+        )
+        self.assertFalse(long_candidate["trigger_checks"]["pullback_touched_vwap"])
+
+    def test_intraday_vwap_pullback_long_confirms_after_touch_and_reclaim(self):
+        gen = SignalGenerator("SPY", "5m", {"signal_strategy_profile": "intraday_sd_v1"})
+
+        signal = gen.update(
+            intraday_breakout_snapshot(
+                sd_regime="trend_walk_up",
+                sd_squeeze_active=False,
+                sd_breakout_up=False,
+                sd_trend_walk_up=True,
+                close=100.35,
+                low=100.05,
+                vwap=100.0,
+                vwap_upper1=100.8,
+                atr_raw=1.0,
+            )
+        )
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal["signal"], "vwap_trend_pullback_long")
+        self.assertTrue(signal["extra"]["trigger_checks"]["pullback_touched_vwap"])
+        self.assertTrue(signal["extra"]["trigger_checks"]["close_not_extended_above_vwap_band"])
+
+    def test_intraday_vwap_pullback_long_rejects_extended_close_above_band(self):
+        gen = SignalGenerator("SPY", "5m", {"signal_strategy_profile": "intraday_sd_v1"})
+
+        signal = gen.update(
+            intraday_breakout_snapshot(
+                sd_regime="trend_walk_up",
+                sd_squeeze_active=False,
+                sd_breakout_up=False,
+                sd_trend_walk_up=True,
+                close=101.2,
+                low=100.05,
+                vwap=100.0,
+                vwap_upper1=100.8,
+                atr_raw=1.0,
+            )
+        )
+
+        self.assertIsNone(signal)
+        trace = gen.get_trace_snapshot()
+        long_candidate = next(
+            item for item in trace["setup_state"]["candidates"]
+            if item["setup"] == "vwap_trend_pullback_long"
+        )
+        self.assertFalse(long_candidate["trigger_checks"]["close_not_extended_above_vwap_band"])
+
+    def test_intraday_vwap_pullback_short_requires_trend_walk_and_touch(self):
+        gen = SignalGenerator("SPY", "5m", {"signal_strategy_profile": "intraday_sd_v1"})
+
+        signal = gen.update(
+            intraday_breakout_snapshot(
+                sd_regime="trend_walk_down",
+                sd_squeeze_active=False,
+                sd_breakout_up=False,
+                sd_breakout_down=False,
+                sd_trend_walk_up=False,
+                sd_trend_walk_down=True,
+                close=99.65,
+                high=99.95,
+                vwap=100.0,
+                vwap_lower1=99.2,
+                vwap_bullish=False,
+                atr_raw=1.0,
+            )
+        )
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal["signal"], "vwap_trend_pullback_short")
+        self.assertTrue(signal["extra"]["trigger_checks"]["pullback_touched_vwap"])
+        self.assertTrue(signal["extra"]["trigger_checks"]["trend_walk_regime"])
+
+    def test_intraday_setup_daily_limit_blocks_repeat_same_day(self):
+        gen = SignalGenerator("SPY", "5m", {"signal_strategy_profile": "intraday_sd_v1"})
+
+        first = gen.update(
+            intraday_breakout_snapshot(
+                us_time="2026-05-01 09:40:00",
+                sd_regime="trend_walk_up",
+                sd_squeeze_active=False,
+                sd_breakout_up=False,
+                sd_trend_walk_up=True,
+                close=100.35,
+                low=100.05,
+                vwap=100.0,
+                vwap_upper1=100.8,
+                atr_raw=1.0,
+            )
+        )
+        second = gen.update(
+            intraday_breakout_snapshot(
+                us_time="2026-05-01 09:45:00",
+                sd_regime="trend_walk_up",
+                sd_squeeze_active=False,
+                sd_breakout_up=False,
+                sd_trend_walk_up=True,
+                close=100.35,
+                low=100.05,
+                vwap=100.0,
+                vwap_upper1=100.8,
+                atr_raw=1.0,
+            )
+        )
+
+        self.assertIsNotNone(first)
+        self.assertIsNone(second)
+        trace = gen.get_trace_snapshot()
+        self.assertEqual(trace["signal_state"]["stage"], "blocked")
+        self.assertFalse(trace["signal_state"]["filter_checks"]["setup_daily_limit"])
+        self.assertFalse(trace["signal_state"]["filter_checks"]["setup_cooldown"])
 
     def test_intraday_passive_dynamic_short_entry_prices_above_close_amd_style(self):
         gen = SignalGenerator(
@@ -837,6 +973,7 @@ class IntradaySdV1CoreTest(unittest.TestCase):
                         }
                     }
                 ),
+                "target_direction_bias_by_symbol": json.dumps({"APP": "short"}),
                 "target_symbol_profile_by_symbol": json.dumps({"APP": {"threshold_profile": "large_liquid"}}),
             },
             "APP",
@@ -846,6 +983,7 @@ class IntradaySdV1CoreTest(unittest.TestCase):
         self.assertEqual(params["sl_atr_mult"], 1.8)
         self.assertEqual(params["rr_ratio"], 2.5)
         self.assertEqual(params["signal_strategy_profile"], "intraday_sd_v1")
+        self.assertEqual(params["target_direction_bias"], "short")
         self.assertEqual(params["target_symbol_profile"]["threshold_profile"], "large_liquid")
 
     def test_timeframe_param_profiles_apply_only_to_matching_interval(self):

@@ -65,6 +65,9 @@ class StrategyReliabilityEnhancementTests(unittest.TestCase):
         )
 
         self.assertEqual(request["premarket_cutoff_time"], "09:20")
+        self.assertTrue(request["portfolio_require_target_direction_alignment"])
+        self.assertEqual(request["portfolio_max_target_rank"], 12)
+        self.assertEqual(request["portfolio_min_target_score"], 10.0)
 
     def test_backtest_indicator_persistence_defaults_off(self):
         request = request_utils.normalize_request(
