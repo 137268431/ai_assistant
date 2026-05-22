@@ -20,6 +20,7 @@ DEFAULT_DURATION_GATE_SOURCES = (
     "runtime_direct_topup_parallel",
     "bar_repair",
     "active_repair",
+    "official_5m_close",
 )
 DEFAULT_THRESHOLDS = {
     "min_symbols": 25,

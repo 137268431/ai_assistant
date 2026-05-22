@@ -200,6 +200,49 @@ class LargeOperationAlertTest(unittest.TestCase):
         self.assertEqual(detail["duration_gate_threshold_s"], 120)
         self.assertEqual(detail["duration_gate_elapsed_s"], 130)
 
+    def test_duration_gate_suppresses_official_5m_close_until_threshold(self):
+        pb = _FakePB()
+        operation = {
+            "operation_id": "op-official-5m",
+            "operation_type": "history_backfill",
+            "job_id": "official_5m_close",
+            "source": "official_5m_close",
+            "symbols_total": 80,
+            "intervals": ["5m"],
+            "task_count": 80,
+            "request_count": 80,
+            "throttle_count": 58,
+            "data_environment": "live",
+            "broker_mode": "paper",
+        }
+
+        completed_short = emit_large_operation_alert(
+            pb,
+            {**operation, "duration_s": 10.047},
+            config=_Config(),
+            stage="completed",
+            broker_mode="paper",
+        )
+        completed = emit_large_operation_alert(
+            pb,
+            {**operation, "duration_s": 130},
+            config=_Config(),
+            stage="completed",
+            broker_mode="paper",
+        )
+
+        self.assertEqual(completed_short["reason"], "duration_below_gate")
+        self.assertEqual(completed_short["duration_gate_source"], "official_5m_close")
+        self.assertEqual(completed_short["duration_gate_threshold_s"], 120)
+        self.assertEqual(completed_short["duration_gate_elapsed_s"], 10.047)
+        self.assertTrue(completed["ok"])
+        self.assertEqual(len([row for row in pb.records if row[0] == "system_events"]), 1)
+        detail = pb.records[0][1]["detail"]
+        self.assertTrue(detail["duration_gate"])
+        self.assertEqual(detail["duration_gate_source"], "official_5m_close")
+        self.assertEqual(detail["duration_gate_threshold_s"], 120)
+        self.assertEqual(detail["duration_gate_elapsed_s"], 130)
+
     def test_duration_gate_keeps_failed_and_deferred_alerts_immediate(self):
         pb = _FakePB()
         operation = {
