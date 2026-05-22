@@ -15,7 +15,13 @@ logger = logging.getLogger("ibkr_compute.market.data_backfill")
 
 
 class DataBackfillTracingMixin:
-    def _new_trace(self, source: str, symbols: Sequence[str], intervals: Sequence[str]) -> Optional[Dict]:
+    def _new_trace(
+        self,
+        source: str,
+        symbols: Sequence[str],
+        intervals: Sequence[str],
+        context: Optional[Dict] = None,
+    ) -> Optional[Dict]:
         if not self._trace_enabled():
             return None
         normalized_symbols = [
@@ -45,9 +51,11 @@ class DataBackfillTracingMixin:
             "max_concurrency": self._max_concurrency(),
             "request_spacing_s": self._request_spacing(),
             "interval_delay_s": self._interval_delay(),
+            "trace_context": dict(context or {}) if isinstance(context, dict) else {},
             "requests": [],
             "writes": [],
             "symbols_timing": [],
+            "symbol_outcomes": {},
         }
         logger.info(
             "[HistoryTrace] stage=start trace=%s source=%s symbols=%d intervals=%s workers=%d spacing_s=%.3f",
@@ -111,6 +119,35 @@ class DataBackfillTracingMixin:
             requests = trace.setdefault("requests", [])
             if len(requests) < 80:
                 requests.append(payload)
+            outcomes = trace.setdefault("symbol_outcomes", {})
+            outcome = outcomes.setdefault(
+                payload["symbol"],
+                {
+                    "symbol": payload["symbol"],
+                    "intervals": [],
+                    "request_count": 0,
+                    "rows": 0,
+                    "errors": [],
+                    "last_error": "",
+                    "hmds_no_data": False,
+                    "terminal_no_data": False,
+                    "max_attempt": 0,
+                },
+            )
+            if payload["interval"] and payload["interval"] not in outcome["intervals"]:
+                outcome["intervals"].append(payload["interval"])
+            outcome["request_count"] = int(outcome.get("request_count", 0) or 0) + 1
+            outcome["rows"] = int(outcome.get("rows", 0) or 0) + int(payload["rows"] or 0)
+            outcome["max_attempt"] = max(int(outcome.get("max_attempt", 0) or 0), payload["attempt"])
+            if payload["error"]:
+                outcome["last_error"] = payload["error"]
+                errors = outcome.setdefault("errors", [])
+                if payload["error"] not in errors and len(errors) < 5:
+                    errors.append(payload["error"])
+                error_text = payload["error"].lower()
+                if "hmds query returned no data" in error_text:
+                    outcome["hmds_no_data"] = True
+                    outcome["terminal_no_data"] = True
         should_log = self._trace_log_all_requests() or payload["broker_request_s"] >= self._trace_slow_seconds()
         if should_log:
             logger.info(
@@ -247,12 +284,41 @@ class DataBackfillTracingMixin:
             "written": int(total_written or 0),
             "max_concurrency": trace.get("max_concurrency", self._max_concurrency()),
             "request_spacing_s": trace.get("request_spacing_s", self._request_spacing()),
+            "trace_context": dict(trace.get("trace_context") or {}),
             "slowest_stage": self._slowest_trace_stage(trace),
             "error": str(error or ""),
             "request_samples": list((trace.get("requests") or [])[-8:]),
             "symbol_timings": list((trace.get("symbols_timing") or [])[-12:]),
             "finished_at_ms": int(finished_at * 1000),
         }
+        symbol_outcomes = list((trace.get("symbol_outcomes") or {}).values())
+        hmds_no_data_symbols = sorted(
+            str((item or {}).get("symbol") or "")
+            for item in symbol_outcomes
+            if (item or {}).get("hmds_no_data")
+        )
+        request_error_symbols = sorted(
+            str((item or {}).get("symbol") or "")
+            for item in symbol_outcomes
+            if str((item or {}).get("last_error") or "")
+        )
+        non_hmds_error_symbols = sorted(
+            str((item or {}).get("symbol") or "")
+            for item in symbol_outcomes
+            if str((item or {}).get("last_error") or "")
+            and not (item or {}).get("hmds_no_data")
+        )
+        summary.update(
+            {
+                "symbol_outcomes": symbol_outcomes,
+                "hmds_no_data_symbols": hmds_no_data_symbols,
+                "hmds_no_data_count": len(hmds_no_data_symbols),
+                "request_error_symbols": request_error_symbols,
+                "request_error_count": len(request_error_symbols),
+                "non_hmds_error_symbols": non_hmds_error_symbols,
+                "non_hmds_error_count": len(non_hmds_error_symbols),
+            }
+        )
         with self._trace_lock:
             self._last_trace = dict(summary)
             self._recent_traces.append(dict(summary))
@@ -280,9 +346,11 @@ class DataBackfillTracingMixin:
             request_delta = self._request_count - int(trace.get("request_count_start", 0) or 0)
             retry_delta = self._retry_count - int(trace.get("retry_count_start", 0) or 0)
             throttle_delta = self._throttle_count - int(trace.get("throttle_count_start", 0) or 0)
+        trace_context = dict(trace.get("trace_context") or {})
         emit_large_operation_alert(
             self.pb_client,
             {
+                **trace_context,
                 "operation_id": str(trace.get("trace_id") or ""),
                 "operation_type": "history_backfill",
                 "job_id": str(trace.get("source") or "history_backfill"),
@@ -305,22 +373,56 @@ class DataBackfillTracingMixin:
         )
 
     def _emit_large_operation_terminal_alert(self, summary: Dict) -> None:
+        trace_context = dict(summary.get("trace_context") or {})
+        source = str(summary.get("source") or "history_backfill")
+        symbols_total = int(summary.get("symbols_total", 0) or 0)
+        hmds_no_data_count = int(summary.get("hmds_no_data_count", 0) or 0)
+        non_hmds_error_count = int(summary.get("non_hmds_error_count", 0) or 0)
+        written = int(summary.get("written", 0) or 0)
+        market_session = str(trace_context.get("market_session") or "").strip().lower()
+        extended_no_data_only = bool(
+            source == "watchlist_idle_topup"
+            and symbols_total > 0
+            and hmds_no_data_count >= symbols_total
+            and non_hmds_error_count == 0
+            and written <= 0
+            and market_session in {"premarket", "afterhours", "closed", "close_transition"}
+        )
         emit_large_operation_alert(
             self.pb_client,
             {
+                **trace_context,
                 "operation_id": str(summary.get("trace_id") or ""),
                 "operation_type": "history_backfill",
-                "job_id": str(summary.get("source") or "history_backfill"),
-                "source": str(summary.get("source") or "history_backfill"),
-                "symbols_total": int(summary.get("symbols_total", 0) or 0),
+                "job_id": source,
+                "source": source,
+                "trigger_source": source,
+                "symbols": list(summary.get("symbols") or []),
+                "symbols_total": symbols_total,
                 "intervals": list(summary.get("intervals") or []),
-                "task_count": int(summary.get("symbols_total", 0) or 0) * max(1, len(summary.get("intervals") or [])),
+                "task_count": symbols_total * max(1, len(summary.get("intervals") or [])),
                 "duration_s": float(summary.get("duration_s", 0) or 0),
                 "request_count": int(summary.get("request_count", 0) or 0),
                 "retry_count": int(summary.get("retry_count", 0) or 0),
                 "throttle_count": int(summary.get("throttle_count", 0) or 0),
-                "written": int(summary.get("written", 0) or 0),
+                "written": written,
                 "slowest_stage": dict(summary.get("slowest_stage") or {}),
+                "hmds_no_data_symbols": list(summary.get("hmds_no_data_symbols") or []),
+                "hmds_no_data_count": hmds_no_data_count,
+                "request_error_count": int(summary.get("request_error_count", 0) or 0),
+                "non_hmds_error_count": non_hmds_error_count,
+                "explained_no_data_only": extended_no_data_only,
+                "explained_no_data_reason": "extended_hours_no_data" if extended_no_data_only else "",
+                "explained_no_data_cn": (
+                    "盘前/盘后或闭市时标的不活跃，IBKR HMDS 可能没有可返回的 5m bars；这类完成事件不代表系统故障。"
+                    if extended_no_data_only
+                    else ""
+                ),
+                "explained_no_data_en": (
+                    "During premarket/afterhours/closed sessions, inactive symbols may have no IBKR HMDS 5m bars; this does not indicate a system failure."
+                    if extended_no_data_only
+                    else ""
+                ),
                 "error": str(summary.get("error") or ""),
                 "data_environment": self.environment,
             },

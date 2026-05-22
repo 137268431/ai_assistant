@@ -277,6 +277,54 @@ class LargeOperationAlertTest(unittest.TestCase):
         self.assertEqual(pb.records[0][1]["level"], "error")
         self.assertEqual(pb.records[1][1]["detail"]["alert_stage"], "deferred")
 
+    def test_detail_compresses_symbols_and_explains_local_pacing_waits(self):
+        pb = _FakePB()
+        operation = {
+            "operation_id": "op-symbols",
+            "operation_type": "history_backfill",
+            "job_id": "unit_test",
+            "symbols": [f"SYM{i}" for i in range(30)],
+            "symbols_total": 30,
+            "intervals": ["5m"],
+            "throttle_count": 55,
+            "duration_s": 130,
+            "data_environment": "live",
+            "broker_mode": "paper",
+        }
+
+        result = emit_large_operation_alert(pb, operation, config=_Config(), stage="completed", broker_mode="paper")
+
+        self.assertTrue(result["ok"])
+        detail = pb.records[-1][1]["detail"]
+        self.assertNotIn("symbols", detail)
+        self.assertEqual(detail["symbols_total"], 30)
+        self.assertEqual(len(detail["symbol_sample"]), 12)
+        self.assertEqual(detail["symbols_omitted"], 18)
+        self.assertEqual(detail["local_pacing_wait_count"], 55)
+        self.assertIn("local request pacing waits", detail["throttle_count_meaning"])
+        self.assertTrue(any("本地排队等待" in item for item in detail["large_reasons_human"]))
+
+    def test_explained_no_data_only_completion_is_not_warned(self):
+        pb = _FakePB()
+        operation = {
+            "operation_id": "op-no-data",
+            "operation_type": "history_backfill",
+            "job_id": "watchlist_idle_topup",
+            "source": "watchlist_idle_topup",
+            "symbols_total": 30,
+            "intervals": ["5m"],
+            "duration_s": 130,
+            "explained_no_data_only": True,
+            "explained_no_data_reason": "extended_hours_no_data",
+            "data_environment": "live",
+            "broker_mode": "paper",
+        }
+
+        result = emit_large_operation_alert(pb, operation, config=_Config(), stage="completed", broker_mode="paper")
+
+        self.assertEqual(result["reason"], "explained_no_data_only")
+        self.assertEqual(len([row for row in pb.records if row[0] == "system_events"]), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

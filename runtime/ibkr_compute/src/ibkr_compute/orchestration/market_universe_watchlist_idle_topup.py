@@ -177,6 +177,13 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             "estimated_next_batch_s": 20.0,
             "seconds_until_next_active_5m_due": None,
             "active_target_count": 0,
+            "no_data_cooldowns": {},
+            "last_no_data_symbols": [],
+            "last_no_data_reason": "",
+            "inactive_symbols": {},
+            "removal_candidates": [],
+            "last_hygiene_notified_at_ms": 0,
+            "last_hygiene_notified_symbols": [],
         }
 
     def _copy_watchlist_idle_topup_state(self, source: dict | None = None) -> dict:
@@ -276,11 +283,18 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
                 completion = self._watchlist_idle_topup_completion_snapshot()
             except Exception:
                 completion = {}
-        remaining = (
-            _safe_int(completion.get("stale"), 0)
-            + _safe_int(completion.get("missing"), 0)
-            + _safe_int(completion.get("unobserved"), 0)
-        )
+        if any(key in completion for key in ("actionable_stale", "actionable_missing", "actionable_unobserved")):
+            remaining = (
+                _safe_int(completion.get("actionable_stale"), 0)
+                + _safe_int(completion.get("actionable_missing"), 0)
+                + _safe_int(completion.get("actionable_unobserved"), 0)
+            )
+        else:
+            remaining = (
+                _safe_int(completion.get("stale"), 0)
+                + _safe_int(completion.get("missing"), 0)
+                + _safe_int(completion.get("unobserved"), 0)
+            )
         last_written = _safe_int((payload or {}).get("last_written_bars"), 0)
         admission = (payload or {}).get("last_admission") if isinstance((payload or {}).get("last_admission"), dict) else {}
         blocker_codes = {
@@ -500,6 +514,264 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
         )
         return stale_minutes * 60 * 1000
 
+    def _watchlist_idle_topup_no_data_cooldown_min(self, market_session: str = "") -> int:
+        service_mod = _service_mod()
+        key = (
+            "ibkr_watchlist_idle_topup_regular_no_data_cooldown_min"
+            if str(market_session or "").strip().lower() == "regular"
+            else "ibkr_watchlist_idle_topup_no_data_cooldown_min"
+        )
+        default = 5 if key.endswith("regular_no_data_cooldown_min") else 15
+        return max(1, self.config.get_int_for_environment(key, service_mod.DATA_ENVIRONMENT, default))
+
+    def _watchlist_inactive_no_data_count_threshold(self) -> int:
+        service_mod = _service_mod()
+        return max(
+            1,
+            self.config.get_int_for_environment(
+                "ibkr_watchlist_inactive_no_data_count_threshold",
+                service_mod.DATA_ENVIRONMENT,
+                3,
+            ),
+        )
+
+    def _watchlist_inactive_days_threshold(self) -> int:
+        service_mod = _service_mod()
+        return max(
+            1,
+            self.config.get_int_for_environment(
+                "ibkr_watchlist_inactive_days_threshold",
+                service_mod.DATA_ENVIRONMENT,
+                3,
+            ),
+        )
+
+    def _watchlist_hygiene_notify_cooldown_ms(self) -> int:
+        service_mod = _service_mod()
+        hours = max(
+            1,
+            self.config.get_int_for_environment(
+                "ibkr_watchlist_hygiene_notify_cooldown_hours",
+                service_mod.DATA_ENVIRONMENT,
+                24,
+            ),
+        )
+        return hours * 60 * 60 * 1000
+
+    def _watchlist_idle_topup_active_trade_symbol_set(self) -> set[str]:
+        with self._subscription_lock:
+            return set(self._normalize_symbol_list(getattr(self, "_active_trade_symbols", []) or []))
+
+    def _watchlist_idle_topup_symbol_manual_member(self, symbol: str) -> bool:
+        normalized = str(symbol or "").strip().upper()
+        record = (getattr(self, "_watchlist_records", {}) or {}).get(normalized) or {}
+        if "manual_member" not in record:
+            return True
+        value = record.get("manual_member")
+        return str(value).strip().lower() not in {"0", "false", "no", "off"}
+
+    def _watchlist_idle_topup_cooldowns(self) -> dict:
+        with self._watchlist_idle_topup_lock:
+            return {
+                str(symbol or "").strip().upper(): dict(item or {})
+                for symbol, item in dict(self._watchlist_idle_topup_state.get("no_data_cooldowns") or {}).items()
+                if str(symbol or "").strip()
+            }
+
+    def _watchlist_idle_topup_no_data_active(self, symbol: str, *, now_ms: int | None = None) -> bool:
+        normalized = str(symbol or "").strip().upper()
+        if not normalized:
+            return False
+        cooldown = self._watchlist_idle_topup_cooldowns().get(normalized) or {}
+        return _safe_int(cooldown.get("cooldown_until_ms"), 0) > int(now_ms or time.time() * 1000)
+
+    def _watchlist_idle_topup_clear_no_data_symbols(self, symbols) -> None:
+        normalized_symbols = set(self._normalize_symbol_list(symbols or []))
+        if not normalized_symbols:
+            return
+        with self._watchlist_idle_topup_lock:
+            cooldowns = dict(self._watchlist_idle_topup_state.get("no_data_cooldowns") or {})
+            changed = False
+            for symbol in normalized_symbols:
+                if symbol in cooldowns:
+                    cooldowns.pop(symbol, None)
+                    changed = True
+            if changed:
+                removal_candidates = [
+                    dict(item or {})
+                    for item in cooldowns.values()
+                    if bool((item or {}).get("removal_candidate"))
+                ]
+                self._watchlist_idle_topup_state = self._copy_watchlist_idle_topup_state(
+                    {
+                        **self._watchlist_idle_topup_state,
+                        "no_data_cooldowns": cooldowns,
+                        "inactive_symbols": cooldowns,
+                        "removal_candidates": removal_candidates,
+                    }
+                )
+
+    def _watchlist_idle_topup_latest_trace(self) -> dict:
+        status_fn = getattr(getattr(self, "data_backfill", None), "status", None)
+        if not callable(status_fn):
+            return {}
+        try:
+            status = status_fn() or {}
+        except Exception:
+            return {}
+        traces = []
+        last_trace = status.get("last_trace") if isinstance(status.get("last_trace"), dict) else {}
+        if last_trace:
+            traces.append(last_trace)
+        traces.extend(
+            trace for trace in (status.get("recent_traces") or [])
+            if isinstance(trace, dict)
+        )
+        for trace in reversed(traces):
+            if str((trace or {}).get("source") or "") == "watchlist_idle_topup":
+                return dict(trace or {})
+        return {}
+
+    def _watchlist_idle_topup_hmds_no_data_from_trace(self, symbols) -> dict:
+        requested = set(self._normalize_symbol_list(symbols or []))
+        if not requested:
+            return {}
+        trace = self._watchlist_idle_topup_latest_trace()
+        if not trace:
+            return {}
+        found: dict[str, dict] = {}
+        for item in trace.get("symbol_outcomes") or []:
+            symbol = str((item or {}).get("symbol") or "").strip().upper()
+            if symbol in requested and bool((item or {}).get("hmds_no_data")):
+                found[symbol] = {
+                    "symbol": symbol,
+                    "last_error": str((item or {}).get("last_error") or "HMDS query returned no data"),
+                    "request_count": _safe_int((item or {}).get("request_count"), 0),
+                    "rows": _safe_int((item or {}).get("rows"), 0),
+                }
+        for item in trace.get("request_samples") or []:
+            symbol = str((item or {}).get("symbol") or "").strip().upper()
+            error = str((item or {}).get("error") or "")
+            if symbol in requested and "hmds query returned no data" in error.lower():
+                found.setdefault(
+                    symbol,
+                    {
+                        "symbol": symbol,
+                        "last_error": error,
+                        "request_count": 1,
+                        "rows": _safe_int((item or {}).get("rows"), 0),
+                    },
+                )
+        return found
+
+    def _watchlist_idle_topup_record_no_data_symbols(self, no_data_by_symbol: dict, market_session: str) -> None:
+        if not no_data_by_symbol:
+            return
+        now_ms = int(time.time() * 1000)
+        session_kind = str(market_session or "").strip().lower() or "unknown"
+        reason = "regular_no_data" if session_kind == "regular" else "extended_hours_no_data"
+        cooldown_ms = self._watchlist_idle_topup_no_data_cooldown_min(session_kind) * 60 * 1000
+        active_trade_symbols = self._watchlist_idle_topup_active_trade_symbol_set()
+        market_date = self._watchlist_idle_topup_target_date()
+        count_threshold = self._watchlist_inactive_no_data_count_threshold()
+        days_threshold = self._watchlist_inactive_days_threshold()
+        with self._watchlist_idle_topup_lock:
+            cooldowns = {
+                str(symbol or "").strip().upper(): dict(item or {})
+                for symbol, item in dict(self._watchlist_idle_topup_state.get("no_data_cooldowns") or {}).items()
+                if str(symbol or "").strip()
+            }
+            for symbol, info in no_data_by_symbol.items():
+                normalized = str(symbol or "").strip().upper()
+                if not normalized or normalized in active_trade_symbols:
+                    continue
+                previous = dict(cooldowns.get(normalized) or {})
+                seen_dates = [
+                    str(item or "")
+                    for item in (previous.get("seen_dates") or [])
+                    if str(item or "")
+                ]
+                if market_date and market_date not in seen_dates:
+                    seen_dates.append(market_date)
+                consecutive_count = _safe_int(previous.get("consecutive_count"), 0) + 1
+                manual_member = self._watchlist_idle_topup_symbol_manual_member(normalized)
+                removal_candidate = consecutive_count >= count_threshold or len(seen_dates) >= days_threshold
+                cooldowns[normalized] = {
+                    **previous,
+                    "symbol": normalized,
+                    "reason": reason,
+                    "session": session_kind,
+                    "first_seen_at_ms": _safe_int(previous.get("first_seen_at_ms"), now_ms) or now_ms,
+                    "last_seen_at_ms": now_ms,
+                    "cooldown_until_ms": now_ms + cooldown_ms,
+                    "consecutive_count": consecutive_count,
+                    "seen_dates": seen_dates[-10:],
+                    "last_error": str((info or {}).get("last_error") or "HMDS query returned no data"),
+                    "manual_member": manual_member,
+                    "inactive_candidate": True,
+                    "removal_candidate": bool(removal_candidate),
+                    "auto_remove_allowed": False,
+                }
+            removal_candidates = [
+                dict(item or {})
+                for item in cooldowns.values()
+                if bool((item or {}).get("removal_candidate"))
+            ]
+            self._watchlist_idle_topup_state = self._copy_watchlist_idle_topup_state(
+                {
+                    **self._watchlist_idle_topup_state,
+                    "no_data_cooldowns": cooldowns,
+                    "last_no_data_symbols": sorted(no_data_by_symbol.keys()),
+                    "last_no_data_reason": reason,
+                    "inactive_symbols": cooldowns,
+                    "removal_candidates": removal_candidates,
+                }
+            )
+        self._notify_watchlist_hygiene_candidates(removal_candidates)
+
+    def _notify_watchlist_hygiene_candidates(self, candidates: list[dict]) -> None:
+        active = [dict(item or {}) for item in (candidates or []) if (item or {}).get("symbol")]
+        if not active:
+            return
+        now_ms = int(time.time() * 1000)
+        symbols = sorted({str((item or {}).get("symbol") or "").strip().upper() for item in active if (item or {}).get("symbol")})
+        with self._watchlist_idle_topup_lock:
+            last_ms = _safe_int(self._watchlist_idle_topup_state.get("last_hygiene_notified_at_ms"), 0)
+            last_symbols = set(self._normalize_symbol_list(self._watchlist_idle_topup_state.get("last_hygiene_notified_symbols") or []))
+            if now_ms - last_ms < self._watchlist_hygiene_notify_cooldown_ms() and set(symbols).issubset(last_symbols):
+                return
+            self._watchlist_idle_topup_state = self._copy_watchlist_idle_topup_state(
+                {
+                    **self._watchlist_idle_topup_state,
+                    "last_hygiene_notified_at_ms": now_ms,
+                    "last_hygiene_notified_symbols": symbols,
+                }
+            )
+        pb = getattr(self, "pb", None) or getattr(getattr(self, "data_backfill", None), "pb_client", None)
+        notifier = getattr(pb, "notify_system_event", None)
+        if not callable(notifier):
+            return
+        service_mod = _service_mod()
+        sample = active[:12]
+        try:
+            notifier(
+                "标的池治理建议 / Watchlist hygiene: 扩展时段无数据",
+                {
+                    "结论 / Conclusion": "部分 watchlist 标的多次返回 HMDS no data，建议检查是否继续保留。",
+                    "非系统故障说明 / Not a system fault": "盘前/盘后可能无成交或 IBKR 没有可用历史 bars。",
+                    "建议动作 / Next action": "确认后可从 trade watchlist 移除；manual_member=true 的标的只建议人工检查。",
+                    "标的 / Symbols": ", ".join(symbols[:20]),
+                    "数量 / Count": len(symbols),
+                    "样本 / Sample": sample,
+                },
+                event_type="alert",
+                level="warning",
+                source="ibkr_compute",
+                environment=str(getattr(service_mod, "ENVIRONMENT", "") or "paper").strip().lower() or "paper",
+            )
+        except Exception as exc:
+            service_mod.logger.warning("Watchlist hygiene notification failed: %s", exc)
+
     def _watchlist_idle_topup_expected_5m_ms(self, *, now_ms: int | None = None) -> int:
         service_mod = _service_mod()
         try:
@@ -569,23 +841,45 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
                 for symbol, item in dict(self._watchlist_idle_observations).items()
                 if symbol not in active_symbols
             }
+            cooldowns = {
+                str(symbol or "").strip().upper(): dict(item or {})
+                for symbol, item in dict(self._watchlist_idle_topup_state.get("no_data_cooldowns") or {}).items()
+                if str(symbol or "").strip().upper() and str(symbol or "").strip().upper() not in active_symbols
+            }
+            removal_candidates = [
+                dict(item or {})
+                for item in (self._watchlist_idle_topup_state.get("removal_candidates") or [])
+                if str((item or {}).get("symbol") or "").strip().upper() not in active_symbols
+            ]
 
         fresh = 0
         stale = 0
         missing = 0
+        explained_no_data = 0
+        explained_no_data_symbols: list[str] = []
         oldest_ms = 0
         oldest_symbol = ""
         for symbol, item in observations.items():
             latest_ms = _safe_int((item or {}).get("latest_ms"), 0)
+            cooldown = cooldowns.get(symbol) or {}
+            no_data_active = _safe_int(cooldown.get("cooldown_until_ms"), 0) > current_ms
             if latest_ms <= 0:
-                missing += 1
+                if no_data_active:
+                    explained_no_data += 1
+                    explained_no_data_symbols.append(symbol)
+                else:
+                    missing += 1
                 continue
             if self._watchlist_idle_topup_latest_is_stale(
                 latest_ms,
                 expected_5m_ms=expected_5m_ms,
                 now_ms=current_ms,
             ):
-                stale += 1
+                if no_data_active:
+                    explained_no_data += 1
+                    explained_no_data_symbols.append(symbol)
+                else:
+                    stale += 1
             else:
                 fresh += 1
             if oldest_ms <= 0 or latest_ms < oldest_ms:
@@ -593,13 +887,32 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
                 oldest_symbol = symbol
 
         observed = len(observations)
+        unobserved = max(0, total - observed)
+        inactive_symbols = sorted(
+            symbol for symbol, item in cooldowns.items()
+            if bool((item or {}).get("inactive_candidate"))
+        )
+        removal_symbols = sorted(
+            str((item or {}).get("symbol") or "").strip().upper()
+            for item in removal_candidates
+            if str((item or {}).get("symbol") or "").strip()
+        )
         return {
             "total": total,
             "observed": observed,
             "fresh": fresh,
             "stale": stale,
             "missing": missing,
-            "unobserved": max(0, total - observed),
+            "unobserved": unobserved,
+            "explained_no_data_count": explained_no_data,
+            "explained_no_data_symbols_sample": sorted(explained_no_data_symbols)[:12],
+            "inactive_candidate_count": len(inactive_symbols),
+            "inactive_symbols_sample": inactive_symbols[:12],
+            "removal_candidate_count": len(removal_symbols),
+            "removal_candidate_symbols_sample": removal_symbols[:12],
+            "actionable_stale": stale,
+            "actionable_missing": missing,
+            "actionable_unobserved": unobserved,
             "progress_pct": round((fresh / total) * 100.0, 2) if total > 0 else 100.0,
             "observed_pct": round((observed / total) * 100.0, 2) if total > 0 else 100.0,
             "oldest_symbol": oldest_symbol,
@@ -808,11 +1121,16 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             else:
                 latest_ms = self.data_backfill.get_latest_stored_bar_ms(symbol, "5m")
             self._observe_watchlist_idle_symbol(symbol, latest_ms)
-            if self._watchlist_idle_topup_latest_is_stale(
+            is_stale = self._watchlist_idle_topup_latest_is_stale(
                 latest_ms,
                 expected_5m_ms=expected_5m_ms,
                 now_ms=now_ms,
-            ):
+            )
+            if self._watchlist_idle_topup_no_data_active(symbol, now_ms=now_ms):
+                if not is_stale:
+                    self._watchlist_idle_topup_clear_no_data_symbols([symbol])
+                continue
+            if is_stale:
                 candidates.append(
                     {
                         "symbol": symbol,
@@ -1068,6 +1386,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
         estimated_bars_selected = 0
         stop_reason = ""
         last_error = ""
+        no_data_symbols_total: set[str] = set()
         full_load_candidates: list[dict] | None = None
         full_load_candidate_initialized = False
 
@@ -1229,34 +1548,77 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
 
                 batch_written = 0
                 flush_ok = True
+                batch_no_data_symbols: list[str] = []
+                batch_explained_no_data_symbols: list[str] = []
+                batch_active_no_data_symbols: list[str] = []
                 if conid_map:
+                    conid_symbols = list(conid_map.keys())
                     symbol_meta = {
                         symbol: dict((getattr(self, "_symbol_meta", {}) or {}).get(symbol, {}) or {})
-                        for symbol in conid_map.keys()
+                        for symbol in conid_symbols
                     }
                     period_overrides = {
                         symbol: {"5m": request_period}
-                        for symbol in conid_map.keys()
+                        for symbol in conid_symbols
+                    }
+                    latest_before = {}
+                    latest_map_getter = getattr(self.data_backfill, "get_latest_stored_bar_ms_map", None)
+                    if callable(latest_map_getter):
+                        try:
+                            latest_before = {
+                                str(symbol or "").strip().upper(): _safe_int(value, 0)
+                                for symbol, value in latest_map_getter(conid_symbols, "5m").items()
+                            }
+                        except Exception:
+                            latest_before = {}
+                    for symbol in conid_symbols:
+                        if symbol not in latest_before:
+                            latest_before[symbol] = self.data_backfill.get_latest_stored_bar_ms(symbol, "5m")
+                    completion_before = {}
+                    try:
+                        completion_before = self._watchlist_idle_topup_completion_snapshot()
+                    except Exception:
+                        completion_before = {}
+                    market_session_kind = str(admission.get("market_session") or "").strip().lower()
+                    trace_context = {
+                        "trigger_type": "scheduled_auto_topup",
+                        "trigger_reason": "watchlist 5m bars missing/stale",
+                        "trigger_reason_cn": "自动回补 watchlist 中缺失或落后的 5m bars",
+                        "trigger_explanation_cn": "这是运行时空闲自动拉取，不是人工手动触发；盘前/盘后标的不活跃时可能返回 no data。",
+                        "trigger_explanation_en": "This is scheduled idle top-up, not a manual trigger; inactive premarket/afterhours symbols can return no data.",
+                        "loop_interval_sec": loop_interval_sec,
+                        "fast_retry_s": fast_retry_s,
+                        "request_period": request_period,
+                        "bar_interval": "5m",
+                        "mode": mode,
+                        "dynamic_enabled": dynamic_enabled,
+                        "active_first_enabled": active_first_enabled,
+                        "max_symbols_per_cycle": max_symbols,
+                        "history_concurrency": history_concurrency,
+                        "request_spacing_s": request_spacing_s,
+                        "market_session": market_session_kind,
+                        "watchlist_completion_before": completion_before,
                     }
                     try:
-                        results = self.data_backfill.backfill_all(
-                            conid_map,
-                            symbol_meta=symbol_meta,
-                            intervals=["5m"],
-                            repair_symbols=[],
-                            period_overrides=period_overrides,
-                            trace_source="watchlist_idle_topup",
-                        )
+                        backfill_kwargs = {
+                            "symbol_meta": symbol_meta,
+                            "intervals": ["5m"],
+                            "repair_symbols": [],
+                            "period_overrides": period_overrides,
+                            "trace_source": "watchlist_idle_topup",
+                            "trace_context": trace_context,
+                        }
+                        results = self.data_backfill.backfill_all(conid_map, **backfill_kwargs)
                     except TypeError as exc:
-                        if "trace_source" not in str(exc):
+                        message = str(exc)
+                        if "trace_context" in message:
+                            backfill_kwargs.pop("trace_context", None)
+                        elif "trace_source" in message:
+                            backfill_kwargs.pop("trace_context", None)
+                            backfill_kwargs.pop("trace_source", None)
+                        else:
                             raise
-                        results = self.data_backfill.backfill_all(
-                            conid_map,
-                            symbol_meta=symbol_meta,
-                            intervals=["5m"],
-                            repair_symbols=[],
-                            period_overrides=period_overrides,
-                        )
+                        results = self.data_backfill.backfill_all(conid_map, **backfill_kwargs)
                     batch_written = sum(
                         int((per_symbol or {}).get("5m", 0) or 0)
                         for per_symbol in (results or {}).values()
@@ -1267,13 +1629,56 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
                     if not flush_ok:
                         last_error = "flush_failed"
 
-                    for symbol in conid_map.keys():
-                        latest_ms = self.data_backfill.get_latest_stored_bar_ms(symbol, "5m")
+                    latest_after = {}
+                    if callable(latest_map_getter):
+                        try:
+                            latest_after = {
+                                str(symbol or "").strip().upper(): _safe_int(value, 0)
+                                for symbol, value in latest_map_getter(conid_symbols, "5m").items()
+                            }
+                        except Exception:
+                            latest_after = {}
+                    progressed_symbols: list[str] = []
+                    for symbol in conid_symbols:
+                        latest_ms = (
+                            _safe_int(latest_after.get(symbol), 0)
+                            if symbol in latest_after
+                            else self.data_backfill.get_latest_stored_bar_ms(symbol, "5m")
+                        )
+                        latest_after[symbol] = latest_ms
                         self._observe_watchlist_idle_symbol(symbol, latest_ms)
+                        if latest_ms > _safe_int(latest_before.get(symbol), 0) or _safe_int(
+                            ((results or {}).get(symbol) or {}).get("5m"),
+                            0,
+                        ) > 0:
+                            progressed_symbols.append(symbol)
                         if symbol not in processed_symbols:
                             processed_symbols.append(symbol)
+                    if progressed_symbols:
+                        self._watchlist_idle_topup_clear_no_data_symbols(progressed_symbols)
+                    trace_no_data = self._watchlist_idle_topup_hmds_no_data_from_trace(conid_symbols)
+                    no_progress_symbols = {
+                        symbol for symbol in conid_symbols
+                        if _safe_int(latest_after.get(symbol), 0) <= _safe_int(latest_before.get(symbol), 0)
+                    }
+                    no_data_by_symbol = {
+                        symbol: info
+                        for symbol, info in trace_no_data.items()
+                        if symbol in no_progress_symbols
+                    }
+                    if no_data_by_symbol:
+                        active_trade_symbols = self._watchlist_idle_topup_active_trade_symbol_set()
+                        batch_no_data_symbols = sorted(no_data_by_symbol.keys())
+                        batch_active_no_data_symbols = sorted(
+                            symbol for symbol in batch_no_data_symbols if symbol in active_trade_symbols
+                        )
+                        batch_explained_no_data_symbols = sorted(
+                            symbol for symbol in batch_no_data_symbols if symbol not in active_trade_symbols
+                        )
+                        no_data_symbols_total.update(batch_no_data_symbols)
+                        self._watchlist_idle_topup_record_no_data_symbols(no_data_by_symbol, market_session_kind)
                     self._last_backfill_at = time.time()
-                    self._last_backfill_symbols = list(conid_map.keys())
+                    self._last_backfill_symbols = list(conid_symbols)
 
                     materialize_enabled = self.config.get_bool_for_environment(
                         "ibkr_watchlist_idle_topup_materialize_5m",
@@ -1322,6 +1727,9 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
                     "dynamic_reason": dynamic_reason,
                     "duration_s": batch_duration_s,
                     "flush_ok": flush_ok,
+                    "no_data_symbols": list(batch_no_data_symbols),
+                    "explained_no_data_symbols": list(batch_explained_no_data_symbols),
+                    "active_no_data_symbols": list(batch_active_no_data_symbols),
                 }
                 batch_summaries.append(batch_summary)
                 estimated_next_batch_s = self._watchlist_idle_topup_estimated_batch_seconds(batch_summaries)
@@ -1343,6 +1751,12 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
                     estimated_bars_selected=estimated_bars_selected,
                     selected_symbol_count=len(attempted_symbols),
                     dynamic_reason=dynamic_reason,
+                    last_no_data_symbols=sorted(no_data_symbols_total),
+                    last_no_data_reason=(
+                        "regular_no_data"
+                        if no_data_symbols_total and str(admission.get("market_session") or "").strip().lower() == "regular"
+                        else ("extended_hours_no_data" if no_data_symbols_total else "")
+                    ),
                 )
 
                 if max_symbols > 0 and len(attempted_set) >= max_symbols:
@@ -1365,6 +1779,12 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
                 last_processed_symbols_total=len(processed_symbols),
                 last_loaded_bars=written_total,
                 last_request_count=request_count,
+                last_no_data_symbols=sorted(no_data_symbols_total),
+                last_no_data_reason=(
+                    "regular_no_data"
+                    if no_data_symbols_total and str(admission.get("market_session") or "").strip().lower() == "regular"
+                    else ("extended_hours_no_data" if no_data_symbols_total else "")
+                ),
                 estimated_bars_selected=estimated_bars_selected,
                 selected_symbol_count=len(attempted_symbols),
                 dynamic_reason=stop_reason if dynamic_enabled else "",
@@ -1398,6 +1818,12 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             last_request_count=request_count,
             last_batches=batch_summaries[-12:],
             last_error=last_error,
+            last_no_data_symbols=sorted(no_data_symbols_total),
+            last_no_data_reason=(
+                "regular_no_data"
+                if no_data_symbols_total and str(admission.get("market_session") or "").strip().lower() == "regular"
+                else ("extended_hours_no_data" if no_data_symbols_total else "")
+            ),
             total_written_bars=_safe_int(self._watchlist_idle_topup_state.get("total_written_bars"), 0) + written_total,
             cycle_count=_safe_int(self._watchlist_idle_topup_state.get("cycle_count"), 0) + 1,
             skipped_count=(

@@ -145,6 +145,7 @@ class DataBackfillBackfillMixin:
         repair_symbols: Optional[Sequence[str]] = None,
         period_overrides: Optional[Dict[str, Dict[str, str]]] = None,
         trace_source: str = "backfill_all",
+        trace_context: Optional[Dict] = None,
     ) -> Dict[str, Dict[str, int]]:
         results = {}
         metadata = symbol_meta or {}
@@ -158,7 +159,8 @@ class DataBackfillBackfillMixin:
             return results
 
         worker_count = min(self._max_concurrency(), len(conid_map))
-        trace = self._new_trace(trace_source, list(conid_map.keys()), interval_list)
+        trace_context_payload = dict(trace_context or {}) if isinstance(trace_context, dict) else {}
+        trace = self._new_trace(trace_source, list(conid_map.keys()), interval_list, context=trace_context_payload)
         operation_id = str((trace or {}).get("trace_id") or "")
         periods_by_symbol = {
             symbol: {
@@ -171,6 +173,7 @@ class DataBackfillBackfillMixin:
             emit_large_operation_alert(
                 self.pb_client,
                 {
+                    **trace_context_payload,
                     "operation_id": operation_id,
                     "operation_type": "history_backfill",
                     "job_id": trace_source,

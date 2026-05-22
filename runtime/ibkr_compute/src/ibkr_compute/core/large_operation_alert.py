@@ -238,6 +238,70 @@ def _intervals(operation: Mapping[str, Any]) -> list[str]:
     return [item for item in dict.fromkeys(explicit) if item]
 
 
+def _symbol_sample_from_operation(operation: Mapping[str, Any], *, limit: int = 12) -> tuple[list[str], int]:
+    symbols = operation.get("symbols") if isinstance(operation.get("symbols"), (list, tuple, set)) else []
+    normalized = [str(item or "").strip().upper() for item in list(symbols) if str(item or "").strip()]
+    sample_limit = max(1, int(limit or 1))
+    sample = normalized[:sample_limit]
+    total = _symbols_total(operation) or len(normalized)
+    return sample, max(0, total - len(sample))
+
+
+def _compact_symbol_list(value: Any, *, limit: int = 20) -> dict[str, Any]:
+    values = [str(item or "").strip().upper() for item in list(value or []) if str(item or "").strip()]
+    sample = values[: max(1, int(limit or 1))]
+    return {
+        "total": len(values),
+        "sample": sample,
+        "omitted": max(0, len(values) - len(sample)),
+    }
+
+
+def _human_reason(reason: str) -> str:
+    text = str(reason or "").strip()
+    if text.startswith("symbols>="):
+        threshold, _, actual = text.removeprefix("symbols>=").partition(":")
+        return f"标的数量达到阈值 / symbols threshold: {actual} >= {threshold}"
+    if text.startswith("tasks>="):
+        threshold, _, actual = text.removeprefix("tasks>=").partition(":")
+        return f"任务数量达到阈值 / task threshold: {actual} >= {threshold}"
+    if text.startswith("high_interval:"):
+        return f"包含高周期 / high-risk interval: {text.split(':', 1)[1]}"
+    if text.startswith("period_days>="):
+        threshold, _, actual = text.removeprefix("period_days>=").partition(":")
+        return f"请求周期较长 / long request period: {actual}d >= {threshold}d"
+    if text.startswith("time_budget_s>="):
+        threshold, _, actual = text.removeprefix("time_budget_s>=").partition(":")
+        return f"计划耗时较长 / time budget threshold: {actual}s >= {threshold}s"
+    if text.startswith("duration_s>="):
+        threshold, _, actual = text.removeprefix("duration_s>=").partition(":")
+        return f"实际耗时较长 / runtime threshold: {actual}s >= {threshold}s"
+    if text.startswith("requests>="):
+        threshold, _, actual = text.removeprefix("requests>=").partition(":")
+        return f"历史请求数较多 / historical requests threshold: {actual} >= {threshold}"
+    if text.startswith("retry>="):
+        threshold, _, actual = text.removeprefix("retry>=").partition(":")
+        return f"重试次数较多 / retry threshold: {actual} >= {threshold}"
+    if text.startswith("throttle>="):
+        threshold, _, actual = text.removeprefix("throttle>=").partition(":")
+        return f"本地排队等待较多 / local pacing waits threshold: {actual} >= {threshold}"
+    if text.startswith("written>="):
+        threshold, _, actual = text.removeprefix("written>=").partition(":")
+        return f"写入 bars 较多 / written bars threshold: {actual} >= {threshold}"
+    return text
+
+
+def _compact_detail_value(key: str, value: Any) -> tuple[bool, Any]:
+    if key == "symbols":
+        return False, value
+    if key.endswith("_symbols") and isinstance(value, (list, tuple, set)):
+        values = [str(item or "").strip().upper() for item in list(value) if str(item or "").strip()]
+        if len(values) > 20:
+            return True, _compact_symbol_list(values)
+        return True, values
+    return True, value
+
+
 def large_operation_reasons(
     operation: Mapping[str, Any],
     *,
@@ -492,9 +556,21 @@ def emit_large_operation_alert(
             "duration_gate_threshold_s": gate_threshold_s,
             "duration_gate_elapsed_s": gate_elapsed_s,
         }
+    if (
+        normalized_stage in {"progress", "completed"}
+        and bool(operation.get("explained_no_data_only"))
+        and not str(operation.get("error") or "").strip()
+    ):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "explained_no_data_only",
+            "operation_id": operation_id,
+            "stage": normalized_stage,
+            "explanation": str(operation.get("explained_no_data_reason") or "no_data"),
+        }
 
-    symbols = operation.get("symbols") if isinstance(operation.get("symbols"), (list, tuple, set)) else []
-    symbol_sample = [str(item).upper() for item in list(symbols)[:12]]
+    symbol_sample, symbols_omitted = _symbol_sample_from_operation(operation)
     operation_type = str(operation.get("operation_type") or operation.get("source") or "operation").strip()
     job_id = str(operation.get("job_id") or operation.get("source") or operation_type).strip()
     operation_started_at_ms = 0
@@ -538,20 +614,30 @@ def emit_large_operation_alert(
     }
     for key, value in dict(operation).items():
         if key not in detail:
-            detail[key] = value
+            keep, compacted = _compact_detail_value(key, value)
+            if keep:
+                detail[key] = compacted
     detail.update(
         {
             "large_operation": True,
             "large_reasons": reasons or list(state.get("large_reasons") or []),
+            "large_reasons_human": [
+                _human_reason(item)
+                for item in (reasons or list(state.get("large_reasons") or []))
+            ],
             "data_environment": data_environment,
             "broker_mode": alert_environment,
             "symbols_total": _symbols_total(operation),
             "symbol_sample": symbol_sample,
+            "symbols_omitted": symbols_omitted,
             "intervals": _intervals(operation),
             "alerted_at_ms": now_ms,
             "alerted_at_iso": alerted_at_iso,
+            "throttle_count_meaning": "本地历史请求排队/节流等待次数 / local request pacing waits; not necessarily broker-side throttle.",
         }
     )
+    if _to_int(operation.get("throttle_count"), 0) > 0 and "local_pacing_wait_count" not in detail:
+        detail["local_pacing_wait_count"] = _to_int(operation.get("throttle_count"), 0)
     if gate_source:
         detail.update(
             {

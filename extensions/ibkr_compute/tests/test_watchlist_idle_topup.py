@@ -63,6 +63,9 @@ class DummyDataBackfill:
         self.backfill_all_calls = []
         self.latest_map_calls = []
         self.latest_single_calls = []
+        self.last_trace = {}
+        self.recent_traces = []
+        self.write_new_bars = True
 
     def get_latest_stored_bar_ms(self, symbol, interval):
         self.latest_single_calls.append((str(symbol or "").strip().upper(), interval))
@@ -73,7 +76,16 @@ class DummyDataBackfill:
         self.latest_map_calls.append((normalized, interval))
         return {symbol: int(self.latest_by_symbol.get(symbol) or 0) for symbol in normalized}
 
-    def backfill_all(self, conid_map, symbol_meta=None, intervals=None, repair_symbols=None, period_overrides=None, trace_source=""):
+    def backfill_all(
+        self,
+        conid_map,
+        symbol_meta=None,
+        intervals=None,
+        repair_symbols=None,
+        period_overrides=None,
+        trace_source="",
+        trace_context=None,
+    ):
         self.backfill_all_calls.append(
             {
                 "conid_map": dict(conid_map or {}),
@@ -85,11 +97,19 @@ class DummyDataBackfill:
                     for symbol, payload in (period_overrides or {}).items()
                 },
                 "trace_source": trace_source,
+                "trace_context": dict(trace_context or {}),
             }
         )
-        for symbol in (conid_map or {}).keys():
-            self.latest_by_symbol[str(symbol or "").strip().upper()] = 9_999_999
-        return {symbol: {"5m": 1} for symbol in (conid_map or {})}
+        if self.write_new_bars:
+            for symbol in (conid_map or {}).keys():
+                self.latest_by_symbol[str(symbol or "").strip().upper()] = 9_999_999
+        return {symbol: {"5m": 1 if self.write_new_bars else 0} for symbol in (conid_map or {})}
+
+    def status(self):
+        return {
+            "last_trace": dict(self.last_trace or {}),
+            "recent_traces": list(self.recent_traces or []),
+        }
 
 
 class DummyConidResolver:
@@ -107,12 +127,18 @@ class DummyPB:
     def __init__(self, target_rows=None):
         self.target_rows = list(target_rows or [])
         self.calls = []
+        self.notifications = []
 
     def get_all_records(self, collection, **kwargs):
         self.calls.append({"collection": collection, **kwargs})
         if collection != "ibkr_targets":
             return []
         return list(self.target_rows)
+
+    def notify_system_event(self, title, detail, **kwargs):
+        payload = {"title": title, "detail": dict(detail or {}), **dict(kwargs or {})}
+        self.notifications.append(payload)
+        return {"ok": True, "message_id": f"msg_{len(self.notifications)}"}
 
 
 class DummyBarRepairCoordinator:
@@ -508,6 +534,21 @@ class WatchlistIdleTopupCandidateSelectionTest(unittest.TestCase):
         self.assertEqual(self._candidate_symbols(result), ["NVDA", "META", "TSLA", "MSFT"])
         self.assertEqual(self.service._watchlist_idle_topup_cursor, 0)
 
+    def test_no_data_cooldown_skips_inactive_symbol_candidate(self):
+        self.service._watchlist_idle_topup_state["no_data_cooldowns"] = {
+            "NVDA": {
+                "symbol": "NVDA",
+                "reason": "extended_hours_no_data",
+                "cooldown_until_ms": 9_999_999_999_999,
+                "inactive_candidate": True,
+            }
+        }
+
+        result = self.service._watchlist_idle_topup_candidates(scan_all=True)
+
+        self.assertNotIn("NVDA", self._candidate_symbols(result))
+        self.assertEqual(self._candidate_symbols(result), ["TSLA", "MSFT"])
+
 
 class WatchlistIdleTopupSchedulerTest(unittest.TestCase):
     def setUp(self):
@@ -550,6 +591,31 @@ class WatchlistIdleTopupSchedulerTest(unittest.TestCase):
 
         self.assertLess(wait_s, 1.0)
 
+    def test_next_wait_uses_actionable_completion_when_no_data_is_explained(self):
+        with mock.patch.object(
+            self.service,
+            "_watchlist_idle_topup_completion_snapshot",
+            return_value={
+                "stale": 2,
+                "missing": 0,
+                "unobserved": 0,
+                "actionable_stale": 0,
+                "actionable_missing": 0,
+                "actionable_unobserved": 0,
+                "explained_no_data_count": 2,
+            },
+        ):
+            wait_s = self.service._watchlist_idle_topup_next_wait_sec(
+                {
+                    "status": "completed",
+                    "last_stop_reason": "completed",
+                    "last_written_bars": 1,
+                    "last_admission": {"blockers": []},
+                }
+            )
+
+        self.assertEqual(wait_s, 2.0)
+
     def test_next_wait_uses_normal_loop_for_hard_blockers(self):
         wait_s = self.service._watchlist_idle_topup_next_wait_sec(
             {
@@ -560,6 +626,28 @@ class WatchlistIdleTopupSchedulerTest(unittest.TestCase):
         )
 
         self.assertEqual(wait_s, 2.0)
+
+    def test_completion_snapshot_separates_explained_no_data_from_actionable_stale(self):
+        self.service._watchlist_idle_observations = {
+            "NVDA": {"latest_ms": 0, "observed_at": "now"},
+            "TSLA": {"latest_ms": 1_000, "observed_at": "now"},
+        }
+        self.service._watchlist_idle_topup_state["no_data_cooldowns"] = {
+            "NVDA": {
+                "symbol": "NVDA",
+                "reason": "extended_hours_no_data",
+                "cooldown_until_ms": 20_000_000,
+                "inactive_candidate": True,
+            }
+        }
+
+        snapshot = self.service._watchlist_idle_topup_completion_snapshot(now_ms=10_000_000)
+
+        self.assertEqual(snapshot["explained_no_data_count"], 1)
+        self.assertEqual(snapshot["explained_no_data_symbols_sample"], ["NVDA"])
+        self.assertEqual(snapshot["missing"], 0)
+        self.assertEqual(snapshot["stale"], 1)
+        self.assertEqual(snapshot["actionable_stale"], 1)
 
 
 class WatchlistIdleTopupCycleTest(unittest.TestCase):
@@ -623,8 +711,113 @@ class WatchlistIdleTopupCycleTest(unittest.TestCase):
         for symbol in ("MSFT", "NVDA", "TSLA"):
             self.assertNotIn(symbol, call["persist_signal_symbols"])
 
+    def test_idle_topup_passes_trigger_context_to_backfill(self):
+        state = self.service._run_watchlist_idle_topup_cycle()
+
+        self.assertEqual(state["status"], "completed")
+        trace_context = self.service.data_backfill.backfill_all_calls[0]["trace_context"]
+        self.assertEqual(trace_context["trigger_type"], "scheduled_auto_topup")
+        self.assertEqual(trace_context["trigger_reason"], "watchlist 5m bars missing/stale")
+        self.assertEqual(trace_context["bar_interval"], "5m")
+        self.assertEqual(trace_context["request_period"], "1d")
+        self.assertIn("watchlist_completion_before", trace_context)
+
+    def test_hmds_no_data_marks_extended_hours_cooldown_and_batch_explanation(self):
+        self.service._active_subscription_symbols = {"AAPL"}
+        self.service._active_trade_symbols = {"AAPL"}
+        self.service._watchlist_symbols = ["AAPL", "TKO"]
+        self.service._watchlist_records = {"AAPL": {"symbol": "AAPL"}, "TKO": {"symbol": "TKO"}}
+        self.service._latest_5m_bar_ms = {"AAPL": 5000, "TKO": 1000}
+        self.service.data_backfill = DummyDataBackfill(self.service._latest_5m_bar_ms)
+        self.service.data_backfill.write_new_bars = False
+        self.service.data_backfill.last_trace = {
+            "source": "watchlist_idle_topup",
+            "symbol_outcomes": [
+                {
+                    "symbol": "TKO",
+                    "hmds_no_data": True,
+                    "last_error": "HMDS query returned no data: TKO@SMART Trades",
+                    "request_count": 1,
+                    "rows": 0,
+                }
+            ],
+        }
+        self.service.conid_resolver = DummyConidResolver({"TKO": 987})
+        self.service_mod.build_market_session_snapshot.return_value = {"kind": "afterhours"}
+
+        state = self.service._run_watchlist_idle_topup_cycle()
+
+        self.assertEqual(state["status"], "completed")
+        self.assertEqual(state["last_no_data_symbols"], ["TKO"])
+        self.assertEqual(state["last_no_data_reason"], "extended_hours_no_data")
+        self.assertIn("TKO", state["no_data_cooldowns"])
+        self.assertEqual(state["no_data_cooldowns"]["TKO"]["reason"], "extended_hours_no_data")
+        self.assertEqual(state["last_batches"][0]["no_data_symbols"], ["TKO"])
+        self.assertEqual(state["last_batches"][0]["explained_no_data_symbols"], ["TKO"])
+
+        candidates = self.service._watchlist_idle_topup_candidates(scan_all=True)
+        self.assertEqual([item["symbol"] for item in candidates], [])
+
+    def test_active_trade_no_data_is_not_silently_cooled(self):
+        self.service._active_subscription_symbols = set()
+        self.service._active_trade_symbols = {"TKO"}
+        self.service._watchlist_symbols = ["TKO"]
+        self.service._watchlist_records = {"TKO": {"symbol": "TKO"}}
+        self.service._latest_5m_bar_ms = {"TKO": 1000}
+        self.service.data_backfill = DummyDataBackfill(self.service._latest_5m_bar_ms)
+        self.service.data_backfill.write_new_bars = False
+        self.service.data_backfill.last_trace = {
+            "source": "watchlist_idle_topup",
+            "symbol_outcomes": [
+                {
+                    "symbol": "TKO",
+                    "hmds_no_data": True,
+                    "last_error": "HMDS query returned no data: TKO@SMART Trades",
+                    "request_count": 1,
+                    "rows": 0,
+                }
+            ],
+        }
+        self.service.conid_resolver = DummyConidResolver({"TKO": 987})
+        self.service_mod.build_market_session_snapshot.return_value = {"kind": "afterhours"}
+
+        state = self.service._run_watchlist_idle_topup_cycle()
+
+        self.assertEqual(state["status"], "completed")
+        self.assertNotIn("TKO", state["no_data_cooldowns"])
+        self.assertEqual(state["last_batches"][0]["active_no_data_symbols"], ["TKO"])
+
+    def test_repeated_no_data_emits_hygiene_candidate_alert_without_auto_remove(self):
+        self.service.pb = DummyPB()
+        self.service.config = DummyConfig(
+            {
+                "ibkr_watchlist_inactive_no_data_count_threshold": 1,
+                "ibkr_watchlist_inactive_days_threshold": 3,
+                "ibkr_watchlist_hygiene_notify_cooldown_hours": 24,
+            }
+        )
+
+        self.service._watchlist_idle_topup_record_no_data_symbols(
+            {"WELL": {"last_error": "HMDS query returned no data: WELL@SMART Trades"}},
+            "afterhours",
+        )
+
+        state = self.service._watchlist_idle_topup_status()
+        self.assertEqual([item["symbol"] for item in state["removal_candidates"]], ["WELL"])
+        self.assertFalse(state["removal_candidates"][0]["auto_remove_allowed"])
+        self.assertEqual(len(self.service.pb.notifications), 1)
+        self.assertIn("Watchlist hygiene", self.service.pb.notifications[0]["title"])
+
     def test_idle_topup_triggers_rollup_even_when_backfill_writes_no_new_5m_bars(self):
-        def zero_write_backfill(conid_map, symbol_meta=None, intervals=None, repair_symbols=None, period_overrides=None, trace_source=""):
+        def zero_write_backfill(
+            conid_map,
+            symbol_meta=None,
+            intervals=None,
+            repair_symbols=None,
+            period_overrides=None,
+            trace_source="",
+            trace_context=None,
+        ):
             self.service.data_backfill.backfill_all_calls.append(
                 {
                     "conid_map": dict(conid_map or {}),
@@ -633,6 +826,7 @@ class WatchlistIdleTopupCycleTest(unittest.TestCase):
                     "repair_symbols": list(repair_symbols or []),
                     "period_overrides": dict(period_overrides or {}),
                     "trace_source": trace_source,
+                    "trace_context": dict(trace_context or {}),
                 }
             )
             return {symbol: {"5m": 0} for symbol in (conid_map or {})}
