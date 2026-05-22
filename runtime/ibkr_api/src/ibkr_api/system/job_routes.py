@@ -347,6 +347,8 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
             config_value=config_value,
             console_base_url=console_base_url,
             startup_chat_id=startup_chat_id,
+            request_json_request=request_json_request,
+            compute_base_url=compute_base_url,
             load_market_snapshots=lambda environment, symbols, market_date, computed_at_ms: load_market_snapshots_from_pb(
                 pb,
                 environment,

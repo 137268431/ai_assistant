@@ -100,6 +100,87 @@ class DailyScannerDataCompletenessMixin:
         except Exception:
             return 2.0
 
+    def _data_completeness_defer_enabled(self, environment: str) -> bool:
+        cfg = getattr(self.api_app, "cfg", None)
+        if cfg is None or not hasattr(cfg, "get_bool_for_environment"):
+            return True
+        try:
+            return bool(
+                cfg.get_bool_for_environment(
+                    "ibkr_daily_scan_quality_defer_enabled",
+                    environment,
+                    True,
+                )
+            )
+        except Exception:
+            return True
+
+    def _data_completeness_defer_min_count(self, environment: str) -> int:
+        cfg = getattr(self.api_app, "cfg", None)
+        if cfg is None or not hasattr(cfg, "get_int_for_environment"):
+            return 10
+        try:
+            return max(
+                0,
+                int(
+                    cfg.get_int_for_environment(
+                        "ibkr_daily_scan_quality_defer_min_incomplete",
+                        environment,
+                        10,
+                    )
+                    or 0
+                ),
+            )
+        except Exception:
+            return 10
+
+    def _data_completeness_defer_ratio(self, environment: str) -> float:
+        cfg = getattr(self.api_app, "cfg", None)
+        if cfg is None or not hasattr(cfg, "get_float_for_environment"):
+            return 0.2
+        try:
+            return max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        cfg.get_float_for_environment(
+                            "ibkr_daily_scan_quality_defer_incomplete_ratio",
+                            environment,
+                            0.2,
+                        )
+                        or 0.0
+                    ),
+                ),
+            )
+        except Exception:
+            return 0.2
+
+    def _data_completeness_scan_quality_gate(
+        self,
+        environment: str,
+        *,
+        symbols_total: int,
+        blocking_incomplete_count: int,
+    ) -> dict:
+        total = max(0, int(symbols_total or 0))
+        blocked = max(0, int(blocking_incomplete_count or 0))
+        ratio = (blocked / total) if total > 0 else 0.0
+        min_count = self._data_completeness_defer_min_count(environment)
+        threshold_ratio = self._data_completeness_defer_ratio(environment)
+        enabled = self._data_completeness_defer_enabled(environment)
+        defer = bool(enabled and blocked > 0 and blocked >= min_count and ratio >= threshold_ratio)
+        return {
+            "enabled": enabled,
+            "defer": defer,
+            "reason": "blocking_data_incomplete_ratio" if defer else "",
+            "blocking_incomplete_count": blocked,
+            "symbols_total": total,
+            "blocking_incomplete_ratio": round(ratio, 6),
+            "threshold_min_count": min_count,
+            "threshold_ratio": threshold_ratio,
+        }
+
     def _runtime_watchlist_topup_fresh(self) -> bool:
         try:
             from ibkr_compute.api.runtime_status_client import get_remote_runtime_status

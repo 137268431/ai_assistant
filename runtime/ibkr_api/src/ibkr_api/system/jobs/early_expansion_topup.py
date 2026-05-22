@@ -104,7 +104,7 @@ def _scan_result_from_status(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _new_targets(result: dict[str, Any]) -> list[dict[str, Any]]:
-    return [item for item in (result.get("new_targets") or []) if isinstance(item, dict)]
+    return [item for item in (result.get("new_targets") or []) if isinstance(item, dict) and _to_text(item.get("symbol"))]
 
 
 def _notify_key(status_payload: dict[str, Any], result: dict[str, Any], environment: str, market_date: str) -> str:
@@ -239,7 +239,7 @@ def _build_card(
     console_base_url: str,
     source: str = "topup",
 ) -> dict[str, Any]:
-    new_targets = [_as_dict(item) for item in (result.get("new_targets") or []) if isinstance(item, dict)]
+    new_targets = [_as_dict(item) for item in (result.get("new_targets") or []) if isinstance(item, dict) and _to_text(item.get("symbol"))]
     lines = [_target_line(item, index) for index, item in enumerate(new_targets[:8], start=1)]
     if len(new_targets) > len(lines):
         lines.append(f"... 另有 {len(new_targets) - len(lines)} 个新增标的")
@@ -743,7 +743,7 @@ def build_early_expansion_topup_response(
             "source": "ibkr-api",
         }, 502
 
-    new_targets = [item for item in (result.get("new_targets") or []) if isinstance(item, dict)]
+    new_targets = [item for item in (result.get("new_targets") or []) if isinstance(item, dict) and _to_text(item.get("symbol"))]
     if not new_targets:
         return {
             "ok": True,

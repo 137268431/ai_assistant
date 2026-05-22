@@ -53,6 +53,9 @@ class DailyScannerRunMixin:
         active = 0
         removed = 0
         errors = 0
+        ok = True
+        retryable = False
+        error_text = ""
         environment_results = []
         eligible = 0
         rejection_summary: dict[str, int] = {}
@@ -83,6 +86,11 @@ class DailyScannerRunMixin:
             active += int(result.get("active", 0) or 0)
             removed += int(result.get("removed", 0) or 0)
             errors += int(result.get("errors", 0) or 0)
+            if result.get("ok") is False:
+                ok = False
+                retryable = retryable or bool(result.get("retryable"))
+                if not error_text:
+                    error_text = str(result.get("error") or result.get("last_error") or "daily_scan_failed")
             for bucket, count in (result.get("rejection_summary") or {}).items():
                 normalized_bucket = str(bucket or "").strip()
                 if not normalized_bucket:
@@ -142,7 +150,8 @@ class DailyScannerRunMixin:
         data_completeness["status"] = "repairing" if data_completeness["incomplete_symbols"] else "ready"
         data_completeness = compact_json_payload(data_completeness, max_list_items=80)
 
-        return {
+        payload = {
+            "ok": ok,
             "mode": scan_mode,
             "scan_stage": DAILY_SCAN_TOPUP_STAGE if scan_mode == DAILY_SCAN_MODE_TOPUP else DAILY_SCAN_STAGE,
             "scanned": scanned,
@@ -164,6 +173,10 @@ class DailyScannerRunMixin:
             "new_active": sum(int(result.get("new_active", 0) or 0) for result in environment_results),
             "new_candidates": sum(int(result.get("new_candidates", 0) or 0) for result in environment_results),
         }
+        if not ok:
+            payload["error"] = error_text or "daily_scan_failed"
+            payload["retryable"] = retryable
+        return payload
 
     def _run_environment_scan(self, date: str, environment: str, *, mode: str = DAILY_SCAN_MODE_SEED) -> dict:
         runtime_environment = resolve_data_environment(environment)
@@ -185,12 +198,87 @@ class DailyScannerRunMixin:
             if bool(completeness_gate.get("blocking_enabled"))
             else set()
         )
+        quality_gate = self._data_completeness_scan_quality_gate(
+            runtime_environment,
+            symbols_total=len(watchlist_symbols),
+            blocking_incomplete_count=len(blocking_incomplete_symbols),
+        )
         repair_strategy = str(completeness_gate.get("repair_strategy") or "").strip()
         incomplete_note = (
             "5m 基础数据不完整，blocking 开启，等待 Runtime watchlist 回补后重扫"
             if repair_strategy == "runtime_watchlist_idle_topup"
             else "5m 基础数据不完整，blocking 开启，已排除本轮筛选并进入异步 API 补偿"
         )
+        if scan_mode == DAILY_SCAN_MODE_SEED and bool(quality_gate.get("defer")):
+            rejection_summary, rejection_examples_by_bucket = _new_rejection_trackers()
+            for symbol in sorted(blocking_incomplete_symbols)[:12]:
+                freshness = (completeness_gate.get("items") or {}).get(symbol) or {}
+                stale_intervals = list(freshness.get("needs_repair_intervals") or [])
+                _record_rejection(
+                    rejection_summary,
+                    rejection_examples_by_bucket,
+                    bucket=REJECTION_BUCKET_DATA_INCOMPLETE,
+                    symbol=symbol,
+                    actual=",".join(stale_intervals) or str(freshness.get("status") or "incomplete"),
+                    threshold="blocking intervals ready",
+                    note=incomplete_note,
+                )
+            rejection_summary[REJECTION_BUCKET_DATA_INCOMPLETE] = len(blocking_incomplete_symbols)
+            data_completeness = {
+                "enabled": bool(completeness_gate.get("enabled")),
+                "blocking_enabled": bool(completeness_gate.get("blocking_enabled")),
+                "status": str(completeness_gate.get("status") or "repairing"),
+                "intervals": list(completeness_gate.get("intervals") or []),
+                "blocking_intervals": list(completeness_gate.get("blocking_intervals") or []),
+                "excluded_incomplete_count": len(blocking_incomplete_symbols),
+                "repairing_count": len(incomplete_symbols),
+                "incomplete_symbol_count": len(incomplete_symbols),
+                "incomplete_symbols": sorted(incomplete_symbols),
+                "soft_incomplete_count": len(completeness_gate.get("soft_incomplete_symbols") or []),
+                "soft_incomplete_symbols": list(completeness_gate.get("soft_incomplete_symbols") or []),
+                "blocking_incomplete_symbols": sorted(blocking_incomplete_symbols),
+                "repair_strategy": repair_strategy,
+                "runtime_topup_waited": bool(completeness_gate.get("runtime_topup_waited")),
+                "repair_job_count": int(completeness_gate.get("repair_job_count", 0) or 0),
+                "repair_jobs": list(completeness_gate.get("repair_jobs") or []),
+                "quality_gate": quality_gate,
+            }
+            return {
+                "ok": False,
+                "retryable": True,
+                "deferred": True,
+                "error": "daily_scan_data_incomplete_repairing",
+                "last_error": "daily_scan_data_incomplete_repairing",
+                "environment": runtime_environment,
+                "mode": scan_mode,
+                "scan_stage": scan_stage,
+                "scanned": len(watchlist_symbols),
+                "eligible": 0,
+                "candidates": 0,
+                "active": 0,
+                "removed": 0,
+                "errors": 0,
+                "new_targets": [],
+                "new_active": 0,
+                "new_candidates": 0,
+                "trade_subscription_budget": settings["trade_subscription_budget"],
+                "active_target_limit": max(
+                    0,
+                    int(settings.get("active_target_limit", DEFAULT_ACTIVE_TARGET_LIMIT) or DEFAULT_ACTIVE_TARGET_LIMIT),
+                ),
+                "active_min_score": max(
+                    0.0,
+                    _safe_float(settings.get("active_min_score"), DEFAULT_ACTIVE_MIN_SCORE),
+                ),
+                "manual_active_count": 0,
+                "manual_retained_count": 0,
+                "timeframe_rollup": {},
+                "engine_materialize": {},
+                "data_completeness": data_completeness,
+                "excluded_incomplete_count": len(blocking_incomplete_symbols),
+                "rejection_summary": rejection_summary,
+                "rejection_examples": _flatten_rejection_examples(rejection_examples_by_bucket),
+            }
         timeframe_rollup = self._rollup_scan_timeframes(runtime_environment, watchlist_symbols)
         engine_materialize = self._materialize_scan_engines(runtime_environment, watchlist_symbols)
         stored_indicator_snapshots = self._load_stored_indicator_snapshots(runtime_environment, watchlist_symbols)
