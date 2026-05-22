@@ -1,0 +1,448 @@
+:root {
+  --logic-bg: #071318;
+  --logic-panel: rgba(9, 18, 28, 0.88);
+  --logic-panel-2: rgba(11, 28, 33, 0.82);
+  --logic-line: rgba(119, 220, 205, 0.18);
+  --logic-line-strong: rgba(119, 220, 205, 0.34);
+  --logic-text: #e6f3f3;
+  --logic-muted: #91a8b8;
+  --logic-teal: #4fd1c5;
+  --logic-amber: #f6ad55;
+  --logic-blue: #63b3ed;
+  --logic-red: #fc8181;
+  --logic-green: #68d391;
+}
+
+body {
+  background:
+    radial-gradient(circle at top left, rgba(79, 209, 197, 0.14), transparent 34rem),
+    radial-gradient(circle at 80% 0%, rgba(99, 179, 237, 0.12), transparent 30rem),
+    linear-gradient(135deg, #061016 0%, #071a20 45%, #081018 100%);
+  color: var(--logic-text);
+}
+
+.logic-shell {
+  max-width: 1680px;
+}
+
+.logic-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 420px);
+  gap: 24px;
+  align-items: stretch;
+  border: 1px solid var(--logic-line-strong);
+  background:
+    linear-gradient(135deg, rgba(79, 209, 197, 0.13), rgba(99, 179, 237, 0.06)),
+    var(--logic-panel);
+  overflow: hidden;
+  position: relative;
+}
+
+.logic-hero::after {
+  content: "";
+  position: absolute;
+  inset: auto -10% -45% 45%;
+  height: 180px;
+  background: linear-gradient(90deg, transparent, rgba(246, 173, 85, 0.14), transparent);
+  transform: rotate(-10deg);
+  pointer-events: none;
+}
+
+.logic-hero h1 {
+  margin: 8px 0 10px;
+  font-family: 'Sora', sans-serif;
+  font-size: clamp(30px, 5vw, 58px);
+  line-height: 0.95;
+  letter-spacing: -0.055em;
+}
+
+.logic-hero p {
+  max-width: 860px;
+  margin: 0;
+  color: var(--logic-muted);
+  font-size: 15px;
+  line-height: 1.75;
+}
+
+.logic-hero-meta {
+  display: grid;
+  gap: 10px;
+  align-content: center;
+  padding: 14px;
+  border: 1px solid var(--logic-line);
+  border-radius: 22px;
+  background: rgba(3, 10, 18, 0.45);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--logic-muted);
+}
+
+.logic-meta-chip {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.logic-meta-chip strong {
+  color: var(--logic-text);
+}
+
+.logic-anchor-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  position: sticky;
+  top: 8px;
+  z-index: 5;
+  border: 1px solid var(--logic-line);
+  backdrop-filter: blur(14px);
+}
+
+.logic-anchor {
+  color: var(--logic-text);
+  text-decoration: none;
+  border: 1px solid rgba(79, 209, 197, 0.2);
+  background: rgba(79, 209, 197, 0.07);
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.logic-anchor:hover {
+  border-color: rgba(79, 209, 197, 0.55);
+  color: #ffffff;
+}
+
+.logic-content {
+  display: grid;
+  gap: 18px;
+}
+
+.logic-panel {
+  border: 1px solid var(--logic-line);
+  background: var(--logic-panel);
+  position: relative;
+  overflow: hidden;
+}
+
+.logic-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, rgba(79, 209, 197, 0.04), transparent 34%, rgba(246, 173, 85, 0.035));
+  pointer-events: none;
+}
+
+.logic-panel > * {
+  position: relative;
+}
+
+.logic-panel-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+
+.logic-kicker,
+.logic-section-kicker {
+  font-family: 'JetBrains Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-weight: 800;
+  color: var(--logic-teal);
+  font-size: 11px;
+}
+
+.logic-title,
+.logic-section-title {
+  font-family: 'Sora', sans-serif;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.035em;
+  margin-top: 5px;
+}
+
+.logic-copy,
+.logic-section-copy {
+  color: var(--logic-muted);
+  line-height: 1.65;
+  font-size: 13px;
+  margin-top: 6px;
+}
+
+.logic-source-stack {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: 620px;
+}
+
+.logic-source-chip,
+.logic-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid rgba(99, 179, 237, 0.18);
+  background: rgba(99, 179, 237, 0.07);
+  border-radius: 999px;
+  color: #b9dfff;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  padding: 5px 8px;
+}
+
+.logic-chip-grid,
+.logic-coverage-grid,
+.logic-stage-grid,
+.logic-scheduler-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.logic-chip,
+.logic-coverage-card,
+.logic-stage-card,
+.logic-scheduler-card {
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: 18px;
+  background: rgba(3, 10, 18, 0.48);
+  padding: 14px;
+}
+
+.logic-chip-label,
+.logic-coverage-label,
+.logic-scheduler-label {
+  font-family: 'JetBrains Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--logic-muted);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.logic-chip-value,
+.logic-coverage-value,
+.logic-scheduler-value {
+  margin-top: 8px;
+  font-family: 'Sora', sans-serif;
+  font-size: 21px;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  color: var(--logic-text);
+}
+
+.logic-chip-copy,
+.logic-coverage-copy,
+.logic-scheduler-copy {
+  margin-top: 5px;
+  color: var(--logic-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.logic-coverage-card.covered {
+  border-color: rgba(104, 211, 145, 0.24);
+  background: rgba(104, 211, 145, 0.06);
+}
+
+.logic-coverage-card.missing {
+  border-color: rgba(252, 129, 129, 0.35);
+  background: rgba(252, 129, 129, 0.08);
+}
+
+.logic-section-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 14px;
+}
+
+.logic-detail-section {
+  border: 1px solid rgba(79, 209, 197, 0.13);
+  border-radius: 18px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.028);
+}
+
+.logic-detail-title,
+.logic-stage-title,
+.logic-cron-title {
+  font-weight: 800;
+  color: var(--logic-text);
+  font-size: 15px;
+}
+
+.logic-detail-copy,
+.logic-stage-copy,
+.logic-cron-copy {
+  color: var(--logic-muted);
+  font-size: 12px;
+  line-height: 1.55;
+  margin-top: 5px;
+}
+
+.logic-lines {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.logic-line {
+  color: #d9e8ea;
+  font-size: 12px;
+  line-height: 1.55;
+  padding-left: 14px;
+  position: relative;
+}
+
+.logic-line::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.68em;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--logic-amber);
+  box-shadow: 0 0 12px rgba(246, 173, 85, 0.8);
+}
+
+.logic-stage-card {
+  display: grid;
+  gap: 10px;
+}
+
+.logic-stage-id {
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--logic-teal);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+
+.logic-stage-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.logic-stage-links a,
+.logic-panel-link {
+  color: var(--logic-teal);
+  text-decoration: none;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+}
+
+.logic-stage-links a:hover,
+.logic-panel-link:hover {
+  color: #ffffff;
+}
+
+.logic-scheduler-family {
+  margin-top: 18px;
+}
+
+.logic-scheduler-family-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  padding-bottom: 8px;
+}
+
+.logic-cron-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 12px;
+}
+
+.logic-cron-card {
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: 18px;
+  background: rgba(3, 10, 18, 0.5);
+  padding: 14px;
+}
+
+.logic-cron-card.off {
+  opacity: 0.66;
+}
+
+.logic-cron-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.logic-state {
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 800;
+  background: rgba(252, 129, 129, 0.12);
+  color: var(--logic-red);
+}
+
+.logic-state.on {
+  background: rgba(104, 211, 145, 0.12);
+  color: var(--logic-green);
+}
+
+.logic-cron-meta {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  color: var(--logic-muted);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+}
+
+.logic-empty-state,
+.logic-error {
+  color: var(--logic-muted);
+  border: 1px dashed rgba(252, 129, 129, 0.25);
+  background: rgba(252, 129, 129, 0.04);
+}
+
+@media (max-width: 900px) {
+  .logic-hero {
+    grid-template-columns: 1fr;
+  }
+  .logic-panel-head,
+  .logic-scheduler-family-head {
+    flex-direction: column;
+  }
+  .logic-source-stack {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 720px) {
+  .logic-shell {
+    padding-bottom: 80px;
+  }
+  .logic-anchor-strip {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+  .logic-anchor {
+    flex: 0 0 auto;
+  }
+  .logic-section-grid,
+  .logic-cron-grid {
+    grid-template-columns: 1fr;
+  }
+}

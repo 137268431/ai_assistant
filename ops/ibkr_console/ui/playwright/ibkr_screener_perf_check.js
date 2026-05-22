@@ -85,7 +85,6 @@ async function createContext(browser, token) {
 function getRouteKey(rawUrl) {
   try {
     const path = new URL(rawUrl).pathname || '';
-    if (path.endsWith('/api/custom/ibkr/rules')) return 'rules';
     if (path.endsWith('/api/custom/ibkr/today-targets')) return 'today-targets';
     if (path.endsWith('/api/custom/ibkr/screener')) return 'screener';
     if (path.endsWith('/api/custom/ibkr/quotes')) return 'quotes';
@@ -100,15 +99,12 @@ async function waitForReady(page, view) {
     await page.waitForFunction(() => {
       const meta = document.getElementById('tableMeta')?.textContent || '';
       const table = document.getElementById('screenerTable')?.textContent || '';
-      const rules = document.getElementById('rulesBoard')?.textContent || '';
       return (
         meta &&
         !meta.includes('等待加载') &&
         !meta.includes('加载中') &&
         table &&
-        !table.includes('加载中') &&
-        rules &&
-        !rules.includes('规则摘要加载中')
+        !table.includes('加载中')
       );
     }, { timeout: READY_TIMEOUT_MS });
     return;
@@ -117,15 +113,12 @@ async function waitForReady(page, view) {
   await page.waitForFunction(() => {
     const meta = document.getElementById('currentTargetsMeta')?.textContent || '';
     const table = document.getElementById('currentTargetsTable')?.textContent || '';
-    const rules = document.getElementById('rulesBoard')?.textContent || '';
     return (
       meta &&
       !meta.includes('等待加载') &&
       !meta.includes('正在加载') &&
       table &&
-      !table.includes('加载中') &&
-      rules &&
-      !rules.includes('规则摘要加载中')
+      !table.includes('加载中')
     );
   }, { timeout: READY_TIMEOUT_MS });
 }

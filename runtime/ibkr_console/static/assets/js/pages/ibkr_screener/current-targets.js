@@ -1418,7 +1418,6 @@
         currentTargetState.page = Math.max(1, Number(todayTargetsPayload.page || currentTargetState.page || 1) || 1);
         currentTargetState.perPage = getCurrentTargetPageSize();
         filteredCurrentTargetRows = Array.isArray(todayTargetsPayload.items) ? todayTargetsPayload.items : [];
-        renderRulesBoard();
         renderCurrentTargetTable();
         setPageRefreshTime();
         if (activeTab === 'screener' && activeScreenerView === 'current') updateHero();
@@ -1433,7 +1432,6 @@
         document.getElementById('currentTargetsTable').innerHTML = `<tr><td colspan="6" class="empty-state">${escapeHtml(error.message || error)}</td></tr>`;
         renderMobileCardState('currentTargetsCards', error.message || error);
         renderCurrentTargetPagination();
-        renderRulesBoard();
         if (activeTab === 'screener' && activeScreenerView === 'current') updateHero();
       }
     }

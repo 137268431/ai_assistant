@@ -21,17 +21,6 @@ async function fulfillStatic(route) {
   await route.fulfill({ path: filePath });
 }
 
-const mockRulesPayload = {
-  ok: true,
-  computed_at_us: '2026-05-04 10:31:00',
-  selection: {
-    title: 'Mock selection rules',
-    subtitle: 'static check',
-    chips: [],
-    sections: [],
-  },
-};
-
 const mockWindowProgressPayload = {
   ok: true,
   environment: 'live',
@@ -221,10 +210,6 @@ async function main() {
 
   await page.route('**/*', async (route) => {
     const url = route.request().url();
-    if (url.includes('/api/custom/ibkr/rules')) {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(mockRulesPayload) });
-      return;
-    }
     if (url.includes('/api/custom/ibkr/active-window-progress')) {
       windowProgressRequests.push(new URL(url));
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(mockWindowProgressPayload) });

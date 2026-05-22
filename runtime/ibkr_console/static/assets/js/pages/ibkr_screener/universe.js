@@ -447,7 +447,6 @@
         populateSelect('targetStatusFilter', screenerPayload.filters && screenerPayload.filters.target_statuses);
         populateSelect('directionFilter', screenerPayload.filters && screenerPayload.filters.direction_biases);
         applyFilters();
-        renderRulesBoard();
         if (loadCurrentTargetsAfter) {
           await loadTodayTargets(false);
         }
@@ -459,7 +458,6 @@
 
       try {
         showLoading('正在聚合筛选器数据...');
-        const rulesPromise = loadRulesSummary();
         const payload = await requestCachedJson(`/api/custom/ibkr/screener${buildQuery({
           broker_mode: currentBrokerMode,
           market_data_mode: currentEnvironment,
@@ -482,11 +480,9 @@
         populateSelect('targetStatusFilter', payload.filters && payload.filters.target_statuses);
         populateSelect('directionFilter', payload.filters && payload.filters.direction_biases);
         applyFilters();
-        await rulesPromise;
         if (loadCurrentTargetsAfter) {
           await loadTodayTargets(false);
         }
-        renderRulesBoard();
         setPageRefreshTime();
         if (activeTab === 'screener') updateHero();
         void refreshScreenerQuotes(items, loadKey);

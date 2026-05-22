@@ -3,16 +3,10 @@
         return loadScreener(false, { loadCurrentTargetsAfter: false, force });
       }
       if (activeScreenerView === 'window-progress') {
-        await Promise.all([
-          loadRulesSummary(),
-          loadWindowProgress(false, { force }),
-        ]);
+        await loadWindowProgress(false, { force });
         return;
       }
-      await Promise.all([
-        loadRulesSummary(),
-        loadTodayTargets(false),
-      ]);
+      await loadTodayTargets(false);
     }
 
     function renderScreenerSummary() {

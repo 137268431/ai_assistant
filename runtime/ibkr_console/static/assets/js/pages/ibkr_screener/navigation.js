@@ -109,7 +109,6 @@
       syncCurrentAdvancedFilters();
       if (force || lastPhoneViewport !== phoneViewport) {
         lastPhoneViewport = phoneViewport;
-        renderRulesBoard();
       }
     }
 

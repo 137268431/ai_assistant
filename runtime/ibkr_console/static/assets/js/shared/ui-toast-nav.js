@@ -35,6 +35,7 @@ function renderNav(activePage) {
         '/ibkr_warmup.html',
         '/ibkr_data_quality.html',
         '/ibkr_history_rebuild.html',
+        '/ibkr_system_logic.html',
         '/ibkr_runtime.html',
         '/ibkr_config.html'
       ],

@@ -101,7 +101,7 @@
         { path: '/ibkr_screener.html', aliases: ['/ibkr_screener.html', '/ibkr_watchlist.html', '/ibkr_targets.html'], icon: '🔎', label: '标的' },
         { path: '/ibkr_chart.html', aliases: ['/ibkr_chart.html', '/ibkr_indicators.html', '/ibkr_stats.html'], icon: '📈', label: '研究' },
         { path: '/ibkr_backtests.html', icon: '🧪', label: '回测' },
-        { path: '/ibkr_system.html', aliases: ['/ibkr_system.html', '/ibkr_monitor.html', '/ibkr_warmup.html', '/ibkr_data_quality.html', '/ibkr_history_rebuild.html', '/ibkr_runtime.html', '/ibkr_config.html'], icon: '🖥️', label: '系统' }
+        { path: '/ibkr_system.html', aliases: ['/ibkr_system.html', '/ibkr_monitor.html', '/ibkr_warmup.html', '/ibkr_data_quality.html', '/ibkr_history_rebuild.html', '/ibkr_system_logic.html', '/ibkr_runtime.html', '/ibkr_config.html'], icon: '🖥️', label: '系统' }
       ];
       return `
         <div class="nav" style="--nav-count:${pages.length}">
@@ -119,6 +119,7 @@
       return global.renderPageBridge([
         { path: '/ibkr_system.html', kicker: 'Overview', label: '总览', copy: '健康 / 统计', active: activePage === '/ibkr_system.html' },
         { path: '/ibkr_monitor.html', kicker: 'Ops', label: '运维', copy: '监控 / 排障', active: opsPages.includes(activePage) },
+        { path: '/ibkr_system_logic.html', kicker: 'Logic', label: '逻辑', copy: '规则 / 调度', active: activePage === '/ibkr_system_logic.html' },
         { path: '/ibkr_runtime.html', kicker: 'Console', label: '控制台', copy: '启动 / 2FA', active: activePage === '/ibkr_runtime.html' },
         { path: '/ibkr_config.html', kicker: 'Config', label: '配置', copy: '环境配置', options: { allowGlobal: true }, active: activePage === '/ibkr_config.html' }
       ]);

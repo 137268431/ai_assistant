@@ -39,6 +39,13 @@ function renderSystemBridge(activePage) {
       active: opsPages.includes(activePage)
     },
     {
+      path: '/ibkr_system_logic.html',
+      kicker: 'Logic',
+      label: '逻辑',
+      copy: '规则 / 调度',
+      active: activePage === '/ibkr_system_logic.html'
+    },
+    {
       path: '/ibkr_runtime.html',
       kicker: 'Console',
       label: '控制台',

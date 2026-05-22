@@ -589,7 +589,6 @@ async function collectPageExpectationIssues(page, url, mobile) {
       const currentViewPanel = document.getElementById('currentViewPanel');
       const activeMobileLists = Array.from(activeTab.querySelectorAll('.mobile-card-list')).filter(visible);
       const visibleDesktopTables = Array.from(activeTab.querySelectorAll('.desktop-table-wrap')).filter(visible);
-      const rulesPanels = Array.from(document.querySelectorAll('#rulesBoard .rules-panel'));
       const toggleButton = document.getElementById('toggleCurrentAdvancedFiltersBtn');
       const isCurrentScreenerView = isScreenerTab && currentViewPanel?.classList.contains('active');
       const rerunDailyScanButton = document.getElementById('rerunDailyScanBtn');
@@ -609,9 +608,6 @@ async function collectPageExpectationIssues(page, url, mobile) {
           const currentCards = document.getElementById('currentTargetsCards');
           if (!visible(currentCards)) issues.push('current_targets_mobile_cards_hidden');
           if (toggleButton && !visible(toggleButton)) issues.push('current_filter_toggle_hidden');
-        }
-        if (isScreenerTab && rulesPanels.length && !rulesPanels.some((panel) => panel.dataset.expanded === 'false')) {
-          issues.push('rules_not_collapsed_by_default');
         }
       } else {
         if (activeMobileLists.length) issues.push(`mobile_card_list_visible_on_desktop:${activeMobileLists.length}`);

@@ -19,8 +19,6 @@ let currentEnvironment = getSharedDataEnvironment();
       computed_at_us: '',
     };
     let runtimeCurrentMarketDate = '';
-    let rulesPayload = { selection: null, signals: null, computed_at_us: '' };
-    let rulesLoadError = '';
     let filteredRows = [];
     let filteredCurrentTargetRows = [];
     let activeWindowProgressStatus = 'all';
@@ -78,12 +76,9 @@ let currentEnvironment = getSharedDataEnvironment();
       perPage: 10,
     };
     let currentFiltersExpanded = false;
-    let rulesLoaded = false;
-    let rulesLoadingPromise = null;
     let screenerLoadKey = '';
     let responsiveStateBound = false;
     let lastPhoneViewport = null;
-    const expandedRulesPanels = new Set();
     let activeReadyTipId = '';
     let activeReadyTipTrigger = null;
     let activeReadyTipHoverRoot = null;
