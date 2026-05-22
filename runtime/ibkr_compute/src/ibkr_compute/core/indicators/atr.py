@@ -15,10 +15,15 @@ class ATRIndicator(BaseIndicator):
         self._atr_smoothing: str = self.params.get("atr_smoothing", "RMA")
         self._atr_multiplier: float = self.params.get("atr_multiplier", 1.5)
         self._orb_bars: int = max(1, int(self.params.get("orb_bars", 6)))
+        self._atr_pct_percentile_lookback: int = max(
+            1,
+            int(self.params.get("atr_pct_percentile_lookback", 100)),
+        )
 
         # ATR running state
         self._atr_raw: float = 0.0
         self._tr_values: deque = deque(maxlen=self._atr_length)
+        self._atr_pct_values: deque = deque(maxlen=self._atr_pct_percentile_lookback)
 
         # VWAP running state (reset daily)
         self._vwap_cum_vol: float = 0.0
@@ -31,7 +36,7 @@ class ATRIndicator(BaseIndicator):
         self._rvol_values: deque = deque(maxlen=20)
 
     def is_ready(self) -> bool:
-        return self.bar_count >= self._atr_length + 1
+        return self.bar_count >= max(self._atr_length + 1, self._atr_pct_percentile_lookback)
 
     def _compute(self):
         close = self.closes[-1]
@@ -60,6 +65,8 @@ class ATRIndicator(BaseIndicator):
 
         atr_val = self._atr_raw * self._atr_multiplier
         atr_pct = (self._atr_raw / close * 100.0) if close > 0 else 0.0
+        self._atr_pct_values.append(atr_pct)
+        atr_pct_percentile = self._percent_rank_latest(self._atr_pct_values)
 
         # VWAP (reset on new trading day)
         bar_date = self._extract_date()
@@ -108,6 +115,7 @@ class ATRIndicator(BaseIndicator):
             "atr": atr_val,
             "atr_raw": self._atr_raw,
             "atr_pct": atr_pct,
+            "atr_pct_percentile": atr_pct_percentile,
             "vwap": vwap,
             "vwap_dev": vwap_dev,
             "vwap_upper1": vwap_upper1,
@@ -136,6 +144,16 @@ class ATRIndicator(BaseIndicator):
         elif self._atr_smoothing == "WMA":
             return self.wma(self._tr_values, period) or prev
         return self.rma_step(prev, value, period)
+
+    @staticmethod
+    def _percent_rank_latest(values: deque) -> float:
+        window = list(values)
+        if not window:
+            return 0.0
+        latest = window[-1]
+        less = sum(1 for item in window if item < latest)
+        equal = sum(1 for item in window if item == latest)
+        return float((less + 0.5 * equal) / len(window) * 100.0)
 
     def _extract_date(self) -> str | None:
         """Extract the US market date from the last bar when available."""
@@ -169,6 +187,7 @@ class ATRIndicator(BaseIndicator):
         super().reset()
         self._atr_raw = 0.0
         self._tr_values.clear()
+        self._atr_pct_values.clear()
         self._vwap_cum_vol = 0.0
         self._vwap_cum_pv = 0.0
         self._hlc3_values.clear()

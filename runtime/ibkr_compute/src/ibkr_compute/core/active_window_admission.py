@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime
 from typing import Any
 
 from ibkr_compute.core.timeline_builder import build_runtime_timeline
+from ibkr_compute.core.time_utils import ET
 
 
 DEFAULT_SIGNAL_WINDOW_MAX_BARS = 12
+ADMISSION_GATE_VERSION = "signal_window_v1"
+DEFAULT_SIGNAL_WINDOW_START_ET = "09:35"
+DEFAULT_SIGNAL_WINDOW_END_ET = "15:30"
+DEFAULT_SD_Z_THRESHOLD = 3.0
 
 COMPONENT_LABELS = {
     "sd_upper_bull_touch_seen": "上轨 EMA 多头触及",
@@ -60,6 +66,182 @@ def _to_int(value: Any, default: int = 0) -> int:
 
 def _to_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _to_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None or value == "":
+            return float(default)
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _parse_hhmm(value: Any) -> tuple[int, int] | None:
+    text = _to_text(value)
+    token = text.split()[-1] if text.split() else text
+    if len(token) >= 5:
+        token = token[:5]
+    try:
+        hour_text, minute_text = token.split(":", 1)
+        hour = int(hour_text)
+        minute = int(minute_text)
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return hour, minute
+    except Exception:
+        return None
+    return None
+
+
+def _item_hhmm(item: dict[str, Any]) -> tuple[int, int] | None:
+    signal_state = item.get("signal_state") if isinstance(item.get("signal_state"), dict) else {}
+    candidate_signal = item.get("candidate_signal") if isinstance(item.get("candidate_signal"), dict) else {}
+    for key in ("latest_us_time", "us_time", "computed_at_us", "admitted_us_time"):
+        parsed = _parse_hhmm(item.get(key))
+        if parsed is not None:
+            return parsed
+    for payload in (signal_state, candidate_signal):
+        for key in ("us_time", "latest_us_time"):
+            parsed = _parse_hhmm(payload.get(key))
+            if parsed is not None:
+                return parsed
+    bar_time_ms = _to_int(
+        item.get("latest_bar_time_ms")
+        or item.get("bar_time_ms")
+        or signal_state.get("bar_time_ms")
+        or candidate_signal.get("bar_time_ms"),
+        0,
+    )
+    if bar_time_ms > 0:
+        try:
+            stamp = datetime.fromtimestamp(bar_time_ms / 1000.0, ET)
+            return stamp.hour, stamp.minute
+        except Exception:
+            return None
+    return None
+
+
+def _within_signal_window(
+    item: dict[str, Any],
+    *,
+    start_et: str = DEFAULT_SIGNAL_WINDOW_START_ET,
+    end_et: str = DEFAULT_SIGNAL_WINDOW_END_ET,
+) -> bool:
+    current = _item_hhmm(item)
+    if current is None:
+        return True
+    start = _parse_hhmm(start_et) or (9, 35)
+    end = _parse_hhmm(end_et) or (15, 30)
+    return start <= current <= end
+
+
+def _bool_from_sources(*values: Any) -> bool:
+    for value in values:
+        if isinstance(value, bool):
+            if value:
+                return True
+            continue
+        text = _to_text(value).lower()
+        if text in {"1", "true", "yes", "on", "long", "short", "overbought", "oversold"}:
+            return True
+    return False
+
+
+def _direction_from_payload(payload: dict[str, Any]) -> str:
+    direction = _to_text(payload.get("direction") or payload.get("direction_bias")).lower()
+    return direction if direction in {"long", "short"} else ""
+
+
+def signal_pressure_from_item(
+    item: dict[str, Any] | None,
+    *,
+    start_et: str = DEFAULT_SIGNAL_WINDOW_START_ET,
+    end_et: str = DEFAULT_SIGNAL_WINDOW_END_ET,
+    sd_z_threshold: float = DEFAULT_SD_Z_THRESHOLD,
+) -> dict[str, Any]:
+    """Return strict signal-window admission metadata for a target/window row."""
+
+    payload = item if isinstance(item, dict) else {}
+    signal_state = payload.get("signal_state") if isinstance(payload.get("signal_state"), dict) else {}
+    candidate_signal = payload.get("candidate_signal") if isinstance(payload.get("candidate_signal"), dict) else {}
+    state_signal = signal_state.get("signal_payload") if isinstance(signal_state.get("signal_payload"), dict) else {}
+    indicator_extra = payload.get("indicator_extra") if isinstance(payload.get("indicator_extra"), dict) else {}
+
+    keys: list[str] = []
+    sides: set[str] = set()
+
+    def add(key: str, side: str = "") -> None:
+        if key and key not in keys:
+            keys.append(key)
+        if side in {"long", "short"}:
+            sides.add(side)
+
+    if _bool_from_sources(payload.get("sd_lower_valid"), payload.get("sd_lower")):
+        add("sd_lower", "long")
+    if _bool_from_sources(payload.get("sd_upper_valid"), payload.get("sd_upper")):
+        add("sd_upper", "short")
+
+    sd_close_z = _to_float(
+        payload.get("sd_close_z")
+        if payload.get("sd_close_z") not in (None, "")
+        else indicator_extra.get("sd_close_z"),
+        0.0,
+    )
+    threshold = abs(_to_float(sd_z_threshold, DEFAULT_SD_Z_THRESHOLD)) or DEFAULT_SD_Z_THRESHOLD
+    if sd_close_z <= -threshold:
+        add("sd_close_z_lte_-3", "long")
+    elif sd_close_z >= threshold:
+        add("sd_close_z_gte_3", "short")
+
+    crsi = _to_float(payload.get("crsi") if payload.get("crsi") not in (None, "") else indicator_extra.get("crsi"), 50.0)
+    crsi_db = _to_float(
+        payload.get("crsi_db") if payload.get("crsi_db") not in (None, "") else indicator_extra.get("crsi_db"),
+        0.0,
+    )
+    crsi_ub = _to_float(
+        payload.get("crsi_ub") if payload.get("crsi_ub") not in (None, "") else indicator_extra.get("crsi_ub"),
+        0.0,
+    )
+    if _bool_from_sources(payload.get("crsi_os"), indicator_extra.get("crsi_os")) or (crsi_db > 0 and crsi <= crsi_db):
+        add("crsi_oversold", "long")
+    if _bool_from_sources(payload.get("crsi_ob"), indicator_extra.get("crsi_ob")) or (crsi_ub > 0 and crsi >= crsi_ub):
+        add("crsi_overbought", "short")
+
+    trace_stage = _to_text(payload.get("trace_stage") or signal_state.get("stage")).lower()
+    trace_direction = _direction_from_payload(signal_state)
+    if trace_stage in {"candidate", "confirmed"} and trace_direction:
+        add(f"trace_{trace_stage}", trace_direction)
+
+    candidate_direction = _direction_from_payload(candidate_signal) or _direction_from_payload(state_signal)
+    if (candidate_signal or state_signal) and candidate_direction:
+        add("candidate_signal", candidate_direction)
+
+    in_window = _within_signal_window(payload, start_et=start_et, end_et=end_et)
+    blocked = _to_text(payload.get("window_status")).lower() == "blocked" or trace_stage == "blocked"
+    passed = bool(keys and sides and in_window and not blocked)
+    family = "confirmed_signal" if trace_stage == "confirmed" else (
+        "candidate_signal" if candidate_signal or state_signal or trace_stage == "candidate" else (
+            "sd_pressure" if any(key.startswith("sd_") for key in keys) else (
+                "crsi_pressure" if any(key.startswith("crsi_") for key in keys) else "none"
+            )
+        )
+    )
+    return {
+        "admission_gate_version": ADMISSION_GATE_VERSION,
+        "signal_window_gate_passed": passed,
+        "signal_pressure_passed": passed,
+        "signal_pressure_keys": keys,
+        "signal_pressure_sides": sorted(sides),
+        "signal_window_time_passed": in_window,
+        "admission_trigger_family": family if passed else "none",
+    }
+
+
+def apply_signal_window_admission_metadata(item: dict[str, Any]) -> dict[str, Any]:
+    metadata = signal_pressure_from_item(item)
+    item.update(metadata)
+    item["admitted"] = is_active_window_admitted(item)
+    return item
 
 
 def component_value(component_flags: dict[str, Any], key: str) -> bool:
@@ -237,7 +419,7 @@ def is_active_window_admitted(item: dict[str, Any]) -> bool:
         return False
     if _to_text(item.get("trace_stage")).lower() == "blocked":
         return False
-    return bool(item.get("sd_upper_valid") or item.get("sd_lower_valid"))
+    return bool(signal_pressure_from_item(item).get("signal_pressure_passed"))
 
 
 def build_active_window_admission_item(trace: dict[str, Any], *, signal_window_max_bars: int) -> dict[str, Any]:
@@ -286,8 +468,7 @@ def build_active_window_admission_item(trace: dict[str, Any], *, signal_window_m
         "collected_components": rollup["collected"],
         "missing_components": rollup["missing"],
     }
-    item["admitted"] = is_active_window_admitted(item)
-    return item
+    return apply_signal_window_admission_metadata(item)
 
 
 def build_active_window_trace_for_bars(

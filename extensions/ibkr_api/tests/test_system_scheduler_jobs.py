@@ -1089,7 +1089,7 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertTrue(delivered["finalized"])
         self.assertEqual(delivered["notify_key"], "seed-run-1")
         self.assertEqual(sent[0]["environment"], "paper")
-        self.assertIn("盘前日筛新增", sent[0]["card"]["header"]["title"]["content"])
+        self.assertIn("信号窗口入池", sent[0]["card"]["header"]["title"]["content"])
         self.assertEqual(events[0][0], "early_expansion_topup")
         notify_state = states[("ibkr_early_expansion_topup_notify", "paper", "2026-05-22")]
         self.assertIn("seed-run-1", notify_state["notified_keys"])
@@ -1656,7 +1656,7 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["admitted"], 0)
         self.assertEqual(payload["reason"], "no_eligible_active_windows")
-        self.assertIn("no_window", payload["rejection_summary"])
+        self.assertIn("signal_pressure_not_ready", payload["rejection_summary"])
 
     def test_intraday_window_admission_respects_full_budget(self):
         pb = _IntradayAdmissionPB()

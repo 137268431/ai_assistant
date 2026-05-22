@@ -117,7 +117,7 @@ class ActiveWindowProgressTest(unittest.TestCase):
     def test_type1_requires_sd_upper_ema_bull_fractal_and_bull_divergence(self):
         self.assertEqual(
             self._run_signal_sequence("upper", ["ema_bull_touch", "fractal_bull", "crsi_bull_div"])["signal"],
-            "trend_sdUpper",
+            "sd_trend_continuation_long",
         )
         for missing in ("ema_bull_touch", "fractal_bull", "crsi_bull_div"):
             with self.subTest(missing=missing):
@@ -130,7 +130,7 @@ class ActiveWindowProgressTest(unittest.TestCase):
     def test_type2_requires_sd_lower_bull_fractal_and_bull_divergence(self):
         self.assertEqual(
             self._run_signal_sequence("lower", ["fractal_bull", "crsi_bull_div"])["signal"],
-            "mr_sdLower",
+            "sd_mr_reversal_long",
         )
         for missing in ("fractal_bull", "crsi_bull_div"):
             with self.subTest(missing=missing):
@@ -143,7 +143,7 @@ class ActiveWindowProgressTest(unittest.TestCase):
     def test_type3_requires_sd_upper_bear_fractal_and_bear_divergence(self):
         self.assertEqual(
             self._run_signal_sequence("upper", ["fractal_bear", "crsi_bear_div"])["signal"],
-            "mr_sdUpper",
+            "sd_mr_reversal_short",
         )
         for missing in ("fractal_bear", "crsi_bear_div"):
             with self.subTest(missing=missing):
@@ -156,7 +156,7 @@ class ActiveWindowProgressTest(unittest.TestCase):
     def test_type4_requires_sd_lower_ema_bear_fractal_and_bear_divergence(self):
         self.assertEqual(
             self._run_signal_sequence("lower", ["ema_bear_touch", "fractal_bear", "crsi_bear_div"])["signal"],
-            "trend_sdLower",
+            "sd_trend_continuation_short",
         )
         for missing in ("ema_bear_touch", "fractal_bear", "crsi_bear_div"):
             with self.subTest(missing=missing):

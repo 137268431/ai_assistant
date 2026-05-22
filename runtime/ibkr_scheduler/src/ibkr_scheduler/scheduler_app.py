@@ -136,6 +136,54 @@ def _compact_scheduler_state_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _compact_scheduler_response_payload(payload: Any) -> Any:
+    return compact_json_payload(
+        payload,
+        max_list_items=8,
+        max_dict_items=50,
+        max_string_length=400,
+        max_depth=4,
+    )
+
+
+def _compact_scheduler_response_state(payload: dict[str, Any]) -> dict[str, Any]:
+    state = dict(payload or {})
+    compacted = _compact_scheduler_response_payload(state)
+    if isinstance(compacted, dict) and _json_payload_size(compacted) <= 120_000:
+        return compacted
+    return {
+        "job_id": str(state.get("job_id") or ""),
+        "environment": str(state.get("environment") or ""),
+        "status": str(state.get("status") or ""),
+        "updated_at_ms": _safe_int(state.get("updated_at_ms"), 0),
+        "last_run_started_at_ms": _safe_int(state.get("last_run_started_at_ms"), 0),
+        "last_run_finished_at_ms": _safe_int(state.get("last_run_finished_at_ms"), 0),
+        "last_success_at_ms": _safe_int(state.get("last_success_at_ms"), 0),
+        "last_scheduled_slot": str(state.get("last_scheduled_slot") or ""),
+        "last_schedule_id": str(state.get("last_schedule_id") or ""),
+        "last_trigger_source": str(state.get("last_trigger_source") or ""),
+        "compacted": True,
+        "compact_reason": "response_size_limit",
+    }
+
+
+def _compact_scheduler_response_states(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        str(job_id): _compact_scheduler_response_state(state if isinstance(state, dict) else {"value": state})
+        for job_id, state in (payload or {}).items()
+    }
+
+
+def _safe_scheduler_loop_status() -> dict[str, Any]:
+    getter = getattr(scheduler, "loop_status", None)
+    if not callable(getter):
+        return {}
+    try:
+        return getter()
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 def _mapping_value(source: Mapping[str, Any] | None, key: str) -> Any:
     if not source:
         return None
@@ -1355,11 +1403,11 @@ def health():
     mode_context = _scheduler_mode_context(request.args)
     broker_mode = mode_context["broker_mode"]
     market_data_mode = mode_context["market_data_mode"]
-    jobs = scheduler.job_states_for_modes(broker_mode, market_data_mode)
     return jsonify(
         {
             "ok": True,
             "status": "running",
+            "payload": "lightweight",
             "service_profile": str(os.environ.get("IBKR_SERVICE_PROFILE") or "scheduler"),
             "environment": market_data_mode,
             "broker_mode": broker_mode,
@@ -1369,11 +1417,8 @@ def health():
             "shared_market_data": market_data_mode == "live",
             "gateway_mode": mode_context["gateway_mode"],
             "loop_interval_seconds": LOOP_INTERVAL_SECONDS,
-            "loop": scheduler.loop_status(),
-            "ingest_cursor": scheduler._get_ingest_cursor(market_data_mode),
-            "compute_dispatch_cursor": scheduler._get_dispatch_cursor(market_data_mode),
+            "loop": _safe_scheduler_loop_status(),
             "service_topology": build_service_topology(),
-            "jobs": jobs,
         }
     )
 
@@ -1384,11 +1429,14 @@ def status():
     broker_mode = mode_context["broker_mode"]
     market_data_mode = mode_context["market_data_mode"]
     lite = str(request.args.get("lite") or "").strip().lower() in {"1", "true", "yes", "on"}
+    full = str(request.args.get("full") or "").strip().lower() in {"1", "true", "yes", "on"}
     config.refresh()
-    jobs = scheduler.job_states_for_modes(broker_mode, market_data_mode)
+    raw_jobs = scheduler.job_states_for_modes(broker_mode, market_data_mode)
+    jobs = raw_jobs if full else _compact_scheduler_response_states(raw_jobs)
     payload = {
         "ok": True,
         "status": "running",
+        "payload": "full" if full else "compact",
         "service_profile": str(os.environ.get("IBKR_SERVICE_PROFILE") or "scheduler"),
         "environment": market_data_mode,
         "broker_mode": broker_mode,
@@ -1398,9 +1446,9 @@ def status():
         "shared_market_data": market_data_mode == "live",
         "gateway_mode": mode_context["gateway_mode"],
         "loop_interval_seconds": LOOP_INTERVAL_SECONDS,
-        "loop": scheduler.loop_status(),
-        "ingest_cursor": scheduler._get_ingest_cursor(market_data_mode),
-        "compute_dispatch_cursor": scheduler._get_dispatch_cursor(market_data_mode),
+        "loop": _safe_scheduler_loop_status(),
+        "ingest_cursor": _compact_scheduler_response_payload(scheduler._get_ingest_cursor(market_data_mode)),
+        "compute_dispatch_cursor": _compact_scheduler_response_payload(scheduler._get_dispatch_cursor(market_data_mode)),
         "service_topology": build_service_topology(),
         "jobs": jobs,
     }

@@ -25,6 +25,7 @@ from ibkr_api.universe.today_targets_shared import (
 )
 from ibkr_compute.api.market.screener.payload import parse_market_date_bounds_ms
 from ibkr_compute.core.active_window_admission import (
+    apply_signal_window_admission_metadata as _apply_signal_window_admission_metadata,
     bars_remaining as _admission_bars_remaining,
     build_active_window_trace_for_bars,
     build_active_window_admission_item,

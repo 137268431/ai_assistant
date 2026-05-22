@@ -35,7 +35,7 @@ from ibkr_compute.api.market.screener.scoring import (
     TRADABILITY_OPERABLE_MIN_SCORE,
     build_tradability_assessment,
 )
-from ibkr_compute.core.active_window_admission import is_active_window_admitted
+from ibkr_compute.core.active_window_admission import is_active_window_admitted, signal_pressure_from_item
 from ibkr_compute.market.timeframe_utils import normalize_interval
 
 
@@ -493,6 +493,11 @@ def _reject_reason(
     max_freshness_min: int,
 ) -> str:
     if not _window_is_valid(item):
+        pressure = signal_pressure_from_item(item)
+        if not pressure.get("signal_window_time_passed"):
+            return "outside_signal_window"
+        if not pressure.get("signal_pressure_keys"):
+            return "signal_pressure_not_ready"
         return to_text(item.get("window_status")) or "no_current_valid_window"
     freshness_min = metrics.get("freshness_min") if isinstance(metrics.get("freshness_min"), int) else None
     if freshness_min is None:
@@ -516,6 +521,8 @@ def _reject_reason(
 
 def _admission_score(item: dict[str, Any], metrics: dict[str, Any]) -> float:
     score = max(to_float(metrics.get("tradability_score")) or 0.0, to_float(item.get("target_score")) or 0.0)
+    if item.get("signal_pressure_passed"):
+        score += 8
     if item.get("sd_upper_valid") and item.get("sd_lower_valid"):
         score += 6
     elif item.get("sd_upper_valid") or item.get("sd_lower_valid"):
@@ -570,6 +577,12 @@ def _target_extra(
             "source": WINDOW_ADMISSION_SOURCE,
             "market_date": market_date,
             "admitted_at_ms": admitted_at_ms,
+            "admission_gate_version": to_text(item.get("admission_gate_version")) or "signal_window_v1",
+            "signal_window_gate_passed": bool(item.get("signal_window_gate_passed")),
+            "signal_pressure_passed": bool(item.get("signal_pressure_passed")),
+            "signal_pressure_keys": list(item.get("signal_pressure_keys") or []),
+            "signal_pressure_sides": list(item.get("signal_pressure_sides") or []),
+            "admission_trigger_family": to_text(item.get("admission_trigger_family")),
             "window_status": to_text(item.get("window_status")),
             "trace_stage": to_text(item.get("trace_stage")),
             "window_flags": item.get("window_flags") if isinstance(item.get("window_flags"), dict) else {},
@@ -639,7 +652,7 @@ def build_intraday_window_admission_response(
     force = parse_boolean(request_payload.get("force"), False)
     dry_run = parse_boolean(first_defined(request_payload.get("dry_run"), request_payload.get("dryRun")), False)
     start_et = to_text(request_payload.get("start_et") or "09:35")
-    end_et = to_text(request_payload.get("end_et") or "15:55")
+    end_et = to_text(request_payload.get("end_et") or "15:30")
     if not force and not _is_admission_window(times, start_et=start_et, end_et=end_et):
         return {
             "ok": True,
@@ -925,7 +938,7 @@ def build_intraday_window_admission_response(
                 "intraday_window_admission",
                 "info",
                 "ibkr_api",
-                "IBKR 盘中窗口入池",
+                "IBKR 信号窗口入池",
                 {
                     "market_date": market_date,
                     "admitted": len(admitted_symbols),

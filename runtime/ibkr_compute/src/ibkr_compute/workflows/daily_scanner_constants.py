@@ -45,6 +45,7 @@ REJECTION_BUCKET_ATR = "atr_pct_below_threshold"
 REJECTION_BUCKET_DAY_CHANGE = "day_change_below_threshold"
 REJECTION_BUCKET_DATA_INCOMPLETE = "data_incomplete_repairing"
 REJECTION_BUCKET_CONTEXT_GATE = "context_gate_not_passed"
+REJECTION_BUCKET_ACTIVE_BUDGET = "active_target_limit_full"
 REJECTION_BUCKET_TOPUP_ACTIVE_SCORE = "topup_context_gate_not_passed"
 REJECTION_BUCKET_TOPUP_ACTIVE_BUDGET = "topup_active_budget_full"
 

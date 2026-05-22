@@ -24,10 +24,10 @@ TOPUP_NOTIFY_STATE_KEY = "ibkr_early_expansion_topup_notify"
 def _notification_title_prefix(source: str) -> str:
     normalized = _to_text(source).lower()
     if normalized == "seed":
-        return "IBKR 盘前日筛新增"
+        return "IBKR 信号窗口入池"
     if normalized == "admission":
-        return "IBKR 盘中入池新增"
-    return "IBKR 早盘扩池新增"
+        return "IBKR 信号窗口入池"
+    return "IBKR 信号窗口入池"
 
 
 def _to_text(value: Any) -> str:
@@ -298,7 +298,7 @@ def _build_failure_card(
     return {
         "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"tag": "plain_text", "content": f"IBKR 早盘扩池失败 · Broker {broker_mode.upper()}"},
+            "title": {"tag": "plain_text", "content": f"IBKR 信号窗口入池失败 · Broker {broker_mode.upper()}"},
             "template": "red",
         },
         "elements": [
@@ -352,7 +352,7 @@ def _deliver_new_targets_notification(
         "early_expansion_topup",
         "info",
         "ibkr_api",
-        "IBKR 早盘扩池新增",
+        "IBKR 信号窗口入池",
         {
             "market_date": market_date,
             "broker_mode": broker_mode,
@@ -713,7 +713,7 @@ def build_early_expansion_topup_response(
             "early_expansion_topup",
             "error",
             "ibkr_api",
-            "IBKR 早盘扩池失败",
+            "IBKR 信号窗口入池失败",
             {
                 "market_date": market_date,
                 "broker_mode": broker_mode,

@@ -15,6 +15,7 @@ from .indicators.dtp import DTP
 from .indicators.atr import ATRIndicator
 from .indicators.crsi import CyclicRSI
 from .indicators.obv_rsi import OBVRsi
+from .indicators.technical import TechnicalIndicators
 from .indicators.divergence import DivergenceDetector
 from .indicators.filters import SignalFilters
 
@@ -33,6 +34,13 @@ DEFAULT_PARAMS = {
     "dtp_signal_band": 4, "dtp_momentum_lookback": 12, "dtp_trend_threshold": 0.1,
     "dtp_early_bars": 12, "dtp_mature_bars": 48,
     "atr_length": 10, "atr_smoothing": "RMA", "atr_multiplier": 1.5,
+    "atr_pct_percentile_lookback": 100,
+    "adx_length": 14, "adx_smoothing": 14,
+    "macd_fast_length": 12, "macd_slow_length": 26, "macd_signal_length": 9,
+    "ppo_fast_length": 12, "ppo_slow_length": 26, "ppo_signal_length": 9,
+    "mfi_length": 14,
+    "stochrsi_rsi_length": 14, "stochrsi_length": 14,
+    "stochrsi_k_smoothing": 3, "stochrsi_d_smoothing": 3,
     "orb_bars": 6,
     "crsi_domcycle": 20, "crsi_vibration": 6, "crsi_leveling": 10.0,
     "crsi_div_lookback": 4, "crsi_div_max_bars": 30,
@@ -61,6 +69,11 @@ DEFAULT_PARAMS = {
     "intraday_max_atr_pct": 1.20,
     "intraday_max_directional_day_change_pct": 4.0,
     "intraday_trend_mismatch_max_abs_day_change_pct": 0.0,
+    "intraday_min_signal_quality_score": 70.0,
+    "intraday_candidate_observation_min_quality_score": 60.0,
+    "entry_plan_version": "entry_plan_v2",
+    "entry_breakout_marketable_quality_min": 80.0,
+    "entry_reprice_policy": "single_reprice_then_cancel",
     "intraday_vwap_pullback_atr_mult": 0.15,
     "intraday_vwap_pullback_max_bps": 10.0,
     "intraday_vwap_pullback_long_require_trend_walk": True,
@@ -78,6 +91,20 @@ def indicator_ready_bar_count(params: dict | None = None) -> int:
     dtp_sma_length = int(effective.get("dtp_sma_length", 100))
     dtp_atr_length = int(effective.get("dtp_atr_length", 200))
     atr_length = int(effective.get("atr_length", 10))
+    atr_pct_percentile_lookback = int(effective.get("atr_pct_percentile_lookback", 100))
+    adx_length = int(effective.get("adx_length", 14))
+    adx_smoothing = int(effective.get("adx_smoothing", 14))
+    macd_fast_length = int(effective.get("macd_fast_length", 12))
+    macd_slow_length = int(effective.get("macd_slow_length", 26))
+    macd_signal_length = int(effective.get("macd_signal_length", 9))
+    ppo_fast_length = int(effective.get("ppo_fast_length", 12))
+    ppo_slow_length = int(effective.get("ppo_slow_length", 26))
+    ppo_signal_length = int(effective.get("ppo_signal_length", 9))
+    mfi_length = int(effective.get("mfi_length", 14))
+    stochrsi_rsi_length = int(effective.get("stochrsi_rsi_length", 14))
+    stochrsi_length = int(effective.get("stochrsi_length", 14))
+    stochrsi_k_smoothing = int(effective.get("stochrsi_k_smoothing", 3))
+    stochrsi_d_smoothing = int(effective.get("stochrsi_d_smoothing", 3))
     crsi_domcycle = int(effective.get("crsi_domcycle", 20))
     crsi_vibration = int(effective.get("crsi_vibration", 6))
 
@@ -88,7 +115,12 @@ def indicator_ready_bar_count(params: dict | None = None) -> int:
         200 + ema_slope_lookback,
         sd_length,
         max(dtp_sma_length, dtp_atr_length),
-        atr_length + 1,
+        max(atr_length + 1, atr_pct_percentile_lookback),
+        adx_length + adx_smoothing,
+        max(macd_fast_length, macd_slow_length) + macd_signal_length,
+        max(ppo_fast_length, ppo_slow_length) + ppo_signal_length,
+        mfi_length + 1,
+        stochrsi_rsi_length + stochrsi_length + stochrsi_k_smoothing + stochrsi_d_smoothing,
         crsi_cycle_len + crsi_phasing_lag + 2,
     )
 
@@ -166,6 +198,7 @@ class IndicatorEngine:
         self.sd = SDChannel(self.params)
         self.dtp = DTP(self.params)
         self.atr_ind = ATRIndicator(self.params)
+        self.technical = TechnicalIndicators(self.params)
         self.crsi = CyclicRSI(self.params)
         self.obv = OBVRsi(self.params)
         self.divergence = DivergenceDetector(self.params)
@@ -199,13 +232,16 @@ class IndicatorEngine:
         # ⑤ ATR + VWAP
         atr_out = self.atr_ind.update(bar)
 
-        # ⑥ cRSI
+        # ⑥ Common technical indicators
+        technical_out = self.technical.update(bar)
+
+        # ⑦ cRSI
         crsi_out = self.crsi.update(bar)
 
-        # ⑦ OBV RSI
+        # ⑧ OBV RSI
         obv_out = self.obv.update(bar)
 
-        # ⑧ Divergence (uses crsi and obv_rsi values)
+        # ⑨ Divergence (uses crsi and obv_rsi values)
         crsi_val = crsi_out.get("crsi", 50.0)
         obv_val = obv_out.get("obv_rsi", 50.0)
         div_out = self.divergence.update(
@@ -235,11 +271,12 @@ class IndicatorEngine:
         snapshot.update(sd_out)
         snapshot.update(dtp_out)
         snapshot.update(atr_out)
+        snapshot.update(technical_out)
         snapshot.update(crsi_out)
         snapshot.update(obv_out)
         snapshot.update(div_out)
 
-        # ⑨ Filters (needs merged snapshot)
+        # ⑩ Filters (needs merged snapshot)
         filter_out = self.filters.update(snapshot)
         snapshot.update(filter_out)
 
@@ -255,6 +292,7 @@ class IndicatorEngine:
             and self.sd.is_ready()
             and self.dtp.is_ready()
             and self.atr_ind.is_ready()
+            and self.technical.is_ready()
             and self.crsi.is_ready()
         )
 

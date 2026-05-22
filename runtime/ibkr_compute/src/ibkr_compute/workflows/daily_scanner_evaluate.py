@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ibkr_compute.core.active_window_admission import signal_pressure_from_item
 from ibkr_compute.market.timeframe_utils import normalize_interval
 from ibkr_compute.universe.dynamic_admission import (
     evaluate_dynamic_admission,
@@ -129,6 +130,33 @@ def _sides_with_signal(
     return sides
 
 
+def _signal_pressure_from_snapshots(snapshots: dict[str, dict], timeframes: tuple[str, ...]) -> dict:
+    sides: set[str] = set()
+    keys: list[str] = []
+    by_timeframe: dict[str, dict] = {}
+    for tf in timeframes:
+        snapshot = snapshots.get(tf)
+        if not isinstance(snapshot, dict):
+            continue
+        pressure = signal_pressure_from_item(snapshot)
+        by_timeframe[tf] = pressure
+        if not pressure.get("signal_pressure_passed"):
+            continue
+        for side in pressure.get("signal_pressure_sides") or []:
+            if side in {"long", "short"}:
+                sides.add(side)
+        for key in pressure.get("signal_pressure_keys") or []:
+            labeled = f"{tf}:{key}"
+            if labeled not in keys:
+                keys.append(labeled)
+    return {
+        "signal_pressure_passed": bool(sides),
+        "signal_pressure_sides": sorted(sides),
+        "signal_pressure_keys": keys,
+        "signal_pressure_by_timeframe": by_timeframe,
+    }
+
+
 def _build_context_gate(
     *,
     snapshots: dict[str, dict],
@@ -139,12 +167,15 @@ def _build_context_gate(
 ) -> dict:
     long_cycle_sides = _side_set_from_snapshots(snapshots, _LONG_CYCLE_TIMEFRAMES)
     structure_sides = _side_set_from_snapshots(snapshots, _STRUCTURE_TIMEFRAMES)
-    trigger_sides = _trigger_sides(snapshots, metric_row)
+    context_trigger_sides = _trigger_sides(snapshots, metric_row)
+    pressure = _signal_pressure_from_snapshots(
+        snapshots,
+        _TRIGGER_TIMEFRAMES + _STRUCTURE_TIMEFRAMES,
+    )
+    trigger_sides = set(pressure["signal_pressure_sides"])
     direction = str(direction_bias or "").strip().lower()
     direction_sides = {direction} if direction in {"long", "short"} else {"long", "short"}
-    if day_gain_triggered and not trigger_sides:
-        trigger_sides = set(direction_sides)
-    effective_structure_sides = structure_sides or trigger_sides
+    effective_structure_sides = structure_sides or context_trigger_sides or trigger_sides
     effective_regime_sides = long_cycle_sides or effective_structure_sides
     trend_sides = effective_regime_sides & effective_structure_sides & trigger_sides & direction_sides
 
@@ -170,10 +201,6 @@ def _build_context_gate(
 
     hot_sides = set()
     rvol_20 = max(_safe_float(metric_row.get("rvol_20")), _snapshot_best_float(snapshots, "rvol_20", 0.0))
-    if day_gain_triggered or rvol_20 >= 3.0:
-        hot_sides = set(trend_sides)
-    if (day_gain_triggered or rvol_20 >= 3.0) and not hot_sides and trigger_sides:
-        hot_sides = set(trigger_sides & direction_sides)
 
     setup_family = ""
     family_score = 0.0
@@ -182,13 +209,26 @@ def _build_context_gate(
     if reversal_sides:
         allowed_sides = sorted(reversal_sides)
         setup_family = "exhaustion_reversal"
-        family_score = 16.0
-        family_reason = "quality + long-cycle trend extended into SD/exhaustion reversal"
+        family_score = 22.0
+        family_reason = "quality + trade-window SD/cRSI pressure + exhaustion reversal"
     elif hot_sides:
         allowed_sides = sorted(hot_sides)
         setup_family = "hot_momentum"
         family_score = 18.0
         family_reason = "quality + regime/structure context + 15m/5m hot trigger"
+    elif trigger_sides:
+        aligned_sides = trigger_sides & direction_sides
+        if not aligned_sides and direction not in {"long", "short"}:
+            aligned_sides = set(trigger_sides)
+        allowed_sides = sorted(aligned_sides or trigger_sides)
+        if trend_sides and structure_sides:
+            setup_family = "signal_window_trend"
+            family_score = 20.0
+            family_reason = "quality + multi-timeframe context + trade-window SD/cRSI pressure"
+        else:
+            setup_family = "signal_pressure"
+            family_score = 16.0
+            family_reason = "quality + trade-window SD/cRSI pressure"
     elif trend_sides and structure_sides:
         allowed_sides = sorted(trend_sides)
         if sd_sides & trend_sides:
@@ -212,17 +252,24 @@ def _build_context_gate(
     if setup_family and soft_missing:
         family_reason = f"{family_reason}; soft_missing={','.join(soft_missing)}"
 
-    context_gate_passed = bool(quality_gate_passed and allowed_sides and setup_family)
+    signal_pressure_passed = bool(pressure["signal_pressure_passed"])
+    context_gate_passed = bool(quality_gate_passed and signal_pressure_passed and allowed_sides and setup_family)
     missing = []
     if not quality_gate_passed:
         missing.append("quality")
-    if not trigger_sides:
-        missing.append("15m/5m_trigger")
+    if not signal_pressure_passed:
+        missing.append("signal_pressure")
     if not allowed_sides and not missing:
         missing.append("timeframe_alignment")
     context_score = family_score + len(long_cycle_sides) * 2.0 + len(structure_sides) * 1.5 + len(trigger_sides)
     return {
         "context_gate_passed": context_gate_passed,
+        "signal_window_gate_passed": context_gate_passed,
+        "signal_pressure_passed": signal_pressure_passed,
+        "signal_pressure_keys": list(pressure["signal_pressure_keys"]),
+        "signal_pressure_sides": sorted(trigger_sides),
+        "admission_trigger_family": setup_family or "none",
+        "admission_gate_version": "signal_window_v1",
         "setup_family": setup_family or "none",
         "allowed_sides": allowed_sides,
         "context_score": round(context_score if context_gate_passed else 0.0, 3),
@@ -234,10 +281,12 @@ def _build_context_gate(
             "long_cycle_sides": sorted(long_cycle_sides),
             "structure_sides": sorted(structure_sides),
             "trigger_sides": sorted(trigger_sides),
+            "context_trigger_sides": sorted(context_trigger_sides),
             "trend_sides": sorted(trend_sides),
             "reversal_sides": sorted(reversal_sides),
             "soft_missing": soft_missing,
         },
+        "signal_pressure_by_timeframe": pressure["signal_pressure_by_timeframe"],
     }
 
 

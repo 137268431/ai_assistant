@@ -32,13 +32,23 @@ def context_engines(symbol: str, *, environment: str = "live", side: str = "long
     )
     trigger = dict(snapshot)
     if bullish:
+        trigger["us_time"] = "10:00"
         trigger["orb_breakout_up"] = True
         trigger["vwap_alignment"] = "above"
+        trigger["sd_lower"] = True
+        trigger["crsi_os"] = True
+        trigger["crsi"] = 18.0
+        trigger["crsi_db"] = 30.0
         if hot:
             trigger["rvol_20"] = 3.2
     else:
+        trigger["us_time"] = "10:00"
         trigger["orb_breakout_down"] = True
         trigger["vwap_alignment"] = "below"
+        trigger["sd_upper"] = True
+        trigger["crsi_ob"] = True
+        trigger["crsi"] = 82.0
+        trigger["crsi_ub"] = 70.0
         if hot:
             trigger["rvol_20"] = 3.2
     return {
@@ -269,7 +279,7 @@ class DailyScanRejectionSummaryTest(unittest.TestCase):
         self.assertEqual(result["new_candidates"], 0)
         self.assertEqual(result["rejection_summary"]["topup_active_budget_full"], 1)
 
-    def test_seed_keeps_rank_over_active_limit_active_with_budget_metadata(self):
+    def test_seed_caps_active_rows_at_active_target_limit(self):
         self.settings["active_target_limit"] = 1
         daily_scanner_mod._load_scan_settings.return_value = dict(self.settings)
         watchlist = [
@@ -294,16 +304,16 @@ class DailyScanRejectionSummaryTest(unittest.TestCase):
 
         result = scanner.run_scan("2026-04-21", environments=["live"])
 
-        self.assertEqual(result["active"], 2)
+        self.assertEqual(result["active"], 1)
         self.assertEqual(result["candidates"], 0)
-        self.assertEqual(result["new_active"], 2)
+        self.assertEqual(result["new_active"], 1)
         self.assertEqual(result["new_candidates"], 0)
-        self.assertEqual([row["status"] for row in pb_client.upserts], ["active", "active"])
+        self.assertEqual([row["status"] for row in pb_client.upserts], ["active"])
         by_symbol = {row["symbol"]: row for row in pb_client.upserts}
         self.assertTrue(by_symbol["AAPL"]["extra"]["within_subscription_budget"])
         self.assertEqual(by_symbol["AAPL"]["extra"]["subscription_rank"], 1)
-        self.assertFalse(by_symbol["NVDA"]["extra"]["within_subscription_budget"])
-        self.assertEqual(by_symbol["NVDA"]["extra"]["subscription_rank"], 0)
+        self.assertNotIn("NVDA", by_symbol)
+        self.assertEqual(result["rejection_summary"]["active_target_limit_full"], 1)
 
     def test_topup_adds_context_active_even_below_active_score(self):
         self.settings["active_min_score"] = 35
@@ -330,7 +340,7 @@ class DailyScanRejectionSummaryTest(unittest.TestCase):
         self.assertEqual(pb_client.upserts[0]["status"], "active")
         self.assertTrue(pb_client.upserts[0]["extra"]["context_active"])
         self.assertTrue(pb_client.upserts[0]["extra"]["context_gate_passed"])
-        self.assertEqual(pb_client.upserts[0]["extra"]["setup_family"], "trend_follow")
+        self.assertIn(pb_client.upserts[0]["extra"]["setup_family"], {"signal_pressure", "signal_window_trend"})
         self.assertEqual(pb_client.upserts[0]["extra"]["allowed_sides"], ["long"])
         self.assertGreater(pb_client.upserts[0]["extra"]["context_score"], 0)
         self.assertEqual(result["new_active"], 1)
@@ -398,9 +408,9 @@ class DailyScanRejectionSummaryTest(unittest.TestCase):
         self.assertEqual(result["new_candidates"], 0)
         self.assertNotIn("AAPL", statuses)
         self.assertEqual(result["rejection_summary"]["context_gate_not_passed"], 1)
-        self.assertEqual(
+        self.assertIn(
             next(row for row in pb_client.upserts if row["symbol"] == "NVDA")["extra"]["setup_family"],
-            "hot_momentum",
+            {"signal_pressure", "signal_window_trend"},
         )
 
     def test_evaluate_symbol_adds_stocks_in_play_bonus_fields(self):
@@ -490,7 +500,7 @@ class DailyScanRejectionSummaryTest(unittest.TestCase):
         self.assertTrue(result["extra"]["day_gain_triggered"])
         self.assertEqual(result["extra"]["long_votes"], 1)
 
-    def test_day_gain_trigger_can_select_symbol_without_sd_touch(self):
+    def test_day_gain_trigger_does_not_select_symbol_without_signal_pressure(self):
         pb_client = DummyPBClient(watchlist=[])
         scanner = DailyScanner(pb_client=pb_client, engines={})
 
@@ -513,6 +523,10 @@ class DailyScanRejectionSummaryTest(unittest.TestCase):
         self.assertEqual(result["direction_bias"], "neutral")
         self.assertIn("day_gain>=4%", result["reason"])
         self.assertEqual(result["extra"]["selection_triggers"], ["day_gain"])
+        self.assertFalse(result["context_gate_passed"])
+        self.assertFalse(result["extra"]["signal_pressure_passed"])
+        self.assertEqual(result["setup_family"], "none")
+        self.assertEqual(result["context_reason"], "context_missing=signal_pressure")
         self.assertEqual(result["strategy_policy"]["selection_trigger"], "day_gain")
         self.assertEqual(result["strategy_policy"]["allowed_sides"], ["long", "short"])
         self.assertEqual(result["strategy_policy"]["entry_style"], "wait_for_pullback_or_exhaustion")

@@ -183,6 +183,13 @@ def build_active_window_items_for_symbols(
             "freshness_min": freshness_min,
             "price": round(price, 4) if price > 0 else 0.0,
             "atr_pct": round(to_float(first_defined(latest_row.get("atr_pct"), indicator_extra.get("atr_pct"), target_extra.get("atr_pct"))) or 0.0, 2),
+            "sd_close_z": round(to_float(first_defined(latest_row.get("sd_close_z"), indicator_extra.get("sd_close_z"))) or 0.0, 4),
+            "crsi": round(to_float(first_defined(latest_row.get("crsi"), indicator_extra.get("crsi"))) or 0.0, 4),
+            "crsi_db": round(to_float(first_defined(latest_row.get("crsi_db"), indicator_extra.get("crsi_db"))) or 0.0, 4),
+            "crsi_ub": round(to_float(first_defined(latest_row.get("crsi_ub"), indicator_extra.get("crsi_ub"))) or 0.0, 4),
+            "crsi_os": bool(first_defined(latest_row.get("crsi_os"), indicator_extra.get("crsi_os"), False)),
+            "crsi_ob": bool(first_defined(latest_row.get("crsi_ob"), indicator_extra.get("crsi_ob"), False)),
+            "indicator_extra": indicator_extra,
             "window_state": to_text(admission_item.get("window_state")),
             "window_max_bars": window_max_bars,
             "window_flags": window_flags,
@@ -220,6 +227,11 @@ def build_active_window_items_for_symbols(
             "trace_stage": to_text(signal_state.get("stage")) or "none",
             "trace_error": trace_error,
         }
+        _apply_signal_window_admission_metadata(item)
+        if item.get("admitted") and item["window_status"] == "no_window":
+            item["status"] = "signal_pressure"
+            item["window_status"] = "signal_pressure"
+            status = "signal_pressure"
         if candidate_signal_source:
             item["candidate_signal_source"] = candidate_signal_source
         items.append(item)
@@ -525,6 +537,13 @@ def build_active_window_progress_response(
             "freshness_min": freshness_min,
             "price": round(price, 4) if price > 0 else 0.0,
             "atr_pct": round(to_float(first_defined(latest_row.get("atr_pct"), indicator_extra.get("atr_pct"), target_extra.get("atr_pct"))) or 0.0, 2),
+            "sd_close_z": round(to_float(first_defined(latest_row.get("sd_close_z"), indicator_extra.get("sd_close_z"))) or 0.0, 4),
+            "crsi": round(to_float(first_defined(latest_row.get("crsi"), indicator_extra.get("crsi"))) or 0.0, 4),
+            "crsi_db": round(to_float(first_defined(latest_row.get("crsi_db"), indicator_extra.get("crsi_db"))) or 0.0, 4),
+            "crsi_ub": round(to_float(first_defined(latest_row.get("crsi_ub"), indicator_extra.get("crsi_ub"))) or 0.0, 4),
+            "crsi_os": bool(first_defined(latest_row.get("crsi_os"), indicator_extra.get("crsi_os"), False)),
+            "crsi_ob": bool(first_defined(latest_row.get("crsi_ob"), indicator_extra.get("crsi_ob"), False)),
+            "indicator_extra": indicator_extra,
             "window_state": _window_state(window_flags),
             "window_max_bars": signal_window_max_bars,
             "window_flags": window_flags,
@@ -567,6 +586,11 @@ def build_active_window_progress_response(
             "trace_stage": to_text(signal_state.get("stage")) or "none",
             "trace_error": trace_error,
         }
+        _apply_signal_window_admission_metadata(item)
+        if item.get("admitted") and item["window_status"] == "no_window":
+            item["status"] = "signal_pressure"
+            item["window_status"] = "signal_pressure"
+            status = "signal_pressure"
         if candidate_signal_source:
             item["candidate_signal_source"] = candidate_signal_source
         items.append(item)

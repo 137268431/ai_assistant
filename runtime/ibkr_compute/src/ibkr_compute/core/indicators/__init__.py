@@ -6,5 +6,6 @@ from .dtp import DTP
 from .atr import ATRIndicator
 from .crsi import CyclicRSI
 from .obv_rsi import OBVRsi
+from .technical import TechnicalIndicators
 from .divergence import DivergenceDetector
 from .filters import SignalFilters

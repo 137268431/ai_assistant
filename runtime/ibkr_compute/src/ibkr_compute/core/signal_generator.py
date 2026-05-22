@@ -328,7 +328,16 @@ class SignalGenerator:
                 sd_upper_valid=sd_upper_valid,
                 sd_lower_valid=sd_lower_valid,
             )
-            if selected_candidate.get("filters_pass"):
+            quality_score = self._signal_quality_score(preview_signal)
+            quality_min = self._intraday_min_signal_quality_score()
+            if selected_candidate.get("filters_pass") and quality_min > 0 and quality_score < quality_min:
+                stage = "blocked"
+                selected_candidate["filters_pass"] = False
+                selected_candidate["filter_reason"] = "signal_quality_below_threshold"
+                selected_candidate.setdefault("filter_checks", {})
+                selected_candidate["filter_checks"]["signal_quality_min"] = False
+                self._prev_intraday_raw_key = ""
+            elif selected_candidate.get("filters_pass"):
                 self._prev_intraday_raw_key = raw_key
                 stage = "confirmed" if candidate_once else "candidate"
                 if candidate_once:
@@ -926,6 +935,15 @@ class SignalGenerator:
             "source": "ibkr_compute",
             **exit_meta,
         }
+        quality_meta = self._build_signal_quality_metadata(
+            snapshot,
+            direction=direction,
+            setup=setup,
+            signal_mode=signal_mode,
+            candidate=candidate,
+            entry=pos.get("entry", close),
+        )
+        extra.update(quality_meta)
         if isinstance(self.params.get("target_strategy_policy"), dict):
             extra["target_strategy_policy"] = dict(self.params.get("target_strategy_policy") or {})
         if isinstance(self.params.get("target_symbol_profile"), dict):
@@ -950,6 +968,7 @@ class SignalGenerator:
             "setup_label": setup_meta.get("setup_label", ""),
             "setup_family": setup_meta.get("setup_family", ""),
             "signal_mode": setup_meta.get("signal_mode", signal_mode),
+            "signal_quality_score": quality_meta.get("signal_quality_score", 0),
         }
 
     def _intraday_validity_minutes(self) -> int:
@@ -957,6 +976,156 @@ class SignalGenerator:
             return max(1, int(self.params.get("intraday_signal_validity_minutes", 15) or 15))
         except Exception:
             return 15
+
+    def _intraday_min_signal_quality_score(self) -> float:
+        return self._intraday_param_float("intraday_min_signal_quality_score", 70.0)
+
+    @staticmethod
+    def _signal_quality_score(signal: dict | None) -> float:
+        if not isinstance(signal, dict):
+            return 0.0
+        extra = signal.get("extra") if isinstance(signal.get("extra"), dict) else {}
+        try:
+            return float(extra.get("signal_quality_score") or signal.get("signal_quality_score") or 0.0)
+        except Exception:
+            return 0.0
+
+    def _build_signal_quality_metadata(
+        self,
+        snapshot: dict,
+        *,
+        direction: str,
+        setup: str,
+        signal_mode: str,
+        candidate: dict | None,
+        entry: float,
+    ) -> dict:
+        close = self._intraday_value_float(snapshot.get("close"), 0.0)
+        atr_pct = abs(self._intraday_value_float(snapshot.get("atr_pct"), 0.0))
+        rvol_20 = self._intraday_value_float(snapshot.get("rvol_20"), 0.0)
+        trigger_checks = dict((candidate or {}).get("trigger_checks") or {})
+        filter_checks = dict((candidate or {}).get("filter_checks") or {})
+        signal_mode_text = str(signal_mode or "").strip().lower()
+        setup_text = str(setup or "").strip().lower()
+
+        hard_pressure = 0.0
+        pressure_keys: list[str] = []
+        if snapshot.get("sd_lower") or snapshot.get("sd_upper") or any("sd_" in key and bool(value) for key, value in trigger_checks.items()):
+            hard_pressure = 35.0
+            pressure_keys.append("sd_pressure")
+        if snapshot.get("crsi_os") or snapshot.get("crsi_ob"):
+            hard_pressure = max(hard_pressure, 35.0)
+            pressure_keys.append("crsi_pressure")
+        if signal_mode_text in {"breakout", "trend_pullback", "trend_continuation", "mr_reversal"}:
+            hard_pressure = max(hard_pressure, 35.0)
+            pressure_keys.append(signal_mode_text)
+
+        direction_matches_trend = self._intraday_sd_trend_matches(snapshot, direction)
+        multi_timeframe = 12.0
+        if direction_matches_trend:
+            multi_timeframe += 5.0
+        if filter_checks.get("target_direction_alignment", True):
+            multi_timeframe += 3.0
+        multi_timeframe = min(20.0, multi_timeframe)
+
+        check_values = list(trigger_checks.values()) + list(filter_checks.values())
+        pass_ratio = (
+            sum(1 for value in check_values if bool(value)) / len(check_values)
+            if check_values
+            else 1.0
+        )
+        confirmation = 10.0 + pass_ratio * 10.0
+        if snapshot.get("crsi_bull_div") or snapshot.get("crsi_bear_div") or snapshot.get("obv_bull_div") or snapshot.get("obv_bear_div"):
+            confirmation += 3.0
+        if snapshot.get("fractal_bull") or snapshot.get("fractal_bear"):
+            confirmation += 2.0
+        adx = self._intraday_value_float(snapshot.get("adx"), 0.0)
+        plus_di = self._intraday_value_float(snapshot.get("plus_di"), 0.0)
+        minus_di = self._intraday_value_float(snapshot.get("minus_di"), 0.0)
+        if adx >= 20.0 and ((direction == "long" and plus_di >= minus_di) or (direction == "short" and minus_di >= plus_di)):
+            confirmation += 5.0
+        mfi = self._intraday_value_float(snapshot.get("mfi"), 50.0)
+        if (direction == "long" and mfi <= 35.0) or (direction == "short" and mfi >= 65.0):
+            confirmation += 3.0
+        confirmation = min(25.0, confirmation)
+
+        entry_quality = 8.0
+        if close > 0 and entry > 0:
+            improvement_bps = abs(close - entry) / close * 10000.0
+            entry_quality = min(10.0, 5.0 + min(5.0, improvement_bps / 6.0))
+        else:
+            improvement_bps = 0.0
+
+        liquidity = 6.0
+        min_rvol = self._intraday_param_float("intraday_min_rvol_20", 1.2)
+        if rvol_20 <= 0 or rvol_20 >= min_rvol:
+            liquidity += 2.0
+        min_atr = self._intraday_param_float("intraday_min_atr_pct", 0.08)
+        max_atr = self._intraday_param_float("intraday_max_atr_pct", 1.20)
+        if (min_atr <= 0 or atr_pct >= min_atr) and (max_atr <= 0 or atr_pct <= max_atr):
+            liquidity += 2.0
+        liquidity = min(10.0, liquidity)
+
+        components = {
+            "signal_pressure": round(hard_pressure, 3),
+            "multi_timeframe": round(multi_timeframe, 3),
+            "confirmation": round(confirmation, 3),
+            "entry_quality": round(entry_quality, 3),
+            "liquidity_freshness": round(liquidity, 3),
+        }
+        score = min(100.0, sum(components.values()))
+        entry_plan = self._build_entry_plan_metadata(
+            snapshot,
+            direction=direction,
+            setup=setup_text,
+            signal_mode=signal_mode_text,
+            entry=entry,
+            close=close,
+            quality_score=score,
+            price_improvement_bps=improvement_bps,
+        )
+        return {
+            "signal_quality_score": round(score, 3),
+            "signal_quality_components": components,
+            "signal_quality_min": self._intraday_min_signal_quality_score(),
+            "signal_pressure_keys": list(dict.fromkeys(pressure_keys)),
+            "entry_quality_score": round(entry_quality, 3),
+            **entry_plan,
+        }
+
+    def _build_entry_plan_metadata(
+        self,
+        snapshot: dict,
+        *,
+        direction: str,
+        setup: str,
+        signal_mode: str,
+        entry: float,
+        close: float,
+        quality_score: float,
+        price_improvement_bps: float,
+    ) -> dict:
+        if "breakout" in setup or signal_mode == "breakout":
+            anchor = "breakout_close"
+            timeout_bars = 2
+        elif "pullback" in setup or signal_mode in {"trend_pullback", "trend_continuation"}:
+            anchor = "vwap_pullback" if self._intraday_value_float(snapshot.get("vwap"), 0.0) > 0 else "ema_pullback"
+            timeout_bars = 3
+        else:
+            anchor = "sd_crsi_reversion"
+            timeout_bars = 6
+        breakout_quality_min = self._intraday_param_float("entry_breakout_marketable_quality_min", 80.0)
+        entry_aggression = "marketable_limit" if signal_mode == "breakout" and quality_score >= breakout_quality_min else "passive_limit"
+        return {
+            "entry_plan_version": str(self.params.get("entry_plan_version") or "entry_plan_v2"),
+            "entry_anchor": anchor,
+            "entry_limit_price": round(float(entry or 0.0), 4),
+            "entry_timeout_bars": timeout_bars,
+            "reprice_policy": str(self.params.get("entry_reprice_policy") or "single_reprice_then_cancel"),
+            "price_improvement_bps": round(float(price_improvement_bps or 0.0), 3),
+            "entry_aggression": entry_aggression,
+            "entry_reference_price": round(float(close or 0.0), 4),
+        }
 
     def _intraday_param_float(self, key: str, default: float = 0.0) -> float:
         try:
@@ -1303,6 +1472,21 @@ class SignalGenerator:
             "entry_limit_offset": pos.get("entry_limit_offset", 0),
             **exit_meta,
         }
+        quality_meta = self._build_signal_quality_metadata(
+            snapshot,
+            direction=direction,
+            setup=signal_type,
+            signal_mode=signal_mode,
+            candidate={
+                "trigger_checks": {
+                    "legacy_mr_window_valid": bool(sd_upper_valid or sd_lower_valid),
+                    "divergence_confirmed": bool(div_source),
+                },
+                "filter_checks": {"legacy_filters_pass": True},
+            },
+            entry=pos.get("entry", close),
+        )
+        extra.update(quality_meta)
         if self._is_intraday_sd_v1():
             extra.update({
                 **setup_meta,
@@ -1340,6 +1524,7 @@ class SignalGenerator:
             "setup_label": setup_meta.get("setup_label", ""),
             "setup_family": setup_meta.get("setup_family", ""),
             "signal_mode": setup_meta.get("signal_mode", signal_mode),
+            "signal_quality_score": quality_meta.get("signal_quality_score", 0),
         }
 
     def _empty_trace(self) -> dict:

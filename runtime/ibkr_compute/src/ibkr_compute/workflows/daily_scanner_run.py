@@ -22,6 +22,7 @@ from .daily_scanner_constants import (
     DEFAULT_ACTIVE_TARGET_LIMIT,
     DEFAULT_DAY_GAIN_TRIGGER_PCT,
     MAX_DATA_COMPLETENESS_REPAIR_JOBS_IN_RESULT,
+    REJECTION_BUCKET_ACTIVE_BUDGET,
     REJECTION_BUCKET_DATA_INCOMPLETE,
     REJECTION_BUCKET_CONTEXT_GATE,
     REJECTION_BUCKET_TOPUP_ACTIVE_BUDGET,
@@ -357,17 +358,22 @@ class DailyScannerRunMixin:
         )
 
         trade_budget = settings["trade_subscription_budget"]
-        active_target_limit = max(
-            0,
-            int(settings.get("active_target_limit", DEFAULT_ACTIVE_TARGET_LIMIT) or DEFAULT_ACTIVE_TARGET_LIMIT),
-        )
+        raw_active_target_limit = settings.get("active_target_limit", DEFAULT_ACTIVE_TARGET_LIMIT)
+        try:
+            active_target_limit = max(
+                0,
+                int(DEFAULT_ACTIVE_TARGET_LIMIT if raw_active_target_limit in (None, "") else raw_active_target_limit),
+            )
+        except (TypeError, ValueError):
+            active_target_limit = DEFAULT_ACTIVE_TARGET_LIMIT
         active_min_score = max(
             0.0,
             _safe_float(settings.get("active_min_score"), DEFAULT_ACTIVE_MIN_SCORE),
         )
-        active_limit = active_target_limit if active_target_limit > 0 else 0
+        active_limit = active_target_limit
         if trade_budget is not None:
-            active_limit = min(active_limit, max(0, int(trade_budget)))
+            trade_budget_limit = max(0, int(trade_budget))
+            active_limit = min(active_limit, trade_budget_limit)
 
         existing_target_symbols = {
             str(row.get("symbol", "")).strip().upper()
@@ -411,31 +417,32 @@ class DailyScannerRunMixin:
                     note="基础质量通过，但 multi-timeframe context 未形成，seed 不再写入低 context candidate",
                 )
                 continue
-            if scan_mode == DAILY_SCAN_MODE_TOPUP:
-                if not qualifies_active:
-                    _record_rejection(
-                        rejection_summary,
-                        rejection_examples_by_bucket,
-                        bucket=REJECTION_BUCKET_TOPUP_ACTIVE_SCORE,
-                        symbol=symbol,
-                        actual=str(result.get("context_reason") or f"context_score={_safe_float(result.get('context_score')):.3f}"),
-                        threshold="context_gate_passed=true",
-                        note="topup 只新增 multi-timeframe context active 标的；低 context 不写 candidate",
-                    )
-                    continue
-                if len(active_symbols) >= active_limit:
-                    _record_rejection(
-                        rejection_summary,
-                        rejection_examples_by_bucket,
-                        bucket=REJECTION_BUCKET_TOPUP_ACTIVE_BUDGET,
-                        symbol=symbol,
-                        actual=str(len(active_symbols)),
-                        threshold=str(active_limit),
-                        note="active 订阅预算已满，topup 不再追加 candidate",
-                    )
-                    continue
+            if not qualifies_active:
+                _record_rejection(
+                    rejection_summary,
+                    rejection_examples_by_bucket,
+                    bucket=REJECTION_BUCKET_TOPUP_ACTIVE_SCORE if scan_mode == DAILY_SCAN_MODE_TOPUP else REJECTION_BUCKET_CONTEXT_GATE,
+                    symbol=symbol,
+                    actual=str(result.get("context_reason") or f"context_score={_safe_float(result.get('context_score')):.3f}"),
+                    threshold="context_gate_passed=true",
+                    note="信号窗口入池只新增 trade-window SD/cRSI pressure active 标的；低 pressure 不写 candidate",
+                )
+                continue
+            if active_limit is not None and len(active_symbols) >= active_limit:
+                _record_rejection(
+                    rejection_summary,
+                    rejection_examples_by_bucket,
+                    bucket=REJECTION_BUCKET_TOPUP_ACTIVE_BUDGET if scan_mode == DAILY_SCAN_MODE_TOPUP else REJECTION_BUCKET_ACTIVE_BUDGET,
+                    symbol=symbol,
+                    actual=str(len(active_symbols)),
+                    threshold=str(active_limit),
+                    note="active 目标上限已满，不再写入超限 active 标的",
+                )
+                continue
             status = "active"
-            within_subscription_budget = qualifies_active and len(active_symbols) < active_limit
+            within_subscription_budget = qualifies_active and (
+                active_limit is None or len(active_symbols) < active_limit
+            )
             retained_symbols.add(symbol)
             if within_subscription_budget:
                 active_symbols.add(symbol)
@@ -462,6 +469,7 @@ class DailyScannerRunMixin:
                 "subscription_rank": subscription_rank,
                 "within_subscription_budget": within_subscription_budget,
                 "active_target_limit": active_target_limit,
+                "active_limit_effective": active_limit if active_limit is not None else 0,
                 "active_min_score": active_min_score,
                 "active_gate_passed": context_gate_passed,
                 "legacy_score_gate_passed": legacy_score_gate_passed,
@@ -556,6 +564,7 @@ class DailyScannerRunMixin:
             "new_candidates": sum(1 for row in new_targets if row.get("status") == "candidate"),
             "trade_subscription_budget": trade_budget,
             "active_target_limit": active_target_limit,
+            "active_limit_effective": active_limit if active_limit is not None else 0,
             "active_min_score": active_min_score,
             "manual_active_count": 0,
             "manual_retained_count": 0,
