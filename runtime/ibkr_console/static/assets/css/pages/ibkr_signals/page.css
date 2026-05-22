@@ -4,24 +4,25 @@
 
         .signals-command-bar {
             display: grid;
-            grid-template-columns: minmax(260px, 0.72fr) minmax(420px, 1.28fr);
-            gap: 12px;
+            grid-template-columns: minmax(250px, 360px) minmax(0, 1fr);
+            gap: 14px;
             align-items: center;
             margin-bottom: 12px;
-            padding: 12px 14px;
-            border-radius: 18px;
-            border: 1px solid rgba(79, 209, 197, 0.18);
+            padding: 12px;
+            border-radius: 16px;
+            border: 1px solid rgba(79, 209, 197, 0.16);
             background:
-                radial-gradient(circle at 8% 20%, rgba(79, 209, 197, 0.13), transparent 28%),
-                radial-gradient(circle at 98% 18%, rgba(246, 173, 85, 0.10), transparent 30%),
-                linear-gradient(145deg, rgba(8, 22, 31, 0.98), rgba(7, 15, 23, 0.98));
-            box-shadow: 0 14px 32px rgba(2, 8, 23, 0.22);
+                linear-gradient(90deg, rgba(79, 209, 197, 0.07), transparent 32%),
+                linear-gradient(180deg, rgba(8, 22, 31, 0.98), rgba(7, 15, 23, 0.97));
+            box-shadow:
+                inset 0 1px 0 rgba(255, 255, 255, 0.03),
+                0 14px 30px rgba(2, 8, 23, 0.20);
         }
 
         .signals-command-main {
             min-width: 0;
             display: grid;
-            gap: 8px;
+            gap: 7px;
         }
 
         .signals-command-kicker {
@@ -35,10 +36,10 @@
 
         .signals-command-title {
             color: var(--text);
-            font-size: clamp(18px, 1.8vw, 22px);
+            font-size: clamp(18px, 1.7vw, 21px);
             font-weight: 800;
             line-height: 1.05;
-            letter-spacing: -0.04em;
+            letter-spacing: -0.03em;
         }
 
         .signals-command-copy {
@@ -48,20 +49,24 @@
         }
 
         .signals-command-summary .chip-row {
-            gap: 6px;
+            gap: 5px;
         }
 
         .signals-command-summary .status-chip {
-            padding: 5px 9px;
+            min-height: 24px;
+            padding: 4px 8px;
+            border-color: rgba(147, 197, 253, 0.10);
+            background: rgba(255, 255, 255, 0.035);
             font-size: 10px;
         }
 
         .signals-command-tools {
             min-width: 0;
             display: grid;
-            grid-template-columns: minmax(220px, 0.68fr) minmax(260px, 1fr) auto;
-            gap: 8px;
+            grid-template-columns: max-content minmax(240px, 1fr) max-content max-content;
+            gap: 10px;
             align-items: center;
+            justify-self: stretch;
         }
 
         .signals-command-date,
@@ -73,35 +78,105 @@
             margin-bottom: 0;
             gap: 6px;
             flex-wrap: nowrap;
+            width: max-content;
+        }
+
+        .signals-command-date .date-shortcuts {
+            flex: 0 0 auto;
+            flex-wrap: nowrap;
+        }
+
+        .signals-command-date .date-btn,
+        .signals-command-date .date-input,
+        .search-input.signals-command-search,
+        .signals-analysis-link,
+        .signals-command-refresh .refresh-btn,
+        .signals-command-refresh .refresh-select {
+            min-height: 40px;
+            border-radius: 10px;
+            font-family: var(--font-mono, 'JetBrains Mono', monospace);
+            font-size: 12px;
+            line-height: 1;
         }
 
         .signals-command-date .date-btn {
-            padding: 7px 10px;
-            font-size: 11px;
+            flex: 0 0 auto;
+            min-width: 58px;
+            padding: 0 12px;
         }
 
         .signals-command-date .date-input {
-            min-width: 142px;
-            padding: 8px 10px;
-            font-size: 11px;
+            flex: 0 0 146px;
+            width: 146px;
+            min-width: 146px;
+            padding: 0 10px;
         }
 
-        .signals-command-search {
-            min-height: 38px;
-            padding: 9px 12px;
-            border-radius: 12px;
+        .search-input.signals-command-search {
+            height: 40px;
+            min-width: 0;
+            padding: 0 13px;
+            background: rgba(10, 24, 34, 0.92);
+            border-color: rgba(147, 197, 253, 0.14);
+            font-size: 12px;
+        }
+
+        .search-input.signals-command-search::placeholder {
+            color: rgba(144, 167, 184, 0.72);
+        }
+
+        .signals-analysis-link {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            height: 40px;
+            padding: 0 14px;
+            border: 1px solid rgba(79, 209, 197, 0.20);
+            background: rgba(79, 209, 197, 0.08);
+            color: #9DEFE8;
+            text-decoration: none;
+            font-weight: 700;
+            white-space: nowrap;
+            transition: border-color 0.18s ease, background 0.18s ease, color 0.18s ease;
+        }
+
+        .signals-analysis-link:hover,
+        .signals-analysis-link:active {
+            border-color: rgba(79, 209, 197, 0.32);
+            background: rgba(79, 209, 197, 0.14);
+            color: var(--text);
         }
 
         .signals-command-refresh .refresh-control {
             justify-content: flex-end;
-            gap: 6px;
+            gap: 8px;
+            flex-wrap: nowrap;
+            width: max-content;
         }
 
         .signals-command-refresh .refresh-btn,
         .signals-command-refresh .refresh-select {
-            min-height: 38px;
-            padding: 8px 10px;
-            border-radius: 12px;
+            padding: 0 11px;
+        }
+
+        .signals-command-refresh .refresh-btn {
+            flex: 0 0 40px;
+            width: 40px;
+            border-color: rgba(147, 197, 253, 0.14);
+            background: rgba(255, 255, 255, 0.04);
+        }
+
+        .signals-command-refresh .refresh-control > .refresh-btn.page-refresh-trigger.is-compact {
+            min-height: 40px;
+            height: 40px;
+            padding: 0;
+            border-radius: 10px;
+            font-size: 13px;
+        }
+
+        .signals-command-refresh .refresh-select {
+            flex: 0 0 132px;
+            width: 132px;
         }
 
         .search-row {
@@ -2015,17 +2090,22 @@
         }
 
         @media (max-width: 1180px) {
-            .signals-command-bar,
-            .signals-command-tools {
+            .signals-command-bar {
                 grid-template-columns: 1fr;
             }
 
             .signals-command-tools {
                 align-items: stretch;
             }
+        }
+
+        @media (max-width: 900px) {
+            .signals-command-tools {
+                grid-template-columns: max-content minmax(0, 1fr);
+            }
 
             .signals-command-refresh .refresh-control {
-                justify-content: flex-start;
+                justify-content: flex-end;
             }
         }
 
@@ -2046,15 +2126,40 @@
                 gap: 7px;
             }
 
+            .signals-command-tools {
+                grid-template-columns: 1fr;
+            }
+
             .signals-command-date .date-picker,
             .signals-command-refresh .refresh-control {
                 flex-wrap: wrap;
+                width: 100%;
+            }
+
+            .signals-command-date .date-shortcuts {
+                width: 100%;
+            }
+
+            .signals-command-date .date-btn {
+                flex: 1 1 0;
             }
 
             .signals-command-search,
+            .signals-analysis-link,
             .signals-command-refresh .refresh-btn,
             .signals-command-refresh .refresh-select,
             .signals-command-date .date-input {
+                width: 100%;
+            }
+
+            .signals-command-date .date-input,
+            .signals-command-refresh .refresh-btn,
+            .signals-command-refresh .refresh-select {
+                flex: 1 1 100%;
+            }
+
+            .signals-command-refresh .refresh-control > .refresh-btn.page-refresh-trigger.is-compact {
+                flex: 1 1 100%;
                 width: 100%;
             }
 
