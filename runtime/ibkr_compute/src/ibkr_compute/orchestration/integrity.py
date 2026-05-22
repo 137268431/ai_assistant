@@ -484,6 +484,14 @@ class TradingServiceIntegrityMixin:
         unresolved_history = []
         deferred_budget_symbols: set[str] = set()
         api_repair_symbols = sorted(intervals_by_symbol.keys())
+        normalized_source = str(source or "").strip().lower()
+        history_trace_source = (
+            "active_repair"
+            if normalized_source.startswith("active_target")
+            else "watchlist_integrity_repair"
+            if normalized_source.startswith("watchlist")
+            else "data_quality_repair"
+        )
         conid_map = self.conid_resolver.resolve_bulk(api_repair_symbols) if api_repair_symbols else {}
         if api_repair_symbols:
             missing_conids = [symbol for symbol in api_repair_symbols if symbol not in conid_map]
@@ -530,6 +538,7 @@ class TradingServiceIntegrityMixin:
                         intervals=[interval],
                         repair_symbols=interval_symbols,
                         period_overrides=effective_period_overrides,
+                        trace_source=history_trace_source,
                     )
                     for symbol, payload in (result or {}).items():
                         backfill_result.setdefault(symbol, {}).update(payload or {})

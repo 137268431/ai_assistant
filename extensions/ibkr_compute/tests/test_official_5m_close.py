@@ -148,7 +148,7 @@ class _FakeBackfill:
             "query_error": "",
         }
 
-    def backfill_all(self, conid_map, symbol_meta=None, intervals=None, repair_symbols=None, period_overrides=None):
+    def backfill_all(self, conid_map, symbol_meta=None, intervals=None, repair_symbols=None, period_overrides=None, trace_source=""):
         requested_intervals = []
         for interval in (intervals or ["5m"]):
             normalized = normalize_interval(interval)
@@ -164,6 +164,7 @@ class _FakeBackfill:
                     symbol: dict(payload or {})
                     for symbol, payload in (period_overrides or {}).items()
                 },
+                "trace_source": str(trace_source or ""),
             }
         )
         return {symbol: {interval: 1 for interval in requested_intervals} for symbol in (conid_map or {})}
@@ -769,6 +770,7 @@ class Official5mCloseFlushTest(unittest.TestCase):
         self.assertEqual(backfill.backfill_all_calls[0]["intervals"], ["15m"])
         self.assertEqual(backfill.backfill_all_calls[0]["repair_symbols"], [])
         self.assertEqual(backfill.backfill_all_calls[0]["period_overrides"], {"AAPL": {"15m": "2d"}})
+        self.assertEqual(backfill.backfill_all_calls[0]["trace_source"], "runtime_direct_topup")
         self.assertEqual(
             pipeline.compute_triggers,
             [
@@ -823,6 +825,7 @@ class Official5mCloseFlushTest(unittest.TestCase):
 
         self.assertEqual(len(backfill.backfill_all_calls), 1)
         self.assertEqual(backfill.backfill_all_calls[0]["intervals"], ["4h", "1h", "30m", "15m"])
+        self.assertEqual(backfill.backfill_all_calls[0]["trace_source"], "runtime_direct_topup_parallel")
         self.assertEqual(
             backfill.backfill_all_calls[0]["period_overrides"],
             {"AAPL": {"4h": "20d", "1h": "5d", "30m": "3d", "15m": "2d"}},

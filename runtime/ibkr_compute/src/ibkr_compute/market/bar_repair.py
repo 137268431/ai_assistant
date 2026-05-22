@@ -397,6 +397,7 @@ class BarRepairCoordinator:
                 intervals=[interval],
                 repair_symbols=[symbol],
                 period_overrides={symbol: {interval: period}},
+                trace_source="bar_repair",
             )
             if writer is not None and hasattr(writer, "flush"):
                 writer.flush()

@@ -194,6 +194,7 @@ const configData = [
   cfg('ibkr_large_operation_alert_min_throttle', '50', '50', '大规模 Throttle 阈值', '行情链路', 707.0598, '单次操作 throttle 数达到该值时触发告警'),
   cfg('ibkr_large_operation_alert_min_time_budget_s', '120', '120', '大规模预算阈值', '行情链路', 707.0599, '计划运行时间预算达到该秒数时触发大规模操作告警'),
   cfg('ibkr_large_operation_progress_cooldown_s', '300', '300', '大规模进度告警冷却', '行情链路', 707.05991, '同一大规模操作的进行中告警最小间隔秒数，避免刷屏'),
+  cfg('ibkr_large_operation_duration_gate_sources', 'watchlist_idle_topup,runtime_direct_topup,runtime_direct_topup_parallel,bar_repair,active_repair', 'watchlist_idle_topup,runtime_direct_topup,runtime_direct_topup_parallel,bar_repair,active_repair', '耗时门控任务来源', '行情链路', 707.059915, '这些自动回补来源的大规模操作不按 symbol 数立即报警，只有超过大规模耗时阈值或失败/延期时才报警'),
   cfg('ibkr_large_operation_requires_ack', 'false', 'false', '大规模操作需确认', '行情链路', 707.05992, '预留开关；当前默认只告警不阻断，开启后可扩展为执行前必须人工确认'),
   cfg('ibkr_official_5m_close_delay_sec', '3', '3', '5m Close 安全等待秒数', '行情链路', 707.08, '5m bar close 后等待多少秒再拉 IBKR 官方历史 bars；越小越快，但过小可能遇到 IBKR 尚未产出该 bar'),
   cfg('ibkr_runtime_direct_topup_close_delay_sec', '8', '8', '高周期 Close 安全等待秒数', '行情链路', 707.09, '15m/30m/1h/4h/1d direct topup 在周期 close 后等待多少秒再拉 IBKR 历史 bars'),

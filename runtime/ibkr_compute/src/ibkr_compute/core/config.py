@@ -183,6 +183,7 @@ class Config:
         "ibkr_large_operation_alert_min_throttle": "50",
         "ibkr_large_operation_alert_min_time_budget_s": "120",
         "ibkr_large_operation_progress_cooldown_s": "300",
+        "ibkr_large_operation_duration_gate_sources": "watchlist_idle_topup,runtime_direct_topup,runtime_direct_topup_parallel,bar_repair,active_repair",
         "ibkr_large_operation_requires_ack": "false",
         "ibkr_history_chunk_days_5m": "4",
         "ibkr_history_chunk_days_15m": "14",
