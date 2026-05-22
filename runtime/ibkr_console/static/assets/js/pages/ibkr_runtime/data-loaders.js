@@ -34,10 +34,10 @@
                     readCustomJson('/api/custom/ibkr/statusz?lite=1', { retryAttempts: 3 }, coreCache),
                     readCustomJson('/api/custom/system/summaryz?lite=1', { retryAttempts: 3 }, coreCache),
                     withTimeout(
-                        readCustomJson('/api/custom/system/monitorz', { retryAttempts: 2 }, coreCache),
+                        readCustomJson('/api/custom/system/monitorz?lite=1', { retryAttempts: 2 }, coreCache),
                         9000,
-                        'system/monitorz'
-                    ).catch(() => ({ service_monitor: { services: {} } })),
+                        'system/monitorz?lite=1'
+                    ).catch(() => ({ service_monitor: { services: {} }, lite: true })),
                     readCustomJson('/api/custom/system/cronz', { retryAttempts: 3 }, { ttlMs: 300000, ttl: 300000, force: Boolean(showToastOnSuccess) }).catch(() => ({ items: [] })),
                     readCustomJson('/api/custom/ibkr/2fa/status', { retryAttempts: 3 }, coreCache),
                     readCustomJson('/api/custom/ibkr/startup/status', { retryAttempts: 3 }, coreCache).catch(() => ({ state: {} })),

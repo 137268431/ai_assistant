@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import threading
+import time
 from typing import Any
 
 from flask import Response, jsonify, request
@@ -9,6 +12,138 @@ from ibkr_api.system.scheduler_support import run_scheduler_job
 
 
 SystemDeps = dict[str, Any]
+
+_CONTROL_PLANE_CACHE_LOCK = threading.RLock()
+_CONTROL_PLANE_CACHE: dict[tuple[str, str, bool], dict[str, Any]] = {}
+_CONTROL_PLANE_IN_FLIGHT: dict[tuple[str, str, bool], threading.Event] = {}
+
+
+def _cache_seconds(env_name: str, fallback: float) -> float:
+    try:
+        return max(0.0, float(os.environ.get(env_name, fallback)))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _control_plane_ttl(endpoint: str, *, lite_mode: bool) -> float:
+    if endpoint == "summaryz" and lite_mode:
+        return _cache_seconds("IBKR_CONTROL_PLANE_SUMMARY_LITE_TTL_SEC", 15.0)
+    if endpoint == "monitorz" and lite_mode:
+        return _cache_seconds("IBKR_CONTROL_PLANE_MONITOR_LITE_TTL_SEC", 15.0)
+    if endpoint == "monitorz":
+        return _cache_seconds("IBKR_CONTROL_PLANE_MONITOR_FULL_TTL_SEC", 45.0)
+    return _cache_seconds("IBKR_CONTROL_PLANE_DEFAULT_TTL_SEC", 15.0)
+
+
+def _control_plane_stale_seconds(endpoint: str, *, lite_mode: bool) -> float:
+    if endpoint == "monitorz" and not lite_mode:
+        return _cache_seconds("IBKR_CONTROL_PLANE_MONITOR_FULL_STALE_SEC", 120.0)
+    return _cache_seconds("IBKR_CONTROL_PLANE_STALE_SEC", 60.0)
+
+
+def _with_cache_meta(
+    payload: Any,
+    *,
+    entry: dict[str, Any],
+    state: str,
+    stale: bool = False,
+    error: Any = None,
+) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+    now = time.monotonic()
+    created_at = float(entry.get("created_at") or now)
+    ttl_seconds = float(entry.get("ttl_seconds") or 0.0)
+    meta = {
+        "state": state,
+        "age_s": round(max(0.0, now - created_at), 3),
+        "ttl_s": round(ttl_seconds, 3),
+        "stale": bool(stale),
+    }
+    if error is not None:
+        meta["error"] = str(error)
+    return {
+        **payload,
+        "_cache": meta,
+    }
+
+
+def _cache_entry(payload: dict[str, Any], ttl_seconds: float, stale_seconds: float) -> dict[str, Any]:
+    now = time.monotonic()
+    return {
+        "payload": payload,
+        "created_at": now,
+        "expires_at": now + ttl_seconds,
+        "stale_until": now + ttl_seconds + stale_seconds,
+        "ttl_seconds": ttl_seconds,
+    }
+
+
+def _cached_control_plane_payload(
+    key: tuple[str, str, bool],
+    *,
+    builder: Any,
+    ttl_seconds: float,
+    stale_seconds: float,
+) -> dict[str, Any]:
+    if str(os.environ.get("IBKR_CONTROL_PLANE_CACHE_ENABLED", "true")).strip().lower() in {"0", "false", "no", "off"}:
+        return builder()
+
+    stale_entry: dict[str, Any] | None = None
+    created_event: threading.Event | None = None
+    while True:
+        stale_entry = None
+        now = time.monotonic()
+        with _CONTROL_PLANE_CACHE_LOCK:
+            entry = _CONTROL_PLANE_CACHE.get(key)
+            if entry and now <= float(entry.get("expires_at") or 0.0):
+                return _with_cache_meta(entry.get("payload"), entry=entry, state="hit")
+            if entry and now <= float(entry.get("stale_until") or 0.0):
+                stale_entry = entry
+            event = _CONTROL_PLANE_IN_FLIGHT.get(key)
+            if event is None:
+                event = threading.Event()
+                _CONTROL_PLANE_IN_FLIGHT[key] = event
+                created_event = event
+                break
+
+        if stale_entry is not None and not event.wait(timeout=max(0.5, min(5.0, ttl_seconds))):
+            return _with_cache_meta(
+                stale_entry.get("payload"),
+                entry=stale_entry,
+                state="stale_wait_timeout",
+                stale=True,
+            )
+        event.wait(timeout=max(0.5, ttl_seconds + stale_seconds))
+
+    try:
+        payload = builder()
+        entry = _cache_entry(payload, ttl_seconds, stale_seconds)
+        with _CONTROL_PLANE_CACHE_LOCK:
+            _CONTROL_PLANE_CACHE[key] = entry
+        return _with_cache_meta(payload, entry=entry, state="miss")
+    except Exception as exc:
+        if stale_entry is not None:
+            return _with_cache_meta(
+                stale_entry.get("payload"),
+                entry=stale_entry,
+                state="stale_error",
+                stale=True,
+                error=exc,
+            )
+        raise
+    finally:
+        with _CONTROL_PLANE_CACHE_LOCK:
+            event = _CONTROL_PLANE_IN_FLIGHT.get(key)
+            if event is created_event:
+                _CONTROL_PLANE_IN_FLIGHT.pop(key, None)
+                event.set()
+
+
+def _clear_control_plane_cache() -> None:
+    with _CONTROL_PLANE_CACHE_LOCK:
+        _CONTROL_PLANE_CACHE.clear()
+        _CONTROL_PLANE_IN_FLIGHT.clear()
 
 
 
@@ -26,6 +161,24 @@ def register_system_read_routes(app, *, deps: SystemDeps, exports: dict[str, Any
     build_service_topology = deps["build_service_topology"]
     request_json_request = deps["request_json_request"]
     scheduler_base_url = deps["scheduler_base_url"]
+
+    def _cached_summary_payload(environment: str, *, lite_mode: bool) -> dict[str, Any]:
+        ttl_seconds = _control_plane_ttl("summaryz", lite_mode=lite_mode)
+        return _cached_control_plane_payload(
+            ("summaryz", environment, lite_mode),
+            builder=lambda: build_system_summary_payload(environment, lite_mode=lite_mode),
+            ttl_seconds=ttl_seconds,
+            stale_seconds=_control_plane_stale_seconds("summaryz", lite_mode=lite_mode),
+        )
+
+    def _cached_monitor_payload(environment: str) -> dict[str, Any]:
+        ttl_seconds = _control_plane_ttl("monitorz", lite_mode=False)
+        return _cached_control_plane_payload(
+            ("monitorz", environment, False),
+            builder=lambda: build_system_monitor_payload(environment),
+            ttl_seconds=ttl_seconds,
+            stale_seconds=_control_plane_stale_seconds("monitorz", lite_mode=False),
+        )
 
     def _request_modes_from_args() -> tuple[str, str]:
         payload = {
@@ -181,7 +334,7 @@ def register_system_read_routes(app, *, deps: SystemDeps, exports: dict[str, Any
     def custom_system_summaryz() -> Response:
         environment, _market_data_mode = _request_modes_from_args()
         lite_mode = parse_boolean(request.args.get("lite"), False)
-        return jsonify(build_system_summary_payload(environment, lite_mode=lite_mode))
+        return jsonify(_cached_summary_payload(environment, lite_mode=lite_mode))
 
     exports["custom_system_summaryz"] = custom_system_summaryz
 
@@ -233,25 +386,27 @@ def register_system_read_routes(app, *, deps: SystemDeps, exports: dict[str, Any
     def custom_system_monitorz() -> Response:
         environment, _market_data_mode = _request_modes_from_args()
         if parse_boolean(request.args.get("lite"), False):
-            summary = build_system_summary_payload(environment, lite_mode=True)
-            return jsonify(
-                {
-                    "ok": bool(summary.get("ok", False)),
-                    "status": str(summary.get("status") or "offline"),
-                    "environment": summary.get("environment") or environment,
-                    "broker_mode": environment,
-                    "data_environment": summary.get("data_environment") or _market_data_mode,
-                    "market_data_environment": summary.get("data_environment") or _market_data_mode,
-                    "service_topology": summary.get("service_topology") if isinstance(summary.get("service_topology"), dict) else build_service_topology(),
-                    "service_monitor": summary.get("service_monitor") if isinstance(summary.get("service_monitor"), dict) else {},
-                    "source": "ibkr-api",
-                    "lite": True,
-                }
-            )
-        return jsonify(build_system_monitor_payload(environment))
+            summary = _cached_summary_payload(environment, lite_mode=True)
+            payload = {
+                "ok": bool(summary.get("ok", False)),
+                "status": str(summary.get("status") or "offline"),
+                "environment": summary.get("environment") or environment,
+                "broker_mode": environment,
+                "data_environment": summary.get("data_environment") or _market_data_mode,
+                "market_data_environment": summary.get("data_environment") or _market_data_mode,
+                "service_topology": summary.get("service_topology") if isinstance(summary.get("service_topology"), dict) else build_service_topology(),
+                "service_monitor": summary.get("service_monitor") if isinstance(summary.get("service_monitor"), dict) else {},
+                "source": "ibkr-api",
+                "lite": True,
+            }
+            if isinstance(summary.get("_cache"), dict):
+                payload["_cache"] = summary["_cache"]
+            return jsonify(payload)
+        return jsonify(_cached_monitor_payload(environment))
 
     exports["custom_system_monitorz"] = custom_system_monitorz
+    exports["_clear_control_plane_cache"] = _clear_control_plane_cache
     return exports
 
 
-__all__ = ["register_system_read_routes"]
+__all__ = ["register_system_read_routes", "_clear_control_plane_cache"]

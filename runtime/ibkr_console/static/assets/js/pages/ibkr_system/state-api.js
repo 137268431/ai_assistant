@@ -5,8 +5,11 @@ let hasLoadedSystemData = false;
 let latestSystemLoadId = 0;
 let lastStableIbkrDataHealth = null;
 let lastStableTodayStats = null;
+let lastSystemSecondaryLoadedAt = 0;
+let lastSystemSecondarySnapshot = null;
 
 const TODAY_STATS_KEYS = ['orders', 'ibkr_bars', 'ibkr_indicators', 'ibkr_signals', 'ibkr_targets', 'events'];
+const SYSTEM_SECONDARY_REFRESH_MS = 5 * 60 * 1000;
 
 function normalizeTodayStatValue(value) {
     const numeric = Number(value);
@@ -52,6 +55,32 @@ function rememberStableTodayStats(today = {}) {
         return cloneTodayStats(lastStableTodayStats);
     }
     return lastStableTodayStats ? cloneTodayStats(lastStableTodayStats) : {};
+}
+
+function shouldRefreshSystemSecondary(showToastOnSuccess = false) {
+    return Boolean(showToastOnSuccess)
+        || !lastSystemSecondaryLoadedAt
+        || (Date.now() - lastSystemSecondaryLoadedAt) >= SYSTEM_SECONDARY_REFRESH_MS;
+}
+
+function rememberSystemSecondarySnapshot(snapshot = {}) {
+    lastSystemSecondaryLoadedAt = Date.now();
+    lastSystemSecondarySnapshot = {
+        eventsResp: snapshot.eventsResp || { items: [] },
+        backtestBatchResp: snapshot.backtestBatchResp || { items: [] },
+        backtestRunsResp: snapshot.backtestRunsResp || { items: [] },
+        todayStats: cloneTodayStats(snapshot.todayStats || {}),
+    };
+    return lastSystemSecondarySnapshot;
+}
+
+function getLastSystemSecondarySnapshot() {
+    return lastSystemSecondarySnapshot || {
+        eventsResp: { items: [] },
+        backtestBatchResp: { items: [] },
+        backtestRunsResp: { items: [] },
+        todayStats: {},
+    };
 }
 
 function cloneIbkrDataHealth(dataHealth = {}) {

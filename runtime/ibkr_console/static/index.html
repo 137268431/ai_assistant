@@ -1367,9 +1367,9 @@
             const summarySymbols = normalizeSymbolList(summary?.config?.ibkr_market_ws_symbols);
             if (summarySymbols.length) return summarySymbols;
 
-            const monitor = await requestCachedJson(`/api/custom/system/monitorz?broker_mode=${encodeURIComponent(currentBrokerMode)}&market_data_mode=${encodeURIComponent(currentEnvironment)}&data_environment=${encodeURIComponent(currentEnvironment)}`, {
-                ttlMs: 15000,
-                swrMs: 15000,
+            const monitor = await requestCachedJson(`/api/custom/system/monitorz?lite=1&broker_mode=${encodeURIComponent(currentBrokerMode)}&market_data_mode=${encodeURIComponent(currentEnvironment)}&data_environment=${encodeURIComponent(currentEnvironment)}`, {
+                ttlMs: 60000,
+                swrMs: 120000,
                 tags: ['home', 'market-monitor', currentBrokerMode, currentEnvironment]
             })
                 .catch(() => ({}));
@@ -1659,6 +1659,18 @@
             setPageRefreshTime();
         }
 
+        function scheduleHomePoll(loader, baseDelayMs = 60000) {
+            const delayMs = baseDelayMs + Math.floor(Math.random() * 5000);
+            window.setTimeout(async () => {
+                if (document.visibilityState !== 'hidden') {
+                    await Promise.resolve()
+                        .then(loader)
+                        .catch(() => null);
+                }
+                scheduleHomePoll(loader, baseDelayMs);
+            }, delayMs);
+        }
+
         document.addEventListener('DOMContentLoaded', async () => {
             syncHomeLayoutState();
             bindResponsiveState();
@@ -1677,12 +1689,10 @@
                     copy: '正在同步目标池、交易概览、系统拓扑和市场脉搏。',
                 }
             );
-            setInterval(loadTodayTargets, 60000);
-            setInterval(loadDashboard, 60000);
-            setInterval(loadMarketIndex, 60000);
-            setInterval(() => {
-                loadSystemOverview().then(() => setPageRefreshTime()).catch(() => null);
-            }, 60000);
+            scheduleHomePoll(loadTodayTargets);
+            scheduleHomePoll(loadDashboard);
+            scheduleHomePoll(loadMarketIndex);
+            scheduleHomePoll(() => loadSystemOverview().then(() => setPageRefreshTime()));
         });
 
         window.onEnvironmentChange = function(environment) {

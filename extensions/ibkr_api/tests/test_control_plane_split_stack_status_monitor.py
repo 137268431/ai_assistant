@@ -1,7 +1,13 @@
 from control_plane_split_stack_helpers import *
+import threading
+import time
 
 
 class ControlPlaneSplitStackStatusMonitorTest(unittest.TestCase):
+    def setUp(self):
+        if hasattr(api_app_mod, "_clear_control_plane_cache"):
+            api_app_mod._clear_control_plane_cache()
+
     def test_api_pb_client_reads_runtime_config_directly_from_pocketbase(self):
         self.assertFalse(api_app_mod.pb.prefer_runtime_config_api)
 
@@ -194,6 +200,83 @@ class ControlPlaneSplitStackStatusMonitorTest(unittest.TestCase):
         self.assertEqual(payload["data_environment"], "live")
         summary_builder.assert_called_once_with("paper", lite_mode=True)
         monitor_builder.assert_not_called()
+
+    def test_summaryz_lite_uses_short_process_cache(self):
+        summary_payload = {
+            "ok": True,
+            "status": "running",
+            "environment": "live",
+            "data_environment": "live",
+            "service_topology": {"services": {"ibkr-api": {"status": "running"}}},
+        }
+        with mock.patch.object(api_app_mod, "_build_system_summary_payload", return_value=summary_payload) as summary_builder:
+            with mock.patch.object(api_app_mod.request, "args", {"environment": "live", "lite": "1"}):
+                first = api_app_mod.custom_system_summaryz()
+                second = api_app_mod.custom_system_summaryz()
+
+        self.assertEqual(first["status"], "running")
+        self.assertEqual(second["status"], "running")
+        self.assertEqual(first["_cache"]["state"], "miss")
+        self.assertEqual(second["_cache"]["state"], "hit")
+        summary_builder.assert_called_once_with("live", lite_mode=True)
+
+    def test_summaryz_lite_single_flight_dedupes_concurrent_builds(self):
+        summary_payload = {
+            "ok": True,
+            "status": "running",
+            "environment": "live",
+            "data_environment": "live",
+            "service_topology": {"services": {"ibkr-api": {"status": "running"}}},
+        }
+
+        def slow_builder(environment, *, lite_mode=False):
+            time.sleep(0.05)
+            return {
+                **summary_payload,
+                "environment": environment,
+                "lite_mode": lite_mode,
+            }
+
+        results = []
+        with mock.patch.object(api_app_mod, "_build_system_summary_payload", side_effect=slow_builder) as summary_builder:
+            with mock.patch.object(api_app_mod.request, "args", {"environment": "live", "lite": "1"}):
+                threads = [
+                    threading.Thread(target=lambda: results.append(api_app_mod.custom_system_summaryz()))
+                    for _ in range(5)
+                ]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join()
+
+        self.assertEqual(len(results), 5)
+        self.assertTrue(all(item["status"] == "running" for item in results))
+        summary_builder.assert_called_once_with("live", lite_mode=True)
+
+    def test_summaryz_lite_returns_stale_cache_on_builder_error(self):
+        summary_payload = {
+            "ok": True,
+            "status": "running",
+            "environment": "live",
+            "data_environment": "live",
+            "service_topology": {"services": {"ibkr-api": {"status": "running"}}},
+        }
+
+        with mock.patch.dict(os.environ, {"IBKR_CONTROL_PLANE_SUMMARY_LITE_TTL_SEC": "0", "IBKR_CONTROL_PLANE_STALE_SEC": "60"}):
+            with mock.patch.object(
+                api_app_mod,
+                "_build_system_summary_payload",
+                side_effect=[summary_payload, RuntimeError("upstream timeout")],
+            ) as summary_builder:
+                with mock.patch.object(api_app_mod.request, "args", {"environment": "live", "lite": "1"}):
+                    first = api_app_mod.custom_system_summaryz()
+                    second = api_app_mod.custom_system_summaryz()
+
+        self.assertEqual(first["_cache"]["state"], "miss")
+        self.assertEqual(second["_cache"]["state"], "stale_error")
+        self.assertTrue(second["_cache"]["stale"])
+        self.assertEqual(second["status"], "running")
+        self.assertEqual(summary_builder.call_count, 2)
 
     def test_api_status_lite_skips_scheduler_payload(self):
         with mock.patch.object(api_app_mod, "_scheduler_status") as scheduler_status:

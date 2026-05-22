@@ -1094,7 +1094,7 @@
 
         async function requestMonitorJson(path, cacheOptions = {}) {
             if (typeof cachedCustomJson === 'function') {
-                const ttlMs = Number(cacheOptions.ttlMs || 10000);
+                const ttlMs = Number(cacheOptions.ttlMs || 45000);
                 return cachedCustomJson(path, currentEnvironment, {}, {
                     ttlMs,
                     swrMs: Number(cacheOptions.swrMs || ttlMs),
@@ -2279,14 +2279,14 @@
             try {
                 const [payload, twoFactorPayload] = await Promise.all([
                     requestMonitorJson('/api/custom/system/monitorz', {
-                        ttlMs: 10000,
-                        swrMs: 10000,
+                        ttlMs: 45000,
+                        swrMs: 120000,
                         force: Boolean(showToastOnSuccess),
                         tags: ['system-monitor']
                     }),
                     requestOptionalMonitorJson('/api/custom/ibkr/2fa/status', {
-                        ttlMs: 10000,
-                        swrMs: 10000,
+                        ttlMs: 30000,
+                        swrMs: 60000,
                         force: Boolean(showToastOnSuccess),
                         tags: ['2fa']
                     })
@@ -2340,7 +2340,7 @@
             refreshTimer = setInterval(() => {
                 if (document.hidden) return;
                 loadMonitorData(false);
-            }, 15000);
+            }, 60000);
         }
 
         function stopPolling() {

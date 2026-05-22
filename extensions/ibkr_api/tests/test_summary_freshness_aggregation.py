@@ -83,6 +83,10 @@ class _FreshnessPB:
 
 
 class SummaryFreshnessAggregationTest(unittest.TestCase):
+    def setUp(self):
+        if hasattr(api_app_mod, "_clear_control_plane_cache"):
+            api_app_mod._clear_control_plane_cache()
+
     def test_summaryz_aggregates_by_close_time_and_interval_due(self):
         bars = [
             _bar("AAPL", "5m", "2026-05-19 10:10:00", "2026-05-19 10:15:00"),

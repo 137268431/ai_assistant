@@ -17,6 +17,11 @@
                 latestRuntimeLoadId += 1;
                 clearRefreshTimer();
             });
+            document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'visible' && !refreshTimer && hasLoadedRuntimeData) {
+                    scheduleRuntimeRefresh(2000);
+                }
+            });
             document.getElementById('nav').innerHTML = renderNav('/ibkr_runtime.html');
             document.getElementById('contextBar').innerHTML = renderPageContextBar('🎛️ IBKR 运行时', { subtitle: '控制 / 调度 / 链路' });
             document.getElementById('pageBridge').innerHTML = renderSystemBridge('/ibkr_runtime.html');

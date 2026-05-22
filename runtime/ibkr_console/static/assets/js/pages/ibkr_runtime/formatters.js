@@ -181,10 +181,17 @@
             clearRefreshTimer();
             if (runtimePageClosing) return;
             const effectiveDelay = delayMs == null ? getRefreshDelayMs() : Number(delayMs);
+            const jitterMs = delayMs == null && refreshMode !== 'boost'
+                ? Math.floor(Math.random() * 5000)
+                : 0;
             refreshTimer = window.setTimeout(() => {
                 refreshTimer = null;
+                if (document.visibilityState === 'hidden') {
+                    scheduleRuntimeRefresh(60000);
+                    return;
+                }
                 void loadRuntimeData(false);
-            }, Math.max(1000, Number.isFinite(effectiveDelay) ? effectiveDelay : 60000));
+            }, Math.max(1000, (Number.isFinite(effectiveDelay) ? effectiveDelay : 60000) + jitterMs));
         }
 
         function boostRuntimeRefresh() {

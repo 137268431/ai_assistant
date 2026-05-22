@@ -44,10 +44,10 @@ async function loadSystemData(showToastOnSuccess = false) {
         const safeCountFetch = async (bucket, label, collection, filter, timeoutMs = secondaryTimeoutMs, cacheOptions = {}) => {
             try {
                 const countCacheOptions = {
-                    ttlMs: 30000,
-                    ttl: 30000,
-                    swrMs: 30000,
-                    swr: 30000,
+                    ttlMs: 300000,
+                    ttl: 300000,
+                    swrMs: 300000,
+                    swr: 300000,
                     ...cacheOptions,
                     force: Boolean(showToastOnSuccess) || Boolean(cacheOptions.force),
                     tags: ['system', 'today-stats', collection, currentBrokerMode, currentEnvironment].concat(cacheOptions.tags || []),
@@ -139,36 +139,43 @@ async function loadSystemData(showToastOnSuccess = false) {
         const brokerTodayFilterBase = `created >= "${escapeQueryValue(todayStart)}" && ${brokerEnvFilterBase}`;
         const targetDateFilter = `date = "${escapeQueryValue(todayDate)}" && ${dataEnvFilterBase}`;
 
-        const [eventsResp, signalCount, indicatorCount, orderCount, barCount, targetCount, eventCount, backtestBatchResp, backtestRunsResp] = await Promise.all([
-            safeApiFetch(secondaryErrors, 'system_events', 'system_events', { filter: brokerEnvFilterBase, sort: '-created', perPage: 8 }, { items: [] }, secondaryTimeoutMs),
-            safeCountFetch(secondaryErrors, 'count:ibkr_signals', 'ibkr_signals', dataTodayFilterBase),
-            safeCountFetch(secondaryErrors, 'count:ibkr_indicators', 'ibkr_indicators', dataTodayFilterBase, secondaryTimeoutMs, {
-                ttlMs: 120000,
-                ttl: 120000,
-                swrMs: 180000,
-                swr: 180000,
-            }),
-            safeCountFetch(secondaryErrors, 'count:orders', 'orders', brokerTodayFilterBase),
-            safeCountFetch(secondaryErrors, 'count:ibkr_bars', 'ibkr_bars', dataTodayFilterBase),
-            safeCountFetch(secondaryErrors, 'count:ibkr_targets', 'ibkr_targets', targetDateFilter),
-            safeCountFetch(secondaryErrors, 'count:system_events', 'system_events', brokerTodayFilterBase),
-            safeApiFetch(secondaryErrors, 'ibkr_backtest_batches', 'ibkr_backtest_batches', { filter: dataEnvFilterBase, sort: '-updated', perPage: 1 }, { items: [] }, secondaryTimeoutMs),
-            safeApiFetch(secondaryErrors, 'ibkr_backtest_runs', 'ibkr_backtest_runs', { filter: dataEnvFilterBase, sort: '-updated', perPage: 2 }, { items: [] }, secondaryTimeoutMs)
-        ]);
+        let secondarySnapshot = getLastSystemSecondarySnapshot();
+        if (shouldRefreshSystemSecondary(showToastOnSuccess)) {
+            const [eventsResp, signalCount, indicatorCount, orderCount, barCount, targetCount, eventCount, backtestBatchResp, backtestRunsResp] = await Promise.all([
+                safeApiFetch(secondaryErrors, 'system_events', 'system_events', { filter: brokerEnvFilterBase, sort: '-created', perPage: 8 }, { items: [] }, secondaryTimeoutMs),
+                safeCountFetch(secondaryErrors, 'count:ibkr_signals', 'ibkr_signals', dataTodayFilterBase),
+                safeCountFetch(secondaryErrors, 'count:ibkr_indicators', 'ibkr_indicators', dataTodayFilterBase),
+                safeCountFetch(secondaryErrors, 'count:orders', 'orders', brokerTodayFilterBase),
+                safeCountFetch(secondaryErrors, 'count:ibkr_bars', 'ibkr_bars', dataTodayFilterBase),
+                safeCountFetch(secondaryErrors, 'count:ibkr_targets', 'ibkr_targets', targetDateFilter),
+                safeCountFetch(secondaryErrors, 'count:system_events', 'system_events', brokerTodayFilterBase),
+                safeApiFetch(secondaryErrors, 'ibkr_backtest_batches', 'ibkr_backtest_batches', { filter: dataEnvFilterBase, sort: '-updated', perPage: 1 }, { items: [] }, secondaryTimeoutMs),
+                safeApiFetch(secondaryErrors, 'ibkr_backtest_runs', 'ibkr_backtest_runs', { filter: dataEnvFilterBase, sort: '-updated', perPage: 2 }, { items: [] }, secondaryTimeoutMs)
+            ]);
+            const mainOrderCount = summaryToday.main_orders == null
+                ? (summaryToday.order_groups == null ? orderCount : Number(summaryToday.order_groups || 0))
+                : Number(summaryToday.main_orders || 0);
+            secondarySnapshot = rememberSystemSecondarySnapshot({
+                eventsResp,
+                backtestBatchResp,
+                backtestRunsResp,
+                todayStats: {
+                    orders: mainOrderCount,
+                    ibkr_bars: barCount,
+                    ibkr_indicators: indicatorCount,
+                    ibkr_signals: signalCount,
+                    ibkr_targets: targetCount,
+                    events: eventCount,
+                },
+            });
+        }
 
         if (loadId !== latestSystemLoadId) return;
 
-        const mainOrderCount = summaryToday.main_orders == null
-            ? (summaryToday.order_groups == null ? orderCount : Number(summaryToday.order_groups || 0))
-            : Number(summaryToday.main_orders || 0);
-        const secondaryTodayStats = {
-            orders: mainOrderCount,
-            ibkr_bars: barCount,
-            ibkr_indicators: indicatorCount,
-            ibkr_signals: signalCount,
-            ibkr_targets: targetCount,
-            events: eventCount,
-        };
+        const secondaryTodayStats = secondarySnapshot.todayStats || {};
+        const eventsResp = secondarySnapshot.eventsResp || { items: [] };
+        const backtestBatchResp = secondarySnapshot.backtestBatchResp || { items: [] };
+        const backtestRunsResp = secondarySnapshot.backtestRunsResp || { items: [] };
         const todayStats = rememberStableTodayStats(mergeTodayStats(summaryTodayStats, secondaryTodayStats));
         const freshnessPayload = summaryLite?.data_freshness || [];
 
