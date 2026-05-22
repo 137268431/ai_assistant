@@ -1095,7 +1095,7 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertIn("seed-run-1", notify_state["notified_keys"])
         self.assertEqual(notify_state["last_source"], "seed")
 
-    def _daily_event_reconcile_deps(self, states, sent, events, *, now_us):
+    def _daily_event_reconcile_deps(self, states, sent, events, *, now_us, request_json_request=None):
         market_date = now_us[:10]
 
         def get_state_payload(state_key, environment, date=None):
@@ -1152,6 +1152,8 @@ class SystemSchedulerJobsTest(unittest.TestCase):
             "console_base_url": lambda: "https://quant.lzw-glory.top",
             "startup_chat_id": lambda environment: f"startup-chat-{environment}",
             "load_market_snapshots": lambda environment, symbols, market_date, computed_at_ms: [],
+            "request_json_request": request_json_request,
+            "compute_base_url": "http://compute",
         }
 
     def test_daily_event_reconcile_sends_seed_new_targets_once(self):
@@ -1290,6 +1292,194 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertTrue(payload["allow_after_cutoff"])
         self.assertEqual(len(sent), 1)
         self.assertEqual(payload["ledger"]["events"]["new_targets:seed:seed-run-4"]["status"], "completed_late")
+
+    def test_daily_event_reconcile_resubmits_seed_scan_when_pool_quality_bad_and_data_ready(self):
+        sent = []
+        events = []
+        calls = []
+        states = {
+            ("ibkr_daily_scan_state", "live", "global"): {
+                "data": {
+                    "status": "completed",
+                    "market_date": "2026-05-22",
+                    "run_id": "seed-partial",
+                    "result": {
+                        "scanned": 124,
+                        "active": 5,
+                        "candidates": 0,
+                        "new_targets": [{"symbol": "BX", "status": "active"}],
+                        "data_completeness": {
+                            "blocking_enabled": True,
+                            "status": "repairing",
+                            "excluded_incomplete_count": 112,
+                        },
+                        "rejection_summary": {"data_incomplete_repairing": 112},
+                    },
+                }
+            }
+        }
+
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            calls.append({"method": method, "path": path, "params": params, "json_body": json_body})
+            if path == "/ibkr/status":
+                return {
+                    "ok": True,
+                    "payload": {
+                        "watchlist_idle_topup": {
+                            "completion": {
+                                "total": 119,
+                                "fresh": 119,
+                                "stale": 0,
+                                "missing": 0,
+                                "unobserved": 0,
+                                "expected_latest_5m_ms": 1000,
+                                "oldest_latest_ms": 1000,
+                            }
+                        }
+                    },
+                }
+            self.assertEqual(path, "/scan")
+            self.assertEqual(method, "POST")
+            self.assertTrue(json_body["async"])
+            self.assertTrue(json_body["force"])
+            self.assertEqual(json_body["mode"], "seed")
+            self.assertEqual(json_body["trigger_source"], "daily_event_target_pool_quality_repair")
+            return {
+                "ok": True,
+                "payload": {
+                    "ok": True,
+                    "accepted": True,
+                    "async": True,
+                    "run_id": "target-pool-quality-live-2026-05-22",
+                    "status": "accepted",
+                },
+            }
+
+        payload, status_code = build_daily_event_reconcile_response(
+            payload={"broker_mode": "paper", "market_data_mode": "live"},
+            **self._daily_event_reconcile_deps(
+                states,
+                sent,
+                events,
+                now_us="2026-05-22 11:36:00",
+                request_json_request=request_json_request,
+            ),
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual([call["path"] for call in calls], ["/ibkr/status", "/scan"])
+        action = payload["actions"][0]
+        self.assertEqual(action["event_id"], "target_pool_quality")
+        self.assertEqual(action["action"], "submit_seed_rescan")
+        event = payload["ledger"]["events"]["target_pool_quality"]
+        self.assertEqual(event["status"], "repairing")
+        self.assertEqual(event["detail"]["reason"], "high_incomplete_data")
+        self.assertEqual(event["detail"]["repair_run_id"], "target-pool-quality-live-2026-05-22")
+        self.assertEqual(sent, [])
+
+    def test_daily_event_reconcile_waits_for_existing_target_pool_repair(self):
+        sent = []
+        events = []
+        states = {
+            ("ibkr_daily_scan_state", "live", "global"): {
+                "data": {
+                    "status": "completed",
+                    "market_date": "2026-05-22",
+                    "run_id": "seed-partial",
+                    "result": {
+                        "scanned": 124,
+                        "active": 5,
+                        "data_completeness": {
+                            "blocking_enabled": True,
+                            "status": "repairing",
+                            "excluded_incomplete_count": 112,
+                        },
+                    },
+                }
+            },
+            ("ibkr_daily_event_ledger", "paper", "2026-05-22"): {
+                "data": {
+                    "events": {
+                        "target_pool_quality": {
+                            "status": "repairing",
+                            "detail": {"repair_run_id": "target-pool-quality-live-2026-05-22"},
+                        }
+                    }
+                }
+            },
+        }
+
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            self.assertEqual(path, "/scan/status")
+            return {
+                "ok": True,
+                "payload": {
+                    "ok": True,
+                    "status": "running",
+                    "run_id": "target-pool-quality-live-2026-05-22",
+                },
+            }
+
+        payload, status_code = build_daily_event_reconcile_response(
+            payload={"broker_mode": "paper", "market_data_mode": "live"},
+            **self._daily_event_reconcile_deps(
+                states,
+                sent,
+                events,
+                now_us="2026-05-22 11:37:00",
+                request_json_request=request_json_request,
+            ),
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["actions"], [])
+        self.assertEqual(payload["ledger"]["events"]["target_pool_quality"]["status"], "repairing")
+
+    def test_daily_event_reconcile_sends_late_seed_notice_after_target_pool_repair(self):
+        sent = []
+        events = []
+        states = {
+            ("ibkr_daily_scan_state", "live", "global"): {
+                "data": {
+                    "status": "completed",
+                    "market_date": "2026-05-22",
+                    "run_id": "target-pool-quality-live-2026-05-22",
+                    "finished_at": "2026-05-22T15:55:33Z",
+                    "result": {
+                        "scanned": 124,
+                        "active": 86,
+                        "new_active": 86,
+                        "data_completeness": {"blocking_enabled": True, "excluded_incomplete_count": 0},
+                        "new_targets": [{"symbol": symbol, "status": "active"} for symbol in ["AAPL", "NVDA"]],
+                    },
+                }
+            },
+            ("ibkr_daily_event_ledger", "paper", "2026-05-22"): {
+                "data": {
+                    "events": {
+                        "target_pool_quality": {
+                            "status": "repairing",
+                            "detail": {"repair_run_id": "target-pool-quality-live-2026-05-22"},
+                        }
+                    }
+                }
+            },
+        }
+
+        payload, status_code = build_daily_event_reconcile_response(
+            payload={"broker_mode": "paper", "market_data_mode": "live"},
+            **self._daily_event_reconcile_deps(states, sent, events, now_us="2026-05-22 11:58:00"),
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(len(sent), 1)
+        event = payload["ledger"]["events"]["new_targets:seed:target-pool-quality-live-2026-05-22"]
+        self.assertEqual(event["status"], "completed_late")
+        self.assertEqual(event["detail"]["late_reason"], "target_pool_quality_repair")
+        self.assertEqual(event["detail"]["new_targets"], 2)
 
     def test_early_expansion_topup_read_timeout_stays_pending(self):
         sent = []

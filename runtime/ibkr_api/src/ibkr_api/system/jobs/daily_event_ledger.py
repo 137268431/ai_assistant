@@ -23,9 +23,12 @@ DAILY_SCAN_STATE_KEY = "ibkr_daily_scan_state"
 OPEN_REPORT_CUTOFF_ET = "10:30"
 DAILY_REPORT_CUTOFF_ET = "18:00"
 DAILY_SCAN_DUE_ET = "09:20"
+TARGET_POOL_QUALITY_DUE_ET = "09:31"
+TARGET_POOL_QUALITY_CUTOFF_ET = "18:00"
 SEED_TARGET_NOTIFY_DUE_ET = "09:30"
 EVENT_ORDER = {
     "daily_scan_seed": 10,
+    "target_pool_quality": 15,
     "new_targets:seed": 20,
     "open_report": 30,
     "daily_report": 40,
@@ -44,6 +47,7 @@ ConfigValue = Callable[[str, str, str], str]
 ConsoleBaseUrl = Callable[[], str]
 StartupChatId = Callable[[str], str]
 LoadMarketSnapshots = Callable[[str, list[str], str, int], list[dict[str, Any]]]
+RequestJsonRequest = Callable[..., dict[str, Any]]
 
 
 def _to_text(value: Any) -> str:
@@ -55,6 +59,13 @@ def _to_int(value: Any, default: int = 0) -> int:
         return int(value)
     except Exception:
         return int(default)
+
+
+def _to_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -124,7 +135,11 @@ def _load_daily_scan_state(get_state_payload: GetStatePayload, data_environment:
 
 
 def _new_targets(result: dict[str, Any]) -> list[dict[str, Any]]:
-    return [dict(item) for item in (result.get("new_targets") or []) if isinstance(item, dict)]
+    return [
+        dict(item)
+        for item in (result.get("new_targets") or [])
+        if isinstance(item, dict) and _to_text(item.get("symbol"))
+    ]
 
 
 def _notified_keys(state: dict[str, Any]) -> set[str]:
@@ -221,6 +236,198 @@ def _compact_action_result(result: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _scan_quality_thresholds(config_value: ConfigValue, data_environment: str) -> dict[str, Any]:
+    return {
+        "incomplete_ratio": max(
+            0.0,
+            min(
+                1.0,
+                _to_float(
+                    config_value("ibkr_daily_scan_quality_defer_incomplete_ratio", "0.2", data_environment),
+                    0.2,
+                ),
+            ),
+        ),
+        "min_incomplete": max(
+            0,
+            _to_int(
+                config_value("ibkr_daily_scan_quality_defer_min_incomplete", "10", data_environment),
+                10,
+            ),
+        ),
+        "min_active": max(
+            0,
+            _to_int(
+                config_value("ibkr_daily_scan_quality_min_active", "8", data_environment),
+                8,
+            ),
+        ),
+    }
+
+
+def _scan_quality_issue(
+    *,
+    daily_scan: dict[str, Any],
+    daily_result: dict[str, Any],
+    market_date: str,
+    thresholds: dict[str, Any],
+) -> dict[str, Any]:
+    status = _to_text(daily_scan.get("status")).lower()
+    if _to_text(daily_scan.get("market_date")) != market_date or status not in {"completed", "failed"}:
+        return {"issue": False, "reason": "scan_not_terminal_for_date"}
+    completeness = _as_dict(daily_result.get("data_completeness"))
+    rejection_summary = _as_dict(daily_result.get("rejection_summary"))
+    scanned = _to_int(daily_result.get("scanned"), 0)
+    active = _to_int(daily_result.get("active"), 0)
+    excluded = _to_int(
+        completeness.get("excluded_incomplete_count")
+        or daily_result.get("excluded_incomplete_count")
+        or rejection_summary.get("data_incomplete_repairing"),
+        0,
+    )
+    ratio = (excluded / scanned) if scanned > 0 else 0.0
+    blocking_enabled = bool(completeness.get("blocking_enabled")) or excluded > 0
+    repairing = _to_text(completeness.get("status")).lower() == "repairing" or excluded > 0
+    high_incomplete = (
+        blocking_enabled
+        and repairing
+        and excluded >= _to_int(thresholds.get("min_incomplete"), 10)
+        and ratio >= _to_float(thresholds.get("incomplete_ratio"), 0.2)
+    )
+    low_active_with_incomplete = (
+        blocking_enabled
+        and repairing
+        and excluded >= _to_int(thresholds.get("min_incomplete"), 10)
+        and active < _to_int(thresholds.get("min_active"), 8)
+    )
+    reason = ""
+    if high_incomplete:
+        reason = "high_incomplete_data"
+    elif low_active_with_incomplete:
+        reason = "low_active_with_incomplete_data"
+    return {
+        "issue": bool(high_incomplete or low_active_with_incomplete),
+        "reason": reason,
+        "scan_status": status,
+        "scanned": scanned,
+        "active": active,
+        "excluded_incomplete_count": excluded,
+        "excluded_incomplete_ratio": round(ratio, 6),
+        "blocking_enabled": blocking_enabled,
+        "repairing": repairing,
+        "thresholds": dict(thresholds),
+    }
+
+
+def _runtime_watchlist_fresh(payload: dict[str, Any], *, scanned: int = 0) -> dict[str, Any]:
+    status_payload = _as_dict(payload)
+    topup = _as_dict(status_payload.get("watchlist_idle_topup"))
+    completion = _as_dict(topup.get("completion"))
+    total = _to_int(completion.get("total"), 0)
+    fresh = _to_int(completion.get("fresh"), 0)
+    stale = _to_int(completion.get("stale"), 0)
+    missing = _to_int(completion.get("missing"), 0)
+    unobserved = _to_int(completion.get("unobserved"), 0)
+    expected_ms = _to_int(completion.get("expected_latest_5m_ms"), 0)
+    oldest_ms = _to_int(completion.get("oldest_latest_ms"), 0)
+    ready = total > 0 and fresh >= total and stale <= 0 and missing <= 0 and unobserved <= 0 and (
+        expected_ms <= 0 or oldest_ms >= expected_ms
+    )
+    if not ready:
+        market_universe = _as_dict(status_payload.get("market_universe"))
+        freshness = _as_dict(market_universe.get("bar_freshness"))
+        if _to_text(freshness.get("status")).lower() == "fresh" and _to_int(freshness.get("pending_symbols_total"), 0) <= 0:
+            ready = True
+    return {
+        "ready": ready,
+        "total": total,
+        "fresh": fresh,
+        "stale": stale,
+        "missing": missing,
+        "unobserved": unobserved,
+        "expected_latest_5m_ms": expected_ms,
+        "oldest_latest_ms": oldest_ms,
+        "scanned": max(0, int(scanned or 0)),
+    }
+
+
+def _fetch_compute_status(
+    *,
+    request_json_request: RequestJsonRequest | None,
+    compute_base_url: str,
+    data_environment: str,
+) -> dict[str, Any]:
+    if not callable(request_json_request) or not _to_text(compute_base_url):
+        return {"ok": False, "error": "compute_request_unavailable", "payload": {}}
+    try:
+        return request_json_request(
+            "GET",
+            compute_base_url,
+            "/ibkr/status",
+            params=[("environment", data_environment)],
+            timeout=8.0,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "payload": {}}
+
+
+def _fetch_seed_scan_status(
+    *,
+    request_json_request: RequestJsonRequest | None,
+    compute_base_url: str,
+    data_environment: str,
+    market_date: str,
+    run_id: str = "",
+) -> dict[str, Any]:
+    if not callable(request_json_request) or not _to_text(compute_base_url):
+        return {"ok": False, "error": "compute_request_unavailable", "payload": {}}
+    params = [
+        ("environment", data_environment),
+        ("market_data_mode", data_environment),
+        ("date", market_date),
+        ("mode", "seed"),
+    ]
+    if _to_text(run_id):
+        params.append(("run_id", _to_text(run_id)))
+    try:
+        return request_json_request("GET", compute_base_url, "/scan/status", params=params, timeout=8.0)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "payload": {}}
+
+
+def _submit_seed_rescan(
+    *,
+    request_json_request: RequestJsonRequest | None,
+    compute_base_url: str,
+    broker_mode: str,
+    data_environment: str,
+    market_date: str,
+) -> dict[str, Any]:
+    if not callable(request_json_request) or not _to_text(compute_base_url):
+        return {"ok": False, "error": "compute_request_unavailable", "payload": {}}
+    run_id = f"target-pool-quality-{data_environment}-{market_date}"
+    try:
+        return request_json_request(
+            "POST",
+            compute_base_url,
+            "/scan",
+            json_body={
+                "environment": data_environment,
+                "market_data_mode": data_environment,
+                "data_environment": data_environment,
+                "broker_mode": broker_mode,
+                "mode": "seed",
+                "force": True,
+                "async": True,
+                "run_id": run_id,
+                "trigger_source": "daily_event_target_pool_quality_repair",
+            },
+            timeout=15.0,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "payload": {}}
+
+
 def _save_ledger(
     *,
     upsert_state: UpsertState,
@@ -287,6 +494,8 @@ def build_daily_event_reconcile_response(
     console_base_url: ConsoleBaseUrl,
     startup_chat_id: StartupChatId,
     load_market_snapshots: LoadMarketSnapshots | None = None,
+    request_json_request: RequestJsonRequest | None = None,
+    compute_base_url: str = "",
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
     broker_mode = request_broker_mode(request_payload)
@@ -372,9 +581,126 @@ def build_daily_event_reconcile_response(
         ),
     )
 
+    quality_thresholds = _scan_quality_thresholds(config_value, data_environment)
+    quality_issue = _scan_quality_issue(
+        daily_scan=daily_scan,
+        daily_result=daily_result,
+        market_date=market_date,
+        thresholds=quality_thresholds,
+    )
+    quality_existing = _as_dict(_as_dict(ledger.get("events")).get("target_pool_quality"))
+    quality_detail = {
+        **_as_dict(quality_existing.get("detail")),
+        **quality_issue,
+    }
+    quality_status = _to_text(quality_existing.get("status")) or "pending"
+    repair_run_id = _to_text(quality_detail.get("repair_run_id"))
+    if not daily_completed and _to_text(daily_scan.get("market_date")) != market_date:
+        quality_status = "pending" if not _after(times, TARGET_POOL_QUALITY_CUTOFF_ET) else "missed"
+    elif not bool(quality_issue.get("issue")):
+        quality_status = "completed" if _to_text(daily_scan.get("market_date")) == market_date else "pending"
+        quality_detail.pop("repair_error", None)
+    elif not _at_or_after(times, TARGET_POOL_QUALITY_DUE_ET):
+        quality_status = "pending"
+    elif not _before_or_at(times, TARGET_POOL_QUALITY_CUTOFF_ET) and not (
+        allow_after_cutoff and wants("target_pool_quality")
+    ):
+        quality_status = "missed"
+    else:
+        poll_payload: dict[str, Any] = {}
+        if repair_run_id:
+            poll = _fetch_seed_scan_status(
+                request_json_request=request_json_request,
+                compute_base_url=compute_base_url,
+                data_environment=data_environment,
+                market_date=market_date,
+                run_id=repair_run_id,
+            )
+            poll_payload = _as_dict(poll.get("payload"))
+            poll_status = _to_text(poll_payload.get("status")).lower()
+            quality_detail["repair_poll"] = {
+                "ok": bool(poll.get("ok")),
+                "status": poll_status,
+                "error": _to_text(poll.get("error") or poll_payload.get("last_error") or poll_payload.get("error")),
+            }
+            if poll_status in {"accepted", "pending", "running", "submitted", "in_progress", "processing"}:
+                quality_status = "repairing"
+            elif poll_status == "completed":
+                poll_result = _as_dict(poll_payload.get("result"))
+                polled_issue = _scan_quality_issue(
+                    daily_scan={"status": "completed", "market_date": market_date},
+                    daily_result=poll_result,
+                    market_date=market_date,
+                    thresholds=quality_thresholds,
+                )
+                quality_detail["repair_result"] = polled_issue
+                quality_status = "completed" if not bool(polled_issue.get("issue")) else "ready"
+            elif poll_status == "failed":
+                quality_status = "ready"
+                quality_detail["repair_error"] = _to_text(poll_payload.get("last_error") or poll_payload.get("error") or poll.get("error"))
+
+        if quality_status not in {"completed", "repairing"}:
+            status_result = _fetch_compute_status(
+                request_json_request=request_json_request,
+                compute_base_url=compute_base_url,
+                data_environment=data_environment,
+            )
+            status_payload = _as_dict(status_result.get("payload"))
+            runtime_ready = _runtime_watchlist_fresh(status_payload, scanned=_to_int(quality_issue.get("scanned"), 0))
+            quality_detail["runtime_readiness"] = {
+                **runtime_ready,
+                "ok": bool(status_result.get("ok")),
+                "error": _to_text(status_result.get("error")),
+            }
+            if not bool(runtime_ready.get("ready")):
+                quality_status = "waiting_data"
+            elif wants("target_pool_quality") and not dry_run:
+                submit = _submit_seed_rescan(
+                    request_json_request=request_json_request,
+                    compute_base_url=compute_base_url,
+                    broker_mode=broker_mode,
+                    data_environment=data_environment,
+                    market_date=market_date,
+                )
+                submit_payload = _as_dict(submit.get("payload"))
+                submitted_run_id = _to_text(submit_payload.get("run_id")) or f"target-pool-quality-{data_environment}-{market_date}"
+                quality_detail["repair_run_id"] = submitted_run_id
+                quality_detail["repair_submitted_at"] = _to_text(times.get("us"))
+                quality_detail["repair_submit"] = {
+                    "ok": bool(submit.get("ok")) and bool(submit_payload.get("ok", True)),
+                    "status": _to_text(submit_payload.get("status")),
+                    "accepted": bool(submit_payload.get("accepted") or submit_payload.get("async")),
+                    "error": _to_text(submit.get("error") or submit_payload.get("error")),
+                }
+                actions.append({
+                    "event_id": "target_pool_quality",
+                    "action": "submit_seed_rescan",
+                    "result": _compact_action_result({"run_id": submitted_run_id, **quality_detail["repair_submit"]}),
+                })
+                quality_status = "repairing" if bool(quality_detail["repair_submit"].get("ok")) else "failed"
+            elif dry_run and wants("target_pool_quality"):
+                quality_status = "ready"
+            else:
+                quality_status = "ready"
+
+    _update_event(
+        ledger,
+        _event(
+            event_id="target_pool_quality",
+            title="目标池质量复核",
+            status=quality_status,
+            due_at_et=TARGET_POOL_QUALITY_DUE_ET,
+            cutoff_at_et=TARGET_POOL_QUALITY_CUTOFF_ET,
+            source="ibkr_daily_scan_state",
+            detail=quality_detail,
+            times=times,
+        ),
+    )
+
     seed_targets = _new_targets(daily_result) if daily_completed else []
     if seed_targets:
-        seed_event_id = f"new_targets:seed:{_to_text(daily_scan.get('run_id') or daily_result.get('run_id')) or market_date}"
+        seed_notify_key = _to_text(daily_scan.get("run_id") or daily_result.get("run_id")) or market_date
+        seed_event_id = f"new_targets:seed:{seed_notify_key}"
         existing_seed = _as_dict(_as_dict(ledger.get("events")).get(seed_event_id))
         seed_done = _to_text(existing_seed.get("status")) in {"completed", "completed_late", "skipped"}
         seed_status = _to_text(existing_seed.get("status")) or "ready"
@@ -383,9 +709,12 @@ def build_daily_event_reconcile_response(
             "new_targets": len(seed_targets),
             "symbols": [_to_text(item.get("symbol")) for item in seed_targets[:20]],
         }
+        repair_seed_notice = bool(seed_notify_key and seed_notify_key == _to_text(quality_detail.get("repair_run_id")))
+        if repair_seed_notice:
+            detail["late_reason"] = "target_pool_quality_repair"
         if not _to_text(detail.get("message_id")):
             notify_state = _load_state(get_state_payload, TOPUP_NOTIFY_STATE_KEY, broker_mode, market_date)
-            notify_key = _to_text(daily_scan.get("run_id") or daily_result.get("run_id"))
+            notify_key = seed_notify_key
             if notify_key and notify_key in _notified_keys(notify_state):
                 detail["message_id"] = _to_text(notify_state.get("last_message_id"))
                 detail["notify_key"] = notify_key
@@ -393,17 +722,19 @@ def build_daily_event_reconcile_response(
             seed_status = _to_text(existing_seed.get("status"))
         elif not _at_or_after(times, SEED_TARGET_NOTIFY_DUE_ET):
             seed_status = "pending"
-        elif not _before_or_at(times, OPEN_REPORT_CUTOFF_ET) and not (allow_after_cutoff and wants(seed_event_id)):
+        elif not _before_or_at(times, OPEN_REPORT_CUTOFF_ET) and not (
+            (allow_after_cutoff or repair_seed_notice) and wants(seed_event_id)
+        ):
             seed_status = "missed"
         elif wants(seed_event_id) and not dry_run:
             result = {
                 **daily_result,
-                "run_id": _to_text(daily_scan.get("run_id") or daily_result.get("run_id")),
+                "run_id": seed_notify_key,
                 "new_targets": seed_targets,
             }
             delivered = notify_new_targets_from_scan(
                 status_payload={
-                    "run_id": _to_text(daily_scan.get("run_id") or daily_result.get("run_id")),
+                    "run_id": seed_notify_key,
                     "finished_at": _to_text(daily_scan.get("finished_at")),
                     "status": "completed",
                 },
