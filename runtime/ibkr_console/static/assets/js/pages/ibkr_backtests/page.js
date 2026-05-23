@@ -1,9 +1,6 @@
 function applyDefaultDates() {
             const latestCompleteDate = syncBacktestDateLimits();
-            const toDate = new Date(`${latestCompleteDate}T12:00:00Z`);
-            const from = new Date(toDate);
-            from.setUTCDate(toDate.getUTCDate() - 14);
-            document.getElementById('dateFrom').value = toIsoDate(from);
+            document.getElementById('dateFrom').value = shiftDateString(latestCompleteDate, -14);
             document.getElementById('dateTo').value = latestCompleteDate;
             syncBacktestDateLimits();
         }

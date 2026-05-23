@@ -168,7 +168,7 @@ function getPageContextFallbackTradingDate() {
       day: '2-digit',
     }).format(new Date());
   } catch (_) {
-    return new Date().toISOString().slice(0, 10);
+    return '--';
   }
 }
 

@@ -167,8 +167,12 @@
 
         function getBacktestDateSpanDays(dateFrom, dateTo) {
             if (!dateFrom || !dateTo) return 0;
-            const start = new Date(`${dateFrom}T00:00:00Z`);
-            const end = new Date(`${dateTo}T00:00:00Z`);
+            const parseDate = (value) => {
+                const [year, month, day] = String(value || '').split('-').map((part) => Number(part || 0));
+                return Date.UTC(year, month - 1, day, 12, 0, 0);
+            };
+            const start = parseDate(dateFrom);
+            const end = parseDate(dateTo);
             return Math.max(1, Math.round((end - start) / 86400000) + 1);
         }
 

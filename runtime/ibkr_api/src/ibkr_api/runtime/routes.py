@@ -1,11 +1,69 @@
 from __future__ import annotations
 
+import copy
+import os
+import threading
+import time
 from typing import Any
 
 from flask import Response, jsonify, request
 
 from ibkr_api.modes import request_broker_mode, request_market_data_mode
 from ibkr_api.system.service_state import canonicalize_topology
+
+
+_RUNTIME_CONFIG_CACHE_LOCK = threading.RLock()
+_RUNTIME_CONFIG_CACHE: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+
+def _runtime_config_cache_ttl_seconds() -> float:
+    try:
+        return max(0.0, float(os.environ.get("IBKR_RUNTIME_CONFIG_CACHE_TTL_SEC", "5") or "5"))
+    except (TypeError, ValueError):
+        return 5.0
+
+
+def _runtime_config_cache_get(key: tuple[str, str, str]) -> dict[str, Any] | None:
+    ttl = _runtime_config_cache_ttl_seconds()
+    if ttl <= 0:
+        return None
+    now = time.time()
+    with _RUNTIME_CONFIG_CACHE_LOCK:
+        entry = _RUNTIME_CONFIG_CACHE.get(key)
+        if not entry:
+            return None
+        if float(entry.get("expires_at") or 0.0) <= now:
+            _RUNTIME_CONFIG_CACHE.pop(key, None)
+            return None
+        payload = copy.deepcopy(entry.get("payload") if isinstance(entry.get("payload"), dict) else {})
+    if payload:
+        payload["_cache"] = {
+            "state": "hit",
+            "ttl_s": ttl,
+            "age_s": round(max(0.0, now - float(entry.get("stored_at") or now)), 3),
+        }
+    return payload if payload else None
+
+
+def _runtime_config_cache_store(key: tuple[str, str, str], payload: dict[str, Any]) -> dict[str, Any]:
+    ttl = _runtime_config_cache_ttl_seconds()
+    if ttl <= 0:
+        return payload
+    now = time.time()
+    cached_payload = copy.deepcopy(payload or {})
+    with _RUNTIME_CONFIG_CACHE_LOCK:
+        _RUNTIME_CONFIG_CACHE[key] = {
+            "payload": cached_payload,
+            "stored_at": now,
+            "expires_at": now + ttl,
+        }
+    payload["_cache"] = {"state": "miss", "ttl_s": ttl, "age_s": 0.0}
+    return payload
+
+
+def _clear_runtime_config_cache() -> None:
+    with _RUNTIME_CONFIG_CACHE_LOCK:
+        _RUNTIME_CONFIG_CACHE.clear()
 
 
 def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
@@ -62,8 +120,14 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     def custom_ibkr_runtime_config() -> Response:
         mode_payload = requested_mode_payload()
         requested_environment = request_broker_mode(mode_payload)
-        environment = requested_environment
         data_environment = request_market_data_mode(mode_payload)
+        scope = str(request.args.get("scope") or "").strip().lower() or "effective"
+        cache_key = (str(requested_environment or ""), str(data_environment or ""), "all" if scope == "all" else "effective")
+        cached_payload = _runtime_config_cache_get(cache_key)
+        if cached_payload is not None:
+            return jsonify(cached_payload)
+
+        environment = requested_environment
         runtime_payload: dict[str, Any] = {}
         try:
             runtime_result = fetch_runtime_status(requested_environment)
@@ -75,28 +139,27 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
                 )
         except Exception:
             runtime_payload = {}
-        scope = str(request.args.get("scope") or "").strip().lower() or "effective"
         rows = pb.get_runtime_config(scope="all", environment=environment)
         if scope != "all":
             rows = pick_effective_config_rows(rows, environment)
-        return jsonify(
-            {
-                "ok": True,
-                "environment": environment,
-                "requested_environment": requested_environment,
-                "broker_mode": environment,
-                "gateway_mode": str(runtime_payload.get("gateway_mode") or ""),
-                "data_environment": data_environment,
-                "market_data_environment": data_environment,
-                "shared_market_data": data_environment == "live",
-                "runtime": runtime_payload,
-                "scope": "all" if scope == "all" else "effective",
-                "items": serialize_config_rows(rows),
-                "source": "ibkr-api",
-                "service_topology": build_service_topology(),
-            }
-        )
+        payload = {
+            "ok": True,
+            "environment": environment,
+            "requested_environment": requested_environment,
+            "broker_mode": environment,
+            "gateway_mode": str(runtime_payload.get("gateway_mode") or ""),
+            "data_environment": data_environment,
+            "market_data_environment": data_environment,
+            "shared_market_data": data_environment == "live",
+            "runtime": runtime_payload,
+            "scope": "all" if scope == "all" else "effective",
+            "items": serialize_config_rows(rows),
+            "source": "ibkr-api",
+            "service_topology": build_service_topology(),
+        }
+        return jsonify(_runtime_config_cache_store(cache_key, payload))
     exports["custom_ibkr_runtime_config"] = custom_ibkr_runtime_config
+    exports["_clear_runtime_config_cache"] = _clear_runtime_config_cache
 
     @app.route("/api/custom/ibkr/healthz", methods=["GET"])
     def custom_ibkr_healthz() -> Response:

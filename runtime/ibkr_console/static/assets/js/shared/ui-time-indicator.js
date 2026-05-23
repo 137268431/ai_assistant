@@ -38,11 +38,13 @@ function getIbkrBarCloseLabel(record) {
 
 function getIbkrComputedTimeLabel(record) {
   const extra = getIbkrExtraObject(record);
-  return extra.computed_at_us || extra.computed_at_cn || record?.updated || record?.created || '--';
+  if (extra.computed_at_us) return extra.computed_at_us;
+  const fallback = record?.updated || record?.created || '';
+  return fallback ? formatMarketTime(fallback, 'datetime') : '--';
 }
 
-// ── 时间格式化（UTC → 北京时间）──
-function formatBeijingTime(utcTimeString, format = 'datetime') {
+// ── 时间格式化（UTC → 美东时间）──
+function formatMarketTime(utcTimeString, format = 'datetime') {
   if (!utcTimeString) return '-';
 
   const date = new Date(utcTimeString);
@@ -51,7 +53,7 @@ function formatBeijingTime(utcTimeString, format = 'datetime') {
   if (isNaN(date.getTime())) return '-';
 
   const options = {
-    timeZone: 'Asia/Shanghai',
+    timeZone: 'America/New_York',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -64,7 +66,7 @@ function formatBeijingTime(utcTimeString, format = 'datetime') {
   if (format === 'date') {
     // 只显示日期: 2025-03-15
     return date.toLocaleDateString('zh-CN', {
-      timeZone: 'Asia/Shanghai',
+      timeZone: 'America/New_York',
       year: 'numeric',
       month: '2-digit',
       day: '2-digit'
@@ -72,7 +74,7 @@ function formatBeijingTime(utcTimeString, format = 'datetime') {
   } else if (format === 'time') {
     // 只显示时间: 14:30:45
     return date.toLocaleTimeString('zh-CN', {
-      timeZone: 'Asia/Shanghai',
+      timeZone: 'America/New_York',
       hour: '2-digit',
       minute: '2-digit',
       second: '2-digit',
@@ -81,12 +83,12 @@ function formatBeijingTime(utcTimeString, format = 'datetime') {
   } else if (format === 'short') {
     // 短格式: 03-15 14:30
     const dateStr = date.toLocaleDateString('zh-CN', {
-      timeZone: 'Asia/Shanghai',
+      timeZone: 'America/New_York',
       month: '2-digit',
       day: '2-digit'
     }).replace(/\//g, '-');
     const timeStr = date.toLocaleTimeString('zh-CN', {
-      timeZone: 'Asia/Shanghai',
+      timeZone: 'America/New_York',
       hour: '2-digit',
       minute: '2-digit',
       hour12: false
@@ -95,13 +97,13 @@ function formatBeijingTime(utcTimeString, format = 'datetime') {
   } else {
     // 完整格式: 2025-03-15 14:30:45
     const dateStr = date.toLocaleDateString('zh-CN', {
-      timeZone: 'Asia/Shanghai',
+      timeZone: 'America/New_York',
       year: 'numeric',
       month: '2-digit',
       day: '2-digit'
     }).replace(/\//g, '-');
     const timeStr = date.toLocaleTimeString('zh-CN', {
-      timeZone: 'Asia/Shanghai',
+      timeZone: 'America/New_York',
       hour: '2-digit',
       minute: '2-digit',
       second: '2-digit',
@@ -109,6 +111,11 @@ function formatBeijingTime(utcTimeString, format = 'datetime') {
     });
     return `${dateStr} ${timeStr}`;
   }
+}
+
+// Backward-compatible alias; all console display now uses ET.
+function formatBeijingTime(utcTimeString, format = 'datetime') {
+  return formatMarketTime(utcTimeString, format);
 }
 
 // ── 相对时间（多久之前）──
@@ -131,7 +138,7 @@ function formatRelativeTime(utcTimeString) {
   if (diffDay < 7) return `${diffDay}天前`;
 
   // 超过7天显示完整日期
-  return formatBeijingTime(utcTimeString, 'short');
+  return formatMarketTime(utcTimeString, 'short');
 }
 
 // ── 标准化指标记录（直接返回原生数据）──
@@ -241,7 +248,7 @@ function renderIndicatorModal(latestIndicator) {
     : '-';
   const computedAt = typeof getIbkrComputedTimeLabel === 'function'
     ? getIbkrComputedTimeLabel(latestIndicator)
-    : (latestIndicator.created ? formatBeijingTime(latestIndicator.created) : '-');
+    : (latestIndicator.created ? formatMarketTime(latestIndicator.created) : '-');
 
   // 时间信息 section（放在最上面）
   const timeSection = `
@@ -255,10 +262,6 @@ function renderIndicatorModal(latestIndicator) {
         <div class="modal-item">
           <div class="modal-label">Bar Close (ET)</div>
           <div class="modal-value">${barCloseEt || '-'}</div>
-        </div>
-        <div class="modal-item">
-          <div class="modal-label">Bar Close (CN)</div>
-          <div class="modal-value">${indicatorExtra.bar_close_cn_time || '-'}</div>
         </div>
         <div class="modal-item">
           <div class="modal-label">Computed At</div>

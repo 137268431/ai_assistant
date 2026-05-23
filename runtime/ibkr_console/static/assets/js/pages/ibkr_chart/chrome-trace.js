@@ -175,7 +175,7 @@
                         <div class="trace-review-head">
                             <div>
                                 <div class="trace-review-time">${escapeHtml(item?.us_time || '--')}</div>
-                                <div class="trace-review-sub">${escapeHtml(item?.cn_time || '--')}${isPreview ? ' · 预估' : ''}</div>
+                                <div class="trace-review-sub">ET${isPreview ? ' · 预估' : ''}</div>
                             </div>
                             <div class="trace-review-price">
                                 ${escapeHtml(formatPrice(item?.close))}

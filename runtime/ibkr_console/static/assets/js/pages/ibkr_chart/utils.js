@@ -1162,8 +1162,8 @@
             const fromUs = String(item?.us_time || '').trim();
             if (/^\d{4}-\d{2}-\d{2}/.test(fromUs)) return fromUs.slice(0, 10);
             const ms = Number(item?.bar_time_ms || 0);
-            if (ms > 0) return new Date(ms).toISOString().slice(0, 10);
-            return new Date().toISOString().slice(0, 10);
+            if (ms > 0) return getEtDateStringFromMs(ms);
+            return getCurrentEtDateString();
         }
 
         function getSignalBadgeClass(signal) {

@@ -47,7 +47,7 @@
     <script>
         const pb = createPocketBaseClient();
         let allSignals = [];
-        let currentDate = new Date().toISOString().split('T')[0];
+        let currentDate = getCurrentEtDateString();
         let currentDirection = 'all';
         let currentStatus = 'all';
         let currentAction = 'all';
@@ -665,11 +665,11 @@
                             </div>
                             <div class="signal-item">
                                 <div class="signal-label">创建时间</div>
-                                <div class="signal-value">${escapeHtml(formatBeijingTime(signal.created, 'time'))}</div>
+                                <div class="signal-value">${escapeHtml(formatMarketTime(signal.created, 'time'))}</div>
                             </div>
                             <div class="signal-item">
                                 <div class="signal-label">处理时间</div>
-                                <div class="signal-value">${escapeHtml(signal.processed_time ? formatBeijingTime(signal.processed_time, 'time') : '-')}</div>
+                                <div class="signal-value">${escapeHtml(signal.processed_time ? formatMarketTime(signal.processed_time, 'time') : '-')}</div>
                             </div>
                             ${signal.reason ? `
                                 <div class="signal-item full-width">

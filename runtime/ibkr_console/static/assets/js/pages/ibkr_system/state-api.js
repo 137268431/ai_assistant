@@ -7,9 +7,99 @@ let lastStableIbkrDataHealth = null;
 let lastStableTodayStats = null;
 let lastSystemSecondaryLoadedAt = 0;
 let lastSystemSecondarySnapshot = null;
+let latestSchedulerCronPayload = null;
+let latestSchedulerCronSummary = null;
+let latestConfigCronSummary = null;
+let latestConfigCronDefinitions = [];
 
 const TODAY_STATS_KEYS = ['orders', 'ibkr_bars', 'ibkr_indicators', 'ibkr_signals', 'ibkr_targets', 'events'];
 const SYSTEM_SECONDARY_REFRESH_MS = 5 * 60 * 1000;
+const SYSTEM_CRON_PAGINATION_CONFIG = {
+    schedulerOverview: {
+        pageSize: 4,
+        pageSizeOptions: [4, 8, 12],
+        label: 'Scheduler Cron',
+    },
+    configCronSummary: {
+        pageSize: 5,
+        pageSizeOptions: [5, 10, 15],
+        label: '配置 Cron',
+    },
+};
+const systemCronPaginationState = {
+    schedulerOverview: {
+        page: 1,
+        pageSize: SYSTEM_CRON_PAGINATION_CONFIG.schedulerOverview.pageSize,
+    },
+    configCronSummary: {
+        page: 1,
+        pageSize: SYSTEM_CRON_PAGINATION_CONFIG.configCronSummary.pageSize,
+    },
+};
+
+function getSystemCronPaginationConfig(key) {
+    return SYSTEM_CRON_PAGINATION_CONFIG[key] || SYSTEM_CRON_PAGINATION_CONFIG.schedulerOverview;
+}
+
+function getSystemCronPaginationState(key) {
+    const config = getSystemCronPaginationConfig(key);
+    if (!systemCronPaginationState[key]) {
+        systemCronPaginationState[key] = {
+            page: 1,
+            pageSize: config.pageSize,
+        };
+    }
+    return systemCronPaginationState[key];
+}
+
+function updateSystemCronPaginationState(key, patch = {}) {
+    const config = getSystemCronPaginationConfig(key);
+    const current = getSystemCronPaginationState(key);
+    const pageSizeOptions = Array.isArray(config.pageSizeOptions) && config.pageSizeOptions.length
+        ? config.pageSizeOptions
+        : [config.pageSize];
+    const requestedPage = Number(patch.page ?? current.page ?? 1);
+    const requestedPageSize = Number(patch.pageSize ?? current.pageSize ?? config.pageSize);
+    const pageSize = pageSizeOptions.includes(requestedPageSize) ? requestedPageSize : config.pageSize;
+    current.page = Number.isFinite(requestedPage) && requestedPage > 0 ? Math.floor(requestedPage) : 1;
+    current.pageSize = pageSize;
+    return current;
+}
+
+function rememberSchedulerCronRenderInputs(cronPayload = {}, summary = {}) {
+    latestSchedulerCronPayload = cronPayload || {};
+    latestSchedulerCronSummary = summary || {};
+}
+
+function rememberConfigCronRenderInputs(summary = {}, cronDefinitions = []) {
+    latestConfigCronSummary = summary || {};
+    latestConfigCronDefinitions = Array.isArray(cronDefinitions) ? cronDefinitions : [];
+}
+
+function rerenderSystemCronPaginationTarget(key) {
+    if (key === 'configCronSummary') {
+        if (typeof renderConfig === 'function') {
+            renderConfig(latestConfigCronSummary || {}, latestConfigCronDefinitions || []);
+        }
+        return;
+    }
+    if (typeof renderSchedulerOverview === 'function') {
+        renderSchedulerOverview(latestSchedulerCronPayload || {}, latestSchedulerCronSummary || {});
+    }
+}
+
+window.setSystemCronPage = function(key, page) {
+    updateSystemCronPaginationState(key, { page });
+    rerenderSystemCronPaginationTarget(key);
+};
+
+window.setSystemCronPageSize = function(key, value) {
+    updateSystemCronPaginationState(key, {
+        page: 1,
+        pageSize: Number(value),
+    });
+    rerenderSystemCronPaginationTarget(key);
+};
 
 function normalizeTodayStatValue(value) {
     const numeric = Number(value);

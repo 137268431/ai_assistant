@@ -852,13 +852,69 @@ function renderEngines(computeData) {
     el.innerHTML = html;
 }
 
+function getSystemCronPageModel(key, rows = []) {
+    const config = typeof getSystemCronPaginationConfig === 'function'
+        ? getSystemCronPaginationConfig(key)
+        : { pageSize: 12, pageSizeOptions: [12], label: 'Cron' };
+    const state = typeof getSystemCronPaginationState === 'function'
+        ? getSystemCronPaginationState(key)
+        : { page: 1, pageSize: config.pageSize };
+    if (typeof createClientPaginationModel !== 'function') {
+        const items = Array.isArray(rows) ? rows : [];
+        return {
+            page: 1,
+            pageSize: items.length || config.pageSize,
+            total: items.length,
+            totalPages: 1,
+            start: 0,
+            end: items.length,
+            hasPrev: false,
+            hasNext: false,
+            pageRows: items,
+            pageSizeOptions: config.pageSizeOptions || [config.pageSize],
+        };
+    }
+    const model = createClientPaginationModel(rows, state, {
+        pageSize: config.pageSize,
+        pageSizeOptions: config.pageSizeOptions,
+    });
+    if (typeof updateSystemCronPaginationState === 'function') {
+        updateSystemCronPaginationState(key, {
+            page: model.page,
+            pageSize: model.pageSize,
+        });
+    }
+    return model;
+}
+
+function renderSystemCronPagination(key, pageModel) {
+    if (typeof renderClientPaginationBar !== 'function') return '';
+    const config = typeof getSystemCronPaginationConfig === 'function'
+        ? getSystemCronPaginationConfig(key)
+        : { label: 'Cron' };
+    return renderClientPaginationBar(pageModel, {
+        key,
+        label: config.label || 'Cron',
+        pageAction: 'setSystemCronPage',
+        pageSizeAction: 'setSystemCronPageSize',
+        rootClass: 'client-pagination page-pagination system-cron-pagination',
+        buttonClass: 'btn system-cron-page-btn',
+    });
+}
+
 function renderSchedulerOverview(cronPayload = {}, summary = {}) {
     const el = document.getElementById('schedulerArea');
     if (!el) return;
+    if (typeof rememberSchedulerCronRenderInputs === 'function') {
+        rememberSchedulerCronRenderInputs(cronPayload, summary);
+    }
     const definitions = Array.isArray(cronPayload?.items) ? cronPayload.items : [];
     const scheduler = getIbkrSchedulerSummary(cronPayload?.scheduler || {}, currentEnvironment);
     const configMap = buildIbkrConfigMap(summary);
     const cards = definitions.map((definition) => getIbkrSchedulerJobCardData(definition, currentEnvironment));
+    const pageModel = getSystemCronPageModel('schedulerOverview', cards);
+    const pagedCards = Array.isArray(pageModel.pageRows) ? pageModel.pageRows : cards;
+    const paginationHtml = renderSystemCronPagination('schedulerOverview', pageModel);
     const enabledDefinitionCount = cards.filter((card) => card.effectiveEnabled).length;
     const coverageDenominator = scheduler.hasJobState ? (scheduler.jobCount || definitions.length || 0) : (definitions.length || 0);
     const coverageNumerator = scheduler.hasJobState ? (scheduler.enabledJobCount || enabledDefinitionCount || 0) : null;
@@ -908,8 +964,9 @@ function renderSchedulerOverview(cronPayload = {}, summary = {}) {
 
     const cronMarkup = cards.length
         ? `
+            ${paginationHtml}
             <div class="cron-grid">
-                ${cards.map((card) => `
+                ${pagedCards.map((card) => `
                     <div class="cron-card">
                         <div class="cron-card-head">
                             <div>
@@ -985,9 +1042,13 @@ function renderCronSummary(definitions, configMap) {
     if (!cronCards.length) {
         return '<div class="loading-text" style="padding:10px 0 0">暂无 IBKR Scheduler job 定义</div>';
     }
+    const pageModel = getSystemCronPageModel('configCronSummary', cronCards);
+    const pagedCronCards = Array.isArray(pageModel.pageRows) ? pageModel.pageRows : cronCards;
+    const paginationHtml = renderSystemCronPagination('configCronSummary', pageModel);
     return `
+        ${paginationHtml}
         <div class="cron-grid">
-            ${cronCards.map((card) => {
+            ${pagedCronCards.map((card) => {
                 return `
                     <div class="cron-card">
                         <div class="cron-card-head">
@@ -1049,6 +1110,9 @@ function renderCronSummary(definitions, configMap) {
 
 function renderConfig(summary, cronDefinitions) {
     const el = document.getElementById('configArea');
+    if (typeof rememberConfigCronRenderInputs === 'function') {
+        rememberConfigCronRenderInputs(summary, cronDefinitions);
+    }
     const configMap = buildIbkrConfigMap(summary);
     const primaryItems = getIbkrSystemPrimaryConfigItems(summary, configMap);
     const secondaryItems = getIbkrSystemSecondaryConfigItems(configMap);

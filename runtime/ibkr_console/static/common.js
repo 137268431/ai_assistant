@@ -1,7 +1,7 @@
 // Shared compatibility entrypoint.
 // Source-of-truth browser modules now live under /assets/js/shared and /assets/css.
 (function loadSharedCommonBundle() {
-  const sharedBundleVersion = '20260522-system-logic';
+  const sharedBundleVersion = '20260523-et-time';
   const sharedScriptPaths = [
     `/assets/js/shared/runtime-config.js?v=${sharedBundleVersion}`,
     `/assets/js/shared/data-center.js?v=${sharedBundleVersion}`,
@@ -59,9 +59,11 @@
       renderDirectionTabs: (...args) => pick('renderDirectionTabs')(...args),
       renderRefreshBar: (...args) => pick('renderRefreshBar')(...args),
       getCommonStyles: (...args) => pick('getCommonStyles')(...args),
+      formatMarketTime: (...args) => pick('formatMarketTime')(...args),
       formatBeijingTime: (...args) => pick('formatBeijingTime')(...args),
       formatEtRefreshClock: (...args) => pick('formatEtRefreshClock')(...args),
       formatEtRefreshDateTime: (...args) => pick('formatEtRefreshDateTime')(...args),
+      getDateStringInTimeZone: (...args) => pick('getDateStringInTimeZone')(...args),
       setPageRefreshTime: (...args) => pick('setPageRefreshTime')(...args),
       setPageContextMeta: (...args) => pick('setPageContextMeta')(...args),
       createClientPaginationModel: (...args) => pick('createClientPaginationModel')(...args),
@@ -80,6 +82,12 @@
       renderOpsBridge: (...args) => pick('renderOpsBridge')(...args),
       renderBacktestsBridge: (...args) => pick('renderBacktestsBridge')(...args),
       getCurrentEtDateString: (...args) => pick('getCurrentEtDateString')(...args),
+      getEtDateStringFromMs: (...args) => pick('getEtDateStringFromMs')(...args),
+      shiftDateString: (...args) => pick('shiftDateString')(...args),
+      getEtDayStartMs: (...args) => pick('getEtDayStartMs')(...args),
+      getEtDayBoundsMs: (...args) => pick('getEtDayBoundsMs')(...args),
+      getEtDateRangeBoundsMs: (...args) => pick('getEtDateRangeBoundsMs')(...args),
+      formatUtcDateTimeForPocketBase: (...args) => pick('formatUtcDateTimeForPocketBase')(...args),
       buildModePayload: (...args) => pick('buildModePayload')(...args),
       refreshBrokerModeContext: (...args) => pick('refreshBrokerModeContext')(...args),
       formatRelativeTime: (...args) => pick('formatRelativeTime')(...args),

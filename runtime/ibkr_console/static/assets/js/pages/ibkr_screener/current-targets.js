@@ -139,7 +139,7 @@
       const match = text.match(/^(\d{4}-\d{2}-\d{2})/);
       if (match) return match[1];
       const num = Number(text);
-      if (Number.isFinite(num) && num > 0) return new Date(num).toISOString().slice(0, 10);
+      if (Number.isFinite(num) && num > 0) return getEtDateStringFromMs(num);
       return fallback;
     }
 
@@ -1034,7 +1034,7 @@
 
           <div class="mobile-data-grid">
             ${buildMobileMetricCard('分数', escapeHtml(Number(item.score || 0).toFixed(1)))}
-            ${buildMobileMetricCard('更新时间', `${escapeHtml(item.us_time || '--')}<br><span class="mobile-data-subcopy">${item.updated ? escapeHtml(formatBeijingTime(item.updated, 'short')) : '--'}</span>`)}
+            ${buildMobileMetricCard('更新时间', `${escapeHtml(item.us_time || '--')}<br><span class="mobile-data-subcopy">${item.updated ? escapeHtml(formatMarketTime(item.updated, 'short')) : '--'}</span>`)}
           </div>
 
           ${buildMobileSection('理由', escapeHtml(item.scan_reason || '--'))}
@@ -1075,7 +1075,7 @@
 
             <div class="mobile-data-grid">
               ${buildMobileMetricCard('成员属性', escapeHtml(formatWatchlistMember(item)))}
-              ${buildMobileMetricCard('更新时间', `${escapeHtml(item.updated_us || item.us_time || '--')}<br><span class="mobile-data-subcopy">${item.updated ? escapeHtml(formatBeijingTime(item.updated, 'short')) : '--'}</span>`)}
+              ${buildMobileMetricCard('更新时间', `${escapeHtml(item.updated_us || item.us_time || '--')}<br><span class="mobile-data-subcopy">${item.updated ? escapeHtml(formatMarketTime(item.updated, 'short')) : '--'}</span>`)}
             </div>
 
             ${buildMobileSection('备注', escapeHtml(item.note || '--'))}

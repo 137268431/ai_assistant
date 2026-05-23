@@ -2,9 +2,7 @@
             if (item?.us_time) return String(item.us_time).slice(5, 16);
             const ms = Number(item?.bar_time_ms || 0);
             if (!ms) return '--';
-            const date = new Date(ms);
-            if (Number.isNaN(date.getTime())) return '--';
-            return `${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')} ${String(date.getUTCHours()).padStart(2, '0')}:${String(date.getUTCMinutes()).padStart(2, '0')}`;
+            return formatBarTimeMsToET(ms).slice(5, 16);
         }
 
         function supportsSessionDividers(interval = currentInterval) {

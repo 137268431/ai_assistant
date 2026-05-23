@@ -71,7 +71,7 @@
                     <table class="data-table">
                         <thead>
                             <tr>
-                                <th>US Time</th>
+                                <th>ET Time</th>
                                 <th>Session</th>
                                 <th>OHLC</th>
                                 <th>ATR</th>

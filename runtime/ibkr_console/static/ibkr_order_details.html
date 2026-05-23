@@ -85,7 +85,7 @@
             return `${text.slice(0, Math.max(0, maxLength - 3))}...`;
         }
 
-        let currentDate = normalizeDateParam(params.get('date'), new Date().toISOString().split('T')[0]);
+        let currentDate = normalizeDateParam(params.get('date'), getCurrentEtDateString());
         let refreshTimer = null;
         let currentInterval = 30;
         let currentPage = 1;
@@ -223,10 +223,8 @@
 
         function formatTimePair(record) {
             const us = record.us_time || (record.bar_time_ms ? formatBarTimeMsToET(record.bar_time_ms) : '');
-            const cn = record.cn_time || '';
-            if (!us && !cn) return '-';
-            if (!cn) return `${us} ET`;
-            return `${us} ET / ${cn} CN`;
+            if (!us) return '-';
+            return `${us} ET`;
         }
 
         function escapeFilterValue(value) {
@@ -356,11 +354,10 @@
                 )`;
             }
 
-            const startTime = `${currentDate} 00:00:00`;
-            const endTime = `${currentDate} 23:59:59`;
-            const startTimeMs = new Date(`${currentDate}T00:00:00Z`).getTime();
-            const endTimeMs = startTimeMs + 24 * 60 * 60 * 1000;
-            return `${environmentFilter} && ((bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}) || (created >= "${escapeFilterValue(startTime)}" && created <= "${escapeFilterValue(endTime)}"))`;
+            const { startTimeMs, endTimeMs } = getEtDayBoundsMs(currentDate);
+            const startTime = formatUtcDateTimeForPocketBase(startTimeMs);
+            const endTime = formatUtcDateTimeForPocketBase(endTimeMs);
+            return `${environmentFilter} && ((bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}) || (created >= "${escapeFilterValue(startTime)}" && created < "${escapeFilterValue(endTime)}"))`;
         }
 
         const loadDetails = guardedLoader(async function() {
@@ -803,7 +800,7 @@
                 if (match) return match[1];
             }
             const barTimeMs = Number(detail?.bar_time_ms || detail?.extra?.bar_time_ms || 0);
-            if (Number.isFinite(barTimeMs) && barTimeMs > 0) return new Date(barTimeMs).toISOString().slice(0, 10);
+            if (Number.isFinite(barTimeMs) && barTimeMs > 0) return getEtDateStringFromMs(barTimeMs);
             return currentDate;
         }
 

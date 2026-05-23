@@ -66,19 +66,25 @@ window.handleLogout = function(event) {
 
 // ── 日期选择器 ──
 function renderDatePicker(onChange) {
-  const today = new Date();
-  const yesterday = new Date(today);
-  yesterday.setDate(yesterday.getDate() - 1);
-
-  const formatDate = (d) => d.toISOString().split('T')[0];
+  const today = typeof getCurrentEtDateString === 'function'
+    ? getCurrentEtDateString()
+    : new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/New_York',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      }).format(new Date());
+  const yesterday = typeof shiftDateString === 'function'
+    ? shiftDateString(today, -1)
+    : today;
 
   return `
     <div class="date-picker">
       <div class="date-shortcuts">
-        <button class="date-btn" data-date="${formatDate(yesterday)}" onclick="selectDate('${formatDate(yesterday)}', this)">昨天</button>
-        <button class="date-btn active" data-date="${formatDate(today)}" onclick="selectDate('${formatDate(today)}', this)">今天</button>
+        <button class="date-btn" data-date="${yesterday}" onclick="selectDate('${yesterday}', this)">昨天</button>
+        <button class="date-btn active" data-date="${today}" onclick="selectDate('${today}', this)">今天</button>
       </div>
-      <input type="date" class="date-input" id="customDate" value="${formatDate(today)}" onchange="selectCustomDate(this.value)">
+      <input type="date" class="date-input" id="customDate" value="${today}" onchange="selectCustomDate(this.value)">
     </div>
   `;
 }

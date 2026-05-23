@@ -1100,6 +1100,33 @@
     gap: 10px;
     align-items: start;
 }
+.system-cron-pagination {
+    margin: 0 0 10px;
+    padding: 7px 9px;
+    border-color: rgba(79, 209, 197, 0.14);
+    background: rgba(79, 209, 197, 0.045);
+}
+.system-cron-pagination .page-pagination-copy,
+.system-cron-pagination .page-pagination-page {
+    font-size: 10px;
+}
+.system-cron-pagination .page-pagination-actions {
+    gap: 6px;
+}
+.system-cron-pagination .system-cron-page-btn {
+    min-height: 28px;
+    padding: 5px 9px;
+    border-radius: 999px;
+    font-size: 10px;
+}
+.system-cron-pagination .page-pagination-size {
+    font-size: 10px;
+}
+.system-cron-pagination .page-pagination-size select {
+    height: 28px;
+    min-width: 72px;
+    font-size: 10px;
+}
 .cron-card {
     display: flex;
     flex-direction: column;
@@ -1465,6 +1492,20 @@
     }
     .cron-meta {
         grid-template-columns: 1fr;
+    }
+    .system-cron-pagination {
+        align-items: stretch;
+    }
+    .system-cron-pagination .page-pagination-actions,
+    .system-cron-pagination .page-pagination-size,
+    .system-cron-pagination .page-pagination-size select {
+        width: 100%;
+    }
+    .system-cron-pagination .page-pagination-actions {
+        justify-content: stretch;
+    }
+    .system-cron-pagination .system-cron-page-btn {
+        flex: 1 1 72px;
     }
 }
 

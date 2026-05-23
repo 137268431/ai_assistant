@@ -1631,7 +1631,7 @@
                     label: 'Market Session',
                     value: String(marketSession?.kind || '--').toUpperCase(),
                     copy: `${marketSession?.label || '--'} · ET ${marketSession?.us_time || '--'}`,
-                    meta: `CN ${marketSession?.cn_time || '--'}`,
+                    meta: `ET ${marketSession?.us_time || '--'}`,
                     toneClass: marketSession?.is_open ? 'is-ok' : 'is-muted',
                 },
                 {

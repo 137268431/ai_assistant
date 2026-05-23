@@ -290,7 +290,7 @@
                 || status?.market_universe?.market_date
                 || ''
             ).trim();
-            return marketDate || new Date().toISOString().slice(0, 10);
+            return marketDate || getCurrentEtDateString();
         }
 
         async function loadRuntimeTodayCounts(status) {

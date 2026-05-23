@@ -249,7 +249,7 @@
             const parsed = new Date(text);
             if (!Number.isNaN(parsed.getTime())) {
                 return parsed.toLocaleString('zh-CN', {
-                    timeZone: 'Asia/Shanghai',
+                    timeZone: 'America/New_York',
                     hour12: false,
                     year: 'numeric',
                     month: '2-digit',
@@ -302,10 +302,7 @@
         }
 
         function shiftIsoDate(dateText, days = 0) {
-            const baseDate = new Date(`${dateText}T00:00:00Z`);
-            if (Number.isNaN(baseDate.getTime())) return dateText;
-            baseDate.setUTCDate(baseDate.getUTCDate() + Number(days || 0));
-            return baseDate.toISOString().slice(0, 10);
+            return typeof shiftDateString === 'function' ? shiftDateString(dateText, days) : dateText;
         }
 
         function getTimeZoneOffsetMinutes(timeZone, date) {
@@ -696,7 +693,7 @@
                             </div>
                             <div class="indicator-time-stack">
                                 <div class="indicator-time">${escapeHtml(indicator.us_time || '-')}</div>
-                                <div class="indicator-subtime">${escapeHtml(indicator.cn_time || '-')}</div>
+                                <div class="indicator-subtime">ET</div>
                             </div>
                         </div>
                         ${focusChips ? `<div class="indicator-focus-row">${focusChips}</div>` : ''}
@@ -744,7 +741,7 @@
                     : '无信号';
                 return `
                     <tr onclick="showIndicatorDetails('${escapeHtml(indicator.id)}')">
-                        <td><div class="table-main">${escapeHtml(indicator.us_time || '--')}</div><div class="table-sub">${escapeHtml(indicator.cn_time || '--')}</div></td>
+                        <td><div class="table-main">${escapeHtml(indicator.us_time || '--')}</div><div class="table-sub">ET</div></td>
                         <td><div class="table-main">${escapeHtml(indicator.symbol || '--')}</div><div class="table-sub">${escapeHtml(getIntervalLabel(indicator.interval) || indicator.interval || '--')}</div></td>
                         <td>${focusTokens || '<span class="table-sub">--</span>'}</td>
                         <td><div class="table-main">${escapeHtml(getTrendText(indicator.trend_dir))}</div><div class="table-sub">${indicator.ema_bullish ? 'EMA 多头' : indicator.ema_bearish ? 'EMA 空头' : 'EMA 中性'}</div></td>
@@ -827,9 +824,7 @@
             if (item?.us_time) return String(item.us_time).slice(5, 16);
             const ms = Number(item?.bar_time_ms || 0);
             if (!ms) return '--';
-            const date = new Date(ms);
-            if (Number.isNaN(date.getTime())) return '--';
-            return `${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')} ${String(date.getUTCHours()).padStart(2, '0')}:${String(date.getUTCMinutes()).padStart(2, '0')}`;
+            return formatBarTimeMsToET(ms).slice(5, 16);
         }
 
         function normalizeChartInterval(interval) {

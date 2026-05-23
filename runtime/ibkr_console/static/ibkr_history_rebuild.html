@@ -270,7 +270,7 @@
         function formatTimeLabel(value) {
             if (!value) return '--';
             try {
-                return formatTime(value, 'Asia/Shanghai', 'full');
+                return formatTime(value, 'America/New_York', 'full');
             } catch (_) {
                 return String(value);
             }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -8,6 +9,13 @@ from typing import Iterable
 from ibkr_compute.market.timeframe_utils import normalize_interval
 
 ComputeSlot = tuple[str, str, str]
+
+
+def compute_lock_stale_threshold_seconds() -> float:
+    try:
+        return max(0.0, float(os.environ.get("IBKR_COMPUTE_LOCK_STALE_THRESHOLD_SEC", "600") or "600"))
+    except (TypeError, ValueError):
+        return 600.0
 
 
 def normalize_compute_slot(environment: str, symbol: str, interval: str) -> ComputeSlot:
@@ -184,8 +192,13 @@ class ComputeLockManager:
 
     def snapshot(self) -> dict:
         now = time.time()
+        stale_threshold_s = compute_lock_stale_threshold_seconds()
         with self._condition:
-            leases = [self._lease_payload(lease, now=now) for lease in self._active_leases.values()]
+            leases = [
+                self._lease_payload(lease, now=now, stale_threshold_s=stale_threshold_s)
+                for lease in self._active_leases.values()
+            ]
+            stale_leases = [lease for lease in leases if bool(lease.get("stale"))]
             active_global_count = sum(1 for lease in self._active_leases.values() if lease.global_scope)
             active_slot_count = sum(1 for lease in self._active_leases.values() if not lease.global_scope)
             return {
@@ -193,6 +206,9 @@ class ComputeLockManager:
                 "active_global_lease_id": int(self._active_global_lease_id or 0),
                 "active_slot_leases": int(self._active_slot_leases or 0),
                 "active_lease_count": len(leases),
+                "stale_threshold_s": round(stale_threshold_s, 3),
+                "stale_lease_count": len(stale_leases),
+                "stale_leases": stale_leases[:8],
                 "leases": leases,
                 "state_inconsistent": bool(
                     bool(self._active_global) != bool(active_global_count)
@@ -204,6 +220,7 @@ class ComputeLockManager:
         requested = request or ComputeLockRequest.global_lock("global")
         requested_slots = set(requested.slots or ())
         now = time.time()
+        stale_threshold_s = compute_lock_stale_threshold_seconds()
         blockers = []
         conflict_slots: set[ComputeSlot] = set()
         with self._condition:
@@ -219,12 +236,16 @@ class ComputeLockManager:
                     matches = bool(overlap)
                     conflict_slots.update(overlap)
                 if matches:
-                    blockers.append(self._lease_payload(lease, now=now))
+                    blockers.append(self._lease_payload(lease, now=now, stale_threshold_s=stale_threshold_s))
             blockers.sort(key=lambda item: float(item.get("age_s") or 0), reverse=True)
+            stale_blockers = [item for item in blockers if bool(item.get("stale"))]
             snapshot = {
                 "active_global": bool(self._active_global),
                 "active_slot_leases": int(self._active_slot_leases or 0),
                 "active_lease_count": len(self._active_leases),
+                "stale_threshold_s": round(stale_threshold_s, 3),
+                "stale_blocked_by_count": len(stale_blockers),
+                "stale_blocked_by": stale_blockers[: max(0, int(limit or 0))],
                 "blocked_by": blockers[: max(0, int(limit or 0))],
                 "blocked_by_count": len(blockers),
                 "conflict_slots": [
@@ -258,14 +279,18 @@ class ComputeLockManager:
         return lease
 
     @staticmethod
-    def _lease_payload(lease: ComputeLockLease, *, now: float) -> dict:
+    def _lease_payload(lease: ComputeLockLease, *, now: float, stale_threshold_s: float | None = None) -> dict:
         request = lease.request or ComputeLockRequest.global_lock("global" if lease.global_scope else "slots")
+        age_s = round(max(0.0, float(now or time.time()) - float(lease.acquired_at or 0.0)), 3)
+        threshold_s = compute_lock_stale_threshold_seconds() if stale_threshold_s is None else max(0.0, float(stale_threshold_s))
         payload = {
             "lease_id": int(lease.lease_id or 0),
             "scope": "global" if lease.global_scope else "slots",
             "reason": str(request.reason or ""),
             "acquired_at_ms": int(float(lease.acquired_at or 0.0) * 1000),
-            "age_s": round(max(0.0, float(now or time.time()) - float(lease.acquired_at or 0.0)), 3),
+            "age_s": age_s,
+            "stale": bool(threshold_s > 0 and age_s >= threshold_s),
+            "stale_threshold_s": round(threshold_s, 3),
             "thread_id": int(lease.thread_id or 0),
             "thread_name": str(lease.thread_name or ""),
             "slot_count": len(lease.slots or ()),

@@ -1,5 +1,6 @@
 import sys
 import threading
+import time
 import types
 import unittest
 from pathlib import Path
@@ -149,6 +150,22 @@ class ComputeLockManagerTest(unittest.TestCase):
             thread.join(1.0)
 
         self.assertEqual(manager.snapshot()["active_lease_count"], 0)
+
+    def test_snapshot_marks_stale_leases(self):
+        manager = ComputeLockManager()
+        lease = manager.acquire(_targeted_request("AAPL"), timeout=0.01)
+        self.assertIsNotNone(lease)
+        try:
+            lease.acquired_at = time.time() - 5
+            with mock.patch.dict("os.environ", {"IBKR_COMPUTE_LOCK_STALE_THRESHOLD_SEC": "1"}):
+                snapshot = manager.snapshot()
+                blockers = manager.describe_blockers(_targeted_request("AAPL"))
+            self.assertEqual(snapshot["stale_lease_count"], 1)
+            self.assertTrue(snapshot["stale_leases"][0]["stale"])
+            self.assertEqual(blockers["stale_blocked_by_count"], 1)
+            self.assertTrue(blockers["blocked_by"][0]["stale"])
+        finally:
+            lease.release()
 
     def test_plan_request_locks_symbols_across_compute_and_rollup_intervals(self):
         request = build_compute_plan_lock_request(

@@ -1196,8 +1196,7 @@
     if (fromUrl) return fromUrl;
     const stored = localStorage.getItem(STORAGE_DATE_KEY) || '';
     if (/^\d{4}-\d{2}-\d{2}$/.test(stored)) return stored;
-    if (typeof getCurrentEtDateString === 'function') return getCurrentEtDateString();
-    return new Date().toISOString().slice(0, 10);
+    return getCurrentEtDateString();
   }
 
   function readFiltersFromUrl() {
@@ -1922,8 +1921,7 @@
       ['status', node.status],
       ['type', node.type],
       ['time_et', formatTime(node.time)],
-      ['time_us', firstNonEmpty(getNested(rawData, 'us_time'), getNested(rawData, 'changed_at_us'))],
-      ['time_cn', firstNonEmpty(getNested(rawData, 'cn_time'), getNested(rawData, 'changed_at_cn'))],
+      ['time_source_et', firstNonEmpty(getNested(rawData, 'us_time'), getNested(rawData, 'changed_at_us'))],
       ['symbol', firstNonEmpty(node.symbol, getNested(rawData, 'symbol'), getNested(rawData, 'ticker'))],
       ['signal_id', firstNonEmpty(node.signalId, getNested(rawData, 'signal_id'))],
       ['trade_group_id', firstNonEmpty(node.tradeGroupId, getNested(rawData, 'trade_group_id'))],
@@ -2002,7 +2000,7 @@
       broker_mode: brokerMode,
       market_data_mode: dataEnvironment,
       data_environment: dataEnvironment,
-      date: typeof getCurrentEtDateString === 'function' ? getCurrentEtDateString() : new Date().toISOString().slice(0, 10),
+      date: getCurrentEtDateString(),
       symbol: '',
       signal_id: '',
       trade_group_id: '',

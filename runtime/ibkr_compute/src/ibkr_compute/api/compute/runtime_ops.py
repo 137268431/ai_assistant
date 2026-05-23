@@ -78,7 +78,7 @@ def _parse_hhmm(value, default: tuple[int, int] | None = None) -> tuple[int, int
     return default
 
 
-def _scan_start_for_environment(api_app, environment: str) -> tuple[tuple[int, int], str]:
+def _scan_window_for_environment(api_app, environment: str) -> tuple[tuple[int, int], tuple[int, int] | None, str, str]:
     runtime_environment = str(environment or "live").strip().lower() or "live"
     configured_time = str(
         api_app.cfg.get_for_environment(
@@ -88,10 +88,6 @@ def _scan_start_for_environment(api_app, environment: str) -> tuple[tuple[int, i
         )
         or DEFAULT_SCAN_TIME_ET
     ).strip()
-    parsed = _parse_hhmm(configured_time)
-    if parsed:
-        return parsed, configured_time
-
     raw_schedule = str(
         api_app.cfg.get_for_environment(
             "ibkr_scan_schedule",
@@ -100,21 +96,33 @@ def _scan_start_for_environment(api_app, environment: str) -> tuple[tuple[int, i
         )
         or ""
     ).strip()
-    fallback_text = raw_schedule.split("-", 1)[0].strip() or DEFAULT_SCAN_TIME_ET
-    fallback = _parse_hhmm(fallback_text, _parse_hhmm(DEFAULT_SCAN_TIME_ET, (9, 20)))
-    return fallback or (9, 20), fallback_text
+    schedule_parts = [item.strip() for item in raw_schedule.split("-", 1)]
+    fallback_start_text = schedule_parts[0] if schedule_parts else DEFAULT_SCAN_TIME_ET
+    fallback_start_text = fallback_start_text or DEFAULT_SCAN_TIME_ET
+    configured_start = _parse_hhmm(configured_time)
+    fallback_start = _parse_hhmm(fallback_start_text, _parse_hhmm(DEFAULT_SCAN_TIME_ET, (9, 20)))
+    start = configured_start or fallback_start or (9, 20)
+    start_label = configured_time if configured_start else fallback_start_text
+    end_label = schedule_parts[1] if len(schedule_parts) > 1 else ""
+    end = _parse_hhmm(end_label) if end_label else None
+    if end is not None and end < start:
+        end = None
+        end_label = ""
+    return start, end, start_label, end_label
 
 
 def _scan_window_state(api_app, environment: str, now_et: datetime | None = None) -> dict:
-    start, start_label = _scan_start_for_environment(api_app, environment)
+    start, end, start_label, end_label = _scan_window_for_environment(api_app, environment)
     current_et = now_et.astimezone(ET) if isinstance(now_et, datetime) else datetime.now(ET)
     current_hhmm = (current_et.hour, current_et.minute)
-    open_now = current_hhmm >= start
+    open_now = current_hhmm >= start and (end is None or current_hhmm <= end)
     return {
         "environment": str(environment or "live").strip().lower() or "live",
         "open": open_now,
         "scan_time_et": f"{start[0]:02d}:{start[1]:02d}",
+        "window_end_et": f"{end[0]:02d}:{end[1]:02d}" if end else "",
         "configured_scan_time_et": start_label,
+        "configured_scan_window_et": f"{start_label}-{end_label}" if end_label else start_label,
         "current_time_et": current_et.strftime("%H:%M"),
         "current_datetime_et": current_et.isoformat(),
     }

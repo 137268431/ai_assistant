@@ -411,7 +411,8 @@
             const validityMinutes = getSignalField(signal, 'validity_minutes', '');
             const triggerChecks = getSignalField(signal, 'trigger_checks', null);
             const filterChecks = getSignalField(signal, 'filter_checks', null);
-            const computedAt = extra.computed_at_us || extra.computed_at_cn || signal.updated || signal.created || '--';
+            const computedAt = extra.computed_at_us
+                || (typeof formatTimeLabel === 'function' ? formatTimeLabel(signal.updated || signal.created || '') : (signal.updated || signal.created || '--'));
             const statusText = isComputedSignal(signal) ? 'COMPUTED' : String(signal.status || '--').toUpperCase();
             const sourceNote = isComputedSignal(signal)
                 ? '当前信号点由 ibkr_bars 实时重算，未必对应历史信号台账。'
@@ -1029,7 +1030,7 @@
                     <div class="rail-value">${focusBar ? formatPrice(focusBar.close) : '--'}</div>
                     <div class="rail-sub">${escapeHtml(currentSymbol || '--')} · ${escapeHtml(getIntervalLabel(currentInterval))}<br>${escapeHtml(focusBar?.us_time || latestBar?.us_time || '--')}</div>
                     <div class="link-row">
-                        <a class="mini-link" href="${buildPageUrl('/ibkr_indicators.html', { date: new Date().toISOString().slice(0, 10) }, { environment: currentEnvironment })}">历史指标页</a>
+                        <a class="mini-link" href="${buildPageUrl('/ibkr_indicators.html', { date: getCurrentEtDateString() }, { environment: currentEnvironment })}">历史指标页</a>
                         <a class="mini-link" href="${buildPageUrl('/ibkr_signals.html', {}, { environment: currentEnvironment })}">历史信号页</a>
                     </div>
                 </div>

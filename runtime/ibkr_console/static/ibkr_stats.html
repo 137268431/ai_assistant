@@ -358,7 +358,7 @@
         }
 
         function getSignalAnalysisDate() {
-            return document.getElementById('signalAnalysisDate')?.value || (typeof getCurrentEtDateString === 'function' ? getCurrentEtDateString() : new Date().toISOString().slice(0, 10));
+            return document.getElementById('signalAnalysisDate')?.value || getCurrentEtDateString();
         }
 
         function formatStatsNumber(value, digits = 0) {
@@ -612,26 +612,29 @@
         async function loadStats() {
             try {
                 setChartHeights();
-                const endDate = new Date();
-                let startDate = new Date();
+                let endDateText = getCurrentEtDateString();
+                let startDateText = endDateText;
                 const softErrors = [];
 
                 // 优先使用自定义日期
                 if (customStartDate && customEndDate) {
-                    startDate = new Date(customStartDate);
-                    endDate.setTime(new Date(customEndDate).getTime() + 86400000); // 加一天包含结束日期
+                    startDateText = customStartDate;
+                    endDateText = customEndDate;
                 } else if (currentRange === '7days') {
-                    startDate.setDate(endDate.getDate() - 7);
+                    startDateText = shiftDateString(endDateText, -7);
                 } else if (currentRange === '30days') {
-                    startDate.setDate(endDate.getDate() - 30);
+                    startDateText = shiftDateString(endDateText, -30);
                 } else if (currentRange === '90days') {
-                    startDate.setDate(endDate.getDate() - 90);
+                    startDateText = shiftDateString(endDateText, -90);
                 } else {
-                    startDate = new Date('2020-01-01');
+                    startDateText = '2020-01-01';
                 }
 
-                const startTimeMs = startDate.getTime();
-                const endTimeMs = endDate.getTime();
+                const rangeBounds = getEtDateRangeBoundsMs(startDateText, endDateText);
+                const startTimeMs = rangeBounds.startMs;
+                const endTimeMs = rangeBounds.endMs;
+                const startDate = new Date(startTimeMs);
+                const endDate = new Date(Math.max(startTimeMs, endTimeMs - 1));
                 const timeFilter = `environment = "${escapeQueryValue(currentEnvironment)}" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`;
 
                 let orders = [];
@@ -867,8 +870,8 @@
             const labels = [];
             const currentDate = new Date(startDate);
             while (currentDate <= endDate) {
-                labels.push(currentDate.toISOString().split('T')[0]);
-                currentDate.setDate(currentDate.getDate() + 1);
+                labels.push(getCurrentEtDateString(currentDate));
+                currentDate.setTime(currentDate.getTime() + 24 * 60 * 60 * 1000);
             }
 
             // 收益曲线
@@ -1110,7 +1113,7 @@
         document.addEventListener('DOMContentLoaded', async () => {
             await initAuth();
             const urlParams = new URLSearchParams(window.location.search);
-            const analysisDate = urlParams.get('date') || (typeof getCurrentEtDateString === 'function' ? getCurrentEtDateString() : new Date().toISOString().slice(0, 10));
+            const analysisDate = urlParams.get('date') || getCurrentEtDateString();
             const analysisDateInput = document.getElementById('signalAnalysisDate');
             if (analysisDateInput) analysisDateInput.value = analysisDate;
             document.getElementById('statsRefreshControl').innerHTML = renderPageRefreshControl({

@@ -7,6 +7,8 @@ class ControlPlaneSplitStackStatusMonitorTest(unittest.TestCase):
     def setUp(self):
         if hasattr(api_app_mod, "_clear_control_plane_cache"):
             api_app_mod._clear_control_plane_cache()
+        if hasattr(api_app_mod, "_clear_runtime_config_cache"):
+            api_app_mod._clear_runtime_config_cache()
 
     def test_api_pb_client_reads_runtime_config_directly_from_pocketbase(self):
         self.assertFalse(api_app_mod.pb.prefer_runtime_config_api)
@@ -126,8 +128,9 @@ class ControlPlaneSplitStackStatusMonitorTest(unittest.TestCase):
         ]
 
         with mock.patch.object(api_app_mod.pb, "get_runtime_config", return_value=rows):
-            with mock.patch.object(api_app_mod.request, "args", {"environment": "live"}):
-                payload = api_app_mod.custom_ibkr_runtime_config()
+            with mock.patch.object(api_app_mod, "_fetch_runtime_status", return_value={"payload": {"environment": "live"}}):
+                with mock.patch.object(api_app_mod.request, "args", {"environment": "live"}):
+                    payload = api_app_mod.custom_ibkr_runtime_config()
 
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["environment"], "live")
@@ -137,6 +140,20 @@ class ControlPlaneSplitStackStatusMonitorTest(unittest.TestCase):
         self.assertEqual(item_map["beta"], "fallback")
         self.assertIn("ibkr-api", payload["service_topology"]["services"])
         self.assertIn("ibkr-scheduler", payload["service_topology"]["services"])
+
+    def test_runtime_config_route_caches_short_repeated_reads(self):
+        rows = [{"key": "alpha", "value": "cached", "environment": "live", "updated": "2026-04-22 00:05:00"}]
+
+        with mock.patch.object(api_app_mod.pb, "get_runtime_config", return_value=rows) as config_mock:
+            with mock.patch.object(api_app_mod, "_fetch_runtime_status", return_value={"payload": {"environment": "live"}}):
+                with mock.patch.object(api_app_mod.request, "args", {"environment": "live", "scope": "all"}):
+                    first = api_app_mod.custom_ibkr_runtime_config()
+                    second = api_app_mod.custom_ibkr_runtime_config()
+
+        self.assertEqual(config_mock.call_count, 1)
+        self.assertEqual(first["_cache"]["state"], "miss")
+        self.assertEqual(second["_cache"]["state"], "hit")
+        self.assertEqual(second["items"][0]["value"], "cached")
 
     def test_api_status_reports_native_routes(self):
         scheduler_payload = {

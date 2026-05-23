@@ -133,7 +133,7 @@
                                                         ? '<span class="tag long">LONG</span>'
                                                         : `<span class="tag">${escapeHtml((item.direction_bias || 'neutral').toUpperCase())}</span>`}</td>
                                                 <td>${escapeHtml(item.scan_reason || '--')}</td>
-                                                <td class="mono">${escapeHtml(item.us_time || '--')}${item.cn_time ? `<br><span style="color: var(--muted);">${escapeHtml(item.cn_time)}</span>` : ''}</td>
+                                                <td class="mono">${escapeHtml(item.us_time || '--')}</td>
                                                 <td>${escapeHtml(String(item?.extra?.universe_size || universeSize || '--'))}</td>
                                                 <td><button class="btn ghost" type="button" onclick="replayTarget('${escapeHtml(item.symbol || '')}', ${Number(item.bar_time_ms || 0)})">回放</button></td>
                                             </tr>

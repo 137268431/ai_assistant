@@ -109,10 +109,17 @@ class ScanRuntimeGateTest(unittest.TestCase):
             "live",
             datetime(2026, 4, 28, 9, 20, tzinfo=ET),
         )
+        after_close = runtime_ops._scan_window_state(
+            fake_app,
+            "live",
+            datetime(2026, 4, 28, 10, 1, tzinfo=ET),
+        )
 
         self.assertFalse(before["open"])
         self.assertEqual(before["scan_time_et"], "09:20")
+        self.assertEqual(before["window_end_et"], "10:00")
         self.assertTrue(at_open["open"])
+        self.assertFalse(after_close["open"])
 
     def test_build_scan_response_skips_before_window_without_force(self):
         fake_app = _fake_app()

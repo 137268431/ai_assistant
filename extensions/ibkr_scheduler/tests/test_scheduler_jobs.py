@@ -368,6 +368,55 @@ class SchedulerJobsTest(unittest.TestCase):
         self.assertEqual("scheduler:ibkr_scan_runtime:default:20260521T1320Z", request_payload["run_id"])
         self.assertEqual("2026-05-21T13:20Z", request_payload["scheduled_slot"])
 
+    def test_scan_runtime_submit_read_timeout_stays_pending_and_recovers_by_poll(self):
+        pb = _FakePB()
+        scheduler = SchedulerService(pb, _FakeConfig())
+
+        with mock.patch(
+            "ibkr_scheduler.jobs.upstream_http.requests.request",
+            side_effect=scheduler_app_mod.requests.ReadTimeout(
+                "HTTPConnectionPool(host='127.0.0.1', port=5100): Read timed out. (read timeout=15)"
+            ),
+        ):
+            with mock.patch(
+                "ibkr_scheduler.scheduler_app.requests.get",
+                return_value=_FakeResponse({"ok": False, "status": "not_found"}, status_code=404),
+            ):
+                result = scheduler.run_job(
+                    "ibkr_scan_runtime",
+                    market_data_mode="live",
+                    trigger_source="scheduler_loop",
+                    scheduled_slot="2026-05-21T13:20Z",
+                )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["pending"])
+        self.assertTrue(result["submit_timeout_waiting"])
+        job_state = pb.states[(f"{SCHEDULER_JOB_STATE_PREFIX}ibkr_scan_runtime", "live", "global")]["data"]
+        self.assertEqual(job_state["status"], "running")
+        self.assertIn("async_operation", job_state["last_result"])
+
+        with mock.patch(
+            "ibkr_scheduler.scheduler_app.requests.get",
+            return_value=_FakeResponse(
+                {
+                    "ok": True,
+                    "status": "completed",
+                    "run_id": "scheduler:ibkr_scan_runtime:default:20260521T1320Z",
+                    "date": "2026-05-21",
+                    "result": {"active": 10},
+                }
+            ),
+        ):
+            poll_results = scheduler.poll_pending_jobs(market_data_mode="live", force=True)
+
+        self.assertEqual(1, len(poll_results))
+        self.assertTrue(poll_results[0]["ok"])
+        self.assertFalse(poll_results[0]["pending"])
+        job_state = pb.states[(f"{SCHEDULER_JOB_STATE_PREFIX}ibkr_scan_runtime", "live", "global")]["data"]
+        self.assertEqual(job_state["status"], "ok")
+        self.assertEqual(job_state["last_result"]["status"], "completed")
+
     def test_data_quality_repair_sweep_sends_watchlist_full_payload(self):
         pb = _FakePB()
         scheduler = SchedulerService(pb, _FakeConfig())

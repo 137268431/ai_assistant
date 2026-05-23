@@ -9,6 +9,15 @@ function normalizeRuntimeBaseUrl(value, fallback) {
   return text ? text.replace(/\/+$/, '') : '';
 }
 
+function formatUtcDateString(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+  return [
+    String(date.getUTCFullYear()).padStart(4, '0'),
+    String(date.getUTCMonth() + 1).padStart(2, '0'),
+    String(date.getUTCDate()).padStart(2, '0'),
+  ].join('-');
+}
+
 const RUNTIME_CONFIG = (typeof window !== 'undefined' && window.__IBKR_RUNTIME_CONFIG__)
   ? window.__IBKR_RUNTIME_CONFIG__
   : {};
@@ -61,6 +70,7 @@ const ENVIRONMENT_LABELS = {
   global: 'GLOBAL'
 };
 const SHARED_DATA_LABEL = 'Shared Data';
+const IBKR_MARKET_TIME_ZONE = 'America/New_York';
 
 function escapeQueryValue(value) {
   return String(value ?? '');
@@ -284,19 +294,124 @@ function renderSharedDataBadge() {
   return `<span class="env-badge data-badge data-${context.data_environment} env-${context.data_environment}" data-shared-data-badge>${label}</span>`;
 }
 
-function getCurrentEtDateString(value = new Date()) {
+function getDateStringInTimeZone(value = new Date(), timeZone = IBKR_MARKET_TIME_ZONE) {
   const date = value instanceof Date ? value : new Date(value);
   const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
   try {
     return new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'America/New_York',
+      timeZone,
       year: 'numeric',
       month: '2-digit',
       day: '2-digit'
     }).format(safeDate);
   } catch (_) {
-    return safeDate.toISOString().slice(0, 10);
+    return formatUtcDateString(safeDate);
   }
+}
+
+function getCurrentEtDateString(value = new Date()) {
+  return getDateStringInTimeZone(value, IBKR_MARKET_TIME_ZONE);
+}
+
+function getEtDateStringFromMs(value) {
+  const ms = Number(value || 0);
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  return getCurrentEtDateString(new Date(ms));
+}
+
+function shiftDateString(dateText, days = 0) {
+  const match = String(dateText || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return String(dateText || '');
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]) + Number(days || 0), 12, 0, 0));
+  if (Number.isNaN(date.getTime())) return String(dateText || '');
+  return formatUtcDateString(date);
+}
+
+function getTimeZoneOffsetMinutes(timeZone, value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return 0;
+  const parts = {};
+  new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).formatToParts(date).forEach((part) => {
+    if (part.type !== 'literal') parts[part.type] = part.value;
+  });
+  const asUtcMs = Date.UTC(
+    Number(parts.year || 0),
+    Math.max(0, Number(parts.month || 1) - 1),
+    Number(parts.day || 1),
+    Number(parts.hour || 0),
+    Number(parts.minute || 0),
+    Number(parts.second || 0)
+  );
+  return Math.round((asUtcMs - date.getTime()) / 60000);
+}
+
+function getUtcMsForTimeZoneDateTime(timeZone, dateText, hour = 0, minute = 0, second = 0) {
+  const match = String(dateText || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return 0;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (!year || !month || !day) return 0;
+  const localAsUtcMs = Date.UTC(year, month - 1, day, Number(hour || 0), Number(minute || 0), Number(second || 0));
+  let utcMs = localAsUtcMs;
+  for (let i = 0; i < 3; i += 1) {
+    const offsetMinutes = getTimeZoneOffsetMinutes(timeZone, new Date(utcMs));
+    const nextUtcMs = localAsUtcMs - offsetMinutes * 60000;
+    if (nextUtcMs === utcMs) break;
+    utcMs = nextUtcMs;
+  }
+  return utcMs;
+}
+
+function getEtDayStartMs(dateText) {
+  return getUtcMsForTimeZoneDateTime(IBKR_MARKET_TIME_ZONE, dateText, 0, 0, 0);
+}
+
+function getEtDayBoundsMs(dateText) {
+  const safeDate = /^\d{4}-\d{2}-\d{2}$/.test(String(dateText || '').trim())
+    ? String(dateText).trim()
+    : getCurrentEtDateString();
+  const nextDate = shiftDateString(safeDate, 1);
+  const startMs = getEtDayStartMs(safeDate);
+  const endMs = getEtDayStartMs(nextDate);
+  return {
+    date: safeDate,
+    nextDate,
+    startMs,
+    endMs,
+    startTimeMs: startMs,
+    endTimeMs: endMs,
+  };
+}
+
+function getEtDateRangeBoundsMs(startDate, endDate = startDate) {
+  const safeStart = /^\d{4}-\d{2}-\d{2}$/.test(String(startDate || '').trim())
+    ? String(startDate).trim()
+    : getCurrentEtDateString();
+  const safeEnd = /^\d{4}-\d{2}-\d{2}$/.test(String(endDate || '').trim())
+    ? String(endDate).trim()
+    : safeStart;
+  return {
+    startDate: safeStart,
+    endDate: safeEnd,
+    startMs: getEtDayStartMs(safeStart),
+    endMs: getEtDayStartMs(shiftDateString(safeEnd, 1)),
+  };
+}
+
+function formatUtcDateTimeForPocketBase(value) {
+  const date = value instanceof Date ? value : new Date(Number(value || 0));
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toISOString().slice(0, 19).replace('T', ' ');
 }
 
 function getPendingEnvironment(allowGlobal = false) {

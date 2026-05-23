@@ -128,7 +128,7 @@ async function loadSystemData(showToastOnSuccess = false) {
             || computeStatus?.market_universe?.market_date
             || ''
         ).trim() || String(summaryLite?.timestamp || '').slice(0, 10);
-        const todayDate = marketDate || new Date().toISOString().slice(0, 10);
+        const todayDate = marketDate || getCurrentEtDateString();
         setPageContextMeta([
             { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
             { label: '交易日', value: todayDate || '--' },

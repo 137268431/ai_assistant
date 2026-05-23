@@ -364,7 +364,7 @@
           <td>
             <div class="meta-stack">
               <span>${escapeHtml(item.us_time || '--')}</span>
-              <small>${item.updated ? escapeHtml(formatBeijingTime(item.updated, 'short')) : '--'}</small>
+              <small>${item.updated ? escapeHtml(formatMarketTime(item.updated, 'short')) : '--'}</small>
             </div>
           </td>
           <td>
@@ -819,7 +819,7 @@
               <td>
                 <div class="meta-stack">
                   <span>${escapeHtml(item.updated_us || item.us_time || '--')}</span>
-                  <small>${item.updated ? escapeHtml(formatBeijingTime(item.updated, 'short')) : '--'}</small>
+                  <small>${item.updated ? escapeHtml(formatMarketTime(item.updated, 'short')) : '--'}</small>
                 </div>
               </td>
               <td>

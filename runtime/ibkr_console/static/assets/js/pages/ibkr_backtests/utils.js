@@ -1,30 +1,9 @@
         function toIsoDate(date) {
-            return date.toISOString().slice(0, 10);
+            return getCurrentEtDateString(date);
         }
 
         function getLatestCompleteBacktestDate() {
-            const now = new Date();
-            const etFormatter = new Intl.DateTimeFormat('en-CA', {
-                timeZone: 'America/New_York',
-                year: 'numeric',
-                month: '2-digit',
-                day: '2-digit',
-            });
-            const parts = Object.fromEntries(
-                etFormatter.formatToParts(now)
-                    .filter((part) => part.type !== 'literal')
-                    .map((part) => [part.type, part.value])
-            );
-            const todayEt = new Date(Date.UTC(
-                Number(parts.year),
-                Number(parts.month) - 1,
-                Number(parts.day),
-                12,
-                0,
-                0
-            ));
-            todayEt.setUTCDate(todayEt.getUTCDate() - 1);
-            return toIsoDate(todayEt);
+            return shiftDateString(getCurrentEtDateString(), -1);
         }
 
         function syncBacktestDateLimits() {

@@ -228,6 +228,13 @@ def _async_operation_running(status: Any) -> bool:
     return _async_operation_status(status) in ASYNC_RUNNING_STATUSES
 
 
+def _request_exception_is_read_timeout(exc: BaseException) -> bool:
+    if isinstance(exc, requests.ReadTimeout):
+        return True
+    text = str(exc or "").strip().lower()
+    return "read timed out" in text or "readtimeout" in text or "read timeout" in text
+
+
 def _scheduler_mode_context(
     source: Mapping[str, Any] | None = None,
     *,
@@ -560,6 +567,9 @@ class SchedulerService:
         if date_text:
             async_operation["date"] = date_text
             async_operation["market_date"] = date_text
+        mode_text = str(result_payload.get("mode") or submit_payload.get("mode") or "").strip()
+        if mode_text:
+            async_operation["mode"] = mode_text
         return async_operation
 
     def _run_native_http_job(
@@ -627,23 +637,39 @@ class SchedulerService:
             )
         except requests.RequestException as exc:
             if async_enabled:
+                async_operation = self._async_operation_payload(
+                    job_id=job_id,
+                    schedule=schedule,
+                    operation_id=operation_id,
+                    scheduled_slot=scheduled_slot,
+                    environment=environment,
+                    broker_mode=broker_mode,
+                    market_data_mode=market_data_mode,
+                    mode_scope=mode_scope,
+                    submit_payload=payload,
+                    submit_result={"payload": {"run_id": operation_id, "status": "running"}},
+                    status="running",
+                )
                 poll_result = self._poll_async_operation(
-                    {
-                        "kind": self._async_job_kind(job_id),
-                        "job_id": job_id,
-                        "operation_id": operation_id,
-                        "run_id": operation_id,
-                        "status_path": self._async_status_path(job_id),
-                        "environment": environment,
-                        "broker_mode": broker_mode,
-                        "market_data_mode": market_data_mode,
-                        "mode_scope": mode_scope,
-                    },
+                    async_operation,
                     job_id=job_id,
                     environment=environment,
                 )
                 if poll_result.get("found"):
                     return poll_result["result"]
+                if _request_exception_is_read_timeout(exc):
+                    return {
+                        "ok": True,
+                        "pending": True,
+                        "async": True,
+                        "status": async_operation["status"],
+                        "async_operation": {
+                            **async_operation,
+                            "last_poll_error": str((poll_result.get("result") or {}).get("error") or ""),
+                        },
+                        "submit_timeout_waiting": True,
+                        "submit_error": str(exc),
+                    }
             raise exc
         if async_enabled:
             response_payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
@@ -1173,19 +1199,21 @@ class SchedulerService:
                 "mode_scope": job_mode_scope,
                 "scheduled_slot": slot_token,
             }
-            if not result.get("ok", False):
+            async_status = _async_operation_status(
+                (result.get("async_operation") if isinstance(result.get("async_operation"), dict) else {}).get("status")
+                or result.get("status")
+            )
+            pending_result = bool(result.get("pending"))
+            if result.get("async") and not _async_operation_terminal(async_status):
+                pending_result = pending_result or not async_status or _async_operation_running(async_status)
+            if not result.get("ok", False) and not pending_result:
                 status = "error"
-            elif result.get("pending") or result.get("async"):
-                async_status = _async_operation_status(
-                    (result.get("async_operation") if isinstance(result.get("async_operation"), dict) else {}).get("status")
-                    or result.get("status")
-                )
+            elif pending_result:
                 status = "running" if async_status == "running" else "pending"
             else:
                 status = "ok" if not result.get("skipped") else "idle"
             if result.get("skipped") and result.get("reason") == "disabled":
                 status = "disabled"
-            pending_result = bool(result.get("pending") or result.get("async"))
             finished_at_ms = _now_ms()
             latest_state = self.job_states(environment).get(canonical_job_id) or {}
             last_runs = latest_state.get("last_runs") if isinstance(latest_state.get("last_runs"), dict) else {}

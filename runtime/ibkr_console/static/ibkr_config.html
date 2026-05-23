@@ -945,7 +945,7 @@ function renderCronOverview() {
         <div>
           <div class="cron-overview-title">IBKR Scheduler 总览</div>
           <div class="cron-overview-subtitle">
-            当前作用域 ${getConfigScopeLabel(configEnvironment)} 下默认展示北京时间，展开后可查看 UTC / 美东时间，以及功能、绑定开关和实际生效状态。
+            当前作用域 ${getConfigScopeLabel(configEnvironment)} 下默认展示美东时间，展开后可查看 UTC / ET，以及功能、绑定开关和实际生效状态。
           </div>
         </div>
         <div class="cron-overview-badge">${pbCronDefinitions.length} 个 Cron</div>
@@ -968,7 +968,7 @@ function renderCronOverview() {
                   <div class="cron-meta-value">
                     <details class="cron-time-details">
                       <summary class="cron-time-summary">
-                        <span class="cron-time-primary">${escapeHtml(definition.beijing_cycle_label || definition.cycle_label || '-')}</span>
+                        <span class="cron-time-primary">${escapeHtml(definition.et_cycle_label || definition.cycle_label || '-')}</span>
                         <span class="cron-time-toggle">UTC / ET</span>
                       </summary>
                       <div class="cron-time-list">

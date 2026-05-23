@@ -376,7 +376,7 @@
       const normalized = normalizeIsoValue(value);
       const timestamp = Date.parse(normalized);
       if (Number.isNaN(timestamp)) return String(value);
-      return formatDateTimeInZone(new Date(timestamp), 'Asia/Shanghai');
+      return formatDateTimeInZone(new Date(timestamp), 'America/New_York');
     }
 
     function summarizeRepairResult(result) {
