@@ -40,7 +40,7 @@ from ibkr_api.universe.today_targets_workflow import (
     resolve_technical_state,
     sort_rows,
 )
-from ibkr_compute.core.broker_mode import resolve_data_environment
+from ibkr_compute.core.broker_mode import normalize_broker_mode, resolve_data_environment
 from ibkr_compute.api.market.screener.payload import parse_market_date_bounds_ms
 from ibkr_compute.api.market.screener.scoring import (
     TRADABILITY_OPERABLE_MAX_FRESHNESS_MIN,
@@ -65,6 +65,11 @@ def build_today_targets_response(
         payload.get("market_data_mode") or payload.get("data_environment") or payload.get("environment")
     )
     runtime_environment = data_environment
+    broker_default = data_environment if data_environment in {"live", "paper"} else "paper"
+    broker_mode = normalize_broker_mode(
+        first_defined(payload.get("broker_mode"), payload.get("brokerMode"), payload.get("runtime_environment"), broker_default),
+        broker_default,
+    )
     current_date = current_market_date(time_strings)
     requested_market_date = to_text(first_defined(payload.get("marketDate"), payload.get("market_date"), payload.get("date"))) or current_date
     try:
@@ -107,7 +112,7 @@ def build_today_targets_response(
         return {
             "ok": True,
             "environment": runtime_environment,
-            "broker_mode": runtime_environment,
+            "broker_mode": broker_mode,
             "data_environment": data_environment,
             "market_date": market_date,
             "current_market_date": current_date,
@@ -251,7 +256,7 @@ def build_today_targets_response(
 
     signal_agg_by_symbol: dict[str, dict[str, Any]] = {}
     for row in signal_records:
-        normalized_signal = normalize_signal_record(row)
+        normalized_signal = normalize_signal_record(row, broker_mode=broker_mode)
         symbol = normalized_signal.get("symbol")
         if not symbol:
             continue
@@ -355,6 +360,9 @@ def build_today_targets_response(
         row["signal_count_today"] = int(signal_agg.get("count") or 0)
         row["latest_signal_id"] = to_text((latest_signal or {}).get("signal_id"))
         row["latest_signal_status"] = to_text((latest_signal or {}).get("status"))
+        row["latest_signal_status_reason"] = to_text((latest_signal or {}).get("status_reason"))
+        row["latest_signal_status_reason_human"] = to_text((latest_signal or {}).get("status_reason_human"))
+        row["latest_signal_effective_broker_mode"] = to_text((latest_signal or {}).get("effective_broker_mode")) or broker_mode
         row["latest_signal_direction"] = to_text((latest_signal or {}).get("direction"))
         row["latest_signal_time"] = to_text((latest_signal or {}).get("us_time"))
         row["latest_signal_time_ms"] = to_int((latest_signal or {}).get("sort_ms"), 0)
@@ -401,7 +409,7 @@ def build_today_targets_response(
     return {
         "ok": True,
         "environment": runtime_environment,
-        "broker_mode": runtime_environment,
+        "broker_mode": broker_mode,
         "data_environment": data_environment,
         "market_date": market_date,
         "current_market_date": current_date,

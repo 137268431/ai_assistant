@@ -603,6 +603,8 @@ class UniverseRoutesTest(unittest.TestCase):
                 "exchange": "NASDAQ",
                 "updated": "2026-04-23 09:36:00",
                 "extra": {
+                    "source": "daily_scan",
+                    "active_gate_passed": True,
                     "screener_snapshot": {
                         "premarket_volume": 650000,
                         "today_volume": 800000,
@@ -681,6 +683,70 @@ class UniverseRoutesTest(unittest.TestCase):
         self.assertTrue(ready_explanation["ready"])
         self.assertIn("方向一致技术条件 5/2", ready_explanation["passed"])
         self.assertEqual([], ready_explanation["missing"])
+
+    def test_today_targets_uses_broker_mode_effective_signal_status(self):
+        pb = _MinimalPB()
+
+        def et_ms(text: str) -> int:
+            return int(datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=ET).timestamp() * 1000)
+
+        pb._records["ibkr_targets"] = [
+            {
+                "id": "target-1",
+                "symbol": "AVGO",
+                "environment": "live",
+                "date": "2026-05-22",
+                "status": "active",
+                "direction_bias": "long",
+                "score": 40,
+                "scan_reason": "daily_scan",
+                "exchange": "NASDAQ",
+                "updated": "2026-05-22 10:20:00",
+                "extra": {"source": "daily_scan", "active_gate_passed": True},
+            }
+        ]
+        pb._all_records["ibkr_bars"] = [
+            {"symbol": "AVGO", "environment": "live", "interval": "1d", "bar_time_ms": et_ms("2026-05-21 00:00:00"), "close": 420, "volume": 1000000, "us_time": "2026-05-21 16:00:00"},
+            {"symbol": "AVGO", "environment": "live", "interval": "5m", "bar_time_ms": et_ms("2026-05-22 10:20:00"), "close": 410, "volume": 800000, "us_time": "2026-05-22 10:20:00", "session_type": "regular"},
+        ]
+        pb._all_records["ibkr_indicators"] = [
+            {"symbol": "AVGO", "environment": "live", "interval": "5", "bar_time_ms": et_ms("2026-05-22 10:20:00"), "atr_pct": 1.0}
+        ]
+        pb._all_records["ibkr_signals"] = [
+            {
+                "symbol": "AVGO",
+                "environment": "live",
+                "signal_id": "AVGO_20260522_1020_sqbrk_S",
+                "direction": "short",
+                "status": "pending",
+                "bar_time_ms": et_ms("2026-05-22 10:20:00"),
+                "us_time": "2026-05-22 10:20:00",
+                "created": "2026-05-22 10:25:12",
+                "updated": "2026-05-22 10:25:16",
+                "extra": {
+                    "execution_by_mode": {
+                        "paper": {
+                            "status": "rejected",
+                            "status_reason": "target_direction_mismatch",
+                        }
+                    }
+                },
+            }
+        ]
+
+        payload, status_code = build_today_targets_response(
+            pb,
+            payload={"broker_mode": "paper", "market_data_mode": "live", "market_date": "2026-05-22"},
+            normalize_environment=lambda value, default="live": str(value or default).strip().lower() or default,
+            time_strings=lambda: {"us": "2026-05-22 10:30:00", "cn": "2026-05-22 22:30:00", "date": "2026-05-22"},
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertEqual("paper", payload["broker_mode"])
+        self.assertEqual("rejected", payload["items"][0]["latest_signal_status"])
+        self.assertEqual("target_direction_mismatch", payload["items"][0]["latest_signal_status_reason"])
+        self.assertIn("方向不匹配", payload["items"][0]["latest_signal_status_reason_human"])
+        self.assertEqual("paper", payload["items"][0]["latest_signal_effective_broker_mode"])
 
     def test_today_targets_explains_missing_ready_conditions(self):
         pb = _MinimalPB()

@@ -3,6 +3,7 @@ import re
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "src"
 if str(SRC_ROOT) not in sys.path:
@@ -988,6 +989,23 @@ class RuntimeSignalLifecycleTest(unittest.TestCase):
             "bracket_submission_protection_incomplete",
             row["extra"]["protection_incomplete_diagnostic"]["reason"],
         )
+
+    def test_validation_rejection_persists_human_reason_and_direction_context(self):
+        service = _FakeSignalsService()
+        service.signal_processor = SimpleNamespace(target_direction_provider=lambda: {"AAPL": "long"})
+        sig = {"signal_id": "SIG_1", "symbol": "AAPL", "direction": "short"}
+
+        service._mark_signal_validation_rejected(sig, "target_direction_mismatch")
+
+        row = service.pb.signals["sig-row-1"]
+        extra = row["extra"]
+        self.assertEqual(extra["status_reason"], "target_direction_mismatch")
+        self.assertEqual(extra["rejection_reason_code"], "target_direction_mismatch")
+        self.assertEqual(extra["rejected_by"], "signal_validation")
+        self.assertEqual(extra["signal_direction_at_validation"], "short")
+        self.assertEqual(extra["target_direction_at_validation"], "long")
+        self.assertEqual(extra["target_direction_source"], "active_target_direction_provider")
+        self.assertIn("方向不匹配", extra["rejection_reason_human"])
 
     def test_ack_submission_surfaces_protection_incomplete_status(self):
         service = _FakeSignalsService()

@@ -759,6 +759,103 @@
             return String(signal?.status || 'pending').trim().toLowerCase() || 'pending';
         }
 
+        function getEffectiveSignalExecution(signal) {
+            const extra = getSignalExtra(signal);
+            const byMode = extra.execution_by_mode && typeof extra.execution_by_mode === 'object'
+                ? extra.execution_by_mode
+                : {};
+            const envKeys = [
+                currentBrokerMode,
+                String(currentBrokerMode || '').toLowerCase(),
+                String(currentBrokerMode || '').toUpperCase(),
+            ].filter(Boolean);
+            for (const key of envKeys) {
+                if (byMode[key] && typeof byMode[key] === 'object') {
+                    return { key, payload: byMode[key] };
+                }
+            }
+            return { key: '', payload: {} };
+        }
+
+        function humanizeSignalStatusReason(reason) {
+            const code = String(reason || '').trim();
+            const map = {
+                target_direction_mismatch: '方向不匹配：信号方向与当日 active target 方向不一致',
+                target_direction_missing: '缺少目标方向：当日 active target 未提供 long/short direction_bias',
+                target_direction_provider_error: '目标方向读取失败：无法确认当日 active target 方向',
+                trading_disabled: '交易开关关闭，自动开仓被禁用',
+                outside_trade_window: '当前不在交易窗口内',
+                outside_order_window: '当前不在下单窗口内',
+                signal_expired: '信号已过有效期',
+                sl_circuit_breaker: '止损熔断已触发',
+                position_limit_reached: '持仓数量已达到上限',
+                fixed_position_symbol_blocked: '固定持仓标的禁止自动开仓',
+                strategy_capacity_full: '策略容量已满',
+                direction_conflict: '已有同标的持仓或挂单，方向冲突',
+                invalid_prices: '信号价格结构无效',
+                entry_guard_no_fresh_quote: '下单前没有可用的新鲜报价',
+                entry_guard_stop_already_crossed: '下单前价格已经穿过止损位',
+                entry_guard_price_drift: '下单前价格相对信号入场价漂移过大',
+                buying_power_blocked: '购买力阈值拦截',
+                submit_failed: '订单提交失败',
+            };
+            if (!code) return '';
+            return map[code] || code.replace(/_/g, ' ');
+        }
+
+        function getSignalExecutionReason(signal) {
+            const extra = getSignalExtra(signal);
+            const modeExecution = getEffectiveSignalExecution(signal);
+            const payload = modeExecution.payload || {};
+            const code = String(
+                payload.status_reason
+                || extra.rejection_reason_code
+                || extra.status_reason
+                || signal?.note
+                || ''
+            ).trim();
+            const human = String(
+                payload.status_reason_human
+                || extra.rejection_reason_human
+                || humanizeSignalStatusReason(code)
+                || ''
+            ).trim();
+            return {
+                brokerMode: modeExecution.key || String(currentBrokerMode || '').trim(),
+                code,
+                human,
+                rejectedBy: String(extra.rejected_by || '').trim(),
+                targetDirection: String(extra.target_direction_at_validation || '').trim(),
+                signalDirection: String(extra.signal_direction_at_validation || signal?.direction || '').trim(),
+            };
+        }
+
+        function buildSignalRejectionPanel(signal) {
+            const status = getEffectiveSignalStatus(signal);
+            const terminalStatuses = new Set(['rejected', 'expired', 'blocked', 'validation_rejected', 'submit_failed']);
+            if (!terminalStatuses.has(status)) return '';
+            const reason = getSignalExecutionReason(signal);
+            const title = status === 'expired' ? '执行终止原因' : '拒绝原因';
+            const summary = reason.human || formatSignalStatusLabel(status);
+            const detailItems = [
+                reason.code ? `code=${reason.code}` : '',
+                reason.brokerMode ? `broker=${reason.brokerMode}` : '',
+                reason.rejectedBy ? `by=${reason.rejectedBy}` : '',
+                reason.signalDirection ? `signal=${reason.signalDirection}` : '',
+                reason.targetDirection ? `target=${reason.targetDirection}` : '',
+            ].filter(Boolean);
+            return `
+                <div class="signal-rejection-panel">
+                    <div class="signal-rejection-head">
+                        <strong>🚫 ${escapeHtml(title)}</strong>
+                        <span>${escapeHtml(formatSignalStatusLabel(status))}</span>
+                    </div>
+                    <div class="signal-rejection-summary">${escapeHtml(summary)}</div>
+                    ${detailItems.length ? `<div class="signal-rejection-detail">${escapeHtml(detailItems.join(' · '))}</div>` : ''}
+                </div>
+            `;
+        }
+
         function getStatusClassName(status) {
             return String(status || 'pending').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '_') || 'pending';
         }
@@ -2630,6 +2727,7 @@
                 const recordIdLiteral = escapeHtml(toJsStringLiteral(signal.id || ''));
                 const isProtectionIncomplete = effectiveStatus === 'protection_incomplete';
                 const mergePanelHtml = buildSignalMergePanel(signal);
+                const rejectionPanelHtml = buildSignalRejectionPanel(signal);
                 const protectionAlertHtml = buildProtectionIncompletePanel(signal);
                 const orderButtonClass = isProtectionIncomplete ? ' btn-protection' : '';
                 const orderButtonText = isProtectionIncomplete ? '🚨 订单处理' : '📋 订单';
@@ -2709,6 +2807,7 @@
 
                         ${shouldShowSignalNote(signal.note) ? `<div class="signal-note signal-note-highlight"><strong>📋 备注:</strong> ${escapeHtml(signal.note)}</div>` : ''}
                         ${signal.reason ? `<div class="signal-note"><strong>📊 原因:</strong> ${escapeHtml(signal.reason)}</div>` : ''}
+                        ${rejectionPanelHtml}
                         ${mergePanelHtml}
                         ${protectionAlertHtml}
 

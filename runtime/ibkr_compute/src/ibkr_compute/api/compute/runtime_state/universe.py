@@ -281,6 +281,13 @@ def get_signal_generator_params(environment: str) -> dict:
             getter = getattr(api_app.cfg, "get_for_environment", None)
             value = getter(key, runtime_environment, str(default)) if getter else default
         params[key] = value
+    params["intraday_require_target_direction_alignment"] = bool(
+        api_app.cfg.get_bool_for_environment(
+            "ibkr_require_target_direction_alignment",
+            runtime_environment,
+            True,
+        )
+    )
     profiles_getter = getattr(api_app.cfg, "get_for_environment", None)
     profiles_json = (
         profiles_getter("ibkr_timeframe_param_profiles_json", runtime_environment, "")

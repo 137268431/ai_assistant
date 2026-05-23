@@ -170,6 +170,39 @@ class IntradaySdV1CoreTest(unittest.TestCase):
         self.assertEqual(trace["signal_state"]["entry_price_plan"], "passive_limit_dynamic")
         self.assertEqual(trace["setup_state"]["selected_setup"], "sd_squeeze_breakout_long")
 
+    def test_intraday_sd_v1_blocks_signal_against_target_direction(self):
+        gen = SignalGenerator(
+            "AVGO",
+            "5m",
+            {
+                "signal_strategy_profile": "intraday_sd_v1",
+                "intraday_require_target_direction_alignment": True,
+                "target_direction_bias": "long",
+            },
+        )
+
+        signal = gen.update(
+            intraday_breakout_snapshot(
+                close=450.10,
+                open=449.0,
+                high=451.2,
+                low=449.8,
+                atr=3.0,
+                sd_regime="breakout_down",
+                sd_breakout_up=False,
+                sd_breakout_down=True,
+                vwap=451.0,
+                vwap_bullish=False,
+                orb_breakout_up=False,
+                orb_breakout_down=True,
+            )
+        )
+
+        self.assertIsNone(signal)
+        trace = gen.get_trace_snapshot()
+        self.assertEqual(trace["signal_state"]["stage"], "blocked")
+        self.assertFalse(trace["signal_state"]["filter_checks"]["target_direction_alignment"])
+
     def test_intraday_sd_v1_blocks_late_new_setups_by_default(self):
         gen = SignalGenerator("SPY", "5m", {"signal_strategy_profile": "intraday_sd_v1"})
 
@@ -945,6 +978,7 @@ class IntradaySdV1CoreTest(unittest.TestCase):
 
         self.assertEqual(selected_symbols, {"APP"})
         self.assertEqual(params["signal_enabled_symbols"], "APP,DDOG")
+        self.assertTrue(params["intraday_require_target_direction_alignment"])
         bias_map = json.loads(params["target_direction_bias_by_symbol"])
         strategy_map = json.loads(params["target_strategy_policy_by_symbol"])
         profile_map = json.loads(params["target_symbol_profile_by_symbol"])
@@ -985,6 +1019,23 @@ class IntradaySdV1CoreTest(unittest.TestCase):
         self.assertEqual(params["signal_strategy_profile"], "intraday_sd_v1")
         self.assertEqual(params["target_direction_bias"], "short")
         self.assertEqual(params["target_symbol_profile"]["threshold_profile"], "large_liquid")
+
+    def test_live_signal_params_apply_target_direction_without_strategy_policy(self):
+        params = engines_mod._signal_params_for_symbol(
+            {
+                "signal_strategy_profile": "intraday_sd_v1",
+                "target_strategy_policy_enabled": False,
+                "target_direction_bias_by_symbol": json.dumps({"APP": "short"}),
+                "target_strategy_policy_by_symbol": json.dumps(
+                    {"APP": {"recommended_signal_profile": "legacy"}}
+                ),
+            },
+            "APP",
+        )
+
+        self.assertEqual(params["target_direction_bias"], "short")
+        self.assertEqual(params["signal_strategy_profile"], "intraday_sd_v1")
+        self.assertNotIn("target_strategy_policy", params)
 
     def test_timeframe_param_profiles_apply_only_to_matching_interval(self):
         from ibkr_compute.core.indicator_engine import IndicatorEngine

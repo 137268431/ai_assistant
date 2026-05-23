@@ -1524,6 +1524,48 @@
             color: var(--pending);
         }
 
+        .signal-rejection-panel {
+            margin: 0 0 12px;
+            padding: 12px;
+            border-radius: 12px;
+            border: 1px solid rgba(252,129,129,0.42);
+            background:
+                radial-gradient(circle at top right, rgba(252,129,129,0.18), transparent 36%),
+                linear-gradient(135deg, rgba(127,29,29,0.24), rgba(113,128,150,0.08));
+            color: var(--text);
+        }
+
+        .signal-rejection-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 7px;
+        }
+
+        .signal-rejection-head strong {
+            color: #FCA5A5;
+            font-size: 13px;
+        }
+
+        .signal-rejection-head span,
+        .signal-rejection-detail {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px;
+            color: var(--muted);
+        }
+
+        .signal-rejection-summary {
+            font-size: 12px;
+            line-height: 1.55;
+            color: #FEE2E2;
+        }
+
+        .signal-rejection-detail {
+            margin-top: 8px;
+            color: #D8E4F0;
+        }
+
         .signal-merge-panel {
             margin: 0 0 12px;
             padding: 12px;

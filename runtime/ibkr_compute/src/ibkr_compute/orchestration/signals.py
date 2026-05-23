@@ -17,6 +17,20 @@ def _service_mod():
 
 
 class TradingServiceSignalsMixin:
+    VALIDATION_REJECTION_REASON_HUMAN = {
+        "target_direction_mismatch": "方向不匹配：信号方向与当日 active target 方向不一致",
+        "target_direction_missing": "缺少目标方向：当日 active target 未提供 long/short direction_bias",
+        "target_direction_provider_error": "目标方向读取失败：无法确认当日 active target 方向",
+        "trading_disabled": "交易开关关闭，自动开仓被禁用",
+        "outside_trade_window": "当前不在交易窗口内",
+        "outside_order_window": "当前不在下单窗口内",
+        "sl_circuit_breaker": "止损熔断已触发",
+        "position_limit_reached": "持仓数量已达到上限",
+        "fixed_position_symbol_blocked": "固定持仓标的禁止自动开仓",
+        "strategy_capacity_full": "策略容量已满",
+        "direction_conflict": "已有同标的持仓或挂单，方向冲突",
+        "invalid_prices": "信号价格结构无效",
+    }
     CAPACITY_DEFER_REASONS = {"strategy_capacity_full"}
     READINESS_DEFER_REASONS = {
         "history_repair_pending",
@@ -85,6 +99,48 @@ class TradingServiceSignalsMixin:
             "safe_action": "diagnostic_only_no_broker_call",
             "recommended_action": "review_and_cancel_or_repair_unprotected_entry",
             "cancel_recommended": True,
+        }
+
+    @classmethod
+    def _validation_rejection_human_reason(cls, reason: str) -> str:
+        text = str(reason or "").strip()
+        if not text:
+            return "信号校验未通过"
+        return cls.VALIDATION_REJECTION_REASON_HUMAN.get(text, text)
+
+    def _target_direction_diagnostic(self, sig: dict) -> dict:
+        symbol = str((sig or {}).get("symbol") or "").strip().upper()
+        processor = getattr(self, "signal_processor", None)
+        provider = getattr(processor, "target_direction_provider", None)
+        if not symbol:
+            return {"target_direction_at_validation": "", "target_direction_source": "symbol_missing"}
+        if not callable(provider):
+            return {"target_direction_at_validation": "", "target_direction_source": "provider_unavailable"}
+        try:
+            payload = provider()
+        except Exception as exc:
+            return {
+                "target_direction_at_validation": "",
+                "target_direction_source": "provider_error",
+                "target_direction_error": str(exc),
+            }
+        if not isinstance(payload, dict):
+            return {"target_direction_at_validation": "", "target_direction_source": "provider_invalid"}
+        target_direction = str(payload.get(symbol, "") or "").strip().lower()
+        return {
+            "target_direction_at_validation": target_direction,
+            "target_direction_source": "active_target_direction_provider" if target_direction else "active_target_missing",
+        }
+
+    def _validation_rejection_extra(self, sig: dict, reason: str) -> dict:
+        status_reason = str(reason or "validation_rejected").strip() or "validation_rejected"
+        return {
+            "status_reason": status_reason,
+            "rejection_reason_code": status_reason,
+            "rejection_reason_human": self._validation_rejection_human_reason(status_reason),
+            "rejected_by": "signal_validation",
+            "signal_direction_at_validation": str((sig or {}).get("direction") or "").strip().lower(),
+            **self._target_direction_diagnostic(sig),
         }
 
     @staticmethod
@@ -1085,7 +1141,7 @@ class TradingServiceSignalsMixin:
                 status_reason,
                 existing_extra,
                 {
-                    "status_reason": status_reason,
+                    **self._validation_rejection_extra(sig, status_reason),
                     "validation_rejected": True,
                     "validation_rejected_at": self._now_iso(),
                 },

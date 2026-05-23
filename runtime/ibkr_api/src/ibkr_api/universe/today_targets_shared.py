@@ -5,7 +5,7 @@ from typing import Any, Callable
 
 from ibkr_api.orders.values import ensure_object, first_defined, parse_boolean, to_float, to_int, to_text
 from ibkr_api.universe.maintenance import parse_json_object
-from ibkr_compute.core.broker_mode import resolve_data_environment
+from ibkr_compute.core.broker_mode import normalize_broker_mode, resolve_data_environment
 from ibkr_compute.market.timeframe_utils import ET, classify_session, format_cn_time, format_us_time, interval_to_chart_tf, ms_to_et
 
 
@@ -253,19 +253,75 @@ def normalize_signal_status(value: Any) -> str:
     return to_text(value).lower()
 
 
-def normalize_signal_record(record: dict[str, Any]) -> dict[str, Any]:
+def humanize_signal_status_reason(value: Any) -> str:
+    code = to_text(value)
+    if not code:
+        return ""
+    return {
+        "target_direction_mismatch": "方向不匹配：信号方向与当日 active target 方向不一致",
+        "target_direction_missing": "缺少目标方向：当日 active target 未提供 long/short direction_bias",
+        "target_direction_provider_error": "目标方向读取失败：无法确认当日 active target 方向",
+        "entry_guard_no_fresh_quote": "下单前没有可用的新鲜报价",
+        "entry_guard_stop_already_crossed": "下单前价格已经穿过止损位",
+        "entry_guard_price_drift": "下单前价格相对信号入场价漂移过大",
+        "buying_power_blocked": "购买力阈值拦截",
+        "submit_failed": "订单提交失败",
+        "signal_expired": "信号已过有效期",
+    }.get(code, code)
+
+
+def signal_execution_for_mode(extra: dict[str, Any], broker_mode: str) -> dict[str, Any]:
+    execution_by_mode = extra.get("execution_by_mode") if isinstance(extra, dict) else {}
+    if not isinstance(execution_by_mode, dict):
+        return {}
+    mode_keys = [
+        broker_mode,
+        to_text(broker_mode).lower(),
+        to_text(broker_mode).upper(),
+    ]
+    for key in mode_keys:
+        execution = execution_by_mode.get(key)
+        if isinstance(execution, dict):
+            return dict(execution)
+    return {}
+
+
+def normalize_signal_record(record: dict[str, Any], broker_mode: str = "") -> dict[str, Any]:
     extra = parse_json_object(record.get("extra"))
     bar_time_ms = to_int(first_defined(record.get("bar_time_ms"), extra.get("bar_time_ms")), 0)
     created = to_text(record.get("created"))
     updated = to_text(record.get("updated")) or created
     created_ms = parse_et_datetime_ms(created)
     updated_ms = parse_et_datetime_ms(updated) or created_ms
+    normalized_broker_mode = normalize_broker_mode(broker_mode, "") if to_text(broker_mode) else ""
+    mode_execution = signal_execution_for_mode(extra, normalized_broker_mode) if normalized_broker_mode else {}
+    top_level_status = normalize_signal_status(first_defined(record.get("status"), extra.get("status")))
+    effective_status = normalize_signal_status(first_defined(mode_execution.get("status"), top_level_status))
+    status_reason = to_text(
+        first_defined(
+            mode_execution.get("status_reason"),
+            mode_execution.get("note"),
+            extra.get("rejection_reason_code"),
+            extra.get("status_reason"),
+            record.get("note"),
+        )
+    )
+    status_reason_human = to_text(
+        first_defined(
+            mode_execution.get("status_reason_human"),
+            extra.get("rejection_reason_human"),
+        )
+    ) or humanize_signal_status_reason(status_reason)
     return {
         "symbol": to_text(record.get("symbol")).upper(),
         "signal_id": to_text(first_defined(record.get("signal_id"), extra.get("signal_id"))),
         "direction": to_text(first_defined(record.get("direction"), extra.get("direction"))).lower(),
         "signal": to_text(first_defined(record.get("signal"), extra.get("signal"))),
-        "status": normalize_signal_status(first_defined(record.get("status"), extra.get("status"))),
+        "status": effective_status,
+        "top_level_status": top_level_status,
+        "status_reason": status_reason,
+        "status_reason_human": status_reason_human,
+        "effective_broker_mode": normalized_broker_mode,
         "bar_time_ms": bar_time_ms,
         "created": created,
         "updated": updated,
@@ -273,7 +329,7 @@ def normalize_signal_record(record: dict[str, Any]) -> dict[str, Any]:
         "updated_ms": updated_ms,
         "sort_ms": bar_time_ms or updated_ms or created_ms,
         "us_time": to_text(record.get("us_time")) or (format_et_datetime(bar_time_ms) if bar_time_ms > 0 else (updated or created)),
-        "note": to_text(record.get("note")) or to_text(first_defined(extra.get("note"), extra.get("status_reason"))),
+        "note": to_text(first_defined(mode_execution.get("note"), record.get("note"), extra.get("note"), status_reason_human, status_reason)),
     }
 
 

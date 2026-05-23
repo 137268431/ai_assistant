@@ -225,6 +225,7 @@
               ${buildMobileMetricCard('信号统计', `${escapeHtml(String(row.signal_count_today || 0))}${row.latest_signal_direction ? ` · ${escapeHtml(String(row.latest_signal_direction || '').toUpperCase())}` : ''}`)}
             </div>
 
+            ${renderCurrentSignalReason(row) ? buildMobileSection('信号拒绝/终止原因', renderCurrentSignalReason(row)) : ''}
             ${buildMobileSection('筛选理由', escapeHtml(row.scan_reason || row.note || '--'))}
             ${renderSymbolProfileSummary(row) ? buildMobileSection('Symbol profile', renderSymbolProfileSummary(row)) : ''}
             ${buildMobileSection('当前阶段', `<strong>${escapeHtml(row.workflow_label || formatCurrentStateLabel(row.workflow_stage || row.attention_state || 'watch'))}</strong> · ${escapeHtml(row.workflow_summary || '--')}`)}
@@ -1245,6 +1246,48 @@
       return latestStatus || 'signaled';
     }
 
+    function humanizeCurrentSignalReason(reason) {
+      const code = String(reason || '').trim();
+      const map = {
+        target_direction_mismatch: '方向不匹配：信号方向与当日 active target 方向不一致',
+        target_direction_missing: '缺少目标方向：当日 active target 未提供 long/short direction_bias',
+        target_direction_provider_error: '目标方向读取失败',
+        entry_guard_no_fresh_quote: '下单前没有新鲜报价',
+        entry_guard_stop_already_crossed: '下单前已穿过止损位',
+        entry_guard_price_drift: '下单前价格漂移过大',
+        buying_power_blocked: '购买力阈值拦截',
+        submit_failed: '订单提交失败',
+        signal_expired: '信号已过有效期',
+      };
+      if (!code) return '';
+      return map[code] || code.replace(/_/g, ' ');
+    }
+
+    function getCurrentSignalReason(row) {
+      return String(
+        row.latest_signal_status_reason_human
+        || humanizeCurrentSignalReason(row.latest_signal_status_reason)
+        || row.latest_signal_note
+        || ''
+      ).trim();
+    }
+
+    function renderCurrentSignalReason(row) {
+      const status = formatCurrentSignalState(row);
+      if (!['rejected', 'expired', 'protection_incomplete'].includes(status)) return '';
+      const reason = getCurrentSignalReason(row);
+      if (!reason) return '';
+      const code = String(row.latest_signal_status_reason || '').trim();
+      const brokerMode = String(row.latest_signal_effective_broker_mode || currentBrokerMode || '').trim();
+      return `
+        <div class="reason-copy current-signal-reason">
+          ${escapeHtml(reason)}
+          ${code ? `<span class="muted mono"> · ${escapeHtml(code)}</span>` : ''}
+          ${brokerMode ? `<span class="muted mono"> · ${escapeHtml(brokerMode)}</span>` : ''}
+        </div>
+      `;
+    }
+
     function formatCurrentStateLabel(value) {
       const key = String(value || '').trim().toLowerCase();
       const labels = {
@@ -1354,6 +1397,7 @@
               <span class="muted">${escapeHtml(row.latest_signal_time || (row.has_signal_today ? '--' : '今日未出信号'))}</span><br>
               <span class="muted">count ${escapeHtml(String(row.signal_count_today || 0))}${row.latest_signal_direction ? ` · ${escapeHtml(String(row.latest_signal_direction || '').toUpperCase())}` : ''}</span>
               ${row.latest_signal_id ? `<br><span class="muted mono">${escapeHtml(row.latest_signal_id)}</span>` : ''}
+              ${renderCurrentSignalReason(row)}
             </td>
             <td>
               <div class="reason-block">
