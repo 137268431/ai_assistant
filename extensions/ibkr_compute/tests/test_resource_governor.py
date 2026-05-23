@@ -75,8 +75,14 @@ class ResourceGovernorTests(unittest.TestCase):
         snapshot = build_resource_governor_snapshot(_host_snapshot())
 
         self.assertEqual(snapshot["status"], "green")
+        self.assertEqual(snapshot["shedding_mode"], "green")
         self.assertEqual(snapshot["health"], "ok")
         self.assertEqual(snapshot["reasons"], [])
+        self.assertTrue(snapshot["lane_admission"]["critical"]["admit"])
+        self.assertTrue(snapshot["lane_admission"]["realtime"]["admit"])
+        self.assertTrue(snapshot["lane_admission"]["opportunistic"]["admit"])
+        self.assertTrue(snapshot["lane_admission"]["batch"]["admit"])
+        self.assertEqual(snapshot["recommended_limits"]["watchlist_idle_topup"]["mode"], "green")
         self.assertTrue(snapshot["admission"]["watchlist_idle_topup"]["admit"])
         self.assertEqual(snapshot["admission"]["watchlist_idle_topup"]["blockers"], [])
         self.assertTrue(snapshot["admission"]["non_priority"]["admit"])
@@ -85,17 +91,44 @@ class ResourceGovernorTests(unittest.TestCase):
         snapshot = build_resource_governor_snapshot(_host_snapshot(cpu_5m_pct=72.0))
 
         self.assertEqual(snapshot["status"], "warning")
+        self.assertEqual(snapshot["shedding_mode"], "warning")
         self.assertEqual(snapshot["health"], "degraded")
         self.assertIn("cpu_warning", _reason_codes(snapshot))
         self.assertTrue(snapshot["admission"]["non_priority"]["admit"])
         self.assertFalse(snapshot["admission"]["watchlist_idle_topup"]["admit"])
+        self.assertTrue(snapshot["lane_admission"]["realtime"]["admit"])
+        self.assertFalse(snapshot["lane_admission"]["opportunistic"]["admit"])
+        self.assertEqual(snapshot["recommended_limits"]["watchlist_idle_topup"]["max_symbols_per_cycle"], 40)
+        self.assertEqual(snapshot["recommended_limits"]["watchlist_idle_topup"]["history_concurrency"], 6)
+
+    def test_cpu_shedding_mode_preserves_realtime_and_defers_lower_lanes(self):
+        snapshot = build_resource_governor_snapshot(_host_snapshot(cpu_5m_pct=80.0))
+
+        self.assertEqual(snapshot["status"], "warning")
+        self.assertEqual(snapshot["shedding_mode"], "shedding")
+        self.assertIn("cpu_shedding", _reason_codes(snapshot))
+        self.assertTrue(snapshot["lane_admission"]["critical"]["admit"])
+        self.assertTrue(snapshot["lane_admission"]["realtime"]["admit"])
+        self.assertFalse(snapshot["lane_admission"]["opportunistic"]["admit"])
+        self.assertFalse(snapshot["lane_admission"]["batch"]["admit"])
+        self.assertEqual(snapshot["deferred_lanes"], ["opportunistic", "batch"])
+        limits = snapshot["recommended_limits"]["watchlist_idle_topup"]
+        self.assertFalse(limits["enabled"])
+        self.assertEqual(limits["max_symbols_per_cycle"], 8)
+        self.assertEqual(limits["history_concurrency"], 2)
+        self.assertEqual(limits["request_spacing_s"], 0.3)
 
     def test_critical_classification_blocks_non_priority(self):
         snapshot = build_resource_governor_snapshot(_host_snapshot(cpu_5m_pct=86.0))
 
         self.assertEqual(snapshot["status"], "critical")
+        self.assertEqual(snapshot["shedding_mode"], "critical")
         self.assertEqual(snapshot["health"], "unhealthy")
         self.assertIn("cpu_critical", _reason_codes(snapshot))
+        self.assertTrue(snapshot["lane_admission"]["critical"]["admit"])
+        self.assertFalse(snapshot["lane_admission"]["realtime"]["admit"])
+        self.assertFalse(snapshot["lane_admission"]["opportunistic"]["admit"])
+        self.assertFalse(snapshot["lane_admission"]["batch"]["admit"])
         self.assertFalse(snapshot["admission"]["non_priority"]["admit"])
         self.assertIn("cpu_critical", {reason["code"] for reason in snapshot["admission"]["non_priority"]["blockers"]})
 

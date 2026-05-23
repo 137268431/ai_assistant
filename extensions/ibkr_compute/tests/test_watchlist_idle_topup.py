@@ -1021,6 +1021,76 @@ class WatchlistIdleTopupCycleTest(unittest.TestCase):
         self.assertEqual(state["last_processed_symbols"], ["NVDA", "META", "TSLA"])
         self.assertEqual(self._called_symbols(), ["NVDA", "META", "TSLA"])
 
+    def test_resource_governor_recommended_budget_overrides_idle_topup_limits(self):
+        self.service._watchlist_symbols = ["AAPL", "MSFT", "NVDA", "TSLA", "META"]
+        self.service.data_backfill.latest_by_symbol.update(
+            {
+                "MSFT": 3_000,
+                "NVDA": 0,
+                "TSLA": 1_000,
+                "META": 0,
+            }
+        )
+        self.service.config = DummyConfig(
+            {
+                "ibkr_watchlist_idle_topup_batch_size": 4,
+                "ibkr_watchlist_idle_topup_max_symbols_per_cycle": 4,
+                "ibkr_watchlist_idle_topup_candidate_scan_size": 4,
+                "ibkr_watchlist_active_due_guard_sec": 45,
+            }
+        )
+        self.service._resource_governor = {
+            "status": "green",
+            "health": "ok",
+            "shedding_mode": "green",
+            "recommended_limits": {
+                "watchlist_idle_topup": {
+                    "enabled": True,
+                    "max_symbols_per_cycle": 2,
+                    "batch_size": 1,
+                    "history_concurrency": 2,
+                    "request_spacing_s": 0.25,
+                }
+            },
+            "admission": {"watchlist_idle_topup": {"admit": True, "blockers": []}},
+        }
+
+        state = self.service._run_watchlist_idle_topup_cycle()
+
+        self.assertEqual(state["status"], "completed")
+        self.assertEqual(state["last_stop_reason"], "max_symbols_per_cycle")
+        self.assertEqual(state["last_attempted_symbols"], ["NVDA", "META"])
+        self.assertEqual([list(call["conid_map"].keys()) for call in self.service.data_backfill.backfill_all_calls], [["NVDA"], ["META"]])
+        self.assertEqual(state["applied_budget"]["max_symbols_per_cycle"], 2)
+        self.assertEqual(state["applied_budget"]["batch_size"], 1)
+        self.assertEqual(state["applied_budget"]["history_concurrency"], 2)
+        self.assertEqual(state["applied_budget"]["request_spacing_s"], 0.25)
+        trace_context = self.service.data_backfill.backfill_all_calls[0]["trace_context"]
+        self.assertEqual(trace_context["applied_budget"]["max_symbols_per_cycle"], 2)
+        self.assertEqual(trace_context["batch_size"], 1)
+
+    def test_resource_governor_critical_shedding_disables_idle_topup(self):
+        self.service._resource_governor = {
+            "status": "critical",
+            "health": "degraded",
+            "shedding_mode": "critical",
+            "recommended_limits": {
+                "watchlist_idle_topup": {
+                    "enabled": True,
+                    "max_symbols_per_cycle": 10,
+                    "batch_size": 4,
+                }
+            },
+            "admission": {"watchlist_idle_topup": {"admit": True, "blockers": []}},
+        }
+
+        state = self.service._run_watchlist_idle_topup_cycle()
+
+        self.assertEqual(state["status"], "skipped")
+        self.assertEqual(state["skip_reason"], "disabled")
+        self.assertFalse(state["applied_budget"]["enabled"])
+        self.assertEqual(state["applied_budget"]["max_symbols_per_cycle"], 0)
+
     def test_dynamic_estimated_bar_budget_truncates_batch_when_exposed(self):
         self.service._watchlist_symbols = ["AAPL", "MSFT", "NVDA", "TSLA", "META"]
         self.service.data_backfill.latest_by_symbol.update(

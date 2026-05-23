@@ -21,6 +21,14 @@ NON_COMPUTE_DISPATCH_SOURCES = {
 COMPUTE_DISPATCH_RETRY_BACKOFF_SECONDS = (0.25, 0.5)
 COMPUTE_DISPATCH_RETRYABLE_ERRORS = {"compute_busy"}
 COMPUTE_DISPATCH_RETRYABLE_STATUS_CODES = {503}
+COMPUTE_BUSY_DEFER_DEFAULT_SECONDS = max(
+    1.0,
+    float(os.environ.get("IBKR_COMPUTE_BUSY_DEFER_SEC", "60") or "60"),
+)
+COMPUTE_BUSY_DEFER_CAP_SECONDS = max(
+    COMPUTE_BUSY_DEFER_DEFAULT_SECONDS,
+    float(os.environ.get("IBKR_COMPUTE_BUSY_DEFER_CAP_SEC", "300") or "300"),
+)
 OFFICIAL_CLOSE_INFLIGHT_GRACE_SECONDS = max(
     60.0,
     float(os.environ.get("IBKR_OFFICIAL_CLOSE_INFLIGHT_GRACE_SEC", "600") or "600"),
@@ -143,6 +151,57 @@ def _coerce_float(value: Any, default: float = 0.0) -> float:
 
 def _compute_dispatch_chunk_size() -> int:
     return max(1, _coerce_int(os.environ.get("IBKR_COMPUTE_DISPATCH_CHUNK_SIZE"), 8))
+
+
+def _compute_busy_defer_seconds(config: Any, environment: str, attempt_count: int) -> float:
+    base_seconds = _coerce_float(
+        _config_value(config, "ibkr_compute_busy_defer_sec", environment, str(COMPUTE_BUSY_DEFER_DEFAULT_SECONDS)),
+        COMPUTE_BUSY_DEFER_DEFAULT_SECONDS,
+    )
+    cap_seconds = _coerce_float(
+        _config_value(config, "ibkr_compute_busy_defer_cap_sec", environment, str(COMPUTE_BUSY_DEFER_CAP_SECONDS)),
+        COMPUTE_BUSY_DEFER_CAP_SECONDS,
+    )
+    base_seconds = max(1.0, base_seconds)
+    cap_seconds = max(base_seconds, cap_seconds)
+    attempt = max(1, int(attempt_count or 1))
+    return min(cap_seconds, base_seconds * (2 ** max(0, attempt - 1)))
+
+
+def _is_compute_busy_deferred(dispatch_5m: dict[str, Any]) -> bool:
+    if bool(dispatch_5m.get("deferred_compute_busy")):
+        return True
+    reason = str(dispatch_5m.get("dispatch_skip_reason") or dispatch_5m.get("reason") or "").strip().lower()
+    return reason in {"compute_busy_deferred", "compute_busy_backoff"}
+
+
+def _compute_busy_backoff_detail(dispatch_5m: dict[str, Any], now_ms: int) -> dict[str, Any]:
+    next_retry_at_ms = _coerce_int(dispatch_5m.get("deferred_next_retry_at_ms"))
+    deferred_symbols = _normalize_symbols(dispatch_5m.get("deferred_busy_symbols"))
+    attempt_count = max(
+        0,
+        _coerce_int(
+            dispatch_5m.get("deferred_attempt_count")
+            or dispatch_5m.get("attempt_count")
+            or dispatch_5m.get("compute_busy_attempt_count")
+        ),
+    )
+    if not _is_compute_busy_deferred(dispatch_5m) or next_retry_at_ms <= now_ms:
+        return {}
+    return {
+        "status": "backoff",
+        "compute_busy_backoff": True,
+        "deferred_compute_busy": True,
+        "deferred_next_retry_at_ms": next_retry_at_ms,
+        "deferred_attempt_count": attempt_count,
+        "attempt_count": attempt_count,
+        "deferred_retry_after_ms": max(0, next_retry_at_ms - now_ms),
+        "deferred_busy_symbols": deferred_symbols,
+        "deferred_busy_symbol_count": _coerce_int(dispatch_5m.get("deferred_busy_symbol_count"), len(deferred_symbols)),
+        "deferred_busy_details": list(dispatch_5m.get("deferred_busy_details") or [])[:8]
+        if isinstance(dispatch_5m.get("deferred_busy_details"), list)
+        else [],
+    }
 
 
 def _is_retryable_compute_failure(response: requests.Response, payload: dict[str, Any]) -> bool:
@@ -683,6 +742,45 @@ def build_compute_dispatch_runner(
                 "dispatch_cursor": saved_dispatch_cursor,
             }
 
+        dispatch_cursor = detail.get("dispatch_cursor") if isinstance(detail.get("dispatch_cursor"), dict) else {}
+        dispatch_5m = dict((dispatch_cursor.get("intervals") or {}).get("5m") or {})
+        now_ms = int(time.time() * 1000)
+        backoff_detail = _compute_busy_backoff_detail(dispatch_5m, now_ms)
+        if backoff_detail:
+            dispatch_intervals = {
+                **(dispatch_cursor.get("intervals") or {}),
+                "5m": {
+                    **dispatch_5m,
+                    "last_dispatched_at_ms": now_ms,
+                    "dispatch_source": "ibkr_scheduler_compute_busy_backoff",
+                    "dispatch_skip_reason": "compute_busy_backoff",
+                    **backoff_detail,
+                },
+            }
+            saved_dispatch_cursor = save_dispatch_cursor(
+                environment,
+                {
+                    "intervals": dispatch_intervals,
+                    "latest_compute_result": {
+                        "ok": True,
+                        "skipped": True,
+                        "status": "backoff",
+                        "reason": "compute_busy_backoff",
+                        **backoff_detail,
+                    },
+                },
+            )
+            return {
+                "ok": True,
+                "skipped": True,
+                "status": "backoff",
+                "reason": "compute_busy_backoff",
+                "compute_skipped": True,
+                **backoff_detail,
+                **detail,
+                "dispatch_cursor": saved_dispatch_cursor,
+            }
+
         try:
             status_response = requests.get(
                 f"{compute_base_url}/health",
@@ -704,8 +802,6 @@ def build_compute_dispatch_runner(
         ingest_cursor = detail.get("ingest_cursor") if isinstance(detail.get("ingest_cursor"), dict) else {}
         ingest_intervals = ingest_cursor.get("intervals") if isinstance(ingest_cursor.get("intervals"), dict) else {}
         latest_5m = dict(ingest_intervals.get("5m") or {})
-        dispatch_cursor = detail.get("dispatch_cursor") if isinstance(detail.get("dispatch_cursor"), dict) else {}
-        dispatch_5m = dict((dispatch_cursor.get("intervals") or {}).get("5m") or {})
         market_ws_symbols = _scheduler_market_ws_symbols(config, environment)
         symbols = sorted(
             set(_cursor_symbols(latest_5m))
@@ -1011,6 +1107,28 @@ def build_compute_dispatch_runner(
 
         if deferred_busy_symbols:
             deferred_symbols = _normalize_symbols(deferred_busy_symbols)
+            previous_deferred_attempt_count = max(
+                0,
+                _coerce_int(
+                    dispatch_5m.get("deferred_attempt_count")
+                    or dispatch_5m.get("attempt_count")
+                    or dispatch_5m.get("compute_busy_attempt_count")
+                ),
+            )
+            deferred_attempt_count = previous_deferred_attempt_count + 1
+            deferred_retry_delay_ms = int(_compute_busy_defer_seconds(config, environment, deferred_attempt_count) * 1000)
+            deferred_next_retry_at_ms = int(time.time() * 1000) + deferred_retry_delay_ms
+            deferred_summary = {
+                "deferred_compute_busy": True,
+                "deferred_next_retry_at_ms": deferred_next_retry_at_ms,
+                "deferred_retry_delay_ms": deferred_retry_delay_ms,
+                "deferred_attempt_count": deferred_attempt_count,
+                "attempt_count": deferred_attempt_count,
+                "deferred_busy_symbols": deferred_symbols,
+                "deferred_busy_symbol_count": len(deferred_symbols),
+                "deferred_busy_details": deferred_busy_details[:8],
+            }
+            aggregate_payload.update(deferred_summary)
             required_signal_symbols = _normalize_symbols(symbols)
             partial_signal_symbols = sorted(
                 set(_normalize_symbols(coverage_detail.get("covered_signal_dispatch_symbols")))
@@ -1035,10 +1153,7 @@ def build_compute_dispatch_runner(
                     "covered_signal_dispatch_symbol_count": len(partial_signal_symbols),
                     "missing_signal_dispatch_symbols": missing_partial_signal_symbols,
                     "missing_signal_dispatch_symbol_count": len(missing_partial_signal_symbols),
-                    "deferred_compute_busy": True,
-                    "deferred_busy_symbols": deferred_symbols,
-                    "deferred_busy_symbol_count": len(deferred_symbols),
-                    "deferred_busy_details": deferred_busy_details[:8],
+                    **deferred_summary,
                 },
             )
             return {
@@ -1046,10 +1161,7 @@ def build_compute_dispatch_runner(
                 "skipped": False,
                 "reason": "compute_busy_deferred",
                 "compute": aggregate_payload,
-                "deferred_compute_busy": True,
-                "deferred_busy_symbols": deferred_symbols,
-                "deferred_busy_symbol_count": len(deferred_symbols),
-                "deferred_busy_details": deferred_busy_details[:8],
+                **deferred_summary,
                 **(
                     {
                         "compute_dispatch_retry_count": compute_retry_count,

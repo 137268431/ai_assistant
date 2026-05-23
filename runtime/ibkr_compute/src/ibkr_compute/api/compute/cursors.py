@@ -99,6 +99,22 @@ def seed_compute_cursors_from_indicators(environment: str) -> int:
     return applied
 
 
+def _seed_from_indicators_enabled(api_app, environment: str) -> bool:
+    cfg = getattr(api_app, "cfg", None)
+    if cfg is not None and hasattr(cfg, "get_bool_for_environment"):
+        try:
+            return bool(
+                cfg.get_bool_for_environment(
+                    "ibkr_compute_cursor_seed_from_indicators_enabled",
+                    environment,
+                    True,
+                )
+            )
+        except Exception:
+            return True
+    return True
+
+
 def load_persisted_compute_cursors(environment: str):
     api_app = _api_app()
     runtime_environment = str(environment or "live").strip().lower() or "live"
@@ -106,6 +122,7 @@ def load_persisted_compute_cursors(environment: str):
         return
 
     applied = 0
+    state_load_failed = False
     try:
         state = api_app.pb.get_state(
             api_app.COMPUTE_CURSOR_STATE_KEY,
@@ -118,10 +135,14 @@ def load_persisted_compute_cursors(environment: str):
             payload.get("cursors") if isinstance(payload, dict) else {},
         )
     except Exception:
+        state_load_failed = True
         traceback.print_exc()
 
-    if applied == 0:
-        applied = seed_compute_cursors_from_indicators(runtime_environment)
+    if not state_load_failed and applied == 0 and _seed_from_indicators_enabled(api_app, runtime_environment):
+        try:
+            applied = seed_compute_cursors_from_indicators(runtime_environment)
+        except Exception:
+            traceback.print_exc()
 
     api_app.persistent_cursor_envs_loaded.add(runtime_environment)
     return applied

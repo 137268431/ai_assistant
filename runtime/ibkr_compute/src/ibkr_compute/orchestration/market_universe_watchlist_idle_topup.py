@@ -156,6 +156,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             "estimated_bars_selected": 0,
             "history_concurrency": 8,
             "request_spacing_s": 0.05,
+            "applied_budget": {},
             "selected_symbol_count": 0,
             "dynamic_reason": "",
             "loop_interval_sec": 2,
@@ -419,6 +420,112 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
         except Exception:
             value = 0.05
         return round(max(0.0, value), 3)
+
+    def _watchlist_idle_topup_resource_shedding_mode(self, resource_governor: dict | None = None) -> str:
+        snapshot = resource_governor if isinstance(resource_governor, dict) else {}
+        return str(
+            snapshot.get("shedding_mode")
+            or snapshot.get("status")
+            or snapshot.get("health")
+            or ""
+        ).strip().lower()
+
+    def _watchlist_idle_topup_recommended_budget(self, resource_governor: dict | None = None) -> dict:
+        snapshot = resource_governor if isinstance(resource_governor, dict) else {}
+        recommended_limits = snapshot.get("recommended_limits")
+        if not isinstance(recommended_limits, dict):
+            recommended_limits = {}
+        budget = recommended_limits.get("watchlist_idle_topup")
+        return dict(budget or {}) if isinstance(budget, dict) else {}
+
+    def _apply_watchlist_idle_topup_resource_budget(
+        self,
+        *,
+        enabled: bool,
+        max_symbols_per_cycle: int,
+        batch_size: int,
+        history_concurrency: int,
+        request_spacing_s: float,
+        resource_governor: dict | None = None,
+    ) -> dict:
+        snapshot = resource_governor if isinstance(resource_governor, dict) else {}
+        recommended = self._watchlist_idle_topup_recommended_budget(snapshot)
+        shedding_mode = self._watchlist_idle_topup_resource_shedding_mode(snapshot)
+        applied = {
+            "enabled": bool(enabled),
+            "max_symbols_per_cycle": max(0, min(WATCHLIST_IDLE_TOPUP_MAX_SYMBOLS_HARD_CAP, int(max_symbols_per_cycle or 0))),
+            "batch_size": max(1, min(WATCHLIST_IDLE_TOPUP_MAX_SYMBOLS_HARD_CAP, int(batch_size or 1))),
+            "history_concurrency": max(1, min(10, int(history_concurrency or 1))),
+            "request_spacing_s": round(max(0.0, float(request_spacing_s or 0.0)), 3),
+            "shedding_mode": shedding_mode,
+            "source": "config",
+            "recommended": dict(recommended),
+        }
+
+        if recommended:
+            applied["source"] = "resource_governor"
+            if "enabled" in recommended:
+                value = recommended.get("enabled")
+                if isinstance(value, str):
+                    applied["enabled"] = value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+                else:
+                    applied["enabled"] = bool(value)
+            for source_key, target_key in (
+                ("max_symbols_per_cycle", "max_symbols_per_cycle"),
+                ("batch_size", "batch_size"),
+                ("history_concurrency", "history_concurrency"),
+            ):
+                if source_key in recommended:
+                    raw_value = _safe_int(recommended.get(source_key), applied[target_key])
+                    if target_key == "max_symbols_per_cycle":
+                        applied[target_key] = max(0, min(WATCHLIST_IDLE_TOPUP_MAX_SYMBOLS_HARD_CAP, raw_value))
+                    elif target_key == "history_concurrency":
+                        applied[target_key] = max(1, min(10, raw_value))
+                    else:
+                        applied[target_key] = max(1, min(WATCHLIST_IDLE_TOPUP_MAX_SYMBOLS_HARD_CAP, raw_value))
+            if "request_spacing_s" in recommended:
+                applied["request_spacing_s"] = round(max(0.0, _safe_float(recommended.get("request_spacing_s"), applied["request_spacing_s"])), 3)
+            elif "request_spacing" in recommended:
+                applied["request_spacing_s"] = round(max(0.0, _safe_float(recommended.get("request_spacing"), applied["request_spacing_s"])), 3)
+
+        if shedding_mode in {"critical", "red", "emergency"}:
+            applied.update(
+                {
+                    "enabled": False,
+                    "max_symbols_per_cycle": 0,
+                    "batch_size": 1,
+                    "history_concurrency": 1,
+                    "request_spacing_s": round(max(applied["request_spacing_s"], 0.5), 3),
+                    "source": "resource_governor",
+                }
+            )
+        elif shedding_mode == "shedding":
+            applied.update(
+                {
+                    "enabled": False,
+                    "max_symbols_per_cycle": min(applied["max_symbols_per_cycle"] or 8, 8),
+                    "batch_size": min(applied["batch_size"], 2),
+                    "history_concurrency": min(applied["history_concurrency"], 2),
+                    "request_spacing_s": round(max(applied["request_spacing_s"], 0.3), 3),
+                    "source": "resource_governor",
+                }
+            )
+        elif shedding_mode in {"warning", "warn", "yellow", "degraded"} and not recommended:
+            applied.update(
+                {
+                    "max_symbols_per_cycle": min(applied["max_symbols_per_cycle"] or 16, 16),
+                    "batch_size": min(applied["batch_size"], 4),
+                    "history_concurrency": min(applied["history_concurrency"], 2),
+                    "request_spacing_s": round(max(applied["request_spacing_s"], 0.2), 3),
+                    "source": "resource_governor" if recommended or shedding_mode else applied["source"],
+                }
+            )
+
+        if "max_symbols_per_cycle" in recommended and applied["max_symbols_per_cycle"] <= 0:
+            applied["enabled"] = False
+        if applied["max_symbols_per_cycle"] > 0:
+            applied["batch_size"] = min(applied["batch_size"], applied["max_symbols_per_cycle"])
+        return applied
 
     def _watchlist_idle_topup_mode(
         self,
@@ -968,6 +1075,14 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
         resource_admission = (
             (resource_governor.get("admission") or {}).get("watchlist_idle_topup") or {}
         )
+        applied_budget = self._apply_watchlist_idle_topup_resource_budget(
+            enabled=self._watchlist_idle_topup_enabled(),
+            max_symbols_per_cycle=self._watchlist_idle_topup_dynamic_max_symbols_per_cycle(),
+            batch_size=self._watchlist_idle_topup_batch_size(),
+            history_concurrency=self._watchlist_idle_topup_history_concurrency(),
+            request_spacing_s=self._watchlist_idle_topup_history_request_spacing(),
+            resource_governor=resource_governor,
+        )
         seconds_until_due = self._seconds_until_next_active_5m_due()
         due_guard_sec = self._watchlist_active_due_guard_sec()
         websocket_status = {}
@@ -996,6 +1111,14 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
 
         if not self._watchlist_idle_topup_enabled():
             blockers.append({"code": "disabled"})
+        if not bool(applied_budget.get("enabled", True)):
+            blockers.append(
+                {
+                    "code": "resource_governor_budget_disabled",
+                    "shedding_mode": applied_budget.get("shedding_mode"),
+                    "applied_budget": applied_budget,
+                }
+            )
         if self._is_warmup_active():
             blockers.append({"code": "warmup_active"})
         if not authenticated:
@@ -1051,6 +1174,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             "active_first_enabled": active_first_enabled,
             "market_session": market_session_kind,
             "resource_governor": resource_governor,
+            "applied_budget": applied_budget,
             "post_close_catchup": post_close_catchup,
         }
         return not blockers, snapshot
@@ -1303,6 +1427,20 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             estimated_bars_budget = 0
         history_concurrency = self._watchlist_idle_topup_history_concurrency()
         request_spacing_s = self._watchlist_idle_topup_history_request_spacing()
+        resource_governor = self._resource_governor_snapshot()
+        applied_budget = self._apply_watchlist_idle_topup_resource_budget(
+            enabled=enabled,
+            max_symbols_per_cycle=max_symbols,
+            batch_size=batch_size,
+            history_concurrency=history_concurrency,
+            request_spacing_s=request_spacing_s,
+            resource_governor=resource_governor,
+        )
+        enabled = bool(applied_budget.get("enabled", enabled))
+        max_symbols = _safe_int(applied_budget.get("max_symbols_per_cycle"), max_symbols)
+        batch_size = _safe_int(applied_budget.get("batch_size"), batch_size)
+        history_concurrency = _safe_int(applied_budget.get("history_concurrency"), history_concurrency)
+        request_spacing_s = _safe_float(applied_budget.get("request_spacing_s"), request_spacing_s)
         fast_retry_s = self._watchlist_idle_topup_fast_retry_sec()
         request_period = self._watchlist_idle_topup_request_period()
         self._set_watchlist_idle_topup_state(
@@ -1318,6 +1456,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             estimated_bars_selected=0,
             history_concurrency=history_concurrency,
             request_spacing_s=request_spacing_s,
+            applied_budget=applied_budget,
             selected_symbol_count=0,
             dynamic_reason="",
             request_period=request_period,
@@ -1328,6 +1467,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
                 status="skipped",
                 skip_reason="disabled",
                 last_stop_reason="disabled",
+                applied_budget=applied_budget,
                 skipped_count=_safe_int(self._watchlist_idle_topup_state.get("skipped_count"), 0) + 1,
             )
             return state
@@ -1460,7 +1600,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
                     batch_candidates, batch_estimated_bars, dynamic_reason = self._watchlist_idle_topup_dynamic_candidates(
                         exclude_symbols=attempted_set,
                         scan_all=scan_all,
-                        max_symbols=remaining_symbols,
+                        max_symbols=min(batch_size, remaining_symbols),
                         remaining_estimated_bars=remaining_estimated_bars,
                     )
                     if not batch_candidates:
@@ -1594,8 +1734,10 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
                         "dynamic_enabled": dynamic_enabled,
                         "active_first_enabled": active_first_enabled,
                         "max_symbols_per_cycle": max_symbols,
+                        "batch_size": batch_size,
                         "history_concurrency": history_concurrency,
                         "request_spacing_s": request_spacing_s,
+                        "applied_budget": applied_budget,
                         "market_session": market_session_kind,
                         "watchlist_completion_before": completion_before,
                     }
@@ -1788,6 +1930,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
                 estimated_bars_selected=estimated_bars_selected,
                 selected_symbol_count=len(attempted_symbols),
                 dynamic_reason=stop_reason if dynamic_enabled else "",
+                applied_budget=applied_budget,
             )
             service_mod.logger.warning("Watchlist idle topup failed: %s", exc)
             return state
@@ -1837,6 +1980,7 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
             estimated_bars_selected=estimated_bars_selected,
             selected_symbol_count=len(attempted_symbols),
             dynamic_reason=stop_reason if dynamic_enabled else "",
+            applied_budget=applied_budget,
         )
         service_mod.logger.info(
             "Watchlist idle topup cycle finished: mode=%s dynamic=%s status=%s stop=%s attempted=%d processed=%d written=%d estimated_bars=%d batches=%d next_due_s=%s estimate_s=%.1f",

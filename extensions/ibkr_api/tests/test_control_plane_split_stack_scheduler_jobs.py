@@ -1,3 +1,5 @@
+import time
+
 from control_plane_split_stack_helpers import *
 
 
@@ -306,6 +308,44 @@ class ControlPlaneSplitStackSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(job_state["status"], "ok")
         self.assertGreater(int(job_state["last_success_at_ms"]), 0)
         self.assertTrue(any(collection == "system_events" for collection, _ in pb.records))
+
+    def test_scheduler_compute_busy_future_backoff_skips_post(self):
+        pb = _FakePB()
+        future_retry_ms = int(time.time() * 1000) + 120000
+        pb.states[(BAR_INGEST_CURSOR_STATE_KEY, "live", "global")] = {
+            "data": {"intervals": {"5m": {"latest_bar_time_ms": 1713797100000, "latest_batch_symbols": ["AAPL"]}}}
+        }
+        pb.states[(COMPUTE_DISPATCH_CURSOR_STATE_KEY, "live", "global")] = {
+            "data": {
+                "intervals": {
+                    "5m": {
+                        "latest_bar_time_ms": 1713796800000,
+                        "deferred_compute_busy": True,
+                        "deferred_next_retry_at_ms": future_retry_ms,
+                        "deferred_attempt_count": 1,
+                        "deferred_busy_symbols": ["AAPL"],
+                        "dispatch_skip_reason": "compute_busy_deferred",
+                    }
+                }
+            }
+        }
+        scheduler = SchedulerService(pb, _FakeConfig())
+
+        with mock.patch("ibkr_scheduler.scheduler_app.requests.post") as post_mock:
+            result = scheduler.run_job("ibkr_compute_runtime", market_data_mode="live", trigger_source="api_manual")
+
+        post_mock.assert_not_called()
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["status"], "backoff")
+        self.assertEqual(result["reason"], "compute_busy_backoff")
+        self.assertEqual(result["deferred_next_retry_at_ms"], future_retry_ms)
+        self.assertEqual(result["deferred_attempt_count"], 1)
+        self.assertEqual(result["attempt_count"], 1)
+        dispatch = pb.states[(COMPUTE_DISPATCH_CURSOR_STATE_KEY, "live", "global")]["data"]
+        dispatch_5m = dispatch["intervals"]["5m"]
+        self.assertEqual(dispatch_5m["dispatch_skip_reason"], "compute_busy_backoff")
+        self.assertEqual(dispatch_5m["deferred_next_retry_at_ms"], future_retry_ms)
 
     def test_scheduler_loop_status_has_observability_fields(self):
         scheduler = SchedulerService(_FakePB(), _FakeConfig())

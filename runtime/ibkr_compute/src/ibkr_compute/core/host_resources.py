@@ -280,6 +280,15 @@ def _config_int(config, key: str, environment: str, default: int) -> int:
     return int(default)
 
 
+def _config_bool(config, key: str, environment: str, default: bool) -> bool:
+    if config is not None and hasattr(config, "get_bool_for_environment"):
+        try:
+            return bool(config.get_bool_for_environment(key, environment, default))
+        except (TypeError, ValueError):
+            return bool(default)
+    return bool(default)
+
+
 def _thresholds_from_config(config, environment: str) -> dict:
     return {
         "sample_stale_sec": _config_int(config, "ibkr_host_resource_monitor_stale_sec", environment, 30),
@@ -367,6 +376,69 @@ def _thresholds_from_config(config, environment: str) -> dict:
             environment,
             20.0,
         ),
+        "peak_shedding_enabled": _config_bool(config, "ibkr_peak_shedding_enabled", environment, True),
+        "peak_cpu_shedding_pct": _config_float(config, "ibkr_peak_cpu_shedding_pct", environment, 78.0),
+        "peak_cpu_recovery_pct": _config_float(config, "ibkr_peak_cpu_recovery_pct", environment, 60.0),
+        "peak_watchlist_warning_max_symbols": _config_int(
+            config,
+            "ibkr_peak_watchlist_warning_max_symbols",
+            environment,
+            40,
+        ),
+        "peak_watchlist_warning_batch_size": _config_int(
+            config,
+            "ibkr_peak_watchlist_warning_batch_size",
+            environment,
+            40,
+        ),
+        "peak_watchlist_warning_history_concurrency": _config_int(
+            config,
+            "ibkr_peak_watchlist_warning_history_concurrency",
+            environment,
+            6,
+        ),
+        "peak_watchlist_warning_request_spacing": _config_float(
+            config,
+            "ibkr_peak_watchlist_warning_request_spacing",
+            environment,
+            0.15,
+        ),
+        "peak_watchlist_shedding_max_symbols": _config_int(
+            config,
+            "ibkr_peak_watchlist_shedding_max_symbols",
+            environment,
+            8,
+        ),
+        "peak_watchlist_shedding_batch_size": _config_int(
+            config,
+            "ibkr_peak_watchlist_shedding_batch_size",
+            environment,
+            8,
+        ),
+        "peak_watchlist_shedding_history_concurrency": _config_int(
+            config,
+            "ibkr_peak_watchlist_shedding_history_concurrency",
+            environment,
+            2,
+        ),
+        "peak_watchlist_shedding_request_spacing": _config_float(
+            config,
+            "ibkr_peak_watchlist_shedding_request_spacing",
+            environment,
+            0.3,
+        ),
+        "peak_watchlist_critical_history_concurrency": _config_int(
+            config,
+            "ibkr_peak_watchlist_critical_history_concurrency",
+            environment,
+            1,
+        ),
+        "peak_watchlist_critical_request_spacing": _config_float(
+            config,
+            "ibkr_peak_watchlist_critical_request_spacing",
+            environment,
+            0.5,
+        ),
     }
 
 
@@ -385,6 +457,98 @@ def _append_threshold_reason(
             "message": message,
         }
     )
+
+
+def _positive_int(value, minimum: int = 1) -> int:
+    try:
+        return max(int(minimum), int(value))
+    except (TypeError, ValueError):
+        return int(minimum)
+
+
+def _positive_float(value, minimum: float = 0.0) -> float:
+    try:
+        return max(float(minimum), float(value))
+    except (TypeError, ValueError):
+        return float(minimum)
+
+
+def _watchlist_recommended_limits(mode: str, thresholds: dict, *, enabled: bool) -> dict:
+    payload = {
+        "mode": str(mode or "green"),
+        "enabled": True,
+        "applied": bool(enabled),
+    }
+    if not enabled or mode == "green":
+        return payload
+    if mode == "warning":
+        payload.update(
+            {
+                "max_symbols_per_cycle": _positive_int(thresholds.get("peak_watchlist_warning_max_symbols"), 1),
+                "batch_size": _positive_int(thresholds.get("peak_watchlist_warning_batch_size"), 1),
+                "history_concurrency": _positive_int(
+                    thresholds.get("peak_watchlist_warning_history_concurrency"),
+                    1,
+                ),
+                "request_spacing_s": round(
+                    _positive_float(thresholds.get("peak_watchlist_warning_request_spacing"), 0.0),
+                    3,
+                ),
+            }
+        )
+        return payload
+    if mode == "shedding":
+        payload.update(
+            {
+                "enabled": False,
+                "max_symbols_per_cycle": _positive_int(thresholds.get("peak_watchlist_shedding_max_symbols"), 1),
+                "batch_size": _positive_int(thresholds.get("peak_watchlist_shedding_batch_size"), 1),
+                "history_concurrency": _positive_int(
+                    thresholds.get("peak_watchlist_shedding_history_concurrency"),
+                    1,
+                ),
+                "request_spacing_s": round(
+                    _positive_float(thresholds.get("peak_watchlist_shedding_request_spacing"), 0.0),
+                    3,
+                ),
+            }
+        )
+        return payload
+    payload.update(
+        {
+            "enabled": False,
+            "max_symbols_per_cycle": 0,
+            "batch_size": 0,
+            "history_concurrency": _positive_int(thresholds.get("peak_watchlist_critical_history_concurrency"), 1),
+            "request_spacing_s": round(
+                _positive_float(thresholds.get("peak_watchlist_critical_request_spacing"), 0.0),
+                3,
+            ),
+        }
+    )
+    return payload
+
+
+def _lane_admission(mode: str) -> dict:
+    mode = str(mode or "green")
+    return {
+        "critical": {"admit": True, "lane": "L0", "description": "locks, state, health, emergency close"},
+        "realtime": {
+            "admit": mode != "critical",
+            "lane": "L1",
+            "description": "active targets, official 5m close, signals, orders",
+        },
+        "opportunistic": {
+            "admit": mode == "green",
+            "lane": "L2",
+            "description": "watchlist idle topup and non-target refresh",
+        },
+        "batch": {
+            "admit": mode == "green",
+            "lane": "L3",
+            "description": "large backfill, scans, retention and offline repair",
+        },
+    }
 
 
 def build_resource_governor_snapshot(
@@ -617,21 +781,68 @@ def build_resource_governor_snapshot(
         status = "green"
         health = "ok"
 
+    peak_shedding_enabled = bool(thresholds.get("peak_shedding_enabled"))
+    shedding_reasons: list[dict] = []
+    if (
+        peak_shedding_enabled
+        and not critical_reasons
+        and cpu_5m_pct is not None
+        and cpu_5m_pct >= thresholds["peak_cpu_shedding_pct"]
+    ):
+        _append_threshold_reason(
+            shedding_reasons,
+            "cpu_shedding",
+            round(cpu_5m_pct, 2),
+            thresholds["peak_cpu_shedding_pct"],
+            "CPU 5m average entered peak shedding mode",
+        )
+
+    if not peak_shedding_enabled:
+        shedding_mode = status
+    elif critical_reasons:
+        shedding_mode = "critical"
+    elif shedding_reasons:
+        shedding_mode = "shedding"
+    elif warning_reasons or watchlist_blockers:
+        shedding_mode = "warning"
+    else:
+        shedding_mode = "green"
+
     admit_watchlist = not critical_reasons and not watchlist_blockers and status == "green"
+    watchlist_limits = _watchlist_recommended_limits(
+        shedding_mode,
+        thresholds,
+        enabled=peak_shedding_enabled,
+    )
+    lane_admission = _lane_admission(shedding_mode)
     return {
         "status": status,
+        "shedding_mode": shedding_mode,
         "health": health,
         "metrics": metrics,
         "thresholds": thresholds,
-        "reasons": critical_reasons + warning_reasons,
+        "reasons": critical_reasons + shedding_reasons + warning_reasons,
+        "shedding_reasons": shedding_reasons,
+        "lane_admission": lane_admission,
+        "recommended_limits": {
+            "watchlist_idle_topup": watchlist_limits,
+        },
+        "deferred_lanes": [
+            lane
+            for lane, admission in lane_admission.items()
+            if not bool(admission.get("admit"))
+        ],
         "admission": {
             "watchlist_idle_topup": {
                 "admit": bool(admit_watchlist),
                 "blockers": watchlist_blockers,
+                "lane": "opportunistic",
+                "recommended_limits": watchlist_limits,
             },
             "non_priority": {
                 "admit": not critical_reasons,
                 "blockers": critical_reasons,
+                "lane": "batch",
             },
         },
     }
