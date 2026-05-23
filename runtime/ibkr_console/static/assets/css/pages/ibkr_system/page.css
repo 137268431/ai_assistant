@@ -509,10 +509,22 @@
     font-weight: 700;
 }
 
-.freshness-grid {
+#freshnessArea {
+    max-height: none;
+    overflow: visible;
+}
+
+.freshness-grid,
+.freshness-interval-grid {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 12px;
+}
+.freshness-scope-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+    margin-bottom: 12px;
 }
 .freshness-overall {
     display: flex;
@@ -606,6 +618,9 @@
 .freshness-card.is-idle {
     border-color: rgba(56,189,248,0.16);
     background: linear-gradient(180deg, rgba(12,33,48,0.9), rgba(10,16,28,0.98));
+}
+.freshness-card.is-monitor {
+    border-style: dashed;
 }
 .freshness-card-head {
     display: flex;
@@ -1384,7 +1399,8 @@
 }
 
 @media (min-width: 1400px) {
-    .freshness-grid {
+    .freshness-grid,
+    .freshness-interval-grid {
         grid-template-columns: repeat(6, minmax(0, 1fr));
     }
 }
@@ -1408,7 +1424,9 @@
     .engine-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
-    .freshness-grid {
+    .freshness-grid,
+    .freshness-interval-grid,
+    .freshness-scope-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
     .scheduler-summary-grid {
@@ -1474,7 +1492,9 @@
     .storage-group-grid {
         grid-template-columns: 1fr;
     }
-    .freshness-grid {
+    .freshness-grid,
+    .freshness-interval-grid,
+    .freshness-scope-grid {
         grid-template-columns: 1fr;
     }
     .ops-summary-lead {

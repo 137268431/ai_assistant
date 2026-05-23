@@ -35,6 +35,7 @@ from ibkr_compute.market.timeframe_utils import (
 
 DEFAULT_CLOSE_DELAY_SECONDS = 3
 DEFAULT_SQLITE_TIMEOUT_SECONDS = 2.0
+DEFAULT_MARKET_MONITOR_SYMBOLS = ("SPY", "QQQ", "VIX")
 
 RUNTIME_UNIVERSE_KEYS = (
     "active_trade_symbols",
@@ -128,6 +129,15 @@ def _get_float_setting(config: Any, key: str, environment: str, default: float) 
     return float(default)
 
 
+def _get_text_setting(config: Any, key: str, environment: str, default: str) -> str:
+    if config is not None and hasattr(config, "get_for_environment"):
+        try:
+            return str(config.get_for_environment(key, environment, default) or "")
+        except Exception:
+            return str(default)
+    return str(default)
+
+
 def _close_delay_seconds(config: Any, environment: str) -> int:
     if config is not None and hasattr(config, "get_int_for_environment"):
         try:
@@ -196,15 +206,15 @@ def _ms_from_dt(value: datetime) -> int:
     return int(value.timestamp() * 1000)
 
 
-def _daily_close_time_ms_from_start(start_ms: int) -> int:
+def _daily_close_time_ms_from_start(start_ms: int, symbol: Any = "") -> int:
     if int(start_ms or 0) <= 0:
         return 0
-    return extended_session_close_ms_for_date(_dt_from_ms(start_ms))
+    return extended_session_close_ms_for_date(_dt_from_ms(start_ms), symbol=symbol)
 
 
-def _previous_extended_close(value: datetime) -> datetime:
+def _previous_extended_close(value: datetime, symbol: Any = "") -> datetime:
     day = previous_trading_day(value)
-    close_ms = extended_session_close_ms_for_date(day)
+    close_ms = extended_session_close_ms_for_date(day, symbol=symbol)
     return _dt_from_ms(close_ms)
 
 
@@ -291,22 +301,34 @@ def _latest_mature_5m_close_ms(now_ms: int, *, delay_seconds: int) -> int:
     return _ms_from_dt(close_dt)
 
 
-def _latest_intraday_expected_close(mature_5m_close_ms: int, interval: str) -> dict[str, Any]:
+def _effective_symbol_mature_5m_close_ms(mature_5m_close_ms: int, symbol: Any = "") -> int:
+    close_ms = int(mature_5m_close_ms or 0)
+    if close_ms <= 0 or not str(symbol or "").strip():
+        return close_ms
+    close_dt = _dt_from_ms(close_ms)
+    symbol_close_ms = extended_session_close_ms_for_date(close_dt, symbol=symbol)
+    if is_nyse_trading_day(close_dt) and symbol_close_ms > 0 and close_ms > symbol_close_ms:
+        return symbol_close_ms
+    return close_ms
+
+
+def _latest_intraday_expected_close(mature_5m_close_ms: int, interval: str, symbol: Any = "") -> dict[str, Any]:
     normalized = normalize_interval(interval)
     if normalized == "5m":
-        close_ms = int(mature_5m_close_ms or 0)
+        close_ms = _effective_symbol_mature_5m_close_ms(mature_5m_close_ms, symbol=symbol)
         return {
             "expected_close_ms": close_ms,
             "expected_close_us": format_us_time(close_ms) if close_ms > 0 else "",
             "current_due": True,
         }
 
-    latest_5m_start_ms = int(mature_5m_close_ms or 0) - interval_to_ms("5m")
+    effective_5m_close_ms = _effective_symbol_mature_5m_close_ms(mature_5m_close_ms, symbol=symbol)
+    latest_5m_start_ms = int(effective_5m_close_ms or 0) - interval_to_ms("5m")
     current_bucket_ms = bucket_start_ms(latest_5m_start_ms, normalized)
-    current_close_ms = bar_close_ms(current_bucket_ms, normalized)
-    if int(mature_5m_close_ms or 0) < current_close_ms:
+    current_close_ms = bar_close_ms(current_bucket_ms, normalized, symbol=symbol)
+    if int(effective_5m_close_ms or 0) < current_close_ms:
         previous_start_ms = previous_intraday_bucket_start_ms(current_bucket_ms, normalized)
-        previous_close_ms = bar_close_ms(previous_start_ms, normalized)
+        previous_close_ms = bar_close_ms(previous_start_ms, normalized, symbol=symbol)
         previous = _dt_from_ms(previous_close_ms)
         return {
             "expected_close_ms": previous_close_ms,
@@ -320,14 +342,14 @@ def _latest_intraday_expected_close(mature_5m_close_ms: int, interval: str) -> d
     }
 
 
-def _latest_daily_expected_close(mature_5m_close_ms: int) -> dict[str, Any]:
+def _latest_daily_expected_close(mature_5m_close_ms: int, symbol: Any = "") -> dict[str, Any]:
     mature_dt = _dt_from_ms(mature_5m_close_ms)
-    current_close_ms = extended_session_close_ms_for_date(mature_dt)
+    current_close_ms = extended_session_close_ms_for_date(mature_dt, symbol=symbol)
     if is_nyse_trading_day(mature_dt) and int(mature_5m_close_ms or 0) >= current_close_ms:
         close_dt = _dt_from_ms(current_close_ms)
         current_due = True
     else:
-        close_dt = _previous_extended_close(mature_dt)
+        close_dt = _previous_extended_close(mature_dt, symbol=symbol)
         current_due = False
     return {
         "expected_close_ms": _ms_from_dt(close_dt),
@@ -336,11 +358,11 @@ def _latest_daily_expected_close(mature_5m_close_ms: int) -> dict[str, Any]:
     }
 
 
-def _expected_close_payload(mature_5m_close_ms: int, interval: str) -> dict[str, Any]:
+def _expected_close_payload(mature_5m_close_ms: int, interval: str, symbol: Any = "") -> dict[str, Any]:
     normalized = normalize_interval(interval)
     if normalized == "1d":
-        return _latest_daily_expected_close(mature_5m_close_ms)
-    return _latest_intraday_expected_close(mature_5m_close_ms, normalized)
+        return _latest_daily_expected_close(mature_5m_close_ms, symbol=symbol)
+    return _latest_intraday_expected_close(mature_5m_close_ms, normalized, symbol=symbol)
 
 
 def extract_bar_close_time_ms(row: dict[str, Any] | None, interval: str) -> int:
@@ -350,7 +372,7 @@ def extract_bar_close_time_ms(row: dict[str, Any] | None, interval: str) -> int:
     normalized = normalize_interval(interval or payload.get("interval") or "5m")
     start_ms = _to_int(payload.get("bar_time_ms"), 0)
     if normalized == "1d" and start_ms > 0:
-        return _daily_close_time_ms_from_start(start_ms)
+        return _daily_close_time_ms_from_start(start_ms, payload.get("symbol"))
 
     extra = _parse_extra(payload.get("extra"))
     close_ms = _to_int(extra.get("bar_close_time_ms"), 0)
@@ -390,7 +412,29 @@ def _runtime_market_universe(runtime_payload: dict[str, Any]) -> dict[str, Any]:
     return dict(market_universe) if isinstance(market_universe, dict) else {}
 
 
-def _resolve_scope_symbols(runtime_payload: dict[str, Any], symbols: list[str]) -> dict[str, list[str]]:
+def _parse_symbol_csv(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple, set)):
+        return _normalize_symbols(value)
+    return _normalize_symbols(str(value or "").replace(";", ",").split(","))
+
+
+def _configured_market_monitor_symbols(config: Any, environment: str) -> list[str]:
+    configured = _get_text_setting(
+        config,
+        "ibkr_market_ws_symbols",
+        environment,
+        ",".join(DEFAULT_MARKET_MONITOR_SYMBOLS),
+    )
+    return _parse_symbol_csv(configured) or list(DEFAULT_MARKET_MONITOR_SYMBOLS)
+
+
+def _resolve_scope_symbols(
+    runtime_payload: dict[str, Any],
+    symbols: list[str],
+    *,
+    config: Any = None,
+    environment: str = "live",
+) -> dict[str, list[str]]:
     all_symbols = sorted(dict.fromkeys(_normalize_symbols(symbols)))
     all_set = set(all_symbols)
     market_universe = _runtime_market_universe(runtime_payload)
@@ -401,25 +445,30 @@ def _resolve_scope_symbols(runtime_payload: dict[str, Any], symbols: list[str]) 
     )
     market_symbols = _normalize_symbols(market_universe.get("market_ws_symbols"))
     market_symbols.extend(_normalize_symbols(market_universe.get("market_ws_subscribed_symbols")))
+    market_symbols.extend(_configured_market_monitor_symbols(config, environment))
     subscription_symbols = _normalize_symbols(market_universe.get("active_subscription_symbols"))
 
-    active = [symbol for symbol in active if symbol in all_set]
     market_symbols = [symbol for symbol in dict.fromkeys(market_symbols) if symbol in all_set]
-    subscription_symbols = [symbol for symbol in subscription_symbols if symbol in all_set]
+    market_symbol_set = set(market_symbols)
+    control_symbols = [symbol for symbol in all_symbols if symbol not in market_symbol_set]
+    active = [symbol for symbol in active if symbol in all_set and symbol not in market_symbol_set]
+    subscription_symbols = [symbol for symbol in subscription_symbols if symbol in all_set and symbol not in market_symbol_set]
     if not active and subscription_symbols:
-        active = [symbol for symbol in subscription_symbols if symbol not in set(market_symbols)] or subscription_symbols
+        active = [symbol for symbol in subscription_symbols if symbol not in market_symbol_set] or control_symbols
 
-    realtime = sorted(dict.fromkeys(active + market_symbols))
+    realtime = sorted(dict.fromkeys(active or control_symbols))
     if not realtime:
-        realtime = subscription_symbols or all_symbols
-    active_scope = active or realtime
+        realtime = subscription_symbols or control_symbols
+    active_scope = active or control_symbols
     realtime_set = set(realtime)
-    watchlist = [symbol for symbol in all_symbols if symbol not in realtime_set]
+    watchlist = [symbol for symbol in all_symbols if symbol not in realtime_set and symbol not in market_symbol_set]
     return {
         "all": all_symbols,
+        "control": control_symbols,
         "active": sorted(dict.fromkeys(active_scope)),
         "realtime": sorted(dict.fromkeys(realtime)),
         "watchlist": watchlist,
+        "market_monitor": sorted(dict.fromkeys(market_symbols)),
     }
 
 
@@ -562,6 +611,7 @@ def _source_5m_bucket_counts_sqlite(
     environment: str,
     *,
     timeout: float,
+    expected_by_symbol_interval: dict[str, dict[str, dict[str, Any]]] | None = None,
 ) -> dict[str, dict[str, int]]:
     normalized_symbols = sorted(dict.fromkeys(_normalize_symbols(list(symbols or []))))
     if not normalized_symbols:
@@ -570,11 +620,13 @@ def _source_5m_bucket_counts_sqlite(
     env_values = [str(environment or "live").strip().lower() or "live"]
     if env_values[0] == "live":
         env_values.append("")
-    symbol_placeholders = ", ".join("?" for _ in normalized_symbols)
     env_placeholders = ", ".join("?" for _ in env_values)
     payload: dict[str, dict[str, int]] = {}
-    with open_pb_sqlite(readonly=True, timeout=timeout) as conn:
-        for interval, expected in (expected_by_interval or {}).items():
+    grouped: dict[tuple[str, int], list[str]] = {}
+    symbol_expected = expected_by_symbol_interval or {}
+    for symbol in normalized_symbols:
+        per_symbol_expected = symbol_expected.get(symbol) or expected_by_interval or {}
+        for interval, expected in per_symbol_expected.items():
             normalized = normalize_interval(interval)
             if normalized in {"5m", "1d"} or not bool((expected or {}).get("current_due")):
                 continue
@@ -582,6 +634,13 @@ def _source_5m_bucket_counts_sqlite(
             window_start_ms = max(0, expected_close_ms - interval_to_ms(normalized))
             if expected_close_ms <= 0 or window_start_ms <= 0:
                 continue
+            grouped.setdefault((normalized, expected_close_ms), []).append(symbol)
+
+    with open_pb_sqlite(readonly=True, timeout=timeout) as conn:
+        for (normalized, expected_close_ms), group_symbols in grouped.items():
+            group_symbols = sorted(dict.fromkeys(group_symbols))
+            symbol_placeholders = ", ".join("?" for _ in group_symbols)
+            window_start_ms = max(0, expected_close_ms - interval_to_ms(normalized))
             rows = conn.execute(
                 f"""
                 SELECT symbol, COUNT(*) AS source_count
@@ -593,14 +652,15 @@ def _source_5m_bucket_counts_sqlite(
                   AND bar_time_ms < ?
                 GROUP BY symbol
                 """,
-                tuple([*env_values, *normalized_symbols, window_start_ms, expected_close_ms]),
+                tuple([*env_values, *group_symbols, window_start_ms, expected_close_ms]),
             ).fetchall()
-            counts = {symbol: 0 for symbol in normalized_symbols}
+            counts = payload.setdefault(normalized, {})
+            for symbol in group_symbols:
+                counts.setdefault(symbol, 0)
             for row in rows:
                 symbol = _normalize_symbol(row["symbol"] if "symbol" in row.keys() else "")
                 if symbol:
                     counts[symbol] = _to_int(row["source_count"] if "source_count" in row.keys() else 0, 0)
-            payload[normalized] = counts
     return payload
 
 
@@ -670,6 +730,7 @@ def _load_5m_source_bucket_counts(
     *,
     symbols: list[str],
     expected_by_interval: dict[str, dict[str, Any]],
+    expected_by_symbol_interval: dict[str, dict[str, dict[str, Any]]] | None = None,
     environment: str,
     config: Any,
 ) -> dict[str, dict[str, int]]:
@@ -683,6 +744,7 @@ def _load_5m_source_bucket_counts(
             expected_by_interval,
             environment,
             timeout=_sqlite_timeout_seconds(config, environment),
+            expected_by_symbol_interval=expected_by_symbol_interval,
         )
     except Exception:
         return {}
@@ -890,6 +952,7 @@ def _aggregate_scope(
     checked_at_ms: int,
     critical: bool,
     best_effort: bool = False,
+    monitor_only: bool = False,
 ) -> dict[str, Any]:
     normalized_symbols = sorted(dict.fromkeys(_normalize_symbols(symbols)))
     normalized_intervals = [
@@ -966,12 +1029,89 @@ def _aggregate_scope(
         "status": str(overall.get("status") or "empty"),
         "critical": bool(critical),
         "best_effort": bool(best_effort),
+        "monitor_only": bool(monitor_only),
         "symbols": normalized_symbols[:50],
         "symbols_total": len(normalized_symbols),
         "intervals": interval_payloads,
         "interval_names": normalized_intervals,
         "overall": overall,
     }
+
+
+def _aggregate_interval_set(
+    *,
+    symbols: list[str],
+    intervals: list[str],
+    items_by_interval: dict[str, dict[str, dict[str, Any]]],
+    expected_by_interval: dict[str, dict[str, Any]],
+    session: str,
+    checked_at_ms: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    normalized_symbols = sorted(dict.fromkeys(_normalize_symbols(symbols)))
+    normalized_intervals = [normalize_interval(interval) for interval in intervals if str(interval or "").strip()]
+    normalized_intervals = list(dict.fromkeys(normalized_intervals))
+    counts = {
+        "ready": 0,
+        "overdue": 0,
+        "missing": 0,
+        "waiting_5m": 0,
+        "not_due": 0,
+        "quiet_extended": 0,
+        "closed_session": 0,
+    }
+    intervals_payload: list[dict[str, Any]] = []
+    samples: list[dict[str, Any]] = []
+    for interval in normalized_intervals:
+        by_symbol = items_by_interval.get(interval) or {}
+        items = [
+            by_symbol[symbol]
+            for symbol in normalized_symbols
+            if symbol in by_symbol
+        ]
+        for item in items:
+            status = str(item.get("status") or "")
+            counts[status] = int(counts.get(status, 0) or 0) + 1
+        intervals_payload.append(
+            _aggregate_interval(
+                interval=interval,
+                items=items,
+                expected=expected_by_interval.get(interval) or {},
+                total_symbols=len(normalized_symbols),
+                session=session,
+            )
+        )
+        samples.extend(_sample(items, {"overdue", "missing", "waiting_5m"}, limit=4))
+
+    total_checks = len(normalized_symbols) * len(normalized_intervals)
+    due_checks = max(
+        0,
+        total_checks
+        - int(counts.get("quiet_extended", 0))
+        - int(counts.get("not_due", 0))
+        - int(counts.get("closed_session", 0)),
+    )
+    covered_checks = max(0, total_checks - int(counts.get("quiet_extended", 0)))
+    overall = {
+        "status": _overall_status(counts, due_checks),
+        "ready_pct": _pct(int(counts.get("ready", 0)), due_checks),
+        "coverage_pct": _pct(covered_checks, total_checks),
+        "total_checks": total_checks,
+        "due_checks": due_checks,
+        "total_symbols": len(normalized_symbols),
+        "symbols_total": len(normalized_symbols),
+        "ready": int(counts.get("ready", 0)),
+        "overdue": int(counts.get("overdue", 0)),
+        "missing": int(counts.get("missing", 0)),
+        "waiting_5m": int(counts.get("waiting_5m", 0)),
+        "not_due": int(counts.get("not_due", 0)),
+        "quiet_extended": int(counts.get("quiet_extended", 0)),
+        "closed_session": int(counts.get("closed_session", 0)),
+        "checked_at_ms": checked_at_ms,
+        "checked_at_us": format_us_time(checked_at_ms),
+        "sample_lag_symbols": samples[:8],
+        "reason_counts": {key: int(value or 0) for key, value in sorted(counts.items()) if int(value or 0) > 0},
+    }
+    return intervals_payload, overall
 
 
 def build_data_freshness_summary(
@@ -1044,6 +1184,20 @@ def build_data_freshness_summary(
             "source": "ibkr-api",
         }
 
+    scope_symbols = _resolve_scope_symbols(
+        runtime,
+        symbols,
+        config=config,
+        environment=data_environment,
+    )
+    expected_by_symbol_interval = {
+        symbol: {
+            interval: _expected_close_payload(mature_5m_close_ms, interval, symbol=symbol)
+            for interval in normalized_intervals
+        }
+        for symbol in symbols
+    }
+
     latest_rows, storage_source = _load_latest_bars(
         pb_client=pb_client,
         symbols=symbols,
@@ -1054,35 +1208,27 @@ def build_data_freshness_summary(
     source_5m_bucket_counts = _load_5m_source_bucket_counts(
         symbols=symbols,
         expected_by_interval=expected_by_interval,
+        expected_by_symbol_interval=expected_by_symbol_interval,
         environment=data_environment,
         config=config,
     )
     pending_symbols = _runtime_pending_symbols(runtime)
 
-    intervals_payload: list[dict[str, Any]] = []
     items_by_interval: dict[str, dict[str, dict[str, Any]]] = {}
-    overall_counts = {
-        "ready": 0,
-        "overdue": 0,
-        "missing": 0,
-        "waiting_5m": 0,
-        "not_due": 0,
-        "quiet_extended": 0,
-        "closed_session": 0,
-    }
-    overall_samples: list[dict[str, Any]] = []
     for interval in normalized_intervals:
-        expected = expected_by_interval[interval]
-        items: list[dict[str, Any]] = []
         interval_items_by_symbol: dict[str, dict[str, Any]] = {}
         for symbol in symbols:
             rows = latest_rows.get(symbol) if isinstance(latest_rows.get(symbol), dict) else {}
             latest_5m = _bar_payload(rows.get("5m"), "5m")
+            symbol_expected = (
+                (expected_by_symbol_interval.get(symbol) or {}).get(interval)
+                or expected_by_interval[interval]
+            )
             item = _evaluate_symbol_interval(
                 symbol=symbol,
                 interval=interval,
                 rows=rows,
-                expected=expected,
+                expected=symbol_expected,
                 latest_5m=latest_5m,
                 session=session,
                 session_start_ms=session_start_ms,
@@ -1090,50 +1236,26 @@ def build_data_freshness_summary(
                 now_ms=checked_at_ms,
                 source_5m_count=(source_5m_bucket_counts.get(interval) or {}).get(symbol),
             )
-            items.append(item)
             interval_items_by_symbol[symbol] = item
-            status = str(item.get("status") or "")
-            overall_counts[status] = int(overall_counts.get(status, 0) or 0) + 1
         items_by_interval[interval] = interval_items_by_symbol
-        interval_payload = _aggregate_interval(
-            interval=interval,
-            items=items,
-            expected=expected,
-            total_symbols=len(symbols),
-            session=session,
-        )
-        intervals_payload.append(interval_payload)
-        overall_samples.extend(_sample(items, {"overdue", "missing", "waiting_5m"}, limit=4))
 
-    total_checks = len(symbols) * len(normalized_intervals)
-    due_checks = max(
-        0,
-        total_checks
-        - int(overall_counts.get("quiet_extended", 0))
-        - int(overall_counts.get("not_due", 0))
-        - int(overall_counts.get("closed_session", 0)),
+    control_symbols = scope_symbols["control"] or scope_symbols["active"] or scope_symbols["realtime"]
+    intervals_payload, overall = _aggregate_interval_set(
+        symbols=control_symbols,
+        intervals=normalized_intervals,
+        items_by_interval=items_by_interval,
+        expected_by_interval=expected_by_interval,
+        session=session,
+        checked_at_ms=checked_at_ms,
     )
-    covered_checks = max(0, total_checks - int(overall_counts.get("quiet_extended", 0)))
-    overall = {
-        "status": _overall_status(overall_counts, due_checks),
-        "ready_pct": _pct(int(overall_counts.get("ready", 0)), due_checks),
-        "coverage_pct": _pct(covered_checks, total_checks),
-        "total_checks": total_checks,
-        "due_checks": due_checks,
-        "total_symbols": len(symbols),
-        "ready": int(overall_counts.get("ready", 0)),
-        "overdue": int(overall_counts.get("overdue", 0)),
-        "missing": int(overall_counts.get("missing", 0)),
-        "waiting_5m": int(overall_counts.get("waiting_5m", 0)),
-        "not_due": int(overall_counts.get("not_due", 0)),
-        "quiet_extended": int(overall_counts.get("quiet_extended", 0)),
-        "closed_session": int(overall_counts.get("closed_session", 0)),
-        "checked_at_ms": checked_at_ms,
-        "checked_at_us": format_us_time(checked_at_ms),
-        "sample_lag_symbols": overall_samples[:8],
-        "reason_counts": {key: int(value or 0) for key, value in sorted(overall_counts.items()) if int(value or 0) > 0},
-    }
-    scope_symbols = _resolve_scope_symbols(runtime, symbols)
+    all_intervals_payload, all_overall = _aggregate_interval_set(
+        symbols=scope_symbols["all"],
+        intervals=normalized_intervals,
+        items_by_interval=items_by_interval,
+        expected_by_interval=expected_by_interval,
+        session=session,
+        checked_at_ms=checked_at_ms,
+    )
     higher_intervals = [
         interval
         for interval in ("15m", "30m", "1h", "4h")
@@ -1148,7 +1270,7 @@ def build_data_freshness_summary(
         "realtime_5m": _aggregate_scope(
             name="realtime_5m",
             label="Realtime 5m",
-            symbols=scope_symbols["realtime"],
+            symbols=scope_symbols["realtime"] or control_symbols,
             intervals=["5m"] if "5m" in normalized_intervals else [],
             items_by_interval=items_by_interval,
             expected_by_interval=expected_by_interval,
@@ -1159,7 +1281,7 @@ def build_data_freshness_summary(
         "active_trading": _aggregate_scope(
             name="active_trading",
             label="Active Trading",
-            symbols=scope_symbols["active"] or scope_symbols["realtime"],
+            symbols=scope_symbols["active"] or control_symbols,
             intervals=active_trading_intervals,
             items_by_interval=items_by_interval,
             expected_by_interval=expected_by_interval,
@@ -1170,7 +1292,7 @@ def build_data_freshness_summary(
         "active_higher_timeframes": _aggregate_scope(
             name="active_higher_timeframes",
             label="Active HTF 15m-4h",
-            symbols=scope_symbols["active"] or scope_symbols["realtime"],
+            symbols=scope_symbols["active"] or control_symbols,
             intervals=higher_intervals,
             items_by_interval=items_by_interval,
             expected_by_interval=expected_by_interval,
@@ -1193,7 +1315,7 @@ def build_data_freshness_summary(
         "daily_1d": _aggregate_scope(
             name="daily_1d",
             label="Daily 1d",
-            symbols=scope_symbols["all"],
+            symbols=control_symbols,
             intervals=["1d"] if "1d" in normalized_intervals else [],
             items_by_interval=items_by_interval,
             expected_by_interval=expected_by_interval,
@@ -1201,8 +1323,39 @@ def build_data_freshness_summary(
             checked_at_ms=checked_at_ms,
             critical=False,
         ),
+        "market_monitor": _aggregate_scope(
+            name="market_monitor",
+            label="Market Monitor",
+            symbols=scope_symbols["market_monitor"],
+            intervals=normalized_intervals,
+            items_by_interval=items_by_interval,
+            expected_by_interval=expected_by_interval,
+            session=session,
+            checked_at_ms=checked_at_ms,
+            critical=False,
+            best_effort=True,
+            monitor_only=True,
+        ),
+        "market_monitor_1d": _aggregate_scope(
+            name="market_monitor_1d",
+            label="Market Monitor 1d",
+            symbols=scope_symbols["market_monitor"],
+            intervals=["1d"] if "1d" in normalized_intervals else [],
+            items_by_interval=items_by_interval,
+            expected_by_interval=expected_by_interval,
+            session=session,
+            checked_at_ms=checked_at_ms,
+            critical=False,
+            best_effort=True,
+            monitor_only=True,
+        ),
     }
-    primary_scope = "active_trading" if scopes["active_trading"]["symbols_total"] > 0 else "realtime_5m"
+    if scopes["active_trading"]["symbols_total"] > 0:
+        primary_scope = "active_trading"
+    elif scopes["realtime_5m"]["symbols_total"] > 0:
+        primary_scope = "realtime_5m"
+    else:
+        primary_scope = "market_monitor"
     display_overall = dict(scopes[primary_scope]["overall"])
     display_overall["scope"] = primary_scope
     display_overall["label"] = scopes[primary_scope]["label"]
@@ -1227,6 +1380,9 @@ def build_data_freshness_summary(
         "close_delay_sec": delay_seconds,
         "intervals": intervals_payload,
         "overall": overall,
+        "all_intervals": all_intervals_payload,
+        "all_overall": all_overall,
+        "legacy_overall": all_overall,
         "scope_symbols": {key: len(value or []) for key, value in scope_symbols.items()},
         "scopes": scopes,
         "source": "ibkr-api",

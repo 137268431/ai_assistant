@@ -55,7 +55,7 @@ class TimeframeBarBuilder:
             return self._finalize_if_closed(key, current, base_bar)
 
         if int(current["bar_time_ms"]) != bucket_ms:
-            previous_close_ms = bar_close_ms(int(current["bar_time_ms"]), interval)
+            previous_close_ms = bar_close_ms(int(current["bar_time_ms"]), interval, symbol=symbol)
             closed = (
                 self._finalize_bucket(current, base_bar, closed_by_bar_time_ms=previous_close_ms)
                 if int(base_bar["bar_time_ms"]) >= previous_close_ms
@@ -110,7 +110,7 @@ class TimeframeBarBuilder:
 
     def _finalize_if_closed(self, key: Tuple[str, str], current: dict, base_bar: dict):
         interval = str(current.get("interval") or key[1])
-        bucket_end_ms = bar_close_ms(int(current["bar_time_ms"]), interval)
+        bucket_end_ms = bar_close_ms(int(current["bar_time_ms"]), interval, symbol=current.get("symbol"))
         base_close_ms = int(base_bar["bar_time_ms"]) + interval_to_ms("5m")
         if base_close_ms < bucket_end_ms:
             return None
@@ -120,7 +120,11 @@ class TimeframeBarBuilder:
     def _finalize_bucket(self, current: dict, closing_bar: dict, *, closed_by_bar_time_ms: int | None = None) -> dict:
         extra = dict(current.get("extra") or {})
         extra.update(build_runtime_timestamps())
-        extra.update(build_bar_close_timestamps(int(current["bar_time_ms"]), str(current.get("interval") or "")))
+        extra.update(build_bar_close_timestamps(
+            int(current["bar_time_ms"]),
+            str(current.get("interval") or ""),
+            symbol=current.get("symbol"),
+        ))
         extra["source"] = "ibkr_5m_rollup"
         extra["closed_by_bar_time_ms"] = int(closed_by_bar_time_ms or closing_bar["bar_time_ms"])
         if str(current.get("interval") or "") == "1d":

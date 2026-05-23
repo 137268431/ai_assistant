@@ -401,8 +401,9 @@ function getFreshnessExpectedLabel(item = {}) {
 }
 
 function renderFreshnessReasonPills(item = {}) {
+    const { due, total } = getFreshnessDueTotal(item);
     const reasons = [
-        ['due', `${Number(item.due_symbols || 0) || 0}/${Number(item.total_symbols || 0) || 0}`],
+        ['due', `${due}/${total}`],
         ['ready', Number(item.ready || 0) || 0],
         ['overdue', Number(item.overdue || 0) || 0],
         ['missing', Number(item.missing || 0) || 0],
@@ -419,9 +420,12 @@ function renderFreshnessReasonPills(item = {}) {
 function renderFreshnessScopeCards(scopes = {}) {
     const scopeOrder = [
         'realtime_5m',
+        'active_trading',
         'active_higher_timeframes',
-        'watchlist_higher_timeframes',
         'daily_1d',
+        'watchlist_higher_timeframes',
+        'market_monitor',
+        'market_monitor_1d',
     ];
     const cards = scopeOrder
         .map((name) => scopes?.[name])
@@ -430,17 +434,17 @@ function renderFreshnessScopeCards(scopes = {}) {
             const overall = scope.overall || {};
             const visual = getFreshnessAggregateVisual(overall);
             const label = scope.label || scope.name || 'Freshness Scope';
-            const due = Number(overall.due_checks ?? overall.due_symbols ?? 0) || 0;
-            const total = Number(overall.total_checks ?? overall.total_symbols ?? 0) || 0;
+            const { due, total } = getFreshnessDueTotal(overall);
             const subtitle = [
-                scope.best_effort ? 'best-effort' : (scope.critical ? 'critical' : 'monitor'),
+                scope.monitor_only ? 'monitor' : (scope.best_effort ? 'best-effort' : (scope.critical ? 'critical' : 'support')),
                 `due ${due}/${total}`,
                 `ready ${Number(overall.ready || 0) || 0}`,
                 Number(overall.overdue || 0) > 0 ? `overdue ${Number(overall.overdue || 0)}` : '',
                 Number(overall.missing || 0) > 0 ? `missing ${Number(overall.missing || 0)}` : '',
                 Number(scope.symbols_total || overall.total_symbols || 0) > 0 ? `symbols ${Number(scope.symbols_total || overall.total_symbols || 0)}` : '',
             ].filter(Boolean).join(' · ');
-            return `<div class="freshness-card ${visual.chipClass}">
+            const monitorClass = scope.monitor_only ? ' is-monitor' : '';
+            return `<div class="freshness-card ${visual.chipClass}${monitorClass}">
                 <div class="freshness-card-head">
                     <span class="freshness-label">${escapeHtml(label)}</span>
                     <span class="freshness-chip ${visual.chipClass}">${escapeHtml(visual.chipText)}</span>
@@ -456,7 +460,7 @@ function renderFreshnessScopeCards(scopes = {}) {
                 <div class="freshness-reasons">${renderFreshnessReasonPills(overall)}</div>
             </div>`;
         });
-    return cards.length ? `<div class="freshness-grid">${cards.join('')}</div>` : '';
+    return cards.length ? `<div class="freshness-scope-grid">${cards.join('')}</div>` : '';
 }
 
 function renderLegacyFreshness(data) {
@@ -577,7 +581,7 @@ function renderFreshness(data) {
 
     el.innerHTML = `<div class="freshness-overall ${overallVisual.chipClass}">
             <div>
-                <div class="freshness-overall-kicker">Realtime Freshness</div>
+                <div class="freshness-overall-kicker">Trade Freshness</div>
                 <div class="freshness-overall-title">
                     <span>${escapeHtml(formatFreshnessReadyPercent(overall))}</span>
                     <span class="freshness-state" style="color:${overallVisual.color}">${escapeHtml(overallVisual.stateText)}</span>
@@ -589,7 +593,7 @@ function renderFreshness(data) {
             </div>
         </div>
         ${scopeCards}
-        <div class="freshness-grid">${cards.join('')}</div>`;
+        <div class="freshness-interval-grid">${cards.join('')}</div>`;
 }
 
 function formatStorageBytes(value) {

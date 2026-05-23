@@ -163,6 +163,63 @@ class SummaryFreshnessAggregationTest(unittest.TestCase):
             build_bar_close_timestamps(start_ms, "1d")["bar_close_us_time"],
             "2026-05-15 20:00:00",
         )
+        vix_row = {
+            "symbol": "VIX",
+            "interval": "1d",
+            "bar_time_ms": start_ms,
+            "extra": json.dumps(
+                {
+                    "bar_close_time_ms": _ms("2026-05-15 20:00:00"),
+                    "bar_close_us_time": "2026-05-15 20:00:00",
+                }
+            ),
+        }
+        self.assertEqual(extract_bar_close_time_ms(vix_row, "1d"), _ms("2026-05-15 17:00:00"))
+        vix_close = build_bar_close_timestamps(start_ms, "1d", symbol="VIX")
+        self.assertEqual(vix_close["bar_close_us_time"], "2026-05-15 17:00:00")
+        self.assertEqual(vix_close["symbol_close_override"], "VIX")
+
+    def test_market_monitor_staleness_is_split_from_trade_freshness(self):
+        bars = [
+            _bar("AAPL", "5m", "2026-05-22 19:55:00", "2026-05-22 20:00:00"),
+            _bar("AAPL", "1d", "2026-05-22 00:00:00", "2026-05-22 20:00:00"),
+            _bar("SPY", "5m", "2026-05-22 19:55:00", "2026-05-22 20:00:00"),
+            _bar("SPY", "1d", "2026-05-21 00:00:00", "2026-05-21 20:00:00"),
+            _bar("QQQ", "5m", "2026-05-22 19:55:00", "2026-05-22 20:00:00"),
+            _bar("QQQ", "1d", "2026-05-21 00:00:00", "2026-05-21 20:00:00"),
+            _bar("VIX", "5m", "2026-05-22 16:55:00", "2026-05-22 17:00:00"),
+            _bar("VIX", "1d", "2026-05-21 00:00:00", "2026-05-21 17:00:00"),
+        ]
+        runtime_payload = _sample_runtime_status_payload(authenticated=True)
+        runtime_payload["market_universe"]["active_trade_symbols"] = ["AAPL"]
+        runtime_payload["market_universe"]["market_ws_symbols"] = ["SPY", "QQQ", "VIX"]
+        runtime_payload["market_universe"]["market_ws_subscribed_symbols"] = ["SPY", "QQQ", "VIX"]
+        runtime_payload["market_universe"]["active_subscription_symbols"] = ["AAPL", "SPY", "QQQ", "VIX"]
+
+        with mock.patch("ibkr_compute.market.freshness_evaluator.open_pb_sqlite", side_effect=FileNotFoundError("no db")):
+            payload = build_data_freshness_summary(
+                pb_client=_FreshnessPB(bars=bars),
+                runtime_payload=runtime_payload,
+                environment="live",
+                market_date="2026-05-22",
+                config=_FreshnessConfig(),
+                now_us="2026-05-22 20:02:00",
+                intervals=["5m", "1d"],
+            )
+
+        intervals = {item["interval"]: item for item in payload["intervals"]}
+        monitor_intervals = {item["interval"]: item for item in payload["scopes"]["market_monitor"]["intervals"]}
+        self.assertEqual(payload["scope_symbols"]["control"], 1)
+        self.assertEqual(payload["scope_symbols"]["market_monitor"], 3)
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["primary_status"], "ready")
+        self.assertEqual(payload["overall"]["overdue"], 0)
+        self.assertEqual(intervals["1d"]["total_symbols"], 1)
+        self.assertEqual(intervals["1d"]["ready"], 1)
+        self.assertEqual(monitor_intervals["5m"]["ready"], 3)
+        self.assertEqual(monitor_intervals["5m"]["overdue"], 0)
+        self.assertEqual(payload["scopes"]["market_monitor_1d"]["overall"]["overdue"], 3)
+        self.assertEqual(payload["all_overall"]["overdue"], 3)
 
     def test_high_interval_waits_for_missing_5m_boundary(self):
         bars = [

@@ -28,6 +28,10 @@ EARLY_CLOSE_MINUTE = 13 * 60
 EXTENDED_CLOSE_MINUTE = 20 * 60
 EARLY_EXTENDED_CLOSE_MINUTE = 17 * 60
 
+SYMBOL_EXTENDED_CLOSE_MINUTES = {
+    "VIX": EARLY_EXTENDED_CLOSE_MINUTE,
+}
+
 CHART_TF_MAP = {
     "5m": "5",
     "15m": "15",
@@ -173,6 +177,14 @@ def extended_close_minute_for_date(value: Any) -> int:
     return EARLY_EXTENDED_CLOSE_MINUTE if is_nyse_early_close_day(value) else EXTENDED_CLOSE_MINUTE
 
 
+def extended_close_minute_for_symbol(symbol: Any, value: Any) -> int:
+    normal_close = extended_close_minute_for_date(value)
+    override = SYMBOL_EXTENDED_CLOSE_MINUTES.get(str(symbol or "").strip().upper())
+    if override is None:
+        return normal_close
+    return min(int(override), int(normal_close))
+
+
 def previous_trading_day(value: Any) -> date:
     cursor = _normalize_market_date(value) - timedelta(days=1)
     while not is_nyse_trading_day(cursor):
@@ -199,13 +211,14 @@ def extended_session_open_ms_for_date(value: Any) -> int:
     return int(_market_dt_for_minute(day, EXTENDED_OPEN_MINUTE).timestamp() * 1000)
 
 
-def extended_session_close_ms_for_date(value: Any) -> int:
+def extended_session_close_ms_for_date(value: Any, symbol: Any = "") -> int:
     day = _normalize_market_date(value)
-    return int(_market_dt_for_minute(day, extended_close_minute_for_date(day)).timestamp() * 1000)
+    close_minute = extended_close_minute_for_symbol(symbol, day) if str(symbol or "").strip() else extended_close_minute_for_date(day)
+    return int(_market_dt_for_minute(day, close_minute).timestamp() * 1000)
 
 
-def extended_session_close_ms_for_start(bar_time_ms: int) -> int:
-    return extended_session_close_ms_for_date(ms_to_et(int(bar_time_ms or 0)))
+def extended_session_close_ms_for_start(bar_time_ms: int, symbol: Any = "") -> int:
+    return extended_session_close_ms_for_date(ms_to_et(int(bar_time_ms or 0)), symbol=symbol)
 
 
 def latest_closed_daily_bucket_start_ms(now_ms: int) -> int:
@@ -301,23 +314,23 @@ def format_cn_time(bar_time_ms: int) -> str:
     return ms_to_et(bar_time_ms).astimezone(CN).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def bar_close_ms(bar_time_ms: int, interval: str) -> int:
+def bar_close_ms(bar_time_ms: int, interval: str, symbol: Any = "") -> int:
     normalized = normalize_interval(interval)
     if normalized == "1d":
-        return extended_session_close_ms_for_start(int(bar_time_ms))
+        return extended_session_close_ms_for_start(int(bar_time_ms), symbol=symbol)
 
     close_ms = int(bar_time_ms) + interval_to_ms(normalized)
     dt = ms_to_et(int(bar_time_ms))
     minute = dt.hour * 60 + dt.minute
-    session_close_minute = extended_close_minute_for_date(dt)
+    session_close_minute = extended_close_minute_for_symbol(symbol, dt) if str(symbol or "").strip() else extended_close_minute_for_date(dt)
     if EXTENDED_OPEN_MINUTE <= minute < session_close_minute:
-        return min(close_ms, extended_session_close_ms_for_date(dt))
+        return min(close_ms, extended_session_close_ms_for_date(dt, symbol=symbol))
     return close_ms
 
 
-def build_bar_close_timestamps(bar_time_ms: int, interval: str) -> Dict[str, object]:
+def build_bar_close_timestamps(bar_time_ms: int, interval: str, symbol: Any = "") -> Dict[str, object]:
     normalized = normalize_interval(interval)
-    close_ms = bar_close_ms(bar_time_ms, normalized)
+    close_ms = bar_close_ms(bar_time_ms, normalized, symbol=symbol)
     payload: Dict[str, object] = {
         "bar_time_semantics": "start",
         "bar_close_time_ms": close_ms,
@@ -336,6 +349,8 @@ def build_bar_close_timestamps(bar_time_ms: int, interval: str) -> Dict[str, obj
                 "extended_close_us_time": format_us_time(close_ms),
             }
         )
+        if str(symbol or "").strip().upper() in SYMBOL_EXTENDED_CLOSE_MINUTES:
+            payload["symbol_close_override"] = str(symbol or "").strip().upper()
     return payload
 
 

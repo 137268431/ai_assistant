@@ -896,7 +896,11 @@ class TradingServiceIntegrityMixin:
             latest_interval_ms = int((row or {}).get("bar_time_ms", 0) or 0)
             result["latest_interval_ms"][interval] = latest_interval_ms
 
-            expected_closed_ms = expected_closed_ms_from_latest_5m(latest_5m_ms, interval)
+            expected_closed_ms = expected_closed_ms_from_latest_5m(
+                latest_5m_ms,
+                interval,
+                symbol=normalized_symbol,
+            )
             result["expected_closed_ms"][interval] = expected_closed_ms
 
             if expected_closed_ms <= 0:

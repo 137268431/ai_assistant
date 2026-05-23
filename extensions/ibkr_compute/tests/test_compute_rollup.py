@@ -463,18 +463,19 @@ class IncrementalRollupWindowTest(unittest.TestCase):
             ],
         )
 
-    def test_timeframe_builder_flushes_daily_on_next_day_rollover_without_final_extended_bar(self):
+    def test_timeframe_builder_flushes_vix_daily_at_symbol_close(self):
         builder = TimeframeBarBuilder(target_intervals=["1d"])
 
         self.assertEqual(builder.consume(_base_bar("VIX", _et_ms(2026, 5, 21, 16, 50))), [])
-        self.assertEqual(builder.consume(_base_bar("VIX", _et_ms(2026, 5, 21, 16, 55))), [])
-        written = builder.consume(_base_bar("VIX", _et_ms(2026, 5, 22, 3, 35)))
+        written = builder.consume(_base_bar("VIX", _et_ms(2026, 5, 21, 16, 55)))
 
         self.assertEqual(len(written), 1)
         self.assertEqual(written[0]["interval"], "1d")
         self.assertEqual(written[0]["bar_time_ms"], _et_ms(2026, 5, 21, 0, 0))
         self.assertEqual(written[0]["extra"]["component_count"], 2)
-        self.assertEqual(written[0]["extra"]["closed_by_bar_time_ms"], _et_ms(2026, 5, 21, 20, 0))
+        self.assertEqual(written[0]["extra"]["closed_by_bar_time_ms"], _et_ms(2026, 5, 21, 17, 0))
+        self.assertEqual(written[0]["extra"]["bar_close_time_ms"], _et_ms(2026, 5, 21, 17, 0))
+        self.assertEqual(written[0]["extra"]["symbol_close_override"], "VIX")
 
     def test_fetch_since_falls_back_to_processed_cursor_when_interval_fetch_empty(self):
         fake_app = mock.Mock()
@@ -508,12 +509,28 @@ class IncrementalRollupWindowTest(unittest.TestCase):
     def test_recent_rollup_for_daily_starts_at_expected_daily_bucket(self):
         fake_app = mock.Mock()
         fake_app.HIGHER_INTERVALS = ["15m", "30m", "1h", "4h", "1d"]
+        fake_app.normalize_symbols.side_effect = _normalize_symbols
 
         with mock.patch.object(compute_rollup, "_api_app", return_value=fake_app), \
                 mock.patch.object(compute_rollup, "_latest_targeted_5m_bar_ms", return_value=_et_ms(2026, 5, 21, 19, 55)):
             since_ms = compute_rollup._recent_rollup_since_ms(
                 "live",
                 ["AAPL", "MSFT"],
+                intervals=["1d"],
+            )
+
+        self.assertEqual(since_ms, _et_ms(2026, 5, 21, 0, 0))
+
+    def test_recent_rollup_for_vix_daily_starts_at_symbol_daily_bucket(self):
+        fake_app = mock.Mock()
+        fake_app.HIGHER_INTERVALS = ["15m", "30m", "1h", "4h", "1d"]
+        fake_app.normalize_symbols.side_effect = _normalize_symbols
+
+        with mock.patch.object(compute_rollup, "_api_app", return_value=fake_app), \
+                mock.patch.object(compute_rollup, "_latest_targeted_5m_bar_ms", return_value=_et_ms(2026, 5, 21, 16, 55)):
+            since_ms = compute_rollup._recent_rollup_since_ms(
+                "live",
+                ["VIX"],
                 intervals=["1d"],
             )
 
@@ -565,6 +582,23 @@ class IncrementalRollupWindowTest(unittest.TestCase):
                     intervals=["15m", "30m", "1h", "4h", "1d"],
                 ),
                 ["15m", "30m", "1h", "4h", "1d"],
+            )
+
+            self.assertEqual(
+                compute_rollup._incremental_due_intervals(
+                    _et_ms(2026, 5, 21, 16, 55),
+                    intervals=["4h", "1d"],
+                    symbols=["AAPL"],
+                ),
+                [],
+            )
+            self.assertEqual(
+                compute_rollup._incremental_due_intervals(
+                    _et_ms(2026, 5, 21, 16, 55),
+                    intervals=["4h", "1d"],
+                    symbols=["VIX"],
+                ),
+                ["4h", "1d"],
             )
 
     def test_incremental_targeted_rollup_skips_when_no_higher_interval_closes(self):

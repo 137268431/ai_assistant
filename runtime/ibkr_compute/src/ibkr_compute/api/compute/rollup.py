@@ -360,11 +360,19 @@ def _stale_target_intervals(environment: str, normalized_symbols, latest_5m_ms: 
 
     stale_intervals = []
     for interval in target_intervals:
-        expected_ms = expected_closed_ms_from_latest_5m(int(latest_5m_ms or 0), interval)
-        if expected_ms <= 0:
-            continue
-        if not _all_symbols_current_for_interval(api_app, environment, interval, symbols, expected_ms):
-            stale_intervals.append(interval)
+        expected_groups: dict[int, list[str]] = {}
+        for symbol in symbols:
+            expected_ms = expected_closed_ms_from_latest_5m(
+                int(latest_5m_ms or 0),
+                interval,
+                symbol=symbol,
+            )
+            if expected_ms > 0:
+                expected_groups.setdefault(expected_ms, []).append(symbol)
+        for expected_ms, group_symbols in expected_groups.items():
+            if not _all_symbols_current_for_interval(api_app, environment, interval, group_symbols, expected_ms):
+                stale_intervals.append(interval)
+                break
     return stale_intervals
 
 
@@ -464,21 +472,33 @@ def _recent_rollup_since_ms(environment: str, normalized_symbols, intervals=None
         # Daily rollup is synthetic extended-session daily. Start at the expected
         # daily bucket so a bounded incremental rebuild never overwrites a daily
         # bar with only the last few 5m components from a previous day.
-        since_candidates.append(expected_closed_ms_from_latest_5m(latest_5m_ms, "1d"))
+        daily_symbols = api_app.normalize_symbols(normalized_symbols) or [""]
+        daily_candidates = [
+            expected_closed_ms_from_latest_5m(latest_5m_ms, "1d", symbol=symbol)
+            for symbol in daily_symbols
+        ]
+        since_candidates.append(min([value for value in daily_candidates if int(value or 0) > 0] or [0]))
     return min([value for value in since_candidates if int(value or 0) > 0] or [0])
 
 
-def _incremental_due_intervals(latest_5m_ms: int, intervals=None) -> list[str]:
+def _incremental_due_intervals(latest_5m_ms: int, intervals=None, symbols=None) -> list[str]:
     api_app = _api_app()
     target_intervals = _normalize_target_intervals(api_app, intervals)
     if latest_5m_ms <= 0:
         return []
 
     latest_5m_close_ms = int(latest_5m_ms) + interval_to_ms("5m")
+    due_symbols = api_app.normalize_symbols(symbols) if symbols else []
+    if not isinstance(due_symbols, (list, tuple, set)):
+        due_symbols = [str(symbol or "").strip().upper() for symbol in (symbols or []) if str(symbol or "").strip()]
+    due_symbols = due_symbols or [""]
     due_intervals = []
     for interval in target_intervals:
         current_bucket_ms = bucket_start_ms(int(latest_5m_ms), interval)
-        if latest_5m_close_ms >= bar_close_ms(current_bucket_ms, interval):
+        if any(
+            latest_5m_close_ms >= bar_close_ms(current_bucket_ms, interval, symbol=symbol)
+            for symbol in due_symbols
+        ):
             due_intervals.append(interval)
     return due_intervals
 
@@ -754,6 +774,7 @@ def ensure_higher_timeframe_bars(
                 due_intervals = _incremental_due_intervals(
                     latest_5m_ms,
                     intervals=target_intervals,
+                    symbols=normalized_symbols,
                 )
                 stale_intervals = _stale_target_intervals(
                     environment,

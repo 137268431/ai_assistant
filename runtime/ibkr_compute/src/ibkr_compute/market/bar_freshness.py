@@ -13,6 +13,7 @@ from ibkr_compute.market.timeframe_utils import (
     EXTENDED_OPEN_MINUTE,
     bar_close_ms,
     bucket_start_ms,
+    extended_close_minute_for_symbol,
     extended_close_minute_for_date,
     extended_session_close_ms_for_date,
     format_us_time,
@@ -60,14 +61,23 @@ def extract_conid_from_bar_row(row: dict | None) -> int:
     return 0
 
 
-def _previous_session_last_5m(value: datetime) -> datetime:
+def _previous_session_last_5m(value: datetime, symbol: Any = "") -> datetime:
     cursor = previous_trading_day(value)
-    close_minute = extended_close_minute_for_date(cursor)
+    close_minute = (
+        extended_close_minute_for_symbol(symbol, cursor)
+        if str(symbol or "").strip()
+        else extended_close_minute_for_date(cursor)
+    )
     session_end = datetime(cursor.year, cursor.month, cursor.day, tzinfo=ET) + timedelta(minutes=close_minute)
     return session_end - timedelta(milliseconds=interval_to_ms("5m"))
 
 
-def latest_expected_extended_5m_ms(*, now_ms: int | None = None, delay_seconds: float = DEFAULT_CLOSE_DELAY_SECONDS) -> int:
+def latest_expected_extended_5m_ms(
+    *,
+    now_ms: int | None = None,
+    delay_seconds: float = DEFAULT_CLOSE_DELAY_SECONDS,
+    symbol: Any = "",
+) -> int:
     """Return the latest expected closed 5m bucket in US extended-hours time.
 
     This avoids treating post-close, half-day late trading close, holiday, or
@@ -80,12 +90,16 @@ def latest_expected_extended_5m_ms(*, now_ms: int | None = None, delay_seconds: 
         now = datetime.now(ET)
     effective = now - timedelta(seconds=max(0.0, float(delay_seconds or 0.0)))
     if not is_nyse_trading_day(effective):
-        return int(_previous_session_last_5m(effective).timestamp() * 1000)
+        return int(_previous_session_last_5m(effective, symbol=symbol).timestamp() * 1000)
 
     minutes = effective.hour * 60 + effective.minute
-    extended_close = extended_close_minute_for_date(effective)
+    extended_close = (
+        extended_close_minute_for_symbol(symbol, effective)
+        if str(symbol or "").strip()
+        else extended_close_minute_for_date(effective)
+    )
     if minutes < EXTENDED_OPEN_MINUTE:
-        return int(_previous_session_last_5m(effective).timestamp() * 1000)
+        return int(_previous_session_last_5m(effective, symbol=symbol).timestamp() * 1000)
     if minutes >= extended_close:
         end = (
             effective.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -97,7 +111,7 @@ def latest_expected_extended_5m_ms(*, now_ms: int | None = None, delay_seconds: 
     closed_source = effective - timedelta(milliseconds=interval_to_ms("5m"))
     closed_minutes = closed_source.hour * 60 + closed_source.minute
     if not is_nyse_trading_day(closed_source) or closed_minutes < EXTENDED_OPEN_MINUTE:
-        return int(_previous_session_last_5m(effective).timestamp() * 1000)
+        return int(_previous_session_last_5m(effective, symbol=symbol).timestamp() * 1000)
     bucket_minutes = closed_minutes - (closed_minutes % 5)
     bucket = closed_source.replace(
         hour=bucket_minutes // 60,
@@ -106,7 +120,7 @@ def latest_expected_extended_5m_ms(*, now_ms: int | None = None, delay_seconds: 
         microsecond=0,
     )
     if bucket.hour * 60 + bucket.minute < EXTENDED_OPEN_MINUTE:
-        return int(_previous_session_last_5m(effective).timestamp() * 1000)
+        return int(_previous_session_last_5m(effective, symbol=symbol).timestamp() * 1000)
     return int(bucket.timestamp() * 1000)
 
 
@@ -114,7 +128,7 @@ def _previous_bucket_start_ms(bucket_ms: int, interval: str) -> int:
     return previous_intraday_bucket_start_ms(bucket_ms, interval)
 
 
-def expected_closed_ms_from_latest_5m(latest_5m_ms: int, interval: str) -> int:
+def expected_closed_ms_from_latest_5m(latest_5m_ms: int, interval: str, symbol: Any = "") -> int:
     normalized = normalize_interval(interval)
     latest_5m_ms = int(latest_5m_ms or 0)
     if latest_5m_ms <= 0:
@@ -125,7 +139,10 @@ def expected_closed_ms_from_latest_5m(latest_5m_ms: int, interval: str) -> int:
     latest_dt = datetime.fromtimestamp(latest_5m_ms / 1000, ET)
     if normalized == "1d":
         latest_5m_close_ms = latest_5m_ms + interval_to_ms("5m")
-        if is_nyse_trading_day(latest_dt) and latest_5m_close_ms >= extended_session_close_ms_for_date(latest_dt):
+        if (
+            is_nyse_trading_day(latest_dt)
+            and latest_5m_close_ms >= extended_session_close_ms_for_date(latest_dt, symbol=symbol)
+        ):
             day = latest_dt.date()
         else:
             day = previous_trading_day(latest_dt)
@@ -134,7 +151,7 @@ def expected_closed_ms_from_latest_5m(latest_5m_ms: int, interval: str) -> int:
 
     current_bucket_ms = bucket_start_ms(latest_5m_ms, normalized)
     latest_5m_close_ms = latest_5m_ms + interval_to_ms("5m")
-    if latest_5m_close_ms >= bar_close_ms(current_bucket_ms, normalized):
+    if latest_5m_close_ms >= bar_close_ms(current_bucket_ms, normalized, symbol=symbol):
         return current_bucket_ms
     return _previous_bucket_start_ms(current_bucket_ms, normalized)
 
@@ -268,17 +285,18 @@ class BarFreshnessPlanner:
         interval: str,
         latest_5m_ms: int,
         *,
+        symbol: Any = "",
         now_ms: int | None = None,
         delay_seconds: int | None = None,
     ) -> int:
         normalized = normalize_interval(interval)
         delay = self._close_delay_seconds(environment) if delay_seconds is None else max(0, int(delay_seconds or 0))
-        expected_5m_ms = latest_expected_extended_5m_ms(now_ms=now_ms, delay_seconds=delay)
+        expected_5m_ms = latest_expected_extended_5m_ms(now_ms=now_ms, delay_seconds=delay, symbol=symbol)
         if normalized == "5m":
             return expected_5m_ms
         if latest_5m_ms > 0:
-            return expected_closed_ms_from_latest_5m(latest_5m_ms, normalized)
-        return expected_closed_ms_from_latest_5m(expected_5m_ms, normalized)
+            return expected_closed_ms_from_latest_5m(latest_5m_ms, normalized, symbol=symbol)
+        return expected_closed_ms_from_latest_5m(expected_5m_ms, normalized, symbol=symbol)
 
     def plan_symbol(
         self,
@@ -317,6 +335,7 @@ class BarFreshnessPlanner:
                 runtime_environment,
                 interval,
                 latest_5m_ms,
+                symbol=normalized_symbol,
                 now_ms=now_ms,
                 delay_seconds=delay_seconds,
             )

@@ -148,13 +148,15 @@ def _build_bulk_freshness_payloads(
         symbols=normalized_symbols,
         intervals=normalized_intervals,
     )
-    expected_5m_ms = latest_expected_extended_5m_ms(
-        delay_seconds=_freshness_close_delay_seconds(api_app, environment)
-    )
+    close_delay_seconds = _freshness_close_delay_seconds(api_app, environment)
     payloads: dict[str, dict] = {}
     for symbol in normalized_symbols:
         latest_map = latest_by_symbol.get(symbol) or {}
         latest_5m_ms = int(latest_map.get("5m", 0) or 0)
+        expected_5m_ms = latest_expected_extended_5m_ms(
+            delay_seconds=close_delay_seconds,
+            symbol=symbol,
+        )
         interval_payloads: dict[str, dict] = {}
         needs_repair_intervals: list[str] = []
         status_counts: dict[str, int] = {}
@@ -163,7 +165,7 @@ def _build_bulk_freshness_payloads(
             expected_ms = (
                 expected_5m_ms
                 if interval == "5m"
-                else expected_closed_ms_from_latest_5m(latest_5m_ms or expected_5m_ms, interval)
+                else expected_closed_ms_from_latest_5m(latest_5m_ms or expected_5m_ms, interval, symbol=symbol)
             )
             reasons: list[str] = []
             if latest_ms <= 0:
