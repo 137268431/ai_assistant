@@ -91,6 +91,8 @@ class _IBGatewayApp(EWrapper, EClient):
         self._last_disconnect_at = 0.0
         self._last_error_code = 0
         self._last_error_message = ""
+        self._last_error_at = 0.0
+        self._recent_errors: list[dict[str, Any]] = []
         self._status_code = 0
 
         self._market_data_listeners: list[Callable[[dict], None]] = []
@@ -231,6 +233,21 @@ class _IBGatewayApp(EWrapper, EClient):
             self._last_message_at = time.time()
             self._last_error_code = int(errorCode or 0)
             self._last_error_message = str(errorString or "")
+            self._last_error_at = time.time()
+            self._recent_errors.append(
+                {
+                    "code": int(errorCode or 0),
+                    "message": str(errorString or ""),
+                    "req_id": int(reqId or 0),
+                    "at": datetime.fromtimestamp(self._last_error_at, ET).isoformat(),
+                    "ts": self._last_error_at,
+                }
+            )
+            self._recent_errors = [
+                item
+                for item in self._recent_errors[-20:]
+                if self._last_error_at - float(item.get("ts", 0) or 0) <= 120
+            ]
             if errorCode not in BENIGN_ERROR_CODES:
                 logger.warning("IB Gateway error reqId=%s code=%s message=%s", reqId, errorCode, errorString)
                 numeric_req_id = int(reqId or 0)
@@ -1117,6 +1134,12 @@ class _IBGatewayApp(EWrapper, EClient):
 
     def status(self) -> dict:
         with self._state_lock:
+            now = time.time()
+            self._recent_errors = [
+                item
+                for item in self._recent_errors[-20:]
+                if now - float(item.get("ts", 0) or 0) <= 120
+            ]
             return {
                 "ready": bool(self._ready),
                 "connected": bool(getattr(self, "isConnected", lambda: False)()),
@@ -1131,6 +1154,14 @@ class _IBGatewayApp(EWrapper, EClient):
                 ),
                 "last_error_code": int(self._last_error_code or 0),
                 "last_error": str(self._last_error_message or ""),
+                "last_error_at": (
+                    datetime.fromtimestamp(self._last_error_at, ET).isoformat()
+                    if self._last_error_at else ""
+                ),
+                "recent_errors": [
+                    {key: value for key, value in item.items() if key != "ts"}
+                    for item in self._recent_errors
+                ],
                 "managed_accounts": str(self._managed_accounts or ""),
                 "subscriptions": len(self._conid_to_ticker),
             }

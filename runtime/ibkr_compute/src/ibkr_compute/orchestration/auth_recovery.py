@@ -33,6 +33,10 @@ class TradingServiceAuthRecoveryMixin:
             "last_runtime_authenticated_at": "",
             "last_gateway_status_code": 0,
             "last_recovery_source": "",
+            "disconnect_reason_code": "",
+            "disconnect_reason_label": "",
+            "disconnect_reason_confidence": "",
+            "disconnect_reason_evidence": {},
             "lock_owner": "",
             "lock_expires_at": "",
             "updated_at": "",
@@ -827,11 +831,19 @@ class TradingServiceAuthRecoveryMixin:
             self._auth_restart_thread.start()
             return True
 
-    def _start_auth_recovery(self, interruption_kind: str, recovery_reason: str, source: str = "runtime"):
+    def _start_auth_recovery(
+        self,
+        interruption_kind: str,
+        recovery_reason: str,
+        source: str = "runtime",
+        disconnect_classification: dict | None = None,
+    ):
         service_mod = _service_mod()
         current = self._copy_auth_recovery_state()
         cycle_id = current.get("cycle_id") or self._next_auth_cycle_id()
         phase = "manual_takeover" if self._manual_takeover_active(current) else "silent_probe"
+        classification = disconnect_classification if isinstance(disconnect_classification, dict) else {}
+        classification_evidence = classification.get("evidence")
         snapshot = self._set_auth_recovery_state(
             cycle_id=cycle_id,
             recovery_phase=phase,
@@ -844,6 +856,10 @@ class TradingServiceAuthRecoveryMixin:
             auto_restart_scheduled=False,
             last_gateway_status_code=int(self.gateway_manager.status().get("status_code") or 0),
             last_recovery_source=source,
+            disconnect_reason_code=str(classification.get("reason_code") or ""),
+            disconnect_reason_label=str(classification.get("reason_label") or ""),
+            disconnect_reason_confidence=str(classification.get("confidence") or ""),
+            disconnect_reason_evidence=classification_evidence if isinstance(classification_evidence, dict) else {},
             lock_owner="auth_probe",
             lock_expires_at=self._future_iso(service_mod.AUTH_RECOVERY_LOCK_TTL_SECONDS),
         )

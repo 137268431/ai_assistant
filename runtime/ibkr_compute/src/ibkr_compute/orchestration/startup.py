@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import datetime
+
+from ibkr_compute.broker.disconnect_reason import classify_ibkr_disconnect, classification_detail_fields
 
 
 def _service_mod():
@@ -49,6 +52,7 @@ class TradingServiceStartupMixin:
         summary: str,
         recommendation: str,
         extra_detail: dict | None = None,
+        level: str = "warning",
     ):
         service_mod = _service_mod()
         now = time.time()
@@ -77,12 +81,38 @@ class TradingServiceStartupMixin:
         if extra_detail:
             detail.update(extra_detail)
 
-        self._emit_system_event("alert", "warning", title, detail)
+        self._emit_system_event("alert", level or "warning", title, detail)
         self._last_session_issue_at = now
+
+    def _classify_session_interruption(
+        self,
+        interruption_kind: str,
+        snapshot: dict | None = None,
+    ) -> dict:
+        gateway_status = {}
+        try:
+            gateway_status = self.gateway_manager.status()
+        except Exception:
+            gateway_status = {}
+        return classify_ibkr_disconnect(
+            snapshot if isinstance(snapshot, dict) else {},
+            gateway_status=gateway_status,
+            interruption_kind=interruption_kind,
+        )
+
+    @staticmethod
+    def _session_issue_detail_from_classification(classification: dict | None) -> dict:
+        return {
+            key: value
+            for key, value in classification_detail_fields(classification).items()
+            if str(value or "").strip()
+        }
 
     def _notify_session_recovered(self, previous_kind: str):
         if not previous_kind:
             return
+        service_mod = _service_mod()
+        auth_state = self._copy_auth_recovery_state()
         detail = {
             "状态结论": "IBKR Session 已恢复认证，当前运行态重新正确。",
             "检查时间": self._now_et(),
@@ -91,6 +121,13 @@ class TradingServiceStartupMixin:
             "恢复来源": previous_kind,
             "后续动作": "系统将继续 warmup、订阅刷新和信号处理。",
         }
+        if auth_state.get("disconnect_reason_code"):
+            detail["归因代码"] = str(auth_state.get("disconnect_reason_code") or "")
+            detail["断线归因"] = str(auth_state.get("disconnect_reason_label") or "")
+        started_at = self._parse_iso_timestamp(str(auth_state.get("probe_started_at") or ""))
+        if started_at is not None:
+            elapsed_s = (datetime.now(started_at.tzinfo or service_mod.ET) - started_at).total_seconds()
+            detail["恢复耗时秒"] = round(max(0.0, elapsed_s), 1)
         runtime_url = self._runtime_page_url()
         if runtime_url:
             detail["运行页"] = runtime_url
@@ -688,36 +725,46 @@ class TradingServiceStartupMixin:
             time.sleep(8)
         return True
 
-    def _on_session_expired(self):
+    def _on_session_expired(self, snapshot: dict | None = None):
         service_mod = _service_mod()
         if self._starting and not self._running:
             service_mod.logger.info("Ignoring session_expired callback during runtime startup")
             return
         self._last_session_authenticated = False
         self._close_warmup_gate("session_unauthenticated")
+        classification = self._classify_session_interruption("session_expired", snapshot)
         service_mod.logger.warning("Session expired; starting auth recovery probe")
         self._start_auth_recovery(
             interruption_kind="session_expired",
             recovery_reason="session_expired",
             source="session_keeper",
+            disconnect_classification=classification,
+        )
+        default_summary = "检测到 IBKR 会话认证中断，系统已进入静默探测与本地重连窗口；此时不等同于每周认证自然过期。"
+        default_recommendation = (
+            "系统会先尝试静默探测与本地重连自愈；只有静默恢复窗口耗尽后，才会升级为需手动触发 2FA。"
+            "你也可以在 Runtime 页面开启人工接管或手动全量重置。"
         )
         self._notify_session_issue(
-            "session_expired",
-            "IBKR 会话认证中断，正在静默恢复",
-            "检测到 IBKR 会话认证中断，系统已进入静默探测与本地重连窗口；此时不等同于每周认证自然过期。",
-            "系统会先尝试静默探测与本地重连自愈；只有静默恢复窗口耗尽后，才会升级为需手动触发 2FA。你也可以在 Runtime 页面开启人工接管或手动全量重置。",
+            str(classification.get("reason_code") or "session_expired"),
+            str(classification.get("title") or "IBKR 会话认证中断，正在静默恢复"),
+            str(classification.get("summary") or default_summary),
+            str(classification.get("recommendation") or default_recommendation),
             {
+                **self._session_issue_detail_from_classification(classification),
                 "恢复动作": "已进入静默探测窗口",
             },
+            level=str(classification.get("level") or "warning"),
         )
 
-    def _on_gateway_down(self):
+    def _on_gateway_down(self, snapshot: dict | None = None):
         service_mod = _service_mod()
         if self._starting and not self._running:
             service_mod.logger.info("Ignoring gateway_down callback during runtime startup")
             return
         self._last_session_authenticated = False
         self._close_warmup_gate("gateway_down")
+        classification = self._classify_session_interruption("gateway_down", snapshot)
         service_mod.logger.error("Gateway down, restarting gateway and starting auth recovery probe...")
         self.gateway_manager.restart()
         time.sleep(10)
@@ -726,14 +773,22 @@ class TradingServiceStartupMixin:
             interruption_kind="gateway_down",
             recovery_reason="gateway_down",
             source="gateway_down",
+            disconnect_classification=classification,
+        )
+        default_summary = "检测到 Gateway 一度不可达，已执行自动重启；系统会先尝试静默恢复当前运行态，再决定是否需要人工 2FA。"
+        default_recommendation = (
+            "系统会先尝试静默探测与本地重连自愈；只有静默恢复窗口耗尽后，才会升级为需手动触发 2FA。"
+            "必要时可在 Runtime 页面执行全量清空后重试。"
         )
         self._notify_session_issue(
-            "gateway_down",
-            "IBKR Gateway 不可达，已触发重启",
-            "检测到 Gateway 一度不可达，已执行自动重启；系统会先尝试静默恢复当前运行态，再决定是否需要人工 2FA。",
-            "系统会先尝试静默探测与本地重连自愈；只有静默恢复窗口耗尽后，才会升级为需手动触发 2FA。必要时可在 Runtime 页面执行全量清空后重试。",
+            str(classification.get("reason_code") or "gateway_down"),
+            str(classification.get("title") or "IBKR Gateway 不可达，已触发重启"),
+            str(classification.get("summary") or default_summary),
+            str(classification.get("recommendation") or default_recommendation),
             {
+                **self._session_issue_detail_from_classification(classification),
                 "Gateway动作": "已自动重启",
                 "恢复动作": "已进入静默探测窗口",
             },
+            level=str(classification.get("level") or "warning"),
         )

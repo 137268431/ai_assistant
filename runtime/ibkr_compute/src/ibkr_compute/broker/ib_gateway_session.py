@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import inspect
 import threading
 import time
 from typing import TYPE_CHECKING, Callable, Optional
@@ -43,6 +44,28 @@ class SocketSessionKeeper:
         self._last_transition = ""
         self._last_status_code = 0
 
+    @staticmethod
+    def _call_transition_callback(callback: Optional[Callable], snapshot: dict):
+        if not callable(callback):
+            return
+        try:
+            signature = inspect.signature(callback)
+            accepted_kinds = {
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.VAR_POSITIONAL,
+            }
+            accepts_payload = any(
+                param.kind in accepted_kinds
+                for param in signature.parameters.values()
+            )
+        except (TypeError, ValueError):
+            accepts_payload = True
+        if accepts_payload:
+            callback(dict(snapshot or {}))
+        else:
+            callback()
+
     def check_auth_status(self) -> dict:
         running = bool(self.gateway_manager.is_running)
         previous = bool(self.is_authenticated)
@@ -57,16 +80,20 @@ class SocketSessionKeeper:
             self._consecutive_failures += 1
             self.is_authenticated = False
             self._last_status_code = 503
-            if previous and callable(self.on_gateway_down):
-                self.on_gateway_down()
             self._last_transition = "gateway_down"
             self._last_check = _iso_now()
-            return {
+            payload = {
                 **status,
+                "authenticated": False,
+                "consecutive_failures": int(self._consecutive_failures or 0),
                 "status_code": self._last_status_code,
                 "last_check": self._last_check,
                 "last_tickle": self._last_check,
             }
+            if previous:
+                self._call_transition_callback(self.on_gateway_down, payload)
+            return payload
+        transition_callback = None
         try:
             health = self.broker.health()
             authenticated = bool(health.get("ready"))
@@ -75,22 +102,24 @@ class SocketSessionKeeper:
             self._last_status_code = int(health.get("status_code", 0) or 0)
             self._consecutive_failures = 0 if authenticated else self._consecutive_failures + 1
             self._last_transition = "authenticated" if authenticated else "unauthenticated"
-            if previous and not authenticated and callable(self.on_session_expired):
-                self.on_session_expired()
+            if previous and not authenticated:
+                transition_callback = self.on_session_expired
         except Exception as exc:
             self.is_authenticated = False
             self._consecutive_failures += 1
             status["error"] = str(exc)
             self._last_status_code = 503
             self._last_transition = "probe_failed"
-            if previous and callable(self.on_session_expired):
-                self.on_session_expired()
+            if previous:
+                transition_callback = self.on_session_expired
         self._last_check = _iso_now()
         status["authenticated"] = bool(self.is_authenticated)
         status["consecutive_failures"] = int(self._consecutive_failures or 0)
         status["status_code"] = int(self._last_status_code or 0)
         status["last_check"] = self._last_check
         status["last_tickle"] = self._last_check
+        if transition_callback:
+            self._call_transition_callback(transition_callback, status)
         return status
 
     def start(self):
