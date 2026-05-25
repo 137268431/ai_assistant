@@ -107,6 +107,7 @@ function normalizePageContextMetaItem(item) {
     label,
     value,
     tone: String(item.tone || '').trim(),
+    title: String(item.title || item.tip || '').trim(),
   };
 }
 
@@ -195,6 +196,114 @@ function resolvePageContextEnvironment(allowGlobal = false) {
   }
 }
 
+function normalizePageContextBrokerMode(value, fallback = 'paper') {
+  if (typeof normalizeBrokerMode === 'function') return normalizeBrokerMode(value, fallback);
+  const text = String(value || fallback || 'paper').trim().toLowerCase();
+  return text === 'live' ? 'live' : 'paper';
+}
+
+function normalizePageContextDataEnvironment(value, fallback = 'live') {
+  if (typeof normalizeRuntimeEnvironment === 'function') return normalizeRuntimeEnvironment(value, fallback);
+  const text = String(value || fallback || 'live').trim().toLowerCase();
+  return ['live', 'paper', 'backtest'].includes(text) ? text : fallback;
+}
+
+function buildPageContextCalendarSignature({ date, brokerMode, dataEnvironment }) {
+  const safeDate = extractPageContextDateToken(date);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(safeDate)) return '';
+  return [
+    normalizePageContextBrokerMode(brokerMode),
+    normalizePageContextDataEnvironment(dataEnvironment),
+    safeDate,
+  ].join('::');
+}
+
+function getPageContextCalendarState() {
+  if (typeof window === 'undefined') return {};
+  const state = window.__ibkrPageContextMarketCalendar;
+  return state && typeof state === 'object' ? state : {};
+}
+
+function formatPageContextCalendarSource(source) {
+  const text = String(source || '').trim().toLowerCase();
+  if (text === 'ibkr_schedule') return 'IBKR 日历';
+  if (text === 'local_nyse_fallback') return '本地 NYSE 日历';
+  return source ? String(source) : '日历';
+}
+
+function formatPageContextClosedReason(reason) {
+  const text = String(reason || '').trim().toLowerCase();
+  if (text === 'weekend') return '周末休市';
+  if (text === 'nyse_holiday') return '美股假日休市';
+  if (text === 'ibkr_closed') return 'IBKR 闭市';
+  if (text.includes('holiday')) return '假日休市';
+  if (text.includes('closed')) return '休市';
+  return '休市';
+}
+
+function formatPageContextMarketDayLabel(calendar) {
+  if (!calendar || typeof calendar !== 'object') return '';
+  if (calendar.is_closed) return formatPageContextClosedReason(calendar.closed_reason);
+  if (calendar.is_trading_day) return '正常交易日';
+  return '日历待确认';
+}
+
+function buildPageContextMarketCalendarTitle(calendar) {
+  if (!calendar || typeof calendar !== 'object') return '';
+  const lines = [
+    `来源：${formatPageContextCalendarSource(calendar.source)}`,
+    `状态：${formatPageContextMarketDayLabel(calendar)}`,
+  ];
+  const session = calendar.session && typeof calendar.session === 'object' ? calendar.session : {};
+  if (session.open_us || session.close_us) {
+    lines.push(`美东：${session.open_us || '--'} - ${session.close_us || '--'}`);
+  }
+  if (session.open_beijing || session.close_beijing) {
+    lines.push(`北京：${session.open_beijing || '--'} - ${session.close_beijing || '--'}`);
+  }
+  if (calendar.next_open_us || calendar.next_open_beijing) {
+    lines.push(`下次开盘：${calendar.next_open_us || '--'} ET / ${calendar.next_open_beijing || '--'} 北京`);
+  }
+  if (calendar.source_error) lines.push(`fallback：${calendar.source_error}`);
+  return lines.join('\n');
+}
+
+function buildPageContextTradingDateItem({ tradingDate, allowGlobal, brokerMode, dataEnvironment }) {
+  const safeDate = tradingDate || '--';
+  const item = { label: '交易日', value: safeDate };
+  if (allowGlobal || !/^\d{4}-\d{2}-\d{2}$/.test(safeDate)) return item;
+
+  const signature = buildPageContextCalendarSignature({ date: safeDate, brokerMode, dataEnvironment });
+  const state = getPageContextCalendarState();
+  if (!signature || state.signature !== signature) return item;
+
+  if (state.status === 'loading') {
+    return {
+      ...item,
+      value: `${safeDate} · 日历确认中`,
+    };
+  }
+
+  if (state.status === 'error') {
+    return {
+      ...item,
+      value: `${safeDate} · 日历待确认`,
+      tone: 'warn',
+      title: String(state.error || 'market calendar unavailable'),
+    };
+  }
+
+  const calendar = state.payload && typeof state.payload === 'object' ? state.payload : {};
+  const dayLabel = formatPageContextMarketDayLabel(calendar);
+  if (!dayLabel) return item;
+  return {
+    ...item,
+    value: `${safeDate} · ${dayLabel}`,
+    tone: calendar.is_closed ? 'warn' : 'ok',
+    title: buildPageContextMarketCalendarTitle(calendar),
+  };
+}
+
 function buildPageContextMetaItems(items = [], options = {}) {
   const pageAllowGlobal = typeof window !== 'undefined' ? window.__ibkrPageContextAllowGlobal : false;
   const allowGlobal = Boolean(options.allowGlobal ?? pageAllowGlobal);
@@ -215,7 +324,7 @@ function buildPageContextMetaItems(items = [], options = {}) {
       ];
   return [
     ...baseItems,
-    { label: '交易日', value: tradingDate || '--' },
+    buildPageContextTradingDateItem({ tradingDate, allowGlobal, brokerMode, dataEnvironment }),
   ];
 }
 
@@ -224,13 +333,96 @@ function renderPageContextMeta(items = [], options = {}) {
   if (!normalized.length) return '';
   return normalized.map((item) => {
     const toneClass = item.tone ? ` is-${escapePageUiText(item.tone)}` : '';
+    const titleAttr = item.title ? ` title="${escapePageUiText(item.title)}"` : '';
     return `
-      <span class="page-context-meta-chip${toneClass}">
+      <span class="page-context-meta-chip${toneClass}"${titleAttr}>
         ${item.label ? `<span class="page-context-meta-label">${escapePageUiText(item.label)}</span>` : ''}
         ${item.value ? `<span class="page-context-meta-value">${escapePageUiText(item.value)}</span>` : ''}
       </span>
     `;
   }).join('');
+}
+
+function rerenderPageContextMetaOnly() {
+  if (typeof document === 'undefined') return [];
+  const allowGlobal = typeof window !== 'undefined' ? Boolean(window.__ibkrPageContextAllowGlobal) : false;
+  const sourceItems = typeof window !== 'undefined' && Array.isArray(window.__ibkrPageContextSourceMetaItems)
+    ? window.__ibkrPageContextSourceMetaItems
+    : [];
+  const normalized = buildPageContextMetaItems(sourceItems, { allowGlobal });
+  if (typeof window !== 'undefined') window.__ibkrPageContextMetaItems = normalized;
+  const html = renderPageContextMeta(sourceItems, { allowGlobal });
+  document.querySelectorAll('[data-page-context-meta]').forEach((node) => {
+    node.innerHTML = html;
+    node.classList.toggle('is-empty', !html);
+  });
+  return normalized;
+}
+
+async function fetchPageContextMarketCalendar({ date, brokerMode, dataEnvironment }) {
+  const params = new URLSearchParams();
+  params.set('date', date);
+  params.set('symbol', 'SPY');
+  params.set('broker_mode', normalizePageContextBrokerMode(brokerMode));
+  params.set('market_data_mode', normalizePageContextDataEnvironment(dataEnvironment));
+  params.set('data_environment', normalizePageContextDataEnvironment(dataEnvironment));
+  const headers = {};
+  const token = typeof getToken === 'function' ? getToken() : '';
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const fetcher = typeof fetchWithRetry === 'function' ? fetchWithRetry : fetch;
+  const response = await fetcher(
+    `/api/custom/system/market_calendar?${params.toString()}`,
+    { method: 'GET', headers },
+    { attempts: 2, retryDelayMs: 300 },
+  );
+  if (response.status === 401 || response.status === 403) {
+    if (typeof handleAuthError === 'function') handleAuthError();
+    throw new Error('Authentication failed');
+  }
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload.ok === false) {
+    throw new Error(payload.error || payload.message || `market_calendar_${response.status}`);
+  }
+  return payload;
+}
+
+function schedulePageContextMarketCalendarLoad(items = [], options = {}) {
+  if (typeof window === 'undefined') return;
+  const pageAllowGlobal = Boolean(options.allowGlobal ?? window.__ibkrPageContextAllowGlobal);
+  if (pageAllowGlobal) return;
+  const tradingDate = resolvePageContextTradingDate(items);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(tradingDate || '')) return;
+  const brokerContext = typeof getBrokerModeContext === 'function' ? getBrokerModeContext() : {};
+  const brokerMode = brokerContext.broker_mode
+    || (typeof getCurrentBrokerMode === 'function' ? getCurrentBrokerMode() : 'paper');
+  const dataEnvironment = brokerContext.data_environment
+    || (typeof getSharedDataEnvironment === 'function' ? getSharedDataEnvironment() : 'live');
+  const signature = buildPageContextCalendarSignature({ date: tradingDate, brokerMode, dataEnvironment });
+  if (!signature) return;
+
+  const state = getPageContextCalendarState();
+  if (state.signature === signature && ['loading', 'loaded'].includes(String(state.status || ''))) return;
+  window.__ibkrPageContextMarketCalendar = { signature, status: 'loading', payload: null, error: '' };
+  rerenderPageContextMetaOnly();
+
+  fetchPageContextMarketCalendar({ date: tradingDate, brokerMode, dataEnvironment })
+    .then((payload) => {
+      const current = getPageContextCalendarState();
+      if (current.signature !== signature) return;
+      window.__ibkrPageContextMarketCalendar = { signature, status: 'loaded', payload, error: '' };
+      rerenderPageContextMetaOnly();
+    })
+    .catch((error) => {
+      const current = getPageContextCalendarState();
+      if (current.signature !== signature) return;
+      window.__ibkrPageContextMarketCalendar = {
+        signature,
+        status: 'error',
+        payload: null,
+        error: error?.message || String(error || 'market calendar unavailable'),
+      };
+      rerenderPageContextMetaOnly();
+    });
 }
 
 function setPageContextMeta(items = []) {
@@ -242,6 +434,7 @@ function setPageContextMeta(items = []) {
     node.innerHTML = html;
     node.classList.toggle('is-empty', !html);
   });
+  schedulePageContextMarketCalendarLoad(items);
   return normalized;
 }
 
@@ -535,6 +728,7 @@ function renderPageContextBar(title, options = {}) {
   const refreshLabel = window.__ibkrPageRefreshTimeLabel || '更新';
   const refreshText = buildPageRefreshTimeText(new Date(), refreshLabel);
   window.setTimeout(() => startPageRefreshClock(refreshLabel), 0);
+  window.setTimeout(() => schedulePageContextMarketCalendarLoad(metaItems, { allowGlobal }), 0);
   return `
     <div class="page-context-bar${safeSubtitle ? ' has-subtitle' : ''}">
       <div class="page-context-main">
