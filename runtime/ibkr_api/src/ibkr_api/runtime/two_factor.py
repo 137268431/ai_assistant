@@ -109,8 +109,10 @@ def is_silent_recovery_state(state_data: dict[str, Any], *, as_dict: AsDict) -> 
     return recovery_phase == "silent_probe" and (
         recovery_class == "scheduled_restart"
         or recovery_class == "stale_broker"
+        or recovery_class == "local_socket_unreachable"
         or bool(state.get("auto_restart_scheduled"))
         or probe_result in {
+            "gateway_socket_unreachable",
             "pending",
             "self_heal",
             "self_heal_pending",
@@ -139,6 +141,11 @@ def build_silent_recovery_message(state_data: dict[str, Any], *, as_dict: AsDict
         return {
             "message": "Gateway 刚经历中断或重启，系统正在静默探测并恢复当前会话；暂不需要立即重新 2FA。",
             "last_result": "已进入 Gateway 中断后的静默恢复窗口。",
+        }
+    if recovery_class == "local_socket_unreachable" or probe_result == "gateway_socket_unreachable":
+        return {
+            "message": "Gateway 进程存在但 API 端口未开放，系统无法确认已进入手机 2FA；请重启 Gateway 后重新开始登录/认证周期。",
+            "last_result": "已识别 Gateway API socket 不可达，不再按手机 2FA 等待处理。",
         }
     return {
         "message": "检测到会话认证中断，系统正在静默探测与本地重连；暂不需要立即重新 2FA。",
@@ -202,6 +209,17 @@ def derive_2fa_action_state(
     elif status in {"timeout", "failed"}:
         operator_action = "request_new_cycle"
 
+    local_socket_unreachable = (
+        bool(state.get("gateway_socket_unreachable"))
+        or str(state.get("disconnect_reason_code") or "").strip().lower() == "local_socket_unreachable"
+        or str(state.get("probe_result") or "").strip().lower() == "gateway_socket_unreachable"
+        or _safe_int(state.get("gateway_status_code"), 0) in {502, 504}
+    )
+    if local_socket_unreachable and status in {"requested", "triggered", "waiting_confirm", "resume_pending", "recovering"}:
+        operator_action = "panic_reset"
+        reset_recommended = True
+        reset_reason = reset_reason or "gateway_socket_unreachable"
+
     state["status"] = status
     state["response_status"] = response_status
     state["challenge_feedback"] = feedback
@@ -250,6 +268,8 @@ def normalize_two_factor_state_with_runtime(
     gateway_status_code = _safe_int(gateway.get("status_code"), 0)
     gateway_running = bool(gateway.get("running") or gateway.get("gateway_running"))
     gateway_reachable = False if gateway_status_code in {0, 502, 503} else bool(gateway.get("reachable") or gateway_running)
+    api_socket_listening = bool(gateway.get("api_socket_listening", True))
+    gateway_socket_unreachable = gateway_status_code in {502, 504} or api_socket_listening is False
     gateway_uptime_s = _safe_int(gateway.get("uptime_s"), 0)
     gateway_pid = _safe_int(gateway.get("pid"), 0)
 
@@ -257,6 +277,9 @@ def normalize_two_factor_state_with_runtime(
     state["runtime_authenticated"] = runtime_authenticated
     state["gateway_status_code"] = gateway_status_code
     state["gateway_reachable"] = gateway_reachable
+    state["gateway_socket_unreachable"] = gateway_socket_unreachable
+    state["api_socket_listening"] = api_socket_listening
+    state["api_socket_port"] = _safe_int(gateway.get("api_socket_port"), 0)
     state["gateway_uptime_s"] = gateway_uptime_s
     state["gateway_pid"] = gateway_pid
     for key in RECOVERY_FIELDS:
@@ -278,10 +301,19 @@ def normalize_two_factor_state_with_runtime(
         state.update(
             {
                 "status": "triggered",
-                "message": "Gateway API 尚不可用，暂未确认 IBKR 已向手机发送 Push；请优先重启 IB Gateway 后重新触发。",
-                "last_result": "gateway_not_ready_push_not_confirmed",
+                "message": (
+                    "Gateway 进程存在但 API 端口未开放，暂未确认 IBKR 已进入手机 2FA；请执行全量清空并重启 Gateway 后重新开始登录/认证。"
+                    if gateway_socket_unreachable
+                    else "Gateway API 尚不可用，暂未确认 IBKR 已向手机发送 Push；请优先重启 IB Gateway 后重新触发。"
+                ),
+                "last_result": "gateway_socket_unreachable_push_not_confirmed" if gateway_socket_unreachable else "gateway_not_ready_push_not_confirmed",
                 "gateway_2fa_not_reached": True,
                 "push_confirmed": False,
+                "reset_recommended": bool(gateway_socket_unreachable),
+                "reset_reason": "gateway_socket_unreachable" if gateway_socket_unreachable else str(state.get("reset_reason") or ""),
+                "disconnect_reason_code": "local_socket_unreachable" if gateway_socket_unreachable else str(state.get("disconnect_reason_code") or ""),
+                "disconnect_reason_label": "本地 Gateway Socket 不可达" if gateway_socket_unreachable else str(state.get("disconnect_reason_label") or ""),
+                "disconnect_reason_confidence": "high" if gateway_socket_unreachable else str(state.get("disconnect_reason_confidence") or ""),
             }
         )
         normalized_status = "triggered"
@@ -322,14 +354,16 @@ def normalize_two_factor_state_with_runtime(
             state["browser_authenticated"] = False
         if server_boot_resume_pending and not active_cycle:
             manual_required = (
-                str(state.get("recovery_phase") or "").strip().lower() == "resume_waiting_manual"
+                gateway_socket_unreachable
+                or str(state.get("recovery_phase") or "").strip().lower() == "resume_waiting_manual"
                 or str(state.get("probe_result") or "").strip().lower() in {
                     "resume_probe_timeout",
                     "manual_trigger_required",
                     "timeout_after_self_heal",
+                    "gateway_socket_unreachable",
                 }
                 or (
-                    gateway_status_code == 401
+                    gateway_status_code in {401, 502, 504}
                     and gateway_uptime_s >= SERVER_BOOT_RESUME_MANUAL_GRACE_SECONDS
                 )
             )
@@ -337,15 +371,25 @@ def normalize_two_factor_state_with_runtime(
                 {
                     "status": "requested" if manual_required else "resume_pending",
                     "message": (
-                        "Gateway 重启后静默恢复仍未认证；请打开 Runtime 页面人工处理当前 2FA，必要时干净重开。"
+                        "Gateway 进程存在但 API 端口未开放；请打开 Runtime 页面执行全量清空并重启 Gateway，然后重新开始登录/认证。"
+                        if gateway_socket_unreachable
+                        else "Gateway 重启后静默恢复仍未认证；请打开 Runtime 页面人工处理当前登录/认证周期，必要时干净重开。"
                         if manual_required
                         else "Compute 重启后正在静默复用现有 Gateway Session，本轮不会自动重开 2FA。"
                     ),
                     "last_result": (
-                        "静默恢复未完成，等待人工触发或重开新的 2FA 轮次。"
+                        "Gateway API socket 不可达，等待全量重启 Gateway。"
+                        if gateway_socket_unreachable
+                        else "静默恢复未完成，等待人工触发或重开新的登录/认证轮次。"
                         if manual_required
                         else "已进入 server_boot 静默恢复窗口。"
                     ),
+                    "reset_recommended": bool(gateway_socket_unreachable) or bool(state.get("reset_recommended")),
+                    "reset_reason": "gateway_socket_unreachable" if gateway_socket_unreachable else str(state.get("reset_reason") or ""),
+                    "gateway_2fa_not_reached": bool(gateway_socket_unreachable) or bool(state.get("gateway_2fa_not_reached")),
+                    "disconnect_reason_code": "local_socket_unreachable" if gateway_socket_unreachable else str(state.get("disconnect_reason_code") or ""),
+                    "disconnect_reason_label": "本地 Gateway Socket 不可达" if gateway_socket_unreachable else str(state.get("disconnect_reason_label") or ""),
+                    "disconnect_reason_confidence": "high" if gateway_socket_unreachable else str(state.get("disconnect_reason_confidence") or ""),
                     "last_error": "",
                     "mode": "",
                     "challenge_code": "",

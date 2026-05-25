@@ -245,16 +245,22 @@ class OrderPlacer:
         entry_order_unique_id: str = "",
         signal_id: str = "",
         source: str = "",
+        order_type: str = "MKT",
+        limit_price: float = 0.0,
+        wait_for_fill: bool = False,
+        fill_timeout: float = 5.0,
     ) -> Dict[str, Any]:
         acct_id = self.get_active_account_id(use_paper)
         symbol = str(symbol or "").upper()
         direction = str(direction or "").lower()
         close_order_ref = f"close_{symbol}_{datetime.now(ET).strftime('%Y%m%d_%H%M%S')}"
         logger.info(
-            "Placing market close: %s %s qty=%s account=%s",
+            "Placing market close: %s %s qty=%s order_type=%s limit=%s account=%s",
             symbol,
             direction,
             quantity,
+            order_type,
+            limit_price,
             acct_id or "-",
         )
         result = self.broker.place_market_close(
@@ -264,8 +270,12 @@ class OrderPlacer:
             quantity=int(quantity or 0),
             account_id=acct_id,
             order_ref=close_order_ref,
+            order_type=order_type,
+            limit_price=limit_price,
+            wait_for_fill=wait_for_fill,
+            fill_timeout=fill_timeout,
         )
-        if result.get("ok"):
+        if result.get("ok") or result.get("submitted"):
             self._log_close_order_to_pb(
                 symbol=symbol,
                 conid=int(conid or 0),
@@ -278,6 +288,10 @@ class OrderPlacer:
                 signal_id=signal_id,
                 source=source,
                 account=acct_id,
+                order_type=str(result.get("order_type") or order_type or "MKT").upper(),
+                limit_price=float(result.get("limit_price") or limit_price or 0.0),
+                status="Filled" if bool(result.get("filled")) else "Submitted",
+                result=result,
             )
         return result
 
@@ -304,9 +318,9 @@ class OrderPlacer:
                 "direction": direction,
                 "position_side": direction,
                 "quantity": kwargs.get("quantity", 0),
-                "limit_price": 0,
-                "status": "Submitted",
-                "order_type": "MKT",
+                "limit_price": kwargs.get("limit_price", 0) or 0,
+                "status": str(kwargs.get("status") or "Submitted"),
+                "order_type": str(kwargs.get("order_type") or "MKT").upper(),
                 "unique_id": close_coid or broker_order_id,
                 "order_id": broker_order_id,
                 "broker_order_id": broker_order_id,
@@ -315,7 +329,11 @@ class OrderPlacer:
                 "parent_order_unique_id": entry_order_unique_id if entry_order_unique_id != (close_coid or broker_order_id) else "",
                 "sibling_order_unique_id": "",
                 "role": "close",
-                "relation_status": "active",
+                "relation_status": (
+                    "closed"
+                    if str(kwargs.get("status") or "").strip().upper() in {"FILLED", "EXECUTED", "CLOSED"}
+                    else "active"
+                ),
                 "signal_id": str(kwargs.get("signal_id") or "").strip(),
                 "bar_time_ms": int(et_now.timestamp() * 1000),
                 "us_time": us_time,
@@ -328,6 +346,9 @@ class OrderPlacer:
                     "linked_trade_group_id": trade_group_id,
                     "linked_entry_order_unique_id": entry_order_unique_id,
                     "submitted_via": "market_close",
+                    "harvest_managed": True,
+                    "harvest_lot": "close",
+                    "market_close_result": dict(kwargs.get("result") or {}),
                 },
             }
             self.pb_client.upsert_order(payload)

@@ -44,6 +44,10 @@ def build_gateway_payload(gateway_payload: Any, *, as_dict: AsDict) -> dict[str,
         "status_code": int(gateway.get("status_code") or 0),
         "pid": int(gateway.get("pid") or 0),
         "uptime_s": int(gateway.get("uptime_s") or 0),
+        "api_socket_listening": bool(gateway.get("api_socket_listening", True)),
+        "api_socket_host": str(gateway.get("api_socket_host") or ""),
+        "api_socket_port": int(gateway.get("api_socket_port") or 0),
+        "api_socket_reason": str(gateway.get("api_socket_reason") or ""),
     }
 
 

@@ -287,6 +287,7 @@ class IBKRTradingService(
             environment=ENVIRONMENT,
             data_environment=DATA_ENVIRONMENT,
             ws_client=self.ws_client,
+            quote_provider=self.realtime_quote_book.get_quote,
         )
 
         self.order_placer = OrderPlacer(
@@ -312,6 +313,7 @@ class IBKRTradingService(
             config=self.config,
             environment=ENVIRONMENT,
             broker=self.broker,
+            order_flow_manager=self.order_flow_manager,
         )
 
         self.signal_router = SignalRouter(

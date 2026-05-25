@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import logging
+import socket
 from typing import TYPE_CHECKING, Dict, List, Optional
 
 from ibkr_compute.broker.ib_gateway_support import (
+    DEFAULT_HOST,
+    DEFAULT_PORT,
     DEFAULT_SERVICE_NAME,
     _run_command,
     _safe_int,
@@ -48,6 +51,53 @@ def _pid_uptime_seconds(pid: int) -> Optional[float]:
         return float((proc.stdout or "").strip())
     except (TypeError, ValueError):
         return None
+
+
+def _api_socket_status(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> dict:
+    host = str(host or DEFAULT_HOST)
+    port = int(port or DEFAULT_PORT)
+    proc = _run_command(["ss", "-ltn"], timeout=5)
+    if proc is not None and proc.returncode == 0:
+        for line in (proc.stdout or "").splitlines():
+            parts = line.split()
+            if len(parts) < 4 or parts[0].upper() != "LISTEN":
+                continue
+            local_address = parts[3].strip()
+            if local_address.rsplit(":", 1)[-1] == str(port):
+                return {
+                    "listening": True,
+                    "host": host,
+                    "port": port,
+                    "source": "ss",
+                    "reason": "",
+                }
+        return {
+            "listening": False,
+            "host": host,
+            "port": port,
+            "source": "ss",
+            "reason": "port_not_listening",
+        }
+
+    probe_host = "127.0.0.1" if host in {"0.0.0.0", "::", ""} else host
+    try:
+        with socket.create_connection((probe_host, port), timeout=0.5):
+            pass
+        return {
+            "listening": True,
+            "host": host,
+            "port": port,
+            "source": "socket",
+            "reason": "",
+        }
+    except OSError as exc:
+        return {
+            "listening": False,
+            "host": host,
+            "port": port,
+            "source": "socket",
+            "reason": str(exc) or "connect_failed",
+        }
 
 
 class GatewayServiceManager:
@@ -105,10 +155,15 @@ class GatewayServiceManager:
     def status(self) -> dict:
         data = _systemctl_show(self.service_name)
         broker_status = self.broker.status() if self.broker else {}
+        socket_host = str(broker_status.get("host") or DEFAULT_HOST)
+        socket_port = _safe_int(broker_status.get("port"), DEFAULT_PORT)
+        api_socket = _api_socket_status(socket_host, socket_port)
         running = str(data.get("ActiveState") or "") == "active"
         status_code = int(broker_status.get("status_code", 0) or 0)
         if not running:
             status_code = 503
+        elif not bool(api_socket.get("listening")):
+            status_code = 502
         elif running and not status_code:
             status_code = 401
         return {
@@ -116,9 +171,14 @@ class GatewayServiceManager:
             "service": self.service_name,
             "pid": _safe_int(data.get("MainPID"), 0),
             "uptime_s": round(self.uptime_seconds, 1) if self.uptime_seconds else None,
-            "reachable": bool(running and status_code != 503),
+            "reachable": bool(running and bool(api_socket.get("listening")) and status_code not in {502, 503}),
             "running": running,
             "status_code": status_code,
+            "api_socket_listening": bool(api_socket.get("listening")),
+            "api_socket_host": str(api_socket.get("host") or socket_host),
+            "api_socket_port": int(api_socket.get("port") or socket_port or 0),
+            "api_socket_source": str(api_socket.get("source") or ""),
+            "api_socket_reason": str(api_socket.get("reason") or ""),
             "active_state": str(data.get("ActiveState") or ""),
             "sub_state": str(data.get("SubState") or ""),
             "active_since": str(data.get("ActiveEnterTimestamp") or ""),

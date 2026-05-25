@@ -38,7 +38,7 @@ def resolve_initial_signal_state(environment: str, bar_ms: int) -> tuple[str, st
     manual_confirm_enabled = api_app.cfg.get_bool_for_environment(
         "signal_manual_confirm_enabled",
         environment,
-        True,
+        False,
     )
 
     if bar_ms <= 0:

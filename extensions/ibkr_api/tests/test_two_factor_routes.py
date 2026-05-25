@@ -422,6 +422,39 @@ class TwoFactorBuildersTest(unittest.TestCase):
         self.assertFalse(normalized["push_confirmed"])
         self.assertIn("暂未确认", normalized["message"])
 
+    def test_gateway_socket_missing_recommends_panic_reset_not_push_wait(self):
+        state = {
+            "status": "triggered",
+            "message": "等待手机确认 IBKR 2FA。",
+            "last_result": "waiting_mobile_approval",
+            "triggered_at": "2026-04-28 10:30:16",
+        }
+        runtime_status = {
+            "session": {"authenticated": False, "running": False},
+            "gateway": {
+                "running": True,
+                "reachable": False,
+                "status_code": 502,
+                "api_socket_listening": False,
+                "api_socket_port": 4001,
+            },
+        }
+
+        normalized = normalize_two_factor_state_with_runtime(
+            state,
+            runtime_status,
+            as_dict=self.as_dict,
+            parse_et_time_ms=parse_et_time_ms,
+        )
+
+        self.assertEqual("triggered", normalized["status"])
+        self.assertEqual("panic_reset", normalized["operator_action"])
+        self.assertTrue(normalized["reset_recommended"])
+        self.assertEqual("gateway_socket_unreachable", normalized["reset_reason"])
+        self.assertEqual("local_socket_unreachable", normalized["disconnect_reason_code"])
+        self.assertTrue(normalized["gateway_2fa_not_reached"])
+        self.assertIn("API 端口未开放", normalized["message"])
+
 
 if __name__ == "__main__":
     unittest.main()

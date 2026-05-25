@@ -142,6 +142,24 @@ class FakeBracketBroker:
         }
 
 
+class FakeMarketCloseBroker:
+    def __init__(self):
+        self.calls = []
+
+    def place_market_close(self, **kwargs):
+        self.calls.append(dict(kwargs))
+        return {
+            "ok": True,
+            "submitted": True,
+            "filled": False,
+            "order_ids": ["901"],
+            "entry_coid": "close_NFLX_20260506_101500",
+            "bracket_group": "close_NFLX_20260506_101500",
+            "order_type": "LMT",
+            "limit_price": 101.25,
+        }
+
+
 class FakeConfig:
     def __init__(self, values=None):
         self.values = dict(values or {})
@@ -311,6 +329,11 @@ class FakeSignalService(TradingServiceSignalsMixin):
 
     def _now_iso(self):
         return "2026-05-13T10:00:00-04:00"
+
+
+def _broker_execution(patch, mode="paper"):
+    extra = patch.get("extra") or {}
+    return (extra.get("execution_by_mode") or {}).get(mode) or {}
 
 
 class BrokerModeResolverTest(unittest.TestCase):
@@ -619,8 +642,97 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
         self.assertEqual("SELL", close_order.action)
         self.assertEqual("MKT", close_order.orderType)
 
+    def test_place_market_close_can_use_marketable_limit_protection(self):
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeClient({"ok": True})
+        adapter.resolve_contract = lambda **kwargs: {
+            "conid": 123,
+            "symbol": "NFLX",
+            "sec_type": "STK",
+            "exchange": "SMART",
+            "currency": "USD",
+        }
+
+        original_order = ib_gateway.Order
+        original_contract = ib_gateway.Contract
+        try:
+            ib_gateway.Order = FakeOrder
+            ib_gateway.Contract = FakeContract
+            result = ib_gateway.BrokerAdapter.place_market_close(
+                adapter,
+                conid=123,
+                symbol="NFLX",
+                direction="short",
+                quantity=7,
+                order_type="marketable_limit",
+                limit_price=101.25,
+            )
+        finally:
+            ib_gateway.Order = original_order
+            ib_gateway.Contract = original_contract
+
+        self.assertTrue(result["ok"])
+        close_order = adapter.client.placed_orders[0][1]
+        self.assertEqual("BUY", close_order.action)
+        self.assertEqual("LMT", close_order.orderType)
+        self.assertEqual(101.25, close_order.lmtPrice)
+        self.assertEqual("LMT", result["order_type"])
+        self.assertEqual(101.25, result["limit_price"])
+
+    def test_place_market_close_rejects_marketable_limit_without_limit_price(self):
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeClient({"ok": True})
+        adapter.resolve_contract = lambda **kwargs: {
+            "conid": 123,
+            "symbol": "NFLX",
+            "sec_type": "STK",
+            "exchange": "SMART",
+            "currency": "USD",
+        }
+
+        result = ib_gateway.BrokerAdapter.place_market_close(
+            adapter,
+            conid=123,
+            symbol="NFLX",
+            direction="short",
+            quantity=7,
+            order_type="marketable_limit",
+            limit_price=0,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("limit_price_required_for_marketable_limit", result["error"])
+        self.assertEqual([], adapter.client.placed_orders)
+
 
 class OrderPlacerBracketMetadataTest(unittest.TestCase):
+    def test_marketable_limit_close_order_is_logged_with_actual_type_and_price(self):
+        pb_client = FakeOrderPBClient()
+        broker = FakeMarketCloseBroker()
+        placer = OrderPlacer(pb_client=pb_client, broker=broker, account_id="DU123")
+
+        result = placer.place_market_close(
+            conid=123,
+            symbol="NFLX",
+            direction="short",
+            quantity=7,
+            order_type="marketable_limit",
+            limit_price=101.25,
+            trade_group_id="NFLX_short_harvest",
+            entry_order_unique_id="entry_NFLX_short_harvest",
+            source="order_flow_full_exit",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("marketable_limit", broker.calls[0]["order_type"])
+        self.assertEqual(101.25, broker.calls[0]["limit_price"])
+        close_row = pb_client.upserts[-1]
+        self.assertEqual("LMT", close_row["order_type"])
+        self.assertEqual(101.25, close_row["limit_price"])
+        self.assertEqual("Submitted", close_row["status"])
+        self.assertEqual("active", close_row["relation_status"])
+        self.assertEqual("LMT", close_row["extra"]["market_close_result"]["order_type"])
+
     def test_pb_upserts_use_canonical_bracket_trade_group_and_oco_metadata(self):
         pb_client = FakeOrderPBClient()
         broker = FakeBracketBroker()
@@ -727,9 +839,28 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertEqual([], service.signal_router.processed)
         self.assertEqual(["sig-aapl"], service.signal_router.released)
         self.assertEqual([], service.order_placer.calls)
-        self.assertEqual("pending", pb.updates[-1][2]["status"])
-        self.assertEqual("strategy_capacity_full", pb.updates[-1][2]["extra"]["status_reason"])
-        self.assertEqual("waiting_for_capacity", pb.updates[-1][2]["extra"]["execution_state"])
+        patch = pb.updates[-1][2]
+        self.assertEqual("pending", _broker_execution(patch)["status"])
+        self.assertEqual("strategy_capacity_full", patch["extra"]["status_reason"])
+        self.assertEqual("waiting_for_capacity", patch["extra"]["execution_state"])
+
+    def test_order_flow_marketable_reprice_preserves_stop_and_target_distance(self):
+        signal = self._signal("AAPL")
+        service = FakeSignalService(signal, lifecycle=FakeLifecycle(), pb=FakeSignalPBClient({"id": "row-aapl"}))
+
+        adjusted = service._apply_order_flow_entry_decision(
+            signal,
+            {
+                "enforced": True,
+                "marketable_limit": {"ok": True, "price": 100.08, "order_type": "marketable_limit"},
+            },
+        )
+
+        self.assertEqual(100.08, adjusted["entry"])
+        self.assertEqual(98.08, adjusted["stop_loss"])
+        self.assertEqual(104.08, adjusted["take_profit"])
+        self.assertEqual("marketable", adjusted["extra"]["entry_limit_intent"])
+        self.assertEqual(98.0, adjusted["extra"]["order_flow_original_stop_loss"])
 
     def test_signal_expired_validation_marks_expired_not_rejected(self):
         signal = self._signal("AAPL")
@@ -742,12 +873,13 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertEqual(["sig-aapl"], service.signal_router.processed)
         self.assertEqual([], service.signal_router.released)
         self.assertEqual([], service.order_placer.calls)
-        self.assertEqual("expired", pb.updates[-1][2]["status"])
-        self.assertEqual("signal_expired", pb.updates[-1][2]["note"])
-        extra = pb.updates[-1][2]["extra"]
+        patch = pb.updates[-1][2]
+        self.assertEqual("expired", _broker_execution(patch)["status"])
+        self.assertEqual("signal_expired", _broker_execution(patch)["note"])
+        extra = patch["extra"]
         self.assertEqual("signal_expired", extra["status_reason"])
         self.assertEqual("ibkr_compute_validation_fallback", extra["expired_by"])
-        self.assertEqual("expired", extra["execution_by_mode"]["live"]["status"])
+        self.assertEqual("expired", extra["execution_by_mode"]["paper"]["status"])
 
     def test_history_repair_pending_defers_and_remains_retriable(self):
         signal = self._signal("AAPL")
@@ -772,9 +904,10 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertEqual(["sig-boxx"], service.signal_router.processed)
         self.assertEqual([], service.signal_router.released)
         self.assertEqual([], service.order_placer.calls)
-        self.assertEqual("rejected", pb.updates[-1][2]["status"])
-        self.assertEqual("fixed_position_symbol_blocked", pb.updates[-1][2]["extra"]["status_reason"])
-        self.assertTrue(pb.updates[-1][2]["extra"]["fixed_position_symbol_blocked"])
+        patch = pb.updates[-1][2]
+        self.assertEqual("rejected", _broker_execution(patch)["status"])
+        self.assertEqual("fixed_position_symbol_blocked", patch["extra"]["status_reason"])
+        self.assertTrue(patch["extra"]["fixed_position_symbol_blocked"])
 
     def test_entry_guard_corrects_adverse_drift_on_stale_30m_confirmation(self):
         signal = self._signal("AAPL")
@@ -999,7 +1132,7 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertEqual([], service.signal_router.released)
         self.assertEqual([], service.order_placer.calls)
         patch = pb.updates[-1][2]
-        self.assertEqual("rejected", patch["status"])
+        self.assertEqual("rejected", _broker_execution(patch)["status"])
         self.assertEqual("buying_power_blocked", patch["extra"]["status_reason"])
         self.assertEqual("blocked", patch["extra"]["buying_power_guard"]["state"])
         self.assertEqual("自动开仓已被购买力阈值拦截", pb.events[-1]["title"])

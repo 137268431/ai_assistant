@@ -74,6 +74,27 @@ class DisconnectReasonClassifierTest(unittest.TestCase):
         self.assertEqual(result["reason_code"], "local_socket_unreachable")
         self.assertEqual(result["level"], "warning")
 
+    def test_missing_gateway_api_socket_is_local_socket_unreachable(self):
+        result = classify_ibkr_disconnect(
+            {
+                "gateway_running": True,
+                "status_code": 401,
+                "last_error_code": 0,
+            },
+            gateway_status={
+                "running": True,
+                "status_code": 502,
+                "api_socket_listening": False,
+                "api_socket_port": 4001,
+            },
+            now=datetime(2026, 5, 24, 3, 0, tzinfo=ET),
+        )
+
+        self.assertEqual(result["reason_code"], "local_socket_unreachable")
+        self.assertEqual(result["confidence"], "high")
+        self.assertFalse(result["evidence"]["api_socket_listening"])
+        self.assertEqual(result["evidence"]["api_socket_port"], 4001)
+
     def test_client_id_conflict_without_disconnect_codes_is_distinct(self):
         result = classify_ibkr_disconnect(
             {

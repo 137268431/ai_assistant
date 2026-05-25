@@ -1794,6 +1794,322 @@ class BrokerAdapter:
     def list_recent_fills(self) -> List[dict]:
         return self.client.request_executions()
 
+    @staticmethod
+    def _order_snapshot_id(snapshot: dict | None) -> str:
+        snapshot = snapshot or {}
+        return str(snapshot.get("orderId") or snapshot.get("order_id") or snapshot.get("id") or "").strip()
+
+    @staticmethod
+    def _order_snapshot_status(snapshot: dict | None) -> str:
+        snapshot = snapshot or {}
+        return str(snapshot.get("status") or snapshot.get("order_status") or snapshot.get("orderStatus") or "").strip().upper()
+
+    @staticmethod
+    def _order_snapshot_remaining(snapshot: dict | None) -> float:
+        snapshot = snapshot or {}
+        return _safe_float(
+            snapshot.get("remainingQuantity")
+            or snapshot.get("remaining")
+            or snapshot.get("remaining_quantity"),
+            0.0,
+        )
+
+    @staticmethod
+    def _order_snapshot_filled(snapshot: dict | None) -> float:
+        snapshot = snapshot or {}
+        return _safe_float(
+            snapshot.get("filledQuantity")
+            or snapshot.get("filled")
+            or snapshot.get("filled_qty")
+            or snapshot.get("filled_quantity"),
+            0.0,
+        )
+
+    @staticmethod
+    def _order_price_matches(snapshot: dict | None, fields: Iterable[str], expected_price: float, tolerance: float = 0.005) -> bool:
+        snapshot = snapshot or {}
+        expected = float(expected_price or 0.0)
+        if expected <= 0:
+            return False
+        for field in fields or []:
+            value = _safe_float(snapshot.get(field), 0.0)
+            if value > 0 and abs(value - expected) <= tolerance:
+                return True
+        return False
+
+    def _request_order_snapshot(
+        self,
+        order_id: str,
+        *,
+        timeout: float = 3.0,
+        include_all: bool = True,
+    ) -> tuple[dict, bool, bool]:
+        normalized_order_id = str(order_id or "").strip()
+        snapshot: dict = {}
+        getter = getattr(self.client, "get_order_snapshot", None)
+        if callable(getter):
+            try:
+                snapshot = dict(getter(normalized_order_id) or {})
+            except Exception:
+                snapshot = {}
+
+        request_open_orders = getattr(self.client, "request_open_orders", None)
+        if not callable(request_open_orders):
+            return snapshot, False, False
+
+        refreshed = False
+        try:
+            try:
+                open_orders = request_open_orders(
+                    timeout=max(1, min(3, int(max(1.0, float(timeout or 0.0))))),
+                    include_all=include_all,
+                )
+            except TypeError:
+                open_orders = request_open_orders(include_all=include_all)
+            refreshed = True
+        except Exception as exc:
+            logger.debug("request_open_orders failed while awaiting order %s: %s", normalized_order_id, exc)
+            return snapshot, False, False
+
+        for item in open_orders or []:
+            if self._order_snapshot_id(item) == normalized_order_id:
+                return dict(item), True, refreshed
+
+        if callable(getter):
+            try:
+                refreshed_snapshot = dict(getter(normalized_order_id) or {})
+                if refreshed_snapshot:
+                    snapshot = {**snapshot, **refreshed_snapshot}
+            except Exception:
+                pass
+        return snapshot, False, refreshed
+
+    def await_order_cancelled(
+        self,
+        order_id: str,
+        *,
+        timeout: float = 3.0,
+        poll_interval: float = 0.2,
+    ) -> dict:
+        normalized_order_id = str(order_id or "").strip()
+        if not normalized_order_id:
+            return {"ok": False, "error": "missing_order_id"}
+        deadline = time.time() + max(0.5, float(timeout or 0.0))
+        last_snapshot: dict = {}
+        while time.time() < deadline:
+            order_error = {}
+            getter = getattr(self.client, "get_order_error", None)
+            if callable(getter):
+                try:
+                    order_error = dict(getter(normalized_order_id) or {})
+                except Exception:
+                    order_error = {}
+            if order_error:
+                return {
+                    "ok": False,
+                    "order_id": normalized_order_id,
+                    "error": str(order_error.get("message") or "order_cancel_rejected"),
+                    "details": order_error,
+                }
+
+            snapshot, found_open, refreshed = self._request_order_snapshot(
+                normalized_order_id,
+                timeout=timeout,
+                include_all=True,
+            )
+            if snapshot:
+                last_snapshot = dict(snapshot)
+            status = self._order_snapshot_status(snapshot)
+            if status in {"FILLED", "EXECUTED"}:
+                return {
+                    "ok": False,
+                    "order_id": normalized_order_id,
+                    "error": "order_filled_during_cancel",
+                    "order": snapshot,
+                }
+            if status in {"CANCELED", "CANCELLED", "API_CANCELLED", "INACTIVE", "REJECTED", "EXPIRED"}:
+                return {
+                    "ok": True,
+                    "order_id": normalized_order_id,
+                    "status": status,
+                    "order": snapshot,
+                }
+            if refreshed and not found_open:
+                if not snapshot:
+                    return {
+                        "ok": True,
+                        "order_id": normalized_order_id,
+                        "status": "NOT_OPEN",
+                        "order": {},
+                        "source": "open_orders_missing",
+                    }
+                # A missing open-order row with a stale Submitted snapshot is
+                # ambiguous (cancel vs. fill); wait for a terminal callback.
+            time.sleep(max(0.05, float(poll_interval or 0.2)))
+        return {
+            "ok": False,
+            "order_id": normalized_order_id,
+            "error": "order_cancel_unconfirmed",
+            "order": last_snapshot,
+        }
+
+    def await_order_price_update(
+        self,
+        order_id: str,
+        *,
+        expected_price: float,
+        fields: Iterable[str],
+        timeout: float = 3.0,
+        poll_interval: float = 0.2,
+    ) -> dict:
+        normalized_order_id = str(order_id or "").strip()
+        if not normalized_order_id:
+            return {"ok": False, "error": "missing_order_id"}
+        deadline = time.time() + max(0.5, float(timeout or 0.0))
+        last_snapshot: dict = {}
+        while time.time() < deadline:
+            order_error = {}
+            getter = getattr(self.client, "get_order_error", None)
+            if callable(getter):
+                try:
+                    order_error = dict(getter(normalized_order_id) or {})
+                except Exception:
+                    order_error = {}
+            if order_error:
+                return {
+                    "ok": False,
+                    "order_id": normalized_order_id,
+                    "error": str(order_error.get("message") or "order_modify_rejected"),
+                    "details": order_error,
+                }
+            snapshot, _found_open, _refreshed = self._request_order_snapshot(
+                normalized_order_id,
+                timeout=timeout,
+                include_all=True,
+            )
+            if snapshot:
+                last_snapshot = dict(snapshot)
+            status = self._order_snapshot_status(snapshot)
+            if status in {"CANCELED", "CANCELLED", "API_CANCELLED", "INACTIVE", "REJECTED", "EXPIRED"}:
+                return {
+                    "ok": False,
+                    "order_id": normalized_order_id,
+                    "error": "order_not_modifiable",
+                    "order": snapshot,
+                }
+            if self._order_price_matches(snapshot, fields, float(expected_price or 0.0)):
+                return {
+                    "ok": True,
+                    "order_id": normalized_order_id,
+                    "order": snapshot,
+                }
+            time.sleep(max(0.05, float(poll_interval or 0.2)))
+        return {
+            "ok": False,
+            "order_id": normalized_order_id,
+            "error": "order_modify_price_unconfirmed",
+            "order": last_snapshot,
+            "expected_price": float(expected_price or 0.0),
+            "fields": list(fields or []),
+        }
+
+    def await_order_fill(
+        self,
+        order_id: str,
+        *,
+        symbol: str = "",
+        expected_quantity: int = 0,
+        timeout: float = 5.0,
+        poll_interval: float = 0.2,
+    ) -> dict:
+        normalized_order_id = str(order_id or "").strip()
+        if not normalized_order_id:
+            return {"ok": False, "error": "missing_order_id"}
+        normalized_symbol = str(symbol or "").strip().upper()
+        expected_qty = abs(int(round(float(expected_quantity or 0))))
+        deadline = time.time() + max(0.5, float(timeout or 0.0))
+        last_snapshot: dict = {}
+        while time.time() < deadline:
+            order_error = {}
+            getter = getattr(self.client, "get_order_error", None)
+            if callable(getter):
+                try:
+                    order_error = dict(getter(normalized_order_id) or {})
+                except Exception:
+                    order_error = {}
+            if order_error:
+                return {
+                    "ok": False,
+                    "order_id": normalized_order_id,
+                    "error": str(order_error.get("message") or "order_rejected"),
+                    "details": order_error,
+                }
+            snapshot, _found_open, _refreshed = self._request_order_snapshot(
+                normalized_order_id,
+                timeout=timeout,
+                include_all=True,
+            )
+            if snapshot:
+                last_snapshot = dict(snapshot)
+            status = self._order_snapshot_status(snapshot)
+            filled_qty = self._order_snapshot_filled(snapshot)
+            remaining_qty = self._order_snapshot_remaining(snapshot)
+            if status in {"FILLED", "EXECUTED"} or (expected_qty > 0 and filled_qty >= expected_qty and remaining_qty <= 0.0001):
+                return {
+                    "ok": True,
+                    "order_id": normalized_order_id,
+                    "status": status or "FILLED",
+                    "order": snapshot,
+                    "filled_quantity": filled_qty,
+                }
+            if status in {"CANCELED", "CANCELLED", "API_CANCELLED", "INACTIVE", "REJECTED", "EXPIRED"}:
+                return {
+                    "ok": False,
+                    "order_id": normalized_order_id,
+                    "error": "order_terminal_before_fill",
+                    "status": status,
+                    "order": snapshot,
+                }
+
+            if normalized_symbol:
+                request_positions = getattr(self.client, "request_positions", None)
+                if callable(request_positions):
+                    try:
+                        try:
+                            positions = request_positions(timeout=max(1, min(3, int(max(1.0, float(timeout or 0.0))))))
+                        except TypeError:
+                            positions = request_positions()
+                        symbol_positions = [
+                            item for item in (positions or [])
+                            if str(item.get("ticker") or item.get("symbol") or item.get("contractDesc") or "").strip().upper() == normalized_symbol
+                        ]
+                        if not symbol_positions:
+                            return {
+                                "ok": True,
+                                "order_id": normalized_order_id,
+                                "status": status or "POSITION_FLAT",
+                                "order": snapshot,
+                                "source": "positions_flat",
+                            }
+                        max_abs_position = max(abs(_safe_float(item.get("position", item.get("quantity", 0)), 0.0)) for item in symbol_positions)
+                        if max_abs_position <= 0.0001:
+                            return {
+                                "ok": True,
+                                "order_id": normalized_order_id,
+                                "status": status or "POSITION_FLAT",
+                                "order": snapshot,
+                                "source": "positions_flat",
+                            }
+                    except Exception as exc:
+                        logger.debug("request_positions failed while awaiting fill %s: %s", normalized_order_id, exc)
+            time.sleep(max(0.05, float(poll_interval or 0.2)))
+        return {
+            "ok": False,
+            "order_id": normalized_order_id,
+            "error": "order_fill_unconfirmed",
+            "order": last_snapshot,
+        }
+
     def _next_bracket_order_ids(self) -> List[int]:
         high_water = self.client.max_seen_order_id() if hasattr(self.client, "max_seen_order_id") else 0
         try:
@@ -2026,6 +2342,10 @@ class BrokerAdapter:
         quantity: int,
         account_id: str = "",
         order_ref: str = "",
+        order_type: str = "MKT",
+        limit_price: float = 0.0,
+        wait_for_fill: bool = False,
+        fill_timeout: float = 5.0,
     ) -> dict:
         contract_info = self.resolve_contract(symbol=symbol, conid=conid)
         if not contract_info:
@@ -2041,7 +2361,19 @@ class BrokerAdapter:
         order = Order()
         order.orderId = int(order_id)
         order.action = side
-        order.orderType = "MKT"
+        normalized_order_type = str(order_type or "MKT").strip().upper()
+        wants_limit = normalized_order_type in {"LMT", "LIMIT", "MARKETABLE_LIMIT"}
+        if wants_limit and float(limit_price or 0.0) <= 0:
+            return {
+                "ok": False,
+                "error": "limit_price_required_for_marketable_limit",
+                "order_type": normalized_order_type,
+                "limit_price": float(limit_price or 0.0),
+            }
+        use_limit = wants_limit
+        order.orderType = "LMT" if use_limit else "MKT"
+        if use_limit:
+            order.lmtPrice = float(limit_price or 0.0)
         order.totalQuantity = float(quantity)
         order.tif = "DAY"
         order_ref = str(order_ref or "").strip()
@@ -2069,12 +2401,32 @@ class BrokerAdapter:
                 "bracket_group": order.orderRef,
                 "entry_coid": order.orderRef,
             }
-        return {
+        result = {
             "ok": True,
+            "submitted": True,
             "order_ids": [str(order_id)],
             "bracket_group": order.orderRef,
             "entry_coid": order.orderRef,
+            "order_type": order.orderType,
+            "limit_price": float(limit_price or 0.0) if use_limit else 0.0,
         }
+        if wait_for_fill:
+            fill_result = self.await_order_fill(
+                str(order_id),
+                symbol=contract.symbol,
+                expected_quantity=int(quantity or 0),
+                timeout=float(fill_timeout or 5.0),
+                poll_interval=0.2,
+            )
+            result["fill"] = fill_result
+            result["filled"] = bool(fill_result.get("ok"))
+            if not fill_result.get("ok"):
+                return {
+                    **result,
+                    "ok": False,
+                    "error": str(fill_result.get("error") or "order_fill_unconfirmed"),
+                }
+        return result
 
     def modify_order(self, order_id: str, updates: dict, account_id: str = "") -> dict:
         contract, order = self.client.get_order_objects(order_id)
@@ -2113,7 +2465,32 @@ class BrokerAdapter:
             if order_error.get("code"):
                 error_message = f"{error_message} (code={order_error.get('code')})"
             return {"ok": False, "error": error_message, "entry_error": entry_result, "order_id": str(order_id)}
-        return {"ok": True, "order_id": str(order_id)}
+        expected_price = 0.0
+        expected_fields: list[str] = []
+        if "auxPrice" in updates and updates["auxPrice"] is not None:
+            expected_price = float(updates["auxPrice"] or 0.0)
+            expected_fields = ["auxPrice"]
+        elif "price" in updates and updates["price"] is not None:
+            expected_price = float(updates["price"] or 0.0)
+            expected_fields = ["price", "lmtPrice"]
+        if expected_price > 0 and expected_fields:
+            confirm_result = self.await_order_price_update(
+                str(order_id),
+                expected_price=expected_price,
+                fields=expected_fields,
+                timeout=3.0,
+                poll_interval=0.2,
+            )
+            if not confirm_result.get("ok"):
+                return {
+                    "ok": False,
+                    "error": str(confirm_result.get("error") or "order_modify_unconfirmed"),
+                    "entry_error": entry_result,
+                    "confirm": confirm_result,
+                    "order_id": str(order_id),
+                }
+            return {"ok": True, "order_id": str(order_id), "order": confirm_result.get("order") or {}}
+        return {"ok": True, "order_id": str(order_id), "order": entry_result.get("order") or {}}
 
     def get_order_snapshot(self, order_id: str) -> dict:
         return self.client.get_order_snapshot(order_id)
@@ -2123,7 +2500,20 @@ class BrokerAdapter:
             self.client.cancel_open_order(order_id)
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
-        return {"ok": True, "order_id": str(order_id)}
+        confirm_result = self.await_order_cancelled(str(order_id), timeout=3.0, poll_interval=0.2)
+        if not confirm_result.get("ok"):
+            return {
+                "ok": False,
+                "order_id": str(order_id),
+                "error": str(confirm_result.get("error") or "order_cancel_unconfirmed"),
+                "confirm": confirm_result,
+            }
+        return {
+            "ok": True,
+            "order_id": str(order_id),
+            "status": confirm_result.get("status") or "",
+            "confirm": confirm_result,
+        }
 
     def cancel_all_orders(self) -> dict:
         orders = self.list_open_orders()

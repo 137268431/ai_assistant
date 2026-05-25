@@ -190,6 +190,10 @@ def classify_ibkr_disconnect(
         "gateway_running": bool(gateway_running),
         "gateway_active_state": str(gateway.get("active_state") or ""),
         "gateway_sub_state": str(gateway.get("sub_state") or ""),
+        "api_socket_listening": bool(gateway.get("api_socket_listening", True)),
+        "api_socket_host": str(gateway.get("api_socket_host") or ""),
+        "api_socket_port": _safe_int(gateway.get("api_socket_port")),
+        "api_socket_reason": str(gateway.get("api_socket_reason") or ""),
         "in_daily_reset_window": bool(reset_window),
         "reset_window_et": "00:15-01:45",
     }
@@ -230,15 +234,19 @@ def classify_ibkr_disconnect(
             evidence=evidence,
         )
 
-    if error_code_set.intersection({502, 504}):
+    if (
+        status_code in {502, 504}
+        or error_code_set.intersection({502, 504})
+        or gateway.get("api_socket_listening") is False
+    ):
         return _build_result(
             reason_code="local_socket_unreachable",
             reason_label="本地 Gateway Socket 不可达",
             level="warning",
             confidence="high",
             title="IBKR Gateway Socket 不可达，正在恢复",
-            summary="检测到 502/504，本地 API 客户端暂时无法连到 Gateway socket。",
-            recommendation="检查 Gateway API 端口、服务监听、IBC 启动状态和防火墙；系统会继续重连探测。",
+            summary="检测到 502/504 或 Gateway API 端口未监听，本地 API 客户端暂时无法连到 Gateway socket。",
+            recommendation="检查 Gateway API 端口、服务监听、IBC 启动状态和防火墙；若长期未监听，请重启 Gateway 后重新开始登录/认证周期。",
             evidence=evidence,
         )
 
@@ -307,4 +315,6 @@ def classification_detail_fields(classification: dict[str, Any] | None) -> dict[
         "原始错误": str(evidence.get("last_error") or ""),
         "Reset窗口": "yes" if evidence.get("in_daily_reset_window") else "no",
         "最近错误": str(evidence.get("recent_errors_text") or ""),
+        "API端口监听": "yes" if evidence.get("api_socket_listening") else "no",
+        "API端口": str(evidence.get("api_socket_port") or ""),
     }

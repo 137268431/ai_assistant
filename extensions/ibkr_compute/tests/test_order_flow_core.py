@@ -1,4 +1,5 @@
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -12,8 +13,27 @@ from ibkr_compute.order_flow import (  # noqa: E402
     ExecutionPoolManager,
     OrderFlowAggregator,
     OrderFlowCandidate,
+    OrderFlowManager,
     OrderFlowTick,
 )
+
+
+class _Config:
+    def __init__(self, values=None):
+        self.values = dict(values or {})
+
+    def get_for_environment(self, key, environment, default=None):
+        return self.values.get(key, default)
+
+    def get_bool_for_environment(self, key, environment, default=False):
+        value = self.values.get(key, default)
+        return str(value).lower() in {"true", "1", "yes", "on"} if isinstance(value, str) else bool(value)
+
+    def get_int_for_environment(self, key, environment, default=0):
+        return int(self.values.get(key, default))
+
+    def get_float_for_environment(self, key, environment, default=0.0):
+        return float(self.values.get(key, default))
 
 
 def test_order_flow_aggregator_closes_aligned_cvd_bars():
@@ -149,3 +169,118 @@ def test_execution_pool_enforces_symbol_cap_when_position_capacity_allows():
     assert not rejected.accepted
     assert rejected.reason == "symbol_pool_full"
     assert pool.status()["active_symbols"] == ["AAPL", "MSFT", "NVDA"]
+
+
+def test_execution_pool_releases_stale_entry_watches():
+    pool = ExecutionPoolManager(max_symbols=3, max_position_slots=1, reservation_ttl_ms=1_000)
+
+    allocated, watch, reason = pool.allocate_candidate(
+        OrderFlowCandidate("AAPL", "long", 0.80, created_at_ms=0),
+        conid=123,
+        at_ms=0,
+    )
+    assert allocated
+    assert reason == "allocated"
+    assert watch.release_at_ms == 1_000
+    assert pool.status()["entry_slot_count"] == 1
+
+    expired = pool.release_expired_watches(1_001)
+
+    assert [item.symbol for item in expired] == ["AAPL"]
+    assert pool.status()["entry_slot_count"] == 0
+
+
+def test_order_flow_manager_defaults_to_enforce_mode():
+    manager = OrderFlowManager(config=_Config(), environment="paper", data_environment="live")
+
+    assert manager.mode() == "enforce"
+    assert manager.enforce_mode() is True
+
+
+def test_order_flow_entry_decision_uses_quote_inferred_tick_side_and_marketable_limit():
+    quote = {"symbol": "AAPL", "bid": 99.98, "ask": 100.0, "last_price": 100.0, "quote_age_s": 0.1}
+    manager = OrderFlowManager(
+        config=_Config({"ibkr_order_flow_mode": "enforce"}),
+        environment="paper",
+        data_environment="live",
+        quote_provider=lambda _symbol: quote,
+    )
+    manager.on_market_tick(
+        {
+            "symbol": "AAPL",
+            "conid": 123,
+            "source": "tick_by_tick",
+            "timestamp_ms": 1_000,
+            "price": 100.0,
+            "size": 10,
+        }
+    )
+
+    decision = manager.entry_decision(
+        {"signal_id": "sig-1", "symbol": "AAPL", "direction": "long", "extra": {"quality_score": 85}},
+        conid=123,
+        quote=quote,
+    )
+
+    assert decision["action"] == "allow"
+    assert decision["reason"] == "order_flow_confirmed"
+    assert decision["confirmation"]["delta_ratio"] == 1
+    assert decision["marketable_limit"]["price"] == 100.08
+
+
+def test_order_flow_entry_decision_rejects_after_confirmation_timeout():
+    quote = {"symbol": "MSFT", "bid": 99.98, "ask": 100.0, "last_price": 100.0, "quote_age_s": 0.1}
+    manager = OrderFlowManager(
+        config=_Config({"ibkr_order_flow_mode": "enforce", "ibkr_order_flow_entry_timeout_sec": "1"}),
+        environment="paper",
+        data_environment="live",
+        quote_provider=lambda _symbol: quote,
+    )
+    manager._entry_wait_started_ms["sig-timeout"] = int(time.time() * 1000) - 2_000
+
+    decision = manager.entry_decision(
+        {"signal_id": "sig-timeout", "symbol": "MSFT", "direction": "long", "extra": {"quality_score": 85}},
+        conid=456,
+        quote=quote,
+    )
+
+    assert decision["action"] == "reject"
+    assert decision["reason"] == "order_flow_timeout"
+    assert manager._entry_wait_started_ms == {}
+    assert manager.execution_pool.status()["entry_slot_count"] == 0
+
+
+def test_order_flow_position_decision_exits_or_tightens_without_widening_stop():
+    quote = {"symbol": "TSLA", "bid": 99.9, "ask": 99.92, "last_price": 99.91, "quote_age_s": 0.1}
+    manager = OrderFlowManager(
+        config=_Config({"ibkr_order_flow_mode": "enforce"}),
+        environment="paper",
+        data_environment="live",
+        quote_provider=lambda _symbol: quote,
+    )
+    manager.on_market_tick(
+        {
+            "symbol": "TSLA",
+            "source": "tick_by_tick",
+            "timestamp_ms": 1_000,
+            "price": 99.9,
+            "size": 10,
+        }
+    )
+
+    exit_decision = manager.position_decision(
+        {"symbol": "TSLA", "direction": "long", "entry_price": 100.0, "stop_price": 99.0, "risk_r": 1.0},
+        quote=quote,
+    )
+
+    assert exit_decision["action"] == "full_exit"
+    assert exit_decision["limit_price"] == 99.82
+
+    quote_profit = {"symbol": "TSLA", "bid": 101.0, "ask": 101.02, "last_price": 101.0, "quote_age_s": 0.1}
+    tighten_decision = manager.position_decision(
+        {"symbol": "TSLA", "direction": "long", "entry_price": 100.0, "stop_price": 99.0, "risk_r": 1.0},
+        quote=quote_profit,
+    )
+
+    assert tighten_decision["action"] == "tighten_stop"
+    assert tighten_decision["stop_price"] >= 100.0

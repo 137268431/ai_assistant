@@ -197,6 +197,7 @@ class ExecutionPoolManager:
             candidate_key=candidate_key,
             state="entry_watch",
             allocated_at_ms=int(at_ms),
+            release_at_ms=int(at_ms) + self.reservation_ttl_ms if self.reservation_ttl_ms > 0 else None,
         )
         self._candidate_watches[symbol] = watch
         return True, watch, "allocated"
@@ -307,11 +308,42 @@ class ExecutionPoolManager:
         self._candidate_watches[normalized_symbol] = updated
         return updated
 
+    def upsert_position_watch(
+        self,
+        symbol: str,
+        *,
+        direction: str = "unknown",
+        conid: int = 0,
+        at_ms: int = 0,
+        candidate_key: str = "",
+    ) -> tuple[bool, ExecutionCandidateWatch | None, str]:
+        normalized_symbol = normalize_symbol(symbol)
+        if not normalized_symbol:
+            return False, None, "symbol_required"
+        existing = self._candidate_watches.get(normalized_symbol)
+        position_watches = [
+            watch for watch in self._candidate_watches.values() if watch.state == "open_position"
+        ]
+        if existing is None and self.max_position_slots > 0 and len(position_watches) >= self.max_position_slots:
+            return False, None, "position_slots_full"
+        updated = ExecutionCandidateWatch(
+            symbol=normalized_symbol,
+            direction=direction or (existing.direction if existing is not None else "unknown"),
+            conid=int(conid or (existing.conid if existing is not None else 0)),
+            candidate_key=str(candidate_key or (existing.candidate_key if existing is not None else f"{normalized_symbol}:position")),
+            state="open_position",
+            allocated_at_ms=existing.allocated_at_ms if existing is not None else int(at_ms),
+            filled_at_ms=existing.filled_at_ms if existing is not None else int(at_ms),
+            release_at_ms=None,
+        )
+        self._candidate_watches[normalized_symbol] = updated
+        return True, updated, "position_watch_upserted"
+
     def release_expired_watches(self, at_ms: int) -> list[ExecutionCandidateWatch]:
         expired = [
             watch
             for watch in self._candidate_watches.values()
-            if watch.state == "filled_watch"
+            if watch.state in {"entry_watch", "filled_watch"}
             and watch.release_at_ms is not None
             and int(at_ms) >= watch.release_at_ms
         ]
@@ -363,7 +395,7 @@ class ExecutionPoolManager:
             "pending_entry_slots": self.pending_entry_slots,
             "open_position_slots": self.open_position_slots,
             "position_slot_count": self.open_position_slots
-            + sum(1 for watch in self._candidate_watches.values() if watch.state == "filled_watch"),
+            + sum(1 for watch in self._candidate_watches.values() if watch.state in {"filled_watch", "open_position"}),
             "fill_watch_slots": sum(1 for slot in self._slots.values() if slot.state == "fill_watch"),
         }
 

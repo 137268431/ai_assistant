@@ -358,13 +358,87 @@ class TradingServiceSignalsMixin:
                 order_flow_manager = getattr(self, "order_flow_manager", None)
                 if order_flow_manager is not None:
                     try:
-                        order_flow_decision = order_flow_manager.observe_signal(sig, conid=int(conid))
+                        quote = self._entry_guard_quote(symbol)
+                        entry_decision = getattr(order_flow_manager, "entry_decision", None)
+                        if callable(entry_decision):
+                            order_flow_decision = entry_decision(sig, conid=int(conid), quote=quote)
+                        else:
+                            order_flow_decision = order_flow_manager.observe_signal(sig, conid=int(conid))
                         extra = self._signal_extra(sig)
                         sig["extra"] = {
                             **extra,
+                            "order_flow": order_flow_decision,
                             "order_flow_shadow": order_flow_decision,
                         }
+                        action = str(order_flow_decision.get("action") or "").strip().lower()
+                        if action == "wait":
+                            self._mark_signal_order_flow_waiting(sig, order_flow_decision)
+                            service_mod.logger.info(
+                                "Signal waiting for order-flow confirmation: signal_id=%s symbol=%s reason=%s",
+                                signal_id,
+                                symbol,
+                                order_flow_decision.get("reason"),
+                            )
+                            continue
+                        if action == "reject":
+                            self._mark_signal_order_flow_rejected(sig, order_flow_decision)
+                            releaser = getattr(order_flow_manager, "release_symbol", None)
+                            if callable(releaser):
+                                releaser(symbol, reason=str(order_flow_decision.get("reason") or "order_flow_rejected"))
+                            self.signal_router.mark_processed(signal_id)
+                            finalized = True
+                            continue
+                        if action == "allow":
+                            previous_entry = self._safe_float(sig.get("entry"), 0.0)
+                            sig = self._apply_order_flow_entry_decision(sig, order_flow_decision)
+                            if self._safe_float(sig.get("entry"), 0.0) != previous_entry:
+                                buying_power_guard = self._evaluate_signal_buying_power_guard(sig)
+                                if buying_power_guard.get("state") == "blocked":
+                                    service_mod.logger.warning(
+                                        "Signal blocked by buying-power guard after order-flow repricing: signal_id=%s symbol=%s remaining_after=%s block_floor=%s",
+                                        signal_id,
+                                        sig.get("symbol"),
+                                        buying_power_guard.get("remaining_after"),
+                                        buying_power_guard.get("block_floor"),
+                                    )
+                                    self._mark_signal_buying_power_blocked(sig, buying_power_guard)
+                                    self._notify_buying_power_guard(sig, buying_power_guard, level="error", event_type="alert")
+                                    releaser = getattr(order_flow_manager, "release_symbol", None)
+                                    if callable(releaser):
+                                        releaser(symbol, reason="buying_power_blocked_after_order_flow")
+                                    self.signal_router.mark_processed(signal_id)
+                                    finalized = True
+                                    continue
+                                if buying_power_guard.get("enabled"):
+                                    extra = self._signal_extra(sig)
+                                    sig["extra"] = {
+                                        **extra,
+                                        **self._buying_power_extra_fields(buying_power_guard),
+                                    }
                     except Exception as order_flow_err:
+                        enforce_mode = getattr(order_flow_manager, "enforce_mode", None)
+                        should_fail_closed = callable(enforce_mode) and bool(enforce_mode())
+                        if should_fail_closed:
+                            order_flow_decision = {
+                                "action": "wait",
+                                "reason": "order_flow_error",
+                                "error": str(order_flow_err),
+                                "enforced": True,
+                            }
+                            extra = self._signal_extra(sig)
+                            sig["extra"] = {
+                                **extra,
+                                "order_flow": order_flow_decision,
+                                "order_flow_shadow": order_flow_decision,
+                            }
+                            self._mark_signal_order_flow_waiting(sig, order_flow_decision)
+                            service_mod.logger.warning(
+                                "Order-flow enforce failed closed: signal_id=%s symbol=%s error=%s",
+                                signal_id,
+                                symbol,
+                                order_flow_err,
+                            )
+                            continue
                         service_mod.logger.warning(
                             "Order-flow shadow observe failed: signal_id=%s symbol=%s error=%s",
                             signal_id,
@@ -555,6 +629,7 @@ class TradingServiceSignalsMixin:
             order_ids = target.get("order_ids") or []
             if not order_ids:
                 continue
+            extra = self._signal_extra(sig)
             self.order_tracker.register_submitted_orders(
                 order_ids,
                 {
@@ -565,8 +640,8 @@ class TradingServiceSignalsMixin:
                     "tp_price": sig["take_profit"],
                     "sl_price": sig["stop_loss"],
                     "entry_order_type": "LMT",
-                    "entry_limit_intent": "passive",
-                    "entry_price_plan": "passive_limit",
+                    "entry_limit_intent": str(extra.get("entry_limit_intent") or "passive"),
+                    "entry_price_plan": str(extra.get("entry_price_plan") or "passive_limit"),
                     "entry_unique_id": target.get("entry_coid")
                     or target.get("bracket_group")
                     or "",
@@ -800,6 +875,45 @@ class TradingServiceSignalsMixin:
         adjusted_sig["extra"] = {**extra, **diagnostics}
         return True, adjusted_sig, ""
 
+    def _apply_order_flow_entry_decision(self, sig: dict, decision: dict) -> dict:
+        marketable = decision.get("marketable_limit") if isinstance(decision.get("marketable_limit"), dict) else {}
+        entry_price = self._safe_float(marketable.get("price"), 0.0)
+        if entry_price <= 0:
+            return sig
+        adjusted_sig = copy.deepcopy(sig)
+        original_entry = self._safe_float(sig.get("entry"), 0.0)
+        original_stop = self._safe_float(sig.get("stop_loss"), 0.0)
+        original_target = self._safe_float(sig.get("take_profit"), 0.0)
+        adjusted_sig["entry"] = self._round_price(entry_price)
+        delta = adjusted_sig["entry"] - self._round_price(original_entry)
+        if original_stop > 0:
+            adjusted_sig["stop_loss"] = self._round_price(original_stop + delta)
+        if original_target > 0:
+            adjusted_sig["take_profit"] = self._round_price(original_target + delta)
+        extra = self._signal_extra(sig)
+        adjusted_sig["extra"] = {
+            **extra,
+            "order_flow": decision,
+            "order_flow_shadow": decision,
+            "order_flow_enforced": bool(decision.get("enforced")),
+            "order_flow_entry_confirmed": True,
+            "order_flow_original_entry": original_entry,
+            "order_flow_original_stop_loss": original_stop,
+            "order_flow_original_take_profit": original_target,
+            "order_flow_entry_limit_price": adjusted_sig["entry"],
+            "order_flow_stop_loss": adjusted_sig.get("stop_loss"),
+            "order_flow_take_profit": adjusted_sig.get("take_profit"),
+            "entry_order_type": "LMT",
+            "entry_limit_intent": "marketable",
+            "entry_price_plan": "order_flow_marketable_limit",
+            "entry_repriced": (
+                adjusted_sig["entry"] != self._round_price(original_entry)
+                or adjusted_sig.get("stop_loss") != self._round_price(original_stop)
+                or adjusted_sig.get("take_profit") != self._round_price(original_target)
+            ),
+        }
+        return adjusted_sig
+
     def _is_fixed_position_signal(self, sig: dict) -> bool:
         lifecycle = getattr(self, "order_lifecycle", None)
         checker = getattr(lifecycle, "is_fixed_position_symbol", None)
@@ -1015,6 +1129,74 @@ class TradingServiceSignalsMixin:
         if broker_mode == data_environment == "live":
             patch.update({"status": status_text, "note": note_text})
         return patch
+
+    def _mark_signal_order_flow_waiting(self, sig: dict, decision: dict):
+        service_mod = _service_mod()
+        if not self.pb:
+            return
+        signal_id = str(sig.get("signal_id") or "").strip()
+        if not signal_id:
+            return
+        try:
+            record, existing_extra = self._load_signal_record_and_extra(sig)
+            if not record:
+                return
+            patch = self._signal_broker_patch(
+                "pending",
+                "order_flow_waiting",
+                existing_extra,
+                {
+                    **self._signal_extra(sig),
+                    "status_reason": "order_flow_waiting",
+                    "execution_state": "waiting_for_order_flow",
+                    "order_flow_waiting": True,
+                    "order_flow_waiting_at": self._now_iso(),
+                    "order_flow": dict(decision or {}),
+                    "order_flow_shadow": dict(decision or {}),
+                },
+            )
+            self.pb.update_record("ibkr_signals", record["id"], patch)
+        except Exception as exc:
+            service_mod.logger.error(
+                "Failed to mark signal order-flow-waiting: signal_id=%s error=%s",
+                signal_id,
+                exc,
+            )
+
+    def _mark_signal_order_flow_rejected(self, sig: dict, decision: dict):
+        service_mod = _service_mod()
+        if not self.pb:
+            return
+        signal_id = str(sig.get("signal_id") or "").strip()
+        if not signal_id:
+            return
+        reason = str((decision or {}).get("reason") or "order_flow_rejected").strip() or "order_flow_rejected"
+        status = "expired" if reason == "order_flow_timeout" else "rejected"
+        try:
+            record, existing_extra = self._load_signal_record_and_extra(sig)
+            if not record:
+                return
+            patch = self._signal_broker_patch(
+                status,
+                reason,
+                existing_extra,
+                {
+                    **self._signal_extra(sig),
+                    "status_reason": reason,
+                    "execution_state": "order_flow_rejected",
+                    "order_flow_rejected": True,
+                    "order_flow_rejected_at": self._now_iso(),
+                    "order_flow": dict(decision or {}),
+                    "order_flow_shadow": dict(decision or {}),
+                },
+            )
+            self.pb.update_record("ibkr_signals", record["id"], patch)
+        except Exception as exc:
+            service_mod.logger.error(
+                "Failed to mark signal order-flow-rejected: signal_id=%s error=%s",
+                signal_id,
+                exc,
+            )
 
     def _mark_signal_waiting_for_capacity(self, sig: dict, capacity: dict):
         service_mod = _service_mod()
@@ -1586,8 +1768,8 @@ class TradingServiceSignalsMixin:
                 "reason": "order_submitted_by_ibkr_compute",
                 "ack_source": "ibkr_service",
                 "entry_order_type": "LMT",
-                "entry_limit_intent": "passive",
-                "entry_price_plan": "passive_limit",
+                "entry_limit_intent": str(signal_extra.get("entry_limit_intent") or "passive"),
+                "entry_price_plan": str(signal_extra.get("entry_price_plan") or "passive_limit"),
                 "submitted_entry_limit_price": sig["entry"],
                 "bracket_group": trade_group_id,
                 "oca_group": oca_group,
@@ -1607,6 +1789,7 @@ class TradingServiceSignalsMixin:
                 **harvest_fields,
                 **exit_policy_fields,
                 **buying_power_fields,
+                "order_flow": signal_extra.get("order_flow", {}),
                 "order_flow_shadow": signal_extra.get("order_flow_shadow", {}),
             },
         }

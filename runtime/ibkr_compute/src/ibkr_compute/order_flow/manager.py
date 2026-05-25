@@ -29,12 +29,14 @@ class OrderFlowManager:
         environment: str = "live",
         data_environment: str | None = None,
         ws_client=None,
+        quote_provider=None,
     ):
         self.config = config
         self.environment = str(environment or "live").strip().lower() or "live"
         self.broker_environment = self.environment
         self.data_environment = str(data_environment or self.environment or "live").strip().lower() or "live"
         self.ws_client = ws_client
+        self.quote_provider = quote_provider
         self.aggregator = OrderFlowAggregator()
         self.candidates = CandidateQueueManager(
             default_ttl_ms=self._config_int("candidate_pullback_ttl_sec", 300) * 1000,
@@ -58,6 +60,8 @@ class OrderFlowManager:
         self._decision_log: list[dict[str, Any]] = []
         self._recent_closed_bars: deque[OrderFlowBar] = deque(maxlen=600)
         self._conid_by_symbol: dict[str, int] = {}
+        self._entry_wait_started_ms: dict[str, int] = {}
+        self._open_position_symbols: set[str] = set()
         self._tick_count = 0
         self._subscribe_errors = 0
         self._last_tick_ms = 0
@@ -67,7 +71,10 @@ class OrderFlowManager:
         return self._config_bool("ibkr_order_flow_enabled", True)
 
     def mode(self) -> str:
-        return self._config_text("ibkr_order_flow_mode", "shadow").strip().lower() or "shadow"
+        return self._config_text("ibkr_order_flow_mode", "enforce").strip().lower() or "enforce"
+
+    def enforce_mode(self) -> bool:
+        return self.mode() in {"confirm", "enforce"}
 
     def on_market_tick(self, payload: dict[str, Any]) -> None:
         if not self.enabled():
@@ -90,6 +97,7 @@ class OrderFlowManager:
         if not self.enabled():
             return {"enabled": False, "mode": self.mode()}
         current_ms = int(time.time() * 1000)
+        self.execution_pool.release_expired_watches(current_ms)
         candidate = self._candidate_from_signal(signal, current_ms)
         update = self.candidates.upsert(candidate, now_ms=current_ms)
         if not update.accepted or update.candidate is None:
@@ -131,6 +139,90 @@ class OrderFlowManager:
             "confirmation": confirmation,
             "enforced": False,
         }
+        self._record_decision(decision)
+        return decision
+
+    def entry_decision(self, signal: dict[str, Any], *, conid: int, quote: dict[str, Any] | None = None) -> dict[str, Any]:
+        observed = self.observe_signal(signal, conid=conid)
+        if not self.enabled():
+            return {**observed, "action": "allow", "reason": "order_flow_disabled", "enforced": False}
+        if not self._config_bool("ibkr_order_flow_auto_entry_enabled", True):
+            return {**observed, "action": "allow", "reason": "auto_entry_disabled", "enforced": False}
+        mode = self.mode()
+        if mode not in {"confirm", "enforce"}:
+            return {**observed, "action": "allow", "reason": "shadow_mode", "enforced": False}
+
+        signal_id = str(signal.get("signal_id") or signal.get("id") or "").strip()
+        symbol = normalize_symbol(str(signal.get("symbol") or ""))
+        direction = str(signal.get("direction") or "").strip().lower()
+        current_ms = int(time.time() * 1000)
+        wait_key = signal_id or f"{symbol}:{direction}"
+        started_ms = self._entry_wait_started_ms.setdefault(wait_key, current_ms)
+        timeout_ms = max(1, self._config_int("ibkr_order_flow_entry_timeout_sec", 60)) * 1000
+        elapsed_ms = max(0, current_ms - started_ms)
+        timeout = elapsed_ms >= timeout_ms
+
+        if not observed.get("allocation_ok"):
+            reason = str(observed.get("allocation_reason") or "execution_pool_unavailable")
+            decision = {
+                **observed,
+                "action": "reject" if timeout else "wait",
+                "reason": "order_flow_timeout" if timeout else reason,
+                "wait_elapsed_ms": elapsed_ms,
+                "wait_timeout_ms": timeout_ms,
+                "enforced": True,
+            }
+            if timeout:
+                self._release_entry_wait(symbol, wait_key, reason=decision["reason"])
+            self._record_decision(decision)
+            return decision
+
+        quote = self._quote_for_symbol(symbol, quote)
+        spread = self._spread_snapshot(quote)
+        if not spread.get("ok"):
+            decision = {
+                **observed,
+                "action": "reject" if timeout else "wait",
+                "reason": "order_flow_timeout" if timeout else str(spread.get("reason") or "quote_unavailable"),
+                "spread": spread,
+                "wait_elapsed_ms": elapsed_ms,
+                "wait_timeout_ms": timeout_ms,
+                "enforced": True,
+            }
+            if timeout:
+                self._release_entry_wait(symbol, wait_key, reason=decision["reason"])
+            self._record_decision(decision)
+            return decision
+
+        confirmation = dict(observed.get("confirmation") or self.confirmation(symbol, direction))
+        if confirmation.get("ok"):
+            marketable = self._marketable_limit_price(direction, quote)
+            if marketable.get("ok"):
+                self._entry_wait_started_ms.pop(wait_key, None)
+                decision = {
+                    **observed,
+                    "action": "allow",
+                    "reason": "order_flow_confirmed",
+                    "confirmation": confirmation,
+                    "spread": spread,
+                    "marketable_limit": marketable,
+                    "enforced": True,
+                }
+                self._record_decision(decision)
+                return decision
+
+        decision = {
+            **observed,
+            "action": "reject" if timeout else "wait",
+            "reason": "order_flow_timeout" if timeout else str(confirmation.get("reason") or "delta_ratio_not_confirmed"),
+            "confirmation": confirmation,
+            "spread": spread,
+            "wait_elapsed_ms": elapsed_ms,
+            "wait_timeout_ms": timeout_ms,
+            "enforced": True,
+        }
+        if timeout:
+            self._release_entry_wait(symbol, wait_key, reason=decision["reason"])
         self._record_decision(decision)
         return decision
 
@@ -177,15 +269,159 @@ class OrderFlowManager:
             self._subscribe_tick(int(conid))
         self._record_decision({"action": "filled_watch", "accepted": watch is not None, "slot": self._watch_dict(watch)})
 
+    def sync_positions(self, positions: list[dict[str, Any]] | None) -> dict[str, Any]:
+        if not self.enabled():
+            return {"enabled": False}
+        current_ms = int(time.time() * 1000)
+        self.execution_pool.release_expired_watches(current_ms)
+        active_symbols: set[str] = set()
+        synced = 0
+        blocked = 0
+        for item in positions or []:
+            symbol = normalize_symbol(str(item.get("ticker") or item.get("symbol") or item.get("contractDesc") or ""))
+            quantity = self._safe_float(item.get("position", item.get("quantity", 0)), 0.0)
+            conid = int(self._safe_float(item.get("conid"), 0.0))
+            if not symbol or not quantity:
+                continue
+            direction = "long" if quantity > 0 else "short"
+            accepted, watch, reason = self.execution_pool.upsert_position_watch(
+                symbol,
+                direction=direction,
+                conid=conid,
+                at_ms=current_ms,
+                candidate_key=f"{symbol}:position",
+            )
+            if not accepted:
+                blocked += 1
+                self._record_decision({"action": "position_watch_blocked", "symbol": symbol, "reason": reason})
+                continue
+            active_symbols.add(symbol)
+            synced += 1
+            if conid > 0:
+                self._conid_by_symbol[symbol] = conid
+                self._subscribe_tick(conid)
+            self._record_decision({"action": "position_watch", "symbol": symbol, "slot": self._watch_dict(watch)})
+
+        for symbol in sorted(self._open_position_symbols - active_symbols):
+            self.release_symbol(symbol, reason="position_flat")
+        self._open_position_symbols = active_symbols
+        return {"enabled": True, "synced": synced, "blocked": blocked, "active_symbols": sorted(active_symbols)}
+
+    def position_decision(
+        self,
+        position: dict[str, Any],
+        *,
+        quote: dict[str, Any] | None = None,
+        order_group: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not self.enabled():
+            return {"action": "hold", "reason": "order_flow_disabled", "enforced": False}
+        if self.mode() != "enforce":
+            return {"action": "hold", "reason": "not_enforce_mode", "enforced": False}
+        symbol = normalize_symbol(str(position.get("symbol") or position.get("ticker") or ""))
+        direction = str(position.get("direction") or "").strip().lower()
+        if not symbol or direction not in {"long", "short"}:
+            return {"action": "hold", "reason": "invalid_position", "enforced": True}
+        quote = self._quote_for_symbol(symbol, quote)
+        spread = self._spread_snapshot(quote)
+        if not spread.get("ok"):
+            return {"action": "hold", "reason": spread.get("reason") or "quote_unavailable", "spread": spread, "enforced": True}
+
+        opposite = "short" if direction == "long" else "long"
+        confirmation = self.confirmation(symbol, opposite)
+        if not confirmation.get("ok"):
+            return {"action": "hold", "reason": str(confirmation.get("reason") or "no_adverse_delta"), "confirmation": confirmation, "spread": spread, "enforced": True}
+
+        current_price = self._current_price_for_direction(direction, quote)
+        entry_price = self._safe_float(position.get("entry_price", position.get("entry")), 0.0)
+        stop_price = self._safe_float(position.get("stop_price", position.get("stop_loss")), 0.0)
+        risk_r = self._safe_float(position.get("risk_r"), abs(entry_price - stop_price))
+        if current_price <= 0 or entry_price <= 0 or risk_r <= 0:
+            return {"action": "hold", "reason": "missing_position_prices", "confirmation": confirmation, "spread": spread, "enforced": True}
+        pnl_r = ((current_price - entry_price) if direction == "long" else (entry_price - current_price)) / risk_r
+        exit_ratio = max(
+            self._config_float("ibkr_order_flow_exit_delta_ratio", 0.18),
+            self._config_float("ibkr_order_flow_min_delta_ratio", 0.12),
+        )
+        stop_ratio = max(
+            self._config_float("ibkr_order_flow_stop_delta_ratio", 0.12),
+            self._config_float("ibkr_order_flow_min_delta_ratio", 0.12),
+        )
+        delta_ratio = abs(self._safe_float(confirmation.get("delta_ratio"), 0.0))
+
+        if self._config_bool("ibkr_order_flow_auto_exit_enabled", True) and delta_ratio >= exit_ratio and pnl_r <= 0.15:
+            marketable = self._marketable_limit_price("short" if direction == "long" else "long", quote)
+            decision = {
+                "action": "full_exit",
+                "reason": "order_flow_adverse_delta_exit",
+                "symbol": symbol,
+                "direction": direction,
+                "pnl_r": round(pnl_r, 4),
+                "confirmation": confirmation,
+                "spread": spread,
+                "marketable_limit": marketable,
+                "limit_price": marketable.get("price") if marketable.get("ok") else 0.0,
+                "enforced": True,
+            }
+            self._record_decision(decision)
+            return decision
+
+        if self._config_bool("ibkr_order_flow_stop_tighten_enabled", True) and delta_ratio >= stop_ratio:
+            stop_price_new = self._tightened_stop_price(direction, current_price, entry_price, stop_price, risk_r)
+            if stop_price_new > 0:
+                decision = {
+                    "action": "tighten_stop",
+                    "reason": "order_flow_adverse_delta_tighten_stop",
+                    "symbol": symbol,
+                    "direction": direction,
+                    "pnl_r": round(pnl_r, 4),
+                    "stop_price": stop_price_new,
+                    "old_stop": stop_price,
+                    "confirmation": confirmation,
+                    "spread": spread,
+                    "enforced": True,
+                }
+                self._record_decision(decision)
+                return decision
+
+        return {
+            "action": "hold",
+            "reason": "adverse_delta_below_action_threshold",
+            "pnl_r": round(pnl_r, 4),
+            "confirmation": confirmation,
+            "spread": spread,
+            "enforced": True,
+        }
+
     def release_symbol(self, symbol: str, *, reason: str = "released") -> None:
         normalized_symbol = normalize_symbol(symbol)
         current_ms = int(time.time() * 1000)
         releaser = getattr(self.execution_pool, "release_candidate_watch", None)
         released = releaser(normalized_symbol) if callable(releaser) else None
+        self._entry_wait_started_ms = {
+            key: value
+            for key, value in self._entry_wait_started_ms.items()
+            if not str(key).startswith(f"{normalized_symbol}:")
+        }
         conid = self._conid_by_symbol.pop(normalized_symbol, 0)
         if conid:
             self._unsubscribe_tick(conid)
         self._record_decision({"action": "release_symbol", "symbol": normalized_symbol, "accepted": released is not None, "reason": reason})
+
+    def _release_entry_wait(self, symbol: str, wait_key: str, *, reason: str) -> None:
+        self._entry_wait_started_ms.pop(wait_key, None)
+        normalized_symbol = normalize_symbol(symbol)
+        released = self.execution_pool.release_candidate_watch(normalized_symbol)
+        conid = self._conid_by_symbol.pop(normalized_symbol, 0)
+        if conid:
+            self._unsubscribe_tick(conid)
+        self._record_decision({
+            "action": "release_entry_wait",
+            "symbol": normalized_symbol,
+            "wait_key": wait_key,
+            "accepted": released is not None,
+            "reason": reason,
+        })
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -250,17 +486,103 @@ class OrderFlowManager:
         if timestamp_ms <= 0:
             raw_time = int(self._first_float(payload, ("time",)))
             timestamp_ms = raw_time * 1000 if 0 < raw_time < 10_000_000_000 else int(time.time() * 1000)
+        quote = self._quote_for_symbol(symbol, None)
+        bid = self._first_optional_float(payload, ("bid", "bid_price", "84"))
+        ask = self._first_optional_float(payload, ("ask", "ask_price", "86"))
+        if bid is None:
+            bid = self._safe_float((quote or {}).get("bid"), 0.0) or None
+        if ask is None:
+            ask = self._safe_float((quote or {}).get("ask"), 0.0) or None
         return OrderFlowTick(
             symbol=symbol,
             timestamp_ms=timestamp_ms,
             price=price,
             size=size,
             side=str(payload.get("side") or ""),
-            bid=self._first_optional_float(payload, ("bid", "bid_price", "84")),
-            ask=self._first_optional_float(payload, ("ask", "ask_price", "86")),
+            bid=bid,
+            ask=ask,
             source=str(payload.get("source") or payload.get("tick_source") or ""),
             metadata={"conid": payload.get("conid") or payload.get("conidEx")},
         )
+
+    def _quote_for_symbol(self, symbol: str, quote: dict[str, Any] | None) -> dict[str, Any]:
+        if isinstance(quote, dict) and quote:
+            return dict(quote)
+        provider = self.quote_provider
+        if not callable(provider):
+            return {}
+        try:
+            value = provider(symbol)
+        except Exception as exc:
+            self._last_error = str(exc)
+            return {}
+        return dict(value or {}) if isinstance(value, dict) else {}
+
+    def _spread_snapshot(self, quote: dict[str, Any] | None) -> dict[str, Any]:
+        quote = quote if isinstance(quote, dict) else {}
+        bid = self._safe_float(quote.get("bid"), 0.0)
+        ask = self._safe_float(quote.get("ask"), 0.0)
+        last = self._safe_float(quote.get("last_price", quote.get("last")), 0.0)
+        if bid <= 0 or ask <= 0 or ask < bid:
+            return {"ok": False, "reason": "quote_bid_ask_unavailable", "bid": bid, "ask": ask, "last": last}
+        mid = (bid + ask) / 2.0
+        spread_bps = ((ask - bid) / mid * 10000.0) if mid > 0 else 0.0
+        max_spread = self._config_float("ibkr_order_flow_max_spread_bps", 12.0)
+        return {
+            "ok": spread_bps <= max_spread,
+            "reason": "ok" if spread_bps <= max_spread else "spread_too_wide",
+            "bid": bid,
+            "ask": ask,
+            "last": last,
+            "spread_bps": round(spread_bps, 4),
+            "max_spread_bps": max_spread,
+        }
+
+    def _marketable_limit_price(self, direction: str, quote: dict[str, Any] | None) -> dict[str, Any]:
+        quote = quote if isinstance(quote, dict) else {}
+        normalized = str(direction or "").strip().lower()
+        bid = self._safe_float(quote.get("bid"), 0.0)
+        ask = self._safe_float(quote.get("ask"), 0.0)
+        last = self._safe_float(quote.get("last_price", quote.get("last")), 0.0)
+        reference = ask if normalized == "long" else bid
+        source = "ask" if normalized == "long" else "bid"
+        if reference <= 0:
+            reference = last
+            source = "last_price"
+        if reference <= 0:
+            return {"ok": False, "reason": "reference_price_unavailable"}
+        bps = max(0.0, self._config_float("ibkr_order_flow_marketable_limit_bps", 8.0))
+        offset = max(0.02, reference * bps / 10000.0)
+        price = reference + offset if normalized == "long" else reference - offset
+        if price <= 0:
+            return {"ok": False, "reason": "invalid_marketable_limit_price"}
+        return {
+            "ok": True,
+            "price": round(price, 2),
+            "reference": round(reference, 4),
+            "reference_source": source,
+            "offset": round(offset, 4),
+            "bps": bps,
+            "order_type": "marketable_limit",
+        }
+
+    def _current_price_for_direction(self, direction: str, quote: dict[str, Any]) -> float:
+        if str(direction or "").strip().lower() == "short":
+            return self._safe_float(quote.get("ask"), 0.0) or self._safe_float(quote.get("last_price"), 0.0)
+        return self._safe_float(quote.get("bid"), 0.0) or self._safe_float(quote.get("last_price"), 0.0)
+
+    @staticmethod
+    def _tightened_stop_price(direction: str, current_price: float, entry_price: float, old_stop: float, risk_r: float) -> float:
+        cushion = max(0.01, float(risk_r or 0.0) * 0.10)
+        if str(direction or "").strip().lower() == "short":
+            candidate = max(entry_price, current_price + cushion) if current_price < entry_price else current_price + cushion
+            if old_stop > 0 and candidate >= old_stop - 0.005:
+                return 0.0
+            return round(max(candidate, current_price + 0.01), 2)
+        candidate = min(entry_price, current_price - cushion) if current_price > entry_price else current_price - cushion
+        if old_stop > 0 and candidate <= old_stop + 0.005:
+            return 0.0
+        return round(min(candidate, current_price - 0.01), 2)
 
     def _subscribe_tick(self, conid: int) -> None:
         subscriber = getattr(self.ws_client, "subscribe_tick_by_tick", None)

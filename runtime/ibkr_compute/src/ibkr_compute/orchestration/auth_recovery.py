@@ -59,6 +59,8 @@ class TradingServiceAuthRecoveryMixin:
         source = self._normalize_recovery_value(payload.get("last_recovery_source"))
         auto_restart_scheduled = bool(payload.get("auto_restart_scheduled"))
 
+        if probe_result == "gateway_socket_unreachable":
+            return "local_socket_unreachable"
         if (
             probe_result in {
                 "fresh_probe_authenticated",
@@ -235,6 +237,12 @@ class TradingServiceAuthRecoveryMixin:
     def _auth_probe_in_late_session(self) -> bool:
         return self._auth_probe_market_session_kind() in {"close_transition", "afterhours"}
 
+    @staticmethod
+    def _gateway_socket_unreachable(status: dict | None, status_code: int | None = None) -> bool:
+        payload = status if isinstance(status, dict) else {}
+        code = int(status_code if status_code is not None else payload.get("status_code") or 0)
+        return code in {502, 504} or payload.get("api_socket_listening") is False
+
     def _wait_for_server_boot_resume_auth(
         self,
         cycle_id: str,
@@ -255,6 +263,7 @@ class TradingServiceAuthRecoveryMixin:
                 return False, attempts
             attempts += 1
             authenticated = False
+            gateway_status = {}
             gateway_status_code = 0
             try:
                 auth_payload = self.session_keeper.check_auth_status()
@@ -262,21 +271,47 @@ class TradingServiceAuthRecoveryMixin:
             except Exception as exc:
                 service_mod.logger.debug("Server boot passive auth probe failed: %s", exc)
             try:
-                gateway_status_code = int(self.gateway_manager.status().get("status_code") or 0)
+                gateway_status = self.gateway_manager.status()
+                gateway_status_code = int(gateway_status.get("status_code") or 0)
             except Exception:
+                gateway_status = {}
                 gateway_status_code = 0
             self._set_auth_recovery_state(
                 cycle_id=cycle_id,
                 recovery_phase="resume_waiting_manual",
+                recovery_class="local_socket_unreachable" if self._gateway_socket_unreachable(gateway_status, gateway_status_code) else None,
                 interruption_kind="server_boot_resume",
                 recovery_reason=recovery_reason,
                 probe_started_at=current.get("probe_started_at") or self._now_iso(),
                 probe_last_checked_at=self._now_iso(),
                 probe_attempts=attempts,
-                probe_result="authenticated" if authenticated else "resume_probe_timeout",
+                probe_result=(
+                    "authenticated"
+                    if authenticated
+                    else (
+                        "gateway_socket_unreachable"
+                        if self._gateway_socket_unreachable(gateway_status, gateway_status_code)
+                        else "resume_probe_timeout"
+                    )
+                ),
                 auto_restart_scheduled=False,
                 last_gateway_status_code=gateway_status_code,
                 last_recovery_source=source,
+                disconnect_reason_code=(
+                    "local_socket_unreachable"
+                    if self._gateway_socket_unreachable(gateway_status, gateway_status_code)
+                    else current.get("disconnect_reason_code", "")
+                ),
+                disconnect_reason_label=(
+                    "本地 Gateway Socket 不可达"
+                    if self._gateway_socket_unreachable(gateway_status, gateway_status_code)
+                    else current.get("disconnect_reason_label", "")
+                ),
+                disconnect_reason_confidence=(
+                    "high"
+                    if self._gateway_socket_unreachable(gateway_status, gateway_status_code)
+                    else current.get("disconnect_reason_confidence", "")
+                ),
                 lock_owner="",
                 lock_expires_at="",
                 manual_takeover_active=False,
@@ -628,6 +663,7 @@ class TradingServiceAuthRecoveryMixin:
                             return
                         attempts += 1
                         authenticated = False
+                        gateway_status = {}
                         gateway_status_code = 0
                         try:
                             auth_payload = self.session_keeper.check_auth_status()
@@ -635,8 +671,10 @@ class TradingServiceAuthRecoveryMixin:
                         except Exception as exc:
                             service_mod.logger.debug("Auth probe auth check failed: %s", exc)
                         try:
-                            gateway_status_code = int(self.gateway_manager.status().get("status_code") or 0)
+                            gateway_status = self.gateway_manager.status()
+                            gateway_status_code = int(gateway_status.get("status_code") or 0)
                         except Exception:
+                            gateway_status = {}
                             gateway_status_code = 0
                         phase = "manual_takeover" if self._manual_takeover_active(current) else (
                             "resume_waiting_manual"
@@ -657,10 +695,27 @@ class TradingServiceAuthRecoveryMixin:
                             probe_last_checked_at=self._now_iso(),
                             probe_attempts=attempts,
                             probe_result="authenticated" if authenticated else (
-                                "resume_probe_timeout" if phase == "resume_waiting_manual" else "pending"
+                                "gateway_socket_unreachable"
+                                if self._gateway_socket_unreachable(gateway_status, gateway_status_code)
+                                else ("resume_probe_timeout" if phase == "resume_waiting_manual" else "pending")
                             ),
                             last_gateway_status_code=gateway_status_code,
                             last_recovery_source=source,
+                            disconnect_reason_code=(
+                                "local_socket_unreachable"
+                                if self._gateway_socket_unreachable(gateway_status, gateway_status_code)
+                                else current.get("disconnect_reason_code", "")
+                            ),
+                            disconnect_reason_label=(
+                                "本地 Gateway Socket 不可达"
+                                if self._gateway_socket_unreachable(gateway_status, gateway_status_code)
+                                else current.get("disconnect_reason_label", "")
+                            ),
+                            disconnect_reason_confidence=(
+                                "high"
+                                if self._gateway_socket_unreachable(gateway_status, gateway_status_code)
+                                else current.get("disconnect_reason_confidence", "")
+                            ),
                             lock_owner="" if phase == "resume_waiting_manual" else "auth_probe",
                             lock_expires_at="" if phase == "resume_waiting_manual" else self._future_iso(service_mod.AUTH_RECOVERY_LOCK_TTL_SECONDS),
                         )
@@ -714,9 +769,29 @@ class TradingServiceAuthRecoveryMixin:
                                     recovery_reason=recovery_reason,
                                     probe_last_checked_at=self._now_iso(),
                                     probe_attempts=attempts,
-                                    probe_result="resume_probe_timeout",
+                                    probe_result=(
+                                        "gateway_socket_unreachable"
+                                        if self._gateway_socket_unreachable(gateway_status, gateway_status_code)
+                                        else "resume_probe_timeout"
+                                    ),
                                     auto_restart_scheduled=False,
+                                    last_gateway_status_code=gateway_status_code,
                                     last_recovery_source=source,
+                                    disconnect_reason_code=(
+                                        "local_socket_unreachable"
+                                        if self._gateway_socket_unreachable(gateway_status, gateway_status_code)
+                                        else current.get("disconnect_reason_code", "")
+                                    ),
+                                    disconnect_reason_label=(
+                                        "本地 Gateway Socket 不可达"
+                                        if self._gateway_socket_unreachable(gateway_status, gateway_status_code)
+                                        else current.get("disconnect_reason_label", "")
+                                    ),
+                                    disconnect_reason_confidence=(
+                                        "high"
+                                        if self._gateway_socket_unreachable(gateway_status, gateway_status_code)
+                                        else current.get("disconnect_reason_confidence", "")
+                                    ),
                                     lock_owner="",
                                     lock_expires_at="",
                                     manual_takeover_active=False,

@@ -58,6 +58,7 @@ class OrderLifecycle:
         config=None,
         environment: str = "live",
         broker: BrokerAdapter | None = None,
+        order_flow_manager=None,
     ):
         self.account_id = account_id or ACCOUNT_ID
         self.pb_client = pb_client
@@ -66,6 +67,7 @@ class OrderLifecycle:
         self.config = config
         self.environment = str(environment or "live").strip().lower() or "live"
         self.broker = broker or BrokerAdapter()
+        self.order_flow_manager = order_flow_manager
 
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -81,6 +83,9 @@ class OrderLifecycle:
         self._intraday_harvest_action_count = 0
         self._intraday_harvest_error_count = 0
         self._last_intraday_harvest_action_ms = 0
+        self._order_flow_risk_action_count = 0
+        self._order_flow_risk_error_count = 0
+        self._last_order_flow_risk_action_ms = 0
 
     def _get_config_value(self, key: str, default: str) -> str:
         if not self.config:
@@ -733,6 +738,367 @@ class OrderLifecycle:
             self._live_exit_policy_update_error_count += 1
             logger.warning("Live exit-policy stop update loop failed: %s", exc)
 
+    def _order_flow_groups(self, rows: list[dict]) -> list[dict]:
+        groups = [group for group in self._group_harvest_rows(rows) if self._harvest_group_active(group)]
+        if groups:
+            return groups
+        entry_row, stop_row, target_row = self._select_live_exit_policy_group(rows)
+        if not entry_row and not stop_row:
+            return []
+        group_key = self._order_group_key(entry_row) or self._order_group_key(stop_row) or self._order_group_key(target_row)
+        return [
+            {
+                "group_key": group_key,
+                "rows": [row for row in (entry_row, stop_row, target_row) if row],
+                "lot": "primary",
+                "entry": entry_row,
+                "stop_loss": stop_row,
+                "take_profit": target_row,
+            }
+        ]
+
+    def _execute_order_flow_tighten_stop(
+        self,
+        *,
+        symbol: str,
+        groups: list[dict],
+        direction: str,
+        stop_price: float,
+        decision: dict,
+    ) -> int:
+        updated = 0
+        if not self.order_modifier or stop_price <= 0:
+            return 0
+        for group in groups:
+            stop_row = group.get("stop_loss") or {}
+            if not stop_row or not self._order_is_open(stop_row):
+                continue
+            old_stop = (
+                self._coerce_float(stop_row.get("limit_price"), 0.0)
+                or self._coerce_float(stop_row.get("sl_price"), 0.0)
+            )
+            if not self._stop_tightens(direction, old_stop, stop_price):
+                continue
+            stop_order_id = self._order_broker_id(stop_row)
+            if not stop_order_id:
+                continue
+            result = self.order_modifier.update_stop_loss(stop_order_id, stop_price)
+            if not result.get("ok"):
+                logger.warning("Order-flow stop tighten failed: %s order=%s error=%s", symbol, stop_order_id, result.get("error"))
+                continue
+            self._upsert_harvest_order_patch(
+                stop_row,
+                limit_price=stop_price,
+                extra_patch={
+                    "reason": str(decision.get("reason") or "order_flow_tighten_stop"),
+                    "order_flow_stop_tightened": True,
+                    "order_flow_stop_tightened_at_ms": int(time.time() * 1000),
+                    "order_flow_old_stop": old_stop,
+                    "order_flow_new_stop": stop_price,
+                    "order_flow_decision": dict(decision or {}),
+                },
+            )
+            updated += 1
+        if updated:
+            self._order_flow_risk_action_count += updated
+            self._last_order_flow_risk_action_ms = int(time.time() * 1000)
+        return updated
+
+    def _cancel_order_flow_protection(self, group: dict, reason: str) -> list[dict]:
+        errors: list[dict] = []
+        for role in ("take_profit", "stop_loss"):
+            row = group.get(role) or {}
+            if not row or not self._order_is_open(row):
+                continue
+            broker_id = self._order_broker_id(row)
+            if not broker_id:
+                continue
+            result = self.order_modifier.cancel_order(broker_id) if self.order_modifier else {"ok": False, "error": "order_modifier_unavailable"}
+            if not result.get("ok") and not self._cancel_result_looks_closed(result):
+                errors.append({"order_id": broker_id, "role": role, "error": result.get("error") or "cancel_failed"})
+                continue
+            self._upsert_harvest_order_patch(
+                row,
+                status="Canceled",
+                relation_status="closed",
+                extra_patch={
+                    "reason": reason,
+                    "order_flow_cancelled_by": "order_flow_full_exit",
+                    "order_flow_cancel_result": dict(result or {}),
+                },
+            )
+        return errors
+
+    def _await_order_flow_close_fill(
+        self,
+        *,
+        close_row: dict,
+        symbol: str,
+        quantity: int,
+    ) -> dict:
+        broker_id = self._order_broker_id(close_row)
+        if not broker_id:
+            return {"ok": False, "error": "missing_close_order_id"}
+        waiter = getattr(self.broker, "await_order_fill", None)
+        timeout = max(1.0, self._get_config_float("ibkr_order_flow_close_fill_timeout_sec", 5.0))
+        if callable(waiter):
+            return waiter(
+                broker_id,
+                symbol=symbol,
+                expected_quantity=quantity,
+                timeout=timeout,
+                poll_interval=0.2,
+            )
+        status = self._order_status(close_row).upper()
+        if status in {"FILLED", "EXECUTED"}:
+            return {"ok": True, "order_id": broker_id, "status": status, "order": dict(close_row)}
+        return {"ok": False, "order_id": broker_id, "error": "close_fill_unconfirmed", "status": status}
+
+    def _mark_order_flow_closing(
+        self,
+        *,
+        groups: list[dict],
+        quantity: int,
+        result: dict,
+        decision: dict,
+        reason: str,
+    ) -> None:
+        now_ms = int(time.time() * 1000)
+        for group in groups or []:
+            entry = group.get("entry") or {}
+            if not entry:
+                continue
+            self._upsert_harvest_order_patch(
+                entry,
+                status="Closing",
+                relation_status="active",
+                extra_patch={
+                    "reason": reason,
+                    "order_flow_closing": True,
+                    "order_flow_closing_quantity": quantity,
+                    "order_flow_closing_at_ms": now_ms,
+                    "order_flow_close_result": dict(result or {}),
+                    "order_flow_decision": dict(decision or {}),
+                },
+            )
+
+    def _mark_order_flow_closed(
+        self,
+        *,
+        groups: list[dict],
+        quantity: int,
+        result: dict,
+        decision: dict,
+    ) -> None:
+        now_ms = int(time.time() * 1000)
+        for group in groups or []:
+            entry = group.get("entry") or {}
+            if entry:
+                self._upsert_harvest_order_patch(
+                    entry,
+                    status="Closed",
+                    relation_status="closed",
+                    extra_patch={
+                        "reason": str(decision.get("reason") or "order_flow_full_exit"),
+                        "order_flow_closing": False,
+                        "order_flow_full_exit": {
+                            "closed_quantity": quantity,
+                            "closed_at_ms": now_ms,
+                            "market_close_result": dict(result or {}),
+                            "decision": dict(decision or {}),
+                        },
+                    },
+                )
+            for row in group.get("rows") or []:
+                if self._order_role(row) != "close":
+                    continue
+                self._upsert_harvest_order_patch(
+                    row,
+                    status="Filled",
+                    relation_status="closed",
+                    extra_patch={
+                        "order_flow_close_filled": True,
+                        "order_flow_close_filled_at_ms": now_ms,
+                        "order_flow_close_fill_result": dict(result or {}),
+                    },
+                )
+
+    def _execute_order_flow_full_exit(
+        self,
+        *,
+        symbol: str,
+        broker_position: dict,
+        groups: list[dict],
+        decision: dict,
+    ) -> dict:
+        if not self.order_placer and not self.broker:
+            return {"ok": False, "reason": "close_dependency_unavailable"}
+        conid = self._broker_position_conid(broker_position)
+        broker_qty = self._broker_position_quantity(broker_position)
+        quantity = abs(int(round(broker_qty)))
+        direction = "long" if broker_qty > 0 else "short"
+        if quantity <= 0 or conid <= 0:
+            return {"ok": False, "reason": "missing_quantity_or_conid"}
+        active_close_rows = self._active_close_rows(groups)
+        if active_close_rows:
+            fill_result = self._await_order_flow_close_fill(
+                close_row=active_close_rows[0],
+                symbol=symbol,
+                quantity=quantity,
+            )
+            if fill_result.get("ok"):
+                self._mark_order_flow_closed(
+                    groups=groups,
+                    quantity=quantity,
+                    result=fill_result,
+                    decision=decision,
+                )
+                self._order_flow_risk_action_count += 1
+                self._last_order_flow_risk_action_ms = int(time.time() * 1000)
+                return {"ok": True, "closed_quantity": quantity, "result": fill_result}
+            if str(fill_result.get("error") or "") == "order_terminal_before_fill":
+                status = str(fill_result.get("status") or "Canceled").title()
+                self._upsert_harvest_order_patch(
+                    active_close_rows[0],
+                    status=status,
+                    relation_status="closed",
+                    extra_patch={
+                        "order_flow_close_terminal_before_fill": True,
+                        "order_flow_close_fill_result": dict(fill_result or {}),
+                    },
+                )
+                return {"ok": False, "reason": "close_terminal_before_fill", "result": fill_result}
+            self._mark_order_flow_closing(
+                groups=groups,
+                quantity=quantity,
+                result=fill_result,
+                decision=decision,
+                reason="order_flow_close_pending",
+            )
+            return {"ok": True, "reason": "close_pending", "result": fill_result}
+        cancel_errors: list[dict] = []
+        for group in groups:
+            cancel_errors.extend(self._cancel_order_flow_protection(group, "order_flow_full_exit"))
+        if cancel_errors:
+            return {"ok": False, "reason": "protection_cancel_failed", "errors": cancel_errors}
+        first_group = groups[0] if groups else {}
+        first_entry = first_group.get("entry") or {}
+        result = self._place_harvest_market_close(
+            conid=conid,
+            symbol=symbol,
+            direction=direction,
+            quantity=quantity,
+            trade_group_id=str(first_group.get("group_key") or ""),
+            entry_order_unique_id=str(first_entry.get("entry_order_unique_id") or first_entry.get("unique_id") or ""),
+            source="order_flow_full_exit",
+            order_type=str((decision.get("marketable_limit") or {}).get("order_type") or "marketable_limit"),
+            limit_price=self._coerce_float(decision.get("limit_price"), 0.0),
+            wait_for_fill=True,
+            fill_timeout=max(1.0, self._get_config_float("ibkr_order_flow_close_fill_timeout_sec", 5.0)),
+        )
+        if not result.get("ok") and result.get("submitted"):
+            self._mark_order_flow_closing(
+                groups=groups,
+                quantity=quantity,
+                result=result,
+                decision=decision,
+                reason=str(result.get("error") or "order_flow_close_pending"),
+            )
+            self._order_flow_risk_action_count += 1
+            self._last_order_flow_risk_action_ms = int(time.time() * 1000)
+            logger.warning("Order-flow full exit close pending: %s qty=%s reason=%s", symbol, quantity, result.get("error"))
+            return {"ok": True, "reason": "close_pending", "closed_quantity": 0, "result": result}
+        if not result.get("ok"):
+            return {"ok": False, "reason": "marketable_close_failed", "result": result}
+        self._mark_order_flow_closed(
+            groups=groups,
+            quantity=quantity,
+            result=result,
+            decision=decision,
+        )
+        self._order_flow_risk_action_count += 1
+        self._last_order_flow_risk_action_ms = int(time.time() * 1000)
+        logger.info("Order-flow full exit: %s qty=%s reason=%s", symbol, quantity, decision.get("reason"))
+        return {"ok": True, "closed_quantity": quantity, "result": result}
+
+    def _maybe_apply_order_flow_risk_for_symbol(self, broker_position: dict) -> bool:
+        manager = getattr(self, "order_flow_manager", None)
+        if manager is None or not callable(getattr(manager, "position_decision", None)):
+            return False
+        symbol = self._broker_position_symbol(broker_position)
+        if not symbol or self.is_fixed_position_symbol(symbol):
+            return False
+        quantity = self._broker_position_quantity(broker_position)
+        if not quantity:
+            return False
+        rows = self._load_live_order_rows_for_symbol(symbol)
+        groups = self._order_flow_groups(rows)
+        if not groups:
+            return False
+        if self._active_close_rows(groups):
+            result = self._execute_order_flow_full_exit(
+                symbol=symbol,
+                broker_position=broker_position,
+                groups=groups,
+                decision={"reason": "order_flow_close_pending_monitor"},
+            )
+            if not result.get("ok"):
+                logger.warning("Order-flow pending close monitor failed: %s reason=%s", symbol, result.get("reason"))
+            return True
+        latest_group = self._latest_group(groups)
+        position = self._build_harvest_position(broker_position, latest_group)
+        position["symbol"] = symbol
+        decision = manager.position_decision(position, order_group=latest_group)
+        action = str(decision.get("action") or "").strip().lower()
+        direction = "long" if quantity > 0 else "short"
+        if action == "full_exit":
+            result = self._execute_order_flow_full_exit(
+                symbol=symbol,
+                broker_position=broker_position,
+                groups=groups,
+                decision=decision,
+            )
+            if not result.get("ok"):
+                logger.warning("Order-flow full exit failed: %s reason=%s", symbol, result.get("reason"))
+            return bool(result.get("ok"))
+        if action == "tighten_stop":
+            updated = self._execute_order_flow_tighten_stop(
+                symbol=symbol,
+                groups=groups,
+                direction=direction,
+                stop_price=self._coerce_float(decision.get("stop_price"), 0.0),
+                decision=decision,
+            )
+            return updated > 0
+        return False
+
+    def _maybe_apply_order_flow_risk(self, positions: Optional[List[Dict]] = None) -> bool:
+        manager = getattr(self, "order_flow_manager", None)
+        if manager is None:
+            return False
+        try:
+            if callable(getattr(manager, "sync_positions", None)):
+                manager.sync_positions(list(positions or []))
+            acted = False
+            if not self._get_config_bool("ibkr_order_flow_auto_exit_enabled", True) and not self._get_config_bool("ibkr_order_flow_stop_tighten_enabled", True):
+                return False
+            for broker_position in positions or []:
+                symbol = self._broker_position_symbol(broker_position)
+                if not symbol:
+                    continue
+                lock = self._harvest_lock_for_symbol(symbol)
+                if not lock.acquire(blocking=False):
+                    continue
+                try:
+                    acted = self._maybe_apply_order_flow_risk_for_symbol(broker_position) or acted
+                finally:
+                    lock.release()
+            return acted
+        except Exception as exc:
+            self._order_flow_risk_error_count += 1
+            logger.warning("Order-flow risk loop failed: %s", exc)
+            return False
+
     def _intraday_harvest_settings(self) -> dict:
         try:
             settings = harvest_settings_from_config(self.config, self.environment)
@@ -838,6 +1204,14 @@ class OrderLifecycle:
         ).lower()
         return any(marker in text for marker in ("not found", "inactive", "filled", "cancelled", "canceled"))
 
+    def _active_close_rows(self, groups: list[dict]) -> list[dict]:
+        rows: list[dict] = []
+        for group in groups or []:
+            for row in group.get("rows") or []:
+                if self._order_role(row) == "close" and self._order_is_open(row):
+                    rows.append(row)
+        return rows
+
     @staticmethod
     def _harvest_state(row: dict | None) -> dict:
         extra = OrderLifecycle._order_extra(row)
@@ -905,7 +1279,11 @@ class OrderLifecycle:
             return False
         stop_row = group.get("stop_loss") or {}
         target_row = group.get("take_profit") or {}
-        return self._order_is_open(stop_row) or self._order_is_open(target_row)
+        return (
+            self._order_is_open(stop_row)
+            or self._order_is_open(target_row)
+            or bool(self._active_close_rows([group]))
+        )
 
     def _order_filled_quantity(self, row: dict | None) -> int:
         row = row or {}
@@ -1120,6 +1498,10 @@ class OrderLifecycle:
         trade_group_id: str,
         entry_order_unique_id: str,
         source: str,
+        order_type: str = "MKT",
+        limit_price: float = 0.0,
+        wait_for_fill: bool = False,
+        fill_timeout: float = 5.0,
     ) -> dict:
         if self.order_placer and hasattr(self.order_placer, "place_market_close"):
             return self.order_placer.place_market_close(
@@ -1131,6 +1513,10 @@ class OrderLifecycle:
                 trade_group_id=trade_group_id,
                 entry_order_unique_id=entry_order_unique_id,
                 source=source,
+                order_type=order_type,
+                limit_price=limit_price,
+                wait_for_fill=wait_for_fill,
+                fill_timeout=fill_timeout,
             )
         return self.broker.place_market_close(
             conid=conid,
@@ -1139,6 +1525,10 @@ class OrderLifecycle:
             quantity=quantity,
             account_id=str(self.account_id or "").strip(),
             order_ref=f"{source}_{symbol}_{datetime.now(ET).strftime('%Y%m%d_%H%M%S')}",
+            order_type=order_type,
+            limit_price=limit_price,
+            wait_for_fill=wait_for_fill,
+            fill_timeout=fill_timeout,
         )
 
     @staticmethod
@@ -1463,6 +1853,8 @@ class OrderLifecycle:
             trade_group_id=str(first_group.get("group_key") or ""),
             entry_order_unique_id=str(first_entry.get("entry_order_unique_id") or first_entry.get("unique_id") or ""),
             source="intraday_harvest_full_exit",
+            order_type=str((decision.get("marketable_limit") or {}).get("order_type") or "MKT"),
+            limit_price=self._coerce_float(decision.get("limit_price"), 0.0),
         )
         if not result.get("ok"):
             self._freeze_harvest_symbol(symbol, "full_exit_market_close_failed", [row for group in groups for row in group.get("rows") or []])
@@ -1791,7 +2183,10 @@ class OrderLifecycle:
 
             positions = self.get_positions()
             self._sync_positions_to_pb_from_snapshot(positions)
-            if self._intraday_harvest_enabled():
+            order_flow_acted = self._maybe_apply_order_flow_risk(positions)
+            if order_flow_acted:
+                logger.info("Order-flow risk action executed; skip secondary exit policy for this cycle")
+            elif self._intraday_harvest_enabled():
                 self._maybe_apply_intraday_harvest(positions)
             else:
                 self._maybe_update_live_exit_policy_stops(positions)
@@ -1871,6 +2266,9 @@ class OrderLifecycle:
             "intraday_harvest_error_count": self._intraday_harvest_error_count,
             "last_intraday_harvest_action_ms": self._last_intraday_harvest_action_ms,
             "intraday_harvest_frozen_symbols": dict(self._harvest_frozen_symbols),
+            "order_flow_risk_action_count": self._order_flow_risk_action_count,
+            "order_flow_risk_error_count": self._order_flow_risk_error_count,
+            "last_order_flow_risk_action_ms": self._last_order_flow_risk_action_ms,
             "sl_circuit_breaker": self.is_sl_circuit_breaker,
             "position_limit_reached": self.is_position_limit_reached,
         }
