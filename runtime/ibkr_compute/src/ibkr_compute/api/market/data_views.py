@@ -13,6 +13,12 @@ from ibkr_compute.api.route_runtime import (
     require_ibkr_service,
 )
 from ibkr_compute.api.market.storage_quotes import fetch_storage_quote_snapshots, merge_quote_with_storage
+from ibkr_compute.market.calendar import (
+    DEFAULT_CALENDAR_EXCHANGE,
+    DEFAULT_CALENDAR_SEC_TYPE,
+    DEFAULT_CALENDAR_SYMBOL,
+    build_ibkr_calendar_snapshot,
+)
 from ibkr_compute.market.timeframe_utils import bucket_start_ms, format_us_time
 
 
@@ -161,3 +167,68 @@ def build_contracts_search_response():
                 **_build_contract_search_runtime_payload(app_mod, service, service_status),
             }
         ), 500
+
+
+def build_ibkr_market_calendar_response():
+    app_mod, service, unavailable = require_ibkr_service(restore=True)
+    if unavailable:
+        return unavailable
+
+    market_date = get_query_arg_text("date") or get_query_arg_text("market_date")
+    if not market_date:
+        current_market_date = getattr(app_mod, "current_market_date", None)
+        market_date = current_market_date() if callable(current_market_date) else ""
+    symbol = get_query_arg_text("symbol", DEFAULT_CALENDAR_SYMBOL, upper=True) or DEFAULT_CALENDAR_SYMBOL
+    exchange = get_query_arg_text("exchange", DEFAULT_CALENDAR_EXCHANGE, upper=True) or DEFAULT_CALENDAR_EXCHANGE
+    sec_type = get_query_arg_text("sec_type", DEFAULT_CALENDAR_SEC_TYPE, upper=True) or DEFAULT_CALENDAR_SEC_TYPE
+    conid = get_query_arg_int("conid", 0, minimum=0)
+
+    broker = getattr(service, "broker", None)
+    if broker is None or not hasattr(broker, "resolve_contract"):
+        return jsonify({"ok": False, "error": "IBKR broker unavailable", "source": "ibkr_schedule"}), 503
+
+    service_status = get_service_status(service)
+    try:
+        contract = broker.resolve_contract(
+            symbol=symbol,
+            conid=conid,
+            exchange=exchange,
+            sec_type=sec_type,
+        )
+    except Exception as exc:
+        return jsonify(
+            {
+                "ok": False,
+                "error": str(exc),
+                "source": "ibkr_schedule",
+                **_build_contract_search_runtime_payload(app_mod, service, service_status),
+            }
+        ), 502
+    if not contract:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "contract_not_found",
+                "source": "ibkr_schedule",
+                "symbol": symbol,
+                "conid": conid,
+                "exchange": exchange,
+                "sec_type": sec_type,
+                **_build_contract_search_runtime_payload(app_mod, service, service_status),
+            }
+        ), 404
+
+    payload = build_ibkr_calendar_snapshot(
+        contract,
+        market_date=market_date,
+        symbol=symbol,
+        exchange=exchange,
+        sec_type=sec_type,
+    )
+    status_code = 200 if payload.get("ok") else 502
+    return jsonify(
+        {
+            **payload,
+            **_build_contract_search_runtime_payload(app_mod, service, service_status),
+        }
+    ), status_code

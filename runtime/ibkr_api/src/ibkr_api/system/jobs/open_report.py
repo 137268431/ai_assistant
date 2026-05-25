@@ -6,7 +6,7 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from ibkr_api.modes import request_broker_mode, request_market_data_mode
-from ibkr_api.system.jobs.market_calendar import is_nyse_non_trading_day
+from ibkr_api.system.jobs.market_calendar import build_market_calendar_snapshot
 
 
 OPEN_REPORT_STATE_KEY = "system_notify_daily"
@@ -31,6 +31,7 @@ ConfigValue = Callable[[str, str, str], str]
 ConsoleBaseUrl = Callable[[], str]
 StartupChatId = Callable[[str], str]
 LoadMarketSnapshots = Callable[[str, list[str], str, int], list[dict[str, Any]]]
+RequestJsonRequest = Callable[..., dict[str, Any]]
 
 
 def _to_text(value: Any) -> str:
@@ -598,6 +599,82 @@ def _build_open_report_card(
     }
 
 
+def _calendar_source_label(calendar: dict[str, Any]) -> str:
+    source = _to_text(calendar.get("source"))
+    label = {
+        "ibkr_schedule": "IBKR 合约交易时间",
+        "local_nyse_fallback": "本地 NYSE 兜底日历",
+    }.get(source, source or "unknown")
+    error = _to_text(calendar.get("source_error"))
+    return f"{label}（IBKR 拉取失败: {error}）" if error and source == "local_nyse_fallback" else label
+
+
+def _build_market_closed_card(
+    *,
+    broker_mode: str,
+    times: dict[str, str],
+    calendar: dict[str, Any],
+    console_base_url: str,
+) -> dict[str, Any]:
+    market_date = _to_text(calendar.get("market_date")) or _to_text(times.get("date"))
+    reason = _to_text(calendar.get("closed_reason")) or "closed"
+    next_open_us = _to_text(calendar.get("next_open_us")) or "待确认"
+    next_open_cn = _to_text(calendar.get("next_open_beijing")) or "待确认"
+    source_line = _calendar_source_label(calendar)
+    elements: list[dict[str, Any]] = [
+        {
+            "tag": "markdown",
+            "content": (
+                "**结论**: 今日市场闭市，不执行 09:30 开盘交易摘要。\n"
+                f"**市场日期**: {market_date or 'n/a'}\n"
+                f"**闭市原因**: {reason}\n"
+                f"**下次开盘**: 美东 {next_open_us} | 北京 {next_open_cn}\n"
+                f"**检查时间**: 美东 {_to_text(times.get('us')) or 'n/a'} | 北京 {_to_text(times.get('cn')) or 'n/a'}\n"
+                f"**日历来源**: {source_line}"
+            ),
+        },
+        {
+            "tag": "markdown",
+            "content": "**处理**: 下一次真实开盘日会自动发送 09:30 开盘交易摘要；今日交易/日筛类任务按闭市处理。",
+        },
+    ]
+    system_url = _report_url(console_base_url, broker_mode, market_date, "system")
+    if system_url:
+        elements.append(
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "查看系统状态"},
+                        "type": "default",
+                        "multi_url": {"url": system_url, "pc_url": system_url, "ios_url": system_url, "android_url": system_url},
+                    }
+                ],
+            }
+        )
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": f"IBKR 今日闭市 · Broker {broker_mode.upper()}"},
+            "template": "blue",
+        },
+        "elements": elements,
+    }
+
+
+def _market_closed_event_detail(*, times: dict[str, str], calendar: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "检查时间": _to_text(times.get("us")),
+        "交易日": _to_text(calendar.get("market_date")) or _to_text(times.get("date")),
+        "结论": "今日市场闭市，不发送开盘交易摘要",
+        "闭市原因": _to_text(calendar.get("closed_reason")) or "closed",
+        "下次开盘(美东)": _to_text(calendar.get("next_open_us")) or "待确认",
+        "下次开盘(北京)": _to_text(calendar.get("next_open_beijing")) or "待确认",
+        "日历来源": _calendar_source_label(calendar),
+    }
+
+
 def _event_detail(
     *,
     times: dict[str, str],
@@ -641,6 +718,8 @@ def build_system_open_report_response(
     console_base_url: ConsoleBaseUrl,
     startup_chat_id: StartupChatId,
     load_market_snapshots: LoadMarketSnapshots | None = None,
+    request_json_request: RequestJsonRequest | None = None,
+    compute_base_url: str = "",
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
     broker_mode = request_broker_mode(request_payload)
@@ -678,39 +757,162 @@ def build_system_open_report_response(
         }, 200
 
     market_date = _to_text(times.get("date"))
-    if is_nyse_non_trading_day(market_date):
+    calendar = build_market_calendar_snapshot(
+        market_date=market_date,
+        broker_mode=broker_mode,
+        data_environment=data_environment,
+        payload=request_payload,
+        request_json_request=request_json_request,
+        compute_base_url=compute_base_url,
+        config_value=config_value,
+    )
+    if bool(calendar.get("is_closed")):
+        if not _truthy(config_value("status_notify_enabled", "TRUE", broker_mode)):
+            next_state = {
+                **state,
+                "open_title": "IBKR 今日闭市提醒",
+                "open_status": "skipped",
+                "open_last_attempt_at": times["us"],
+                "open_skipped_at": times["us"],
+                "open_skipped_reason": "status_notify_disabled",
+                "open_reason": "status_notify_disabled",
+                "open_report_market_date": market_date,
+                "open_daily_scan_status": "market_closed",
+                "market_calendar": calendar,
+            }
+            upsert_state(OPEN_REPORT_STATE_KEY, broker_mode, next_state, times["date"])
+            return {
+                "ok": True,
+                "environment": broker_mode,
+                "broker_mode": broker_mode,
+                "market_data_mode": data_environment,
+                "data_environment": data_environment,
+                "job_id": "system_open_report",
+                "skipped": True,
+                "reason": "status_notify_disabled",
+                "trading_day": False,
+                "market_date": market_date,
+                "calendar": calendar,
+                "state": next_state,
+                "source": "ibkr-api",
+            }, 200
+        if not _truthy(config_value("market_closed_notify_enabled", "TRUE", broker_mode)):
+            next_state = {
+                **state,
+                "open_title": "IBKR 今日闭市提醒",
+                "open_status": "skipped",
+                "open_last_attempt_at": times["us"],
+                "open_skipped_at": times["us"],
+                "open_skipped_reason": "market_closed_notify_disabled",
+                "open_reason": "market_closed_notify_disabled",
+                "open_report_market_date": market_date,
+                "open_daily_scan_status": "market_closed",
+                "market_calendar": calendar,
+            }
+            upsert_state(OPEN_REPORT_STATE_KEY, broker_mode, next_state, times["date"])
+            return {
+                "ok": True,
+                "environment": broker_mode,
+                "broker_mode": broker_mode,
+                "market_data_mode": data_environment,
+                "data_environment": data_environment,
+                "job_id": "system_open_report",
+                "skipped": True,
+                "reason": "market_closed_notify_disabled",
+                "trading_day": False,
+                "market_date": market_date,
+                "calendar": calendar,
+                "state": next_state,
+                "source": "ibkr-api",
+            }, 200
+        if _to_text(calendar.get("closed_reason")).lower() == "weekend" and not _truthy(
+            config_value("market_closed_notify_weekends", "TRUE", broker_mode)
+        ):
+            next_state = {
+                **state,
+                "open_title": "IBKR 今日闭市提醒",
+                "open_status": "skipped",
+                "open_last_attempt_at": times["us"],
+                "open_skipped_at": times["us"],
+                "open_skipped_reason": "market_closed_weekend_notify_disabled",
+                "open_reason": "market_closed_weekend_notify_disabled",
+                "open_report_market_date": market_date,
+                "open_daily_scan_status": "market_closed",
+                "market_calendar": calendar,
+            }
+            upsert_state(OPEN_REPORT_STATE_KEY, broker_mode, next_state, times["date"])
+            return {
+                "ok": True,
+                "environment": broker_mode,
+                "broker_mode": broker_mode,
+                "market_data_mode": data_environment,
+                "data_environment": data_environment,
+                "job_id": "system_open_report",
+                "skipped": True,
+                "reason": "market_closed_weekend_notify_disabled",
+                "trading_day": False,
+                "market_date": market_date,
+                "calendar": calendar,
+                "state": next_state,
+                "source": "ibkr-api",
+            }, 200
+
+        card = _build_market_closed_card(
+            broker_mode=broker_mode,
+            times=times,
+            calendar=calendar,
+            console_base_url=console_base_url(),
+        )
+        result = _as_dict(feishu_send_interactive(card, startup_chat_id(broker_mode), broker_mode))
+        notified = bool(result.get("success")) and not bool(result.get("suppressed"))
+        finalized = bool(notified or result.get("skipped") or result.get("suppressed"))
+        event_record = write_system_event_record(
+            "market_closed_notice",
+            "info",
+            "ibkr-api",
+            "IBKR 今日闭市提醒",
+            _market_closed_event_detail(times=times, calendar=calendar),
+            broker_mode,
+            notified,
+        )
+        persisted = bool(event_record)
         next_state = {
             **state,
-            "open_title": "IBKR 09:30 开盘交易摘要",
-            "open_status": "skipped",
+            "open_title": "IBKR 今日闭市提醒",
+            "open_status": "closed",
             "open_last_attempt_at": times["us"],
-            "open_notified": False,
-            "open_persisted": False,
-            "open_message_id": "",
-            "open_skipped": True,
-            "open_suppressed": False,
-            "open_reason": "non_trading_day",
-            "open_error": "",
+            "open_notified": notified,
+            "open_persisted": persisted,
+            "open_message_id": _to_text(result.get("message_id")),
+            "open_skipped": bool(result.get("skipped")),
+            "open_suppressed": bool(result.get("suppressed")),
+            "open_reason": "market_closed",
+            "open_error": "" if finalized else (_to_text(result.get("error")) or "send_failed"),
             "open_report_market_date": market_date,
             "open_target_total": 0,
-            "open_daily_scan_status": "non_trading_day",
-            "open_sent_at": times["us"],
+            "open_daily_scan_status": "market_closed",
+            "market_closed_notice_sent_at": times["us"] if finalized else "",
+            "market_calendar": calendar,
         }
+        if finalized:
+            next_state["open_sent_at"] = times["us"]
         upsert_state(OPEN_REPORT_STATE_KEY, broker_mode, next_state, times["date"])
         return {
-            "ok": True,
+            "ok": finalized,
             "environment": broker_mode,
             "broker_mode": broker_mode,
             "market_data_mode": data_environment,
             "data_environment": data_environment,
             "job_id": "system_open_report",
-            "skipped": True,
-            "reason": "non_trading_day",
+            "skipped": bool(result.get("skipped")),
+            "reason": "market_closed",
             "trading_day": False,
             "market_date": market_date,
-            "notified": False,
-            "persisted": False,
-            "message_id": "",
+            "calendar": calendar,
+            "notified": notified,
+            "persisted": persisted,
+            "message_id": _to_text(result.get("message_id")),
+            "error": "" if finalized else next_state["open_error"],
             "state": next_state,
             "source": "ibkr-api",
         }, 200

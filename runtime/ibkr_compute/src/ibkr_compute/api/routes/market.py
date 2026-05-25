@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from ibkr_compute.api.market.data_views import (
     build_contracts_search_response,
+    build_ibkr_market_calendar_response,
     build_ibkr_forming_bar_response,
     build_ibkr_ingest_close_response,
     build_ibkr_quotes_response,
@@ -16,6 +17,7 @@ def register_market_routes(app):
         register_runtime_proxy_route(app, "ibkr_quotes", "/ibkr/quotes", ["GET"])
         register_runtime_proxy_route(app, "ibkr_forming_bar", "/ibkr/quotes/forming_bar", ["GET"])
         register_runtime_proxy_route(app, "ibkr_ingest_close", "/ibkr/ingest/close", ["POST"])
+        register_runtime_proxy_route(app, "ibkr_market_calendar", "/ibkr/market/calendar", ["GET"])
         register_runtime_proxy_route(app, "contracts_search", "/contracts/search", ["GET"])
     else:
         @app.route("/ibkr/quotes", methods=["GET"])
@@ -29,6 +31,10 @@ def register_market_routes(app):
         @app.route("/ibkr/ingest/close", methods=["POST"])
         def ibkr_ingest_close():
             return build_ibkr_ingest_close_response()
+
+        @app.route("/ibkr/market/calendar", methods=["GET"])
+        def ibkr_market_calendar():
+            return build_ibkr_market_calendar_response()
 
         @app.route("/contracts/search", methods=["GET"])
         def contracts_search():

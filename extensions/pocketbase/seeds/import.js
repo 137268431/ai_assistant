@@ -57,7 +57,7 @@ const configData = [
   cfg('pb_cron_ibkr_weekly_reauth_reminder_enabled', 'TRUE', 'TRUE', '周验证提醒', 'Scheduler 调度(兼容 key)', 137, '每周发送一张周验证提醒卡片；只提醒，不自动触发 Gateway 登录。Cron: 0 5 * * 1；周期: 每周一 UTC 05:00；时间窗口: 北京时间周一 13:00 / 美东周一 01:00(EDT) 或 00:00(EST)。受 Scheduler 总开关和本开关共同控制。'),
   cfg('pb_cron_ibkr_weekly_reauth_followup_enabled', 'TRUE', 'TRUE', '周验证补提醒', 'Scheduler 调度(兼容 key)', 137.5, '若周验证仍停在待手动触发阶段，则补发一张飞书验证卡片提醒。Cron: 30 7 * * 1；周期: 每周一 UTC 07:30；时间窗口: 北京时间周一 15:30 / 美东周一 03:30(EDT) 或 02:30(EST)。受 Scheduler 总开关和本开关共同控制。'),
   cfg('pb_cron_ibkr_2fa_hourly_check_enabled', 'TRUE', 'TRUE', '2FA 每小时提醒', 'Scheduler 调度(兼容 key)', 138, '若 2FA 仍未恢复，则按小时补发飞书验证卡片提醒。Cron: 5 4-20 * * 1-5；周期: 工作日 UTC 每小时 05 分；时间窗口: 盘前到盘后。受 Scheduler 总开关和本开关共同控制。'),
-  cfg('pb_cron_system_market_open_reminder_enabled', 'TRUE', 'TRUE', '09:30 开盘交易摘要', 'Scheduler 调度(兼容 key)', 139, '仅 NYSE 交易日 09:30 发送开盘交易摘要，包含系统状态、今日标的、日筛错误和 SPY/QQQ/VIX 等大盘监控；休息日跳过。Cron: */5 * * * *；周期: 每 5 分钟轮询一次；时间窗口: 内部按 ET 09:30-09:39 仅发送一次。受 Scheduler 总开关、本开关和 status_notify_enabled 共同控制。'),
+  cfg('pb_cron_system_market_open_reminder_enabled', 'TRUE', 'TRUE', '09:30 开盘交易摘要', 'Scheduler 调度(兼容 key)', 139, '交易日 09:30 发送开盘交易摘要；闭市日同窗口发送闭市与下次开盘提醒。Cron: */5 * * * *；周期: 每 5 分钟轮询一次；时间窗口: 内部按 ET 09:30-09:39 仅发送一次。受 Scheduler 总开关、本开关、status_notify_enabled 与 market_closed_notify_enabled 共同控制。'),
   cfg('pb_cron_system_daily_report_enabled', 'TRUE', 'TRUE', '系统日报', 'Scheduler 调度(兼容 key)', 139, '仅 NYSE 交易日汇总当日信号、订单、bars、targets 和系统事件，并在收盘后发送日报；休息日跳过。Cron: */5 * * * *；周期: 每 5 分钟轮询一次；时间窗口: 内部按 ET 16:05 起 30 分钟内仅发送一次。日报是否真正发送，还受 daily_summary_notify_enabled 控制。'),
   cfg('pb_cron_ibkr_history_retention_enabled', 'TRUE', 'TRUE', '历史数据留存', 'Scheduler 调度(兼容 key)', 140, '清理超过留存窗口的 ibkr_bars / ibkr_indicators / ibkr_signals / ibkr_reverse_signals / ibkr_targets / ibkr_bar_integrity / ibkr_bar_coverage_daily 历史数据。Cron: 10 * * * *；周期: 每小时第 10 分钟；时间窗口: 全天。受 Scheduler 总开关、本开关以及 ibkr_history_retention_enabled / ibkr_history_retention_days 配置共同控制；运行态线程会在每小时第 12 分钟做同小时兜底。'),
   cfg('pb_cron_ibkr_storage_governor_enabled', 'TRUE', 'TRUE', 'PocketBase 存储治理', 'Scheduler 调度(兼容 key)', 140.5, '按 balanced_50g 策略清理可重建指标、旧日志、TV 兼容数据和旧回测产物。Cron: 20 3 * * *；时区: America/New_York；周期: 每日美东 03:20。受 Scheduler 总开关和 storage_cleanup_enabled 控制；只删除安全过期数据，不自动 VACUUM。'),
@@ -209,6 +209,9 @@ const configData = [
   cfg('ibkr_realtime_quote_stale_resubscribe_sec', '600', '600', 'Quote 自动重订阅阈值', '标的订阅', 627, '实时 quote 超过该秒数未更新时，运行态会强制 unsubscribe/subscribe 修复僵尸订阅'),
   cfg('ibkr_realtime_quote_resubscribe_cooldown_sec', '300', '300', 'Quote 重订阅冷却秒数', '标的订阅', 628, '同一标的自动重订阅后的最小冷却秒数，避免 IBKR streaming 频繁抖动'),
   cfg('ibkr_market_ws_symbols', 'SPY,QQQ,VIX', 'SPY,QQQ,VIX', '市场监控标的', '标的订阅', 626, '系统级 WS 市场监控默认订阅标的；用于 monitor / runtime 状态页和行情链路基准观测'),
+  cfg('ibkr_market_calendar_symbol', 'SPY', 'SPY', '交易日历代表标的', '标的订阅', 626.2, '用于 IBKR ContractDetails 交易时间拉取的代表合约 symbol；默认 SPY 代表美股常规日历'),
+  cfg('ibkr_market_calendar_exchange', 'SMART', 'SMART', '交易日历交易所', '标的订阅', 626.3, '用于 IBKR ContractDetails 交易时间拉取的 exchange；默认 SMART'),
+  cfg('ibkr_market_calendar_sec_type', 'STK', 'STK', '交易日历证券类型', '标的订阅', 626.4, '用于 IBKR ContractDetails 交易时间拉取的 secType；默认 STK'),
 
   cfg('ibkr_bar_publish_enabled', 'TRUE', 'TRUE', 'K线发布开关', '行情链路', 700, '控制实时 / 回补 bars 是否写入 PocketBase；关闭后页面与指标链路不会收到新 OHLCV'),
   cfg('tv_webhook_ingest_enabled', 'TRUE', 'TRUE', 'TV Webhook 入库开关', '行情链路', 702, '控制 /webhook/tv 是否写入 tv_signals / tv_indicators；关闭后直接返回 skipped'),
@@ -301,6 +304,8 @@ const configData = [
   cfg('reverse_chat_id', 'oc_2931e2b8501df3a9d869d7aebceb8fe2', 'oc_2931e2b8501df3a9d869d7aebceb8fe2', '反转群 Chat ID', '通知路由', 640, '反转信号与反转执行卡片默认发送到这里'),
 
   cfg('status_notify_enabled', 'TRUE', 'TRUE', '状态摘要通知', '系统通知', 900, 'NYSE 交易日 09:30 开盘交易摘要、重启和定时系统状态摘要通知开关；09:30 由开盘摘要接管，:00 / :30 会合并同轮心跳与健康检查结果，不再额外发送重复卡片'),
+  cfg('market_closed_notify_enabled', 'TRUE', 'TRUE', '闭市提醒通知', '系统通知', 905, '非交易日 09:30 ET 发送一次闭市与下次开盘提醒；实际交易日历优先从 IBKR 合约交易时间拉取，失败时回退本地 NYSE 日历'),
+  cfg('market_closed_notify_weekends', 'TRUE', 'TRUE', '周末闭市提醒', '系统通知', 906, '闭市提醒是否覆盖周末；默认开启，保证每天 09:30 ET 都有明确开闭市状态'),
   cfg('daily_summary_notify_enabled', 'TRUE', 'TRUE', '日报通知', '系统通知', 910, '仅 NYSE 交易日收盘后发送当日交易汇总；周末或非交易日跳过'),
   cfg('manual_stop_notify_enabled', 'TRUE', 'TRUE', '手动停止通知', '系统通知', 920, '手动停止算法时发送通知'),
   cfg('health_check_notify_enabled', 'TRUE', 'TRUE', '兜底心跳通知', '系统通知', 930, '仅在状态摘要关闭时，用于发送独立 ok 心跳兜底；warning / error 级别仍走 inspection_notify_enabled'),

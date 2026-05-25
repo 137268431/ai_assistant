@@ -466,7 +466,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         139,
         "*/5 * * * *",
         "每 5 分钟轮询一次；内部按 ET 09:30-09:39 仅发送一次",
-        "兼容入口：仅 NYSE 交易日 09:30 发送开盘交易摘要，实际与 system_scan_summary 共用同一状态避免重复。",
+        "兼容入口：交易日 09:30 发送开盘交易摘要；闭市日同窗口发送闭市与下次开盘提醒，实际与 system_scan_summary 共用同一状态避免重复。",
         "当前由 ibkr-scheduler 触发 ibkr-api 原生开盘交易摘要；PB 仅保留兼容壳。",
         hook_file="ibkr_system_monitor.pb.js",
         runner_kind="native_api_http",

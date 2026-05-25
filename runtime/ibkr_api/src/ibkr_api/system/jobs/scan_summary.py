@@ -16,6 +16,7 @@ ConsoleBaseUrl = Callable[[], str]
 SignalChatId = Callable[[str], str]
 StartupChatId = Callable[[str], str]
 LoadMarketSnapshots = Callable[[str, list[str], str, int], list[dict[str, Any]]]
+RequestJsonRequest = Callable[..., dict[str, Any]]
 
 
 def build_system_scan_summary_response(
@@ -35,6 +36,8 @@ def build_system_scan_summary_response(
     signal_chat_id: SignalChatId,
     startup_chat_id: StartupChatId,
     load_market_snapshots: LoadMarketSnapshots | None = None,
+    request_json_request: RequestJsonRequest | None = None,
+    compute_base_url: str = "",
 ) -> tuple[dict[str, Any], int]:
     from ibkr_api.system.jobs.open_report import build_system_open_report_response
 
@@ -54,6 +57,8 @@ def build_system_scan_summary_response(
         console_base_url=console_base_url,
         startup_chat_id=startup_chat_id,
         load_market_snapshots=load_market_snapshots,
+        request_json_request=request_json_request,
+        compute_base_url=compute_base_url,
     )
     report["job_id"] = "system_scan_summary"
     return report, status_code

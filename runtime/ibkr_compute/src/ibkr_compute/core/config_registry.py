@@ -36,6 +36,8 @@ CONFIG_GROUP_OVERRIDES: dict[str, str] = {
     "status_notify_enabled": "notification",
     "daily_summary_notify_enabled": "notification",
     "health_check_notify_enabled": "notification",
+    "market_closed_notify_enabled": "notification",
+    "market_closed_notify_weekends": "notification",
     "inspection_notify_enabled": "notification",
     "manual_stop_notify_enabled": "notification",
 }

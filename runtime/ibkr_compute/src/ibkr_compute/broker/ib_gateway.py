@@ -473,6 +473,9 @@ class _IBGatewayApp(EWrapper, EClient):
             "valid_exchanges": str(getattr(contractDetails, "validExchanges", "") or ""),
             "min_tick": _safe_float(getattr(contractDetails, "minTick", 0) or 0, 0.0),
             "trading_class": str(getattr(contractDetails, "tradingClass", "") or ""),
+            "trading_hours": str(getattr(contractDetails, "tradingHours", "") or ""),
+            "liquid_hours": str(getattr(contractDetails, "liquidHours", "") or ""),
+            "time_zone_id": str(getattr(contractDetails, "timeZoneId", "") or ""),
         }
         self._contract_cache_by_symbol[item["symbol"]] = item
         if item["conid"] > 0:

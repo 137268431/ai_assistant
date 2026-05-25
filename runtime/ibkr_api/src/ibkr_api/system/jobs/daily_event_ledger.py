@@ -4,7 +4,7 @@ from typing import Any, Callable
 
 from ibkr_api.modes import request_broker_mode, request_market_data_mode
 from ibkr_api.system.jobs.early_expansion_topup import TOPUP_NOTIFY_STATE_KEY, notify_new_targets_from_scan
-from ibkr_api.system.jobs.market_calendar import is_nyse_non_trading_day
+from ibkr_api.system.jobs.market_calendar import build_market_calendar_snapshot
 from ibkr_api.system.jobs.open_report import (
     DEFAULT_OPEN_REPORT_TIME_ET,
     DEFAULT_OPEN_REPORT_WINDOW_MINUTES,
@@ -29,6 +29,7 @@ SEED_TARGET_NOTIFY_DUE_ET = "09:30"
 EVENT_ORDER = {
     "daily_scan_seed": 10,
     "target_pool_quality": 15,
+    "market_closed_notice": 18,
     "new_targets:seed": 20,
     "open_report": 30,
     "daily_report": 40,
@@ -524,7 +525,16 @@ def build_daily_event_reconcile_response(
             or force_event_id == event_id.split(":", 1)[0]
         )
 
-    if is_nyse_non_trading_day(market_date):
+    calendar = build_market_calendar_snapshot(
+        market_date=market_date,
+        broker_mode=broker_mode,
+        data_environment=data_environment,
+        payload=request_payload,
+        request_json_request=request_json_request,
+        compute_base_url=compute_base_url,
+        config_value=config_value,
+    )
+    if bool(calendar.get("is_closed")):
         for event_id, title, due_at in (
             ("daily_scan_seed", "盘前日筛", DAILY_SCAN_DUE_ET),
             ("open_report", "09:30 开盘交易摘要", DEFAULT_OPEN_REPORT_TIME_ET),
@@ -538,10 +548,40 @@ def build_daily_event_reconcile_response(
                     status="skipped",
                     due_at_et=due_at,
                     source="calendar",
-                    detail={"reason": "non_trading_day"},
+                    detail={"reason": "market_closed", "calendar": calendar},
                     times=times,
                 ),
             )
+        reminder_state = _load_state(get_state_payload, OPEN_REPORT_STATE_KEY, broker_mode, market_date)
+        closed_sent = bool(_to_text(reminder_state.get("market_closed_notice_sent_at") or reminder_state.get("open_sent_at")))
+        if closed_sent and _to_text(reminder_state.get("open_reason")) not in {"market_closed", "non_trading_day"}:
+            closed_sent = False
+        if closed_sent:
+            closed_status = "completed"
+        elif not _at_or_after(times, DEFAULT_OPEN_REPORT_TIME_ET):
+            closed_status = "pending"
+        elif not _before_or_at(times, OPEN_REPORT_CUTOFF_ET):
+            closed_status = "missed"
+        else:
+            closed_status = "ready"
+        _update_event(
+            ledger,
+            _event(
+                event_id="market_closed_notice",
+                title="闭市提醒",
+                status=closed_status,
+                due_at_et=DEFAULT_OPEN_REPORT_TIME_ET,
+                cutoff_at_et=OPEN_REPORT_CUTOFF_ET,
+                source="system_notify_daily",
+                detail={
+                    "reason": "market_closed",
+                    "open_sent_at": _to_text(reminder_state.get("open_sent_at")),
+                    "message_id": _to_text(reminder_state.get("open_message_id")),
+                    "calendar": calendar,
+                },
+                times=times,
+            ),
+        )
         saved = ledger if dry_run else _save_ledger(upsert_state=upsert_state, broker_mode=broker_mode, market_date=market_date, ledger=ledger, times=times)
         return {
             "ok": True,
@@ -808,6 +848,8 @@ def build_daily_event_reconcile_response(
                 console_base_url=console_base_url,
                 startup_chat_id=startup_chat_id,
                 load_market_snapshots=load_market_snapshots,
+                request_json_request=request_json_request,
+                compute_base_url=compute_base_url,
             )
             actions.append({"event_id": "open_report", "action": "send_open_report", "result": _compact_action_result(report)})
             if isinstance(report.get("state"), dict):

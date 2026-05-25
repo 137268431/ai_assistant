@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from ibkr_api.modes import request_broker_mode, request_market_data_mode
-from ibkr_api.system.jobs.market_calendar import is_nyse_non_trading_day
+from ibkr_api.system.jobs.market_calendar import build_market_calendar_snapshot, is_nyse_non_trading_day
 
 
 DAILY_REMINDER_STATE_KEY = "system_notify_daily"
@@ -528,36 +528,63 @@ def build_system_market_open_reminder_response(
             "job_id": "system_market_open_reminder",
         }, 200
     market_date = _to_text(times.get("date"))
-    if is_nyse_non_trading_day(market_date):
+    calendar = build_market_calendar_snapshot(
+        market_date=market_date,
+        broker_mode=broker_mode,
+        data_environment=data_environment,
+        payload=request_payload,
+    )
+    if bool(calendar.get("is_closed")):
+        event_result = _as_dict(emit_system_event(
+            event_type="status_change",
+            level="info",
+            source="ibkr_api",
+            title="IBKR 今日闭市提醒",
+            detail={
+                "检查时间": times["us"],
+                "交易日": market_date,
+                "结论": "今日市场闭市，不执行 09:30 开盘系统检查",
+                "闭市原因": _to_text(calendar.get("closed_reason")) or "closed",
+                "下次开盘(美东)": _to_text(calendar.get("next_open_us")) or "待确认",
+                "下次开盘(北京)": _to_text(calendar.get("next_open_beijing")) or "待确认",
+                "日历来源": _to_text(calendar.get("source")) or "unknown",
+            },
+            environment=broker_mode,
+        ))
+        finalized = _event_delivery_finalized(event_result)
         next_state = {
             **current_state,
-            "open_title": "IBKR 09:30 开盘系统检查",
-            "open_status": "skipped",
+            "open_title": "IBKR 今日闭市提醒",
+            "open_status": "closed",
             "open_last_attempt_at": times["us"],
-            "open_notified": False,
-            "open_persisted": False,
-            "open_message_id": "",
-            "open_skipped": True,
-            "open_suppressed": False,
-            "open_reason": "non_trading_day",
-            "open_error": "",
-            "open_sent_at": times["us"],
+            "open_notified": bool(event_result.get("notified")),
+            "open_persisted": bool(event_result.get("persisted")),
+            "open_message_id": _to_text(event_result.get("message_id")),
+            "open_skipped": bool(event_result.get("skipped")),
+            "open_suppressed": bool(event_result.get("suppressed")),
+            "open_reason": "market_closed",
+            "open_error": _event_result_error(event_result),
+            "market_closed_notice_sent_at": times["us"] if finalized else "",
+            "market_calendar": calendar,
         }
+        if finalized:
+            next_state["open_sent_at"] = times["us"]
         upsert_state(DAILY_REMINDER_STATE_KEY, broker_mode, next_state, times["date"])
         return {
-            "ok": True,
+            "ok": finalized,
             "environment": broker_mode,
             "broker_mode": broker_mode,
             "market_data_mode": data_environment,
             "data_environment": data_environment,
-            "notified": False,
-            "persisted": False,
-            "message_id": "",
-            "skipped": True,
-            "reason": "non_trading_day",
+            "notified": bool(event_result.get("notified")),
+            "persisted": bool(event_result.get("persisted")),
+            "message_id": _to_text(event_result.get("message_id")),
+            "skipped": bool(event_result.get("skipped")),
+            "reason": "market_closed",
             "trading_day": False,
             "market_date": market_date,
-            "error": "",
+            "calendar": calendar,
+            "error": _event_result_error(event_result),
             "state": next_state,
             "source": "ibkr-api",
             "job_id": "system_market_open_reminder",

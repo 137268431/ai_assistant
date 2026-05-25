@@ -9,6 +9,7 @@ from flask import Response, jsonify, request
 
 from ibkr_api.modes import request_broker_mode, request_market_data_mode
 from ibkr_api.system.jobs import build_daily_event_ledger_response
+from ibkr_api.system.jobs.market_calendar import build_market_calendar_response
 from ibkr_api.system.scheduler_support import run_scheduler_job
 
 
@@ -161,10 +162,12 @@ def register_system_read_routes(app, *, deps: SystemDeps, exports: dict[str, Any
     collect_storage_health = deps.get("collect_storage_health")
     build_service_topology = deps["build_service_topology"]
     request_json_request = deps["request_json_request"]
+    compute_base_url = deps["compute_base_url"]
     scheduler_base_url = deps["scheduler_base_url"]
     normalize_environment = deps["normalize_environment"]
     time_strings = deps["time_strings"]
     get_state_payload = deps["get_state_payload"]
+    config_value = deps["config_value"]
 
     def _cached_summary_payload(environment: str, *, lite_mode: bool) -> dict[str, Any]:
         ttl_seconds = _control_plane_ttl("summaryz", lite_mode=lite_mode)
@@ -325,6 +328,20 @@ def register_system_read_routes(app, *, deps: SystemDeps, exports: dict[str, Any
         return response if status_code == 200 else (response, status_code)
 
     exports["custom_system_daily_event_ledger"] = custom_system_daily_event_ledger
+
+    @app.route("/api/custom/system/market_calendar", methods=["GET"])
+    def custom_system_market_calendar() -> Response:
+        payload, status_code = build_market_calendar_response(
+            payload=dict(request.args or {}),
+            time_strings=time_strings,
+            request_json_request=request_json_request,
+            compute_base_url=compute_base_url,
+            config_value=config_value,
+        )
+        response = jsonify(payload)
+        return response if status_code == 200 else (response, status_code)
+
+    exports["custom_system_market_calendar"] = custom_system_market_calendar
 
     @app.route("/api/custom/system/scheduler/jobs/run", methods=["POST"])
     def custom_system_scheduler_job_run() -> Response:

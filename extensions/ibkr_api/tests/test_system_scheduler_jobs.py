@@ -705,7 +705,7 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(len(sent), 0)
         self.assertEqual(pb.states, {})
 
-    def test_market_open_reminder_skips_non_trading_day(self):
+    def test_market_open_reminder_sends_closed_notice_on_non_trading_day(self):
         pb = _ReminderPB()
         sent = []
 
@@ -716,15 +716,17 @@ class SystemSchedulerJobsTest(unittest.TestCase):
 
         self.assertEqual(status_code, 200)
         self.assertTrue(payload["ok"])
-        self.assertTrue(payload["skipped"])
-        self.assertEqual(payload["reason"], "non_trading_day")
+        self.assertFalse(payload["skipped"])
+        self.assertEqual(payload["reason"], "market_closed")
         self.assertFalse(payload["trading_day"])
         self.assertEqual(payload["market_date"], "2026-05-09")
-        self.assertEqual(len(sent), 0)
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["title"], "IBKR 今日闭市提醒")
         state = pb.states[("system_notify_daily", "live", "2026-05-09")]["data"]
         self.assertEqual(state["open_sent_at"], "2026-05-09 09:30:00")
-        self.assertEqual(state["open_reason"], "non_trading_day")
-        self.assertFalse(state["open_notified"])
+        self.assertEqual(state["open_reason"], "market_closed")
+        self.assertTrue(state["open_notified"])
+        self.assertEqual(state["market_calendar"]["closed_reason"], "weekend")
 
     def test_market_open_reminder_retries_when_delivery_fails(self):
         pb = _ReminderPB()
@@ -1368,7 +1370,7 @@ class SystemSchedulerJobsTest(unittest.TestCase):
 
         self.assertEqual(status_code, 200)
         self.assertTrue(payload["ok"])
-        self.assertEqual([call["path"] for call in calls], ["/ibkr/status", "/scan"])
+        self.assertEqual([call["path"] for call in calls], ["/ibkr/market/calendar", "/ibkr/status", "/scan"])
         action = payload["actions"][0]
         self.assertEqual(action["event_id"], "target_pool_quality")
         self.assertEqual(action["action"], "submit_seed_rescan")

@@ -231,6 +231,8 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
                 market_date,
                 computed_at_ms,
             ),
+            request_json_request=request_json_request,
+            compute_base_url=compute_base_url,
         )
         payload["job_id"] = "system_market_open_reminder"
         response = jsonify(payload)
@@ -296,6 +298,8 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
                 market_date,
                 computed_at_ms,
             ),
+            request_json_request=request_json_request,
+            compute_base_url=compute_base_url,
         )
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)

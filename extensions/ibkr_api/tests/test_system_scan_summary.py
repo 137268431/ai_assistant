@@ -24,6 +24,7 @@ from ibkr_api.system.jobs.open_report import (
     load_market_snapshots_from_pb,
     matches_open_report_time_window,
 )
+from ibkr_api.system.jobs.market_calendar import build_market_calendar_snapshot
 
 
 class SystemScanSummaryTest(unittest.TestCase):
@@ -115,7 +116,7 @@ class SystemScanSummaryTest(unittest.TestCase):
         self.assertEqual(snapshots[0]["change_pct"], 0.2)
         self.assertEqual(snapshots[0]["freshness_min"], 5)
 
-    def test_scan_summary_skips_weekend_without_sending_open_report(self):
+    def test_scan_summary_sends_weekend_closed_notice_without_loading_targets(self):
         sent = []
         states = {}
         events = []
@@ -132,11 +133,11 @@ class SystemScanSummaryTest(unittest.TestCase):
             build_today_targets_response=build_today_targets_response,
             build_system_summary_payload=lambda environment, lite_mode=False: (_ for _ in ()).throw(AssertionError("summary should not load")),
             build_system_monitor_payload=lambda environment: (_ for _ in ()).throw(AssertionError("monitor should not load")),
-            feishu_send_interactive=lambda card, chat_id, environment: sent.append(card) or {"success": True},
+            feishu_send_interactive=lambda card, chat_id, environment: sent.append(card) or {"success": True, "message_id": "om-closed-weekend"},
             write_system_event_record=lambda *args, **kwargs: events.append(args) or {},
             get_state_payload=lambda state_key, environment: {"data": states.get((state_key, environment), {})},
             upsert_state=lambda key, environment, data, date: states.update({(key, environment): data}) or data,
-            config_value=lambda key, default, environment: (_ for _ in ()).throw(AssertionError("config should not load")),
+            config_value=lambda key, default, environment: default,
             console_base_url=lambda: "https://quant.lzw-glory.top",
             signal_chat_id=lambda environment: f"signal-chat-{environment}",
             startup_chat_id=lambda environment: f"startup-chat-{environment}",
@@ -145,20 +146,23 @@ class SystemScanSummaryTest(unittest.TestCase):
 
         self.assertEqual(status_code, 200)
         self.assertTrue(payload["ok"])
-        self.assertTrue(payload["skipped"])
-        self.assertEqual(payload["reason"], "non_trading_day")
+        self.assertFalse(payload["skipped"])
+        self.assertEqual(payload["reason"], "market_closed")
         self.assertFalse(payload["trading_day"])
         self.assertEqual(payload["market_date"], "2026-05-09")
         self.assertEqual(payload["job_id"], "system_scan_summary")
-        self.assertEqual(sent, [])
-        self.assertEqual(events, [])
+        self.assertEqual(len(sent), 1)
+        self.assertIn("IBKR 今日闭市", sent[0]["header"]["title"]["content"])
+        self.assertEqual(events[0][0], "market_closed_notice")
         self.assertEqual(target_calls, [])
         state = states[("system_notify_daily", "live")]
         self.assertEqual(state["open_sent_at"], "2026-05-09 09:30:00")
-        self.assertEqual(state["open_reason"], "non_trading_day")
-        self.assertFalse(state["open_notified"])
+        self.assertEqual(state["open_reason"], "market_closed")
+        self.assertTrue(state["open_notified"])
+        self.assertEqual(state["open_message_id"], "om-closed-weekend")
+        self.assertEqual(state["market_calendar"]["closed_reason"], "weekend")
 
-    def test_open_report_skips_nyse_holiday_without_sending_card(self):
+    def test_open_report_sends_nyse_holiday_closed_card(self):
         sent = []
         states = {}
         events = []
@@ -170,11 +174,11 @@ class SystemScanSummaryTest(unittest.TestCase):
             build_today_targets_response=lambda *, payload: (_ for _ in ()).throw(AssertionError("targets should not load")),
             build_system_summary_payload=lambda environment, lite_mode=False: (_ for _ in ()).throw(AssertionError("summary should not load")),
             build_system_monitor_payload=lambda environment: (_ for _ in ()).throw(AssertionError("monitor should not load")),
-            feishu_send_interactive=lambda card, chat_id, environment: sent.append(card) or {"success": True},
+            feishu_send_interactive=lambda card, chat_id, environment: sent.append(card) or {"success": True, "message_id": "om-holiday"},
             write_system_event_record=lambda *args, **kwargs: events.append(args) or {},
             get_state_payload=lambda state_key, environment: {"data": states.get((state_key, environment), {})},
             upsert_state=lambda key, environment, data, date: states.update({(key, environment): data}) or data,
-            config_value=lambda key, default, environment: (_ for _ in ()).throw(AssertionError("config should not load")),
+            config_value=lambda key, default, environment: default,
             console_base_url=lambda: "https://quant.lzw-glory.top",
             startup_chat_id=lambda environment: f"startup-chat-{environment}",
             load_market_snapshots=lambda environment, symbols, market_date, computed_at_ms: sent.append(symbols) or [],
@@ -182,14 +186,51 @@ class SystemScanSummaryTest(unittest.TestCase):
 
         self.assertEqual(status_code, 200)
         self.assertTrue(payload["ok"])
-        self.assertTrue(payload["skipped"])
-        self.assertEqual(payload["reason"], "non_trading_day")
+        self.assertFalse(payload["skipped"])
+        self.assertEqual(payload["reason"], "market_closed")
         self.assertEqual(payload["market_date"], "2026-07-03")
-        self.assertEqual(sent, [])
-        self.assertEqual(events, [])
+        self.assertEqual(len(sent), 1)
+        self.assertIn("下次开盘", sent[0]["elements"][0]["content"])
+        self.assertEqual(events[0][0], "market_closed_notice")
         state = states[("system_notify_daily", "live")]
         self.assertEqual(state["open_sent_at"], "2026-07-03 09:30:00")
-        self.assertEqual(state["open_daily_scan_status"], "non_trading_day")
+        self.assertEqual(state["open_daily_scan_status"], "market_closed")
+        self.assertEqual(state["open_message_id"], "om-holiday")
+
+    def test_market_calendar_uses_ibkr_schedule_when_available(self):
+        calls = []
+
+        snapshot = build_market_calendar_snapshot(
+            market_date="2026-05-25",
+            broker_mode="live",
+            data_environment="live",
+            payload={},
+            request_json_request=lambda method, base_url, path, params=None, timeout=0, **kwargs: calls.append(
+                (method, base_url, path, params)
+            )
+            or {
+                "status_code": 200,
+                "payload": {
+                    "ok": True,
+                    "source": "ibkr_schedule",
+                    "market_date": "2026-05-25",
+                    "symbol": "SPY",
+                    "is_trading_day": False,
+                    "is_closed": True,
+                    "closed_reason": "ibkr_closed",
+                    "session": {},
+                    "next_open_us": "2026-05-26 09:30:00",
+                    "next_open_beijing": "2026-05-26 21:30:00",
+                },
+            },
+            compute_base_url="http://compute.internal",
+            config_value=lambda key, default, environment: default,
+        )
+
+        self.assertEqual(snapshot["source"], "ibkr_schedule")
+        self.assertTrue(snapshot["is_closed"])
+        self.assertEqual(snapshot["closed_reason"], "ibkr_closed")
+        self.assertEqual(calls[0][2], "/ibkr/market/calendar")
 
     def test_scan_summary_delivers_open_report_to_status_chat(self):
         sent = []
