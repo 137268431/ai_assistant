@@ -26,7 +26,8 @@ const CONFIG_ALIAS_FALLBACKS = {
     'pb_cron_ibkr_data_quality_open_sweep_enabled',
     'pb_cron_ibkr_data_quality_close_sweep_enabled'
   ],
-  pb_cron_ibkr_data_quality_truth_audit_enabled: ['pb_cron_ibkr_data_quality_premarket_truth_audit_enabled']
+  pb_cron_ibkr_data_quality_truth_audit_enabled: ['pb_cron_ibkr_data_quality_premarket_truth_audit_enabled'],
+  ibkr_order_flow_execution_pool_size: ['ibkr_order_flow_active_limit']
 };
 
 const configData = [
@@ -107,6 +108,38 @@ const configData = [
   cfg('ibkr_market_sentiment_vix_calm_max', '20', '20', 'VIX平稳阈值', '信号与反转', 224.4, 'VIX 低于该值且 SPY/QQQ 偏强时标记 risk_on'),
   cfg('ibkr_market_sentiment_vix_risk_off', '25', '25', 'VIX风险阈值', '信号与反转', 224.5, 'VIX 高于该值时标记 risk_off，除非恐慌正在退潮'),
   cfg('ibkr_market_sentiment_vix_panic', '30', '30', 'VIX恐慌阈值', '信号与反转', 224.6, 'VIX 高于该值时标记 panic；不会直接当作看涨信号'),
+  cfg('ibkr_order_flow_enabled', 'TRUE', 'TRUE', '订单流观察开关', '信号与反转', 225.0, '默认开启；启动后 paper/live 都会以 shadow 模式维护 candidate queue / execution pool / CVD，不拦截信号、不改变下单行为'),
+  cfg('ibkr_order_flow_mode', 'shadow', 'shadow', '订单流模式', '信号与反转', 225.1, 'shadow=只记录与订阅执行池，不阻断交易；未来可扩展 confirm/enforce'),
+  cfg('ibkr_order_flow_active_limit', '3', '3', '订单流执行池上限', '信号与反转', 225.2, '最多同时订阅 tick-by-tick 的 execution pool 标的数；4核8G 默认 3'),
+  cfg('ibkr_order_flow_execution_pool_size', '3', '3', '订单流执行池大小', '信号与反转', 225.205, 'execution_pool 的标准大小配置；兼容旧 key ibkr_order_flow_active_limit，默认 3 个 shadow 观察槽位'),
+  cfg('ibkr_order_flow_max_position_slots', '1', '1', '持仓订单流槽位', '信号与反转', 225.21, 'execution pool 中最多保留多少个持仓风险监控槽位，避免持仓永久占满新开仓名额'),
+  cfg('ibkr_order_flow_tick_types', 'Last', 'Last', '订单流 Tick 类型', '信号与反转', 225.3, '默认只订阅 reqTickByTickData Last，BidAsk 暂复用 L1 quote 以节省 tick 额度'),
+  cfg('ibkr_order_flow_confirm_window_sec', '60', '60', '订单流确认窗口秒', '信号与反转', 225.4, 'CVD/delta ratio 的默认确认窗口；v1 shadow 统计使用'),
+  cfg('ibkr_order_flow_min_delta_ratio', '0.12', '0.12', '最小 Delta Ratio', '信号与反转', 225.5, '订单流方向确认阈值；多头要求大于该值，空头要求小于负该值'),
+  cfg('ibkr_order_flow_max_spread_bps', '12', '12', '订单流最大点差bp', '信号与反转', 225.6, '订单流确认时允许的最大 spread bps；v1 shadow 先记录不拦截'),
+  cfg('candidate_queue_max', '10', '10', '候选队列上限', '信号与反转', 226.0, '5m setup candidate queue 最大数量；同标的同向合并、反向冲突阻断'),
+  cfg('candidate_breakout_ttl_sec', '120', '120', '突破候选TTL秒', '信号与反转', 226.1, 'breakout / squeeze setup 的订单流观察有效期'),
+  cfg('candidate_pullback_ttl_sec', '300', '300', '回踩候选TTL秒', '信号与反转', 226.2, 'VWAP / trend pullback setup 的订单流观察有效期'),
+  cfg('candidate_reversal_ttl_sec', '600', '600', '反转候选TTL秒', '信号与反转', 226.3, 'mean reversion / reversal setup 的订单流观察有效期'),
+  cfg('quality_auto_full_min', '80', '80', 'A级质量分', '信号与反转', 227.0, 'A/A+ paper 自动化门槛参考；v1 shadow 统计使用'),
+  cfg('quality_auto_small_min', '75', '75', 'A-质量分', '信号与反转', 227.1, 'A- 小仓/paper/观察门槛参考；v1 shadow 统计使用'),
+  cfg('quality_shadow_min', '70', '70', '订单流Shadow质量分', '信号与反转', 227.2, '低于该质量分的候选仅保留普通信号，不进入订单流重点观察'),
+  cfg('entry_breakout_order_timeout_sec', '15', '15', '突破订单超时秒', '信号与反转', 228.0, '未来 breakout marketable limit 的等待时间；当前版本不改变订单行为'),
+  cfg('entry_pullback_order_timeout_sec', '90', '90', '回踩订单超时秒', '信号与反转', 228.1, '未来 pullback/reversal limit 的等待时间；当前版本不改变订单行为'),
+  cfg('entry_watch_after_fill_sec', '180', '180', '成交后订单流观察秒', '信号与反转', 228.2, '成交后短暂保留持仓风险监控槽位，默认 180 秒后释放'),
+  cfg('partial_take_profit_r', '1.0', '1.0', '核心止盈R', '信号与反转', 229.0, 'core 仓位默认止盈 R；当前版本作为配置占位与复盘字段'),
+  cfg('partial_take_profit_fraction', '0.6', '0.6', '核心止盈比例', '信号与反转', 229.1, 'core 仓位默认比例；当前版本作为配置占位与复盘字段'),
+  cfg('breakeven_trigger_r', '0.6', '0.6', '保本触发R', '信号与反转', 229.2, '达到该 R 后可推 breakeven；当前版本不放宽止损'),
+  cfg('runner_enabled', 'TRUE', 'TRUE', 'Runner 开关', '信号与反转', 229.3, '趋势/突破可保留 runner；当前版本作为配置占位'),
+  cfg('runner_fraction', '0.4', '0.4', 'Runner 比例', '信号与反转', 229.4, 'runner 默认仓位比例；mean reversion 默认不启用 runner'),
+  cfg('mean_reversion_runner_enabled', 'FALSE', 'FALSE', '均值回归Runner', '信号与反转', 229.5, '均值回归默认不跑 runner'),
+  cfg('breakout_runner_enabled', 'TRUE', 'TRUE', '突破Runner', '信号与反转', 229.6, '突破 setup 允许 runner'),
+  cfg('trend_pullback_runner_enabled', 'TRUE', 'TRUE', '趋势回踩Runner', '信号与反转', 229.7, '趋势回踩 setup 允许 runner'),
+  cfg('new_entry_cutoff_time', '14:45', '14:45', '新开仓截止时间', '信号与反转', 229.8, '订单流增强策略建议的新开仓截止时间，ET'),
+  cfg('force_flat_time', '15:45', '15:45', '强制日内平仓时间', '信号与反转', 229.9, '订单流增强策略建议的日内强制平仓时间，ET'),
+  cfg('never_widen_stop_by_order_flow', 'TRUE', 'TRUE', '订单流不放宽止损', '信号与反转', 229.91, '硬保护：订单流只允许提前退出、减仓或收紧止损，不能放宽止损'),
+  cfg('cvd_flip_exit_enabled', 'TRUE', 'TRUE', 'CVD翻转退出', '信号与反转', 229.92, '未来用于 CVD 翻转提前减仓/退出；当前版本先记录'),
+  cfg('cvd_divergence_take_profit_enabled', 'TRUE', 'TRUE', 'CVD背离止盈', '信号与反转', 229.93, '未来用于 CVD 背离提前止盈；当前版本先记录'),
   cfg('reverse_signal_threshold', '6', '6', '反转通知阈值', '信号与反转', 230, '仅当反转评分达到该阈值时发送反转卡片通知'),
   cfg('reverse_flip_enabled', 'FALSE', 'FALSE', '反向信号反手', '信号与反转', 235, '默认关闭；反向信号只用于取消/平仓/风控，不立即开反向新仓'),
 

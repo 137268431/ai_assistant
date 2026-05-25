@@ -28,6 +28,7 @@ CONFIG_ALIASES: dict[str, tuple[str, ...]] = {
     "pb_cron_ibkr_data_quality_truth_audit_enabled": (
         "pb_cron_ibkr_data_quality_premarket_truth_audit_enabled",
     ),
+    "ibkr_order_flow_execution_pool_size": ("ibkr_order_flow_active_limit",),
 }
 
 CONFIG_GROUP_OVERRIDES: dict[str, str] = {
@@ -76,7 +77,17 @@ def _infer_group(key: str) -> str:
         return "target_universe"
     if normalized.startswith("ibkr_history_") or normalized.startswith("ibkr_bar_"):
         return "market_data"
-    if normalized.startswith("intraday_") or normalized.startswith("signal_") or normalized.startswith("exit_"):
+    if normalized.startswith("ibkr_order_flow_") or normalized == "never_widen_stop_by_order_flow":
+        return "order_flow"
+    if (
+        normalized.startswith("intraday_")
+        or normalized.startswith("signal_")
+        or normalized.startswith("exit_")
+        or normalized.startswith("candidate_")
+        or normalized.startswith("quality_")
+        or normalized.startswith("runner_")
+        or normalized in {"cvd_flip_exit_enabled", "cvd_divergence_take_profit_enabled"}
+    ):
         return "strategy"
     return "runtime"
 

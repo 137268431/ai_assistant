@@ -101,6 +101,7 @@ def build_statusz_runtime_payload(
         ),
         "data_backfill": build_data_backfill_payload(payload.get("data_backfill"), as_dict=as_dict),
         "order_tracker": build_order_tracker_payload(payload.get("order_tracker"), as_dict=as_dict),
+        "order_flow": as_dict(payload.get("order_flow")),
         "warmup": warmup,
         "realtime_compute": build_realtime_compute_payload(payload.get("realtime_compute"), as_dict=as_dict),
         "daily_scan": build_daily_scan_payload(daily_scan, as_dict=as_dict),

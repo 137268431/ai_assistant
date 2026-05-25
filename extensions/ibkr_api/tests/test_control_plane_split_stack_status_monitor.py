@@ -844,6 +844,34 @@ class ControlPlaneSplitStackStatusMonitorTest(unittest.TestCase):
         self.assertFalse(gate["raw_signal_gate"]["open"])
         self.assertFalse(gate["raw_startup_snapshot"]["open"])
 
+    def test_statusz_runtime_view_exposes_order_flow_and_tick_by_tick_status(self):
+        runtime_payload = _sample_runtime_status_payload(authenticated=True)
+        runtime_payload["websocket"].update(
+            {
+                "tick_by_tick_subscribed_conids": [265598],
+                "tick_by_tick_pending_conids": [],
+            }
+        )
+        runtime_payload["order_flow"] = {
+            "enabled": True,
+            "mode": "shadow",
+            "broker_environment": "paper",
+            "data_environment": "live",
+            "execution_pool": {"max_symbols": 3, "active_symbols": ["AAPL"]},
+        }
+
+        runtime_view = api_app_mod._build_statusz_runtime_payload(
+            runtime_payload,
+            False,
+            live_readiness={},
+        )
+
+        self.assertTrue(runtime_view["order_flow"]["enabled"])
+        self.assertEqual(runtime_view["order_flow"]["mode"], "shadow")
+        self.assertEqual(runtime_view["order_flow"]["data_environment"], "live")
+        self.assertEqual(runtime_view["websocket"]["tick_by_tick_subscribed_count"], 1)
+        self.assertEqual(runtime_view["websocket"]["tick_by_tick_pending_count"], 0)
+
     def test_statusz_route_canonicalizes_reboot_starting_runtime_state(self):
         compute_result = {"ok": True, "payload": _sample_compute_status_payload(), "error": ""}
         runtime_result = {

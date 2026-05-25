@@ -54,6 +54,7 @@ from ibkr_compute.order.order_placer import OrderPlacer
 from ibkr_compute.order.order_tracker import OrderTracker
 from ibkr_compute.order.order_modifier import OrderModifier
 from ibkr_compute.order.order_lifecycle import OrderLifecycle
+from ibkr_compute.order_flow import OrderFlowManager
 from ibkr_compute.orchestration.auth_recovery import TradingServiceAuthRecoveryMixin
 from ibkr_compute.orchestration.integrity import TradingServiceIntegrityMixin
 from ibkr_compute.orchestration.lifecycle import TradingServiceLifecycleMixin
@@ -280,6 +281,12 @@ class IBKRTradingService(
             config=self.config,
             environment=DATA_ENVIRONMENT,
             broker=self.broker,
+        )
+        self.order_flow_manager = OrderFlowManager(
+            config=self.config,
+            environment=ENVIRONMENT,
+            data_environment=DATA_ENVIRONMENT,
+            ws_client=self.ws_client,
         )
 
         self.order_placer = OrderPlacer(

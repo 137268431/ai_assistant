@@ -68,6 +68,14 @@ def build_websocket_payload(websocket_payload: Any, *, as_dict: AsDict) -> dict[
         "message_count": int(websocket.get("message_count") or 0),
         "subscribed_count": _list_total(websocket.get("subscribed_conids"), websocket.get("subscribed_count")),
         "pending_count": _list_total(websocket.get("pending_conids"), websocket.get("pending_count")),
+        "tick_by_tick_subscribed_count": _list_total(
+            websocket.get("tick_by_tick_subscribed_conids"),
+            websocket.get("tick_by_tick_subscribed_count"),
+        ),
+        "tick_by_tick_pending_count": _list_total(
+            websocket.get("tick_by_tick_pending_conids"),
+            websocket.get("tick_by_tick_pending_count"),
+        ),
     }
 
 

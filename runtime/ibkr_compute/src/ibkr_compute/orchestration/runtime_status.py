@@ -223,6 +223,11 @@ class TradingServiceRuntimeStatusMixin:
             "order_placer": self.order_placer.status(),
             "order_tracker": self.order_tracker.status(),
             "order_lifecycle": self.order_lifecycle.status(),
+            "order_flow": (
+                self.order_flow_manager.status()
+                if getattr(self, "order_flow_manager", None) is not None
+                else {"enabled": False, "reason": "manager_unavailable"}
+            ),
             "signal_router": self.signal_router.status(),
             "signal_processor": self.signal_processor.status(),
             "warmup": warmup_state,

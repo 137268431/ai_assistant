@@ -29,6 +29,10 @@ class IBKRWebSocketClient:
         self._state_lock = threading.RLock()
         self._subscribed_conids: Set[int] = set()
         self._pending_subscriptions: Set[int] = set()
+        self._tick_subscribed_conids: Set[int] = set()
+        self._tick_pending_subscriptions: Set[int] = set()
+        self._tick_subscription_types: Dict[int, str] = {}
+        self._tick_last_errors: Dict[int, str] = {}
         self._order_updates_enabled = False
 
     @property
@@ -79,8 +83,13 @@ class IBKRWebSocketClient:
         self.broker.remove_order_update_listener(self._handle_order_update)
         with self._state_lock:
             subscribed = list(self._subscribed_conids)
+            tick_subscribed = list(self._tick_subscribed_conids)
             self._subscribed_conids.clear()
             self._pending_subscriptions.clear()
+            self._tick_subscribed_conids.clear()
+            self._tick_pending_subscriptions.clear()
+            self._tick_subscription_types.clear()
+            self._tick_last_errors.clear()
             self._connected = False
             self._ready = False
         for conid in subscribed:
@@ -88,12 +97,20 @@ class IBKRWebSocketClient:
                 self.broker.unsubscribe_market_data(conid)
             except Exception:
                 logger.exception("Failed to unsubscribe market data for %s", conid)
+        for conid in tick_subscribed:
+            try:
+                self.broker.unsubscribe_tick_by_tick(conid)
+            except Exception:
+                logger.exception("Failed to unsubscribe tick-by-tick for %s", conid)
 
     def _flush_pending(self):
         with self._state_lock:
             pending = list(self._pending_subscriptions)
+            tick_pending = list(self._tick_pending_subscriptions)
         for conid in pending:
             self._send_subscription(conid)
+        for conid in tick_pending:
+            self._send_tick_subscription(conid, self._tick_subscription_types.get(conid, "Last"))
 
     def subscribe(self, conid: int):
         try:
@@ -117,6 +134,33 @@ class IBKRWebSocketClient:
             self.broker.unsubscribe_market_data(normalized)
         except Exception:
             logger.exception("Failed to unsubscribe %s", normalized)
+
+    def subscribe_tick_by_tick(self, conid: int, tick_type: str = "Last"):
+        try:
+            normalized = int(conid)
+        except (TypeError, ValueError):
+            return
+        normalized_tick_type = str(tick_type or "Last").strip() or "Last"
+        with self._state_lock:
+            self._tick_subscription_types[normalized] = normalized_tick_type
+            self._tick_pending_subscriptions.add(normalized)
+        if self._running:
+            self._send_tick_subscription(normalized, normalized_tick_type)
+
+    def unsubscribe_tick_by_tick(self, conid: int):
+        try:
+            normalized = int(conid)
+        except (TypeError, ValueError):
+            return
+        with self._state_lock:
+            self._tick_pending_subscriptions.discard(normalized)
+            self._tick_subscribed_conids.discard(normalized)
+            self._tick_subscription_types.pop(normalized, None)
+            self._tick_last_errors.pop(normalized, None)
+        try:
+            self.broker.unsubscribe_tick_by_tick(normalized)
+        except Exception:
+            logger.exception("Failed to unsubscribe tick-by-tick %s", normalized)
 
     def resubscribe(self, conid: int):
         try:
@@ -149,6 +193,28 @@ class IBKRWebSocketClient:
             self._subscribed_conids.add(conid)
             self._pending_subscriptions.discard(conid)
 
+    def _send_tick_subscription(self, conid: int, tick_type: str = "Last"):
+        with self._state_lock:
+            if conid in self._tick_subscribed_conids:
+                self._tick_pending_subscriptions.discard(conid)
+                return
+        subscriber = getattr(self.broker, "subscribe_tick_by_tick", None)
+        if not callable(subscriber):
+            with self._state_lock:
+                self._tick_last_errors[conid] = "broker_tick_by_tick_unavailable"
+            return
+        try:
+            subscriber(conid=conid, symbol="", tick_type=tick_type)
+        except Exception as exc:
+            with self._state_lock:
+                self._tick_last_errors[conid] = str(exc)
+            logger.warning("Failed to subscribe tick-by-tick conid=%s: %s", conid, exc)
+            return
+        with self._state_lock:
+            self._tick_subscribed_conids.add(conid)
+            self._tick_pending_subscriptions.discard(conid)
+            self._tick_last_errors.pop(conid, None)
+
     def status(self) -> dict:
         now_ts = time.time()
         with self._state_lock:
@@ -163,6 +229,12 @@ class IBKRWebSocketClient:
                 "subscribed_count": len(self._subscribed_conids),
                 "pending_conids": sorted(self._pending_subscriptions),
                 "subscribed_conids": sorted(self._subscribed_conids),
+                "tick_by_tick_pending_count": len(self._tick_pending_subscriptions),
+                "tick_by_tick_subscribed_count": len(self._tick_subscribed_conids),
+                "tick_by_tick_pending_conids": sorted(self._tick_pending_subscriptions),
+                "tick_by_tick_subscribed_conids": sorted(self._tick_subscribed_conids),
+                "tick_by_tick_types": dict(self._tick_subscription_types),
+                "tick_by_tick_last_errors": dict(self._tick_last_errors),
                 "order_updates_subscribed": bool(self._order_updates_enabled),
                 "last_message": (
                     time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(last_message))

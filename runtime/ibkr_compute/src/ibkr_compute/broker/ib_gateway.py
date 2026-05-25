@@ -56,6 +56,9 @@ from ibkr_compute.core.time_utils import ET
 logger = logging.getLogger(__name__)
 
 
+TICK_BY_TICK_DUPLICATE_WINDOW_SECONDS = 15.0
+
+
 from ibkr_compute.broker.ib_gateway_service import (
     GatewayServiceManager,
     _pid_uptime_seconds,
@@ -100,6 +103,9 @@ class _IBGatewayApp(EWrapper, EClient):
         self._ticker_meta: Dict[int, dict] = {}
         self._ticker_payloads: Dict[int, dict] = {}
         self._conid_to_ticker: Dict[int, int] = {}
+        self._tick_by_tick_meta: Dict[int, dict] = {}
+        self._tick_by_tick_by_conid: Dict[tuple[int, str], int] = {}
+        self._tick_by_tick_last_request_at: Dict[tuple[int, str], float] = {}
         self._open_orders: Dict[str, dict] = {}
         self._open_order_objects: Dict[str, tuple[Any, Any]] = {}
         self._order_errors: Dict[str, dict] = {}
@@ -338,6 +344,9 @@ class _IBGatewayApp(EWrapper, EClient):
         if not payload:
             return
         payload["_updated"] = int(time.time() * 1000)
+        self._emit_market_payload(payload)
+
+    def _emit_market_payload(self, payload: dict):
         with self._listener_lock:
             listeners = list(self._market_data_listeners)
         for listener in listeners:
@@ -388,6 +397,63 @@ class _IBGatewayApp(EWrapper, EClient):
         payload["87"] = _safe_float(parts[3], 0.0)
         payload["_updated"] = _safe_int(parts[5], int(time.time() * 1000))
         self._emit_tick(int(tickerId))
+
+    def tickByTickAllLast(  # noqa: N802
+        self,
+        reqId: int,
+        tickType: int,
+        time_: int,
+        price: float,
+        size: int,
+        _tickAttribLast,
+        exchange: str,
+        specialConditions: str,
+    ):
+        meta = dict(self._tick_by_tick_meta.get(int(reqId)) or {})
+        if not meta:
+            return
+        payload = {
+            **meta,
+            "source": "tick_by_tick",
+            "tick_type_code": int(tickType or 0),
+            "timestamp_ms": int(time_ or time.time()) * 1000,
+            "price": float(price or 0.0),
+            "31": float(price or 0.0),
+            "size": int(size or 0),
+            "7059": int(size or 0),
+            "exchange": str(exchange or ""),
+            "special_conditions": str(specialConditions or ""),
+            "_updated": int(time.time() * 1000),
+        }
+        self._emit_market_payload(payload)
+
+    def tickByTickBidAsk(  # noqa: N802
+        self,
+        reqId: int,
+        time_: int,
+        bidPrice: float,
+        askPrice: float,
+        bidSize: int,
+        askSize: int,
+        _tickAttribBidAsk,
+    ):
+        meta = dict(self._tick_by_tick_meta.get(int(reqId)) or {})
+        if not meta:
+            return
+        payload = {
+            **meta,
+            "source": "tick_by_tick",
+            "tick_type": "BidAsk",
+            "timestamp_ms": int(time_ or time.time()) * 1000,
+            "bid": float(bidPrice or 0.0),
+            "84": float(bidPrice or 0.0),
+            "ask": float(askPrice or 0.0),
+            "86": float(askPrice or 0.0),
+            "bid_size": int(bidSize or 0),
+            "ask_size": int(askSize or 0),
+            "_updated": int(time.time() * 1000),
+        }
+        self._emit_market_payload(payload)
 
     def contractDetails(self, reqId: int, contractDetails):  # noqa: N802
         ctx = self._pending_requests.get(int(reqId))
@@ -1164,6 +1230,7 @@ class _IBGatewayApp(EWrapper, EClient):
                 ],
                 "managed_accounts": str(self._managed_accounts or ""),
                 "subscriptions": len(self._conid_to_ticker),
+                "tick_by_tick_subscriptions": len(self._tick_by_tick_meta),
             }
 
 
@@ -1616,6 +1683,98 @@ class BrokerAdapter:
             logger.exception("cancelMktData failed for conid=%s ticker=%s", conid, ticker_id)
         self.client._ticker_meta.pop(int(ticker_id), None)
         self.client._ticker_payloads.pop(int(ticker_id), None)
+
+    @staticmethod
+    def _normalize_tick_by_tick_type(tick_type: str = "Last") -> str:
+        normalized = str(tick_type or "Last").strip() or "Last"
+        if normalized.lower() != "last":
+            raise ValueError(f"unsupported_tick_by_tick_type:{normalized}")
+        return "Last"
+
+    def subscribe_tick_by_tick(
+        self,
+        conid: int,
+        symbol: str = "",
+        exchange: str = "SMART",
+        tick_type: str = "Last",
+    ) -> int:
+        normalized_tick_type = self._normalize_tick_by_tick_type(tick_type)
+        contract = self.resolve_contract(symbol=symbol, conid=conid, exchange=exchange)
+        if not contract:
+            raise RuntimeError(f"contract_not_found:{symbol or conid}")
+        self.connect()
+        if not callable(getattr(self.client, "reqTickByTickData", None)):
+            raise RuntimeError("req_tick_by_tick_unavailable")
+        normalized_conid = int(contract.get("conid") or conid)
+        key = (normalized_conid, normalized_tick_type.lower())
+        now_ts = time.time()
+        with self.client._state_lock:
+            existing = self.client._tick_by_tick_by_conid.get(key)
+            if existing and existing in self.client._tick_by_tick_meta:
+                return int(existing)
+            last_request_at = float(self.client._tick_by_tick_last_request_at.get(key, 0.0) or 0.0)
+            if now_ts - last_request_at < TICK_BY_TICK_DUPLICATE_WINDOW_SECONDS:
+                raise RuntimeError(f"tick_by_tick_duplicate_cooldown:{normalized_conid}:{normalized_tick_type}")
+            req_id = int(self.client.next_ticker_ids(1)[0])
+            self.client._tick_by_tick_last_request_at[key] = now_ts
+
+        ib_contract = Contract()
+        ib_contract.conId = normalized_conid
+        ib_contract.symbol = str(contract.get("symbol") or symbol)
+        ib_contract.secType = str(contract.get("sec_type") or "STK")
+        ib_contract.exchange = str(contract.get("exchange") or exchange or "SMART")
+        ib_contract.currency = str(contract.get("currency") or "USD")
+        meta = {
+            "tickerId": req_id,
+            "reqId": req_id,
+            "conid": int(ib_contract.conId),
+            "conidEx": int(ib_contract.conId),
+            "symbol": str(ib_contract.symbol).upper(),
+            "tick_type": normalized_tick_type,
+        }
+        with self.client._state_lock:
+            self.client._tick_by_tick_meta[req_id] = meta
+            self.client._tick_by_tick_by_conid[key] = req_id
+        try:
+            self.client.reqTickByTickData(req_id, ib_contract, normalized_tick_type, 0, False)
+        except Exception:
+            with self.client._state_lock:
+                self.client._tick_by_tick_meta.pop(req_id, None)
+                self.client._tick_by_tick_by_conid.pop(key, None)
+            raise
+        return req_id
+
+    def unsubscribe_tick_by_tick(self, conid: int, tick_type: str = ""):
+        normalized_conid = int(conid or 0)
+        normalized_tick_type = str(tick_type or "").strip().lower()
+        now_ts = time.time()
+        with self.client._state_lock:
+            reqs = [
+                (key, int(req_id))
+                for key, req_id in list(self.client._tick_by_tick_by_conid.items())
+                if key[0] == normalized_conid
+                and (not normalized_tick_type or key[1] == normalized_tick_type)
+            ]
+            for key, req_id in reqs:
+                self.client._tick_by_tick_by_conid.pop(key, None)
+                self.client._tick_by_tick_meta.pop(int(req_id), None)
+                self.client._tick_by_tick_last_request_at[key] = now_ts
+        for _key, req_id in reqs:
+            try:
+                self.client.cancelTickByTickData(int(req_id))
+            except Exception:
+                logger.exception("cancelTickByTickData failed for conid=%s req_id=%s", conid, req_id)
+
+    def list_tick_by_tick_subscriptions(self) -> List[dict]:
+        with self.client._state_lock:
+            return sorted(
+                [dict(item) for item in self.client._tick_by_tick_meta.values()],
+                key=lambda item: (
+                    int(item.get("conid") or 0),
+                    str(item.get("tick_type") or ""),
+                    int(item.get("reqId") or 0),
+                ),
+            )
 
     def list_positions(self) -> List[dict]:
         return self.client.request_positions()

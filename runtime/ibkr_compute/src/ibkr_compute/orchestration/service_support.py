@@ -181,6 +181,9 @@ class TradingServiceSupportMixin:
     def _on_ws_market_tick(self, tick_data: dict):
         self.realtime_quote_book.on_tick(tick_data)
         self.bar_aggregator.on_tick(tick_data)
+        order_flow_manager = getattr(self, "order_flow_manager", None)
+        if order_flow_manager is not None:
+            order_flow_manager.on_market_tick(tick_data)
 
     def _market_date(self) -> str:
         return datetime.now(_service_mod().ET).strftime("%Y-%m-%d")

@@ -354,6 +354,24 @@ class TradingServiceSignalsMixin:
                     service_mod.logger.warning("Cannot resolve conid for %s, skipping", symbol)
                     continue
 
+                order_flow_decision = {}
+                order_flow_manager = getattr(self, "order_flow_manager", None)
+                if order_flow_manager is not None:
+                    try:
+                        order_flow_decision = order_flow_manager.observe_signal(sig, conid=int(conid))
+                        extra = self._signal_extra(sig)
+                        sig["extra"] = {
+                            **extra,
+                            "order_flow_shadow": order_flow_decision,
+                        }
+                    except Exception as order_flow_err:
+                        service_mod.logger.warning(
+                            "Order-flow shadow observe failed: signal_id=%s symbol=%s error=%s",
+                            signal_id,
+                            symbol,
+                            order_flow_err,
+                        )
+
                 harvest_settings = self._harvest_entry_settings()
                 harvest_submitter = getattr(self.order_placer, "place_harvest_bracket_order", None)
                 if not callable(harvest_submitter):
@@ -384,6 +402,21 @@ class TradingServiceSignalsMixin:
                     )
 
                 if result.get("ok"):
+                    if order_flow_manager is not None:
+                        try:
+                            order_flow_manager.mark_filled(
+                                symbol,
+                                conid=int(conid),
+                                direction=sig.get("direction", ""),
+                                signal_id=signal_id,
+                            )
+                        except Exception as order_flow_err:
+                            service_mod.logger.debug(
+                                "Order-flow filled watch failed: signal_id=%s symbol=%s error=%s",
+                                signal_id,
+                                symbol,
+                                order_flow_err,
+                            )
                     if buying_power_guard.get("enabled"):
                         result["buying_power_guard"] = dict(buying_power_guard)
                         self._notify_buying_power_guard(
@@ -1574,6 +1607,7 @@ class TradingServiceSignalsMixin:
                 **harvest_fields,
                 **exit_policy_fields,
                 **buying_power_fields,
+                "order_flow_shadow": signal_extra.get("order_flow_shadow", {}),
             },
         }
 
