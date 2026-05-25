@@ -8,7 +8,9 @@ const LOGIC_SECTION_ORDER = [
   ['indicators', '数据与指标'],
   ['signals', '信号生成'],
   ['execution', '执行校验'],
+  ['order_flow', '订单流'],
   ['orders', '订单生命周期'],
+  ['broker_mode_switch', '模式切换 / 2FA'],
   ['quality', '数据质量'],
   ['backtest_validation', '回测验证'],
   ['scheduler', '调度时间线'],
@@ -76,9 +78,9 @@ function renderCoverage(coverage = []) {
     const status = item.status === 'covered' ? 'covered' : 'missing';
     return `
       <article class="logic-coverage-card ${status}">
-        <div class="logic-coverage-label">${safeEscape(item.id || '--')}</div>
-        <div class="logic-coverage-value">${status === 'covered' ? 'Covered' : 'Missing'}</div>
-        <div class="logic-coverage-copy">${safeEscape(item.label || '--')}</div>
+        <span class="logic-coverage-dot"></span>
+        <span class="logic-coverage-label">${safeEscape(item.label || item.id || '--')}</span>
+        <strong>${status === 'covered' ? 'Covered' : 'Missing'}</strong>
       </article>
     `;
   }).join('');
@@ -94,6 +96,45 @@ function renderChips(chips = []) {
           <div class="logic-chip-label">${safeEscape(chip.label || '--')}</div>
           <div class="logic-chip-value">${safeEscape(chip.value == null ? '--' : String(chip.value))}</div>
           <div class="logic-chip-copy">${safeEscape(chip.copy || chip.note || '--')}</div>
+        </article>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderHighlights(highlights = []) {
+  const items = arrayOrEmpty(highlights);
+  if (!items.length) return '';
+  return `
+    <div class="logic-highlight-grid">
+      ${items.map((item) => `
+        <article class="logic-highlight ${safeEscape(item.tone || 'neutral')}">
+          <div class="logic-highlight-label">${safeEscape(item.label || item.id || '--')}</div>
+          <div class="logic-highlight-value">${safeEscape(item.value == null ? '--' : String(item.value))}</div>
+          <div class="logic-highlight-note">${safeEscape(item.note || item.summary || '')}</div>
+        </article>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderDetails(details = []) {
+  const items = arrayOrEmpty(details);
+  if (!items.length) return '';
+  return `
+    <div class="logic-detail-grid">
+      ${items.map((detail) => `
+        <article class="logic-detail-card ${safeEscape(detail.tone || 'neutral')}">
+          <div class="logic-detail-card-head">
+            <div>
+              <div class="logic-detail-id">${safeEscape(detail.id || '')}</div>
+              <div class="logic-detail-card-title">${safeEscape(detail.title || '--')}</div>
+            </div>
+            ${detail.summary ? `<span>${safeEscape(detail.summary)}</span>` : ''}
+          </div>
+          <div class="logic-lines">
+            ${arrayOrEmpty(detail.lines).map((line) => `<div class="logic-line">${safeEscape(line)}</div>`).join('')}
+          </div>
         </article>
       `).join('')}
     </div>
@@ -150,6 +191,7 @@ function renderSystemFlowPanel(panel = {}) {
         ${renderSourceStack(panel)}
       </div>
       ${renderChips(panel.chips)}
+      ${renderHighlights(panel.highlights)}
       <div class="logic-stage-grid">
         ${stages.map((stage, index) => `
           <article class="logic-stage-card">
@@ -177,6 +219,8 @@ function renderGenericPanel(id, panel = {}, index = 0) {
         ${renderSourceStack(panel)}
       </div>
       ${renderChips(panel.chips)}
+      ${renderHighlights(panel.highlights)}
+      ${renderDetails(panel.details)}
       ${renderSections(panel.sections)}
     </section>
   `;
@@ -277,7 +321,9 @@ function renderLogicContent(rulesPayload = {}, cronPayload = {}) {
     indicators: rulesPayload.indicators,
     signals: rulesPayload.signals,
     execution: rulesPayload.execution,
+    order_flow: rulesPayload.order_flow,
     orders: rulesPayload.orders,
+    broker_mode_switch: rulesPayload.broker_mode_switch,
     quality: rulesPayload.quality,
     backtest_validation: rulesPayload.backtest_validation,
   };

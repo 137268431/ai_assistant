@@ -114,14 +114,16 @@ class SystemLogicRulesPayloadTest(unittest.TestCase):
             response = rules_views.build_rules_response()
 
         payload = response.get_json()
-        self.assertEqual("system_logic_v1", payload["schema_version"])
+        self.assertEqual("system_logic_v2", payload["schema_version"])
         for key in (
             "system_flow",
             "selection",
             "indicators",
             "signals",
             "execution",
+            "order_flow",
             "orders",
+            "broker_mode_switch",
             "quality",
             "backtest_validation",
             "source_refs",
@@ -133,6 +135,8 @@ class SystemLogicRulesPayloadTest(unittest.TestCase):
         self.assertIn("target_selection", coverage_ids)
         self.assertIn("data_indicators", coverage_ids)
         self.assertIn("scheduler", coverage_ids)
+        self.assertIn("order_flow", coverage_ids)
+        self.assertIn("broker_mode_switch", coverage_ids)
         self.assertTrue(all(item["status"] == "covered" for item in payload["logic_coverage"]))
 
     def test_indicator_and_execution_sections_include_expected_defaults(self):
@@ -142,6 +146,8 @@ class SystemLogicRulesPayloadTest(unittest.TestCase):
             indicators = rules_views._indicator_panel("live")
             execution = rules_views._execution_panel("live")
             signals = rules_views._signal_panel("live")
+            order_flow = rules_views._order_flow_panel("live")
+            broker_switch = rules_views._broker_mode_switch_panel("live")
 
         indicator_text = "\n".join(
             line
@@ -162,6 +168,11 @@ class SystemLogicRulesPayloadTest(unittest.TestCase):
         self.assertIn("order_window_end_time", str(execution))
         self.assertIn("signal_validity_minutes", str(execution))
         self.assertIn("position_amount", execution_text)
+        self.assertIn("ibkr_order_flow_mode", str(order_flow))
+        self.assertIn("Execution Pool", str(order_flow))
+        self.assertIn("never_widen_stop_by_order_flow", str(order_flow))
+        self.assertIn("broker-mode/switch/preview", str(broker_switch))
+        self.assertIn("2FA", str(broker_switch))
 
 
 if __name__ == "__main__":

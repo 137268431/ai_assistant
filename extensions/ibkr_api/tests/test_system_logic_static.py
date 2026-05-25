@@ -20,8 +20,14 @@ class SystemLogicStaticSmokeTest(unittest.TestCase):
         self.assertIn("/api/custom/ibkr/rules", js)
         self.assertIn("/api/custom/system/cronz", js)
         self.assertIn("logic_coverage", js)
+        self.assertIn("order_flow", js)
+        self.assertIn("broker_mode_switch", js)
+        self.assertIn("renderDetails", js)
         self.assertIn("System Logic Map", html)
+        self.assertIn("20260525-system-logic-v2", html)
         self.assertIn("logic-anchor-strip", css)
+        self.assertIn("flex-direction: row", css)
+        self.assertIn("--page-panel-min-height: 0px", css)
 
     def test_system_navigation_includes_logic_page(self):
         bridge_js = read_repo_text("runtime/ibkr_console/static/assets/js/shared/ui-bridges.js")
@@ -48,6 +54,8 @@ class SystemLogicStaticSmokeTest(unittest.TestCase):
         for token in (
             "runtime/ibkr_compute/src/ibkr_compute/core/signal_generator.py",
             "runtime/ibkr_compute/src/ibkr_compute/core/indicator_engine.py",
+            "runtime/ibkr_compute/src/ibkr_compute/order_flow",
+            "runtime/ibkr_api/src/ibkr_api/control/broker_mode_switch.py",
             "runtime/ibkr_scheduler/src/ibkr_scheduler/cron_registry.py",
             "runtime/ibkr_console/static/ibkr_system_logic.html",
             "runtime/ibkr_compute/src/ibkr_compute/api/market/rules_views.py",

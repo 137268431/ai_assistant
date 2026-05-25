@@ -1,140 +1,270 @@
 :root {
-  --logic-bg: #071318;
-  --logic-panel: rgba(9, 18, 28, 0.88);
-  --logic-panel-2: rgba(11, 28, 33, 0.82);
-  --logic-line: rgba(119, 220, 205, 0.18);
-  --logic-line-strong: rgba(119, 220, 205, 0.34);
-  --logic-text: #e6f3f3;
-  --logic-muted: #91a8b8;
-  --logic-teal: #4fd1c5;
-  --logic-amber: #f6ad55;
-  --logic-blue: #63b3ed;
-  --logic-red: #fc8181;
-  --logic-green: #68d391;
+  --logic-bg: #061116;
+  --logic-ink: #e9f8f5;
+  --logic-muted: #8ba7af;
+  --logic-soft: rgba(233, 248, 245, 0.68);
+  --logic-panel: rgba(7, 18, 24, 0.88);
+  --logic-panel-2: rgba(10, 28, 33, 0.78);
+  --logic-line: rgba(84, 214, 198, 0.18);
+  --logic-line-strong: rgba(84, 214, 198, 0.36);
+  --logic-teal: #54d6c6;
+  --logic-gold: #f2bb63;
+  --logic-blue: #74b7ff;
+  --logic-red: #ff7d7d;
+  --logic-green: #78d99b;
+  --logic-font-display: 'Sora', sans-serif;
+  --logic-font-mono: 'JetBrains Mono', monospace;
 }
 
 body {
   background:
-    radial-gradient(circle at top left, rgba(79, 209, 197, 0.14), transparent 34rem),
-    radial-gradient(circle at 80% 0%, rgba(99, 179, 237, 0.12), transparent 30rem),
-    linear-gradient(135deg, #061016 0%, #071a20 45%, #081018 100%);
-  color: var(--logic-text);
+    radial-gradient(circle at 10% -8%, rgba(84, 214, 198, 0.17), transparent 34rem),
+    radial-gradient(circle at 92% 4%, rgba(242, 187, 99, 0.13), transparent 31rem),
+    linear-gradient(135deg, #061116 0%, #071a20 45%, #071016 100%);
+  color: var(--logic-ink);
 }
 
 .logic-shell {
-  max-width: 1680px;
+  --page-panel-min-height: 0px;
+  max-width: min(100%, 1760px);
+  padding-top: 10px;
+}
+
+.logic-shell .panel {
+  min-height: 0;
+}
+
+.logic-hero.panel,
+.logic-coverage.panel,
+.logic-panel.panel,
+.logic-error.panel,
+.logic-empty-state.panel {
+  min-height: 0;
+  border: 1px solid var(--logic-line);
+  background: var(--logic-panel);
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.25);
 }
 
 .logic-hero {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 420px);
-  gap: 24px;
-  align-items: stretch;
-  border: 1px solid var(--logic-line-strong);
-  background:
-    linear-gradient(135deg, rgba(79, 209, 197, 0.13), rgba(99, 179, 237, 0.06)),
-    var(--logic-panel);
-  overflow: hidden;
   position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 440px);
+  gap: 22px;
+  align-items: stretch;
+  overflow: hidden;
+  padding: 24px;
+  border-radius: 24px;
+  background:
+    linear-gradient(135deg, rgba(84, 214, 198, 0.13), rgba(116, 183, 255, 0.05)),
+    var(--logic-panel);
 }
 
+.logic-hero::before,
 .logic-hero::after {
   content: "";
   position: absolute;
-  inset: auto -10% -45% 45%;
-  height: 180px;
-  background: linear-gradient(90deg, transparent, rgba(246, 173, 85, 0.14), transparent);
-  transform: rotate(-10deg);
   pointer-events: none;
 }
 
+.logic-hero::before {
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(84, 214, 198, 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(84, 214, 198, 0.045) 1px, transparent 1px);
+  background-size: 42px 42px;
+  mask-image: linear-gradient(90deg, rgba(0, 0, 0, 0.74), transparent 78%);
+}
+
+.logic-hero::after {
+  right: -14%;
+  bottom: -56%;
+  width: 58%;
+  height: 78%;
+  background: linear-gradient(105deg, transparent, rgba(242, 187, 99, 0.22), transparent);
+  transform: rotate(-8deg);
+}
+
+.logic-hero-main,
+.logic-hero-meta {
+  position: relative;
+  z-index: 1;
+}
+
 .logic-hero h1 {
-  margin: 8px 0 10px;
-  font-family: 'Sora', sans-serif;
-  font-size: clamp(30px, 5vw, 58px);
-  line-height: 0.95;
-  letter-spacing: -0.055em;
+  max-width: 860px;
+  margin: 8px 0 12px;
+  font-family: var(--logic-font-display);
+  font-size: clamp(34px, 5.4vw, 72px);
+  line-height: 0.9;
+  letter-spacing: -0.065em;
 }
 
 .logic-hero p {
-  max-width: 860px;
+  max-width: 900px;
   margin: 0;
-  color: var(--logic-muted);
+  color: var(--logic-soft);
   font-size: 15px;
   line-height: 1.75;
 }
 
 .logic-hero-meta {
   display: grid;
-  gap: 10px;
-  align-content: center;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+  align-content: start;
   padding: 14px;
-  border: 1px solid var(--logic-line);
-  border-radius: 22px;
-  background: rgba(3, 10, 18, 0.45);
-  font-family: 'JetBrains Mono', monospace;
+  border: 1px solid rgba(233, 248, 245, 0.08);
+  border-radius: 20px;
+  background: rgba(2, 9, 15, 0.58);
+  backdrop-filter: blur(14px);
+  font-family: var(--logic-font-mono);
   font-size: 12px;
   color: var(--logic-muted);
 }
 
 .logic-meta-chip {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 12px;
-  border-radius: 14px;
+  display: grid;
+  gap: 4px;
+  gap: 14px;
+  padding: 9px 12px;
+  border-radius: 13px;
   background: rgba(255, 255, 255, 0.035);
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .logic-meta-chip strong {
-  color: var(--logic-text);
+  color: var(--logic-ink);
+  letter-spacing: -0.02em;
+  overflow-wrap: anywhere;
 }
 
-.logic-anchor-strip {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
+.logic-anchor-strip.panel {
   position: sticky;
   top: 8px;
-  z-index: 5;
-  border: 1px solid var(--logic-line);
-  backdrop-filter: blur(14px);
+  z-index: 8;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 0;
+  margin: 10px 0;
+  padding: 8px;
+  overflow-x: auto;
+  border: 1px solid rgba(84, 214, 198, 0.22);
+  border-radius: 18px;
+  background: rgba(5, 17, 22, 0.82);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
 }
 
 .logic-anchor {
-  color: var(--logic-text);
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  color: var(--logic-ink);
   text-decoration: none;
-  border: 1px solid rgba(79, 209, 197, 0.2);
-  background: rgba(79, 209, 197, 0.07);
+  border: 1px solid rgba(84, 214, 198, 0.21);
+  background: rgba(84, 214, 198, 0.08);
   border-radius: 999px;
   padding: 8px 12px;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 800;
+  white-space: nowrap;
+  transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease;
 }
 
 .logic-anchor:hover {
-  border-color: rgba(79, 209, 197, 0.55);
+  transform: translateY(-1px);
+  border-color: rgba(84, 214, 198, 0.58);
+  background: rgba(84, 214, 198, 0.16);
   color: #ffffff;
+}
+
+.logic-coverage.panel {
+  display: block;
+  padding: 16px;
+  border-radius: 20px;
+  background:
+    linear-gradient(135deg, rgba(84, 214, 198, 0.06), rgba(255, 255, 255, 0.015)),
+    rgba(5, 15, 20, 0.78);
+}
+
+.logic-coverage-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.logic-coverage-card {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 13px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.027);
+  color: var(--logic-muted);
+  font-size: 12px;
+}
+
+.logic-coverage-card strong {
+  margin-left: auto;
+  color: var(--logic-green);
+  font-family: var(--logic-font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.logic-coverage-card.missing strong {
+  color: var(--logic-red);
+}
+
+.logic-coverage-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--logic-green);
+  box-shadow: 0 0 14px rgba(120, 217, 155, 0.65);
+}
+
+.logic-coverage-card.missing .logic-coverage-dot {
+  background: var(--logic-red);
+  box-shadow: 0 0 14px rgba(255, 125, 125, 0.6);
+}
+
+.logic-coverage-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--logic-ink);
+  font-weight: 700;
 }
 
 .logic-content {
   display: grid;
-  gap: 18px;
+  gap: 14px;
+  margin-top: 14px;
 }
 
 .logic-panel {
-  border: 1px solid var(--logic-line);
-  background: var(--logic-panel);
   position: relative;
+  display: block;
   overflow: hidden;
+  padding: 18px;
+  border-radius: 22px;
 }
 
 .logic-panel::before {
   content: "";
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, rgba(79, 209, 197, 0.04), transparent 34%, rgba(246, 173, 85, 0.035));
+  background: linear-gradient(90deg, rgba(84, 214, 198, 0.042), transparent 40%, rgba(242, 187, 99, 0.04));
   pointer-events: none;
 }
 
@@ -143,38 +273,41 @@ body {
 }
 
 .logic-panel-head {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 18px;
-  align-items: flex-start;
-  margin-bottom: 16px;
+  align-items: start;
+  margin-bottom: 14px;
 }
 
 .logic-kicker,
-.logic-section-kicker {
-  font-family: 'JetBrains Mono', monospace;
+.logic-section-kicker,
+.logic-detail-id {
+  font-family: var(--logic-font-mono);
   text-transform: uppercase;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.16em;
   font-weight: 800;
   color: var(--logic-teal);
-  font-size: 11px;
+  font-size: 10px;
 }
 
 .logic-title,
 .logic-section-title {
-  font-family: 'Sora', sans-serif;
-  font-size: 22px;
-  font-weight: 800;
-  letter-spacing: -0.035em;
   margin-top: 5px;
+  font-family: var(--logic-font-display);
+  font-size: clamp(18px, 1.6vw, 25px);
+  font-weight: 850;
+  letter-spacing: -0.04em;
+  color: var(--logic-ink);
 }
 
 .logic-copy,
 .logic-section-copy {
+  max-width: 960px;
+  margin-top: 6px;
   color: var(--logic-muted);
   line-height: 1.65;
   font-size: 13px;
-  margin-top: 6px;
 }
 
 .logic-source-stack {
@@ -182,7 +315,7 @@ body {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 6px;
-  max-width: 620px;
+  max-width: 720px;
 }
 
 .logic-source-chip,
@@ -190,59 +323,62 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border: 1px solid rgba(99, 179, 237, 0.18);
-  background: rgba(99, 179, 237, 0.07);
+  border: 1px solid rgba(116, 183, 255, 0.18);
+  background: rgba(116, 183, 255, 0.07);
   border-radius: 999px;
-  color: #b9dfff;
-  font-family: 'JetBrains Mono', monospace;
+  color: #c7e4ff;
+  font-family: var(--logic-font-mono);
   font-size: 10px;
   padding: 5px 8px;
+  white-space: nowrap;
 }
 
 .logic-chip-grid,
-.logic-coverage-grid,
+.logic-highlight-grid,
 .logic-stage-grid,
 .logic-scheduler-summary {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 12px;
-  margin-bottom: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
 }
 
 .logic-chip,
-.logic-coverage-card,
+.logic-highlight,
 .logic-stage-card,
 .logic-scheduler-card {
+  min-width: 0;
   border: 1px solid rgba(255, 255, 255, 0.075);
   border-radius: 18px;
-  background: rgba(3, 10, 18, 0.48);
-  padding: 14px;
+  background: rgba(2, 9, 15, 0.48);
+  padding: 13px;
 }
 
 .logic-chip-label,
-.logic-coverage-label,
+.logic-highlight-label,
 .logic-scheduler-label {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: var(--logic-font-mono);
   text-transform: uppercase;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.13em;
   color: var(--logic-muted);
   font-size: 10px;
   font-weight: 800;
 }
 
 .logic-chip-value,
-.logic-coverage-value,
+.logic-highlight-value,
 .logic-scheduler-value {
   margin-top: 8px;
-  font-family: 'Sora', sans-serif;
-  font-size: 21px;
-  font-weight: 800;
-  letter-spacing: -0.04em;
-  color: var(--logic-text);
+  font-family: var(--logic-font-display);
+  font-size: 20px;
+  font-weight: 850;
+  letter-spacing: -0.045em;
+  color: var(--logic-ink);
+  overflow-wrap: anywhere;
 }
 
 .logic-chip-copy,
-.logic-coverage-copy,
+.logic-highlight-note,
 .logic-scheduler-copy {
   margin-top: 5px;
   color: var(--logic-muted);
@@ -250,35 +386,78 @@ body {
   line-height: 1.5;
 }
 
-.logic-coverage-card.covered {
-  border-color: rgba(104, 211, 145, 0.24);
-  background: rgba(104, 211, 145, 0.06);
+.logic-highlight.accent,
+.logic-detail-card.accent {
+  border-color: rgba(84, 214, 198, 0.26);
+  background: linear-gradient(180deg, rgba(84, 214, 198, 0.10), rgba(2, 9, 15, 0.48));
 }
 
-.logic-coverage-card.missing {
-  border-color: rgba(252, 129, 129, 0.35);
-  background: rgba(252, 129, 129, 0.08);
+.logic-highlight.warn,
+.logic-detail-card.warn {
+  border-color: rgba(242, 187, 99, 0.28);
+  background: linear-gradient(180deg, rgba(242, 187, 99, 0.105), rgba(2, 9, 15, 0.48));
+}
+
+.logic-highlight.muted,
+.logic-detail-card.muted {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.logic-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 12px;
+  margin: 4px 0 14px;
 }
 
 .logic-section-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+  gap: 12px;
 }
 
+.logic-detail-card,
 .logic-detail-section {
-  border: 1px solid rgba(79, 209, 197, 0.13);
+  min-width: 0;
+  border: 1px solid rgba(84, 214, 198, 0.13);
   border-radius: 18px;
   padding: 14px;
   background: rgba(255, 255, 255, 0.028);
 }
 
+.logic-detail-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.logic-detail-card-head > span {
+  flex: 0 0 auto;
+  max-width: 42%;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 999px;
+  padding: 5px 8px;
+  color: var(--logic-soft);
+  font-family: var(--logic-font-mono);
+  font-size: 10px;
+  line-height: 1.3;
+  text-align: right;
+}
+
+.logic-detail-card-title,
 .logic-detail-title,
 .logic-stage-title,
 .logic-cron-title {
-  font-weight: 800;
-  color: var(--logic-text);
+  font-weight: 850;
+  color: var(--logic-ink);
   font-size: 15px;
+  letter-spacing: -0.01em;
+}
+
+.logic-detail-card-title {
+  margin-top: 5px;
 }
 
 .logic-detail-copy,
@@ -297,11 +476,13 @@ body {
 }
 
 .logic-line {
-  color: #d9e8ea;
+  min-width: 0;
+  color: #dceceb;
   font-size: 12px;
-  line-height: 1.55;
+  line-height: 1.58;
   padding-left: 14px;
   position: relative;
+  overflow-wrap: anywhere;
 }
 
 .logic-line::before {
@@ -312,21 +493,21 @@ body {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--logic-amber);
-  box-shadow: 0 0 12px rgba(246, 173, 85, 0.8);
+  background: var(--logic-gold);
+  box-shadow: 0 0 12px rgba(242, 187, 99, 0.72);
 }
 
 .logic-stage-card {
   display: grid;
-  gap: 10px;
+  gap: 9px;
 }
 
 .logic-stage-id {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: var(--logic-font-mono);
   color: var(--logic-teal);
   font-size: 10px;
   text-transform: uppercase;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.13em;
 }
 
 .logic-stage-links {
@@ -339,7 +520,7 @@ body {
 .logic-panel-link {
   color: var(--logic-teal);
   text-decoration: none;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: var(--logic-font-mono);
   font-size: 11px;
 }
 
@@ -364,19 +545,19 @@ body {
 
 .logic-cron-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 10px;
 }
 
 .logic-cron-card {
   border: 1px solid rgba(255, 255, 255, 0.075);
   border-radius: 18px;
-  background: rgba(3, 10, 18, 0.5);
+  background: rgba(2, 9, 15, 0.5);
   padding: 14px;
 }
 
 .logic-cron-card.off {
-  opacity: 0.66;
+  opacity: 0.64;
 }
 
 .logic-cron-head {
@@ -387,17 +568,18 @@ body {
 }
 
 .logic-state {
+  flex: 0 0 auto;
   border-radius: 999px;
   padding: 4px 8px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: var(--logic-font-mono);
   font-size: 10px;
   font-weight: 800;
-  background: rgba(252, 129, 129, 0.12);
+  background: rgba(255, 125, 125, 0.12);
   color: var(--logic-red);
 }
 
 .logic-state.on {
-  background: rgba(104, 211, 145, 0.12);
+  background: rgba(120, 217, 155, 0.12);
   color: var(--logic-green);
 }
 
@@ -406,25 +588,26 @@ body {
   gap: 6px;
   margin-top: 12px;
   color: var(--logic-muted);
-  font-family: 'JetBrains Mono', monospace;
+  font-family: var(--logic-font-mono);
   font-size: 10px;
+  overflow-wrap: anywhere;
 }
 
 .logic-empty-state,
 .logic-error {
   color: var(--logic-muted);
-  border: 1px dashed rgba(252, 129, 129, 0.25);
-  background: rgba(252, 129, 129, 0.04);
+  border: 1px dashed rgba(255, 125, 125, 0.25);
+  background: rgba(255, 125, 125, 0.04);
+  padding: 16px;
+  border-radius: 18px;
 }
 
-@media (max-width: 900px) {
-  .logic-hero {
+@media (max-width: 1100px) {
+  .logic-hero,
+  .logic-panel-head {
     grid-template-columns: 1fr;
   }
-  .logic-panel-head,
-  .logic-scheduler-family-head {
-    flex-direction: column;
-  }
+
   .logic-source-stack {
     justify-content: flex-start;
   }
@@ -434,15 +617,39 @@ body {
   .logic-shell {
     padding-bottom: 80px;
   }
-  .logic-anchor-strip {
-    flex-wrap: nowrap;
-    overflow-x: auto;
+
+  .logic-hero,
+  .logic-panel,
+  .logic-coverage.panel {
+    border-radius: 18px;
+    padding: 14px;
   }
-  .logic-anchor {
-    flex: 0 0 auto;
+
+  .logic-hero h1 {
+    font-size: clamp(32px, 12vw, 52px);
   }
+
+  .logic-detail-grid,
   .logic-section-grid,
   .logic-cron-grid {
     grid-template-columns: 1fr;
+  }
+
+  .logic-detail-card-head {
+    display: grid;
+  }
+
+  .logic-hero-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .logic-detail-card-head > span {
+    max-width: none;
+    text-align: left;
+  }
+
+  .logic-scheduler-family-head,
+  .logic-cron-head {
+    flex-direction: column;
   }
 }

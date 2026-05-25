@@ -18,7 +18,7 @@ from ibkr_compute.signal.signal_processor import (
 from ibkr_compute.workflows.daily_scanner import build_daily_scan_rule_summary
 
 
-SYSTEM_LOGIC_SCHEMA_VERSION = "system_logic_v1"
+SYSTEM_LOGIC_SCHEMA_VERSION = "system_logic_v2"
 SYSTEM_LOGIC_TIMEFRAMES = ("5m", "15m", "30m", "1h", "4h", "1d")
 
 SYSTEM_LOGIC_COVERAGE_DOMAINS = [
@@ -65,6 +65,18 @@ SYSTEM_LOGIC_COVERAGE_DOMAINS = [
         ],
     },
     {
+        "id": "order_flow",
+        "label": "订单流 / 自动确认",
+        "source_modules": [
+            "ibkr_compute.order_flow.manager",
+            "ibkr_compute.order_flow.aggregator",
+            "ibkr_compute.order_flow.candidate_queue",
+            "ibkr_compute.order_flow.execution_pool",
+            "ibkr_compute.orchestration.signals",
+            "ibkr_compute.order.order_placer",
+        ],
+    },
+    {
         "id": "order_lifecycle",
         "label": "订单 / 生命周期 / 反向信号",
         "source_modules": [
@@ -72,6 +84,18 @@ SYSTEM_LOGIC_COVERAGE_DOMAINS = [
             "ibkr_api.reverse",
             "ibkr_api.universe.lifecycle_flow",
             "ibkr_compute.signal.reverse_signal",
+        ],
+    },
+    {
+        "id": "broker_mode_switch",
+        "label": "Broker 模式切换 / 2FA",
+        "source_modules": [
+            "ibkr_api.control.broker_mode_switch",
+            "ibkr_api.control.routes",
+            "ibkr_api.runtime.two_factor",
+            "ibkr_api.two_factor.*",
+            "ibkr_compute.broker.ib_gateway_service",
+            "ibkr_compute.orchestration.auth_recovery",
         ],
     },
     {
@@ -600,7 +624,9 @@ def _system_flow_panel(environment: str) -> dict:
             "data_indicators",
             "signal_generation",
             "execution_validation",
+            "order_flow",
             "order_lifecycle",
+            "broker_mode_switch",
             "scheduler",
             "data_quality",
             "backtest_validation",
@@ -608,7 +634,8 @@ def _system_flow_panel(environment: str) -> dict:
         "chips": [
             {"label": "Universe", "value": "watchlist -> targets", "copy": "trade / market_monitor 角色分离"},
             {"label": "Compute", "value": "bars -> indicators -> signals", "copy": "5m close 驱动盘中计算"},
-            {"label": "Execution", "value": "signals -> orders -> lifecycle", "copy": "人工确认/风控/券商订单链路"},
+            {"label": "Order Flow", "value": "CVD -> confirm / exit", "copy": "订单流自动确认、提前退出、只收紧止损"},
+            {"label": "Execution", "value": "signals -> orders -> lifecycle", "copy": "风控 / 券商订单 / 生命周期链路"},
             {"label": "Ops", "value": "scheduler + quality", "copy": "调度、修复、审计、日报"},
         ],
         "stages": [
@@ -637,9 +664,15 @@ def _system_flow_panel(environment: str) -> dict:
                 "links": ["/ibkr_signals.html", "/ibkr_screener.html?view=window-progress"],
             },
             {
+                "id": "order_flow",
+                "label": "订单流确认",
+                "summary": "OrderFlowManager 聚合 tick-by-tick CVD，管理 candidate queue / execution pool；enforce 模式确认开仓、提前平仓或只收紧止损。",
+                "links": ["/ibkr_runtime.html", "/ibkr_signals.html"],
+            },
+            {
                 "id": "execution",
                 "label": "执行校验",
-                "summary": "SignalProcessor 校验交易开关、时间窗口、有效期、仓位容量、cooldown、方向一致性和价格结构。",
+                "summary": "SignalProcessor 校验交易开关、时间窗口、有效期、仓位容量、cooldown、方向一致性和价格结构；订单流通过后才进入券商下单。",
                 "links": ["/ibkr_runtime.html", "/orders.html"],
             },
             {
@@ -650,8 +683,8 @@ def _system_flow_panel(environment: str) -> dict:
             },
             {
                 "id": "scheduler_quality",
-                "label": "调度 / 质量 / 验证",
-                "summary": "ibkr-scheduler 统一触发日筛、补池、compute、数据质量、系统报告和存储治理；回测用于验证逻辑变更。",
+                "label": "运行控制 / 调度 / 验证",
+                "summary": "Broker 模式切换先走账户/2FA/Gateway 风险检查；ibkr-scheduler 统一触发日筛、compute、数据质量、系统报告和存储治理。",
                 "links": ["/ibkr_system.html", "/ibkr_data_quality.html", "/ibkr_backtests.html"],
             },
         ],
@@ -899,6 +932,326 @@ def _execution_panel(environment: str) -> dict:
     }
 
 
+def _order_flow_panel(environment: str) -> dict:
+    app_mod = get_app_module()
+    app_mod.cfg.refresh()
+    cfg = app_mod.cfg
+
+    enabled, enabled_source = _resolve_config_bool_text(cfg, "ibkr_order_flow_enabled", environment, "true")
+    mode, mode_source = _resolve_config_text(cfg, "ibkr_order_flow_mode", environment, "enforce")
+    pool_size, pool_size_source = _resolve_config_text(cfg, "ibkr_order_flow_execution_pool_size", environment, "3")
+    active_limit, active_limit_source = _resolve_config_text(cfg, "ibkr_order_flow_active_limit", environment, "3")
+    position_slots, position_slots_source = _resolve_config_text(
+        cfg,
+        "ibkr_order_flow_max_position_slots",
+        environment,
+        "1",
+    )
+    confirm_window, confirm_window_source = _resolve_config_text(
+        cfg,
+        "ibkr_order_flow_confirm_window_sec",
+        environment,
+        "60",
+    )
+    min_delta_ratio, min_delta_source = _resolve_config_text(
+        cfg,
+        "ibkr_order_flow_min_delta_ratio",
+        environment,
+        "0.12",
+    )
+    max_spread_bps, max_spread_source = _resolve_config_text(
+        cfg,
+        "ibkr_order_flow_max_spread_bps",
+        environment,
+        "12",
+    )
+    entry_timeout, entry_timeout_source = _resolve_config_text(
+        cfg,
+        "ibkr_order_flow_entry_timeout_sec",
+        environment,
+        "60",
+    )
+    marketable_bps, marketable_bps_source = _resolve_config_text(
+        cfg,
+        "ibkr_order_flow_marketable_limit_bps",
+        environment,
+        "8",
+    )
+    manual_confirm, manual_confirm_source = _resolve_config_bool_text(
+        cfg,
+        "signal_manual_confirm_enabled",
+        environment,
+        "false",
+    )
+
+    return {
+        "title": "订单流自动确认与执行规则",
+        "subtitle": "OrderFlowManager 使用 tick-by-tick Last 聚合 CVD / delta，管理候选队列和执行池；默认 enforce 模式会参与开仓、提前平仓与止损收紧。",
+        "coverage_domains": ["order_flow", "execution_validation"],
+        "source_refs": [
+            "ibkr_compute.order_flow.manager",
+            "ibkr_compute.order_flow.aggregator",
+            "ibkr_compute.order_flow.candidate_queue",
+            "ibkr_compute.order_flow.execution_pool",
+            "ibkr_compute.orchestration.signals",
+            "ibkr_compute.order.order_placer",
+        ],
+        "chips": [
+            {
+                "label": "Order Flow",
+                "value": f"{enabled} / {mode}",
+                "copy": f"ibkr_order_flow_enabled={enabled_source}, ibkr_order_flow_mode={mode_source}",
+            },
+            {
+                "label": "Execution Pool",
+                "value": pool_size,
+                "copy": f"ibkr_order_flow_execution_pool_size · {pool_size_source}",
+            },
+            {
+                "label": "Position Slots",
+                "value": position_slots,
+                "copy": f"ibkr_order_flow_max_position_slots · {position_slots_source}",
+            },
+            {
+                "label": "CVD Window",
+                "value": f"{confirm_window}s / {min_delta_ratio}",
+                "copy": f"window={confirm_window_source}, ratio={min_delta_source}",
+            },
+            {
+                "label": "Entry Timeout",
+                "value": f"{entry_timeout}s",
+                "copy": f"ibkr_order_flow_entry_timeout_sec · {entry_timeout_source}",
+            },
+            {
+                "label": "Manual Confirm",
+                "value": manual_confirm,
+                "copy": f"signal_manual_confirm_enabled · {manual_confirm_source}",
+            },
+        ],
+        "highlights": [
+            {
+                "id": "mode",
+                "label": "默认模式",
+                "value": f"{enabled} / {mode}",
+                "note": "confirm/enforce 会等待订单流确认；shadow 只记录与订阅，不阻断交易",
+                "tone": "accent",
+            },
+            {
+                "id": "capacity",
+                "label": "执行池",
+                "value": f"{pool_size} symbols / {position_slots} position",
+                "note": "entry slots = execution_pool_size - max_position_slots",
+                "tone": "neutral",
+            },
+            {
+                "id": "risk",
+                "label": "硬保护",
+                "value": "never widen stop",
+                "note": "订单流只能提前退出、减仓或收紧止损，不能放宽止损",
+                "tone": "warn",
+            },
+        ],
+        "details": [
+            {
+                "id": "cvd",
+                "title": "CVD 聚合",
+                "summary": "tick-by-tick Last -> 10/30/60s bars",
+                "tone": "accent",
+                "lines": [
+                    "OrderFlowAggregator 将 signed trade ticks 聚合成 10s / 30s / 60s CVD bars。",
+                    "buy_volume / sell_volume / delta / cvd_close 会进入确认逻辑。",
+                    "同 symbol 的 out-of-order tick 会被拒绝并写入 last_error。",
+                    _config_line(cfg, "ibkr_order_flow_tick_types", environment, "Last"),
+                    f"ibkr_order_flow_confirm_window_sec = {confirm_window} ({confirm_window_source})",
+                    f"ibkr_order_flow_min_delta_ratio = {min_delta_ratio} ({min_delta_source})",
+                ],
+            },
+            {
+                "id": "entry",
+                "title": "开仓确认",
+                "summary": "wait -> allow / reject",
+                "tone": "neutral",
+                "lines": [
+                    "disabled 或 auto_entry=false 时直接 allow，并标记 enforced=false。",
+                    "shadow 模式只 observe candidate，不阻断下单。",
+                    "confirm/enforce 模式必须同时通过 execution pool 分配、quote spread、方向 delta ratio。",
+                    f"max_spread_bps = {max_spread_bps} ({max_spread_source})",
+                    f"entry_timeout_sec = {entry_timeout} ({entry_timeout_source})；超时返回 order_flow_timeout 并释放候选 watch。",
+                    f"确认后使用 marketable LMT: long=ask+{marketable_bps}bps, short=bid-{marketable_bps}bps ({marketable_bps_source})。",
+                ],
+            },
+            {
+                "id": "position",
+                "title": "持仓管理",
+                "summary": "提前平仓或只收紧止损",
+                "tone": "warn",
+                "lines": [
+                    _config_line(cfg, "ibkr_order_flow_auto_exit_enabled", environment, "true"),
+                    _config_line(cfg, "ibkr_order_flow_stop_tighten_enabled", environment, "true"),
+                    _config_line(cfg, "ibkr_order_flow_exit_delta_ratio", environment, "0.18"),
+                    _config_line(cfg, "ibkr_order_flow_stop_delta_ratio", environment, "0.12"),
+                    _config_line(cfg, "ibkr_order_flow_close_fill_timeout_sec", environment, "5", suffix="s"),
+                    _config_line(cfg, "never_widen_stop_by_order_flow", environment, "true"),
+                    "强反向 CVD 且 pnl_r <= 0.15 时触发 full_exit；否则达到 stop 阈值时只尝试 tighten_stop。",
+                ],
+            },
+        ],
+        "sections": [
+            {
+                "title": "Candidate Queue",
+                "copy": "订单流候选先进入队列，再争取 execution pool 名额。",
+                "lines": [
+                    _config_line(cfg, "candidate_queue_max", environment, "10"),
+                    _config_line(cfg, "candidate_breakout_ttl_sec", environment, "120", suffix="s"),
+                    _config_line(cfg, "candidate_pullback_ttl_sec", environment, "300", suffix="s"),
+                    _config_line(cfg, "candidate_reversal_ttl_sec", environment, "600", suffix="s"),
+                    "同 symbol 同向同策略会 merge；反向冲突时强者替换弱者，弱者被 rejected_conflict。",
+                ],
+            },
+            {
+                "title": "Execution Pool",
+                "copy": "4 核 8G 默认限制为小池，避免 tick-by-tick 订阅和持仓 watch 无限扩张。",
+                "lines": [
+                    f"ibkr_order_flow_execution_pool_size = {pool_size} ({pool_size_source})",
+                    f"ibkr_order_flow_active_limit = {active_limit} ({active_limit_source})；旧 key 仅兼容。",
+                    f"ibkr_order_flow_max_position_slots = {position_slots} ({position_slots_source})",
+                    _config_line(cfg, "entry_watch_after_fill_sec", environment, "180", suffix="s"),
+                    "filled 后保留 position watch；cancelled / rejected / timeout 会释放 entry slot。",
+                ],
+            },
+            {
+                "title": "默认自动确认链路",
+                "copy": "当前默认不再要求人工确认每条新信号，而是先走订单流与风控校验。",
+                "lines": [
+                    f"signal_manual_confirm_enabled = {manual_confirm} ({manual_confirm_source})",
+                    _config_line(cfg, "quality_auto_full_min", environment, "80"),
+                    _config_line(cfg, "quality_auto_small_min", environment, "75"),
+                    _config_line(cfg, "quality_shadow_min", environment, "70"),
+                    _config_line(cfg, "new_entry_cutoff_time", environment, "14:45"),
+                    _config_line(cfg, "force_flat_time", environment, "15:45"),
+                ],
+            },
+        ],
+    }
+
+
+def _broker_mode_switch_panel(environment: str) -> dict:
+    return {
+        "title": "Broker 模式切换与 2FA 安全规则",
+        "subtitle": "paper/live 切换必须先通过账户、PB 订单组、Gateway 配置和 2FA 状态检查；切换写配置后按固定顺序重启服务。",
+        "coverage_domains": ["broker_mode_switch"],
+        "source_refs": [
+            "ibkr_api.control.broker_mode_switch",
+            "ibkr_api.control.routes",
+            "ibkr_api.runtime.two_factor",
+            "ibkr_api.two_factor.*",
+            "ibkr_compute.broker.ib_gateway_service",
+            "ibkr_compute.orchestration.auth_recovery",
+        ],
+        "chips": [
+            {
+                "label": "Preview API",
+                "value": "required",
+                "copy": "/api/custom/ibkr/broker-mode/switch/preview",
+            },
+            {
+                "label": "Confirm Text",
+                "value": "SWITCH TARGET",
+                "copy": "必须精确输入 SWITCH LIVE 或 SWITCH PAPER",
+            },
+            {
+                "label": "Hard Blockers",
+                "value": "positions / orders / 2FA",
+                "copy": "任一 blocker 存在时返回 409，不写配置",
+            },
+            {
+                "label": "Restart Plan",
+                "value": "Gateway first",
+                "copy": "stop runtime -> restart gateway -> runtime/compute/scheduler/api",
+            },
+        ],
+        "highlights": [
+            {
+                "id": "guard",
+                "label": "切换前置",
+                "value": "preview first",
+                "note": "执行前会再跑一次 preview，避免状态在确认后变更",
+                "tone": "accent",
+            },
+            {
+                "id": "accounts",
+                "label": "账户隔离",
+                "value": "paper/live keys",
+                "note": "live 需要显式 IBKR_LIVE_USERNAME；paper 可回退 IBKR_USERNAME",
+                "tone": "neutral",
+            },
+            {
+                "id": "2fa",
+                "label": "2FA",
+                "value": "active blocks",
+                "note": "已有 Gateway 验证流程未完成时禁止切换",
+                "tone": "warn",
+            },
+        ],
+        "details": [
+            {
+                "id": "blockers",
+                "title": "Preview Blockers",
+                "summary": "任何一项命中都阻断切换",
+                "tone": "warn",
+                "lines": [
+                    "目标账户 ID 缺失: live=IBKR_ACCOUNT_ID, paper=IBKR_PAPER_ACCOUNT_ID。",
+                    "目标 Gateway 登录名或密码缺失；live 不接受 legacy IBKR_USERNAME 作为显式 live 登录名。",
+                    "IBC config.ini 不存在、不可读或不可写。",
+                    "任一运行 .env 文件不存在或不可读，不能保证所有服务同步切换。",
+                    "当前账户快照不可用、仍有持仓、IBKR 挂单或 PB active/stale/shadow 订单组。",
+                    "2FA / Gateway 验证流程处于 requested/pending/waiting/responded/submitted/running 或 recovery 等待状态。",
+                ],
+            },
+            {
+                "id": "write",
+                "title": "写配置规则",
+                "summary": "先备份，再原子替换",
+                "tone": "neutral",
+                "lines": [
+                    "确认文本必须等于 preview 返回的 confirm_text。",
+                    "切换过程使用进程内锁，已有切换进行中时返回 broker_mode_switch_in_progress。",
+                    ".env 写入 IBKR_BROKER_MODE 与 IBKR_GATEWAY_MODE；若提供目标凭据，也同步 IBKR_USERNAME / IBKR_PASSWORD。",
+                    "原模式的 legacy 登录信息会先补到 IBKR_LIVE_* 或 IBKR_PAPER_*，避免切回时丢凭据。",
+                    "IBC config.ini 写入 IbLoginId / IbPassword / TradingMode / OverrideTwsApiPort。",
+                    "如果 IBC 写入失败，不会继续重启服务。",
+                ],
+            },
+            {
+                "id": "restart",
+                "title": "重启顺序",
+                "summary": "Gateway 恢复后重新完成 2FA",
+                "tone": "accent",
+                "lines": [
+                    "1. stop ibkr-runtime，避免 runtime 在旧 Gateway 模式下继续操作。",
+                    "2. restart ibkr-gateway，使 IBC 读取目标登录配置。",
+                    "3. restart ibkr-runtime。",
+                    "4. restart ibkr-compute。",
+                    "5. restart ibkr-scheduler。",
+                    "6. 延迟 schedule restart ibkr-api，让当前请求先返回。",
+                    "ibkr-gateway 或 ibkr-runtime 重启失败属于 hard failure。",
+                ],
+            },
+        ],
+        "sections": [
+            {
+                "title": "操作验收",
+                "copy": "成功切换并不等于已恢复交易，后续必须观察 Gateway / Runtime / 2FA 状态。",
+                "lines": [
+                    "成功响应为 202 restart_requested；next_step 会提示等待目标模式恢复并完成 2FA。",
+                    "失败响应会保留 blockers / env_updates / ibc_config_update / restart_results，便于人工恢复。",
+                    "所有切换事件会写入 system_events，来源为 broker_mode_switch。",
+                ],
+            },
+        ],
+    }
+
+
 def _orders_panel(environment: str) -> dict:
     app_mod = get_app_module()
     app_mod.cfg.refresh()
@@ -1075,7 +1428,9 @@ def build_rules_response():
             "indicators": _indicator_panel(environment),
             "signals": _signal_panel(environment),
             "execution": _execution_panel(environment),
+            "order_flow": _order_flow_panel(environment),
             "orders": _orders_panel(environment),
+            "broker_mode_switch": _broker_mode_switch_panel(environment),
             "quality": _quality_panel(environment),
             "backtest_validation": _backtest_validation_panel(environment),
             "source_refs": _source_refs(),
