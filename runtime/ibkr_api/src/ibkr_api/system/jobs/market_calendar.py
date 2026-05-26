@@ -101,6 +101,7 @@ def build_market_calendar_snapshot(
     request_json_request: RequestJsonRequest | None = None,
     compute_base_url: str = "",
     config_value: ConfigValue | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     environment = _to_text(data_environment or broker_mode or "live").lower() or "live"
     contract_args = _calendar_contract_args(payload=payload, config_value=config_value, environment=environment)
@@ -134,6 +135,7 @@ def build_market_calendar_snapshot(
                     symbol=contract_args["symbol"],
                     exchange=contract_args["exchange"],
                     sec_type=contract_args["sec_type"],
+                    now=now,
                 )
                 return _enrich_next_open(payload_data, fallback)
             source_error = _status_error(result) or "ibkr_schedule_unavailable"
@@ -148,6 +150,7 @@ def build_market_calendar_snapshot(
         exchange=contract_args["exchange"],
         sec_type=contract_args["sec_type"],
         source_error=source_error,
+        now=now,
     )
 
 

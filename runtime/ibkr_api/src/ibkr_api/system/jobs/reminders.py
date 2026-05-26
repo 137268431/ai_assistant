@@ -4,6 +4,7 @@ from typing import Any, Callable
 
 from ibkr_api.modes import request_broker_mode, request_market_data_mode
 from ibkr_api.system.jobs.market_calendar import build_market_calendar_snapshot, is_nyse_non_trading_day
+from ibkr_api.system.jobs.market_session_text import market_session_detail_fields
 
 
 DAILY_REMINDER_STATE_KEY = "system_notify_daily"
@@ -376,6 +377,9 @@ def _build_close_report_card(
     market_date = _to_text(targets_payload.get("market_date")) or _to_text(daily_scan.get("market_date")) or _to_text(times.get("date"))
     issue_lines, blocking = _close_issue_lines(summary, monitor, targets_payload, data_environment)
     issue_text = "；".join(issue_lines) if issue_lines else "无"
+    market_session_fields = market_session_detail_fields(_as_dict(_as_dict(context.get("runtime")).get("market_session")))
+    market_session_lines = "\n".join(f"**{key}**: {value}" for key, value in market_session_fields.items())
+    market_session_block = f"\n{market_session_lines}" if market_session_lines else ""
     elements: list[dict[str, Any]] = [
         {
             "tag": "markdown",
@@ -384,6 +388,7 @@ def _build_close_report_card(
                 f"**需要处理**: {_close_operator_action(issue_lines, blocking)}\n"
                 f"**交易日**: {market_date or 'n/a'}\n"
                 f"**检查时间**: 美东 {_to_text(times.get('us')) or 'n/a'} | 北京 {_to_text(times.get('cn')) or 'n/a'}"
+                f"{market_session_block}"
             ),
         },
         {
@@ -479,6 +484,7 @@ def _close_event_detail(
     }
     if issue_lines:
         detail["关注点"] = "；".join(issue_lines)
+    detail.update(market_session_detail_fields(_as_dict(_as_dict(context.get("runtime")).get("market_session"))))
     return detail
 
 

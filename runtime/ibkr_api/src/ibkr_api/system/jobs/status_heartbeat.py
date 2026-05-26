@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from ibkr_api.modes import request_broker_mode, request_market_data_mode
+from ibkr_api.system.jobs.market_session_text import market_session_detail_fields
 
 
 HEARTBEAT_STATE_KEY = "system_notify_heartbeat"
@@ -655,6 +656,7 @@ def _heartbeat_detail(snapshot: dict[str, Any], *, timestamp_us: str) -> dict[st
             f"日筛 {_to_text(daily_scan.get('status')) or 'unknown'}"
         ),
     }
+    detail.update(market_session_detail_fields(_as_dict(runtime.get("market_session"))))
     if backtest_line:
         detail["Backtest"] = f"{backtest_line} | independent non-blocking"
     if client_ids_line:

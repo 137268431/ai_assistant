@@ -108,6 +108,7 @@ function normalizePageContextMetaItem(item) {
     value,
     tone: String(item.tone || '').trim(),
     title: String(item.title || item.tip || '').trim(),
+    includeInContext: Boolean(item.includeInContext || item.context || item.contextChip),
   };
 }
 
@@ -132,6 +133,20 @@ function isPageContextTradingDateLabel(label) {
     'tradingdate',
     'tradingday',
   ].includes(normalized);
+}
+
+function isPageContextBaseMetaLabel(label) {
+  const normalized = normalizePageContextMetaLabel(label);
+  return [
+    'broker',
+    'brokermode',
+    'data',
+    'dataenvironment',
+    'marketdata',
+    'marketdatamode',
+    'environment',
+    'env',
+  ].includes(normalized) || isPageContextTradingDateLabel(label);
 }
 
 function getPageContextUrlTradingDate() {
@@ -322,9 +337,11 @@ function buildPageContextMetaItems(items = [], options = {}) {
           tone: dataEnvironment === 'live' ? 'shared' : dataEnvironment,
         },
       ];
+  const extraItems = normalized.filter((item) => item.includeInContext && !isPageContextBaseMetaLabel(item.label));
   return [
     ...baseItems,
     buildPageContextTradingDateItem({ tradingDate, allowGlobal, brokerMode, dataEnvironment }),
+    ...extraItems,
   ];
 }
 

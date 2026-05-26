@@ -52,6 +52,55 @@
             `;
         }
 
+        function getRuntimeMarketSessionLabel(session = {}) {
+            const kind = String(session?.kind || '').trim().toLowerCase();
+            const labels = {
+                premarket: '盘前',
+                regular: '盘中',
+                close_transition: '盘后过渡',
+                afterhours: '盘后',
+                closed: '闭市'
+            };
+            return String(session?.label_zh || session?.display_label || labels[kind] || kind || '--');
+        }
+
+        function getRuntimeMarketSessionTone(session = {}) {
+            const kind = String(session?.kind || '').trim().toLowerCase();
+            if (kind === 'closed') return 'warn';
+            if (kind === 'afterhours' || kind === 'close_transition' || kind === 'premarket') return 'shared';
+            if (kind === 'regular') return 'ok';
+            return '';
+        }
+
+        function buildRuntimeMarketSessionTitle(session = {}) {
+            const lines = [];
+            const source = String(session?.source || session?.calendar?.source || '').trim();
+            const sourceError = String(session?.source_error || session?.calendar?.source_error || '').trim();
+            const sourceLabel = source === 'ibkr_schedule'
+                ? 'IBKR 合约交易时间'
+                : (source === 'local_nyse_fallback' ? '本地 NYSE 兜底日历' : (source || '来源待确认'));
+            lines.push(`来源：${sourceError ? `${sourceLabel}（IBKR 拉取失败: ${sourceError}）` : sourceLabel}`);
+            if (session?.us_time || session?.cn_time) {
+                lines.push(`当前：${session?.us_time || '--'} ET / ${session?.cn_time || '--'} 北京`);
+            }
+            if (session?.regular_open_us || session?.regular_close_us) {
+                lines.push(`常规美东：${session?.regular_open_us || '--'} - ${session?.regular_close_us || '--'}`);
+            }
+            if (session?.regular_open_beijing || session?.regular_close_beijing) {
+                lines.push(`常规北京：${session?.regular_open_beijing || '--'} - ${session?.regular_close_beijing || '--'}`);
+            }
+            if (session?.extended_open_us || session?.extended_close_us) {
+                lines.push(`扩展美东：${session?.extended_open_us || '--'} - ${session?.extended_close_us || '--'}`);
+            }
+            if (session?.extended_open_beijing || session?.extended_close_beijing) {
+                lines.push(`扩展北京：${session?.extended_open_beijing || '--'} - ${session?.extended_close_beijing || '--'}`);
+            }
+            if (String(session?.kind || '').toLowerCase() === 'closed' && (session?.next_open_us || session?.next_open_beijing)) {
+                lines.push(`下次开盘：${session?.next_open_us || '--'} ET / ${session?.next_open_beijing || '--'} 北京`);
+            }
+            return lines.join('\n');
+        }
+
         function renderMetricCards(summary, health, status, twoFactorState, latestBar) {
             const today = summary?.today || {};
             const computeHealth = normalizeIbkrComputeHealth(health);
@@ -763,6 +812,13 @@
                 { label: 'Broker', value: getEnvironmentLabel(currentBrokerMode), tone: currentBrokerMode },
                 { label: 'Data', value: getEnvironmentLabel(currentDataEnvironment), tone: currentDataEnvironment },
                 { label: 'Market Date', value: String(status?.market_universe?.market_date || '--') },
+                {
+                    label: '时段',
+                    value: getRuntimeMarketSessionLabel(status?.market_session || {}),
+                    tone: getRuntimeMarketSessionTone(status?.market_session || {}),
+                    title: buildRuntimeMarketSessionTitle(status?.market_session || {}),
+                    includeInContext: true,
+                },
                 { label: '运行位置', value: formatRuntimeModeLabel(status?.service_topology?.runtime_mode, { compact: true }) },
                 { label: 'Session', value: sessionAuthenticated ? 'AUTHED' : 'PENDING', tone: sessionAuthenticated ? 'ok' : 'warn' },
             ]);

@@ -355,6 +355,9 @@ class SystemScanSummaryTest(unittest.TestCase):
         self.assertEqual(sent[0]["chat_id"], "startup-chat-paper")
         self.assertEqual(sent[0]["environment"], "paper")
         self.assertIn("Broker PAPER", sent[0]["card"]["header"]["title"]["content"])
+        card_text = "\n".join(element.get("content", "") for element in sent[0]["card"]["elements"] if element.get("tag") == "markdown")
+        self.assertIn("**市场时段**: 盘中 (regular)", card_text)
+        self.assertIn("**日历来源**", card_text)
         self.assertEqual(target_payloads[0]["broker_mode"], "paper")
         self.assertEqual(target_payloads[0]["market_data_mode"], "live")
         self.assertEqual(target_payloads[0]["environment"], "live")
@@ -442,6 +445,15 @@ class SystemScanSummaryTest(unittest.TestCase):
                 "status": "ok",
                 "runtime": {
                     "status": "running",
+                    "market_session": {
+                        "kind": "regular",
+                        "label_zh": "盘中",
+                        "source": "ibkr_schedule",
+                        "regular_open_us": "2026-04-28 09:30:00",
+                        "regular_close_us": "2026-04-28 16:00:00",
+                        "extended_open_us": "2026-04-28 04:00:00",
+                        "extended_close_us": "2026-04-28 20:00:00",
+                    },
                     "gateway": {"running": True},
                     "session": {"authenticated": True},
                     "websocket": {"connected": True},
@@ -489,6 +501,15 @@ class SystemScanSummaryTest(unittest.TestCase):
                 "status": "ok",
                 "runtime": {
                     "status": "running",
+                    "market_session": {
+                        "kind": "regular",
+                        "label_zh": "盘中",
+                        "source": "ibkr_schedule",
+                        "regular_open_us": "2026-04-28 09:30:00",
+                        "regular_close_us": "2026-04-28 16:00:00",
+                        "extended_open_us": "2026-04-28 04:00:00",
+                        "extended_close_us": "2026-04-28 20:00:00",
+                    },
                     "gateway": {"running": True},
                     "session": {"authenticated": True},
                     "websocket": {"connected": True},
@@ -511,6 +532,9 @@ class SystemScanSummaryTest(unittest.TestCase):
         self.assertEqual(payload["data_environment"], "live")
         self.assertEqual(emitted[0]["environment"], "paper")
         self.assertEqual(state_writes[0]["environment"], "paper")
+        self.assertEqual(emitted[0]["detail"]["市场时段"], "盘中 (regular)")
+        self.assertIn("常规 2026-04-28 09:30:00 - 2026-04-28 16:00:00", emitted[0]["detail"]["交易时间(美东)"])
+        self.assertEqual(emitted[0]["detail"]["日历来源"], "IBKR 合约交易时间")
 
     def test_heartbeat_debounces_first_monitor_source_timeout(self):
         monitor_payload = {
@@ -807,6 +831,13 @@ class SystemScanSummaryTest(unittest.TestCase):
                 "status": "ok",
                 "runtime": {
                     "status": "running",
+                    "market_session": {
+                        "kind": "regular",
+                        "label_zh": "盘中",
+                        "source": "ibkr_schedule",
+                        "regular_open_us": "2026-04-28 09:30:00",
+                        "regular_close_us": "2026-04-28 16:00:00",
+                    },
                     "gateway": {"running": True},
                     "session": {"authenticated": True},
                     "websocket": {"connected": True},
@@ -822,6 +853,8 @@ class SystemScanSummaryTest(unittest.TestCase):
         self.assertEqual(status_code, 200)
         self.assertTrue(payload["ok"])
         detail = emitted[0]["detail"]
+        self.assertEqual(detail["市场时段"], "盘中 (regular)")
+        self.assertIn("常规 2026-04-28 09:30:00 - 2026-04-28 16:00:00", detail["交易时间(美东)"])
         self.assertIn("orders 1", detail["数据"])
         self.assertNotIn("orders 3", detail["数据"])
         self.assertIn("expired 1", detail["今日标的"])

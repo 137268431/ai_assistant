@@ -11,6 +11,150 @@ def _service_mod():
 
 
 class TradingServiceRuntimeStatusMixin:
+    def _market_calendar_contract_args(self, service_mod) -> dict[str, str]:
+        config = getattr(self, "config", None)
+        environment = str(getattr(service_mod, "DATA_ENVIRONMENT", "live") or "live")
+
+        def config_text(key: str, default: str) -> str:
+            if config is None or not hasattr(config, "get_for_environment"):
+                return default
+            try:
+                return str(config.get_for_environment(key, environment, default) or default).strip() or default
+            except Exception:
+                return default
+
+        return {
+            "symbol": config_text("ibkr_market_calendar_symbol", "SPY").upper(),
+            "exchange": config_text("ibkr_market_calendar_exchange", "SMART").upper(),
+            "sec_type": config_text("ibkr_market_calendar_sec_type", "STK").upper(),
+        }
+
+    def _runtime_market_session_snapshot(self, service_mod) -> dict:
+        from ibkr_compute.market.calendar import (
+            IBKR_SCHEDULE_SOURCE,
+            build_ibkr_calendar_snapshot,
+            build_local_nyse_calendar_snapshot,
+            build_market_session_from_calendar,
+        )
+
+        now = datetime.now(service_mod.ET)
+        market_date = str(getattr(self, "_current_market_date", "") or now.strftime("%Y-%m-%d")).strip()
+        contract_args = self._market_calendar_contract_args(service_mod)
+        fallback = service_mod.build_market_session_snapshot(now)
+        cache = getattr(self, "_market_session_calendar_cache", None)
+        signature = (
+            market_date,
+            contract_args["symbol"],
+            contract_args["exchange"],
+            contract_args["sec_type"],
+        )
+        now_ts = time.time()
+        if isinstance(cache, dict) and cache.get("signature") == signature and float(cache.get("expires_at") or 0) > now_ts:
+            payload = dict(cache.get("payload") or {})
+            session = build_market_session_from_calendar(payload, now=now) if payload else {}
+            if session:
+                merged = {**fallback, **session}
+                merged["calendar"] = {
+                    key: payload.get(key)
+                    for key in (
+                        "source",
+                        "source_error",
+                        "market_date",
+                        "symbol",
+                        "exchange",
+                        "sec_type",
+                        "schedule_kind",
+                        "time_zone_id",
+                        "is_trading_day",
+                        "is_closed",
+                        "closed_reason",
+                        "session",
+                        "next_open_us",
+                        "next_open_beijing",
+                    )
+                    if key in payload
+                }
+                return merged
+
+        source_error = ""
+        payload = {}
+        broker = getattr(self, "broker", None)
+        try:
+            if broker is None or not hasattr(broker, "resolve_contract"):
+                raise RuntimeError("broker_unavailable")
+            gateway_manager = getattr(self, "gateway_manager", None)
+            gateway_status = gateway_manager.status() if gateway_manager is not None and hasattr(gateway_manager, "status") else {}
+            if gateway_status and not (gateway_status.get("running") or gateway_status.get("reachable")):
+                raise RuntimeError("gateway_unreachable")
+            session_keeper = getattr(self, "session_keeper", None)
+            if session_keeper is not None and getattr(session_keeper, "is_authenticated", True) is False:
+                raise RuntimeError("session_unauthenticated")
+            contract = broker.resolve_contract(
+                symbol=contract_args["symbol"],
+                conid=0,
+                exchange=contract_args["exchange"],
+                sec_type=contract_args["sec_type"],
+            )
+            if not contract:
+                raise RuntimeError("contract_not_found")
+            payload = build_ibkr_calendar_snapshot(
+                contract,
+                market_date=market_date,
+                symbol=contract_args["symbol"],
+                exchange=contract_args["exchange"],
+                sec_type=contract_args["sec_type"],
+                now=now,
+            )
+            if not payload.get("ok"):
+                raise RuntimeError(str(payload.get("error") or "ibkr_schedule_unavailable"))
+        except Exception as exc:
+            source_error = str(exc)
+            payload = build_local_nyse_calendar_snapshot(
+                market_date,
+                symbol=contract_args["symbol"],
+                exchange=contract_args["exchange"],
+                sec_type=contract_args["sec_type"],
+                source_error=source_error,
+                now=now,
+            )
+
+        ttl_seconds = 300 if payload.get("source") == IBKR_SCHEDULE_SOURCE and payload.get("ok") else 60
+        try:
+            self._market_session_calendar_cache = {
+                "signature": signature,
+                "expires_at": now_ts + ttl_seconds,
+                "payload": dict(payload),
+            }
+        except Exception:
+            pass
+        session = build_market_session_from_calendar(payload, now=now) if payload else {}
+        if not session:
+            return fallback
+        merged = {**fallback, **session}
+        merged["calendar"] = {
+            key: payload.get(key)
+            for key in (
+                "source",
+                "source_error",
+                "market_date",
+                "symbol",
+                "exchange",
+                "sec_type",
+                "schedule_kind",
+                "time_zone_id",
+                "is_trading_day",
+                "is_closed",
+                "closed_reason",
+                "session",
+                "next_open_us",
+                "next_open_beijing",
+            )
+            if key in payload
+        }
+        if source_error and not merged.get("source_error"):
+            merged["source_error"] = source_error
+        return merged
+
     def status(self, refresh_auth: bool = True) -> dict:
         service_mod = _service_mod()
         session_status = self.session_keeper.status()
@@ -67,7 +211,7 @@ class TradingServiceRuntimeStatusMixin:
                 stalled = True
                 stall_reason = "lagging"
 
-        market_session = service_mod.build_market_session_snapshot()
+        market_session = self._runtime_market_session_snapshot(service_mod)
         auth_recovery = self._copy_auth_recovery_state()
         official_5m = self._copy_official_5m_state()
         direct_history_topup = self._copy_direct_topup_state()

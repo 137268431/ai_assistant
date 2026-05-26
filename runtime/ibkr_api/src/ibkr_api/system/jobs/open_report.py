@@ -7,6 +7,11 @@ from zoneinfo import ZoneInfo
 
 from ibkr_api.modes import request_broker_mode, request_market_data_mode
 from ibkr_api.system.jobs.market_calendar import build_market_calendar_snapshot
+from ibkr_api.system.jobs.market_session_text import (
+    market_calendar_source_label,
+    market_session_detail_fields,
+    market_session_from_calendar,
+)
 
 
 OPEN_REPORT_STATE_KEY = "system_notify_daily"
@@ -250,6 +255,16 @@ def _parse_us_time_ms(value: Any) -> int:
         return int(datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp() * 1000)
     except Exception:
         return 0
+
+
+def _parse_et_datetime(value: Any) -> datetime | None:
+    text = _to_text(value)
+    if len(text) < 19:
+        return None
+    try:
+        return datetime.strptime(text[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=ET)
+    except Exception:
+        return None
 
 
 def _first_by_symbol(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -532,6 +547,7 @@ def _build_open_report_card(
     monitor: dict[str, Any],
     targets_payload: dict[str, Any],
     market_snapshots: list[dict[str, Any]],
+    calendar: dict[str, Any],
     console_base_url: str,
 ) -> dict[str, Any]:
     market_date = _to_text(targets_payload.get("market_date")) or _to_text(times.get("date"))
@@ -543,6 +559,9 @@ def _build_open_report_card(
     service_line, link_line, services_line = _system_lines(summary, monitor)
     issue_text = _scan_issue_text(targets_payload)
     level = _report_level(summary, monitor, targets_payload)
+    market_session_fields = market_session_detail_fields(market_session_from_calendar(calendar))
+    market_session_lines = "\n".join(f"**{key}**: {value}" for key, value in market_session_fields.items())
+    market_session_block = f"\n{market_session_lines}" if market_session_lines else ""
     elements: list[dict[str, Any]] = [
         {
             "tag": "markdown",
@@ -554,6 +573,7 @@ def _build_open_report_card(
                 f"**系统**: {service_line}\n"
                 f"**IBKR链路**: {link_line}\n"
                 f"**服务统计**: {services_line}"
+                f"{market_session_block}"
             ),
         },
         {"tag": "markdown", "content": f"**今日标的**: {_target_summary_line(targets_payload)}\n" + "\n".join(target_lines)},
@@ -600,13 +620,7 @@ def _build_open_report_card(
 
 
 def _calendar_source_label(calendar: dict[str, Any]) -> str:
-    source = _to_text(calendar.get("source"))
-    label = {
-        "ibkr_schedule": "IBKR 合约交易时间",
-        "local_nyse_fallback": "本地 NYSE 兜底日历",
-    }.get(source, source or "unknown")
-    error = _to_text(calendar.get("source_error"))
-    return f"{label}（IBKR 拉取失败: {error}）" if error and source == "local_nyse_fallback" else label
+    return market_calendar_source_label(calendar.get("source"), calendar.get("source_error"))
 
 
 def _build_market_closed_card(
@@ -621,6 +635,13 @@ def _build_market_closed_card(
     next_open_us = _to_text(calendar.get("next_open_us")) or "待确认"
     next_open_cn = _to_text(calendar.get("next_open_beijing")) or "待确认"
     source_line = _calendar_source_label(calendar)
+    market_session_fields = {
+        key: value
+        for key, value in market_session_detail_fields(market_session_from_calendar(calendar)).items()
+        if key not in {"日历来源", "下次开盘"}
+    }
+    market_session_lines = "\n".join(f"**{key}**: {value}" for key, value in market_session_fields.items())
+    market_session_block = f"\n{market_session_lines}" if market_session_lines else ""
     elements: list[dict[str, Any]] = [
         {
             "tag": "markdown",
@@ -631,6 +652,7 @@ def _build_market_closed_card(
                 f"**下次开盘**: 美东 {next_open_us} | 北京 {next_open_cn}\n"
                 f"**检查时间**: 美东 {_to_text(times.get('us')) or 'n/a'} | 北京 {_to_text(times.get('cn')) or 'n/a'}\n"
                 f"**日历来源**: {source_line}"
+                f"{market_session_block}"
             ),
         },
         {
@@ -664,7 +686,7 @@ def _build_market_closed_card(
 
 
 def _market_closed_event_detail(*, times: dict[str, str], calendar: dict[str, Any]) -> dict[str, Any]:
-    return {
+    detail = {
         "检查时间": _to_text(times.get("us")),
         "交易日": _to_text(calendar.get("market_date")) or _to_text(times.get("date")),
         "结论": "今日市场闭市，不发送开盘交易摘要",
@@ -673,6 +695,8 @@ def _market_closed_event_detail(*, times: dict[str, str], calendar: dict[str, An
         "下次开盘(北京)": _to_text(calendar.get("next_open_beijing")) or "待确认",
         "日历来源": _calendar_source_label(calendar),
     }
+    detail.update(market_session_detail_fields(market_session_from_calendar(calendar)))
+    return detail
 
 
 def _event_detail(
@@ -682,6 +706,7 @@ def _event_detail(
     monitor: dict[str, Any],
     targets_payload: dict[str, Any],
     market_snapshots: list[dict[str, Any]],
+    calendar: dict[str, Any],
 ) -> dict[str, Any]:
     service_line, link_line, services_line = _system_lines(summary, monitor)
     market_line = " | ".join(_format_market_line(item) for item in market_snapshots[:3]) or "n/a"
@@ -699,6 +724,7 @@ def _event_detail(
     }
     if issue_text:
         detail["需要关注"] = issue_text
+    detail.update(market_session_detail_fields(market_session_from_calendar(calendar)))
     return detail
 
 
@@ -765,6 +791,7 @@ def build_system_open_report_response(
         request_json_request=request_json_request,
         compute_base_url=compute_base_url,
         config_value=config_value,
+        now=_parse_et_datetime(times.get("us")),
     )
     if bool(calendar.get("is_closed")):
         if not _truthy(config_value("status_notify_enabled", "TRUE", broker_mode)):
@@ -971,6 +998,7 @@ def build_system_open_report_response(
         monitor=monitor,
         targets_payload=targets_payload,
         market_snapshots=market_snapshots,
+        calendar=calendar,
         console_base_url=console_base_url(),
     )
     result = _as_dict(feishu_send_interactive(card, startup_chat_id(broker_mode), broker_mode))
@@ -982,7 +1010,14 @@ def build_system_open_report_response(
         level,
         "ibkr-api",
         "IBKR 09:30 开盘交易摘要",
-        _event_detail(times=times, summary=summary, monitor=monitor, targets_payload=targets_payload, market_snapshots=market_snapshots),
+        _event_detail(
+            times=times,
+            summary=summary,
+            monitor=monitor,
+            targets_payload=targets_payload,
+            market_snapshots=market_snapshots,
+            calendar=calendar,
+        ),
         broker_mode,
         notified,
     )
