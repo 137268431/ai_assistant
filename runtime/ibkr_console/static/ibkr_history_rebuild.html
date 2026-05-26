@@ -214,8 +214,28 @@
         }
 
         async function requestJson(path, options = {}) {
+            const method = String(options.method || 'GET').toUpperCase();
+            if (method === 'GET' && typeof cachedPageJson === 'function') {
+                return cachedPageJson(path, {
+                    method,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...authHeaders(),
+                        ...(options.headers || {})
+                    },
+                    retryAttempts: 2,
+                    retryDelayMs: 300
+                }, {
+                    profile: 'runtimeStatus',
+                    environment: currentEnvironment,
+                    ttlMs: 5000,
+                    swrMs: 5000,
+                    force: Boolean(options.force),
+                    tags: ['historyRebuild', currentEnvironment]
+                });
+            }
             const response = await fetch(path, {
-                method: options.method || 'GET',
+                method,
                 headers: {
                     'Content-Type': 'application/json',
                     ...authHeaders(),
@@ -235,6 +255,9 @@
                 error.status = response.status;
                 error.payload = payload;
                 throw error;
+            }
+            if (method !== 'GET' && typeof invalidateIbkrDataCache === 'function') {
+                invalidateIbkrDataCache(['historyRebuild', 'historyList', 'marketData', 'runtimeStatus']);
             }
             return payload;
         }

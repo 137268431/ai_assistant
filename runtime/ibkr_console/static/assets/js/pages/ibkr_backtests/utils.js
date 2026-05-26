@@ -159,8 +159,21 @@
         }
 
         async function requestBacktestJson(path, { method = 'GET', body = null } = {}) {
+            const methodText = String(method || 'GET').toUpperCase();
+            if (methodText === 'GET' && typeof cachedPageJson === 'function') {
+                return cachedPageJson(path, {
+                    method: methodText,
+                    headers: buildAuthHeaders(),
+                    retryAttempts: 3,
+                    retryDelayMs: 500,
+                }, {
+                    profile: 'historyList',
+                    environment: currentEnvironment,
+                    tags: ['backtests', currentEnvironment]
+                });
+            }
             const res = await fetch(`${BASE_URL}${path}`, {
-                method,
+                method: methodText,
                 headers: buildAuthHeaders(),
                 body: body ? JSON.stringify(body) : null,
             });
@@ -176,6 +189,9 @@
             }
             if (!res.ok || payload.ok === false) {
                 throw new Error(payload.error || payload.message || `Request failed: ${res.status}`);
+            }
+            if (methodText !== 'GET' && typeof invalidateIbkrDataCache === 'function') {
+                invalidateIbkrDataCache(['backtests', 'historyList']);
             }
             return payload;
         }

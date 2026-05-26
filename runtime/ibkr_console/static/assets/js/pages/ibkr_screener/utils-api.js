@@ -47,6 +47,9 @@
 
     function requestCachedJson(path, requestOptions = {}, cacheOptions = {}) {
       const method = String(requestOptions.method || 'GET').toUpperCase();
+      if (method === 'GET' && typeof cachedPageJson === 'function') {
+        return cachedPageJson(path, requestOptions, cacheOptions);
+      }
       if (method === 'GET' && typeof cachedCustomJson === 'function') {
         return cachedCustomJson(path, '', requestOptions, cacheOptions);
       }
@@ -493,6 +496,106 @@
       const gates = getFailedGates(row);
       if (!gates.length) return emptyText ? `<span class="muted">${escapeHtml(emptyText)}</span>` : '';
       return `<div class="reason-wrap">${gates.slice(0, 6).map((item) => `<span class="reason-pill">${escapeHtml(item)}</span>`).join('')}</div>`;
+    }
+
+    function normalizeExecutionList(value) {
+      if (!isDisplayValue(value)) return [];
+      if (Array.isArray(value)) return value.map((item) => String(item || '').trim()).filter(Boolean);
+      if (isPlainObject(value)) return Object.keys(value).filter((key) => normalizeTruth(value[key]));
+      return String(value || '').split(/[;,，；]/).map((item) => item.trim()).filter(Boolean);
+    }
+
+    function formatExecutionBlocker(value) {
+      const key = String(value || '').trim();
+      const map = {
+        target_not_active: 'target not active',
+        active_gate_not_passed: 'active gate 未通过',
+        data_quality_not_ready: '数据质量未 ready',
+        avoid_new_entries: 'avoid new entries',
+        watch_only: 'watch only',
+        direction_missing: '缺少方向',
+        direction_not_allowed: '方向不在 allowed_sides',
+      };
+      return map[key] || key.replace(/_/g, ' ');
+    }
+
+    function getExecutionLayerState(row) {
+      const extra = getRowExtra(row);
+      const eligibleRaw = firstDisplayValue([
+        row?.execution_eligible,
+        row?.is_execution_eligible,
+        extra.execution_eligible,
+      ]);
+      const blockers = normalizeExecutionList(firstDisplayValue([
+        row?.execution_blockers,
+        extra.execution_blockers,
+      ]));
+      const rawLayer = String(firstDisplayValue([
+        row?.target_layer,
+        extra.target_layer,
+      ]) || '').trim().toLowerCase();
+      const eligible = eligibleRaw !== undefined ? normalizeTruth(eligibleRaw) : rawLayer === 'execution';
+      const layer = rawLayer || (eligible ? 'execution' : (blockers.length ? 'observe' : ''));
+      const executionSides = normalizeExecutionList(firstDisplayValue([
+        row?.execution_allowed_sides,
+        extra.execution_allowed_sides,
+        extra.allowed_sides,
+      ]));
+      const contextSides = normalizeExecutionList(firstDisplayValue([
+        row?.context_allowed_sides,
+        extra.context_allowed_sides,
+        extra.signal_pressure_sides,
+      ]));
+      return {
+        known: Boolean(layer || eligibleRaw !== undefined || blockers.length || executionSides.length || contextSides.length),
+        eligible,
+        layer,
+        blockers,
+        executionSides,
+        contextSides,
+      };
+    }
+
+    function renderExecutionLayerPills(row) {
+      const state = getExecutionLayerState(row);
+      if (!state.known) return '';
+      const layerLabel = state.eligible || state.layer === 'execution' ? '执行层' : '观察层';
+      const layerClass = state.eligible || state.layer === 'execution' ? 'execution' : 'observe';
+      const sideLabel = state.executionSides.length ? `exec ${state.executionSides.join('/')}` : '';
+      const blockerLabel = state.blockers.length ? `blocked ${state.blockers.length}` : '';
+      const parts = [
+        statusChip(layerLabel, layerClass),
+        sideLabel ? statusChip(sideLabel, state.eligible ? 'active' : 'neutral') : '',
+        blockerLabel ? statusChip(blockerLabel, 'blocked') : '',
+      ].filter(Boolean);
+      return parts.length ? `<div class="pill-row execution-layer-row">${parts.join('')}</div>` : '';
+    }
+
+    function renderExecutionLayerBlock(row, label = '执行层') {
+      const state = getExecutionLayerState(row);
+      if (!state.known) return '';
+      const blockers = state.blockers.map(formatExecutionBlocker);
+      const detail = state.eligible
+        ? '允许自动信号/执行；active 仍同时用于订阅与观察。'
+        : '仅订阅/观察，不会自动入场。';
+      const sideCopy = [
+        state.executionSides.length ? `exec sides: ${state.executionSides.join(', ')}` : '',
+        state.contextSides.length ? `context sides: ${state.contextSides.join(', ')}` : '',
+      ].filter(Boolean).join(' · ');
+      return `
+        <div class="reason-block execution-layer-block" style="margin-top:10px;">
+          <div class="reason-label">${escapeHtml(label)}</div>
+          ${renderExecutionLayerPills(row)}
+          <div class="reason-copy">${escapeHtml(detail)}${sideCopy ? ` <span class="muted mono">${escapeHtml(sideCopy)}</span>` : ''}</div>
+          ${blockers.length ? `<div style="margin-top:6px;">${buildExecutionBlockerPills(blockers)}</div>` : ''}
+        </div>
+      `;
+    }
+
+    function buildExecutionBlockerPills(blockers) {
+      const list = Array.isArray(blockers) ? blockers.filter(Boolean) : [];
+      if (!list.length) return '<span class="muted">execution blockers: none</span>';
+      return `<div class="reason-wrap">${list.slice(0, 6).map((item) => `<span class="reason-pill execution-blocker-pill">${escapeHtml(item)}</span>`).join('')}</div>`;
     }
 
     function renderAdmissionControlRow(row) {

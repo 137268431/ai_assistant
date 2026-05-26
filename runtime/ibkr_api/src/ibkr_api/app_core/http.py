@@ -109,23 +109,29 @@ def request_json_request(
     timeout: float = 5.0,
 ) -> dict[str, Any]:
     target_url = f"{base_url.rstrip('/')}/{path.lstrip('/')}"
+    timeout_s = max(1.0, float(timeout or 0))
+    started = time.monotonic()
     try:
         response = requests_module.request(
             method=method.upper(),
             url=target_url,
             params=params,
             json=json_body,
-            timeout=max(1.0, float(timeout or 0)),
+            timeout=timeout_s,
         )
     except requests_module.RequestException as exc:
+        elapsed_ms = round((time.monotonic() - started) * 1000.0, 1)
         return {
             "ok": False,
             "status_code": 0,
             "payload": {},
             "error": str(exc),
             "target_url": target_url,
+            "elapsed_ms": elapsed_ms,
+            "timeout_s": timeout_s,
         }
 
+    elapsed_ms = round((time.monotonic() - started) * 1000.0, 1)
     payload: Any = {}
     try:
         payload = response.json() if response.content else {}
@@ -137,4 +143,6 @@ def request_json_request(
         "payload": payload if isinstance(payload, dict) else {},
         "target_url": target_url,
         "error": "",
+        "elapsed_ms": elapsed_ms,
+        "timeout_s": timeout_s,
     }

@@ -37,6 +37,7 @@ from ibkr_compute.api.market.screener.scoring import (
 )
 from ibkr_compute.core.active_window_admission import is_active_window_admitted, signal_pressure_from_item
 from ibkr_compute.market.timeframe_utils import normalize_interval
+from ibkr_compute.universe.target_execution import apply_target_execution_metadata
 
 
 NormalizeEnvironment = Callable[[Any, str], str]
@@ -558,9 +559,20 @@ def _target_extra(
 ) -> dict[str, Any]:
     existing_extra = parse_json_object(existing.get("extra"))
     existing_source = to_text(existing_extra.get("source"))
-    return {
+    direction_bias = normalize_direction_bias(metrics.get("direction_bias"), default="neutral")
+    payload = {
         **existing_extra,
         "source": existing_source or WINDOW_ADMISSION_SOURCE,
+        "active_gate_passed": True,
+        "context_active": True,
+        "context_gate_passed": True,
+        "context_allowed_sides": [direction_bias] if direction_bias in {"long", "short"} else [],
+        "strategy_policy": {
+            **(existing_extra.get("strategy_policy") if isinstance(existing_extra.get("strategy_policy"), dict) else {}),
+            "setup_type": "intraday_window_admission",
+            "allowed_sides": [direction_bias] if direction_bias in {"long", "short"} else [],
+            "avoid_new_entries": False,
+        },
         "screener_snapshot": {
             "symbol": to_text(item.get("symbol")).upper(),
             "price": float(to_float(metrics.get("price")) or 0.0),
@@ -604,6 +616,13 @@ def _target_extra(
         "market_date": market_date,
         "environment": to_text(existing.get("environment")),
     }
+    return apply_target_execution_metadata(
+        payload,
+        direction_bias=direction_bias,
+        status="active",
+        active_gate_passed=True,
+        data_quality_ready=True,
+    )
 
 
 def _rejection_summary(rejected: list[dict[str, Any]]) -> dict[str, int]:
@@ -895,6 +914,9 @@ def build_intraday_window_admission_response(
                         "action": to_text(result.get("action")) or "updated",
                         "score": score,
                         "direction_bias": row_payload["direction_bias"],
+                        "execution_eligible": bool(extra.get("execution_eligible")),
+                        "target_layer": to_text(extra.get("target_layer")),
+                        "execution_blockers": list(extra.get("execution_blockers") or []),
                         "window_status": row["window_status"],
                         "trace_stage": row["trace_stage"],
                         "bars_remaining": row["bars_remaining"],
@@ -993,6 +1015,9 @@ def build_intraday_window_admission_response(
                 "symbol": row["symbol"],
                 "score": row["score"],
                 "direction_bias": row["direction_bias"],
+                "execution_eligible": True,
+                "target_layer": "execution",
+                "execution_blockers": [],
                 "window_status": row["window_status"],
                 "trace_stage": row["trace_stage"],
                 "bars_remaining": row["bars_remaining"],

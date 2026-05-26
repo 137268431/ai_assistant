@@ -229,8 +229,24 @@
                 headers.Authorization = `Bearer ${token}`;
             }
 
-            const res = await fetch(buildApiUrl(path, options.params || {}), {
-                method: options.method || 'GET',
+            const method = String(options.method || 'GET').toUpperCase();
+            const requestUrl = buildApiUrl(path, options.params || {});
+            if (method === 'GET' && typeof cachedPageJson === 'function') {
+                return cachedPageJson(requestUrl, {
+                    method,
+                    headers,
+                    retryAttempts: 3,
+                    retryDelayMs: 500,
+                }, {
+                    profile: 'tradingList',
+                    environment: currentEnvironment,
+                    force: Boolean(options.force),
+                    tags: ['reverse', currentEnvironment]
+                });
+            }
+
+            const res = await fetch(requestUrl, {
+                method,
                 headers,
                 body: options.body ? JSON.stringify(options.body) : undefined,
             });
@@ -252,6 +268,9 @@
                 throw new Error(payload.error || payload.message || 'Request failed');
             }
 
+            if (method !== 'GET' && typeof invalidateIbkrDataCache === 'function') {
+                invalidateIbkrDataCache(['reverse', 'ibkr_signals', 'orders', 'tradingList']);
+            }
             return payload;
         }
 

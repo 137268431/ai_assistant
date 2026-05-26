@@ -1,7 +1,7 @@
 // Shared compatibility entrypoint.
 // Source-of-truth browser modules now live under /assets/js/shared and /assets/css.
 (function loadSharedCommonBundle() {
-  const sharedBundleVersion = '20260526-market-calendar-context';
+  const sharedBundleVersion = '20260526-cache-profiles';
   const sharedScriptPaths = [
     `/assets/js/shared/runtime-config.js?v=${sharedBundleVersion}`,
     `/assets/js/shared/data-center.js?v=${sharedBundleVersion}`,
@@ -44,8 +44,13 @@
       apiFetch: (...args) => pick('apiFetch')(...args),
       get IbkrDataCenter() { return pick('IbkrDataCenter'); },
       buildDataCacheKey: (...args) => pick('buildDataCacheKey')(...args),
+      getIbkrCacheProfile: (...args) => pick('getIbkrCacheProfile')(...args),
+      getMarketCalendarCacheOptions: (...args) => pick('getMarketCalendarCacheOptions')(...args),
+      invalidateIbkrDataCache: (...args) => pick('invalidateIbkrDataCache')(...args),
       cachedApiFetch: (...args) => pick('cachedApiFetch')(...args),
       cachedCustomJson: (...args) => pick('cachedCustomJson')(...args),
+      cachedPageJson: (...args) => pick('cachedPageJson')(...args),
+      cachedMarketCalendar: (...args) => pick('cachedMarketCalendar')(...args),
       fetchCollectionFullListCached: (...args) => pick('fetchCollectionFullListCached')(...args),
       cachedCountFetch: (...args) => pick('cachedCountFetch')(...args),
       fetchRealtimeQuotes: (...args) => pick('fetchRealtimeQuotes')(...args),

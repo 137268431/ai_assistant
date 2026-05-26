@@ -4,7 +4,14 @@ from typing import Any
 
 from flask import Response, jsonify, request
 
+from ibkr_api.app_core.route_cache import RouteSWRCache, cache_seconds, canonical_cache_key, request_cache_bypass
 from ibkr_api.modes import request_broker_mode, request_market_data_mode
+
+_REVERSE_ROUTE_CACHE = RouteSWRCache("reverse")
+
+
+def _clear_reverse_route_cache() -> None:
+    _REVERSE_ROUTE_CACHE.clear()
 
 
 def register_reverse_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
@@ -20,21 +27,28 @@ def register_reverse_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
 
     @app.route("/api/custom/ibkr/reverse/list", methods=["GET"])
     def custom_ibkr_reverse_list() -> Response:
+        query_payload = request.args.to_dict(flat=True)
         mode_payload = {
-            "broker_mode": request.args.get("broker_mode") or request.args.get("environment"),
-            "market_data_mode": request.args.get("market_data_mode"),
-            "data_environment": request.args.get("data_environment"),
+            "broker_mode": query_payload.get("broker_mode") or query_payload.get("environment"),
+            "market_data_mode": query_payload.get("market_data_mode"),
+            "data_environment": query_payload.get("data_environment"),
         }
-        payload, status_code = build_reverse_list_response(
-            pb,
-            environment=request_broker_mode(mode_payload),
-            data_environment=request_market_data_mode(mode_payload),
-            date_str=request.args.get("date") or "",
-            symbol=request.args.get("symbol") or "",
-            statuses=request.args.get("status") or "",
-            limit=request.args.get("limit"),
-            normalize_environment=normalize_environment,
-            escape_filter=escape_filter_string,
+        payload, status_code = _REVERSE_ROUTE_CACHE.get(
+            canonical_cache_key("reverse_list", query_payload),
+            builder=lambda: build_reverse_list_response(
+                pb,
+                environment=request_broker_mode(mode_payload),
+                data_environment=request_market_data_mode(mode_payload),
+                date_str=query_payload.get("date") or "",
+                symbol=query_payload.get("symbol") or "",
+                statuses=query_payload.get("status") or "",
+                limit=query_payload.get("limit"),
+                normalize_environment=normalize_environment,
+                escape_filter=escape_filter_string,
+            ),
+            ttl_seconds=cache_seconds("IBKR_ROUTE_CACHE_REVERSE_TTL_SEC", 30.0),
+            stale_seconds=cache_seconds("IBKR_ROUTE_CACHE_REVERSE_STALE_SEC", 120.0),
+            force=request_cache_bypass(query_payload),
         )
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
@@ -47,24 +61,33 @@ def register_reverse_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             payload=request.get_json(silent=True) or {},
             escape_filter=escape_filter_string,
         )
+        if status_code < 400:
+            _clear_reverse_route_cache()
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
     exports["custom_ibkr_reverse_calculate"] = custom_ibkr_reverse_calculate
 
     @app.route("/api/custom/ibkr/reverse/pending", methods=["GET"])
     def custom_ibkr_reverse_pending() -> Response:
+        query_payload = request.args.to_dict(flat=True)
         mode_payload = {
-            "broker_mode": request.args.get("broker_mode") or request.args.get("environment"),
-            "market_data_mode": request.args.get("market_data_mode"),
-            "data_environment": request.args.get("data_environment"),
+            "broker_mode": query_payload.get("broker_mode") or query_payload.get("environment"),
+            "market_data_mode": query_payload.get("market_data_mode"),
+            "data_environment": query_payload.get("data_environment"),
         }
-        payload, status_code = build_reverse_pending_response(
-            pb,
-            environment=request_broker_mode(mode_payload),
-            data_environment=request_market_data_mode(mode_payload),
-            limit=request.args.get("limit"),
-            normalize_environment=normalize_environment,
-            escape_filter=escape_filter_string,
+        payload, status_code = _REVERSE_ROUTE_CACHE.get(
+            canonical_cache_key("reverse_pending", query_payload),
+            builder=lambda: build_reverse_pending_response(
+                pb,
+                environment=request_broker_mode(mode_payload),
+                data_environment=request_market_data_mode(mode_payload),
+                limit=query_payload.get("limit"),
+                normalize_environment=normalize_environment,
+                escape_filter=escape_filter_string,
+            ),
+            ttl_seconds=cache_seconds("IBKR_ROUTE_CACHE_REVERSE_TTL_SEC", 30.0),
+            stale_seconds=cache_seconds("IBKR_ROUTE_CACHE_REVERSE_STALE_SEC", 120.0),
+            force=request_cache_bypass(query_payload),
         )
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
@@ -77,6 +100,8 @@ def register_reverse_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             payload=request.get_json(silent=True) or {},
             escape_filter=escape_filter_string,
         )
+        if status_code < 400:
+            _clear_reverse_route_cache()
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
     exports["custom_ibkr_reverse_dispatch"] = custom_ibkr_reverse_dispatch
@@ -88,6 +113,8 @@ def register_reverse_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             payload=request.get_json(silent=True) or {},
             escape_filter=escape_filter_string,
         )
+        if status_code < 400:
+            _clear_reverse_route_cache()
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
     exports["custom_ibkr_reverse_ack"] = custom_ibkr_reverse_ack
@@ -95,4 +122,4 @@ def register_reverse_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     return exports
 
 
-__all__ = ["register_reverse_routes"]
+__all__ = ["register_reverse_routes", "_clear_reverse_route_cache"]

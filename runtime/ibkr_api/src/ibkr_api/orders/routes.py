@@ -10,6 +10,22 @@ from ibkr_api.orders.group_common import load_order_action_context
 from ibkr_api.orders.values import to_text
 
 
+def _clear_order_sensitive_read_caches() -> None:
+    for import_path, function_name in (
+        ("ibkr_api.account.routes", "_clear_account_route_cache"),
+        ("ibkr_api.reverse.routes", "_clear_reverse_route_cache"),
+        ("ibkr_api.signals.routes", "_clear_signal_sensitive_read_caches"),
+        ("ibkr_api.universe.routes", "_clear_universe_route_cache"),
+    ):
+        try:
+            module = __import__(import_path, fromlist=[function_name])
+            clear_fn = getattr(module, function_name, None)
+            if callable(clear_fn):
+                clear_fn()
+        except Exception:
+            pass
+
+
 def register_order_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     pb = deps["pb"]
     normalize_environment = deps["normalize_environment"]
@@ -23,6 +39,7 @@ def register_order_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     build_order_cancel_webhook_response = deps["build_order_cancel_webhook_response"]
     build_order_close_webhook_response = deps["build_order_close_webhook_response"]
     notify_order_status = deps.get("notify_order_status")
+    notify_order_callback_ledger = deps.get("notify_order_callback_ledger")
     exports: dict[str, Any] = {}
 
     def _notify_group_action(action: str, action_payload: dict[str, Any], result_payload: dict[str, Any], status_code: int) -> dict[str, Any]:
@@ -77,7 +94,10 @@ def register_order_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             normalize_environment=normalize_environment,
             escape_filter_string=escape_filter_string,
             notify_order_status=notify_order_status,
+            notify_order_callback_ledger=notify_order_callback_ledger,
         )
+        if status_code < 400:
+            _clear_order_sensitive_read_caches()
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
     exports["custom_ibkr_orders_upsert"] = custom_ibkr_orders_upsert
@@ -90,6 +110,8 @@ def register_order_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             normalize_environment=normalize_environment,
             escape_filter_string=escape_filter_string,
         )
+        if status_code < 400:
+            _clear_order_sensitive_read_caches()
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
     exports["custom_ibkr_orders_reconcile"] = custom_ibkr_orders_reconcile
@@ -107,6 +129,8 @@ def register_order_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
         notification = _notify_group_action("canceled", request_payload, payload, status_code)
         if notification:
             payload["notification"] = notification
+        if status_code < 400:
+            _clear_order_sensitive_read_caches()
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
     exports["custom_ibkr_orders_cancel_group"] = custom_ibkr_orders_cancel_group
@@ -120,6 +144,8 @@ def register_order_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             escape_filter_string=escape_filter_string,
             cancel_broker_order=cancel_broker_order,
         )
+        if status_code < 400:
+            _clear_order_sensitive_read_caches()
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
     exports["custom_ibkr_orders_cancel_sync"] = custom_ibkr_orders_cancel_sync
@@ -136,6 +162,8 @@ def register_order_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
         notification = _notify_group_action("closed", request_payload, payload, status_code)
         if notification:
             payload["notification"] = notification
+        if status_code < 400:
+            _clear_order_sensitive_read_caches()
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
     exports["custom_ibkr_orders_close_group"] = custom_ibkr_orders_close_group
@@ -155,6 +183,8 @@ def register_order_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             cancel_broker_order=cancel_broker_order,
         )
         _notify_group_action("canceled", action_payload, payload, status_code)
+        if status_code < 400:
+            _clear_order_sensitive_read_caches()
         return payload.get("body") or "", int(status_code or 200), {"Content-Type": str(payload.get("content_type") or "text/html; charset=utf-8")}
     exports["webhook_order_cancel"] = webhook_order_cancel
 
@@ -172,6 +202,8 @@ def register_order_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             escape_filter_string=escape_filter_string,
         )
         _notify_group_action("closed", action_payload, payload, status_code)
+        if status_code < 400:
+            _clear_order_sensitive_read_caches()
         return payload.get("body") or "", int(status_code or 200), {"Content-Type": str(payload.get("content_type") or "text/html; charset=utf-8")}
     exports["webhook_order_close"] = webhook_order_close
 

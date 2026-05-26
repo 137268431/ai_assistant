@@ -8,7 +8,7 @@
     <script src="common.js"></script>
     <script>document.write(getCommonStyles());</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-    <link rel="stylesheet" href="/assets/css/pages/ibkr_monitor/page.css?v=20260518-bridge-align">
+    <link rel="stylesheet" href="/assets/css/pages/ibkr_monitor/page.css?v=20260527-admission-preview">
 </head>
 <body>
     <div id="nav"></div>
@@ -230,6 +230,8 @@
         let currentEnvironment = getCurrentRuntimeEnvironment();
         let refreshTimer = null;
         let latestMonitorLoadId = 0;
+        let latestMonitorPayload = null;
+        let admissionPreviewState = { loading: false, payload: null, error: '' };
         let lastCounterSnapshot = null;
         let symbolPagerState = {};
 
@@ -1093,6 +1095,17 @@
         }
 
         async function requestMonitorJson(path, cacheOptions = {}) {
+            if (typeof cachedPageJson === 'function') {
+                const ttlMs = Number(cacheOptions.ttlMs || 45000);
+                return cachedPageJson(path, { retryAttempts: 3, retryDelayMs: 500 }, {
+                    profile: cacheOptions.profile || 'runtimeStatus',
+                    environment: currentEnvironment,
+                    ttlMs,
+                    swrMs: Number(cacheOptions.swrMs || ttlMs),
+                    force: Boolean(cacheOptions.force),
+                    tags: ['monitor', currentEnvironment].concat(cacheOptions.tags || [])
+                });
+            }
             if (typeof cachedCustomJson === 'function') {
                 const ttlMs = Number(cacheOptions.ttlMs || 45000);
                 return cachedCustomJson(path, currentEnvironment, {}, {
@@ -1216,7 +1229,96 @@
                     detail: item?.detail || 'watchlist 中有交易标的，但当前 active target 数为 0；实时信号不会产生可交易目标。',
                 };
             }
+            if (code === 'no_execution_eligible_targets') {
+                return {
+                    ...item,
+                    title: '没有可执行交易目标',
+                    detail: item?.detail || '当前 active target 只有观察层标的，不会自动入场；可查看入池预览判断盘中哪些标的可能补入执行层。',
+                };
+            }
             return item || {};
+        }
+
+        function shouldShowAdmissionPreviewAction(flags) {
+            return (flags || []).some((item) => ['no_active_targets', 'no_execution_eligible_targets'].includes(String(item?.code || '').trim()));
+        }
+
+        function renderAdmissionPreviewSummary() {
+            if (admissionPreviewState.loading) {
+                return '<div class="flag-preview-card">正在 dry-run 入池预览...</div>';
+            }
+            if (admissionPreviewState.error) {
+                return `<div class="flag-preview-card is-error">入池预览失败：${escapeHtml(admissionPreviewState.error)}</div>`;
+            }
+            const payload = admissionPreviewState.payload;
+            if (!payload) return '';
+            const items = Array.isArray(payload.admitted_items) ? payload.admitted_items : [];
+            const rejectionSummary = payload.rejection_summary && typeof payload.rejection_summary === 'object'
+                ? payload.rejection_summary
+                : {};
+            const itemHtml = items.length
+                ? `<div class="preview-symbol-list">${items.slice(0, 8).map((item) => {
+                    const symbol = String(item?.symbol || '').toUpperCase();
+                    const direction = String(item?.direction_bias || 'n/a');
+                    const score = item?.score ?? 'n/a';
+                    const windowStatus = item?.window_status || item?.trace_stage || 'window';
+                    const bars = Number(item?.bars_remaining || 0) || 0;
+                    return `<span class="preview-symbol-chip">${escapeHtml(symbol)} · ${escapeHtml(direction)} · ${escapeHtml(String(score))} · ${escapeHtml(windowStatus)}${bars > 0 ? ` · ${bars} bars` : ''}</span>`;
+                }).join('')}</div>`
+                : `<div class="preview-symbol-list">${Object.entries(rejectionSummary).slice(0, 6).map(([reason, count]) => `<span class="preview-symbol-chip muted">${escapeHtml(reason)} ${escapeHtml(String(count))}</span>`).join('') || '<span class="muted">暂无可入池候选。</span>'}</div>`;
+            return `
+                <div class="flag-preview-card">
+                    <div class="flag-preview-title">入池预览 · would_admit ${escapeHtml(String(payload.would_admit ?? items.length))} · eligible ${escapeHtml(String(payload.eligible ?? 0))} · scanned ${escapeHtml(String(payload.scanned ?? 0))}</div>
+                    ${itemHtml}
+                </div>
+            `;
+        }
+
+        async function requestAdmissionPreviewFromMonitor() {
+            if (!initMonitorAuth() || admissionPreviewState.loading) return;
+            admissionPreviewState = { loading: true, payload: null, error: '' };
+            renderFlags(latestMonitorPayload || {});
+            const runtime = latestMonitorPayload?.runtime || {};
+            const marketUniverse = runtime?.market_universe || {};
+            const body = {
+                environment: currentEnvironment,
+                market_data_mode: currentEnvironment,
+                data_environment: currentEnvironment,
+                market_date: marketUniverse.active_target_date || '',
+                dry_run: true,
+                force: true,
+                max_admit: 8,
+                max_scan_symbols: 200,
+                trigger_source: 'monitor_page_preview',
+            };
+            try {
+                const response = await fetchWithRetry(buildPageUrl('/api/custom/system/jobs/intraday_window_admission', {}, { environment: currentEnvironment }), {
+                    method: 'POST',
+                    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+                    body: JSON.stringify(body),
+                }, {
+                    attempts: 2,
+                    retryDelayMs: 500,
+                });
+                const text = await response.text();
+                let payload = {};
+                try {
+                    payload = text ? JSON.parse(text) : {};
+                } catch (_) {
+                    payload = { ok: false, raw: text };
+                }
+                if (response.status === 401 || response.status === 403) {
+                    handleAuthError();
+                    throw new Error('Authentication failed');
+                }
+                if (!response.ok || payload.ok === false) {
+                    throw new Error(payload.error || payload.message || `Request failed (${response.status})`);
+                }
+                admissionPreviewState = { loading: false, payload, error: '' };
+            } catch (error) {
+                admissionPreviewState = { loading: false, payload: null, error: error?.message || String(error || 'request_failed') };
+            }
+            renderFlags(latestMonitorPayload || {});
         }
 
         function renderMetricCard({ label, value, copy, delta = null, toneClass = '' }) {
@@ -1578,6 +1680,7 @@
             if (!metaEl || !gridEl) return;
 
             const runtime = payload?.runtime || {};
+            const marketUniverse = runtime?.market_universe || {};
             const marketSession = runtime?.market_session || {};
             const realtimeQuotes = runtime?.realtime_quotes || {};
             const writer = runtime?.data_writer || {};
@@ -1592,6 +1695,15 @@
             const watchlistStatus = deriveWatchlistTopupStatus(payload);
             const monitorRows = getMarketMonitorRows(payload);
             const marketSummary = summarizeMarketMonitors(monitorRows);
+            const activeTargetCount = Number(marketUniverse?.active_target_count || 0) || 0;
+            const executionEligibleCount = Number(marketUniverse?.execution_eligible_target_count || 0) || 0;
+            const observeTargetCount = Number(marketUniverse?.observe_target_count || 0) || 0;
+            const executionSymbols = Array.isArray(marketUniverse?.execution_eligible_symbols) ? marketUniverse.execution_eligible_symbols : [];
+            const observeSymbols = Array.isArray(marketUniverse?.observe_target_symbols) ? marketUniverse.observe_target_symbols : [];
+            const noExecutionTargets = Boolean(marketUniverse?.no_execution_eligible_targets);
+            const executionTargetTone = noExecutionTargets
+                ? 'is-warn'
+                : (executionEligibleCount > 0 ? 'is-ok' : (activeTargetCount > 0 ? 'is-warn' : 'is-neutral'));
 
             const writerAvailable = Object.keys(writer).length > 0;
             const writerPending = Number(writer?.pending_batch || 0) || 0;
@@ -1654,6 +1766,17 @@
                     copy: watchlistStatus.copy,
                     meta: watchlistStatus.meta,
                     toneClass: metricToneFromChip(watchlistStatus.tone),
+                },
+                {
+                    label: 'Execution Targets',
+                    value: activeTargetCount ? `${executionEligibleCount}/${activeTargetCount}` : 'NONE',
+                    copy: activeTargetCount
+                        ? `execution ${executionEligibleCount} · observe ${observeTargetCount}`
+                        : 'no active targets in current market universe',
+                    meta: executionSymbols.length
+                        ? `exec ${executionSymbols.slice(0, 5).join(', ')}`
+                        : (observeSymbols.length ? `observe ${observeSymbols.slice(0, 5).join(', ')}` : '--'),
+                    toneClass: executionTargetTone,
                 },
                 {
                     label: 'Quote Coverage',
@@ -2231,6 +2354,14 @@
                 document.getElementById('flagList').innerHTML = '<div class="empty-state">当前没有 flags。</div>';
                 return;
             }
+            const previewAction = shouldShowAdmissionPreviewAction(flags)
+                ? `
+                    <div class="flag-preview-actions">
+                        <button class="mini-btn" type="button" onclick="requestAdmissionPreviewFromMonitor()" ${admissionPreviewState.loading ? 'disabled' : ''}>${admissionPreviewState.loading ? '预览中...' : 'Dry-run 入池预览'}</button>
+                    </div>
+                    ${renderAdmissionPreviewSummary()}
+                  `
+                : '';
             document.getElementById('flagList').innerHTML = flags.map((item) => {
                 const flagView = getMonitorFlagView(item);
                 return `
@@ -2242,7 +2373,7 @@
                     <div class="flag-detail">${escapeHtml(flagView.detail || '--')}</div>
                 </div>
             `;
-            }).join('');
+            }).join('') + previewAction;
         }
 
         function renderRecentEvents(payload) {
@@ -2293,6 +2424,7 @@
                 ]);
                 payload.two_factor = getTwoFactorState(twoFactorPayload);
                 if (loadId !== latestMonitorLoadId) return;
+                latestMonitorPayload = payload;
                 const deltas = deriveRefreshDelta(payload?.api_utilization || {});
                 renderHero(payload);
                 renderMarketSentiment(payload);
@@ -2396,6 +2528,7 @@
         });
 
         window.loadMonitorData = loadMonitorData;
+        window.requestAdmissionPreviewFromMonitor = requestAdmissionPreviewFromMonitor;
     </script>
 </body>
 </html>

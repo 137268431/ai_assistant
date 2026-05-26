@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any, Callable
 
 from ibkr_api.modes import request_broker_mode
@@ -214,18 +215,31 @@ def build_account_snapshot_response(
     normalize_environment: NormalizeEnvironment,
     request_json_request: RequestJsonRequest,
     runtime_base_url: str,
+    upstream_timeout: float = 20.0,
 ) -> tuple[dict[str, Any], int]:
+    started = time.monotonic()
     environment = request_broker_mode(payload)
     result = request_json_request(
         "GET",
         runtime_base_url,
         "/ibkr/account",
         params=[("broker_mode", environment), ("environment", environment)],
-        timeout=20.0,
+        timeout=upstream_timeout,
     )
+    upstream_elapsed_ms = float(result.get("elapsed_ms") or 0.0)
     status_code = int(result.get("status_code") or 200)
     upstream_payload = ensure_object(result.get("payload"))
     selected_upstream = to_text(result.get("target_url")) or f"{runtime_base_url.rstrip('/')}/ibkr/account"
+    diagnostics = {
+        "account_snapshot": {
+            "upstream_elapsed_ms": round(upstream_elapsed_ms, 1),
+            "upstream_timeout_s": float(result.get("timeout_s") or upstream_timeout or 0.0),
+            "enrichment_elapsed_ms": 0.0,
+            "total_elapsed_ms": round((time.monotonic() - started) * 1000.0, 1),
+            "degraded": False,
+            "upstream_status_code": status_code,
+        }
+    }
     if not upstream_payload or (status_code >= 400 and not upstream_payload.get("ok")):
         return {
             "ok": False,
@@ -236,8 +250,26 @@ def build_account_snapshot_response(
             "proxy_route": "/api/custom/ibkr/account_snapshot",
             "proxy_upstream": selected_upstream,
             "source": "ibkr-api",
+            "diagnostics": diagnostics,
         }, 502 if status_code < 400 else status_code
+    enrich_started = time.monotonic()
     enriched = enrich_account_snapshot(pb, dict(upstream_payload), environment)
+    enrichment_elapsed_ms = round((time.monotonic() - enrich_started) * 1000.0, 1)
+    total_elapsed_ms = round((time.monotonic() - started) * 1000.0, 1)
+    existing_diagnostics = ensure_object(enriched.get("diagnostics"))
+    account_diagnostics = ensure_object(existing_diagnostics.get("account_snapshot"))
+    account_diagnostics.update(
+        {
+            "upstream_elapsed_ms": round(upstream_elapsed_ms, 1),
+            "upstream_timeout_s": float(result.get("timeout_s") or upstream_timeout or 0.0),
+            "enrichment_elapsed_ms": enrichment_elapsed_ms,
+            "total_elapsed_ms": total_elapsed_ms,
+            "degraded": bool(ensure_object(enriched.get("errors")).get("summary") or ensure_object(enriched.get("errors")).get("positions") or ensure_object(enriched.get("errors")).get("orders")),
+            "upstream_status_code": status_code,
+        }
+    )
+    existing_diagnostics["account_snapshot"] = account_diagnostics
+    enriched["diagnostics"] = existing_diagnostics
     enriched["proxy_source"] = "ibkr-api"
     enriched["proxy_route"] = "/api/custom/ibkr/account_snapshot"
     enriched["proxy_upstream"] = selected_upstream

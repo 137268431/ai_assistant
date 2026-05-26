@@ -10,6 +10,7 @@ from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_compute.core.time_utils import ET
 from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite
 from ibkr_compute.market.timeframe_utils import format_cn_time, format_us_time, interval_to_chart_tf
+from ibkr_compute.universe.target_execution import apply_target_execution_metadata
 from ibkr_compute.universe.dynamic_admission import normalize_admission_bool
 
 from .daily_scanner_constants import (
@@ -452,6 +453,7 @@ class DailyScannerRunMixin:
             active_count += 1
             context_active = context_gate_passed
 
+            context_allowed_sides = list(result.get("allowed_sides") or [])
             extra = {
                 **(result.get("extra") or {}),
                 "environment": runtime_environment,
@@ -476,7 +478,7 @@ class DailyScannerRunMixin:
                 "context_active": context_active,
                 "context_gate_passed": context_gate_passed,
                 "setup_family": str(result.get("setup_family") or "none"),
-                "allowed_sides": list(result.get("allowed_sides") or []),
+                "context_allowed_sides": context_allowed_sides,
                 "context_score": round(_safe_float(result.get("context_score")), 3),
                 "context_reason": str(result.get("context_reason") or "").strip(),
             }
@@ -484,6 +486,12 @@ class DailyScannerRunMixin:
             if isinstance(dynamic_thresholds, dict):
                 extra["threshold_profile"] = str(dynamic_thresholds.get("threshold_profile") or "").strip()
                 extra["threshold_profile_reasons"] = list(dynamic_thresholds.get("threshold_profile_reasons") or [])
+            extra = apply_target_execution_metadata(
+                extra,
+                direction_bias=result.get("direction_bias", "neutral"),
+                status=status,
+                active_gate_passed=context_gate_passed,
+            )
             extra.update(
                 build_active_reason_payload(
                     symbol=symbol,
@@ -521,6 +529,9 @@ class DailyScannerRunMixin:
                     "score": round(_safe_float(result.get("score")), 3),
                     "admission_score": round(_safe_float(result.get("admission_score")), 3),
                     "threshold_profile": extra.get("threshold_profile", ""),
+                    "execution_eligible": bool(extra.get("execution_eligible")),
+                    "target_layer": str(extra.get("target_layer") or ""),
+                    "execution_blockers": list(extra.get("execution_blockers") or []),
                     "scan_reason": result.get("reason", ""),
                     "scan_stage": scan_stage,
                     "active_reason_summary": extra.get("active_reason_summary") or {},

@@ -554,6 +554,7 @@
         'currentTechnicalStateFilter',
         'currentSignalStateFilter',
         'currentTargetStatusFilter',
+        'currentExecutionLayerFilter',
         'currentDirectionBiasFilter',
         'currentTargetSortBy',
         'currentTargetPageSize',

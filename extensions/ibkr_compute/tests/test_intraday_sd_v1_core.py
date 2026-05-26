@@ -17,6 +17,7 @@ from ibkr_compute.core.indicators.atr import ATRIndicator
 from ibkr_compute.core.indicators.sd_channel import SDChannel
 from ibkr_compute.core.signal_generator import SignalGenerator
 from ibkr_compute.market.timeframe_utils import build_signal_id
+from ibkr_compute.universe.target_execution import target_row_execution_metadata
 
 
 def intraday_breakout_snapshot(**overrides):
@@ -986,6 +987,94 @@ class IntradaySdV1CoreTest(unittest.TestCase):
         self.assertEqual(strategy_map["APP"]["recommended_signal_profile"], "intraday_sd_v1")
         self.assertEqual(strategy_map["DDOG"]["recommended_exit_policy"]["tp_rr"], 2.1)
         self.assertEqual(profile_map["APP"]["threshold_profile"], "large_liquid")
+
+    def test_signal_params_exclude_watch_only_execution_layer(self):
+        class FakeCfg:
+            def get_for_environment(self, key, environment, default=None):
+                if key == "ibkr_market_ws_symbols":
+                    return "SPY,QQQ,VIX"
+                return default
+
+            def get_int_for_environment(self, key, environment, default=0):
+                return default
+
+            def get_bool_for_environment(self, key, environment, default=False):
+                if key == "ibkr_target_strategy_policy_enabled":
+                    return True
+                return default
+
+            def get_float_for_environment(self, key, environment, default=0.0):
+                return default
+
+        rows = [
+            {
+                "symbol": "APP",
+                "status": "active",
+                "direction_bias": "short",
+                "extra": {
+                    "source": "daily_scan",
+                    "active_gate_passed": True,
+                    "strategy_policy": {"allowed_sides": ["short"]},
+                },
+            },
+            {
+                "symbol": "TOST",
+                "status": "active",
+                "direction_bias": "long",
+                "extra": {
+                    "source": "daily_scan",
+                    "active_gate_passed": True,
+                    "strategy_policy": {"setup_type": "watch_only", "allowed_sides": ["long"]},
+                },
+            },
+        ]
+        fake_app = SimpleNamespace(
+            WATCHLIST_SYMBOL_ROLE_MARKET_MONITOR="market_monitor",
+            pb=SimpleNamespace(
+                get_all_records=lambda collection, **kwargs: rows
+                if collection == "ibkr_targets"
+                else []
+            ),
+            cfg=FakeCfg(),
+            current_market_date=lambda: "2026-05-01",
+            normalize_symbol_csv=lambda text: [item.strip().upper() for item in str(text or "").split(",") if item.strip()],
+            normalize_watchlist_symbol_role=lambda role: str(role or "").strip().lower(),
+        )
+
+        with mock.patch.object(universe_mod, "_api_app", return_value=fake_app), mock.patch.object(
+            universe_mod,
+            "load_effective_watchlist",
+            return_value={},
+        ):
+            params = universe_mod.get_signal_generator_params("live")
+            selected_symbols = universe_mod.get_active_trade_symbols("live")
+            biases = universe_mod.get_active_target_direction_biases("live")
+
+        self.assertEqual(selected_symbols, {"APP", "TOST"})
+        self.assertEqual(params["signal_enabled_symbols"], "APP")
+        self.assertEqual(biases, {"APP": "short"})
+        strategy_map = json.loads(params["target_strategy_policy_by_symbol"])
+        self.assertEqual(set(strategy_map), {"APP"})
+
+    def test_execution_metadata_recomputes_stale_persisted_flag(self):
+        metadata = target_row_execution_metadata(
+            {
+                "symbol": "TOST",
+                "status": "active",
+                "direction_bias": "long",
+                "extra": {
+                    "source": "daily_scan",
+                    "active_gate_passed": True,
+                    "execution_eligible": True,
+                    "target_layer": "execution",
+                    "strategy_policy": {"setup_type": "watch_only", "allowed_sides": ["long"]},
+                },
+            }
+        )
+
+        self.assertFalse(metadata["execution_eligible"])
+        self.assertEqual("observe", metadata["target_layer"])
+        self.assertIn("watch_only", metadata["execution_blockers"])
 
     def test_live_signal_params_apply_per_symbol_target_policy(self):
         params = engines_mod._signal_params_for_symbol(

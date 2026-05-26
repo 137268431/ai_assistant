@@ -237,6 +237,62 @@ class OrderTrackerIdentityTest(unittest.TestCase):
         self.assertEqual("long", upsert["position_side"])
         self.assertEqual(0.43, upsert["commission"])
 
+    def test_realtime_callback_metadata_syncs_to_pb(self):
+        pb_client = FakePBClient()
+        tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="live")
+
+        tracker.on_order_update(
+            {
+                "orderId": "101",
+                "ticker": "AAPL",
+                "side": "BUY",
+                "orderType": "LMT",
+                "totalSize": 10,
+                "filledQuantity": 0,
+                "avgPrice": 0,
+                "price": 180.1,
+                "status": "Submitted",
+                "cOID": "entry_AAPL_long_20260422_093500",
+                "broker_realtime_callback": True,
+                "ib_callback_type": "openOrder",
+                "broker_callback_received_at_ms": 1713797700000,
+            }
+        )
+
+        self.assertEqual(1, len(pb_client.upserts))
+        extra = pb_client.upserts[0]["extra"]
+        self.assertTrue(extra["broker_realtime_callback"])
+        self.assertEqual("ws", extra["broker_update_source"])
+        self.assertEqual("openOrder", extra["ib_callback_type"])
+        self.assertEqual(1713797700000, extra["broker_callback_received_at_ms"])
+
+    def test_poll_source_never_marks_realtime_callback(self):
+        pb_client = FakePBClient()
+        tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="live")
+
+        tracker._handle_live_order_payload(
+            {
+                "orderId": "102",
+                "ticker": "AAPL",
+                "side": "BUY",
+                "orderType": "LMT",
+                "totalSize": 10,
+                "filledQuantity": 0,
+                "avgPrice": 0,
+                "price": 180.1,
+                "status": "Submitted",
+                "cOID": "entry_AAPL_long_20260422_093500",
+                "broker_realtime_callback": True,
+                "ib_callback_type": "openOrder",
+            },
+            source="poll",
+        )
+
+        self.assertEqual(1, len(pb_client.upserts))
+        extra = pb_client.upserts[0]["extra"]
+        self.assertFalse(extra["broker_realtime_callback"])
+        self.assertEqual("poll", extra["broker_update_source"])
+
     def test_complete_live_open_orders_restores_tracker_identity_fields(self):
         tracker = OrderTracker(pb_client=FakePBClient(), broker=FakeBroker(), environment="live")
         tracker.register_submitted_orders(

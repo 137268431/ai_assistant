@@ -722,8 +722,27 @@
             brokerLiveError = '';
             renderBrokerLivePanel();
             try {
+                const requestPath = buildPageUrl('/api/custom/ibkr/account_snapshot', {}, { environment: currentEnvironment });
+                if (typeof cachedPageJson === 'function') {
+                    const payload = await cachedPageJson(requestPath, {
+                        headers: getOrderActionHeaders(),
+                        retryAttempts: 2,
+                        retryDelayMs: 500,
+                    }, {
+                        profile: 'runtimeStatus',
+                        environment: currentEnvironment,
+                        ttlMs: 5000,
+                        swrMs: 15000,
+                        tags: ['orders', 'account', currentEnvironment],
+                    });
+                    if (requestId !== currentOrdersRequestId) return;
+                    brokerLiveSnapshot = payload || {};
+                    brokerLiveFetchedAt = payload.fetched_at || new Date().toISOString();
+                    renderBrokerLivePanel();
+                    return;
+                }
                 const response = await fetchWithRetry(
-                    `${BASE_URL}${buildPageUrl('/api/custom/ibkr/account_snapshot', {}, { environment: currentEnvironment })}`,
+                    `${BASE_URL}${requestPath}`,
                     {
                         method: 'GET',
                         headers: getOrderActionHeaders()
@@ -2218,7 +2237,7 @@
         }
 
         async function requestPositionClose(payload) {
-            return readOrderActionResponse(
+            const result = await readOrderActionResponse(
                 await fetchWithRetry(
                     buildPageUrl('/api/custom/ibkr/positions/close', {}, { environment: currentEnvironment }),
                     {
@@ -2232,6 +2251,10 @@
                     { attempts: 2, retryDelayMs: 400 }
                 )
             );
+            if (typeof invalidateIbkrDataCache === 'function') {
+                invalidateIbkrDataCache(['orders', 'account', 'runtimeStatus', 'tradingList']);
+            }
+            return result;
         }
 
         function describeProtectionCancel(payload) {
@@ -2323,7 +2346,7 @@
         }
 
         async function requestOrderAction(path, uniqueId, extraPayload = {}) {
-            return readOrderActionResponse(
+            const result = await readOrderActionResponse(
                 await fetchWithRetry(
                     buildPageUrl(path, {}, { environment: currentEnvironment }),
                     {
@@ -2338,6 +2361,10 @@
                     { attempts: 2, retryDelayMs: 400 }
                 )
             );
+            if (typeof invalidateIbkrDataCache === 'function') {
+                invalidateIbkrDataCache(['orders', 'account', 'signals', 'reverse', 'runtimeStatus', 'tradingList']);
+            }
+            return result;
         }
 
         async function requestCancelSync(targetId, brokerOrderId) {
@@ -2362,6 +2389,9 @@
             }
             if (!response.ok || payload?.ok === false) {
                 throw new Error(payload?.error || payload?.message || `请求失败 (${response.status})`);
+            }
+            if (typeof invalidateIbkrDataCache === 'function') {
+                invalidateIbkrDataCache(['orders', 'account', 'signals', 'reverse', 'runtimeStatus', 'tradingList']);
             }
             return payload;
         }

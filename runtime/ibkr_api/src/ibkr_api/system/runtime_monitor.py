@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Any, Callable
 
 
@@ -126,6 +127,35 @@ def build_system_monitor_payload(
     support: Callable[..., dict[str, Any]],
 ):
     def _build_system_monitor_payload(environment: str) -> dict[str, Any]:
+        def _account_snapshot_probe(probe_environment: str) -> dict[str, Any]:
+            started = time.monotonic()
+            try:
+                from ibkr_api.account.snapshot import build_account_snapshot_response
+
+                payload, status_code = build_account_snapshot_response(
+                    globals_dict["pb"],
+                    payload={"broker_mode": probe_environment, "environment": probe_environment},
+                    normalize_environment=globals_dict["_normalize_environment"],
+                    request_json_request=globals_dict["_request_json_request"],
+                    runtime_base_url=str(globals_dict.get("RUNTIME_BASE_URL") or "http://127.0.0.1:5101").rstrip("/"),
+                    upstream_timeout=float(os.environ.get("IBKR_ACCOUNT_SNAPSHOT_MONITOR_TIMEOUT_SEC", "12.0") or 12.0),
+                )
+                return {
+                    "ok": status_code < 400 and payload.get("ok") is not False,
+                    "status_code": status_code,
+                    "payload": payload,
+                    "elapsed_ms": round((time.monotonic() - started) * 1000.0, 1),
+                    "error": "",
+                }
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "status_code": 0,
+                    "payload": {},
+                    "elapsed_ms": round((time.monotonic() - started) * 1000.0, 1),
+                    "error": str(exc),
+                }
+
         return support(
             environment,
             normalize_environment=globals_dict["_normalize_environment"],
@@ -149,6 +179,7 @@ def build_system_monitor_payload(
             derive_monitor_service_map=globals_dict["_derive_monitor_service_map"],
             merge_service_topology=globals_dict["_merge_service_topology"],
             build_service_topology=build_service_topology,
+            account_snapshot_probe=_account_snapshot_probe,
             service_profile=str(os.environ.get("IBKR_SERVICE_PROFILE") or "api"),
         )
 

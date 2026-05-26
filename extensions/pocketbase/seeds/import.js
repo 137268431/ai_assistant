@@ -301,6 +301,7 @@ const configData = [
   cfg('signal_chat_id', 'oc_edb26dcc52938b7833ac9f32ae6b1620', 'oc_edb26dcc52938b7833ac9f32ae6b1620', '信号群 Chat ID', '通知路由', 620, '新信号卡片默认发送到这里'),
   cfg('backtest_chat_id', 'oc_8c4831630f2121ffe5ff9c7f72ec9e1e', 'oc_8c4831630f2121ffe5ff9c7f72ec9e1e', '回测群 Chat ID', '通知路由', 625, 'Backtest 单次回测和参数实验通知默认发送到这里'),
   cfg('order_chat_id', 'oc_5ca4585e1fd108c2c662dfc358684945', 'oc_5ca4585e1fd108c2c662dfc358684945', '订单群 Chat ID', '通知路由', 630, '订单创建、状态流转与 TP/SL 卡片默认发送到这里'),
+  cfg('trade_ledger_chat_id', 'oc_c5f7f750a38692b48220b8f6c58e0ac9', 'oc_c5f7f750a38692b48220b8f6c58e0ac9', '交易流水群 Chat ID', '通知路由', 635, 'IBKR socket 实时订单回调流水发送到这里，用于确认真实开仓、保护单和退出单状态'),
   cfg('reverse_chat_id', 'oc_2931e2b8501df3a9d869d7aebceb8fe2', 'oc_2931e2b8501df3a9d869d7aebceb8fe2', '反转群 Chat ID', '通知路由', 640, '反转信号与反转执行卡片默认发送到这里'),
 
   cfg('status_notify_enabled', 'TRUE', 'TRUE', '状态摘要通知', '系统通知', 900, 'NYSE 交易日 09:30 开盘交易摘要、重启和定时系统状态摘要通知开关；09:30 由开盘摘要接管，:00 / :30 会合并同轮心跳与健康检查结果，不再额外发送重复卡片'),

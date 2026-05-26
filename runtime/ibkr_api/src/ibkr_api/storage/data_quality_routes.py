@@ -18,6 +18,15 @@ from ibkr_compute.core.broker_mode import resolve_data_environment
 StorageDeps = dict[str, Any]
 
 
+def _clear_data_quality_read_cache() -> None:
+    try:
+        from ibkr_api.data_quality.routes import _clear_data_quality_route_cache
+
+        _clear_data_quality_route_cache()
+    except Exception:
+        pass
+
+
 def register_storage_data_quality_routes(app, *, deps: StorageDeps, exports: dict[str, Any]) -> dict[str, Any]:
     pb = deps["pb"]
 
@@ -58,6 +67,7 @@ def register_storage_data_quality_routes(app, *, deps: StorageDeps, exports: dic
             timeout=30,
             update_transform=merge_bar_integrity_row,
         )
+        _clear_data_quality_read_cache()
         return jsonify(
             {
                 "ok": errors == 0,
@@ -99,6 +109,7 @@ def register_storage_data_quality_routes(app, *, deps: StorageDeps, exports: dic
             timeout=30,
             update_transform=merge_bar_coverage_daily_row,
         )
+        _clear_data_quality_read_cache()
         return jsonify(
             {
                 "ok": errors == 0,
@@ -139,6 +150,7 @@ def register_storage_data_quality_routes(app, *, deps: StorageDeps, exports: dic
             ["environment", "market_date", "symbol", "interval"],
             timeout=30,
         )
+        _clear_data_quality_read_cache()
         return jsonify(
             {
                 "ok": errors == 0,

@@ -28,9 +28,45 @@ ORDER_NOTIFY_STATUSES = {
 ORDER_ROLE_LABELS = {
     "entry": "入场",
     "take_profit": "止盈",
+    "repair_tp": "修复止盈",
     "stop_loss": "止损",
     "repair_sl": "修复止损",
+    "tp": "止盈",
+    "sl": "止损",
     "close": "平仓",
+    "manual_close": "手动平仓",
+    "market_close": "市价平仓",
+    "close_order": "平仓",
+    "reverse_close": "反向平仓",
+}
+
+EXIT_ORDER_ROLES = {
+    "take_profit",
+    "repair_tp",
+    "tp",
+    "stop_loss",
+    "repair_sl",
+    "sl",
+    "close",
+    "manual_close",
+    "market_close",
+    "close_order",
+    "reverse_close",
+}
+
+COMMISSION_FIELDS = ("commission", "actual_fill_commission", "ibkr_commission")
+PNL_EPSILON = 1e-9
+ORDER_FLOW_DEFAULT_EXIT_DELTA_RATIO = 0.18
+ORDER_FLOW_DEFAULT_PROFIT_EXIT_R = 0.15
+
+ORDER_GROUP_REASON_LABELS = {
+    "order_flow_adverse_delta_exit": "订单流反向 Delta 过强，且利润未达到保护阈值，触发提前平仓",
+    "order_flow_full_exit": "订单流风控触发全平",
+    "order_flow_close_pending": "订单流风控平仓单仍在等待成交确认",
+    "order_flow_adverse_delta_tighten_stop": "订单流反向 Delta 过强，触发收紧止损",
+    "intraday_harvest_full_exit": "日内波动收割策略触发全平",
+    "intraday_harvest_partial_exit": "日内波动收割策略触发部分平仓",
+    "intraday_harvest_tighten_stop": "日内波动收割策略触发收紧止损",
 }
 
 _ORDER_GROUP_NOTIFY_LOCKS: dict[str, threading.Lock] = {}
@@ -106,6 +142,24 @@ def _format_quantity(value: Any) -> str:
     if int(parsed) == parsed:
         return str(int(parsed))
     return f"{parsed:.2f}"
+
+
+def _format_money(value: Any) -> str:
+    parsed = to_float(value)
+    if parsed is None:
+        return "-"
+    return f"${parsed:,.2f}"
+
+
+def _format_signed_money(value: Any) -> str:
+    parsed = to_float(value)
+    if parsed is None:
+        return "-"
+    if parsed > 0:
+        return f"+${parsed:,.2f}"
+    if parsed < 0:
+        return f"-${abs(parsed):,.2f}"
+    return "$0.00"
 
 
 def _status_text(status: Any) -> str:
@@ -321,6 +375,433 @@ def _group_notify_key(rows: list[dict[str, Any]], *, action: str, group_status: 
     return f"order_group_notify_v1:{environment}:{trade_group_id}:{action_key}:{digest}"
 
 
+def _positive_number(record_or_data: Any, *fields: str) -> float | None:
+    for field in fields:
+        value = to_float(_record_or_extra_value(record_or_data, field))
+        if value is not None and value > 0:
+            return value
+    return None
+
+
+def _number_with_presence(record_or_data: Any, *fields: str) -> tuple[float | None, str]:
+    extra = _extra(record_or_data)
+    for field in fields:
+        for value in (_record_value(record_or_data, field), extra.get(field)):
+            if value in (None, ""):
+                continue
+            parsed = to_float(value)
+            if parsed is not None:
+                return parsed, field
+    return None, ""
+
+
+def _number_field_sources(record_or_data: Any, field: str) -> list[tuple[float, str]]:
+    extra = _extra(record_or_data)
+    values = ((_record_value(record_or_data, field), "record"), (extra.get(field), "extra"))
+    parsed_values: list[tuple[float, str]] = []
+    for value, source in values:
+        if value in (None, ""):
+            continue
+        parsed = to_float(value)
+        if parsed is not None:
+            parsed_values.append((parsed, source))
+    return parsed_values
+
+
+def _stored_net_pnl(record_or_data: Any) -> tuple[float | None, str]:
+    return _number_with_presence(record_or_data, "realized_net_pnl", "net_pnl")
+
+
+def _stored_gross_pnl(record_or_data: Any) -> tuple[float | None, str]:
+    value, field = _number_with_presence(record_or_data, "realized_gross_pnl", "gross_pnl")
+    if value is not None:
+        return value, field
+    for parsed, source in _number_field_sources(record_or_data, "pnl"):
+        if abs(parsed) > PNL_EPSILON or source == "extra":
+            return parsed, "pnl"
+    return None, ""
+
+
+def _normalize_trade_side(value: Any, *, exit_order_direction: bool = False) -> str:
+    text = to_text(value).lower()
+    if text in {"long", "buy_to_open"}:
+        return "long"
+    if text in {"short", "sell_to_open"}:
+        return "short"
+    if text == "buy":
+        return "short" if exit_order_direction else "long"
+    if text == "sell":
+        return "long" if exit_order_direction else "short"
+    return ""
+
+
+def _trade_side(entry_order: dict[str, Any], exit_order: dict[str, Any]) -> str:
+    for row, fields in (
+        (entry_order, ("position_side", "direction", "side")),
+        (exit_order, ("position_side", "trade_side")),
+    ):
+        for field in fields:
+            side = _normalize_trade_side(_record_or_extra_value(row, field))
+            if side:
+                return side
+    for field in ("direction", "side", "action"):
+        side = _normalize_trade_side(_record_or_extra_value(exit_order, field), exit_order_direction=True)
+        if side:
+            return side
+    return ""
+
+
+def _directional_pnl(direction: Any, entry_price: Any, exit_price: Any, quantity: Any) -> float | None:
+    side = _normalize_trade_side(direction)
+    entry = to_float(entry_price)
+    exit_ = to_float(exit_price)
+    qty = to_float(quantity)
+    if not side or entry is None or exit_ is None or qty is None or entry <= 0 or exit_ <= 0 or qty <= 0:
+        return None
+    per_share = entry - exit_ if side == "short" else exit_ - entry
+    return per_share * abs(qty)
+
+
+def _exit_order_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for row in sorted(rows or [], key=_role_sort_key):
+        normalized = normalize_order_row(row)
+        if normalized.get("role") in EXIT_ORDER_ROLES and to_text(normalized.get("status")).lower() in {"filled", "closed"}:
+            return row
+    return None
+
+
+def _sum_known_commissions(rows: list[dict[str, Any]]) -> tuple[float, bool]:
+    total = 0.0
+    found = False
+    for row in rows or []:
+        row_found = False
+        for field in COMMISSION_FIELDS:
+            for value, source in _number_field_sources(row, field):
+                if abs(value) <= PNL_EPSILON and source != "extra":
+                    continue
+                total += abs(value)
+                found = True
+                row_found = True
+                break
+            if row_found:
+                break
+    return total, found
+
+
+def _pnl_outcome_label(value: Any) -> str:
+    parsed = to_float(value)
+    if parsed is None:
+        return "盈亏"
+    if parsed > 0:
+        return "盈利"
+    if parsed < 0:
+        return "亏损"
+    return "持平"
+
+
+def _realized_group_pnl_model(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not rows:
+        return None
+    entry_order = pick_primary_order_row(rows) or {}
+    exit_order = _exit_order_row(rows)
+    if not exit_order:
+        return None
+
+    net_pnl, net_field = _stored_net_pnl(exit_order)
+    if net_pnl is None:
+        net_pnl, net_field = _stored_net_pnl(entry_order)
+
+    commission, commission_known = _sum_known_commissions(rows)
+    gross_pnl: float | None = None
+    gross_field = ""
+    if net_pnl is None:
+        gross_pnl, gross_field = _stored_gross_pnl(exit_order)
+        if gross_pnl is None:
+            gross_pnl, gross_field = _stored_gross_pnl(entry_order)
+
+    entry_price = _positive_number(
+        entry_order,
+        "fill_price",
+        "avg_price",
+        "avg_fill_price",
+        "actual_fill_price",
+        "entry_fill_price",
+        "limit_price",
+        "price",
+        "entry_price",
+    )
+    exit_price = _positive_number(
+        exit_order,
+        "fill_price",
+        "avg_price",
+        "avg_fill_price",
+        "actual_fill_price",
+        "exit_fill_price",
+        "price",
+        "limit_price",
+        "tp_price",
+        "take_profit",
+        "sl_price",
+        "stop_loss",
+    )
+    quantity = first_defined(
+        _positive_number(exit_order, "filled_qty", "quantity"),
+        _positive_number(entry_order, "filled_qty", "quantity"),
+    )
+
+    value_is_net = net_pnl is not None
+    value_source = net_field
+    if net_pnl is not None:
+        value = net_pnl
+    else:
+        if gross_pnl is None:
+            side = _trade_side(entry_order, exit_order)
+            gross_pnl = _directional_pnl(side, entry_price, exit_price, quantity)
+            gross_field = "computed_gross_pnl" if gross_pnl is not None else ""
+        if gross_pnl is None:
+            return None
+        value = gross_pnl - commission if commission_known else gross_pnl
+        value_is_net = commission_known
+        value_source = "computed_net_pnl" if commission_known and gross_field == "computed_gross_pnl" else gross_field
+
+    normalized_exit = normalize_order_row(exit_order)
+    return {
+        "value": value,
+        "is_net": value_is_net,
+        "source": value_source,
+        "commission": commission,
+        "commission_known": commission_known,
+        "entry_price": entry_price,
+        "exit_price": exit_price,
+        "quantity": quantity,
+        "exit_role": normalized_exit.get("role") or to_text(_record_or_extra_value(exit_order, "role")) or "exit",
+    }
+
+
+def _realized_pnl_detail(model: dict[str, Any]) -> str:
+    parts: list[str] = []
+    role = ORDER_ROLE_LABELS.get(to_text(model.get("exit_role")), "退出")
+    exit_price = model.get("exit_price")
+    quantity = model.get("quantity")
+    if exit_price is not None:
+        parts.append(f"{role} @{_format_price(exit_price)}")
+    if quantity is not None:
+        parts.append(f"{_format_quantity(quantity)}股")
+    if bool(model.get("is_net")):
+        commission = to_float(model.get("commission")) or 0.0
+        if commission > 0:
+            parts.append(f"含手续费 {_format_money(commission)}")
+    else:
+        parts.append("未计手续费")
+    return f"（{'，'.join(parts)}）" if parts else ""
+
+
+def _realized_pnl_line(model: dict[str, Any] | None) -> str:
+    if not model:
+        return ""
+    value = model.get("value")
+    return f"**实际盈亏**: {_pnl_outcome_label(value)} {_format_signed_money(value)}{_realized_pnl_detail(model)}"
+
+
+def _single_order_pnl_model(order_record: Any) -> dict[str, Any] | None:
+    net_pnl, net_field = _stored_net_pnl(order_record)
+    commission, commission_known = _sum_known_commissions([order_record])
+    if net_pnl is not None:
+        value = net_pnl
+        value_is_net = True
+        value_source = net_field
+    else:
+        gross_pnl, gross_field = _stored_gross_pnl(order_record)
+        if gross_pnl is None:
+            return None
+        value = gross_pnl - commission if commission_known else gross_pnl
+        value_is_net = commission_known
+        value_source = gross_field
+    return {
+        "value": value,
+        "is_net": value_is_net,
+        "source": value_source,
+        "commission": commission,
+        "commission_known": commission_known,
+        "exit_price": _positive_number(
+            order_record,
+            "fill_price",
+            "avg_price",
+            "avg_fill_price",
+            "actual_fill_price",
+            "price",
+            "limit_price",
+        ),
+        "quantity": _positive_number(order_record, "filled_qty", "quantity"),
+        "exit_role": normalize_order_row(order_record).get("role") or to_text(_record_or_extra_value(order_record, "role")),
+    }
+
+
+def _as_object(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _nested_object(source: dict[str, Any], *path: str) -> dict[str, Any]:
+    current: Any = source
+    for key in path:
+        current = _as_object(current).get(key)
+    return _as_object(current)
+
+
+def _nested_value(source: dict[str, Any], *path: str) -> Any:
+    current: Any = source
+    for key in path:
+        current = _as_object(current).get(key)
+        if current is None:
+            return None
+    return current
+
+
+def _compact_number(value: Any) -> str:
+    parsed = to_float(value)
+    if parsed is None:
+        return ""
+    text = f"{parsed:.6f}".rstrip("0").rstrip(".")
+    return "0" if text in {"", "-0"} else text
+
+
+def _reason_label(reason: Any) -> str:
+    normalized = to_text(reason)
+    if not normalized:
+        return ""
+    return ORDER_GROUP_REASON_LABELS.get(normalized, f"系统记录原因 {normalized}")
+
+
+def _reason_source_for_row(row: dict[str, Any]) -> dict[str, Any] | None:
+    extra = _extra(row)
+    candidates: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+    for field in ("order_flow_full_exit", "harvest_full_exit", "harvest_partial_exit", "order_flow_close_result"):
+        payload = _as_object(extra.get(field))
+        if not payload:
+            continue
+        decision = _as_object(payload.get("decision")) or _as_object(payload.get("order_flow_decision"))
+        candidates.append((field, payload, decision))
+    for field in ("order_flow_decision", "harvest_last_decision"):
+        decision = _as_object(extra.get(field))
+        if decision:
+            candidates.append((field, {}, decision))
+
+    for field, payload, decision in candidates:
+        reason = to_text(decision.get("reason") or payload.get("reason"))
+        if reason:
+            return {"reason": reason, "source": field, "payload": payload, "decision": decision, "row": row}
+
+    reason = to_text(extra.get("last_status_reason") or extra.get("reason"))
+    if reason:
+        return {"reason": reason, "source": "row_extra", "payload": {}, "decision": {}, "row": row}
+    return None
+
+
+def _order_group_reason_model(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for row in sorted(rows or [], key=_role_sort_key):
+        model = _reason_source_for_row(row)
+        if model:
+            return model
+    return None
+
+
+def _delta_evidence_line(reason: str, decision: dict[str, Any]) -> str:
+    if reason != "order_flow_adverse_delta_exit":
+        return ""
+    confirmation = _as_object(decision.get("confirmation"))
+    direction = to_text(decision.get("direction")).lower()
+    direction_label = "多头" if direction == "long" else ("空头" if direction == "short" else "持仓")
+    adverse_label = "空方" if direction == "long" else ("多方" if direction == "short" else "反向")
+    interval = _compact_number(confirmation.get("interval_sec")) or "60"
+    delta_ratio = to_float(confirmation.get("delta_ratio"))
+    abs_delta_ratio = abs(delta_ratio) if delta_ratio is not None else None
+    exit_threshold = first_defined(
+        decision.get("exit_delta_ratio"),
+        decision.get("exit_ratio"),
+        confirmation.get("exit_delta_ratio"),
+        ORDER_FLOW_DEFAULT_EXIT_DELTA_RATIO,
+    )
+    pnl_r = decision.get("pnl_r")
+    profit_threshold = first_defined(decision.get("profit_exit_r"), decision.get("max_exit_pnl_r"), ORDER_FLOW_DEFAULT_PROFIT_EXIT_R)
+
+    parts = [f"{direction_label}遇到 {interval}s {adverse_label} Delta"]
+    if delta_ratio is not None:
+        parts.append(
+            f"delta_ratio {_compact_number(delta_ratio)}"
+            f"（abs {_compact_number(abs_delta_ratio)}）≥ 平仓阈值 {_compact_number(exit_threshold)}"
+        )
+    if to_float(confirmation.get("delta")) is not None:
+        parts.append(f"delta {_compact_number(confirmation.get('delta'))}")
+    if to_float(confirmation.get("cvd")) is not None:
+        parts.append(f"CVD {_compact_number(confirmation.get('cvd'))}")
+    if to_float(pnl_r) is not None:
+        parts.append(f"pnl_r {_compact_number(pnl_r)} ≤ {_compact_number(profit_threshold)}")
+    return f"**依据**: {'，'.join(parts)}"
+
+
+def _action_summary_line(rows: list[dict[str, Any]], reason_model: dict[str, Any], pnl_model: dict[str, Any] | None) -> str:
+    reason = to_text(reason_model.get("reason"))
+    if reason not in {"order_flow_adverse_delta_exit", "order_flow_full_exit", "intraday_harvest_full_exit"}:
+        return ""
+
+    decision = _as_object(reason_model.get("decision"))
+    canceled_roles: list[str] = []
+    for row in sorted(rows or [], key=_role_sort_key):
+        normalized = normalize_order_row(row)
+        role = normalized.get("role") or ""
+        if role not in {"take_profit", "stop_loss", "tp", "sl", "repair_tp", "repair_sl"}:
+            continue
+        if to_text(normalized.get("status")).lower() not in {"canceled", "cancelled"}:
+            continue
+        label = ORDER_ROLE_LABELS.get(role, role)
+        if label not in canceled_roles:
+            canceled_roles.append(label)
+    quantity = first_defined(
+        (pnl_model or {}).get("quantity"),
+        decision.get("quantity"),
+        decision.get("closed_quantity"),
+        _nested_value(_as_object(reason_model.get("payload")), "market_close_result", "fill", "filled_quantity"),
+    )
+    direction = to_text(decision.get("direction") or _record_or_extra_value(reason_model.get("row"), "position_side", "direction")).lower()
+    close_side = "卖出" if direction == "long" else ("买入" if direction == "short" else "平仓")
+    avg_fill = first_defined(
+        (pnl_model or {}).get("exit_price"),
+        _nested_value(_as_object(reason_model.get("payload")), "market_close_result", "fill", "order", "avgFillPrice"),
+        _nested_value(_as_object(reason_model.get("payload")), "market_close_result", "fill", "order", "avgPrice"),
+    )
+    limit_price = first_defined(decision.get("limit_price"), _nested_value(_as_object(reason_model.get("payload")), "market_close_result", "limit_price"))
+
+    parts: list[str] = []
+    if canceled_roles:
+        parts.append(f"已取消{'/'.join(canceled_roles)}保护单")
+    if quantity:
+        close_text = f"用平仓单{close_side} {_format_quantity(quantity)} 股"
+    else:
+        close_text = f"用平仓单{close_side}"
+    if limit_price not in (None, ""):
+        close_text = f"{close_text}，限价 {_format_price(limit_price)}"
+    if avg_fill not in (None, ""):
+        close_text = f"{close_text}，均价 {_format_price(avg_fill)}"
+    parts.append(close_text)
+    return f"**处理**: {'，'.join(parts)}" if parts else ""
+
+
+def _order_group_reason_lines(rows: list[dict[str, Any]], pnl_model: dict[str, Any] | None) -> list[str]:
+    reason_model = _order_group_reason_model(rows)
+    if not reason_model:
+        return []
+    reason = to_text(reason_model.get("reason"))
+    label = _reason_label(reason)
+    lines = [f"**原因**: {label}（{reason}）" if reason in ORDER_GROUP_REASON_LABELS else f"**原因**: {label}"]
+    evidence_line = _delta_evidence_line(reason, _as_object(reason_model.get("decision")))
+    if evidence_line:
+        lines.append(evidence_line)
+    action_line = _action_summary_line(rows, reason_model, pnl_model)
+    if action_line:
+        lines.append(action_line)
+    return lines
+
+
 def _leg_line(row: dict[str, Any]) -> str:
     normalized = normalize_order_row(row)
     role = normalized.get("role") or to_text(_record_or_extra_value(row, "order_type")) or "order"
@@ -342,7 +823,10 @@ def _leg_line(row: dict[str, Any]) -> str:
     return f"**{label}**: {_status_text(status)} · ID {order_id or '-'} · {filled}/{quantity} · {price}"
 
 
-def _group_status_template(status: str) -> str:
+def _group_status_template(status: str, pnl_value: Any = None) -> str:
+    parsed_pnl = to_float(pnl_value)
+    if parsed_pnl is not None and parsed_pnl < 0:
+        return "red"
     if status in {"Filled", "Closed"}:
         return "green"
     if status in {"Canceled", "Expired"}:
@@ -368,6 +852,9 @@ def build_order_group_status_card(
     signal_id = to_text(_record_or_extra_value(primary, "signal_id"))
     resolved_status = to_text(status or _group_status(rows) or _record_or_extra_value(primary, "status", "order_status", "current_status"))
     status_text = _status_text(resolved_status)
+    pnl_model = _realized_group_pnl_model(rows)
+    pnl_line = _realized_pnl_line(pnl_model)
+    title_pnl = f" · {_pnl_outcome_label(pnl_model.get('value'))} {_format_signed_money(pnl_model.get('value'))}" if pnl_model else ""
 
     body_lines = [
         f"**状态**: {status_text}",
@@ -379,6 +866,9 @@ def build_order_group_status_card(
         body_lines.extend(_leg_line(row) for row in rows)
     else:
         body_lines.append("**订单**: -")
+    body_lines.extend(_order_group_reason_lines(rows, pnl_model))
+    if pnl_line:
+        body_lines.append(pnl_line)
     if message:
         body_lines.append(f"**说明**: {message}")
     body_lines.append(f"**时间**: {to_text(_record_or_extra_value(primary, 'us_time', 'order_time', 'fill_time')) or '-'}")
@@ -393,9 +883,9 @@ def build_order_group_status_card(
         "header": {
             "title": {
                 "tag": "plain_text",
-                "content": f"📦 订单组 · {broker_badge} · {status_text} · {symbol}",
+                "content": f"📦 订单组 · {broker_badge} · {status_text}{title_pnl} · {symbol}",
             },
-            "template": _group_status_template(resolved_status),
+            "template": _group_status_template(resolved_status, pnl_model.get("value") if pnl_model else None),
         },
         "elements": elements,
     }
@@ -439,10 +929,287 @@ def _apply_order_notification_patch(pb: Any, primary_row: dict[str, Any], extra_
     record_id = to_text(primary_row.get("id"))
     if not record_id or not extra_patch:
         return
+    merged_patch = dict(extra_patch)
     try:
-        pb.update_record("orders", record_id, {"extra": extra_patch})
+        getter = getattr(pb, "get_first_record", None)
+        if callable(getter):
+            safe_id = record_id.replace("\\", "\\\\").replace('"', '\\"')
+            latest = getter("orders", filter=f'id = "{safe_id}"')
+            latest_extra = ensure_object((latest or {}).get("extra")) if isinstance(latest, dict) else {}
+            if latest_extra:
+                merged_patch = {**latest_extra, **merged_patch}
+    except Exception:
+        merged_patch = dict(extra_patch)
+    try:
+        pb.update_record("orders", record_id, {"extra": merged_patch})
     except Exception:
         return
+
+
+def _truthy(value: Any) -> bool:
+    return to_text(value).lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _trade_ledger_environment_allowed(environment: Any) -> bool:
+    return to_text(environment or "live").lower() in {"live", "paper"}
+
+
+def _trade_ledger_role_label(order_record: Any) -> str:
+    role = to_text(_record_or_extra_value(order_record, "role"))
+    return ORDER_ROLE_LABELS.get(role, role or "-")
+
+
+def _trade_ledger_callback_type(order_record: Any) -> str:
+    return to_text(_record_or_extra_value(order_record, "ib_callback_type", "callback_type")) or "broker_callback"
+
+
+def _trade_ledger_exec_id(order_record: Any) -> str:
+    return to_text(_record_or_extra_value(order_record, "ib_exec_id", "exec_id", "execution_id"))
+
+
+def _trade_ledger_filled_qty(order_record: Any) -> float:
+    return to_float(_record_or_extra_value(order_record, "filled_qty", "filledQuantity", "filled")) or 0.0
+
+
+def _trade_ledger_fill_price(order_record: Any) -> float:
+    return (
+        to_float(
+            _record_or_extra_value(
+                order_record,
+                "fill_price",
+                "avg_price",
+                "avgFillPrice",
+                "avgPrice",
+                "last_fill_price",
+                "lastFillPrice",
+                "execution_price",
+            )
+        )
+        or 0.0
+    )
+
+
+def _trade_ledger_event_model(order_record: dict[str, Any], previous_order: dict[str, Any] | None) -> dict[str, Any]:
+    environment = to_text(_record_or_extra_value(order_record, "environment")) or "live"
+    if not _trade_ledger_environment_allowed(environment):
+        return {"skipped": True, "reason": "environment_not_notifiable", "environment": environment}
+    if not _truthy(_record_or_extra_value(order_record, "broker_realtime_callback")):
+        return {"skipped": True, "reason": "not_realtime_broker_callback", "environment": environment}
+
+    previous = previous_order if isinstance(previous_order, dict) else {}
+    previous_extra = ensure_object(previous.get("extra"))
+    current_status = to_text(_record_or_extra_value(order_record, "status", "order_status", "current_status"))
+    previous_status = to_text(_record_or_extra_value(previous, "status", "order_status", "current_status"))
+    current_filled = _trade_ledger_filled_qty(order_record)
+    previous_filled = _trade_ledger_filled_qty(previous)
+    fill_delta = max(0.0, current_filled - previous_filled)
+    current_broker_order_id = to_text(_record_or_extra_value(order_record, "broker_order_id", "order_id", "orderId"))
+    previous_broker_order_id = to_text(_record_or_extra_value(previous, "broker_order_id", "order_id", "orderId"))
+    first_realtime_callback = not _truthy(previous_extra.get("broker_realtime_callback"))
+    broker_order_id_appeared = bool(current_broker_order_id and not previous_broker_order_id)
+    status_changed = bool(current_status and previous_status and current_status != previous_status)
+
+    if fill_delta > 0:
+        event_type = "fill"
+        event_label = "已成交" if current_status in {"Filled", "Closed", "Executed"} else "部分成交"
+        reason = "fill_quantity_increased"
+    elif first_realtime_callback:
+        event_type = "first_callback"
+        event_label = "首次真实回调"
+        reason = "first_realtime_callback"
+    elif broker_order_id_appeared:
+        event_type = "broker_order_confirmed"
+        event_label = "Broker订单确认"
+        reason = "broker_order_id_appeared"
+    elif status_changed:
+        event_type = "status_change"
+        event_label = _status_text(current_status)
+        reason = "status_changed"
+    else:
+        return {
+            "skipped": True,
+            "reason": "no_material_callback_delta",
+            "environment": environment,
+            "status": current_status,
+        }
+
+    callback_type = _trade_ledger_callback_type(order_record)
+    exec_id = _trade_ledger_exec_id(order_record)
+    trade_group_id = to_text(_record_or_extra_value(order_record, "trade_group_id", "entry_order_unique_id", "unique_id"))
+    unique_id = to_text(_record_or_extra_value(order_record, "unique_id", "id"))
+    digest_payload = {
+        "environment": environment,
+        "broker_order_id": current_broker_order_id,
+        "unique_id": unique_id,
+        "trade_group_id": trade_group_id,
+        "callback_type": callback_type,
+        "exec_id": exec_id,
+        "event_type": event_type,
+        "status": current_status,
+        "filled_qty": round(current_filled, 8),
+        "fill_price": round(_trade_ledger_fill_price(order_record), 8),
+    }
+    digest = hashlib.sha1(json.dumps(digest_payload, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()[:16]
+    return {
+        "skipped": False,
+        "reason": reason,
+        "event_type": event_type,
+        "event_label": event_label,
+        "environment": environment,
+        "status": current_status,
+        "previous_status": previous_status,
+        "filled_qty": current_filled,
+        "previous_filled_qty": previous_filled,
+        "fill_delta": fill_delta,
+        "callback_type": callback_type,
+        "exec_id": exec_id,
+        "notify_key": f"trade_ledger_callback_v1:{environment}:{current_broker_order_id or unique_id}:{digest}",
+    }
+
+
+def _trade_ledger_template(event_model: dict[str, Any], status: str) -> str:
+    if event_model.get("event_type") == "fill" or status in {"Filled", "Closed", "Executed"}:
+        return "green"
+    if status in {"Canceled", "Cancelled", "Rejected", "Expired", "Inactive"}:
+        return "orange"
+    return "blue"
+
+
+def build_order_callback_ledger_card(
+    order_record: dict[str, Any],
+    event_model: dict[str, Any],
+    *,
+    console_base_url: str = "",
+) -> dict[str, Any]:
+    environment = to_text(_record_or_extra_value(order_record, "environment")) or "live"
+    broker_badge = _broker_badge(environment)
+    symbol = to_text(_record_or_extra_value(order_record, "symbol")).upper() or "ORDER"
+    status = to_text(event_model.get("status") or _record_or_extra_value(order_record, "status", "order_status", "current_status"))
+    status_text = _status_text(status)
+    callback_type = to_text(event_model.get("callback_type")) or _trade_ledger_callback_type(order_record)
+    event_label = to_text(event_model.get("event_label")) or status_text
+    broker_order_id = to_text(_record_or_extra_value(order_record, "broker_order_id", "order_id", "orderId"))
+    unique_id = to_text(_record_or_extra_value(order_record, "unique_id", "id"))
+    signal_id = to_text(_record_or_extra_value(order_record, "signal_id"))
+    trade_group_id = to_text(_record_or_extra_value(order_record, "trade_group_id", "entry_order_unique_id"))
+    direction = to_text(_record_or_extra_value(order_record, "position_side", "direction", "side"))
+    order_type = to_text(_record_or_extra_value(order_record, "order_type", "orderType"))
+    callback_time = to_text(_record_or_extra_value(order_record, "broker_callback_received_at", "us_time", "order_time", "fill_time"))
+    fill_delta = to_float(event_model.get("fill_delta")) or 0.0
+    filled_qty = to_float(event_model.get("filled_qty"))
+    previous_filled_qty = to_float(event_model.get("previous_filled_qty"))
+    fill_line = (
+        f"**成交增量 / 累计**: +{_format_quantity(fill_delta)} / {_format_quantity(filled_qty)}"
+        if fill_delta > 0
+        else f"**成交数量**: {_format_quantity(filled_qty)}"
+    )
+    if previous_filled_qty and previous_filled_qty > 0 and fill_delta > 0:
+        fill_line = f"{fill_line}（前次 {_format_quantity(previous_filled_qty)}）"
+
+    body_lines = [
+        f"**回调判定**: {event_label}",
+        f"**回调类型**: {callback_type}",
+        f"**状态**: {status_text}",
+        f"**Symbol / Broker**: {symbol} / {broker_badge}",
+        f"**Broker订单ID / UniqueID**: {broker_order_id or '-'} / {unique_id or '-'}",
+        f"**信号ID / 交易组**: {signal_id or '-'} / {trade_group_id or '-'}",
+        f"**角色 / 类型 / 方向**: {_trade_ledger_role_label(order_record)} / {order_type or '-'} / {direction or '-'}",
+        f"**数量 / 已成交**: {_format_quantity(_record_or_extra_value(order_record, 'quantity'))} / {_format_quantity(filled_qty)}",
+        f"**均价 / 最新成交价**: {_format_price(_trade_ledger_fill_price(order_record))} / {_format_price(_record_or_extra_value(order_record, 'last_fill_price', 'lastFillPrice', 'execution_price'))}",
+        fill_line,
+    ]
+    exec_id = to_text(event_model.get("exec_id"))
+    if exec_id:
+        body_lines.append(f"**Exec ID**: {exec_id}")
+    body_lines.append(f"**回调时间**: {callback_time or '-'}")
+
+    elements: list[dict[str, Any]] = [{"tag": "markdown", "content": "\n".join(body_lines)}]
+    buttons = order_view_buttons(console_base_url, order_record)
+    if buttons:
+        elements.extend([{"tag": "hr"}, {"tag": "action", "actions": buttons}])
+
+    return {
+        "config": {"update_multi": True, "wide_screen_mode": True},
+        "header": {
+            "title": {
+                "tag": "plain_text",
+                "content": f"🧾 订单真实回调 · {broker_badge} · {_trade_ledger_role_label(order_record)} · {event_label} · {symbol}",
+            },
+            "template": _trade_ledger_template(event_model, status),
+        },
+        "elements": elements,
+    }
+
+
+def _trade_ledger_notification_patch(
+    order_record: dict[str, Any],
+    *,
+    event_model: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    now_ms = int(time.time() * 1000)
+    success = bool(result.get("success") or result.get("ok"))
+    patch: dict[str, Any] = {
+        **ensure_object(order_record.get("extra")),
+        "feishu_trade_ledger_notify_key": to_text(event_model.get("notify_key")),
+        "feishu_trade_ledger_last_result": "success" if success else "failed",
+        "feishu_trade_ledger_last_at_ms": now_ms,
+        "feishu_trade_ledger_last_reason": to_text(event_model.get("reason")),
+        "feishu_trade_ledger_error": "" if success else to_text(result.get("error") or "unknown_error"),
+    }
+    message_id = to_text(result.get("message_id"))
+    if message_id:
+        patch["feishu_trade_ledger_message_id"] = message_id
+    for source_key, target_key in (
+        ("http_status", "feishu_trade_ledger_http_status"),
+        ("api_code", "feishu_trade_ledger_api_code"),
+        ("api_message", "feishu_trade_ledger_api_message"),
+        ("response_body", "feishu_trade_ledger_response_body"),
+    ):
+        if result.get(source_key) not in (None, ""):
+            patch[target_key] = result.get(source_key)
+    return patch
+
+
+def sync_order_callback_ledger_notification(
+    pb: Any,
+    order_record: dict[str, Any],
+    *,
+    previous_order: dict[str, Any] | None = None,
+    send_interactive: Any = None,
+    trade_ledger_chat_id: str = "",
+    console_base_url: str = "",
+) -> dict[str, Any]:
+    if not isinstance(order_record, dict) or not order_record:
+        return {"success": False, "skipped": True, "reason": "missing_order"}
+
+    event_model = _trade_ledger_event_model(order_record, previous_order)
+    if bool(event_model.get("skipped")):
+        return {"success": False, "skipped": True, **event_model}
+
+    current_extra = ensure_object(order_record.get("extra"))
+    notify_key = to_text(event_model.get("notify_key"))
+    if current_extra.get("feishu_trade_ledger_notify_key") == notify_key and current_extra.get("feishu_trade_ledger_last_result") == "success":
+        return {"success": True, "skipped": True, "reason": "already_notified", "notify_key": notify_key}
+    if not callable(send_interactive) or not trade_ledger_chat_id:
+        return {"success": False, "skipped": True, "reason": "missing_send_target", "notify_key": notify_key}
+
+    card = build_order_callback_ledger_card(order_record, event_model, console_base_url=console_base_url)
+    try:
+        result = dict(send_interactive(card, trade_ledger_chat_id, event_model.get("environment") or "live") or {})
+    except Exception as exc:
+        result = {"success": False, "error": str(exc)}
+
+    extra_patch = _trade_ledger_notification_patch(order_record, event_model=event_model, result=result)
+    _apply_order_notification_patch(pb, order_record, extra_patch)
+    return {
+        **result,
+        "message_id": to_text(result.get("message_id")),
+        "notify_key": notify_key,
+        "event_type": event_model.get("event_type"),
+        "reason": event_model.get("reason"),
+        "extra_patch": extra_patch,
+    }
 
 
 def sync_order_status_notification(
@@ -599,6 +1366,7 @@ def build_order_status_card(order_record: Any, *, status: str = "", message: str
     trade_group_id = to_text(_record_or_extra_value(order_record, "trade_group_id", "entry_order_unique_id"))
     role = to_text(_record_or_extra_value(order_record, "role"))
     order_type = to_text(_record_or_extra_value(order_record, "order_type"))
+    pnl_line = _realized_pnl_line(_single_order_pnl_model(order_record))
 
     body_lines = [
         f"**状态**: {status_text}",
@@ -610,6 +1378,8 @@ def build_order_status_card(order_record: Any, *, status: str = "", message: str
         f"**数量 / 已成交**: {_format_quantity(_record_or_extra_value(order_record, 'quantity'))} / {_format_quantity(_record_or_extra_value(order_record, 'filled_qty'))}",
         f"**价格 / 止盈 / 止损**: {_format_price(_record_or_extra_value(order_record, 'price', 'limit_price', 'avg_price', 'avg_fill_price'))} / {_format_price(_record_or_extra_value(order_record, 'tp_price', 'take_profit'))} / {_format_price(_record_or_extra_value(order_record, 'sl_price', 'stop_loss'))}",
     ]
+    if pnl_line:
+        body_lines.append(pnl_line)
     if message:
         body_lines.append(f"**说明**: {message}")
     body_lines.append(f"**时间**: {to_text(_record_or_extra_value(order_record, 'us_time', 'order_time', 'fill_time')) or '-'}")
@@ -634,8 +1404,10 @@ def build_order_status_card(order_record: Any, *, status: str = "", message: str
 
 
 __all__ = [
+    "build_order_callback_ledger_card",
     "build_order_group_status_card",
     "build_order_status_card",
     "order_view_buttons",
+    "sync_order_callback_ledger_notification",
     "sync_order_status_notification",
 ]

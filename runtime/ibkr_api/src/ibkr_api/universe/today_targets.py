@@ -48,6 +48,7 @@ from ibkr_compute.api.market.screener.scoring import (
     TRADABILITY_OPERABLE_MIN_SCORE,
     build_tradability_assessment,
 )
+from ibkr_compute.universe.target_execution import build_target_execution_metadata
 
 
 NormalizeEnvironment = Callable[[Any, str], str]
@@ -135,6 +136,9 @@ def build_today_targets_response(
                 "protection_incomplete_count": 0,
                 "executed_count": 0,
                 "stale_count": 0,
+                "execution_eligible_count": 0,
+                "observe_only_count": 0,
+                "watch_only_count": 0,
             },
             "filters": filters,
             "filtered_summary": {"total": 0, "ready_count": 0, "signaled_count": 0, "needs_action_count": 0},
@@ -277,6 +281,9 @@ def build_today_targets_response(
     protection_incomplete_count = 0
     executed_count = 0
     stale_count = 0
+    execution_eligible_count = 0
+    observe_only_count = 0
+    watch_only_count = 0
 
     for symbol in ordered_symbols:
         target = target_by_symbol.get(symbol)
@@ -306,6 +313,12 @@ def build_today_targets_response(
         }
         target_status = effective_target_status(target)
         direction_bias = to_text(first_defined(target.get("direction_bias"), "neutral")).lower() or "neutral"
+        execution_meta = build_target_execution_metadata(
+            target_extra,
+            direction_bias=direction_bias,
+            status=target_status,
+        )
+        target_extra = {**target_extra, **execution_meta}
         score = round(to_float(target.get("score")) or 0.0, 2)
         scan_reason = to_text(target.get("scan_reason"))
         intraday_bar_time_ms = to_int((intraday or {}).get("bar_time_ms"), 0)
@@ -340,6 +353,12 @@ def build_today_targets_response(
             "change_7d": compare_history["change_7d"],
             "extra": target_extra,
             "updated": to_text(target.get("updated")),
+            "execution_eligible": bool(execution_meta.get("execution_eligible")),
+            "is_execution_eligible": bool(execution_meta.get("execution_eligible")),
+            "execution_blockers": list(execution_meta.get("execution_blockers") or []),
+            "target_layer": to_text(execution_meta.get("target_layer")),
+            "execution_allowed_sides": list(execution_meta.get("execution_allowed_sides") or []),
+            "context_allowed_sides": list(execution_meta.get("context_allowed_sides") or []),
         }
         tradability_score, assessment_notes = build_tradability_assessment(row)
         row["tradability_score"] = tradability_score
@@ -395,6 +414,12 @@ def build_today_targets_response(
             protection_incomplete_count += 1
         if row["latest_signal_status"] == "executed":
             executed_count += 1
+        if row["execution_eligible"]:
+            execution_eligible_count += 1
+        else:
+            observe_only_count += 1
+        if "watch_only" in row["execution_blockers"]:
+            watch_only_count += 1
         items.append(row)
 
     filtered_items = [row for row in sort_rows(items, to_text(filters.get("sort_by"))) if matches_filters(row, filters)]
@@ -432,6 +457,9 @@ def build_today_targets_response(
             "protection_incomplete_count": protection_incomplete_count,
             "executed_count": executed_count,
             "stale_count": stale_count,
+            "execution_eligible_count": execution_eligible_count,
+            "observe_only_count": observe_only_count,
+            "watch_only_count": watch_only_count,
         },
         "filters": filters,
         "filtered_summary": filtered_summary,

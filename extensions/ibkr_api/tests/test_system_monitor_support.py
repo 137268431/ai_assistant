@@ -814,6 +814,130 @@ class SystemMonitorSupportTest(unittest.TestCase):
         errors = {item["stage"]: item for item in payload["monitor_builder_errors"]}
         self.assertEqual(errors["compute_monitor"]["severity"], "warning")
 
+    def test_monitor_payload_flags_slow_account_snapshot(self):
+        payload = build_system_monitor_payload(
+            "paper",
+            normalize_environment=lambda value, default="paper": str(value or default).strip().lower() or default,
+            fetch_compute_monitor=lambda environment: {
+                "ok": True,
+                "status_code": 200,
+                "payload": {
+                    "ok": True,
+                    "status": "ok",
+                    "environment": environment,
+                    "flags": [],
+                    "runtime": {
+                        "status": "running",
+                        "runtime_phase": "running",
+                        "gateway": {"running": True, "reachable": True},
+                        "session": {"authenticated": True},
+                        "websocket": {"connected": True, "ready": True},
+                    },
+                    "compute": {"status": "running", "total_engines": 1, "ready_engines": 1},
+                    "service_topology": {"services": {}},
+                },
+            },
+            as_dict=lambda value: dict(value) if isinstance(value, dict) else {},
+            config_refresh=lambda: None,
+            scheduler_status=lambda environment: {"ok": True, "status": "running", "environment": environment, "jobs": {}},
+            build_cron_payload=lambda config, environment, jobs: [],
+            config=object(),
+            build_scheduler_summary=lambda environment, scheduler_payload: {
+                "status": "running",
+                "loop_interval_seconds": 30,
+                "job_count": 0,
+            },
+            augment_scheduler_summary=lambda summary, items: summary,
+            request_json=lambda *args, **kwargs: {"ok": True, "status_code": 200, "payload": {}},
+            pb_base_url="http://127.0.0.1:8090",
+            console_base_url="https://quant.lzw-glory.top",
+            probe_console_status=lambda *_args, **_kwargs: {
+                "ok": True,
+                "status_code": 200,
+                "target_url": "https://quant.lzw-glory.top/index.html",
+                "error": "",
+            },
+            load_effective_config_map=lambda *args, **kwargs: {},
+            monitor_config_keys=("ibkr_target_refresh_sec",),
+            load_recent_system_events=lambda *args, **kwargs: [],
+            enrich_monitor_payload_with_pocketbase_disk=lambda payload: payload,
+            derive_monitor_service_map=derive_monitor_service_map,
+            merge_service_topology=lambda *payloads: {"services": {}},
+            build_service_topology=lambda: {"services": {}},
+            account_snapshot_probe=lambda environment: {
+                "ok": True,
+                "status_code": 200,
+                "elapsed_ms": 13000.0,
+                "payload": {
+                    "ok": True,
+                    "service_running": True,
+                    "gateway_running": True,
+                    "session_authenticated": True,
+                    "errors": {},
+                },
+            },
+            service_profile="api",
+        )
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["status"], "warning")
+        flag_codes = {item["code"] for item in payload["flags"]}
+        self.assertIn("account_snapshot_timeout", flag_codes)
+
+    def test_monitor_payload_flags_account_runtime_unavailable(self):
+        payload = build_system_monitor_payload(
+            "paper",
+            normalize_environment=lambda value, default="paper": str(value or default).strip().lower() or default,
+            fetch_compute_monitor=lambda environment: {
+                "ok": True,
+                "status_code": 200,
+                "payload": {
+                    "ok": True,
+                    "status": "ok",
+                    "environment": environment,
+                    "flags": [],
+                    "runtime": {},
+                    "compute": {"status": "running", "total_engines": 1, "ready_engines": 1},
+                    "service_topology": {"services": {}},
+                },
+            },
+            as_dict=lambda value: dict(value) if isinstance(value, dict) else {},
+            config_refresh=lambda: None,
+            scheduler_status=lambda environment: {"ok": True, "status": "running", "environment": environment, "jobs": {}},
+            build_cron_payload=lambda config, environment, jobs: [],
+            config=object(),
+            build_scheduler_summary=lambda environment, scheduler_payload: {"status": "running", "loop_interval_seconds": 30, "job_count": 0},
+            augment_scheduler_summary=lambda summary, items: summary,
+            request_json=lambda *args, **kwargs: {"ok": True, "status_code": 200, "payload": {}},
+            pb_base_url="http://127.0.0.1:8090",
+            console_base_url="https://quant.lzw-glory.top",
+            probe_console_status=lambda *_args, **_kwargs: {"ok": True, "status_code": 200, "target_url": "https://quant.lzw-glory.top/index.html", "error": ""},
+            load_effective_config_map=lambda *args, **kwargs: {},
+            monitor_config_keys=("ibkr_target_refresh_sec",),
+            load_recent_system_events=lambda *args, **kwargs: [],
+            enrich_monitor_payload_with_pocketbase_disk=lambda payload: payload,
+            derive_monitor_service_map=derive_monitor_service_map,
+            merge_service_topology=lambda *payloads: {"services": {}},
+            build_service_topology=lambda: {"services": {}},
+            account_snapshot_probe=lambda environment: {
+                "ok": True,
+                "status_code": 200,
+                "payload": {
+                    "ok": True,
+                    "service_running": False,
+                    "gateway_running": False,
+                    "session_authenticated": False,
+                    "errors": {},
+                },
+            },
+            service_profile="api",
+        )
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["status"], "error")
+        flag_codes = {item["code"] for item in payload["flags"]}
+        self.assertIn("account_runtime_unavailable", flag_codes)
+
     def test_monitor_payload_accepts_zero_arg_console_probe_wrapper(self):
         payload = build_system_monitor_payload(
             "live",

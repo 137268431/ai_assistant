@@ -667,9 +667,13 @@ class UniverseRoutesTest(unittest.TestCase):
         self.assertEqual(200, status_code)
         self.assertTrue(payload["ok"])
         self.assertEqual(1, payload["summary"]["active_count"])
+        self.assertEqual(1, payload["summary"]["execution_eligible_count"])
+        self.assertEqual(0, payload["summary"]["observe_only_count"])
         self.assertEqual(1, payload["summary"]["awaiting_confirm_count"])
         self.assertEqual(1, payload["filtered_total"])
         self.assertEqual("AAPL", payload["items"][0]["symbol"])
+        self.assertTrue(payload["items"][0]["execution_eligible"])
+        self.assertEqual("execution", payload["items"][0]["target_layer"])
         self.assertEqual("awaiting_confirm", payload["items"][0]["workflow_stage"])
         self.assertEqual("信号待确认", payload["items"][0]["workflow_label"])
         self.assertTrue(payload["items"][0]["has_signal_today"])
@@ -683,6 +687,79 @@ class UniverseRoutesTest(unittest.TestCase):
         self.assertTrue(ready_explanation["ready"])
         self.assertIn("方向一致技术条件 5/2", ready_explanation["passed"])
         self.assertEqual([], ready_explanation["missing"])
+
+    def test_today_targets_marks_watch_only_active_as_observe_layer(self):
+        pb = _MinimalPB()
+
+        def et_ms(text: str) -> int:
+            return int(datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=ET).timestamp() * 1000)
+
+        pb._records["ibkr_targets"] = [
+            {
+                "id": "target-1",
+                "symbol": "TOST",
+                "environment": "live",
+                "date": "2026-04-23",
+                "status": "active",
+                "direction_bias": "long",
+                "score": 24,
+                "scan_reason": "policy=watch_only",
+                "exchange": "NASDAQ",
+                "updated": "2026-04-23 09:36:00",
+                "extra": {
+                    "source": "daily_scan",
+                    "active_gate_passed": True,
+                    "strategy_policy": {
+                        "setup_type": "watch_only",
+                        "allowed_sides": ["long"],
+                    },
+                },
+            }
+        ]
+        pb._all_records["ibkr_bars"] = [
+            {"symbol": "TOST", "environment": "live", "interval": "1d", "bar_time_ms": et_ms("2026-04-22 00:00:00"), "close": 20, "volume": 900000, "us_time": "2026-04-22 16:00:00"},
+            {"symbol": "TOST", "environment": "live", "interval": "5m", "bar_time_ms": et_ms("2026-04-23 09:35:00"), "close": 21, "volume": 50000, "us_time": "2026-04-23 09:35:00", "exchange": "NASDAQ", "session_type": "regular"},
+        ]
+        pb._all_records["ibkr_indicators"] = [
+            {"symbol": "TOST", "environment": "live", "interval": "5", "bar_time_ms": et_ms("2026-04-23 09:35:00"), "atr_pct": 1.0}
+        ]
+
+        with mock.patch("ibkr_api.universe.today_targets.time.time", return_value=et_ms("2026-04-23 09:40:00") / 1000):
+            payload, status_code = build_today_targets_response(
+                pb,
+                payload={"environment": "live", "market_date": "2026-04-23"},
+                normalize_environment=lambda value, default="live": str(value or default).strip().lower() or default,
+                time_strings=lambda: {"us": "2026-04-23 09:40:00", "cn": "2026-04-23 21:40:00", "date": "2026-04-23"},
+            )
+
+        self.assertEqual(200, status_code)
+        self.assertEqual(1, payload["summary"]["active_count"])
+        self.assertEqual(0, payload["summary"]["execution_eligible_count"])
+        self.assertEqual(1, payload["summary"]["observe_only_count"])
+        self.assertEqual(1, payload["summary"]["watch_only_count"])
+        row = payload["items"][0]
+        self.assertFalse(row["execution_eligible"])
+        self.assertEqual("observe", row["target_layer"])
+        self.assertIn("watch_only", row["execution_blockers"])
+
+        with mock.patch("ibkr_api.universe.today_targets.time.time", return_value=et_ms("2026-04-23 09:40:00") / 1000):
+            observe_payload, observe_status = build_today_targets_response(
+                pb,
+                payload={"environment": "live", "market_date": "2026-04-23", "execution_layer": "observe"},
+                normalize_environment=lambda value, default="live": str(value or default).strip().lower() or default,
+                time_strings=lambda: {"us": "2026-04-23 09:40:00", "cn": "2026-04-23 21:40:00", "date": "2026-04-23"},
+            )
+            execution_payload, execution_status = build_today_targets_response(
+                pb,
+                payload={"environment": "live", "market_date": "2026-04-23", "execution_layer": "execution"},
+                normalize_environment=lambda value, default="live": str(value or default).strip().lower() or default,
+                time_strings=lambda: {"us": "2026-04-23 09:40:00", "cn": "2026-04-23 21:40:00", "date": "2026-04-23"},
+            )
+
+        self.assertEqual(200, observe_status)
+        self.assertEqual(1, observe_payload["filtered_total"])
+        self.assertEqual(200, execution_status)
+        self.assertEqual(0, execution_payload["filtered_total"])
 
     def test_today_targets_uses_broker_mode_effective_signal_status(self):
         pb = _MinimalPB()

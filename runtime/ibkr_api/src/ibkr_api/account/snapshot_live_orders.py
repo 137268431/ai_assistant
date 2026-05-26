@@ -22,6 +22,16 @@ ORDER_LEG_SORT_WEIGHT = {
     "take_profit": 1,
     "stop_loss": 2,
 }
+OPEN_ORDER_STATUS_FILTER_VALUES = (
+    "ApiPending",
+    "API_PENDING",
+    "Init",
+    "InProgress",
+    "Pending",
+    "PendingSubmit",
+    "PreSubmitted",
+    "Submitted",
+)
 
 
 def _normalize_leg_role(order: dict[str, Any] | None) -> str:
@@ -55,15 +65,67 @@ def _sorted_order_legs(orders: list[dict[str, Any]] | None) -> list[dict[str, An
     return sorted(result, key=_order_leg_sort_key)
 
 
-def _fetch_execution_commissions(pb: Any, environment: str) -> dict[str, dict[str, Any]]:
+def _quote_filter_value(value: Any) -> str:
+    return escape_filter_string(to_text(value))
+
+
+def _or_filter(field: str, values: list[str]) -> str:
+    normalized = []
+    seen: set[str] = set()
+    for value in values:
+        text = to_text(value)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    if not normalized:
+        return ""
+    return "(" + " || ".join(f'{field} = "{_quote_filter_value(value)}"' for value in normalized) + ")"
+
+
+def _open_order_filter(environment: str) -> str:
+    status_filter = _or_filter("status", list(OPEN_ORDER_STATUS_FILTER_VALUES))
+    return (
+        f'environment = "{_quote_filter_value(environment)}" && '
+        f'(relation_status = "active" || relation_status = "planned"'
+        f'{f" || {status_filter}" if status_filter else ""})'
+    )
+
+
+def _collect_order_ids(orders: list[dict[str, Any]]) -> list[str]:
+    ids: list[str] = []
+    seen: set[str] = set()
+    for order in orders or []:
+        for value in (order.get("order_id"), order.get("broker_order_id")):
+            text = to_text(value)
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            ids.append(text)
+    return ids
+
+
+def _fetch_execution_commissions(pb: Any, environment: str, order_ids: list[str] | None = None) -> dict[str, dict[str, Any]]:
+    ids = [to_text(value) for value in (order_ids or []) if to_text(value)]
+    if not ids:
+        return {}
+    rows: list[dict[str, Any]] = []
     try:
-        rows = pb.get_records(
-            "ibkr_execution_fills",
-            filter=f'environment = "{escape_filter_string(environment)}"',
-            sort="-trade_time_ms,-updated",
-            per_page=500,
-            page=1,
-        ) or []
+        for offset in range(0, len(ids), 24):
+            chunk = ids[offset:offset + 24]
+            order_filter = _or_filter("order_id", chunk)
+            if not order_filter:
+                continue
+            rows.extend(
+                pb.get_records(
+                    "ibkr_execution_fills",
+                    filter=f'environment = "{_quote_filter_value(environment)}" && {order_filter}',
+                    sort="-trade_time_ms,-updated",
+                    per_page=200,
+                    page=1,
+                )
+                or []
+            )
     except Exception:
         return {}
 
@@ -490,10 +552,10 @@ def _sort_groups(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def build_managed_order_context(pb: Any, environment: str, live_orders: list[dict[str, Any]]) -> dict[str, Any]:
-    order_rows = pb.get_records("orders", filter=f'environment = "{environment}"', sort="-updated", per_page=OPEN_ORDER_FILTER_PER_PAGE, page=1) or []
+    order_rows = pb.get_records("orders", filter=_open_order_filter(environment), sort="-updated", per_page=OPEN_ORDER_FILTER_PER_PAGE, page=1) or []
     normalized_order_records = [normalize_order_record(dict(row)) for row in order_rows if isinstance(row, dict)]
     normalized_order_records = [row for row in normalized_order_records if row.get("symbol")]
-    execution_commissions = _fetch_execution_commissions(pb, environment)
+    execution_commissions = _fetch_execution_commissions(pb, environment, _collect_order_ids(normalized_order_records))
     normalized_order_records = _enrich_orders_with_execution_commissions(normalized_order_records, execution_commissions)
     pb_lookup = _build_pb_order_lookup(normalized_order_records)
     active_pb_groups_by_key: dict[str, dict[str, Any]] = {}

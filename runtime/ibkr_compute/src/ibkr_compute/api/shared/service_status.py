@@ -87,11 +87,26 @@ def _build_minimal_runtime_status(service, error: Exception | None = None) -> di
     watchlist_trade_symbols = _safe_list_attr(service, "_watchlist_trade_symbols")
     active_trade_symbols = _safe_list_attr(service, "_active_trade_symbols")
     active_trade_symbol_set = set(active_trade_symbols)
+    execution_eligible_symbols = list(active_trade_symbols)
+    direction_method = getattr(service, "_active_target_direction_biases", None)
+    if callable(direction_method):
+        try:
+            execution_eligible_symbols = [
+                str(symbol or "").strip().upper()
+                for symbol in (direction_method() or {}).keys()
+                if str(symbol or "").strip()
+            ]
+        except Exception as exc:
+            logger.warning("IBKR service execution target status failed: %s", exc, exc_info=True)
+            errors.append({"section": "_active_target_direction_biases", "error": str(exc)})
+    execution_eligible_symbol_set = set(execution_eligible_symbols)
+    observe_target_symbols = sorted(active_trade_symbol_set - execution_eligible_symbol_set)
     inactive_trade_symbols = [
         symbol for symbol in watchlist_trade_symbols
         if symbol not in active_trade_symbol_set
     ]
     no_active_targets = bool(watchlist_trade_symbols) and not bool(active_trade_symbol_set)
+    no_execution_eligible_targets = bool(active_trade_symbol_set) and not bool(execution_eligible_symbol_set)
     if active_trade_symbol_set:
         trade_universe_status = "ready"
     elif watchlist_trade_symbols:
@@ -134,6 +149,11 @@ def _build_minimal_runtime_status(service, error: Exception | None = None) -> di
             "inactive_trade_symbols_total": len(inactive_trade_symbols),
             "inactive_trade_symbols_sample": inactive_trade_symbols[:25],
             "active_target_count": len(active_trade_symbols),
+            "execution_eligible_target_count": len(execution_eligible_symbols),
+            "execution_eligible_symbols": execution_eligible_symbols,
+            "observe_target_count": len(observe_target_symbols),
+            "observe_target_symbols": observe_target_symbols[:25],
+            "no_execution_eligible_targets": no_execution_eligible_targets,
             "active_subscription_count": len(active_subscription_symbols),
             "active_target_symbols": active_trade_symbols,
             "active_subscription_symbols": active_subscription_symbols,

@@ -107,6 +107,41 @@ class LifecycleFlowStaticSmokeTest(unittest.TestCase):
                 for token in tokens:
                     self.assertIn(token, text)
 
+    def test_screener_and_monitor_surface_execution_layer_controls(self):
+        screener_html = read_repo_text("runtime/ibkr_console/static/ibkr_screener.html")
+        screener_utils = read_repo_text("runtime/ibkr_console/static/assets/js/pages/ibkr_screener/utils-api.js")
+        current_targets_js = read_repo_text("runtime/ibkr_console/static/assets/js/pages/ibkr_screener/current-targets.js")
+        monitor_html = read_repo_text("runtime/ibkr_console/static/ibkr_monitor.html")
+
+        for token in (
+            "currentExecutionLayerFilter",
+            "20260527-execution-layer",
+        ):
+            self.assertIn(token, screener_html)
+        for token in (
+            "getExecutionLayerState",
+            "renderExecutionLayerPills",
+            "renderExecutionLayerBlock",
+            "execution_blockers",
+            "watch only",
+        ):
+            self.assertIn(token, screener_utils)
+        for token in (
+            "execution_layer",
+            "execution_eligible_count",
+            "observe_only_count",
+            "watch_only_count",
+        ):
+            self.assertIn(token, current_targets_js)
+        for token in (
+            "no_execution_eligible_targets",
+            "requestAdmissionPreviewFromMonitor",
+            "/api/custom/system/jobs/intraday_window_admission",
+            "monitor_page_preview",
+            "Dry-run 入池预览",
+        ):
+            self.assertIn(token, monitor_html)
+
     def test_backend_route_is_registered(self):
         universe_routes = read_repo_text("runtime/ibkr_api/src/ibkr_api/universe/routes.py")
         compat_routes = read_repo_text("runtime/ibkr_api/src/ibkr_api/compat/routes.py")

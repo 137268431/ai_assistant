@@ -7,6 +7,7 @@ from ibkr_compute.api.compute.runtime_state.runtime import _api_app
 from ibkr_compute.api.market.screener import load_effective_watchlist
 from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_compute.core.indicator_engine import DEFAULT_PARAMS, params_for_interval
+from ibkr_compute.universe.target_execution import target_row_execution_eligible
 
 
 MANUAL_TARGET_SOURCES = {
@@ -205,13 +206,20 @@ def _load_qualified_trade_target_rows(environment: str, market_date: str | None 
     return qualified_rows
 
 
+def _load_execution_eligible_trade_target_rows(environment: str, market_date: str | None = None) -> list[dict]:
+    return [
+        row
+        for row in _load_qualified_trade_target_rows(environment, market_date)
+        if target_row_execution_eligible(row)
+    ]
+
+
 def _get_signal_enabled_symbols(environment: str) -> set[str]:
-    symbols = set(_get_trade_watchlist_symbols(environment))
-    symbols.update({
+    symbols = {
         str(row.get("symbol", "")).strip().upper()
-        for row in _load_qualified_trade_target_rows(environment)
+        for row in _load_execution_eligible_trade_target_rows(environment)
         if str(row.get("symbol", "")).strip()
-    })
+    }
     symbols.difference_update(get_market_monitor_symbols(environment))
     symbols.difference_update(FIXED_TRADE_BLOCKED_SYMBOLS)
     return symbols
@@ -228,6 +236,8 @@ def get_active_trade_symbols(environment: str, market_date: str | None = None) -
 def get_active_target_direction_biases(environment: str, market_date: str | None = None) -> dict[str, str]:
     biases: dict[str, str] = {}
     for row in _load_selected_active_trade_target_rows(environment, market_date):
+        if not target_row_execution_eligible(row):
+            continue
         symbol = str(row.get("symbol", "")).strip().upper()
         if not symbol:
             continue
@@ -240,7 +250,7 @@ def get_signal_generator_params(environment: str) -> dict:
     api_app = _api_app()
     runtime_environment = _normalize_environment(environment)
     market_monitor_symbols = sorted(get_market_monitor_symbols(environment))
-    active_target_rows = _load_qualified_trade_target_rows(runtime_environment)
+    active_target_rows = _load_execution_eligible_trade_target_rows(runtime_environment)
     signal_enabled_symbols = sorted(_get_signal_enabled_symbols(runtime_environment))
     target_direction_bias_by_symbol: dict[str, str] = {}
     target_strategy_policy_by_symbol: dict[str, dict] = {}

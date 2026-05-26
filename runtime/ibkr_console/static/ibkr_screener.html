@@ -8,7 +8,7 @@
   <script src="/common.js"></script>
   <script>document.write(getCommonStyles())</script>
   <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-  <link rel="stylesheet" href="/assets/css/pages/ibkr_screener/page.css?v=20260519-window-progress-signals">
+  <link rel="stylesheet" href="/assets/css/pages/ibkr_screener/page.css?v=20260527-execution-layer">
 </head>
 <body>
   <div id="nav"></div>
@@ -93,6 +93,14 @@
                     <option value="">全部</option>
                     <option value="active">active</option>
                     <option value="candidate">candidate</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="currentExecutionLayerFilter">Execution Layer</label>
+                  <select id="currentExecutionLayerFilter">
+                    <option value="">全部</option>
+                    <option value="execution">执行层</option>
+                    <option value="observe">观察层</option>
                   </select>
                 </div>
                 <div class="field">
@@ -653,12 +661,12 @@
   </div>
 
   <script src="/assets/js/pages/ibkr_screener/state.js?v=20260519-window-progress-signals"></script>
-  <script src="/assets/js/pages/ibkr_screener/utils-api.js?v=20260506-window-status-tabs"></script>
+  <script src="/assets/js/pages/ibkr_screener/utils-api.js?v=20260527-execution-layer"></script>
   <script src="/assets/js/pages/ibkr_screener/navigation.js?v=20260506-window-status-tabs"></script>
   <script src="/assets/js/pages/ibkr_screener/ready-rules.js?v=20260506-window-status-tabs"></script>
   <script src="/assets/js/pages/ibkr_screener/summary.js?v=20260519-window-progress-signals"></script>
-  <script src="/assets/js/pages/ibkr_screener/current-targets.js?v=20260519-window-progress-signals"></script>
-  <script src="/assets/js/pages/ibkr_screener/universe.js?v=20260506-window-status-tabs"></script>
+  <script src="/assets/js/pages/ibkr_screener/current-targets.js?v=20260527-execution-layer"></script>
+  <script src="/assets/js/pages/ibkr_screener/universe.js?v=20260527-execution-layer"></script>
   <script src="/assets/js/pages/ibkr_screener/targets-watchlist.js?v=20260509-watchlist-eligibility"></script>
   <script src="/assets/js/pages/ibkr_screener/page.js?v=20260506-window-status-tabs"></script>
 </body>

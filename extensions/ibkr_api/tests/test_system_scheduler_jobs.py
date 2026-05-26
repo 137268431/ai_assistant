@@ -24,6 +24,7 @@ from ibkr_api.system.jobs.early_expansion_topup import (
     notify_new_targets_from_scan,
 )
 from ibkr_api.system.jobs.intraday_window_admission import build_intraday_window_admission_response
+from ibkr_api.system.jobs.monitor_alert import build_system_monitor_alert_guard_response
 from ibkr_api.system.jobs.order_expiry import build_order_expiry_response
 from ibkr_api.system.jobs.reminders import (
     build_system_daily_report_response,
@@ -1691,6 +1692,77 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertTrue(payload["skipped"])
         self.assertEqual(payload["reason"], "subscription_budget_full")
         self.assertEqual(payload["admitted"], 0)
+
+    def test_system_monitor_alert_includes_admission_preview_for_target_gap(self):
+        states = {}
+        events = []
+        preview_requests = []
+
+        def get_state_payload(state_key, environment):
+            return {"data": states.get((state_key, environment), {})}
+
+        def upsert_state(state_key, environment, data, date):
+            states[(state_key, environment)] = dict(data)
+            return data
+
+        def build_admission_preview(payload):
+            preview_requests.append(dict(payload))
+            return {
+                "ok": True,
+                "scanned": 12,
+                "eligible": 2,
+                "would_admit": 2,
+                "admitted_items": [
+                    {
+                        "symbol": "APP",
+                        "direction_bias": "short",
+                        "score": 88.5,
+                        "window_status": "upper_active",
+                        "bars_remaining": 3,
+                    },
+                    {
+                        "symbol": "TOST",
+                        "direction_bias": "long",
+                        "score": 77,
+                        "window_status": "lower_active",
+                    },
+                ],
+            }
+
+        payload, status_code = build_system_monitor_alert_guard_response(
+            payload={"environment": "live"},
+            normalize_environment=lambda value, default="live": str(value or default),
+            time_strings=lambda: {"us": "2026-04-23 12:05:00", "cn": "2026-04-24 00:05:00", "date": "2026-04-23"},
+            build_system_monitor_payload=lambda environment: {
+                "status": "warning",
+                "flags": [
+                    {
+                        "code": "no_execution_eligible_targets",
+                        "severity": "warning",
+                        "title": "No executable trade targets",
+                        "detail": "active targets are observe only",
+                    }
+                ],
+                "runtime": {"session": {"authenticated": True}, "websocket": {"connected": True}},
+                "scheduler": {"latest_ingested_bar_time_ms": 1, "dispatch_lag_min": 0.0},
+                "service_monitor": {"status_counts": {"running": 8}, "services": {}},
+                "pocketbase": {"disk": {"filesystem": {"used_pct": 10}}},
+            },
+            emit_system_event=lambda **kwargs: events.append(kwargs) or {"ok": True, "notified": True},
+            get_state_payload=get_state_payload,
+            upsert_state=upsert_state,
+            build_admission_preview=build_admission_preview,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["triggered"])
+        self.assertEqual(1, len(preview_requests))
+        self.assertTrue(preview_requests[0]["dry_run"])
+        self.assertTrue(preview_requests[0]["force"])
+        self.assertEqual("monitor_alert_preview", preview_requests[0]["trigger_source"])
+        self.assertEqual(2, payload["admission_preview"]["would_admit"])
+        self.assertIn("would_admit 2", events[0]["detail"]["入池预览"])
+        self.assertIn("APP(short", events[0]["detail"]["可能加入"])
 
     def test_daily_report_skips_outside_target_window(self):
         pb = _ReminderPB()

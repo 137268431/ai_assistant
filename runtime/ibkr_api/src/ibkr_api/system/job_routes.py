@@ -251,6 +251,17 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
             emit_system_event=emit_system_event,
             get_state_payload=lambda state_key, environment: get_state_payload(state_key, environment, date=time_strings()["date"]),
             upsert_state=lambda key, environment, data, date: pb.upsert_state(key, environment, data, date=date),
+            build_admission_preview=lambda payload: build_intraday_window_admission_response(
+                pb,
+                payload=payload,
+                normalize_environment=normalize_environment,
+                escape_filter_string=escape_filter_string,
+                time_strings=time_strings,
+                request_json_request=request_json_request,
+                compute_base_url=compute_base_url,
+                config_value=config_value,
+                write_system_event_record=write_system_event_record,
+            ),
         )
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)

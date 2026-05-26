@@ -1,5 +1,5 @@
 from control_plane_split_stack_helpers import *
-from ibkr_api.orders.notifications import sync_order_status_notification
+from ibkr_api.orders.notifications import sync_order_callback_ledger_notification, sync_order_status_notification
 
 
 class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
@@ -644,6 +644,7 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
         fake_pb.create_record = mock.Mock(side_effect=lambda collection, data: {**data, "id": f"{collection}-1"})
         fake_pb.update_record = mock.Mock()
         notify_calls = []
+        ledger_calls = []
 
         payload, status_code = build_order_upsert_response(
             fake_pb,
@@ -652,6 +653,8 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
             escape_filter_string=api_app_mod._escape_filter_string,
             notify_order_status=lambda status, order_row, options: notify_calls.append((status, order_row, options))
             or {"success": True, "message_id": "order-msg-1"},
+            notify_order_callback_ledger=lambda status, order_row, options: ledger_calls.append((status, order_row, options))
+            or {"success": True, "message_id": "ledger-msg-unexpected"},
         )
 
         self.assertEqual(status_code, 200)
@@ -663,7 +666,141 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
         self.assertEqual(notify_calls[0][0], "Submitted")
         self.assertEqual(notify_calls[0][1]["id"], "orders-1")
         self.assertEqual(notify_calls[0][2]["message"], "订单已提交")
+        self.assertEqual(ledger_calls, [])
+        self.assertEqual(payload["trade_ledger_notification"], {})
         fake_pb.update_record.assert_not_called()
+
+    def test_build_order_upsert_response_routes_realtime_callback_to_trade_ledger(self):
+        existing_row = {
+            "id": "order-entry",
+            "unique_id": "sig-1_entry",
+            "order_type": "Entry",
+            "order_id": "",
+            "broker_order_id": "",
+            "symbol": "AAPL",
+            "environment": "live",
+            "direction": "long",
+            "quantity": 10,
+            "limit_price": 180.1,
+            "status": "Submitted",
+            "filled_qty": 0,
+            "fill_price": 0,
+            "signal_id": "sig-1",
+            "trade_group_id": "sig-1_entry",
+            "entry_order_unique_id": "sig-1_entry",
+            "parent_order_unique_id": "",
+            "sibling_order_unique_id": "",
+            "role": "entry",
+            "relation_status": "active",
+            "position_side": "long",
+            "extra": {"environment": "live", "current_status": "Submitted"},
+        }
+        request_payload = {
+            "environment": "live",
+            "unique_id": "sig-1_entry",
+            "order_type": "Entry",
+            "order_id": "101",
+            "broker_order_id": "101",
+            "symbol": "AAPL",
+            "direction": "long",
+            "quantity": 10,
+            "limit_price": 180.1,
+            "status": "Submitted",
+            "trade_group_id": "sig-1_entry",
+            "entry_order_unique_id": "sig-1_entry",
+            "role": "entry",
+            "signal_id": "sig-1",
+            "us_time": "2026-04-22 09:35:01",
+            "cn_time": "2026-04-22 21:35:01",
+            "bar_time_ms": 1713797701000,
+            "extra": {
+                "broker_realtime_callback": True,
+                "ib_callback_type": "openOrder",
+                "broker_callback_received_at": "2026-04-22 09:35:01",
+                "broker_callback_received_at_ms": 1713797701000,
+            },
+        }
+        fake_pb = _FakePB()
+        fake_pb.get_first_record = mock.Mock(return_value=existing_row)
+        fake_pb.get_records = mock.Mock(return_value=[])
+        fake_pb.update_record = mock.Mock(side_effect=lambda collection, record_id, data: {**data, "id": record_id})
+        fake_pb.create_record = mock.Mock(side_effect=lambda collection, data: {**data, "id": f"{collection}-detail"})
+        ledger_calls = []
+
+        payload, status_code = build_order_upsert_response(
+            fake_pb,
+            payload=request_payload,
+            normalize_environment=api_app_mod._normalize_environment,
+            escape_filter_string=api_app_mod._escape_filter_string,
+            notify_order_callback_ledger=lambda status, order_row, options: ledger_calls.append((status, order_row, options))
+            or {"success": True, "message_id": "ledger-msg-1"},
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertFalse(payload["idempotent"])
+        self.assertEqual(payload["trade_ledger_notification"]["message_id"], "ledger-msg-1")
+        self.assertEqual(len(ledger_calls), 1)
+        self.assertEqual(ledger_calls[0][0], "Submitted")
+        self.assertEqual(ledger_calls[0][1]["broker_order_id"], "101")
+        self.assertEqual(ledger_calls[0][2]["previous_order"]["id"], "order-entry")
+
+    def test_sync_order_callback_ledger_notification_sends_fill_delta(self):
+        class _LedgerPB:
+            def __init__(self):
+                self.order = {
+                    "id": "order-entry",
+                    "unique_id": "sig-1_entry",
+                    "order_type": "Entry",
+                    "symbol": "AAPL",
+                    "environment": "live",
+                    "status": "Submitted",
+                    "role": "entry",
+                    "broker_order_id": "101",
+                    "order_id": "101",
+                    "trade_group_id": "sig-1_entry",
+                    "entry_order_unique_id": "sig-1_entry",
+                    "signal_id": "sig-1",
+                    "direction": "long",
+                    "quantity": 10,
+                    "filled_qty": 5,
+                    "fill_price": 180.2,
+                    "extra": {
+                        "environment": "live",
+                        "broker_realtime_callback": True,
+                        "ib_callback_type": "orderStatus",
+                        "broker_callback_received_at": "2026-04-22 09:36:00",
+                    },
+                }
+                self.updated = []
+
+            def update_record(self, collection, record_id, patch):
+                self.updated.append((collection, record_id, patch))
+                self.order = {**self.order, **patch}
+                return dict(self.order)
+
+        pb = _LedgerPB()
+        previous = {**pb.order, "filled_qty": 0, "extra": {"environment": "live"}}
+        send_calls = []
+
+        result = sync_order_callback_ledger_notification(
+            pb,
+            pb.order,
+            previous_order=previous,
+            send_interactive=lambda card, chat_id, environment: send_calls.append((card, chat_id, environment))
+            or {"success": True, "message_id": "ledger-msg-1"},
+            trade_ledger_chat_id="ledger-chat-test",
+            console_base_url="https://console.example.com",
+        )
+
+        self.assertEqual(result["message_id"], "ledger-msg-1")
+        self.assertEqual(result["event_type"], "fill")
+        self.assertEqual(len(send_calls), 1)
+        self.assertEqual(send_calls[0][1], "ledger-chat-test")
+        card_text = send_calls[0][0]["elements"][0]["content"]
+        self.assertIn("真实回调", send_calls[0][0]["header"]["title"]["content"])
+        self.assertIn("成交增量", card_text)
+        self.assertIn("101", card_text)
+        self.assertEqual(pb.updated[0][2]["extra"]["feishu_trade_ledger_message_id"], "ledger-msg-1")
 
     def test_sync_order_status_notification_sends_then_updates_group_card(self):
         class _OrderNotifyPB:

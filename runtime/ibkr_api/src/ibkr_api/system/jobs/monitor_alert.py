@@ -22,6 +22,7 @@ BuildSystemMonitorPayload = Callable[[str], dict[str, Any]]
 EmitSystemEvent = Callable[..., dict[str, Any]]
 GetStatePayload = Callable[[str, str], dict[str, Any]]
 UpsertState = Callable[[str, str, dict[str, Any], str], dict[str, Any]]
+BuildAdmissionPreview = Callable[[dict[str, Any]], Any]
 
 
 def _to_text(value: Any) -> str:
@@ -116,7 +117,60 @@ def _fingerprint(monitor_payload: dict[str, Any], flags: list[dict[str, Any]]) -
     )
 
 
-def _detail(monitor_payload: dict[str, Any], flags: list[dict[str, Any]], *, timestamp_us: str) -> dict[str, Any]:
+def _admission_preview_payload(result: Any) -> dict[str, Any]:
+    if isinstance(result, tuple) and result:
+        payload = result[0]
+    else:
+        payload = result
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _admission_preview_detail(admission_preview: dict[str, Any]) -> dict[str, str]:
+    if not admission_preview:
+        return {}
+    if admission_preview.get("error") and not admission_preview.get("ok", False):
+        return {"入池预览": f"unavailable:{_to_text(admission_preview.get('error'))}"}
+    admitted_items = [
+        dict(item)
+        for item in (admission_preview.get("admitted_items") or [])
+        if isinstance(item, dict) and _to_text(item.get("symbol"))
+    ]
+    summary = (
+        f"would_admit {_to_int(admission_preview.get('would_admit'), len(admitted_items))} | "
+        f"eligible {_to_int(admission_preview.get('eligible'), 0)} | "
+        f"scanned {_to_int(admission_preview.get('scanned'), 0)}"
+    )
+    detail = {"入池预览": summary}
+    if admitted_items:
+        parts = []
+        for item in admitted_items[:8]:
+            symbol = _to_text(item.get("symbol")).upper()
+            direction = _to_text(item.get("direction_bias"))
+            score = item.get("score")
+            window = _to_text(item.get("window_status"))
+            bars = _to_int(item.get("bars_remaining"), 0)
+            score_text = f"score {score}" if score not in (None, "") else "score n/a"
+            bars_text = f", {bars} bars" if bars > 0 else ""
+            parts.append(f"{symbol}({direction or 'n/a'}, {score_text}, {window or 'window'}{bars_text})")
+        detail["可能加入"] = " | ".join(parts)
+    else:
+        rejection_summary = admission_preview.get("rejection_summary")
+        if isinstance(rejection_summary, dict) and rejection_summary:
+            parts = [
+                f"{_to_text(reason)} {_to_int(count, 0)}"
+                for reason, count in list(rejection_summary.items())[:5]
+            ]
+            detail["未入池原因"] = " | ".join(parts)
+    return detail
+
+
+def _detail(
+    monitor_payload: dict[str, Any],
+    flags: list[dict[str, Any]],
+    *,
+    timestamp_us: str,
+    admission_preview: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     service_monitor = _as_dict(monitor_payload.get("service_monitor"))
     counts = _as_dict(service_monitor.get("status_counts"))
     runtime = _as_dict(monitor_payload.get("runtime"))
@@ -125,7 +179,7 @@ def _detail(monitor_payload: dict[str, Any], flags: list[dict[str, Any]], *, tim
     websocket = _as_dict(runtime.get("websocket"))
     pb_disk = _as_dict(_as_dict(monitor_payload.get("pocketbase")).get("disk"))
     filesystem = _as_dict(pb_disk.get("filesystem"))
-    return {
+    detail = {
         "检查时间": timestamp_us,
         "监控状态": _to_text(monitor_payload.get("status")).upper() or "UNKNOWN",
         "触发项": " | ".join(
@@ -148,6 +202,40 @@ def _detail(monitor_payload: dict[str, Any], flags: list[dict[str, Any]], *, tim
             else "unknown"
         ),
     }
+    detail.update(_admission_preview_detail(admission_preview or {}))
+    return detail
+
+
+def _should_load_admission_preview(flags: list[dict[str, Any]]) -> bool:
+    preview_codes = {"no_active_targets", "no_execution_eligible_targets"}
+    return any(_to_text(item.get("code")) in preview_codes for item in flags)
+
+
+def _load_admission_preview(
+    builder: BuildAdmissionPreview | None,
+    *,
+    environment: str,
+    market_date: str,
+) -> dict[str, Any]:
+    if not callable(builder):
+        return {}
+    try:
+        result = builder(
+            {
+                "environment": environment,
+                "market_data_mode": environment,
+                "data_environment": environment,
+                "market_date": market_date,
+                "dry_run": True,
+                "force": True,
+                "max_admit": 8,
+                "max_scan_symbols": 200,
+                "trigger_source": "monitor_alert_preview",
+            }
+        )
+        return _admission_preview_payload(result)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 def build_system_monitor_alert_guard_response(
@@ -159,6 +247,7 @@ def build_system_monitor_alert_guard_response(
     emit_system_event: EmitSystemEvent,
     get_state_payload: GetStatePayload,
     upsert_state: UpsertState,
+    build_admission_preview: BuildAdmissionPreview | None = None,
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
     environment = request_market_data_mode(request_payload)
@@ -197,13 +286,25 @@ def build_system_monitor_alert_guard_response(
     level = "error" if any(_to_text(item.get("severity")).lower() == "error" for item in flags) else "warning"
     title = f"IBKR Monitor {'严重告警' if level == 'error' else '告警'}（{len(flags)}项）"
     event: dict[str, Any] = {}
+    admission_preview: dict[str, Any] = {}
     if should_notify:
+        if _should_load_admission_preview(flags):
+            admission_preview = _load_admission_preview(
+                build_admission_preview,
+                environment=environment,
+                market_date=_to_text((times or {}).get("date")),
+            )
         event = emit_system_event(
             event_type="alert",
             level=level,
             source="ibkr-api",
             title=title,
-            detail=_detail(monitor_payload, flags, timestamp_us=times["us"]),
+            detail=_detail(
+                monitor_payload,
+                flags,
+                timestamp_us=times["us"],
+                admission_preview=admission_preview,
+            ),
             environment=environment,
         )
         next_state.update(
@@ -220,6 +321,7 @@ def build_system_monitor_alert_guard_response(
         "job_id": "system_monitor_alert_guard",
         "triggered": bool(should_notify),
         "flag_codes": [_to_text(item.get("code")) for item in flags],
+        "admission_preview": admission_preview,
         "event": event,
         "state": next_state,
         "source": "ibkr-api",

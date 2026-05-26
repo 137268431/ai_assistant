@@ -46,6 +46,7 @@ class Config:
         "system_monitor_host_load_consecutive_count": "2",
         "signal_chat_id": "oc_edb26dcc52938b7833ac9f32ae6b1620",
         "order_chat_id": "oc_5ca4585e1fd108c2c662dfc358684945",
+        "trade_ledger_chat_id": "oc_c5f7f750a38692b48220b8f6c58e0ac9",
         "reverse_chat_id": "oc_2931e2b8501df3a9d869d7aebceb8fe2",
         "status_chat_id": "oc_b7b52fc28816d90e27ce50ca7922a9ac",
         "system_status_chat_id": "oc_b7b52fc28816d90e27ce50ca7922a9ac",

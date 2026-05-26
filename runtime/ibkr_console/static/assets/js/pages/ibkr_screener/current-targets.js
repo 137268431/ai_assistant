@@ -218,6 +218,7 @@
               ${row.has_live_bar ? statusChip(formatFreshness(row.freshness_min), Number(row.freshness_min) <= 30 ? 'active' : 'candidate') : statusChip('无当日bar', 'stale')}
               ${dataQualityChip(row)}
               ${renderAdmissionScoreChip(row)}
+              ${renderExecutionLayerPills(row)}
             </div>
 
             <div class="mobile-data-grid">
@@ -229,6 +230,7 @@
             ${buildMobileSection('筛选理由', escapeHtml(row.scan_reason || row.note || '--'))}
             ${renderSymbolProfileSummary(row) ? buildMobileSection('Symbol profile', renderSymbolProfileSummary(row)) : ''}
             ${buildMobileSection('当前阶段', `<strong>${escapeHtml(row.workflow_label || formatCurrentStateLabel(row.workflow_stage || row.attention_state || 'watch'))}</strong> · ${escapeHtml(row.workflow_summary || '--')}`)}
+            ${renderExecutionLayerBlock(row)}
             ${buildMobileSection('阶段阻塞', buildFlagPills(row.workflow_blockers, '当前无明显阻塞'))}
             ${buildMobileSection('下一步', escapeHtml(row.workflow_next_action || '--'))}
             ${buildMobileSection('可操作依据', buildReasonPills(row))}
@@ -1133,6 +1135,7 @@
         technical_state: document.getElementById('currentTechnicalStateFilter')?.value || '',
         signal_state: document.getElementById('currentSignalStateFilter')?.value || '',
         target_status: document.getElementById('currentTargetStatusFilter')?.value || '',
+        execution_layer: document.getElementById('currentExecutionLayerFilter')?.value || '',
         direction_bias: document.getElementById('currentDirectionBiasFilter')?.value || '',
         ready_only: Boolean(document.getElementById('currentReadyOnly')?.checked),
         signaled_only: Boolean(document.getElementById('currentSignaledOnly')?.checked),
@@ -1159,6 +1162,7 @@
         technical_state: filters.technical_state,
         signal_state: filters.signal_state,
         target_status: filters.target_status,
+        execution_layer: filters.execution_layer,
         direction_bias: filters.direction_bias,
         ready_only: filters.ready_only,
         signaled_only: filters.signaled_only,
@@ -1339,13 +1343,16 @@
       const readyCount = rows.filter((row) => row.technical_state === 'ready').length;
       const needsActionCount = rows.filter((row) => ['awaiting_confirm', 'pending', 'submitted', 'protected_active', 'protection_incomplete'].includes(String(row.latest_signal_status || ''))).length;
       const signaledCount = rows.filter((row) => row.has_signal_today).length;
+      const executionEligibleCount = Number(summary.execution_eligible_count || 0) || 0;
+      const observeOnlyCount = Number(summary.observe_only_count || 0) || 0;
+      const watchOnlyCount = Number(summary.watch_only_count || 0) || 0;
       const scanTimeEt = String(workflow.scan_summary_time_et || '09:20');
       const openCheckTimeEt = String(workflow.open_check_time_et || scanTimeEt);
       const workflowTimingCopy = scanTimeEt === openCheckTimeEt
         ? `${scanTimeEt} ET 日筛；${workflow.intraday_refresh_rule || '5m close-driven'}`
         : `${scanTimeEt} ET 日筛；${openCheckTimeEt} ET 检查`;
-      meta.textContent = `${currentPage}/${totalPages} 页 · ${rows.length} 条 · ready ${readyCount} · signaled ${signaledCount} · action ${needsActionCount} · ${filteredTotal}/${summary.total || 0}`;
-      metaSecondary.textContent = `ready ${filteredSummary.ready_count || 0} · signaled ${filteredSummary.signaled_count || 0} · action ${filteredSummary.needs_action_count || 0}。${workflowTimingCopy}。`;
+      meta.textContent = `${currentPage}/${totalPages} 页 · ${rows.length} 条 · exec ${executionEligibleCount} · observe ${observeOnlyCount} · ready ${readyCount} · signaled ${signaledCount} · action ${needsActionCount} · ${filteredTotal}/${summary.total || 0}`;
+      metaSecondary.textContent = `ready ${filteredSummary.ready_count || 0} · signaled ${filteredSummary.signaled_count || 0} · action ${filteredSummary.needs_action_count || 0} · watch_only ${watchOnlyCount}。${workflowTimingCopy}。`;
       renderCurrentTargetPagination();
 
       if (!rows.length) {
@@ -1386,6 +1393,7 @@
               ${statusChip(row.target_status || '--', row.target_status || '')}<br>
               ${statusChip(row.direction_bias || 'neutral', row.direction_bias || 'neutral')}<br>
               <span class="muted">target ${escapeHtml(formatNumber(row.target_score || 0, 1))} · tradability ${escapeHtml(formatNumber(row.tradability_score || 0, 0))}</span>
+              ${renderExecutionLayerPills(row)}
               ${renderAdmissionControlRow(row)}
             </td>
             <td>
@@ -1408,6 +1416,7 @@
                 <div class="reason-label">当前阶段</div>
                 <div class="reason-copy"><strong>${escapeHtml(row.workflow_label || formatCurrentStateLabel(row.workflow_stage || row.attention_state || 'watch'))}</strong> · ${escapeHtml(row.workflow_summary || '--')}</div>
               </div>
+              ${renderExecutionLayerBlock(row)}
               <div class="reason-block" style="margin-top:10px;">
                 <div class="reason-label">阶段阻塞</div>
                 ${buildFlagPills(row.workflow_blockers, '当前无明显阻塞')}

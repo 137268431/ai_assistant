@@ -1317,6 +1317,13 @@
     const headers = { Accept: 'application/json' };
     if (token) headers.Authorization = `Bearer ${token}`;
     const url = buildEndpointUrl(filters);
+    if (typeof cachedPageJson === 'function') {
+      return cachedPageJson(url, { headers, retryAttempts: 3, retryDelayMs: 500 }, {
+        profile: effectiveMode(filters) === 'backtest' ? 'historyList' : 'pageDetail',
+        environment: filters?.data_environment || filters?.market_data_mode || filters?.environment || '',
+        tags: ['lifecycleFlow', effectiveMode(filters)]
+      });
+    }
     const fetcher = typeof fetchWithRetry === 'function'
       ? fetchWithRetry(url, { headers }, { attempts: 3, retryDelayMs: 500 })
       : fetch(url, { headers, cache: 'no-store' });

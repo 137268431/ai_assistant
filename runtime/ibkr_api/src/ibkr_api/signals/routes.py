@@ -4,7 +4,27 @@ from typing import Any
 
 from flask import Response, jsonify, request
 
+from ibkr_api.app_core.route_cache import RouteSWRCache, cache_seconds, canonical_cache_key, request_cache_bypass
 from ibkr_api.modes import request_broker_mode, request_market_data_mode
+
+
+_SIGNAL_ROUTE_CACHE = RouteSWRCache("signals")
+
+
+def _clear_signal_sensitive_read_caches() -> None:
+    _SIGNAL_ROUTE_CACHE.clear()
+    for import_path, function_name in (
+        ("ibkr_api.account.routes", "_clear_account_route_cache"),
+        ("ibkr_api.reverse.routes", "_clear_reverse_route_cache"),
+        ("ibkr_api.universe.routes", "_clear_universe_route_cache"),
+    ):
+        try:
+            module = __import__(import_path, fromlist=[function_name])
+            clear_fn = getattr(module, function_name, None)
+            if callable(clear_fn):
+                clear_fn()
+        except Exception:
+            pass
 
 
 def register_signal_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
@@ -26,6 +46,7 @@ def register_signal_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     build_signal_cancel_webhook_response = deps["build_signal_cancel_webhook_response"]
     config_value = deps["config_value"]
     notify_order_status = deps.get("notify_order_status")
+    notify_order_callback_ledger = deps.get("notify_order_callback_ledger")
     exports: dict[str, Any] = {}
 
     @app.route("/api/custom/ibkr/signal", methods=["POST"])
@@ -41,6 +62,8 @@ def register_signal_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             signal_chat_id_fn=signal_chat_id,
             console_base_url=console_base_url(),
         )
+        if status_code < 400:
+            _clear_signal_sensitive_read_caches()
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
     exports["custom_ibkr_signal"] = custom_ibkr_signal
@@ -58,25 +81,34 @@ def register_signal_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             signal_chat_id_fn=signal_chat_id,
             console_base_url=console_base_url(),
         )
+        if status_code < 400:
+            _clear_signal_sensitive_read_caches()
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
     exports["custom_ibkr_signals"] = custom_ibkr_signals
 
     @app.route("/api/custom/ibkr/signals/pending", methods=["GET"])
     def custom_ibkr_signals_pending() -> Response:
+        query_payload = request.args.to_dict(flat=True)
         mode_payload = {
-            "broker_mode": request.args.get("broker_mode") or request.args.get("environment"),
-            "market_data_mode": request.args.get("market_data_mode"),
-            "data_environment": request.args.get("data_environment"),
+            "broker_mode": query_payload.get("broker_mode") or query_payload.get("environment"),
+            "market_data_mode": query_payload.get("market_data_mode"),
+            "data_environment": query_payload.get("data_environment"),
         }
-        payload, status_code = build_signals_pending_response(
-            pb,
-            environment=request_broker_mode(mode_payload),
-            data_environment=request_market_data_mode(mode_payload),
-            date_str=request.args.get("date") or "",
-            normalize_environment=normalize_environment,
-            escape_filter_string=escape_filter_string,
-            as_dict=as_dict,
+        payload, status_code = _SIGNAL_ROUTE_CACHE.get(
+            canonical_cache_key("signals_pending", query_payload),
+            builder=lambda: build_signals_pending_response(
+                pb,
+                environment=request_broker_mode(mode_payload),
+                data_environment=request_market_data_mode(mode_payload),
+                date_str=query_payload.get("date") or "",
+                normalize_environment=normalize_environment,
+                escape_filter_string=escape_filter_string,
+                as_dict=as_dict,
+            ),
+            ttl_seconds=cache_seconds("IBKR_ROUTE_CACHE_SIGNALS_PENDING_TTL_SEC", 30.0),
+            stale_seconds=cache_seconds("IBKR_ROUTE_CACHE_SIGNALS_PENDING_STALE_SEC", 120.0),
+            force=request_cache_bypass(query_payload),
         )
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
@@ -95,7 +127,10 @@ def register_signal_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             signal_chat_id_fn=signal_chat_id,
             console_base_url=console_base_url(),
             notify_order_status=notify_order_status,
+            notify_order_callback_ledger=notify_order_callback_ledger,
         )
+        if status_code < 400:
+            _clear_signal_sensitive_read_caches()
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
     exports["custom_ibkr_signals_ack"] = custom_ibkr_signals_ack
@@ -117,6 +152,8 @@ def register_signal_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             console_base_url=console_base_url(),
             config_value=config_value,
         )
+        if status_code < 400:
+            _clear_signal_sensitive_read_caches()
         return payload.get("body") or "", int(status_code or 200), {"Content-Type": str(payload.get("content_type") or "text/html; charset=utf-8")}
     exports["webhook_signal_confirm"] = webhook_signal_confirm
 
@@ -138,10 +175,12 @@ def register_signal_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             update_signal_card=feishu_update_interactive,
             console_base_url=console_base_url(),
         )
+        if status_code < 400:
+            _clear_signal_sensitive_read_caches()
         return payload.get("body") or "", int(status_code or 200), {"Content-Type": str(payload.get("content_type") or "text/html; charset=utf-8")}
     exports["webhook_signal_cancel"] = webhook_signal_cancel
 
     return exports
 
 
-__all__ = ["register_signal_routes"]
+__all__ = ["register_signal_routes", "_clear_signal_sensitive_read_caches"]

@@ -415,6 +415,26 @@ def _build_monitor_flags(runtime_status: dict, api_utilization: dict, host_snaps
             ),
         )
 
+    if bool(market_universe.get("no_execution_eligible_targets")) and _should_warn_no_active_targets(runtime_status):
+        active_total = int(market_universe.get("active_target_count", 0) or 0)
+        observe_total = int(market_universe.get("observe_target_count", active_total) or 0)
+        sample_symbols = [
+            str(symbol or "").strip().upper()
+            for symbol in (market_universe.get("observe_target_symbols") or market_universe.get("active_trade_symbols") or [])
+            if str(symbol or "").strip()
+        ]
+        sample_suffix = f" 示例: {', '.join(sample_symbols[:8])}。" if sample_symbols else ""
+        _append_monitor_flag(
+            flags,
+            "warning",
+            "no_execution_eligible_targets",
+            "No executable trade targets",
+            (
+                f"当前 active target 有 {active_total} 个，但 execution_eligible 数为 0，"
+                f"这些标的只会观察/回补，不会自动入场。observe {observe_total}。{sample_suffix}"
+            ),
+        )
+
     last_trace_retry_count = int(api_utilization.get("last_trace_retry_count", 0) or 0)
     last_trace_throttle_count = int(api_utilization.get("last_trace_throttle_count", 0) or 0)
     last_trace_error = str(api_utilization.get("last_trace_error") or "").strip()

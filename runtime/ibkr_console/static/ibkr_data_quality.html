@@ -218,8 +218,21 @@
       const token = getToken();
       const headers = { 'Content-Type': 'application/json' };
       if (token) headers['Authorization'] = `Bearer ${token}`;
+      const methodText = String(method || 'GET').toUpperCase();
+      if (methodText === 'GET' && typeof cachedPageJson === 'function') {
+        return cachedPageJson(path, {
+          method: methodText,
+          headers,
+          retryAttempts: 3,
+          retryDelayMs: 500
+        }, {
+          profile: 'historyList',
+          environment: currentEnvironment,
+          tags: ['dataQuality', currentEnvironment]
+        });
+      }
       const response = await fetch(`${BASE_URL}${path}`, {
-        method,
+        method: methodText,
         headers,
         body: body ? JSON.stringify(body) : null
       });
@@ -236,6 +249,9 @@
       }
       if (!response.ok) {
         throw new Error(payload.message || payload.error || `Request failed (${response.status})`);
+      }
+      if (methodText !== 'GET' && typeof invalidateIbkrDataCache === 'function') {
+        invalidateIbkrDataCache(['dataQuality', 'historyList', 'marketData', 'runtimeStatus']);
       }
       return payload;
     }

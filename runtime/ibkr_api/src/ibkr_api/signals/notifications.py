@@ -51,6 +51,17 @@ def _format_money(value: Any) -> str:
     return f"${parsed:,.2f}"
 
 
+def _format_signed_money(value: Any) -> str:
+    parsed = to_float(value)
+    if parsed is None:
+        return "-"
+    if parsed > 0:
+        return f"+${parsed:,.2f}"
+    if parsed < 0:
+        return f"-${abs(parsed):,.2f}"
+    return "$0.00"
+
+
 def _broker_badge(environment: Any) -> str:
     normalized = to_text(environment or "live").lower()
     if normalized in {"live", "paper"}:
@@ -222,6 +233,23 @@ def _price_plan_lines(record_or_data: Any) -> list[str]:
     if actual_fill is not None:
         lines.append(f"**实际成交价**: {_format_price(actual_fill)}")
     return lines
+
+
+def _planned_pnl_lines(record_or_data: Any) -> list[str]:
+    direction = to_text(record_value(record_or_data, "direction")).lower()
+    if direction not in {"long", "short"}:
+        return []
+    entry = _positive_price(record_or_data, "limit_price", "entry_limit_price", "entry")
+    take_profit = _positive_price(record_or_data, "take_profit", "tp_price")
+    stop_loss = _positive_price(record_or_data, "stop_loss", "sl_price")
+    quantity = _positive_price(record_or_data, "shares", "quantity")
+    if entry is None or take_profit is None or stop_loss is None or quantity is None:
+        return []
+    expected_profit = (take_profit - entry) * quantity if direction == "long" else (entry - take_profit) * quantity
+    expected_loss = (stop_loss - entry) * quantity if direction == "long" else (entry - stop_loss) * quantity
+    if expected_profit <= 0 or expected_loss >= 0:
+        return []
+    return [f"**预计盈利 / 预计亏损**: {_format_signed_money(expected_profit)} / {_format_signed_money(expected_loss)}"]
 
 
 def _atr_volatility_text(value: Any) -> str:
@@ -591,6 +619,7 @@ def build_signal_notification_card(record_or_data: Any, *, console_base_url: str
         f"**仓位 / 风报比**: {_format_quantity(record_value(record_or_data, 'shares'))} / {to_text(record_value(record_or_data, 'rr') or '-')}",
     ]
     body_lines.extend(_price_plan_lines(record_or_data))
+    body_lines.extend(_planned_pnl_lines(record_or_data))
     body_lines.extend(_market_metric_lines(record_or_data))
     body_lines.extend(_source_lines(record_or_data))
     body_lines.extend(_followup_lines(record_or_data))
@@ -761,6 +790,7 @@ def build_signal_status_card(record_or_data: Any, *, message: str = "", console_
         f"**仓位**: {_format_quantity(record_value(record_or_data, 'shares'))}",
     ]
     body_lines.extend(_price_plan_lines(record_or_data))
+    body_lines.extend(_planned_pnl_lines(record_or_data))
     body_lines.extend(_market_metric_lines(record_or_data))
     body_lines.extend(_buying_power_lines(record_or_data))
     body_lines.extend(_followup_lines(record_or_data))

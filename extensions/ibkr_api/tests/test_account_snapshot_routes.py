@@ -34,6 +34,7 @@ from ibkr_api.account.snapshot import build_account_snapshot_response, enrich_ac
 
 class _FakePB:
     def __init__(self, rows=None):
+        self.calls = []
         self.rows = {
             "orders": [
                 {
@@ -73,6 +74,15 @@ class _FakePB:
             self.rows = rows
 
     def get_records(self, collection, filter=None, sort=None, per_page=200, page=1):
+        self.calls.append(
+            {
+                "collection": collection,
+                "filter": filter,
+                "sort": sort,
+                "per_page": per_page,
+                "page": page,
+            }
+        )
         return list(self.rows.get(collection, []))
 
 
@@ -495,6 +505,45 @@ class AccountSnapshotRoutesTest(unittest.TestCase):
         self.assertEqual("http://127.0.0.1:5101/ibkr/account", payload["proxy_upstream"])
         self.assertEqual(12.5, payload["summary"]["account_today_pnl"]["net"])
         self.assertEqual("broker_daily_pnl", payload["summary"]["account_today_pnl"]["source"])
+        diagnostics = payload["diagnostics"]["account_snapshot"]
+        self.assertIn("upstream_elapsed_ms", diagnostics)
+        self.assertIn("enrichment_elapsed_ms", diagnostics)
+        self.assertIn("total_elapsed_ms", diagnostics)
+
+    def test_enrich_account_snapshot_skips_execution_fill_scan_without_order_ids(self):
+        pb = _FakePB({"orders": [], "ibkr_execution_fills": [{"order_id": "old", "commission": 9.99}], "ibkr_signals": []})
+        payload = {
+            "ok": True,
+            "environment": "live",
+            "positions": [],
+            "orders": [],
+            "live_open_orders": [],
+            "counts": {},
+        }
+
+        enrich_account_snapshot(pb, payload, "live")
+
+        collections = [call["collection"] for call in pb.calls]
+        self.assertIn("orders", collections)
+        self.assertNotIn("ibkr_execution_fills", collections)
+
+    def test_enrich_account_snapshot_filters_pb_orders_to_open_like_rows(self):
+        pb = _FakePB({"orders": [], "ibkr_signals": []})
+        payload = {
+            "ok": True,
+            "environment": "live",
+            "positions": [],
+            "orders": [],
+            "live_open_orders": [],
+            "counts": {},
+        }
+
+        enrich_account_snapshot(pb, payload, "live")
+
+        order_call = next(call for call in pb.calls if call["collection"] == "orders")
+        self.assertIn('environment = "live"', order_call["filter"])
+        self.assertIn('relation_status = "active"', order_call["filter"])
+        self.assertIn('status = "Submitted"', order_call["filter"])
 
 
 if __name__ == "__main__":

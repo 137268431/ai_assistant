@@ -238,6 +238,8 @@
     'getDateStringInTimeZone', 'getCurrentEtDateString', 'getEtDateStringFromMs',
     'shiftDateString', 'getEtDayStartMs', 'getEtDayBoundsMs', 'getEtDateRangeBoundsMs',
     'formatUtcDateTimeForPocketBase',
+    'getIbkrCacheProfile', 'getMarketCalendarCacheOptions', 'invalidateIbkrDataCache',
+    'cachedPageJson', 'cachedMarketCalendar',
     'buildPageRefreshTimeText', 'updatePageRefreshClockText', 'startPageRefreshClock',
     'setPageRefreshTime', 'normalizePageContextMetaItem', 'normalizePageContextMetaLabel',
     'extractPageContextDateToken', 'isPageContextTradingDateLabel', 'getPageContextUrlTradingDate',

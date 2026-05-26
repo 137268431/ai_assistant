@@ -1022,6 +1022,44 @@
             line-height: 1.7;
             color: var(--muted);
         }
+        .flag-preview-actions {
+            display: flex;
+            justify-content: flex-end;
+            margin-top: 2px;
+        }
+        .flag-preview-card {
+            border-radius: 14px;
+            border: 1px solid rgba(79, 209, 197, 0.20);
+            background: rgba(79, 209, 197, 0.07);
+            padding: 12px 13px;
+            color: var(--text);
+        }
+        .flag-preview-card.is-error {
+            border-color: rgba(252, 129, 129, 0.25);
+            background: rgba(252, 129, 129, 0.08);
+            color: #FC8181;
+        }
+        .flag-preview-title {
+            font-size: 12px;
+            font-weight: 800;
+            margin-bottom: 8px;
+        }
+        .preview-symbol-list {
+            display: flex;
+            gap: 7px;
+            flex-wrap: wrap;
+        }
+        .preview-symbol-chip {
+            display: inline-flex;
+            align-items: center;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(255, 255, 255, 0.04);
+            padding: 5px 8px;
+            font-size: 11px;
+            color: var(--muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
         .severity {
             display: inline-flex;
             align-items: center;

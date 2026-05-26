@@ -439,6 +439,9 @@
         }
 
         function requestCachedJson(path, cacheOptions = {}) {
+            if (typeof cachedPageJson === 'function') {
+                return cachedPageJson(path, { retryAttempts: 3, retryDelayMs: 500 }, cacheOptions);
+            }
             if (typeof cachedCustomJson === 'function') {
                 return cachedCustomJson(path, '', {}, cacheOptions);
             }

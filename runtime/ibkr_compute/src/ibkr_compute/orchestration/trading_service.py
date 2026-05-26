@@ -48,6 +48,7 @@ from ibkr_compute.market.timeframe_utils import (
     interval_to_ms,
 )
 from ibkr_compute.orchestration.market_universe_support import _target_row_is_daily_scan_active, _target_row_is_manual
+from ibkr_compute.universe.target_execution import target_row_execution_eligible
 from ibkr_compute.market.timeframe_builder import TimeframeBarBuilder
 from ibkr_compute.core.indicator_engine import indicator_ready_bar_count
 from ibkr_compute.order.order_placer import OrderPlacer
@@ -491,6 +492,7 @@ class IBKRTradingService(
             row for row in rows
             if str(row.get("symbol", "")).strip().upper() not in market_monitors
             and (_target_row_is_daily_scan_active(row) or _target_row_is_manual(row))
+            and target_row_execution_eligible(row)
         ]
         prioritized_rows = list(active_rows)
         biases: dict[str, str] = {}

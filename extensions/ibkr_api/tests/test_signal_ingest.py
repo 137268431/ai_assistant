@@ -10,7 +10,7 @@ if str(SERVICE_SRC_ROOT) not in sys.path:
 
 from ibkr_api.signals.ingest import build_signal_ingest_response, build_signals_ingest_response
 from ibkr_api.signals.notifications import build_signal_notification_card, build_signal_status_card
-from ibkr_api.orders.notifications import build_order_status_card
+from ibkr_api.orders.notifications import build_order_group_status_card, build_order_status_card
 
 
 class _FakePB:
@@ -347,6 +347,67 @@ class SignalIngressBuildersTest(unittest.TestCase):
             self.assertIn("**ATR值 / ATR波动率**: 0.85 / 0.57% (低波动)", content)
             self.assertIn("**止损ATR倍数**: 1.61x", content)
 
+    def test_signal_cards_include_expected_profit_and_loss(self):
+        cases = [
+            (
+                {
+                    "id": "sig-row-long",
+                    "signal_id": "sig-pl-long",
+                    "symbol": "AAPL",
+                    "direction": "long",
+                    "environment": "live",
+                    "status": "pending",
+                    "entry": 100.0,
+                    "stop_loss": 98.0,
+                    "take_profit": 104.0,
+                    "shares": 10,
+                },
+                "**预计盈利 / 预计亏损**: +$40.00 / -$20.00",
+            ),
+            (
+                {
+                    "id": "sig-row-short",
+                    "signal_id": "sig-pl-short",
+                    "symbol": "PLTR",
+                    "direction": "short",
+                    "environment": "paper",
+                    "status": "pending",
+                    "limit_price": 135.13,
+                    "entry": 134.81,
+                    "stop_loss": 137.13,
+                    "take_profit": 127.13,
+                    "shares": 75,
+                },
+                "**预计盈利 / 预计亏损**: +$600.00 / -$150.00",
+            ),
+        ]
+
+        for record, expected_line in cases:
+            notification_card = build_signal_notification_card(record, console_base_url="https://console.example.com")
+            status_card = build_signal_status_card(record, message="信号已确认，等待执行", console_base_url="https://console.example.com")
+            for card in (notification_card, status_card):
+                self.assertIn(expected_line, card["elements"][0]["content"])
+
+    def test_signal_cards_skip_expected_profit_and_loss_when_plan_incomplete(self):
+        record = {
+            "id": "sig-row-missing",
+            "signal_id": "sig-pl-missing",
+            "symbol": "AAPL",
+            "direction": "long",
+            "environment": "live",
+            "status": "pending",
+            "entry": 100.0,
+            "stop_loss": 98.0,
+            "take_profit": 104.0,
+            "shares": 0,
+        }
+
+        notification_card = build_signal_notification_card(record, console_base_url="https://console.example.com")
+        status_card = build_signal_status_card(record, message="信号已确认，等待执行", console_base_url="https://console.example.com")
+
+        for card in (notification_card, status_card):
+            self.assertNotIn("预计盈利 / 预计亏损", card["elements"][0]["content"])
+
     def test_signal_status_card_includes_lifecycle_button(self):
         card = build_signal_status_card(
             {
@@ -420,6 +481,343 @@ class SignalIngressBuildersTest(unittest.TestCase):
                 for url in urls
             )
         )
+
+    def test_order_group_status_card_includes_realized_loss_for_closed_long(self):
+        rows = [
+            {
+                "id": "order-entry",
+                "unique_id": "ONON_20260526_1020_mr_L",
+                "order_type": "Entry",
+                "symbol": "ONON",
+                "environment": "paper",
+                "status": "Closed",
+                "role": "entry",
+                "order_id": "76",
+                "broker_order_id": "76",
+                "trade_group_id": "ONON_long_20260526_102612_harvest",
+                "entry_order_unique_id": "ONON_long_20260526_102612_harvest",
+                "signal_id": "ONON_20260526_1020_mr_L",
+                "direction": "long",
+                "quantity": 251,
+                "filled_qty": 251,
+                "fill_price": 39.91,
+                "us_time": "2026-05-26 10:29:12",
+            },
+            {
+                "id": "order-close",
+                "unique_id": "close_ONON_long_20260526_102612_harvest",
+                "order_type": "MKT",
+                "symbol": "ONON",
+                "environment": "paper",
+                "status": "Filled",
+                "role": "close",
+                "order_id": "79",
+                "broker_order_id": "79",
+                "trade_group_id": "ONON_long_20260526_102612_harvest",
+                "entry_order_unique_id": "ONON_long_20260526_102612_harvest",
+                "signal_id": "ONON_20260526_1020_mr_L",
+                "direction": "sell",
+                "quantity": 251,
+                "filled_qty": 251,
+                "fill_price": 39.88,
+                "us_time": "2026-05-26 10:29:12",
+            },
+            {
+                "id": "order-tp",
+                "unique_id": "tp_ONON_long_20260526_102612_harvest",
+                "order_type": "TakeProfit",
+                "symbol": "ONON",
+                "environment": "paper",
+                "status": "Canceled",
+                "role": "take_profit",
+                "order_id": "77",
+                "broker_order_id": "77",
+                "trade_group_id": "ONON_long_20260526_102612_harvest",
+                "entry_order_unique_id": "ONON_long_20260526_102612_harvest",
+                "signal_id": "ONON_20260526_1020_mr_L",
+                "quantity": 251,
+                "filled_qty": 0,
+                "limit_price": 40.64,
+            },
+            {
+                "id": "order-sl",
+                "unique_id": "sl_ONON_long_20260526_102612_harvest",
+                "order_type": "StopLoss",
+                "symbol": "ONON",
+                "environment": "paper",
+                "status": "Canceled",
+                "role": "stop_loss",
+                "order_id": "78",
+                "broker_order_id": "78",
+                "trade_group_id": "ONON_long_20260526_102612_harvest",
+                "entry_order_unique_id": "ONON_long_20260526_102612_harvest",
+                "signal_id": "ONON_20260526_1020_mr_L",
+                "quantity": 251,
+                "filled_qty": 0,
+                "limit_price": 39.36,
+            },
+        ]
+
+        card = build_order_group_status_card(rows, status="Closed", message="已成交 -> 已平仓", console_base_url="https://console.example.com")
+        content = card["elements"][0]["content"]
+        title = card["header"]["title"]["content"]
+
+        self.assertIn("亏损 -$7.53", title)
+        self.assertEqual("red", card["header"]["template"])
+        self.assertIn("**实际盈亏**: 亏损 -$7.53", content)
+        self.assertIn("平仓 @39.88", content)
+        self.assertIn("251股", content)
+        self.assertIn("未计手续费", content)
+
+    def test_order_group_status_card_computes_short_net_profit_with_commission(self):
+        rows = [
+            {
+                "id": "order-entry",
+                "unique_id": "short-entry",
+                "order_type": "Entry",
+                "symbol": "TSLA",
+                "environment": "paper",
+                "status": "Closed",
+                "role": "entry",
+                "order_id": "201",
+                "broker_order_id": "201",
+                "trade_group_id": "short-entry",
+                "entry_order_unique_id": "short-entry",
+                "signal_id": "sig-short",
+                "direction": "short",
+                "quantity": 4,
+                "filled_qty": 4,
+                "fill_price": 50.0,
+                "commission": 0.5,
+            },
+            {
+                "id": "order-close",
+                "unique_id": "short-close",
+                "order_type": "MKT",
+                "symbol": "TSLA",
+                "environment": "paper",
+                "status": "Filled",
+                "role": "close",
+                "order_id": "202",
+                "broker_order_id": "202",
+                "trade_group_id": "short-entry",
+                "entry_order_unique_id": "short-entry",
+                "signal_id": "sig-short",
+                "direction": "buy",
+                "quantity": 4,
+                "filled_qty": 4,
+                "fill_price": 45.0,
+                "commission": 0.5,
+            },
+        ]
+
+        card = build_order_group_status_card(rows, status="Closed", message="平仓完成", console_base_url="https://console.example.com")
+        content = card["elements"][0]["content"]
+
+        self.assertIn("盈利 +$19.00", card["header"]["title"]["content"])
+        self.assertEqual("green", card["header"]["template"])
+        self.assertIn("**实际盈亏**: 盈利 +$19.00", content)
+        self.assertIn("含手续费 $1.00", content)
+
+    def test_order_group_status_card_explains_order_flow_exit_and_ignores_default_zero_pnl(self):
+        rows = [
+            {
+                "id": "order-entry",
+                "unique_id": "entry_BABA_long_20260526_112518_harvest",
+                "order_type": "LMT",
+                "symbol": "BABA",
+                "environment": "paper",
+                "status": "Closed",
+                "role": "entry",
+                "order_id": "80",
+                "broker_order_id": "80",
+                "trade_group_id": "BABA_long_20260526_112518_harvest",
+                "entry_order_unique_id": "entry_BABA_long_20260526_112518_harvest",
+                "signal_id": "BABA_20260526_1120_mr_L",
+                "direction": "long",
+                "quantity": 78,
+                "filled_qty": 78,
+                "limit_price": 129.44,
+                "fill_price": 129.34,
+                "pnl": 0,
+                "commission": 0,
+                "us_time": "2026-05-26 11:29:35",
+                "extra": {
+                    "last_status_reason": "order_flow_adverse_delta_exit",
+                    "order_flow_full_exit": {
+                        "closed_quantity": 78,
+                        "decision": {
+                            "action": "full_exit",
+                            "reason": "order_flow_adverse_delta_exit",
+                            "direction": "long",
+                            "pnl_r": 0.0326,
+                            "limit_price": 129.27,
+                            "confirmation": {
+                                "interval_sec": 60,
+                                "delta": -4144,
+                                "cvd": -213777,
+                                "delta_ratio": -0.723211,
+                                "min_delta_ratio": 0.12,
+                            },
+                        },
+                        "market_close_result": {
+                            "limit_price": 129.27,
+                            "fill": {
+                                "filled_quantity": 78,
+                                "order": {"avgFillPrice": 129.35},
+                            },
+                        },
+                    },
+                },
+            },
+            {
+                "id": "order-close",
+                "unique_id": "close_BABA_20260526_112934",
+                "order_type": "LMT",
+                "symbol": "BABA",
+                "environment": "paper",
+                "status": "Filled",
+                "role": "close",
+                "order_id": "83",
+                "broker_order_id": "83",
+                "trade_group_id": "BABA_long_20260526_112518_harvest",
+                "entry_order_unique_id": "entry_BABA_long_20260526_112518_harvest",
+                "direction": "sell",
+                "quantity": 78,
+                "filled_qty": 78,
+                "limit_price": 129.27,
+                "fill_price": 129.35,
+                "pnl": 0,
+                "commission": 0,
+            },
+            {
+                "id": "order-tp",
+                "unique_id": "tp_BABA_long_20260526_112518_harvest",
+                "order_type": "LMT",
+                "symbol": "BABA",
+                "environment": "paper",
+                "status": "Canceled",
+                "role": "take_profit",
+                "order_id": "81",
+                "broker_order_id": "81",
+                "trade_group_id": "BABA_long_20260526_112518_harvest",
+                "entry_order_unique_id": "entry_BABA_long_20260526_112518_harvest",
+                "quantity": 78,
+                "filled_qty": 0,
+                "limit_price": 130.72,
+                "pnl": 0,
+                "commission": 0,
+            },
+            {
+                "id": "order-sl",
+                "unique_id": "sl_BABA_long_20260526_112518_harvest",
+                "order_type": "STP",
+                "symbol": "BABA",
+                "environment": "paper",
+                "status": "Canceled",
+                "role": "stop_loss",
+                "order_id": "82",
+                "broker_order_id": "82",
+                "trade_group_id": "BABA_long_20260526_112518_harvest",
+                "entry_order_unique_id": "entry_BABA_long_20260526_112518_harvest",
+                "quantity": 78,
+                "filled_qty": 0,
+                "limit_price": 128.42,
+                "pnl": 0,
+                "commission": 0,
+            },
+        ]
+
+        card = build_order_group_status_card(rows, status="Closed", message="已成交 -> 已平仓", console_base_url="https://console.example.com")
+        content = card["elements"][0]["content"]
+
+        self.assertIn("盈利 +$0.78", card["header"]["title"]["content"])
+        self.assertNotIn("持平 $0.00", card["header"]["title"]["content"])
+        self.assertIn("**原因**: 订单流反向 Delta 过强，且利润未达到保护阈值，触发提前平仓（order_flow_adverse_delta_exit）", content)
+        self.assertIn("delta_ratio -0.723211", content)
+        self.assertIn("平仓阈值 0.18", content)
+        self.assertIn("pnl_r 0.0326 ≤ 0.15", content)
+        self.assertIn("**处理**: 已取消止盈/止损保护单，用平仓单卖出 78 股，限价 129.27，均价 129.35", content)
+        self.assertIn("**实际盈亏**: 盈利 +$0.78", content)
+        self.assertIn("未计手续费", content)
+
+    def test_order_group_status_card_keeps_unknown_reason_code_readable(self):
+        rows = [
+            {
+                "id": "order-entry",
+                "unique_id": "entry-custom",
+                "order_type": "LMT",
+                "symbol": "AAPL",
+                "environment": "paper",
+                "status": "Closed",
+                "role": "entry",
+                "trade_group_id": "entry-custom",
+                "direction": "long",
+                "quantity": 2,
+                "filled_qty": 2,
+                "fill_price": 100.0,
+                "extra": {"last_status_reason": "custom_exit_rule"},
+            },
+            {
+                "id": "order-close",
+                "unique_id": "close-custom",
+                "order_type": "MKT",
+                "symbol": "AAPL",
+                "environment": "paper",
+                "status": "Filled",
+                "role": "close",
+                "trade_group_id": "entry-custom",
+                "direction": "sell",
+                "quantity": 2,
+                "filled_qty": 2,
+                "fill_price": 101.0,
+            },
+        ]
+
+        card = build_order_group_status_card(rows, status="Closed", message="平仓完成", console_base_url="https://console.example.com")
+
+        self.assertIn("**原因**: 系统记录原因 custom_exit_rule", card["elements"][0]["content"])
+
+    def test_order_cards_skip_or_use_only_available_pnl_data(self):
+        entry_only_card = build_order_group_status_card(
+            [
+                {
+                    "id": "order-entry",
+                    "unique_id": "sig-entry",
+                    "order_type": "Entry",
+                    "symbol": "AAPL",
+                    "environment": "live",
+                    "status": "Filled",
+                    "role": "entry",
+                    "quantity": 10,
+                    "filled_qty": 10,
+                    "fill_price": 100.0,
+                }
+            ],
+            status="Filled",
+            message="入场成交",
+            console_base_url="https://console.example.com",
+        )
+        self.assertNotIn("实际盈亏", entry_only_card["elements"][0]["content"])
+
+        single_order_card = build_order_status_card(
+            {
+                "id": "order-close",
+                "unique_id": "sig-close",
+                "order_type": "MKT",
+                "symbol": "ONON",
+                "environment": "paper",
+                "status": "Filled",
+                "role": "close",
+                "quantity": 251,
+                "filled_qty": 251,
+                "fill_price": 39.88,
+                "realized_net_pnl": -7.53,
+            },
+            message="平仓成交",
+            console_base_url="https://console.example.com",
+        )
+        self.assertIn("**实际盈亏**: 亏损 -$7.53", single_order_card["elements"][0]["content"])
 
     def test_signal_status_card_includes_buying_power_guard(self):
         record = {

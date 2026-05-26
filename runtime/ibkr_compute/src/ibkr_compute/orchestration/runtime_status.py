@@ -247,11 +247,18 @@ class TradingServiceRuntimeStatusMixin:
             active_subscription_symbols = list(self._active_subscription_symbols)
         active_subscription_set = set(active_subscription_symbols)
         active_trade_symbol_set = set(self._active_trade_symbols)
+        try:
+            execution_eligible_symbols = self._normalize_symbol_list((self._active_target_direction_biases() or {}).keys())
+        except Exception:
+            execution_eligible_symbols = list(self._active_trade_symbols)
+        execution_eligible_symbol_set = set(execution_eligible_symbols)
+        observe_target_symbols = sorted(active_trade_symbol_set - execution_eligible_symbol_set)
         inactive_trade_symbols = [
             symbol for symbol in scan_symbols
             if symbol not in active_trade_symbol_set
         ]
         no_active_targets = bool(scan_symbols) and not bool(active_trade_symbol_set)
+        no_execution_eligible_targets = bool(active_trade_symbol_set) and not bool(execution_eligible_symbol_set)
         if active_trade_symbol_set:
             trade_universe_status = "ready"
         elif scan_symbols:
@@ -427,6 +434,11 @@ class TradingServiceRuntimeStatusMixin:
                 "market_ws_symbols": list(market_ws_symbols),
                 "active_target_date": self._active_target_date,
                 "active_target_count": len(self._active_trade_symbols),
+                "execution_eligible_target_count": len(execution_eligible_symbols),
+                "execution_eligible_symbols": list(execution_eligible_symbols),
+                "observe_target_count": len(observe_target_symbols),
+                "observe_target_symbols": list(observe_target_symbols[:25]),
+                "no_execution_eligible_targets": no_execution_eligible_targets,
                 "active_subscription_count": len(active_subscription_symbols),
                 "active_target_symbols": list(self._active_trade_symbols),
                 "active_subscription_symbols": list(active_subscription_symbols),

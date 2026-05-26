@@ -23,7 +23,12 @@
                         : apiFetch(collection, params)
                 );
                 const readCustomJson = (path, options = {}, cacheOptions = {}) => (
-                    typeof cachedCustomJson === 'function'
+                    typeof cachedPageJson === 'function'
+                        ? cachedPageJson(path, options, {
+                            environment: currentBrokerMode,
+                            ...cacheOptions,
+                          })
+                        : typeof cachedCustomJson === 'function'
                         ? cachedCustomJson(path, currentBrokerMode, options, cacheOptions)
                         : requestIbkrEnvironmentJson(path, currentBrokerMode, options)
                 );

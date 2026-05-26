@@ -16,6 +16,16 @@ ORDER_INTERNAL_EXTRA_KEYS = {
     "feishu_order_notify_api_code": True,
     "feishu_order_notify_api_message": True,
     "feishu_order_notify_response_body": True,
+    "feishu_trade_ledger_notify_key": True,
+    "feishu_trade_ledger_message_id": True,
+    "feishu_trade_ledger_last_result": True,
+    "feishu_trade_ledger_last_at_ms": True,
+    "feishu_trade_ledger_last_reason": True,
+    "feishu_trade_ledger_error": True,
+    "feishu_trade_ledger_http_status": True,
+    "feishu_trade_ledger_api_code": True,
+    "feishu_trade_ledger_api_message": True,
+    "feishu_trade_ledger_response_body": True,
 }
 
 ORDER_STATUS_TEXT_MAP = {

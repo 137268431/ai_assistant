@@ -177,13 +177,28 @@
             return headers;
         }
         async function requestWarmupJson(path, params = {}, { method = 'GET', body = null } = {}) {
+            const methodText = String(method || 'GET').toUpperCase();
             const options = {
-                method,
+                method: methodText,
                 headers: getAuthHeaders(body ? { 'Content-Type': 'application/json' } : {})
             };
             if (body) options.body = JSON.stringify(body);
+            const requestPath = buildPageUrl(path, params, { environment: currentEnvironment });
+            if (methodText === 'GET' && typeof cachedPageJson === 'function') {
+                return cachedPageJson(requestPath, {
+                    ...options,
+                    retryAttempts: 3,
+                    retryDelayMs: 500
+                }, {
+                    profile: 'runtimeStatus',
+                    environment: currentEnvironment,
+                    ttlMs: 5000,
+                    swrMs: 5000,
+                    tags: ['warmup', currentEnvironment]
+                });
+            }
             const response = await fetchWithRetry(
-                buildPageUrl(path, params, { environment: currentEnvironment }),
+                requestPath,
                 options,
                 { attempts: 3, retryDelayMs: 500 }
             );
@@ -200,6 +215,9 @@
             }
             if (!response.ok) {
                 throw new Error(payload.message || payload.error || `Request failed (${response.status})`);
+            }
+            if (methodText !== 'GET' && typeof invalidateIbkrDataCache === 'function') {
+                invalidateIbkrDataCache(['warmup', 'runtimeStatus', 'marketData']);
             }
             return payload;
         }

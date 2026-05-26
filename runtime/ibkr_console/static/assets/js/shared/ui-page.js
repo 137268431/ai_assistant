@@ -320,13 +320,16 @@ function buildPageContextTradingDateItem({ tradingDate, allowGlobal, brokerMode,
 }
 
 function buildPageContextMetaItems(items = [], options = {}) {
+  const normalizedItems = (Array.isArray(items) ? items : [])
+    .map(normalizePageContextMetaItem)
+    .filter(Boolean);
   const pageAllowGlobal = typeof window !== 'undefined' ? window.__ibkrPageContextAllowGlobal : false;
   const allowGlobal = Boolean(options.allowGlobal ?? pageAllowGlobal);
   const environment = resolvePageContextEnvironment(allowGlobal);
   const brokerContext = !allowGlobal && typeof getBrokerModeContext === 'function' ? getBrokerModeContext() : {};
   const brokerMode = brokerContext.broker_mode || environment;
   const dataEnvironment = brokerContext.data_environment || 'live';
-  const tradingDate = resolvePageContextTradingDate(items);
+  const tradingDate = resolvePageContextTradingDate(normalizedItems);
   const baseItems = allowGlobal
     ? [{ label: '环境', value: getEnvironmentLabel(environment, true), tone: environment }]
     : [
@@ -337,7 +340,7 @@ function buildPageContextMetaItems(items = [], options = {}) {
           tone: dataEnvironment === 'live' ? 'shared' : dataEnvironment,
         },
       ];
-  const extraItems = normalized.filter((item) => item.includeInContext && !isPageContextBaseMetaLabel(item.label));
+  const extraItems = normalizedItems.filter((item) => item.includeInContext && !isPageContextBaseMetaLabel(item.label));
   return [
     ...baseItems,
     buildPageContextTradingDateItem({ tradingDate, allowGlobal, brokerMode, dataEnvironment }),
@@ -377,6 +380,17 @@ function rerenderPageContextMetaOnly() {
 }
 
 async function fetchPageContextMarketCalendar({ date, brokerMode, dataEnvironment }) {
+  if (typeof cachedMarketCalendar === 'function') {
+    return cachedMarketCalendar({
+      date,
+      broker_mode: brokerMode,
+      market_data_mode: dataEnvironment,
+      data_environment: dataEnvironment,
+      symbol: 'SPY',
+    }, {
+      tags: ['pageContext'],
+    });
+  }
   const params = new URLSearchParams();
   params.set('date', date);
   params.set('symbol', 'SPY');

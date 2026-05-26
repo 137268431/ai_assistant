@@ -34,6 +34,9 @@ MergeServiceTopology = Callable[..., dict[str, Any]]
 BuildServiceTopology = Callable[[], dict[str, Any]]
 ProbeConsoleStatus = Callable[[str], dict[str, Any]]
 RequestsGet = Callable[..., requests.Response]
+AccountSnapshotProbe = Callable[[str], dict[str, Any]]
+
+ACCOUNT_SNAPSHOT_WARN_MS = 12_000.0
 
 
 def _monitor_builder_error(stage: str, exc: Any, *, severity: str = "warning") -> dict[str, str]:
@@ -169,6 +172,117 @@ def _append_effective_gate_flag(existing_flags: Any, gate: dict[str, Any]) -> li
                 }
             )
     return merged
+
+
+def _merge_unique_flags(existing_flags: Any, extra_flags: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged = [dict(item) for item in existing_flags if isinstance(item, dict)] if isinstance(existing_flags, list) else []
+    seen = {str(item.get("code") or "").strip() for item in merged if str(item.get("code") or "").strip()}
+    for item in extra_flags:
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("code") or "").strip()
+        if code and code in seen:
+            continue
+        if code:
+            seen.add(code)
+        merged.append(dict(item))
+    return merged
+
+
+def _set_status_from_flags(payload: dict[str, Any], flags: list[dict[str, Any]]) -> None:
+    severities = {str((item or {}).get("severity") or "").strip().lower() for item in flags if isinstance(item, dict)}
+    current_status = str(payload.get("status") or "ok").strip().lower() or "ok"
+    if "error" in severities and current_status not in {"offline", "error"}:
+        payload["status"] = "error"
+        payload["ok"] = False
+    elif "warning" in severities and current_status == "ok":
+        payload["status"] = "warning"
+        payload["ok"] = False
+
+
+def _elapsed_from_account_snapshot_probe(probe: dict[str, Any], snapshot: dict[str, Any]) -> float:
+    elapsed = probe.get("elapsed_ms")
+    if elapsed not in (None, ""):
+        try:
+            return float(elapsed)
+        except Exception:
+            return 0.0
+    diagnostics = snapshot.get("diagnostics") if isinstance(snapshot.get("diagnostics"), dict) else {}
+    account = diagnostics.get("account_snapshot") if isinstance(diagnostics.get("account_snapshot"), dict) else {}
+    try:
+        return float(account.get("total_elapsed_ms") or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _account_snapshot_flags(probe: dict[str, Any]) -> list[dict[str, Any]]:
+    if not isinstance(probe, dict) or probe.get("skipped"):
+        return []
+    snapshot = probe.get("payload") if isinstance(probe.get("payload"), dict) else {}
+    flags: list[dict[str, Any]] = []
+    status_code = int(probe.get("status_code") or 0)
+    ok = bool(probe.get("ok")) and status_code < 400 and snapshot.get("ok") is not False
+    service_running = snapshot.get("service_running")
+    gateway_running = snapshot.get("gateway_running")
+    session_authenticated = snapshot.get("session_authenticated")
+    if service_running is False or gateway_running is False or session_authenticated is False:
+        flags.append(
+            {
+                "severity": "error",
+                "code": "account_runtime_unavailable",
+                "title": "Account runtime unavailable",
+                "detail": (
+                    f"service_running={service_running} gateway_running={gateway_running} "
+                    f"session_authenticated={session_authenticated}"
+                ),
+            }
+        )
+    if not ok:
+        detail = str(probe.get("error") or snapshot.get("error") or snapshot.get("message") or f"status={status_code}")
+        flags.append(
+            {
+                "severity": "warning",
+                "code": "account_snapshot_degraded",
+                "title": "Account snapshot unavailable",
+                "detail": detail,
+            }
+        )
+    elapsed_ms = _elapsed_from_account_snapshot_probe(probe, snapshot)
+    if elapsed_ms >= ACCOUNT_SNAPSHOT_WARN_MS:
+        flags.append(
+            {
+                "severity": "warning",
+                "code": "account_snapshot_timeout",
+                "title": "Account snapshot slow",
+                "detail": f"account snapshot took {elapsed_ms:.0f}ms",
+            }
+        )
+    errors = snapshot.get("errors") if isinstance(snapshot.get("errors"), dict) else {}
+    blocking_errors = [
+        f"{name}: {errors.get(name)}"
+        for name in ("summary", "positions", "orders")
+        if str(errors.get(name) or "").strip()
+    ]
+    if blocking_errors:
+        flags.append(
+            {
+                "severity": "warning",
+                "code": "account_snapshot_degraded",
+                "title": "Account snapshot degraded",
+                "detail": " | ".join(blocking_errors[:3]),
+            }
+        )
+    pnl_error = str(errors.get("pnl") or "").strip()
+    if pnl_error:
+        flags.append(
+            {
+                "severity": "warning",
+                "code": "account_pnl_unavailable",
+                "title": "Account PnL unavailable",
+                "detail": pnl_error,
+            }
+        )
+    return flags
 
 
 def _history_backfill_detail(compute: dict[str, Any]) -> str:
@@ -555,6 +669,7 @@ def build_system_monitor_payload(
     derive_monitor_service_map: DeriveMonitorServiceMap,
     merge_service_topology: MergeServiceTopology,
     build_service_topology: BuildServiceTopology,
+    account_snapshot_probe: AccountSnapshotProbe | None = None,
     service_profile: str = "api",
 ) -> dict[str, Any]:
     runtime_environment = normalize_broker_mode(environment, configured_broker_mode())
@@ -646,6 +761,19 @@ def build_system_monitor_payload(
             "target_url": f"{str(console_base_url or '').rstrip('/')}/index.html",
             "error": str(exc),
         }
+    if callable(account_snapshot_probe):
+        try:
+            account_snapshot_probe_payload = account_snapshot_probe(runtime_environment)
+        except Exception as exc:
+            builder_errors.append(_monitor_builder_error("account_snapshot", exc))
+            account_snapshot_probe_payload = {
+                "ok": False,
+                "status_code": 0,
+                "payload": {},
+                "error": str(exc),
+            }
+    else:
+        account_snapshot_probe_payload = {"ok": True, "skipped": True, "reason": "account_snapshot_probe_not_configured"}
 
     merged_payload = dict(base_payload)
     merged_payload.setdefault("ok", base_monitor_ok)
@@ -693,6 +821,7 @@ def build_system_monitor_payload(
         "timeout_s": base_monitor_result.get("timeout_s"),
         "source_unavailable": monitor_source_unavailable,
     }
+    merged_payload["account_snapshot_probe"] = account_snapshot_probe_payload
     merged_payload["scheduler"] = scheduler_summary
     merged_payload["backtest_service"] = {
         **backtest_health,
@@ -754,6 +883,10 @@ def build_system_monitor_payload(
         merged_payload["flags"] = _append_effective_gate_flag(merged_payload.get("flags"), gate)
     except Exception as exc:
         builder_errors.append(_monitor_builder_error("effective_trading_gate", exc))
+    account_flags = _account_snapshot_flags(account_snapshot_probe_payload)
+    if account_flags:
+        merged_payload["flags"] = _merge_unique_flags(merged_payload.get("flags"), account_flags)
+        _set_status_from_flags(merged_payload, account_flags)
     if builder_errors:
         merged_payload["monitor_builder_errors"] = builder_errors
         merged_payload["flags"] = _merge_monitor_builder_flags(merged_payload.get("flags"), builder_errors)

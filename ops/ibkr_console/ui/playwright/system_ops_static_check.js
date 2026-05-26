@@ -16,6 +16,7 @@ function findRepoRoot(startDir) {
 const repoRoot = findRepoRoot(__dirname);
 const staticRoot = path.join(repoRoot, 'runtime', 'ibkr_console', 'static');
 const issues = [];
+let checkCount = 0;
 
 function readStatic(relativePath) {
   return fs.readFileSync(path.join(staticRoot, relativePath), 'utf8');
@@ -49,6 +50,7 @@ function readPageScriptBundle(htmlRelativePath, scriptPrefix, fallbackRelativePa
 }
 
 function assert(condition, issue) {
+  checkCount += 1;
   if (!condition) issues.push(issue);
 }
 
@@ -97,6 +99,58 @@ function buildUiSandbox() {
   return sandbox;
 }
 
+function buildPageUiSandbox() {
+  const localStore = new Map([
+    ['ibkr_environment', 'live'],
+    ['ibkr_broker_mode', 'paper'],
+    ['ibkr_market_data_mode', 'live'],
+  ]);
+  const localStorage = {
+    getItem: (key) => localStore.get(key) || '',
+    setItem: (key, value) => localStore.set(key, String(value)),
+    removeItem: (key) => localStore.delete(key),
+  };
+  const location = {
+    href: 'https://static-check.local/ibkr_runtime.html?environment=live&broker_mode=paper&market_data_mode=live',
+    origin: 'https://static-check.local',
+    search: '?environment=live&broker_mode=paper&market_data_mode=live',
+    pathname: '/ibkr_runtime.html',
+  };
+  const sandbox = {
+    window: {
+      __IBKR_RUNTIME_CONFIG__: {},
+      __ibkrBrokerModeContext: {
+        broker_mode: 'paper',
+        data_environment: 'live',
+        market_data_environment: 'live',
+      },
+      location,
+      localStorage,
+      setTimeout: () => 0,
+      clearTimeout: () => {},
+      setInterval: () => 0,
+      clearInterval: () => {},
+    },
+    document: {
+      getElementById: () => null,
+      querySelectorAll: () => [],
+      body: { insertAdjacentHTML: () => {} },
+    },
+    localStorage,
+    location,
+    URL,
+    URLSearchParams,
+    Intl,
+    Date,
+    console,
+  };
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  vm.runInContext(readStatic('assets/js/shared/base.js'), sandbox, { filename: 'base.js' });
+  vm.runInContext(readStatic('assets/js/shared/ui-page.js'), sandbox, { filename: 'ui-page.js' });
+  return sandbox;
+}
+
 function renderSystemFreshnessFixture(freshnessPayload) {
   const sandbox = buildUiSandbox();
   const elements = new Map();
@@ -130,6 +184,40 @@ try {
   assert(/page-bridge-link active[\s\S]*图表工作台/.test(analyticsBridge), 'analytics_bridge_chart_not_active');
 } catch (error) {
   issues.push(`ui_render_failed:${error.message}`);
+}
+
+try {
+  const pageUi = buildPageUiSandbox();
+  const contextMeta = pageUi.buildPageContextMetaItems([
+    { label: '交易日', value: '2026-05-26' },
+    { label: 'Broker', value: 'should-not-duplicate', includeInContext: true },
+    { label: '链路', value: 'ready', tone: 'ok', includeInContext: true },
+  ]);
+  const contextHtml = pageUi.renderPageContextBar('测试', {
+    description: 'Context regression',
+    metaItems: [
+      { label: '交易日', value: '2026-05-26' },
+      { label: '链路', value: 'ready', tone: 'ok', includeInContext: true },
+    ],
+  });
+  assert(contextMeta.some((item) => item.label === 'Broker' && item.value === 'PAPER'), 'page_context_missing_broker_chip');
+  assert(contextMeta.some((item) => item.label === '数据' && item.value === 'Shared Data'), 'page_context_missing_data_chip');
+  assert(contextMeta.some((item) => item.label === '交易日' && item.value.includes('2026-05-26')), 'page_context_missing_trading_date_chip');
+  assert(contextMeta.some((item) => item.label === '链路' && item.value === 'ready'), 'page_context_missing_custom_chip');
+  assert(!contextMeta.some((item) => item.label === 'Broker' && item.value === 'should-not-duplicate'), 'page_context_duplicate_base_chip');
+  assert(includesAll(contextHtml, ['page-context-bar', '测试', 'Broker', 'PAPER', 'Shared Data', '交易日', '2026-05-26', '链路', 'ready']), 'page_context_render_missing_expected_copy');
+  assert(typeof pageUi.getIbkrCacheProfile === 'function', 'cache_profile_helper_missing');
+  assert(typeof pageUi.cachedPageJson === 'function', 'cached_page_json_missing');
+  assert(typeof pageUi.cachedMarketCalendar === 'function', 'cached_market_calendar_missing');
+  const cacheDate = pageUi.getCurrentEtDateString();
+  const calendarCache = pageUi.getMarketCalendarCacheOptions({
+    ok: true,
+    market_date: cacheDate,
+    market_session: { kind: 'regular' },
+  }, { date: cacheDate });
+  assert(calendarCache.ttlMs === 30000 && calendarCache.swrMs >= 60000, `market_calendar_active_cache_profile:${JSON.stringify(calendarCache)}`);
+} catch (error) {
+  issues.push(`page_context_render_failed:${error.message}`);
 }
 
 const commonCss = readStatic('assets/css/common.css');
@@ -248,6 +336,13 @@ assert(!/screener-domain-bridge[\s\S]{0,240}page-bridge-copy[\s\S]{0,80}display:
 assert(!/screener-domain-tab\.page-bridge-link[\s\S]{0,120}min-height:\s*42px/.test(screenerCss), 'screener_bridge_compact_height');
 
 const runtimeHtml = readStatic('ibkr_runtime.html');
+const runtimeContextFixVersion = '20260526-cache-profiles';
+const commonJs = readStatic('common.js');
+assert(commonJs.includes(`sharedBundleVersion = '${runtimeContextFixVersion}'`), 'common_missing_runtime_context_fix_cachebuster');
+assert(runtimeHtml.includes(`common.js?v=${runtimeContextFixVersion}`), 'runtime_html_missing_runtime_context_fix_cachebuster');
+assert(commonJs.includes('cachedPageJson') && commonJs.includes('cachedMarketCalendar'), 'common_missing_cache_helper_exports');
+assert(!commonJs.includes('20260526-market-calendar-context'), 'common_still_has_market_calendar_cachebuster');
+assert(!runtimeHtml.includes('common.js?v=20260526-market-calendar-context'), 'runtime_html_still_has_market_calendar_cachebuster');
 const runtimeJs = readPageScriptBundle(
   'ibkr_runtime.html',
   'assets/js/pages/ibkr_runtime/',
@@ -300,4 +395,4 @@ if (issues.length) {
   process.exit(1);
 }
 
-console.log(JSON.stringify({ ok: true, checks: 59, staticRoot }, null, 2));
+console.log(JSON.stringify({ ok: true, checks: checkCount, staticRoot }, null, 2));

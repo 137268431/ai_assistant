@@ -185,6 +185,8 @@ def build_market_universe_payload(
 ) -> dict[str, Any]:
     market_universe = as_dict(market_universe_payload)
     active_trade_symbols = market_universe.get("active_trade_symbols")
+    execution_eligible_symbols = market_universe.get("execution_eligible_symbols")
+    observe_target_symbols = market_universe.get("observe_target_symbols")
     market_ws_symbols = market_universe.get("market_ws_symbols")
     market_ws_subscribed_symbols = market_universe.get("market_ws_subscribed_symbols")
     active_repair_symbols = market_universe.get("last_active_repair_symbols")
@@ -195,6 +197,14 @@ def build_market_universe_payload(
         "watchlist_pool_count": int(market_universe.get("watchlist_pool_count") or 0),
         "active_target_date": str(market_universe.get("active_target_date") or ""),
         "active_target_count": int(market_universe.get("active_target_count") or 0),
+        "execution_eligible_target_count": int(market_universe.get("execution_eligible_target_count") or 0),
+        "execution_eligible_symbols": trim_array(
+            execution_eligible_symbols,
+            len(execution_eligible_symbols) if isinstance(execution_eligible_symbols, list) else 0,
+        ),
+        "observe_target_count": int(market_universe.get("observe_target_count") or 0),
+        "observe_target_symbols": trim_array(observe_target_symbols, 25),
+        "no_execution_eligible_targets": bool(market_universe.get("no_execution_eligible_targets")),
         "active_trade_symbols": trim_array(
             active_trade_symbols,
             len(active_trade_symbols) if isinstance(active_trade_symbols, list) else 0,

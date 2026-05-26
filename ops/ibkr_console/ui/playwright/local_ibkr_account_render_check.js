@@ -445,6 +445,7 @@ common = common.replace(
 const safeCommon = common.replace(/<\/script/gi, '<\\/script');
 const injected = `<script>${safeCommon}</script><script>
 window.__MOCK_SNAPSHOT__ = ${JSON.stringify(mockSnapshot)};
+window.getUsDate = function() { return '2026-04-10'; };
 window.buildPageUrl = function(path, params = {}, options = {}) {
   const search = new URLSearchParams();
   const env = options && options.environment ? String(options.environment) : 'live';
@@ -455,7 +456,25 @@ window.buildPageUrl = function(path, params = {}, options = {}) {
   const query = search.toString();
   return query ? \`\${path}?\${query}\` : path;
 };
-window.fetchWithRetry = async function() {
+window.fetchWithRetry = async function(input) {
+  const url = String(input || '');
+  if (url.includes('/api/custom/ibkr/today-targets')) {
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        ok: true,
+        market_date: '2026-04-10',
+        summary: {
+          total: 25,
+          active_count: 24,
+          candidate_count: 1,
+          signaled_count: 3,
+        },
+        items: [],
+      }),
+    };
+  }
   return {
     ok: true,
     status: 200,
@@ -508,6 +527,8 @@ html = html.replace(/<link href="https:\/\/fonts\.googleapis\.com[^"]+" rel="sty
     ordersMeta: document.getElementById('ordersMeta')?.textContent || '',
     positionsMeta: document.getElementById('positionsMeta')?.textContent || '',
     accountSummaryText: document.getElementById('summaryGrid')?.innerText || '',
+    pageTopText: document.getElementById('pageTopSection')?.innerText || '',
+    contextText: document.getElementById('contextBar')?.innerText || '',
     positionsText: document.getElementById('positionsArea')?.innerText || '',
     flatSectionText: document.querySelector('.flat-position-section')?.innerText || '',
     summaryText: document.getElementById('ordersSummary')?.innerText || '',
@@ -535,6 +556,9 @@ html = html.replace(/<link href="https:\/\/fonts\.googleapis\.com[^"]+" rel="sty
     && result.areaText.includes('PB Stale / Needs Repair Chains')
     && result.areaText.includes('missing_client_order_id')
     && result.accountSummaryText.includes('Remaining BP')
+    && result.pageTopText.includes('盘中标 24 active')
+    && result.contextText.includes('盘中标')
+    && result.contextText.includes('24 active')
     && result.positionsMeta.includes('1 open · 1 flat rows')
     && result.positionsText.includes('Unrealized %')
     && result.flatSectionText.includes('今日已闭合 / FLAT')

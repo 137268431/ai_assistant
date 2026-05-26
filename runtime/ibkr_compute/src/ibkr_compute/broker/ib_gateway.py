@@ -295,6 +295,20 @@ class _IBGatewayApp(EWrapper, EClient):
             if callback in self._order_update_listeners:
                 self._order_update_listeners.remove(callback)
 
+    def _has_pending_request_kind(self, *kinds: str) -> bool:
+        requested = {str(kind or "") for kind in kinds}
+        return any(str(ctx.kind or "") in requested for ctx in list(self._pending_requests.values()))
+
+    def _order_callback_metadata(self, callback_type: str, *, requested_snapshot: bool = False) -> dict[str, Any]:
+        received_ms = int(time.time() * 1000)
+        return {
+            "ib_callback_type": str(callback_type or ""),
+            "broker_realtime_callback": not bool(requested_snapshot),
+            "broker_callback_received_at_ms": received_ms,
+            "broker_callback_received_at": _iso_now(),
+            "broker_callback_source": "request_snapshot" if requested_snapshot else "ib_socket_callback",
+        }
+
     def _next_request(self, kind: str) -> tuple[int, _PendingRequest]:
         with self._state_lock:
             self._request_seq += 1
@@ -530,6 +544,7 @@ class _IBGatewayApp(EWrapper, EClient):
             ctx.event.set()
 
     def openOrder(self, orderId: int, contract, order, orderState):  # noqa: N802
+        requested_snapshot = self._has_pending_request_kind("open_orders", "open_orders_all")
         normalized = {
             "orderId": str(orderId),
             "id": str(orderId),
@@ -555,6 +570,7 @@ class _IBGatewayApp(EWrapper, EClient):
             "avgFillPrice": 0.0,
             "avgPrice": 0.0,
             "updated_at": _iso_now(),
+            **self._order_callback_metadata("openOrder", requested_snapshot=requested_snapshot),
         }
         key = str(orderId)
         with self._state_lock:
@@ -579,6 +595,7 @@ class _IBGatewayApp(EWrapper, EClient):
         _mktCapPrice: float,
     ):
         key = str(orderId)
+        requested_snapshot = self._has_pending_request_kind("open_orders", "open_orders_all")
         patch = {
             "orderId": key,
             "id": key,
@@ -588,6 +605,7 @@ class _IBGatewayApp(EWrapper, EClient):
             "avgFillPrice": _safe_float(avgFillPrice, 0.0),
             "avgPrice": _safe_float(avgFillPrice, 0.0),
             "updated_at": _iso_now(),
+            **self._order_callback_metadata("orderStatus", requested_snapshot=requested_snapshot),
         }
         with self._state_lock:
             current = dict(self._open_orders.get(key) or {})
@@ -714,14 +732,17 @@ class _IBGatewayApp(EWrapper, EClient):
         exec_id = str(getattr(execution, "execId", "") or "")
         if not exec_id:
             return
+        order_id = str(getattr(execution, "orderId", "") or "")
+        shares = _safe_float(getattr(execution, "shares", 0), 0.0)
+        price = _safe_float(getattr(execution, "price", 0), 0.0)
         self._executions[exec_id] = {
             "execId": exec_id,
-            "orderId": str(getattr(execution, "orderId", "") or ""),
+            "orderId": order_id,
             "conid": int(getattr(contract, "conId", 0) or 0),
             "ticker": str(getattr(contract, "symbol", "") or "").upper(),
             "side": str(getattr(execution, "side", "") or "").upper(),
-            "shares": _safe_float(getattr(execution, "shares", 0), 0.0),
-            "price": _safe_float(getattr(execution, "price", 0), 0.0),
+            "shares": shares,
+            "price": price,
             "time": str(getattr(execution, "time", "") or ""),
             "account": str(getattr(execution, "acctNumber", "") or ""),
             "commission": 0.0,
@@ -729,6 +750,48 @@ class _IBGatewayApp(EWrapper, EClient):
         ctx = self._pending_requests.get(int(reqId))
         if ctx:
             ctx.items = [dict(item) for item in self._executions.values()]
+        if ctx and ctx.kind == "executions":
+            return
+        if not order_id:
+            return
+        with self._state_lock:
+            current = dict(self._open_orders.get(order_id) or {})
+            order_execs = [
+                item
+                for item in self._executions.values()
+                if str(item.get("orderId") or "") == order_id
+            ]
+            cumulative_shares = sum(_safe_float(item.get("shares"), 0.0) for item in order_execs)
+            fill_value = sum(
+                _safe_float(item.get("shares"), 0.0) * _safe_float(item.get("price"), 0.0)
+                for item in order_execs
+            )
+            average_price = (fill_value / cumulative_shares) if cumulative_shares > 0 else price
+            remaining_quantity = _safe_float(current.get("remainingQuantity"), 0.0)
+            status = str(current.get("status") or "")
+            if remaining_quantity <= 0 and cumulative_shares > 0:
+                status = status or "Filled"
+            payload = {
+                **current,
+                "orderId": order_id,
+                "id": order_id,
+                "conid": int(getattr(contract, "conId", 0) or current.get("conid") or 0),
+                "ticker": str(getattr(contract, "symbol", "") or current.get("ticker") or "").upper(),
+                "side": str(getattr(execution, "side", "") or current.get("side") or "").upper(),
+                "status": status or "Submitted",
+                "filledQuantity": cumulative_shares,
+                "avgFillPrice": average_price,
+                "avgPrice": average_price,
+                "lastFillPrice": price,
+                "lastExecutionTime": str(getattr(execution, "time", "") or ""),
+                "ib_exec_id": exec_id,
+                "execution_shares": shares,
+                "execution_price": price,
+                "updated_at": _iso_now(),
+                **self._order_callback_metadata("execDetails", requested_snapshot=False),
+            }
+            self._open_orders[order_id] = payload
+        self._emit_order_update(payload)
 
     def execDetailsEnd(self, reqId: int):  # noqa: N802
         ctx = self._pending_requests.get(int(reqId))

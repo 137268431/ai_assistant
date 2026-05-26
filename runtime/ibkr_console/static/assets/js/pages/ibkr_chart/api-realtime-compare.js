@@ -24,11 +24,26 @@
         }
 
         async function requestChartJson(path, { method = 'GET', body = null } = {}, maxRetries = 1) {
+            const methodText = String(method || 'GET').toUpperCase();
+            if (methodText === 'GET' && typeof cachedPageJson === 'function') {
+                return cachedPageJson(buildPageUrl(path, {}, { environment: currentEnvironment }), {
+                    method: methodText,
+                    headers: getAuthHeaders(),
+                    retryAttempts: maxRetries + 1,
+                    retryDelayMs: 300,
+                }, {
+                    profile: 'tradingList',
+                    environment: currentEnvironment,
+                    ttlMs: 15000,
+                    swrMs: 15000,
+                    tags: ['chart', currentEnvironment]
+                });
+            }
             let lastError = null;
             for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
                 try {
                     const options = {
-                        method,
+                        method: methodText,
                         headers: getAuthHeaders(body ? { 'Content-Type': 'application/json' } : {})
                     };
                     if (body) options.body = JSON.stringify(body);
@@ -66,6 +81,19 @@
         async function requestChartRuntimeJson(path, params = {}, maxRetries = 1) {
             let lastError = null;
             const url = `${BASE_URL}${buildPageUrl(path, params, { environment: currentEnvironment })}`;
+            if (typeof cachedPageJson === 'function') {
+                return cachedPageJson(buildPageUrl(path, params, { environment: currentEnvironment }), {
+                    headers: getAuthHeaders(),
+                    retryAttempts: maxRetries + 1,
+                    retryDelayMs: 300,
+                }, {
+                    profile: 'realtime',
+                    environment: currentEnvironment,
+                    ttlMs: 15000,
+                    swrMs: 15000,
+                    tags: ['chart', 'runtime', currentEnvironment]
+                });
+            }
             for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
                 try {
                     const response = await fetch(url, {

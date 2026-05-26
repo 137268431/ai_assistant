@@ -24,7 +24,12 @@ from ibkr_api.system.jobs.open_report import (
     load_market_snapshots_from_pb,
     matches_open_report_time_window,
 )
-from ibkr_api.system.jobs.market_calendar import build_market_calendar_snapshot
+from ibkr_api.system.jobs.market_calendar import (
+    _clear_market_calendar_cache,
+    build_market_calendar_response,
+    build_market_calendar_snapshot,
+)
+from ibkr_api.app_core.route_cache import RouteSWRCache, canonical_cache_key, request_cache_bypass
 
 
 class SystemScanSummaryTest(unittest.TestCase):
@@ -231,6 +236,86 @@ class SystemScanSummaryTest(unittest.TestCase):
         self.assertTrue(snapshot["is_closed"])
         self.assertEqual(snapshot["closed_reason"], "ibkr_closed")
         self.assertEqual(calls[0][2], "/ibkr/market/calendar")
+
+    def test_market_calendar_response_caches_and_allows_cache_bust(self):
+        _clear_market_calendar_cache()
+        calls = []
+
+        def request_calendar(method, base_url, path, params=None, timeout=0, **kwargs):
+            calls.append((method, base_url, path, params))
+            return {
+                "status_code": 200,
+                "payload": {
+                    "ok": True,
+                    "source": "ibkr_schedule",
+                    "market_date": "2026-05-26",
+                    "symbol": "SPY",
+                    "is_trading_day": True,
+                    "is_closed": False,
+                    "closed_reason": "",
+                    "market_session": {"kind": "regular", "label_zh": "盘中"},
+                    "session": {},
+                },
+            }
+
+        def build_payload(**extra):
+            return {
+                "date": "2026-05-26",
+                "broker_mode": "paper",
+                "market_data_mode": "live",
+                "data_environment": "live",
+                **extra,
+            }
+
+        common = {
+            "time_strings": lambda: {"date": "2026-05-26"},
+            "request_json_request": request_calendar,
+            "compute_base_url": "http://compute.internal",
+            "config_value": lambda key, default, environment: default,
+        }
+        try:
+            first, first_status = build_market_calendar_response(payload=build_payload(), **common)
+            second, second_status = build_market_calendar_response(payload=build_payload(), **common)
+            bypass, bypass_status = build_market_calendar_response(payload=build_payload(cache_bust="1"), **common)
+        finally:
+            _clear_market_calendar_cache()
+
+        self.assertEqual(first_status, 200)
+        self.assertEqual(second_status, 200)
+        self.assertEqual(bypass_status, 200)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(first["_cache"]["state"], "miss")
+        self.assertEqual(second["_cache"]["state"], "hit")
+        self.assertEqual(bypass["_cache"]["state"], "bypass")
+
+    def test_route_swr_cache_hits_and_bypass_refreshes(self):
+        cache = RouteSWRCache("test-route-cache")
+        calls = []
+        key = canonical_cache_key("demo", {"a": "1", "cache_bust": "1"})
+
+        def builder():
+            calls.append(len(calls) + 1)
+            return {"ok": True, "value": calls[-1]}, 200
+
+        first, first_status = cache.get(key, builder=builder, ttl_seconds=30, stale_seconds=30)
+        second, second_status = cache.get(key, builder=builder, ttl_seconds=30, stale_seconds=30)
+        bypass, bypass_status = cache.get(
+            key,
+            builder=builder,
+            ttl_seconds=30,
+            stale_seconds=30,
+            force=request_cache_bypass({"cache_bust": "1"}),
+        )
+
+        self.assertEqual(first_status, 200)
+        self.assertEqual(second_status, 200)
+        self.assertEqual(bypass_status, 200)
+        self.assertEqual(first["value"], 1)
+        self.assertEqual(second["value"], 1)
+        self.assertEqual(bypass["value"], 2)
+        self.assertEqual(first["_cache"]["state"], "miss")
+        self.assertEqual(second["_cache"]["state"], "hit")
+        self.assertEqual(bypass["_cache"]["state"], "bypass")
 
     def test_scan_summary_delivers_open_report_to_status_chat(self):
         sent = []

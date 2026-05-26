@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import threading
+import time
 from datetime import datetime
 from typing import Any, Callable
 
@@ -22,6 +25,10 @@ from ibkr_compute.market.calendar import (
 RequestJsonRequest = Callable[..., dict[str, Any]]
 ConfigValue = Callable[[str, str, str], str]
 
+_MARKET_CALENDAR_CACHE_LOCK = threading.RLock()
+_MARKET_CALENDAR_CACHE: dict[tuple[str, str, str, str, str, str], dict[str, Any]] = {}
+_MARKET_CALENDAR_IN_FLIGHT: dict[tuple[str, str, str, str, str, str], threading.Event] = {}
+
 
 def _to_text(value: Any) -> str:
     return str(value if value is not None else "").strip()
@@ -29,6 +36,21 @@ def _to_text(value: Any) -> str:
 
 def _as_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
+
+
+def _truthy(value: Any) -> bool:
+    return _to_text(value).lower() in {"1", "true", "yes", "on"}
+
+
+def _disabled(value: Any) -> bool:
+    return _to_text(value).lower() in {"0", "false", "no", "off"}
+
+
+def _cache_seconds(env_name: str, fallback: float) -> float:
+    try:
+        return max(0.0, float(os.environ.get(env_name, fallback)))
+    except (TypeError, ValueError):
+        return fallback
 
 
 def _parse_market_date(value: Any):
@@ -90,6 +112,225 @@ def _enrich_next_open(snapshot: dict[str, Any], fallback: dict[str, Any]) -> dic
         if _to_text(fallback.get(key)):
             enriched[key] = fallback.get(key)
     return enriched
+
+
+def _market_calendar_cache_enabled() -> bool:
+    return not _disabled(os.environ.get("IBKR_MARKET_CALENDAR_CACHE_ENABLED", "true"))
+
+
+def _market_calendar_cache_bypass(data: dict[str, Any]) -> bool:
+    return _truthy(data.get("cache_bust")) or _disabled(data.get("cache"))
+
+
+def _market_calendar_cache_key(
+    *,
+    market_date: str,
+    broker_mode: str,
+    data_environment: str,
+    contract_args: dict[str, str],
+) -> tuple[str, str, str, str, str, str]:
+    return (
+        market_date,
+        _to_text(broker_mode).lower(),
+        _to_text(data_environment).lower(),
+        _to_text(contract_args.get("symbol")).upper(),
+        _to_text(contract_args.get("exchange")).upper(),
+        _to_text(contract_args.get("sec_type")).upper(),
+    )
+
+
+def _market_calendar_ttl_seconds(payload: dict[str, Any], *, market_date: str, today_date: str) -> float:
+    source_error = _to_text(payload.get("source_error") or payload.get("error"))
+    if source_error or payload.get("ok") is False:
+        return _cache_seconds("IBKR_MARKET_CALENDAR_ERROR_TTL_SEC", 60.0)
+    if market_date and today_date and market_date < today_date:
+        return _cache_seconds("IBKR_MARKET_CALENDAR_HISTORY_TTL_SEC", 86400.0)
+
+    market_session = _as_dict(payload.get("market_session"))
+    kind = _to_text(market_session.get("kind") or payload.get("session_kind")).lower()
+    if payload.get("is_closed") or payload.get("is_trading_day") is False or kind == "closed":
+        return _cache_seconds("IBKR_MARKET_CALENDAR_CLOSED_TTL_SEC", 1800.0)
+    if kind == "afterhours":
+        return _cache_seconds("IBKR_MARKET_CALENDAR_AFTERHOURS_TTL_SEC", 120.0)
+    if kind in {"premarket", "regular", "close_transition"}:
+        return _cache_seconds("IBKR_MARKET_CALENDAR_ACTIVE_TTL_SEC", 30.0)
+    return _cache_seconds("IBKR_MARKET_CALENDAR_DEFAULT_TTL_SEC", 60.0)
+
+
+def _market_calendar_stale_seconds(ttl_seconds: float) -> float:
+    fallback = 300.0 if ttl_seconds < 300.0 else min(ttl_seconds, 3600.0)
+    return _cache_seconds("IBKR_MARKET_CALENDAR_STALE_SEC", fallback)
+
+
+def _market_calendar_cache_entry(payload: dict[str, Any], *, market_date: str, today_date: str) -> dict[str, Any]:
+    now = time.monotonic()
+    ttl_seconds = _market_calendar_ttl_seconds(payload, market_date=market_date, today_date=today_date)
+    stale_seconds = _market_calendar_stale_seconds(ttl_seconds)
+    return {
+        "payload": payload,
+        "created_at": now,
+        "expires_at": now + ttl_seconds,
+        "stale_until": now + ttl_seconds + stale_seconds,
+        "ttl_seconds": ttl_seconds,
+    }
+
+
+def _with_market_calendar_cache_meta(
+    payload: dict[str, Any],
+    *,
+    entry: dict[str, Any],
+    state: str,
+    stale: bool = False,
+    error: Any = None,
+) -> dict[str, Any]:
+    now = time.monotonic()
+    created_at = float(entry.get("created_at") or now)
+    meta = {
+        "state": state,
+        "age_s": round(max(0.0, now - created_at), 3),
+        "ttl_s": round(float(entry.get("ttl_seconds") or 0.0), 3),
+        "stale": bool(stale),
+    }
+    if error is not None:
+        meta["error"] = str(error)
+    return {**payload, "_cache": meta}
+
+
+def _store_market_calendar_cache_entry(
+    key: tuple[str, str, str, str, str, str],
+    payload: dict[str, Any],
+    *,
+    market_date: str,
+    today_date: str,
+) -> dict[str, Any]:
+    entry = _market_calendar_cache_entry(payload, market_date=market_date, today_date=today_date)
+    with _MARKET_CALENDAR_CACHE_LOCK:
+        _MARKET_CALENDAR_CACHE[key] = entry
+    return entry
+
+
+def _refresh_market_calendar_cache(
+    key: tuple[str, str, str, str, str, str],
+    *,
+    builder: Callable[[], dict[str, Any]],
+    market_date: str,
+    today_date: str,
+    event: threading.Event,
+) -> None:
+    try:
+        payload = builder()
+        _store_market_calendar_cache_entry(key, payload, market_date=market_date, today_date=today_date)
+    except Exception:
+        pass
+    finally:
+        with _MARKET_CALENDAR_CACHE_LOCK:
+            current = _MARKET_CALENDAR_IN_FLIGHT.get(key)
+            if current is event:
+                _MARKET_CALENDAR_IN_FLIGHT.pop(key, None)
+            event.set()
+
+
+def _cached_market_calendar_payload(
+    key: tuple[str, str, str, str, str, str],
+    *,
+    builder: Callable[[], dict[str, Any]],
+    market_date: str,
+    today_date: str,
+    force: bool = False,
+) -> dict[str, Any]:
+    if not _market_calendar_cache_enabled():
+        payload = builder()
+        entry = _market_calendar_cache_entry(payload, market_date=market_date, today_date=today_date)
+        return _with_market_calendar_cache_meta(payload, entry=entry, state="bypass")
+    if force:
+        payload = builder()
+        entry = _store_market_calendar_cache_entry(key, payload, market_date=market_date, today_date=today_date)
+        return _with_market_calendar_cache_meta(payload, entry=entry, state="bypass")
+
+    now = time.monotonic()
+    with _MARKET_CALENDAR_CACHE_LOCK:
+        entry = _MARKET_CALENDAR_CACHE.get(key)
+        if entry and now <= float(entry.get("expires_at") or 0.0):
+            return _with_market_calendar_cache_meta(_as_dict(entry.get("payload")), entry=entry, state="hit")
+        if entry and now <= float(entry.get("stale_until") or 0.0):
+            event = _MARKET_CALENDAR_IN_FLIGHT.get(key)
+            if event is None:
+                event = threading.Event()
+                _MARKET_CALENDAR_IN_FLIGHT[key] = event
+                thread = threading.Thread(
+                    target=_refresh_market_calendar_cache,
+                    kwargs={
+                        "key": key,
+                        "builder": builder,
+                        "market_date": market_date,
+                        "today_date": today_date,
+                        "event": event,
+                    },
+                    daemon=True,
+                )
+                thread.start()
+            return _with_market_calendar_cache_meta(
+                _as_dict(entry.get("payload")),
+                entry=entry,
+                state="stale",
+                stale=True,
+            )
+        event = _MARKET_CALENDAR_IN_FLIGHT.get(key)
+
+    if event is not None:
+        event.wait(timeout=2.0)
+        with _MARKET_CALENDAR_CACHE_LOCK:
+            entry = _MARKET_CALENDAR_CACHE.get(key)
+            if entry and time.monotonic() <= float(entry.get("stale_until") or 0.0):
+                return _with_market_calendar_cache_meta(
+                    _as_dict(entry.get("payload")),
+                    entry=entry,
+                    state="wait_hit",
+                    stale=time.monotonic() > float(entry.get("expires_at") or 0.0),
+                )
+
+    created_event = threading.Event()
+    with _MARKET_CALENDAR_CACHE_LOCK:
+        event = _MARKET_CALENDAR_IN_FLIGHT.get(key)
+        if event is None:
+            _MARKET_CALENDAR_IN_FLIGHT[key] = created_event
+            event = created_event
+
+    if event is not created_event:
+        event.wait(timeout=2.0)
+        with _MARKET_CALENDAR_CACHE_LOCK:
+            entry = _MARKET_CALENDAR_CACHE.get(key)
+            if entry:
+                return _with_market_calendar_cache_meta(_as_dict(entry.get("payload")), entry=entry, state="wait_hit")
+
+    try:
+        payload = builder()
+        entry = _store_market_calendar_cache_entry(key, payload, market_date=market_date, today_date=today_date)
+        return _with_market_calendar_cache_meta(payload, entry=entry, state="miss")
+    except Exception as exc:
+        with _MARKET_CALENDAR_CACHE_LOCK:
+            entry = _MARKET_CALENDAR_CACHE.get(key)
+        if entry and time.monotonic() <= float(entry.get("stale_until") or 0.0):
+            return _with_market_calendar_cache_meta(
+                _as_dict(entry.get("payload")),
+                entry=entry,
+                state="stale_error",
+                stale=True,
+                error=exc,
+            )
+        raise
+    finally:
+        with _MARKET_CALENDAR_CACHE_LOCK:
+            current = _MARKET_CALENDAR_IN_FLIGHT.get(key)
+            if current is created_event:
+                _MARKET_CALENDAR_IN_FLIGHT.pop(key, None)
+                created_event.set()
+
+
+def _clear_market_calendar_cache() -> None:
+    with _MARKET_CALENDAR_CACHE_LOCK:
+        _MARKET_CALENDAR_CACHE.clear()
+        _MARKET_CALENDAR_IN_FLIGHT.clear()
 
 
 def build_market_calendar_snapshot(
@@ -169,28 +410,53 @@ def build_market_calendar_response(
         return {"ok": False, "error": "invalid_market_date", "market_date": market_date, "source": "ibkr-api"}, 400
     broker_mode = request_broker_mode(data)
     data_environment = request_market_data_mode(data)
-    snapshot = build_market_calendar_snapshot(
+    contract_args = _calendar_contract_args(payload=data, config_value=config_value, environment=data_environment)
+
+    def build_payload() -> dict[str, Any]:
+        snapshot = build_market_calendar_snapshot(
+            market_date=market_date,
+            broker_mode=broker_mode,
+            data_environment=data_environment,
+            payload=data,
+            request_json_request=request_json_request,
+            compute_base_url=compute_base_url,
+            config_value=config_value,
+        )
+        return {
+            **snapshot,
+            "environment": broker_mode,
+            "broker_mode": broker_mode,
+            "market_data_mode": data_environment,
+            "data_environment": data_environment,
+            "source": _to_text(snapshot.get("source")) or LOCAL_NYSE_FALLBACK_SOURCE,
+            "api_source": "ibkr-api",
+        }
+
+    cache_key = _market_calendar_cache_key(
         market_date=market_date,
         broker_mode=broker_mode,
         data_environment=data_environment,
-        payload=data,
-        request_json_request=request_json_request,
-        compute_base_url=compute_base_url,
-        config_value=config_value,
+        contract_args=contract_args,
+    )
+    payload_data = _cached_market_calendar_payload(
+        cache_key,
+        builder=build_payload,
+        market_date=market_date,
+        today_date=_to_text(times.get("date")),
+        force=_market_calendar_cache_bypass(data),
     )
     return {
-        **snapshot,
+        **payload_data,
         "environment": broker_mode,
         "broker_mode": broker_mode,
         "market_data_mode": data_environment,
         "data_environment": data_environment,
-        "source": _to_text(snapshot.get("source")) or LOCAL_NYSE_FALLBACK_SOURCE,
-        "api_source": "ibkr-api",
     }, 200
 
 
 __all__ = [
     "build_market_calendar_response",
     "build_market_calendar_snapshot",
+    "_clear_market_calendar_cache",
     "is_nyse_non_trading_day",
 ]

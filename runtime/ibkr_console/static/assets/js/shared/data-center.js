@@ -136,10 +136,25 @@
     return null;
   }
 
+  function resolveEntryOptions(value, options) {
+    const source = options && typeof options === 'object' ? options : {};
+    if (typeof source.resolveOptions !== 'function') return source;
+    try {
+      const resolved = source.resolveOptions(value, { updatedAt: nowMs() });
+      if (resolved && typeof resolved === 'object') {
+        return { ...source, ...resolved };
+      }
+    } catch (_) {
+      // Dynamic TTL failures should not prevent caching with the base options.
+    }
+    return source;
+  }
+
   function makeEntry(value, options) {
+    const effectiveOptions = resolveEntryOptions(value, options);
     const timestamp = nowMs();
-    const ttlMs = normalizeMs(options.ttlMs != null ? options.ttlMs : options.ttl, DEFAULT_TTL_MS);
-    const swrMs = normalizeMs(options.swrMs != null ? options.swrMs : options.swr, DEFAULT_SWR_MS);
+    const ttlMs = normalizeMs(effectiveOptions.ttlMs != null ? effectiveOptions.ttlMs : effectiveOptions.ttl, DEFAULT_TTL_MS);
+    const swrMs = normalizeMs(effectiveOptions.swrMs != null ? effectiveOptions.swrMs : effectiveOptions.swr, DEFAULT_SWR_MS);
     return {
       value,
       updatedAt: timestamp,
@@ -147,8 +162,8 @@
       staleUntil: timestamp + ttlMs + swrMs,
       ttlMs,
       swrMs,
-      persist: options.persist === true,
-      tags: normalizeTags(options.tags)
+      persist: effectiveOptions.persist === true,
+      tags: normalizeTags(effectiveOptions.tags)
     };
   }
 

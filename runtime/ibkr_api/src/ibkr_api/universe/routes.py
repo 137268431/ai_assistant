@@ -4,6 +4,7 @@ from typing import Any
 
 from flask import Response, jsonify, request
 
+from ibkr_api.app_core.route_cache import RouteSWRCache, cache_seconds, canonical_cache_key, request_cache_bypass
 from ibkr_api.universe.active_window_progress import build_active_window_progress_response
 from ibkr_api.universe.fundamentals import build_fundamentals_list_response, build_fundamentals_refresh_response
 from ibkr_api.universe.lifecycle_flow import build_lifecycle_flow_response
@@ -19,6 +20,29 @@ from ibkr_api.universe.watchlist import (
     build_watchlist_remove_response,
     build_watchlist_upsert_response,
 )
+
+_UNIVERSE_ROUTE_CACHE = RouteSWRCache("universe")
+
+
+def _clear_universe_route_cache() -> None:
+    _UNIVERSE_ROUTE_CACHE.clear()
+
+
+def _cached_universe_response(
+    namespace: str,
+    query_payload: dict[str, Any],
+    builder: Any,
+    *,
+    ttl_seconds: float,
+    stale_seconds: float | None = None,
+) -> tuple[dict[str, Any], int]:
+    return _UNIVERSE_ROUTE_CACHE.get(
+        canonical_cache_key(namespace, query_payload),
+        builder=builder,
+        ttl_seconds=ttl_seconds,
+        stale_seconds=stale_seconds if stale_seconds is not None else max(60.0, ttl_seconds * 2),
+        force=request_cache_bypass(query_payload),
+    )
 
 
 def register_universe_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
@@ -41,6 +65,8 @@ def register_universe_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             request_json_request=request_json_request,
             compute_base_url=compute_base_url,
         )
+        if status_code < 400:
+            _clear_universe_route_cache()
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
 
@@ -72,6 +98,8 @@ def register_universe_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             request_json_request=request_json_request,
             compute_base_url=compute_base_url,
         )
+        if status_code < 400:
+            _clear_universe_route_cache()
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
 
@@ -88,6 +116,8 @@ def register_universe_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             request_json_request=request_json_request,
             compute_base_url=compute_base_url,
         )
+        if status_code < 400:
+            _clear_universe_route_cache()
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
 
@@ -104,6 +134,8 @@ def register_universe_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             request_json_request=request_json_request,
             compute_base_url=compute_base_url,
         )
+        if status_code < 400:
+            _clear_universe_route_cache()
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
 
@@ -111,11 +143,18 @@ def register_universe_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
 
     @app.route("/api/custom/ibkr/screener", methods=["GET"])
     def custom_ibkr_screener() -> Response:
-        payload, status_code = build_screener_proxy_response(
-            payload=request.args.to_dict(flat=True),
-            normalize_environment=normalize_environment,
-            request_json_request=request_json_request,
-            compute_base_url=compute_base_url,
+        query_payload = request.args.to_dict(flat=True)
+        payload, status_code = _cached_universe_response(
+            "screener",
+            query_payload,
+            lambda: build_screener_proxy_response(
+                payload=query_payload,
+                normalize_environment=normalize_environment,
+                request_json_request=request_json_request,
+                compute_base_url=compute_base_url,
+            ),
+            ttl_seconds=cache_seconds("IBKR_ROUTE_CACHE_SCREENER_TTL_SEC", 30.0),
+            stale_seconds=cache_seconds("IBKR_ROUTE_CACHE_SCREENER_STALE_SEC", 90.0),
         )
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
@@ -126,15 +165,22 @@ def register_universe_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     def custom_ibkr_today_targets() -> Response:
         query_payload = request.args.to_dict(flat=True)
         paginate = "page" in request.args or "per_page" in request.args or "page_size" in request.args
-        payload, status_code = build_today_targets_response(
-            pb,
-            payload={
-                **query_payload,
-                "paginate": paginate,
-                "per_page": query_payload.get("per_page") or query_payload.get("page_size"),
-            },
-            normalize_environment=normalize_environment,
-            time_strings=time_strings,
+        builder_payload = {
+            **query_payload,
+            "paginate": paginate,
+            "per_page": query_payload.get("per_page") or query_payload.get("page_size"),
+        }
+        payload, status_code = _cached_universe_response(
+            "today-targets",
+            builder_payload,
+            lambda: build_today_targets_response(
+                pb,
+                payload=builder_payload,
+                normalize_environment=normalize_environment,
+                time_strings=time_strings,
+            ),
+            ttl_seconds=cache_seconds("IBKR_ROUTE_CACHE_TODAY_TARGETS_TTL_SEC", 30.0),
+            stale_seconds=cache_seconds("IBKR_ROUTE_CACHE_TODAY_TARGETS_STALE_SEC", 120.0),
         )
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
@@ -143,11 +189,18 @@ def register_universe_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
 
     @app.route("/api/custom/ibkr/active-window-progress", methods=["GET"])
     def custom_ibkr_active_window_progress() -> Response:
-        payload, status_code = build_active_window_progress_response(
-            pb,
-            payload=request.args.to_dict(flat=True),
-            normalize_environment=normalize_environment,
-            time_strings=time_strings,
+        query_payload = request.args.to_dict(flat=True)
+        payload, status_code = _cached_universe_response(
+            "active-window-progress",
+            query_payload,
+            lambda: build_active_window_progress_response(
+                pb,
+                payload=query_payload,
+                normalize_environment=normalize_environment,
+                time_strings=time_strings,
+            ),
+            ttl_seconds=cache_seconds("IBKR_ROUTE_CACHE_ACTIVE_WINDOW_TTL_SEC", 30.0),
+            stale_seconds=cache_seconds("IBKR_ROUTE_CACHE_ACTIVE_WINDOW_STALE_SEC", 120.0),
         )
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
@@ -156,11 +209,22 @@ def register_universe_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
 
     @app.route("/api/custom/ibkr/lifecycle-flow", methods=["GET"])
     def custom_ibkr_lifecycle_flow() -> Response:
-        payload, status_code = build_lifecycle_flow_response(
-            pb,
-            payload=request.args.to_dict(flat=True),
-            normalize_environment=normalize_environment,
-            time_strings=time_strings,
+        query_payload = request.args.to_dict(flat=True)
+        has_backtest_run = bool(str(query_payload.get("run_id") or "").strip())
+        payload, status_code = _cached_universe_response(
+            "lifecycle-flow",
+            query_payload,
+            lambda: build_lifecycle_flow_response(
+                pb,
+                payload=query_payload,
+                normalize_environment=normalize_environment,
+                time_strings=time_strings,
+            ),
+            ttl_seconds=cache_seconds(
+                "IBKR_ROUTE_CACHE_LIFECYCLE_BACKTEST_TTL_SEC" if has_backtest_run else "IBKR_ROUTE_CACHE_LIFECYCLE_TTL_SEC",
+                120.0 if has_backtest_run else 30.0,
+            ),
+            stale_seconds=cache_seconds("IBKR_ROUTE_CACHE_LIFECYCLE_STALE_SEC", 300.0),
         )
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
@@ -174,6 +238,8 @@ def register_universe_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             payload=request.get_json(silent=True) or {},
             escape_filter_string=escape_filter_string,
         )
+        if status_code < 400:
+            _clear_universe_route_cache()
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
 
@@ -182,10 +248,17 @@ def register_universe_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     @app.route("/api/custom/ibkr/fundamentals/list", methods=["GET"])
     @app.route("/api/custom/ibkr/fundamentals", methods=["GET"])
     def custom_ibkr_fundamentals_list() -> Response:
-        payload, status_code = build_fundamentals_list_response(
-            pb,
-            payload=request.args.to_dict(flat=True),
-            escape_filter_string=escape_filter_string,
+        query_payload = request.args.to_dict(flat=True)
+        payload, status_code = _cached_universe_response(
+            "fundamentals-list",
+            query_payload,
+            lambda: build_fundamentals_list_response(
+                pb,
+                payload=query_payload,
+                escape_filter_string=escape_filter_string,
+            ),
+            ttl_seconds=cache_seconds("IBKR_ROUTE_CACHE_FUNDAMENTALS_TTL_SEC", 300.0),
+            stale_seconds=cache_seconds("IBKR_ROUTE_CACHE_FUNDAMENTALS_STALE_SEC", 600.0),
         )
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
@@ -200,6 +273,8 @@ def register_universe_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             normalize_environment=normalize_environment,
             escape_filter_string=escape_filter_string,
         )
+        if status_code < 400:
+            _clear_universe_route_cache()
         response = jsonify(payload)
         return response if status_code == 200 else (response, status_code)
 
@@ -208,4 +283,4 @@ def register_universe_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     return exports
 
 
-__all__ = ["register_universe_routes"]
+__all__ = ["register_universe_routes", "_clear_universe_route_cache"]

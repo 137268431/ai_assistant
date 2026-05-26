@@ -184,18 +184,34 @@
         }
 
         async function requestIndicatorJson(path, { method = 'GET', body = null } = {}, maxRetries = 1) {
+            const methodText = String(method || 'GET').toUpperCase();
+            const requestPath = buildPageUrl(path, {}, {
+                brokerMode: currentBrokerMode,
+                dataEnvironment: currentEnvironment,
+            });
+            if (methodText === 'GET' && typeof cachedPageJson === 'function') {
+                return cachedPageJson(requestPath, {
+                    method: methodText,
+                    headers: getIndicatorAuthHeaders(),
+                    retryAttempts: maxRetries + 1,
+                    retryDelayMs: 250,
+                }, {
+                    profile: 'tradingList',
+                    environment: currentEnvironment,
+                    ttlMs: 30000,
+                    swrMs: 30000,
+                    tags: ['indicators', currentEnvironment]
+                });
+            }
             let lastError = null;
             for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
                 try {
                     const options = {
-                        method,
+                        method: methodText,
                         headers: getIndicatorAuthHeaders(body ? { 'Content-Type': 'application/json' } : {})
                     };
                     if (body) options.body = JSON.stringify(body);
-	                    const response = await fetch(buildPageUrl(path, {}, {
-	                        brokerMode: currentBrokerMode,
-	                        dataEnvironment: currentEnvironment,
-	                    }), options);
+                    const response = await fetch(requestPath, options);
                     if (response.status === 401 || response.status === 403) {
                         clearToken();
                         location.href = `/login.html?from=${encodeURIComponent(`${location.pathname}${location.search}`)}`;

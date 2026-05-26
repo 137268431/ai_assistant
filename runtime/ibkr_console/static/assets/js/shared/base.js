@@ -738,7 +738,11 @@ async function apiFetch(collection, params = {}) {
     throw new Error(error.message || 'Request failed');
   }
 
-  return res.json();
+  const payload = await res.json();
+  if (String(options.method || 'GET').toUpperCase() !== 'GET') {
+    invalidateIbkrDataCache([collection, 'apiFetch']);
+  }
+  return payload;
 }
 
 function getSharedDataCenter() {
@@ -762,20 +766,171 @@ function getCachedValue(key, loader, cacheOptions = {}) {
   return dataCenter.get(key, loader, cacheOptions);
 }
 
+const IBKR_CACHE_PROFILES = {
+  realtime: { ttlMs: 10000, swrMs: 10000, persist: false },
+  runtimeStatus: { ttlMs: 10000, swrMs: 15000, persist: false },
+  marketCalendar: { ttlMs: 30000, swrMs: 300000, persist: true },
+  tradingList: { ttlMs: 30000, swrMs: 30000, persist: false },
+  historyList: { ttlMs: 120000, swrMs: 300000, persist: true },
+  configStatic: { ttlMs: 300000, swrMs: 300000, persist: true },
+  pageDetail: { ttlMs: 120000, swrMs: 120000, persist: false },
+};
+
+function hashCacheScopeText(value) {
+  const text = String(value || '');
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function getIbkrCacheAuthScope() {
+  const token = typeof getToken === 'function' ? getToken() : '';
+  return token ? `auth:${hashCacheScopeText(token)}` : 'anon';
+}
+
+function getIbkrCacheModeScope(environment = '') {
+  const context = typeof getBrokerModeContext === 'function' ? getBrokerModeContext() : {};
+  return {
+    auth: getIbkrCacheAuthScope(),
+    broker_mode: context.broker_mode || (typeof getCurrentBrokerMode === 'function' ? getCurrentBrokerMode() : 'paper'),
+    data_environment: environment || context.data_environment || (typeof getCurrentRuntimeEnvironment === 'function' ? getCurrentRuntimeEnvironment() : 'live'),
+  };
+}
+
+function normalizeIbkrCacheProfileName(profile) {
+  const text = String(profile || '').trim();
+  return Object.prototype.hasOwnProperty.call(IBKR_CACHE_PROFILES, text) ? text : 'tradingList';
+}
+
+function getIbkrCacheProfile(profile = 'tradingList', overrides = {}) {
+  const profileName = normalizeIbkrCacheProfileName(profile);
+  const base = IBKR_CACHE_PROFILES[profileName] || IBKR_CACHE_PROFILES.tradingList;
+  const source = overrides && typeof overrides === 'object' ? overrides : {};
+  return {
+    profile: profileName,
+    ...base,
+    ...source,
+    tags: [profileName].concat(base.tags || [], source.tags || []),
+  };
+}
+
+function inferCollectionCacheProfile(collection) {
+  const name = String(collection || '').trim().toLowerCase();
+  if (name === 'config') return 'configStatic';
+  if (name.includes('backtest') || name.includes('bars') || name.includes('indicators')) return 'historyList';
+  if (name.includes('system_events')) return 'historyList';
+  if (['orders', 'ibkr_signals', 'ibkr_targets', 'watchlist'].includes(name)) return 'tradingList';
+  return 'tradingList';
+}
+
+function inferPathCacheProfile(path) {
+  const text = String(path || '').toLowerCase();
+  if (text.includes('/market_calendar')) return 'marketCalendar';
+  if (text.includes('/runtime/config') || text.includes('/system/cronz')) return 'configStatic';
+  if (text.includes('/statusz') || text.includes('/healthz') || text.includes('/monitorz') || text.includes('/summaryz')) return 'runtimeStatus';
+  if (text.includes('/account_snapshot')) return 'runtimeStatus';
+  if (text.includes('/backtest') || text.includes('/data_quality') || text.includes('/history/')) return 'historyList';
+  if (text.includes('/screener') || text.includes('/today-targets') || text.includes('/active-window-progress')) return 'tradingList';
+  if (text.includes('/signals') || text.includes('/orders') || text.includes('/reverse')) return 'tradingList';
+  return 'tradingList';
+}
+
+function inferIbkrCacheInvalidationTags(pathOrTags) {
+  if (Array.isArray(pathOrTags)) return pathOrTags;
+  const text = String(pathOrTags || '').toLowerCase();
+  const tags = ['apiFetch', 'customJson'];
+  if (text.includes('config') || text.includes('cronz')) tags.push('config', 'configStatic', 'marketCalendar', 'system');
+  if (text.includes('watchlist') || text.includes('targets') || text.includes('screener')) tags.push('watchlist', 'targets', 'screener', 'tradingList');
+  if (text.includes('orders') || text.includes('account')) tags.push('orders', 'account', 'runtimeStatus', 'summary');
+  if (text.includes('signal')) tags.push('ibkr_signals', 'signals', 'summary', 'tradingList');
+  if (text.includes('reverse')) tags.push('reverse', 'ibkr_signals', 'orders', 'tradingList');
+  if (text.includes('data_quality') || text.includes('history') || text.includes('warmup') || text.includes('repair') || text.includes('scan')) {
+    tags.push('dataQuality', 'historyList', 'marketData', 'runtimeStatus', 'system');
+  }
+  if (text.includes('service') || text.includes('runtime') || text.includes('gateway') || text.includes('scheduler')) {
+    tags.push('runtimeStatus', 'system', 'monitor');
+  }
+  return [...new Set(tags)];
+}
+
+function invalidateIbkrDataCache(matchOrTags) {
+  const dataCenter = getSharedDataCenter();
+  let removed = 0;
+  if (dataCenter && typeof dataCenter.invalidate === 'function') {
+    removed = dataCenter.invalidate(matchOrTags);
+  }
+  return removed;
+}
+
+function getMarketCalendarCacheOptions(calendar = {}, fallback = {}) {
+  const payload = calendar && typeof calendar === 'object' ? calendar : {};
+  const date = String(payload.market_date || fallback.date || '').slice(0, 10);
+  const today = typeof getCurrentEtDateString === 'function' ? getCurrentEtDateString() : '';
+  const session = payload.market_session && typeof payload.market_session === 'object' ? payload.market_session : {};
+  const kind = String(session.kind || payload.session_kind || '').trim().toLowerCase();
+  const sourceError = String(payload.source_error || payload.error || '').trim();
+  if (date && today && date < today) {
+    return { ttlMs: 86400000, swrMs: 3600000, persist: true };
+  }
+  if (sourceError || payload.ok === false) {
+    return { ttlMs: 60000, swrMs: 120000, persist: true };
+  }
+  if (payload.is_closed || payload.is_trading_day === false || kind === 'closed') {
+    return { ttlMs: 1800000, swrMs: 1800000, persist: true };
+  }
+  if (kind === 'afterhours') {
+    return { ttlMs: 120000, swrMs: 300000, persist: true };
+  }
+  if (['premarket', 'regular', 'close_transition'].includes(kind)) {
+    return { ttlMs: 30000, swrMs: 60000, persist: true };
+  }
+  return { ttlMs: 60000, swrMs: 300000, persist: true };
+}
+
 function cachedApiFetch(collection, params = {}, cacheOptions = {}) {
-  const key = getSharedDataCacheKey('apiFetch', { collection, params });
+  const method = String(params.method || 'GET').toUpperCase();
+  if (method !== 'GET') return apiFetch(collection, params);
+  const profile = getIbkrCacheProfile(cacheOptions.profile || inferCollectionCacheProfile(collection), cacheOptions);
+  const key = getSharedDataCacheKey('apiFetch', {
+    collection,
+    params,
+    scope: getIbkrCacheModeScope(),
+  });
   return getCachedValue(key, () => apiFetch(collection, params), {
-    tags: ['apiFetch', collection].concat(cacheOptions.tags || []),
-    ...cacheOptions
+    ...profile,
+    tags: ['apiFetch', collection].concat(profile.tags || [])
   });
 }
 
-function buildCustomJsonRequestPath(path, environment) {
+function withCacheBustParam(path, enabled) {
+  if (!enabled) return String(path || '');
+  try {
+    const url = new URL(String(path || ''), typeof window !== 'undefined' ? window.location.origin : 'http://127.0.0.1');
+    url.searchParams.set('cache_bust', '1');
+    return `${url.pathname}${url.search}`;
+  } catch (_) {
+    const separator = String(path || '').includes('?') ? '&' : '?';
+    return `${path}${separator}cache_bust=1`;
+  }
+}
+
+function buildCustomJsonRequestPath(path, environment, requestOptions = {}) {
   const sourcePath = String(path || '');
-  return buildPageUrl(sourcePath, {}, { environment });
+  return buildPageUrl(withCacheBustParam(sourcePath, requestOptions.cacheBust || requestOptions.cache_bust), {}, { environment });
 }
 
 async function customJsonFetch(path, environment = '', requestOptions = {}) {
+  const method = String(requestOptions.method || 'GET').toUpperCase();
+  const {
+    retryAttempts,
+    retryDelayMs,
+    cacheBust,
+    cache_bust: cacheBustSnake,
+    ...fetchRequestOptions
+  } = requestOptions || {};
   const token = getToken();
   const headers = {
     ...(requestOptions.headers || {})
@@ -787,18 +942,18 @@ async function customJsonFetch(path, environment = '', requestOptions = {}) {
   if (requestOptions.body && typeof requestOptions.body === 'object' && !headers['Content-Type'] && !headers['content-type']) {
     headers['Content-Type'] = 'application/json';
   }
-  const requestPath = buildCustomJsonRequestPath(path, environment);
+  const requestPath = buildCustomJsonRequestPath(path, environment, requestOptions);
   const response = await fetchWithRetry(
     `${BASE_URL}${requestPath}`,
     {
-      ...requestOptions,
+      ...fetchRequestOptions,
       body: requestBody,
-      method: requestOptions.method || 'GET',
+      method,
       headers
     },
     {
-      attempts: requestOptions.retryAttempts || 3,
-      retryDelayMs: requestOptions.retryDelayMs || 500
+      attempts: retryAttempts || 3,
+      retryDelayMs: retryDelayMs || 500
     }
   );
   if (response.status === 401 || response.status === 403) {
@@ -809,19 +964,21 @@ async function customJsonFetch(path, environment = '', requestOptions = {}) {
   if (!response.ok || payload?.ok === false) {
     throw new Error(payload?.error || payload?.message || `Request failed (${response.status})`);
   }
+  if (method !== 'GET') {
+    invalidateIbkrDataCache(inferIbkrCacheInvalidationTags(path));
+  }
   return payload;
 }
 
 function isCustomJsonRequestOptions(options) {
   if (!options || typeof options !== 'object') return false;
-  return ['headers', 'method', 'body', 'retryAttempts', 'retryDelayMs'].some((key) => Object.prototype.hasOwnProperty.call(options, key));
+  return ['headers', 'method', 'body', 'retryAttempts', 'retryDelayMs', 'signal', 'cacheBust', 'cache_bust'].some((key) => Object.prototype.hasOwnProperty.call(options, key));
 }
 
 function getCustomJsonCacheRequestKey(requestOptions = {}) {
   const method = String(requestOptions.method || 'GET').toUpperCase();
   const keyOptions = { method };
   if (requestOptions.body != null) keyOptions.body = requestOptions.body;
-  if (requestOptions.headers && typeof requestOptions.headers === 'object') keyOptions.headers = requestOptions.headers;
   return keyOptions;
 }
 
@@ -836,14 +993,67 @@ function cachedCustomJson(path, environment = '', requestOptionsOrCacheOptions =
   } else {
     cacheOptions = requestOptionsOrCacheOptions || {};
   }
+  const method = String(requestOptions.method || 'GET').toUpperCase();
+  if (method !== 'GET') {
+    return customJsonFetch(path, environment, requestOptions);
+  }
+  const profile = getIbkrCacheProfile(cacheOptions.profile || inferPathCacheProfile(path), cacheOptions);
+  const fetchOptions = {
+    ...requestOptions,
+    cacheBust: Boolean(requestOptions.cacheBust || requestOptions.cache_bust || profile.force),
+  };
   const key = getSharedDataCacheKey('customJson', {
     path,
     environment,
-    request: getCustomJsonCacheRequestKey(requestOptions)
+    request: getCustomJsonCacheRequestKey(requestOptions),
+    scope: getIbkrCacheModeScope(environment),
   });
-  return getCachedValue(key, () => customJsonFetch(path, environment, requestOptions), {
-    tags: ['customJson'].concat(cacheOptions.tags || []),
-    ...cacheOptions
+  return getCachedValue(key, () => customJsonFetch(path, environment, fetchOptions), {
+    ...profile,
+    tags: ['customJson'].concat(profile.tags || [])
+  });
+}
+
+function cachedPageJson(path, requestOptions = {}, cacheOptions = {}) {
+  const method = String((requestOptions && requestOptions.method) || 'GET').toUpperCase();
+  const environment = cacheOptions.environment || '';
+  if (method !== 'GET') {
+    return customJsonFetch(path, environment, requestOptions || {});
+  }
+  return cachedCustomJson(path, environment, requestOptions || {}, {
+    ...cacheOptions,
+    profile: cacheOptions.profile || inferPathCacheProfile(path),
+  });
+}
+
+function cachedMarketCalendar(options = {}, cacheOptions = {}) {
+  const source = options && typeof options === 'object' ? options : {};
+  const context = typeof getBrokerModeContext === 'function' ? getBrokerModeContext() : {};
+  const date = String(source.date || source.market_date || (typeof getCurrentEtDateString === 'function' ? getCurrentEtDateString() : '')).slice(0, 10);
+  const brokerMode = normalizeBrokerMode(source.broker_mode || source.brokerMode || context.broker_mode || getCurrentBrokerMode(), 'paper');
+  const dataEnvironment = normalizeRuntimeEnvironment(
+    source.market_data_mode || source.data_environment || source.dataEnvironment || context.data_environment || getCurrentRuntimeEnvironment(),
+    'live'
+  );
+  const params = {
+    date,
+    market_date: date,
+    symbol: source.symbol || 'SPY',
+    exchange: source.exchange || 'SMART',
+    sec_type: source.sec_type || source.secType || 'STK',
+  };
+  const path = buildPageUrl('/api/custom/system/market_calendar', params, {
+    environment: dataEnvironment,
+    brokerMode,
+    dataEnvironment,
+  });
+  return cachedPageJson(path, { retryAttempts: 2, retryDelayMs: 300 }, {
+    ...cacheOptions,
+    profile: 'marketCalendar',
+    environment: dataEnvironment,
+    persist: true,
+    resolveOptions: (payload) => getMarketCalendarCacheOptions(payload, { date }),
+    tags: ['marketCalendar', date, brokerMode, dataEnvironment].concat(cacheOptions.tags || []),
   });
 }
 
@@ -875,10 +1085,15 @@ async function fetchCollectionFullList(collection, options = {}) {
 }
 
 function fetchCollectionFullListCached(collection, options = {}, cacheOptions = {}) {
-  const key = getSharedDataCacheKey('collectionFullList', { collection, options });
+  const profile = getIbkrCacheProfile(cacheOptions.profile || inferCollectionCacheProfile(collection), cacheOptions);
+  const key = getSharedDataCacheKey('collectionFullList', {
+    collection,
+    options,
+    scope: getIbkrCacheModeScope(),
+  });
   return getCachedValue(key, () => fetchCollectionFullListUncached(collection, options), {
-    tags: ['apiFetch', 'collectionFullList', collection].concat(cacheOptions.tags || []),
-    ...cacheOptions
+    ...profile,
+    tags: ['apiFetch', 'collectionFullList', collection].concat(profile.tags || [])
   });
 }
 
@@ -894,10 +1109,15 @@ async function countFetch(collection, filter = '', options = {}) {
 }
 
 function cachedCountFetch(collection, filter = '', cacheOptions = {}) {
-  const key = getSharedDataCacheKey('countFetch', { collection, filter });
+  const profile = getIbkrCacheProfile(cacheOptions.profile || inferCollectionCacheProfile(collection), cacheOptions);
+  const key = getSharedDataCacheKey('countFetch', {
+    collection,
+    filter,
+    scope: getIbkrCacheModeScope(),
+  });
   return getCachedValue(key, () => countFetch(collection, filter), {
-    tags: ['apiFetch', 'countFetch', collection].concat(cacheOptions.tags || []),
-    ...cacheOptions
+    ...profile,
+    tags: ['apiFetch', 'countFetch', collection].concat(profile.tags || [])
   });
 }
 
@@ -1032,14 +1252,16 @@ async function fetchRealtimeQuotesIfNeeded(symbols = [], { reset = false, force 
     return fetchRealtimeQuotes(fetchSymbols, { reset: false });
   }
 
-  const key = getSharedDataCacheKey('realtimeQuotes', { symbols: fetchSymbols.slice().sort() });
+  const key = getSharedDataCacheKey('realtimeQuotes', {
+    symbols: fetchSymbols.slice().sort(),
+    scope: getIbkrCacheModeScope(),
+  });
+  const profile = getIbkrCacheProfile('realtime', { ttlMs: boundedMaxAgeMs, swrMs, tags: ['realtimeQuotes'] });
   const payload = await dataCenter.get(
     key,
     () => fetchRealtimeQuotes(fetchSymbols, { reset: false }),
     {
-      ttlMs: boundedMaxAgeMs,
-      swrMs,
-      tags: ['realtimeQuotes'],
+      ...profile,
       onRefresh: (freshPayload) => {
         cacheRealtimeQuoteItems(freshPayload?.items || [], {
           reset: false,
@@ -1084,8 +1306,13 @@ if (typeof window !== 'undefined') {
   window.getSharedDataEnvironment = getSharedDataEnvironment;
   window.getConsoleBrokerMode = getConsoleBrokerMode;
   window.apiFetch = apiFetch;
+  window.getIbkrCacheProfile = getIbkrCacheProfile;
+  window.getMarketCalendarCacheOptions = getMarketCalendarCacheOptions;
+  window.invalidateIbkrDataCache = invalidateIbkrDataCache;
   window.cachedApiFetch = cachedApiFetch;
   window.cachedCustomJson = cachedCustomJson;
+  window.cachedPageJson = cachedPageJson;
+  window.cachedMarketCalendar = cachedMarketCalendar;
   window.fetchCollectionFullList = window.fetchCollectionFullList || fetchCollectionFullList;
   window.fetchCollectionFullListCached = fetchCollectionFullListCached;
   window.cachedCountFetch = cachedCountFetch;

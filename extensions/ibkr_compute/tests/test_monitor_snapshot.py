@@ -47,9 +47,17 @@ except ModuleNotFoundError:
     fake_flask.redirect = lambda url, code=302: {"redirect": url, "code": code}
     fake_flask.request = types.SimpleNamespace(get_json=lambda silent=True: {}, args={}, values={})
     sys.modules["flask"] = fake_flask
+else:
+    if not hasattr(flask, "redirect"):
+        flask.redirect = lambda url, code=302: {"redirect": url, "code": code}
+    if hasattr(flask, "Flask") and not hasattr(flask.Flask, "route"):
+        flask.Flask.route = lambda self, *args, **kwargs: (lambda func: func)
+    if hasattr(flask, "Flask") and not hasattr(flask.Flask, "add_url_rule"):
+        flask.Flask.add_url_rule = lambda self, *args, **kwargs: None
 
 logging.disable(logging.CRITICAL)
 from ibkr_compute.api import server
+from ibkr_compute.api.monitor.runtime.uninitialized import _build_uninitialized_runtime_status
 logging.disable(logging.NOTSET)
 
 
@@ -134,6 +142,15 @@ class FakeService:
 
 
 class MonitorSnapshotTest(unittest.TestCase):
+    def test_uninitialized_runtime_status_includes_execution_target_fields(self):
+        payload = _build_uninitialized_runtime_status("live", "service unavailable")
+        market_universe = payload["market_universe"]
+
+        self.assertEqual(0, market_universe["execution_eligible_target_count"])
+        self.assertEqual([], market_universe["execution_eligible_symbols"])
+        self.assertEqual(0, market_universe["observe_target_count"])
+        self.assertFalse(market_universe["no_execution_eligible_targets"])
+
     def test_build_cpu_usage_snapshot_percent(self):
         payload = server._build_cpu_usage_snapshot(
             {"total": 200, "idle": 80, "sampled_at": 10.0},
@@ -438,6 +455,37 @@ class MonitorSnapshotTest(unittest.TestCase):
         warning = next(item for item in flags if item["code"] == "no_active_targets")
         self.assertEqual(warning["severity"], "warning")
         self.assertIn("AAPL", warning["detail"])
+
+    def test_no_execution_eligible_targets_warns_when_active_targets_are_observe_only(self):
+        flags = server._build_monitor_flags(
+            {
+                "gateway": {"running": True, "reachable": True},
+                "session": {"authenticated": True},
+                "websocket": {"connected": True, "ready": True},
+                "market_session": {"kind": "regular"},
+                "market_universe": {
+                    "watchlist_trade_count": 2,
+                    "active_target_count": 2,
+                    "execution_eligible_target_count": 0,
+                    "observe_target_count": 2,
+                    "observe_target_symbols": ["APP", "TOST"],
+                    "no_execution_eligible_targets": True,
+                },
+            },
+            {
+                "subscription_limit": 70,
+                "active_subscription_count": 2,
+                "utilization_pct": 3.0,
+                "pending_subscription_count": 0,
+            },
+            {},
+            {},
+        )
+
+        warning = next(item for item in flags if item["code"] == "no_execution_eligible_targets")
+        self.assertEqual(warning["severity"], "warning")
+        self.assertIn("APP", warning["detail"])
+        self.assertIn("execution_eligible 数为 0", warning["detail"])
 
     def test_no_active_targets_suppressed_outside_regular_session(self):
         flags = server._build_monitor_flags(

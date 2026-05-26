@@ -385,6 +385,7 @@ def normalize_filters(options: dict[str, Any]) -> dict[str, Any]:
         "technical_state": to_text(first_defined(options.get("technical_state"), options.get("technicalState"))).lower(),
         "signal_state": to_text(first_defined(options.get("signal_state"), options.get("signalState"))).lower(),
         "target_status": to_text(first_defined(options.get("target_status"), options.get("targetStatus"))).lower(),
+        "execution_layer": to_text(first_defined(options.get("execution_layer"), options.get("executionLayer"), options.get("target_layer"), options.get("targetLayer"))).lower(),
         "direction_bias": to_text(first_defined(options.get("direction_bias"), options.get("directionBias"))).lower(),
         "ready_only": parse_boolean(first_defined(options.get("ready_only"), options.get("readyOnly")), False),
         "signaled_only": parse_boolean(first_defined(options.get("signaled_only"), options.get("signaledOnly")), False),
@@ -423,10 +424,12 @@ def matches_filters(row: dict[str, Any], filters: dict[str, Any]) -> bool:
                 to_text(row.get("workflow_label")),
                 to_text(row.get("workflow_summary")),
                 to_text(row.get("workflow_next_action")),
+                to_text(row.get("target_layer")),
             ]
             + [to_text(item) for item in (row.get("technical_flags") or [])]
             + [to_text(item) for item in (row.get("operable_reasons") or [])]
             + [to_text(item) for item in (row.get("workflow_blockers") or [])]
+            + [to_text(item) for item in (row.get("execution_blockers") or [])]
         ).upper()
         if search not in haystack:
             return False
@@ -434,6 +437,14 @@ def matches_filters(row: dict[str, Any], filters: dict[str, Any]) -> bool:
         return False
     if normalized.get("target_status") and to_text(row.get("target_status")).lower() != normalized.get("target_status"):
         return False
+    execution_layer = to_text(normalized.get("execution_layer")).lower()
+    if execution_layer:
+        row_layer = to_text(row.get("target_layer")).lower()
+        row_execution_eligible = bool(row.get("execution_eligible") or row.get("is_execution_eligible"))
+        if execution_layer == "execution" and not (row_execution_eligible or row_layer == "execution"):
+            return False
+        if execution_layer == "observe" and (row_execution_eligible or row_layer == "execution"):
+            return False
     if normalized.get("direction_bias") and to_text(row.get("direction_bias")).lower() != normalized.get("direction_bias"):
         return False
     if not matches_signal_state(row, to_text(normalized.get("signal_state"))):

@@ -784,6 +784,9 @@ class OrderTracker:
             str(order.get("cOID") or order.get("coid") or "").strip(),
             str(order.get("side") or "").strip().upper(),
             str(order.get("orderType") or "").strip().upper(),
+            bool(order.get("broker_realtime_callback")),
+            str(order.get("ib_callback_type") or "").strip(),
+            str(order.get("ib_exec_id") or "").strip(),
         )
 
     def _order_needs_sync(self, previous: Dict, current: Dict) -> bool:
@@ -826,6 +829,8 @@ class OrderTracker:
         merged = dict(prev)
         merged.update(order)
         merged["orderId"] = order_id
+        merged["_order_update_source"] = str(source or "")
+        merged["broker_realtime_callback"] = bool(source == "ws" and order.get("broker_realtime_callback"))
         merged = self._stamp_known_order(merged, seen_live=True)
         should_sync = self._order_needs_sync(prev, merged)
         self._known_orders[order_id] = merged
@@ -1156,7 +1161,22 @@ class OrderTracker:
                 extra = {
                     "source": "order_tracker",
                     "seen_live": bool(order.get("_seen_live")),
+                    "broker_update_source": str(order.get("_order_update_source") or ""),
+                    "broker_realtime_callback": bool(order.get("broker_realtime_callback")),
                 }
+                for source_key, target_key in (
+                    ("ib_callback_type", "ib_callback_type"),
+                    ("broker_callback_source", "broker_callback_source"),
+                    ("broker_callback_received_at", "broker_callback_received_at"),
+                    ("broker_callback_received_at_ms", "broker_callback_received_at_ms"),
+                    ("ib_exec_id", "ib_exec_id"),
+                    ("execution_shares", "execution_shares"),
+                    ("execution_price", "execution_price"),
+                    ("lastFillPrice", "last_fill_price"),
+                    ("lastExecutionTime", "last_execution_time"),
+                ):
+                    if order.get(source_key) not in (None, ""):
+                        extra[target_key] = order.get(source_key)
                 if coid:
                     extra["coid"] = coid
                 if role == "close":

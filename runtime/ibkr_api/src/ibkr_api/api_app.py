@@ -39,6 +39,7 @@ from ibkr_api.app_core.presentation import (
     system_page_url as _system_page_url_support,
     system_status_chat_id as _system_status_chat_id_support,
     time_strings as _time_strings_support,
+    trade_ledger_chat_id as _trade_ledger_chat_id_support,
     runtime_page_url as _runtime_page_url_support,
 )
 from ibkr_api.app_core.proxying import (
@@ -88,7 +89,7 @@ from ibkr_api.orders.daily_stats import build_daily_order_stats, empty_daily_ord
 from ibkr_api.orders.group_cancel import build_order_cancel_group_response
 from ibkr_api.orders.group_close import build_order_close_group_response
 from ibkr_api.orders.integrity import build_order_detail_integrity_response
-from ibkr_api.orders.notifications import sync_order_status_notification
+from ibkr_api.orders.notifications import sync_order_callback_ledger_notification, sync_order_status_notification
 from ibkr_api.orders.webhooks import build_order_cancel_webhook_response, build_order_close_webhook_response
 from ibkr_api.orders.upsert import build_order_upsert_response
 from ibkr_api.orders.reconcile import build_orders_reconcile_response
@@ -190,6 +191,7 @@ DEFAULT_FEISHU_ALERT_CHAT_ID = str(os.environ.get("FEISHU_ALERT_CHAT_ID") or "oc
 DEFAULT_FEISHU_STARTUP_CHAT_ID = str(os.environ.get("FEISHU_STARTUP_CHAT_ID") or "oc_cc5d0a950797b1c2c010953e14bceeff").strip()
 DEFAULT_FEISHU_SIGNAL_CHAT_ID = str(os.environ.get("FEISHU_SIGNAL_CHAT_ID") or "oc_edb26dcc52938b7833ac9f32ae6b1620").strip()
 DEFAULT_FEISHU_ORDER_CHAT_ID = str(os.environ.get("FEISHU_ORDER_CHAT_ID") or "oc_5ca4585e1fd108c2c662dfc358684945").strip()
+DEFAULT_FEISHU_TRADE_LEDGER_CHAT_ID = str(os.environ.get("FEISHU_TRADE_LEDGER_CHAT_ID") or "oc_c5f7f750a38692b48220b8f6c58e0ac9").strip()
 MONITOR_CONFIG_KEYS = (
     "ibkr_target_subscription_limit",
     "ibkr_history_request_spacing",
@@ -613,6 +615,14 @@ def _order_chat_id(environment: str) -> str:
     )
 
 
+def _trade_ledger_chat_id(environment: str) -> str:
+    return _trade_ledger_chat_id_support(
+        environment,
+        config_value_fn=_config_value,
+        default_chat_id=DEFAULT_FEISHU_TRADE_LEDGER_CHAT_ID,
+    )
+
+
 def _system_status_chat_id(environment: str) -> str:
     return _system_status_chat_id_support(
         environment,
@@ -668,6 +678,21 @@ def _notify_order_status(status: str, order_row: dict[str, Any], options: dict[s
         send_interactive=_feishu_send_interactive,
         update_interactive=_feishu_update_interactive,
         order_chat_id=_order_chat_id(environment),
+        console_base_url=_console_base_url(),
+    )
+
+
+def _notify_order_callback_ledger(status: str, order_row: dict[str, Any], options: dict[str, Any] | None = None) -> dict[str, Any]:
+    data = options if isinstance(options, dict) else {}
+    extra = (order_row or {}).get("extra") if isinstance((order_row or {}).get("extra"), dict) else {}
+    raw_environment = (order_row or {}).get("environment") or extra.get("environment") or data.get("environment") or "live"
+    environment = str(raw_environment).strip() or "live"
+    return sync_order_callback_ledger_notification(
+        pb,
+        order_row,
+        previous_order=data.get("previous_order") if isinstance(data.get("previous_order"), dict) else None,
+        send_interactive=_feishu_send_interactive,
+        trade_ledger_chat_id=_trade_ledger_chat_id(environment),
         console_base_url=_console_base_url(),
     )
 

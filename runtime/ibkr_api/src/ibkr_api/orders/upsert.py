@@ -193,6 +193,7 @@ def build_order_upsert_response(
     normalize_environment: Callable[[Any, str], str],
     escape_filter_string: Callable[[Any], str],
     notify_order_status: Callable[[str, dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None,
+    notify_order_callback_ledger: Callable[[str, dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], int]:
     environment = request_broker_mode(payload)
     unique_id = to_text(payload.get("unique_id"))
@@ -235,6 +236,29 @@ def build_order_upsert_response(
         detail_row = {}
 
     response_order = saved_order if isinstance(saved_order, dict) else next_payload
+    trade_ledger_notification: dict[str, Any] = {}
+    response_extra = ensure_object(response_order.get("extra"))
+    is_realtime_callback = to_text(response_extra.get("broker_realtime_callback")).lower() in {"1", "true", "yes", "y", "on"}
+    if (
+        not is_idempotent
+        and environment in {"live", "paper"}
+        and is_realtime_callback
+        and callable(notify_order_callback_ledger)
+    ):
+        try:
+            trade_ledger_notification = dict(
+                notify_order_callback_ledger(
+                    status,
+                    response_order,
+                    {
+                        "previous_order": existing_dict or {},
+                    },
+                )
+                or {}
+            )
+        except Exception as exc:
+            trade_ledger_notification = {"success": False, "error": str(exc), "skipped": True}
+
     notification_result: dict[str, Any] = {}
     if not is_idempotent and callable(notify_order_status):
         transition_text = get_order_status_transition_text(previous_status, status)
@@ -263,6 +287,7 @@ def build_order_upsert_response(
             "detail_record_id": str((detail_row or {}).get("id") or ""),
             "notification_mode": "order_group_card",
             "notification": notification_result,
+            "trade_ledger_notification": trade_ledger_notification,
             "order": {
                 "id": response_order.get("id") or "",
                 "unique_id": response_order.get("unique_id") or unique_id,

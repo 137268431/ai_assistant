@@ -156,6 +156,16 @@
         let actionBusy = false;
         let ticketDrawerOpen = false;
         let orderViewState = { search: '', scope: 'all' };
+        let accountTargetSummary = {
+            status: 'loading',
+            active: 0,
+            candidate: 0,
+            signaled: 0,
+            total: 0,
+            marketDate: '',
+            error: '',
+            fetchedAt: 0,
+        };
 
         function initAuth() {
             const token = getToken();
@@ -186,18 +196,32 @@
             return headers;
         }
 
-        async function requestAccountJson(path, { method = 'GET', body = null, timeoutMs = 12000 } = {}) {
+        async function requestAccountJson(path, { method = 'GET', body = null, timeoutMs = 12000, timeoutLabel = '请求', force = false, cacheProfile = '' } = {}) {
             const controller = typeof AbortController === 'function' ? new AbortController() : null;
             const timer = controller ? setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs) || 12000)) : null;
+            const methodText = String(method || 'GET').toUpperCase();
             const options = {
-                method,
+                method: methodText,
                 headers: getAuthHeaders(body ? { 'Content-Type': 'application/json' } : {}),
                 ...(controller ? { signal: controller.signal } : {})
             };
             if (body) options.body = JSON.stringify(body);
             try {
+                const requestPath = buildPageUrl(path, {}, { environment: currentEnvironment });
+                if (methodText === 'GET' && typeof cachedPageJson === 'function') {
+                    return await cachedPageJson(requestPath, {
+                        ...options,
+                        retryAttempts: 3,
+                        retryDelayMs: 500
+                    }, {
+                        profile: cacheProfile || (String(path || '').includes('account_snapshot') ? 'runtimeStatus' : 'tradingList'),
+                        environment: currentEnvironment,
+                        force,
+                        tags: ['account', currentEnvironment]
+                    });
+                }
                 const response = await fetchWithRetry(
-                    buildPageUrl(path, {}, { environment: currentEnvironment }),
+                    requestPath,
                     options,
                     { attempts: 3, retryDelayMs: 500 }
                 );
@@ -215,10 +239,13 @@
                 if (!response.ok) {
                     throw new Error(data.message || data.error || `Request failed (${response.status})`);
                 }
+                if (methodText !== 'GET' && typeof invalidateIbkrDataCache === 'function') {
+                    invalidateIbkrDataCache(['account', 'orders', 'runtimeStatus', 'tradingList']);
+                }
                 return data;
             } catch (error) {
                 if (error?.name === 'AbortError') {
-                    throw new Error(`请求超时（${Math.round((Math.max(1000, Number(timeoutMs) || 12000)) / 1000)}s），请稍后重试或回控制台检查 Runtime`);
+                    throw new Error(`${timeoutLabel}超时（${Math.round((Math.max(1000, Number(timeoutMs) || 12000)) / 1000)}s），请稍后重试或检查 API / Runtime`);
                 }
                 throw error;
             } finally {
@@ -426,15 +453,30 @@
         function renderAccountTopSection(snapshot = latestSnapshot, orderMetrics = null) {
             const counts = snapshot?.counts || {};
             const metrics = orderMetrics || getAccountOrderMetrics(snapshot);
+            const targetMeta = getAccountTargetMeta();
             setPageContextMeta([
                 { label: '环境', value: getEnvironmentLabel(currentEnvironment), tone: currentEnvironment },
                 { label: '会话', value: getAccountSessionLabel(snapshot) },
+                targetMeta,
                 { label: '订单过滤', value: getAccountFilterSummary() },
             ]);
+            const targetsUrl = buildPageUrl('/ibkr_screener.html', {
+                view: 'current',
+                market_date: accountTargetSummary.marketDate || getUsDate(),
+            }, {
+                environment: getSharedDataEnvironment(),
+                brokerMode: currentEnvironment,
+                dataEnvironment: getSharedDataEnvironment(),
+            });
+            const targetTitle = accountTargetSummary.error || `active ${accountTargetSummary.active || 0} · candidate ${accountTargetSummary.candidate || 0} · signaled ${accountTargetSummary.signaled || 0}`;
+            const targetDotColor = accountTargetSummary.status === 'loading'
+                ? '#F6AD55'
+                : (accountTargetSummary.status === 'error' || accountTargetSummary.active <= 0 ? '#FC8181' : '#68D391');
             const statusHtml = `
                 <div class="chip-row">
                     <span class="status-chip"><span class="dot" style="color:#4FD1C5"></span>Net Liq ${escapeHtml(getAccountNetLiqLabel(snapshot))}</span>
                     <span class="status-chip"><span class="dot" style="color:#68D391"></span>BP ${escapeHtml(getAccountBuyingPowerLabel(snapshot))}</span>
+                    <a class="status-chip" href="${escapeHtml(targetsUrl)}" title="${escapeHtml(targetTitle)}"><span class="dot" style="color:${targetDotColor}"></span>盘中标 ${escapeHtml(getAccountTargetStatusLabel())}</a>
                     <span class="status-chip"><span class="dot" style="color:#63B3ED"></span>持仓 ${escapeHtml(String(counts.open_positions || 0))}</span>
                     <span class="status-chip"><span class="dot" style="color:#F6AD55"></span>IBKR 挂单 ${escapeHtml(String(metrics.liveOrdersCount || counts.open_orders || 0))}</span>
                     <span class="status-chip"><span class="dot" style="color:#FC8181"></span>信号组 ${escapeHtml(String(metrics.visibleGroupCount || 0))}</span>
@@ -446,6 +488,63 @@
                 copy: '把账户净值、真实持仓、实时挂单和直接下单入口集中在一页里，遇到 2FA 或 runtime 异常再切回控制台处理。',
                 statusHtml,
             });
+        }
+
+        function getAccountTargetMeta() {
+            if (accountTargetSummary.status === 'loading') {
+                return { label: '盘中标', value: '加载中', tone: 'pending', title: '正在加载今日目标池', includeInContext: true };
+            }
+            if (accountTargetSummary.status === 'error') {
+                return { label: '盘中标', value: '--', tone: 'warning', title: accountTargetSummary.error || '今日目标池加载失败', includeInContext: true };
+            }
+            const value = `${accountTargetSummary.active || 0} active`;
+            const tone = accountTargetSummary.active > 0 ? 'live' : 'warning';
+            const title = `total ${accountTargetSummary.total || 0} · candidate ${accountTargetSummary.candidate || 0} · signaled ${accountTargetSummary.signaled || 0}`;
+            return { label: '盘中标', value, tone, title, includeInContext: true };
+        }
+
+        function getAccountTargetStatusLabel() {
+            if (accountTargetSummary.status === 'loading') return '加载中';
+            if (accountTargetSummary.status === 'error') return '加载失败';
+            return `${accountTargetSummary.active || 0} active`;
+        }
+
+        async function loadAccountTargetSummary(force = false) {
+            const now = Date.now();
+            if (!force && accountTargetSummary.fetchedAt && now - accountTargetSummary.fetchedAt < 60000) {
+                renderAccountTopSection(latestSnapshot);
+                return accountTargetSummary;
+            }
+            const marketDate = accountTargetSummary.marketDate || getUsDate();
+            try {
+                const payload = await requestAccountJson('/api/custom/ibkr/today-targets', {
+                    timeoutMs: 12000,
+                    timeoutLabel: '盘中标',
+                    method: 'GET',
+                    force,
+                    cacheProfile: 'tradingList',
+                });
+                const summary = payload?.summary || {};
+                accountTargetSummary = {
+                    status: 'ok',
+                    active: Number(summary.active_count || 0) || 0,
+                    candidate: Number(summary.candidate_count || 0) || 0,
+                    signaled: Number(summary.signaled_count || 0) || 0,
+                    total: Number(summary.total || 0) || 0,
+                    marketDate: payload?.market_date || marketDate,
+                    error: '',
+                    fetchedAt: Date.now(),
+                };
+            } catch (error) {
+                accountTargetSummary = {
+                    ...accountTargetSummary,
+                    status: 'error',
+                    error: error?.message || String(error || 'today targets unavailable'),
+                    fetchedAt: Date.now(),
+                };
+            }
+            renderAccountTopSection(latestSnapshot);
+            return accountTargetSummary;
         }
 
         function renderAccountPageChrome(snapshot = latestSnapshot, orderMetrics = null) {
@@ -1673,20 +1772,22 @@
             const blocker = document.getElementById('blocker');
             const errors = snapshot?.errors || {};
             const hasFetchError = Boolean(errors.summary || errors.positions || errors.orders || errors.pnl);
+            const hasServiceState = Boolean(snapshot && ('service_running' in snapshot || 'service_starting' in snapshot));
+            const hasSessionState = Boolean(snapshot && 'session_authenticated' in snapshot);
             const sessionAuthenticated = Boolean(snapshot?.session_authenticated);
-            const serviceRunning = Boolean(snapshot?.service_running || snapshot?.service_starting);
+            const serviceRunning = hasServiceState ? Boolean(snapshot?.service_running || snapshot?.service_starting) : true;
             const bpGuard = getBuyingPowerGuard(snapshot);
             const bpState = String(bpGuard.state || 'ok').toLowerCase();
             const hasBuyingPowerIssue = Boolean(snapshot?.summary && bpGuard.enabled !== false && (bpState === 'warning' || bpState === 'blocked'));
 
-            if (serviceRunning && sessionAuthenticated && !hasFetchError && !hasBuyingPowerIssue) {
+            if (serviceRunning && (!hasSessionState || sessionAuthenticated) && !hasFetchError && !hasBuyingPowerIssue) {
                 blocker.innerHTML = '';
                 return;
             }
 
             const lines = [];
-            if (!serviceRunning) lines.push('Runtime 当前没有 running，账户页只能看到空状态。');
-            if (serviceRunning && !sessionAuthenticated) lines.push('当前会话未认证，先去控制台完成 2FA。');
+            if (hasServiceState && !serviceRunning) lines.push('Runtime 当前没有 running，账户页只能看到空状态。');
+            if (serviceRunning && hasSessionState && !sessionAuthenticated) lines.push('当前会话未认证，先去控制台完成 2FA。');
             if (errors.summary) lines.push(`summary error: ${errors.summary}`);
             if (errors.positions) lines.push(`positions error: ${errors.positions}`);
             if (errors.orders) lines.push(`orders error: ${errors.orders}`);
@@ -2579,7 +2680,12 @@
             const refreshInfo = document.getElementById('refreshInfo');
             refreshInfo.textContent = '刷新中...';
             try {
-                const snapshot = await requestAccountJson('/api/custom/ibkr/account_snapshot');
+                const snapshot = await requestAccountJson('/api/custom/ibkr/account_snapshot', {
+                    timeoutMs: 20000,
+                    timeoutLabel: '账户快照',
+                    force: showFeedback,
+                    cacheProfile: 'runtimeStatus',
+                });
                 latestSnapshot = snapshot;
                 renderBlocker(snapshot);
                 renderSummary(snapshot);
@@ -2590,10 +2696,12 @@
                 renderTicketPreview();
                 setPageRefreshTime(snapshot.fetched_at || new Date());
                 refreshInfo.textContent = '账户状态已加载';
+                void loadAccountTargetSummary(Boolean(showFeedback));
                 if (showFeedback) showToast('账户状态已刷新');
             } catch (error) {
                 renderBlocker({ errors: { summary: error.message } });
                 renderAccountTopSection(null);
+                void loadAccountTargetSummary(false);
                 document.getElementById('summaryGrid').innerHTML = '';
                 document.getElementById('metaGrid').innerHTML = '';
                 document.getElementById('positionsArea').innerHTML = `<div class="empty-state">加载失败：${escapeHtml(error.message || 'unknown error')}</div>`;
@@ -2883,6 +2991,7 @@
                 subtitle: '真实账户 / 持仓 / 挂单 / 操作入口',
             });
             renderAccountPageChrome();
+            void loadAccountTargetSummary(false);
             toggleEntryPriceField();
             renderTicketPreview();
             await withPageLoading(
