@@ -545,6 +545,7 @@ class _IBGatewayApp(EWrapper, EClient):
 
     def openOrder(self, orderId: int, contract, order, orderState):  # noqa: N802
         requested_snapshot = self._has_pending_request_kind("open_orders", "open_orders_all")
+        closed_statuses = {"FILLED", "EXECUTED", "CANCELLED", "CANCELED", "INACTIVE", "REJECTED", "EXPIRED"}
         normalized = {
             "orderId": str(orderId),
             "id": str(orderId),
@@ -575,6 +576,23 @@ class _IBGatewayApp(EWrapper, EClient):
         key = str(orderId)
         with self._state_lock:
             previous = dict(self._open_orders.get(key) or {})
+            previous_filled = _safe_float(previous.get("filledQuantity"), 0.0)
+            previous_avg = _safe_float(previous.get("avgPrice") or previous.get("avgFillPrice"), 0.0)
+            previous_remaining = _safe_float(previous.get("remainingQuantity"), 0.0)
+            if previous_filled > _safe_float(normalized.get("filledQuantity"), 0.0):
+                normalized["filledQuantity"] = previous_filled
+                normalized["remainingQuantity"] = min(
+                    _safe_float(normalized.get("remainingQuantity"), 0.0),
+                    previous_remaining,
+                )
+            if previous_avg > 0 and _safe_float(normalized.get("avgPrice"), 0.0) <= 0:
+                normalized["avgPrice"] = previous_avg
+                normalized["avgFillPrice"] = previous_avg
+            for key_name in ("lastFillPrice", "lastExecutionTime", "ib_exec_id", "execution_shares", "execution_price"):
+                if previous.get(key_name) not in (None, "") and normalized.get(key_name) in (None, ""):
+                    normalized[key_name] = previous.get(key_name)
+            if str(previous.get("status") or "").strip().upper() in closed_statuses and str(normalized.get("status") or "").strip().upper() not in closed_statuses:
+                normalized["status"] = previous.get("status")
             merged = {**previous, **normalized}
             self._open_orders[key] = merged
             self._open_order_objects[key] = (copy.deepcopy(contract), copy.deepcopy(order))
@@ -609,6 +627,18 @@ class _IBGatewayApp(EWrapper, EClient):
         }
         with self._state_lock:
             current = dict(self._open_orders.get(key) or {})
+            current_filled = _safe_float(current.get("filledQuantity"), 0.0)
+            patch_filled = _safe_float(patch.get("filledQuantity"), 0.0)
+            if current_filled > patch_filled:
+                patch["filledQuantity"] = current_filled
+                patch["remainingQuantity"] = _safe_float(current.get("remainingQuantity"), 0.0)
+            current_avg = _safe_float(current.get("avgPrice") or current.get("avgFillPrice"), 0.0)
+            if current_avg > 0 and _safe_float(patch.get("avgPrice"), 0.0) <= 0:
+                patch["avgPrice"] = current_avg
+                patch["avgFillPrice"] = current_avg
+            closed_statuses = {"FILLED", "EXECUTED", "CANCELLED", "CANCELED", "INACTIVE", "REJECTED", "EXPIRED"}
+            if str(current.get("status") or "").strip().upper() in closed_statuses and str(patch.get("status") or "").strip().upper() not in closed_statuses:
+                patch["status"] = current.get("status")
             merged = {**current, **patch}
             self._open_orders[key] = merged
         self._emit_order_update(merged)
@@ -1871,6 +1901,16 @@ class BrokerAdapter:
         return str(snapshot.get("status") or snapshot.get("order_status") or snapshot.get("orderStatus") or "").strip().upper()
 
     @staticmethod
+    def _order_error_is_cancelled(order_error: dict | None) -> bool:
+        order_error = order_error or {}
+        try:
+            code = int(order_error.get("code") or 0)
+        except Exception:
+            code = 0
+        message = str(order_error.get("message") or order_error.get("error") or "").strip().lower()
+        return code == 202 or "order canceled" in message or "order cancelled" in message
+
+    @staticmethod
     def _order_snapshot_remaining(snapshot: dict | None) -> float:
         snapshot = snapshot or {}
         return _safe_float(
@@ -1971,6 +2011,19 @@ class BrokerAdapter:
                 except Exception:
                     order_error = {}
             if order_error:
+                if self._order_error_is_cancelled(order_error):
+                    clearer = getattr(self.client, "clear_order_error", None)
+                    if callable(clearer):
+                        try:
+                            clearer(normalized_order_id)
+                        except Exception:
+                            pass
+                    return {
+                        "ok": True,
+                        "order_id": normalized_order_id,
+                        "status": "CANCELLED",
+                        "details": order_error,
+                    }
                 return {
                     "ok": False,
                     "order_id": normalized_order_id,
@@ -2563,6 +2616,9 @@ class BrokerAdapter:
 
     def cancel_order(self, order_id: str) -> dict:
         try:
+            clearer = getattr(self.client, "clear_order_error", None)
+            if callable(clearer):
+                clearer(str(order_id))
             self.client.cancel_open_order(order_id)
         except Exception as exc:
             return {"ok": False, "error": str(exc)}

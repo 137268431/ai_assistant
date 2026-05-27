@@ -45,6 +45,10 @@ DEFAULT_KEEP_SYMBOLS = tuple(
     for symbol in os.environ.get("IBKR_EOD_KEEP_SYMBOLS", "").split(",")
     if symbol.strip()
 )
+PROTECTION_TP_ROLES = {"take_profit", "tp", "repair_tp"}
+PROTECTION_SL_ROLES = {"stop_loss", "sl", "repair_sl"}
+PROTECTION_ROLES = PROTECTION_TP_ROLES | PROTECTION_SL_ROLES
+ACTIVE_CLOSE_ROLES = {"close", "manual_close", "market_close", "close_order", "reverse_close"}
 
 
 class OrderLifecycle:
@@ -86,6 +90,7 @@ class OrderLifecycle:
         self._order_flow_risk_action_count = 0
         self._order_flow_risk_error_count = 0
         self._last_order_flow_risk_action_ms = 0
+        self._protection_missing_alerted: set[str] = set()
 
     def _get_config_value(self, key: str, default: str) -> str:
         if not self.config:
@@ -455,6 +460,24 @@ class OrderLifecycle:
             "EXPIRED",
         }
 
+    @staticmethod
+    def _protection_role_family(role: str) -> str:
+        normalized = str(role or "").strip().lower()
+        if normalized in PROTECTION_TP_ROLES:
+            return "take_profit"
+        if normalized in PROTECTION_SL_ROLES:
+            return "stop_loss"
+        return ""
+
+    @staticmethod
+    def _protection_role_label(role: str) -> str:
+        family = OrderLifecycle._protection_role_family(role) or str(role or "")
+        if family == "take_profit":
+            return "止盈"
+        if family == "stop_loss":
+            return "止损"
+        return family or "保护单"
+
     def _load_latest_5m_risk_snapshot(self, symbol: str) -> dict:
         if not self.pb_client:
             return {}
@@ -508,6 +531,207 @@ class OrderLifecycle:
         except Exception as exc:
             logger.debug("Live order row lookup failed for %s: %s", symbol, exc)
             return []
+
+    def _list_broker_open_orders_for_symbols(self, symbols: set[str]) -> list[dict]:
+        if not symbols:
+            return []
+        getter = getattr(self.broker, "list_open_orders", None)
+        if not callable(getter):
+            return []
+        try:
+            try:
+                rows = getter(include_all=True)
+            except TypeError:
+                rows = getter()
+        except Exception as exc:
+            logger.debug("Broker open-order lookup failed for protection check: %s", exc)
+            return []
+        result: list[dict] = []
+        for row in rows or []:
+            symbol = str(row.get("ticker") or row.get("symbol") or row.get("contractDesc") or "").strip().upper()
+            if symbol in symbols:
+                result.append(dict(row))
+        return result
+
+    def _broker_open_order_ids(self, open_orders: list[dict] | None = None) -> set[str]:
+        ids: set[str] = set()
+        for row in open_orders or []:
+            status = str(row.get("status") or row.get("order_status") or row.get("orderStatus") or "").strip().upper()
+            if status in {"FILLED", "EXECUTED", "CANCELED", "CANCELLED", "API_CANCELLED", "CLOSED", "INACTIVE", "REJECTED", "EXPIRED"}:
+                continue
+            order_id = str(row.get("orderId") or row.get("order_id") or row.get("id") or "").strip()
+            if order_id:
+                ids.add(order_id)
+        return ids
+
+    def _group_rows_by_trade_group(self, rows: list[dict]) -> list[dict]:
+        groups: dict[str, dict] = {}
+        for row in rows or []:
+            group_key = self._order_group_key(row)
+            if not group_key:
+                continue
+            bucket = groups.setdefault(group_key, {"group_key": group_key, "rows": [], "entry": {}})
+            bucket["rows"].append(row)
+            if self._order_role(row) == "entry" and not bucket.get("entry"):
+                bucket["entry"] = row
+        return list(groups.values())
+
+    def _protection_missing_model_for_group(self, group: dict, open_order_ids: set[str]) -> dict:
+        entry = group.get("entry") or {}
+        if not entry or not self._entry_is_filled(entry):
+            return {}
+        if self._order_status(entry).upper() in {"CANCELED", "CANCELLED", "CLOSED", "INACTIVE", "REJECTED", "EXPIRED"}:
+            return {}
+        rows = list(group.get("rows") or [])
+        if any(self._order_role(row) in ACTIVE_CLOSE_ROLES and self._order_is_open(row) for row in rows):
+            return {}
+        if any(
+            self._order_role(row) in (PROTECTION_ROLES | ACTIVE_CLOSE_ROLES) and self._entry_is_filled(row)
+            for row in rows
+        ):
+            return {}
+
+        active_roles: set[str] = set()
+        terminal_roles: list[dict] = []
+        tp_already_filled = False
+        for row in rows:
+            role = self._order_role(row)
+            family = self._protection_role_family(role)
+            if not family:
+                continue
+            broker_id = self._order_broker_id(row)
+            active = self._order_is_open(row) or (broker_id and broker_id in open_order_ids)
+            if active:
+                active_roles.add(family)
+            else:
+                terminal_roles.append(
+                    {
+                        "role": family,
+                        "label": self._protection_role_label(family),
+                        "status": self._order_status(row) or "missing",
+                        "order_id": broker_id,
+                    }
+                )
+            if family == "take_profit" and self._entry_is_filled(row):
+                tp_already_filled = True
+
+        missing_roles: list[str] = []
+        if "take_profit" not in active_roles and not tp_already_filled:
+            missing_roles.append("take_profit")
+        if "stop_loss" not in active_roles:
+            missing_roles.append("stop_loss")
+        if not missing_roles:
+            return {}
+        return {
+            "group_key": str(group.get("group_key") or self._order_group_key(entry)),
+            "entry": entry,
+            "missing_roles": missing_roles,
+            "active_roles": sorted(active_roles),
+            "terminal_roles": terminal_roles,
+        }
+
+    def _notify_protection_missing(self, issue: dict, broker_position: dict) -> None:
+        notifier = getattr(self.pb_client, "notify_system_event", None)
+        if not callable(notifier):
+            return
+        entry = issue.get("entry") or {}
+        symbol = self._broker_position_symbol(broker_position) or str(entry.get("symbol") or "").strip().upper()
+        group_key = str(issue.get("group_key") or self._order_group_key(entry) or "").strip()
+        missing_labels = [self._protection_role_label(role) for role in issue.get("missing_roles") or []]
+        detail = {
+            "状态结论": "入场已成交且券商仍有持仓，但当前没有完整有效的保护单。",
+            "标的": symbol or "-",
+            "交易组": group_key or "-",
+            "信号ID": str(entry.get("signal_id") or "-"),
+            "Broker入场订单ID": self._order_broker_id(entry) or "-",
+            "当前持仓": self._broker_position_quantity(broker_position),
+            "缺失保护": "/".join(missing_labels) or "-",
+            "处理建议": "立即核对 IBKR 持仓和 open orders，人工补保护单或平仓；本告警不会自动下单。",
+        }
+        try:
+            notifier(
+                "成交后保护单缺失",
+                detail,
+                event_type="alert",
+                level="error",
+                source="ibkr_compute",
+                environment=self.environment,
+            )
+        except Exception as exc:
+            logger.warning("Protection-missing notification failed: %s", exc)
+
+    def _mark_protection_missing_issue(self, issue: dict, broker_position: dict) -> None:
+        if not self.pb_client:
+            return
+        entry = dict(issue.get("entry") or {})
+        if not entry:
+            return
+        now_ms = int(time.time() * 1000)
+        missing_roles = list(issue.get("missing_roles") or [])
+        group_key = str(issue.get("group_key") or self._order_group_key(entry) or "").strip()
+        notify_key = f"{self.environment}:{group_key}:{','.join(missing_roles)}"
+        entry_extra = self._order_extra(entry)
+        already_marked = (
+            entry_extra.get("protection_state") == "missing_after_fill"
+            and list(entry_extra.get("missing_protection_roles") or []) == missing_roles
+        )
+        extra_patch = {
+            **entry_extra,
+            "reason": "protection_missing_after_entry_fill",
+            "protection_state": "missing_after_fill",
+            "protection_incomplete": True,
+            "protection_complete": False,
+            "missing_protection_roles": missing_roles,
+            "active_protection_roles": list(issue.get("active_roles") or []),
+            "terminal_protection_roles": list(issue.get("terminal_roles") or []),
+            "broker_position_quantity": self._broker_position_quantity(broker_position),
+            "protection_checked_at_ms": now_ms,
+            "protection_missing_notify_key": notify_key,
+        }
+        payload = {
+            **entry,
+            "status": entry.get("status") or "Filled",
+            "extra": extra_patch,
+        }
+        try:
+            if hasattr(self.pb_client, "upsert_order"):
+                self.pb_client.upsert_order(payload)
+            elif entry.get("id"):
+                self.pb_client.update_record("orders", entry["id"], payload)
+        except Exception as exc:
+            logger.debug("Protection-missing PB patch failed for %s: %s", entry.get("unique_id"), exc)
+        if not already_marked and notify_key not in self._protection_missing_alerted:
+            self._notify_protection_missing(issue, broker_position)
+            self._protection_missing_alerted.add(notify_key)
+
+    def _detect_missing_protection_after_fill(
+        self,
+        positions: Optional[List[Dict]] = None,
+        *,
+        open_orders: list[dict] | None = None,
+    ) -> list[dict]:
+        if not self.pb_client:
+            return []
+        active_positions = [
+            dict(pos)
+            for pos in (positions or [])
+            if self._broker_position_symbol(pos) and abs(self._broker_position_quantity(pos)) > 0
+        ]
+        symbols = {self._broker_position_symbol(pos) for pos in active_positions}
+        broker_open_orders = open_orders if open_orders is not None else self._list_broker_open_orders_for_symbols(symbols)
+        open_order_ids = self._broker_open_order_ids(broker_open_orders)
+        issues: list[dict] = []
+        for broker_position in active_positions:
+            symbol = self._broker_position_symbol(broker_position)
+            rows = self._load_live_order_rows_for_symbol(symbol)
+            for group in self._group_rows_by_trade_group(rows):
+                issue = self._protection_missing_model_for_group(group, open_order_ids)
+                if not issue:
+                    continue
+                issue["symbol"] = symbol
+                issues.append(issue)
+                self._mark_protection_missing_issue(issue, broker_position)
+        return issues
 
     def _select_live_exit_policy_group(self, rows: list[dict]) -> tuple[dict, dict, dict]:
         groups: dict[str, dict[str, dict]] = {}
@@ -2183,6 +2407,7 @@ class OrderLifecycle:
 
             positions = self.get_positions()
             self._sync_positions_to_pb_from_snapshot(positions)
+            self._detect_missing_protection_after_fill(positions)
             order_flow_acted = self._maybe_apply_order_flow_risk(positions)
             if order_flow_acted:
                 logger.info("Order-flow risk action executed; skip secondary exit policy for this cycle")

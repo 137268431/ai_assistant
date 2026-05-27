@@ -17,6 +17,7 @@ ORDER_INTERNAL_EXTRA_KEYS = {
     "feishu_order_notify_api_message": True,
     "feishu_order_notify_response_body": True,
     "feishu_trade_ledger_notify_key": True,
+    "feishu_trade_ledger_notified_keys": True,
     "feishu_trade_ledger_message_id": True,
     "feishu_trade_ledger_last_result": True,
     "feishu_trade_ledger_last_at_ms": True,
@@ -34,6 +35,7 @@ ORDER_STATUS_TEXT_MAP = {
     "Filled": "已成交",
     "Canceled": "已取消",
     "Closed": "已平仓",
+    "protection_incomplete": "保护单不完整",
 }
 
 

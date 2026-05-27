@@ -450,6 +450,218 @@ class SystemScanSummaryTest(unittest.TestCase):
         self.assertEqual(snapshot_calls, ["live"])
         self.assertEqual(states[("system_notify_daily", "paper")]["open_message_id"], "om-paper")
 
+    def test_open_report_waits_for_pending_open_capture_then_reloads_targets(self):
+        _clear_market_calendar_cache()
+        sent = []
+        states = {}
+        events = []
+        target_payloads = []
+        calls = []
+        status_calls = []
+
+        def build_today_targets_response(*, payload):
+            target_payloads.append(payload)
+            if len(target_payloads) == 1:
+                return {
+                    "market_date": payload["market_date"],
+                    "computed_at_ms": 1777469400000,
+                    "daily_scan": {"status": "completed", "market_date": payload["market_date"]},
+                    "summary": {"total": 0, "active_count": 0, "candidate_count": 0},
+                    "items": [],
+                }, 200
+            return {
+                "market_date": payload["market_date"],
+                "computed_at_ms": 1777469410000,
+                "daily_scan": {"status": "completed", "market_date": payload["market_date"]},
+                "summary": {"total": 1, "active_count": 1, "candidate_count": 0},
+                "items": [
+                    {
+                        "symbol": "NVDA",
+                        "status": "active",
+                        "score": 33,
+                        "direction_bias": "long",
+                        "technical_state": "ready",
+                        "price": 910,
+                        "day_change_pct": 1.5,
+                    }
+                ],
+            }, 200
+
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=0, **kwargs):
+            calls.append({"method": method, "path": path, "params": params, "json_body": json_body})
+            if path == "/ibkr/market/calendar":
+                return {
+                    "ok": True,
+                    "payload": {
+                        "ok": True,
+                        "source": "ibkr_schedule",
+                        "market_date": "2026-04-29",
+                        "is_trading_day": True,
+                        "is_closed": False,
+                        "market_session": {"kind": "regular", "label_zh": "盘中"},
+                    },
+                }
+            self.assertEqual(path, "/scan/status")
+            status_calls.append(params)
+            status = "pending" if len(status_calls) == 1 else "completed"
+            return {
+                "ok": True,
+                "payload": {
+                    "ok": True,
+                    "status": status,
+                    "run_id": "scan-live-2026-04-29-preopen",
+                    "result": {"ok": True, "new_targets": [{"symbol": "NVDA"}]},
+                },
+            }
+
+        payload, status_code = build_system_open_report_response(
+            payload={"broker_mode": "paper", "market_data_mode": "live"},
+            normalize_environment=lambda value, default: str(value or default).strip().lower(),
+            time_strings=lambda: {"us": "2026-04-29 09:30:14", "cn": "2026-04-29 21:30:14", "date": "2026-04-29"},
+            build_today_targets_response=build_today_targets_response,
+            build_system_summary_payload=lambda environment, lite_mode=False: {"status": "running"},
+            build_system_monitor_payload=lambda environment: {"scheduler": {"status": "running"}, "service_monitor": {"status_counts": {"running": 3}}},
+            feishu_send_interactive=lambda card, chat_id, environment: sent.append(card) or {"success": True, "message_id": "om-open-capture"},
+            write_system_event_record=lambda *args, **kwargs: events.append(args) or {},
+            get_state_payload=lambda state_key, environment: {"data": states.get((state_key, environment), {})},
+            upsert_state=lambda key, environment, data, date: states.update({(key, environment): data}) or data,
+            config_value=lambda key, default, environment: "SPY,QQQ,VIX" if key == "ibkr_market_ws_symbols" else default,
+            console_base_url=lambda: "https://quant.lzw-glory.top",
+            startup_chat_id=lambda environment: f"startup-chat-{environment}",
+            load_market_snapshots=lambda environment, symbols, market_date, computed_at_ms: [],
+            request_json_request=request_json_request,
+            compute_base_url="http://compute.internal",
+            sleep_fn=lambda seconds: (_ for _ in ()).throw(AssertionError("capture should complete before sleeping")),
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["opening_capture"]["status"], "completed")
+        self.assertEqual(len(target_payloads), 2)
+        self.assertEqual([call["path"] for call in calls], ["/ibkr/market/calendar", "/scan/status", "/scan/status"])
+        card_text = "\n".join(element.get("content", "") for element in sent[0]["elements"] if element.get("tag") == "markdown")
+        self.assertIn("NVDA", card_text)
+        self.assertIn("**开盘采集**: completed", card_text)
+        self.assertEqual(states[("system_notify_daily", "paper")]["open_target_total"], 1)
+        self.assertEqual(states[("system_notify_daily", "paper")]["open_target_capture_status"], "completed")
+        self.assertIn("开盘采集", events[0][4])
+
+    def test_open_report_submits_capture_when_no_topup_exists(self):
+        _clear_market_calendar_cache()
+        sent = []
+        states = {}
+        target_payloads = []
+        calls = []
+
+        def build_today_targets_response(*, payload):
+            target_payloads.append(payload)
+            empty = len(target_payloads) == 1
+            return {
+                "market_date": payload["market_date"],
+                "computed_at_ms": 1777555800000,
+                "daily_scan": {"status": "completed", "market_date": payload["market_date"]},
+                "summary": {"total": 0 if empty else 1, "active_count": 0 if empty else 1, "candidate_count": 0},
+                "items": [] if empty else [{"symbol": "AAPL", "status": "active", "score": 20, "price": 200}],
+            }, 200
+
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=0, **kwargs):
+            calls.append({"method": method, "path": path, "params": params, "json_body": json_body})
+            if path == "/ibkr/market/calendar":
+                return {"ok": True, "payload": {"ok": True, "market_date": "2026-04-30", "is_trading_day": True, "is_closed": False}}
+            if path == "/scan/status" and method == "GET" and len([call for call in calls if call["path"] == "/scan/status"]) == 1:
+                return {"ok": False, "status_code": 404, "payload": {"status": "not_found", "error": "scan_attempt_not_found"}}
+            if path == "/scan":
+                self.assertEqual(json_body["mode"], "topup")
+                self.assertTrue(json_body["force"])
+                self.assertTrue(json_body["async"])
+                self.assertEqual(json_body["trigger_source"], "open_report_empty_target_capture")
+                self.assertEqual(json_body["run_id"], "open-report-capture-live-2026-04-30")
+                return {"ok": True, "payload": {"ok": True, "accepted": True, "async": True, "run_id": json_body["run_id"], "status": "accepted"}}
+            self.assertEqual(path, "/scan/status")
+            return {"ok": True, "payload": {"ok": True, "status": "completed", "run_id": "open-report-capture-live-2026-04-30"}}
+
+        payload, status_code = build_system_open_report_response(
+            payload={"broker_mode": "paper", "market_data_mode": "live"},
+            normalize_environment=lambda value, default: str(value or default).strip().lower(),
+            time_strings=lambda: {"us": "2026-04-30 09:30:05", "cn": "2026-04-30 21:30:05", "date": "2026-04-30"},
+            build_today_targets_response=build_today_targets_response,
+            build_system_summary_payload=lambda environment, lite_mode=False: {"status": "running"},
+            build_system_monitor_payload=lambda environment: {"scheduler": {"status": "running"}},
+            feishu_send_interactive=lambda card, chat_id, environment: sent.append(card) or {"success": True, "message_id": "om-submit-capture"},
+            write_system_event_record=lambda *args, **kwargs: {},
+            get_state_payload=lambda state_key, environment: {"data": states.get((state_key, environment), {})},
+            upsert_state=lambda key, environment, data, date: states.update({(key, environment): data}) or data,
+            config_value=lambda key, default, environment: default,
+            console_base_url=lambda: "https://quant.lzw-glory.top",
+            startup_chat_id=lambda environment: f"startup-chat-{environment}",
+            load_market_snapshots=lambda environment, symbols, market_date, computed_at_ms: [],
+            request_json_request=request_json_request,
+            compute_base_url="http://compute.internal",
+            sleep_fn=lambda seconds: (_ for _ in ()).throw(AssertionError("capture should complete before sleeping")),
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["opening_capture"]["submitted"])
+        self.assertEqual(payload["opening_capture"]["status"], "completed")
+        self.assertEqual([call["path"] for call in calls], ["/ibkr/market/calendar", "/scan/status", "/scan", "/scan/status"])
+        self.assertEqual(len(target_payloads), 2)
+        card_text = "\n".join(element.get("content", "") for element in sent[0]["elements"] if element.get("tag") == "markdown")
+        self.assertIn("AAPL", card_text)
+
+    def test_open_report_reports_open_capture_timeout_without_blocking_card(self):
+        _clear_market_calendar_cache()
+        sent = []
+        states = {}
+
+        def build_today_targets_response(*, payload):
+            return {
+                "market_date": payload["market_date"],
+                "computed_at_ms": 1777642200000,
+                "daily_scan": {"status": "completed", "market_date": payload["market_date"]},
+                "summary": {"total": 0, "active_count": 0, "candidate_count": 0},
+                "items": [],
+            }, 200
+
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=0, **kwargs):
+            if path == "/ibkr/market/calendar":
+                return {"ok": True, "payload": {"ok": True, "market_date": "2026-05-01", "is_trading_day": True, "is_closed": False}}
+            self.assertEqual(path, "/scan/status")
+            return {"ok": True, "payload": {"ok": True, "status": "pending", "run_id": "scan-live-2026-05-01-preopen"}}
+
+        def config_value(key, default, environment):
+            if key == "ibkr_open_report_target_wait_sec":
+                return "0"
+            return default
+
+        payload, status_code = build_system_open_report_response(
+            payload={"broker_mode": "paper", "market_data_mode": "live"},
+            normalize_environment=lambda value, default: str(value or default).strip().lower(),
+            time_strings=lambda: {"us": "2026-05-01 09:30:05", "cn": "2026-05-01 21:30:05", "date": "2026-05-01"},
+            build_today_targets_response=build_today_targets_response,
+            build_system_summary_payload=lambda environment, lite_mode=False: {"status": "running"},
+            build_system_monitor_payload=lambda environment: {"scheduler": {"status": "running"}},
+            feishu_send_interactive=lambda card, chat_id, environment: sent.append(card) or {"success": True, "message_id": "om-timeout"},
+            write_system_event_record=lambda *args, **kwargs: {},
+            get_state_payload=lambda state_key, environment: {"data": states.get((state_key, environment), {})},
+            upsert_state=lambda key, environment, data, date: states.update({(key, environment): data}) or data,
+            config_value=config_value,
+            console_base_url=lambda: "https://quant.lzw-glory.top",
+            startup_chat_id=lambda environment: f"startup-chat-{environment}",
+            load_market_snapshots=lambda environment, symbols, market_date, computed_at_ms: [],
+            request_json_request=request_json_request,
+            compute_base_url="http://compute.internal",
+            sleep_fn=lambda seconds: (_ for _ in ()).throw(AssertionError("zero wait budget should not sleep")),
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["opening_capture"]["status"], "timeout")
+        self.assertEqual(sent[0]["header"]["template"], "orange")
+        card_text = "\n".join(element.get("content", "") for element in sent[0]["elements"] if element.get("tag") == "markdown")
+        self.assertIn("开盘采集等待超时", card_text)
+        self.assertEqual(states[("system_notify_daily", "paper")]["open_target_capture_status"], "timeout")
+
     def test_scan_summary_reports_daily_scan_failure(self):
         sent = []
         states = {}

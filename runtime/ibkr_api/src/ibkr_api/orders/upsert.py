@@ -141,6 +141,46 @@ def build_order_record_payload(payload: dict[str, Any], existing_row: dict[str, 
     return order_payload
 
 
+ORDER_HEARTBEAT_EXTRA_KEYS = {
+    "broker_callback_received_at",
+    "broker_callback_received_at_ms",
+    "broker_callback_source",
+    "broker_realtime_callback",
+    "ib_callback_type",
+    "us_time",
+    "cn_time",
+    "bar_time_ms",
+    "order_time",
+    "status_updated_us_time",
+    "status_updated_cn_time",
+    "status_updated_bar_time_ms",
+    "last_status_source",
+    "last_status_reason",
+    "previous_status",
+    "current_status",
+    "status_transition_text",
+}
+
+ORDER_REALTIME_STATUS_CONFIRMATION_STATUSES = {
+    "filled",
+    "closed",
+    "executed",
+    "canceled",
+    "cancelled",
+    "rejected",
+    "expired",
+    "inactive",
+}
+
+
+def _comparable_extra(extra: dict[str, Any]) -> dict[str, Any]:
+    return {
+        str(key): value
+        for key, value in ensure_object(extra).items()
+        if str(key) not in ORDER_HEARTBEAT_EXTRA_KEYS
+    }
+
+
 def is_idempotent_order_payload(existing_row: dict[str, Any] | None, next_payload: dict[str, Any]) -> bool:
     if not existing_row or not existing_row.get("id"):
         return False
@@ -183,7 +223,17 @@ def is_idempotent_order_payload(existing_row: dict[str, Any] | None, next_payloa
             return False
     left_extra = ensure_object(existing_row.get("extra"))
     right_extra = ensure_object(next_payload.get("extra"))
-    return json.dumps(left_extra, sort_keys=True, ensure_ascii=True) == json.dumps(right_extra, sort_keys=True, ensure_ascii=True)
+    if (
+        to_text(next_payload.get("status")).lower() in ORDER_REALTIME_STATUS_CONFIRMATION_STATUSES
+        and to_text(right_extra.get("broker_realtime_callback")).lower() in {"1", "true", "yes", "y", "on"}
+        and to_text(left_extra.get("broker_realtime_callback")).lower() not in {"1", "true", "yes", "y", "on"}
+    ):
+        return False
+    return json.dumps(_comparable_extra(left_extra), sort_keys=True, ensure_ascii=True) == json.dumps(
+        _comparable_extra(right_extra),
+        sort_keys=True,
+        ensure_ascii=True,
+    )
 
 
 def build_order_upsert_response(

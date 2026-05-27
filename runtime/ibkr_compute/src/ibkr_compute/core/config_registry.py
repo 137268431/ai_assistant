@@ -75,7 +75,11 @@ def _infer_group(key: str) -> str:
         return "service_topology"
     if normalized.startswith("storage_cleanup_"):
         return "storage"
-    if normalized.startswith("ibkr_daily_scan_") or normalized.startswith("ibkr_dynamic_admission_"):
+    if (
+        normalized.startswith("ibkr_daily_scan_")
+        or normalized.startswith("ibkr_dynamic_admission_")
+        or normalized.startswith("ibkr_open_report_target_")
+    ):
         return "target_universe"
     if normalized.startswith("ibkr_history_") or normalized.startswith("ibkr_bar_"):
         return "market_data"

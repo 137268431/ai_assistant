@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timedelta
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
@@ -17,6 +18,8 @@ from ibkr_api.system.jobs.market_session_text import (
 OPEN_REPORT_STATE_KEY = "system_notify_daily"
 DEFAULT_OPEN_REPORT_TIME_ET = "09:30"
 DEFAULT_OPEN_REPORT_WINDOW_MINUTES = 10
+DEFAULT_OPEN_TARGET_WAIT_SEC = 45.0
+DEFAULT_OPEN_TARGET_POLL_SEC = 3.0
 DEFAULT_MARKET_SYMBOLS = "SPY,QQQ,VIX"
 ET = ZoneInfo("America/New_York")
 MS_PER_DAY = 24 * 60 * 60 * 1000
@@ -37,6 +40,7 @@ ConsoleBaseUrl = Callable[[], str]
 StartupChatId = Callable[[str], str]
 LoadMarketSnapshots = Callable[[str, list[str], str, int], list[dict[str, Any]]]
 RequestJsonRequest = Callable[..., dict[str, Any]]
+SleepFunction = Callable[[float], None]
 
 
 def _to_text(value: Any) -> str:
@@ -409,6 +413,363 @@ def _scan_issue_text(targets_payload: dict[str, Any]) -> str:
     return ""
 
 
+def _target_counts(targets_payload: dict[str, Any]) -> dict[str, int]:
+    summary = _as_dict(targets_payload.get("summary"))
+    return {
+        "total": _to_int(summary.get("total"), 0),
+        "active": _to_int(summary.get("active_count"), 0),
+        "candidate": _to_int(summary.get("candidate_count"), 0),
+    }
+
+
+def _targets_empty(targets_payload: dict[str, Any]) -> bool:
+    if any(isinstance(item, dict) for item in (targets_payload.get("items") or [])):
+        return False
+    counts = _target_counts(targets_payload)
+    return counts["total"] <= 0 and counts["active"] <= 0 and counts["candidate"] <= 0
+
+
+def _scan_status_text(payload: dict[str, Any]) -> str:
+    return _to_text(payload.get("status") or payload.get("state")).lower()
+
+
+def _is_scan_pending_status(status: str) -> bool:
+    return status in {"accepted", "submitted", "running", "pending", "in_progress", "processing"}
+
+
+def _open_capture_truthy(config_value: ConfigValue, key: str, default: str, environment: str) -> bool:
+    try:
+        return _truthy(config_value(key, default, environment))
+    except Exception:
+        return _truthy(default)
+
+
+def _open_capture_float(config_value: ConfigValue, key: str, default: str, environment: str) -> float:
+    try:
+        return _to_float(config_value(key, default, environment), _to_float(default, 0.0))
+    except Exception:
+        return _to_float(default, 0.0)
+
+
+def _scan_status_params(environment: str, market_date: str, run_id: str = "") -> list[tuple[str, str]]:
+    params = [
+        ("environment", environment),
+        ("data_environment", environment),
+        ("market_data_mode", environment),
+        ("date", market_date),
+        ("market_date", market_date),
+        ("mode", "topup"),
+    ]
+    if _to_text(run_id):
+        params.append(("run_id", _to_text(run_id)))
+    return params
+
+
+def _fetch_open_capture_scan_status(
+    *,
+    request_json_request: RequestJsonRequest | None,
+    compute_base_url: str,
+    environment: str,
+    market_date: str,
+    run_id: str = "",
+    timeout: float = 3.0,
+) -> dict[str, Any]:
+    if not callable(request_json_request) or not _to_text(compute_base_url):
+        return {"ok": False, "error": "compute_request_unavailable", "payload": {}}
+    try:
+        result = request_json_request(
+            "GET",
+            compute_base_url,
+            "/scan/status",
+            params=_scan_status_params(environment, market_date, run_id=run_id),
+            timeout=timeout,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "payload": {}}
+    payload = _as_dict((result or {}).get("payload"))
+    return {
+        "ok": bool((result or {}).get("ok")),
+        "error": _to_text((result or {}).get("error") or payload.get("error") or payload.get("last_error")),
+        "payload": payload,
+        "status_code": _to_int((result or {}).get("status_code"), 0),
+    }
+
+
+def _submit_open_capture_scan(
+    *,
+    request_json_request: RequestJsonRequest | None,
+    compute_base_url: str,
+    broker_mode: str,
+    data_environment: str,
+    market_date: str,
+    run_id: str,
+) -> dict[str, Any]:
+    if not callable(request_json_request) or not _to_text(compute_base_url):
+        return {"ok": False, "error": "compute_request_unavailable", "payload": {}}
+    try:
+        result = request_json_request(
+            "POST",
+            compute_base_url,
+            "/scan",
+            json_body={
+                "environment": data_environment,
+                "broker_mode": broker_mode,
+                "market_data_mode": data_environment,
+                "data_environment": data_environment,
+                "mode": "topup",
+                "force": True,
+                "async": True,
+                "run_id": run_id,
+                "trigger_source": "open_report_empty_target_capture",
+            },
+            timeout=15.0,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "payload": {}}
+    payload = _as_dict((result or {}).get("payload"))
+    return {
+        "ok": bool((result or {}).get("ok")) and bool(payload.get("ok", True)),
+        "error": _to_text((result or {}).get("error") or payload.get("error") or payload.get("reason")),
+        "payload": payload,
+        "status_code": _to_int((result or {}).get("status_code"), 0),
+    }
+
+
+def _finalize_open_capture_status(
+    *,
+    status: str,
+    started_at: float,
+    wait_seconds: float,
+    poll_seconds: float,
+    run_id: str = "",
+    reason: str = "",
+    error: str = "",
+    scan_payload: dict[str, Any] | None = None,
+    submitted: bool = False,
+    checked_existing: bool = False,
+    attempts: int = 0,
+) -> dict[str, Any]:
+    payload = _as_dict(scan_payload)
+    return {
+        "enabled": True,
+        "status": status,
+        "reason": reason,
+        "error": error,
+        "run_id": _to_text(run_id or payload.get("run_id")),
+        "submitted": bool(submitted),
+        "checked_existing": bool(checked_existing),
+        "attempts": int(attempts or 0),
+        "wait_budget_sec": round(max(0.0, wait_seconds), 3),
+        "poll_sec": round(max(0.0, poll_seconds), 3),
+        "elapsed_s": round(max(0.0, time.monotonic() - started_at), 3),
+        "scan_status": _scan_status_text(payload),
+    }
+
+
+def _prepare_open_target_capture(
+    *,
+    broker_mode: str,
+    data_environment: str,
+    market_date: str,
+    targets_payload: dict[str, Any],
+    request_json_request: RequestJsonRequest | None,
+    compute_base_url: str,
+    config_value: ConfigValue,
+    sleep_fn: SleepFunction | None = None,
+) -> dict[str, Any]:
+    if not _targets_empty(targets_payload):
+        return {"enabled": False, "skipped": True, "reason": "target_pool_ready", "status": "skipped"}
+    if not _open_capture_truthy(config_value, "ibkr_open_report_target_capture_enabled", "TRUE", data_environment):
+        return {"enabled": False, "skipped": True, "reason": "target_capture_disabled", "status": "disabled"}
+    started_at = time.monotonic()
+    wait_seconds = max(
+        0.0,
+        _open_capture_float(config_value, "ibkr_open_report_target_wait_sec", str(DEFAULT_OPEN_TARGET_WAIT_SEC), data_environment),
+    )
+    poll_seconds = max(
+        0.2,
+        _open_capture_float(config_value, "ibkr_open_report_target_poll_sec", str(DEFAULT_OPEN_TARGET_POLL_SEC), data_environment),
+    )
+    if not callable(request_json_request) or not _to_text(compute_base_url):
+        return _finalize_open_capture_status(
+            status="unavailable",
+            reason="compute_request_unavailable",
+            error="compute_request_unavailable",
+            started_at=started_at,
+            wait_seconds=wait_seconds,
+            poll_seconds=poll_seconds,
+        )
+
+    sleep = sleep_fn or time.sleep
+    attempts = 0
+    checked_existing = False
+    submitted = False
+    run_id = f"open-report-capture-{data_environment}-{market_date}"
+
+    existing = _fetch_open_capture_scan_status(
+        request_json_request=request_json_request,
+        compute_base_url=compute_base_url,
+        environment=data_environment,
+        market_date=market_date,
+    )
+    checked_existing = True
+    existing_payload = _as_dict(existing.get("payload"))
+    existing_status = _scan_status_text(existing_payload)
+    if bool(existing.get("ok")) and existing_status == "completed":
+        return _finalize_open_capture_status(
+            status="completed",
+            reason="existing_topup_completed",
+            started_at=started_at,
+            wait_seconds=wait_seconds,
+            poll_seconds=poll_seconds,
+            run_id=_to_text(existing_payload.get("run_id")),
+            scan_payload=existing_payload,
+            checked_existing=checked_existing,
+            attempts=1,
+        )
+    if bool(existing.get("ok")) and _is_scan_pending_status(existing_status):
+        run_id = _to_text(existing_payload.get("run_id")) or run_id
+        reason = "existing_topup_pending"
+    else:
+        submit = _submit_open_capture_scan(
+            request_json_request=request_json_request,
+            compute_base_url=compute_base_url,
+            broker_mode=broker_mode,
+            data_environment=data_environment,
+            market_date=market_date,
+            run_id=run_id,
+        )
+        submitted = True
+        submit_payload = _as_dict(submit.get("payload"))
+        submit_status = _scan_status_text(submit_payload)
+        run_id = _to_text(submit_payload.get("run_id")) or run_id
+        if bool(submit.get("ok")) and submit_status == "completed":
+            return _finalize_open_capture_status(
+                status="completed",
+                reason="submitted_topup_completed",
+                started_at=started_at,
+                wait_seconds=wait_seconds,
+                poll_seconds=poll_seconds,
+                run_id=run_id,
+                scan_payload=submit_payload,
+                submitted=submitted,
+                checked_existing=checked_existing,
+                attempts=1,
+            )
+        if not (bool(submit.get("ok")) and (bool(submit_payload.get("accepted")) or bool(submit_payload.get("async")) or _is_scan_pending_status(submit_status))):
+            return _finalize_open_capture_status(
+                status="submit_failed",
+                reason="submit_failed",
+                error=_to_text(submit.get("error") or submit_payload.get("error") or "scan_submit_failed"),
+                started_at=started_at,
+                wait_seconds=wait_seconds,
+                poll_seconds=poll_seconds,
+                run_id=run_id,
+                scan_payload=submit_payload,
+                submitted=submitted,
+                checked_existing=checked_existing,
+                attempts=1,
+            )
+        reason = "submitted_topup_pending"
+
+    deadline = started_at + wait_seconds
+    last_payload: dict[str, Any] = {}
+    last_error = ""
+    while True:
+        attempts += 1
+        status_result = _fetch_open_capture_scan_status(
+            request_json_request=request_json_request,
+            compute_base_url=compute_base_url,
+            environment=data_environment,
+            market_date=market_date,
+            run_id=run_id,
+            timeout=min(8.0, max(1.0, poll_seconds + 1.0)),
+        )
+        last_payload = _as_dict(status_result.get("payload"))
+        last_error = _to_text(status_result.get("error"))
+        status = _scan_status_text(last_payload)
+        if bool(status_result.get("ok")) and status == "completed":
+            return _finalize_open_capture_status(
+                status="completed",
+                reason=reason,
+                started_at=started_at,
+                wait_seconds=wait_seconds,
+                poll_seconds=poll_seconds,
+                run_id=run_id,
+                scan_payload=last_payload,
+                submitted=submitted,
+                checked_existing=checked_existing,
+                attempts=attempts,
+            )
+        if bool(status_result.get("ok")) and status == "failed":
+            return _finalize_open_capture_status(
+                status="failed",
+                reason=reason,
+                error=last_error or _to_text(last_payload.get("last_error") or last_payload.get("error") or "scan_failed"),
+                started_at=started_at,
+                wait_seconds=wait_seconds,
+                poll_seconds=poll_seconds,
+                run_id=run_id,
+                scan_payload=last_payload,
+                submitted=submitted,
+                checked_existing=checked_existing,
+                attempts=attempts,
+            )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return _finalize_open_capture_status(
+                status="timeout",
+                reason=reason,
+                error=last_error or "scan_still_pending",
+                started_at=started_at,
+                wait_seconds=wait_seconds,
+                poll_seconds=poll_seconds,
+                run_id=run_id,
+                scan_payload=last_payload,
+                submitted=submitted,
+                checked_existing=checked_existing,
+                attempts=attempts,
+            )
+        sleep(min(poll_seconds, remaining))
+
+
+def _opening_capture_issue_text(opening_capture: dict[str, Any] | None) -> str:
+    capture = _as_dict(opening_capture)
+    status = _to_text(capture.get("status")).lower()
+    if not status or status in {"skipped", "disabled"}:
+        return ""
+    if status == "completed":
+        return ""
+    if status == "completed_empty":
+        return "开盘采集完成但未入选标的"
+    if status == "timeout":
+        return "开盘采集等待超时"
+    if status in {"failed", "submit_failed", "unavailable"}:
+        return f"开盘采集{status}: {_to_text(capture.get('error')) or _to_text(capture.get('reason')) or 'unknown_error'}"
+    return ""
+
+
+def _opening_capture_line(opening_capture: dict[str, Any] | None) -> str:
+    capture = _as_dict(opening_capture)
+    status = _to_text(capture.get("status"))
+    if not status or status in {"skipped", "disabled"}:
+        return ""
+    parts = [status]
+    reason = _to_text(capture.get("reason"))
+    if reason:
+        parts.append(reason)
+    run_id = _to_text(capture.get("run_id"))
+    if run_id:
+        parts.append(f"run {run_id}")
+    elapsed = _to_float(capture.get("elapsed_s"), 0.0)
+    if elapsed > 0:
+        parts.append(f"waited {elapsed:.1f}s")
+    error = _to_text(capture.get("error"))
+    if error:
+        parts.append(error)
+    return " · ".join(parts)
+
+
 def _system_lines(summary: dict[str, Any], monitor: dict[str, Any]) -> tuple[str, str, str]:
     compute = _as_dict(summary.get("ibkr_compute") or monitor.get("compute"))
     runtime = {**_as_dict(summary.get("ibkr_runtime")), **_as_dict(monitor.get("runtime"))}
@@ -440,7 +801,12 @@ def _status_problem(status: Any) -> bool:
     return bool(text) and text not in {"running", "ok", "ready", "healthy", "connected", "authenticated", "completed"}
 
 
-def _open_issue_lines(summary: dict[str, Any], monitor: dict[str, Any], targets_payload: dict[str, Any]) -> tuple[list[str], bool]:
+def _open_issue_lines(
+    summary: dict[str, Any],
+    monitor: dict[str, Any],
+    targets_payload: dict[str, Any],
+    opening_capture: dict[str, Any] | None = None,
+) -> tuple[list[str], bool]:
     issues: list[str] = []
     blocking = False
     scan_issue = _scan_issue_text(targets_payload)
@@ -480,11 +846,19 @@ def _open_issue_lines(summary: dict[str, Any], monitor: dict[str, Any], targets_
     summary_counts = _as_dict(targets_payload.get("summary"))
     if _to_int(summary_counts.get("total"), 0) <= 0:
         issues.append("今日暂无 active / candidate 标的")
+    capture_issue = _opening_capture_issue_text(opening_capture)
+    if capture_issue:
+        issues.append(capture_issue)
     return issues, blocking
 
 
-def _open_conclusion(summary: dict[str, Any], monitor: dict[str, Any], targets_payload: dict[str, Any]) -> str:
-    issues, blocking = _open_issue_lines(summary, monitor, targets_payload)
+def _open_conclusion(
+    summary: dict[str, Any],
+    monitor: dict[str, Any],
+    targets_payload: dict[str, Any],
+    opening_capture: dict[str, Any] | None = None,
+) -> str:
+    issues, blocking = _open_issue_lines(summary, monitor, targets_payload, opening_capture)
     if blocking:
         return "不建议开仓: " + "；".join(issues[:3])
     if issues:
@@ -492,20 +866,32 @@ def _open_conclusion(summary: dict[str, Any], monitor: dict[str, Any], targets_p
     return "可交易: 系统链路已就绪，按今日标的池观察信号。"
 
 
-def _open_operator_action(summary: dict[str, Any], monitor: dict[str, Any], targets_payload: dict[str, Any]) -> str:
-    issues, blocking = _open_issue_lines(summary, monitor, targets_payload)
+def _open_operator_action(
+    summary: dict[str, Any],
+    monitor: dict[str, Any],
+    targets_payload: dict[str, Any],
+    opening_capture: dict[str, Any] | None = None,
+) -> str:
+    issues, blocking = _open_issue_lines(summary, monitor, targets_payload, opening_capture)
     if not issues:
         return "无需处理；重点关注今日标的、信号确认和大盘方向。"
     joined = "；".join(issues)
     if "日筛" in joined:
         return "先检查 compute / screener / targets 写入链路，修复后手动重跑 scan；未刷新前不要只按旧标的池操作。"
+    if "开盘采集" in joined or "今日暂无 active / candidate 标的" in joined:
+        return "先确认 09:29/open-report topup 扫描完成与 targets 写入；未刷新前不要按空池操作。"
     if blocking:
         return "先恢复 Gateway / Session / WebSocket 与核心服务，再允许自动交易。"
     return "确认今日标的池与系统状态后再按策略执行。"
 
 
-def _report_level(summary: dict[str, Any], monitor: dict[str, Any], targets_payload: dict[str, Any]) -> str:
-    issues, blocking = _open_issue_lines(summary, monitor, targets_payload)
+def _report_level(
+    summary: dict[str, Any],
+    monitor: dict[str, Any],
+    targets_payload: dict[str, Any],
+    opening_capture: dict[str, Any] | None = None,
+) -> str:
+    issues, blocking = _open_issue_lines(summary, monitor, targets_payload, opening_capture)
     if blocking:
         return "error"
     if issues:
@@ -549,6 +935,7 @@ def _build_open_report_card(
     market_snapshots: list[dict[str, Any]],
     calendar: dict[str, Any],
     console_base_url: str,
+    opening_capture: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     market_date = _to_text(targets_payload.get("market_date")) or _to_text(times.get("date"))
     target_items = [_as_dict(item) for item in (targets_payload.get("items") or []) if isinstance(item, dict)]
@@ -557,22 +944,26 @@ def _build_open_report_card(
         target_lines = ["今日暂无 active / candidate 标的。"]
     market_lines = [_format_market_line(item) for item in market_snapshots[:6]] or ["大盘监控数据暂不可用。"]
     service_line, link_line, services_line = _system_lines(summary, monitor)
-    issue_text = _scan_issue_text(targets_payload)
-    level = _report_level(summary, monitor, targets_payload)
+    issue_parts = [text for text in (_scan_issue_text(targets_payload), _opening_capture_issue_text(opening_capture)) if text]
+    issue_text = "；".join(issue_parts)
+    level = _report_level(summary, monitor, targets_payload, opening_capture)
     market_session_fields = market_session_detail_fields(market_session_from_calendar(calendar))
     market_session_lines = "\n".join(f"**{key}**: {value}" for key, value in market_session_fields.items())
     market_session_block = f"\n{market_session_lines}" if market_session_lines else ""
+    capture_line = _opening_capture_line(opening_capture)
+    capture_block = f"\n**开盘采集**: {capture_line}" if capture_line else ""
     elements: list[dict[str, Any]] = [
         {
             "tag": "markdown",
             "content": (
-                f"**结论**: {_open_conclusion(summary, monitor, targets_payload)}\n"
-                f"**需要处理**: {_open_operator_action(summary, monitor, targets_payload)}\n"
+                f"**结论**: {_open_conclusion(summary, monitor, targets_payload, opening_capture)}\n"
+                f"**需要处理**: {_open_operator_action(summary, monitor, targets_payload, opening_capture)}\n"
                 f"**交易日**: {market_date or 'n/a'}\n"
                 f"**检查时间**: 美东 {_to_text(times.get('us')) or 'n/a'} | 北京 {_to_text(times.get('cn')) or 'n/a'}\n"
                 f"**系统**: {service_line}\n"
                 f"**IBKR链路**: {link_line}\n"
                 f"**服务统计**: {services_line}"
+                f"{capture_block}"
                 f"{market_session_block}"
             ),
         },
@@ -583,7 +974,7 @@ def _build_open_report_card(
         elements.append(
             {
                 "tag": "markdown",
-                "content": f"**需要关注**: {issue_text}\n**建议**: {_open_operator_action(summary, monitor, targets_payload)}",
+                "content": f"**需要关注**: {issue_text}\n**建议**: {_open_operator_action(summary, monitor, targets_payload, opening_capture)}",
             }
         )
     actions = []
@@ -707,21 +1098,26 @@ def _event_detail(
     targets_payload: dict[str, Any],
     market_snapshots: list[dict[str, Any]],
     calendar: dict[str, Any],
+    opening_capture: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     service_line, link_line, services_line = _system_lines(summary, monitor)
     market_line = " | ".join(_format_market_line(item) for item in market_snapshots[:3]) or "n/a"
-    issue_text = _scan_issue_text(targets_payload)
+    issue_parts = [text for text in (_scan_issue_text(targets_payload), _opening_capture_issue_text(opening_capture)) if text]
+    issue_text = "；".join(issue_parts)
     detail = {
         "检查时间": _to_text(times.get("us")),
         "交易日": _to_text(targets_payload.get("market_date")) or _to_text(times.get("date")),
-        "结论": _open_conclusion(summary, monitor, targets_payload),
-        "需要处理": _open_operator_action(summary, monitor, targets_payload),
+        "结论": _open_conclusion(summary, monitor, targets_payload, opening_capture),
+        "需要处理": _open_operator_action(summary, monitor, targets_payload, opening_capture),
         "系统": service_line,
         "IBKR链路": link_line,
         "服务统计": services_line,
         "今日标的": _target_summary_line(targets_payload),
         "大盘": market_line,
     }
+    capture_line = _opening_capture_line(opening_capture)
+    if capture_line:
+        detail["开盘采集"] = capture_line
     if issue_text:
         detail["需要关注"] = issue_text
     detail.update(market_session_detail_fields(market_session_from_calendar(calendar)))
@@ -746,6 +1142,7 @@ def build_system_open_report_response(
     load_market_snapshots: LoadMarketSnapshots | None = None,
     request_json_request: RequestJsonRequest | None = None,
     compute_base_url: str = "",
+    sleep_fn: SleepFunction | None = None,
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
     broker_mode = request_broker_mode(request_payload)
@@ -972,9 +1369,39 @@ def build_system_open_report_response(
             "page": 1,
             "paginate": False,
             "sort_by": "attention_asc",
+            "cache_bust": "1",
         }
     )
     targets_payload = _as_dict(targets_payload)
+    opening_capture = _prepare_open_target_capture(
+        broker_mode=broker_mode,
+        data_environment=data_environment,
+        market_date=times["date"],
+        targets_payload=targets_payload,
+        request_json_request=request_json_request,
+        compute_base_url=compute_base_url,
+        config_value=config_value,
+        sleep_fn=sleep_fn,
+    )
+    if _to_text(opening_capture.get("status")).lower() == "completed":
+        refreshed_targets_payload, _ = build_today_targets_response(
+            payload={
+                "broker_mode": broker_mode,
+                "market_data_mode": data_environment,
+                "data_environment": data_environment,
+                "environment": data_environment,
+                "market_date": times["date"],
+                "date": times["date"],
+                "per_page": 5,
+                "page": 1,
+                "paginate": False,
+                "sort_by": "attention_asc",
+                "cache_bust": "1",
+            }
+        )
+        targets_payload = _as_dict(refreshed_targets_payload)
+        if _targets_empty(targets_payload):
+            opening_capture = {**opening_capture, "status": "completed_empty", "reason": "completed_no_targets"}
     computed_at_ms = _to_int(targets_payload.get("computed_at_ms"), 0) or _parse_us_time_ms(times.get("us"))
     market_symbols = _normalize_symbols(config_value("ibkr_market_ws_symbols", DEFAULT_MARKET_SYMBOLS, data_environment)) or _normalize_symbols(DEFAULT_MARKET_SYMBOLS)
     market_snapshots: list[dict[str, Any]] = []
@@ -1000,11 +1427,12 @@ def build_system_open_report_response(
         market_snapshots=market_snapshots,
         calendar=calendar,
         console_base_url=console_base_url(),
+        opening_capture=opening_capture,
     )
     result = _as_dict(feishu_send_interactive(card, startup_chat_id(broker_mode), broker_mode))
     notified = bool(result.get("success")) and not bool(result.get("suppressed"))
     finalized = bool(notified or result.get("skipped") or result.get("suppressed"))
-    level = _report_level(summary, monitor, targets_payload)
+    level = _report_level(summary, monitor, targets_payload, opening_capture)
     event_record = write_system_event_record(
         "open_report",
         level,
@@ -1017,6 +1445,7 @@ def build_system_open_report_response(
             targets_payload=targets_payload,
             market_snapshots=market_snapshots,
             calendar=calendar,
+            opening_capture=opening_capture,
         ),
         broker_mode,
         notified,
@@ -1037,6 +1466,10 @@ def build_system_open_report_response(
         "open_report_market_date": _to_text(targets_payload.get("market_date")) or times["date"],
         "open_target_total": _to_int(_as_dict(targets_payload.get("summary")).get("total"), 0),
         "open_daily_scan_status": _to_text(_as_dict(targets_payload.get("daily_scan")).get("status")),
+        "open_target_capture_status": _to_text(opening_capture.get("status")),
+        "open_target_capture_run_id": _to_text(opening_capture.get("run_id")),
+        "open_target_capture_error": _to_text(opening_capture.get("error")),
+        "opening_capture": opening_capture,
     }
     if finalized:
         next_state["open_sent_at"] = times["us"]
@@ -1054,6 +1487,7 @@ def build_system_open_report_response(
         "skipped": bool(result.get("skipped")),
         "suppressed": bool(result.get("suppressed")),
         "error": "" if finalized else next_state["open_error"],
+        "opening_capture": opening_capture,
         "state": next_state,
         "source": "ibkr-api",
     }, 200
@@ -1062,6 +1496,8 @@ def build_system_open_report_response(
 __all__ = [
     "DEFAULT_OPEN_REPORT_TIME_ET",
     "DEFAULT_OPEN_REPORT_WINDOW_MINUTES",
+    "DEFAULT_OPEN_TARGET_POLL_SEC",
+    "DEFAULT_OPEN_TARGET_WAIT_SEC",
     "OPEN_REPORT_STATE_KEY",
     "build_system_open_report_response",
     "load_market_snapshots_from_pb",

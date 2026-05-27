@@ -4,6 +4,7 @@ Order tracking built on top of IB Gateway socket events plus polling fallback.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 import logging
@@ -94,6 +95,18 @@ class OrderTracker:
     @staticmethod
     def _normalize_text(value: Any) -> str:
         return str(value or "").strip()
+
+    @staticmethod
+    def _ensure_object(value: Any) -> dict:
+        if isinstance(value, dict):
+            return dict(value)
+        if isinstance(value, str) and value.strip():
+            try:
+                parsed = json.loads(value)
+                return dict(parsed) if isinstance(parsed, dict) else {}
+            except Exception:
+                return {}
+        return {}
 
     @classmethod
     def _normalize_trade_direction(cls, value: Any) -> str:
@@ -209,6 +222,19 @@ class OrderTracker:
     def _is_open_order_status(status: str) -> bool:
         return str(status or "").strip().upper() not in {
             "",
+            "FILLED",
+            "EXECUTED",
+            "CANCELLED",
+            "CANCELED",
+            "INACTIVE",
+            "REJECTED",
+            "EXPIRED",
+            "API_CANCELLED",
+        }
+
+    @staticmethod
+    def _is_terminal_order_status(status: Any) -> bool:
+        return str(status or "").strip().upper() in {
             "FILLED",
             "EXECUTED",
             "CANCELLED",
@@ -796,6 +822,30 @@ class OrderTracker:
             return True
         return self._order_sync_signature(previous) != self._order_sync_signature(current)
 
+    def _stabilize_live_order_merge(self, previous: Dict, current: Dict) -> Dict:
+        if not previous:
+            return current
+        stabilized = dict(current)
+        previous_filled = self._to_float(previous.get("filledQuantity"), 0.0)
+        current_filled = self._to_float(stabilized.get("filledQuantity"), 0.0)
+        if previous_filled > current_filled:
+            stabilized["filledQuantity"] = previous_filled
+            if previous.get("remainingQuantity") not in (None, ""):
+                stabilized["remainingQuantity"] = previous.get("remainingQuantity")
+        previous_avg = self._to_float(previous.get("avgPrice") or previous.get("avgFillPrice"), 0.0)
+        current_avg = self._to_float(stabilized.get("avgPrice") or stabilized.get("avgFillPrice"), 0.0)
+        if previous_avg > 0 and current_avg <= 0:
+            stabilized["avgPrice"] = previous_avg
+            stabilized["avgFillPrice"] = previous_avg
+        for field in ("lastFillPrice", "lastExecutionTime", "ib_exec_id", "execution_shares", "execution_price"):
+            if previous.get(field) not in (None, "") and stabilized.get(field) in (None, ""):
+                stabilized[field] = previous.get(field)
+        previous_status = self._extract_order_status(previous)
+        current_status = self._extract_order_status(stabilized)
+        if self._is_terminal_order_status(previous_status) and not self._is_terminal_order_status(current_status):
+            stabilized["status"] = previous.get("status")
+        return stabilized
+
     def _emit_order_transition_callbacks(self, previous_status: str, merged: Dict):
         status = self._extract_order_status(merged)
         if status in ("FILLED", "EXECUTED") and previous_status not in ("FILLED", "EXECUTED"):
@@ -831,6 +881,7 @@ class OrderTracker:
         merged["orderId"] = order_id
         merged["_order_update_source"] = str(source or "")
         merged["broker_realtime_callback"] = bool(source == "ws" and order.get("broker_realtime_callback"))
+        merged = self._stabilize_live_order_merge(prev, merged)
         merged = self._stamp_known_order(merged, seen_live=True)
         should_sync = self._order_needs_sync(prev, merged)
         self._known_orders[order_id] = merged
@@ -963,6 +1014,7 @@ class OrderTracker:
                 merged = dict(previous)
                 merged.update(payload)
                 merged["orderId"] = order_id
+                merged = self._stabilize_live_order_merge(previous, merged)
                 status = self._extract_order_status(merged)
                 if not status:
                     self._known_orders[order_id] = previous
@@ -1017,6 +1069,143 @@ class OrderTracker:
             current_order_ids.add(order_id)
             self._handle_live_order_payload(order, source="poll")
         self._finalize_disappeared_orders(current_order_ids)
+
+    def _partial_harvest_quantity_mismatch(
+        self,
+        *,
+        role: str,
+        existing_order: Optional[Dict[str, Any]],
+        broker_quantity: Any,
+    ) -> dict[str, Any]:
+        if str(role or "").strip() != "take_profit" or not isinstance(existing_order, dict):
+            return {}
+        existing_extra = self._ensure_object(existing_order.get("extra"))
+        family = str(
+            existing_order.get("order_family_type")
+            or existing_extra.get("order_family_type")
+            or existing_extra.get("family")
+            or ""
+        ).strip()
+        expected = int(round(self._to_float(
+            existing_order.get("partial_tp_quantity")
+            or existing_extra.get("partial_tp_quantity")
+            or existing_extra.get("expected_quantity"),
+            0.0,
+        )))
+        broker_qty = int(round(self._to_float(broker_quantity, 0.0)))
+        is_partial_harvest = (
+            family == "partial_harvest_bracket"
+            or bool(existing_extra.get("partial_harvest_managed"))
+            or expected > 0
+        )
+        if not is_partial_harvest or expected <= 0 or broker_qty <= 0 or broker_qty == expected:
+            return {}
+        return {
+            "protection_quantity_mismatch": True,
+            "quantity_mismatch_reason": "partial_harvest_take_profit_quantity_mismatch",
+            "expected_quantity": expected,
+            "broker_quantity": broker_qty,
+            "protection_expected_quantity": expected,
+            "protection_broker_quantity": broker_qty,
+            "safety_cancel_recommended": True,
+        }
+
+    def _find_signal_row(self, *, signal_id: str, environment: str) -> Optional[Dict[str, Any]]:
+        signal_id = self._normalize_text(signal_id)
+        environment = self._normalize_text(environment) or self.environment
+        if not signal_id or not getattr(self, "pb_client", None):
+            return None
+        filter_text = (
+            f'signal_id = "{self._escape_filter_value(signal_id)}" && '
+            f'environment = "{self._escape_filter_value(environment)}"'
+        )
+        getter = getattr(self.pb_client, "get_first_record", None)
+        try:
+            if callable(getter):
+                row = getter("ibkr_signals", filter=filter_text)
+                return dict(row) if isinstance(row, dict) else None
+            rows = self.pb_client.get_records("ibkr_signals", filter=filter_text, sort="-updated", per_page=1)
+            return dict(rows[0]) if rows else None
+        except Exception as exc:
+            logger.debug("Signal lookup for protection mismatch failed: signal_id=%s error=%s", signal_id, exc)
+            return None
+
+    def _mark_protection_quantity_mismatch(
+        self,
+        *,
+        signal_id: str,
+        environment: str,
+        symbol: str,
+        trade_group_id: str,
+        order_id: str,
+        unique_id: str,
+        mismatch: dict[str, Any],
+    ) -> None:
+        if not mismatch or not getattr(self, "pb_client", None):
+            return
+        signal = self._find_signal_row(signal_id=signal_id, environment=environment)
+        if not signal:
+            return
+        signal_extra = self._ensure_object(signal.get("extra"))
+        mismatch_key = (
+            f"{unique_id or order_id}:"
+            f"{mismatch.get('expected_quantity')}:{mismatch.get('broker_quantity')}"
+        )
+        already_notified = signal_extra.get("protection_quantity_mismatch_key") == mismatch_key
+        diagnostic = {
+            "reason": "protection_quantity_mismatch",
+            "symbol": str(symbol or "").strip().upper(),
+            "signal_id": signal_id,
+            "trade_group_id": trade_group_id,
+            "order_id": order_id,
+            "unique_id": unique_id,
+            "expected_quantity": mismatch.get("expected_quantity"),
+            "broker_quantity": mismatch.get("broker_quantity"),
+            "recommended_action": "review_and_cancel_or_repair_unprotected_entry",
+            "safe_action": "diagnostic_only_no_broker_call",
+        }
+        patch = {
+            "status": "protection_incomplete",
+            "note": "protection_quantity_mismatch",
+            "extra": {
+                **signal_extra,
+                "status_reason": "protection_quantity_mismatch",
+                "protection_complete": False,
+                "protection_incomplete": True,
+                "protection_quantity_mismatch": True,
+                "protection_quantity_mismatch_key": mismatch_key,
+                "protection_quantity_mismatch_detail": diagnostic,
+                "safety_cancel_recommended": True,
+            },
+        }
+        updater = getattr(self.pb_client, "update_record", None)
+        if callable(updater) and signal.get("id"):
+            try:
+                updater("ibkr_signals", str(signal.get("id")), patch)
+            except Exception as exc:
+                logger.debug("Signal protection mismatch update failed: signal_id=%s error=%s", signal_id, exc)
+        notifier = getattr(self.pb_client, "notify_system_event", None)
+        if callable(notifier) and not already_notified:
+            try:
+                notifier(
+                    "保护单数量不一致",
+                    {
+                        "标的": diagnostic["symbol"] or "-",
+                        "信号ID": signal_id or "-",
+                        "交易组": trade_group_id or "-",
+                        "Broker订单ID": order_id or "-",
+                        "UniqueID": unique_id or "-",
+                        "计划数量": mismatch.get("expected_quantity"),
+                        "Broker数量": mismatch.get("broker_quantity"),
+                        "处理建议": "检查保护单数量，必要时取消或修复该交易组。",
+                    },
+                    event_type="alert",
+                    level="error",
+                    source="ibkr_compute",
+                    environment=environment,
+                )
+            except Exception as exc:
+                logger.debug("Protection mismatch notification failed: signal_id=%s error=%s", signal_id, exc)
 
     def _sync_to_pb(self, order: dict):
         if not self.pb_client:
@@ -1179,6 +1368,22 @@ class OrderTracker:
                         extra[target_key] = order.get(source_key)
                 if coid:
                     extra["coid"] = coid
+                quantity_mismatch = self._partial_harvest_quantity_mismatch(
+                    role=role,
+                    existing_order=existing_order,
+                    broker_quantity=quantity,
+                )
+                if quantity_mismatch:
+                    extra.update(quantity_mismatch)
+                    self._mark_protection_quantity_mismatch(
+                        signal_id=signal_id,
+                        environment=runtime_environment,
+                        symbol=symbol,
+                        trade_group_id=trade_group_id,
+                        order_id=order_id,
+                        unique_id=canonical_unique_id,
+                        mismatch=quantity_mismatch,
+                    )
                 if role == "close":
                     extra.update(
                         {

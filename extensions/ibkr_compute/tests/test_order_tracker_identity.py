@@ -10,9 +10,12 @@ from ibkr_compute.order.order_tracker import OrderTracker
 
 
 class FakePBClient:
-    def __init__(self, rows=None):
+    def __init__(self, rows=None, signal_rows=None):
         self.rows = list(rows or [])
+        self.signal_rows = list(signal_rows or [])
         self.upserts = []
+        self.updates = []
+        self.events = []
         self.get_records_calls = []
 
     def get_records(self, collection, filter=None, sort=None, per_page=100, page=1):
@@ -25,6 +28,20 @@ class FakePBClient:
                 "page": page,
             }
         )
+        if collection == "ibkr_signals":
+            text = filter or ""
+            result = []
+            for row in self.signal_rows:
+                if 'signal_id = "' in text:
+                    signal_id = text.split('signal_id = "', 1)[1].split('"', 1)[0]
+                    if row.get("signal_id") != signal_id:
+                        continue
+                if 'environment = "' in text:
+                    environment = text.split('environment = "', 1)[1].split('"', 1)[0]
+                    if row.get("environment") != environment:
+                        continue
+                result.append(dict(row))
+            return result[:per_page]
         if 'unique_id = "entry_XOM_long_20260417_111312"' in (filter or ""):
             return [
                 {
@@ -91,6 +108,26 @@ class FakePBClient:
     def upsert_order(self, data):
         self.upserts.append(dict(data))
         return {"success": True}
+
+    def get_first_record(self, collection, filter=None, sort=None):
+        rows = self.get_records(collection, filter=filter, sort=sort, per_page=1)
+        return rows[0] if rows else None
+
+    def update_record(self, collection, record_id, data):
+        self.updates.append((collection, record_id, dict(data)))
+        if collection == "ibkr_signals":
+            for idx, row in enumerate(self.signal_rows):
+                if row.get("id") == record_id:
+                    updated = {**row, **data}
+                    if "extra" in data:
+                        updated["extra"] = dict(data["extra"] or {})
+                    self.signal_rows[idx] = updated
+                    return dict(updated)
+        return {**dict(data), "id": record_id}
+
+    def notify_system_event(self, title, detail=None, **kwargs):
+        self.events.append({"title": title, "detail": dict(detail or {}), **kwargs})
+        return {"ok": True}
 
 
 class FakeBroker:
@@ -292,6 +329,120 @@ class OrderTrackerIdentityTest(unittest.TestCase):
         extra = pb_client.upserts[0]["extra"]
         self.assertFalse(extra["broker_realtime_callback"])
         self.assertEqual("poll", extra["broker_update_source"])
+
+    def test_live_order_merge_keeps_filled_quantity_and_terminal_status_monotonic(self):
+        pb_client = FakePBClient()
+        tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="live")
+
+        tracker._handle_live_order_payload(
+            {
+                "orderId": "103",
+                "ticker": "AAPL",
+                "side": "BUY",
+                "orderType": "LMT",
+                "totalSize": 10,
+                "filledQuantity": 10,
+                "remainingQuantity": 0,
+                "avgPrice": 180.2,
+                "price": 180.1,
+                "status": "Filled",
+                "cOID": "entry_AAPL_long_20260422_093500",
+                "broker_realtime_callback": True,
+                "ib_callback_type": "execDetails",
+            },
+            source="ws",
+        )
+        tracker._handle_live_order_payload(
+            {
+                "orderId": "103",
+                "ticker": "AAPL",
+                "side": "BUY",
+                "orderType": "LMT",
+                "totalSize": 10,
+                "filledQuantity": 0,
+                "remainingQuantity": 10,
+                "avgPrice": 0,
+                "price": 180.1,
+                "status": "Submitted",
+                "cOID": "entry_AAPL_long_20260422_093500",
+                "broker_realtime_callback": True,
+                "ib_callback_type": "openOrder",
+            },
+            source="ws",
+        )
+
+        self.assertGreaterEqual(len(pb_client.upserts), 1)
+        latest = pb_client.upserts[-1]
+        self.assertEqual(10, latest["filled_qty"])
+        self.assertEqual(180.2, latest["fill_price"])
+        self.assertEqual("Filled", latest["status"])
+
+    def test_partial_harvest_take_profit_quantity_mismatch_marks_signal(self):
+        pb_client = FakePBClient(
+            rows=[
+                {
+                    "id": "tp-row",
+                    "unique_id": "tp_AAPL_long_20260422_093500_harvest",
+                    "order_id": "202",
+                    "broker_order_id": "202",
+                    "symbol": "AAPL",
+                    "environment": "live",
+                    "signal_id": "sig-1",
+                    "trade_group_id": "AAPL_long_20260422_093500_harvest",
+                    "entry_order_unique_id": "entry_AAPL_long_20260422_093500_harvest",
+                    "parent_order_unique_id": "entry_AAPL_long_20260422_093500_harvest",
+                    "role": "take_profit",
+                    "status": "Submitted",
+                    "quantity": 3,
+                    "extra": {
+                        "order_family_type": "partial_harvest_bracket",
+                        "partial_harvest_managed": True,
+                        "partial_tp_quantity": 3,
+                    },
+                }
+            ],
+            signal_rows=[
+                {
+                    "id": "sig-row",
+                    "signal_id": "sig-1",
+                    "symbol": "AAPL",
+                    "environment": "live",
+                    "status": "submitted",
+                    "extra": {},
+                }
+            ],
+        )
+        tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="live")
+
+        tracker._sync_to_pb(
+            {
+                "orderId": "202",
+                "parentId": "201",
+                "ticker": "AAPL",
+                "side": "SELL",
+                "orderType": "LMT",
+                "totalSize": 10,
+                "filledQuantity": 0,
+                "avgPrice": 0,
+                "price": 184.0,
+                "status": "Submitted",
+                "cOID": "tp_AAPL_long_20260422_093500_harvest",
+            }
+        )
+
+        self.assertEqual(1, len(pb_client.upserts))
+        extra = pb_client.upserts[0]["extra"]
+        self.assertTrue(extra["protection_quantity_mismatch"])
+        self.assertEqual(3, extra["expected_quantity"])
+        self.assertEqual(10, extra["broker_quantity"])
+        self.assertEqual(1, len(pb_client.updates))
+        self.assertEqual("ibkr_signals", pb_client.updates[0][0])
+        signal_patch = pb_client.updates[0][2]
+        self.assertEqual("protection_incomplete", signal_patch["status"])
+        self.assertEqual("protection_quantity_mismatch", signal_patch["note"])
+        self.assertTrue(signal_patch["extra"]["safety_cancel_recommended"])
+        self.assertEqual(1, len(pb_client.events))
+        self.assertEqual("保护单数量不一致", pb_client.events[0]["title"])
 
     def test_complete_live_open_orders_restores_tracker_identity_fields(self):
         tracker = OrderTracker(pb_client=FakePBClient(), broker=FakeBroker(), environment="live")

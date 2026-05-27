@@ -48,6 +48,7 @@ class _FakePB:
         self.orders = list(orders or [])
         self.snapshot = dict(snapshot or {})
         self.upserts = []
+        self.events = []
 
     def get_records(self, collection, filter=None, sort=None, per_page=100, page=1):
         if collection == "orders":
@@ -61,6 +62,16 @@ class _FakePB:
 
     def upsert_order(self, payload):
         self.upserts.append(dict(payload))
+        for idx, row in enumerate(self.orders):
+            if str(row.get("id") or "") == str(payload.get("id") or ""):
+                merged = dict(row)
+                merged.update(dict(payload))
+                self.orders[idx] = merged
+                return {"ok": True, "id": row.get("id")}
+        return {"ok": True}
+
+    def notify_system_event(self, title, detail=None, **kwargs):
+        self.events.append({"title": title, "detail": dict(detail or {}), **dict(kwargs or {})})
         return {"ok": True}
 
 
@@ -209,6 +220,77 @@ class OrderLifecycleRiskLimitTests(unittest.TestCase):
         self.assertTrue(lifecycle.is_fixed_position_symbol("bil"))
         self.assertTrue(lifecycle.is_fixed_position_symbol("BOXX"))
         self.assertTrue(lifecycle.is_fixed_position_symbol("IBKR"))
+
+    def test_detects_filled_position_without_active_protection_and_alerts(self):
+        pb = _FakePB(
+            orders=[
+                {
+                    "id": "entry",
+                    "symbol": "NFLX",
+                    "role": "entry",
+                    "status": "Filled",
+                    "quantity": 114,
+                    "filled_qty": 114,
+                    "fill_price": 88.01877,
+                    "broker_order_id": "84",
+                    "trade_group_id": "NFLX_short_20260527_105036_harvest",
+                    "entry_order_unique_id": "entry_NFLX_short_20260527_105036_harvest",
+                    "unique_id": "entry_NFLX_short_20260527_105036_harvest",
+                    "signal_id": "NFLX_20260527_1045_mr_U",
+                    "environment": "paper",
+                    "extra": {"reason": "order_submitted_by_ibkr_compute"},
+                },
+                {
+                    "id": "tp",
+                    "symbol": "NFLX",
+                    "role": "take_profit",
+                    "status": "Canceled",
+                    "quantity": 114,
+                    "filled_qty": 0,
+                    "limit_price": 86.69,
+                    "broker_order_id": "85",
+                    "trade_group_id": "NFLX_short_20260527_105036_harvest",
+                    "entry_order_unique_id": "entry_NFLX_short_20260527_105036_harvest",
+                    "unique_id": "tp_NFLX_short_20260527_105036_harvest",
+                    "environment": "paper",
+                    "extra": {"broker_last_error": {"code": 201, "message": "Invalid Price"}},
+                },
+                {
+                    "id": "sl",
+                    "symbol": "NFLX",
+                    "role": "stop_loss",
+                    "status": "Canceled",
+                    "quantity": 114,
+                    "filled_qty": 0,
+                    "limit_price": 88.90,
+                    "broker_order_id": "86",
+                    "trade_group_id": "NFLX_short_20260527_105036_harvest",
+                    "entry_order_unique_id": "entry_NFLX_short_20260527_105036_harvest",
+                    "unique_id": "sl_NFLX_short_20260527_105036_harvest",
+                    "environment": "paper",
+                    "extra": {"reason": "Order Canceled"},
+                },
+            ]
+        )
+        lifecycle = OrderLifecycle(pb_client=pb, environment="paper", config=_FakeConfig({}))
+
+        issues = lifecycle._detect_missing_protection_after_fill(
+            [{"ticker": "NFLX", "position": -114, "conid": 123}],
+            open_orders=[],
+        )
+
+        self.assertEqual(1, len(issues))
+        self.assertEqual(["take_profit", "stop_loss"], issues[0]["missing_roles"])
+        entry_patch = next(item for item in pb.upserts if item["id"] == "entry")
+        extra = entry_patch["extra"]
+        self.assertEqual("missing_after_fill", extra["protection_state"])
+        self.assertFalse(extra["protection_complete"])
+        self.assertTrue(extra["protection_incomplete"])
+        self.assertEqual(["take_profit", "stop_loss"], extra["missing_protection_roles"])
+        self.assertEqual(-114, extra["broker_position_quantity"])
+        self.assertEqual("成交后保护单缺失", pb.events[0]["title"])
+        self.assertEqual("error", pb.events[0]["level"])
+        self.assertIn("止盈/止损", pb.events[0]["detail"]["缺失保护"])
 
     def test_strategy_capacity_excludes_fixed_positions_and_counts_open_entries(self):
         lifecycle = OrderLifecycle(

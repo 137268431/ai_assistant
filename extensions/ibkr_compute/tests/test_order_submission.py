@@ -704,6 +704,40 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
         self.assertEqual("limit_price_required_for_marketable_limit", result["error"])
         self.assertEqual([], adapter.client.placed_orders)
 
+    def test_cancel_order_clears_stale_modify_error_and_accepts_ib_canceled_callback(self):
+        class FakeCancelClient:
+            def __init__(self):
+                self.errors = {"86": {"code": 201, "message": "Order rejected - reason:Invalid Price"}}
+                self.cleared = []
+                self.cancelled = []
+
+            def clear_order_error(self, order_id):
+                self.cleared.append(str(order_id))
+                self.errors.pop(str(order_id), None)
+
+            def cancel_open_order(self, order_id):
+                self.cancelled.append(str(order_id))
+                self.errors[str(order_id)] = {"code": 202, "message": "Order Canceled"}
+
+            def get_order_error(self, order_id):
+                return dict(self.errors.get(str(order_id)) or {})
+
+            def get_order_snapshot(self, order_id):
+                return {}
+
+            def request_open_orders(self, timeout=1, include_all=False):
+                return []
+
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeCancelClient()
+
+        result = ib_gateway.BrokerAdapter.cancel_order(adapter, "86")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("CANCELLED", result["status"])
+        self.assertEqual(["86"], adapter.client.cancelled)
+        self.assertGreaterEqual(adapter.client.cleared.count("86"), 2)
+
 
 class OrderPlacerBracketMetadataTest(unittest.TestCase):
     def test_marketable_limit_close_order_is_logged_with_actual_type_and_price(self):

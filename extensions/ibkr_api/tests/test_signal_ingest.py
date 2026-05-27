@@ -619,6 +619,77 @@ class SignalIngressBuildersTest(unittest.TestCase):
         self.assertIn("**实际盈亏**: 盈利 +$19.00", content)
         self.assertIn("含手续费 $1.00", content)
 
+    def test_order_group_status_card_flags_filled_entry_with_canceled_protection(self):
+        rows = [
+            {
+                "id": "order-entry",
+                "unique_id": "entry_NFLX_short_20260527_105036_harvest",
+                "order_type": "LMT",
+                "symbol": "NFLX",
+                "environment": "paper",
+                "status": "Filled",
+                "role": "entry",
+                "order_id": "84",
+                "broker_order_id": "84",
+                "trade_group_id": "NFLX_short_20260527_105036_harvest",
+                "entry_order_unique_id": "entry_NFLX_short_20260527_105036_harvest",
+                "signal_id": "NFLX_20260527_1045_mr_U",
+                "direction": "short",
+                "quantity": 114,
+                "filled_qty": 114,
+                "fill_price": 88.01877,
+                "extra": {"reason": "order_submitted_by_ibkr_compute"},
+            },
+            {
+                "id": "order-tp",
+                "unique_id": "tp_NFLX_short_20260527_105036_harvest",
+                "order_type": "LMT",
+                "symbol": "NFLX",
+                "environment": "paper",
+                "status": "Canceled",
+                "role": "take_profit",
+                "order_id": "85",
+                "broker_order_id": "85",
+                "trade_group_id": "NFLX_short_20260527_105036_harvest",
+                "entry_order_unique_id": "entry_NFLX_short_20260527_105036_harvest",
+                "quantity": 114,
+                "filled_qty": 0,
+                "limit_price": 86.69,
+                "extra": {
+                    "broker_last_error": {"code": 201, "message": "Order rejected - reason:Invalid Price"},
+                    "status_updated_bar_time_ms": 200,
+                },
+            },
+            {
+                "id": "order-sl",
+                "unique_id": "sl_NFLX_short_20260527_105036_harvest",
+                "order_type": "STP",
+                "symbol": "NFLX",
+                "environment": "paper",
+                "status": "Canceled",
+                "role": "stop_loss",
+                "order_id": "86",
+                "broker_order_id": "86",
+                "trade_group_id": "NFLX_short_20260527_105036_harvest",
+                "entry_order_unique_id": "entry_NFLX_short_20260527_105036_harvest",
+                "quantity": 114,
+                "filled_qty": 0,
+                "limit_price": 88.90,
+                "extra": {"reason": "Order Canceled", "status_updated_bar_time_ms": 100},
+            },
+        ]
+
+        card = build_order_group_status_card(rows, status="Filled", message="已成交", console_base_url="https://console.example.com")
+        content = card["elements"][0]["content"]
+
+        self.assertIn("保护单不完整", card["header"]["title"]["content"])
+        self.assertEqual("orange", card["header"]["template"])
+        self.assertIn("**保护状态**: 异常 - 缺少有效止盈/止损", content)
+        self.assertIn("止盈已取消", content)
+        self.assertIn("止损已取消", content)
+        self.assertIn("Invalid Price", content)
+        self.assertNotIn("order_submitted_by_ibkr_compute", content)
+
     def test_order_group_status_card_explains_order_flow_exit_and_ignores_default_zero_pnl(self):
         rows = [
             {

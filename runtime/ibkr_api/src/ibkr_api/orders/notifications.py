@@ -25,6 +25,22 @@ ORDER_NOTIFY_STATUSES = {
     "protection_incomplete",
 }
 
+TRADE_LEDGER_NON_MATERIAL_CALLBACK_STATUSES = {
+    "Init",
+    "Submitted",
+    "PreSubmitted",
+    "ApiPending",
+    "PendingSubmit",
+}
+
+TRADE_LEDGER_TERMINAL_STATUSES = {
+    "Canceled",
+    "Cancelled",
+    "Rejected",
+    "Expired",
+    "Inactive",
+}
+
 ORDER_ROLE_LABELS = {
     "entry": "入场",
     "take_profit": "止盈",
@@ -54,6 +70,13 @@ EXIT_ORDER_ROLES = {
     "reverse_close",
 }
 
+PROTECTION_TP_ROLES = {"take_profit", "repair_tp", "tp"}
+PROTECTION_SL_ROLES = {"stop_loss", "repair_sl", "sl"}
+PROTECTION_ROLES = PROTECTION_TP_ROLES | PROTECTION_SL_ROLES
+ACTIVE_CLOSE_ROLES = {"close", "manual_close", "market_close", "close_order", "reverse_close"}
+TERMINAL_ORDER_STATUSES = {"filled", "executed", "canceled", "cancelled", "apicancelled", "closed", "inactive", "rejected", "expired"}
+GENERIC_ENTRY_REASONS = {"order_submitted_by_ibkr_compute", "entry_filled_and_protection_submitted"}
+
 COMMISSION_FIELDS = ("commission", "actual_fill_commission", "ibkr_commission")
 PNL_EPSILON = 1e-9
 ORDER_FLOW_DEFAULT_EXIT_DELTA_RATIO = 0.18
@@ -67,6 +90,9 @@ ORDER_GROUP_REASON_LABELS = {
     "intraday_harvest_full_exit": "日内波动收割策略触发全平",
     "intraday_harvest_partial_exit": "日内波动收割策略触发部分平仓",
     "intraday_harvest_tighten_stop": "日内波动收割策略触发收紧止损",
+    "protection_missing_after_entry_fill": "入场已成交，但当前没有完整有效的止盈/止损保护单",
+    "protection_leg_canceled": "保护单已取消，当前保护不完整",
+    "protection_leg_rejected": "保护单被券商拒绝，当前保护不完整",
 }
 
 _ORDER_GROUP_NOTIFY_LOCKS: dict[str, threading.Lock] = {}
@@ -277,6 +303,112 @@ def _role_sort_key(row: dict[str, Any]) -> tuple[int, str]:
     return role_order, normalized.get("unique_id") or normalized.get("id") or ""
 
 
+def _status_key(value: Any) -> str:
+    return to_text(value).strip().lower().replace("_", "")
+
+
+def _row_status_key(row: dict[str, Any]) -> str:
+    return _status_key(normalize_order_row(row).get("status") or _record_or_extra_value(row, "status", "order_status", "current_status"))
+
+
+def _row_is_active(row: dict[str, Any]) -> bool:
+    status = _row_status_key(row)
+    return bool(status and status not in TERMINAL_ORDER_STATUSES)
+
+
+def _row_is_filled(row: dict[str, Any]) -> bool:
+    normalized = normalize_order_row(row)
+    status = _status_key(normalized.get("status"))
+    filled_qty = to_float(_record_or_extra_value(row, "filled_qty", "filledQuantity", "filled"))
+    return status in {"filled", "executed", "closed"} or (filled_qty is not None and filled_qty > 0)
+
+
+def _protection_role_family(role: str) -> str:
+    if role in PROTECTION_TP_ROLES:
+        return "take_profit"
+    if role in PROTECTION_SL_ROLES:
+        return "stop_loss"
+    return ""
+
+
+def _protection_role_label(role_or_family: str) -> str:
+    family = _protection_role_family(role_or_family) or role_or_family
+    if family == "take_profit":
+        return "止盈"
+    if family == "stop_loss":
+        return "止损"
+    return ORDER_ROLE_LABELS.get(role_or_family, role_or_family or "保护单")
+
+
+def _protection_state_model(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    rows = sorted(dedupe_order_rows(rows or []), key=_role_sort_key)
+    primary = pick_primary_order_row(rows, rows[0] if rows else {}) or {}
+    if not primary or not _row_is_filled(primary):
+        return {"state": "not_filled", "missing_roles": []}
+
+    active_close_rows = [
+        row
+        for row in rows
+        if (normalize_order_row(row).get("role") or "") in ACTIVE_CLOSE_ROLES and _row_is_active(row)
+    ]
+    if active_close_rows:
+        return {"state": "closing", "missing_roles": []}
+
+    active_roles: set[str] = set()
+    terminal_roles: list[dict[str, str]] = []
+    tp_already_filled = False
+    for row in rows:
+        normalized = normalize_order_row(row)
+        role = normalized.get("role") or ""
+        family = _protection_role_family(role)
+        if not family:
+            continue
+        status = _row_status_key(row)
+        if _row_is_active(row):
+            active_roles.add(family)
+        elif status in TERMINAL_ORDER_STATUSES:
+            terminal_roles.append(
+                {
+                    "role": family,
+                    "label": _protection_role_label(family),
+                    "status": status,
+                    "status_text": _status_text(normalized.get("status")),
+                }
+            )
+        if family == "take_profit" and _row_is_filled(row):
+            tp_already_filled = True
+
+    missing_roles: list[str] = []
+    if "take_profit" not in active_roles and not tp_already_filled:
+        missing_roles.append("take_profit")
+    if "stop_loss" not in active_roles:
+        missing_roles.append("stop_loss")
+    if not missing_roles:
+        return {"state": "protected", "missing_roles": [], "active_roles": sorted(active_roles)}
+    return {
+        "state": "missing_after_fill",
+        "missing_roles": missing_roles,
+        "active_roles": sorted(active_roles),
+        "terminal_roles": terminal_roles,
+    }
+
+
+def _protection_status_line(rows: list[dict[str, Any]]) -> str:
+    model = _protection_state_model(rows)
+    if model.get("state") != "missing_after_fill":
+        return ""
+    missing_labels = [_protection_role_label(role) for role in model.get("missing_roles") or []]
+    parts = [f"缺少有效{'/'.join(missing_labels)}"]
+    terminal_parts: list[str] = []
+    for item in model.get("terminal_roles") or []:
+        text = f"{item.get('label') or '保护单'}{item.get('status_text') or ''}"
+        if text and text not in terminal_parts:
+            terminal_parts.append(text)
+    if terminal_parts:
+        parts.append("；".join(terminal_parts))
+    return f"**保护状态**: 异常 - {'；'.join(parts)}"
+
+
 def _order_group_context(
     pb: Any,
     order_record: dict[str, Any],
@@ -344,6 +476,8 @@ def _group_status(rows: list[dict[str, Any]]) -> str:
         for row in normalized_rows
     ):
         return "Closed"
+    if _protection_state_model(rows).get("state") == "missing_after_fill":
+        return "protection_incomplete"
     if primary_status in {"Filled", "Rejected", "Expired"}:
         return primary_status
     statuses = {row.get("status") for row in normalized_rows if row.get("status")}
@@ -669,6 +803,11 @@ def _reason_label(reason: Any) -> str:
     normalized = to_text(reason)
     if not normalized:
         return ""
+    lowered = normalized.lower()
+    if "invalid price" in lowered:
+        return f"券商拒绝保护单价格（{normalized}）"
+    if "order canceled" in lowered or "order cancelled" in lowered:
+        return f"保护单已被券商取消（{normalized}）"
     return ORDER_GROUP_REASON_LABELS.get(normalized, f"系统记录原因 {normalized}")
 
 
@@ -691,17 +830,65 @@ def _reason_source_for_row(row: dict[str, Any]) -> dict[str, Any] | None:
         if reason:
             return {"reason": reason, "source": field, "payload": payload, "decision": decision, "row": row}
 
-    reason = to_text(extra.get("last_status_reason") or extra.get("reason"))
+    reason = to_text(extra.get("last_status_reason") or extra.get("reason") or extra.get("status_reason"))
     if reason:
         return {"reason": reason, "source": "row_extra", "payload": {}, "decision": {}, "row": row}
+    for field in ("broker_last_error", "order_error", "broker_error", "ib_error"):
+        payload = _as_object(extra.get(field))
+        if not payload:
+            continue
+        reason = to_text(payload.get("message") or payload.get("error") or payload.get("reason"))
+        if reason:
+            return {"reason": reason, "source": field, "payload": payload, "decision": {}, "row": row}
     return None
 
 
+def _row_reason_recency(row: dict[str, Any]) -> tuple[int, str]:
+    extra = _extra(row)
+    for field in ("status_updated_bar_time_ms", "bar_time_ms", "updated_bar_time_ms", "created_bar_time_ms"):
+        parsed = to_float(_record_or_extra_value(row, field))
+        if parsed is not None:
+            return int(parsed), to_text(normalize_order_row(row).get("unique_id") or row.get("id"))
+    for field in ("updated", "created", "us_time", "order_time", "fill_time"):
+        text = to_text(_record_or_extra_value(row, field) or extra.get(field))
+        if text:
+            return 0, text
+    return 0, to_text(normalize_order_row(row).get("unique_id") or row.get("id"))
+
+
 def _order_group_reason_model(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    protection_model = _protection_state_model(rows)
+    terminal_protection_rows = [
+        row
+        for row in rows or []
+        if (normalize_order_row(row).get("role") or "") in PROTECTION_ROLES
+        and _row_status_key(row) in {"canceled", "cancelled", "inactive", "rejected", "expired"}
+    ]
+    for row in sorted(terminal_protection_rows, key=_row_reason_recency, reverse=True):
+        model = _reason_source_for_row(row)
+        reason = to_text((model or {}).get("reason"))
+        if model and reason not in GENERIC_ENTRY_REASONS:
+            return model
+
+    fallback_model: dict[str, Any] | None = None
     for row in sorted(rows or [], key=_role_sort_key):
         model = _reason_source_for_row(row)
+        reason = to_text((model or {}).get("reason"))
+        if model and reason in GENERIC_ENTRY_REASONS and protection_model.get("state") == "missing_after_fill":
+            fallback_model = model
+            continue
         if model:
             return model
+    if protection_model.get("state") == "missing_after_fill":
+        if any(_row_status_key(row) == "rejected" for row in terminal_protection_rows):
+            reason = "protection_leg_rejected"
+        elif terminal_protection_rows:
+            reason = "protection_leg_canceled"
+        else:
+            reason = "protection_missing_after_entry_fill"
+        return {"reason": reason, "source": "protection_state", "payload": protection_model, "decision": {}, "row": {}}
+    if fallback_model:
+        return fallback_model
     return None
 
 
@@ -850,7 +1037,10 @@ def build_order_group_status_card(
     symbol = to_text(_record_or_extra_value(primary, "symbol")).upper() or "ORDER"
     trade_group_id = to_text(_record_or_extra_value(primary, "trade_group_id", "entry_order_unique_id", "unique_id"))
     signal_id = to_text(_record_or_extra_value(primary, "signal_id"))
+    protection_model = _protection_state_model(rows)
     resolved_status = to_text(status or _group_status(rows) or _record_or_extra_value(primary, "status", "order_status", "current_status"))
+    if protection_model.get("state") == "missing_after_fill" and resolved_status in {"", "Filled", "Submitted"}:
+        resolved_status = "protection_incomplete"
     status_text = _status_text(resolved_status)
     pnl_model = _realized_group_pnl_model(rows)
     pnl_line = _realized_pnl_line(pnl_model)
@@ -862,6 +1052,9 @@ def build_order_group_status_card(
         f"**Broker**: {broker_badge}",
         f"**信号ID / 交易组**: {signal_id or '-'} / {trade_group_id or '-'}",
     ]
+    protection_line = _protection_status_line(rows)
+    if protection_line:
+        body_lines.append(protection_line)
     if rows:
         body_lines.extend(_leg_line(row) for row in rows)
     else:
@@ -971,6 +1164,10 @@ def _trade_ledger_filled_qty(order_record: Any) -> float:
     return to_float(_record_or_extra_value(order_record, "filled_qty", "filledQuantity", "filled")) or 0.0
 
 
+def _trade_ledger_order_qty(order_record: Any) -> float:
+    return to_float(_record_or_extra_value(order_record, "quantity", "totalSize", "totalQuantity")) or 0.0
+
+
 def _trade_ledger_fill_price(order_record: Any) -> float:
     return (
         to_float(
@@ -989,6 +1186,31 @@ def _trade_ledger_fill_price(order_record: Any) -> float:
     )
 
 
+def _trade_ledger_notified_keys(extra: Any) -> set[str]:
+    source = ensure_object(extra)
+    raw_keys = source.get("feishu_trade_ledger_notified_keys")
+    keys: set[str] = set()
+    if isinstance(raw_keys, list):
+        keys.update(to_text(item) for item in raw_keys if to_text(item))
+    elif isinstance(raw_keys, dict):
+        keys.update(to_text(key) for key, value in raw_keys.items() if value and to_text(key))
+    elif isinstance(raw_keys, str):
+        try:
+            parsed = json.loads(raw_keys)
+            if isinstance(parsed, list):
+                keys.update(to_text(item) for item in parsed if to_text(item))
+            elif isinstance(parsed, dict):
+                keys.update(to_text(key) for key, value in parsed.items() if value and to_text(key))
+            elif to_text(parsed):
+                keys.add(to_text(parsed))
+        except Exception:
+            keys.add(to_text(raw_keys))
+    last_key = to_text(source.get("feishu_trade_ledger_notify_key"))
+    if last_key:
+        keys.add(last_key)
+    return {key for key in keys if key}
+
+
 def _trade_ledger_event_model(order_record: dict[str, Any], previous_order: dict[str, Any] | None) -> dict[str, Any]:
     environment = to_text(_record_or_extra_value(order_record, "environment")) or "live"
     if not _trade_ledger_environment_allowed(environment):
@@ -1003,25 +1225,78 @@ def _trade_ledger_event_model(order_record: dict[str, Any], previous_order: dict
     current_filled = _trade_ledger_filled_qty(order_record)
     previous_filled = _trade_ledger_filled_qty(previous)
     fill_delta = max(0.0, current_filled - previous_filled)
+    quantity = _trade_ledger_order_qty(order_record)
     current_broker_order_id = to_text(_record_or_extra_value(order_record, "broker_order_id", "order_id", "orderId"))
     previous_broker_order_id = to_text(_record_or_extra_value(previous, "broker_order_id", "order_id", "orderId"))
     first_realtime_callback = not _truthy(previous_extra.get("broker_realtime_callback"))
     broker_order_id_appeared = bool(current_broker_order_id and not previous_broker_order_id)
     status_changed = bool(current_status and previous_status and current_status != previous_status)
+    callback_type = _trade_ledger_callback_type(order_record)
+    current_status_key = current_status.replace("_", "").lower()
+    terminal_status = current_status in TRADE_LEDGER_TERMINAL_STATUSES or current_status_key in {
+        "canceled",
+        "cancelled",
+        "rejected",
+        "expired",
+        "inactive",
+    }
+    is_full_fill = quantity > 0 and current_filled + 1e-8 >= quantity
+    has_trade_ledger_notification = bool(_trade_ledger_notified_keys(order_record.get("extra")))
 
     if fill_delta > 0:
         event_type = "fill"
-        event_label = "已成交" if current_status in {"Filled", "Closed", "Executed"} else "部分成交"
+        event_label = "已成交" if current_status in {"Filled", "Closed", "Executed"} or is_full_fill else "部分成交"
         reason = "fill_quantity_increased"
+    elif (
+        current_status in {"Filled", "Closed", "Executed"}
+        and quantity > 0
+        and previous_filled + 1e-8 >= quantity
+        and has_trade_ledger_notification
+    ):
+        return {
+            "skipped": True,
+            "reason": "full_fill_already_seen",
+            "environment": environment,
+            "status": current_status,
+        }
+    elif current_status in {"Filled", "Closed", "Executed"} and quantity > 0 and previous_filled + 1e-8 >= quantity:
+        event_type = "fill"
+        event_label = "已成交"
+        reason = "full_fill_status_confirmed"
+    elif terminal_status and (status_changed or first_realtime_callback):
+        event_type = "terminal_status"
+        event_label = _status_text(current_status)
+        reason = "terminal_status"
     elif first_realtime_callback:
+        if current_status in TRADE_LEDGER_NON_MATERIAL_CALLBACK_STATUSES and callback_type in {"openOrder", "orderStatus"}:
+            return {
+                "skipped": True,
+                "reason": "non_terminal_callback_noise",
+                "environment": environment,
+                "status": current_status,
+            }
         event_type = "first_callback"
         event_label = "首次真实回调"
         reason = "first_realtime_callback"
     elif broker_order_id_appeared:
+        if current_status in TRADE_LEDGER_NON_MATERIAL_CALLBACK_STATUSES and callback_type in {"openOrder", "orderStatus"}:
+            return {
+                "skipped": True,
+                "reason": "non_terminal_callback_noise",
+                "environment": environment,
+                "status": current_status,
+            }
         event_type = "broker_order_confirmed"
         event_label = "Broker订单确认"
         reason = "broker_order_id_appeared"
     elif status_changed:
+        if current_status in TRADE_LEDGER_NON_MATERIAL_CALLBACK_STATUSES and callback_type in {"openOrder", "orderStatus"}:
+            return {
+                "skipped": True,
+                "reason": "non_terminal_callback_noise",
+                "environment": environment,
+                "status": current_status,
+            }
         event_type = "status_change"
         event_label = _status_text(current_status)
         reason = "status_changed"
@@ -1033,7 +1308,6 @@ def _trade_ledger_event_model(order_record: dict[str, Any], previous_order: dict
             "status": current_status,
         }
 
-    callback_type = _trade_ledger_callback_type(order_record)
     exec_id = _trade_ledger_exec_id(order_record)
     trade_group_id = to_text(_record_or_extra_value(order_record, "trade_group_id", "entry_order_unique_id", "unique_id"))
     unique_id = to_text(_record_or_extra_value(order_record, "unique_id", "id"))
@@ -1149,9 +1423,16 @@ def _trade_ledger_notification_patch(
 ) -> dict[str, Any]:
     now_ms = int(time.time() * 1000)
     success = bool(result.get("success") or result.get("ok"))
+    notified_keys = list(_trade_ledger_notified_keys(order_record.get("extra")))
+    notify_key = to_text(event_model.get("notify_key"))
+    if success and notify_key and notify_key not in notified_keys:
+        notified_keys.append(notify_key)
+    if len(notified_keys) > 50:
+        notified_keys = notified_keys[-50:]
     patch: dict[str, Any] = {
         **ensure_object(order_record.get("extra")),
-        "feishu_trade_ledger_notify_key": to_text(event_model.get("notify_key")),
+        "feishu_trade_ledger_notify_key": notify_key,
+        "feishu_trade_ledger_notified_keys": notified_keys,
         "feishu_trade_ledger_last_result": "success" if success else "failed",
         "feishu_trade_ledger_last_at_ms": now_ms,
         "feishu_trade_ledger_last_reason": to_text(event_model.get("reason")),
@@ -1189,7 +1470,7 @@ def sync_order_callback_ledger_notification(
 
     current_extra = ensure_object(order_record.get("extra"))
     notify_key = to_text(event_model.get("notify_key"))
-    if current_extra.get("feishu_trade_ledger_notify_key") == notify_key and current_extra.get("feishu_trade_ledger_last_result") == "success":
+    if notify_key in _trade_ledger_notified_keys(current_extra) and current_extra.get("feishu_trade_ledger_last_result") == "success":
         return {"success": True, "skipped": True, "reason": "already_notified", "notify_key": notify_key}
     if not callable(send_interactive) or not trade_ledger_chat_id:
         return {"success": False, "skipped": True, "reason": "missing_send_target", "notify_key": notify_key}

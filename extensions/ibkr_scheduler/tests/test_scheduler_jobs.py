@@ -241,19 +241,24 @@ class SchedulerJobsTest(unittest.TestCase):
             )
         )
 
-    def test_early_expansion_topup_crons_match_0930_to_1030_et(self):
+    def test_early_expansion_topup_crons_match_0929_to_1030_et(self):
         definition = next(item for item in scheduler_app_mod.CRON_DEFINITIONS if item["id"] == "ibkr_early_expansion_topup")
         schedules = {item["id"]: item for item in definition["schedules"]}
+        preopen = schedules["preopen_0929"]
         early = schedules["early_0930_0950"]
         late = schedules["early_1000_1030"]
 
+        self.assertEqual(preopen["cron_expr"], "29 9 * * 1-5")
         self.assertEqual(early["cron_expr"], "30,40,50 9 * * 1-5")
         self.assertEqual(late["cron_expr"], "0,10,20,30 10 * * 1-5")
+        self.assertEqual(preopen["cron_timezone"], "America/New_York")
         self.assertEqual(early["cron_timezone"], "America/New_York")
         self.assertEqual(late["cron_timezone"], "America/New_York")
         self.assertIn("ibkr_early_expansion_topup_late", definition["deprecated_aliases"])
+        self.assertTrue(cron_matches_minute(preopen["cron_expr"], datetime(2026, 4, 20, 13, 29, tzinfo=timezone.utc), preopen["cron_timezone"]))
         self.assertTrue(cron_matches_minute(early["cron_expr"], datetime(2026, 4, 20, 13, 30, tzinfo=timezone.utc), early["cron_timezone"]))
         self.assertTrue(cron_matches_minute(late["cron_expr"], datetime(2026, 4, 20, 14, 30, tzinfo=timezone.utc), late["cron_timezone"]))
+        self.assertFalse(cron_matches_minute(preopen["cron_expr"], datetime(2026, 4, 20, 13, 28, tzinfo=timezone.utc), preopen["cron_timezone"]))
         self.assertFalse(cron_matches_minute(early["cron_expr"], datetime(2026, 4, 20, 13, 20, tzinfo=timezone.utc), early["cron_timezone"]))
         self.assertFalse(cron_matches_minute(late["cron_expr"], datetime(2026, 4, 20, 14, 40, tzinfo=timezone.utc), late["cron_timezone"]))
 
