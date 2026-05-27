@@ -1,7 +1,7 @@
 // Shared compatibility entrypoint.
 // Source-of-truth browser modules now live under /assets/js/shared and /assets/css.
 (function loadSharedCommonBundle() {
-  const sharedBundleVersion = '20260526-cache-profiles';
+  const sharedBundleVersion = '20260527-cache-profiles-2';
   const sharedScriptPaths = [
     `/assets/js/shared/runtime-config.js?v=${sharedBundleVersion}`,
     `/assets/js/shared/data-center.js?v=${sharedBundleVersion}`,
@@ -87,6 +87,8 @@
       renderOpsBridge: (...args) => pick('renderOpsBridge')(...args),
       renderBacktestsBridge: (...args) => pick('renderBacktestsBridge')(...args),
       getCurrentEtDateString: (...args) => pick('getCurrentEtDateString')(...args),
+      getUsDate: (...args) => pick('getUsDate')(...args),
+      getUsDateFromTime: (...args) => pick('getUsDateFromTime')(...args),
       getEtDateStringFromMs: (...args) => pick('getEtDateStringFromMs')(...args),
       shiftDateString: (...args) => pick('shiftDateString')(...args),
       getEtDayStartMs: (...args) => pick('getEtDayStartMs')(...args),

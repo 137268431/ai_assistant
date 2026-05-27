@@ -313,6 +313,15 @@ function getCurrentEtDateString(value = new Date()) {
   return getDateStringInTimeZone(value, IBKR_MARKET_TIME_ZONE);
 }
 
+function getUsDate(value = new Date()) {
+  return getCurrentEtDateString(value);
+}
+
+function getUsDateFromTime(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? getUsDate() : getCurrentEtDateString(date);
+}
+
 function getEtDateStringFromMs(value) {
   const ms = Number(value || 0);
   if (!Number.isFinite(ms) || ms <= 0) return '';
