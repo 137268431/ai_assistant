@@ -366,7 +366,7 @@ def _load_account_snapshot(
 ) -> tuple[dict[str, Any], int]:
     return build_account_snapshot_response(
         pb,
-        payload={"broker_mode": current_broker_mode, "environment": current_broker_mode},
+        payload={"broker_mode": current_broker_mode, "environment": current_broker_mode, "include_pnl": "0"},
         normalize_environment=normalize_environment,
         request_json_request=request_json_request,
         runtime_base_url=runtime_base_url,

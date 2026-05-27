@@ -19,6 +19,20 @@ NormalizeEnvironment = Callable[[Any, str], str]
 RequestJsonRequest = Callable[..., dict[str, Any]]
 
 
+def _include_pnl_param(payload: dict[str, Any]) -> str | None:
+    if "include_pnl" not in payload:
+        return None
+    value = payload.get("include_pnl")
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    text = to_text(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return "1"
+    if text in {"0", "false", "no", "off"}:
+        return "0"
+    return None
+
+
 def _enrich_buying_power_summary(payload: dict[str, Any]) -> None:
     summary = ensure_object(payload.get("summary"))
     if not summary:
@@ -219,11 +233,15 @@ def build_account_snapshot_response(
 ) -> tuple[dict[str, Any], int]:
     started = time.monotonic()
     environment = request_broker_mode(payload)
+    params = [("broker_mode", environment), ("environment", environment)]
+    include_pnl = _include_pnl_param(payload)
+    if include_pnl is not None:
+        params.append(("include_pnl", include_pnl))
     result = request_json_request(
         "GET",
         runtime_base_url,
         "/ibkr/account",
-        params=[("broker_mode", environment), ("environment", environment)],
+        params=params,
         timeout=upstream_timeout,
     )
     upstream_elapsed_ms = float(result.get("elapsed_ms") or 0.0)

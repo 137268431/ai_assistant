@@ -134,7 +134,7 @@ def build_system_monitor_payload(
 
                 payload, status_code = build_account_snapshot_response(
                     globals_dict["pb"],
-                    payload={"broker_mode": probe_environment, "environment": probe_environment},
+                    payload={"broker_mode": probe_environment, "environment": probe_environment, "include_pnl": "0"},
                     normalize_environment=globals_dict["_normalize_environment"],
                     request_json_request=globals_dict["_request_json_request"],
                     runtime_base_url=str(globals_dict.get("RUNTIME_BASE_URL") or "http://127.0.0.1:5101").rstrip("/"),

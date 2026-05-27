@@ -15,6 +15,7 @@ ORDERS_COLLECTION = "orders"
 ENTRY_ROLES = {"entry"}
 PROTECTION_ROLES = {"take_profit", "repair_tp", "tp", "stop_loss", "repair_sl", "sl"}
 EXIT_ROLES = {"take_profit", "repair_tp", "tp", "stop_loss", "repair_sl", "sl", "close", "manual_close", "market_close", "close_order", "reverse_close"}
+FILLED_STATUSES = {"filled", "executed", "closed", "complete", "completed", "partiallyfilled", "partially_filled"}
 
 NormalizeEnvironment = Callable[[Any, str], str]
 EscapeFilterString = Callable[[Any], str]
@@ -127,7 +128,56 @@ def _role(row: dict[str, Any]) -> str:
 
 
 def _is_filled(row: dict[str, Any]) -> bool:
-    return _lower(row.get("status") or _as_object(row.get("extra")).get("status")) == "filled"
+    return _lower(row.get("status") or _as_object(row.get("extra")).get("status")) in FILLED_STATUSES
+
+
+def _order_reason(row: dict[str, Any]) -> str:
+    extra = _as_object(row.get("extra"))
+    for value in (
+        row.get("reason"),
+        row.get("status_reason"),
+        row.get("note"),
+        row.get("close_reason"),
+        extra.get("close_reason"),
+        extra.get("reason"),
+        extra.get("status_reason"),
+        extra.get("status_reason_human"),
+        extra.get("close_reason_code"),
+    ):
+        text = _text(value)
+        if text:
+            return text
+    return ""
+
+
+def _infer_related_order_reason(order: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+    own_reason = _order_reason(order)
+    if own_reason:
+        return own_reason
+    order_ms = _event_time_ms(order)
+    candidates: list[tuple[int, int, str]] = []
+    for other in rows:
+        if other is order:
+            continue
+        reason = _order_reason(other)
+        if not reason:
+            continue
+        other_ms = _event_time_ms(other)
+        distance = abs(order_ms - other_ms) if order_ms and other_ms else 0
+        if distance and distance > 15 * 60 * 1000:
+            continue
+        role = _role(other)
+        status = _lower(other.get("status") or _as_object(other.get("extra")).get("status"))
+        priority = 3
+        if role == "entry" and status == "closed":
+            priority = 0
+        elif role in EXIT_ROLES and _is_filled(other):
+            priority = 1
+        elif role in PROTECTION_ROLES and status in {"canceled", "cancelled"}:
+            priority = 2
+        candidates.append((priority, distance, reason))
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    return candidates[0][2] if candidates else ""
 
 
 def _event_time_ms(row: dict[str, Any]) -> int:
@@ -244,8 +294,7 @@ def _build_issue_flags(
         flags.append({"code": "entry_filled_without_protection", "severity": "high", "message": "entry filled without TP/SL protection"})
     for order in orders:
         if _role(order) == "close" and _is_filled(order):
-            extra = _as_object(order.get("extra"))
-            if not any(_text(value) for value in (order.get("reason"), extra.get("reason"), extra.get("status_reason"), extra.get("close_reason"))):
+            if not _infer_related_order_reason(order, orders):
                 flags.append({"code": "close_missing_reason", "severity": "medium", "message": "close order filled without close reason"})
                 break
     for signal in signals:
@@ -330,7 +379,7 @@ def _build_events(
                 "type": "order",
                 "lane": lane,
                 "status": _text(order.get("status")),
-                "reason": _text(order.get("reason")) or _text(_as_object(order.get("extra")).get("reason")),
+                "reason": _infer_related_order_reason(order, orders),
                 "role": role,
                 "ts_ms": _event_time_ms(order),
                 "time": _event_time_text(order),

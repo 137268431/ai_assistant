@@ -22,6 +22,7 @@ body {
 .trade-review-shell {
   max-width: var(--page-shell-max-wide, 1680px);
   padding-top: 14px;
+  --page-panel-min-height: 0px;
 }
 
 .trade-review-shell .panel,
@@ -105,6 +106,11 @@ body {
   display: grid;
   grid-column: span 2;
   gap: 7px;
+}
+
+.review-filter label:first-child,
+.review-filter label:nth-child(5) {
+  grid-column: span 2;
 }
 
 .review-filter input,
@@ -295,6 +301,10 @@ body {
   .symbol-list,
   .issue-list { max-height: none; }
   .integration-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .review-filter-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .review-filter label,
+  .check-field,
+  .filter-actions { grid-column: span 2; }
 }
 
 @media (max-width: 720px) {

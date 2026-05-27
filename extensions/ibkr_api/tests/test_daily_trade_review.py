@@ -146,11 +146,22 @@ class DailyTradeReviewTest(unittest.TestCase):
                     "status_reason": "manual_rejected",
                     "us_time": "2026-05-21 09:40:00",
                 },
+                {
+                    "signal_id": "sig-nflx",
+                    "environment": "live",
+                    "date": "2026-05-21",
+                    "symbol": "NFLX",
+                    "direction": "long",
+                    "status": "closed",
+                    "us_time": "2026-05-21 10:00:00",
+                },
             ],
             "orders": [
                 {"id": "entry-aapl", "signal_id": "sig-aapl", "environment": "paper", "symbol": "AAPL", "role": "entry", "status": "Filled", "fill_price": 100, "filled_qty": 10, "us_time": "2026-05-21 09:36:00"},
                 {"id": "tp-aapl", "signal_id": "sig-aapl", "environment": "paper", "symbol": "AAPL", "role": "take_profit", "status": "Filled", "fill_price": 110, "filled_qty": 10, "us_time": "2026-05-21 10:10:00"},
                 {"id": "entry-tsla", "signal_id": "sig-tsla", "environment": "paper", "symbol": "TSLA", "role": "entry", "status": "Filled", "fill_price": 200, "filled_qty": 3, "us_time": "2026-05-21 09:41:00"},
+                {"id": "entry-nflx", "signal_id": "sig-nflx", "environment": "paper", "symbol": "NFLX", "role": "entry", "status": "Closed", "reason": "order_flow_adverse_delta_exit", "us_time": "2026-05-21 10:01:00"},
+                {"id": "close-nflx", "environment": "paper", "symbol": "NFLX", "role": "close", "status": "Filled", "us_time": "2026-05-21 10:01:05"},
             ],
         }
         payload, status = build_daily_trade_review_response(
@@ -175,6 +186,10 @@ class DailyTradeReviewTest(unittest.TestCase):
         self.assertEqual("problem", by_symbol["TSLA"]["review_status"])
         self.assertEqual("rejected_signal_has_orders", by_symbol["TSLA"]["issue_flags"][0]["code"])
         self.assertTrue(by_symbol["AAPL"].get("events"))
+        self.assertEqual(1, by_symbol["NFLX"]["order_summary"]["entry_filled"])
+        self.assertFalse(by_symbol["NFLX"]["issue_flags"])
+        nflx_reasons = [event.get("reason") for event in by_symbol["NFLX"].get("events", []) if event.get("role") == "close"]
+        self.assertEqual(["order_flow_adverse_delta_exit"], nflx_reasons)
 
     def test_registers_daily_trade_review_route(self):
         app = _FakeApp()

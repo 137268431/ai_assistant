@@ -19,21 +19,23 @@ def _resolve_snapshot_account_id(api_app, service) -> str:
     return account_id
 
 
-def build_snapshot_context(service) -> dict:
+def build_snapshot_context(service, *, include_pnl: bool = True) -> dict:
     api_app = _api_app()
     runtime_environment = api_app._ibkr_service_environment(service)
     service_status = get_service_status_snapshot(service)
     account_id = _resolve_snapshot_account_id(api_app, service)
+    include_pnl_flag = bool(include_pnl)
     return {
         "api_app": api_app,
         "runtime_environment": runtime_environment,
         "service_status": service_status,
         "account_id": account_id,
-        "cache_key": (runtime_environment, account_id),
+        "include_pnl": include_pnl_flag,
+        "cache_key": (runtime_environment, account_id, include_pnl_flag),
     }
 
 
-def load_cached_snapshot(api_app, cache_key: tuple[str, str]):
+def load_cached_snapshot(api_app, cache_key: tuple[str, str, bool]):
     now = time.time()
     with api_app.ibkr_account_snapshot_cache_lock:
         cached_entry = api_app.ibkr_account_snapshot_cache.get(cache_key)
@@ -44,7 +46,7 @@ def load_cached_snapshot(api_app, cache_key: tuple[str, str]):
     return None
 
 
-def store_cached_snapshot(api_app, cache_key: tuple[str, str], payload: dict):
+def store_cached_snapshot(api_app, cache_key: tuple[str, str, bool], payload: dict):
     cache_expires_at = time.time() + api_app.IBKR_ACCOUNT_SNAPSHOT_TTL_SECONDS
     with api_app.ibkr_account_snapshot_cache_lock:
         api_app.ibkr_account_snapshot_cache[cache_key] = {

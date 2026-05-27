@@ -87,6 +87,51 @@ class _FakePB:
 
 
 class AccountSnapshotRoutesTest(unittest.TestCase):
+    def test_build_account_snapshot_response_forwards_include_pnl_flag(self):
+        calls = []
+
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            calls.append(
+                {
+                    "method": method,
+                    "base_url": base_url,
+                    "path": path,
+                    "params": list(params or []),
+                    "timeout": timeout,
+                }
+            )
+            return {
+                "ok": True,
+                "status_code": 200,
+                "payload": {
+                    "ok": True,
+                    "environment": "paper",
+                    "summary": {},
+                    "positions": [],
+                    "orders": [],
+                    "live_open_orders": [],
+                    "counts": {},
+                },
+                "target_url": "http://runtime/ibkr/account",
+                "elapsed_ms": 12.3,
+                "timeout_s": timeout,
+            }
+
+        payload, status_code = build_account_snapshot_response(
+            _FakePB(rows={"orders": [], "ibkr_signals": []}),
+            payload={"broker_mode": "paper", "environment": "paper", "include_pnl": "0"},
+            normalize_environment=lambda value, default="live": value or default,
+            request_json_request=request_json_request,
+            runtime_base_url="http://runtime",
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(
+            [("broker_mode", "paper"), ("environment", "paper"), ("include_pnl", "0")],
+            calls[0]["params"],
+        )
+
     def test_enrich_account_snapshot_builds_reconciliation_fields(self):
         pb = _FakePB()
         payload = {

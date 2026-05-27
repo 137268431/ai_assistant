@@ -3,7 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
-def fetch_snapshot_sources(service, account_id: str) -> dict:
+def fetch_snapshot_sources(service, account_id: str, *, include_pnl: bool = True) -> dict:
     summary_raw = {}
     pnl_raw = {}
     positions_raw = []
@@ -13,6 +13,7 @@ def fetch_snapshot_sources(service, account_id: str) -> dict:
     positions_error = ""
     orders_error = ""
     account_snapshot_requested = False
+    positions_loaded = False
 
     fetchers = {}
     if hasattr(service, "order_lifecycle") and service.order_lifecycle:
@@ -24,7 +25,7 @@ def fetch_snapshot_sources(service, account_id: str) -> dict:
             fetchers["summary"] = lambda: service.order_lifecycle.get_account_summary(account_id)
             fetchers["positions"] = lambda: service.order_lifecycle.get_positions(account_id)
         pnl_getter = getattr(service.order_lifecycle, "get_account_pnl", None)
-        if callable(pnl_getter):
+        if include_pnl and callable(pnl_getter):
             fetchers["pnl"] = lambda: pnl_getter(account_id)
     if hasattr(service, "order_tracker") and service.order_tracker:
         fetchers["orders"] = service.order_tracker.get_live_orders
@@ -56,11 +57,14 @@ def fetch_snapshot_sources(service, account_id: str) -> dict:
                 if name == "account_snapshot":
                     payload = value if isinstance(value, dict) else {}
                     summary_raw = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
-                    positions_raw = payload.get("positions") if isinstance(payload.get("positions"), list) else []
+                    if isinstance(payload.get("positions"), list):
+                        positions_raw = payload.get("positions")
+                        positions_loaded = True
                 elif name == "summary":
                     summary_raw = value if isinstance(value, dict) else {}
                 elif name == "positions":
                     positions_raw = value if isinstance(value, list) else []
+                    positions_loaded = isinstance(value, list)
                 elif name == "pnl":
                     payload = value if isinstance(value, dict) else {}
                     if payload.get("error") and not bool(payload.get("ok", True)):
@@ -81,9 +85,10 @@ def fetch_snapshot_sources(service, account_id: str) -> dict:
                 summary_error = ""
             except Exception as exc:
                 summary_error = str(exc)
-        if not positions_raw:
+        if not positions_loaded:
             try:
                 positions_raw = service.order_lifecycle.get_positions(account_id)
+                positions_loaded = True
                 positions_error = ""
             except Exception as exc:
                 positions_error = str(exc)

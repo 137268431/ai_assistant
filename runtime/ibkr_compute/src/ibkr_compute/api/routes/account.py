@@ -11,7 +11,7 @@ from ibkr_compute.api.account.views import (
     _build_ibkr_order_history,
     _build_ibkr_place_order_response,
 )
-from ibkr_compute.api.route_request import get_query_arg_int
+from ibkr_compute.api.route_request import get_query_arg_bool, get_query_arg_int
 from ibkr_compute.api.route_response import build_json_request_response, json_response
 from ibkr_compute.api.route_runtime import require_ibkr_service
 from ibkr_compute.api.runtime_proxy import register_runtime_proxy_route, should_proxy_runtime_requests
@@ -50,7 +50,7 @@ def register_account_routes(app):
         if unavailable:
             return unavailable
         try:
-            return jsonify(_build_ibkr_account_snapshot(service))
+            return jsonify(_build_ibkr_account_snapshot(service, include_pnl=get_query_arg_bool("include_pnl", True)))
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)}), 500
 
@@ -59,7 +59,7 @@ def register_account_routes(app):
         service, unavailable = _resolve_account_service()
         if unavailable:
             return unavailable
-        snapshot = _build_ibkr_account_snapshot(service)
+        snapshot = _build_ibkr_account_snapshot(service, include_pnl=False)
         return jsonify(
             {
                 "ok": True,
@@ -76,7 +76,7 @@ def register_account_routes(app):
         service, unavailable = _resolve_account_service()
         if unavailable:
             return unavailable
-        snapshot = _build_ibkr_account_snapshot(service)
+        snapshot = _build_ibkr_account_snapshot(service, include_pnl=False)
         return jsonify(
             {
                 "ok": True,

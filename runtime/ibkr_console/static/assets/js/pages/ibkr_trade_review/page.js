@@ -3,7 +3,7 @@
 
   const PAGE_PATH = '/ibkr_trade_review.html';
   const ENDPOINT = '/api/custom/ibkr/analytics/daily-trade-review';
-  const state = { payload: null, selectedSymbol: '', search: '' };
+  const state = { payload: null, selectedSymbol: '', search: '', requestSeq: 0, abortController: null };
 
   function $(id) { return document.getElementById(id); }
 
@@ -33,6 +33,32 @@
     return `${path}${query.toString() ? `?${query}` : ''}`;
   }
 
+  function linkedPageUrl(path, params = {}) {
+    const text = String(path || '').trim();
+    if (text.includes('?') && !Object.keys(params || {}).length) return text;
+    return pageUrl(text || '/ibkr_lifecycle_flow.html', params);
+  }
+
+  function apiUrl(path, params = {}) {
+    const query = new URLSearchParams();
+    Object.entries(params || {}).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') query.set(key, value);
+    });
+    return `${path}${query.toString() ? `?${query.toString()}` : ''}`;
+  }
+
+  function syncUrlFromForm() {
+    const next = new URL(window.location.href);
+    const params = getReviewParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (key === 'limit') return;
+      if (value !== undefined && value !== null && value !== '') next.searchParams.set(key, value);
+      else next.searchParams.delete(key);
+    });
+    if (!$('symbolInput').value) next.searchParams.delete('symbol');
+    window.history.replaceState({}, '', `${next.pathname}${next.search}`);
+  }
+
   function authHeaders(extra = {}) {
     if (typeof getAuthHeaders === 'function') return getAuthHeaders(extra);
     const token = localStorage.getItem('pb_token') || '';
@@ -60,20 +86,28 @@
   }
 
   async function loadReview() {
+    const seq = state.requestSeq + 1;
+    state.requestSeq = seq;
+    if (state.abortController) state.abortController.abort();
+    state.abortController = new AbortController();
     renderLoading();
     const params = getReviewParams();
-    const query = new URLSearchParams(params).toString();
-    const url = pageUrl(`${ENDPOINT}?${query}`);
+    const url = apiUrl(ENDPOINT, params);
     try {
-      const response = await fetch(url, { headers: authHeaders() });
+      const response = await fetch(url, { headers: authHeaders(), signal: state.abortController.signal });
       const text = await response.text();
       const payload = text ? JSON.parse(text) : {};
       if (!response.ok || payload.ok === false) throw new Error(payload.error || `Request failed (${response.status})`);
+      if (seq !== state.requestSeq) return;
       state.payload = payload;
       const first = (payload.items || [])[0];
       state.selectedSymbol = first ? first.symbol : '';
       renderAll();
     } catch (error) {
+      if (error && error.name === 'AbortError') return;
+      if (seq !== state.requestSeq) return;
+      state.payload = null;
+      state.selectedSymbol = '';
       renderError(error.message || String(error));
     }
   }
@@ -105,8 +139,10 @@
     const summary = payload.summary || {};
     const daily = summary.daily_signals || {};
     const realized = daily.realized || {};
+    const filterCopy = `${payload.market_date || '--'} · ${payload.broker_mode || '--'} / ${payload.data_environment || '--'}`;
     const cards = [
-      ['标的数', summary.symbols, 'selected + unselected + traded'],
+      ['日期', payload.market_date || '--', filterCopy],
+      ['返回', summary.returned, summary.truncated ? `已截断 / total ${summary.symbols || 0}` : `total ${summary.symbols || 0}`],
       ['已选标', summary.selected_count, 'active / candidate target'],
       ['未选/拒绝', summary.not_selected_count, '完整账本来自 ibkr_target_decisions'],
       ['已成交', summary.traded_count, 'entry filled symbols'],
@@ -153,6 +189,8 @@
     const rows = filteredItems();
     if (!rows.length) {
       $('symbolList').innerHTML = '<div class="empty-state">没有匹配标的。</div>';
+      state.selectedSymbol = '';
+      renderDetail();
       return;
     }
     if (!rows.some((row) => row.symbol === state.selectedSymbol)) state.selectedSymbol = rows[0].symbol;
@@ -217,7 +255,7 @@
     }
     $('detailTitle').textContent = `${item.symbol} · ${item.review_status}`;
     $('detailCopy').textContent = item.selection_reason || item.signal_summary?.latest_reason || '暂无摘要原因。';
-    $('lifecycleLink').href = pageUrl(item.lifecycle_url || '/ibkr_lifecycle_flow.html');
+    $('lifecycleLink').href = linkedPageUrl(item.lifecycle_url || '/ibkr_lifecycle_flow.html');
     const order = item.order_summary || {};
     const signal = item.signal_summary || {};
     const realized = item.realized || {};
@@ -253,7 +291,7 @@
       <article class="issue-card ${escapeHtml(flag.severity || 'medium')}">
         <strong>${escapeHtml(item.symbol)} · ${escapeHtml(flag.code)}</strong>
         <p>${escapeHtml(flag.message || '')}</p>
-        <a href="${pageUrl(item.lifecycle_url || '/ibkr_lifecycle_flow.html')}">打开生命周期</a>
+        <a href="${linkedPageUrl(item.lifecycle_url || '/ibkr_lifecycle_flow.html')}">打开生命周期</a>
       </article>
     `)).join('')}`;
   }
@@ -283,6 +321,7 @@
     $('dataModeInput').value = query.get('data_environment') || query.get('market_data_mode') || 'live';
     $('statusInput').value = query.get('status') || 'all';
     $('symbolInput').value = (query.get('symbol') || '').toUpperCase();
+    if (query.has('include_events')) $('includeEventsInput').checked = ['1', 'true', 'yes', 'on'].includes(String(query.get('include_events') || '').toLowerCase());
   }
 
   document.addEventListener('DOMContentLoaded', () => {
@@ -290,6 +329,7 @@
     initChrome();
     $('reviewFilterForm').addEventListener('submit', (event) => {
       event.preventDefault();
+      syncUrlFromForm();
       initChrome();
       loadReview();
     });
@@ -300,11 +340,14 @@
       $('statusInput').value = 'all';
       $('symbolInput').value = '';
       $('includeEventsInput').checked = true;
+      syncUrlFromForm();
+      initChrome();
       loadReview();
     });
     $('localSearchInput').addEventListener('input', (event) => {
       state.search = event.target.value || '';
       renderSymbols();
+      renderDetail();
     });
     loadReview().catch((error) => showMessage(error.message || String(error)));
   });

@@ -201,14 +201,18 @@ def _build_snapshot_counts(positions: list[dict], orders: list[dict], live_open_
     }
 
 
-def _build_ibkr_account_snapshot(service) -> dict:
-    context = build_snapshot_context(service)
+def _build_ibkr_account_snapshot(service, *, include_pnl: bool = True) -> dict:
+    context = build_snapshot_context(service, include_pnl=include_pnl)
     api_app = context["api_app"]
     cached = load_cached_snapshot(api_app, context["cache_key"])
     if cached:
         return cached
 
-    snapshot_sources = fetch_snapshot_sources(service, context["account_id"])
+    snapshot_sources = fetch_snapshot_sources(
+        service,
+        context["account_id"],
+        include_pnl=context["include_pnl"],
+    )
     fallback_ids = load_pb_fallback_order_ids(api_app, service)
     merged_orders_raw, live_open_payload = recover_live_open_orders(
         api_app,
@@ -247,6 +251,7 @@ def _build_ibkr_account_snapshot(service) -> dict:
         ),
         "summary_raw": snapshot_sources["summary_raw"] if isinstance(snapshot_sources["summary_raw"], dict) else {},
         "pnl_raw": snapshot_sources.get("pnl_raw") if isinstance(snapshot_sources.get("pnl_raw"), dict) else {},
+        "include_pnl": bool(context["include_pnl"]),
         "positions": positions,
         "orders": orders,
         "live_open_orders": live_open_orders,
