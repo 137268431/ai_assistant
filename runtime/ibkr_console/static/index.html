@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Trading Flight - 首页</title>
     <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
-    <script src="common.js"></script>
+    <script src="common.js?v=20260528-market-session-chip-1"></script>
     <script>document.write(getCommonStyles());</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
     <link rel="stylesheet" href="/assets/css/pages/index/page.css?v=20260522-market-compact">
@@ -723,17 +723,16 @@
             const marketDate = String(payload.market_date || getUsDate()).trim() || getUsDate();
             const currentMarketDate = String(payload.current_market_date || marketDate).trim() || marketDate;
             const workflow = payload.workflow || {};
-            const scanTimeEt = String(workflow.scan_summary_time_et || '09:20').trim() || '09:20';
+            const scanTimeEt = String(workflow.scan_summary_time_et || '08:20-09:20').trim() || '08:20-09:20';
             const openCheckTimeEt = String(workflow.open_check_time_et || scanTimeEt).trim() || scanTimeEt;
+            const topupWindowEt = String(workflow.topup_window_et || '09:25-11:00').trim() || '09:25-11:00';
             const intradayRefreshRule = String(workflow.intraday_refresh_rule || '5m close-driven').trim() || '5m close-driven';
-            const timingCopy = scanTimeEt === openCheckTimeEt
-                ? `${scanTimeEt} ET 生成 candidate / active，并完成盘前检查`
-                : `${scanTimeEt} ET 生成 candidate / active，${openCheckTimeEt} ET 做盘前检查`;
+            const timingCopy = `${scanTimeEt} ET 每 5 分钟覆盖预筛，${topupWindowEt} ET 增量入池，${openCheckTimeEt} ET 做盘前检查`;
             const dateCopy = marketDate === currentMarketDate
                 ? `首页默认按当前美东交易日 ${marketDate} 展示，不按本地自然日。`
                 : `首页当前展示交易日 ${marketDate}，当前美东交易日为 ${currentMarketDate}。`;
 
-            tipEl.textContent = `${dateCopy} ${timingCopy}，盘中按 ${intradayRefreshRule} 刷新；要看其他交易日，请进入“当前标的榜”。`;
+            tipEl.textContent = `${dateCopy} ${timingCopy}；盘中按 ${intradayRefreshRule} 刷新；要看其他交易日，请进入“当前标的榜”。`;
         }
 
         function renderTodayTargets(payload) {

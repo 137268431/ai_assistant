@@ -658,10 +658,12 @@ def build_screener_payload(
             bar_time_ms=bar_ms
         )
         latest_intraday_by_symbol[symbol] = row
-        stats = volume_stats_by_symbol.setdefault(symbol, {"premarket": 0.0, "today": 0.0})
+        stats = volume_stats_by_symbol.setdefault(symbol, {"premarket": 0.0, "regular": 0.0, "today": 0.0})
         stats["today"] += volume
         if session_type == "premarket":
             stats["premarket"] += volume
+        elif session_type == "regular":
+            stats["regular"] += volume
 
     latest_indicator_by_symbol = {}
     for row in indicator_rows:
@@ -760,6 +762,7 @@ def build_screener_payload(
             "atr_pct": atr_pct,
             "avg_10d_volume": avg_10d_volume,
             "premarket_volume": round(coerce_float(volume_stats.get("premarket")), 2),
+            "regular_volume": round(coerce_float(volume_stats.get("regular")), 2),
             "today_volume": round(coerce_float(volume_stats.get("today")), 2),
             "latest_bar_time_ms": latest_bar_time_ms,
             "latest_intraday_bar_time_ms": intraday_bar_ms,

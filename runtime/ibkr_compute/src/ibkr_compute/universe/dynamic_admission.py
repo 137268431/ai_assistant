@@ -5,6 +5,8 @@ from __future__ import annotations
 from math import isfinite
 from typing import Any
 
+from ibkr_compute.universe.activity_gate import enrich_activity_metrics, evaluate_activity_gate
+
 DEFAULT_DYNAMIC_ADMISSION_MIN_SCORE = 58.0
 ADMISSION_SCORE_CAP = 100.0
 
@@ -66,6 +68,7 @@ def evaluate_dynamic_admission(
         normalized_symbol,
         fundamentals=fundamental_row,
         metrics=metric_row,
+        settings=settings_row,
     )
     thresholds = _build_dynamic_thresholds(profile, settings_row)
     failed_gates = _build_failed_gates(normalized_symbol, profile, thresholds)
@@ -112,7 +115,8 @@ def evaluate_dynamic_admission(
     }
 
 
-def _build_symbol_profile(symbol: str, *, fundamentals: dict, metrics: dict) -> dict:
+def _build_symbol_profile(symbol: str, *, fundamentals: dict, metrics: dict, settings: dict | None = None) -> dict:
+    metrics = enrich_activity_metrics(metrics, settings=settings)
     fundamentals_extra = _as_dict(fundamentals.get("extra"))
     price = _safe_float(
         _first_present(metrics.get("price"), _fundamental_value(fundamentals, fundamentals_extra, "price"))
@@ -126,6 +130,8 @@ def _build_symbol_profile(symbol: str, *, fundamentals: dict, metrics: dict) -> 
     )
     premarket_volume = _safe_float(metrics.get("premarket_volume"))
     today_volume = _safe_float(metrics.get("today_volume"))
+    regular_volume = _safe_float(metrics.get("regular_volume"))
+    elapsed_rvol = _safe_float(metrics.get("elapsed_rvol"))
     atr_pct = abs(_safe_float(metrics.get("atr_pct")))
     day_change_pct = _safe_float(metrics.get("day_change_pct"))
     abs_day_change_pct = abs(day_change_pct)
@@ -250,7 +256,10 @@ def _build_symbol_profile(symbol: str, *, fundamentals: dict, metrics: dict) -> 
         "price_band": _price_band(price),
         "avg_10d_volume": round(avg_10d_volume, 2),
         "premarket_volume": round(premarket_volume, 2),
+        "regular_volume": round(regular_volume, 2),
         "today_volume": round(today_volume, 2),
+        "elapsed_regular_minutes": _safe_int_or_none(metrics.get("elapsed_regular_minutes")),
+        "elapsed_rvol": round(elapsed_rvol, 4),
         "dollar_volume": round(dollar_volume, 2),
         "avg_dollar_volume": round(avg_dollar_volume, 2),
         "liquidity_tier": _liquidity_tier(avg_10d_volume, avg_dollar_volume),
@@ -415,6 +424,20 @@ def _build_dynamic_thresholds(profile: dict, settings: dict) -> dict:
     )
     min_score = max(0.0, min(ADMISSION_SCORE_CAP, min_score + min_score_adjustment))
 
+    activity_any_of = {
+        "premarket_volume_gte": round(premarket_threshold, 2),
+        "today_volume_gte": round(today_threshold, 2),
+        "rvol_20_gte": round(rvol_threshold, 4),
+    }
+    activity_gate = {}
+    if _activity_gate_configured(settings):
+        activity_gate = evaluate_activity_gate(profile, settings=settings)
+    if activity_gate.get("applied"):
+        activity_any_of = {
+            key: round(_safe_float(value), 4 if str(key).endswith("rvol_gte") else 2)
+            for key, value in (activity_gate.get("thresholds") or {}).items()
+        }
+
     return {
         "mode": "dynamic",
         "threshold_profile": threshold_profile,
@@ -425,11 +448,8 @@ def _build_dynamic_thresholds(profile: dict, settings: dict) -> dict:
         "activity_profile": activity_profile,
         "avg_10d_volume_gte": round(avg_threshold, 2),
         "avg_dollar_volume_gte": round(avg_dollar_threshold, 2),
-        "activity_any_of": {
-            "premarket_volume_gte": round(premarket_threshold, 2),
-            "today_volume_gte": round(today_threshold, 2),
-            "rvol_20_gte": round(rvol_threshold, 4),
-        },
+        "activity_any_of": activity_any_of,
+        "activity_gate": activity_gate,
         "volatility_any_of": {
             "atr_pct_gte": round(atr_threshold, 4),
             "abs_day_change_pct_gte": round(day_threshold, 4),
@@ -450,6 +470,16 @@ def _build_dynamic_thresholds(profile: dict, settings: dict) -> dict:
             "abs_day_change_pct_gte": round(base_day, 4),
         },
     }
+
+
+def _activity_gate_configured(settings: dict | None) -> bool:
+    settings = settings if isinstance(settings, dict) else {}
+    return bool(
+        settings.get("activity_gate_stages")
+        or settings.get("activity_gate_stages_json")
+        or settings.get("target_activity_gate_stages_json")
+        or settings.get("ibkr_target_activity_gate_stages_json")
+    )
 
 
 def _select_threshold_profile(profile: dict) -> tuple[str, list[str]]:
@@ -533,34 +563,57 @@ def _build_failed_gates(symbol: str, profile: dict, thresholds: dict) -> list[di
     activity_thresholds = thresholds.get("activity_any_of") or {}
     premarket_volume = _safe_float(profile.get("premarket_volume"))
     today_volume = _safe_float(profile.get("today_volume"))
+    regular_volume = _safe_float(profile.get("regular_volume"))
+    elapsed_rvol = _safe_float(profile.get("elapsed_rvol"))
     rvol_20 = _safe_float(profile.get("rvol_20"))
     pre_threshold = _safe_float(activity_thresholds.get("premarket_volume_gte"))
     today_threshold = _safe_float(activity_thresholds.get("today_volume_gte"))
+    regular_threshold = _safe_float(activity_thresholds.get("regular_volume_gte"))
+    elapsed_rvol_threshold = _safe_float(activity_thresholds.get("elapsed_rvol_gte"))
     rvol_threshold = _safe_float(activity_thresholds.get("rvol_20_gte"))
     activity_passed = (
-        premarket_volume >= pre_threshold
-        or today_volume >= today_threshold
+        (pre_threshold > 0 and premarket_volume >= pre_threshold)
+        or (today_threshold > 0 and today_volume >= today_threshold)
+        or (regular_threshold > 0 and regular_volume >= regular_threshold)
+        or (elapsed_rvol_threshold > 0 and elapsed_rvol >= elapsed_rvol_threshold)
         or (rvol_threshold > 0 and rvol_20 >= rvol_threshold)
     )
     floor_activity = _safe_float((thresholds.get("blocking_floors") or {}).get("activity_volume_gte"))
     if not activity_passed:
+        stage_gate = thresholds.get("activity_gate") if isinstance(thresholds.get("activity_gate"), dict) else {}
+        stage_blocking = bool(stage_gate.get("applied"))
         failed_gates.append(
             _failed_gate(
                 symbol=symbol,
                 bucket=REJECTION_BUCKET_PREMARKET,
-                metric="premarket_volume|today_volume|rvol_20",
+                metric="premarket_volume|today_volume|regular_volume|elapsed_rvol|rvol_20",
                 actual=(
                     f"pre={_format_number(premarket_volume)}, today={_format_number(today_volume)}, "
+                    f"regular={_format_number(regular_volume)}, elapsed_rvol={_format_number(elapsed_rvol)}, "
                     f"rvol={_format_number(rvol_20)}"
                 ),
                 threshold=(
-                    f"pre>={_format_number(pre_threshold)} or today>={_format_number(today_threshold)} "
-                    f"or rvol>={_format_number(rvol_threshold)}"
+                    " or ".join(
+                        item
+                        for item in [
+                            f"pre>={_format_number(pre_threshold)}" if pre_threshold > 0 else "",
+                            f"today>={_format_number(today_threshold)}" if today_threshold > 0 else "",
+                            f"regular>={_format_number(regular_threshold)}" if regular_threshold > 0 else "",
+                            f"elapsed_rvol>={_format_number(elapsed_rvol_threshold)}" if elapsed_rvol_threshold > 0 else "",
+                            f"rvol>={_format_number(rvol_threshold)}" if rvol_threshold > 0 else "",
+                        ]
+                        if item
+                    )
                 ),
                 note="Intraday activity is below the dynamic threshold.",
                 severity=(
                     "blocking"
-                    if max(premarket_volume, today_volume) < floor_activity and rvol_20 <= 0
+                    if stage_blocking
+                    or (
+                        max(premarket_volume, today_volume, regular_volume) < floor_activity
+                        and rvol_20 <= 0
+                        and elapsed_rvol <= 0
+                    )
                     else "soft"
                 ),
             )
@@ -620,6 +673,12 @@ def _build_admission_score(profile: dict, thresholds: dict) -> tuple[float, dict
     activity_thresholds = thresholds.get("activity_any_of") or {}
     volatility_thresholds = thresholds.get("volatility_any_of") or {}
 
+    def activity_ratio(metric: str, threshold_key: str) -> float:
+        threshold = _safe_float(activity_thresholds.get(threshold_key))
+        if threshold <= 0:
+            return 0.0
+        return _score_ratio(_safe_float(profile.get(metric)), threshold, 22.0)
+
     liquidity_score = max(
         _score_ratio(_safe_float(profile.get("avg_10d_volume")), avg_threshold, 24.0),
         _score_ratio(_safe_float(profile.get("avg_dollar_volume")), avg_dollar_threshold, 24.0)
@@ -627,21 +686,11 @@ def _build_admission_score(profile: dict, thresholds: dict) -> tuple[float, dict
         else 0.0,
     )
     activity_score = max(
-        _score_ratio(
-            _safe_float(profile.get("premarket_volume")),
-            _safe_float(activity_thresholds.get("premarket_volume_gte")),
-            22.0,
-        ),
-        _score_ratio(
-            _safe_float(profile.get("today_volume")),
-            _safe_float(activity_thresholds.get("today_volume_gte")),
-            22.0,
-        ),
-        _score_ratio(
-            _safe_float(profile.get("rvol_20")),
-            _safe_float(activity_thresholds.get("rvol_20_gte")),
-            22.0,
-        ),
+        activity_ratio("premarket_volume", "premarket_volume_gte"),
+        activity_ratio("today_volume", "today_volume_gte"),
+        activity_ratio("regular_volume", "regular_volume_gte"),
+        activity_ratio("elapsed_rvol", "elapsed_rvol_gte"),
+        activity_ratio("rvol_20", "rvol_20_gte"),
     )
     volatility_score = max(
         _score_ratio(
@@ -805,9 +854,11 @@ def _build_reason_tags(
     min_score: float,
     strategy_policy: dict,
 ) -> list[str]:
+    activity_gate = thresholds.get("activity_gate") if isinstance(thresholds.get("activity_gate"), dict) else {}
     return [
         f"admission={_format_number(admission_score)}>={_format_number(min_score)}",
         f"threshold_profile={thresholds.get('threshold_profile')}",
+        f"activity_stage={activity_gate.get('stage_id') or 'dynamic'}",
         f"profile={profile.get('liquidity_tier')}/{profile.get('activity_profile')}/{profile.get('volatility_profile')}",
         f"policy={strategy_policy.get('setup_type')}",
         f"dyn_avg>={_format_number(thresholds.get('avg_10d_volume_gte'))}",

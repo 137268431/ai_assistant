@@ -398,13 +398,20 @@ class Config:
         "ibkr_order_fast_track_sec": "30",
         "ibkr_order_question_suppress_enabled": "false",
         "ibkr_order_question_suppress_message_ids": "",
-        "ibkr_scan_schedule": "09:20-10:00",
+        "ibkr_scan_schedule": "08:20-09:20",
         "watchlist_interval_min": "5",
-        "ibkr_daily_scan_time_et": "09:20",
+        "ibkr_daily_scan_time_et": "08:20",
         "ibkr_daily_scan_min_avg_10d_volume": "100000",
         "ibkr_daily_scan_min_atr_pct": "0.15",
         "ibkr_daily_scan_min_abs_day_change_pct": "1.0",
         "ibkr_daily_scan_min_premarket_volume": "5000",
+        "ibkr_target_activity_gate_stages_json": (
+            '[{"id":"preopen_early","start_et":"08:20","end_et":"08:55","any_of":{"premarket_volume_gte":3000}},'
+            '{"id":"preopen_final","start_et":"09:00","end_et":"09:25","any_of":{"premarket_volume_gte":5000}},'
+            '{"id":"open_discovery","start_et":"09:30","end_et":"09:45","any_of":{"premarket_volume_gte":5000,"regular_volume_gte":10000,"elapsed_rvol_gte":1.5}},'
+            '{"id":"open_followthrough","start_et":"09:50","end_et":"10:30","any_of":{"premarket_volume_gte":10000,"regular_volume_gte":30000,"elapsed_rvol_gte":1.2}},'
+            '{"id":"late_morning","start_et":"10:35","end_et":"11:00","any_of":{"regular_volume_gte":60000,"elapsed_rvol_gte":1.0}}]'
+        ),
         "ibkr_daily_scan_day_gain_trigger_enabled": "true",
         "ibkr_daily_scan_day_gain_trigger_pct": "4.0",
         "ibkr_open_report_target_capture_enabled": "true",
@@ -600,4 +607,4 @@ class Config:
 
     @property
     def scan_schedule(self) -> str:
-        return self.get("ibkr_scan_schedule", "09:20-10:00")
+        return self.get("ibkr_scan_schedule", "08:20-09:20")

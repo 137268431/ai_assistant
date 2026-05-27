@@ -347,18 +347,18 @@ class TradingServiceMarketUniverseTargetsMixin:
     def _scan_schedule_start(self) -> tuple[int, int]:
         service_mod = _service_mod()
         preferred = self._parse_hhmm(
-            self.config.get_for_environment("ibkr_daily_scan_time_et", service_mod.DATA_ENVIRONMENT, "09:20")
+            self.config.get_for_environment("ibkr_daily_scan_time_et", service_mod.DATA_ENVIRONMENT, "08:20")
         )
         if preferred:
             return preferred
         raw_schedule = str(
-            self.config.get_for_environment("ibkr_scan_schedule", service_mod.DATA_ENVIRONMENT, "09:20-10:00") or ""
+            self.config.get_for_environment("ibkr_scan_schedule", service_mod.DATA_ENVIRONMENT, "08:20-09:20") or ""
         ).strip()
-        start_text = raw_schedule.split("-", 1)[0].strip() or "09:20"
+        start_text = raw_schedule.split("-", 1)[0].strip() or "08:20"
         scheduled = self._parse_hhmm(start_text)
         if scheduled:
             return scheduled
-        return 9, 20
+        return 8, 20
 
     def _scan_window_open(self) -> bool:
         service_mod = _service_mod()

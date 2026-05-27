@@ -170,7 +170,7 @@
       ]);
     },
     getCommonStyles() {
-      return '<link rel="stylesheet" href="/assets/css/common.css?v=20260518-bridge-align">';
+      return '<link rel="stylesheet" href="/assets/css/common.css?v=20260528-market-session-chip-1">';
     },
     showConfirmDialog(options = {}) {
       const message = options.message || options.title || '确认操作？';

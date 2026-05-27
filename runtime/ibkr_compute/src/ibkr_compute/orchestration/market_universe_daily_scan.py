@@ -140,8 +140,8 @@ class TradingServiceMarketUniverseDailyScanMixin:
         service_mod = _service_mod()
         et_zone = getattr(service_mod, "ET", None)
         current = now_dt or (datetime.now(et_zone) if et_zone is not None else datetime.now())
-        raw_schedule = self._daily_scan_config_text("ibkr_scan_schedule", "09:20-10:00")
-        end_text = "10:00"
+        raw_schedule = self._daily_scan_config_text("ibkr_scan_schedule", "08:20-09:20")
+        end_text = "09:20"
         if "-" in raw_schedule:
             end_text = raw_schedule.split("-", 1)[1].strip() or end_text
         parsed = self._parse_hhmm(end_text)

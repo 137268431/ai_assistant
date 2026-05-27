@@ -879,7 +879,7 @@ def _open_operator_action(
     if "日筛" in joined:
         return "先检查 compute / screener / targets 写入链路，修复后手动重跑 scan；未刷新前不要只按旧标的池操作。"
     if "开盘采集" in joined or "今日暂无 active / candidate 标的" in joined:
-        return "先确认 09:29/open-report topup 扫描完成与 targets 写入；未刷新前不要按空池操作。"
+        return "先确认 09:25/open-report topup 扫描完成与 targets 写入；未刷新前不要按空池操作。"
     if blocking:
         return "先恢复 Gateway / Session / WebSocket 与核心服务，再允许自动交易。"
     return "确认今日标的池与系统状态后再按策略执行。"

@@ -568,6 +568,7 @@ class SignalIngressBuildersTest(unittest.TestCase):
         self.assertIn("平仓 @39.88", content)
         self.assertIn("251股", content)
         self.assertIn("未计手续费", content)
+        self.assertNotIn("保护状态", content)
 
     def test_order_group_status_card_computes_short_net_profit_with_commission(self):
         rows = [

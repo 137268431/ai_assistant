@@ -345,6 +345,8 @@ def _protection_state_model(rows: list[dict[str, Any]]) -> dict[str, Any]:
     primary = pick_primary_order_row(rows, rows[0] if rows else {}) or {}
     if not primary or not _row_is_filled(primary):
         return {"state": "not_filled", "missing_roles": []}
+    if _row_status_key(primary) == "closed":
+        return {"state": "closed", "missing_roles": []}
 
     active_close_rows = [
         row
@@ -353,6 +355,11 @@ def _protection_state_model(rows: list[dict[str, Any]]) -> dict[str, Any]:
     ]
     if active_close_rows:
         return {"state": "closing", "missing_roles": []}
+    if any(
+        (normalize_order_row(row).get("role") or "") in EXIT_ORDER_ROLES and _row_is_filled(row)
+        for row in rows
+    ):
+        return {"state": "closed", "missing_roles": []}
 
     active_roles: set[str] = set()
     terminal_roles: list[dict[str, str]] = []

@@ -37,6 +37,11 @@ from ibkr_compute.api.market.screener.scoring import (
 )
 from ibkr_compute.core.active_window_admission import is_active_window_admitted, signal_pressure_from_item
 from ibkr_compute.market.timeframe_utils import normalize_interval
+from ibkr_compute.universe.activity_gate import (
+    DEFAULT_ACTIVITY_GATE_STAGES_JSON,
+    enrich_activity_metrics,
+    evaluate_activity_gate,
+)
 from ibkr_compute.universe.target_execution import apply_target_execution_metadata
 
 
@@ -414,10 +419,12 @@ def _build_metrics_by_symbol(
         current_latest = latest_intraday_by_symbol.get(symbol)
         if current_latest is None or bar_time_ms >= to_int(current_latest.get("bar_time_ms"), 0):
             latest_intraday_by_symbol[symbol] = payload_row
-        stats = volume_stats_by_symbol.setdefault(symbol, {"premarket": 0.0, "today": 0.0})
+        stats = volume_stats_by_symbol.setdefault(symbol, {"premarket": 0.0, "regular": 0.0, "today": 0.0})
         stats["today"] += payload_row["volume"]
         if session_type == "premarket":
             stats["premarket"] += payload_row["volume"]
+        elif session_type == "regular":
+            stats["regular"] += payload_row["volume"]
 
     latest_indicator_by_symbol = _latest_by_symbol([
         row
@@ -449,7 +456,7 @@ def _build_metrics_by_symbol(
         freshness_min = item.get("freshness_min") if isinstance(item.get("freshness_min"), int) else None
         if freshness_min is None and latest_bar_time_ms > 0:
             freshness_min = max(0, int((computed_at_ms - latest_bar_time_ms) // 60000))
-        volume_stats = volume_stats_by_symbol.get(symbol, {"premarket": 0.0, "today": 0.0})
+        volume_stats = volume_stats_by_symbol.get(symbol, {"premarket": 0.0, "regular": 0.0, "today": 0.0})
         direction_bias = _infer_direction_bias(item, indicator_extra)
         row = {
             "symbol": symbol,
@@ -465,6 +472,7 @@ def _build_metrics_by_symbol(
             ),
             "avg_10d_volume": float(first_defined(computed_avg_10d if computed_avg_10d > 0 else None, screener_snapshot.get("avg_10d_volume")) or 0.0),
             "premarket_volume": float(first_defined(volume_stats.get("premarket") if volume_stats.get("premarket") else None, screener_snapshot.get("premarket_volume")) or 0.0),
+            "regular_volume": float(first_defined(volume_stats.get("regular") if volume_stats.get("regular") else None, screener_snapshot.get("regular_volume")) or 0.0),
             "today_volume": float(first_defined(volume_stats.get("today") if volume_stats.get("today") else None, screener_snapshot.get("today_volume")) or 0.0),
             "latest_bar_time_ms": latest_bar_time_ms,
             "freshness_min": freshness_min,
@@ -476,6 +484,7 @@ def _build_metrics_by_symbol(
             "exchange": to_text(first_defined(target.get("exchange"), intraday.get("exchange"), item.get("exchange"))).upper(),
             "indicator_extra": indicator_extra,
         }
+        row = enrich_activity_metrics(row, now_et=computed_at_ms)
         tradability_score, operable_reasons = build_tradability_assessment(row)
         row["tradability_score"] = tradability_score
         row["operable_reasons"] = operable_reasons
@@ -493,6 +502,8 @@ def _reject_reason(
     min_today_volume: int,
     min_tradability_score: int,
     max_freshness_min: int,
+    activity_gate_settings: dict[str, Any] | None = None,
+    now_et: Any = None,
 ) -> str:
     if not _window_is_valid(item):
         pressure = signal_pressure_from_item(item)
@@ -514,7 +525,11 @@ def _reject_reason(
         return "atr_pct_below_threshold"
     premarket_volume = to_float(metrics.get("premarket_volume")) or 0.0
     today_volume = to_float(metrics.get("today_volume")) or 0.0
-    if premarket_volume < min_premarket_volume and today_volume < min_today_volume:
+    activity_gate = evaluate_activity_gate(metrics, settings=activity_gate_settings, now_et=now_et)
+    if activity_gate.get("applied"):
+        if not bool(activity_gate.get("passed")):
+            return "activity_below_threshold"
+    elif premarket_volume < min_premarket_volume and today_volume < min_today_volume:
         return "activity_below_threshold"
     if (to_float(metrics.get("tradability_score")) or 0.0) < min_tradability_score:
         return "tradability_score_below_threshold"
@@ -580,7 +595,9 @@ def _target_extra(
             "atr_pct": float(to_float(metrics.get("atr_pct")) or 0.0),
             "avg_10d_volume": float(to_float(metrics.get("avg_10d_volume")) or 0.0),
             "premarket_volume": float(to_float(metrics.get("premarket_volume")) or 0.0),
+            "regular_volume": float(to_float(metrics.get("regular_volume")) or 0.0),
             "today_volume": float(to_float(metrics.get("today_volume")) or 0.0),
+            "elapsed_rvol": float(to_float(metrics.get("elapsed_rvol")) or 0.0),
             "tradability_score": float(to_float(metrics.get("tradability_score")) or 0.0),
             "operable_reasons": list(metrics.get("operable_reasons") or []),
             "freshness_min": int(metrics.get("freshness_min") or 0),
@@ -608,11 +625,14 @@ def _target_extra(
                 "atr_pct": metrics.get("atr_pct"),
                 "avg_10d_volume": metrics.get("avg_10d_volume"),
                 "premarket_volume": metrics.get("premarket_volume"),
+                "regular_volume": metrics.get("regular_volume"),
                 "today_volume": metrics.get("today_volume"),
+                "elapsed_rvol": metrics.get("elapsed_rvol"),
                 "day_change_pct": metrics.get("day_change_pct"),
                 "freshness_min": metrics.get("freshness_min"),
                 "tradability_score": metrics.get("tradability_score"),
             },
+            "activity_gate": metrics.get("activity_gate") if isinstance(metrics.get("activity_gate"), dict) else {},
         },
         "market_date": market_date,
         "environment": to_text(existing.get("environment")),
@@ -808,6 +828,12 @@ def build_intraday_window_admission_response(
         TRADABILITY_OPERABLE_MIN_SCORE,
         environment,
     )
+    activity_gate_settings = {
+        "activity_gate_stages_json": to_text(
+            config_value("ibkr_target_activity_gate_stages_json", DEFAULT_ACTIVITY_GATE_STAGES_JSON, environment)
+        )
+        or DEFAULT_ACTIVITY_GATE_STAGES_JSON,
+    }
 
     computed_at_ms = int(time.time() * 1000)
     trade_watchlist, watchlist_monitor_symbols = _load_effective_watchlist(
@@ -899,15 +925,22 @@ def build_intraday_window_admission_response(
             min_today_volume=min_today_volume,
             min_tradability_score=min_tradability_score,
             max_freshness_min=max_freshness_min,
+            activity_gate_settings=activity_gate_settings,
+            now_et=computed_at_ms,
         )
         if reason:
+            activity_gate = evaluate_activity_gate(metrics, settings=activity_gate_settings, now_et=computed_at_ms)
             rejected.append({
                 "symbol": symbol,
                 "reason": reason,
                 "window_status": to_text(item.get("window_status")),
                 "trace_stage": to_text(item.get("trace_stage")),
+                "activity_gate": activity_gate if activity_gate.get("applied") else {},
             })
             continue
+        activity_gate = evaluate_activity_gate(metrics, settings=activity_gate_settings, now_et=computed_at_ms)
+        if activity_gate.get("applied"):
+            metrics = {**metrics, "activity_gate": activity_gate}
         score = _admission_score(item, metrics)
         eligible.append(
             {
@@ -1066,6 +1099,7 @@ def build_intraday_window_admission_response(
         "min_premarket_volume": min_premarket_volume,
         "min_today_volume": min_today_volume,
         "min_tradability_score": min_tradability_score,
+        "activity_gate_stages_json": activity_gate_settings["activity_gate_stages_json"],
         "effective_max_admit": effective_max_admit,
     }
     target_decision_rows: list[dict[str, Any]] = []
@@ -1163,6 +1197,10 @@ def build_intraday_window_admission_response(
             "min_premarket_volume": min_premarket_volume,
             "min_today_volume": min_today_volume,
             "min_tradability_score": min_tradability_score,
+            "activity_gate": {
+                "stages_json": activity_gate_settings["activity_gate_stages_json"],
+                "current": evaluate_activity_gate({}, settings=activity_gate_settings, now_et=computed_at_ms),
+            },
         },
         "scanned": len(trace_symbols),
         "source_symbols": len(allowed_candidate_symbols),

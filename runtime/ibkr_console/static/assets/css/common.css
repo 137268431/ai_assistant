@@ -132,7 +132,7 @@
         align-items: center;
         justify-content: space-between;
         gap: 10px;
-        margin: 0 var(--page-gutter) 10px;
+        margin: 0 var(--page-gutter) 8px;
         padding: 8px 10px;
         border: 1px solid var(--border);
         border-radius: 12px;
@@ -415,12 +415,12 @@
 
       body > #contextBar > .page-context-bar,
       body > #configEnvironmentBar > .page-context-bar {
-        margin-top: 16px;
+        margin-top: 6px;
       }
 
       .page-shell > #contextBar > .page-context-bar,
       .page-shell > #configEnvironmentBar > .page-context-bar {
-        margin-top: 16px;
+        margin-top: 6px;
       }
 
       .page-shell > #contextBar > .page-context-bar,

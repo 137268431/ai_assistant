@@ -92,7 +92,7 @@ def _scan_window_for_environment(api_app, environment: str) -> tuple[tuple[int, 
         api_app.cfg.get_for_environment(
             "ibkr_scan_schedule",
             runtime_environment,
-            f"{DEFAULT_SCAN_TIME_ET}-10:00",
+            f"{DEFAULT_SCAN_TIME_ET}-09:20",
         )
         or ""
     ).strip()

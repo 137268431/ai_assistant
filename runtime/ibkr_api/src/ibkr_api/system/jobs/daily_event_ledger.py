@@ -536,7 +536,7 @@ def build_daily_event_reconcile_response(
     )
     if bool(calendar.get("is_closed")):
         for event_id, title, due_at in (
-            ("daily_scan_seed", "盘前日筛", DAILY_SCAN_DUE_ET),
+            ("daily_scan_seed", "08:20-09:20 预筛最终轮", DAILY_SCAN_DUE_ET),
             ("open_report", "09:30 开盘交易摘要", DEFAULT_OPEN_REPORT_TIME_ET),
             ("daily_report", "16:05 收盘汇总", DEFAULT_DAILY_REPORT_TIME_ET),
         ):
@@ -605,7 +605,7 @@ def build_daily_event_reconcile_response(
         ledger,
         _event(
             event_id="daily_scan_seed",
-            title="盘前日筛",
+            title="08:20-09:20 预筛最终轮",
             status="completed" if daily_completed else ("pending" if not _at_or_after(times, OPEN_REPORT_CUTOFF_ET) else "missed"),
             due_at_et=DAILY_SCAN_DUE_ET,
             cutoff_at_et=OPEN_REPORT_CUTOFF_ET,
@@ -806,7 +806,7 @@ def build_daily_event_reconcile_response(
             ledger,
             _event(
                 event_id=seed_event_id,
-                title="盘前新增标的通知",
+                title="预筛新增标的通知",
                 status=seed_status,
                 due_at_et=SEED_TARGET_NOTIFY_DUE_ET,
                 cutoff_at_et=OPEN_REPORT_CUTOFF_ET,

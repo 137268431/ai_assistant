@@ -135,6 +135,27 @@ function isPageContextTradingDateLabel(label) {
   ].includes(normalized);
 }
 
+function isPageContextMarketSessionLabel(label) {
+  const normalized = normalizePageContextMetaLabel(label);
+  return [
+    '时段',
+    'session',
+    'marketsession',
+    'marketphase',
+    'timewindow',
+    'markettimewindow',
+  ].includes(normalized);
+}
+
+function isPageContextMarketSessionPlaceholder(value) {
+  const text = String(value || '').trim().toLowerCase();
+  return !text
+    || ['--', '-', 'n/a'].includes(text)
+    || text.includes('待确认')
+    || text.includes('确认中')
+    || text.includes('loading');
+}
+
 function isPageContextBaseMetaLabel(label) {
   const normalized = normalizePageContextMetaLabel(label);
   return [
@@ -211,6 +232,59 @@ function resolvePageContextEnvironment(allowGlobal = false) {
   }
 }
 
+function getPageContextRuntimeConfigValue(key) {
+  const config = typeof window !== 'undefined' && window.__IBKR_RUNTIME_CONFIG__
+    ? window.__IBKR_RUNTIME_CONFIG__
+    : {};
+  return String(config[key] || '').trim();
+}
+
+function resolvePageContextBrokerContext(allowGlobal = false, environment = '') {
+  if (!allowGlobal && typeof getBrokerModeContext === 'function') return getBrokerModeContext();
+
+  let params = null;
+  try {
+    params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+  } catch (_) {
+    params = null;
+  }
+  const context = typeof window !== 'undefined' && window.__ibkrBrokerModeContext
+    ? window.__ibkrBrokerModeContext
+    : {};
+  const storedBrokerMode = (() => {
+    try { return localStorage.getItem('ibkr_broker_mode') || ''; } catch (_) { return ''; }
+  })();
+  const storedDataEnvironment = (() => {
+    try { return localStorage.getItem('ibkr_market_data_mode') || ''; } catch (_) { return ''; }
+  })();
+  const brokerMode = normalizePageContextBrokerMode(
+    context.broker_mode
+      || params?.get('broker_mode')
+      || getPageContextRuntimeConfigValue('BROKER_MODE')
+      || storedBrokerMode
+      || environment
+      || 'paper',
+    'paper'
+  );
+  const dataEnvironment = normalizePageContextDataEnvironment(
+    context.data_environment
+      || context.market_data_environment
+      || params?.get('market_data_mode')
+      || params?.get('data_environment')
+      || getPageContextRuntimeConfigValue('MARKET_DATA_MODE')
+      || storedDataEnvironment
+      || 'live',
+    'live'
+  );
+  return {
+    ...context,
+    broker_mode: brokerMode,
+    environment: brokerMode,
+    data_environment: dataEnvironment,
+    market_data_environment: dataEnvironment,
+  };
+}
+
 function normalizePageContextBrokerMode(value, fallback = 'paper') {
   if (typeof normalizeBrokerMode === 'function') return normalizeBrokerMode(value, fallback);
   const text = String(value || fallback || 'paper').trim().toLowerCase();
@@ -283,6 +357,70 @@ function buildPageContextMarketCalendarTitle(calendar) {
   return lines.join('\n');
 }
 
+function getPageContextMarketSession(calendar) {
+  const source = calendar && typeof calendar === 'object' ? calendar : {};
+  const session = source.market_session && typeof source.market_session === 'object'
+    ? source.market_session
+    : {};
+  return { source, session };
+}
+
+function formatPageContextMarketSessionLabel(calendar) {
+  const { source, session } = getPageContextMarketSession(calendar);
+  const kind = String(session.kind || source.session_kind || '').trim().toLowerCase();
+  const labels = {
+    premarket: '盘前',
+    regular: '盘中',
+    close_transition: '盘后过渡',
+    afterhours: '盘后',
+    overnight: '夜盘',
+    night: '夜盘',
+    closed: '闭市',
+  };
+  const display = String(session.label_zh || session.display_label || '').trim();
+  if (display) return display;
+  return labels[kind] || String(session.label || kind || '').trim();
+}
+
+function getPageContextMarketSessionTone(calendar) {
+  const { source, session } = getPageContextMarketSession(calendar);
+  const kind = String(session.kind || source.session_kind || '').trim().toLowerCase();
+  if (kind === 'regular') return 'ok';
+  if (['premarket', 'close_transition', 'afterhours', 'overnight', 'night'].includes(kind)) return 'shared';
+  if (kind === 'closed' || source.is_closed || source.is_trading_day === false) return 'warn';
+  return '';
+}
+
+function buildPageContextMarketSessionTitle(calendar, fallback = '') {
+  const { source, session } = getPageContextMarketSession(calendar);
+  if (!source || !Object.keys(source).length) return String(fallback || '');
+  const lines = [
+    `来源：${formatPageContextCalendarSource(session.source || source.source)}`,
+    `状态：${formatPageContextMarketDayLabel(source) || formatPageContextMarketSessionLabel(source) || '日历待确认'}`,
+  ];
+  const sourceError = String(session.source_error || source.source_error || fallback || '').trim();
+  if (session.us_time || session.cn_time) {
+    lines.push(`当前：${session.us_time || '--'} ET / ${session.cn_time || '--'} 北京`);
+  }
+  if (session.regular_open_us || session.regular_close_us) {
+    lines.push(`常规美东：${session.regular_open_us || '--'} - ${session.regular_close_us || '--'}`);
+  }
+  if (session.regular_open_beijing || session.regular_close_beijing) {
+    lines.push(`常规北京：${session.regular_open_beijing || '--'} - ${session.regular_close_beijing || '--'}`);
+  }
+  if (session.extended_open_us || session.extended_close_us) {
+    lines.push(`扩展美东：${session.extended_open_us || '--'} - ${session.extended_close_us || '--'}`);
+  }
+  if (session.extended_open_beijing || session.extended_close_beijing) {
+    lines.push(`扩展北京：${session.extended_open_beijing || '--'} - ${session.extended_close_beijing || '--'}`);
+  }
+  if (session.next_open_us || session.next_open_beijing || source.next_open_us || source.next_open_beijing) {
+    lines.push(`下次开盘：${session.next_open_us || source.next_open_us || '--'} ET / ${session.next_open_beijing || source.next_open_beijing || '--'} 北京`);
+  }
+  if (sourceError) lines.push(`fallback：${sourceError}`);
+  return lines.join('\n');
+}
+
 function buildPageContextTradingDateItem({ tradingDate, allowGlobal, brokerMode, dataEnvironment }) {
   const safeDate = tradingDate || '--';
   const item = { label: '交易日', value: safeDate };
@@ -319,6 +457,40 @@ function buildPageContextTradingDateItem({ tradingDate, allowGlobal, brokerMode,
   };
 }
 
+function buildPageContextMarketSessionItem({ tradingDate, brokerMode, dataEnvironment }) {
+  const safeDate = tradingDate || '--';
+  const item = { label: '时段', value: '日历待确认', tone: 'warn' };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(safeDate)) return item;
+
+  const signature = buildPageContextCalendarSignature({ date: safeDate, brokerMode, dataEnvironment });
+  const state = getPageContextCalendarState();
+  if (!signature || state.signature !== signature) {
+    return { label: '时段', value: '日历确认中' };
+  }
+
+  if (state.status === 'loading') {
+    return { label: '时段', value: '日历确认中' };
+  }
+
+  if (state.status === 'error') {
+    return {
+      label: '时段',
+      value: '日历待确认',
+      tone: 'warn',
+      title: String(state.error || 'market calendar unavailable'),
+    };
+  }
+
+  const calendar = state.payload && typeof state.payload === 'object' ? state.payload : {};
+  const label = formatPageContextMarketSessionLabel(calendar);
+  return {
+    label: '时段',
+    value: label || '日历待确认',
+    tone: label ? getPageContextMarketSessionTone(calendar) : 'warn',
+    title: buildPageContextMarketSessionTitle(calendar),
+  };
+}
+
 function buildPageContextMetaItems(items = [], options = {}) {
   const normalizedItems = (Array.isArray(items) ? items : [])
     .map(normalizePageContextMetaItem)
@@ -326,9 +498,9 @@ function buildPageContextMetaItems(items = [], options = {}) {
   const pageAllowGlobal = typeof window !== 'undefined' ? window.__ibkrPageContextAllowGlobal : false;
   const allowGlobal = Boolean(options.allowGlobal ?? pageAllowGlobal);
   const environment = resolvePageContextEnvironment(allowGlobal);
-  const brokerContext = !allowGlobal && typeof getBrokerModeContext === 'function' ? getBrokerModeContext() : {};
+  const brokerContext = resolvePageContextBrokerContext(allowGlobal, environment);
   const brokerMode = brokerContext.broker_mode || environment;
-  const dataEnvironment = brokerContext.data_environment || 'live';
+  const dataEnvironment = brokerContext.data_environment || brokerContext.market_data_environment || 'live';
   const tradingDate = resolvePageContextTradingDate(normalizedItems);
   const baseItems = allowGlobal
     ? [{ label: '环境', value: getEnvironmentLabel(environment, true), tone: environment }]
@@ -340,12 +512,22 @@ function buildPageContextMetaItems(items = [], options = {}) {
           tone: dataEnvironment === 'live' ? 'shared' : dataEnvironment,
         },
       ];
-  const extraItems = normalizedItems.filter((item) => item.includeInContext && !isPageContextBaseMetaLabel(item.label));
+  const explicitSessionItem = normalizedItems.find((item) => (
+    isPageContextMarketSessionLabel(item.label)
+    && !isPageContextMarketSessionPlaceholder(item.value)
+  ));
+  const sessionItem = explicitSessionItem || buildPageContextMarketSessionItem({ tradingDate, brokerMode, dataEnvironment });
+  const extraItems = normalizedItems.filter((item) => (
+    item.includeInContext
+    && !isPageContextBaseMetaLabel(item.label)
+    && !isPageContextMarketSessionLabel(item.label)
+  ));
   return [
     ...baseItems,
     buildPageContextTradingDateItem({ tradingDate, allowGlobal, brokerMode, dataEnvironment }),
+    sessionItem,
     ...extraItems,
-  ];
+  ].filter(Boolean);
 }
 
 function renderPageContextMeta(items = [], options = {}) {
@@ -419,15 +601,13 @@ async function fetchPageContextMarketCalendar({ date, brokerMode, dataEnvironmen
 
 function schedulePageContextMarketCalendarLoad(items = [], options = {}) {
   if (typeof window === 'undefined') return;
-  const pageAllowGlobal = Boolean(options.allowGlobal ?? window.__ibkrPageContextAllowGlobal);
-  if (pageAllowGlobal) return;
   const tradingDate = resolvePageContextTradingDate(items);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(tradingDate || '')) return;
-  const brokerContext = typeof getBrokerModeContext === 'function' ? getBrokerModeContext() : {};
-  const brokerMode = brokerContext.broker_mode
-    || (typeof getCurrentBrokerMode === 'function' ? getCurrentBrokerMode() : 'paper');
-  const dataEnvironment = brokerContext.data_environment
-    || (typeof getSharedDataEnvironment === 'function' ? getSharedDataEnvironment() : 'live');
+  const pageAllowGlobal = Boolean(options.allowGlobal ?? window.__ibkrPageContextAllowGlobal);
+  const environment = resolvePageContextEnvironment(pageAllowGlobal);
+  const brokerContext = resolvePageContextBrokerContext(pageAllowGlobal, environment);
+  const brokerMode = brokerContext.broker_mode || 'paper';
+  const dataEnvironment = brokerContext.data_environment || brokerContext.market_data_environment || 'live';
   const signature = buildPageContextCalendarSignature({ date: tradingDate, brokerMode, dataEnvironment });
   if (!signature) return;
 

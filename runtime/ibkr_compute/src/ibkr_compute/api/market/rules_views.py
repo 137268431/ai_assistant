@@ -15,6 +15,7 @@ from ibkr_compute.signal.signal_processor import (
     DEFAULT_TRADE_WINDOW_END,
     DEFAULT_TRADE_WINDOW_START,
 )
+from ibkr_compute.universe.activity_gate import parse_activity_gate_stages
 from ibkr_compute.workflows.daily_scanner import build_daily_scan_rule_summary
 
 
@@ -207,6 +208,22 @@ def _parse_json_object(value) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _format_activity_threshold(key: str, value) -> str:
+    metric = str(key or "").removesuffix("_gte")
+    labels = {
+        "premarket_volume": "premarket_volume",
+        "regular_volume": "regular_volume",
+        "today_volume": "today_volume",
+        "elapsed_rvol": "elapsed_rvol",
+        "rvol_20": "rvol_20",
+    }
+    if metric in {"elapsed_rvol", "rvol_20"}:
+        display_value = _format_number(value)
+    else:
+        display_value = _format_count(int(float(value or 0)))
+    return f"{labels.get(metric, metric)} >= {display_value}"
+
+
 def _build_logic_coverage(section_ids: set[str]) -> list[dict]:
     return [
         {
@@ -248,9 +265,24 @@ def _selection_panel(environment: str) -> dict:
         app_mod.cfg,
         "ibkr_daily_scan_time_et",
         environment,
-        str(daily_scan.get("scan_time_et") or "09:20"),
+        str(daily_scan.get("scan_time_et") or "08:20"),
+    )
+    scan_schedule, scan_schedule_source = _resolve_config_text(
+        app_mod.cfg,
+        "ibkr_scan_schedule",
+        environment,
+        "08:20-09:20",
     )
     quality_gates = daily_scan.get("quality_gates") or {}
+    activity_stage_lines = []
+    for stage in parse_activity_gate_stages(quality_gates.get("activity_gate_stages_json")):
+        thresholds = " or ".join(
+            _format_activity_threshold(key, value)
+            for key, value in (stage.get("any_of") or {}).items()
+        )
+        activity_stage_lines.append(
+            f"{stage.get('start_et')}-{stage.get('end_et')}: {thresholds}"
+        )
     subscription_budget = daily_scan.get("subscription_budget") or {}
     trade_budget = subscription_budget.get("trade_budget") or "unlimited"
     total_limit = int(subscription_budget.get("total_limit") or 0)
@@ -264,12 +296,22 @@ def _selection_panel(environment: str) -> dict:
 
     return {
         "title": "当前选标规则",
-        "subtitle": "09:20 ET 先按 multi-TF 投票叠加量能/波动门槛产出 candidate / active，其中 trade active 会先扣除 monitor 订阅名额。",
+        "subtitle": "08:20-09:20 ET 每 5 分钟覆盖预筛，09:25-11:00 ET 每 5 分钟只做增量入池；multi-TF 投票叠加分阶段量能/波动门槛产出 candidate / active。",
         "chips": [
             {
-                "label": "日筛时间",
+                "label": "预筛窗口",
+                "value": f"{scan_schedule} ET",
+                "copy": f"ibkr_scan_schedule · {scan_schedule_source}",
+            },
+            {
+                "label": "预筛起始",
                 "value": f"{daily_scan_time} ET",
                 "copy": f"ibkr_daily_scan_time_et · {daily_scan_time_source}",
+            },
+            {
+                "label": "增量入池",
+                "value": "09:25-11:00 ET",
+                "copy": "ibkr_early_expansion_topup · 只新增符合条件的标的，不移除已有 active",
             },
             {
                 "label": "Trade Watchlist",
@@ -295,7 +337,7 @@ def _selection_panel(environment: str) -> dict:
         ],
         "sections": [
             {
-                "title": "09:20 日筛投票",
+                "title": "08:20-09:20 覆盖预筛投票",
                 "copy": "每个 ready timeframe 只要命中任一条件，就给对应方向加票并加分；方向打平直接淘汰。",
                 "lines": [
                     f"做多主条件: {' / '.join(daily_scan['long_primary'])} 任一命中 => long +1票, +{daily_scan['primary_weight']}分",
@@ -307,14 +349,16 @@ def _selection_panel(environment: str) -> dict:
                 ],
             },
             {
-                "title": "量能与波动门槛",
-                "copy": "只有同时过掉下面四个硬门槛的 symbol，才会进入今日自动目标池。",
+                "title": "分阶段成交活跃度与波动门槛",
+                "copy": "10D 均量、波动仍是硬门槛；成交活跃度按扫描阶段切换，盘前看 premarket_volume，开盘后看 regular_volume / elapsed_rvol。",
                 "lines": [
                     f"avg_10d_volume >= {_format_count(int(quality_gates.get('avg_10d_volume_gte') or 0))}",
-                    f"premarket_volume >= {_format_count(int(quality_gates.get('premarket_volume_gte') or 0))}",
+                    *(activity_stage_lines or [
+                        f"premarket_volume >= {_format_count(int(quality_gates.get('premarket_volume_gte') or 0))}"
+                    ]),
                     f"atr_pct >= {_format_number(quality_gates.get('atr_pct_gte') or 0)}",
                     f"|day_change_pct| >= {_format_number(quality_gates.get('abs_day_change_pct_gte') or 0)}%",
-                    "通过后的自动候选会按 technical_score、|day_change_pct|、premarket_volume、avg_10d_volume、atr_pct 顺序排序。",
+                    "通过后的自动候选会按 technical_score、|day_change_pct|、阶段成交活跃度、avg_10d_volume、atr_pct 顺序排序。",
                 ],
             },
             {
@@ -648,7 +692,7 @@ def _system_flow_panel(environment: str) -> dict:
             {
                 "id": "daily_scan",
                 "label": "日筛 / 目标池",
-                "summary": "09:20 ET 使用多周期投票、量能/波动硬门槛和订阅预算产出 candidate / active。",
+                "summary": "08:20-09:20 ET 覆盖预筛使用多周期投票、分阶段量能/波动硬门槛和订阅预算产出 candidate / active；09:25-11:00 ET 只做增量入池。",
                 "links": ["/ibkr_screener.html?tab=screener&view=current"],
             },
             {

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>配置管理</title>
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
-<script src="common.js"></script>
+<script src="common.js?v=20260528-market-session-chip-1"></script>
 <script>document.write(getCommonStyles())</script>
 <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
 <link rel="stylesheet" href="/assets/css/pages/ibkr_config/page.css?v=20260518-fluid-shell">
@@ -77,6 +77,7 @@ const ACTIVE_CONFIG_KEYS = new Set([
   'ibkr_daily_scan_time_et',
   'ibkr_daily_scan_min_avg_10d_volume',
   'ibkr_daily_scan_min_premarket_volume',
+  'ibkr_target_activity_gate_stages_json',
   'ibkr_daily_scan_min_atr_pct',
   'ibkr_daily_scan_min_abs_day_change_pct',
   'ibkr_daily_scan_runtime_topup_wait_sec',
@@ -312,15 +313,16 @@ const CONFIG_META = {
 
   watchlist_interval_min: meta('标的同步间隔', '标的订阅', 600, '5', '联动 sync_*: 同步窗口内按该间隔刷新 watchlist 股票池'),
   ibkr_target_refresh_sec: meta('目标订阅刷新秒数', '标的订阅', 610, '60', '按 ibkr_targets 刷新当日实时订阅列表'),
-  ibkr_daily_scan_time_et: meta('日筛触发时间', '标的订阅', 612, '09:20', '每日自动初筛触发时间，ET 时区；当前设计为 09:20 信号窗口初筛'),
+  ibkr_daily_scan_time_et: meta('日筛起始时间', '标的订阅', 612, '08:20', '每日自动预筛起始时间，ET 时区；当前设计为 08:20-09:20 每 5 分钟覆盖重筛'),
   ibkr_daily_scan_min_avg_10d_volume: meta('日筛最小10D均量', '标的订阅', 614, '100000', '自动日筛硬门槛：10 日平均成交量至少达到该值'),
   ibkr_daily_scan_min_premarket_volume: meta('日筛最小盘前量', '标的订阅', 616, '5000', '自动日筛硬门槛：盘前累计成交量至少达到该值'),
+  ibkr_target_activity_gate_stages_json: meta('分阶段成交活跃门槛', '标的订阅', 617, '', 'JSON 配置 08:20-11:00 不同阶段的 activity any_of 门槛；盘前看 premarket_volume，开盘后看 regular_volume / elapsed_rvol'),
   ibkr_daily_scan_min_atr_pct: meta('日筛最小 ATR%', '标的订阅', 618, '0.15', '自动日筛硬门槛：ATR 百分比至少达到该值'),
   ibkr_daily_scan_min_abs_day_change_pct: meta('日筛最小日涨跌%', '标的订阅', 619, '1.0', '自动日筛硬门槛：当日涨跌幅绝对值至少达到该值'),
   ibkr_daily_scan_runtime_topup_wait_sec: meta('日筛等待 Runtime 回补秒数', '标的订阅', 619.6, '20', '远程 compute 依赖 Runtime watchlist topup 时，若刚好遇到 5m close 后追新窗口，日筛最多等待这些秒数再判定数据完整性'),
   ibkr_daily_scan_runtime_topup_poll_sec: meta('日筛等待回补轮询秒数', '标的订阅', 619.7, '2', '等待 Runtime watchlist topup 期间的状态轮询间隔秒数'),
   ibkr_open_report_target_capture_enabled: meta('开盘摘要空池补采集', '标的订阅', 619.72, 'TRUE', '09:30 开盘摘要发现今日 active/candidate 目标为空时，检查或触发 topup scan，等待完成后再重读目标池'),
-  ibkr_open_report_target_wait_sec: meta('开盘摘要等待补池秒数', '标的订阅', 619.74, '45', '开盘摘要等待 09:29/open-report topup 完成的最大秒数；超时后仍发送摘要并标注开盘采集状态'),
+  ibkr_open_report_target_wait_sec: meta('开盘摘要等待补池秒数', '标的订阅', 619.74, '45', '开盘摘要等待 09:25/open-report topup 完成的最大秒数；超时后仍发送摘要并标注开盘采集状态'),
   ibkr_open_report_target_poll_sec: meta('开盘摘要补池轮询秒数', '标的订阅', 619.76, '3', '开盘摘要等待补池时轮询 /scan/status 的间隔秒数'),
   ibkr_target_subscription_limit: meta('Trade 订阅上限', '标的订阅', 620, '80', 'trade 标的单独上限；实际 trade 可用预算会再与总订阅上限扣除 monitor 预留后的余额取更小值'),
   ibkr_total_subscription_limit: meta('总订阅上限', '标的订阅', 625, '80', 'WS 总订阅上限，包含 trade targets 与 market monitor 订阅'),
@@ -359,9 +361,9 @@ const CONFIG_META = {
   intraday_window_admission_min_avg_10d_volume: meta('窗口准入最小10D均量', '动态准入 / Fundamentals', 671, '500000', '信号窗口入池硬门槛：10 日均量低于该值则进入 failed_gates'),
   intraday_window_admission_min_atr_pct: meta('窗口准入最小 ATR%', '动态准入 / Fundamentals', 672, '0.15', '信号窗口入池硬门槛：ATR% 低于该值时拒绝自动 active admission'),
   intraday_window_admission_min_premarket_volume: meta('窗口准入最小盘前量', '动态准入 / Fundamentals', 673, '5000', '信号窗口入池硬门槛之一：盘前量不足时需 today volume 达到替代阈值'),
-  intraday_window_admission_min_today_volume: meta('窗口准入最小当日量', '动态准入 / Fundamentals', 674, '10000', '信号窗口入池硬门槛之一：盘前量不足时使用当日累计量兜底'),
+  intraday_window_admission_min_today_volume: meta('窗口准入最小当日量', '动态准入 / Fundamentals', 674, '10000', '11:00 后信号窗口入池兜底门槛；08:20-11:00 优先使用分阶段 regular_volume / elapsed_rvol activity gate'),
   intraday_window_admission_min_tradability_score: meta('窗口准入最小可交易分', '动态准入 / Fundamentals', 675, '60', '信号窗口入池硬门槛：tradability_score 低于该值时只展示 failed_gates，不自动提升到 active'),
-  ibkr_dynamic_admission_enabled: meta('日筛动态准入开关', '动态准入 / Fundamentals', 676, 'TRUE', '启用后 09:20 日筛按 symbol_profile/fundamentals 和市场画像动态调整 admission thresholds，并输出 failed_gates'),
+  ibkr_dynamic_admission_enabled: meta('日筛动态准入开关', '动态准入 / Fundamentals', 676, 'TRUE', '启用后 08:20-09:20 预筛按 symbol_profile/fundamentals、分阶段成交活跃门槛和市场画像动态调整 admission thresholds，并输出 failed_gates'),
   ibkr_dynamic_admission_min_score: meta('日筛动态准入最低分', '动态准入 / Fundamentals', 677, '58', '日筛 dynamic_admission 的最低 admission_score；低于该分会进入 failed_gates 并降低自动入池优先级'),
 
   ibkr_symbol_profile_enabled: meta('Symbol Profile 开关', '动态准入 / Fundamentals', 680, 'TRUE', '启用后 eligibility/screener/watchlist 可展示 symbol_profile，用于区分 ETF/ADR/普通股/行业等画像'),

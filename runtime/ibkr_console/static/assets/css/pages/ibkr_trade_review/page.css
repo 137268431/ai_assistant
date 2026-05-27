@@ -21,12 +21,12 @@ body {
 
 .trade-review-shell {
   max-width: var(--page-shell-max-wide, 1680px);
-  padding-top: 14px;
+  padding-top: 0;
   --page-panel-min-height: 0px;
 }
 
 .trade-review-shell > #contextBar {
-  margin-bottom: 10px;
+  margin-bottom: 6px;
 }
 
 .review-context-token,

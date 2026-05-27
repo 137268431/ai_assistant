@@ -52,7 +52,7 @@ class _FakeResponse:
 
 
 class _FakeConfig:
-    def __init__(self, scan_time="09:20"):
+    def __init__(self, scan_time="08:20"):
         self.scan_time = scan_time
 
     def refresh(self):
@@ -63,7 +63,7 @@ class _FakeConfig:
         if key == "ibkr_daily_scan_time_et":
             return self.scan_time
         if key == "ibkr_scan_schedule":
-            return "09:20-10:00"
+            return "08:20-09:20"
         return default
 
 
@@ -82,7 +82,7 @@ class _FakePB:
         return payload
 
 
-def _fake_app(scan_time="09:20"):
+def _fake_app(scan_time="08:20"):
     return SimpleNamespace(
         SUPPORTED_COMPUTE_ENVIRONMENTS=["live", "paper", "backtest"],
         DEFAULT_COMPUTE_ENVIRONMENTS=["live"],
@@ -97,27 +97,27 @@ def _fake_app(scan_time="09:20"):
 
 class ScanRuntimeGateTest(unittest.TestCase):
     def test_scan_window_state_uses_configured_et_time(self):
-        fake_app = _fake_app(scan_time="09:20")
+        fake_app = _fake_app(scan_time="08:20")
 
         before = runtime_ops._scan_window_state(
             fake_app,
             "live",
-            datetime(2026, 4, 28, 9, 19, tzinfo=ET),
+            datetime(2026, 4, 28, 8, 19, tzinfo=ET),
         )
         at_open = runtime_ops._scan_window_state(
             fake_app,
             "live",
-            datetime(2026, 4, 28, 9, 20, tzinfo=ET),
+            datetime(2026, 4, 28, 8, 20, tzinfo=ET),
         )
         after_close = runtime_ops._scan_window_state(
             fake_app,
             "live",
-            datetime(2026, 4, 28, 10, 1, tzinfo=ET),
+            datetime(2026, 4, 28, 9, 21, tzinfo=ET),
         )
 
         self.assertFalse(before["open"])
-        self.assertEqual(before["scan_time_et"], "09:20")
-        self.assertEqual(before["window_end_et"], "10:00")
+        self.assertEqual(before["scan_time_et"], "08:20")
+        self.assertEqual(before["window_end_et"], "09:20")
         self.assertTrue(at_open["open"])
         self.assertFalse(after_close["open"])
 
@@ -126,8 +126,8 @@ class ScanRuntimeGateTest(unittest.TestCase):
         blocked_window = {
             "environment": "live",
             "open": False,
-            "scan_time_et": "09:20",
-            "configured_scan_time_et": "09:20",
+            "scan_time_et": "08:20",
+            "configured_scan_time_et": "08:20",
             "current_time_et": "05:55",
             "current_datetime_et": "2026-04-28T05:55:00-04:00",
         }
@@ -153,8 +153,8 @@ class ScanRuntimeGateTest(unittest.TestCase):
         blocked_window = {
             "environment": "live",
             "open": False,
-            "scan_time_et": "09:20",
-            "configured_scan_time_et": "09:20",
+            "scan_time_et": "08:20",
+            "configured_scan_time_et": "08:20",
             "current_time_et": "05:55",
             "current_datetime_et": "2026-04-28T05:55:00-04:00",
         }

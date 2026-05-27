@@ -1346,11 +1346,12 @@
       const executionEligibleCount = Number(summary.execution_eligible_count || 0) || 0;
       const observeOnlyCount = Number(summary.observe_only_count || 0) || 0;
       const watchOnlyCount = Number(summary.watch_only_count || 0) || 0;
-      const scanTimeEt = String(workflow.scan_summary_time_et || '09:20');
+      const scanTimeEt = String(workflow.scan_summary_time_et || '08:20-09:20');
       const openCheckTimeEt = String(workflow.open_check_time_et || scanTimeEt);
+      const topupWindowEt = String(workflow.topup_window_et || '09:25-11:00');
       const workflowTimingCopy = scanTimeEt === openCheckTimeEt
-        ? `${scanTimeEt} ET 日筛；${workflow.intraday_refresh_rule || '5m close-driven'}`
-        : `${scanTimeEt} ET 日筛；${openCheckTimeEt} ET 检查`;
+        ? `${scanTimeEt} ET 覆盖预筛；${topupWindowEt} ET 增量入池；${workflow.intraday_refresh_rule || '5m close-driven'}`
+        : `${scanTimeEt} ET 覆盖预筛；${topupWindowEt} ET 增量入池；${openCheckTimeEt} ET 检查`;
       meta.textContent = `${currentPage}/${totalPages} 页 · ${rows.length} 条 · exec ${executionEligibleCount} · observe ${observeOnlyCount} · ready ${readyCount} · signaled ${signaledCount} · action ${needsActionCount} · ${filteredTotal}/${summary.total || 0}`;
       metaSecondary.textContent = `ready ${filteredSummary.ready_count || 0} · signaled ${filteredSummary.signaled_count || 0} · action ${filteredSummary.needs_action_count || 0} · watch_only ${watchOnlyCount}。${workflowTimingCopy}。`;
       renderCurrentTargetPagination();

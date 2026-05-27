@@ -8,6 +8,7 @@ from ibkr_compute.universe.dynamic_admission import (
     DEFAULT_DYNAMIC_ADMISSION_MIN_SCORE,
     normalize_admission_bool,
 )
+from ibkr_compute.universe.activity_gate import DEFAULT_ACTIVITY_GATE_STAGES_JSON
 
 from .daily_scanner_constants import (
     DAILY_SCAN_LONG_PRIMARY_RULES,
@@ -147,6 +148,14 @@ def _load_scan_settings(
                 DEFAULT_MIN_PREMARKET_VOLUME,
             ),
         ),
+        "activity_gate_stages_json": str(
+            api_app.cfg.get_for_environment(
+                "ibkr_target_activity_gate_stages_json",
+                runtime_environment,
+                DEFAULT_ACTIVITY_GATE_STAGES_JSON,
+            )
+            or DEFAULT_ACTIVITY_GATE_STAGES_JSON
+        ).strip() or DEFAULT_ACTIVITY_GATE_STAGES_JSON,
         "monitor_count": monitor_count,
         "target_subscription_limit": target_limit,
         "total_subscription_limit": total_limit,
@@ -263,6 +272,7 @@ def build_daily_scan_rule_summary(
             "atr_pct_gte": settings["min_atr_pct"],
             "abs_day_change_pct_gte": settings["min_abs_day_change_pct"],
             "premarket_volume_gte": settings["min_premarket_volume"],
+            "activity_gate_stages_json": settings.get("activity_gate_stages_json", DEFAULT_ACTIVITY_GATE_STAGES_JSON),
             "data_completeness_blocking": completeness_blocking,
             "data_completeness_intervals": DEFAULT_DATA_COMPLETENESS_INTERVALS,
             "data_completeness_blocking_intervals": DEFAULT_DATA_COMPLETENESS_BLOCKING_INTERVALS,

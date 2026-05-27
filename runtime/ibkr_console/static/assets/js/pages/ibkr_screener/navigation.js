@@ -33,7 +33,7 @@
         button.classList.remove('is-running', 'is-success', 'is-error', 'is-blocked');
         if (status !== 'idle') button.classList.add(`is-${status}`);
         button.title = isToday
-          ? '手动补跑一次 09:20 ET 信号窗口日筛，刷新今日 candidate / active。'
+          ? '手动补跑一次 08:20-09:20 ET 信号窗口预筛，刷新今日 candidate / active。'
           : `只支持当前美东日期 ${getUsDate()}，当前选择 ${selectedDate || '--'}。`;
       });
       if (feedback) {

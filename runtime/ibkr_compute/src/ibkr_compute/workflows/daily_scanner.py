@@ -1,12 +1,12 @@
 """
 每日标的扫描器
 
-当前实现改为 09:20 ET 的日内波动型初筛：
+当前实现改为 08:20-09:20 ET 每 5 分钟覆盖预筛，09:25-11:00 ET 增量入池：
   1. 读取 trade watchlist
   2. 复用 screener 聚合得到量能 / 波动指标
   3. 使用 1d/4h 定势、1h/30m 看结构、15m/5m 看触发
-  4. 叠加 avg_10d_volume / premarket_volume / atr_pct / day_change_pct 的质量门
-  5. 只有形成 multi-timeframe context 的标的写成 active，预算溢出才保留 candidate 兼容
+  4. 叠加 avg_10d_volume / 分阶段成交活跃度 / atr_pct / day_change_pct 的质量门
+  5. seed 覆盖刷新 candidate / active，topup 只新增符合条件的标的，不移除已有 active
 """
 
 from __future__ import annotations

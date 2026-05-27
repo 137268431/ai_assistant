@@ -79,6 +79,7 @@ def _infer_group(key: str) -> str:
         normalized.startswith("ibkr_daily_scan_")
         or normalized.startswith("ibkr_dynamic_admission_")
         or normalized.startswith("ibkr_open_report_target_")
+        or normalized.startswith("ibkr_target_activity_")
     ):
         return "target_universe"
     if normalized.startswith("ibkr_history_") or normalized.startswith("ibkr_bar_"):

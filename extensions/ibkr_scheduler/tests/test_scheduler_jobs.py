@@ -214,53 +214,68 @@ class SchedulerJobsTest(unittest.TestCase):
             )
         )
 
-    def test_scan_runtime_cron_matches_0920_et_only(self):
+    def test_scan_runtime_crons_match_0820_to_0920_every_five_minutes(self):
         definition = next(item for item in scheduler_app_mod.CRON_DEFINITIONS if item["id"] == "ibkr_scan_runtime")
+        schedules = {item["id"]: item for item in definition["schedules"]}
+        early = schedules["preopen_0820_0855"]
+        final = schedules["preopen_0900_0920"]
 
-        self.assertEqual(definition["cron_expr"], "20 9 * * 1-5")
+        self.assertEqual(early["cron_expr"], "20,25,30,35,40,45,50,55 8 * * 1-5")
+        self.assertEqual(final["cron_expr"], "0,5,10,15,20 9 * * 1-5")
         self.assertEqual(definition["cron_timezone"], "America/New_York")
         self.assertTrue(
             cron_matches_minute(
-                definition["cron_expr"],
-                datetime(2026, 4, 20, 13, 20, tzinfo=timezone.utc),
-                definition["cron_timezone"],
+                early["cron_expr"],
+                datetime(2026, 4, 20, 12, 20, tzinfo=timezone.utc),
+                early["cron_timezone"],
             )
         )
         self.assertTrue(
             cron_matches_minute(
-                definition["cron_expr"],
-                datetime(2026, 1, 5, 14, 20, tzinfo=timezone.utc),
-                definition["cron_timezone"],
+                final["cron_expr"],
+                datetime(2026, 4, 20, 13, 20, tzinfo=timezone.utc),
+                final["cron_timezone"],
             )
         )
         self.assertFalse(
             cron_matches_minute(
-                definition["cron_expr"],
-                datetime(2026, 4, 20, 9, 55, tzinfo=timezone.utc),
-                definition["cron_timezone"],
+                early["cron_expr"],
+                datetime(2026, 4, 20, 12, 15, tzinfo=timezone.utc),
+                early["cron_timezone"],
+            )
+        )
+        self.assertFalse(
+            cron_matches_minute(
+                final["cron_expr"],
+                datetime(2026, 4, 20, 13, 25, tzinfo=timezone.utc),
+                final["cron_timezone"],
             )
         )
 
-    def test_early_expansion_topup_crons_match_0929_to_1030_et(self):
+    def test_early_expansion_topup_crons_match_0925_to_1100_every_five_minutes(self):
         definition = next(item for item in scheduler_app_mod.CRON_DEFINITIONS if item["id"] == "ibkr_early_expansion_topup")
         schedules = {item["id"]: item for item in definition["schedules"]}
-        preopen = schedules["preopen_0929"]
-        early = schedules["early_0930_0950"]
-        late = schedules["early_1000_1030"]
+        preopen = schedules["preopen_0925"]
+        early = schedules["open_0930_0955"]
+        mid = schedules["mid_1000_1055"]
+        handoff = schedules["handoff_1100"]
 
-        self.assertEqual(preopen["cron_expr"], "29 9 * * 1-5")
-        self.assertEqual(early["cron_expr"], "30,40,50 9 * * 1-5")
-        self.assertEqual(late["cron_expr"], "0,10,20,30 10 * * 1-5")
+        self.assertEqual(preopen["cron_expr"], "25 9 * * 1-5")
+        self.assertEqual(early["cron_expr"], "30,35,40,45,50,55 9 * * 1-5")
+        self.assertEqual(mid["cron_expr"], "0,5,10,15,20,25,30,35,40,45,50,55 10 * * 1-5")
+        self.assertEqual(handoff["cron_expr"], "0 11 * * 1-5")
         self.assertEqual(preopen["cron_timezone"], "America/New_York")
         self.assertEqual(early["cron_timezone"], "America/New_York")
-        self.assertEqual(late["cron_timezone"], "America/New_York")
+        self.assertEqual(mid["cron_timezone"], "America/New_York")
+        self.assertEqual(handoff["cron_timezone"], "America/New_York")
         self.assertIn("ibkr_early_expansion_topup_late", definition["deprecated_aliases"])
-        self.assertTrue(cron_matches_minute(preopen["cron_expr"], datetime(2026, 4, 20, 13, 29, tzinfo=timezone.utc), preopen["cron_timezone"]))
+        self.assertTrue(cron_matches_minute(preopen["cron_expr"], datetime(2026, 4, 20, 13, 25, tzinfo=timezone.utc), preopen["cron_timezone"]))
         self.assertTrue(cron_matches_minute(early["cron_expr"], datetime(2026, 4, 20, 13, 30, tzinfo=timezone.utc), early["cron_timezone"]))
-        self.assertTrue(cron_matches_minute(late["cron_expr"], datetime(2026, 4, 20, 14, 30, tzinfo=timezone.utc), late["cron_timezone"]))
-        self.assertFalse(cron_matches_minute(preopen["cron_expr"], datetime(2026, 4, 20, 13, 28, tzinfo=timezone.utc), preopen["cron_timezone"]))
+        self.assertTrue(cron_matches_minute(mid["cron_expr"], datetime(2026, 4, 20, 14, 55, tzinfo=timezone.utc), mid["cron_timezone"]))
+        self.assertTrue(cron_matches_minute(handoff["cron_expr"], datetime(2026, 4, 20, 15, 0, tzinfo=timezone.utc), handoff["cron_timezone"]))
+        self.assertFalse(cron_matches_minute(preopen["cron_expr"], datetime(2026, 4, 20, 13, 29, tzinfo=timezone.utc), preopen["cron_timezone"]))
         self.assertFalse(cron_matches_minute(early["cron_expr"], datetime(2026, 4, 20, 13, 20, tzinfo=timezone.utc), early["cron_timezone"]))
-        self.assertFalse(cron_matches_minute(late["cron_expr"], datetime(2026, 4, 20, 14, 40, tzinfo=timezone.utc), late["cron_timezone"]))
+        self.assertFalse(cron_matches_minute(handoff["cron_expr"], datetime(2026, 4, 20, 15, 5, tzinfo=timezone.utc), handoff["cron_timezone"]))
 
     def test_intraday_window_admission_cron_matches_regular_session_et(self):
         definition = next(item for item in scheduler_app_mod.CRON_DEFINITIONS if item["id"] == "ibkr_intraday_window_admission")
@@ -352,7 +367,7 @@ class SchedulerJobsTest(unittest.TestCase):
                     "ok": True,
                     "accepted": True,
                     "async": True,
-                    "run_id": "scheduler:ibkr_scan_runtime:default:20260521T1320Z",
+                    "run_id": "scheduler:ibkr_scan_runtime:preopen_0900_0920:20260521T1320Z",
                     "status": "accepted",
                     "date": "2026-05-21",
                 }
@@ -363,6 +378,7 @@ class SchedulerJobsTest(unittest.TestCase):
                 market_data_mode="live",
                 trigger_source="scheduler_loop",
                 scheduled_slot="2026-05-21T13:20Z",
+                schedule_id="preopen_0900_0920",
             )
 
         self.assertTrue(result["ok"])
@@ -370,7 +386,7 @@ class SchedulerJobsTest(unittest.TestCase):
         self.assertEqual("pending", pb.states[(f"{SCHEDULER_JOB_STATE_PREFIX}ibkr_scan_runtime", "live", "global")]["data"]["status"])
         request_payload = request_mock.call_args.kwargs["json"]
         self.assertTrue(request_payload["async"])
-        self.assertEqual("scheduler:ibkr_scan_runtime:default:20260521T1320Z", request_payload["run_id"])
+        self.assertEqual("scheduler:ibkr_scan_runtime:preopen_0900_0920:20260521T1320Z", request_payload["run_id"])
         self.assertEqual("2026-05-21T13:20Z", request_payload["scheduled_slot"])
 
     def test_scan_runtime_submit_read_timeout_stays_pending_and_recovers_by_poll(self):
@@ -392,6 +408,7 @@ class SchedulerJobsTest(unittest.TestCase):
                     market_data_mode="live",
                     trigger_source="scheduler_loop",
                     scheduled_slot="2026-05-21T13:20Z",
+                    schedule_id="preopen_0900_0920",
                 )
 
         self.assertTrue(result["ok"])
@@ -407,7 +424,7 @@ class SchedulerJobsTest(unittest.TestCase):
                 {
                     "ok": True,
                     "status": "completed",
-                    "run_id": "scheduler:ibkr_scan_runtime:default:20260521T1320Z",
+                    "run_id": "scheduler:ibkr_scan_runtime:preopen_0900_0920:20260521T1320Z",
                     "date": "2026-05-21",
                     "result": {"active": 10},
                 }
@@ -1317,11 +1334,11 @@ class SchedulerJobsTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["canonical_job_id"], "ibkr_early_expansion_topup")
         self.assertEqual(result["alias_job_id"], "ibkr_early_expansion_topup_late")
-        self.assertEqual(result["schedule_id"], "early_1000_1030")
+        self.assertEqual(result["schedule_id"], "mid_1000_1055")
         request_payload = request_mock.call_args.kwargs["json"]
-        self.assertEqual(request_payload["schedule_id"], "early_1000_1030")
+        self.assertEqual(request_payload["schedule_id"], "mid_1000_1055")
         job_state = pb.states[(f"{SCHEDULER_JOB_STATE_PREFIX}ibkr_early_expansion_topup", "live", "global")]["data"]
-        self.assertIn("early_1000_1030", job_state["last_runs"])
+        self.assertIn("mid_1000_1055", job_state["last_runs"])
 
     def test_premarket_truth_audit_cron_scans_full_watchlist(self):
         pb = _FakePB()

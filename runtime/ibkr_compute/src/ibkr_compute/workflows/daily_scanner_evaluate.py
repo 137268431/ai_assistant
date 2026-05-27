@@ -8,6 +8,7 @@ from ibkr_compute.universe.dynamic_admission import (
     evaluate_dynamic_admission,
     normalize_admission_bool,
 )
+from ibkr_compute.universe.activity_gate import enrich_activity_metrics, evaluate_activity_gate
 
 from .daily_scanner_constants import (
     DAILY_SCAN_LONG_PRIMARY_RULES,
@@ -439,8 +440,12 @@ class DailyScannerEvaluateMixin:
             }
 
         technical_score += len(snapshots) * DAILY_SCAN_READY_TIMEFRAME_BONUS
+        metric_row = enrich_activity_metrics(metric_row, settings=settings)
         avg_10d_volume = _safe_float(metric_row.get("avg_10d_volume"))
         premarket_volume = _safe_float(metric_row.get("premarket_volume"))
+        today_volume = _safe_float(metric_row.get("today_volume"))
+        regular_volume = _safe_float(metric_row.get("regular_volume"))
+        elapsed_rvol = _safe_float(metric_row.get("elapsed_rvol"))
         atr_pct = abs(_safe_float(metric_row.get("atr_pct")))
 
         dynamic_enabled = normalize_admission_bool(settings.get("dynamic_admission_enabled"), False)
@@ -493,19 +498,40 @@ class DailyScannerEvaluateMixin:
                 settings.get("min_abs_day_change_pct"),
                 DEFAULT_MIN_ABS_DAY_CHANGE_PCT,
             )
+            activity_gate = (
+                evaluate_activity_gate(metric_row, settings=settings)
+                if (
+                    settings.get("activity_gate_stages")
+                    or settings.get("activity_gate_stages_json")
+                    or settings.get("ibkr_target_activity_gate_stages_json")
+                )
+                else {}
+            )
+            if activity_gate.get("applied"):
+                activity_passed = bool(activity_gate.get("passed"))
+                activity_threshold_text = " or ".join(
+                    f"{key}>={_format_threshold(value)}"
+                    for key, value in (activity_gate.get("thresholds") or {}).items()
+                )
+                gate_reasons.append(f"activity_stage={activity_gate.get('stage_id')}")
+                dynamic_thresholds["activity_gate"] = activity_gate
+                dynamic_thresholds["activity_any_of"] = dict(activity_gate.get("thresholds") or {})
+            else:
+                activity_passed = premarket_volume >= min_premarket_volume
+                activity_threshold_text = f"pre>={_format_threshold(min_premarket_volume)}"
             quality_gate_passed = (
                 avg_10d_volume >= min_avg_10d_volume
-                and premarket_volume >= min_premarket_volume
+                and activity_passed
                 and atr_pct >= min_atr_pct
                 and abs(day_change_pct) >= min_abs_day_change_pct
             )
 
             gate_reasons = [
                 f"10d>={_format_threshold(min_avg_10d_volume)}",
-                f"pre>={_format_threshold(min_premarket_volume)}",
+                activity_threshold_text,
                 f"atr>={_format_threshold(min_atr_pct)}",
                 f"|day|>={_format_threshold(min_abs_day_change_pct)}",
-            ]
+            ] + [item for item in gate_reasons if str(item or "").startswith("activity_stage=")]
             if avg_10d_volume < min_avg_10d_volume:
                 rejection_examples.append(
                     {
@@ -516,14 +542,18 @@ class DailyScannerEvaluateMixin:
                         "note": "10 日均量不足",
                     }
                 )
-            if premarket_volume < min_premarket_volume:
+            if not activity_passed:
                 rejection_examples.append(
                     {
                         "bucket": REJECTION_BUCKET_PREMARKET,
                         "symbol": symbol,
-                        "actual": _format_metric_value(premarket_volume),
-                        "threshold": _format_threshold(min_premarket_volume),
-                        "note": "盘前量不足",
+                        "actual": (
+                            f"pre={_format_metric_value(premarket_volume)}, "
+                            f"regular={_format_metric_value(regular_volume)}, "
+                            f"elapsed_rvol={_format_metric_value(elapsed_rvol)}"
+                        ),
+                        "threshold": activity_threshold_text,
+                        "note": "阶段成交活跃度不足",
                     }
                 )
             if atr_pct < min_atr_pct:
@@ -553,6 +583,9 @@ class DailyScannerEvaluateMixin:
                 "exchange": str(metric_row.get("exchange", "") or "").strip().upper(),
                 "avg_10d_volume": round(avg_10d_volume, 2),
                 "premarket_volume": round(premarket_volume, 2),
+                "regular_volume": round(regular_volume, 2),
+                "today_volume": round(today_volume, 2),
+                "elapsed_rvol": round(elapsed_rvol, 4),
                 "atr_pct": round(atr_pct, 4),
                 "day_change_pct": round(day_change_pct, 2),
             }
@@ -635,6 +668,9 @@ class DailyScannerEvaluateMixin:
             "exchange": str(metric_row.get("exchange", "") or "").strip().upper(),
             "avg_10d_volume": round(avg_10d_volume, 2),
             "premarket_volume": round(premarket_volume, 2),
+            "regular_volume": round(regular_volume, 2),
+            "today_volume": round(today_volume, 2),
+            "elapsed_rvol": round(elapsed_rvol, 4),
             "atr_pct": round(atr_pct, 4),
             "day_change_pct": round(day_change_pct, 2),
             "extra": {
