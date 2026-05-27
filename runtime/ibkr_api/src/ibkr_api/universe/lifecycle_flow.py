@@ -1097,6 +1097,7 @@ def _load_live_sources(
         system_parts.append(f'(title ~ "{escape_filter(trade_group_id)}" || detail ~ "{escape_filter(trade_group_id)}")')
     if order_id:
         order_parts.append(f'(order_id = "{escape_filter(order_id)}" || broker_order_id = "{escape_filter(order_id)}")')
+        system_parts.append(f'(title ~ "{escape_filter(order_id)}" || detail ~ "{escape_filter(order_id)}")')
     if start_ms > 0 and end_ms > 0:
         reverse_query_parts.append(f"bar_time_ms >= {start_ms}")
         reverse_query_parts.append(f"bar_time_ms < {end_ms}")
@@ -1119,11 +1120,10 @@ def _load_live_sources(
     system_filter_parts = []
     if system_parts:
         system_filter_parts.append("(" + " || ".join(system_parts) + ")")
-    if start_ms > 0 and end_ms > 0:
-        system_filter_parts.extend([f'created >= "{escape_filter(market_date)} 00:00:00"', f'created <= "{escape_filter(market_date)} 23:59:59"'])
-    if system_filter_parts:
+        if start_ms > 0 and end_ms > 0:
+            system_filter_parts.extend([f'created >= "{escape_filter(market_date)} 00:00:00"', f'created <= "{escape_filter(market_date)} 23:59:59"'])
         system_filter_parts.append(f'(environment = "{escape_filter(environment)}" || environment = "global")')
-    system_events = load("system_events", system_filter_parts, sort="-created", max_pages=1) if system_filter_parts else []
+    system_events = load("system_events", system_filter_parts, sort="-created", max_pages=1) if system_parts else []
 
     order_ids = []
     for row in orders:

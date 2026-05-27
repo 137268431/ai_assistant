@@ -361,6 +361,80 @@ class LifecycleFlowApiTest(unittest.TestCase):
         self.assertEqual("stop_loss_modified", reverse_events[0]["event_type"])
         self.assertEqual("tg_reverse", reverse_events[0]["trade_group_id"])
 
+    def test_symbol_only_does_not_render_global_system_events(self):
+        pb = StrictReversePocketBase(
+            {
+                "system_events": [
+                    {
+                        "event_type": "alert",
+                        "level": "warning",
+                        "source": "ibkr_api",
+                        "title": "Gateway heartbeat delayed",
+                        "detail": {"reason": "global_status"},
+                        "environment": "global",
+                        "created": "2026-04-28 14:00:00",
+                    }
+                ]
+            }
+        )
+        payload, status_code = build_lifecycle_flow_response(
+            pb,
+            payload={
+                "environment": "live",
+                "date": "2026-04-28",
+                "symbol": "AAPL",
+            },
+            normalize_environment=normalize_environment,
+            time_strings=time_strings,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(0, payload["source_summary"]["counts"]["system_events"])
+        self.assertEqual([], [event for event in payload["events"] if event["event_type"] == "system_interrupt"])
+        self.assertEqual([], [collection for collection, _kwargs in pb.calls if collection == "system_events"])
+        self.assertEqual([], payload["nodes"])
+
+    def test_contextual_system_events_still_render_as_interrupts(self):
+        pb = StrictReversePocketBase(
+            {
+                "system_events": [
+                    {
+                        "event_type": "alert",
+                        "level": "error",
+                        "source": "ibkr_api",
+                        "title": "sig_system_related broker callback failed",
+                        "detail": {"signal_id": "sig_system_related", "reason": "callback_timeout"},
+                        "environment": "global",
+                        "created": "2026-04-28 14:00:00",
+                    }
+                ]
+            }
+        )
+        payload, status_code = build_lifecycle_flow_response(
+            pb,
+            payload={
+                "environment": "live",
+                "date": "2026-04-28",
+                "symbol": "AAPL",
+                "signal_id": "sig_system_related",
+            },
+            normalize_environment=normalize_environment,
+            time_strings=time_strings,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(1, payload["source_summary"]["counts"]["system_events"])
+        system_events = [event for event in payload["events"] if event["event_type"] == "system_interrupt"]
+        self.assertEqual(1, len(system_events))
+        self.assertEqual("error", system_events[0]["state"])
+        system_filters = [
+            kwargs.get("filter") or ""
+            for collection, kwargs in pb.calls
+            if collection == "system_events"
+        ]
+        self.assertEqual(1, len(system_filters))
+        self.assertIn("sig_system_related", system_filters[0])
+
     def test_order_details_do_not_double_count_position(self):
         payload, status_code = self.build(
             {

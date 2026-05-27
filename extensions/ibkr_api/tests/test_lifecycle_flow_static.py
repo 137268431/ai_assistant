@@ -156,10 +156,19 @@ class LifecycleFlowStaticSmokeTest(unittest.TestCase):
         for token in (
             "hasLifecycleContext",
             "renderGuideState",
+            "emptyLifecycleNotice",
+            "params.get('market_date')",
+            "已隐藏无关系统事件",
             "isPlaceholderUnknownNode",
             "displayLifecycleLabel",
         ):
             self.assertIn(token, js)
+
+    def test_daily_review_lifecycle_url_uses_canonical_date_param(self):
+        daily_review = read_repo_text("runtime/ibkr_api/src/ibkr_api/analytics/daily_trade_review.py")
+
+        self.assertIn("lifecycle_url", daily_review)
+        self.assertIn("date={market_date}", daily_review)
 
 
 if __name__ == "__main__":

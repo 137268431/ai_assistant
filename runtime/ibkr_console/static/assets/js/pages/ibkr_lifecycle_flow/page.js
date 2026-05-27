@@ -1062,7 +1062,7 @@
         id: 'empty_lifecycle',
         severity: 'medium',
         title: '未返回流程节点',
-        copy: '请检查筛选条件或确认 /api/custom/ibkr/lifecycle-flow 是否已返回 nodes/events。'
+        copy: '当前筛选条件下没有目标、信号、订单或成交事件；页面已隐藏无关系统事件。'
       });
     }
 
@@ -1192,7 +1192,7 @@
 
   function getDefaultDate() {
     const params = new URLSearchParams(window.location.search);
-    const fromUrl = params.get('date') || '';
+    const fromUrl = params.get('date') || params.get('market_date') || '';
     if (fromUrl) return fromUrl;
     const stored = localStorage.getItem(STORAGE_DATE_KEY) || '';
     if (/^\d{4}-\d{2}-\d{2}$/.test(stored)) return stored;
@@ -1208,13 +1208,14 @@
     const dataEnvironment = isBacktest
       ? 'backtest'
       : normalizeEnvironment(params.get('market_data_mode') || params.get('data_environment') || currentDataEnvironment());
+    const queryDate = params.get('date') || params.get('market_date') || '';
     return {
       mode: urlMode,
       environment: isBacktest ? 'backtest' : dataEnvironment,
       broker_mode: brokerMode,
       market_data_mode: dataEnvironment,
       data_environment: dataEnvironment,
-      date: params.get('date') || getDefaultDate(),
+      date: queryDate || getDefaultDate(),
       symbol: normalizeText(params.get('symbol')).toUpperCase(),
       signal_id: normalizeText(params.get('signal_id')),
       trade_group_id: normalizeText(params.get('trade_group_id')),
@@ -1453,6 +1454,19 @@
     if ($('graphModeInfo')) $('graphModeInfo').textContent = 'Guide';
   }
 
+  function emptyLifecycleNotice(model) {
+    const raw = asObject(model?.raw);
+    const context = asObject(raw.context);
+    const sourceSummary = asObject(raw.source_summary);
+    const symbol = normalizeText(firstNonEmpty(context.symbol, raw.symbol)).toUpperCase();
+    const marketDate = normalizeText(firstNonEmpty(context.market_date, raw.market_date, raw.date));
+    const brokerMode = normalizeText(firstNonEmpty(raw.broker_mode, raw.environment, sourceSummary.broker_mode));
+    const dataMode = normalizeText(firstNonEmpty(raw.data_environment, raw.market_data_environment, sourceSummary.data_environment));
+    const scope = [symbol, marketDate].filter(Boolean).join(' / ') || '当前筛选条件';
+    const modeText = [brokerMode, dataMode].filter(Boolean).join(' / ');
+    return `${scope} 未找到交易生命周期事件${modeText ? `（${modeText}）` : ''}；已隐藏无关系统事件。请从信号/订单入口进入，或补充 signal_id / trade_group_id / order_id。`;
+  }
+
   function updateContext(filters, model) {
     if (typeof setPageContextMeta === 'function') {
       setPageContextMeta([
@@ -1464,10 +1478,14 @@
       ]);
     }
     if ($('graphSummary')) {
-      $('graphSummary').textContent = `${model.nodes.length} nodes · ${model.edges.length} edges · ${model.events.length} events · lane-colored`;
+      $('graphSummary').textContent = model.nodes.length
+        ? `${model.nodes.length} nodes · ${model.edges.length} edges · ${model.events.length} events · lane-colored`
+        : '0 nodes · 已隐藏无关系统事件';
     }
     if ($('eventSummary')) {
-      $('eventSummary').textContent = `按时间排序展示 ${model.events.length || model.nodes.length} 个生命周期事件。`;
+      $('eventSummary').textContent = model.events.length || model.nodes.length
+        ? `按时间排序展示 ${model.events.length || model.nodes.length} 个生命周期事件。`
+        : '没有目标、信号、订单或成交事件可展示。';
     }
     if ($('eventCount')) $('eventCount').textContent = `${model.events.length} events`;
     if ($('endpointInfo')) $('endpointInfo').textContent = `GET ${buildEndpointUrl(filters)}`;
@@ -1477,9 +1495,15 @@
     const current = model.current;
     if (!$('currentStageCard')) return;
     if (!current) {
+      const notice = emptyLifecycleNotice(model);
       $('currentStageCard').innerHTML = `
         <div class="card-kicker">Current Phase</div>
-        <div class="stage-placeholder">未能判断当前阶段。请检查 API 是否返回 current/current_stage 或可排序节点。</div>
+        <div class="stage-title">没有交易生命周期事件</div>
+        <div class="stage-copy">${escapeHtml(notice)}</div>
+        <div class="stage-chip-row">
+          <span class="flow-chip">0 nodes</span>
+          <span class="flow-chip">system_events hidden</span>
+        </div>
       `;
       return;
     }
@@ -1714,6 +1738,26 @@
     if (!graphEl || !timelineEl) return;
     renderLaneStrip(model);
 
+    if (!model.nodes.length) {
+      if (state.cy) {
+        state.cy.destroy();
+        state.cy = null;
+      }
+      const notice = emptyLifecycleNotice(model);
+      graphEl.hidden = false;
+      timelineEl.hidden = true;
+      graphEl.innerHTML = `
+        <div class="graph-guide">
+          <div class="graph-guide-kicker">No Lifecycle Events</div>
+          <div class="graph-guide-title">没有可画成 DAG 的交易事件</div>
+          <div class="graph-guide-copy">${escapeHtml(notice)}</div>
+        </div>
+      `;
+      if ($('nodeDetails')) $('nodeDetails').innerHTML = `<div class="empty-state">${escapeHtml(notice)}</div>`;
+      if ($('graphModeInfo')) $('graphModeInfo').textContent = 'Empty lifecycle';
+      return;
+    }
+
     if (!window.cytoscape || state.showTimeline) {
       graphEl.hidden = true;
       timelineEl.hidden = false;
@@ -1826,7 +1870,7 @@
     if (!list) return;
     const items = timelineItems(model);
     if (!items.length) {
-      list.innerHTML = '<div class="empty-state">暂无事件。若 API 返回 nodes，也会在图谱里展示。</div>';
+      list.innerHTML = `<div class="empty-state">${escapeHtml(emptyLifecycleNotice(model))}</div>`;
       return;
     }
     list.innerHTML = items.map((item) => renderTimelineItem(item, 'event')).join('');

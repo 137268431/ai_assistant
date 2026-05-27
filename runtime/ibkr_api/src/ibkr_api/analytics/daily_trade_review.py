@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from ibkr_api.analytics.daily_signals import build_daily_signal_analytics_response
@@ -70,6 +70,23 @@ def _as_object(value: Any) -> dict[str, Any]:
             return {}
         return dict(parsed) if isinstance(parsed, dict) else {}
     return {}
+
+
+def _as_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return []
+        if isinstance(parsed, list):
+            return list(parsed)
+        if isinstance(parsed, dict):
+            return [dict(parsed)]
+    return []
 
 
 def _date_token(value: Any, fallback: str) -> str:
@@ -196,6 +213,44 @@ def _event_time_text(row: dict[str, Any]) -> str:
     return ""
 
 
+def _parse_time_text_ms(value: Any) -> int:
+    if isinstance(value, (int, float)) and value > 0:
+        return int(value)
+    text = _text(value)
+    if not text:
+        return 0
+    if text.isdigit():
+        return _to_int(text, 0)
+    normalized = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return int(parsed.timestamp() * 1000)
+    except Exception:
+        pass
+    for pattern in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"):
+        try:
+            parsed = datetime.strptime(text, pattern).replace(tzinfo=timezone.utc)
+            return int(parsed.timestamp() * 1000)
+        except Exception:
+            continue
+    return 0
+
+
+def _row_or_extra(row: dict[str, Any], *fields: str) -> Any:
+    extra = _as_object(row.get("extra"))
+    for field in fields:
+        value = row.get(field)
+        if value not in (None, ""):
+            return value
+    for field in fields:
+        value = extra.get(field)
+        if value not in (None, ""):
+            return value
+    return None
+
+
 def _signal_status(signal: dict[str, Any]) -> str:
     extra = _as_object(signal.get("extra"))
     return _lower(signal.get("status") or extra.get("status") or "unknown") or "unknown"
@@ -219,6 +274,61 @@ def _signal_reason(signal: dict[str, Any]) -> str:
     return ""
 
 
+def _signal_name(signal: dict[str, Any]) -> str:
+    return _text(_row_or_extra(signal, "signal", "setup", "setup_name", "setup_label", "signal_type"))
+
+
+def _signal_bar_time_ms(signal: dict[str, Any]) -> int:
+    return _to_int(_row_or_extra(signal, "bar_time_ms", "signal_bar_time_ms", "ts_ms"), 0)
+
+
+def _signal_expired_at(signal: dict[str, Any]) -> str:
+    return _text(_row_or_extra(signal, "expired_at", "validation_expired_at"))
+
+
+def _signal_expired_at_ms(signal: dict[str, Any]) -> int:
+    value = _to_int(_row_or_extra(signal, "expired_at_ms", "expired_bar_time_ms", "validation_expired_at_ms"), 0)
+    if value > 0:
+        return value
+    return _parse_time_text_ms(_signal_expired_at(signal))
+
+
+def _signal_status_explanation(signal: dict[str, Any]) -> str:
+    status = _signal_status(signal)
+    reason = _signal_reason(signal)
+    if reason:
+        return reason
+    expired_at = _signal_expired_at(signal)
+    if status == "expired":
+        return f"signal expired at {expired_at}" if expired_at else "signal expired before execution"
+    if status in {"rejected", "cancelled", "canceled"}:
+        return "signal rejected before order submission"
+    if status in {"closed", "executed", "filled", "complete", "completed"}:
+        return "signal completed execution lifecycle"
+    if status in {"pending", "confirmed", "submitted"}:
+        return "signal awaiting execution lifecycle update"
+    return status
+
+
+def _build_signal_summary(signals: list[dict[str, Any]]) -> dict[str, Any]:
+    latest_signal = signals[-1] if signals else {}
+    status_reason = _signal_reason(latest_signal)
+    return {
+        "total": len(signals),
+        "latest_signal_id": _text(latest_signal.get("signal_id")),
+        "latest_status": _signal_status(latest_signal) if latest_signal else "",
+        "latest_reason": status_reason,
+        "latest_direction": _text(latest_signal.get("direction")),
+        "latest_time": _event_time_text(latest_signal),
+        "signal": _signal_name(latest_signal),
+        "status_reason": status_reason,
+        "bar_time_ms": _signal_bar_time_ms(latest_signal),
+        "expired_at": _signal_expired_at(latest_signal),
+        "expired_at_ms": _signal_expired_at_ms(latest_signal),
+        "status_explanation": _signal_status_explanation(latest_signal) if latest_signal else "",
+    }
+
+
 def _decision_reason(row: dict[str, Any]) -> str:
     extra = _as_object(row.get("extra"))
     for value in (row.get("reason_text"), row.get("reason_code"), row.get("decision"), extra.get("reason")):
@@ -226,6 +336,146 @@ def _decision_reason(row: dict[str, Any]) -> str:
         if text:
             return text
     return ""
+
+
+def _decision_reason_code(row: dict[str, Any]) -> str:
+    extra = _as_object(row.get("extra"))
+    return _text(row.get("reason_code") or extra.get("reason_code"))
+
+
+def _decision_source(row: dict[str, Any]) -> str:
+    extra = _as_object(row.get("extra"))
+    return _text(row.get("source") or extra.get("source"))
+
+
+def _decision_object(row: dict[str, Any], field: str) -> dict[str, Any]:
+    direct = _as_object(row.get(field))
+    if direct:
+        return direct
+    extra = _as_object(row.get("extra"))
+    return _as_object(extra.get(field))
+
+
+def _decision_rejection_examples(row: dict[str, Any]) -> list[Any]:
+    extra = _as_object(row.get("extra"))
+    for value in (
+        row.get("rejection_examples"),
+        extra.get("rejection_examples"),
+        extra.get("failed_gates"),
+        extra.get("rejections"),
+    ):
+        rows = _as_list(value)
+        if rows:
+            return rows
+    return []
+
+
+def _decision_created_ms(row: dict[str, Any]) -> int:
+    value = _to_int(_row_or_extra(row, "created_ms"), 0)
+    if value > 0:
+        return value
+    return _parse_time_text_ms(row.get("created"))
+
+
+def _decision_bool(row: dict[str, Any], field: str) -> bool:
+    return _truthy(_row_or_extra(row, field))
+
+
+def _build_decision_summary(decision: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "decision_key": _text(decision.get("decision_key")),
+        "decision": _text(decision.get("decision")),
+        "code": _decision_reason_code(decision),
+        "text": _text(decision.get("reason_text")) or _decision_reason_code(decision),
+        "source": _decision_source(decision),
+        "created": _text(decision.get("created")),
+        "created_ms": _decision_created_ms(decision),
+        "rank": _to_int(decision.get("rank"), 0),
+        "active_gate_passed": _decision_bool(decision, "active_gate_passed"),
+        "context_gate_passed": _decision_bool(decision, "context_gate_passed"),
+        "related_target_id": _text(decision.get("related_target_id")),
+        "metrics": _decision_object(decision, "metrics"),
+        "thresholds": _decision_object(decision, "thresholds"),
+        "rejection_examples": _decision_rejection_examples(decision),
+    }
+
+
+def _build_not_selected_reasons(decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        _build_decision_summary(decision)
+        for decision in decisions
+        if _lower(decision.get("decision")) in {"rejected", "not_selected", "deferred", "error"}
+    ]
+
+
+def _build_selection_summary(
+    *,
+    target: dict[str, Any] | None,
+    decisions: list[dict[str, Any]],
+    selection_decision: str,
+    selection_reason: str,
+) -> dict[str, Any]:
+    latest_decision = decisions[-1] if decisions else {}
+    target_extra = _as_object((target or {}).get("extra"))
+    decision_counts = Counter(_lower(row.get("decision")) or "unknown" for row in decisions)
+    return {
+        "selected": bool(target) or _lower(selection_decision) == "selected",
+        "decision": selection_decision,
+        "latest_decision": _text(latest_decision.get("decision")),
+        "reason_code": _decision_reason_code(latest_decision),
+        "reason_text": selection_reason,
+        "source": _decision_source(latest_decision) or _text(target_extra.get("source")),
+        "rank": _to_int(latest_decision.get("rank"), 0),
+        "created": _text(latest_decision.get("created")) or _text((target or {}).get("created")),
+        "created_ms": _decision_created_ms(latest_decision) or _event_time_ms(target or {}),
+        "decision_count": len(decisions),
+        "selected_decision_count": int(decision_counts.get("selected", 0)),
+        "not_selected_decision_count": sum(int(decision_counts.get(key, 0)) for key in ("rejected", "not_selected", "deferred", "error")),
+        "active_gate_passed": _decision_bool(latest_decision, "active_gate_passed") or _truthy(target_extra.get("active_gate_passed")),
+        "context_gate_passed": _decision_bool(latest_decision, "context_gate_passed") or _truthy(target_extra.get("context_gate_passed")),
+        "related_target_id": _text(latest_decision.get("related_target_id")) or _text((target or {}).get("id")),
+        "target_status": _text((target or {}).get("status")),
+    }
+
+
+def _build_selection_diagnostics(decisions: list[dict[str, Any]]) -> dict[str, Any]:
+    latest_decision = decisions[-1] if decisions else {}
+    decision_counts = Counter(_lower(row.get("decision")) or "unknown" for row in decisions)
+    sources = Counter(_decision_source(row) or "unknown" for row in decisions)
+    rejection_examples: list[Any] = []
+    for decision in decisions:
+        for example in _decision_rejection_examples(decision):
+            if len(rejection_examples) >= 20:
+                break
+            rejection_examples.append(example)
+        if len(rejection_examples) >= 20:
+            break
+    return {
+        "decision_counts": dict(decision_counts),
+        "sources": dict(sources),
+        "latest_decision_key": _text(latest_decision.get("decision_key")),
+        "metrics": _decision_object(latest_decision, "metrics"),
+        "thresholds": _decision_object(latest_decision, "thresholds"),
+        "rejection_examples": rejection_examples,
+        "decisions": [_build_decision_summary(decision) for decision in decisions],
+    }
+
+
+def _legacy_rejection_coverage(today_targets: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], list[Any]]:
+    daily_scan = today_targets.get("daily_scan") if isinstance(today_targets.get("daily_scan"), dict) else {}
+    scan_result = daily_scan.get("result") if isinstance(daily_scan.get("result"), dict) else {}
+    rejection_summary = _as_object(scan_result.get("rejection_summary"))
+    rejection_examples = _as_list(scan_result.get("rejection_examples"))
+    coverage = {
+        "source": "today_targets.daily_scan.result",
+        "summary_exists": bool(rejection_summary),
+        "examples_exists": bool(rejection_examples),
+        "summary_count": sum(_to_int(value, 0) for value in rejection_summary.values()),
+        "example_count": len(rejection_examples),
+        "rejection_summary": rejection_summary,
+        "rejection_examples": rejection_examples[:20],
+    }
+    return coverage, rejection_summary, rejection_examples
 
 
 def _decision_key(symbol: str, source: str, stage: str) -> str:
@@ -584,7 +834,6 @@ def build_daily_trade_review_response(
         symbol_decisions = decisions_by_symbol.get(symbol, [])
         symbol_signals = signals_by_symbol.get(symbol, [])
         symbol_orders = orders_grouped.get(symbol, [])
-        latest_signal = symbol_signals[-1] if symbol_signals else {}
         latest_decision = symbol_decisions[-1] if symbol_decisions else {}
         issues = _build_issue_flags(
             symbol=symbol,
@@ -595,6 +844,7 @@ def build_daily_trade_review_response(
         )
         order_summary = _summarize_orders(symbol_orders)
         selection_decision = _text(latest_decision.get("decision")) or ("selected" if target else "")
+        selection_reason = _text((target or {}).get("scan_reason")) or _decision_reason(latest_decision)
         review_status = _infer_review_status(
             target=target,
             decisions=symbol_decisions,
@@ -606,30 +856,21 @@ def build_daily_trade_review_response(
             "symbol": symbol,
             "review_status": review_status,
             "selection_decision": selection_decision,
-            "selection_reason": _text((target or {}).get("scan_reason")) or _decision_reason(latest_decision),
-            "not_selected_reasons": [
-                {
-                    "code": _text(decision.get("reason_code")),
-                    "text": _text(decision.get("reason_text")) or _text(decision.get("reason_code")),
-                    "decision": _text(decision.get("decision")),
-                    "source": _text(decision.get("source")),
-                }
-                for decision in symbol_decisions
-                if _lower(decision.get("decision")) in {"rejected", "not_selected", "deferred", "error"}
-            ],
+            "selection_reason": selection_reason,
+            "selection_summary": _build_selection_summary(
+                target=target,
+                decisions=symbol_decisions,
+                selection_decision=selection_decision,
+                selection_reason=selection_reason,
+            ),
+            "selection_diagnostics": _build_selection_diagnostics(symbol_decisions),
+            "not_selected_reasons": _build_not_selected_reasons(symbol_decisions),
             "target": target or None,
-            "signal_summary": {
-                "total": len(symbol_signals),
-                "latest_signal_id": _text(latest_signal.get("signal_id")),
-                "latest_status": _signal_status(latest_signal) if latest_signal else "",
-                "latest_reason": _signal_reason(latest_signal),
-                "latest_direction": _text(latest_signal.get("direction")),
-                "latest_time": _event_time_text(latest_signal),
-            },
+            "signal_summary": _build_signal_summary(symbol_signals),
             "order_summary": order_summary,
             "realized": dict(realized_by_symbol.get(symbol) or {"closed_trades": 0, "net_pnl": 0.0}),
             "issue_flags": issues,
-            "lifecycle_url": f"/ibkr_lifecycle_flow.html?symbol={symbol}&market_date={market_date}&broker_mode={broker_mode}&market_data_mode={data_environment}",
+            "lifecycle_url": f"/ibkr_lifecycle_flow.html?symbol={symbol}&date={market_date}&broker_mode={broker_mode}&market_data_mode={data_environment}",
             "decision_count": len(symbol_decisions),
         }
         if include_events:
@@ -666,16 +907,28 @@ def build_daily_trade_review_response(
     not_selected_count = sum(1 for row in items if row.get("review_status") == "not_selected")
     traded_count = sum(1 for row in items if (row.get("order_summary") or {}).get("entry_filled"))
 
+    legacy_rejection_coverage, legacy_rejection_summary, legacy_rejection_examples = _legacy_rejection_coverage(today_targets)
+    coverage = {
+        "target_decisions": {
+            "collection": TARGET_DECISIONS_COLLECTION,
+            "available": not bool(decision_error),
+            "exists": bool(decisions),
+            "present": bool(decisions),
+            "rows": len(decisions),
+            "error": decision_error,
+        },
+        "legacy_rejections": legacy_rejection_coverage,
+        "using_legacy_rejections_only": not decisions and bool(legacy_rejection_summary or legacy_rejection_examples),
+    }
+
     if not decisions:
-        daily_scan = today_targets.get("daily_scan") if isinstance(today_targets.get("daily_scan"), dict) else {}
-        scan_result = daily_scan.get("result") if isinstance(daily_scan.get("result"), dict) else {}
-        if scan_result.get("rejection_summary") or scan_result.get("rejection_examples"):
+        if legacy_rejection_summary or legacy_rejection_examples:
             warnings.append(
                 {
                     "code": "legacy_rejection_summary_only",
                     "message": "target decision ledger is empty; showing legacy rejection summary/examples only for old scans",
-                    "rejection_summary": scan_result.get("rejection_summary") or {},
-                    "rejection_examples": scan_result.get("rejection_examples") or [],
+                    "rejection_summary": legacy_rejection_summary,
+                    "rejection_examples": legacy_rejection_examples,
                 }
             )
 
@@ -708,6 +961,7 @@ def build_daily_trade_review_response(
             "today_targets": today_targets.get("summary") or {},
             "daily_signals": daily_signals.get("summary") or {},
         },
+        "coverage": coverage,
         "integrations": [
             {"id": "lifecycle_flow", "endpoint": "/api/custom/ibkr/lifecycle-flow", "role": "per-symbol lifecycle drilldown"},
             {"id": "daily_signals", "endpoint": "/api/custom/ibkr/analytics/daily-signals", "role": "rule/RR/PnL summary"},
