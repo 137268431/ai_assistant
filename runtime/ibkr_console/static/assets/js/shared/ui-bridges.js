@@ -99,6 +99,14 @@ function renderExecutionBridge(activePage, params = {}) {
       active: activePage === '/ibkr_lifecycle_flow.html'
     },
     {
+      path: '/ibkr_trade_review.html',
+      params: bridgeParams,
+      kicker: 'Review',
+      label: '每日复盘',
+      copy: '原因 / 问题',
+      active: activePage === '/ibkr_trade_review.html'
+    },
+    {
       path: '/ibkr_account.html',
       params: bridgeParams,
       kicker: 'Account',

@@ -227,7 +227,13 @@ def build_active_window_items_for_symbols(
             "trace_stage": to_text(signal_state.get("stage")) or "none",
             "trace_error": trace_error,
         }
+        display_candidate_signal = item.get("candidate_signal")
+        if candidate_signal_source == "stored_signal":
+            # Stored rows are historical context; only live trace pressure should promote no_window to signal_pressure.
+            item["candidate_signal"] = None
         _apply_signal_window_admission_metadata(item)
+        if candidate_signal_source == "stored_signal":
+            item["candidate_signal"] = display_candidate_signal
         if item.get("admitted") and item["window_status"] == "no_window":
             item["status"] = "signal_pressure"
             item["window_status"] = "signal_pressure"
@@ -586,7 +592,13 @@ def build_active_window_progress_response(
             "trace_stage": to_text(signal_state.get("stage")) or "none",
             "trace_error": trace_error,
         }
+        display_candidate_signal = item.get("candidate_signal")
+        if candidate_signal_source == "stored_signal":
+            # Stored rows are historical context; only live trace pressure should promote no_window to signal_pressure.
+            item["candidate_signal"] = None
         _apply_signal_window_admission_metadata(item)
+        if candidate_signal_source == "stored_signal":
+            item["candidate_signal"] = display_candidate_signal
         if item.get("admitted") and item["window_status"] == "no_window":
             item["status"] = "signal_pressure"
             item["window_status"] = "signal_pressure"

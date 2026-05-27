@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>IBKR 每日交易复盘 - Trading Flight</title>
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <script src="common.js"></script>
+  <script>document.write(getCommonStyles());</script>
+  <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
+  <link rel="stylesheet" href="/assets/css/pages/ibkr_trade_review/page.css?v=20260527-trade-review">
+</head>
+<body>
+  <div id="nav"></div>
+  <main class="page-shell page-shell-wide trade-review-shell">
+    <div id="contextBar"></div>
+    <div id="pageBridge"></div>
+
+    <section class="review-hero panel">
+      <div>
+        <div class="review-kicker">Daily Trade Forensics</div>
+        <h1>每日交易回溯</h1>
+        <p>把每日每个标的的选标、不选、开仓、保护、改止损和平仓事件串起来，直接暴露执行逻辑问题。</p>
+      </div>
+      <div class="endpoint-stack">
+        <span>GET /api/custom/ibkr/analytics/daily-trade-review</span>
+        <span>复用 lifecycle-flow / daily-signals / today-targets / active-window-progress</span>
+      </div>
+    </section>
+
+    <section class="review-filter panel" aria-label="每日复盘筛选">
+      <form id="reviewFilterForm" class="review-filter-grid">
+        <label>
+          <span>Date</span>
+          <input id="reviewDateInput" name="market_date" type="date">
+        </label>
+        <label>
+          <span>Broker</span>
+          <select id="brokerModeInput" name="broker_mode">
+            <option value="paper">paper</option>
+            <option value="live">live</option>
+          </select>
+        </label>
+        <label>
+          <span>Market Data</span>
+          <select id="dataModeInput" name="data_environment">
+            <option value="live">live</option>
+            <option value="paper">paper</option>
+          </select>
+        </label>
+        <label>
+          <span>Status</span>
+          <select id="statusInput" name="status">
+            <option value="all">全部</option>
+            <option value="problem">有问题</option>
+            <option value="selected">已选标</option>
+            <option value="not_selected">未选标</option>
+            <option value="signaled">已出信号</option>
+            <option value="open">开仓未平</option>
+            <option value="closed">已平仓</option>
+            <option value="traded">已成交</option>
+          </select>
+        </label>
+        <label>
+          <span>Symbol</span>
+          <input id="symbolInput" name="symbol" type="text" placeholder="AAPL / NVDA">
+        </label>
+        <label class="check-field">
+          <input id="includeEventsInput" type="checkbox" checked>
+          <span>显示事件摘要</span>
+        </label>
+        <div class="filter-actions">
+          <button class="review-btn primary" type="submit">复盘</button>
+          <button class="review-btn" id="resetButton" type="button">重置</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="review-grid cards-grid" id="summaryCards">
+      <article class="metric-card loading-card">等待加载复盘数据...</article>
+    </section>
+
+    <section class="review-layout">
+      <aside class="panel symbol-panel">
+        <div class="panel-head">
+          <div>
+            <div class="review-kicker">Symbols</div>
+            <h2>标的列表</h2>
+          </div>
+          <input id="localSearchInput" type="search" placeholder="搜索 symbol / reason">
+        </div>
+        <div id="symbolList" class="symbol-list"><div class="empty-state">等待加载...</div></div>
+      </aside>
+
+      <section class="panel detail-panel">
+        <div class="panel-head detail-head">
+          <div>
+            <div class="review-kicker">Timeline</div>
+            <h2 id="detailTitle">选择一个标的</h2>
+            <p id="detailCopy">查看这个标的从选标到平仓的所有事件和原因。</p>
+          </div>
+          <a id="lifecycleLink" class="review-btn compact" href="/ibkr_lifecycle_flow.html">生命周期图</a>
+        </div>
+        <div id="symbolDetail" class="symbol-detail"><div class="empty-state">左侧选择标的后展示事件时间线。</div></div>
+      </section>
+
+      <aside class="panel issue-panel">
+        <div class="panel-head">
+          <div>
+            <div class="review-kicker">Logic Issues</div>
+            <h2>执行逻辑问题</h2>
+          </div>
+        </div>
+        <div id="issueList" class="issue-list"><div class="empty-state">复盘后列出疑似错误。</div></div>
+      </aside>
+    </section>
+
+    <section class="panel integrations-panel">
+      <div class="panel-head">
+        <div>
+          <div class="review-kicker">Integrated Capabilities</div>
+          <h2>已整合能力</h2>
+          <p>这个页面是总控台，不替代已有页面；点击标的可继续钻取生命周期图、信号统计和标的工作台。</p>
+        </div>
+      </div>
+      <div id="integrationList" class="integration-list"></div>
+    </section>
+  </main>
+
+  <script src="/assets/js/pages/ibkr_trade_review/page.js?v=20260527-trade-review"></script>
+</body>
+</html>

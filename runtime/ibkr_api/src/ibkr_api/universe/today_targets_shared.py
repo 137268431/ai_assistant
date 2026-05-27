@@ -18,6 +18,15 @@ DAILY_SCAN_SUMMARY_TIME_ET = "09:20"
 MARKET_OPEN_CHECK_TIME_ET = "09:30"
 INTRADAY_REFRESH_RULE = "5m close-driven"
 TODAY_TARGET_STATUSES = {"active", "candidate"}
+MANUAL_TARGET_SOURCES = {
+    "ibkr_screener",
+    "manual_page",
+    "manual_page_add",
+    "manual_page_edit",
+    "manual_page_remove",
+    "screener_targets_tab",
+}
+CONTEXT_ACTIVE_TARGET_SOURCES = {"daily_scan", "intraday_window_admission"}
 
 TimeStrings = Callable[[], dict[str, str]]
 
@@ -34,12 +43,24 @@ def truthy_target_value(value: Any) -> bool:
 def target_row_is_daily_scan_active(row: dict[str, Any] | None) -> bool:
     extra = parse_json_object((row or {}).get("extra"))
     source = to_text(extra.get("source")).lower()
-    return source == "daily_scan" and truthy_target_value(extra.get("active_gate_passed"))
+    if source not in CONTEXT_ACTIVE_TARGET_SOURCES:
+        return False
+    return (
+        truthy_target_value(extra.get("active_gate_passed"))
+        or truthy_target_value(extra.get("context_active"))
+        or truthy_target_value(extra.get("context_gate_passed"))
+    )
+
+
+def target_row_is_manual_active(row: dict[str, Any] | None) -> bool:
+    extra = parse_json_object((row or {}).get("extra"))
+    source = to_text(extra.get("source")).lower()
+    return source.startswith("manual_") or source in MANUAL_TARGET_SOURCES
 
 
 def effective_target_status(row: dict[str, Any] | None) -> str:
     status = to_text((row or {}).get("status")).lower()
-    if status == "active" and not target_row_is_daily_scan_active(row):
+    if status == "active" and not (target_row_is_daily_scan_active(row) or target_row_is_manual_active(row)):
         return "candidate"
     return status
 

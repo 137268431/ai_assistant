@@ -23,6 +23,17 @@ from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite
 from ibkr_compute.market.timeframe_utils import format_us_time, normalize_interval
 
 
+MANUAL_TARGET_SOURCES = {
+    "ibkr_screener",
+    "manual_page",
+    "manual_page_add",
+    "manual_page_edit",
+    "manual_page_remove",
+    "screener_targets_tab",
+}
+CONTEXT_ACTIVE_TARGET_SOURCES = {"daily_scan", "intraday_window_admission"}
+
+
 def _truthy_target_value(value) -> bool:
     if isinstance(value, bool):
         return value
@@ -35,7 +46,7 @@ def _truthy_target_value(value) -> bool:
 def _target_row_is_daily_scan_active(row: dict | None) -> bool:
     extra = parse_json_object((row or {}).get("extra"))
     source = str(extra.get("source") or "").strip().lower()
-    if source not in {"daily_scan", "intraday_window_admission"}:
+    if source not in CONTEXT_ACTIVE_TARGET_SOURCES:
         return False
     return (
         _truthy_target_value(extra.get("active_gate_passed"))
@@ -44,9 +55,15 @@ def _target_row_is_daily_scan_active(row: dict | None) -> bool:
     )
 
 
+def _target_row_is_manual_active(row: dict | None) -> bool:
+    extra = parse_json_object((row or {}).get("extra"))
+    source = str(extra.get("source") or "").strip().lower()
+    return source.startswith("manual_") or source in MANUAL_TARGET_SOURCES
+
+
 def _effective_target_status(row: dict | None) -> str:
     status = str((row or {}).get("status") or "").strip().lower()
-    if status == "active" and not _target_row_is_daily_scan_active(row):
+    if status == "active" and not (_target_row_is_daily_scan_active(row) or _target_row_is_manual_active(row)):
         return "candidate"
     return status
 

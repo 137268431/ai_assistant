@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timedelta
 
 from ibkr_compute.core.payload_compact import compact_json_payload
@@ -44,6 +45,71 @@ from .daily_scanner_target_reasons import (
 
 
 class DailyScannerRunMixin:
+    def _build_target_decision_record(
+        self,
+        *,
+        date: str,
+        environment: str,
+        source: str,
+        scan_stage: str,
+        symbol: str,
+        decision: str,
+        reason_code: str,
+        reason_text: str = "",
+        metrics: dict | None = None,
+        thresholds: dict | None = None,
+        rank: int = 0,
+        active_gate_passed: bool = False,
+        context_gate_passed: bool = False,
+        related_target_id: str = "",
+        extra: dict | None = None,
+    ) -> dict:
+        normalized_symbol = str(symbol or "").strip().upper()
+        normalized_source = str(source or "").strip().lower() or DAILY_SCAN_SOURCE
+        normalized_stage = str(scan_stage or "").strip() or DAILY_SCAN_STAGE
+        normalized_decision = str(decision or "").strip().lower() or "unknown"
+        decision_key = "|".join(
+            [
+                str(environment or "").strip().lower(),
+                str(date or "").strip(),
+                normalized_source,
+                normalized_stage,
+                normalized_symbol,
+            ]
+        )
+        return {
+            "decision_key": decision_key,
+            "environment": str(environment or "").strip().lower(),
+            "market_date": str(date or "").strip(),
+            "source": normalized_source,
+            "scan_run_id": f"{date}:{environment}:{normalized_stage}",
+            "symbol": normalized_symbol,
+            "decision": normalized_decision,
+            "reason_code": str(reason_code or normalized_decision).strip(),
+            "reason_text": str(reason_text or reason_code or normalized_decision).strip(),
+            "metrics": dict(metrics or {}),
+            "thresholds": dict(thresholds or {}),
+            "rank": int(rank or 0),
+            "active_gate_passed": bool(active_gate_passed),
+            "context_gate_passed": bool(context_gate_passed),
+            "related_target_id": str(related_target_id or "").strip(),
+            "created_ms": int(time.time() * 1000),
+            "extra": dict(extra or {}),
+        }
+
+    def _write_target_decisions(self, rows: list[dict]) -> dict:
+        clean_rows = [row for row in rows or [] if isinstance(row, dict) and str(row.get("symbol") or "").strip()]
+        if not clean_rows:
+            return {"ok": True, "created": 0, "updated": 0, "skipped": 0, "total": 0}
+        writer = getattr(self.pb_client, "upsert_target_decisions", None)
+        if not callable(writer):
+            return {"ok": False, "error": "pb_client_missing_upsert_target_decisions", "total": len(clean_rows)}
+        try:
+            result = writer(clean_rows)
+            return {**(result if isinstance(result, dict) else {}), "total": len(clean_rows)}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "total": len(clean_rows)}
+
     def run_scan(self, date: str, environments=None, *, mode: str = DAILY_SCAN_MODE_SEED) -> dict:
         """
         执行每日自动筛选。
@@ -184,6 +250,42 @@ class DailyScannerRunMixin:
         runtime_environment = resolve_data_environment(environment)
         scan_mode = _normalize_scan_mode(mode)
         scan_stage = DAILY_SCAN_TOPUP_STAGE if scan_mode == DAILY_SCAN_MODE_TOPUP else DAILY_SCAN_STAGE
+        target_decisions: list[dict] = []
+
+        def add_target_decision(
+            *,
+            symbol: str,
+            decision: str,
+            reason_code: str,
+            reason_text: str = "",
+            metrics: dict | None = None,
+            thresholds: dict | None = None,
+            rank: int = 0,
+            active_gate_passed: bool = False,
+            context_gate_passed: bool = False,
+            related_target_id: str = "",
+            extra: dict | None = None,
+        ) -> None:
+            target_decisions.append(
+                self._build_target_decision_record(
+                    date=date,
+                    environment=runtime_environment,
+                    source=DAILY_SCAN_SOURCE,
+                    scan_stage=scan_stage,
+                    symbol=symbol,
+                    decision=decision,
+                    reason_code=reason_code,
+                    reason_text=reason_text,
+                    metrics=metrics,
+                    thresholds=thresholds,
+                    rank=rank,
+                    active_gate_passed=active_gate_passed,
+                    context_gate_passed=context_gate_passed,
+                    related_target_id=related_target_id,
+                    extra=extra,
+                )
+            )
+
         settings = self._load_scan_settings(runtime_environment)
         watchlist = self._get_watchlist(runtime_environment)
         watchlist_symbols = sorted(
@@ -226,6 +328,20 @@ class DailyScannerRunMixin:
                     note=incomplete_note,
                 )
             rejection_summary[REJECTION_BUCKET_DATA_INCOMPLETE] = len(blocking_incomplete_symbols)
+            for symbol in watchlist_symbols:
+                freshness = (completeness_gate.get("items") or {}).get(symbol) or {}
+                stale_intervals = list(freshness.get("needs_repair_intervals") or [])
+                is_blocking = symbol in blocking_incomplete_symbols
+                add_target_decision(
+                    symbol=symbol,
+                    decision="rejected" if is_blocking else "deferred",
+                    reason_code=REJECTION_BUCKET_DATA_INCOMPLETE if is_blocking else "daily_scan_deferred_data_quality",
+                    reason_text=",".join(stale_intervals) or incomplete_note,
+                    metrics={"data_quality_status": str(freshness.get("status") or "")},
+                    thresholds={"blocking_intervals": list(completeness_gate.get("blocking_intervals") or [])},
+                    extra={"repair_strategy": repair_strategy, "scan_deferred": True},
+                )
+            target_decisions_write = self._write_target_decisions(target_decisions)
             data_completeness = {
                 "enabled": bool(completeness_gate.get("enabled")),
                 "blocking_enabled": bool(completeness_gate.get("blocking_enabled")),
@@ -280,6 +396,7 @@ class DailyScannerRunMixin:
                 "excluded_incomplete_count": len(blocking_incomplete_symbols),
                 "rejection_summary": rejection_summary,
                 "rejection_examples": _flatten_rejection_examples(rejection_examples_by_bucket),
+                "target_decisions_write": target_decisions_write,
             }
         timeframe_rollup = self._rollup_scan_timeframes(runtime_environment, watchlist_symbols)
         engine_materialize = self._materialize_scan_engines(runtime_environment, watchlist_symbols)
@@ -306,6 +423,15 @@ class DailyScannerRunMixin:
                     threshold="blocking intervals ready",
                     note=incomplete_note,
                 )
+                add_target_decision(
+                    symbol=symbol,
+                    decision="rejected",
+                    reason_code=REJECTION_BUCKET_DATA_INCOMPLETE,
+                    reason_text=",".join(stale_intervals) or incomplete_note,
+                    metrics={"data_quality_status": str(freshness.get("status") or "")},
+                    thresholds={"blocking_intervals": list(completeness_gate.get("blocking_intervals") or [])},
+                    extra={"repair_strategy": repair_strategy},
+                )
                 continue
             try:
                 result = self.evaluate_symbol(
@@ -330,6 +456,7 @@ class DailyScannerRunMixin:
                         }
                     eligible.append(result)
                 else:
+                    examples = list((result or {}).get("rejection_examples") or [])
                     for example in (result or {}).get("rejection_examples") or []:
                         _record_rejection(
                             rejection_summary,
@@ -340,9 +467,25 @@ class DailyScannerRunMixin:
                             threshold=str((example or {}).get("threshold") or ""),
                             note=str((example or {}).get("note") or ""),
                         )
+                    primary = examples[0] if examples else {}
+                    add_target_decision(
+                        symbol=symbol,
+                        decision="rejected",
+                        reason_code=str((primary or {}).get("bucket") or "quality_gate_not_passed"),
+                        reason_text=str((primary or {}).get("note") or (primary or {}).get("actual") or "quality gate not passed"),
+                        metrics=dict(result or {}),
+                        thresholds={"threshold": str((primary or {}).get("threshold") or "")},
+                        extra={"rejection_examples": examples},
+                    )
             except Exception as exc:
                 errors += 1
                 print(f"[Scanner] {runtime_environment}/{symbol} error: {exc}")
+                add_target_decision(
+                    symbol=symbol,
+                    decision="error",
+                    reason_code="evaluate_symbol_error",
+                    reason_text=str(exc),
+                )
 
         eligible.sort(
             key=lambda item: (
@@ -401,6 +544,14 @@ class DailyScannerRunMixin:
             if not symbol:
                 continue
             if scan_mode == DAILY_SCAN_MODE_TOPUP and symbol in existing_target_symbols:
+                add_target_decision(
+                    symbol=symbol,
+                    decision="deferred",
+                    reason_code="existing_target_retained",
+                    reason_text="topup skipped because target already exists",
+                    metrics=dict(result or {}),
+                    rank=auto_rank,
+                )
                 continue
 
             auto_rank += 1
@@ -417,6 +568,17 @@ class DailyScannerRunMixin:
                     threshold="context_gate_passed=true",
                     note="基础质量通过，但 multi-timeframe context 未形成，seed 不再写入低 context candidate",
                 )
+                add_target_decision(
+                    symbol=symbol,
+                    decision="rejected",
+                    reason_code=REJECTION_BUCKET_CONTEXT_GATE,
+                    reason_text=str(result.get("context_reason") or "context_gate_passed=false"),
+                    metrics=dict(result or {}),
+                    thresholds={"context_gate_passed": True, "active_min_score": active_min_score},
+                    rank=auto_rank,
+                    active_gate_passed=False,
+                    context_gate_passed=False,
+                )
                 continue
             if not qualifies_active:
                 _record_rejection(
@@ -428,6 +590,17 @@ class DailyScannerRunMixin:
                     threshold="context_gate_passed=true",
                     note="信号窗口入池只新增 trade-window SD/cRSI pressure active 标的；低 pressure 不写 candidate",
                 )
+                add_target_decision(
+                    symbol=symbol,
+                    decision="rejected",
+                    reason_code=REJECTION_BUCKET_TOPUP_ACTIVE_SCORE if scan_mode == DAILY_SCAN_MODE_TOPUP else REJECTION_BUCKET_CONTEXT_GATE,
+                    reason_text=str(result.get("context_reason") or f"context_score={_safe_float(result.get('context_score')):.3f}"),
+                    metrics=dict(result or {}),
+                    thresholds={"context_gate_passed": True, "active_min_score": active_min_score},
+                    rank=auto_rank,
+                    active_gate_passed=False,
+                    context_gate_passed=False,
+                )
                 continue
             if active_limit is not None and len(active_symbols) >= active_limit:
                 _record_rejection(
@@ -438,6 +611,17 @@ class DailyScannerRunMixin:
                     actual=str(len(active_symbols)),
                     threshold=str(active_limit),
                     note="active 目标上限已满，不再写入超限 active 标的",
+                )
+                add_target_decision(
+                    symbol=symbol,
+                    decision="deferred",
+                    reason_code=REJECTION_BUCKET_TOPUP_ACTIVE_BUDGET if scan_mode == DAILY_SCAN_MODE_TOPUP else REJECTION_BUCKET_ACTIVE_BUDGET,
+                    reason_text="active target limit is full",
+                    metrics=dict(result or {}),
+                    thresholds={"active_limit": active_limit, "active_symbols": len(active_symbols)},
+                    rank=auto_rank,
+                    active_gate_passed=qualifies_active,
+                    context_gate_passed=context_gate_passed,
                 )
                 continue
             status = "active"
@@ -505,7 +689,7 @@ class DailyScannerRunMixin:
                     extra=extra,
                 )
             )
-            self.pb_client.upsert_scan(
+            scan_write_result = self.pb_client.upsert_scan(
                 {
                     "environment": runtime_environment,
                     "symbol": symbol,
@@ -517,6 +701,37 @@ class DailyScannerRunMixin:
                     "status": status,
                     "extra": extra,
                 }
+            )
+            target_record = scan_write_result.get("record") if isinstance(scan_write_result, dict) else {}
+            add_target_decision(
+                symbol=symbol,
+                decision="selected",
+                reason_code="selected_active",
+                reason_text=str(result.get("reason", "") or "selected active target"),
+                metrics={
+                    "score": round(_safe_float(result.get("score")), 3),
+                    "admission_score": round(_safe_float(result.get("admission_score")), 3),
+                    "technical_score": round(_safe_float(result.get("technical_score")), 3),
+                    "context_score": round(_safe_float(result.get("context_score")), 3),
+                    "avg_10d_volume": round(_safe_float(result.get("avg_10d_volume")), 2),
+                    "premarket_volume": round(_safe_float(result.get("premarket_volume")), 2),
+                    "atr_pct": round(_safe_float(result.get("atr_pct")), 4),
+                    "day_change_pct": round(_safe_float(result.get("day_change_pct")), 2),
+                },
+                thresholds={
+                    "active_min_score": active_min_score,
+                    "active_limit": active_limit if active_limit is not None else 0,
+                },
+                rank=auto_rank,
+                active_gate_passed=qualifies_active,
+                context_gate_passed=context_gate_passed,
+                related_target_id=str((target_record or {}).get("id") or ""),
+                extra={
+                    "direction_bias": str(result.get("direction_bias", "neutral") or "neutral"),
+                    "execution_eligible": bool(extra.get("execution_eligible")),
+                    "target_layer": str(extra.get("target_layer") or ""),
+                    "scan_stage": scan_stage,
+                },
             )
             new_targets.append(
                 {
@@ -545,6 +760,8 @@ class DailyScannerRunMixin:
                 environment=runtime_environment,
                 retained_symbols=retained_symbols,
             )
+
+        target_decisions_write = self._write_target_decisions(target_decisions)
 
         return {
             "environment": runtime_environment,
@@ -601,6 +818,7 @@ class DailyScannerRunMixin:
             },
             "rejection_summary": rejection_summary,
             "rejection_examples": _flatten_rejection_examples(rejection_examples_by_bucket),
+            "target_decisions_write": target_decisions_write,
         }
 
     def _build_metric_rows(self, date: str, environment: str, symbols: list[str]) -> dict[str, dict]:

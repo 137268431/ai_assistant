@@ -97,7 +97,7 @@
     renderNav(activePage) {
       const pages = [
         { path: '/index.html', icon: '🏠', label: '首页' },
-        { path: '/ibkr_signals.html', aliases: ['/ibkr_signals.html', '/ibkr_reverse_signals.html', '/orders.html', '/ibkr_order_details.html', '/ibkr_account.html'], icon: '📡', label: '执行' },
+        { path: '/ibkr_signals.html', aliases: ['/ibkr_signals.html', '/ibkr_reverse_signals.html', '/orders.html', '/ibkr_order_details.html', '/ibkr_lifecycle_flow.html', '/ibkr_trade_review.html', '/ibkr_account.html'], icon: '📡', label: '执行' },
         { path: '/ibkr_screener.html', aliases: ['/ibkr_screener.html', '/ibkr_watchlist.html', '/ibkr_targets.html'], icon: '🔎', label: '标的' },
         { path: '/ibkr_chart.html', aliases: ['/ibkr_chart.html', '/ibkr_indicators.html', '/ibkr_stats.html'], icon: '📈', label: '研究' },
         { path: '/ibkr_backtests.html', icon: '🧪', label: '回测' },
@@ -130,6 +130,8 @@
         { path: '/ibkr_signals.html', params: bridgeParams, kicker: 'Signals', label: '主信号', copy: '确认 / 执行', active: activePage === '/ibkr_signals.html' },
         { path: '/ibkr_reverse_signals.html', params: bridgeParams, kicker: 'Reverse', label: '反转信号', copy: '平仓 / 调整', active: activePage === '/ibkr_reverse_signals.html' },
         { path: '/orders.html', params: bridgeParams, kicker: 'Orders', label: '订单', copy: '状态 / 操作', active: activePage === '/orders.html' || activePage === '/ibkr_order_details.html' },
+        { path: '/ibkr_lifecycle_flow.html', params: bridgeParams, kicker: 'Lifecycle', label: '生命周期', copy: '流程 / 事件', active: activePage === '/ibkr_lifecycle_flow.html' },
+        { path: '/ibkr_trade_review.html', params: bridgeParams, kicker: 'Review', label: '每日复盘', copy: '原因 / 问题', active: activePage === '/ibkr_trade_review.html' },
         { path: '/ibkr_account.html', params: bridgeParams, kicker: 'Account', label: '账户', copy: '净值 / 持仓', active: activePage === '/ibkr_account.html' }
       ]);
     },

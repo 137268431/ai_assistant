@@ -418,6 +418,34 @@ class PBClient:
             timeout=30,
         )
 
+    def upsert_target_decisions(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        normalized = []
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            payload = dict(item)
+            payload["environment"] = str(payload.get("environment") or configured_market_data_mode()).strip().lower() or "live"
+            payload["market_date"] = str(payload.get("market_date") or payload.get("date") or "").strip()
+            payload["source"] = str(payload.get("source") or "daily_scan").strip().lower()
+            payload["symbol"] = str(payload.get("symbol") or "").strip().upper()
+            if not payload.get("decision_key"):
+                payload["decision_key"] = "|".join(
+                    [
+                        payload["environment"],
+                        payload["market_date"],
+                        payload["source"],
+                        str(payload.get("scan_run_id") or "").strip(),
+                        payload["symbol"],
+                    ]
+                )
+            normalized.append(payload)
+        return self._batch_upsert_records(
+            "ibkr_target_decisions",
+            normalized,
+            ["decision_key"],
+            timeout=30,
+        )
+
     def upsert_execution_fills(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
         normalized = []
         for item in items or []:

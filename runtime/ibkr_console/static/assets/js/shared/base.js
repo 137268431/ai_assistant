@@ -842,7 +842,7 @@ function inferPathCacheProfile(path) {
   if (text.includes('/statusz') || text.includes('/healthz') || text.includes('/monitorz') || text.includes('/summaryz')) return 'runtimeStatus';
   if (text.includes('/account_snapshot')) return 'runtimeStatus';
   if (text.includes('/backtest') || text.includes('/data_quality') || text.includes('/history/')) return 'historyList';
-  if (text.includes('/screener') || text.includes('/today-targets') || text.includes('/active-window-progress')) return 'tradingList';
+  if (text.includes('/screener') || text.includes('/today-targets') || text.includes('/active-window-progress') || text.includes('/daily-trade-review')) return 'tradingList';
   if (text.includes('/signals') || text.includes('/orders') || text.includes('/reverse')) return 'tradingList';
   return 'tradingList';
 }

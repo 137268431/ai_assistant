@@ -56,6 +56,7 @@ DEFAULT_MIN_PREMARKET_VOLUME = 5_000
 DEFAULT_MIN_TODAY_VOLUME = 300_000
 DEFAULT_MARKET_MONITOR_SYMBOLS = "SPY,QQQ,VIX"
 WINDOW_ADMISSION_SOURCE = "intraday_window_admission"
+TARGET_DECISIONS_COLLECTION = "ibkr_target_decisions"
 
 
 def _config_int(config_value: ConfigValue, key: str, default: int, environment: str, *, minimum: int = 0) -> int:
@@ -633,6 +634,91 @@ def _rejection_summary(rejected: list[dict[str, Any]]) -> dict[str, int]:
     return dict(sorted(summary.items(), key=lambda pair: (-pair[1], pair[0])))
 
 
+def _target_decision_payload(
+    *,
+    market_date: str,
+    environment: str,
+    symbol: str,
+    decision: str,
+    reason_code: str,
+    reason_text: str = "",
+    metrics: dict[str, Any] | None = None,
+    thresholds: dict[str, Any] | None = None,
+    rank: int = 0,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    normalized_symbol = to_text(symbol).upper()
+    normalized_environment = to_text(environment).lower() or LIVE_ENVIRONMENT
+    normalized_decision = to_text(decision).lower() or "unknown"
+    scan_run_id = f"{market_date}:{normalized_environment}:{WINDOW_ADMISSION_SOURCE}"
+    return {
+        "decision_key": "|".join([normalized_environment, market_date, WINDOW_ADMISSION_SOURCE, normalized_symbol]),
+        "environment": normalized_environment,
+        "market_date": market_date,
+        "source": WINDOW_ADMISSION_SOURCE,
+        "scan_run_id": scan_run_id,
+        "symbol": normalized_symbol,
+        "decision": normalized_decision,
+        "reason_code": to_text(reason_code) or normalized_decision,
+        "reason_text": to_text(reason_text or reason_code or normalized_decision),
+        "metrics": dict(metrics or {}),
+        "thresholds": dict(thresholds or {}),
+        "rank": int(rank or 0),
+        "active_gate_passed": normalized_decision == "selected",
+        "context_gate_passed": normalized_decision == "selected",
+        "related_target_id": "",
+        "created_ms": int(time.time() * 1000),
+        "extra": dict(extra or {}),
+    }
+
+
+def _write_target_decisions(
+    pb: Any,
+    *,
+    rows: list[dict[str, Any]],
+    escape_filter_string: EscapeFilterString,
+) -> dict[str, Any]:
+    clean_rows = [row for row in rows or [] if isinstance(row, dict) and to_text(row.get("symbol"))]
+    if not clean_rows:
+        return {"ok": True, "created": 0, "updated": 0, "skipped": 0, "total": 0}
+    created = 0
+    updated = 0
+    errors: list[dict[str, Any]] = []
+    for row in clean_rows:
+        try:
+            result = upsert_record(
+                pb,
+                TARGET_DECISIONS_COLLECTION,
+                filter_expr=f'decision_key = "{escape_filter_string(row.get("decision_key"))}"',
+                data=row,
+                compare_fields=[
+                    "decision",
+                    "reason_code",
+                    "reason_text",
+                    "metrics",
+                    "thresholds",
+                    "rank",
+                    "active_gate_passed",
+                    "context_gate_passed",
+                    "extra",
+                ],
+            )
+            action = to_text(result.get("action"))
+            if action == "created":
+                created += 1
+            elif action == "updated":
+                updated += 1
+        except Exception as exc:
+            errors.append({"symbol": to_text(row.get("symbol")), "error": str(exc)})
+    return {
+        "ok": not errors,
+        "created": created,
+        "updated": updated,
+        "errors": errors[:20],
+        "total": len(clean_rows),
+    }
+
+
 def build_intraday_window_admission_response(
     pb: Any,
     *,
@@ -973,6 +1059,82 @@ def build_intraday_window_admission_response(
         except Exception:
             pass
 
+    thresholds = {
+        "max_freshness_min": max_freshness_min,
+        "min_avg_10d_volume": min_avg_10d_volume,
+        "min_atr_pct": min_atr_pct,
+        "min_premarket_volume": min_premarket_volume,
+        "min_today_volume": min_today_volume,
+        "min_tradability_score": min_tradability_score,
+        "effective_max_admit": effective_max_admit,
+    }
+    target_decision_rows: list[dict[str, Any]] = []
+    if not dry_run:
+        write_error_by_symbol = {to_text(item.get("symbol")).upper(): to_text(item.get("error")) for item in write_errors}
+        for rank, row in enumerate(selected, start=1):
+            symbol = to_text(row.get("symbol")).upper()
+            admitted = symbol in admitted_symbols
+            target_decision_rows.append(
+                _target_decision_payload(
+                    market_date=market_date,
+                    environment=data_environment,
+                    symbol=symbol,
+                    decision="selected" if admitted else "error",
+                    reason_code="intraday_window_admitted" if admitted else "target_write_error",
+                    reason_text=row.get("scan_reason") if admitted else write_error_by_symbol.get(symbol, "target write failed"),
+                    metrics=dict(row.get("metrics") or {}),
+                    thresholds=thresholds,
+                    rank=rank,
+                    extra={
+                        "window_status": row.get("window_status"),
+                        "trace_stage": row.get("trace_stage"),
+                        "bars_remaining": row.get("bars_remaining"),
+                        "score": row.get("score"),
+                        "existing_status": row.get("existing_status"),
+                    },
+                )
+            )
+        selected_symbols = {to_text(row.get("symbol")).upper() for row in selected}
+        for item in rejected:
+            symbol = to_text(item.get("symbol")).upper()
+            if not symbol or symbol in selected_symbols:
+                continue
+            reason = to_text(item.get("reason")) or "rejected"
+            target_decision_rows.append(
+                _target_decision_payload(
+                    market_date=market_date,
+                    environment=data_environment,
+                    symbol=symbol,
+                    decision="deferred" if reason in {"admission_budget_deferred"} else "rejected",
+                    reason_code=reason,
+                    reason_text=reason,
+                    thresholds=thresholds,
+                    extra={key: value for key, value in item.items() if key != "symbol"},
+                )
+            )
+        for symbol in fresh_symbols[max_scan_symbols:]:
+            if symbol in selected_symbols:
+                continue
+            target_decision_rows.append(
+                _target_decision_payload(
+                    market_date=market_date,
+                    environment=data_environment,
+                    symbol=symbol,
+                    decision="deferred",
+                    reason_code="scan_limit_deferred",
+                    reason_text="fresh symbol skipped by max_scan_symbols",
+                    thresholds=thresholds,
+                    extra={"max_scan_symbols": max_scan_symbols},
+                )
+            )
+        target_decisions_write = _write_target_decisions(
+            pb,
+            rows=target_decision_rows,
+            escape_filter_string=escape_filter_string,
+        )
+    else:
+        target_decisions_write = {"ok": True, "skipped": True, "reason": "dry_run", "total": 0}
+
     ok = not write_errors and not reconcile_error
     status_code = 200 if ok else 502
     response = {
@@ -1032,6 +1194,7 @@ def build_intraday_window_admission_response(
         "write_errors": write_errors,
         "watchlist_sync": watchlist_sync,
         "runtime_reconcile": runtime_reconcile,
+        "target_decisions_write": target_decisions_write,
         "error": reconcile_error or (write_errors[0]["error"] if write_errors else ""),
         "source": "ibkr-api",
     }
