@@ -991,13 +991,21 @@
             return role || type;
         }
 
+        function orderFilledQuantity(order) {
+            return firstOrderPositiveNumber(order, 'filled_qty', 'filledQuantity', 'actual_filled_qty') || 0;
+        }
+
+        function isOrderActuallyFilled(order) {
+            const status = String(orderField(order, 'status') || '').trim().toLowerCase();
+            return ['filled', 'executed', 'closed'].includes(status) || orderFilledQuantity(order) > 0;
+        }
+
         function isEntryOrder(order) {
             return orderLifecycleRole(order) === 'entry';
         }
 
         function isFilledExitOrder(order) {
-            const status = String(orderField(order, 'status') || '').trim().toLowerCase();
-            if (status !== 'filled') return false;
+            if (!isOrderActuallyFilled(order)) return false;
             return ['take_profit', 'stop_loss', 'repair_tp', 'repair_sl', 'close', 'manual_close', 'market_close'].includes(orderLifecycleRole(order));
         }
 
@@ -1137,7 +1145,8 @@
                 document.getElementById('todayPnLWinCount').textContent = formatNumber(pnlSummary.winCount || 0, 0);
                 document.getElementById('todayPnLLossCount').textContent = formatNumber(pnlSummary.lossCount || 0, 0);
                 if (pnlSummary.exitCount > 0) {
-                    pnlEl.textContent = `${pnl > 0 ? '+' : ''}${formatNumber(pnl, 0)}`;
+                    const sign = pnl > 0 ? '+' : (pnl < 0 ? '-' : '');
+                    pnlEl.textContent = `${sign}$${formatNumber(Math.abs(pnl), 2)}`;
                 } else {
                     pnlEl.textContent = '-';
                 }

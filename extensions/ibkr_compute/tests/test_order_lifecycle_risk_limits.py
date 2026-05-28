@@ -28,11 +28,17 @@ class _FakeConfig:
 
 
 class _FakeBroker:
-    def __init__(self, positions=None):
+    def __init__(self, positions=None, fill_result=None):
         self.positions = list(positions or [])
+        self.fill_result = dict(fill_result or {})
+        self.fill_calls = []
 
     def list_positions(self):
         return list(self.positions)
+
+    def await_order_fill(self, order_id, **kwargs):
+        self.fill_calls.append({"order_id": str(order_id), **dict(kwargs or {})})
+        return dict(self.fill_result or {"ok": False, "error": "close_fill_unconfirmed"})
 
 
 class _FakeOrderTracker:
@@ -76,9 +82,10 @@ class _FakePB:
 
 
 class _FakeOrderModifier:
-    def __init__(self):
+    def __init__(self, cancel_results=None):
         self.modifications = []
         self.cancellations = []
+        self.cancel_results = list(cancel_results or [])
 
     def modify_order(self, order_id, updates, acct_id=None):
         self.modifications.append((str(order_id), dict(updates or {})))
@@ -89,12 +96,17 @@ class _FakeOrderModifier:
 
     def cancel_order(self, order_id, acct_id=None):
         self.cancellations.append(str(order_id))
+        if self.cancel_results:
+            result = dict(self.cancel_results.pop(0))
+            result.setdefault("order_id", str(order_id))
+            return result
         return {"ok": True, "order_id": str(order_id)}
 
 
 class _FakeOrderPlacer:
     def __init__(self):
         self.brackets = []
+        self.closes = []
 
     def place_bracket_order(self, **kwargs):
         self.brackets.append(dict(kwargs))
@@ -103,6 +115,33 @@ class _FakeOrderPlacer:
             "order_ids": ["201", "202", "203"],
             "bracket_group": f"{kwargs.get('symbol')}_reentry",
         }
+
+    def place_market_close(self, **kwargs):
+        self.closes.append(dict(kwargs))
+        return {
+            "ok": True,
+            "submitted": True,
+            "filled": True,
+            "order_ids": ["901"],
+            "entry_coid": f"close_{kwargs.get('symbol')}_order_flow",
+            "bracket_group": f"close_{kwargs.get('symbol')}_order_flow",
+            "order_type": str(kwargs.get("order_type") or "MKT").upper(),
+            "limit_price": float(kwargs.get("limit_price") or 0.0),
+        }
+
+
+class _FakeOrderFlowManager:
+    def __init__(self, decision=None):
+        self.decision = dict(decision or {"action": "hold", "reason": "test_hold"})
+        self.positions = []
+        self.decisions = []
+
+    def sync_positions(self, positions):
+        self.positions.append(list(positions or []))
+
+    def position_decision(self, position, order_group=None):
+        self.decisions.append({"position": dict(position or {}), "order_group": dict(order_group or {})})
+        return dict(self.decision)
 
 
 class OrderLifecycleRiskLimitTests(unittest.TestCase):
@@ -173,6 +212,94 @@ class OrderLifecycleRiskLimitTests(unittest.TestCase):
                 "extra": dict(base_extra),
             },
         ]
+
+    def _order_flow_rows(self, *, entry_extra=None, tp_status="Submitted", sl_status="Submitted", close_status=None):
+        group = "NFLX_short_20260527_105036_harvest"
+        base_extra = {
+            "harvest_managed": True,
+            "harvest_profile": "intraday_volatility_harvest_v1",
+            "harvest_lot": "primary",
+            "partial_harvest_managed": True,
+        }
+        rows = [
+            {
+                "id": "entry",
+                "symbol": "NFLX",
+                "role": "entry",
+                "status": "Filled",
+                "quantity": 114,
+                "filled_qty": 114,
+                "fill_price": 88.01877,
+                "limit_price": 88.02,
+                "broker_order_id": "84",
+                "trade_group_id": group,
+                "entry_order_unique_id": f"entry_{group}",
+                "unique_id": f"entry_{group}",
+                "signal_id": "NFLX_20260527_1045_mr_U",
+                "bar_time_ms": 10,
+                "environment": "paper",
+                "extra": {**base_extra, **dict(entry_extra or {})},
+            },
+            {
+                "id": "tp",
+                "symbol": "NFLX",
+                "role": "take_profit",
+                "status": tp_status,
+                "quantity": 114,
+                "filled_qty": 0,
+                "limit_price": 86.70,
+                "broker_order_id": "85",
+                "trade_group_id": group,
+                "entry_order_unique_id": f"entry_{group}",
+                "parent_order_unique_id": f"entry_{group}",
+                "unique_id": f"tp_{group}",
+                "bar_time_ms": 10,
+                "environment": "paper",
+                "extra": dict(base_extra),
+            },
+            {
+                "id": "sl",
+                "symbol": "NFLX",
+                "role": "stop_loss",
+                "status": sl_status,
+                "quantity": 114,
+                "filled_qty": 0,
+                "limit_price": 88.91,
+                "broker_order_id": "86",
+                "trade_group_id": group,
+                "entry_order_unique_id": f"entry_{group}",
+                "parent_order_unique_id": f"entry_{group}",
+                "unique_id": f"sl_{group}",
+                "bar_time_ms": 10,
+                "environment": "paper",
+                "extra": dict(base_extra),
+            },
+        ]
+        if close_status:
+            rows.append(
+                {
+                    "id": "close",
+                    "symbol": "NFLX",
+                    "role": "close",
+                    "status": close_status,
+                    "quantity": 114,
+                    "filled_qty": 0,
+                    "limit_price": 87.95,
+                    "broker_order_id": "901",
+                    "trade_group_id": group,
+                    "entry_order_unique_id": f"entry_{group}",
+                    "parent_order_unique_id": f"entry_{group}",
+                    "unique_id": f"close_{group}",
+                    "bar_time_ms": 11,
+                    "environment": "paper",
+                    "extra": {
+                        **base_extra,
+                        "harvest_lot": "close",
+                        "close_order": True,
+                    },
+                }
+            )
+        return rows
 
     def test_zero_position_limit_disables_daily_trade_count_cap(self):
         lifecycle = OrderLifecycle(config=_FakeConfig({"position_limit_max": 0}))
@@ -383,6 +510,162 @@ class OrderLifecycleRiskLimitTests(unittest.TestCase):
         target_patch = next(item for item in pb.upserts if item["id"] == "tp")
         self.assertEqual("Canceled", target_patch["status"])
         self.assertTrue(target_patch["extra"]["partial_harvest_cancelled_after_stop"])
+
+    def test_order_flow_full_exit_persists_close_intent_when_cancel_is_pending(self):
+        pb = _FakePB(orders=self._order_flow_rows())
+        modifier = _FakeOrderModifier(
+            cancel_results=[
+                {"ok": False, "error": "order_cancel_unconfirmed"},
+                {"ok": False, "error": "order_cancel_unconfirmed"},
+            ]
+        )
+        placer = _FakeOrderPlacer()
+        lifecycle = OrderLifecycle(
+            pb_client=pb,
+            order_modifier=modifier,
+            order_placer=placer,
+            environment="paper",
+            order_flow_manager=_FakeOrderFlowManager(
+                {
+                    "action": "full_exit",
+                    "reason": "order_flow_adverse_delta_exit",
+                    "limit_price": 87.95,
+                    "marketable_limit": {"order_type": "marketable_limit"},
+                }
+            ),
+            config=_FakeConfig({"ibkr_order_flow_close_fill_timeout_sec": 1}),
+            broker=_FakeBroker(),
+        )
+
+        acted = lifecycle._maybe_apply_order_flow_risk_for_symbol({"ticker": "NFLX", "position": -114, "conid": 123})
+
+        self.assertTrue(acted)
+        self.assertEqual(["85", "86"], modifier.cancellations)
+        self.assertEqual([], placer.closes)
+        entry_patch = pb.upserts[-1]
+        self.assertEqual("entry", entry_patch["id"])
+        self.assertEqual("Closing", entry_patch["status"])
+        self.assertTrue(entry_patch["extra"]["order_flow_closing"])
+        self.assertEqual("protection_cancel_pending", entry_patch["extra"]["order_flow_close_intent"]["reason"])
+        pending_patches = [item for item in pb.upserts if item["id"] in {"tp", "sl"}]
+        self.assertTrue(all(item["extra"]["order_flow_cancel_pending"] for item in pending_patches))
+
+    def test_order_flow_close_intent_recovers_after_protection_orders_are_canceled(self):
+        decision = {
+            "action": "full_exit",
+            "reason": "order_flow_adverse_delta_exit",
+            "limit_price": 87.95,
+            "marketable_limit": {"order_type": "marketable_limit"},
+        }
+        pb = _FakePB(
+            orders=self._order_flow_rows(
+                tp_status="Canceled",
+                sl_status="Canceled",
+                entry_extra={
+                    "order_flow_closing": True,
+                    "order_flow_close_intent": {
+                        "reason": "protection_cancel_pending",
+                        "quantity": 114,
+                        "symbol": "NFLX",
+                        "conid": 123,
+                        "direction": "short",
+                        "decision": dict(decision),
+                    },
+                },
+            )
+        )
+        placer = _FakeOrderPlacer()
+        lifecycle = OrderLifecycle(
+            pb_client=pb,
+            order_modifier=_FakeOrderModifier(),
+            order_placer=placer,
+            environment="paper",
+            order_flow_manager=_FakeOrderFlowManager({"action": "hold", "reason": "no_new_decision"}),
+            config=_FakeConfig({"ibkr_order_flow_close_fill_timeout_sec": 1}),
+            broker=_FakeBroker(),
+        )
+
+        acted = lifecycle._maybe_apply_order_flow_risk_for_symbol({"ticker": "NFLX", "position": -114, "conid": 123})
+
+        self.assertTrue(acted)
+        self.assertEqual(1, len(placer.closes))
+        close_call = placer.closes[0]
+        self.assertEqual("short", close_call["direction"])
+        self.assertEqual(114, close_call["quantity"])
+        self.assertEqual("marketable_limit", close_call["order_type"])
+        self.assertEqual(87.95, close_call["limit_price"])
+        entry_patch = next(item for item in reversed(pb.upserts) if item["id"] == "entry")
+        self.assertEqual("Closed", entry_patch["status"])
+        self.assertFalse(entry_patch["extra"]["order_flow_closing"])
+        self.assertEqual({}, entry_patch["extra"]["order_flow_close_intent"])
+
+    def test_order_flow_close_intent_does_not_duplicate_active_close_order(self):
+        decision = {
+            "action": "full_exit",
+            "reason": "order_flow_adverse_delta_exit",
+            "limit_price": 87.95,
+            "marketable_limit": {"order_type": "marketable_limit"},
+        }
+        pb = _FakePB(
+            orders=self._order_flow_rows(
+                tp_status="Canceled",
+                sl_status="Canceled",
+                close_status="Submitted",
+                entry_extra={
+                    "order_flow_closing": True,
+                    "order_flow_close_intent": {"decision": dict(decision), "quantity": 114},
+                },
+            )
+        )
+        placer = _FakeOrderPlacer()
+        lifecycle = OrderLifecycle(
+            pb_client=pb,
+            order_modifier=_FakeOrderModifier(),
+            order_placer=placer,
+            environment="paper",
+            order_flow_manager=_FakeOrderFlowManager({"action": "hold", "reason": "no_new_decision"}),
+            broker=_FakeBroker(fill_result={"ok": False, "error": "close_fill_unconfirmed"}),
+        )
+
+        acted = lifecycle._maybe_apply_order_flow_risk_for_symbol({"ticker": "NFLX", "position": -114, "conid": 123})
+
+        self.assertTrue(acted)
+        self.assertEqual([], placer.closes)
+        self.assertEqual([{"order_id": "901", "symbol": "NFLX", "expected_quantity": 114, "timeout": 5.0, "poll_interval": 0.2}], lifecycle.broker.fill_calls)
+        entry_patch = next(item for item in reversed(pb.upserts) if item["id"] == "entry")
+        self.assertEqual("order_flow_close_pending", entry_patch["extra"]["reason"])
+
+    def test_order_flow_full_exit_hard_cancel_failure_skips_close_submission(self):
+        pb = _FakePB(orders=self._order_flow_rows())
+        modifier = _FakeOrderModifier(
+            cancel_results=[
+                {"ok": False, "error": "exchange_rejected_cancel"},
+                {"ok": True},
+            ]
+        )
+        placer = _FakeOrderPlacer()
+        lifecycle = OrderLifecycle(
+            pb_client=pb,
+            order_modifier=modifier,
+            order_placer=placer,
+            environment="paper",
+            order_flow_manager=_FakeOrderFlowManager(
+                {
+                    "action": "full_exit",
+                    "reason": "order_flow_adverse_delta_exit",
+                    "limit_price": 87.95,
+                    "marketable_limit": {"order_type": "marketable_limit"},
+                }
+            ),
+            broker=_FakeBroker(),
+        )
+
+        acted = lifecycle._maybe_apply_order_flow_risk_for_symbol({"ticker": "NFLX", "position": -114, "conid": 123})
+
+        self.assertFalse(acted)
+        self.assertEqual([], placer.closes)
+        self.assertEqual(["85", "86"], modifier.cancellations)
+        self.assertFalse(any(item["id"] == "tp" and item.get("status") == "Canceled" for item in pb.upserts))
 
 
 if __name__ == "__main__":

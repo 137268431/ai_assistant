@@ -265,6 +265,39 @@ class OrderDailyStatsTest(unittest.TestCase):
         self.assertEqual(stats["realized_gross_pnl"], 1.0)
         self.assertEqual(stats["realized_net_pnl"], -0.25)
 
+    def test_counts_canceled_close_with_filled_quantity_as_realized_exit(self):
+        rows = [
+            {
+                "id": "entry-1",
+                "unique_id": "entry-1",
+                "trade_group_id": "tg-1",
+                "role": "entry",
+                "status": "Closed",
+                "position_side": "short",
+                "fill_price": 88.0187719298,
+                "filled_qty": 114,
+            },
+            {
+                "id": "close-1",
+                "unique_id": "close_tg-1",
+                "trade_group_id": "tg-1",
+                "entry_order_unique_id": "entry-1",
+                "role": "close",
+                "order_type": "MKT",
+                "status": "Canceled",
+                "fill_price": 87.6,
+                "filled_qty": 114,
+            },
+        ]
+
+        stats = build_daily_order_stats(rows)
+
+        self.assertEqual(stats["close_filled"], 1)
+        self.assertEqual(stats["manual_close_filled"], 1)
+        self.assertEqual(stats["close_take_profit_filled"], 1)
+        self.assertEqual(stats["winning_trades"], 1)
+        self.assertEqual(stats["realized_net_pnl"], 47.74)
+
 
 if __name__ == "__main__":
     unittest.main()

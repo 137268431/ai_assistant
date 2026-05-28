@@ -1028,8 +1028,20 @@ class OrderLifecycle:
             self._last_order_flow_risk_action_ms = int(time.time() * 1000)
         return updated
 
-    def _cancel_order_flow_protection(self, group: dict, reason: str) -> list[dict]:
-        errors: list[dict] = []
+    @staticmethod
+    def _cancel_result_is_pending(result: dict | None) -> bool:
+        result = result or {}
+        confirm = result.get("confirm") if isinstance(result.get("confirm"), dict) else {}
+        text = str(
+            result.get("error")
+            or result.get("message")
+            or confirm.get("error")
+            or ""
+        ).lower()
+        return any(marker in text for marker in ("unconfirmed", "timeout", "timed out", "pending"))
+
+    def _cancel_order_flow_protection(self, group: dict, reason: str) -> dict:
+        outcomes = {"errors": [], "pending": [], "cancelled": []}
         for role in ("take_profit", "stop_loss"):
             row = group.get(role) or {}
             if not row or not self._order_is_open(row):
@@ -1039,7 +1051,20 @@ class OrderLifecycle:
                 continue
             result = self.order_modifier.cancel_order(broker_id) if self.order_modifier else {"ok": False, "error": "order_modifier_unavailable"}
             if not result.get("ok") and not self._cancel_result_looks_closed(result):
-                errors.append({"order_id": broker_id, "role": role, "error": result.get("error") or "cancel_failed"})
+                item = {"order_id": broker_id, "role": role, "error": result.get("error") or "cancel_failed", "result": dict(result or {})}
+                if self._cancel_result_is_pending(result):
+                    outcomes["pending"].append(item)
+                    self._upsert_harvest_order_patch(
+                        row,
+                        extra_patch={
+                            "reason": reason,
+                            "order_flow_cancel_pending": True,
+                            "order_flow_cancel_requested_at_ms": int(time.time() * 1000),
+                            "order_flow_cancel_result": dict(result or {}),
+                        },
+                    )
+                else:
+                    outcomes["errors"].append(item)
                 continue
             self._upsert_harvest_order_patch(
                 row,
@@ -1051,7 +1076,8 @@ class OrderLifecycle:
                     "order_flow_cancel_result": dict(result or {}),
                 },
             )
-        return errors
+            outcomes["cancelled"].append({"order_id": broker_id, "role": role, "result": dict(result or {})})
+        return outcomes
 
     def _await_order_flow_close_fill(
         self,
@@ -1086,12 +1112,31 @@ class OrderLifecycle:
         result: dict,
         decision: dict,
         reason: str,
+        symbol: str = "",
+        conid: int = 0,
+        direction: str = "",
     ) -> None:
         now_ms = int(time.time() * 1000)
         for group in groups or []:
             entry = group.get("entry") or {}
             if not entry:
                 continue
+            previous_intent = self._order_extra(entry).get("order_flow_close_intent")
+            if not isinstance(previous_intent, dict):
+                previous_intent = {}
+            retry_count = int(previous_intent.get("retry_count") or 0)
+            intent = {
+                **previous_intent,
+                "reason": reason,
+                "quantity": quantity,
+                "symbol": str(symbol or previous_intent.get("symbol") or "").strip().upper(),
+                "conid": int(conid or previous_intent.get("conid") or 0),
+                "direction": str(direction or previous_intent.get("direction") or "").strip().lower(),
+                "decision": dict(decision or previous_intent.get("decision") or {}),
+                "last_result": dict(result or {}),
+                "retry_count": retry_count + (1 if reason in {"protection_cancel_failed", "marketable_close_failed", "close_terminal_before_fill"} else 0),
+                "updated_at_ms": now_ms,
+            }
             self._upsert_harvest_order_patch(
                 entry,
                 status="Closing",
@@ -1103,6 +1148,7 @@ class OrderLifecycle:
                     "order_flow_closing_at_ms": now_ms,
                     "order_flow_close_result": dict(result or {}),
                     "order_flow_decision": dict(decision or {}),
+                    "order_flow_close_intent": intent,
                 },
             )
 
@@ -1125,6 +1171,7 @@ class OrderLifecycle:
                     extra_patch={
                         "reason": str(decision.get("reason") or "order_flow_full_exit"),
                         "order_flow_closing": False,
+                        "order_flow_close_intent": {},
                         "order_flow_full_exit": {
                             "closed_quantity": quantity,
                             "closed_at_ms": now_ms,
@@ -1146,6 +1193,29 @@ class OrderLifecycle:
                         "order_flow_close_fill_result": dict(result or {}),
                     },
                 )
+
+    def _pending_order_flow_close_groups(self, rows: list[dict]) -> list[dict]:
+        groups: list[dict] = []
+        for group in self._group_harvest_rows(rows):
+            entry = group.get("entry") or {}
+            if not entry or not self._entry_is_filled(entry):
+                continue
+            extra = self._order_extra(entry)
+            intent = extra.get("order_flow_close_intent")
+            if bool(extra.get("order_flow_closing")) or (isinstance(intent, dict) and bool(intent)):
+                groups.append(group)
+        return groups
+
+    def _pending_order_flow_decision(self, groups: list[dict]) -> dict:
+        for group in groups or []:
+            entry = group.get("entry") or {}
+            intent = self._order_extra(entry).get("order_flow_close_intent")
+            if not isinstance(intent, dict):
+                continue
+            decision = intent.get("decision")
+            if isinstance(decision, dict) and decision:
+                return dict(decision)
+        return {"reason": "order_flow_close_intent_recovery"}
 
     def _execute_order_flow_full_exit(
         self,
@@ -1198,15 +1268,63 @@ class OrderLifecycle:
                 result=fill_result,
                 decision=decision,
                 reason="order_flow_close_pending",
+                symbol=symbol,
+                conid=conid,
+                direction=direction,
             )
             return {"ok": True, "reason": "close_pending", "result": fill_result}
+        self._mark_order_flow_closing(
+            groups=groups,
+            quantity=quantity,
+            result={"phase": "cancel_protection"},
+            decision=decision,
+            reason="order_flow_canceling_protection",
+            symbol=symbol,
+            conid=conid,
+            direction=direction,
+        )
         cancel_errors: list[dict] = []
+        cancel_pending: list[dict] = []
+        cancel_cancelled: list[dict] = []
         for group in groups:
-            cancel_errors.extend(self._cancel_order_flow_protection(group, "order_flow_full_exit"))
+            cancel_result = self._cancel_order_flow_protection(group, "order_flow_full_exit")
+            cancel_errors.extend(cancel_result.get("errors") or [])
+            cancel_pending.extend(cancel_result.get("pending") or [])
+            cancel_cancelled.extend(cancel_result.get("cancelled") or [])
         if cancel_errors:
+            self._mark_order_flow_closing(
+                groups=groups,
+                quantity=quantity,
+                result={"phase": "cancel_protection", "errors": cancel_errors, "cancelled": cancel_cancelled},
+                decision=decision,
+                reason="protection_cancel_failed",
+                symbol=symbol,
+                conid=conid,
+                direction=direction,
+            )
             return {"ok": False, "reason": "protection_cancel_failed", "errors": cancel_errors}
+        if cancel_pending:
+            pending_result = {
+                "phase": "cancel_protection",
+                "pending": cancel_pending,
+                "cancelled": cancel_cancelled,
+            }
+            self._mark_order_flow_closing(
+                groups=groups,
+                quantity=quantity,
+                result=pending_result,
+                decision=decision,
+                reason="protection_cancel_pending",
+                symbol=symbol,
+                conid=conid,
+                direction=direction,
+            )
+            logger.warning("Order-flow full exit waiting for protection cancel: %s qty=%s pending=%s", symbol, quantity, len(cancel_pending))
+            return {"ok": True, "reason": "protection_cancel_pending", "closed_quantity": 0, "result": pending_result}
         first_group = groups[0] if groups else {}
         first_entry = first_group.get("entry") or {}
+        close_limit_price = self._coerce_float(decision.get("limit_price"), 0.0)
+        close_order_type = str((decision.get("marketable_limit") or {}).get("order_type") or ("marketable_limit" if close_limit_price > 0 else "MKT"))
         result = self._place_harvest_market_close(
             conid=conid,
             symbol=symbol,
@@ -1215,8 +1333,8 @@ class OrderLifecycle:
             trade_group_id=str(first_group.get("group_key") or ""),
             entry_order_unique_id=str(first_entry.get("entry_order_unique_id") or first_entry.get("unique_id") or ""),
             source="order_flow_full_exit",
-            order_type=str((decision.get("marketable_limit") or {}).get("order_type") or "marketable_limit"),
-            limit_price=self._coerce_float(decision.get("limit_price"), 0.0),
+            order_type=close_order_type,
+            limit_price=close_limit_price,
             wait_for_fill=True,
             fill_timeout=max(1.0, self._get_config_float("ibkr_order_flow_close_fill_timeout_sec", 5.0)),
         )
@@ -1227,12 +1345,25 @@ class OrderLifecycle:
                 result=result,
                 decision=decision,
                 reason=str(result.get("error") or "order_flow_close_pending"),
+                symbol=symbol,
+                conid=conid,
+                direction=direction,
             )
             self._order_flow_risk_action_count += 1
             self._last_order_flow_risk_action_ms = int(time.time() * 1000)
             logger.warning("Order-flow full exit close pending: %s qty=%s reason=%s", symbol, quantity, result.get("error"))
             return {"ok": True, "reason": "close_pending", "closed_quantity": 0, "result": result}
         if not result.get("ok"):
+            self._mark_order_flow_closing(
+                groups=groups,
+                quantity=quantity,
+                result=result,
+                decision=decision,
+                reason="marketable_close_failed",
+                symbol=symbol,
+                conid=conid,
+                direction=direction,
+            )
             return {"ok": False, "reason": "marketable_close_failed", "result": result}
         self._mark_order_flow_closed(
             groups=groups,
@@ -1247,8 +1378,6 @@ class OrderLifecycle:
 
     def _maybe_apply_order_flow_risk_for_symbol(self, broker_position: dict) -> bool:
         manager = getattr(self, "order_flow_manager", None)
-        if manager is None or not callable(getattr(manager, "position_decision", None)):
-            return False
         symbol = self._broker_position_symbol(broker_position)
         if not symbol or self.is_fixed_position_symbol(symbol):
             return False
@@ -1256,6 +1385,19 @@ class OrderLifecycle:
         if not quantity:
             return False
         rows = self._load_live_order_rows_for_symbol(symbol)
+        pending_groups = self._pending_order_flow_close_groups(rows)
+        if pending_groups:
+            result = self._execute_order_flow_full_exit(
+                symbol=symbol,
+                broker_position=broker_position,
+                groups=pending_groups,
+                decision=self._pending_order_flow_decision(pending_groups),
+            )
+            if not result.get("ok"):
+                logger.warning("Order-flow close intent recovery failed: %s reason=%s", symbol, result.get("reason"))
+            return True
+        if manager is None or not callable(getattr(manager, "position_decision", None)):
+            return False
         groups = self._order_flow_groups(rows)
         if not groups:
             return False

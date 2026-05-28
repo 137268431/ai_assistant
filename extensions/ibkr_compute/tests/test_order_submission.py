@@ -607,6 +607,53 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
         self.assertFalse(hasattr(tp_order, "ocaGroup"))
         self.assertFalse(hasattr(sl_order, "ocaGroup"))
 
+    def test_order_prices_are_normalized_to_cent_tick_before_submission(self):
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeClient(
+            submission_result={
+                "ok": True,
+                "orders": {"101": {"ok": True}, "102": {"ok": True}, "103": {"ok": True}},
+                "missing_order_ids": [],
+            }
+        )
+        adapter.resolve_contract = lambda **kwargs: {
+            "conid": 123,
+            "symbol": "NFLX",
+            "sec_type": "STK",
+            "exchange": "SMART",
+            "currency": "USD",
+        }
+
+        original_order = ib_gateway.Order
+        original_contract = ib_gateway.Contract
+        try:
+            ib_gateway.Order = FakeOrder
+            ib_gateway.Contract = FakeContract
+            result = ib_gateway.BrokerAdapter.place_bracket_order(
+                adapter,
+                conid=123,
+                symbol="NFLX",
+                direction="short",
+                quantity=114,
+                entry_price=88.018772,
+                take_profit_price=86.6988,
+                stop_loss_price=88.9088,
+                order_family_type="partial_harvest_bracket",
+            )
+        finally:
+            ib_gateway.Order = original_order
+            ib_gateway.Contract = original_contract
+
+        self.assertTrue(result["ok"])
+        entry_order = adapter.client.placed_orders[0][1]
+        tp_order = adapter.client.placed_orders[1][1]
+        sl_order = adapter.client.placed_orders[2][1]
+        self.assertEqual(88.02, entry_order.lmtPrice)
+        self.assertEqual(86.70, tp_order.lmtPrice)
+        self.assertEqual(88.91, sl_order.auxPrice)
+        self.assertEqual(88.91, result["stop_loss_price"])
+        self.assertTrue(result["price_normalization"]["stop_loss_price"]["changed"])
+
     def test_place_market_close_sets_account_id_on_order(self):
         adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
         adapter.client = FakeClient({"ok": True})
@@ -679,6 +726,41 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
         self.assertEqual("LMT", result["order_type"])
         self.assertEqual(101.25, result["limit_price"])
 
+    def test_place_market_close_normalizes_marketable_limit_price(self):
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeClient({"ok": True})
+        adapter.resolve_contract = lambda **kwargs: {
+            "conid": 123,
+            "symbol": "NFLX",
+            "sec_type": "STK",
+            "exchange": "SMART",
+            "currency": "USD",
+        }
+
+        original_order = ib_gateway.Order
+        original_contract = ib_gateway.Contract
+        try:
+            ib_gateway.Order = FakeOrder
+            ib_gateway.Contract = FakeContract
+            result = ib_gateway.BrokerAdapter.place_market_close(
+                adapter,
+                conid=123,
+                symbol="NFLX",
+                direction="short",
+                quantity=7,
+                order_type="marketable_limit",
+                limit_price=101.257,
+            )
+        finally:
+            ib_gateway.Order = original_order
+            ib_gateway.Contract = original_contract
+
+        self.assertTrue(result["ok"])
+        close_order = adapter.client.placed_orders[0][1]
+        self.assertEqual(101.26, close_order.lmtPrice)
+        self.assertEqual(101.26, result["limit_price"])
+        self.assertTrue(result["price_normalization"]["limit_price"]["changed"])
+
     def test_place_market_close_rejects_marketable_limit_without_limit_price(self):
         adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
         adapter.client = FakeClient({"ok": True})
@@ -737,6 +819,85 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
         self.assertEqual("CANCELLED", result["status"])
         self.assertEqual(["86"], adapter.client.cancelled)
         self.assertGreaterEqual(adapter.client.cleared.count("86"), 2)
+
+    def test_cancel_order_ignores_stale_invalid_price_after_cancel_request(self):
+        class FakeCancelClient:
+            def __init__(self):
+                self.errors = {}
+                self.cleared = []
+                self.cancelled = []
+                self.open_status = "Cancelled"
+
+            def clear_order_error(self, order_id):
+                self.cleared.append(str(order_id))
+                self.errors.pop(str(order_id), None)
+
+            def cancel_open_order(self, order_id):
+                self.cancelled.append(str(order_id))
+                self.errors[str(order_id)] = {"code": 201, "message": "Order rejected - reason:Invalid Price"}
+
+            def get_order_error(self, order_id):
+                return dict(self.errors.get(str(order_id)) or {})
+
+            def get_order_snapshot(self, order_id):
+                return {"orderId": str(order_id), "status": self.open_status}
+
+            def request_open_orders(self, timeout=1, include_all=False):
+                return [{"orderId": "86", "status": self.open_status}]
+
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeCancelClient()
+
+        result = ib_gateway.BrokerAdapter.cancel_order(adapter, "86")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("CANCELLED", result["status"])
+        self.assertEqual(["86"], adapter.client.cancelled)
+        self.assertEqual([{"code": 201, "message": "Order rejected - reason:Invalid Price"}], result["confirm"]["ignored_errors"])
+
+    def test_modify_order_normalizes_price_updates_before_confirmation(self):
+        class FakeModifyClient:
+            def __init__(self):
+                self.contract = FakeContract()
+                self.order = FakeOrder()
+                self.order.orderId = 555
+                self.order.orderType = "STP"
+                self.placed_orders = []
+                self.cleared = []
+
+            def get_order_objects(self, order_id):
+                return self.contract, self.order
+
+            def clear_order_error(self, order_id):
+                self.cleared.append(str(order_id))
+
+            def place_order(self, contract, order):
+                self.placed_orders.append((contract, order))
+
+            def await_order_submission(self, order_id, timeout=3.0, poll_interval=0.2):
+                return {"ok": True, "order": self.get_order_snapshot(order_id)}
+
+            def get_order_error(self, order_id):
+                return {}
+
+            def get_order_snapshot(self, order_id):
+                return {
+                    "orderId": str(order_id),
+                    "status": "Submitted",
+                    "auxPrice": getattr(self.order, "auxPrice", 0),
+                }
+
+            def request_open_orders(self, timeout=1, include_all=False):
+                return [self.get_order_snapshot("555")]
+
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeModifyClient()
+
+        result = ib_gateway.BrokerAdapter.modify_order(adapter, "555", {"auxPrice": 88.9088})
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(88.91, adapter.client.order.auxPrice)
+        self.assertEqual(88.91, result["price_normalization"]["auxPrice"]["normalized"])
 
 
 class OrderPlacerBracketMetadataTest(unittest.TestCase):

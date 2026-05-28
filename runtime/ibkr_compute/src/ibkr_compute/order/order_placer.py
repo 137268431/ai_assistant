@@ -97,6 +97,9 @@ class OrderPlacer:
         )
         if result.get("ok"):
             self._order_count += 1
+            broker_order_extra = dict(order_extra or {})
+            if isinstance(result.get("price_normalization"), dict) and result.get("price_normalization"):
+                broker_order_extra["broker_price_normalization"] = dict(result.get("price_normalization") or {})
             self._log_order_to_pb(
                 symbol=str(symbol or "").upper(),
                 conid=int(conid or 0),
@@ -104,9 +107,9 @@ class OrderPlacer:
                 entry_coid=result.get("entry_coid") or "",
                 tp_coid=result.get("tp_coid") or "",
                 sl_coid=result.get("sl_coid") or "",
-                entry_price=float(entry_price or 0.0),
-                tp_price=float(take_profit_price or 0.0),
-                sl_price=float(stop_loss_price or 0.0),
+                entry_price=float(result.get("entry_price") or entry_price or 0.0),
+                tp_price=float(result.get("take_profit_price") or take_profit_price or 0.0),
+                sl_price=float(result.get("stop_loss_price") or stop_loss_price or 0.0),
                 quantity=entry_quantity,
                 take_profit_quantity=int(result.get("take_profit_quantity") or tp_quantity),
                 stop_loss_quantity=int(result.get("stop_loss_quantity") or sl_quantity),
@@ -116,7 +119,7 @@ class OrderPlacer:
                 bracket_group=result.get("bracket_group") or "",
                 oca_group=result.get("oca_group") or "",
                 order_family_type=result.get("order_family_type") or resolved_family_type,
-                order_extra=dict(order_extra or {}),
+                order_extra=broker_order_extra,
             )
         missing_order_ids = [
             str(item or "").strip()
@@ -163,6 +166,7 @@ class OrderPlacer:
             "take_profit_quantity": int(result.get("take_profit_quantity") or tp_quantity),
             "stop_loss_quantity": int(result.get("stop_loss_quantity") or sl_quantity),
             "order_extra": dict(order_extra or {}),
+            "price_normalization": dict(result.get("price_normalization") or {}),
             "raw_response": result.get("raw"),
         }
 

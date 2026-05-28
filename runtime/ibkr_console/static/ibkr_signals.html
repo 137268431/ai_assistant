@@ -745,6 +745,14 @@
 
         function getEffectiveSignalStatus(signal) {
             const extra = getSignalExtra(signal);
+            const recordStatus = String(signal?.status || '').trim().toLowerCase();
+            const note = String(signal?.note || extra.note || extra.status_reason || '').trim().toLowerCase();
+            if (['closed', 'expired', 'rejected', 'protection_incomplete'].includes(recordStatus)) {
+                return recordStatus;
+            }
+            if (note.startsWith('closed_by_') || note.includes('closed_by_manual_close')) {
+                return 'closed';
+            }
             const byMode = extra.execution_by_mode && typeof extra.execution_by_mode === 'object'
                 ? extra.execution_by_mode
                 : {};
@@ -757,7 +765,7 @@
                 const modeStatus = String(byMode[key]?.status || '').trim().toLowerCase();
                 if (modeStatus) return modeStatus;
             }
-            return String(signal?.status || 'pending').trim().toLowerCase() || 'pending';
+            return recordStatus || 'pending';
         }
 
         function getEffectiveSignalExecution(signal) {
@@ -929,7 +937,10 @@
 
         function isFilledOrderStatus(order) {
             const status = getOrderText(order, 'status', 'order_status').toLowerCase();
-            return ['filled', 'executed', 'closed'].includes(status);
+            const filledQty = firstPositiveNumber(
+                getOrderNumber(order, 'actual_filled_qty', 'filled_qty', 'filledQuantity')
+            );
+            return ['filled', 'executed', 'closed'].includes(status) || filledQty !== null;
         }
 
         function orderSortTime(order) {
@@ -1017,6 +1028,55 @@
                 });
             });
             return rows;
+        }
+
+        function latestRelatedOrderByRole(orders, roles) {
+            const roleSet = new Set((roles || []).map((role) => String(role || '').trim().toLowerCase()));
+            return (orders || [])
+                .filter((order) => roleSet.has(normalizePnlOrderRole(order)))
+                .sort((a, b) => orderSortTime(b) - orderSortTime(a))[0] || null;
+        }
+
+        function resolveSignalDisplayEntryPrice(signal, relatedOrders = []) {
+            const extra = getSignalExtra(signal);
+            const entryOrder = latestRelatedOrderByRole(relatedOrders, ['entry']);
+            return firstPositiveNumber(
+                getOrderNumber(entryOrder, 'limit_price', 'price', 'lmtPrice'),
+                getOrderNumber(entryOrder, 'fill_price', 'filled_price', 'avgPrice', 'avg_fill_price'),
+                extra.submitted_entry,
+                extra.submitted_entry_limit_price,
+                extra.entry_limit_price,
+                signal?.entry,
+                extra.entry
+            );
+        }
+
+        function resolveSignalDisplayTakeProfitPrice(signal, relatedOrders = []) {
+            const extra = getSignalExtra(signal);
+            const tpOrder = latestRelatedOrderByRole(relatedOrders, ['take_profit']);
+            return firstPositiveNumber(
+                getOrderNumber(tpOrder, 'limit_price', 'tp_price', 'price', 'lmtPrice'),
+                extra.take_profit_order_price,
+                extra.order_flow_take_profit,
+                extra.submitted_take_profit,
+                extra.initial_take_profit,
+                signal?.take_profit,
+                extra.take_profit
+            );
+        }
+
+        function resolveSignalDisplayStopLossPrice(signal, relatedOrders = []) {
+            const extra = getSignalExtra(signal);
+            const slOrder = latestRelatedOrderByRole(relatedOrders, ['stop_loss']);
+            return firstPositiveNumber(
+                getOrderNumber(slOrder, 'sl_price', 'limit_price', 'stop_price', 'auxPrice', 'price'),
+                extra.stop_loss_order_price,
+                extra.order_flow_stop_loss,
+                extra.submitted_stop_loss,
+                extra.initial_stop_loss,
+                signal?.stop_loss,
+                extra.stop_loss
+            );
         }
 
         function roleLabelForPnl(role) {
@@ -1550,7 +1610,7 @@
                 await loadSignalRealtimeQuotes(allSignals.map((signal) => signal.symbol), { force }).catch((error) => {
                     console.warn('加载实时行情失败:', error);
                 });
-                await loadOrdersMap().catch((error) => {
+                await loadOrdersMap({ force }).catch((error) => {
                     console.warn('加载订单映射失败:', error);
                 });
 
@@ -1771,7 +1831,7 @@
 
         // 加载订单映射（按 signal_id / trade_group_id 分组）
         let ordersMap = {};
-        async function loadOrdersMap() {
+        async function loadOrdersMap({ force = false } = {}) {
             ordersMap = {};
 
             // 获取当前信号的 signal_id 和 trade_group_id，便于已平仓卡片回查退出成交。
@@ -1803,7 +1863,8 @@
                     const rows = await fetchCollectionFullList('orders', {
                         filter: `environment = "${currentBrokerMode}" && (${idFilter}) && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
                         sort: '-bar_time_ms,-created',
-                        maxPages: 6
+                        maxPages: 6,
+                        force
                     });
                     rows.forEach(addOrderToMap);
                 }
@@ -1813,7 +1874,8 @@
                     const rows = await fetchCollectionFullList('orders', {
                         filter: `environment = "${currentBrokerMode}" && (${groupFilter}) && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
                         sort: '-bar_time_ms,-created',
-                        maxPages: 6
+                        maxPages: 6,
+                        force
                     });
                     rows.forEach(addOrderToMap);
                 }
@@ -2615,23 +2677,24 @@
                 const isPending = effectiveStatus === 'pending';
                 const showCountdown = isAwaitingConfirm || isPending;
 
-                // 计算开仓金额
-                const entryPrice = signal.entry || 0;
+                // ATR波动率数据（优先从 latestIndicator 获取，没有则从 signal.extra 获取）
+                const latestIndicator = mergeIndicatorWithRealtimeQuote(signalIndicatorsMap[signal.id] || null) || signalIndicatorsMap[signal.id] || null;
+                const signalExtra = getSignalExtra(signal);
+                const relatedOrders = getRelatedOrdersForSignal(signal);
+
+                // 计算开仓金额；有真实订单时优先展示订单最新 Entry/TP/SL，避免信号原始价和订单修改后价格不一致。
+                const entryPrice = resolveSignalDisplayEntryPrice(signal, relatedOrders) || signal.entry || 0;
                 const shares = signal.shares || 0;
 
                 // 计算预计盈亏
                 const isLong = signal.direction === 'long';
-                const stopLoss = signal.stop_loss || 0;
-                const takeProfit = signal.take_profit || 0;
+                const stopLoss = resolveSignalDisplayStopLossPrice(signal, relatedOrders) || signal.stop_loss || 0;
+                const takeProfit = resolveSignalDisplayTakeProfitPrice(signal, relatedOrders) || signal.take_profit || 0;
                 const hasTradePrices = hasPositiveNumber(entryPrice) && hasPositiveNumber(takeProfit) && hasPositiveNumber(stopLoss) && hasPositiveNumber(shares);
                 const profitPerShare = hasTradePrices ? (isLong ? (takeProfit - entryPrice) : (entryPrice - takeProfit)) : 0;
                 const lossPerShare = hasTradePrices ? (isLong ? (entryPrice - stopLoss) : (stopLoss - entryPrice)) : 0;
                 const expectedProfit = profitPerShare * shares;
                 const expectedLoss = lossPerShare * shares;
-
-                // ATR波动率数据（优先从 latestIndicator 获取，没有则从 signal.extra 获取）
-                const latestIndicator = mergeIndicatorWithRealtimeQuote(signalIndicatorsMap[signal.id] || null) || signalIndicatorsMap[signal.id] || null;
-                const signalExtra = getSignalExtra(signal);
                 const closeTimeMs = getSignalCloseTimeMs(signal);
                 const createdMs = getSignalCreatedMs(signal);
                 const computedAtMs = getSignalComputedAtMs(signal);
@@ -2673,12 +2736,12 @@
                 const isSelected = isSameSignalId(signal.signal_id, selectedSignalId);
                 const isDetailActive = isSameSignalId(signal.signal_id, detailSignalId);
                 const selectedStyle = isSelected ? 'border-color:rgba(59,130,246,0.85);box-shadow:0 0 0 1px rgba(59,130,246,0.35),0 20px 50px rgba(59,130,246,0.18);' : '';
-                const entryText = formatSignalPrice(signal.entry);
+                const entryText = formatSignalPrice(entryPrice);
                 const currentPriceText = formatCurrentPrice(latestIndicator, signal);
-                const takeProfitBaseText = formatSignalPrice(signal.take_profit);
-                const stopLossBaseText = formatSignalPrice(signal.stop_loss);
+                const takeProfitBaseText = formatSignalPrice(takeProfit);
+                const stopLossBaseText = formatSignalPrice(stopLoss);
                 const rrText = signal.rr || '数据缺失';
-                const sharesAmountText = `${formatQuantityLabel(signal.shares)} / ${formatPositionSizeLabel(signal.entry, signal.shares)}`;
+                const sharesAmountText = `${formatQuantityLabel(signal.shares)} / ${formatPositionSizeLabel(entryPrice, signal.shares)}`;
                 const signalIdText = signal.signal_id || '数据缺失';
                 const usTimeText = signal.us_time || '等待数据';
                 const expectedProfitText = hasTradePrices ? formatPrice(expectedProfit) : '数据缺失';
@@ -2689,7 +2752,6 @@
                 const stopLossHtml = hasTradePrices && effectiveStatus !== 'closed'
                     ? formatTargetPriceWithPnlHtml(stopLossBaseText, `-${formatPrice(Math.abs(expectedLoss))}`, 'negative')
                     : escapeHtml(stopLossBaseText);
-                const relatedOrders = getRelatedOrdersForSignal(signal);
                 const closedPnl = buildClosedSignalPnl(signal, latestIndicator, relatedOrders);
                 const pnlPanelHtml = buildSignalPnlPanelHtml(signal, closedPnl, expectedProfitText, expectedLossText);
                 const indicatorStateText = getIndicatorEmptyState(signal, latestIndicator);

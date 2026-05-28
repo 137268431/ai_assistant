@@ -8,7 +8,7 @@
   <script src="common.js?v=20260528-market-session-chip-1"></script>
   <script>document.write(getCommonStyles());</script>
   <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-  <link rel="stylesheet" href="/assets/css/pages/ibkr_trade_review/page.css?v=20260528-trade-review-tight-top">
+  <link rel="stylesheet" href="/assets/css/pages/ibkr_trade_review/page.css?v=20260528-trade-review-compact-console">
 </head>
 <body>
   <div id="nav"></div>
@@ -16,22 +16,25 @@
     <div id="contextBar"></div>
     <div id="pageBridge"></div>
 
-    <section class="review-hero panel">
-      <div>
-        <div class="review-kicker">Daily Trade Forensics</div>
-        <h1>每日交易回溯</h1>
-        <p>把每日每个标的的选标、不选、开仓、保护、改止损和平仓事件串起来，直接暴露执行逻辑问题。</p>
+    <section class="review-command panel" aria-labelledby="reviewCommandTitle">
+      <div class="review-command-head">
+        <div>
+          <div class="review-kicker">Daily Review Console</div>
+          <h1 id="reviewCommandTitle">每日交易复盘</h1>
+          <p>按交易日汇总选标、信号、订单、保护和平仓异常，先筛选再查看标的链路。</p>
+        </div>
+        <details class="review-debug">
+          <summary>接口信息</summary>
+          <div class="review-debug-body">
+            <span>GET /api/custom/ibkr/analytics/daily-trade-review</span>
+            <span>复用 lifecycle-flow / daily-signals / today-targets / active-window-progress</span>
+            <div id="integrationList" class="integration-list debug-integration-list"></div>
+          </div>
+        </details>
       </div>
-      <div class="endpoint-stack">
-        <span>GET /api/custom/ibkr/analytics/daily-trade-review</span>
-        <span>复用 lifecycle-flow / daily-signals / today-targets / active-window-progress</span>
-      </div>
-    </section>
-
-    <section class="review-filter panel" aria-label="每日复盘筛选">
       <form id="reviewFilterForm" class="review-filter-grid">
         <label>
-          <span>ET Market Date</span>
+          <span>交易日 ET</span>
           <input id="reviewDateInput" name="market_date" type="date">
         </label>
         <label>
@@ -115,18 +118,8 @@
       </aside>
     </section>
 
-    <section class="panel integrations-panel">
-      <div class="panel-head">
-        <div>
-          <div class="review-kicker">Integrated Capabilities</div>
-          <h2>已整合能力</h2>
-          <p>这个页面是总控台，不替代已有页面；点击标的可继续钻取生命周期图、信号统计和标的工作台。</p>
-        </div>
-      </div>
-      <div id="integrationList" class="integration-list"></div>
-    </section>
   </main>
 
-  <script src="/assets/js/pages/ibkr_trade_review/page.js?v=20260527-trade-review-ui2"></script>
+  <script src="/assets/js/pages/ibkr_trade_review/page.js?v=20260528-trade-review-compact-console"></script>
 </body>
 </html>

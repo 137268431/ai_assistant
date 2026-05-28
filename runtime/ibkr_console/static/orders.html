@@ -1162,6 +1162,16 @@
                 || ['takeprofit', 'stoploss'].includes(orderType);
         }
 
+        function isFilledExecutionOrder(order) {
+            const status = String(order?.status || '').trim().toLowerCase();
+            return ['filled', 'executed', 'closed'].includes(status) || actualFilledQty(order) > 0;
+        }
+
+        function isFilledExitOrderForGroup(order) {
+            if (!order || String(order.role || '').trim().toLowerCase() === 'entry') return false;
+            return isProtectiveOrder(order) && isFilledExecutionOrder(order);
+        }
+
         function isMainOrder(order) {
             if (!order || isProtectiveOrder(order)) return false;
             const role = String(order.role || '').trim().toLowerCase();
@@ -1235,7 +1245,7 @@
                 const primaryOrder = pickPrimaryOrder(ordersSorted);
                 if (!primaryOrder) return null;
                 const latestEvent = [...ordersInGroup].sort((a, b) => b.time_key - a.time_key)[0];
-                const exitOrder = ordersSorted.find((order) => order.role !== 'entry' && order.status === 'Filled') || null;
+                const exitOrder = ordersSorted.find(isFilledExitOrderForGroup) || null;
                 const relationAlert = ordersSorted.find((order) => order.relation_status === 'orphaned') || null;
                 return {
                     group_id: groupId,
@@ -1316,7 +1326,7 @@
                 const closeOrders = ordersSorted.filter((order) => String(order.role || '').trim().toLowerCase() === 'close');
                 const primaryOrder = entryOrders[0] || pickPrimaryOrder(ordersSorted);
                 const latestEvent = [...ordersSorted].sort((a, b) => (b.time_key || 0) - (a.time_key || 0))[0] || primaryOrder;
-                const exitOrder = ordersSorted.find((order) => order.role !== 'entry' && order.status === 'Filled') || null;
+                const exitOrder = ordersSorted.find(isFilledExitOrderForGroup) || null;
                 const relationAlert = ordersSorted.find((order) => order.relation_status === 'orphaned') || null;
                 const tradeGroupIds = uniqueNonEmpty(bucket.tradeGroups.map((group) => group.trade_group_id || group.group_id));
                 const signalId = bucket.signal_id || primaryOrder?.signal_id || latestEvent?.signal_id || '';
@@ -1733,7 +1743,7 @@
         function hasFilledExitForEntry(group, entryOrder) {
             return (group.orders || []).some((order) => {
                 if (order === entryOrder || order.role === 'entry') return false;
-                if (String(order.status || '') !== 'Filled') return false;
+                if (!isFilledExitOrderForGroup(order)) return false;
                 return sameTradeGroupOrder(order, entryOrder);
             });
         }

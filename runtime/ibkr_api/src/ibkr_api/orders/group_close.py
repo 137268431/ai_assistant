@@ -45,6 +45,13 @@ def _error_response(message: str, status_code: int, *, target_id: str) -> tuple[
     )
 
 
+def _is_filled_exit_snapshot(snapshot: dict[str, Any]) -> bool:
+    if snapshot.get("role") == "entry":
+        return False
+    status = to_text(snapshot.get("status"))
+    return status in {"Filled", "Executed", "Closed"} or float(snapshot.get("filled_qty") or 0) > 0
+
+
 def build_order_close_group_response(
     pb: Any,
     *,
@@ -93,15 +100,22 @@ def build_order_close_group_response(
     updated_record_ids: list[str] = []
     closed_order_ids: list[str] = []
     cancelled_order_ids: list[str] = []
+    filled_exit_order_ids: list[str] = []
     detail_record_ids: list[str] = []
     source = to_text(payload.get("source")) or "orders/close_group"
     reason = to_text(payload.get("reason")) or "页面平仓交易组"
 
     for row in related_rows:
         snapshot = normalize_order_row(row)
-        if snapshot["status"] in {"Canceled", "Closed"}:
+        is_filled_exit = _is_filled_exit_snapshot(snapshot)
+        if snapshot["status"] in {"Canceled", "Closed"} and not is_filled_exit:
             continue
-        next_status = "Closed" if snapshot["unique_id"] == entry_order_unique_id else "Canceled"
+        if snapshot["unique_id"] == entry_order_unique_id:
+            next_status = "Closed"
+        elif is_filled_exit:
+            next_status = "Filled"
+        else:
+            next_status = "Canceled"
         patch, event_times = build_group_status_patch(
             row,
             next_status=next_status,
@@ -112,6 +126,8 @@ def build_order_close_group_response(
         updated_record_ids.append(to_text((updated_row or {}).get("id") or row.get("id") or snapshot["unique_id"]))
         if next_status == "Closed":
             closed_order_ids.append(snapshot["unique_id"])
+        elif next_status == "Filled":
+            filled_exit_order_ids.append(snapshot["unique_id"])
         else:
             cancelled_order_ids.append(snapshot["unique_id"])
         detail_row = append_group_order_detail(
@@ -138,6 +154,7 @@ def build_order_close_group_response(
             "trade_group_id": trade_group_id,
             "closed_order_ids": closed_order_ids,
             "cancelled_order_ids": cancelled_order_ids,
+            "filled_exit_order_ids": filled_exit_order_ids,
             "updated_record_ids": updated_record_ids,
             "detail_record_ids": detail_record_ids,
             "source": "ibkr-api",

@@ -445,6 +445,87 @@ class OrderGroupActionsTest(unittest.TestCase):
         self.assertTrue(all(row["extra"]["source"] == "orders/close_group" for row in created_details))
         self.assertEqual(created_details[0]["extra"]["trade_group_id"], "sig-1_entry")
 
+    def test_close_group_preserves_filled_close_order(self):
+        pb = _FakePB(
+            [
+                {
+                    "id": "order-1",
+                    "unique_id": "sig-1_entry",
+                    "symbol": "AAPL",
+                    "environment": "live",
+                    "status": "Filled",
+                    "role": "entry",
+                    "order_type": "Entry",
+                    "order_id": "101",
+                    "broker_order_id": "101",
+                    "trade_group_id": "sig-1_entry",
+                    "entry_order_unique_id": "sig-1_entry",
+                    "direction": "long",
+                    "quantity": 10,
+                    "filled_qty": 10,
+                    "signal_id": "sig-1",
+                    "extra": {"environment": "live", "role": "entry", "trade_group_id": "sig-1_entry"},
+                },
+                {
+                    "id": "order-2",
+                    "unique_id": "sig-1_tp",
+                    "symbol": "AAPL",
+                    "environment": "live",
+                    "status": "Submitted",
+                    "role": "take_profit",
+                    "order_type": "TakeProfit",
+                    "order_id": "102",
+                    "broker_order_id": "102",
+                    "trade_group_id": "sig-1_entry",
+                    "entry_order_unique_id": "sig-1_entry",
+                    "parent_order_unique_id": "sig-1_entry",
+                    "direction": "long",
+                    "quantity": 10,
+                    "filled_qty": 0,
+                    "signal_id": "sig-1",
+                    "extra": {"environment": "live", "role": "take_profit", "trade_group_id": "sig-1_entry"},
+                },
+                {
+                    "id": "order-3",
+                    "unique_id": "close_sig-1_101500",
+                    "symbol": "AAPL",
+                    "environment": "live",
+                    "status": "Filled",
+                    "role": "close",
+                    "order_type": "MKT",
+                    "order_id": "104",
+                    "broker_order_id": "104",
+                    "trade_group_id": "sig-1_entry",
+                    "entry_order_unique_id": "sig-1_entry",
+                    "parent_order_unique_id": "sig-1_entry",
+                    "direction": "sell",
+                    "position_side": "long",
+                    "quantity": 10,
+                    "filled_qty": 10,
+                    "fill_price": 105,
+                    "signal_id": "sig-1",
+                    "extra": {"environment": "live", "role": "close", "trade_group_id": "sig-1_entry"},
+                },
+            ]
+        )
+
+        payload, status_code = build_order_close_group_response(
+            pb,
+            payload={"id": "sig-1_entry", "environment": "live"},
+            normalize_environment=lambda value, default: to_text(value or default) or default,
+            escape_filter_string=escape_filter_string,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["closed_order_ids"], ["sig-1_entry"])
+        self.assertEqual(payload["filled_exit_order_ids"], ["close_sig-1_101500"])
+        self.assertEqual(payload["cancelled_order_ids"], ["sig-1_tp"])
+        self.assertEqual(pb.orders["order-1"]["status"], "Closed")
+        self.assertEqual(pb.orders["order-2"]["status"], "Canceled")
+        self.assertEqual(pb.orders["order-3"]["status"], "Filled")
+        self.assertEqual(pb.orders["order-3"]["relation_status"], "closed")
+
     def test_close_group_requires_filled_entry(self):
         pb = _FakePB(
             [

@@ -145,7 +145,16 @@ def _role(row: dict[str, Any]) -> str:
 
 
 def _is_filled(row: dict[str, Any]) -> bool:
-    return _lower(row.get("status") or _as_object(row.get("extra")).get("status")) in FILLED_STATUSES
+    extra = _as_object(row.get("extra"))
+    filled_qty = _to_float(row.get("filled_qty") if row.get("filled_qty") not in (None, "") else extra.get("filled_qty"))
+    actual_filled_qty = _to_float(
+        row.get("actual_filled_qty") if row.get("actual_filled_qty") not in (None, "") else extra.get("actual_filled_qty")
+    )
+    return (
+        _lower(row.get("status") or extra.get("status")) in FILLED_STATUSES
+        or (filled_qty is not None and filled_qty > 0)
+        or (actual_filled_qty is not None and actual_filled_qty > 0)
+    )
 
 
 def _order_reason(row: dict[str, Any]) -> str:

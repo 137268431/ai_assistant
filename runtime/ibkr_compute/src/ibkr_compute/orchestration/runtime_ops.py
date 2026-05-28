@@ -778,6 +778,28 @@ class TradingServiceRuntimeOpsMixin:
         if not (sl_modify or {}).get("ok") or not (tp_modify or {}).get("ok"):
             return {**result, "ok": False, "reason": "broker_modify_failed"}
 
+        sl_normalization = ((sl_modify or {}).get("price_normalization") or {}).get("auxPrice") or {}
+        tp_normalization = (
+            ((tp_modify or {}).get("price_normalization") or {}).get("price")
+            or ((tp_modify or {}).get("price_normalization") or {}).get("lmtPrice")
+            or {}
+        )
+        normalized_sl = float(sl_normalization.get("normalized") or 0.0)
+        normalized_tp = float(tp_normalization.get("normalized") or 0.0)
+        if normalized_sl > 0 or normalized_tp > 0:
+            result["price_normalization"] = {
+                "stop_loss": dict(sl_normalization or {}),
+                "take_profit": dict(tp_normalization or {}),
+            }
+        if normalized_sl > 0 and abs(normalized_sl - new_sl) > 0.0000001:
+            result["raw_stop_loss"] = new_sl
+            new_sl = normalized_sl
+            result["stop_loss"] = new_sl
+        if normalized_tp > 0 and abs(normalized_tp - new_tp) > 0.0000001:
+            result["raw_take_profit"] = new_tp
+            new_tp = normalized_tp
+            result["take_profit"] = new_tp
+
         self._update_pb_order_row(
             entry_row,
             {"stop_loss": new_sl, "take_profit": new_tp, "sl_price": new_sl, "tp_price": new_tp},

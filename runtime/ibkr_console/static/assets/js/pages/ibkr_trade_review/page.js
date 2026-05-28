@@ -280,10 +280,6 @@
         market_data_environment: context.data_environment
       });
     }
-    const actionMeta = `
-      <span class="review-context-token"><b>Market Date</b>${escapeHtml(context.market_date)}</span>
-      <span class="review-context-token"><b>时段</b>${escapeHtml(sessionLabel)}</span>
-    `;
     if (typeof renderPageContextBar === 'function') {
       node.innerHTML = renderPageContextBar('🧾 IBKR 每日复盘', {
         subtitle: 'Broker / Data / Market Date / 时段 · forensic console',
@@ -296,8 +292,7 @@
             title: state.marketCalendarError || '',
             includeInContext: true
           }
-        ],
-        actionsHtml: actionMeta
+        ]
       });
       return;
     }
@@ -306,7 +301,8 @@
         <strong>IBKR 每日复盘</strong>
         <span>Broker ${escapeHtml(context.broker_mode)}</span>
         <span>Data ${escapeHtml(context.data_environment)}</span>
-        ${actionMeta}
+        <span>Market Date ${escapeHtml(context.market_date)}</span>
+        <span>时段 ${escapeHtml(sessionLabel)}</span>
       </div>
     `;
   }
@@ -760,14 +756,16 @@
   }
 
   function renderIntegrations() {
+    const node = $('integrationList');
+    if (!node) return;
     const rows = state.payload?.integrations || [];
-    $('integrationList').innerHTML = rows.map((item) => `
+    node.innerHTML = rows.length ? rows.map((item) => `
       <article class="integration-card">
         <strong>${escapeHtml(item.id)}</strong>
         <span>${escapeHtml(item.endpoint || item.collection || '')}</span>
         <p>${escapeHtml(item.role || '')}</p>
       </article>
-    `).join('');
+    `).join('') : '<div class="empty-state compact">接口来源暂无返回；不影响复盘结果。</div>';
   }
 
   function initChrome() {

@@ -88,7 +88,9 @@ def _is_entry_order(row: dict[str, Any]) -> bool:
 
 
 def _is_filled(row: dict[str, Any]) -> bool:
-    return to_text(_row_value(row, "status")).lower() == "filled"
+    status = to_text(_row_value(row, "status")).lower()
+    filled_qty = _positive_number_from(row, "filled_qty", "actual_filled_qty")
+    return status in {"filled", "executed", "closed"} or filled_qty is not None
 
 
 def _nonempty_values(row: dict[str, Any], fields: tuple[str, ...]) -> list[str]:

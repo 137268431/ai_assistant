@@ -6,6 +6,7 @@ import math
 import threading
 import time
 from datetime import datetime, timedelta
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from ibkr_compute.broker.ib_gateway_compat import (
@@ -1452,6 +1453,32 @@ class BrokerAdapter:
             order.firmQuoteOnly = False
 
     @staticmethod
+    def _normalize_order_price(price: float, min_tick: float = 0.01) -> float:
+        try:
+            value = Decimal(str(price or 0))
+            tick = Decimal(str(min_tick or 0.01))
+        except Exception:
+            return 0.0
+        if not value.is_finite() or not tick.is_finite() or value <= 0 or tick <= 0:
+            return 0.0
+        steps = (value / tick).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        normalized = (steps * tick).quantize(tick, rounding=ROUND_HALF_UP)
+        return float(normalized)
+
+    @classmethod
+    def _price_normalization_details(cls, **prices: float) -> dict:
+        details: dict[str, dict[str, float | bool]] = {}
+        for name, raw_price in prices.items():
+            raw = _safe_float(raw_price, 0.0)
+            normalized = cls._normalize_order_price(raw)
+            details[name] = {
+                "raw": raw,
+                "normalized": normalized,
+                "changed": abs(raw - normalized) > 0.0000001,
+            }
+        return details
+
+    @staticmethod
     def _contract_exchange_values(item: dict) -> set[str]:
         values: set[str] = set()
         for key in ("exchange", "primary_exchange", "listing_exchange"):
@@ -1911,6 +1938,16 @@ class BrokerAdapter:
         return code == 202 or "order canceled" in message or "order cancelled" in message
 
     @staticmethod
+    def _order_error_is_stale_invalid_price_rejection(order_error: dict | None) -> bool:
+        order_error = order_error or {}
+        try:
+            code = int(order_error.get("code") or 0)
+        except Exception:
+            code = 0
+        message = str(order_error.get("message") or order_error.get("error") or "").strip().lower()
+        return code == 201 and "invalid price" in message
+
+    @staticmethod
     def _order_snapshot_remaining(snapshot: dict | None) -> float:
         snapshot = snapshot or {}
         return _safe_float(
@@ -2002,6 +2039,7 @@ class BrokerAdapter:
             return {"ok": False, "error": "missing_order_id"}
         deadline = time.time() + max(0.5, float(timeout or 0.0))
         last_snapshot: dict = {}
+        ignored_errors: list[dict] = []
         while time.time() < deadline:
             order_error = {}
             getter = getattr(self.client, "get_order_error", None)
@@ -2023,13 +2061,23 @@ class BrokerAdapter:
                         "order_id": normalized_order_id,
                         "status": "CANCELLED",
                         "details": order_error,
+                        "ignored_errors": ignored_errors,
                     }
-                return {
-                    "ok": False,
-                    "order_id": normalized_order_id,
-                    "error": str(order_error.get("message") or "order_cancel_rejected"),
-                    "details": order_error,
-                }
+                if self._order_error_is_stale_invalid_price_rejection(order_error):
+                    ignored_errors.append(dict(order_error))
+                    clearer = getattr(self.client, "clear_order_error", None)
+                    if callable(clearer):
+                        try:
+                            clearer(normalized_order_id)
+                        except Exception:
+                            pass
+                else:
+                    return {
+                        "ok": False,
+                        "order_id": normalized_order_id,
+                        "error": str(order_error.get("message") or "order_cancel_rejected"),
+                        "details": order_error,
+                    }
 
             snapshot, found_open, refreshed = self._request_order_snapshot(
                 normalized_order_id,
@@ -2052,6 +2100,7 @@ class BrokerAdapter:
                     "order_id": normalized_order_id,
                     "status": status,
                     "order": snapshot,
+                    "ignored_errors": ignored_errors,
                 }
             if refreshed and not found_open:
                 if not snapshot:
@@ -2061,6 +2110,7 @@ class BrokerAdapter:
                         "status": "NOT_OPEN",
                         "order": {},
                         "source": "open_orders_missing",
+                        "ignored_errors": ignored_errors,
                     }
                 # A missing open-order row with a stale Submitted snapshot is
                 # ambiguous (cancel vs. fill); wait for a terminal callback.
@@ -2070,6 +2120,7 @@ class BrokerAdapter:
             "order_id": normalized_order_id,
             "error": "order_cancel_unconfirmed",
             "order": last_snapshot,
+            "ignored_errors": ignored_errors,
         }
 
     def await_order_price_update(
@@ -2291,6 +2342,14 @@ class BrokerAdapter:
         tp_ref = f"tp_{group}"
         sl_ref = f"sl_{group}"
         account_id = str(account_id or "").strip()
+        normalized_entry_price = self._normalize_order_price(entry_price)
+        normalized_tp_price = self._normalize_order_price(take_profit_price)
+        normalized_sl_price = self._normalize_order_price(stop_loss_price)
+        price_normalization = self._price_normalization_details(
+            entry_price=entry_price,
+            take_profit_price=take_profit_price,
+            stop_loss_price=stop_loss_price,
+        )
 
         entry = Order()
         entry.orderId = int(order_ids[0])
@@ -2304,14 +2363,14 @@ class BrokerAdapter:
         entry.transmit = False
         self._clear_legacy_order_flags(entry)
         if entry.orderType == "LMT":
-            entry.lmtPrice = float(entry_price)
+            entry.lmtPrice = float(normalized_entry_price)
 
         tp = Order()
         tp.orderId = int(order_ids[1])
         tp.action = close_side
         tp.orderType = "LMT"
         tp.totalQuantity = float(tp_quantity)
-        tp.lmtPrice = float(take_profit_price)
+        tp.lmtPrice = float(normalized_tp_price)
         tp.tif = "GTC"
         tp.parentId = int(order_ids[0])
         tp.orderRef = tp_ref
@@ -2328,7 +2387,7 @@ class BrokerAdapter:
         sl.action = close_side
         sl.orderType = "STP"
         sl.totalQuantity = float(sl_quantity)
-        sl.auxPrice = float(stop_loss_price)
+        sl.auxPrice = float(normalized_sl_price)
         sl.tif = "GTC"
         sl.parentId = int(order_ids[0])
         sl.orderRef = sl_ref
@@ -2360,6 +2419,10 @@ class BrokerAdapter:
                 "entry_coid": entry_ref,
                 "tp_coid": tp_ref,
                 "sl_coid": sl_ref,
+                "entry_price": normalized_entry_price if entry.orderType == "LMT" else float(entry_price or 0.0),
+                "take_profit_price": normalized_tp_price,
+                "stop_loss_price": normalized_sl_price,
+                "price_normalization": price_normalization,
             }
 
         submission_result = self.client.await_order_submissions(
@@ -2414,6 +2477,10 @@ class BrokerAdapter:
                     "entry_coid": entry_ref,
                     "tp_coid": tp_ref,
                     "sl_coid": sl_ref,
+                    "entry_price": normalized_entry_price if entry.orderType == "LMT" else float(entry_price or 0.0),
+                    "take_profit_price": normalized_tp_price,
+                    "stop_loss_price": normalized_sl_price,
+                    "price_normalization": price_normalization,
                 }
             return {
                 "ok": False,
@@ -2434,6 +2501,10 @@ class BrokerAdapter:
                 "entry_coid": entry_ref,
                 "tp_coid": tp_ref,
                 "sl_coid": sl_ref,
+                "entry_price": normalized_entry_price if entry.orderType == "LMT" else float(entry_price or 0.0),
+                "take_profit_price": normalized_tp_price,
+                "stop_loss_price": normalized_sl_price,
+                "price_normalization": price_normalization,
             }
 
         return {
@@ -2448,6 +2519,10 @@ class BrokerAdapter:
             "entry_coid": entry_ref,
             "tp_coid": tp_ref,
             "sl_coid": sl_ref,
+            "entry_price": normalized_entry_price if entry.orderType == "LMT" else float(entry_price or 0.0),
+            "take_profit_price": normalized_tp_price,
+            "stop_loss_price": normalized_sl_price,
+            "price_normalization": price_normalization,
             "submission": submission_result,
             "protection_complete": True,
         }
@@ -2482,17 +2557,20 @@ class BrokerAdapter:
         order.action = side
         normalized_order_type = str(order_type or "MKT").strip().upper()
         wants_limit = normalized_order_type in {"LMT", "LIMIT", "MARKETABLE_LIMIT"}
-        if wants_limit and float(limit_price or 0.0) <= 0:
+        normalized_limit_price = self._normalize_order_price(limit_price) if wants_limit else 0.0
+        price_normalization = self._price_normalization_details(limit_price=limit_price) if wants_limit else {}
+        if wants_limit and normalized_limit_price <= 0:
             return {
                 "ok": False,
                 "error": "limit_price_required_for_marketable_limit",
                 "order_type": normalized_order_type,
                 "limit_price": float(limit_price or 0.0),
+                "price_normalization": price_normalization,
             }
         use_limit = wants_limit
         order.orderType = "LMT" if use_limit else "MKT"
         if use_limit:
-            order.lmtPrice = float(limit_price or 0.0)
+            order.lmtPrice = float(normalized_limit_price)
         order.totalQuantity = float(quantity)
         order.tif = "DAY"
         order_ref = str(order_ref or "").strip()
@@ -2527,7 +2605,8 @@ class BrokerAdapter:
             "bracket_group": order.orderRef,
             "entry_coid": order.orderRef,
             "order_type": order.orderType,
-            "limit_price": float(limit_price or 0.0) if use_limit else 0.0,
+            "limit_price": float(normalized_limit_price) if use_limit else 0.0,
+            "price_normalization": price_normalization,
         }
         if wait_for_fill:
             fill_result = self.await_order_fill(
@@ -2557,13 +2636,34 @@ class BrokerAdapter:
             contract, order = self.client.get_order_objects(order_id)
         if not contract or not order:
             return {"ok": False, "error": "order_not_found"}
+        price_normalization: dict = {}
         if "price" in updates and updates["price"] is not None:
+            normalized_price = self._normalize_order_price(updates["price"])
+            price_normalization["price"] = {
+                "raw": _safe_float(updates["price"], 0.0),
+                "normalized": normalized_price,
+                "changed": abs(_safe_float(updates["price"], 0.0) - normalized_price) > 0.0000001,
+            }
             if str(getattr(order, "orderType", "") or "").upper() in {"STP", "STOP"}:
-                order.auxPrice = float(updates["price"])
+                order.auxPrice = float(normalized_price)
             else:
-                order.lmtPrice = float(updates["price"])
+                order.lmtPrice = float(normalized_price)
         if "auxPrice" in updates and updates["auxPrice"] is not None:
-            order.auxPrice = float(updates["auxPrice"])
+            normalized_aux_price = self._normalize_order_price(updates["auxPrice"])
+            price_normalization["auxPrice"] = {
+                "raw": _safe_float(updates["auxPrice"], 0.0),
+                "normalized": normalized_aux_price,
+                "changed": abs(_safe_float(updates["auxPrice"], 0.0) - normalized_aux_price) > 0.0000001,
+            }
+            order.auxPrice = float(normalized_aux_price)
+        if "lmtPrice" in updates and updates["lmtPrice"] is not None:
+            normalized_lmt_price = self._normalize_order_price(updates["lmtPrice"])
+            price_normalization["lmtPrice"] = {
+                "raw": _safe_float(updates["lmtPrice"], 0.0),
+                "normalized": normalized_lmt_price,
+                "changed": abs(_safe_float(updates["lmtPrice"], 0.0) - normalized_lmt_price) > 0.0000001,
+            }
+            order.lmtPrice = float(normalized_lmt_price)
         if "quantity" in updates and updates["quantity"] is not None:
             order.totalQuantity = float(updates["quantity"])
         if "tif" in updates and updates["tif"]:
@@ -2587,11 +2687,17 @@ class BrokerAdapter:
         expected_price = 0.0
         expected_fields: list[str] = []
         if "auxPrice" in updates and updates["auxPrice"] is not None:
-            expected_price = float(updates["auxPrice"] or 0.0)
+            expected_price = float(price_normalization.get("auxPrice", {}).get("normalized") or 0.0)
             expected_fields = ["auxPrice"]
+        elif "lmtPrice" in updates and updates["lmtPrice"] is not None:
+            expected_price = float(price_normalization.get("lmtPrice", {}).get("normalized") or 0.0)
+            expected_fields = ["lmtPrice", "price"]
         elif "price" in updates and updates["price"] is not None:
-            expected_price = float(updates["price"] or 0.0)
-            expected_fields = ["price", "lmtPrice"]
+            expected_price = float(price_normalization.get("price", {}).get("normalized") or 0.0)
+            if str(getattr(order, "orderType", "") or "").upper() in {"STP", "STOP"}:
+                expected_fields = ["auxPrice", "price"]
+            else:
+                expected_fields = ["price", "lmtPrice"]
         if expected_price > 0 and expected_fields:
             confirm_result = self.await_order_price_update(
                 str(order_id),
@@ -2607,9 +2713,20 @@ class BrokerAdapter:
                     "entry_error": entry_result,
                     "confirm": confirm_result,
                     "order_id": str(order_id),
+                    "price_normalization": price_normalization,
                 }
-            return {"ok": True, "order_id": str(order_id), "order": confirm_result.get("order") or {}}
-        return {"ok": True, "order_id": str(order_id), "order": entry_result.get("order") or {}}
+            return {
+                "ok": True,
+                "order_id": str(order_id),
+                "order": confirm_result.get("order") or {},
+                "price_normalization": price_normalization,
+            }
+        return {
+            "ok": True,
+            "order_id": str(order_id),
+            "order": entry_result.get("order") or {},
+            "price_normalization": price_normalization,
+        }
 
     def get_order_snapshot(self, order_id: str) -> dict:
         return self.client.get_order_snapshot(order_id)

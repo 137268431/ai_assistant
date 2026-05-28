@@ -29,7 +29,6 @@ body {
   margin-bottom: 6px;
 }
 
-.review-context-token,
 .review-context-fallback span {
   display: inline-flex;
   align-items: center;
@@ -44,7 +43,6 @@ body {
   white-space: nowrap;
 }
 
-.review-context-token b,
 .review-context-fallback strong {
   color: var(--review-accent);
   text-transform: uppercase;
@@ -71,34 +69,26 @@ body {
   backdrop-filter: blur(18px);
 }
 
-.review-hero {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  padding: 20px;
-}
-
 .review-kicker,
 .metric-label,
-.review-filter span {
+.review-filter-grid label > span {
   color: var(--review-accent);
   font: 800 10px/1 'JetBrains Mono', monospace;
   letter-spacing: 0.14em;
   text-transform: uppercase;
 }
 
-.review-hero h1,
+.review-command h1,
 .panel-head h2 {
   margin: 7px 0 0;
   color: var(--review-text);
   letter-spacing: -0.055em;
 }
 
-.review-hero h1 { font-size: clamp(28px, 4vw, 54px); }
+.review-command h1 { font-size: clamp(24px, 2.6vw, 34px); }
 .panel-head h2 { font-size: 19px; }
 
-.review-hero p,
+.review-command p,
 .panel-head p,
 .metric-copy,
 .event-copy,
@@ -110,13 +100,68 @@ body {
   line-height: 1.55;
 }
 
-.endpoint-stack {
-  display: grid;
-  justify-items: end;
-  gap: 8px;
+.review-command {
+  margin-top: 10px;
+  padding: 16px;
 }
 
-.endpoint-stack span,
+.review-command-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding-bottom: 14px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+
+.review-command-head p {
+  margin: 7px 0 0;
+  max-width: 760px;
+}
+
+.review-debug {
+  flex: 0 1 430px;
+  display: grid;
+  justify-items: end;
+  min-width: min(100%, 260px);
+}
+
+.review-debug summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.045);
+  color: var(--review-muted);
+  font: 800 11px/1.2 'JetBrains Mono', monospace;
+  cursor: pointer;
+  user-select: none;
+}
+
+.review-debug summary::-webkit-details-marker { display: none; }
+.review-debug summary::after { content: '＋'; margin-left: 8px; color: var(--review-accent); }
+.review-debug[open] summary::after { content: '－'; }
+.review-debug[open] summary {
+  color: var(--review-text);
+  border-color: rgba(139, 212, 80, 0.30);
+  background: rgba(139, 212, 80, 0.08);
+}
+
+.review-debug-body {
+  display: grid;
+  gap: 8px;
+  width: min(430px, 100%);
+  margin-top: 8px;
+  padding: 12px;
+  border: 1px solid rgba(255,255,255,0.09);
+  border-radius: 14px;
+  background: rgba(2, 8, 23, 0.30);
+}
+
+.review-debug-body > span,
 .status-pill,
 .reason-chip,
 .issue-count {
@@ -131,29 +176,35 @@ body {
   font: 700 10.5px/1.2 'JetBrains Mono', monospace;
 }
 
-.review-filter { margin-top: 12px; padding: 14px; }
+.review-debug-body > span {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .review-filter-grid {
   display: grid;
-  grid-template-columns: repeat(12, minmax(0, 1fr));
+  grid-template-columns:
+    minmax(160px, 1.08fr)
+    minmax(120px, 0.72fr)
+    minmax(130px, 0.76fr)
+    minmax(130px, 0.78fr)
+    minmax(190px, 1fr)
+    max-content
+    max-content;
   gap: 10px;
   align-items: end;
 }
 
-.review-filter label {
+.review-filter-grid label {
   display: grid;
-  grid-column: span 2;
   gap: 7px;
+  min-width: 0;
 }
 
-.review-filter label:first-child,
-.review-filter label:nth-child(5) {
-  grid-column: span 2;
-}
-
-.review-filter input,
-.review-filter select,
+.review-filter-grid input,
+.review-filter-grid select,
 #localSearchInput {
-  min-height: 39px;
+  min-height: 42px;
   border-radius: 12px;
   border: 1px solid rgba(255,255,255,0.10);
   background: rgba(2, 8, 23, 0.34);
@@ -163,21 +214,39 @@ body {
 }
 
 .check-field {
-  grid-column: span 2;
   display: flex !important;
-  grid-template-columns: auto 1fr;
   align-items: center;
-  min-height: 39px;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 10px;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 12px;
+  background: rgba(2, 8, 23, 0.24);
 }
 
-.check-field input { min-height: auto; }
-.filter-actions { grid-column: span 2; display: flex; gap: 8px; justify-content: flex-end; }
+.check-field input {
+  width: 16px;
+  min-height: auto;
+  accent-color: var(--review-accent);
+}
+
+.review-filter-grid .check-field span {
+  color: var(--review-accent);
+  font: 800 11px/1 'JetBrains Mono', monospace;
+  letter-spacing: 0.08em;
+}
+
+.filter-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
 
 .review-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 39px;
+  min-height: 42px;
   padding: 0 14px;
   border-radius: 12px;
   border: 1px solid rgba(255,255,255,0.12);
@@ -405,6 +474,16 @@ body {
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
 }
+.debug-integration-list.integration-list {
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+.debug-integration-list .integration-card {
+  padding: 10px;
+}
+.debug-integration-list .integration-card p {
+  margin: 5px 0 0;
+}
 .empty-state {
   border: 1px dashed rgba(255,255,255,0.12);
   border-radius: 14px;
@@ -422,18 +501,21 @@ body {
   .issue-list { max-height: none; }
   .integration-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .review-filter-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
-  .review-filter label,
+  .review-filter-grid label,
   .check-field,
   .filter-actions { grid-column: span 2; }
+  .debug-integration-list.integration-list { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 720px) {
-  .review-hero { align-items: flex-start; flex-direction: column; }
-  .endpoint-stack { justify-items: start; }
+  .review-command-head { align-items: flex-start; flex-direction: column; }
+  .review-debug { width: 100%; justify-items: start; }
+  .review-debug-body { width: 100%; }
   .review-filter-grid { grid-template-columns: 1fr; }
-  .review-filter label,
+  .review-filter-grid label,
   .check-field,
   .filter-actions { grid-column: span 1; }
+  .filter-actions .review-btn { flex: 1; }
   .cards-grid,
   .execution-chain,
   .detail-cards,

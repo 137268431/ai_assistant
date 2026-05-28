@@ -95,7 +95,14 @@ def _order_role(row: dict[str, Any]) -> str:
 
 
 def _is_filled(row: dict[str, Any]) -> bool:
-    return _text(_row_value(row, "status")).lower() == "filled"
+    status = _text(_row_value(row, "status")).lower()
+    filled_qty = _to_float(_row_value(row, "filled_qty"))
+    actual_filled_qty = _to_float(_row_value(row, "actual_filled_qty"))
+    return (
+        status in {"filled", "executed", "closed"}
+        or (filled_qty is not None and filled_qty > 0)
+        or (actual_filled_qty is not None and actual_filled_qty > 0)
+    )
 
 
 def _is_entry(row: dict[str, Any]) -> bool:
