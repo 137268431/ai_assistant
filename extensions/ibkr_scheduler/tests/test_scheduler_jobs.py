@@ -172,6 +172,13 @@ class SchedulerJobsTest(unittest.TestCase):
                 market_data_mode="live",
                 mode_scope="market_data",
             )
+            scheduler._run_native_http_job(
+                "ibkr_tv_indicator_audit",
+                "live",
+                broker_mode="paper",
+                market_data_mode="live",
+                mode_scope="market_data",
+            )
             scheduler._run_native_api_job(
                 "system_status_reminder",
                 "live",
@@ -182,7 +189,8 @@ class SchedulerJobsTest(unittest.TestCase):
 
         self.assertEqual(run_mock.call_args_list[0].kwargs["timeout_seconds"], scheduler_app_mod.DEFAULT_ASYNC_SUBMIT_TIMEOUT_SECONDS)
         self.assertEqual(run_mock.call_args_list[1].kwargs["timeout_seconds"], scheduler_app_mod.DEFAULT_ASYNC_SUBMIT_TIMEOUT_SECONDS)
-        self.assertEqual(run_mock.call_args_list[2].kwargs["timeout_seconds"], 150)
+        self.assertEqual(run_mock.call_args_list[2].kwargs["timeout_seconds"], scheduler_app_mod.DEFAULT_ASYNC_SUBMIT_TIMEOUT_SECONDS)
+        self.assertEqual(run_mock.call_args_list[3].kwargs["timeout_seconds"], 150)
 
     def test_cron_matches_minute_supports_ranges_steps_and_weekdays(self):
         monday = datetime(2026, 4, 20, 9, 40, tzinfo=timezone.utc)
@@ -377,6 +385,7 @@ class SchedulerJobsTest(unittest.TestCase):
     def test_data_quality_jobs_are_collapsed_to_multi_schedule_jobs(self):
         repair = next(item for item in scheduler_app_mod.CRON_DEFINITIONS if item["id"] == "ibkr_data_quality_repair_sweep")
         truth = next(item for item in scheduler_app_mod.CRON_DEFINITIONS if item["id"] == "ibkr_data_quality_truth_audit_cycle")
+        tv_audit = next(item for item in scheduler_app_mod.CRON_DEFINITIONS if item["id"] == "ibkr_tv_indicator_audit")
 
         self.assertNotIn("ibkr_data_quality_open_sweep", {item["id"] for item in scheduler_app_mod.CRON_DEFINITIONS})
         self.assertEqual({item["id"] for item in repair["schedules"]}, {"open_sweep", "close_sweep"})
@@ -385,6 +394,11 @@ class SchedulerJobsTest(unittest.TestCase):
         self.assertEqual(
             {item["payload_mode"] for item in truth["schedules"]},
             {"previous_business_day", "current_day"},
+        )
+        self.assertEqual(tv_audit["default_value"], "FALSE")
+        self.assertEqual(
+            scheduler_app_mod.NATIVE_HTTP_JOB_ENDPOINTS["ibkr_tv_indicator_audit"],
+            ("POST", "/ibkr/data-quality/tv-indicator-audit"),
         )
 
     def test_scan_runtime_submits_async_job(self):

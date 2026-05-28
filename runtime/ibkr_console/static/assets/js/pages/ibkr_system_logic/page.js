@@ -344,6 +344,7 @@ function renderSchedulerPanel(cronPayload = {}) {
           <span class="logic-source-chip">ibkr_scheduler.cron_registry</span>
           <span class="logic-source-chip">ibkr_scheduler.scheduler_app</span>
           <span class="logic-source-chip">ibkr_api.system.jobs</span>
+          <span class="logic-source-chip">ibkr_api.system.jobs.active_window_progress_status</span>
         </div>
       </div>
       <div class="logic-scheduler-summary">

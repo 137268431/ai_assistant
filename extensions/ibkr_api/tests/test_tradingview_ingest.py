@@ -11,10 +11,25 @@ for src_root in (SERVICE_SRC_ROOT, COMPUTE_SRC_ROOT):
     if str(src_root) not in sys.path:
         sys.path.insert(0, str(src_root))
 
+
+class _FakeApp:
+    def route(self, _path, methods=None):
+        def decorator(func):
+            return func
+
+        return decorator
+
+
 sys.modules.setdefault(
     "flask",
-    SimpleNamespace(Response=object, jsonify=lambda payload: payload, request=SimpleNamespace(get_json=lambda silent=True: {})),
+    SimpleNamespace(
+        Flask=lambda name: _FakeApp(),
+        Response=object,
+        jsonify=lambda payload: payload,
+        request=SimpleNamespace(get_json=lambda silent=True: {}),
+    ),
 )
+
 
 from ibkr_api.tradingview.ingest import (
     normalize_risk_reward_value,
@@ -23,14 +38,6 @@ from ibkr_api.tradingview.ingest import (
     upsert_tv_signal,
 )
 from ibkr_api.tradingview import routes as tv_routes
-
-
-class _FakeApp:
-    def route(self, _path, methods=None):
-        def decorator(func):
-            return func
-
-        return decorator
 
 
 class _FakePB:

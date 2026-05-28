@@ -55,11 +55,13 @@ JOB_TIMEOUT_SECONDS = {
     "ibkr_scan_runtime": 180,
     "ibkr_data_quality_repair_sweep": 300,
     "ibkr_data_quality_truth_audit_cycle": 300,
+    "ibkr_tv_indicator_audit": 300,
 }
 ASYNC_NATIVE_HTTP_JOB_IDS = {
     "ibkr_scan_runtime",
     "ibkr_data_quality_repair_sweep",
     "ibkr_data_quality_truth_audit_cycle",
+    "ibkr_tv_indicator_audit",
 }
 ASYNC_RUNNING_STATUSES = {"accepted", "pending", "running", "submitted", "in_progress", "processing"}
 ASYNC_TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
@@ -480,6 +482,14 @@ class SchedulerService:
                 "persist": True,
                 "market_date": market_date,
                 "payload_mode": payload_mode or "current_day",
+            }
+        if job_id == "ibkr_tv_indicator_audit":
+            return {
+                "symbols": ["SPY"],
+                "intervals": ["5", "15", "30", "60", "240", "D"],
+                "limit": 120,
+                "alert": True,
+                "source": "ibkr_scheduler",
             }
         if job_id == "ibkr_storage_governor":
             return {

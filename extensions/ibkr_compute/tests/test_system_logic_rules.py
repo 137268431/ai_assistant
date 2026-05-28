@@ -153,6 +153,9 @@ class SystemLogicRulesPayloadTest(unittest.TestCase):
             signals = rules_views._signal_panel("live")
             order_flow = rules_views._order_flow_panel("live")
             broker_switch = rules_views._broker_mode_switch_panel("live")
+            quality = rules_views._quality_panel("live")
+            backtest = rules_views._backtest_validation_panel("live")
+            system_flow = rules_views._system_flow_panel("live")
 
         indicator_text = "\n".join(
             line
@@ -202,10 +205,42 @@ class SystemLogicRulesPayloadTest(unittest.TestCase):
         self.assertIn("not core alpha", str(order_flow))
         self.assertIn("broker-mode/switch/preview", str(broker_switch))
         self.assertIn("2FA", str(broker_switch))
+        self.assertIn("proof_status", str(execution))
+        self.assertIn("database_correctness_status", str(execution))
+        self.assertIn("truth_status", str(execution))
+        self.assertIn("data_quality_not_ready", str(execution))
 
         self.assertIn("open_target_reconcile", str(selection))
         self.assertIn("target_activation_diagnostics", str(selection))
         self.assertIn("target_activation_timeline", str(selection))
+        self.assertIn("ibkr_active_window_progress_status", str(selection))
+        self.assertIn("08:30-11:00", str(selection))
+
+        self.assertIn("indicator_audit", str(indicators))
+        self.assertIn("tv_indicator_audit_snapshots", str(indicators))
+        self.assertIn("1e-4", str(indicators))
+        self.assertIn("1e-2", str(indicators))
+
+        self.assertIn("proof_status", str(quality))
+        self.assertIn("green/ok", str(quality))
+        self.assertIn("truth_repair", str(quality))
+        self.assertIn("delete_extra_stored_bar", str(quality))
+        self.assertIn("delete_not_confirmed_by_refetch", str(quality))
+        self.assertIn("ibkr_bar_truth_repair_events", str(quality))
+        self.assertIn("tv_indicator_audit", str(quality))
+        self.assertIn("tv_indicator_audit_snapshots", str(quality))
+        self.assertIn("indicators、backtests 或 live candidates", str(quality))
+
+        self.assertIn("backtest_require_truth_proof", str(backtest))
+        self.assertIn("data_correctness_guard_enabled", str(backtest))
+        self.assertIn("data_quality_proof_gate", str(backtest))
+        self.assertIn("data_quality_proof_not_green", str(backtest))
+        self.assertIn("ibkr_bar_integrity", str(backtest))
+        self.assertIn("ibkr_bar_truth_audit", str(backtest))
+
+        self.assertIn("Data Proof", str(system_flow))
+        self.assertIn("ibkr_active_window_progress_status", str(system_flow))
+        self.assertIn("tv_indicator_audit", str(system_flow))
 
 
 if __name__ == "__main__":

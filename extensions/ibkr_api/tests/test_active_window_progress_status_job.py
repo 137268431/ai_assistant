@@ -20,6 +20,14 @@ from ibkr_api.system.jobs.active_window_progress_status import (
 )
 
 
+def _card_text(card):
+    return "\n".join(
+        str(element.get("content") or "")
+        for element in (card.get("elements") or [])
+        if isinstance(element, dict)
+    )
+
+
 class ActiveWindowProgressStatusJobTest(unittest.TestCase):
     def _sample_progress(self, payload):
         return {
@@ -165,13 +173,29 @@ class ActiveWindowProgressStatusJobTest(unittest.TestCase):
         state = states[(ACTIVE_WINDOW_PROGRESS_CARD_STATE_KEY, "paper", "2026-05-28")]["data"]
         self.assertEqual(state["message_id"], "msg-1")
         self.assertEqual(state["chat_id"], "startup-chat-paper")
+        self.assertEqual(state["update_seq"], 1)
+        self.assertEqual(state["last_refresh_at_et"], "2026-05-28 09:45:00")
+        self.assertEqual(state["next_expected_refresh_at_et"], "2026-05-28 09:50:00")
+        self.assertEqual(payload["heartbeat"]["update_seq"], 1)
         self.assertTrue(events)
-        self.assertIn("IBKR 标的/信号窗口动态", sends[0]["card"]["header"]["title"]["content"])
+        card = sends[0]["card"]
+        self.assertIn("IBKR 标的/信号窗口动态", card["header"]["title"]["content"])
+        self.assertIn("09:45 ET", card["header"]["title"]["content"])
+        self.assertIn("运行心跳", _card_text(card))
+        self.assertIn("第 1 次刷新", _card_text(card))
+        self.assertIn("下次约 09:50 ET", _card_text(card))
+        self.assertEqual(_card_text(card).count("状态分布"), 1)
 
     def test_second_run_updates_existing_message_id_without_sending_new_card(self):
         states = {
             (ACTIVE_WINDOW_PROGRESS_CARD_STATE_KEY, "paper", "2026-05-28"): {
-                "data": {"message_id": "msg-existing", "chat_id": "startup-chat-paper"}
+                "data": {
+                    "message_id": "msg-existing",
+                    "chat_id": "startup-chat-paper",
+                    "update_seq": 1,
+                    "last_refresh_at_et": "2026-05-28 09:40:00",
+                    "last_refresh_at_cn": "2026-05-28 21:40:00",
+                }
             }
         }
         sends = []
@@ -195,6 +219,12 @@ class ActiveWindowProgressStatusJobTest(unittest.TestCase):
         self.assertFalse(events)
         state = states[(ACTIVE_WINDOW_PROGRESS_CARD_STATE_KEY, "paper", "2026-05-28")]["data"]
         self.assertEqual(state["message_id"], "msg-existing")
+        self.assertEqual(state["update_seq"], 2)
+        self.assertEqual(state["last_refresh_at_et"], "2026-05-28 09:45:00")
+        self.assertEqual(state["next_expected_refresh_at_et"], "2026-05-28 09:50:00")
+        self.assertEqual(payload["heartbeat"]["last_refresh_short_et"], "09:40")
+        self.assertIn("第 2 次刷新", _card_text(updates[0]["card"]))
+        self.assertIn("上次 09:40 ET", _card_text(updates[0]["card"]))
 
     def test_dry_run_builds_card_without_delivery_or_state_write(self):
         states = {}
@@ -212,6 +242,8 @@ class ActiveWindowProgressStatusJobTest(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["status"], "dry_run")
         self.assertIn("card", payload)
+        self.assertEqual(payload["heartbeat"]["update_seq"], 1)
+        self.assertIn("运行心跳", _card_text(payload["card"]))
         self.assertFalse(sends)
         self.assertFalse(updates)
         self.assertFalse(events)
@@ -220,7 +252,7 @@ class ActiveWindowProgressStatusJobTest(unittest.TestCase):
     def test_update_failure_falls_back_to_send_and_replaces_state_message_id(self):
         states = {
             (ACTIVE_WINDOW_PROGRESS_CARD_STATE_KEY, "paper", "2026-05-28"): {
-                "data": {"message_id": "msg-old", "chat_id": "startup-chat-paper"}
+                "data": {"message_id": "msg-old", "chat_id": "startup-chat-paper", "update_seq": 3}
             }
         }
         sends = []
@@ -250,6 +282,8 @@ class ActiveWindowProgressStatusJobTest(unittest.TestCase):
         self.assertEqual(sends[0]["chat_id"], "startup-chat-paper")
         state = states[(ACTIVE_WINDOW_PROGRESS_CARD_STATE_KEY, "paper", "2026-05-28")]["data"]
         self.assertEqual(state["message_id"], "msg-new")
+        self.assertEqual(state["update_seq"], 4)
+        self.assertIn("第 4 次刷新", _card_text(sends[0]["card"]))
         self.assertTrue(events)
         self.assertEqual(events[0][0][1], "warning")
 

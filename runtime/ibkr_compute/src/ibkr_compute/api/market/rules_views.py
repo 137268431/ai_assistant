@@ -114,6 +114,8 @@ SYSTEM_LOGIC_COVERAGE_DOMAINS = [
             "ibkr_compute.core.indicators.dtp",
             "ibkr_compute.core.indicators.divergence",
             "ibkr_compute.core.indicators.filters",
+            "ibkr_api.tradingview.ingest",
+            "ibkr_compute.api.ops.tv_indicator_audit",
         ],
     },
     {
@@ -180,6 +182,7 @@ SYSTEM_LOGIC_COVERAGE_DOMAINS = [
             "ibkr_scheduler.scheduler_app",
             "ibkr_api.system.jobs",
             "ibkr_api.system.jobs.early_expansion_topup",
+            "ibkr_api.system.jobs.active_window_progress_status",
         ],
     },
     {
@@ -188,6 +191,10 @@ SYSTEM_LOGIC_COVERAGE_DOMAINS = [
         "source_modules": [
             "ibkr_compute.market.bar_freshness",
             "ibkr_compute.backtest.market_data_coverage",
+            "ibkr_compute.api.ops.data_quality_truth",
+            "ibkr_compute.api.ops.truth_repair",
+            "ibkr_compute.api.ops.tv_indicator_audit",
+            "ibkr_api.tradingview.ingest",
             "ibkr_api.system.jobs.data_gap",
         ],
     },
@@ -195,6 +202,8 @@ SYSTEM_LOGIC_COVERAGE_DOMAINS = [
         "id": "backtest_validation",
         "label": "回测 / 验证",
         "source_modules": [
+            "ibkr_compute.backtest.orchestration",
+            "ibkr_compute.backtest.request_utils",
             "ibkr_compute.backtest.portfolio",
             "ibkr_compute.backtest.scan_replay",
             "ibkr_compute.backtest.tv_parity",
@@ -415,6 +424,7 @@ def _selection_panel(environment: str) -> dict:
             "ibkr_compute.api.market.screener.scoring",
             "ibkr_compute.api.market.screener.payload",
             "ibkr_api.system.jobs.early_expansion_topup",
+            "ibkr_api.system.jobs.active_window_progress_status",
         ],
         "sections": [
             {
@@ -451,6 +461,16 @@ def _selection_panel(environment: str) -> dict:
                     "若 /scan/status 已有 pending/running topup 且 active_count <= 0，open reconcile 不直接返回 pending，而是同步重跑 /scan。",
                     "topup 模式下 existing target 记为 deferred/existing_target_retained；新标的必须 context_gate_passed=true 才写 active，低 signal pressure 不写 candidate。",
                     "run_scan 返回 target_activation_diagnostics 与 target_activation_timeline，并在可用时写入 target_decisions。",
+                ],
+            },
+            {
+                "title": "Active Window Progress 动态卡",
+                "copy": "开盘前后持续向启动群更新同一张状态卡，即使没有订单也展示 active 标的和信号窗口进度。",
+                "lines": [
+                    "ibkr_active_window_progress_status 由 scheduler 以 native_api_http 调用 /api/custom/system/jobs/active_window_progress_status。",
+                    "Cron 覆盖工作日 ET 08:30-11:00，每 5 分钟更新；11:00 执行最后一轮 handoff。",
+                    "状态卡读取 /api/custom/ibkr/active-window-progress 与 today targets，展示 active/candidate、新鲜 5m bars、window_active/valid/confirmed/candidate 与状态分布。",
+                    "同一交易日按 ibkr_active_window_progress_card state 保存 message_id；更新失败时 fallback 重新发送并写 system_events。",
                 ],
             },
             {
@@ -836,7 +856,7 @@ def _signal_panel(environment: str) -> dict:
 def _system_flow_panel(environment: str) -> dict:
     return {
         "title": "系统逻辑地图",
-        "subtitle": "从观察池、open reconcile、signal-window active 入池、core_two_setup_v1 两个核心 setup、Delta 辅助策略、订单生命周期、调度与验证的完整链路。",
+        "subtitle": "从观察池、open reconcile、signal-window active 入池、core_two_setup_v1 两个核心 setup、Delta 辅助策略、data correctness proof、订单生命周期、调度与验证的完整链路。",
         "coverage_domains": [
             "target_selection",
             "data_indicators",
@@ -854,15 +874,19 @@ def _system_flow_panel(environment: str) -> dict:
             {"label": "Core Strategy", "value": CORE_TWO_SETUP_PROFILE, "copy": "只保留 vwap_trend_pullback_long 与 sd_mr_reversal_short"},
             {"label": "Compute", "value": "bars -> indicators -> 2 setups", "copy": "5m close 驱动 retained setup 评估"},
             {"label": "Delta", "value": "aux / shadow / A/B", "copy": "TBT CVD / proxy Delta 不作为核心 alpha"},
+            {"label": "Data Proof", "value": "green required", "copy": "truth_audit + bar_integrity 保护回测、指标和 live candidates"},
             {"label": "Execution", "value": "signals -> orders -> lifecycle", "copy": "风控 / 券商订单 / 生命周期链路"},
-            {"label": "Ops", "value": "scheduler + quality", "copy": "调度、修复、审计、日报"},
+            {"label": "Ops", "value": "scheduler + quality", "copy": "调度、修复、审计、日报；job=ibkr_active_window_progress_status"},
         ],
         "source_refs": [
             "ibkr_compute.workflows.daily_scanner_run",
             "ibkr_compute.core.signal_generator",
             "ibkr_compute.signal.signal_processor",
             "ibkr_compute.order_flow.manager",
+            "ibkr_compute.api.ops.truth_repair",
+            "ibkr_compute.api.ops.tv_indicator_audit",
             "ibkr_api.system.jobs.early_expansion_topup",
+            "ibkr_api.system.jobs.active_window_progress_status",
             "ibkr_scheduler.cron_registry",
         ],
         "stages": [
@@ -881,7 +905,7 @@ def _system_flow_panel(environment: str) -> dict:
             {
                 "id": "bars_indicators",
                 "label": "行情与指标",
-                "summary": "IBKR bars 落库后按 5m/15m/30m/1h/4h/1d 计算指标快照，并检查 freshness / completeness。",
+                "summary": "IBKR bars 落库后按 5m/15m/30m/1h/4h/1d 计算指标快照；TradingView indicator_audit 快照可与 ibkr_bars/ibkr_indicators 做字段级审计。",
                 "links": ["/ibkr_indicators.html", "/ibkr_chart.html"],
             },
             {
@@ -899,7 +923,7 @@ def _system_flow_panel(environment: str) -> dict:
             {
                 "id": "execution",
                 "label": "执行校验",
-                "summary": "SignalProcessor 校验交易开关、窗口、有效期、容量、cooldown、方向冲突、filled-entry daily limit、目标方向一致性和价格结构。",
+                "summary": "SignalProcessor 校验交易开关、窗口、有效期、容量、cooldown、方向冲突、filled-entry daily limit、目标方向一致性、价格结构和 target data_quality proof_status。",
                 "links": ["/ibkr_runtime.html", "/orders.html"],
             },
             {
@@ -911,7 +935,7 @@ def _system_flow_panel(environment: str) -> dict:
             {
                 "id": "scheduler_quality",
                 "label": "运行控制 / 调度 / 验证",
-                "summary": "Broker 模式切换先走账户/2FA/Gateway 风险检查；ibkr-scheduler 统一触发日筛、compute、数据质量、系统报告和存储治理。",
+                "summary": "Broker 模式切换先走账户/2FA/Gateway 风险检查；scheduler 统一触发日筛、ibkr_active_window_progress_status 动态卡、compute、truth repair、TV audit、数据质量报告和存储治理。",
                 "links": ["/ibkr_system.html", "/ibkr_data_quality.html", "/ibkr_backtests.html"],
             },
         ],
@@ -922,6 +946,8 @@ def _system_flow_panel(environment: str) -> dict:
                 "lines": [
                     "策略/指标/筛选/执行/订单/调度/数据质量/回测逻辑都属于覆盖范围。",
                     "页面文案必须从当前代码常量、默认配置、函数分支或接口输出推导，不能按旧文档或推测补规则。",
+                    "proof_status 必须为 green/ok 才能信任 indicators、backtests 或 live candidates；red/unavailable 要先修复或明确降级。",
+                    "TradingView indicator_audit 与 IBKR truth audit 是审计/证明链路，不会新增 core alpha setup。",
                     "纯 UI 样式和普通文案不属于核心逻辑覆盖范围。",
                     "source_refs 和 coverage 清单用于发现页面没有覆盖的新逻辑域。",
                 ],
@@ -957,6 +983,8 @@ def _indicator_panel(environment: str) -> dict:
             "ibkr_compute.core.indicator_engine",
             "ibkr_compute.core.indicators.*",
             "ibkr_compute.market.bar_freshness",
+            "ibkr_api.tradingview.ingest",
+            "ibkr_compute.api.ops.tv_indicator_audit",
         ],
         "chips": [
             {
@@ -978,6 +1006,11 @@ def _indicator_panel(environment: str) -> dict:
                 "label": "DTP Early",
                 "value": f"{DEFAULT_PARAMS.get('dtp_early_bars', 12)} bars",
                 "copy": "DTP 初期过滤阈值",
+            },
+            {
+                "label": "TV Audit",
+                "value": "indicator_audit",
+                "copy": "TradingView 快照写入 tv_indicator_audit_snapshots 后与 IBKR 指标对账",
             },
         ],
         "sections": [
@@ -1031,6 +1064,17 @@ def _indicator_panel(environment: str) -> dict:
                     _config_line(cfg, "ibkr_daily_scan_data_completeness_blocking_enabled", environment, "true"),
                     _config_line(cfg, "ibkr_daily_scan_data_completeness_intervals", environment, "5m,15m,30m,1h,4h,1d"),
                     _config_line(cfg, "ibkr_daily_scan_data_completeness_blocking_intervals", environment, "5m"),
+                ],
+            },
+            {
+                "title": "TradingView 指标审计快照",
+                "copy": "TradingView Pine 的 type=indicator_audit 不进入普通 signal/indicator 结论，而是作为外部快照用于 TV-vs-IBKR parity 审计。",
+                "lines": [
+                    "webhook_tv 收到 type=indicator_audit / audit_indicator 时写入 tv_indicator_audit_snapshots；dedup key = symbol + interval + bar_time_ms + environment + script_tag。",
+                    "snapshot extra 会标准化 dayChangePct/day_change_pct、vwapUpper1/vwap_upper1、sdStdDev/sd_std_dev、dtpPhaseBars/dtp_phase_bars 等别名。",
+                    "tv_indicator_audit 读取 tv_indicator_audit_snapshots、ibkr_bars、ibkr_indicators；bar 字段和 indicator extra 字段分别对比。",
+                    "价格容差 = 1e-4；atr_pct、crsi、obv_rsi、vwap_dist、day_change_pct 等百分比/震荡字段容差 = 1e-2；bool/string/int 字段要求精确匹配。",
+                    "缺少审计表或没有 TV snapshot 时 status=unavailable；出现 mismatch 时 status=error 并可触发 system event debounce 告警。",
                 ],
             },
         ],
@@ -1103,6 +1147,7 @@ def _execution_panel(environment: str) -> dict:
             "ibkr_compute.signal.signal_processor",
             "ibkr_compute.core.position_sizing",
             "ibkr_compute.core.exit_policy",
+            "ibkr_compute.universe.target_execution",
             "ibkr_api.orders.routes",
         ],
         "chips": [
@@ -1136,6 +1181,11 @@ def _execution_panel(environment: str) -> dict:
                 "value": symbol_daily_entry_limit,
                 "copy": f"intraday_symbol_daily_entry_limit · {symbol_daily_entry_limit_source}",
             },
+            {
+                "label": "Data Proof",
+                "value": "green/ok",
+                "copy": "target data_quality.proof_status red/unavailable 会阻断 execution_eligible",
+            },
         ],
         "sections": [
             {
@@ -1148,6 +1198,8 @@ def _execution_panel(environment: str) -> dict:
                     f"order_window_end_time = {order_window_end} ET ({order_window_end_source})",
                     f"signal_time 超过 signal_validity_minutes={signal_validity_minutes} 后过期。",
                     "止损熔断、position limit、strategy capacity、fixed_position_symbols 都可阻断。",
+                    "target extra.data_quality.status 必须 ready/ok/fresh；proof_status、database_correctness_status 或 truth_status 如存在，必须为 green/ok。",
+                    "proof_status 非 green/ok 时 target_execution 输出 execution_eligible=false，并追加 data_quality_not_ready。",
                     "cooldown、同标的方向冲突、symbol daily entry limit、target direction alignment、entry/SL/TP 价格结构必须通过。",
                     "symbol daily entry limit 在 direction_conflict 之后检查；失败原因为 symbol_daily_entry_limit_reached。",
                 ],
@@ -1620,18 +1672,24 @@ def _quality_panel(environment: str) -> dict:
     cfg = app_mod.cfg
     return {
         "title": "数据质量与修复逻辑",
-        "subtitle": "数据完整性影响 daily scan、ready/operable、信号生成和回测可信度。",
+        "subtitle": "数据完整性影响 daily scan、ready/operable、信号生成、回测可信度和 live candidates；当前口径要求 proof_status green 后才能信任指标、回测或候选。",
         "coverage_domains": ["data_quality"],
         "source_refs": [
             "ibkr_compute.market.bar_freshness",
+            "ibkr_compute.api.ops.data_quality_truth",
+            "ibkr_compute.api.ops.truth_repair",
+            "ibkr_compute.api.ops.tv_indicator_audit",
             "ibkr_compute.backtest.market_data_coverage",
             "ibkr_compute.backtest.market_data_backfill",
+            "ibkr_api.tradingview.ingest",
             "ibkr_api.system.jobs.data_gap",
         ],
         "chips": [
             {"label": "5m Delay", "value": f"{_resolve_config_text(cfg, 'ibkr_official_5m_close_delay_sec', environment, '3')[0]}s", "copy": "official close 等待"},
             {"label": "Completeness", "value": _resolve_config_text(cfg, "ibkr_daily_scan_data_completeness_blocking_enabled", environment, "true")[0], "copy": "日筛阻断开关"},
-            {"label": "Repair", "value": "sweep + targeted", "copy": "缺口扫描与修复"},
+            {"label": "Proof Status", "value": "green required", "copy": "proof_status 非 green/ok 不信任 indicators/backtests/live candidates"},
+            {"label": "Truth Repair", "value": "plan -> apply -> verify", "copy": "truth_repair 修复 bars 并重算受影响指标/信号"},
+            {"label": "TV Audit", "value": "tv_indicator_audit", "copy": "TradingView 快照对比 IBKR bars/indicators"},
             {"label": "Truth Audit", "value": "IBKR history", "copy": "权威历史对账"},
         ],
         "sections": [
@@ -1642,6 +1700,16 @@ def _quality_panel(environment: str) -> dict:
                     _config_line(cfg, "ibkr_official_5m_close_delay_sec", environment, "3", "official close delay", "s"),
                     "5m 使用 latest_expected_extended_5m_ms；高周期使用 latest 5m 推导 expected closed time。",
                     "freshness 会进入 screener operable、current targets、data quality 和 monitor flags。",
+                ],
+            },
+            {
+                "title": "Data Correctness Proof Gate",
+                "copy": "proof gate 是比 freshness 更硬的可信度证明；红灯时不得把指标、回测或 live candidate 当成可交易事实。",
+                "lines": [
+                    "proof_status 必须为 green/ok；red/unavailable 表示需要先修复或明确关闭对应 guard。",
+                    "target_execution 会读取 data_quality.proof_status / database_correctness_status / truth_status；非 green/ok => execution_eligible=false, blocker=data_quality_not_ready。",
+                    "classify_truth_audit_status 要求 matched_bar_count > 0；零匹配 bars 不是 ok，而是 unavailable。",
+                    "ops/validate/run_data_correctness_guard.py 的规则输出明确要求 proof_status green 后再信任 indicators、backtests 或 live candidates。",
                 ],
             },
             {
@@ -1657,12 +1725,33 @@ def _quality_panel(environment: str) -> dict:
                 ],
             },
             {
+                "title": "Truth Repair",
+                "copy": "truth_repair 以 IBKR authoritative history 为准修复 5m stored bars，并在修复后重算依赖数据。",
+                "lines": [
+                    "POST /ibkr/data-quality/truth-repair 会先 build_truth_repair_plan，动作为 upsert_ibkr_bar、replace_with_ibkr_bar、delete_extra_stored_bar。",
+                    "delete_extra_stored_bar 默认需要 confirm_refetch 二次确认；若 refetch 不再证明 missing_ibkr，则拒绝删除并返回 delete_not_confirmed_by_refetch。",
+                    "apply=true 时写入/替换/删除 ibkr_bars，并删除受影响窗口内 ibkr_indicators 和未 executed 的 ibkr_signals；随后尝试 _trigger_realtime_compute(source=truth_repair)。",
+                    "修复事件写入 ibkr_bar_truth_repair_events；最终 truth audit 重新计算后才把 proof_status 置为 green，否则 blocked_symbols 保留。",
+                ],
+            },
+            {
+                "title": "TradingView Indicator Audit",
+                "copy": "TV 指标审计用外部 Pine 快照验证 IBKR bars/indicators 的计算一致性，结果是审计信号，不是 alpha setup。",
+                "lines": [
+                    "type=indicator_audit / audit_indicator 写入 tv_indicator_audit_snapshots，普通 type=indicator 仍写 tv_indicators。",
+                    "POST /ibkr/data-quality/tv-indicator-audit 支持 symbols、intervals、window、limit 与 alert；可异步走 runtime proxy，长超时 300s。",
+                    "required tables = tv_indicator_audit_snapshots + ibkr_bars + ibkr_indicators；缺表或无 TV snapshots 返回 status=unavailable。",
+                    "mismatch status=error 时通过 ibkr_compute_tv_indicator_audit 写 data_quality system event，并以 fingerprint + alert_debounce_seconds 去重。",
+                ],
+            },
+            {
                 "title": "修复与审计",
-                "copy": "数据质量页和 scheduler 负责全观察池 sweep、truth audit、targeted repair。",
+                "copy": "数据质量页、scheduler 和 CLI 负责全观察池 sweep、truth audit、targeted repair 与人工证明链路。",
                 "lines": [
                     "repair sweep 尝试修复可回补缺口；truth audit 对比 stored bars 与 IBKR authoritative history。",
                     "data_gap_guard 根据 monitor flags 和市场活动状态发告警。",
                     "storage governor 清理可重建指标、旧日志、TV 兼容数据和旧回测产物。",
+                    "ibkr_bar_truth_repair_events retention=180d；tv_indicator_audit_snapshots retention=30d。",
                 ],
             },
         ],
@@ -1672,9 +1761,11 @@ def _quality_panel(environment: str) -> dict:
 def _backtest_validation_panel(environment: str) -> dict:
     return {
         "title": "回测与验证链路",
-        "subtitle": "任何规则变更都应能用 backtest / replay / parity 工具复盘验证；Delta/proxy A/B 只用于辅助对照，不改写核心 alpha 结论。",
+        "subtitle": "任何规则变更都应能用 backtest / replay / parity 工具复盘验证；默认先要求 data_quality_proof_gate green，Delta/proxy A/B 只用于辅助对照，不改写核心 alpha 结论。",
         "coverage_domains": ["backtest_validation"],
         "source_refs": [
+            "ibkr_compute.backtest.orchestration",
+            "ibkr_compute.backtest.request_utils",
             "ibkr_compute.backtest.portfolio",
             "ibkr_compute.backtest.scan_replay",
             "ibkr_compute.backtest.runtime_records",
@@ -1684,11 +1775,23 @@ def _backtest_validation_panel(environment: str) -> dict:
         "chips": [
             {"label": "Default Source", "value": "daily_scan_replay", "copy": "使用每日入选结果重放"},
             {"label": "Core Strategy", "value": CORE_TWO_SETUP_PROFILE, "copy": "只验证两个 retained core setups"},
+            {"label": "Truth Proof", "value": "required by default", "copy": "backtest_require_truth_proof=true"},
             {"label": "Cost", "value": "execution profile", "copy": "成交成本/滑点画像"},
             {"label": "Delta A/B", "value": "proxy/shadow", "copy": "不得当成核心 alpha"},
             {"label": "Parity", "value": "TV / live compare", "copy": "与 TradingView/实时结果对照"},
         ],
         "sections": [
+            {
+                "title": "Backtest Data Correctness Gate",
+                "copy": "回测默认 fail-closed，先证明 5m bars 可信，再允许策略结论进入 metrics。",
+                "lines": [
+                    "request_utils.normalize_request 默认 backtest_require_truth_proof=true；也接受 data_correctness_guard_enabled 作为兼容开关。",
+                    "_build_backtest_truth_proof_gate 检查 ibkr_bar_truth_audit 与 ibkr_bar_integrity，范围为 request date_from/date_to、source_environment、interval=5m、全部 symbols。",
+                    "所有 symbol/date pair 都必须有 truth row 和 integrity row；truth status=ok、matched_bar_count>0、missing_stored/missing_ibkr/bar_mismatch=0；integrity status in ok/repaired 且 needs_repair=false。",
+                    "proof red 时抛出 data_quality_proof_not_green:<reason>，不会继续 preflight backfill、portfolio stream 或 daily_scan_replay cache/scan。",
+                    "通过后把 data_quality_proof_gate 写入 request、runtime_records 与 metrics；显式 backtest_require_truth_proof=false 时 status=disabled。",
+                ],
+            },
             {
                 "title": "推荐验证路径",
                 "copy": "新增或修改策略逻辑时，至少验证 daily scan -> signal -> portfolio 链路。",

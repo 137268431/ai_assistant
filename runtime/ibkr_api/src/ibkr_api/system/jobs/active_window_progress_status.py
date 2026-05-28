@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Any, Callable
 from urllib.parse import urlencode
 
@@ -93,6 +94,76 @@ def _config_enabled(config_value: ConfigValue, broker_mode: str) -> bool:
         return _truthy(config_value("status_notify_enabled", "TRUE", broker_mode))
     except Exception:
         return True
+
+
+def _parse_time_text(value: Any) -> datetime | None:
+    text = _to_text(value)
+    if not text:
+        return None
+    normalized = text.replace("T", " ").split("+", 1)[0].split("Z", 1)[0].strip()
+    for candidate, fmt in (
+        (normalized[:19], "%Y-%m-%d %H:%M:%S"),
+        (normalized[:16], "%Y-%m-%d %H:%M"),
+    ):
+        try:
+            return datetime.strptime(candidate, fmt)
+        except Exception:
+            continue
+    return None
+
+
+def _time_short(value: Any) -> str:
+    parsed = _parse_time_text(value)
+    if parsed is not None:
+        return parsed.strftime("%H:%M")
+    text = _to_text(value)
+    if " " in text:
+        text = text.split(" ", 1)[1]
+    return text[:5] if len(text) >= 5 else text
+
+
+def _add_minutes_text(value: Any, minutes: int) -> str:
+    parsed = _parse_time_text(value)
+    if parsed is None:
+        return ""
+    return (parsed + timedelta(minutes=max(1, int(minutes or 1)))).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _build_heartbeat(state: dict[str, Any], times: dict[str, str], progress: dict[str, Any], interval_min: int) -> dict[str, Any]:
+    current_et = _to_text(times.get("us")) or _to_text(progress.get("computed_at_us"))
+    current_cn = _to_text(times.get("cn")) or _to_text(progress.get("computed_at_cn"))
+    update_seq = max(0, _to_int(state.get("update_seq"), 0)) + 1
+    next_et = _add_minutes_text(current_et, interval_min)
+    next_cn = _add_minutes_text(current_cn, interval_min)
+    last_et = _to_text(state.get("last_refresh_at_et") or state.get("last_delivery_at"))
+    last_cn = _to_text(state.get("last_refresh_at_cn"))
+    return {
+        "update_seq": update_seq,
+        "current_refresh_at_et": current_et,
+        "current_refresh_at_cn": current_cn,
+        "current_refresh_short_et": _time_short(current_et),
+        "last_refresh_at_et": last_et,
+        "last_refresh_at_cn": last_cn,
+        "last_refresh_short_et": _time_short(last_et),
+        "next_expected_refresh_at_et": next_et,
+        "next_expected_refresh_at_cn": next_cn,
+        "next_expected_refresh_short_et": _time_short(next_et),
+        "interval_min": max(1, int(interval_min or 1)),
+    }
+
+
+def _heartbeat_line(heartbeat: dict[str, Any]) -> str:
+    seq = _to_int(heartbeat.get("update_seq"), 0)
+    current_et = _to_text(heartbeat.get("current_refresh_at_et")) or "-"
+    current_cn = _to_text(heartbeat.get("current_refresh_at_cn")) or "-"
+    last_short = _to_text(heartbeat.get("last_refresh_short_et")) or "首次"
+    next_short = _to_text(heartbeat.get("next_expected_refresh_short_et")) or "-"
+    interval_min = _to_int(heartbeat.get("interval_min"), 5)
+    last_label = "首次" if last_short == "首次" else f"{last_short} ET"
+    return (
+        f"🟢 **运行心跳**: 第 {seq} 次刷新 | 本次 {current_et} ET / {current_cn} CN | "
+        f"上次 {last_label} | 下次约 {next_short} ET | 节奏 {interval_min}m"
+    )
 
 
 def _report_url(console_base_url: ConsoleBaseUrl, data_environment: str, market_date: str) -> str:
@@ -254,6 +325,7 @@ def _build_card(
     times: dict[str, str],
     progress: dict[str, Any],
     today_targets: dict[str, Any],
+    heartbeat: dict[str, Any],
     console_base_url: ConsoleBaseUrl,
     delivery_note: str = "",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -267,12 +339,14 @@ def _build_card(
     count_bits = ", ".join(f"{key}:{value}" for key, value in status_counts.items()) or "-"
     header_template = _card_template(summary, items)
     note = delivery_note or "同一张卡每 5 分钟更新；没有信号/订单时也展示等待进度。"
+    title_suffix = f" · {_to_text(heartbeat.get('current_refresh_short_et'))} ET" if _to_text(heartbeat.get("current_refresh_short_et")) else ""
     elements: list[dict[str, Any]] = [
         {
             "tag": "markdown",
             "content": (
                 f"**交易日**: {market_date}\n"
                 f"**数据**: {_data_badge(data_environment)} | **Broker**: {broker_mode.upper()}\n"
+                f"{_heartbeat_line(heartbeat)}\n"
                 f"**检查时间**: 美东 {_to_text(times.get('us')) or _to_text(progress.get('computed_at_us')) or 'n/a'} | 北京 {_to_text(times.get('cn')) or _to_text(progress.get('computed_at_cn')) or 'n/a'}\n"
                 f"**标的池**: active {active_count} | candidate {candidate_count} | 新鲜 5m bars {live_bars}\n"
                 f"**信号窗口**: active {_to_int(summary.get('window_active_count'))} | valid {_to_int(summary.get('window_valid_count'))} | confirmed {_to_int(summary.get('confirmed_count'))} | candidate {_to_int(summary.get('current_candidate_signal_count'))}\n"
@@ -302,7 +376,7 @@ def _build_card(
     return {
         "config": {"wide_screen_mode": True, "update_multi": True},
         "header": {
-            "title": {"tag": "plain_text", "content": f"IBKR 标的/信号窗口动态 · Broker {broker_mode.upper()}"},
+            "title": {"tag": "plain_text", "content": f"IBKR 标的/信号窗口动态 · Broker {broker_mode.upper()}{title_suffix}"},
             "template": header_template,
         },
         "elements": elements,
@@ -372,6 +446,7 @@ def build_active_window_progress_status_response(
         market_date = _to_text(times.get("date"))
     dry_run = _truthy(request_payload.get("dry_run")) if "dry_run" in request_payload else False
     limit = max(1, min(200, _to_int(request_payload.get("limit"), 200)))
+    heartbeat_interval_min = max(1, min(60, _to_int(request_payload.get("heartbeat_interval_min"), 5)))
 
     base_payload = {
         **request_payload,
@@ -424,6 +499,8 @@ def build_active_window_progress_status_response(
         }
 
     notify_enabled = _config_enabled(config_value, broker_mode)
+    state = _load_state(get_state_payload, broker_mode, market_date)
+    heartbeat = _build_heartbeat(state, times, progress, heartbeat_interval_min)
     delivery_note = "Dry run：只生成卡片，不发送飞书。" if dry_run else (
         "通知开关已关闭：只计算进度，不发送飞书。" if not notify_enabled else ""
     )
@@ -434,6 +511,7 @@ def build_active_window_progress_status_response(
         times=times,
         progress=progress,
         today_targets=today_targets,
+        heartbeat=heartbeat,
         console_base_url=console_base_url,
         delivery_note=delivery_note,
     )
@@ -453,6 +531,7 @@ def build_active_window_progress_status_response(
             "sent": False,
             "message_id": "",
             "summary": summary,
+            "heartbeat": heartbeat,
             "delivery": {"action": "dry_run", "success": True},
             "card": card,
             "progress": {"summary": _as_dict(progress.get("summary")), "returned_count": _to_int(progress.get("returned_count"))},
@@ -474,13 +553,13 @@ def build_active_window_progress_status_response(
             "sent": False,
             "message_id": "",
             "summary": summary,
+            "heartbeat": heartbeat,
             "delivery": {"action": "skipped", "success": True, "reason": "status_notify_disabled"},
             "card": card,
             "progress": {"summary": _as_dict(progress.get("summary")), "returned_count": _to_int(progress.get("returned_count"))},
             "source": "ibkr-api",
         }, 200
 
-    state = _load_state(get_state_payload, broker_mode, market_date)
     previous_message_id = _to_text(state.get("message_id") or state.get("last_message_id"))
     chat_id = _to_text(state.get("chat_id")) or _to_text(startup_chat_id(broker_mode))
     delivery: dict[str, Any]
@@ -584,6 +663,12 @@ def build_active_window_progress_status_response(
         "last_delivery_status": status,
         "last_delivery_at": _to_text(times.get("us")),
         "last_delivery_error": _to_text(delivery.get("error")),
+        "update_seq": _to_int(heartbeat.get("update_seq"), 0),
+        "last_refresh_at_et": _to_text(heartbeat.get("current_refresh_at_et")),
+        "last_refresh_at_cn": _to_text(heartbeat.get("current_refresh_at_cn")),
+        "next_expected_refresh_at_et": _to_text(heartbeat.get("next_expected_refresh_at_et")),
+        "next_expected_refresh_at_cn": _to_text(heartbeat.get("next_expected_refresh_at_cn")),
+        "heartbeat_interval_min": _to_int(heartbeat.get("interval_min"), heartbeat_interval_min),
         "last_summary": summary,
         "last_progress_returned_count": _to_int(progress.get("returned_count")),
     }
@@ -618,6 +703,7 @@ def build_active_window_progress_status_response(
         "notified": delivered,
         "message_id": message_id,
         "summary": summary,
+        "heartbeat": heartbeat,
         "delivery": delivery,
         "card": card,
         "progress": {"summary": _as_dict(progress.get("summary")), "returned_count": _to_int(progress.get("returned_count"))},
