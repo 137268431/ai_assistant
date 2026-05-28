@@ -386,7 +386,7 @@ class DataBackfillTracingMixin:
             and hmds_no_data_count >= symbols_total
             and non_hmds_error_count == 0
             and written <= 0
-            and market_session in {"premarket", "afterhours", "closed", "close_transition"}
+            and market_session in {"premarket", "afterhours", "closed", "close_transition", "overnight"}
         )
         emit_large_operation_alert(
             self.pb_client,

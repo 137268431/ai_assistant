@@ -261,12 +261,30 @@ class DailyTradeReviewTest(unittest.TestCase):
     def test_console_page_and_compat_wiring(self):
         html = (REPO_ROOT / "runtime" / "ibkr_console" / "static" / "ibkr_trade_review.html").read_text(encoding="utf-8")
         js = (REPO_ROOT / "runtime" / "ibkr_console" / "static" / "assets" / "js" / "pages" / "ibkr_trade_review" / "page.js").read_text(encoding="utf-8")
+        css = (REPO_ROOT / "runtime" / "ibkr_console" / "static" / "assets" / "css" / "pages" / "ibkr_trade_review" / "page.css").read_text(encoding="utf-8")
         compat = (REPO_ROOT / "runtime" / "ibkr_api" / "src" / "ibkr_api" / "compat" / "routes.py").read_text(encoding="utf-8")
         bridge = (REPO_ROOT / "runtime" / "ibkr_console" / "static" / "assets" / "js" / "shared" / "ui-bridges.js").read_text(encoding="utf-8")
         for token in ("/api/custom/ibkr/analytics/daily-trade-review", "ibkr_trade_review", "生命周期图"):
             self.assertIn(token, html)
-        for token in ("daily-trade-review", "issue_flags", "lifecycle_url", "not_selected_reasons"):
+        for token in (
+            "daily-trade-review",
+            "issue_flags",
+            "lifecycle_url",
+            "not_selected_reasons",
+            "{ id: 'traded', label: '已交易' }",
+            "function isTradedItem",
+            "reviewStatusLabel",
+            "拒绝/跳过记录",
+        ):
             self.assertIn(token, js)
+        for token in (
+            ".status-pill.traded",
+            ".status-pill.closed",
+            ".symbol-row.is-traded",
+            ".symbol-row.is-closed",
+            ".explain-card.secondary",
+        ):
+            self.assertIn(token, css)
         self.assertIn("ibkr/analytics/daily-trade-review", compat)
         self.assertIn("/ibkr_trade_review.html", bridge)
 

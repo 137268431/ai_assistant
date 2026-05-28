@@ -9,6 +9,7 @@ SESSION_LABELS_ZH = {
     "regular": "盘中",
     "close_transition": "盘后过渡",
     "afterhours": "盘后",
+    "overnight": "夜盘",
 }
 
 

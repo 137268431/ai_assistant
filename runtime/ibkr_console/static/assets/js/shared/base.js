@@ -890,7 +890,7 @@ function getMarketCalendarCacheOptions(calendar = {}, fallback = {}) {
   if (payload.is_closed || payload.is_trading_day === false || kind === 'closed') {
     return { ttlMs: 1800000, swrMs: 1800000, persist: true };
   }
-  if (kind === 'afterhours') {
+  if (kind === 'afterhours' || kind === 'overnight' || kind === 'night') {
     return { ttlMs: 120000, swrMs: 300000, persist: true };
   }
   if (['premarket', 'regular', 'close_transition'].includes(kind)) {

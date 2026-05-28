@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Trading Flight - 首页</title>
     <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
-    <script src="common.js?v=20260528-market-session-chip-1"></script>
+    <script src="common.js?v=20260528-night-session-review-entry-1"></script>
     <script>document.write(getCommonStyles());</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
     <link rel="stylesheet" href="/assets/css/pages/index/page.css?v=20260522-market-compact">
@@ -183,6 +183,15 @@
                             </div>
                             <div class="home-quick-title">订单管理</div>
                             <div class="home-quick-copy">跟踪入场、止盈、止损和当前状态。</div>
+                        </a>
+
+                        <a id="actionTradeReviewLink" href="/ibkr_trade_review.html" class="home-quick-link">
+                            <div class="home-quick-link-top">
+                                <div class="home-quick-icon">🧾</div>
+                                <div class="home-quick-arrow">OPEN</div>
+                            </div>
+                            <div class="home-quick-title">每日复盘</div>
+                            <div class="home-quick-copy">按交易日回看选标、信号、订单和执行逻辑问题。</div>
                         </a>
 
                         <a id="actionLifecycleLink" href="/ibkr_lifecycle_flow.html" class="home-quick-link">
@@ -379,6 +388,7 @@
                 actionTargetsLink: buildPageUrl('/ibkr_screener.html', { tab: 'targets' }),
                 actionSignalsLink: buildPageUrl('/ibkr_signals.html'),
                 actionOrdersLink: buildPageUrl('/orders.html'),
+                actionTradeReviewLink: buildPageUrl('/ibkr_trade_review.html', { date: getUsDate() }),
                 actionLifecycleLink: buildPageUrl('/ibkr_lifecycle_flow.html', { date: getUsDate() }),
                 actionChartLink: buildPageUrl('/ibkr_chart.html'),
                 actionAccountLink: buildPageUrl('/ibkr_account.html'),
@@ -703,7 +713,7 @@
             const toolCount = document.querySelectorAll('#homeQuickLinks .home-tool-chip').length;
             const metaEl = document.getElementById('quickLinksMeta');
             if (!metaEl) return;
-            metaEl.textContent = `${primaryCount} 个主入口 · ${toolCount} 个补充工具 · 覆盖筛选 / 研究 / 执行 / 账户 / 系统`;
+            metaEl.textContent = `${primaryCount} 个主入口 · ${toolCount} 个补充工具 · 覆盖筛选 / 研究 / 执行 / 复盘 / 账户 / 系统`;
         }
 
         function buildTargetSignalUrl(symbol, marketDate) {

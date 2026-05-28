@@ -55,7 +55,7 @@ def _should_suppress_session_unauthenticated(runtime_status: dict) -> bool:
     market_session = runtime_status.get("market_session") or {}
     market_session_kind = str(market_session.get("kind") or "").strip().lower()
     grace_seconds = SESSION_UNAUTHENTICATED_GRACE_SECONDS
-    if market_session_kind in {"close_transition", "afterhours"}:
+    if market_session_kind in {"close_transition", "afterhours", "overnight"}:
         grace_seconds = max(
             grace_seconds,
             SESSION_UNAUTHENTICATED_LATE_SESSION_GRACE_SECONDS,
@@ -122,7 +122,7 @@ def _resolve_ws_silence_policy_kind(runtime_status: dict) -> str:
     market_session_kind = str(market_session.get("kind") or "").strip().lower()
     if market_session_kind == "closed":
         return "disabled"
-    if market_session_kind in {"close_transition", "afterhours"}:
+    if market_session_kind in {"close_transition", "afterhours", "overnight"}:
         return "late_session"
     return "regular"
 

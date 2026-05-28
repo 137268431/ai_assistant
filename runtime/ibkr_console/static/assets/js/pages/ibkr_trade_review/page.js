@@ -9,16 +9,13 @@
     symbolTab: 'all',
     search: '',
     requestSeq: 0,
-    abortController: null,
-    marketCalendar: null,
-    marketCalendarSignature: '',
-    marketCalendarLoading: false,
-    marketCalendarError: ''
+    abortController: null
   };
   const SYMBOL_TABS = [
     { id: 'all', label: '全部' },
     { id: 'active', label: '激活' },
     { id: 'selected', label: '已选' },
+    { id: 'traded', label: '已交易' },
     { id: 'not_selected', label: '未选/拒绝' },
     { id: 'problem', label: '问题' }
   ];
@@ -150,7 +147,8 @@
 
   function tabFromLegacyStatus(value) {
     const key = lowerText(value).replace(/[\s-]+/g, '_');
-    if (['selected', 'signaled', 'open', 'closed', 'traded'].includes(key)) return 'selected';
+    if (['open', 'closed', 'traded'].includes(key)) return 'traded';
+    if (['selected', 'signaled'].includes(key)) return 'selected';
     if (key === 'not_selected') return 'not_selected';
     if (key === 'problem') return 'problem';
     return '';
@@ -216,22 +214,6 @@
     };
   }
 
-  function calendarSessionLabel(calendar) {
-    const source = asObject(calendar);
-    const session = asObject(source.market_session || source.session);
-    const kind = lowerText(session.kind || source.session_kind);
-    const labels = {
-      premarket: '盘前',
-      regular: '盘中',
-      close_transition: '盘后过渡',
-      afterhours: '盘后',
-      overnight: '夜盘',
-      night: '夜盘',
-      closed: '闭市'
-    };
-    return firstText(session.label_zh, session.display_label, session.label, labels[kind]);
-  }
-
   function marketSessionLabel(payload = state.payload) {
     const source = payload || {};
     const session = asObject(source.session || source.market_session || source.session_info || source.time_window);
@@ -246,65 +228,14 @@
       session.phase,
       summary.session_label,
       summary.time_window_label,
-      calendarSessionLabel(state.marketCalendar),
-      state.marketCalendarLoading ? '日历确认中' : '',
-      state.marketCalendarError ? '日历待确认' : '',
       '时段待确认'
     );
-  }
-
-  function marketCalendarSignature(context) {
-    return [context.broker_mode, context.data_environment, context.market_date].join('::');
-  }
-
-  async function loadMarketCalendarContext() {
-    const context = reviewContext();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(context.market_date)) return;
-    const signature = marketCalendarSignature(context);
-    if (state.marketCalendarSignature === signature && (state.marketCalendarLoading || state.marketCalendar)) return;
-    state.marketCalendarSignature = signature;
-    state.marketCalendar = null;
-    state.marketCalendarError = '';
-    state.marketCalendarLoading = true;
-    renderReviewContextBar();
-    try {
-      let payload;
-      const request = {
-        date: context.market_date,
-        market_date: context.market_date,
-        symbol: 'SPY',
-        broker_mode: context.broker_mode,
-        market_data_mode: context.data_environment,
-        data_environment: context.data_environment
-      };
-      if (typeof cachedMarketCalendar === 'function') {
-        payload = await cachedMarketCalendar(request, { tags: ['dailyTradeReview', 'pageContext'] });
-      } else {
-        const url = apiUrl('/api/custom/system/market_calendar', request);
-        const response = await fetch(url, { headers: authHeaders() });
-        payload = await response.json().catch(() => ({}));
-        if (!response.ok || payload.ok === false) throw new Error(payload.error || `market_calendar_${response.status}`);
-      }
-      if (state.marketCalendarSignature !== signature) return;
-      state.marketCalendar = payload || null;
-      state.marketCalendarError = '';
-    } catch (error) {
-      if (state.marketCalendarSignature !== signature) return;
-      state.marketCalendar = null;
-      state.marketCalendarError = error?.message || String(error || 'market calendar unavailable');
-    } finally {
-      if (state.marketCalendarSignature === signature) {
-        state.marketCalendarLoading = false;
-        renderReviewContextBar();
-      }
-    }
   }
 
   function renderReviewContextBar() {
     const node = $('contextBar');
     if (!node) return;
     const context = reviewContext();
-    const sessionLabel = marketSessionLabel();
     if (typeof setBrokerModeContext === 'function') {
       setBrokerModeContext({
         broker_mode: context.broker_mode,
@@ -317,17 +248,11 @@
         subtitle: 'Broker / Data / Market Date / 时段 · forensic console',
         metaItems: [
           { label: 'Market Date', value: context.market_date },
-          {
-            label: '时段',
-            value: sessionLabel,
-            tone: state.marketCalendarError ? 'warn' : '',
-            title: state.marketCalendarError || '',
-            includeInContext: true
-          }
         ]
       });
       return;
     }
+    const sessionLabel = marketSessionLabel();
     node.innerHTML = `
       <div class="review-context-fallback">
         <strong>IBKR 每日复盘</strong>
@@ -372,7 +297,6 @@
       const first = (payload.items || [])[0];
       state.selectedSymbol = first ? first.symbol : '';
       initChrome();
-      loadMarketCalendarContext().catch(() => null);
       renderAll();
     } catch (error) {
       if (error && error.name === 'AbortError') return;
@@ -442,7 +366,33 @@
     return Boolean((item.issue_flags || []).length);
   }
 
+  function orderSummary(item) {
+    return asObject(item?.order_summary);
+  }
+
+  function isClosedItem(item) {
+    const order = orderSummary(item);
+    const status = lowerText(item?.review_status);
+    return status === 'closed' || Number(order.exit_filled || 0) > 0;
+  }
+
+  function isTradedItem(item) {
+    const order = orderSummary(item);
+    const status = lowerText(item?.review_status);
+    return isClosedItem(item)
+      || ['open', 'traded'].includes(status)
+      || Number(order.entry_filled || 0) > 0;
+  }
+
+  function tradeSummary(item) {
+    const order = orderSummary(item);
+    const realized = asObject(item?.realized);
+    if (!isTradedItem(item)) return '';
+    return `entry ${Number(order.entry_filled || 0)} · exit ${Number(order.exit_filled || 0)} · PnL ${formatNumber(realized.net_pnl || 0, 2)}`;
+  }
+
   function isActiveTarget(item) {
+    if (isProblemItem(item) || isTradedItem(item)) return false;
     const target = asObject(item.target);
     const targetExtra = asObject(target.extra);
     const selection = asObject(item.selection_summary);
@@ -451,6 +401,7 @@
   }
 
   function isSelectedItem(item) {
+    if (isProblemItem(item) || isTradedItem(item)) return false;
     const selection = asObject(item.selection_summary);
     const target = asObject(item.target);
     const targetStatus = lowerText(target.status || selection.target_status || item.target_status || item.status);
@@ -465,17 +416,19 @@
   }
 
   function isNotSelectedItem(item) {
+    if (isProblemItem(item) || isTradedItem(item) || isSelectedItem(item)) return false;
     const selection = asObject(item.selection_summary);
     const decision = lowerText(item.selection_decision || item.decision || selection.decision || selection.latest_decision);
     const status = lowerText(item.review_status);
     if (status === 'not_selected') return true;
-    if (['rejected', 'not_selected', 'deferred', 'error', 'blocked'].includes(decision)) return !isSelectedItem(item);
-    return collectNotSelectedReasons(item).length > 0 && !isSelectedItem(item);
+    if (['rejected', 'not_selected', 'deferred', 'error', 'blocked'].includes(decision)) return true;
+    return collectNotSelectedReasons(item).length > 0;
   }
 
   function matchesSymbolTab(item, tab = state.symbolTab) {
     if (tab === 'active') return isActiveTarget(item);
     if (tab === 'selected') return isSelectedItem(item);
+    if (tab === 'traded') return isTradedItem(item) && !isProblemItem(item);
     if (tab === 'not_selected') return isNotSelectedItem(item);
     if (tab === 'problem') return isProblemItem(item);
     return true;
@@ -489,6 +442,7 @@
       all: rows.length,
       active: rows.filter((item) => matchesSymbolTab(item, 'active')).length,
       selected: rows.filter((item) => matchesSymbolTab(item, 'selected')).length,
+      traded: rows.filter((item) => matchesSymbolTab(item, 'traded')).length,
       not_selected: rows.filter((item) => matchesSymbolTab(item, 'not_selected')).length,
       problem: rows.filter((item) => matchesSymbolTab(item, 'problem')).length
     };
@@ -537,13 +491,37 @@
     });
   }
 
-  function toneForStatus(status) {
+  function reviewStatusLabel(item) {
+    const key = lowerText(item?.review_status);
+    if (isProblemItem(item)) return '链路异常';
+    if (isClosedItem(item)) return '已闭环';
+    if (isTradedItem(item)) return '已开仓';
+    if (key === 'not_selected') return '未选/拒绝';
+    if (key === 'selected') return '已选标';
+    if (key === 'signaled') return '已出信号';
+    return firstText(item?.review_status, 'unknown');
+  }
+
+  function toneForStatus(status, item = null) {
+    if (item && isProblemItem(item)) return 'danger';
+    if (item && isClosedItem(item)) return 'closed';
+    if (item && isTradedItem(item)) return 'traded';
     const key = String(status || '').toLowerCase();
     if (key === 'problem') return 'danger';
     if (key === 'not_selected') return 'muted';
-    if (key === 'closed') return 'done';
+    if (key === 'closed') return 'closed';
+    if (key === 'open') return 'traded';
     if (key === 'open' || key === 'signaled') return 'warn';
     return 'info';
+  }
+
+  function rowStateClasses(item) {
+    return [
+      item.symbol === state.selectedSymbol ? 'active' : '',
+      isProblemItem(item) ? 'is-problem' : '',
+      isClosedItem(item) && !isProblemItem(item) ? 'is-closed' : '',
+      isTradedItem(item) && !isClosedItem(item) && !isProblemItem(item) ? 'is-traded' : ''
+    ].filter(Boolean).join(' ');
   }
 
   function renderSymbols() {
@@ -560,10 +538,15 @@
       const reasons = collectNotSelectedReasons(item);
       const signal = signalSummary(item);
       const reasonText = selectedReason(item) || reasons[0]?.text || signal.reason || '--';
+      const tradeLine = tradeSummary(item);
       return `
-        <button class="symbol-row ${item.symbol === state.selectedSymbol ? 'active' : ''}" type="button" data-symbol="${escapeHtml(item.symbol)}">
-          <span class="symbol-main"><strong>${escapeHtml(item.symbol)}</strong><em>${escapeHtml(reasonText)}</em></span>
-          <span class="status-pill ${toneForStatus(item.review_status)}">${escapeHtml(item.review_status || 'unknown')}</span>
+        <button class="symbol-row ${rowStateClasses(item)}" type="button" data-symbol="${escapeHtml(item.symbol)}">
+          <span class="symbol-main">
+            <strong>${escapeHtml(item.symbol)}</strong>
+            <em>${escapeHtml(reasonText)}</em>
+            ${tradeLine ? `<small class="symbol-trade-line">${escapeHtml(tradeLine)}</small>` : ''}
+          </span>
+          <span class="status-pill ${toneForStatus(item.review_status, item)}">${escapeHtml(reviewStatusLabel(item))}</span>
           ${issues ? `<span class="issue-count">${issues}</span>` : ''}
         </button>
       `;
@@ -593,10 +576,15 @@
       ...asList(item.execution_blockers || target.execution_blockers || targetExtra.execution_blockers)
     ];
     const seen = new Set();
-    return rawReasons.map((reason) => ({
-      label: reasonLabel(reason, '未选'),
-      text: reasonText(reason)
-    })).filter((reason) => {
+    return rawReasons.map((reason) => {
+      const label = reasonLabel(reason, '未选');
+      const text = reasonText(reason);
+      return {
+        label,
+        text,
+        tone: reasonTone(label, text)
+      };
+    }).filter((reason) => {
       const key = `${reason.label}:${reason.text}`;
       if (!reason.text || seen.has(key)) return false;
       seen.add(key);
@@ -626,6 +614,55 @@
     );
   }
 
+  function reasonTone(label, text) {
+    const value = `${label || ''} ${text || ''}`.toLowerCase();
+    if (value.includes('error') || value.includes('blocked') || value.includes('blocker')) return 'blocked';
+    if (value.includes('deferred') || value.includes('skip') || value.includes('already exists') || value.includes('已存在')) return 'deferred';
+    if (value.includes('rejected') || value.includes('not_selected') || value.includes('拒绝') || value.includes('未选')) return 'rejected';
+    return 'muted';
+  }
+
+  function splitReasonTokens(value) {
+    return firstText(value)
+      .split(/[,，;；\n|]+/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  function shortReasonText(value, maxLength = 120) {
+    const text = firstText(value);
+    if (text.length <= maxLength) return text;
+    return `${text.slice(0, maxLength - 1)}…`;
+  }
+
+  function renderSelectedReasonList(reason) {
+    const text = firstText(reason);
+    const tokens = splitReasonTokens(text);
+    if (!tokens.length) {
+      return '<span class="reason-chip muted reason-token"><span>没有 selected target / selected decision 原因字段。</span></span>';
+    }
+    const limit = 8;
+    const visible = tokens.slice(0, limit).map((token) => (
+      `<span class="reason-chip reason-token selected" title="${escapeHtml(token)}"><span>${escapeHtml(token)}</span></span>`
+    )).join('');
+    const overflow = tokens.length > limit
+      ? `<span class="reason-chip muted reason-token" title="${escapeHtml(text)}"><span>+${tokens.length - limit} more</span></span>`
+      : '';
+    return `<div class="reason-chip-list selected-reason-list" title="${escapeHtml(text)}">${visible}${overflow}</div>`;
+  }
+
+  function renderNotSelectedReasonList(reasons, { selectedContext = false } = {}) {
+    const emptyCopy = selectedContext
+      ? '没有拒绝/跳过记录；最终状态由选标、信号和订单链路确认。'
+      : '无 rejected/not_selected/blocker 字段；旧 payload 只能说明“没有入选证据”。';
+    if (!reasons.length) {
+      return `<span class="reason-chip muted"><b>${selectedContext ? '无记录' : '未选'}</b><span>${escapeHtml(emptyCopy)}</span></span>`;
+    }
+    return reasons.slice(0, 8).map((reason) => (
+      `<span class="reason-chip ${escapeHtml(reason.tone || 'muted')}"><b>${escapeHtml(reason.label)}</b><span>${escapeHtml(reason.text)}</span></span>`
+    )).join('');
+  }
+
   function selectionSummary(item) {
     const status = lowerText(item.review_status);
     const selection = lowerText(item.selection_decision || item.decision);
@@ -639,6 +676,20 @@
         label: hasTarget ? '已选但异常' : '链路异常',
         tone: 'danger',
         copy: (item.issue_flags || [])[0]?.message || '执行链路存在 issue_flags'
+      };
+    }
+    if (isClosedItem(item)) {
+      return {
+        label: '已闭环',
+        tone: 'closed',
+        copy: `${tradeSummary(item) || '已交易并结束闭环'}；${selectedReason(item) || '来自今日信号/订单链路'}`
+      };
+    }
+    if (isTradedItem(item)) {
+      return {
+        label: '已交易',
+        tone: 'traded',
+        copy: `${tradeSummary(item) || '已有 entry 成交'}；${selectedReason(item) || '来自今日信号/订单链路'}`
       };
     }
     if (selected) {
@@ -688,17 +739,19 @@
     const signal = signalSummary(item);
     const status = lowerText(signal.status);
     const terminal = ['expired', 'blocked', 'rejected', 'cancelled', 'canceled'].some((key) => status.includes(key));
-    const reasons = collectNotSelectedReasons(item);
-    return firstText(
+    const explicit = firstText(
       item.expired_reason,
       item.blocked_reason,
       item.filter_reason,
       item.status_reason,
+      signal.blockedReason
+    );
+    if (explicit) return explicit;
+    if (!terminal) return '';
+    return firstText(
       signal.statusExplanation,
-      signal.blockedReason,
-      terminal ? signal.reason : '',
+      signal.reason,
       terminal && signal.expiredAt ? `过期时间 ${signal.expiredAt}` : '',
-      reasons[0]?.text,
       terminal ? `${signal.status}（旧 payload 未提供详细原因）` : ''
     );
   }
@@ -717,39 +770,46 @@
 
   function renderReasonChips(item) {
     const selection = selectionSummary(item);
-    const selectedCopy = selectedReason(item) || (selection.tone === 'done' ? selection.copy : '没有 selected target / selected decision 原因字段。');
+    const selectedCopy = selectedReason(item);
     const notSelected = collectNotSelectedReasons(item);
     const signal = signalSummary(item);
     const blockedReason = blockedOrExpiredReason(item);
-    const notSelectedHtml = notSelected.length
-      ? notSelected.slice(0, 8).map((reason) => `<span class="reason-chip"><b>${escapeHtml(reason.label)}</b><span>${escapeHtml(reason.text)}</span></span>`).join('')
-      : '<span class="reason-chip muted"><b>未选</b><span>无 rejected/not_selected/blocker 字段；旧 payload 只能说明“没有入选证据”。</span></span>';
+    const selectedContext = isSelectedItem(item) || isTradedItem(item);
+    const selectedFallback = selectedCopy || (selectedContext ? '已进入今日目标 / 信号 / 订单链路。' : '');
+    const notSelectedLabel = selectedContext ? '拒绝/跳过记录' : '为什么没选';
+    const notSelectedHelp = selectedContext
+      ? '这些记录可能来自盘中补池、重复入池或风控拒绝；最终结论以上方“选标结论”为准。'
+      : '来自 rejected / not_selected / deferred 决策账本。';
+    const blockedCard = blockedReason ? `
+        <article class="explain-card warn">
+          <span>为什么过期/阻塞</span>
+          <strong>${escapeHtml(shortReasonText(blockedReason))}</strong>
+          <p>${escapeHtml('来自 signal status_reason / blocker / rejected ledger。')}</p>
+        </article>
+    ` : '';
     return `
       <div class="forensic-explain-grid">
         <article class="explain-card ${classToken(selection.tone)}">
           <span>选标结论</span>
           <strong>${escapeHtml(selection.label)}</strong>
-          <p>${escapeHtml(selection.copy)}</p>
+          <p title="${escapeHtml(selection.copy)}">${escapeHtml(shortReasonText(selection.copy))}</p>
         </article>
-        <article class="explain-card">
+        <article class="explain-card ${selectedContext ? 'done' : 'secondary'}">
           <span>为什么选</span>
-          <strong>${escapeHtml(selectedCopy || '--')}</strong>
+          ${renderSelectedReasonList(selectedFallback)}
           <p>${escapeHtml(selectedCopy ? '来自 selected target / selected decision / scan_reason。' : '没有入选原因字段。')}</p>
         </article>
-        <article class="explain-card">
-          <span>为什么没选</span>
-          <div class="reason-chip-list">${notSelectedHtml}</div>
+        <article class="explain-card ${selectedContext ? 'secondary' : 'warn'}">
+          <span>${escapeHtml(notSelectedLabel)}</span>
+          <div class="reason-chip-list">${renderNotSelectedReasonList(notSelected, { selectedContext })}</div>
+          <p>${escapeHtml(notSelectedHelp)}</p>
         </article>
         <article class="explain-card">
           <span>信号什么时候产生</span>
           <strong>${escapeHtml(signal.time)}</strong>
           <p>${escapeHtml(signal.total ? `${signal.signal || signal.status || 'generated'} · ${signal.reason || '无原因字段'}` : '当天没有同标的信号记录。')}</p>
         </article>
-        <article class="explain-card ${blockedReason ? 'warn' : 'done'}">
-          <span>为什么过期/阻塞</span>
-          <strong>${escapeHtml(blockedReason || '未过期/未阻塞')}</strong>
-          <p>${escapeHtml(blockedReason ? '来自 signal status_reason / blocker / rejected ledger。' : '没有 expired / blocked / rejected 状态。')}</p>
-        </article>
+        ${blockedCard}
       </div>
     `;
   }
@@ -828,17 +888,17 @@
       $('symbolDetail').innerHTML = '<div class="empty-state">没有详情。</div>';
       return;
     }
-    $('detailTitle').textContent = `${item.symbol} · ${item.review_status}`;
+    $('detailTitle').textContent = `${item.symbol} · ${reviewStatusLabel(item)}`;
     const selection = selectionSummary(item);
     const signal = signalSummary(item);
     const notSelected = collectNotSelectedReasons(item);
-    $('detailCopy').textContent = selectedReason(item) || notSelected[0]?.text || signal.reason || selection.copy || '暂无摘要原因。';
+    $('detailCopy').textContent = tradeSummary(item) || selectedReason(item) || notSelected[0]?.text || signal.reason || selection.copy || '暂无摘要原因。';
     $('lifecycleLink').href = linkedPageUrl(item.lifecycle_url || '/ibkr_lifecycle_flow.html');
     const order = item.order_summary || {};
     const realized = item.realized || {};
     $('symbolDetail').innerHTML = `
       <div class="detail-cards">
-        <article><span>结论</span><strong>${escapeHtml(selection.label)}</strong><em>${escapeHtml(selection.copy || '--')}</em></article>
+        <article><span>结论</span><strong>${escapeHtml(selection.label)}</strong><em title="${escapeHtml(selection.copy || '--')}">${escapeHtml(shortReasonText(selection.copy || '--'))}</em></article>
         <article><span>信号时间</span><strong>${escapeHtml(signal.time)}</strong><em>${escapeHtml(signal.status || '--')}</em></article>
         <article><span>开仓成交</span><strong>${escapeHtml(order.entry_filled || 0)}</strong><em>orders ${escapeHtml(order.total || 0)}</em></article>
         <article><span>平仓</span><strong>${escapeHtml(order.exit_filled || 0)}</strong><em>PnL ${escapeHtml(formatNumber(realized.net_pnl || 0, 2))}</em></article>
@@ -888,7 +948,6 @@
 
   function initChrome() {
     renderReviewContextBar();
-    loadMarketCalendarContext().catch(() => null);
     const nav = $('nav');
     if (nav && typeof renderNav === 'function') nav.innerHTML = renderNav(PAGE_PATH);
     const bridge = $('pageBridge');

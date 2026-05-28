@@ -235,7 +235,7 @@ class TradingServiceAuthRecoveryMixin:
             return ""
 
     def _auth_probe_in_late_session(self) -> bool:
-        return self._auth_probe_market_session_kind() in {"close_transition", "afterhours"}
+        return self._auth_probe_market_session_kind() in {"close_transition", "afterhours", "overnight"}
 
     @staticmethod
     def _gateway_socket_unreachable(status: dict | None, status_code: int | None = None) -> bool:

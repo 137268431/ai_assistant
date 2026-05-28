@@ -76,7 +76,8 @@ class MarketCalendarTest(unittest.TestCase):
             ("2026-05-26 10:00:00", "regular", "盘中"),
             ("2026-05-26 16:05:00", "close_transition", "盘后过渡"),
             ("2026-05-26 17:00:00", "afterhours", "盘后"),
-            ("2026-05-26 20:01:00", "closed", "闭市"),
+            ("2026-05-26 20:01:00", "overnight", "夜盘"),
+            ("2026-05-26 03:00:00", "overnight", "夜盘"),
         ]
         for raw_time, expected_kind, expected_label in cases:
             with self.subTest(raw_time=raw_time):

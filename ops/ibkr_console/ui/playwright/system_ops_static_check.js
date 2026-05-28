@@ -336,7 +336,7 @@ assert(!/screener-domain-bridge[\s\S]{0,240}page-bridge-copy[\s\S]{0,80}display:
 assert(!/screener-domain-tab\.page-bridge-link[\s\S]{0,120}min-height:\s*42px/.test(screenerCss), 'screener_bridge_compact_height');
 
 const runtimeHtml = readStatic('ibkr_runtime.html');
-const runtimeContextFixVersion = '20260526-cache-profiles';
+const runtimeContextFixVersion = '20260528-night-session-review-entry-1';
 const commonJs = readStatic('common.js');
 assert(commonJs.includes(`sharedBundleVersion = '${runtimeContextFixVersion}'`), 'common_missing_runtime_context_fix_cachebuster');
 assert(runtimeHtml.includes(`common.js?v=${runtimeContextFixVersion}`), 'runtime_html_missing_runtime_context_fix_cachebuster');

@@ -62,6 +62,7 @@ MARKET_SESSION_LABELS = {
     "regular": "regular",
     "close_transition": "close_transition",
     "afterhours": "afterhours",
+    "overnight": "overnight",
 }
 
 
@@ -413,7 +414,7 @@ def classify_market_session_kind(
     regular_close = regular_close_minute_for_date(dt)
     extended_close = extended_close_minute_for_date(dt)
     if minutes < EXTENDED_OPEN_MINUTE:
-        return "closed"
+        return "overnight"
     if minutes < REGULAR_OPEN_MINUTE:
         return "premarket"
     if minutes < regular_close:
@@ -422,7 +423,7 @@ def classify_market_session_kind(
         return "close_transition"
     if minutes < extended_close:
         return "afterhours"
-    return "closed"
+    return "overnight"
 
 
 def build_market_session_snapshot(
@@ -440,8 +441,8 @@ def build_market_session_snapshot(
         "cn_time": dt.astimezone(CN).strftime("%Y-%m-%d %H:%M:%S"),
         "weekday": dt.weekday(),
         "minutes": dt.hour * 60 + dt.minute,
-        "is_open": kind in {"premarket", "regular", "close_transition", "afterhours"},
-        "is_late_session": kind in {"close_transition", "afterhours"},
+        "is_open": kind in {"premarket", "regular", "close_transition", "afterhours", "overnight"},
+        "is_late_session": kind in {"close_transition", "afterhours", "overnight"},
         "requires_live_5m": kind in {"premarket", "regular", "close_transition", "afterhours"},
     }
 

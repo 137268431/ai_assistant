@@ -59,6 +59,8 @@
                 regular: '盘中',
                 close_transition: '盘后过渡',
                 afterhours: '盘后',
+                overnight: '夜盘',
+                night: '夜盘',
                 closed: '闭市'
             };
             return String(session?.label_zh || session?.display_label || labels[kind] || kind || '--');
@@ -67,7 +69,7 @@
         function getRuntimeMarketSessionTone(session = {}) {
             const kind = String(session?.kind || '').trim().toLowerCase();
             if (kind === 'closed') return 'warn';
-            if (kind === 'afterhours' || kind === 'close_transition' || kind === 'premarket') return 'shared';
+            if (kind === 'afterhours' || kind === 'close_transition' || kind === 'premarket' || kind === 'overnight' || kind === 'night') return 'shared';
             if (kind === 'regular') return 'ok';
             return '';
         }

@@ -25,6 +25,7 @@ MARKET_SESSION_LABELS_ZH = {
     "regular": "盘中",
     "close_transition": "盘后过渡",
     "afterhours": "盘后",
+    "overnight": "夜盘",
 }
 
 
@@ -270,7 +271,7 @@ def _market_session_kind_from_windows(
     extended_open = extended_open or regular_open
     extended_close = extended_close or regular_close
     if et_now < extended_open or et_now >= extended_close:
-        return "closed"
+        return "overnight"
     if et_now < regular_open:
         return "premarket"
     if et_now < regular_close:
@@ -314,8 +315,8 @@ def build_market_session_from_calendar(snapshot: dict[str, Any], *, now: datetim
         "cn_time": current.astimezone(CN).strftime("%Y-%m-%d %H:%M:%S"),
         "weekday": current.weekday(),
         "minutes": current.hour * 60 + current.minute,
-        "is_open": kind in {"premarket", "regular", "close_transition", "afterhours"},
-        "is_late_session": kind in {"close_transition", "afterhours"},
+        "is_open": kind in {"premarket", "regular", "close_transition", "afterhours", "overnight"},
+        "is_late_session": kind in {"close_transition", "afterhours", "overnight"},
         "requires_live_5m": kind in {"premarket", "regular", "close_transition", "afterhours"},
         "regular_open_us": _format_us(regular_open),
         "regular_close_us": _format_us(regular_close),

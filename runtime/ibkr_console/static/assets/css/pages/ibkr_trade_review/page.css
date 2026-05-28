@@ -384,6 +384,14 @@ body {
   cursor: pointer;
 }
 .symbol-row.active { border-color: rgba(139, 212, 80, 0.75); background: rgba(139, 212, 80, 0.10); }
+.symbol-row.is-traded {
+  border-color: rgba(103,232,249,0.30);
+  background: linear-gradient(90deg, rgba(103,232,249,0.10), rgba(255,255,255,0.035));
+}
+.symbol-row.is-closed {
+  border-color: rgba(245,193,86,0.34);
+  background: linear-gradient(90deg, rgba(245,193,86,0.12), rgba(255,255,255,0.035));
+}
 .symbol-main { display: grid; gap: 4px; min-width: 0; }
 .symbol-main strong { font-size: 16px; letter-spacing: -0.02em; }
 .symbol-main em {
@@ -394,6 +402,11 @@ body {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   font-style: normal;
+}
+.symbol-trade-line {
+  color: var(--review-gold);
+  font: 800 10px/1.25 'JetBrains Mono', monospace;
+  overflow-wrap: anywhere;
 }
 .symbol-row .status-pill {
   justify-content: center;
@@ -409,6 +422,8 @@ body {
 .status-pill.done { color: #bbf7d0; border-color: rgba(74,222,128,0.35); background: rgba(74,222,128,0.10); }
 .status-pill.warn { color: #fde68a; border-color: rgba(245,193,86,0.35); background: rgba(245,193,86,0.11); }
 .status-pill.info { color: #bae6fd; border-color: rgba(103,232,249,0.30); background: rgba(103,232,249,0.10); }
+.status-pill.traded { color: #bae6fd; border-color: rgba(103,232,249,0.38); background: rgba(103,232,249,0.12); }
+.status-pill.closed { color: #fde68a; border-color: rgba(245,193,86,0.46); background: rgba(245,193,86,0.13); }
 .issue-count { color: #fecdd3; background: rgba(251,113,133,0.15); }
 
 .detail-cards {
@@ -452,6 +467,38 @@ body {
 .reason-chip b { color: var(--review-accent); }
 .reason-chip > span { color: var(--review-muted); }
 .reason-chip.muted { color: var(--review-muted); border-style: dashed; }
+.reason-chip.selected {
+  color: #bbf7d0;
+  border-color: rgba(139,212,80,0.30);
+  background: rgba(139,212,80,0.10);
+}
+.reason-chip.selected > span { color: #bbf7d0; }
+.reason-chip.rejected,
+.reason-chip.blocked {
+  color: #fecdd3;
+  border-color: rgba(251,113,133,0.35);
+  background: rgba(251,113,133,0.11);
+}
+.reason-chip.rejected > span,
+.reason-chip.blocked > span { color: #fecdd3; }
+.reason-chip.deferred {
+  color: #fde68a;
+  border-color: rgba(245,193,86,0.34);
+  background: rgba(245,193,86,0.10);
+}
+.reason-chip.deferred > span { color: #fde68a; }
+.reason-chip.reason-token {
+  min-height: 24px;
+  padding: 4px 8px;
+  font-size: 10px;
+  line-height: 1.18;
+}
+.selected-reason-list {
+  gap: 6px;
+  max-height: 84px;
+  overflow: auto;
+  padding-right: 2px;
+}
 
 .forensic-explain-grid {
   display: grid;
@@ -504,6 +551,11 @@ body {
 .chain-step.warn { border-color: rgba(245,193,86,0.36); background: rgba(245,193,86,0.10); }
 .explain-card.done,
 .chain-step.done { border-color: rgba(139,212,80,0.36); background: rgba(139,212,80,0.09); }
+.explain-card.traded,
+.chain-step.traded { border-color: rgba(103,232,249,0.30); background: rgba(103,232,249,0.09); }
+.explain-card.closed,
+.chain-step.closed { border-color: rgba(245,193,86,0.40); background: rgba(245,193,86,0.11); }
+.explain-card.secondary { border-style: dashed; background: rgba(255,255,255,0.025); }
 .chain-step.info { border-color: rgba(103,232,249,0.30); background: rgba(103,232,249,0.09); }
 .chain-step.muted { border-style: dashed; opacity: 0.82; }
 
