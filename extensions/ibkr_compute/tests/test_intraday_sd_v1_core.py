@@ -129,6 +129,92 @@ class IntradaySdV1CoreTest(unittest.TestCase):
         self.assertEqual(trace["setup_state"]["strategy_profile"], "legacy")
         self.assertFalse(trace["setup_state"]["enabled"])
 
+    def test_core_two_setup_profile_keeps_only_core_candidates(self):
+        gen = SignalGenerator("SPY", "5m", {"signal_strategy_profile": "core_two_setup_v1"})
+
+        signal = gen.update(intraday_breakout_snapshot())
+
+        self.assertIsNone(signal)
+        trace = gen.get_trace_snapshot()
+        self.assertEqual(trace["setup_state"]["strategy_profile"], "core_two_setup_v1")
+        self.assertTrue(trace["setup_state"]["enabled"])
+        self.assertEqual(
+            [item["setup"] for item in trace["setup_state"]["candidates"]],
+            ["vwap_trend_pullback_long", "sd_mr_reversal_short"],
+        )
+        self.assertFalse(trace["component_flags"]["legacy_signals_enabled"])
+
+    def test_core_two_setup_profile_emits_vwap_pullback_long(self):
+        gen = SignalGenerator("SPY", "5m", {"signal_strategy_profile": "core_two_setup_v1"})
+
+        signal = gen.update(
+            intraday_breakout_snapshot(
+                sd_regime="trend_walk_up",
+                sd_squeeze_active=False,
+                sd_breakout_up=False,
+                sd_trend_walk_up=True,
+                close=100.35,
+                low=100.05,
+                vwap=100.0,
+                vwap_upper1=100.8,
+                atr_raw=1.0,
+            )
+        )
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal["signal"], "vwap_trend_pullback_long")
+        self.assertEqual(signal["extra"]["strategy_profile"], "core_two_setup_v1")
+
+    def test_core_two_setup_profile_emits_mr_short_only_after_exhaustion(self):
+        gen = SignalGenerator("SPY", "5m", {"signal_strategy_profile": "core_two_setup_v1"})
+
+        signal = gen.update(
+            intraday_breakout_snapshot(
+                sd_upper=True,
+                sd_lower=False,
+                sd_regime="flat",
+                sd_squeeze_active=False,
+                sd_breakout_up=False,
+                sd_breakout_down=False,
+                fractal_bear=True,
+                crsi_bear_div=True,
+                high=102.0,
+                close=101.2,
+                block_mr_short=False,
+            )
+        )
+
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal["signal"], "sd_mr_reversal_short")
+        self.assertEqual(signal["direction"], "short")
+        self.assertTrue(signal["extra"]["trigger_checks"]["bearish_divergence_seen"])
+
+    def test_core_two_setup_profile_blocks_mr_short_in_early_bull_trend(self):
+        gen = SignalGenerator("SPY", "5m", {"signal_strategy_profile": "core_two_setup_v1"})
+
+        signal = gen.update(
+            intraday_breakout_snapshot(
+                sd_upper=True,
+                sd_lower=False,
+                sd_regime="trend_walk_up",
+                sd_squeeze_active=False,
+                sd_breakout_up=False,
+                sd_breakout_down=False,
+                fractal_bear=True,
+                crsi_bear_div=True,
+                high=102.0,
+                close=101.2,
+                dtp_dir=1,
+                dtp_phase="confirmed",
+                dtp_phase_bars=20,
+            )
+        )
+
+        self.assertIsNone(signal)
+        trace = gen.get_trace_snapshot()
+        self.assertEqual(trace["signal_state"]["stage"], "blocked")
+        self.assertFalse(trace["signal_state"]["filter_checks"]["not_bull_trend_early_or_confirmed"])
+
     def test_intraday_sd_v1_emits_squeeze_breakout_long(self):
         gen = SignalGenerator("SPY", "5m", {"signal_strategy_profile": "intraday_sd_v1"})
 

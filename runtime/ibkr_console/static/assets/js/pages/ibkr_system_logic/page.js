@@ -6,9 +6,9 @@ const LOGIC_SECTION_ORDER = [
   ['system_flow', '系统地图'],
   ['selection', '标的选择'],
   ['indicators', '数据与指标'],
-  ['signals', '信号生成'],
+  ['signals', '核心策略'],
   ['execution', '执行校验'],
-  ['order_flow', '订单流'],
+  ['order_flow', 'Delta / 订单流'],
   ['orders', '订单生命周期'],
   ['broker_mode_switch', '模式切换 / 2FA'],
   ['quality', '数据质量'],
@@ -141,6 +141,78 @@ function renderDetails(details = []) {
   `;
 }
 
+function renderPolicyCards(panel = {}) {
+  const cards = [];
+  const retained = arrayOrEmpty(panel.retained_setups);
+  const nonCore = arrayOrEmpty(panel.non_core_setups);
+  const flow = arrayOrEmpty(panel.setup_flow);
+  const delta = panel.delta_policy && typeof panel.delta_policy === 'object' ? panel.delta_policy : null;
+
+  if (panel.strategy_profile || panel.runtime_signal_profile) {
+    cards.push({
+      tone: 'accent',
+      id: 'strategy',
+      title: panel.strategy_profile || 'Strategy',
+      summary: panel.runtime_signal_profile ? `runtime: ${panel.runtime_signal_profile}` : '',
+      lines: [
+        panel.strategy_profile ? `core profile: ${panel.strategy_profile}` : '',
+        panel.runtime_signal_profile ? `runtime source: ${panel.runtime_signal_profile}` : '',
+        retained.length ? `retained setups: ${retained.map((item) => item.id || item.setup || '').filter(Boolean).join(' + ')}` : '',
+      ].filter(Boolean),
+    });
+  }
+
+  if (nonCore.length) {
+    cards.push({
+      tone: 'warn',
+      id: 'non_core',
+      title: 'Deleted / Non-Core',
+      summary: `${nonCore.length} legacy labels`,
+      lines: nonCore.map((item) => `${item.id || '--'} · ${item.status || 'non_core'}`),
+    });
+  }
+
+  if (flow.length) {
+    cards.push({
+      tone: 'neutral',
+      id: 'flow',
+      title: 'Setup Flow',
+      summary: 'target -> setup -> execution',
+      lines: flow,
+    });
+  }
+
+  if (delta) {
+    cards.push({
+      tone: 'warn',
+      id: 'delta',
+      title: 'Delta Policy',
+      summary: delta.summary || delta.mode || 'auxiliary only',
+      lines: arrayOrEmpty(delta.lines),
+    });
+  }
+
+  if (!cards.length) return '';
+  return `
+    <div class="logic-detail-grid">
+      ${cards.map((card) => `
+        <article class="logic-detail-card ${safeEscape(card.tone || 'neutral')}">
+          <div class="logic-detail-card-head">
+            <div>
+              <div class="logic-detail-id">${safeEscape(card.id || '')}</div>
+              <div class="logic-detail-card-title">${safeEscape(card.title || '--')}</div>
+            </div>
+            ${card.summary ? `<span>${safeEscape(card.summary)}</span>` : ''}
+          </div>
+          <div class="logic-lines">
+            ${arrayOrEmpty(card.lines).map((line) => `<div class="logic-line">${safeEscape(line)}</div>`).join('')}
+          </div>
+        </article>
+      `).join('')}
+    </div>
+  `;
+}
+
 function renderSourceStack(panel = {}) {
   const refs = panelSourceRefs(panel).slice(0, 8);
   if (!refs.length) return '';
@@ -220,6 +292,7 @@ function renderGenericPanel(id, panel = {}, index = 0) {
       </div>
       ${renderChips(panel.chips)}
       ${renderHighlights(panel.highlights)}
+      ${renderPolicyCards(panel)}
       ${renderDetails(panel.details)}
       ${renderSections(panel.sections)}
     </section>
@@ -412,7 +485,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   currentBrokerMode = getCurrentBrokerMode();
   document.getElementById('nav').innerHTML = renderNav('/ibkr_system_logic.html');
   document.getElementById('contextBar').innerHTML = renderPageContextBar('🧭 IBKR 系统逻辑', {
-    subtitle: '规则地图 / 指标 / 信号 / 调度',
+    subtitle: 'core_two_setup_v1 / Delta 辅助策略 / 指标 / 调度',
   });
   document.getElementById('pageBridge').innerHTML = renderSystemBridge('/ibkr_system_logic.html');
   renderAnchors();

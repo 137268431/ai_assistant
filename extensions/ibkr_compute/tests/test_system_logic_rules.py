@@ -32,7 +32,7 @@ from ibkr_compute.api.market import rules_views
 
 class FakeConfig:
     DEFAULTS = {
-        "ibkr_timeframe_param_profiles_json": '{"5m":{"signal_strategy_profile":"intraday_sd_v1"}}',
+        "ibkr_timeframe_param_profiles_json": '{"5m":{"signal_strategy_profile":"core_two_setup_v1"}}',
     }
 
     def __init__(self):
@@ -138,6 +138,8 @@ class SystemLogicRulesPayloadTest(unittest.TestCase):
         self.assertIn("order_flow", coverage_ids)
         self.assertIn("broker_mode_switch", coverage_ids)
         self.assertTrue(all(item["status"] == "covered" for item in payload["logic_coverage"]))
+        self.assertEqual("core_two_setup_v1", payload["signals"]["strategy_profile"])
+        self.assertEqual("auxiliary_shadow_proxy_ab", payload["signals"]["delta_policy"]["mode"])
 
     def test_indicator_and_execution_sections_include_expected_defaults(self):
         fake_app = FakeAppModule()
@@ -161,9 +163,20 @@ class SystemLogicRulesPayloadTest(unittest.TestCase):
         self.assertIn("sd_length", indicator_text)
         self.assertIn("DTP Early", str(indicators["chips"]))
         self.assertIn("intraday_signal_validity_minutes", str(signals))
-        self.assertIn("intraday_sd_v1", str(signals))
-        self.assertIn("sd_squeeze_breakout_long", str(signals))
-        self.assertIn("vwap_trend_pullback_long", str(signals))
+        self.assertEqual("core_two_setup_v1", signals["strategy_profile"])
+        self.assertEqual("core_two_setup_v1", signals["runtime_signal_profile"])
+        retained_setup_ids = [item["id"] for item in signals["retained_setups"]]
+        self.assertEqual(
+            ["vwap_trend_pullback_long", "sd_mr_reversal_short"],
+            retained_setup_ids,
+        )
+        self.assertNotIn("vwap_trend_pullback_short", retained_setup_ids)
+        non_core_setup_ids = {item["id"] for item in signals["non_core_setups"]}
+        self.assertIn("sd_squeeze_breakout_long", non_core_setup_ids)
+        self.assertIn("sd_mr_reversal_long", non_core_setup_ids)
+        self.assertIn("deleted_non_core", str(signals))
+        self.assertEqual("auxiliary_shadow_proxy_ab", signals["delta_policy"]["mode"])
+        self.assertFalse(signals["delta_policy"]["core_alpha"])
         self.assertIn("intraday_reentry_policy", str(signals))
         self.assertIn("intraday_symbol_daily_entry_limit", str(signals))
         self.assertIn("symbol_daily_entry_limit_reached", str(signals))
@@ -186,6 +199,7 @@ class SystemLogicRulesPayloadTest(unittest.TestCase):
         self.assertIn("tbt_missing", str(order_flow))
         self.assertIn("tbt_stale", str(order_flow))
         self.assertIn("ignored_non_tbt_tick_count", str(order_flow))
+        self.assertIn("not core alpha", str(order_flow))
         self.assertIn("broker-mode/switch/preview", str(broker_switch))
         self.assertIn("2FA", str(broker_switch))
 

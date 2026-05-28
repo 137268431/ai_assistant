@@ -6,6 +6,8 @@ from typing import Any
 
 
 UNKNOWN_SETUP = "unknown_setup"
+CORE_TWO_SETUP_PROFILE = "core_two_setup_v1"
+CORE_TWO_SETUP_ACTIVE_SETUPS = ("vwap_trend_pullback_long", "sd_mr_reversal_short")
 
 
 CANONICAL_INTRADAY_SETUPS: dict[str, dict[str, str]] = {
@@ -197,6 +199,8 @@ def build_setup_metadata(
 
 __all__ = [
     "CANONICAL_INTRADAY_SETUPS",
+    "CORE_TWO_SETUP_ACTIVE_SETUPS",
+    "CORE_TWO_SETUP_PROFILE",
     "UNKNOWN_SETUP",
     "build_setup_metadata",
     "normalize_setup_name",

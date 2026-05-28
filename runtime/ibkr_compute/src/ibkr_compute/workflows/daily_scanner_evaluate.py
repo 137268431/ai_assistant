@@ -612,8 +612,8 @@ class DailyScannerEvaluateMixin:
                         or "standard"
                     ),
                     "recommended_signal_profile": str(
-                        strategy_policy.get("recommended_signal_profile") or "intraday_sd_v1"
-                    ).strip() or "intraday_sd_v1",
+                        strategy_policy.get("recommended_signal_profile") or "core_two_setup_v1"
+                    ).strip() or "core_two_setup_v1",
                 }
             )
 

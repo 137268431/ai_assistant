@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+from .delta_proxy import (
+    BACKTEST_DELTA_MODE_PROXY_FILTER,
+    PROXY_DELTA_FILTER_REASON,
+    evaluate_proxy_delta_gate,
+    normalize_backtest_delta_mode,
+    normalize_backtest_delta_proxy_threshold,
+)
 from .runtime_support import *
 
 
@@ -25,6 +32,10 @@ class BacktestSymbolRowsRunnerMixin:
         compare_with_tv = self._should_compare_with_tv(request)
         compare_tv_signals = self._should_compare_tv_signals(request)
         capture_indicator_rows = self._should_persist_backtest_indicators(request)
+        backtest_delta_mode = normalize_backtest_delta_mode(request.get("backtest_delta_mode"))
+        backtest_delta_proxy_threshold = normalize_backtest_delta_proxy_threshold(
+            request.get("backtest_delta_proxy_threshold")
+        )
         tv_reference = self._load_tv_reference(
             symbol,
             request["source_environment"],
@@ -206,6 +217,16 @@ class BacktestSymbolRowsRunnerMixin:
                     self._compare_generated_signal(symbol_tv_parity, signal_payload)
                 signal_row = self._build_backtest_signal_row(request, bar, signal_payload)
                 signal_row["status"] = "generated"
+                delta_gate = evaluate_proxy_delta_gate(
+                    bar,
+                    signal_payload.get("direction"),
+                    mode=backtest_delta_mode,
+                    threshold=backtest_delta_proxy_threshold,
+                )
+                if delta_gate.get("enabled"):
+                    signal_extra = self._parse_object(signal_row.get("extra"))
+                    signal_extra["delta_gate"] = delta_gate
+                    signal_row["extra"] = signal_extra
                 signal_rows.append(signal_row)
                 signal_id = str(signal_row.get("signal_id", "") or "")
                 if signal_id:
@@ -271,6 +292,24 @@ class BacktestSymbolRowsRunnerMixin:
                         elif index >= len(bars) - 1:
                             self._mark_backtest_signal_status(signal_index, signal_id, "dropped", "last_bar_no_entry")
                     else:
+                        if (
+                            backtest_delta_mode == BACKTEST_DELTA_MODE_PROXY_FILTER
+                            and delta_gate.get("enabled")
+                            and not bool(delta_gate.get("passed"))
+                        ):
+                            delta_gate = {
+                                **delta_gate,
+                                "filtered": True,
+                                "filter_reason": PROXY_DELTA_FILTER_REASON,
+                            }
+                            self._mark_backtest_signal_status(
+                                signal_index,
+                                signal_id,
+                                "skipped",
+                                PROXY_DELTA_FILTER_REASON,
+                                {"delta_gate": delta_gate},
+                            )
+                            continue
                         pending_signal = self._build_backtest_pending_signal(
                             symbol,
                             bar,

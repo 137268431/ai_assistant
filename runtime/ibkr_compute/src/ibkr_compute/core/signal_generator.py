@@ -22,6 +22,9 @@ from .time_utils import ET
 
 logger = logging.getLogger(__name__)
 DEFAULT_MARKET_MONITOR_SYMBOLS = ""
+CORE_TWO_SETUP_PROFILE = "core_two_setup_v1"
+INTRADAY_CANDIDATE_PROFILES = {"intraday_sd_v1", CORE_TWO_SETUP_PROFILE}
+CORE_TWO_SETUP_SETUPS = {"vwap_trend_pullback_long", "sd_mr_reversal_short"}
 
 
 def _param_bool(value, default: bool = False) -> bool:
@@ -119,7 +122,15 @@ class SignalGenerator:
     def _is_intraday_sd_v1(self) -> bool:
         return self.strategy_profile == "intraday_sd_v1"
 
+    def _is_core_two_setup_v1(self) -> bool:
+        return self.strategy_profile == CORE_TWO_SETUP_PROFILE
+
+    def _is_intraday_candidate_profile(self) -> bool:
+        return self.strategy_profile in INTRADAY_CANDIDATE_PROFILES
+
     def _legacy_signals_enabled(self) -> bool:
+        if self._is_core_two_setup_v1():
+            return False
         if not self._is_intraday_sd_v1():
             return True
         if "intraday_include_legacy_signals" not in self.params:
@@ -382,6 +393,12 @@ class SignalGenerator:
             and selected_candidate.get("source") == "legacy_sd"
             and selected_candidate.get("direction") == "short"
         )
+        core_mr_short_confirmed = bool(
+            signal
+            and selected_candidate
+            and selected_candidate.get("setup") == "sd_mr_reversal_short"
+            and selected_candidate.get("source") == "intraday"
+        )
         if legacy_buy_confirmed:
             if sd_upper_valid and self.sd_upper_bull_touch_seen and self.sd_upper_bull_fractal_seen and bull_div_seen:
                 self.sd_upper_mr_used = True
@@ -392,6 +409,8 @@ class SignalGenerator:
                 self.sd_upper_mr_used = True
             if sd_lower_valid and self.sd_lower_bear_touch_seen and self.sd_lower_bear_fractal_seen and bear_div_seen:
                 self.sd_lower_mr_used = True
+        if core_mr_short_confirmed:
+            self.sd_upper_mr_used = True
 
         # ── 8. 组件清除 ──
         if legacy_signals_enabled and buy_raw and should_filter_buy:
@@ -408,6 +427,9 @@ class SignalGenerator:
             self.sell_consumed = True
             self._clear_bear_components()
             events.append("空头信号确认并消费窗口")
+        if core_mr_short_confirmed:
+            self._clear_bear_components()
+            events.append("核心均值回归空确认并消费上轨窗口")
 
         trace_filter_reason = ""
         if selection.get("ambiguous"):
@@ -596,12 +618,12 @@ class SignalGenerator:
     def _build_intraday_setup_state(self, snapshot: dict, *, block_all: bool = False) -> dict:
         state = {
             "strategy_profile": self.strategy_profile,
-            "enabled": self._is_intraday_sd_v1(),
+            "enabled": self._is_intraday_candidate_profile(),
             "selected_setup": "",
             "selected_direction": "",
             "candidates": [],
         }
-        if not self._is_intraday_sd_v1():
+        if not self._is_intraday_candidate_profile():
             return state
 
         if snapshot.get("sd_squeeze_active", False):
@@ -666,45 +688,73 @@ class SignalGenerator:
                 or str(snapshot.get("sd_regime", "") or "").strip().lower() == "trend_walk_down"
             ),
         }
+        mr_short_checks = {
+            "sd_upper_window_valid": bool(self.sd_upper_mr_active and not self.sd_upper_mr_used),
+            "sd_upper_bear_fractal_seen": bool(self.sd_upper_bear_fractal_seen),
+            "bearish_divergence_seen": bool(self.bear_crsi_div_seen or self.bear_obv_div_seen),
+            "close_rejects_upper_pressure": close < high,
+        }
 
-        candidates = [
-            self._intraday_candidate(
-                "sd_squeeze_breakout_long",
-                "long",
-                "breakout",
-                squeeze_long_checks,
-                self._intraday_filter_checks(snapshot, "long", "sd_squeeze_breakout_long", base_filter_checks),
-                "SD squeeze released upward with price holding above VWAP.",
-                priority=100,
-            ),
-            self._intraday_candidate(
-                "sd_squeeze_breakout_short",
-                "short",
-                "breakout",
-                squeeze_short_checks,
-                self._intraday_filter_checks(snapshot, "short", "sd_squeeze_breakout_short", base_filter_checks),
-                "SD squeeze released downward with price holding below VWAP.",
-                priority=100,
-            ),
-            self._intraday_candidate(
-                "vwap_trend_pullback_long",
-                "long",
-                "trend_pullback",
-                trend_long_checks,
-                self._intraday_filter_checks(snapshot, "long", "vwap_trend_pullback_long", base_filter_checks),
-                "SD trend-walk up remains intact after a pullback into the VWAP band.",
-                priority=80,
-            ),
-            self._intraday_candidate(
-                "vwap_trend_pullback_short",
-                "short",
-                "trend_pullback",
-                trend_short_checks,
-                self._intraday_filter_checks(snapshot, "short", "vwap_trend_pullback_short", base_filter_checks),
-                "SD trend-walk down remains intact after a pullback into the VWAP band.",
-                priority=80,
-            ),
-        ]
+        if self._is_core_two_setup_v1():
+            candidates = [
+                self._intraday_candidate(
+                    "vwap_trend_pullback_long",
+                    "long",
+                    "trend_pullback",
+                    trend_long_checks,
+                    self._intraday_filter_checks(snapshot, "long", "vwap_trend_pullback_long", base_filter_checks),
+                    "Core setup: uptrend remains intact after a pullback into the VWAP band.",
+                    priority=90,
+                ),
+                self._intraday_candidate(
+                    "sd_mr_reversal_short",
+                    "short",
+                    "mr_reversal",
+                    mr_short_checks,
+                    self._intraday_mr_short_filter_checks(snapshot, base_filter_checks),
+                    "Core setup: upper SD pressure rejects price after bearish fractal/divergence exhaustion.",
+                    priority=80,
+                ),
+            ]
+        else:
+            candidates = [
+                self._intraday_candidate(
+                    "sd_squeeze_breakout_long",
+                    "long",
+                    "breakout",
+                    squeeze_long_checks,
+                    self._intraday_filter_checks(snapshot, "long", "sd_squeeze_breakout_long", base_filter_checks),
+                    "SD squeeze released upward with price holding above VWAP.",
+                    priority=100,
+                ),
+                self._intraday_candidate(
+                    "sd_squeeze_breakout_short",
+                    "short",
+                    "breakout",
+                    squeeze_short_checks,
+                    self._intraday_filter_checks(snapshot, "short", "sd_squeeze_breakout_short", base_filter_checks),
+                    "SD squeeze released downward with price holding below VWAP.",
+                    priority=100,
+                ),
+                self._intraday_candidate(
+                    "vwap_trend_pullback_long",
+                    "long",
+                    "trend_pullback",
+                    trend_long_checks,
+                    self._intraday_filter_checks(snapshot, "long", "vwap_trend_pullback_long", base_filter_checks),
+                    "SD trend-walk up remains intact after a pullback into the VWAP band.",
+                    priority=80,
+                ),
+                self._intraday_candidate(
+                    "vwap_trend_pullback_short",
+                    "short",
+                    "trend_pullback",
+                    trend_short_checks,
+                    self._intraday_filter_checks(snapshot, "short", "vwap_trend_pullback_short", base_filter_checks),
+                    "SD trend-walk down remains intact after a pullback into the VWAP band.",
+                    priority=80,
+                ),
+            ]
         state["candidates"] = candidates
         selected = next((item for item in candidates if item["triggered"]), None)
         if selected:
@@ -1154,6 +1204,15 @@ class SignalGenerator:
         except Exception:
             return default
 
+    @staticmethod
+    def _intraday_param_int_from_value(value, default: int = 0) -> int:
+        try:
+            if value is None or value == "":
+                return default
+            return int(value)
+        except Exception:
+            return default
+
     def _intraday_param_bool(self, key: str, default: bool = False) -> bool:
         value = self.params.get(key, default)
         if isinstance(value, bool):
@@ -1176,6 +1235,25 @@ class SignalGenerator:
         checks["setup_cooldown"] = self._intraday_setup_cooldown_pass(snapshot, setup, direction)
         checks["symbol_daily_entry_limit"] = self._intraday_symbol_daily_entry_limit_pass(snapshot)
         return checks
+
+    def _intraday_mr_short_filter_checks(self, snapshot: dict, base_filter_checks: dict) -> dict:
+        checks = self._intraday_filter_checks(snapshot, "short", "sd_mr_reversal_short", base_filter_checks)
+        checks["mr_short_not_blocked"] = not bool(snapshot.get("block_mr_short", False))
+        checks["not_bull_trend_early_or_confirmed"] = not self._intraday_bull_trend_blocks_mr_short(snapshot)
+        return checks
+
+    def _intraday_bull_trend_blocks_mr_short(self, snapshot: dict) -> bool:
+        dtp_dir = snapshot.get("dtp_dir", 0)
+        try:
+            dtp_value = int(float(dtp_dir))
+        except (TypeError, ValueError):
+            dtp_value = 0
+        if dtp_value != 1:
+            return False
+        dtp_early_bars = self._intraday_param_int("dtp_early_bars", 12)
+        dtp_phase_bars = self._intraday_param_int_from_value(snapshot.get("dtp_phase_bars"), 0)
+        dtp_phase = str(snapshot.get("dtp_phase", "neutral") or "neutral").strip().lower()
+        return dtp_phase_bars <= dtp_early_bars or dtp_phase == "confirmed"
 
     def _intraday_vwap_pullback_tolerance(self, snapshot: dict, vwap: float) -> float:
         atr_basis = self._intraday_value_float(snapshot.get("atr_raw"), 0.0)

@@ -347,6 +347,8 @@ class BacktestRuntimeRecordsMixin:
             "premarket_cutoff_time": request.get("premarket_cutoff_time", DEFAULT_SCAN_CUTOFF_TIME),
             "scan_session_mode": request.get("scan_session_mode", "extended"),
             "retention_limit": request.get("retention_limit", DEFAULT_BACKTEST_RETENTION_LIMIT),
+            "backtest_delta_mode": str(request.get("backtest_delta_mode") or "off"),
+            "backtest_delta_proxy_threshold": float(request.get("backtest_delta_proxy_threshold", 0.12) or 0.12),
             "preflight_backfill": bool(request.get("preflight_backfill", True)),
             "backfill_concurrency": int(request.get("backfill_concurrency", DEFAULT_BACKTEST_BACKFILL_CONCURRENCY) or DEFAULT_BACKTEST_BACKFILL_CONCURRENCY),
             "backfill_symbol_timeout_s": int(
@@ -752,6 +754,8 @@ class BacktestRuntimeRecordsMixin:
             "premarket_cutoff_time": str(request.get("premarket_cutoff_time") or DEFAULT_SCAN_CUTOFF_TIME),
             "scan_session_mode": str(request.get("scan_session_mode") or "extended"),
             "retention_limit": int(request.get("retention_limit", DEFAULT_BACKTEST_RETENTION_LIMIT) or DEFAULT_BACKTEST_RETENTION_LIMIT),
+            "backtest_delta_mode": str(request.get("backtest_delta_mode") or "off"),
+            "backtest_delta_proxy_threshold": float(request.get("backtest_delta_proxy_threshold", 0.12) or 0.12),
             "preflight_backfill": bool(request.get("preflight_backfill", True)),
             "backfill_concurrency": int(request.get("backfill_concurrency", DEFAULT_BACKTEST_BACKFILL_CONCURRENCY) or DEFAULT_BACKTEST_BACKFILL_CONCURRENCY),
             "backfill_symbol_timeout_s": int(
@@ -798,6 +802,7 @@ class BacktestRuntimeRecordsMixin:
             extra["portfolio_rejection_counts"] = metrics.get("portfolio_rejection_counts") or {}
             extra["execution_cost_summary"] = metrics.get("execution_cost_summary") or {}
             extra["daily_scan_match_diagnostics"] = metrics.get("daily_scan_match_diagnostics") or {}
+            extra["delta_ab_summary"] = metrics.get("delta_ab_summary") or {}
             extra["daily_selection_cache"] = metrics.get("daily_selection_cache") or {}
             audit = metrics.get("backtest_audit") or {}
             if audit:

@@ -797,7 +797,7 @@ def _build_strategy_policy(
         "signal_confirmation": confirmation,
         "entry_style": "wait_for_confirmation" if confirmation in {"strict", "blocked"} else "momentum_or_pullback",
         "position_size_multiplier": round(max(0.0, min(1.25, size_multiplier)), 3),
-        "recommended_signal_profile": "intraday_sd_v1",
+        "recommended_signal_profile": "core_two_setup_v1",
         "recommended_exit_policy": exit_policy,
         "avoid_new_entries": risk_profile == "avoid",
     }

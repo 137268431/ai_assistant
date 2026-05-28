@@ -21,6 +21,73 @@ from ibkr_compute.workflows.daily_scanner import build_daily_scan_rule_summary
 
 SYSTEM_LOGIC_SCHEMA_VERSION = "system_logic_v2"
 SYSTEM_LOGIC_TIMEFRAMES = ("5m", "15m", "30m", "1h", "4h", "1d")
+CORE_TWO_SETUP_PROFILE = "core_two_setup_v1"
+CORE_TWO_SETUP_RETAINED_SETUPS = (
+    {
+        "id": "vwap_trend_pullback_long",
+        "direction": "long",
+        "family": "trend_pullback",
+        "role": "core_alpha",
+        "summary": "VWAP 顺势回踩做多：只保留 long 方向，要求趋势延续、回踩质量和风险距离可控。",
+    },
+    {
+        "id": "sd_mr_reversal_short",
+        "direction": "short",
+        "family": "mean_reversion",
+        "role": "core_alpha",
+        "summary": "SD 均值回归做空：只保留 short 方向，要求上轨/超买后的反转证据和做空过滤通过。",
+    },
+)
+CORE_TWO_SETUP_NON_CORE_SETUPS = (
+    {
+        "id": "sd_squeeze_breakout_long",
+        "status": "deleted_non_core",
+        "reason": "breakout family removed from the clean core-alpha set; keep only for legacy traces/backtest comparisons.",
+    },
+    {
+        "id": "sd_squeeze_breakout_short",
+        "status": "deleted_non_core",
+        "reason": "breakout family removed from the clean core-alpha set; keep only for legacy traces/backtest comparisons.",
+    },
+    {
+        "id": "vwap_trend_pullback_short",
+        "status": "deleted_non_core",
+        "reason": "opposite-direction VWAP pullback is not retained in core_two_setup_v1.",
+    },
+    {
+        "id": "sd_mr_reversal_long",
+        "status": "deleted_non_core",
+        "reason": "opposite-direction SD mean-reversion is not retained in core_two_setup_v1.",
+    },
+    {
+        "id": "sd_trend_continuation_long",
+        "status": "legacy_non_core",
+        "reason": "legacy continuation remains a historical/compatibility label, not a core setup.",
+    },
+    {
+        "id": "sd_trend_continuation_short",
+        "status": "legacy_non_core",
+        "reason": "legacy continuation remains a historical/compatibility label, not a core setup.",
+    },
+)
+CORE_TWO_SETUP_FLOW_STEPS = (
+    "1. Active target 入池后读取 5m close、VWAP、SD channel、ATR、cRSI/divergence、volume/freshness 等快照。",
+    "2. 只按 core_two_setup_v1 评估 retained setup: vwap_trend_pullback_long 与 sd_mr_reversal_short。",
+    "3. 每个 retained setup 先做触发条件，再做 regular session、entry window、liquidity/ATR、方向一致性与 block_all 过滤。",
+    "4. 通过基础过滤后计算 quality_score、entry plan、entry/SL/TP/shares，并应用 setup cooldown 与 symbol daily limit。",
+    "5. 候选确认后进入 SignalProcessor；执行窗口、交易开关、容量、目标方向、价格结构和订单流辅助确认继续保护。",
+)
+CORE_TWO_SETUP_DELTA_POLICY = {
+    "mode": "auxiliary_shadow_proxy_ab",
+    "core_alpha": False,
+    "summary": "Delta/CVD 只能作为辅助执行证据、shadow observation 或 proxy A/B 对照；不属于 core_two_setup_v1 的 alpha setup。",
+    "lines": (
+        "Delta 不创建 setup、不提高 core setup 数量，也不替代 vwap_trend_pullback_long / sd_mr_reversal_short 的结构条件。",
+        "实时 TBT Delta 可在 order-flow confirm/enforce 配置下做执行确认、拒绝、止损收紧或提前退出，但语义是 execution/risk overlay。",
+        "backtest 中的 Delta/proxy A/B 只能用于 shadow/proxy 对照和敏感性分析；不能把 proxy Delta 当成核心 alpha 结论。",
+        "缺失、新鲜度不足或来源不是 tick-by-tick 的 Delta 不允许放宽核心过滤或止损。",
+    ),
+}
 
 SYSTEM_LOGIC_COVERAGE_DOMAINS = [
     {
@@ -553,14 +620,43 @@ def _signal_panel(environment: str) -> dict:
         str(params.get("intraday_setup_cooldown_bars", 6)),
     )
 
+    retained_setup_lines = [
+        f"{item['id']} · {item['direction']} · {item['family']} · {item['summary']}"
+        for item in CORE_TWO_SETUP_RETAINED_SETUPS
+    ]
+    non_core_setup_lines = [
+        f"{item['id']} · {item['status']} · {item['reason']}"
+        for item in CORE_TWO_SETUP_NON_CORE_SETUPS
+    ]
+    delta_policy = {
+        **CORE_TWO_SETUP_DELTA_POLICY,
+        "lines": list(CORE_TWO_SETUP_DELTA_POLICY["lines"]),
+    }
+
     return {
-        "title": "当前信号规则（代码事实）",
-        "subtitle": "SignalGenerator 默认使用 intraday_sd_v1：每根 bar 构建独立 setup candidate，按触发、过滤、优先级、质量分和去重确认信号；legacy SD 作为候选并入同一选择器。",
+        "title": "当前核心策略规则（core_two_setup_v1）",
+        "subtitle": "clean two-setup strategy：核心 alpha 只保留 vwap_trend_pullback_long 与 sd_mr_reversal_short；其他旧 setup 为 deleted/non-core，Delta/CVD 只作辅助、shadow 或 proxy A/B。",
+        "strategy_profile": CORE_TWO_SETUP_PROFILE,
+        "runtime_signal_profile": str(params.get("signal_strategy_profile", CORE_TWO_SETUP_PROFILE)),
+        "retained_setups": [dict(item) for item in CORE_TWO_SETUP_RETAINED_SETUPS],
+        "non_core_setups": [dict(item) for item in CORE_TWO_SETUP_NON_CORE_SETUPS],
+        "setup_flow": list(CORE_TWO_SETUP_FLOW_STEPS),
+        "delta_policy": delta_policy,
         "chips": [
             {
-                "label": "Strategy Profile",
-                "value": str(params.get("signal_strategy_profile", "intraday_sd_v1")),
-                "copy": "IndicatorEngine.DEFAULT_PARAMS.signal_strategy_profile",
+                "label": "Core Strategy",
+                "value": CORE_TWO_SETUP_PROFILE,
+                "copy": "System Logic policy: exactly two retained core setups",
+            },
+            {
+                "label": "Runtime Source",
+                "value": str(params.get("signal_strategy_profile", CORE_TWO_SETUP_PROFILE)),
+                "copy": "Display policy only; core signal generation is not changed here",
+            },
+            {
+                "label": "Retained Setups",
+                "value": "2",
+                "copy": "vwap_trend_pullback_long + sd_mr_reversal_short",
             },
             {
                 "label": "Intraday Entry",
@@ -588,6 +684,11 @@ def _signal_panel(environment: str) -> dict:
                 "copy": f"intraday_setup_cooldown_bars · {setup_cooldown_source}",
             },
             {
+                "label": "Delta Policy",
+                "value": "aux / shadow",
+                "copy": "Delta/CVD is not a core alpha setup",
+            },
+            {
                 "label": "当前 Active",
                 "value": active_count,
                 "copy": "当前 active target 数量，用于盘中关注集合",
@@ -595,10 +696,10 @@ def _signal_panel(environment: str) -> dict:
         ],
         "highlights": [
             {
-                "id": "candidate_order",
-                "label": "候选优先级",
-                "value": "100 / 80 / 60 / 50",
-                "note": "SD squeeze breakout > VWAP trend pullback > legacy trend continuation > legacy MR reversal",
+                "id": "core_scope",
+                "label": "Core Alpha",
+                "value": "2 setups",
+                "note": "只保留 vwap_trend_pullback_long 与 sd_mr_reversal_short",
                 "tone": "accent",
             },
             {
@@ -619,41 +720,52 @@ def _signal_panel(environment: str) -> dict:
                 "id": "entry_plan",
                 "label": "Entry Plan",
                 "value": str(params.get("entry_plan_version", "entry_plan_v2")),
-                "note": f"breakout quality >= {breakout_marketable_min} 才用 marketable_limit，否则 passive_limit",
+                "note": f"entry aggression quality >= {breakout_marketable_min} 才用 marketable_limit，否则 passive_limit",
                 "tone": "neutral",
+            },
+            {
+                "id": "delta_policy",
+                "label": "Delta",
+                "value": "not alpha",
+                "note": "只允许辅助确认、shadow 观察或 proxy A/B；不新增 setup",
+                "tone": "warn",
             },
         ],
         "details": [
             {
-                "id": "setups",
-                "title": "intraday_sd_v1 Setup 候选",
-                "summary": "新 setup + legacy SD 同池竞争",
+                "id": "core_two_setup_v1",
+                "title": "Clean Two-Setup Strategy",
+                "summary": "exactly two retained core setups",
                 "tone": "accent",
                 "lines": [
-                    "sd_squeeze_breakout_long/short · priority=100 · recent squeeze + breakout + VWAP side + ORB 反向保护。",
-                    "vwap_trend_pullback_long/short · priority=80 · SD trend walk + VWAP 趋势 + 回踩 VWAP band + 未过度延伸。",
-                    "legacy sd_trend_continuation_long/short · priority=60 · 旧 MR 窗口顺势结构转成候选。",
-                    "legacy sd_mr_reversal_long/short · priority=50 · 旧 SD 均值回归结构转成候选。",
-                    "intraday_include_legacy_signals=false 时 legacy SD 不进入候选池。",
+                    f"profile={CORE_TWO_SETUP_PROFILE}",
+                    "Core alpha scope is intentionally narrow: one long trend-pullback setup and one short mean-reversion setup.",
+                    "Retained setup names are part of the strategy contract; any other setup name is treated as deleted/non-core for this page.",
+                    "This documentation update does not change SignalGenerator or backtest Delta implementation.",
+                    *retained_setup_lines,
                 ],
             },
             {
-                "id": "selection",
-                "title": "候选选择与去重",
-                "summary": "triggered -> viable -> direction guard -> max priority",
-                "tone": "neutral",
+                "id": "deleted_non_core_setups",
+                "title": "Deleted / Non-Core Setups",
+                "summary": "visible only as legacy traces or comparison labels",
+                "tone": "warn",
                 "lines": [
-                    "先取 triggered candidates；若存在 filters_pass=true 的 viable 候选，只在 viable 池选择，否则在 triggered 池选择用于 blocked trace。",
-                    "同一根 bar 内如果选择池同时包含 long 与 short，stage=blocked，ambiguous_opposite_directions=true。",
-                    "同方向候选按 priority 最大者胜出；priority 相同保留先出现的候选。",
-                    "raw_key=market_date/source/direction/setup 去重；同一 key 连续出现时 stage=candidate，不重复确认。",
-                    "确认时写入 setup/day count、symbol/day count 和 last signal bar，用于 cooldown/reentry。",
+                    "Non-core setup names must not be interpreted as retained alpha in core_two_setup_v1.",
+                    *non_core_setup_lines,
                 ],
+            },
+            {
+                "id": "setup_flow",
+                "title": "Setup Flow",
+                "summary": "target -> snapshot -> retained setup -> filters -> execution",
+                "tone": "neutral",
+                "lines": list(CORE_TWO_SETUP_FLOW_STEPS),
             },
             {
                 "id": "filters",
                 "title": "过滤与重复入场",
-                "summary": "基础过滤 + 单标的上限",
+                "summary": "基础过滤 + setup cooldown + 单标的上限",
                 "tone": "warn",
                 "lines": [
                     f"基础过滤: block_all_pass、regular session、intraday_entry_window={intraday_entry_start}-{intraday_entry_end} ET、rvol_20_min、atr_pct_min/max。",
@@ -671,10 +783,17 @@ def _signal_panel(environment: str) -> dict:
                 "lines": [
                     "quality components = signal_pressure + multi_timeframe + confirmation + entry_quality + liquidity_freshness，封顶 100。",
                     f"quality_score < intraday_min_signal_quality_score={intraday_quality_min} 时 stage=blocked，filter_reason=signal_quality_below_threshold。",
-                    "entry_plan_version=entry_plan_v2；breakout anchor=breakout_close，pullback anchor=vwap_pullback/ema_pullback，reversal anchor=sd_crsi_reversion。",
+                    "entry_plan_version=entry_plan_v2；retained pullback anchor=vwap_pullback/ema_pullback，retained reversal anchor=sd_crsi_reversion；breakout anchor 仅属非核心兼容语义。",
                     f"entry_aggression: signal_mode=breakout 且 quality_score >= {breakout_marketable_min} ({breakout_marketable_source}) => marketable_limit，否则 passive_limit。",
                     f"intra signal validity = {intraday_signal_validity_minutes}m；runtime 仍按 signal_validity_minutes={signal_validity_minutes} 做执行过期校验。",
                 ],
+            },
+            {
+                "id": "delta_policy",
+                "title": "Delta / CVD Policy",
+                "summary": delta_policy["summary"],
+                "tone": "warn",
+                "lines": delta_policy["lines"],
             },
         ],
         "coverage_domains": ["signal_generation", "execution_validation"],
@@ -717,7 +836,7 @@ def _signal_panel(environment: str) -> dict:
 def _system_flow_panel(environment: str) -> dict:
     return {
         "title": "系统逻辑地图",
-        "subtitle": "从观察池、open reconcile、signal-window active 入池、intraday setup、TBT 订单流到订单生命周期、调度与验证的完整链路。",
+        "subtitle": "从观察池、open reconcile、signal-window active 入池、core_two_setup_v1 两个核心 setup、Delta 辅助策略、订单生命周期、调度与验证的完整链路。",
         "coverage_domains": [
             "target_selection",
             "data_indicators",
@@ -732,8 +851,9 @@ def _system_flow_panel(environment: str) -> dict:
         ],
         "chips": [
             {"label": "Universe", "value": "watchlist -> targets", "copy": "seed/topup/open reconcile 维护 active 标池"},
-            {"label": "Compute", "value": "bars -> indicators -> setups", "copy": "5m close 驱动 intraday_sd_v1 candidate"},
-            {"label": "Order Flow", "value": "TBT CVD -> confirm / exit", "copy": "只接受 tick-by-tick，L1 tick 不参与确认"},
+            {"label": "Core Strategy", "value": CORE_TWO_SETUP_PROFILE, "copy": "只保留 vwap_trend_pullback_long 与 sd_mr_reversal_short"},
+            {"label": "Compute", "value": "bars -> indicators -> 2 setups", "copy": "5m close 驱动 retained setup 评估"},
+            {"label": "Delta", "value": "aux / shadow / A/B", "copy": "TBT CVD / proxy Delta 不作为核心 alpha"},
             {"label": "Execution", "value": "signals -> orders -> lifecycle", "copy": "风控 / 券商订单 / 生命周期链路"},
             {"label": "Ops", "value": "scheduler + quality", "copy": "调度、修复、审计、日报"},
         ],
@@ -767,13 +887,13 @@ def _system_flow_panel(environment: str) -> dict:
             {
                 "id": "signals",
                 "label": "信号生成",
-                "summary": "SignalGenerator 构建 intraday_sd_v1 setup candidates：SD squeeze、VWAP trend pullback 与 legacy SD 同池按优先级、过滤、质量分和去重确认。",
+                "summary": "core_two_setup_v1 只保留 vwap_trend_pullback_long 与 sd_mr_reversal_short；SD squeeze、反向 VWAP、long MR 与 legacy continuation 均为 deleted/non-core。",
                 "links": ["/ibkr_signals.html", "/ibkr_screener.html?view=window-progress"],
             },
             {
                 "id": "order_flow",
                 "label": "订单流确认",
-                "summary": "OrderFlowManager 只接受 tick-by-tick Last 聚合 CVD；确认前检查 TBT freshness，缺失或过期会 fail-closed。",
+                "summary": "OrderFlowManager 只接受 tick-by-tick Last 聚合 CVD；Delta 只能做辅助确认、shadow 观察或 proxy A/B，不能生成核心 setup。",
                 "links": ["/ibkr_runtime.html", "/ibkr_signals.html"],
             },
             {
@@ -1124,10 +1244,15 @@ def _order_flow_panel(environment: str) -> dict:
         environment,
         "false",
     )
+    delta_policy = {
+        **CORE_TWO_SETUP_DELTA_POLICY,
+        "lines": list(CORE_TWO_SETUP_DELTA_POLICY["lines"]),
+    }
 
     return {
-        "title": "订单流自动确认与执行规则",
-        "subtitle": "OrderFlowManager 只接受 tick-by-tick Last 聚合 CVD / delta；L1 行情 tick 会被忽略，confirm/enforce 模式在无新鲜 TBT 时 fail-closed。",
+        "title": "订单流 Delta 辅助确认与执行规则",
+        "subtitle": "OrderFlowManager 只接受 tick-by-tick Last 聚合 CVD / Delta；Delta 是 execution/risk overlay 与 shadow/proxy A/B 输入，不是 core_two_setup_v1 alpha。",
+        "delta_policy": delta_policy,
         "coverage_domains": ["order_flow", "execution_validation"],
         "source_refs": [
             "ibkr_compute.order_flow.manager",
@@ -1159,6 +1284,11 @@ def _order_flow_panel(environment: str) -> dict:
                 "copy": f"window={confirm_window_source}, ratio={min_delta_source}",
             },
             {
+                "label": "Delta Role",
+                "value": "aux / shadow",
+                "copy": "not core alpha; proxy A/B only for experiments",
+            },
+            {
                 "label": "TBT Freshness",
                 "value": f"{tbt_freshness}s",
                 "copy": f"ibkr_order_flow_tbt_freshness_sec · {tbt_freshness_source}",
@@ -1179,8 +1309,15 @@ def _order_flow_panel(environment: str) -> dict:
                 "id": "mode",
                 "label": "默认模式",
                 "value": f"{enabled} / {mode}",
-                "note": "confirm/enforce 会等待订单流确认；shadow 只记录与订阅，不阻断交易",
+                "note": "confirm/enforce 可做执行确认；shadow 只记录与订阅；两者都不是核心 alpha",
                 "tone": "accent",
+            },
+            {
+                "id": "delta_policy",
+                "label": "Delta Policy",
+                "value": "not alpha",
+                "note": "Delta/CVD 不创建 setup，只能辅助确认、风控或 proxy A/B",
+                "tone": "warn",
             },
             {
                 "id": "capacity",
@@ -1199,6 +1336,13 @@ def _order_flow_panel(environment: str) -> dict:
         ],
         "details": [
             {
+                "id": "delta_policy",
+                "title": "Delta / CVD Policy",
+                "summary": delta_policy["summary"],
+                "tone": "warn",
+                "lines": delta_policy["lines"],
+            },
+            {
                 "id": "cvd",
                 "title": "CVD 聚合",
                 "summary": "tick-by-tick Last -> 10/30/60s bars",
@@ -1207,7 +1351,7 @@ def _order_flow_panel(environment: str) -> dict:
                     "on_market_tick 先检查 payload source；只有 tick_by_tick / tickbytick / tbt / ibkr_tbt / tick_by_tick_all_last 会进入聚合。",
                     "L1 market data 或未标记来源的 tick 会增加 ignored_non_tbt_tick_count / tick_by_tick.ignored_l1_tick_count，不进入 CVD。",
                     "OrderFlowAggregator 将 signed trade ticks 聚合成 10s / 30s / 60s CVD bars。",
-                    "buy_volume / sell_volume / delta / cvd_close 会进入确认逻辑。",
+                    "buy_volume / sell_volume / delta / cvd_close 会进入辅助确认逻辑，但不会生成 core setup。",
                     "同 symbol 的 out-of-order tick 会被拒绝并写入 last_error。",
                     _config_line(cfg, "ibkr_order_flow_tick_types", environment, "Last"),
                     f"ibkr_order_flow_confirm_window_sec = {confirm_window} ({confirm_window_source})",
@@ -1224,7 +1368,7 @@ def _order_flow_panel(environment: str) -> dict:
                     "disabled 或 auto_entry=false 时直接 allow，并标记 enforced=false。",
                     "shadow 模式只 observe candidate，不阻断下单。",
                     "confirmation() 先检查 _tbt_status；无 tick-by-tick 成交返回 tbt_missing，超过 freshness 返回 tbt_stale。",
-                    "confirm/enforce 模式必须同时通过 execution pool 分配、quote spread、方向 delta ratio。",
+                    "confirm/enforce 模式必须同时通过 execution pool 分配、quote spread、方向 delta ratio；这是执行门控，不是核心 alpha 选择。",
                     f"max_spread_bps = {max_spread_bps} ({max_spread_source})",
                     f"entry_timeout_sec = {entry_timeout} ({entry_timeout_source})；超时返回 order_flow_timeout 并释放候选 watch。",
                     f"确认后使用 marketable LMT: long=ask+{marketable_bps}bps, short=bid-{marketable_bps}bps ({marketable_bps_source})。",
@@ -1242,7 +1386,7 @@ def _order_flow_panel(environment: str) -> dict:
                     _config_line(cfg, "ibkr_order_flow_stop_delta_ratio", environment, "0.12"),
                     _config_line(cfg, "ibkr_order_flow_close_fill_timeout_sec", environment, "5", suffix="s"),
                     _config_line(cfg, "never_widen_stop_by_order_flow", environment, "true"),
-                    "强反向 CVD 且 pnl_r <= 0.15 时触发 full_exit；否则达到 stop 阈值时只尝试 tighten_stop。",
+                    "强反向 CVD 且 pnl_r <= 0.15 时触发 full_exit；否则达到 stop 阈值时只尝试 tighten_stop；Delta 永远不能放宽止损。",
                 ],
             },
         ],
@@ -1282,7 +1426,7 @@ def _order_flow_panel(environment: str) -> dict:
             },
             {
                 "title": "默认自动确认链路",
-                "copy": "当前默认不再要求人工确认每条新信号，而是先走订单流与风控校验。",
+                "copy": "当前默认不再要求人工确认每条新信号，而是先走订单流与风控校验；Delta 只能作为辅助门控或 shadow/proxy 对照。",
                 "lines": [
                     f"signal_manual_confirm_enabled = {manual_confirm} ({manual_confirm_source})",
                     _config_line(cfg, "quality_auto_full_min", environment, "80"),
@@ -1528,7 +1672,7 @@ def _quality_panel(environment: str) -> dict:
 def _backtest_validation_panel(environment: str) -> dict:
     return {
         "title": "回测与验证链路",
-        "subtitle": "任何规则变更都应能用 backtest / replay / parity 工具复盘验证。",
+        "subtitle": "任何规则变更都应能用 backtest / replay / parity 工具复盘验证；Delta/proxy A/B 只用于辅助对照，不改写核心 alpha 结论。",
         "coverage_domains": ["backtest_validation"],
         "source_refs": [
             "ibkr_compute.backtest.portfolio",
@@ -1539,8 +1683,9 @@ def _backtest_validation_panel(environment: str) -> dict:
         ],
         "chips": [
             {"label": "Default Source", "value": "daily_scan_replay", "copy": "使用每日入选结果重放"},
-            {"label": "Signal Engine", "value": "live SD", "copy": "尽量贴近盘中逻辑"},
+            {"label": "Core Strategy", "value": CORE_TWO_SETUP_PROFILE, "copy": "只验证两个 retained core setups"},
             {"label": "Cost", "value": "execution profile", "copy": "成交成本/滑点画像"},
+            {"label": "Delta A/B", "value": "proxy/shadow", "copy": "不得当成核心 alpha"},
             {"label": "Parity", "value": "TV / live compare", "copy": "与 TradingView/实时结果对照"},
         ],
         "sections": [
@@ -1549,9 +1694,19 @@ def _backtest_validation_panel(environment: str) -> dict:
                 "copy": "新增或修改策略逻辑时，至少验证 daily scan -> signal -> portfolio 链路。",
                 "lines": [
                     "daily_scan_replay: 使用每日筛选缓存重建入选集合，避免手工标的偏差。",
-                    "portfolio stream: 验证 confirm/fill/TP/SL/reverse/保护单调整链路。",
+                    "portfolio stream: 验证 retained setups 的 confirm/fill/TP/SL/reverse/保护单调整链路。",
                     "TV parity: 对照 TradingView 指标或信号，定位指标/窗口差异。",
                     "execution cost profile: 使用实际/近期 fills 校准滑点和成交成本。",
+                ],
+            },
+            {
+                "title": "Delta Proxy A/B 口径",
+                "copy": "Delta 相关回测或代理数据只能回答辅助执行是否改善风险收益，不能把 Delta 升级为核心 setup。",
+                "lines": [
+                    "A/B baseline 应固定为 core_two_setup_v1 两个 retained setups。",
+                    "Delta variant 可以记录 shadow allow/reject、proxy fill 或风险调整差异，但必须单独标记为 auxiliary/proxy。",
+                    "TBT 缺失时不能用 L1 或估算 Delta 反推核心信号；proxy 数据只能报告为 proxy。",
+                    "本页面只更新规则说明，不修改 backtest Delta 实现。",
                 ],
             },
             {

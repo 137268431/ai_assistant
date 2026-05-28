@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .delta_proxy import build_delta_ab_summary
 from .runtime_support import *
 
 
@@ -182,6 +183,11 @@ class BacktestOrchestrationMixin:
         metrics["backtest_reverse_signal_count"] = len(all_reverse_rows)
         metrics["signal_count"] = len(all_signal_rows)
         metrics["executed_signal_count"] = len([row for row in all_signal_rows if str(row.get("status") or "") == "executed"])
+        metrics["delta_ab_summary"] = build_delta_ab_summary(
+            all_signal_rows,
+            request.get("backtest_delta_mode"),
+            request.get("backtest_delta_proxy_threshold"),
+        )
         metrics["backtest_signal_status_breakdown"] = self._count_values(all_signal_rows, "status")
         metrics["backtest_signal_reason_breakdown"] = self._count_signal_status_reasons(all_signal_rows)
         metrics["backtest_signal_rejection_breakdown"] = self._count_signal_status_reasons(

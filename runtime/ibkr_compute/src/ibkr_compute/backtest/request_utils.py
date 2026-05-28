@@ -7,6 +7,11 @@ from typing import Any
 from ibkr_compute.core.broker_mode import configured_broker_mode, normalize_broker_mode, resolve_data_environment
 from ibkr_compute.core.indicator_engine import DEFAULT_PARAMS
 from ibkr_compute.backtest import constants
+from ibkr_compute.backtest.delta_proxy import (
+    DEFAULT_BACKTEST_DELTA_PROXY_THRESHOLD,
+    normalize_backtest_delta_mode,
+    normalize_backtest_delta_proxy_threshold,
+)
 
 
 def parse_symbols(raw_symbols: Any) -> list[str]:
@@ -169,6 +174,8 @@ def build_variant_request(base_request: dict, variant: dict, variant_index: int)
         "slippage_cap_to_bar",
         "limit_price_protection",
         "stop_gap_to_open",
+        "backtest_delta_mode",
+        "backtest_delta_proxy_threshold",
     ):
         if key in base_request.get("params", {}):
             request["params"][key] = deepcopy(base_request["params"][key])
@@ -365,6 +372,12 @@ def normalize_request(payload: dict) -> dict:
     compare_with_tv = normalize_bool(payload.get("compare_with_tv"), True)
     compare_tv_signals = normalize_bool(payload.get("compare_tv_signals"), False)
     persist_backtest_indicators = normalize_bool(payload.get("persist_backtest_indicators"), False)
+    backtest_delta_mode = normalize_backtest_delta_mode(payload.get("backtest_delta_mode"))
+    backtest_delta_proxy_threshold = normalize_backtest_delta_proxy_threshold(
+        payload.get("backtest_delta_proxy_threshold")
+        if payload.get("backtest_delta_proxy_threshold") not in (None, "")
+        else DEFAULT_BACKTEST_DELTA_PROXY_THRESHOLD
+    )
     warmup_bars = normalize_positive_int(
         payload.get("warmup_bars") or payload.get("preheat_bars"),
         default=constants.BACKTEST_WARMUP_BARS,
@@ -587,6 +600,8 @@ def normalize_request(payload: dict) -> dict:
         "compare_with_tv": compare_with_tv,
         "compare_tv_signals": compare_tv_signals,
         "persist_backtest_indicators": persist_backtest_indicators,
+        "backtest_delta_mode": backtest_delta_mode,
+        "backtest_delta_proxy_threshold": backtest_delta_proxy_threshold,
         "warmup_bars": warmup_bars,
         "scan_warmup_bars": scan_warmup_bars,
         "daily_selected_only": daily_selected_only,
@@ -636,6 +651,8 @@ def normalize_request(payload: dict) -> dict:
             "scan_warmup_bars": scan_warmup_bars,
             "premarket_cutoff_time": premarket_cutoff_time,
             "persist_backtest_indicators": persist_backtest_indicators,
+            "backtest_delta_mode": backtest_delta_mode,
+            "backtest_delta_proxy_threshold": backtest_delta_proxy_threshold,
             "daily_selected_only": daily_selected_only,
             "daily_selection_require_sd_trigger": daily_selection_require_sd_trigger,
             "daily_selection_reuse_live_admission": daily_selection_reuse_live_admission,

@@ -290,7 +290,7 @@ class Config:
         "ibkr_runtime_direct_topup_period_1d": "60d",
         "signal_validity_minutes": "30",
         "signal_window_max_bars": "12",
-        "signal_strategy_profile": "intraday_sd_v1",
+        "signal_strategy_profile": "core_two_setup_v1",
         "ibkr_signal_strategy_profile": "",
         "exit_policy_profile": "setup_aware_hybrid_v1",
         "exit_policy_overrides": "",
@@ -342,7 +342,7 @@ class Config:
         "intraday_setup_cooldown_bars": "6",
         "intraday_reentry_policy": "controlled",
         "intraday_symbol_daily_entry_limit": "2",
-        "intraday_include_legacy_signals": "true",
+        "intraday_include_legacy_signals": "false",
         "ibkr_require_target_direction_alignment": "true",
         "ibkr_market_sentiment_enabled": "true",
         "ibkr_market_sentiment_mode": "annotate",
@@ -452,7 +452,7 @@ class Config:
         "ibkr_daily_scan_materialize_enabled": "true",
         "ibkr_daily_scan_materialize_intervals": "5m,15m,30m,1h",
         "ibkr_timeframe_param_profiles_json": (
-            '{"5m":{"signal_strategy_profile":"intraday_sd_v1"},'
+            '{"5m":{"signal_strategy_profile":"core_two_setup_v1","intraday_include_legacy_signals":false},'
             '"15m":{"sd_length":96,"dtp_sma_length":80,"dtp_atr_length":160,"crsi_domcycle":24,"signal_window_max_bars":8},'
             '"30m":{"sd_length":80,"dtp_sma_length":70,"dtp_atr_length":140,"ema_slope_lookback":10},'
             '"1h":{"sd_length":80,"dtp_sma_length":60,"dtp_atr_length":120,"ema_slope_lookback":8},'

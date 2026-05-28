@@ -59,7 +59,7 @@ DEFAULT_PARAMS = {
     "ema_strength_lookback": 20, "ema_weak_threshold": 0.005,
     "dtp_switch_lookback": 10, "dtp_max_switches": 3,
     "oscillation_lookback": 20, "oscillation_threshold": 0.4,
-    "signal_strategy_profile": "intraday_sd_v1",
+    "signal_strategy_profile": "core_two_setup_v1",
     "ibkr_signal_strategy_profile": "",
     "intraday_signal_validity_minutes": 15,
     "intraday_entry_window_start_time": "09:35",
@@ -81,7 +81,7 @@ DEFAULT_PARAMS = {
     "intraday_setup_cooldown_bars": 6,
     "intraday_reentry_policy": "controlled",
     "intraday_symbol_daily_entry_limit": 2,
-    "intraday_include_legacy_signals": True,
+    "intraday_include_legacy_signals": False,
 }
 
 
