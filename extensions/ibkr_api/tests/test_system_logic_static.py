@@ -24,18 +24,26 @@ class SystemLogicStaticSmokeTest(unittest.TestCase):
         self.assertIn("broker_mode_switch", js)
         self.assertIn("renderDetails", js)
         self.assertIn("System Logic Map", html)
-        self.assertIn("20260525-system-logic-v2", html)
+        self.assertIn("当前代码事实", html)
+        self.assertIn("20260528-code-truth-logic-v1", html)
         self.assertIn("logic-anchor-strip", css)
         self.assertIn("flex-direction: row", css)
         self.assertIn("--page-panel-min-height: 0px", css)
 
     def test_system_navigation_includes_logic_page(self):
+        index_html = read_repo_text("runtime/ibkr_console/static/index.html")
         bridge_js = read_repo_text("runtime/ibkr_console/static/assets/js/shared/ui-bridges.js")
         nav_js = read_repo_text("runtime/ibkr_console/static/assets/js/shared/ui-toast-nav.js")
         facade_js = read_repo_text("runtime/ibkr_console/static/assets/js/shared/ui.js")
 
         for text in (bridge_js, nav_js, facade_js):
             self.assertIn("/ibkr_system_logic.html", text)
+        self.assertIn("/ibkr_system_logic.html", index_html)
+        self.assertIn("actionSystemLogicLink", index_html)
+        self.assertIn("renderHomeBridge", index_html)
+        self.assertIn("系统逻辑", index_html)
+        self.assertIn("代码规则 / 调度", bridge_js)
+        self.assertIn("代码规则 / 调度", facade_js)
         self.assertIn("规则 / 调度", bridge_js)
 
     def test_screener_no_longer_hosts_rules_board(self):

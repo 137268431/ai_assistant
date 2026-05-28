@@ -63,8 +63,13 @@ class OrderFlowManager:
         self._entry_wait_started_ms: dict[str, int] = {}
         self._open_position_symbols: set[str] = set()
         self._tick_count = 0
+        self._ignored_non_tbt_tick_count = 0
         self._subscribe_errors = 0
         self._last_tick_ms = 0
+        self._last_tbt_tick_ms_by_symbol: dict[str, int] = {}
+        self._tbt_tick_count_by_symbol: dict[str, int] = {}
+        self._last_ignored_tick_ms = 0
+        self._last_ignored_tick_source = ""
         self._last_error = ""
 
     def enabled(self) -> bool:
@@ -79,6 +84,9 @@ class OrderFlowManager:
     def on_market_tick(self, payload: dict[str, Any]) -> None:
         if not self.enabled():
             return
+        if not self._is_tick_by_tick_payload(payload):
+            self._record_ignored_non_tbt_tick(payload)
+            return
         tick = self._tick_from_payload(payload)
         if tick is None:
             return
@@ -91,6 +99,11 @@ class OrderFlowManager:
         with self._lock:
             self._tick_count += 1
             self._last_tick_ms = max(self._last_tick_ms, tick.timestamp_ms)
+            self._last_tbt_tick_ms_by_symbol[tick.symbol] = max(
+                int(self._last_tbt_tick_ms_by_symbol.get(tick.symbol, 0) or 0),
+                tick.timestamp_ms,
+            )
+            self._tbt_tick_count_by_symbol[tick.symbol] = int(self._tbt_tick_count_by_symbol.get(tick.symbol, 0) or 0) + 1
             self._recent_closed_bars.extend(closed)
 
     def observe_signal(self, signal: dict[str, Any], *, conid: int) -> dict[str, Any]:
@@ -230,12 +243,29 @@ class OrderFlowManager:
         normalized_symbol = normalize_symbol(symbol)
         interval_sec = self._config_int("ibkr_order_flow_confirm_window_sec", 60)
         min_delta_ratio = self._config_float("ibkr_order_flow_min_delta_ratio", 0.12)
+        tbt_status = self._tbt_status(normalized_symbol)
+        if not tbt_status.get("has_recent_tbt"):
+            return {
+                "ok": False,
+                "reason": str(tbt_status.get("reason") or "tbt_missing"),
+                "symbol": normalized_symbol,
+                "interval_sec": interval_sec,
+                "min_delta_ratio": min_delta_ratio,
+                "tbt": tbt_status,
+            }
         bars = [
             bar for bar in self.aggregator.snapshot(normalized_symbol)
             if bar.interval_seconds == interval_sec
         ]
         if not bars:
-            return {"ok": False, "reason": "order_flow_missing", "symbol": normalized_symbol}
+            return {
+                "ok": False,
+                "reason": "order_flow_missing",
+                "symbol": normalized_symbol,
+                "interval_sec": interval_sec,
+                "min_delta_ratio": min_delta_ratio,
+                "tbt": tbt_status,
+            }
         latest = bars[-1]
         known = float(latest.buy_volume + latest.sell_volume)
         ratio = (latest.delta / known) if known > 0 else 0.0
@@ -251,6 +281,7 @@ class OrderFlowManager:
             "delta_ratio": round(ratio, 6),
             "min_delta_ratio": min_delta_ratio,
             "tick_count": latest.tick_count,
+            "tbt": tbt_status,
         }
 
     def mark_filled(self, symbol: str, *, conid: int, direction: str = "", signal_id: str = "") -> None:
@@ -428,7 +459,18 @@ class OrderFlowManager:
             recent_bars = [bar.to_dict() for bar in list(self._recent_closed_bars)[-25:]]
             decisions = list(self._decision_log[-25:])
             tick_count = int(self._tick_count)
+            ignored_non_tbt_tick_count = int(self._ignored_non_tbt_tick_count)
             last_tick_ms = int(self._last_tick_ms)
+            last_tbt_tick_ms_by_symbol = dict(self._last_tbt_tick_ms_by_symbol)
+            tbt_tick_count_by_symbol = dict(self._tbt_tick_count_by_symbol)
+            last_ignored_tick_ms = int(self._last_ignored_tick_ms)
+            last_ignored_tick_source = str(self._last_ignored_tick_source or "")
+        ws_status = self._ws_status()
+        active_conids = sorted({
+            self._conid_by_symbol.get(symbol, 0)
+            for symbol in self.execution_pool.active_symbols()
+            if self._conid_by_symbol.get(symbol, 0)
+        })
         return {
             "enabled": self.enabled(),
             "mode": self.mode(),
@@ -436,7 +478,23 @@ class OrderFlowManager:
             "broker_environment": self.broker_environment,
             "data_environment": self.data_environment,
             "tick_count": tick_count,
+            "tbt_tick_count": tick_count,
+            "ignored_non_tbt_tick_count": ignored_non_tbt_tick_count,
             "last_tick_ms": last_tick_ms,
+            "last_tbt_tick_ms": last_tick_ms,
+            "last_ignored_tick_ms": last_ignored_tick_ms,
+            "last_ignored_tick_source": last_ignored_tick_source,
+            "tick_by_tick": {
+                "policy": "tbt_only",
+                "expected_subscription_count": len(active_conids),
+                "expected_conids": active_conids,
+                "subscribed_count": int(ws_status.get("tick_by_tick_subscribed_count", 0) or 0),
+                "pending_count": int(ws_status.get("tick_by_tick_pending_count", 0) or 0),
+                "last_tick_ms_by_symbol": last_tbt_tick_ms_by_symbol,
+                "tick_count_by_symbol": tbt_tick_count_by_symbol,
+                "ignored_l1_tick_count": ignored_non_tbt_tick_count,
+                "freshness_sec": self._tbt_freshness_sec(),
+            },
             "current_cvd": {symbol: self.aggregator.current_cvd(symbol) for symbol in self.execution_pool.active_symbols()},
             "candidate_queue": {
                 "active_count": len(self.candidates),
@@ -444,7 +502,7 @@ class OrderFlowManager:
             },
             "execution_pool": {
                 **self.execution_pool.status(),
-                "active_conids": sorted({self._conid_by_symbol.get(symbol, 0) for symbol in self.execution_pool.active_symbols() if self._conid_by_symbol.get(symbol, 0)}),
+                "active_conids": active_conids,
             },
             "recent_closed_bars": recent_bars,
             "subscribe_errors": int(self._subscribe_errors),
@@ -475,6 +533,8 @@ class OrderFlowManager:
 
     def _tick_from_payload(self, payload: dict[str, Any]) -> OrderFlowTick | None:
         payload = payload if isinstance(payload, dict) else {}
+        if not self._is_tick_by_tick_payload(payload):
+            return None
         symbol = normalize_symbol(str(payload.get("symbol") or ""))
         if not symbol:
             return None
@@ -504,6 +564,80 @@ class OrderFlowManager:
             source=str(payload.get("source") or payload.get("tick_source") or ""),
             metadata={"conid": payload.get("conid") or payload.get("conidEx")},
         )
+
+    @staticmethod
+    def _is_tick_by_tick_payload(payload: dict[str, Any] | None) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        source = str(payload.get("source") or payload.get("tick_source") or "").strip().lower()
+        normalized_source = source.replace("-", "_").replace(" ", "_")
+        if normalized_source in {"tick_by_tick", "tickbytick", "tbt", "ibkr_tbt", "tick_by_tick_all_last"}:
+            return True
+        return False
+
+    def _record_ignored_non_tbt_tick(self, payload: dict[str, Any] | None) -> None:
+        payload = payload if isinstance(payload, dict) else {}
+        source = str(payload.get("source") or payload.get("tick_source") or "l1_market_data").strip() or "l1_market_data"
+        timestamp_ms = int(self._first_float(payload, ("timestamp_ms", "time_ms", "_updated")))
+        if timestamp_ms <= 0:
+            raw_time = int(self._first_float(payload, ("time",)))
+            timestamp_ms = raw_time * 1000 if 0 < raw_time < 10_000_000_000 else int(time.time() * 1000)
+        with self._lock:
+            self._ignored_non_tbt_tick_count += 1
+            self._last_ignored_tick_ms = max(int(self._last_ignored_tick_ms or 0), timestamp_ms)
+            self._last_ignored_tick_source = source
+
+    def _tbt_status(self, symbol: str) -> dict[str, Any]:
+        normalized_symbol = normalize_symbol(symbol)
+        freshness_sec = self._tbt_freshness_sec()
+        now_ms = int(time.time() * 1000)
+        with self._lock:
+            last_ms = int(self._last_tbt_tick_ms_by_symbol.get(normalized_symbol, 0) or 0)
+            tick_count = int(self._tbt_tick_count_by_symbol.get(normalized_symbol, 0) or 0)
+        if tick_count <= 0 or last_ms <= 0:
+            return {
+                "has_recent_tbt": False,
+                "reason": "tbt_missing",
+                "symbol": normalized_symbol,
+                "last_tick_ms": last_ms,
+                "tick_count": tick_count,
+                "freshness_sec": freshness_sec,
+            }
+        age_ms = max(0, now_ms - last_ms)
+        if freshness_sec > 0 and age_ms > freshness_sec * 1000:
+            return {
+                "has_recent_tbt": False,
+                "reason": "tbt_stale",
+                "symbol": normalized_symbol,
+                "last_tick_ms": last_ms,
+                "age_ms": age_ms,
+                "tick_count": tick_count,
+                "freshness_sec": freshness_sec,
+            }
+        return {
+            "has_recent_tbt": True,
+            "reason": "ok",
+            "symbol": normalized_symbol,
+            "last_tick_ms": last_ms,
+            "age_ms": age_ms,
+            "tick_count": tick_count,
+            "freshness_sec": freshness_sec,
+        }
+
+    def _tbt_freshness_sec(self) -> int:
+        default = max(10, self._config_int("ibkr_order_flow_confirm_window_sec", 60) * 2)
+        return max(0, self._config_int("ibkr_order_flow_tbt_freshness_sec", default))
+
+    def _ws_status(self) -> dict[str, Any]:
+        provider = getattr(self.ws_client, "status", None)
+        if not callable(provider):
+            return {}
+        try:
+            status = provider()
+        except Exception as exc:
+            self._last_error = str(exc)
+            return {}
+        return dict(status or {}) if isinstance(status, dict) else {}
 
     def _quote_for_symbol(self, symbol: str, quote: dict[str, Any] | None) -> dict[str, Any]:
         if isinstance(quote, dict) and quote:

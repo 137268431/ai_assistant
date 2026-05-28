@@ -98,6 +98,49 @@ def _scan_status_params(environment: str, market_date: str) -> list[tuple[str, s
     ]
 
 
+def _parse_hhmm_from_times(times: dict[str, str]) -> tuple[int, int] | None:
+    text = _to_text((times or {}).get("us"))
+    if not text:
+        return None
+    time_text = text.split(" ", 1)[-1] if " " in text else text
+    try:
+        hour_text, minute_text = time_text.split(":", 2)[:2]
+        hour = int(hour_text)
+        minute = int(minute_text)
+    except Exception:
+        return None
+    if 0 <= hour <= 23 and 0 <= minute <= 59:
+        return hour, minute
+    return None
+
+
+def _open_target_reconcile_status(times: dict[str, str]) -> dict[str, Any]:
+    hhmm = _parse_hhmm_from_times(times)
+    if hhmm is None:
+        return {"enabled": False, "reason": "time_unavailable", "window_start": "09:25", "window_end": "09:45"}
+    open_now = (9, 25) <= hhmm <= (9, 45)
+    return {
+        "enabled": open_now,
+        "reason": "open_target_pool_reconcile" if open_now else "outside_open_reconcile_window",
+        "current_time_et": f"{hhmm[0]:02d}:{hhmm[1]:02d}",
+        "window_start": "09:25",
+        "window_end": "09:45",
+    }
+
+
+def _active_count_from_scan_status(payload: dict[str, Any]) -> int:
+    result = _scan_result_from_status(payload)
+    counts = _as_dict(payload.get("counts"))
+    for source in (result, counts, payload):
+        if not isinstance(source, dict):
+            continue
+        if source.get("active") is not None:
+            return _to_int(source.get("active"), 0)
+        if source.get("new_active") is not None:
+            return _to_int(source.get("new_active"), 0)
+    return 0
+
+
 def _scan_result_from_status(payload: dict[str, Any]) -> dict[str, Any]:
     result = _as_dict(payload.get("result"))
     return result if result else _as_dict(payload)
@@ -185,8 +228,11 @@ def _status_detail(
         "elapsed_s": elapsed_s,
         "mode": _to_text(scan_payload.get("mode")),
         "async": bool(scan_payload.get("async")),
+        "open_target_reconcile": bool(scan_payload.get("open_target_reconcile")),
         "compute_status_code": _to_int(upstream.get("status_code"), 0),
     }
+    if isinstance(scan_payload.get("target_reconcile_window"), dict):
+        detail["target_reconcile_window"] = dict(scan_payload.get("target_reconcile_window") or {})
     for key in ("target_url",):
         value = _to_text(upstream.get(key))
         if value:
@@ -530,6 +576,14 @@ def build_early_expansion_topup_response(
     data_environment = request_market_data_mode(request_payload)
     times = time_strings()
     market_date = _to_text(request_payload.get("market_date") or request_payload.get("date") or times.get("date"))
+    open_reconcile = _open_target_reconcile_status(times)
+    if "async" in request_payload:
+        scan_async = _truthy(request_payload.get("async"))
+    else:
+        scan_async = not bool(open_reconcile.get("enabled"))
+    trigger_source = _to_text(request_payload.get("trigger_source"))
+    if not trigger_source:
+        trigger_source = "open_target_pool_reconcile" if open_reconcile.get("enabled") else "early_expansion_topup"
     scan_payload = {
         "environment": data_environment,
         "broker_mode": broker_mode,
@@ -537,8 +591,10 @@ def build_early_expansion_topup_response(
         "data_environment": data_environment,
         "mode": "topup",
         "force": True,
-        "async": True,
-        "trigger_source": _to_text(request_payload.get("trigger_source")) or "early_expansion_topup",
+        "async": scan_async,
+        "open_target_reconcile": bool(open_reconcile.get("enabled")),
+        "target_reconcile_window": open_reconcile,
+        "trigger_source": trigger_source,
     }
     completed_notification: dict[str, Any] = {}
     should_check_existing_scan = callable(get_state_payload) and callable(upsert_state)
@@ -586,30 +642,43 @@ def build_early_expansion_topup_response(
                     "source": "ibkr-api",
                 }, 502
         elif bool(existing_scan.get("ok")) and _is_pending_scan_status(existing_status):
-            return {
-                "ok": True,
-                "environment": broker_mode,
-                "broker_mode": broker_mode,
-                "market_data_mode": data_environment,
-                "data_environment": data_environment,
-                "market_date": market_date,
-                "job_id": "ibkr_early_expansion_topup",
-                "status": _submission_status(existing_payload),
-                "accepted": True,
-                "async": True,
-                "run_id": _to_text(existing_payload.get("run_id")),
-                "pending": True,
-                "notified": False,
-                "detail": _status_detail(
-                    status=_submission_status(existing_payload),
-                    elapsed_s=0.0,
-                    scan_payload=scan_payload,
-                    upstream={"ok": True, "status_code": 200, "target_url": f"{compute_base_url.rstrip('/')}/scan/status"},
-                    result=existing_payload,
-                ),
-                "scan": existing_payload,
-                "source": "ibkr-api",
-            }, 200
+            active_count = _active_count_from_scan_status(existing_payload)
+            if open_reconcile.get("enabled") and active_count <= 0:
+                completed_notification = {
+                    "checked": True,
+                    "skipped": True,
+                    "reason": "open_reconcile_overrides_pending_scan",
+                    "pending_run_id": _to_text(existing_payload.get("run_id")),
+                    "pending_status": existing_status,
+                    "active_count": active_count,
+                    "source": "open_target_pool_reconcile",
+                }
+            else:
+                return {
+                    "ok": True,
+                    "environment": broker_mode,
+                    "broker_mode": broker_mode,
+                    "market_data_mode": data_environment,
+                    "data_environment": data_environment,
+                    "market_date": market_date,
+                    "job_id": "ibkr_early_expansion_topup",
+                    "status": _submission_status(existing_payload),
+                    "accepted": True,
+                    "async": True,
+                    "run_id": _to_text(existing_payload.get("run_id")),
+                    "pending": True,
+                    "notified": False,
+                    "detail": _status_detail(
+                        status=_submission_status(existing_payload),
+                        elapsed_s=0.0,
+                        scan_payload=scan_payload,
+                        upstream={"ok": True, "status_code": 200, "target_url": f"{compute_base_url.rstrip('/')}/scan/status"},
+                        result=existing_payload,
+                    ),
+                    "open_target_reconcile": open_reconcile,
+                    "scan": existing_payload,
+                    "source": "ibkr-api",
+                }, 200
 
     started_at = time.monotonic()
     upstream = request_json_request(
@@ -642,7 +711,7 @@ def build_early_expansion_topup_response(
             "market_date": market_date,
             "job_id": "ibkr_early_expansion_topup",
             "status": status,
-            "async": True,
+            "async": bool(scan_payload.get("async")),
             "pending": True,
             "notified": False,
             "elapsed_s": elapsed_s,
@@ -675,7 +744,7 @@ def build_early_expansion_topup_response(
             "job_id": "ibkr_early_expansion_topup",
             "status": status,
             "accepted": True,
-            "async": True,
+            "async": bool(result.get("async", scan_payload.get("async"))),
             "run_id": _to_text(result.get("run_id")),
             "notified": bool(completed_notification.get("notified")),
             "message_id": _to_text(completed_notification.get("message_id")),

@@ -86,6 +86,8 @@ class SignalGenerator:
         self._recent_squeeze_bars = 0
         self._intraday_last_signal_day_by_key: dict[str, str] = {}
         self._intraday_last_signal_bar_by_key: dict[str, int] = {}
+        self._intraday_signal_count_by_key_day: dict[str, int] = {}
+        self._intraday_symbol_signal_count_by_day: dict[str, int] = {}
         self.last_trace = self._empty_trace()
 
     def set_params(self, params: dict = None) -> None:
@@ -295,6 +297,7 @@ class SignalGenerator:
         selection = self._select_signal_candidate(setup_state.get("candidates") or [])
         selected_candidate = selection.get("selected")
         if selected_candidate:
+            self._apply_symbol_daily_limit_filter(selected_candidate, snapshot)
             setup_state["selected"] = selected_candidate
             setup_state["selected_setup"] = selected_candidate.get("setup", "")
             setup_state["selected_direction"] = selected_candidate.get("direction", "")
@@ -875,6 +878,12 @@ class SignalGenerator:
             exit_policy_type=extra.get("exit_policy_type") or candidate.get("exit_policy_type") or "",
         )
         extra.update(setup_meta)
+        extra.update({
+            "trigger_checks": dict(candidate.get("trigger_checks") or {}),
+            "filter_checks": dict(candidate.get("filter_checks") or {}),
+            "technical_description": str(candidate.get("technical_description") or extra.get("technical_description") or ""),
+            "validity_minutes": self._intraday_validity_minutes(),
+        })
         signal["extra"] = extra
         signal["setup"] = setup_meta.get("setup", setup)
         signal["setup_label"] = setup_meta.get("setup_label", "")
@@ -1165,6 +1174,7 @@ class SignalGenerator:
         checks["target_direction_alignment"] = self._intraday_target_direction_alignment_pass(direction)
         checks["setup_daily_limit"] = self._intraday_setup_daily_limit_pass(snapshot, setup, direction)
         checks["setup_cooldown"] = self._intraday_setup_cooldown_pass(snapshot, setup, direction)
+        checks["symbol_daily_entry_limit"] = self._intraday_symbol_daily_entry_limit_pass(snapshot)
         return checks
 
     def _intraday_vwap_pullback_tolerance(self, snapshot: dict, vwap: float) -> float:
@@ -1232,11 +1242,16 @@ class SignalGenerator:
         limit = self._intraday_param_int("intraday_setup_daily_limit", 1)
         if limit <= 0:
             return True
+        if self._intraday_controlled_reentry_enabled():
+            return True
         day = self._snapshot_market_date(snapshot)
         if not day:
             return True
         key = self._intraday_setup_state_key(setup, direction)
-        return self._intraday_last_signal_day_by_key.get(key) != day
+        if not key:
+            return True
+        key_day = self._intraday_setup_day_key(day, key)
+        return int(self._intraday_signal_count_by_key_day.get(key_day, 0) or 0) < limit
 
     def _intraday_setup_cooldown_pass(self, snapshot: dict, setup: str, direction: str) -> bool:
         cooldown_bars = self._intraday_param_int("intraday_setup_cooldown_bars", 6)
@@ -1261,7 +1276,56 @@ class SignalGenerator:
         day = self._snapshot_market_date(snapshot)
         if day:
             self._intraday_last_signal_day_by_key[key] = day
+            key_day = self._intraday_setup_day_key(day, key)
+            self._intraday_signal_count_by_key_day[key_day] = (
+                int(self._intraday_signal_count_by_key_day.get(key_day, 0) or 0) + 1
+            )
+            symbol_day = self._intraday_symbol_day_key(day)
+            self._intraday_symbol_signal_count_by_day[symbol_day] = (
+                int(self._intraday_symbol_signal_count_by_day.get(symbol_day, 0) or 0) + 1
+            )
         self._intraday_last_signal_bar_by_key[key] = self._bar_index
+
+    def _intraday_controlled_reentry_enabled(self) -> bool:
+        policy = str(self.params.get("intraday_reentry_policy") or "controlled").strip().lower()
+        return policy in {"controlled", "enabled", "allow", "allow_reentry", "reentry"}
+
+    def _intraday_symbol_daily_entry_limit(self) -> int:
+        return max(0, self._intraday_param_int("intraday_symbol_daily_entry_limit", 2))
+
+    def _intraday_symbol_daily_entry_limit_pass(self, snapshot: dict) -> bool:
+        if not self._intraday_controlled_reentry_enabled():
+            return True
+        limit = self._intraday_symbol_daily_entry_limit()
+        if limit <= 0:
+            return True
+        day = self._snapshot_market_date(snapshot)
+        if not day:
+            return True
+        symbol_day = self._intraday_symbol_day_key(day)
+        return int(self._intraday_symbol_signal_count_by_day.get(symbol_day, 0) or 0) < limit
+
+    def _apply_symbol_daily_limit_filter(self, candidate: dict, snapshot: dict) -> None:
+        checks = candidate.setdefault("filter_checks", {})
+        passed = self._intraday_symbol_daily_entry_limit_pass(snapshot)
+        checks["symbol_daily_entry_limit"] = passed
+        if passed:
+            return
+        candidate["filters_pass"] = False
+        failed_without_symbol = [
+            name for name, value in checks.items()
+            if name != "symbol_daily_entry_limit" and not value
+        ]
+        if not failed_without_symbol and not str(candidate.get("filter_reason") or "").strip():
+            candidate["filter_reason"] = "symbol_daily_entry_limit_reached"
+
+    @staticmethod
+    def _intraday_setup_day_key(day: str, setup_key: str) -> str:
+        return f"{str(day or '').strip()}:{str(setup_key or '').strip()}"
+
+    def _intraday_symbol_day_key(self, day: str) -> str:
+        symbol = str(self.symbol or "").strip().upper()
+        return f"{str(day or '').strip()}:{symbol}"
 
     @staticmethod
     def _intraday_setup_state_key(setup: str, direction: str) -> str:
@@ -1726,4 +1790,6 @@ class SignalGenerator:
         self._recent_squeeze_bars = 0
         self._intraday_last_signal_day_by_key.clear()
         self._intraday_last_signal_bar_by_key.clear()
+        self._intraday_signal_count_by_key_day.clear()
+        self._intraday_symbol_signal_count_by_day.clear()
         self.last_trace = self._empty_trace()

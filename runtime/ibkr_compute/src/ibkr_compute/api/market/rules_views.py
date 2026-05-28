@@ -30,8 +30,10 @@ SYSTEM_LOGIC_COVERAGE_DOMAINS = [
             "ibkr_compute.workflows.daily_scanner_constants",
             "ibkr_compute.workflows.daily_scanner_settings",
             "ibkr_compute.workflows.daily_scanner_evaluate",
+            "ibkr_compute.workflows.daily_scanner_run",
             "ibkr_compute.api.market.screener.scoring",
             "ibkr_compute.api.market.screener.payload",
+            "ibkr_api.system.jobs.early_expansion_topup",
         ],
     },
     {
@@ -52,6 +54,8 @@ SYSTEM_LOGIC_COVERAGE_DOMAINS = [
         "label": "信号生成",
         "source_modules": [
             "ibkr_compute.core.signal_generator",
+            "ibkr_compute.core.setup_registry",
+            "ibkr_compute.core.active_window_admission",
             "ibkr_compute.core.position_sizing",
             "ibkr_compute.core.exit_policy",
         ],
@@ -61,6 +65,7 @@ SYSTEM_LOGIC_COVERAGE_DOMAINS = [
         "label": "执行校验",
         "source_modules": [
             "ibkr_compute.signal.signal_processor",
+            "ibkr_compute.core.signal_generator",
             "ibkr_compute.orchestration.lifecycle",
             "ibkr_api.orders.routes",
         ],
@@ -73,6 +78,7 @@ SYSTEM_LOGIC_COVERAGE_DOMAINS = [
             "ibkr_compute.order_flow.aggregator",
             "ibkr_compute.order_flow.candidate_queue",
             "ibkr_compute.order_flow.execution_pool",
+            "ibkr_compute.core.config",
             "ibkr_compute.orchestration.signals",
             "ibkr_compute.order.order_placer",
         ],
@@ -106,6 +112,7 @@ SYSTEM_LOGIC_COVERAGE_DOMAINS = [
             "ibkr_scheduler.cron_registry",
             "ibkr_scheduler.scheduler_app",
             "ibkr_api.system.jobs",
+            "ibkr_api.system.jobs.early_expansion_topup",
         ],
     },
     {
@@ -296,7 +303,7 @@ def _selection_panel(environment: str) -> dict:
 
     return {
         "title": "当前选标规则",
-        "subtitle": "08:20-09:20 ET 每 5 分钟覆盖预筛，09:25-11:00 ET 每 5 分钟只做增量入池；multi-TF 投票叠加分阶段量能/波动门槛产出 candidate / active。",
+        "subtitle": "08:20-09:20 ET 覆盖预筛；09:25-11:00 ET topup 只新增符合 signal-window context 的 active 标的，09:25-09:45 额外执行 open_target_reconcile 防止开盘空池。",
         "chips": [
             {
                 "label": "预筛窗口",
@@ -311,7 +318,12 @@ def _selection_panel(environment: str) -> dict:
             {
                 "label": "增量入池",
                 "value": "09:25-11:00 ET",
-                "copy": "ibkr_early_expansion_topup · 只新增符合条件的标的，不移除已有 active",
+                "copy": "ibkr_early_expansion_topup · topup 只新增，不移除已有 active",
+            },
+            {
+                "label": "Open Reconcile",
+                "value": "09:25-09:45 ET",
+                "copy": "open_target_reconcile=true 时同步 scan，空 active pending scan 会被覆盖重跑",
             },
             {
                 "label": "Trade Watchlist",
@@ -332,8 +344,10 @@ def _selection_panel(environment: str) -> dict:
         "coverage_domains": ["target_selection"],
         "source_refs": [
             "ibkr_compute.workflows.daily_scanner",
+            "ibkr_compute.workflows.daily_scanner_run",
             "ibkr_compute.api.market.screener.scoring",
             "ibkr_compute.api.market.screener.payload",
+            "ibkr_api.system.jobs.early_expansion_topup",
         ],
         "sections": [
             {
@@ -359,6 +373,17 @@ def _selection_panel(environment: str) -> dict:
                     f"atr_pct >= {_format_number(quality_gates.get('atr_pct_gte') or 0)}",
                     f"|day_change_pct| >= {_format_number(quality_gates.get('abs_day_change_pct_gte') or 0)}%",
                     "通过后的自动候选会按 technical_score、|day_change_pct|、阶段成交活跃度、avg_10d_volume、atr_pct 顺序排序。",
+                ],
+            },
+            {
+                "title": "Topup / Open Target Reconcile",
+                "copy": "topup 只新增当前未在目标池的标的；开盘初段用同步 reconcile 避免 pending scan 导致首页/目标池短暂空池。",
+                "lines": [
+                    "ibkr_early_expansion_topup cron 覆盖 09:25-11:00 ET；09:25-09:45 ET _open_target_reconcile_status => open_target_reconcile=true。",
+                    "open_target_reconcile=true 且请求未显式传 async 时，提交给 compute /scan 的 async=false，trigger_source=open_target_pool_reconcile。",
+                    "若 /scan/status 已有 pending/running topup 且 active_count <= 0，open reconcile 不直接返回 pending，而是同步重跑 /scan。",
+                    "topup 模式下 existing target 记为 deferred/existing_target_retained；新标的必须 context_gate_passed=true 才写 active，低 signal pressure 不写 candidate。",
+                    "run_scan 返回 target_activation_diagnostics 与 target_activation_timeline，并在可用时写入 target_decisions。",
                 ],
             },
             {
@@ -485,35 +510,82 @@ def _signal_panel(environment: str) -> dict:
         "atr_multiplier="
         f"{_format_number(params.get('atr_multiplier', 1.5))}"
     )
+    intraday_entry_start, intraday_entry_start_source = _resolve_config_text(
+        app_mod.cfg,
+        "intraday_entry_window_start_time",
+        environment,
+        str(params.get("intraday_entry_window_start_time", "09:35")),
+    )
+    intraday_entry_end, intraday_entry_end_source = _resolve_config_text(
+        app_mod.cfg,
+        "intraday_entry_window_end_time",
+        environment,
+        str(params.get("intraday_entry_window_end_time", "10:30")),
+    )
+    intraday_quality_min, intraday_quality_source = _resolve_config_text(
+        app_mod.cfg,
+        "intraday_min_signal_quality_score",
+        environment,
+        str(params.get("intraday_min_signal_quality_score", 70.0)),
+    )
+    breakout_marketable_min, breakout_marketable_source = _resolve_config_text(
+        app_mod.cfg,
+        "entry_breakout_marketable_quality_min",
+        environment,
+        str(params.get("entry_breakout_marketable_quality_min", 80.0)),
+    )
+    reentry_policy, reentry_policy_source = _resolve_config_text(
+        app_mod.cfg,
+        "intraday_reentry_policy",
+        environment,
+        str(params.get("intraday_reentry_policy", "controlled")),
+    )
+    symbol_daily_entry_limit, symbol_daily_entry_limit_source = _resolve_config_text(
+        app_mod.cfg,
+        "intraday_symbol_daily_entry_limit",
+        environment,
+        str(params.get("intraday_symbol_daily_entry_limit", 2)),
+    )
+    setup_cooldown_bars, setup_cooldown_source = _resolve_config_text(
+        app_mod.cfg,
+        "intraday_setup_cooldown_bars",
+        environment,
+        str(params.get("intraday_setup_cooldown_bars", 6)),
+    )
 
     return {
-        "title": "当前信号规则",
-        "subtitle": "结构规则来自 SignalGenerator，时间窗口来自 SignalProcessor / runtime config，参数直接读取当前代码默认值与运行配置。",
+        "title": "当前信号规则（代码事实）",
+        "subtitle": "SignalGenerator 默认使用 intraday_sd_v1：每根 bar 构建独立 setup candidate，按触发、过滤、优先级、质量分和去重确认信号；legacy SD 作为候选并入同一选择器。",
         "chips": [
             {
-                "label": "EMA Touch",
-                "value": str(params.get("ema_touch_type", "slow")),
-                "copy": "IndicatorEngine.DEFAULT_PARAMS.ema_touch_type",
+                "label": "Strategy Profile",
+                "value": str(params.get("signal_strategy_profile", "intraday_sd_v1")),
+                "copy": "IndicatorEngine.DEFAULT_PARAMS.signal_strategy_profile",
             },
             {
-                "label": "DTP Early",
-                "value": f"{dtp_early_bars} bars",
-                "copy": "DTP 初期过滤阈值",
+                "label": "Intraday Entry",
+                "value": f"{intraday_entry_start}-{intraday_entry_end} ET",
+                "copy": f"start={intraday_entry_start_source}, end={intraday_entry_end_source}",
             },
             {
-                "label": "交易窗口",
+                "label": "Trade Window",
                 "value": trade_window_value,
-                "copy": f"start={trade_window_start_source}, end={trade_window_end_source}",
+                "copy": f"SignalProcessor start={trade_window_start_source}, end={trade_window_end_source}",
             },
             {
-                "label": "信号有效期",
+                "label": "Signal Validity",
                 "value": signal_validity_value,
                 "copy": f"signal_validity_minutes · {signal_validity_source}",
             },
             {
-                "label": "Intraday Valid",
-                "value": f"{intraday_signal_validity_minutes}m",
-                "copy": "IndicatorEngine.DEFAULT_PARAMS.intraday_signal_validity_minutes",
+                "label": "Reentry",
+                "value": reentry_policy,
+                "copy": f"intraday_symbol_daily_entry_limit={symbol_daily_entry_limit} · {symbol_daily_entry_limit_source}",
+            },
+            {
+                "label": "Setup Cooldown",
+                "value": f"{setup_cooldown_bars} bars",
+                "copy": f"intraday_setup_cooldown_bars · {setup_cooldown_source}",
             },
             {
                 "label": "当前 Active",
@@ -523,119 +595,101 @@ def _signal_panel(environment: str) -> dict:
         ],
         "highlights": [
             {
-                "id": "window",
-                "label": "交易窗口",
-                "value": trade_window_value,
-                "note": f"start={trade_window_start_source} · end={trade_window_end_source}",
+                "id": "candidate_order",
+                "label": "候选优先级",
+                "value": "100 / 80 / 60 / 50",
+                "note": "SD squeeze breakout > VWAP trend pullback > legacy trend continuation > legacy MR reversal",
                 "tone": "accent",
             },
             {
-                "id": "validity",
-                "label": "信号有效期",
-                "value": signal_validity_value,
-                "note": f"signal_validity_minutes · {signal_validity_source}",
+                "id": "quality",
+                "label": "质量分门槛",
+                "value": intraday_quality_min,
+                "note": f"intraday_min_signal_quality_score · {intraday_quality_source}",
                 "tone": "neutral",
             },
             {
-                "id": "structure",
-                "label": "结构入口",
-                "value": "4 类结构 / 2 多 2 空",
-                "note": "MR 窗口触发后，再看 EMA / fractal / divergence 组件",
-                "tone": "neutral",
-            },
-            {
-                "id": "blockers",
-                "label": "关键阻断",
-                "value": "DTP / EMA / 全局阻断",
-                "note": "monitor-only symbol 不出交易信号",
+                "id": "reentry",
+                "label": "重复入场",
+                "value": f"{reentry_policy} / {symbol_daily_entry_limit}",
+                "note": "controlled 会绕过单 setup 每日限制，但保留 setup cooldown 与单标的每日上限",
                 "tone": "warn",
+            },
+            {
+                "id": "entry_plan",
+                "label": "Entry Plan",
+                "value": str(params.get("entry_plan_version", "entry_plan_v2")),
+                "note": f"breakout quality >= {breakout_marketable_min} 才用 marketable_limit，否则 passive_limit",
+                "tone": "neutral",
             },
         ],
         "details": [
             {
-                "id": "trigger",
-                "title": "结构触发",
-                "summary": "4 类结构 / 2 多 2 空",
-                "tone": "neutral",
-                "lines": [
-                    "LONG T1 · sdUpper 窗口 + EMA bull touch + fractal_bull + bull divergence(cRSI/OBV 任一)",
-                    "LONG T2 · sdLower 窗口 + fractal_bull + bull divergence(cRSI/OBV 任一)",
-                    "SHORT T3 · sdUpper 窗口 + fractal_bear + bear divergence(cRSI/OBV 任一)",
-                    "SHORT T4 · sdLower 窗口 + EMA bear touch + fractal_bear + bear divergence(cRSI/OBV 任一)",
-                ],
-            },
-            {
-                "id": "blockers",
-                "title": "阻断条件",
-                "summary": "DTP / EMA / 全局阻断 / monitor-only",
-                "tone": "warn",
-                "lines": [
-                    f"DTP · LONG T2: dtp_dir=-1 且 (dtp_phase_bars <= {dtp_early_bars} 或 dtp_phase=confirmed) => block",
-                    f"DTP · SHORT T3: dtp_dir=1 且 (dtp_phase_bars <= {dtp_early_bars} 或 dtp_phase=confirmed) => block",
-                    "EMA trend · LONG T1 / SHORT T4: block_ema_trend=true => block",
-                    "Global kill · 任意方向: block_all_signals=true => block",
-                    "Monitor-only · market_monitor symbol 不出交易信号",
-                ],
-            },
-            {
-                "id": "execution",
-                "title": "执行窗口",
-                "summary": f"{trade_window_value} · valid {signal_validity_value}",
+                "id": "setups",
+                "title": "intraday_sd_v1 Setup 候选",
+                "summary": "新 setup + legacy SD 同池竞争",
                 "tone": "accent",
                 "lines": [
-                    f"trade_window_start_time = {trade_window_start} ET ({trade_window_start_source})",
-                    f"trade_window_end_time = {trade_window_end} ET ({trade_window_end_source})",
-                    f"order_window_end_time = {order_window_end} ET ({order_window_end_source})",
-                    f"signal_validity_minutes = {signal_validity_minutes} ({signal_validity_source})",
-                    f"intraday_signal_validity_minutes = {intraday_signal_validity_minutes} (code default)",
-                    f"signal_manual_confirm_enabled = {manual_confirm_enabled} ({manual_confirm_source})",
-                    f"ibkr_trading_enabled = {trading_enabled} ({trading_enabled_source})",
+                    "sd_squeeze_breakout_long/short · priority=100 · recent squeeze + breakout + VWAP side + ORB 反向保护。",
+                    "vwap_trend_pullback_long/short · priority=80 · SD trend walk + VWAP 趋势 + 回踩 VWAP band + 未过度延伸。",
+                    "legacy sd_trend_continuation_long/short · priority=60 · 旧 MR 窗口顺势结构转成候选。",
+                    "legacy sd_mr_reversal_long/short · priority=50 · 旧 SD 均值回归结构转成候选。",
+                    "intraday_include_legacy_signals=false 时 legacy SD 不进入候选池。",
                 ],
             },
             {
-                "id": "formula",
-                "title": "价格与仓位公式",
-                "summary": "RR / 仓位 / 单笔风险",
+                "id": "selection",
+                "title": "候选选择与去重",
+                "summary": "triggered -> viable -> direction guard -> max priority",
+                "tone": "neutral",
+                "lines": [
+                    "先取 triggered candidates；若存在 filters_pass=true 的 viable 候选，只在 viable 池选择，否则在 triggered 池选择用于 blocked trace。",
+                    "同一根 bar 内如果选择池同时包含 long 与 short，stage=blocked，ambiguous_opposite_directions=true。",
+                    "同方向候选按 priority 最大者胜出；priority 相同保留先出现的候选。",
+                    "raw_key=market_date/source/direction/setup 去重；同一 key 连续出现时 stage=candidate，不重复确认。",
+                    "确认时写入 setup/day count、symbol/day count 和 last signal bar，用于 cooldown/reentry。",
+                ],
+            },
+            {
+                "id": "filters",
+                "title": "过滤与重复入场",
+                "summary": "基础过滤 + 单标的上限",
+                "tone": "warn",
+                "lines": [
+                    f"基础过滤: block_all_pass、regular session、intraday_entry_window={intraday_entry_start}-{intraday_entry_end} ET、rvol_20_min、atr_pct_min/max。",
+                    "方向过滤: directional_day_change_max、trend_mismatch_day_change_guard、target_direction_alignment。",
+                    f"setup_cooldown: 同 setup+direction 确认后必须等待 > {setup_cooldown_bars} 根 bar。",
+                    f"intraday_reentry_policy={reentry_policy} ({reentry_policy_source}); controlled 时 setup_daily_limit 恒通过，但 cooldown 仍生效。",
+                    f"intraday_symbol_daily_entry_limit={symbol_daily_entry_limit} ({symbol_daily_entry_limit_source}); 超限后 filter_reason=symbol_daily_entry_limit_reached。",
+                ],
+            },
+            {
+                "id": "quality_entry",
+                "title": "质量分与 Entry Plan",
+                "summary": "quality gate 决定是否确认",
                 "tone": "muted",
                 "lines": [
-                    f"Long Formula: {formula_long}",
-                    f"Short Formula: {formula_short}",
-                    f"Risk Params: {formula_risk}",
+                    "quality components = signal_pressure + multi_timeframe + confirmation + entry_quality + liquidity_freshness，封顶 100。",
+                    f"quality_score < intraday_min_signal_quality_score={intraday_quality_min} 时 stage=blocked，filter_reason=signal_quality_below_threshold。",
+                    "entry_plan_version=entry_plan_v2；breakout anchor=breakout_close，pullback anchor=vwap_pullback/ema_pullback，reversal anchor=sd_crsi_reversion。",
+                    f"entry_aggression: signal_mode=breakout 且 quality_score >= {breakout_marketable_min} ({breakout_marketable_source}) => marketable_limit，否则 passive_limit。",
+                    f"intra signal validity = {intraday_signal_validity_minutes}m；runtime 仍按 signal_validity_minutes={signal_validity_minutes} 做执行过期校验。",
                 ],
             },
         ],
         "coverage_domains": ["signal_generation", "execution_validation"],
         "source_refs": [
             "ibkr_compute.core.signal_generator",
+            "ibkr_compute.core.setup_registry",
+            "ibkr_compute.core.active_window_admission",
             "ibkr_compute.signal.signal_processor",
             "ibkr_compute.core.position_sizing",
             "ibkr_compute.core.exit_policy",
         ],
         "sections": [
             {
-                "title": "四类结构信号",
-                "copy": "MR 窗口被 SD 上下轨触发后，组件集齐才会出信号。",
-                "lines": [
-                    "做多 Type 1: sdUpper 窗口 + EMA bull touch + fractal_bull + bull divergence(cRSI/OBV 任一)",
-                    "做多 Type 2: sdLower 窗口 + fractal_bull + bull divergence(cRSI/OBV 任一)",
-                    "做空 Type 3: sdUpper 窗口 + fractal_bear + bear divergence(cRSI/OBV 任一)",
-                    f"做空 Type 4: sdLower 窗口 + EMA bear touch + fractal_bear + bear divergence(cRSI/OBV 任一)",
-                ],
-            },
-            {
-                "title": "过滤与阻断",
-                "copy": "组件满足后还要通过 DTP / EMA / 震荡过滤。",
-                "lines": [
-                    f"做多 Type 2: 若 dtp_dir=-1 且 (dtp_phase_bars <= {dtp_early_bars} 或 dtp_phase=confirmed) => block",
-                    f"做空 Type 3: 若 dtp_dir=1 且 (dtp_phase_bars <= {dtp_early_bars} 或 dtp_phase=confirmed) => block",
-                    "做多 Type 1 / 做空 Type 4: 若 block_ema_trend=true => block",
-                    "任意方向: block_all_signals=true => block",
-                    "market_monitor symbol 不出交易信号",
-                ],
-            },
-            {
-                "title": "时间与执行窗口",
-                "copy": "即使有结构信号，也要通过运行态窗口校验。",
+                "title": "执行窗口与运行态开关",
+                "copy": "信号生成后仍要进入 SignalProcessor，交易窗口、下单窗口、有效期和开关以 runtime config 为准。",
                 "lines": [
                     f"trade_window_start_time={trade_window_start} ET ({trade_window_start_source})",
                     f"trade_window_end_time={trade_window_end} ET ({trade_window_end_source})",
@@ -647,22 +701,23 @@ def _signal_panel(environment: str) -> dict:
                 ],
             },
             {
-                "title": "仓位与价格公式",
-                "copy": "入场、止损、止盈和股数直接使用当前参数。",
+                "title": "价格与仓位公式",
+                "copy": "SignalGenerator 构造 signal 时生成 entry / stop_loss / take_profit / shares，并套用 setup-aware exit policy。",
                 "lines": [
                     f"Long: {formula_long}",
                     f"Short: {formula_short}",
                     formula_risk,
+                    _param_line(app_mod.cfg, "entry_limit_mode", environment),
+                    _param_line(app_mod.cfg, "exit_policy_profile", environment),
                 ],
             },
         ],
     }
 
-
 def _system_flow_panel(environment: str) -> dict:
     return {
         "title": "系统逻辑地图",
-        "subtitle": "从观察池到信号、订单、生命周期、调度与验证的完整链路。",
+        "subtitle": "从观察池、open reconcile、signal-window active 入池、intraday setup、TBT 订单流到订单生命周期、调度与验证的完整链路。",
         "coverage_domains": [
             "target_selection",
             "data_indicators",
@@ -676,11 +731,19 @@ def _system_flow_panel(environment: str) -> dict:
             "backtest_validation",
         ],
         "chips": [
-            {"label": "Universe", "value": "watchlist -> targets", "copy": "trade / market_monitor 角色分离"},
-            {"label": "Compute", "value": "bars -> indicators -> signals", "copy": "5m close 驱动盘中计算"},
-            {"label": "Order Flow", "value": "CVD -> confirm / exit", "copy": "订单流自动确认、提前退出、只收紧止损"},
+            {"label": "Universe", "value": "watchlist -> targets", "copy": "seed/topup/open reconcile 维护 active 标池"},
+            {"label": "Compute", "value": "bars -> indicators -> setups", "copy": "5m close 驱动 intraday_sd_v1 candidate"},
+            {"label": "Order Flow", "value": "TBT CVD -> confirm / exit", "copy": "只接受 tick-by-tick，L1 tick 不参与确认"},
             {"label": "Execution", "value": "signals -> orders -> lifecycle", "copy": "风控 / 券商订单 / 生命周期链路"},
             {"label": "Ops", "value": "scheduler + quality", "copy": "调度、修复、审计、日报"},
+        ],
+        "source_refs": [
+            "ibkr_compute.workflows.daily_scanner_run",
+            "ibkr_compute.core.signal_generator",
+            "ibkr_compute.signal.signal_processor",
+            "ibkr_compute.order_flow.manager",
+            "ibkr_api.system.jobs.early_expansion_topup",
+            "ibkr_scheduler.cron_registry",
         ],
         "stages": [
             {
@@ -692,7 +755,7 @@ def _system_flow_panel(environment: str) -> dict:
             {
                 "id": "daily_scan",
                 "label": "日筛 / 目标池",
-                "summary": "08:20-09:20 ET 覆盖预筛使用多周期投票、分阶段量能/波动硬门槛和订阅预算产出 candidate / active；09:25-11:00 ET 只做增量入池。",
+                "summary": "08:20-09:20 ET 覆盖预筛；09:25-11:00 ET topup 只新增 context_gate_passed active；09:25-09:45 ET open reconcile 可同步重跑空 active pending scan。",
                 "links": ["/ibkr_screener.html?tab=screener&view=current"],
             },
             {
@@ -704,19 +767,19 @@ def _system_flow_panel(environment: str) -> dict:
             {
                 "id": "signals",
                 "label": "信号生成",
-                "summary": "SignalGenerator 维护 SD 窗口状态，收集 EMA touch、分形和背离，经过 DTP/EMA/global 过滤后输出信号。",
+                "summary": "SignalGenerator 构建 intraday_sd_v1 setup candidates：SD squeeze、VWAP trend pullback 与 legacy SD 同池按优先级、过滤、质量分和去重确认。",
                 "links": ["/ibkr_signals.html", "/ibkr_screener.html?view=window-progress"],
             },
             {
                 "id": "order_flow",
                 "label": "订单流确认",
-                "summary": "OrderFlowManager 聚合 tick-by-tick CVD，管理 candidate queue / execution pool；enforce 模式确认开仓、提前平仓或只收紧止损。",
+                "summary": "OrderFlowManager 只接受 tick-by-tick Last 聚合 CVD；确认前检查 TBT freshness，缺失或过期会 fail-closed。",
                 "links": ["/ibkr_runtime.html", "/ibkr_signals.html"],
             },
             {
                 "id": "execution",
                 "label": "执行校验",
-                "summary": "SignalProcessor 校验交易开关、时间窗口、有效期、仓位容量、cooldown、方向一致性和价格结构；订单流通过后才进入券商下单。",
+                "summary": "SignalProcessor 校验交易开关、窗口、有效期、容量、cooldown、方向冲突、filled-entry daily limit、目标方向一致性和价格结构。",
                 "links": ["/ibkr_runtime.html", "/orders.html"],
             },
             {
@@ -738,6 +801,7 @@ def _system_flow_panel(environment: str) -> dict:
                 "copy": "这张页面是系统逻辑的入口；新增或修改核心逻辑时必须同步更新自动规则源、展示或同步校验。",
                 "lines": [
                     "策略/指标/筛选/执行/订单/调度/数据质量/回测逻辑都属于覆盖范围。",
+                    "页面文案必须从当前代码常量、默认配置、函数分支或接口输出推导，不能按旧文档或推测补规则。",
                     "纯 UI 样式和普通文案不属于核心逻辑覆盖范围。",
                     "source_refs 和 coverage 清单用于发现页面没有覆盖的新逻辑域。",
                 ],
@@ -899,9 +963,21 @@ def _execution_panel(environment: str) -> dict:
         environment,
         "5",
     )
+    reentry_policy, reentry_policy_source = _resolve_config_text(
+        cfg,
+        "intraday_reentry_policy",
+        environment,
+        str(DEFAULT_PARAMS.get("intraday_reentry_policy", "controlled")),
+    )
+    symbol_daily_entry_limit, symbol_daily_entry_limit_source = _resolve_config_text(
+        cfg,
+        "intraday_symbol_daily_entry_limit",
+        environment,
+        str(DEFAULT_PARAMS.get("intraday_symbol_daily_entry_limit", 2)),
+    )
     return {
         "title": "执行校验与风控规则",
-        "subtitle": "结构信号生成后还必须通过 SignalProcessor 与订单链路的运行态校验。",
+        "subtitle": "结构信号生成后还必须通过 SignalProcessor 与订单链路的运行态校验；当前代码在方向冲突后、目标方向一致性前检查 filled-entry 日内入场上限。",
         "coverage_domains": ["execution_validation"],
         "source_refs": [
             "ibkr_compute.signal.signal_processor",
@@ -930,6 +1006,16 @@ def _execution_panel(environment: str) -> dict:
                 "value": manual_confirm_enabled,
                 "copy": manual_confirm_source,
             },
+            {
+                "label": "Reentry Policy",
+                "value": reentry_policy,
+                "copy": f"intraday_reentry_policy · {reentry_policy_source}",
+            },
+            {
+                "label": "Symbol Daily Limit",
+                "value": symbol_daily_entry_limit,
+                "copy": f"intraday_symbol_daily_entry_limit · {symbol_daily_entry_limit_source}",
+            },
         ],
         "sections": [
             {
@@ -942,7 +1028,8 @@ def _execution_panel(environment: str) -> dict:
                     f"order_window_end_time = {order_window_end} ET ({order_window_end_source})",
                     f"signal_time 超过 signal_validity_minutes={signal_validity_minutes} 后过期。",
                     "止损熔断、position limit、strategy capacity、fixed_position_symbols 都可阻断。",
-                    "cooldown、同标的方向冲突、target direction alignment、entry/SL/TP 价格结构必须通过。",
+                    "cooldown、同标的方向冲突、symbol daily entry limit、target direction alignment、entry/SL/TP 价格结构必须通过。",
+                    "symbol daily entry limit 在 direction_conflict 之后检查；失败原因为 symbol_daily_entry_limit_reached。",
                 ],
             },
             {
@@ -953,6 +1040,10 @@ def _execution_panel(environment: str) -> dict:
                     f"max_strategy_open_positions = {max_strategy_positions} ({max_strategy_positions_source})",
                     _config_line(cfg, "cooldown_bars_after_sl", environment, "6"),
                     _config_line(cfg, "cooldown_bars_after_reverse", environment, "3"),
+                    f"intraday_reentry_policy = {reentry_policy} ({reentry_policy_source})",
+                    f"intraday_symbol_daily_entry_limit = {symbol_daily_entry_limit} ({symbol_daily_entry_limit_source})",
+                    "SignalProcessor 只在 register_filled_position 时累计 daily_entry_counts；pending entry 被 remove 后不会计入每日入场次数。",
+                    "daily_entry_counts 按 ET market date 自动重置，并在 status() 中输出 daily_entry_counts_date / daily_entry_counts。",
                     _config_line(cfg, "ibkr_require_target_direction_alignment", environment, "true"),
                     _config_line(cfg, "fixed_position_symbols", environment, "BOXX,IBKR"),
                 ],
@@ -997,6 +1088,12 @@ def _order_flow_panel(environment: str) -> dict:
         environment,
         "60",
     )
+    tbt_freshness, tbt_freshness_source = _resolve_config_text(
+        cfg,
+        "ibkr_order_flow_tbt_freshness_sec",
+        environment,
+        "120",
+    )
     min_delta_ratio, min_delta_source = _resolve_config_text(
         cfg,
         "ibkr_order_flow_min_delta_ratio",
@@ -1030,7 +1127,7 @@ def _order_flow_panel(environment: str) -> dict:
 
     return {
         "title": "订单流自动确认与执行规则",
-        "subtitle": "OrderFlowManager 使用 tick-by-tick Last 聚合 CVD / delta，管理候选队列和执行池；默认 enforce 模式会参与开仓、提前平仓与止损收紧。",
+        "subtitle": "OrderFlowManager 只接受 tick-by-tick Last 聚合 CVD / delta；L1 行情 tick 会被忽略，confirm/enforce 模式在无新鲜 TBT 时 fail-closed。",
         "coverage_domains": ["order_flow", "execution_validation"],
         "source_refs": [
             "ibkr_compute.order_flow.manager",
@@ -1062,6 +1159,11 @@ def _order_flow_panel(environment: str) -> dict:
                 "copy": f"window={confirm_window_source}, ratio={min_delta_source}",
             },
             {
+                "label": "TBT Freshness",
+                "value": f"{tbt_freshness}s",
+                "copy": f"ibkr_order_flow_tbt_freshness_sec · {tbt_freshness_source}",
+            },
+            {
                 "label": "Entry Timeout",
                 "value": f"{entry_timeout}s",
                 "copy": f"ibkr_order_flow_entry_timeout_sec · {entry_timeout_source}",
@@ -1090,8 +1192,8 @@ def _order_flow_panel(environment: str) -> dict:
             {
                 "id": "risk",
                 "label": "硬保护",
-                "value": "never widen stop",
-                "note": "订单流只能提前退出、减仓或收紧止损，不能放宽止损",
+                "value": "TBT fail-closed",
+                "note": "tbt_missing / tbt_stale 会拒绝确认；订单流也不能放宽止损",
                 "tone": "warn",
             },
         ],
@@ -1102,11 +1204,14 @@ def _order_flow_panel(environment: str) -> dict:
                 "summary": "tick-by-tick Last -> 10/30/60s bars",
                 "tone": "accent",
                 "lines": [
+                    "on_market_tick 先检查 payload source；只有 tick_by_tick / tickbytick / tbt / ibkr_tbt / tick_by_tick_all_last 会进入聚合。",
+                    "L1 market data 或未标记来源的 tick 会增加 ignored_non_tbt_tick_count / tick_by_tick.ignored_l1_tick_count，不进入 CVD。",
                     "OrderFlowAggregator 将 signed trade ticks 聚合成 10s / 30s / 60s CVD bars。",
                     "buy_volume / sell_volume / delta / cvd_close 会进入确认逻辑。",
                     "同 symbol 的 out-of-order tick 会被拒绝并写入 last_error。",
                     _config_line(cfg, "ibkr_order_flow_tick_types", environment, "Last"),
                     f"ibkr_order_flow_confirm_window_sec = {confirm_window} ({confirm_window_source})",
+                    f"ibkr_order_flow_tbt_freshness_sec = {tbt_freshness} ({tbt_freshness_source})",
                     f"ibkr_order_flow_min_delta_ratio = {min_delta_ratio} ({min_delta_source})",
                 ],
             },
@@ -1118,6 +1223,7 @@ def _order_flow_panel(environment: str) -> dict:
                 "lines": [
                     "disabled 或 auto_entry=false 时直接 allow，并标记 enforced=false。",
                     "shadow 模式只 observe candidate，不阻断下单。",
+                    "confirmation() 先检查 _tbt_status；无 tick-by-tick 成交返回 tbt_missing，超过 freshness 返回 tbt_stale。",
                     "confirm/enforce 模式必须同时通过 execution pool 分配、quote spread、方向 delta ratio。",
                     f"max_spread_bps = {max_spread_bps} ({max_spread_source})",
                     f"entry_timeout_sec = {entry_timeout} ({entry_timeout_source})；超时返回 order_flow_timeout 并释放候选 watch。",
@@ -1161,6 +1267,17 @@ def _order_flow_panel(environment: str) -> dict:
                     f"ibkr_order_flow_max_position_slots = {position_slots} ({position_slots_source})",
                     _config_line(cfg, "entry_watch_after_fill_sec", environment, "180", suffix="s"),
                     "filled 后保留 position watch；cancelled / rejected / timeout 会释放 entry slot。",
+                ],
+            },
+            {
+                "title": "TBT 状态与诊断",
+                "copy": "status() 直接暴露 TBT-only 事实，用来区分真实订单流缺失和普通 L1 行情更新。",
+                "lines": [
+                    "status.tick_by_tick.policy = tbt_only",
+                    "status.tbt_tick_count = 已接收 tick-by-tick 成交数；status.ignored_non_tbt_tick_count = 被忽略的非 TBT tick 数。",
+                    "status.tick_by_tick.last_tick_ms_by_symbol / tick_count_by_symbol 按 symbol 输出最近 TBT 时间和数量。",
+                    "status.tick_by_tick.expected_conids 来自 execution pool active symbols 的 conid，用于核对订阅。",
+                    "status.tick_by_tick.freshness_sec 读取 ibkr_order_flow_tbt_freshness_sec。",
                 ],
             },
             {

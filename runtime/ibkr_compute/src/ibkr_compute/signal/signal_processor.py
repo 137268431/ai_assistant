@@ -41,6 +41,9 @@ class SignalProcessor:
         self.capacity_provider = capacity_provider
         self._active_positions: Dict[str, dict] = {}
         self._cooldowns: Dict[str, dict] = {}
+        self._daily_entry_counts: Dict[str, int] = {}
+        self._daily_entry_count_keys: set[str] = set()
+        self._daily_entry_counts_date = ""
 
     def validate_signal(self, signal: dict) -> Tuple[bool, str]:
         et_now = datetime.now(ET)
@@ -83,6 +86,10 @@ class SignalProcessor:
 
         if self._has_conflicting_position(symbol, direction):
             return False, "direction_conflict"
+
+        daily_entry_ok, daily_entry_reason = self._daily_entry_limit_status(symbol, et_now)
+        if not daily_entry_ok:
+            return False, daily_entry_reason
 
         aligned, alignment_reason = self._target_direction_alignment_status(symbol, direction)
         if not aligned:
@@ -246,6 +253,53 @@ class SignalProcessor:
             return True
         return False
 
+    def _reentry_policy(self) -> str:
+        getter = getattr(self.config, "get_for_environment", None)
+        if not callable(getter):
+            return "controlled"
+        try:
+            return str(getter("intraday_reentry_policy", self.environment, "controlled") or "controlled").strip().lower()
+        except Exception:
+            return "controlled"
+
+    def _controlled_reentry_enabled(self) -> bool:
+        return self._reentry_policy() in {"controlled", "enabled", "allow", "allow_reentry", "reentry"}
+
+    def _symbol_daily_entry_limit(self) -> int:
+        getter = getattr(self.config, "get_int_for_environment", None)
+        if not callable(getter):
+            return 2
+        try:
+            return max(0, int(getter("intraday_symbol_daily_entry_limit", self.environment, 2)))
+        except Exception:
+            return 2
+
+    @staticmethod
+    def _market_date(et_now: datetime) -> str:
+        return et_now.astimezone(ET).strftime("%Y-%m-%d")
+
+    def _ensure_daily_entry_count_date(self, et_now: datetime | None = None) -> str:
+        now = et_now.astimezone(ET) if isinstance(et_now, datetime) else datetime.now(ET)
+        market_date = self._market_date(now)
+        if self._daily_entry_counts_date != market_date:
+            self._daily_entry_counts.clear()
+            self._daily_entry_count_keys.clear()
+            self._daily_entry_counts_date = market_date
+        return market_date
+
+    def _daily_entry_limit_status(self, symbol: str, et_now: datetime) -> Tuple[bool, str]:
+        normalized_symbol = str(symbol or "").strip().upper()
+        if not normalized_symbol or not self._controlled_reentry_enabled():
+            return True, "ok"
+        limit = self._symbol_daily_entry_limit()
+        if limit <= 0:
+            return True, "ok"
+        self._ensure_daily_entry_count_date(et_now)
+        count = int(self._daily_entry_counts.get(normalized_symbol, 0) or 0)
+        if count >= limit:
+            return False, "symbol_daily_entry_limit_reached"
+        return True, "ok"
+
     def _cooldown_status(self, symbol: str, et_now: datetime) -> Tuple[bool, str]:
         if not symbol:
             return False, "ok"
@@ -309,6 +363,7 @@ class SignalProcessor:
         self.register_position(symbol, payload)
 
     def register_filled_position(self, symbol: str, position_data: dict):
+        self._record_daily_entry(symbol, position_data)
         payload = dict(position_data or {})
         payload["state"] = "filled_position"
         self.register_position(symbol, payload)
@@ -319,6 +374,9 @@ class SignalProcessor:
     def daily_reset(self):
         self._active_positions.clear()
         self._cooldowns.clear()
+        self._daily_entry_counts.clear()
+        self._daily_entry_count_keys.clear()
+        self._daily_entry_counts_date = self._market_date(datetime.now(ET))
         logger.info("Signal processor daily reset")
 
     def status(self) -> dict:
@@ -343,8 +401,53 @@ class SignalProcessor:
             "trading_gate_reason": trade_ready_reason,
             "target_direction_alignment_required": self._target_direction_alignment_enabled(),
             "strategy_capacity_provider_enabled": callable(self.capacity_provider),
+            "reentry_policy": self._reentry_policy(),
+            "symbol_daily_entry_limit": self._symbol_daily_entry_limit(),
+            "daily_entry_counts_date": self._ensure_daily_entry_count_date(datetime.now(ET)),
+            "daily_entry_counts": dict(self._daily_entry_counts),
             "trade_window_start_time": f"{self._trade_window_start()[0]:02d}:{self._trade_window_start()[1]:02d}",
             "trade_window_end_time": f"{self._trade_window_end()[0]:02d}:{self._trade_window_end()[1]:02d}",
             "order_window_end_time": f"{self._order_window_end()[0]:02d}:{self._order_window_end()[1]:02d}",
             "signal_validity_minutes": self._signal_validity_minutes(),
         }
+
+    def _record_daily_entry(self, symbol: str, position_data: dict | None = None) -> None:
+        normalized_symbol = str(symbol or "").strip().upper()
+        if not normalized_symbol:
+            return
+        now = datetime.now(ET)
+        market_date = self._ensure_daily_entry_count_date(now)
+        payload = dict(position_data or {})
+        existing = self._active_positions.get(normalized_symbol)
+        if isinstance(existing, dict) and str(existing.get("state") or "").strip().lower() == "filled_position":
+            existing_key = self._daily_entry_count_key(market_date, normalized_symbol, existing)
+            if not existing_key or existing_key == self._daily_entry_count_key(market_date, normalized_symbol, payload):
+                return
+        entry_key = self._daily_entry_count_key(market_date, normalized_symbol, payload)
+        if entry_key and entry_key in self._daily_entry_count_keys:
+            return
+        self._daily_entry_counts[normalized_symbol] = int(self._daily_entry_counts.get(normalized_symbol, 0) or 0) + 1
+        if entry_key:
+            self._daily_entry_count_keys.add(entry_key)
+
+    @staticmethod
+    def _daily_entry_count_key(market_date: str, symbol: str, payload: dict | None = None) -> str:
+        row = payload if isinstance(payload, dict) else {}
+        for key in (
+            "signal_id",
+            "id",
+            "order_id",
+            "broker_order_id",
+            "orderId",
+            "entry_order_id",
+            "entry_coid",
+            "cOID",
+            "coid",
+            "orderRef",
+            "bracket_group",
+            "trade_group_id",
+        ):
+            value = str(row.get(key) or "").strip()
+            if value:
+                return f"{market_date}:{symbol}:{key}:{value}"
+        return ""

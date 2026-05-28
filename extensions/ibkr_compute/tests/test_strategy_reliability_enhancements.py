@@ -668,6 +668,37 @@ class StrategyReliabilityEnhancementTests(unittest.TestCase):
         self.assertFalse(valid)
         self.assertEqual(reason, "cooldown_after_reverse_close")
 
+    def test_signal_processor_controlled_reentry_counts_filled_entries_only(self):
+        processor = SignalProcessor(FakeConfig(), environment="live")
+        signal = {
+            "symbol": "AAPL",
+            "direction": "long",
+            "entry": 100.0,
+            "stop_loss": 95.0,
+            "take_profit": 110.0,
+            "shares": 10,
+        }
+
+        processor.register_pending_entry("AAPL", {"direction": "long", "signal_id": "sig-pending"})
+        processor.remove_position("AAPL")
+        valid, reason = processor.validate_signal(signal)
+        self.assertTrue(valid)
+        self.assertEqual(reason, "ok")
+        self.assertEqual(processor.status()["daily_entry_counts"].get("AAPL", 0), 0)
+
+        processor.register_filled_position("AAPL", {"direction": "long", "signal_id": "sig-1"})
+        processor.remove_position("AAPL")
+        valid, reason = processor.validate_signal(signal)
+        self.assertTrue(valid)
+        self.assertEqual(reason, "ok")
+
+        processor.register_filled_position("AAPL", {"direction": "long", "signal_id": "sig-2"})
+        processor.remove_position("AAPL")
+        valid, reason = processor.validate_signal(signal)
+        self.assertFalse(valid)
+        self.assertEqual(reason, "symbol_daily_entry_limit_reached")
+        self.assertEqual(processor.status()["daily_entry_counts"]["AAPL"], 2)
+
     def test_signal_processor_requires_active_target_direction_alignment(self):
         long_signal = {
             "symbol": "AAPL",

@@ -142,7 +142,10 @@ class SystemLogicRulesPayloadTest(unittest.TestCase):
     def test_indicator_and_execution_sections_include_expected_defaults(self):
         fake_app = FakeAppModule()
         with mock.patch.object(rules_views, "get_app_module", return_value=fake_app), \
-            mock.patch.object(rules_views, "get_active_trade_symbols", return_value={"AAPL"}):
+            mock.patch.object(rules_views, "load_effective_watchlist", return_value={"AAPL": {"symbol_role": "trade"}}), \
+            mock.patch.object(rules_views, "get_active_trade_symbols", return_value={"AAPL"}), \
+            mock.patch.object(rules_views, "build_daily_scan_rule_summary", return_value=DAILY_SCAN_SUMMARY):
+            selection = rules_views._selection_panel("live")
             indicators = rules_views._indicator_panel("live")
             execution = rules_views._execution_panel("live")
             signals = rules_views._signal_panel("live")
@@ -158,6 +161,12 @@ class SystemLogicRulesPayloadTest(unittest.TestCase):
         self.assertIn("sd_length", indicator_text)
         self.assertIn("DTP Early", str(indicators["chips"]))
         self.assertIn("intraday_signal_validity_minutes", str(signals))
+        self.assertIn("intraday_sd_v1", str(signals))
+        self.assertIn("sd_squeeze_breakout_long", str(signals))
+        self.assertIn("vwap_trend_pullback_long", str(signals))
+        self.assertIn("intraday_reentry_policy", str(signals))
+        self.assertIn("intraday_symbol_daily_entry_limit", str(signals))
+        self.assertIn("symbol_daily_entry_limit_reached", str(signals))
 
         execution_text = "\n".join(
             line
@@ -168,11 +177,21 @@ class SystemLogicRulesPayloadTest(unittest.TestCase):
         self.assertIn("order_window_end_time", str(execution))
         self.assertIn("signal_validity_minutes", str(execution))
         self.assertIn("position_amount", execution_text)
+        self.assertIn("daily_entry_counts", str(execution))
+        self.assertIn("filled", str(execution))
         self.assertIn("ibkr_order_flow_mode", str(order_flow))
         self.assertIn("Execution Pool", str(order_flow))
         self.assertIn("never_widen_stop_by_order_flow", str(order_flow))
+        self.assertIn("ibkr_order_flow_tbt_freshness_sec", str(order_flow))
+        self.assertIn("tbt_missing", str(order_flow))
+        self.assertIn("tbt_stale", str(order_flow))
+        self.assertIn("ignored_non_tbt_tick_count", str(order_flow))
         self.assertIn("broker-mode/switch/preview", str(broker_switch))
         self.assertIn("2FA", str(broker_switch))
+
+        self.assertIn("open_target_reconcile", str(selection))
+        self.assertIn("target_activation_diagnostics", str(selection))
+        self.assertIn("target_activation_timeline", str(selection))
 
 
 if __name__ == "__main__":

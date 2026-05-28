@@ -485,7 +485,14 @@ class IntradaySdV1CoreTest(unittest.TestCase):
         self.assertTrue(signal["extra"]["trigger_checks"]["trend_walk_regime"])
 
     def test_intraday_setup_daily_limit_blocks_repeat_same_day(self):
-        gen = SignalGenerator("SPY", "5m", {"signal_strategy_profile": "intraday_sd_v1"})
+        gen = SignalGenerator(
+            "SPY",
+            "5m",
+            {
+                "signal_strategy_profile": "intraday_sd_v1",
+                "intraday_reentry_policy": "single_setup",
+            },
+        )
 
         first = gen.update(
             intraday_breakout_snapshot(
@@ -522,6 +529,54 @@ class IntradaySdV1CoreTest(unittest.TestCase):
         self.assertEqual(trace["signal_state"]["stage"], "blocked")
         self.assertFalse(trace["signal_state"]["filter_checks"]["setup_daily_limit"])
         self.assertFalse(trace["signal_state"]["filter_checks"]["setup_cooldown"])
+
+    def test_intraday_controlled_reentry_allows_second_and_blocks_third_symbol_signal(self):
+        gen = SignalGenerator(
+            "SPY",
+            "5m",
+            {
+                "signal_strategy_profile": "intraday_sd_v1",
+                "intraday_reentry_policy": "controlled",
+                "intraday_symbol_daily_entry_limit": 2,
+                "intraday_setup_cooldown_bars": 1,
+            },
+        )
+
+        first = gen.update(intraday_breakout_snapshot(us_time="2026-05-01 09:40:00"))
+        self.assertIsNotNone(first)
+
+        self.assertIsNone(
+            gen.update(
+                intraday_breakout_snapshot(
+                    us_time="2026-05-01 09:45:00",
+                    sd_squeeze_active=False,
+                    sd_breakout_up=False,
+                    sd_trend_walk_up=False,
+                )
+            )
+        )
+        second = gen.update(intraday_breakout_snapshot(us_time="2026-05-01 09:50:00"))
+        self.assertIsNotNone(second)
+        self.assertTrue(second["extra"]["filter_checks"]["setup_daily_limit"])
+        self.assertTrue(second["extra"]["filter_checks"]["symbol_daily_entry_limit"])
+
+        self.assertIsNone(
+            gen.update(
+                intraday_breakout_snapshot(
+                    us_time="2026-05-01 09:55:00",
+                    sd_squeeze_active=False,
+                    sd_breakout_up=False,
+                    sd_trend_walk_up=False,
+                )
+            )
+        )
+        third = gen.update(intraday_breakout_snapshot(us_time="2026-05-01 10:00:00"))
+
+        self.assertIsNone(third)
+        trace = gen.get_trace_snapshot()
+        self.assertEqual(trace["signal_state"]["stage"], "blocked")
+        self.assertFalse(trace["signal_state"]["filter_checks"]["symbol_daily_entry_limit"])
+        self.assertEqual(trace["signal_state"]["filter_reason"], "symbol_daily_entry_limit_reached")
 
     def test_intraday_passive_dynamic_short_entry_prices_above_close_amd_style(self):
         gen = SignalGenerator(

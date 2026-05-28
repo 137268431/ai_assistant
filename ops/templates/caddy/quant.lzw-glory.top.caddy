@@ -32,4 +32,10 @@ quant.lzw-glory.top {
         X-Content-Type-Options "nosniff"
         -Server
     }
+
+    @console_html path / /index.html /*.html
+    header @console_html Cache-Control "no-cache"
+
+    @console_assets path /common.js /assets/*
+    header @console_assets Cache-Control "public, max-age=300, stale-while-revalidate=86400"
 }

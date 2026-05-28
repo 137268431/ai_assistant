@@ -35,6 +35,8 @@ NATIVE_CUSTOM_ROUTES = [
     "ibkr/fundamentals/refresh",
     "ibkr/health-report",
     "ibkr/healthz",
+    "ibkr/home-dashboard",
+    "ibkr/home-market",
     "ibkr/account_snapshot",
     "ibkr/analytics/daily-signals",
     "ibkr/analytics/daily-trade-review",

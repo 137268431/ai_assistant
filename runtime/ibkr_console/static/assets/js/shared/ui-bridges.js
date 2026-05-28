@@ -176,6 +176,12 @@ function renderHomeBridge() {
       copy: '回放 / 验证'
     },
     {
+      path: '/ibkr_system_logic.html',
+      kicker: 'Logic',
+      label: '逻辑',
+      copy: '代码规则 / 调度'
+    },
+    {
       path: '/ibkr_system.html',
       kicker: 'System',
       label: '系统域',

@@ -753,7 +753,9 @@ class SystemSchedulerJobsTest(unittest.TestCase):
             self.assertEqual(path, "/scan")
             self.assertEqual(json_body["mode"], "topup")
             self.assertTrue(json_body["force"])
-            self.assertTrue(json_body["async"])
+            self.assertFalse(json_body["async"])
+            self.assertTrue(json_body["open_target_reconcile"])
+            self.assertEqual(json_body["trigger_source"], "open_target_pool_reconcile")
             self.assertLessEqual(float(timeout), 30.0)
             return {
                 "ok": True,
@@ -1006,6 +1008,64 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(events[0][0], "early_expansion_topup")
         state = states[("ibkr_early_expansion_topup_notify", "live")]
         self.assertIn("scan-live-2026-04-23-old", state["notified_keys"])
+
+    def test_early_expansion_topup_open_reconcile_overrides_empty_pending_scan(self):
+        sent = []
+        events = []
+        calls = []
+
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            calls.append({"method": method, "path": path, "params": params, "json_body": dict(json_body or {})})
+            if path == "/scan/status":
+                return {
+                    "ok": True,
+                    "status_code": 200,
+                    "payload": {
+                        "ok": True,
+                        "status": "running",
+                        "run_id": "scan-live-2026-04-23-pending",
+                        "counts": {"active": 0},
+                    },
+                }
+            self.assertEqual(path, "/scan")
+            self.assertFalse(json_body["async"])
+            self.assertTrue(json_body["open_target_reconcile"])
+            self.assertEqual(json_body["trigger_source"], "open_target_pool_reconcile")
+            return {
+                "ok": True,
+                "status_code": 200,
+                "payload": {
+                    "ok": True,
+                    "scanned": 1,
+                    "eligible": 1,
+                    "new_active": 1,
+                    "new_candidates": 0,
+                    "new_targets": [{"symbol": "NVDA", "status": "active", "direction_bias": "long", "score": 18}],
+                },
+            }
+
+        payload, status_code = build_early_expansion_topup_response(
+            payload={"environment": "live"},
+            normalize_environment=lambda value, default: str(value or default).strip().lower() or default,
+            time_strings=lambda: {"us": "2026-04-23 09:35:00", "cn": "2026-04-23 21:35:00", "date": "2026-04-23"},
+            request_json_request=request_json_request,
+            compute_base_url="http://compute",
+            feishu_send_interactive=lambda card, chat_id, environment: sent.append({"card": card, "chat_id": chat_id}) or {"success": True, "message_id": "msg-topup"},
+            write_system_event_record=lambda *args, **kwargs: events.append(args) or {"id": "event-1"},
+            config_value=lambda key, default, environment: default,
+            console_base_url=lambda: "https://quant.lzw-glory.top",
+            startup_chat_id=lambda environment: f"startup-chat-{environment}",
+            get_state_payload=lambda state_key, environment: {"data": {}},
+            upsert_state=lambda key, environment, data, date: data,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["status"], "success")
+        self.assertEqual([call["path"] for call in calls], ["/scan/status", "/scan"])
+        self.assertEqual(payload["completed_notification"]["reason"], "open_reconcile_overrides_pending_scan")
+        self.assertEqual(payload["detail"]["target_reconcile_window"]["current_time_et"], "09:35")
+        self.assertEqual(len(sent), 1)
 
     def test_early_expansion_topup_does_not_duplicate_completed_async_notification(self):
         sent = []

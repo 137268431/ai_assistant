@@ -18,6 +18,7 @@ ORDER_FLOW_DEFAULTS = {
     "ibkr_order_flow_max_position_slots": "1",
     "ibkr_order_flow_tick_types": "Last",
     "ibkr_order_flow_confirm_window_sec": "60",
+    "ibkr_order_flow_tbt_freshness_sec": "120",
     "ibkr_order_flow_min_delta_ratio": "0.12",
     "ibkr_order_flow_max_spread_bps": "12",
     "ibkr_order_flow_auto_entry_enabled": "true",

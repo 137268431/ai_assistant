@@ -110,6 +110,27 @@ class DailyScannerRunMixin:
         except Exception as exc:
             return {"ok": False, "error": str(exc), "total": len(clean_rows)}
 
+    @staticmethod
+    def _target_activation_timeline(rows: list[dict], *, limit: int = 50) -> list[dict]:
+        timeline: list[dict] = []
+        for row in rows or []:
+            if not isinstance(row, dict) or not str(row.get("symbol") or "").strip():
+                continue
+            timeline.append(
+                {
+                    "symbol": str(row.get("symbol") or "").strip().upper(),
+                    "decision": str(row.get("decision") or "").strip(),
+                    "reason_code": str(row.get("reason_code") or "").strip(),
+                    "rank": int(row.get("rank", 0) or 0),
+                    "active_gate_passed": bool(row.get("active_gate_passed")),
+                    "context_gate_passed": bool(row.get("context_gate_passed")),
+                    "related_target_id": str(row.get("related_target_id") or "").strip(),
+                }
+            )
+            if len(timeline) >= limit:
+                break
+        return timeline
+
     def run_scan(self, date: str, environments=None, *, mode: str = DAILY_SCAN_MODE_SEED) -> dict:
         """
         执行每日自动筛选。
@@ -240,6 +261,21 @@ class DailyScannerRunMixin:
             ],
             "new_active": sum(int(result.get("new_active", 0) or 0) for result in environment_results),
             "new_candidates": sum(int(result.get("new_candidates", 0) or 0) for result in environment_results),
+            "target_activation_diagnostics": {
+                "mode": scan_mode,
+                "scan_stage": DAILY_SCAN_TOPUP_STAGE if scan_mode == DAILY_SCAN_MODE_TOPUP else DAILY_SCAN_STAGE,
+                "environment_count": len(environment_results),
+                "environments": {
+                    str(result.get("environment") or ""): dict(result.get("target_activation_diagnostics") or {})
+                    for result in environment_results
+                    if str(result.get("environment") or "")
+                },
+            },
+            "target_activation_timeline": [
+                item
+                for result in environment_results
+                for item in (result.get("target_activation_timeline") or [])
+            ][:80],
         }
         if not ok:
             payload["error"] = error_text or "daily_scan_failed"
@@ -534,6 +570,7 @@ class DailyScannerRunMixin:
         }
         if scan_mode != DAILY_SCAN_MODE_TOPUP:
             active_symbols = set()
+        existing_active_symbols = set(active_symbols)
         active_count = 0
         candidate_count = 0
         new_targets: list[dict] = []
@@ -768,6 +805,24 @@ class DailyScannerRunMixin:
             )
 
         target_decisions_write = self._write_target_decisions(target_decisions)
+        target_activation_timeline = self._target_activation_timeline(target_decisions)
+        target_activation_diagnostics = {
+            "scan_stage": scan_stage,
+            "mode": scan_mode,
+            "existing_target_count": len(existing_target_symbols),
+            "existing_active_count": len(existing_active_symbols),
+            "eligible_count": len([
+                item
+                for item in eligible
+                if str(item.get("symbol", "")).strip().upper()
+                not in (existing_target_symbols if scan_mode == DAILY_SCAN_MODE_TOPUP else set())
+            ]),
+            "new_target_count": len(new_targets),
+            "new_active_count": sum(1 for row in new_targets if row.get("status") == "active"),
+            "active_limit_effective": active_limit if active_limit is not None else 0,
+            "active_target_limit": active_target_limit,
+            "rejection_summary": dict(rejection_summary),
+        }
 
         return {
             "environment": runtime_environment,
@@ -824,6 +879,8 @@ class DailyScannerRunMixin:
             },
             "rejection_summary": rejection_summary,
             "rejection_examples": _flatten_rejection_examples(rejection_examples_by_bucket),
+            "target_activation_diagnostics": target_activation_diagnostics,
+            "target_activation_timeline": target_activation_timeline,
             "target_decisions_write": target_decisions_write,
         }
 

@@ -149,6 +149,7 @@
         { path: '/ibkr_screener.html', params: { tab: 'screener', view: 'current' }, kicker: 'Targets', label: '标的域', copy: '筛选 / 标池' },
         { path: '/ibkr_chart.html', kicker: 'Research', label: '研究域', copy: '图表 / 统计' },
         { path: '/ibkr_backtests.html', kicker: 'Backtest', label: '回测域', copy: '回放 / 验证' },
+        { path: '/ibkr_system_logic.html', kicker: 'Logic', label: '逻辑', copy: '代码规则 / 调度' },
         { path: '/ibkr_system.html', kicker: 'System', label: '系统域', copy: '总览 / 运维 / 配置' }
       ]);
     },

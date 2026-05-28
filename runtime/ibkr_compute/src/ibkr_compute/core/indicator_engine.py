@@ -79,6 +79,8 @@ DEFAULT_PARAMS = {
     "intraday_vwap_pullback_long_require_trend_walk": True,
     "intraday_setup_daily_limit": 1,
     "intraday_setup_cooldown_bars": 6,
+    "intraday_reentry_policy": "controlled",
+    "intraday_symbol_daily_entry_limit": 2,
     "intraday_include_legacy_signals": True,
 }
 

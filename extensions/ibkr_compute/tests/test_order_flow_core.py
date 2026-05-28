@@ -205,12 +205,13 @@ def test_order_flow_entry_decision_uses_quote_inferred_tick_side_and_marketable_
         data_environment="live",
         quote_provider=lambda _symbol: quote,
     )
+    now_ms = int(time.time() * 1000)
     manager.on_market_tick(
         {
             "symbol": "AAPL",
             "conid": 123,
             "source": "tick_by_tick",
-            "timestamp_ms": 1_000,
+            "timestamp_ms": now_ms,
             "price": 100.0,
             "size": 10,
         }
@@ -250,6 +251,78 @@ def test_order_flow_entry_decision_rejects_after_confirmation_timeout():
     assert manager.execution_pool.status()["entry_slot_count"] == 0
 
 
+def test_order_flow_manager_ignores_l1_ticks_and_fails_closed_without_tbt():
+    manager = OrderFlowManager(
+        config=_Config({"ibkr_order_flow_mode": "enforce"}),
+        environment="paper",
+        data_environment="live",
+    )
+
+    manager.on_market_tick(
+        {
+            "symbol": "AAPL",
+            "timestamp_ms": int(time.time() * 1000),
+            "price": 100.0,
+            "size": 10,
+        }
+    )
+
+    status = manager.status()
+    assert status["tbt_tick_count"] == 0
+    assert status["ignored_non_tbt_tick_count"] == 1
+    assert status["tick_by_tick"]["ignored_l1_tick_count"] == 1
+    confirmation = manager.confirmation("AAPL", "long")
+    assert confirmation["ok"] is False
+    assert confirmation["reason"] == "tbt_missing"
+
+
+def test_order_flow_manager_confirms_with_fresh_tbt_tick():
+    manager = OrderFlowManager(
+        config=_Config({"ibkr_order_flow_mode": "enforce"}),
+        environment="paper",
+        data_environment="live",
+        quote_provider=lambda _symbol: {"bid": 99.98, "ask": 100.0, "last_price": 100.0},
+    )
+
+    manager.on_market_tick(
+        {
+            "symbol": "AAPL",
+            "source": "tick_by_tick",
+            "timestamp_ms": int(time.time() * 1000),
+            "price": 100.0,
+            "size": 10,
+        }
+    )
+
+    confirmation = manager.confirmation("AAPL", "long")
+    assert confirmation["ok"] is True
+    assert confirmation["reason"] == "ok"
+    assert confirmation["tbt"]["has_recent_tbt"] is True
+
+
+def test_order_flow_manager_fails_closed_on_stale_tbt_tick():
+    manager = OrderFlowManager(
+        config=_Config({"ibkr_order_flow_mode": "enforce", "ibkr_order_flow_tbt_freshness_sec": "1"}),
+        environment="paper",
+        data_environment="live",
+        quote_provider=lambda _symbol: {"bid": 99.98, "ask": 100.0, "last_price": 100.0},
+    )
+
+    manager.on_market_tick(
+        {
+            "symbol": "AAPL",
+            "source": "tick_by_tick",
+            "timestamp_ms": int(time.time() * 1000) - 5_000,
+            "price": 100.0,
+            "size": 10,
+        }
+    )
+
+    confirmation = manager.confirmation("AAPL", "long")
+    assert confirmation["ok"] is False
+    assert confirmation["reason"] == "tbt_stale"
+
+
 def test_order_flow_position_decision_exits_or_tightens_without_widening_stop():
     quote = {"symbol": "TSLA", "bid": 99.9, "ask": 99.92, "last_price": 99.91, "quote_age_s": 0.1}
     manager = OrderFlowManager(
@@ -262,7 +335,7 @@ def test_order_flow_position_decision_exits_or_tightens_without_widening_stop():
         {
             "symbol": "TSLA",
             "source": "tick_by_tick",
-            "timestamp_ms": 1_000,
+            "timestamp_ms": int(time.time() * 1000),
             "price": 99.9,
             "size": 10,
         }
