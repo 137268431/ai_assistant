@@ -8,7 +8,7 @@
   <script src="common.js?v=20260528-market-session-chip-1"></script>
   <script>document.write(getCommonStyles());</script>
   <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-  <link rel="stylesheet" href="/assets/css/pages/ibkr_trade_review/page.css?v=20260528-trade-review-compact-console">
+  <link rel="stylesheet" href="/assets/css/pages/ibkr_trade_review/page.css?v=20260528-trade-review-symbol-tabs-1">
 </head>
 <body>
   <div id="nav"></div>
@@ -52,19 +52,6 @@
           </select>
         </label>
         <label>
-          <span>Status</span>
-          <select id="statusInput" name="status">
-            <option value="all">全部</option>
-            <option value="problem">有问题</option>
-            <option value="selected">已选标</option>
-            <option value="not_selected">未选标</option>
-            <option value="signaled">已出信号</option>
-            <option value="open">开仓未平</option>
-            <option value="closed">已平仓</option>
-            <option value="traded">已成交</option>
-          </select>
-        </label>
-        <label>
           <span>Symbol</span>
           <input id="symbolInput" name="symbol" type="text" placeholder="AAPL / NVDA">
         </label>
@@ -92,6 +79,7 @@
           </div>
           <input id="localSearchInput" type="search" placeholder="搜索 symbol / reason">
         </div>
+        <div id="symbolStatusTabs" class="symbol-tabs" role="tablist" aria-label="标的状态筛选"></div>
         <div id="symbolList" class="symbol-list"><div class="empty-state">等待加载...</div></div>
       </aside>
 
@@ -120,6 +108,6 @@
 
   </main>
 
-  <script src="/assets/js/pages/ibkr_trade_review/page.js?v=20260528-trade-review-compact-console"></script>
+  <script src="/assets/js/pages/ibkr_trade_review/page.js?v=20260528-trade-review-symbol-tabs-1"></script>
 </body>
 </html>

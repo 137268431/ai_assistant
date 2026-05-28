@@ -6,6 +6,7 @@
   const state = {
     payload: null,
     selectedSymbol: '',
+    symbolTab: 'all',
     search: '',
     requestSeq: 0,
     abortController: null,
@@ -14,6 +15,13 @@
     marketCalendarLoading: false,
     marketCalendarError: ''
   };
+  const SYMBOL_TABS = [
+    { id: 'all', label: '全部' },
+    { id: 'active', label: '激活' },
+    { id: 'selected', label: '已选' },
+    { id: 'not_selected', label: '未选/拒绝' },
+    { id: 'problem', label: '问题' }
+  ];
 
   function $(id) { return document.getElementById(id); }
 
@@ -66,6 +74,9 @@
       else next.searchParams.delete(key);
     });
     if (!$('symbolInput').value) next.searchParams.delete('symbol');
+    next.searchParams.delete('status');
+    if (state.symbolTab && state.symbolTab !== 'all') next.searchParams.set('tab', state.symbolTab);
+    else next.searchParams.delete('tab');
     window.history.replaceState({}, '', `${next.pathname}${next.search}`);
   }
 
@@ -122,6 +133,27 @@
 
   function lowerText(value) {
     return firstText(value).toLowerCase();
+  }
+
+  function truthyValue(value) {
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'number') return Number.isFinite(value) && value !== 0;
+    const text = lowerText(value);
+    return ['1', 'true', 'yes', 'y', 'on', 'passed', 'pass'].includes(text);
+  }
+
+  function normalizeSymbolTab(value) {
+    const key = lowerText(value).replace(/[\s-]+/g, '_');
+    if (SYMBOL_TABS.some((tab) => tab.id === key)) return key;
+    return '';
+  }
+
+  function tabFromLegacyStatus(value) {
+    const key = lowerText(value).replace(/[\s-]+/g, '_');
+    if (['selected', 'signaled', 'open', 'closed', 'traded'].includes(key)) return 'selected';
+    if (key === 'not_selected') return 'not_selected';
+    if (key === 'problem') return 'problem';
+    return '';
   }
 
   function classToken(value, fallback = 'item') {
@@ -313,7 +345,6 @@
       broker_mode: $('brokerModeInput').value || 'paper',
       data_environment: $('dataModeInput').value || 'live',
       market_data_mode: $('dataModeInput').value || 'live',
-      status: $('statusInput').value || 'all',
       include_events: $('includeEventsInput').checked ? '1' : '0',
       limit: '500'
     };
@@ -354,6 +385,7 @@
 
   function renderLoading() {
     $('summaryCards').innerHTML = '<article class="metric-card loading-card">正在聚合 daily-trade-review...</article>';
+    $('symbolStatusTabs').innerHTML = '';
     $('symbolList').innerHTML = '<div class="empty-state">加载中...</div>';
     $('symbolDetail').innerHTML = '<div class="empty-state">加载中...</div>';
     $('issueList').innerHTML = '<div class="empty-state">加载中...</div>';
@@ -361,6 +393,7 @@
 
   function renderError(message) {
     $('summaryCards').innerHTML = `<article class="metric-card error-card">加载失败：${escapeHtml(message)}</article>`;
+    $('symbolStatusTabs').innerHTML = '';
     $('symbolList').innerHTML = '<div class="empty-state">没有可展示数据。</div>';
     $('symbolDetail').innerHTML = '<div class="empty-state">请检查 API、权限或 PocketBase schema。</div>';
     $('issueList').innerHTML = '<div class="empty-state">加载失败。</div>';
@@ -368,6 +401,7 @@
 
   function renderAll() {
     renderSummary();
+    renderSymbolTabs();
     renderSymbols();
     renderDetail();
     renderIssues();
@@ -400,8 +434,92 @@
     `).join('');
   }
 
+  function allReviewItems() {
+    return Array.isArray(state.payload?.items) ? state.payload.items : [];
+  }
+
+  function isProblemItem(item) {
+    return Boolean((item.issue_flags || []).length);
+  }
+
+  function isActiveTarget(item) {
+    const target = asObject(item.target);
+    const targetExtra = asObject(target.extra);
+    const selection = asObject(item.selection_summary);
+    const targetStatus = lowerText(target.status || selection.target_status || item.target_status || item.status);
+    return targetStatus === 'active' || truthyValue(selection.active_gate_passed) || truthyValue(targetExtra.active_gate_passed);
+  }
+
+  function isSelectedItem(item) {
+    const selection = asObject(item.selection_summary);
+    const target = asObject(item.target);
+    const targetStatus = lowerText(target.status || selection.target_status || item.target_status || item.status);
+    const decision = lowerText(item.selection_decision || item.decision || selection.decision);
+    const status = lowerText(item.review_status);
+    return Boolean(item.target)
+      || truthyValue(selection.selected)
+      || isActiveTarget(item)
+      || ['active', 'candidate', 'selected'].includes(targetStatus)
+      || ['selected', 'active', 'candidate', 'accepted'].includes(decision)
+      || ['selected', 'signaled', 'open', 'closed'].includes(status);
+  }
+
+  function isNotSelectedItem(item) {
+    const selection = asObject(item.selection_summary);
+    const decision = lowerText(item.selection_decision || item.decision || selection.decision || selection.latest_decision);
+    const status = lowerText(item.review_status);
+    if (status === 'not_selected') return true;
+    if (['rejected', 'not_selected', 'deferred', 'error', 'blocked'].includes(decision)) return !isSelectedItem(item);
+    return collectNotSelectedReasons(item).length > 0 && !isSelectedItem(item);
+  }
+
+  function matchesSymbolTab(item, tab = state.symbolTab) {
+    if (tab === 'active') return isActiveTarget(item);
+    if (tab === 'selected') return isSelectedItem(item);
+    if (tab === 'not_selected') return isNotSelectedItem(item);
+    if (tab === 'problem') return isProblemItem(item);
+    return true;
+  }
+
+  function renderSymbolTabs() {
+    const node = $('symbolStatusTabs');
+    if (!node) return;
+    const rows = allReviewItems();
+    const counts = {
+      all: rows.length,
+      active: rows.filter((item) => matchesSymbolTab(item, 'active')).length,
+      selected: rows.filter((item) => matchesSymbolTab(item, 'selected')).length,
+      not_selected: rows.filter((item) => matchesSymbolTab(item, 'not_selected')).length,
+      problem: rows.filter((item) => matchesSymbolTab(item, 'problem')).length
+    };
+    node.innerHTML = SYMBOL_TABS.map((tab) => `
+      <button
+        class="symbol-tab ${tab.id === state.symbolTab ? 'is-active' : ''}"
+        type="button"
+        role="tab"
+        aria-selected="${tab.id === state.symbolTab ? 'true' : 'false'}"
+        data-tab="${escapeHtml(tab.id)}"
+      >
+        <span>${escapeHtml(tab.label)}</span>
+        <strong>${escapeHtml(counts[tab.id] || 0)}</strong>
+      </button>
+    `).join('');
+    node.querySelectorAll('.symbol-tab').forEach((button) => {
+      button.addEventListener('click', () => {
+        const nextTab = normalizeSymbolTab(button.dataset.tab) || 'all';
+        if (nextTab === state.symbolTab) return;
+        state.symbolTab = nextTab;
+        syncUrlFromForm();
+        renderSymbolTabs();
+        renderSymbols();
+        renderDetail();
+        renderIssues();
+      });
+    });
+  }
+
   function filteredItems() {
-    const rows = Array.isArray(state.payload?.items) ? state.payload.items : [];
+    const rows = allReviewItems().filter((item) => matchesSymbolTab(item));
     const needle = state.search.trim().toLowerCase();
     if (!needle) return rows;
     return rows.filter((item) => {
@@ -604,8 +722,8 @@
     const signal = signalSummary(item);
     const blockedReason = blockedOrExpiredReason(item);
     const notSelectedHtml = notSelected.length
-      ? notSelected.slice(0, 8).map((reason) => `<span class="reason-chip"><b>${escapeHtml(reason.label)}</b>${escapeHtml(reason.text)}</span>`).join('')
-      : '<span class="reason-chip muted"><b>未选</b>无 rejected/not_selected/blocker 字段；旧 payload 只能说明“没有入选证据”。</span>';
+      ? notSelected.slice(0, 8).map((reason) => `<span class="reason-chip"><b>${escapeHtml(reason.label)}</b><span>${escapeHtml(reason.text)}</span></span>`).join('')
+      : '<span class="reason-chip muted"><b>未选</b><span>无 rejected/not_selected/blocker 字段；旧 payload 只能说明“没有入选证据”。</span></span>';
     return `
       <div class="forensic-explain-grid">
         <article class="explain-card ${classToken(selection.tone)}">
@@ -737,7 +855,7 @@
   }
 
   function renderIssues() {
-    const rows = (state.payload?.items || []).filter((item) => (item.issue_flags || []).length);
+    const rows = filteredItems().filter((item) => (item.issue_flags || []).length);
     const warnings = state.payload?.warnings || [];
     const warningHtml = warnings.length ? warnings.map((warning) => `
       <article class="issue-card warn"><strong>${escapeHtml(warning.code || 'warning')}</strong><p>${escapeHtml(warning.message || '')}</p></article>
@@ -782,7 +900,7 @@
     $('reviewDateInput').value = query.get('market_date') || query.get('date') || todayEt();
     $('brokerModeInput').value = query.get('broker_mode') || 'paper';
     $('dataModeInput').value = query.get('data_environment') || query.get('market_data_mode') || 'live';
-    $('statusInput').value = query.get('status') || 'all';
+    state.symbolTab = normalizeSymbolTab(query.get('tab')) || tabFromLegacyStatus(query.get('status')) || 'all';
     $('symbolInput').value = (query.get('symbol') || '').toUpperCase();
     if (query.has('include_events')) $('includeEventsInput').checked = ['1', 'true', 'yes', 'on'].includes(String(query.get('include_events') || '').toLowerCase());
   }
@@ -800,8 +918,10 @@
       $('reviewDateInput').value = todayEt();
       $('brokerModeInput').value = 'paper';
       $('dataModeInput').value = 'live';
-      $('statusInput').value = 'all';
+      state.symbolTab = 'all';
       $('symbolInput').value = '';
+      $('localSearchInput').value = '';
+      state.search = '';
       $('includeEventsInput').checked = true;
       syncUrlFromForm();
       initChrome();
@@ -811,6 +931,7 @@
       state.search = event.target.value || '';
       renderSymbols();
       renderDetail();
+      renderIssues();
     });
     loadReview().catch((error) => showMessage(error.message || String(error)));
   });
