@@ -747,6 +747,8 @@ class BacktestRuntimeRecordsMixin:
             "daily_selection_cache_force_rebuild": bool(request.get("daily_selection_cache_force_rebuild", False)),
             "daily_selection_cache_trust_existing": bool(request.get("daily_selection_cache_trust_existing", False)),
             "daily_selection_cache_revalidate_input_hash": bool(request.get("daily_selection_cache_revalidate_input_hash", False)),
+            "backtest_require_truth_proof": bool(request.get("backtest_require_truth_proof", True)),
+            "data_quality_proof_gate": request.get("data_quality_proof_gate") or {},
             "daily_scan_min_avg_10d_volume": float(request.get("daily_scan_min_avg_10d_volume", 0) or 0),
             "daily_scan_min_premarket_volume": float(request.get("daily_scan_min_premarket_volume", 0) or 0),
             "daily_scan_min_atr_pct": float(request.get("daily_scan_min_atr_pct", 0) or 0),

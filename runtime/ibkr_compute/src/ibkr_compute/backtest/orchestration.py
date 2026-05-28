@@ -5,6 +5,274 @@ from .runtime_support import *
 
 
 class BacktestOrchestrationMixin:
+    def _backtest_truth_proof_required(self, request: dict) -> bool:
+        return request_utils.normalize_bool(request.get("backtest_require_truth_proof"), True)
+
+    def _build_backtest_truth_proof_gate(
+        self,
+        symbols: list[str],
+        request: dict,
+        *,
+        date_from: str = "",
+        date_to: str = "",
+        context: str = "backtest",
+    ) -> dict:
+        required = self._backtest_truth_proof_required(request)
+        normalized_symbols = sorted({str(symbol or "").strip().upper() for symbol in symbols or [] if str(symbol or "").strip()})
+        if not required:
+            return {
+                "ok": True,
+                "status": "disabled",
+                "required": False,
+                "reason": "backtest_truth_proof_disabled",
+                "context": context,
+                "symbols": normalized_symbols,
+            }
+        if not normalized_symbols:
+            return {"ok": False, "status": "red", "required": True, "reason": "no_symbols", "context": context, "symbols": []}
+
+        try:
+            range_from = str(date_from or request["date_from"])
+            range_to = str(date_to or request["date_to"])
+            start_ms, end_ms = self._date_to_ms_range(range_from, range_to)
+            expected_dates = trading_date_strings_from_ms(start_ms, end_ms)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "red",
+                "required": True,
+                "reason": f"date_range_invalid:{str(exc)[:120]}",
+                "context": context,
+                "symbols": normalized_symbols,
+            }
+        if not expected_dates:
+            return {
+                "ok": False,
+                "status": "red",
+                "required": True,
+                "reason": "no_trading_dates",
+                "context": context,
+                "symbols": normalized_symbols,
+                "dates": [],
+            }
+
+        db_path = str(runtime_backtest_sqlite_path() or "").strip()
+        if not db_path or not os.path.exists(db_path):
+            return {
+                "ok": False,
+                "status": "red",
+                "required": True,
+                "reason": "sqlite_unavailable",
+                "context": context,
+                "symbols": normalized_symbols,
+                "dates": expected_dates,
+            }
+
+        environment = str(request.get("source_environment") or "live").strip().lower() or "live"
+        interval = "5m"
+        try:
+            with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=10) as conn:
+                conn.row_factory = sqlite3.Row
+                table_names = {
+                    str(row["name"] or "")
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('ibkr_bar_integrity', 'ibkr_bar_truth_audit')"
+                    ).fetchall()
+                }
+                if "ibkr_bar_truth_audit" not in table_names:
+                    return {
+                        "ok": False,
+                        "status": "red",
+                        "required": True,
+                        "reason": "truth_audit_table_missing",
+                        "context": context,
+                        "environment": environment,
+                        "interval": interval,
+                        "symbols": normalized_symbols,
+                        "dates": expected_dates,
+                    }
+                if "ibkr_bar_integrity" not in table_names:
+                    return {
+                        "ok": False,
+                        "status": "red",
+                        "required": True,
+                        "reason": "bar_integrity_table_missing",
+                        "context": context,
+                        "environment": environment,
+                        "interval": interval,
+                        "symbols": normalized_symbols,
+                        "dates": expected_dates,
+                    }
+                symbol_placeholders = ", ".join("?" for _ in normalized_symbols)
+                date_placeholders = ", ".join("?" for _ in expected_dates)
+                truth_rows = conn.execute(
+                    f"""
+                    SELECT
+                        market_date,
+                        symbol,
+                        interval,
+                        status,
+                        matched_bar_count,
+                        missing_stored_bar_count,
+                        missing_ibkr_bar_count,
+                        bar_mismatch_count,
+                        last_checked_at,
+                        updated
+                    FROM ibkr_bar_truth_audit
+                    WHERE environment = ?
+                      AND interval = ?
+                      AND symbol IN ({symbol_placeholders})
+                      AND market_date IN ({date_placeholders})
+                    ORDER BY updated DESC, last_checked_at DESC
+                    """,
+                    (environment, interval, *normalized_symbols, *expected_dates),
+                ).fetchall()
+                integrity_rows = conn.execute(
+                    f"""
+                    SELECT
+                        market_date,
+                        symbol,
+                        interval,
+                        status,
+                        needs_repair,
+                        gap_count,
+                        duplicate_count,
+                        bad_ohlc_count,
+                        last_scan_at,
+                        updated
+                    FROM ibkr_bar_integrity
+                    WHERE environment = ?
+                      AND interval = ?
+                      AND symbol IN ({symbol_placeholders})
+                      AND market_date IN ({date_placeholders})
+                    ORDER BY updated DESC, last_scan_at DESC
+                    """,
+                    (environment, interval, *normalized_symbols, *expected_dates),
+                ).fetchall()
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "red",
+                "required": True,
+                "reason": f"data_quality_proof_query_failed:{str(exc)[:120]}",
+                "context": context,
+                "environment": environment,
+                "interval": interval,
+                "symbols": normalized_symbols,
+                "dates": expected_dates,
+            }
+
+        truth_by_pair: dict[tuple[str, str], dict] = {}
+        for row in truth_rows or []:
+            market_date = str(row["market_date"] or "")[:10]
+            symbol = str(row["symbol"] or "").strip().upper()
+            key = (market_date, symbol)
+            if market_date and symbol and key not in truth_by_pair:
+                truth_by_pair[key] = dict(row)
+        integrity_by_pair: dict[tuple[str, str], dict] = {}
+        for row in integrity_rows or []:
+            market_date = str(row["market_date"] or "")[:10]
+            symbol = str(row["symbol"] or "").strip().upper()
+            key = (market_date, symbol)
+            if market_date and symbol and key not in integrity_by_pair:
+                integrity_by_pair[key] = dict(row)
+
+        missing_truth_pairs = []
+        bad_truth_pairs = []
+        missing_integrity_pairs = []
+        bad_integrity_pairs = []
+        for market_date in expected_dates:
+            for symbol in normalized_symbols:
+                row = truth_by_pair.get((market_date, symbol))
+                if not row:
+                    missing_truth_pairs.append({"market_date": market_date, "symbol": symbol, "source": "truth_audit"})
+                else:
+                    status = str(row.get("status") or "").strip().lower()
+                    matched = int(row.get("matched_bar_count") or 0)
+                    missing_stored = int(row.get("missing_stored_bar_count") or 0)
+                    missing_ibkr = int(row.get("missing_ibkr_bar_count") or 0)
+                    mismatched = int(row.get("bar_mismatch_count") or 0)
+                    if status != "ok" or matched <= 0 or missing_stored > 0 or missing_ibkr > 0 or mismatched > 0:
+                        bad_truth_pairs.append(
+                            {
+                                "market_date": market_date,
+                                "symbol": symbol,
+                                "source": "truth_audit",
+                                "status": status,
+                                "matched_bar_count": matched,
+                                "missing_stored_bar_count": missing_stored,
+                                "missing_ibkr_bar_count": missing_ibkr,
+                                "bar_mismatch_count": mismatched,
+                            }
+                        )
+
+                integrity = integrity_by_pair.get((market_date, symbol))
+                if not integrity:
+                    missing_integrity_pairs.append({"market_date": market_date, "symbol": symbol, "source": "bar_integrity"})
+                    continue
+                integrity_status = str(integrity.get("status") or "").strip().lower()
+                needs_repair = bool(integrity.get("needs_repair"))
+                gap_count = int(integrity.get("gap_count") or 0)
+                duplicate_count = int(integrity.get("duplicate_count") or 0)
+                bad_ohlc_count = int(integrity.get("bad_ohlc_count") or 0)
+                if (
+                    integrity_status not in {"ok", "repaired"}
+                    or needs_repair
+                    or gap_count > 0
+                    or duplicate_count > 0
+                    or bad_ohlc_count > 0
+                ):
+                    bad_integrity_pairs.append(
+                        {
+                            "market_date": market_date,
+                            "symbol": symbol,
+                            "source": "bar_integrity",
+                            "status": integrity_status,
+                            "needs_repair": needs_repair,
+                            "gap_count": gap_count,
+                            "duplicate_count": duplicate_count,
+                            "bad_ohlc_count": bad_ohlc_count,
+                        }
+                    )
+
+        missing_pairs = [*missing_truth_pairs, *missing_integrity_pairs]
+        bad_pairs = [*bad_truth_pairs, *bad_integrity_pairs]
+        ok = not missing_pairs and not bad_pairs
+        if ok:
+            reason = "green"
+        elif missing_integrity_pairs:
+            reason = "bar_integrity_missing"
+        elif missing_truth_pairs:
+            reason = "truth_audit_missing"
+        elif bad_integrity_pairs:
+            reason = "bar_integrity_not_green"
+        else:
+            reason = "truth_audit_not_green"
+        return {
+            "ok": ok,
+            "status": "green" if ok else "red",
+            "required": True,
+            "reason": reason,
+            "context": context,
+            "environment": environment,
+            "interval": interval,
+            "date_from": str(date_from or request.get("date_from") or ""),
+            "date_to": str(date_to or request.get("date_to") or ""),
+            "dates": expected_dates,
+            "symbols": normalized_symbols,
+            "expected_pair_count": len(expected_dates) * len(normalized_symbols),
+            "audited_pair_count": len(truth_by_pair),
+            "integrity_pair_count": len(integrity_by_pair),
+            "missing_truth_pair_count": len(missing_truth_pairs),
+            "bad_truth_pair_count": len(bad_truth_pairs),
+            "missing_integrity_pair_count": len(missing_integrity_pairs),
+            "bad_integrity_pair_count": len(bad_integrity_pairs),
+            "missing_pair_count": len(missing_pairs),
+            "bad_pair_count": len(bad_pairs),
+            "missing_examples": missing_pairs[:20],
+            "bad_examples": bad_pairs[:20],
+        }
+
     def _execute_run(self, run_id: str, request: dict, progress_context: dict | None = None) -> dict:
         started_at = time.time()
         self._set_progress_context("running", "bootstrap", "resolving symbols", 2, progress_context)
@@ -40,6 +308,10 @@ class BacktestOrchestrationMixin:
             raise ValueError("No symbols resolved for backtest")
         request["symbols"] = symbols
         request["symbols_text"] = ",".join(symbols)
+        data_quality_proof_gate = self._build_backtest_truth_proof_gate(symbols, request)
+        request["data_quality_proof_gate"] = data_quality_proof_gate
+        if not data_quality_proof_gate.get("ok"):
+            raise ValueError(f"data_quality_proof_not_green:{data_quality_proof_gate.get('reason') or 'unknown'}")
         preflight_backfill = self._preflight_backfill_symbols(symbols, request, progress_context=progress_context)
         self._update_run(
             run_id,
@@ -181,6 +453,7 @@ class BacktestOrchestrationMixin:
         metrics["backtest_signal_count"] = len(all_signal_rows)
         metrics["backtest_target_count"] = len(backtest_target_rows)
         metrics["backtest_reverse_signal_count"] = len(all_reverse_rows)
+        metrics["data_quality_proof_gate"] = data_quality_proof_gate
         metrics["signal_count"] = len(all_signal_rows)
         metrics["executed_signal_count"] = len([row for row in all_signal_rows if str(row.get("status") or "") == "executed"])
         metrics["delta_ab_summary"] = build_delta_ab_summary(

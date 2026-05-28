@@ -2,12 +2,35 @@ import copy
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 SERVICE_SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_api" / "src"
-if str(SERVICE_SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SERVICE_SRC_ROOT))
+COMPUTE_SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "src"
+for src_root in (SERVICE_SRC_ROOT, COMPUTE_SRC_ROOT):
+    if str(src_root) not in sys.path:
+        sys.path.insert(0, str(src_root))
 
-from ibkr_api.tradingview.ingest import normalize_risk_reward_value, upsert_tv_indicator, upsert_tv_signal
+sys.modules.setdefault(
+    "flask",
+    SimpleNamespace(Response=object, jsonify=lambda payload: payload, request=SimpleNamespace(get_json=lambda silent=True: {})),
+)
+
+from ibkr_api.tradingview.ingest import (
+    normalize_risk_reward_value,
+    upsert_tv_indicator,
+    upsert_tv_indicator_audit,
+    upsert_tv_signal,
+)
+from ibkr_api.tradingview import routes as tv_routes
+
+
+class _FakeApp:
+    def route(self, _path, methods=None):
+        def decorator(func):
+            return func
+
+        return decorator
 
 
 class _FakePB:
@@ -60,7 +83,7 @@ class TradingViewIngestTest(unittest.TestCase):
         collection, row = pb.created[0]
         self.assertEqual(collection, "tv_indicators")
         self.assertEqual(row["symbol"], "AAPL")
-        self.assertEqual(row["environment"], "paper")
+        self.assertEqual(row["environment"], "live")
         self.assertEqual(row["bar_index"], 7)
         self.assertEqual(row["extra"]["dayChangePct"], 1.5)
         self.assertEqual(row["extra"]["day_change_pct"], 1.5)
@@ -83,6 +106,89 @@ class TradingViewIngestTest(unittest.TestCase):
 
         self.assertEqual(response["msg"], "duplicate indicator, skipped")
         self.assertEqual(pb.created, [])
+
+    def test_upsert_tv_indicator_audit_writes_snapshot_collection(self):
+        pb = _FakePB()
+
+        response = upsert_tv_indicator_audit(
+            {
+                "type": "audit_indicator",
+                "symbol": "msft",
+                "interval": "15",
+                "bar_time_ms": "1713859200000",
+                "bar_index": "11",
+                "script_tag": 'IAC "audit"',
+                "environment": "backtest",
+                "extra": {"dayChangePct": "2.5", "close": "421.12"},
+                "audit_reason": "snapshot",
+            },
+            pb=pb,
+            normalize_environment=self.normalize_environment,
+            escape_filter_string=self.escape_filter_string,
+            jsonify_fn=lambda payload: payload,
+        )
+
+        self.assertEqual(response["ok"], True)
+        self.assertEqual(response["type"], "indicator_audit")
+        self.assertEqual(len(pb.created), 1)
+        collection, row = pb.created[0]
+        self.assertEqual(collection, "tv_indicator_audit_snapshots")
+        self.assertEqual(row["symbol"], "MSFT")
+        self.assertEqual(row["environment"], "backtest")
+        self.assertEqual(row["script_tag"], 'IAC "audit"')
+        self.assertEqual(row["bar_index"], 11)
+        self.assertEqual(row["extra"]["day_change_pct"], 2.5)
+        self.assertEqual(row["extra"]["audit_reason"], "snapshot")
+        self.assertEqual(row["extra"]["source"], "tradingview")
+
+    def test_upsert_tv_indicator_audit_dedup_includes_script_tag(self):
+        pb = _FakePB(existing={"id": "audit-1"})
+
+        response = upsert_tv_indicator_audit(
+            {
+                "symbol": "MSFT",
+                "interval": "15",
+                "bar_time_ms": 1713859200000,
+                "script_tag": 'IAC "audit"',
+                "environment": "backtest",
+            },
+            pb=pb,
+            normalize_environment=self.normalize_environment,
+            escape_filter_string=self.escape_filter_string,
+            jsonify_fn=lambda payload: payload,
+        )
+
+        self.assertEqual(response["type"], "indicator_audit")
+        self.assertEqual(response["msg"], "duplicate indicator_audit, skipped")
+        self.assertEqual(pb.created, [])
+        collection, filter_expr = pb.lookup_filters[0]
+        self.assertEqual(collection, "tv_indicator_audit_snapshots")
+        self.assertIn('symbol = "MSFT"', filter_expr)
+        self.assertIn('interval = "15"', filter_expr)
+        self.assertIn("bar_time_ms = 1713859200000", filter_expr)
+        self.assertIn('environment = "backtest"', filter_expr)
+        self.assertIn('script_tag = "IAC \\"audit\\""', filter_expr)
+
+    def test_webhook_tv_routes_indicator_audit_alias_to_audit_upsert(self):
+        calls = []
+        handlers = tv_routes.register_tradingview_routes(
+            _FakeApp(),
+            deps={
+                "upsert_tv_indicator": lambda payload: {"ok": True, "type": "indicator"},
+                "upsert_tv_indicator_audit": lambda payload: calls.append(payload) or {"ok": True, "type": "indicator_audit"},
+                "upsert_tv_signal": lambda payload: {"ok": True, "type": "signal"},
+                "config_value": lambda key, default, environment: "TRUE",
+                "normalize_environment": self.normalize_environment,
+                "parse_boolean": lambda value, default: default if value is None else str(value).upper() == "TRUE",
+            },
+        )
+
+        request = SimpleNamespace(get_json=lambda silent=True: {"type": "audit_indicator", "symbol": "MSFT"})
+        with mock.patch.object(tv_routes, "request", request):
+            response = handlers["webhook_tv"]()
+
+        self.assertEqual(response["type"], "indicator_audit")
+        self.assertEqual(calls, [{"type": "audit_indicator", "symbol": "MSFT"}])
 
     def test_upsert_tv_signal_creates_record_with_rr_and_date(self):
         pb = _FakePB()

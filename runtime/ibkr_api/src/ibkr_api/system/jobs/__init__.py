@@ -15,6 +15,7 @@ from ibkr_api.system.jobs.fundamentals_refresh import build_fundamentals_refresh
 from ibkr_api.system.jobs.intraday_window_admission import build_intraday_window_admission_response
 from ibkr_api.system.jobs.monitor_alert import build_system_monitor_alert_guard_response
 from ibkr_api.system.jobs.order_expiry import build_order_expiry_response
+from ibkr_api.system.jobs.active_window_progress_status import build_active_window_progress_status_response
 from ibkr_api.system.jobs.reminders import (
     build_system_daily_report_response,
     build_system_market_open_reminder_response,

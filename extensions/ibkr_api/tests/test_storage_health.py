@@ -51,7 +51,7 @@ class StorageHealthTest(unittest.TestCase):
             _create_table(conn, "config", ", key text default '' not null")
             _create_table(conn, "watchlist", ", symbol text default '' not null")
             _create_table(conn, "system_events", ", event_type text default '' not null")
-            for name in ("ibkr_bar_integrity", "ibkr_bar_coverage_daily", "ibkr_bar_truth_audit"):
+            for name in ("ibkr_bar_integrity", "ibkr_bar_coverage_daily", "ibkr_bar_truth_audit", "ibkr_bar_truth_repair_events"):
                 _create_table(conn, name, ", market_date text default '' not null")
             for name in (
                 "ibkr_backtest_runs",
@@ -64,6 +64,7 @@ class StorageHealthTest(unittest.TestCase):
                 "ibkr_backtest_indicators",
                 "tv_signals",
                 "tv_indicators",
+                "tv_indicator_audit_snapshots",
             ):
                 _create_table(conn, name, ", bar_time_ms numeric default 0 not null")
             conn.execute(
@@ -90,7 +91,7 @@ class StorageHealthTest(unittest.TestCase):
 
         self.assertEqual(payload["environment"], "live")
         self.assertIn(payload["status"], {"warning", "error"})
-        self.assertEqual(payload["summary"]["monitored_tables"], 24)
+        self.assertEqual(payload["summary"]["monitored_tables"], 26)
         self.assertTrue(any(table["name"] == "ibkr_bars" for table in payload["tables"]))
         self.assertTrue(any(flag["code"] == "ibkr_bars_retention_lag" for flag in payload["flags"]))
         orders = next(table for table in payload["tables"] if table["name"] == "orders")

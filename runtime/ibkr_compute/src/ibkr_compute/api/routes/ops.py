@@ -23,6 +23,8 @@ from ibkr_compute.api.ops.views import (
     build_ibkr_data_quality_repair_response,
     build_ibkr_data_quality_scan_response,
     build_ibkr_data_quality_truth_audit_response,
+    build_ibkr_data_quality_truth_repair_response,
+    build_ibkr_data_quality_tv_indicator_audit_response,
     build_health_response,
     build_retention_cleanup_response,
     build_status_response,
@@ -128,6 +130,8 @@ def register_ops_routes(app):
         register_runtime_proxy_route(app, "ibkr_data_quality_scan", "/ibkr/data-quality/scan", ["POST"])
         register_runtime_proxy_route(app, "ibkr_data_quality_repair", "/ibkr/data-quality/repair", ["POST"])
         register_runtime_proxy_route(app, "ibkr_data_quality_truth_audit", "/ibkr/data-quality/truth-audit", ["POST"])
+        register_runtime_proxy_route(app, "ibkr_data_quality_truth_repair", "/ibkr/data-quality/truth-repair", ["POST"])
+        register_runtime_proxy_route(app, "ibkr_data_quality_tv_indicator_audit", "/ibkr/data-quality/tv-indicator-audit", ["POST"])
         register_runtime_proxy_route(app, "ibkr_data_quality_daily_rescan", "/ibkr/data-quality/daily-rescan", ["POST"])
         register_runtime_proxy_route(app, "ibkr_data_quality_daily_repair", "/ibkr/data-quality/daily-repair", ["POST"])
     else:
@@ -142,6 +146,14 @@ def register_ops_routes(app):
         @app.route("/ibkr/data-quality/truth-audit", methods=["POST"])
         def ibkr_data_quality_truth_audit():
             return build_ibkr_data_quality_truth_audit_response()
+
+        @app.route("/ibkr/data-quality/truth-repair", methods=["POST"])
+        def ibkr_data_quality_truth_repair():
+            return build_ibkr_data_quality_truth_repair_response()
+
+        @app.route("/ibkr/data-quality/tv-indicator-audit", methods=["POST"])
+        def ibkr_data_quality_tv_indicator_audit():
+            return build_ibkr_data_quality_tv_indicator_audit_response()
 
         @app.route("/ibkr/data-quality/daily-rescan", methods=["POST"])
         def ibkr_data_quality_daily_rescan():

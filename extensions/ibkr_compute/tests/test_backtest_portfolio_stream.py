@@ -118,6 +118,7 @@ class BacktestPortfolioStreamTests(unittest.TestCase):
             "compare_with_tv": False,
             "compare_tv_signals": False,
             "persist_backtest_indicators": False,
+            "backtest_require_truth_proof": False,
         }
         payload.update(overrides)
         return request_utils.normalize_request(payload)

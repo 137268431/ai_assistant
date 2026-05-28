@@ -23,6 +23,8 @@ from ibkr_compute.api.ops.action_views import (
     build_ibkr_data_quality_repair_response,
     build_ibkr_data_quality_scan_response,
     build_ibkr_data_quality_truth_audit_response,
+    build_ibkr_data_quality_truth_repair_response,
+    build_ibkr_data_quality_tv_indicator_audit_response,
     build_retention_cleanup_response,
     build_storage_cleanup_response,
 )

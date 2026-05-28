@@ -66,6 +66,20 @@ def _resolve_data_quality_symbols(service, payload: dict) -> list[str]:
             return app_mod.normalize_symbols(((status_payload.get("market_universe") or {}).get("active_target_symbols") or []))
         except Exception:
             return []
+    if scan_scope == "trade_watchlist":
+        symbols = []
+        try:
+            status_payload = get_service_status_snapshot(service)
+            symbols.extend((status_payload.get("market_universe") or {}).get("active_target_symbols") or [])
+        except Exception:
+            pass
+        try:
+            service.config.refresh()
+            service._refresh_watchlist_pool(force=True)
+            symbols.extend(service._watchlist_symbols or [])
+        except Exception:
+            pass
+        return app_mod.normalize_symbols(symbols)
     if scan_scope == "watchlist_full":
         try:
             service.config.refresh()

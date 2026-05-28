@@ -74,6 +74,13 @@ STANDARD_POLICIES: tuple[dict[str, Any], ...] = (
         "sort": "market_date",
     },
     {
+        "collection": "ibkr_bar_truth_repair_events",
+        "field": "market_date",
+        "kind": "date_text",
+        "retention_days": 180,
+        "sort": "market_date",
+    },
+    {
         "collection": "ibkr_signals",
         "field": "bar_time_ms",
         "kind": "ms",
@@ -108,6 +115,14 @@ STANDARD_POLICIES: tuple[dict[str, Any], ...] = (
     },
     {
         "collection": "tv_indicators",
+        "field": "bar_time_ms",
+        "kind": "ms",
+        "retention_days": 30,
+        "include_legacy_empty": True,
+        "sort": "bar_time_ms",
+    },
+    {
+        "collection": "tv_indicator_audit_snapshots",
         "field": "bar_time_ms",
         "kind": "ms",
         "retention_days": 30,

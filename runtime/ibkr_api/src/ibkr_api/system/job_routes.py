@@ -7,6 +7,7 @@ from flask import Response, jsonify, request
 from ibkr_api.system.jobs import (
     build_auth_edge_guard_response,
     build_auth_pending_guard_response,
+    build_active_window_progress_status_response,
     build_data_gap_guard_response,
     build_daily_event_reconcile_response,
     build_early_expansion_topup_response,
@@ -284,6 +285,32 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
         return response if status_code == 200 else (response, status_code)
 
     exports["custom_system_job_status_reminder"] = custom_system_job_status_reminder
+
+    @app.route("/api/custom/system/jobs/active_window_progress_status", methods=["POST"])
+    def custom_system_job_active_window_progress_status() -> Response:
+        payload, status_code = build_active_window_progress_status_response(
+            payload=request.get_json(silent=True) or {},
+            normalize_environment=normalize_environment,
+            time_strings=time_strings,
+            build_active_window_progress_response=lambda payload: build_active_window_progress_response(payload=payload),
+            build_today_targets_response=lambda payload: build_today_targets_response(payload=payload),
+            feishu_send_interactive=feishu_send_interactive,
+            feishu_update_interactive=feishu_update_interactive,
+            write_system_event_record=write_system_event_record,
+            get_state_payload=lambda state_key, environment, date=None: get_state_payload(
+                state_key,
+                environment,
+                date=date or time_strings()["date"],
+            ),
+            upsert_state=lambda key, environment, data, date: pb.upsert_state(key, environment, data, date=date),
+            config_value=config_value,
+            console_base_url=console_base_url,
+            startup_chat_id=startup_chat_id,
+        )
+        response = jsonify(payload)
+        return response if status_code == 200 else (response, status_code)
+
+    exports["custom_system_job_active_window_progress_status"] = custom_system_job_active_window_progress_status
 
     @app.route("/api/custom/system/jobs/scan_summary", methods=["POST"])
     def custom_system_job_scan_summary() -> Response:

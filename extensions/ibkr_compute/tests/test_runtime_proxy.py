@@ -138,6 +138,16 @@ class RuntimeProxyTimeoutTest(unittest.TestCase):
 
         self.assertEqual(300, request_mock.call_args.kwargs["timeout"])
 
+    def test_data_quality_truth_repair_uses_long_runtime_proxy_timeout(self):
+        _, request_mock = self._proxy_once("/ibkr/data-quality/truth-repair")
+
+        self.assertEqual(300, request_mock.call_args.kwargs["timeout"])
+
+    def test_data_quality_tv_indicator_audit_uses_long_runtime_proxy_timeout(self):
+        _, request_mock = self._proxy_once("/ibkr/data-quality/tv-indicator-audit")
+
+        self.assertEqual(300, request_mock.call_args.kwargs["timeout"])
+
     def test_data_quality_repair_async_returns_accepted_and_persists_status(self):
         runtime_proxy._ASYNC_OPERATION_STATES.clear()
         body = json.dumps({
@@ -160,6 +170,50 @@ class RuntimeProxyTimeoutTest(unittest.TestCase):
         forward_payload = json.loads(request_mock.call_args.kwargs["data"].decode("utf-8"))
         self.assertNotIn("async", forward_payload)
         self.assertEqual("op-test", forward_payload["operation_id"])
+
+    def test_data_quality_truth_repair_async_returns_accepted(self):
+        runtime_proxy._ASYNC_OPERATION_STATES.clear()
+        body = json.dumps({
+            "async": True,
+            "operation_id": "op-truth-repair",
+            "data_environment": "live",
+        }).encode("utf-8")
+        with mock.patch.object(runtime_proxy, "get_runtime_internal_url", return_value="http://runtime.internal"):
+            with mock.patch.object(runtime_proxy, "jsonify", _jsonify):
+                with mock.patch.object(runtime_proxy.threading, "Thread", _ImmediateThread):
+                    with mock.patch.object(runtime_proxy.requests, "request", return_value=_FakeResponse({"ok": True, "proof_status": "green"})) as request_mock:
+                        with mock.patch.object(runtime_proxy, "request", _FakeRequest(body)):
+                            response, status = runtime_proxy.proxy_runtime_request("/ibkr/data-quality/truth-repair")
+
+        self.assertEqual(202, status)
+        self.assertIn(b"accepted", response.content)
+        state = runtime_proxy._load_async_operation_state("op-truth-repair", "live")
+        self.assertEqual("completed", state["status"])
+        self.assertEqual("/ibkr/data-quality/truth-repair", state["path"])
+        forward_payload = json.loads(request_mock.call_args.kwargs["data"].decode("utf-8"))
+        self.assertNotIn("async", forward_payload)
+
+    def test_data_quality_tv_indicator_audit_async_returns_accepted(self):
+        runtime_proxy._ASYNC_OPERATION_STATES.clear()
+        body = json.dumps({
+            "async": True,
+            "operation_id": "op-tv-audit",
+            "data_environment": "live",
+        }).encode("utf-8")
+        with mock.patch.object(runtime_proxy, "get_runtime_internal_url", return_value="http://runtime.internal"):
+            with mock.patch.object(runtime_proxy, "jsonify", _jsonify):
+                with mock.patch.object(runtime_proxy.threading, "Thread", _ImmediateThread):
+                    with mock.patch.object(runtime_proxy.requests, "request", return_value=_FakeResponse({"ok": True, "status": "pass"})) as request_mock:
+                        with mock.patch.object(runtime_proxy, "request", _FakeRequest(body)):
+                            response, status = runtime_proxy.proxy_runtime_request("/ibkr/data-quality/tv-indicator-audit")
+
+        self.assertEqual(202, status)
+        self.assertIn(b"accepted", response.content)
+        state = runtime_proxy._load_async_operation_state("op-tv-audit", "live")
+        self.assertEqual("completed", state["status"])
+        self.assertEqual("/ibkr/data-quality/tv-indicator-audit", state["path"])
+        forward_payload = json.loads(request_mock.call_args.kwargs["data"].decode("utf-8"))
+        self.assertNotIn("async", forward_payload)
 
 
 if __name__ == "__main__":

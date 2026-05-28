@@ -176,6 +176,7 @@ def build_variant_request(base_request: dict, variant: dict, variant_index: int)
         "stop_gap_to_open",
         "backtest_delta_mode",
         "backtest_delta_proxy_threshold",
+        "backtest_require_truth_proof",
     ):
         if key in base_request.get("params", {}):
             request["params"][key] = deepcopy(base_request["params"][key])
@@ -425,6 +426,12 @@ def normalize_request(payload: dict) -> dict:
     daily_selection_cache_force_rebuild = normalize_bool(payload.get("daily_selection_cache_force_rebuild"), False)
     daily_selection_cache_trust_existing = normalize_bool(payload.get("daily_selection_cache_trust_existing"), False)
     daily_selection_cache_revalidate_input_hash = normalize_bool(payload.get("daily_selection_cache_revalidate_input_hash"), False)
+    backtest_require_truth_proof = normalize_bool(
+        payload.get("backtest_require_truth_proof")
+        if payload.get("backtest_require_truth_proof") is not None
+        else payload.get("data_correctness_guard_enabled"),
+        True,
+    )
     daily_scan_min_avg_10d_volume = normalize_positive_float(
         payload.get("daily_scan_min_avg_10d_volume"),
         0.0,
@@ -614,6 +621,7 @@ def normalize_request(payload: dict) -> dict:
         "daily_selection_cache_force_rebuild": daily_selection_cache_force_rebuild,
         "daily_selection_cache_trust_existing": daily_selection_cache_trust_existing,
         "daily_selection_cache_revalidate_input_hash": daily_selection_cache_revalidate_input_hash,
+        "backtest_require_truth_proof": backtest_require_truth_proof,
         "daily_scan_min_avg_10d_volume": daily_scan_min_avg_10d_volume,
         "daily_scan_min_premarket_volume": daily_scan_min_premarket_volume,
         "daily_scan_min_atr_pct": daily_scan_min_atr_pct,
@@ -663,6 +671,7 @@ def normalize_request(payload: dict) -> dict:
             "daily_selection_cache_force_rebuild": daily_selection_cache_force_rebuild,
             "daily_selection_cache_trust_existing": daily_selection_cache_trust_existing,
             "daily_selection_cache_revalidate_input_hash": daily_selection_cache_revalidate_input_hash,
+            "backtest_require_truth_proof": backtest_require_truth_proof,
             "daily_scan_min_avg_10d_volume": daily_scan_min_avg_10d_volume,
             "daily_scan_min_premarket_volume": daily_scan_min_premarket_volume,
             "daily_scan_min_atr_pct": daily_scan_min_atr_pct,

@@ -474,6 +474,9 @@ class PBClient:
     def truth_audit_bar_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
         return self.call_custom_api("ibkr/data_quality/truth_audit", method="POST", data=data, timeout=60)
 
+    def truth_repair_bar_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        return self.call_custom_api("ibkr/data_quality/truth_repair", method="POST", data=data, timeout=300)
+
     def upsert_order(self, data: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(data or {})
         broker_mode = normalize_broker_mode(payload.get("broker_mode") or payload.get("environment"), configured_broker_mode())

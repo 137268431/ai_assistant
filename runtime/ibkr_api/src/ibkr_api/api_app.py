@@ -154,8 +154,16 @@ from ibkr_api.system.scheduler_support import (
     scheduler_status as _scheduler_status_support,
 )
 from ibkr_api.system.summary_support import build_system_summary_payload as _build_system_summary_payload_support
-from ibkr_api.tradingview.ingest import upsert_tv_indicator as _upsert_tv_indicator_support, upsert_tv_signal as _upsert_tv_signal_support
-from ibkr_api.tradingview.runtime_adapters import build_upsert_tv_indicator, build_upsert_tv_signal
+from ibkr_api.tradingview.ingest import (
+    upsert_tv_indicator as _upsert_tv_indicator_support,
+    upsert_tv_indicator_audit as _upsert_tv_indicator_audit_support,
+    upsert_tv_signal as _upsert_tv_signal_support,
+)
+from ibkr_api.tradingview.runtime_adapters import (
+    build_upsert_tv_indicator,
+    build_upsert_tv_indicator_audit,
+    build_upsert_tv_signal,
+)
 from ibkr_compute.api.service_topology import build_service_topology
 from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_scheduler.cron_registry import build_cron_payload
@@ -988,6 +996,11 @@ _upsert_tv_indicator = build_upsert_tv_indicator(
     globals_dict=globals(),
     pb=pb,
     support=_upsert_tv_indicator_support,
+)
+_upsert_tv_indicator_audit = build_upsert_tv_indicator_audit(
+    globals_dict=globals(),
+    pb=pb,
+    support=_upsert_tv_indicator_audit_support,
 )
 _upsert_tv_signal = build_upsert_tv_signal(
     globals_dict=globals(),

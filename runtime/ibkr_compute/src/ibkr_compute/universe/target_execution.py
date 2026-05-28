@@ -74,6 +74,13 @@ def _data_quality_ready(extra: dict[str, Any], default: bool = True) -> bool:
     status = _to_text(data_quality.get("status")).lower()
     if status and status not in {"ready", "ok", "fresh"}:
         return False
+    proof_status = _to_text(
+        data_quality.get("proof_status")
+        or data_quality.get("database_correctness_status")
+        or data_quality.get("truth_status")
+    ).lower()
+    if proof_status and proof_status not in {"green", "ok"}:
+        return False
     if _truthy(data_quality.get("needs_repair")):
         return False
     return True

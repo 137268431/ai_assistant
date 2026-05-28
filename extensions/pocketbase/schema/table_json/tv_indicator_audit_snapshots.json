@@ -1,0 +1,28 @@
+{
+  "bar_index": 20133,
+  "bar_time_ms": 1774025100000,
+  "cn_time": "2026-03-21 00:45",
+  "collectionId": "_pb_tv_indicator_audit_snapshots_",
+  "collectionName": "tv_indicator_audit_snapshots",
+  "created": "2026-03-20 16:50:24.797Z",
+  "exchange": "BATS",
+  "extra": {
+    "atr": 0.8484,
+    "atr_pct": 0.42,
+    "audit_reason": "snapshot",
+    "close": 134.28,
+    "crsi": 36.97,
+    "dtp_phase": "confirmed",
+    "ema_bullish": true,
+    "source_collection": "tv_indicators",
+    "trend_dir": 1,
+    "volume": 4240
+  },
+  "id": "tias2rjutm8iany",
+  "interval": "5",
+  "script_tag": "SAC_v2_diag_20260303",
+  "symbol": "ARM",
+  "updated": "2026-03-20 16:50:24.797Z",
+  "us_time": "2026-03-20 12:45",
+  "environment": "paper"
+}

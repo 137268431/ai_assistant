@@ -7,6 +7,45 @@ from typing import Any, Callable
 from ibkr_api.modes import request_broker_mode, request_market_data_mode
 
 
+TV_INDICATOR_COLLECTION = "tv_indicators"
+TV_INDICATOR_AUDIT_COLLECTION = "tv_indicator_audit_snapshots"
+
+TV_INDICATOR_ALIAS_MAP = {
+    "dayChangePct": "day_change_pct",
+    "prevCloseChangePct": "prev_close_change_pct",
+    "change7d": "change_7d",
+    "obvRsi": "obv_rsi",
+    "emaBullTouch": "ema_bull_touch",
+    "emaBearTouch": "ema_bear_touch",
+    "emaBullish": "ema_bullish",
+    "emaBearish": "ema_bearish",
+    "vwapUpper1": "vwap_upper1",
+    "vwapLower1": "vwap_lower1",
+    "vwapUpper2": "vwap_upper2",
+    "vwapLower2": "vwap_lower2",
+    "vwapDist": "vwap_dist",
+    "sdStdDev": "sd_std_dev",
+    "dtpPhaseBars": "dtp_phase_bars",
+}
+
+TV_INDICATOR_TOP_LEVEL_FIELDS = {
+    "type",
+    "symbol",
+    "exchange",
+    "interval",
+    "script_tag",
+    "us_time",
+    "cn_time",
+    "bar_time_ms",
+    "bar_index",
+    "environment",
+    "market_data_mode",
+    "data_environment",
+    "broker_mode",
+    "extra",
+}
+
+
 def to_finite_number(value: Any) -> float | None:
     try:
         number = float(value)
@@ -86,34 +125,21 @@ def extract_signal_date(us_time_text: Any, *, time_strings: Callable[[], dict[st
     return time_strings()["date"]
 
 
-def upsert_tv_indicator(
+def _normalize_tv_indicator_payload(
     payload: dict[str, Any],
     *,
-    pb: Any,
-    normalize_environment: Callable[[Any, str], str],
-    escape_filter_string: Callable[[Any], str],
-    jsonify_fn: Callable[[dict[str, Any]], Any],
-):
-    alias_map = {
-        "dayChangePct": "day_change_pct",
-        "prevCloseChangePct": "prev_close_change_pct",
-        "change7d": "change_7d",
-        "obvRsi": "obv_rsi",
-        "emaBullTouch": "ema_bull_touch",
-        "emaBearTouch": "ema_bear_touch",
-        "emaBullish": "ema_bullish",
-        "emaBearish": "ema_bearish",
-        "vwapUpper1": "vwap_upper1",
-        "vwapLower1": "vwap_lower1",
-        "vwapUpper2": "vwap_upper2",
-        "vwapLower2": "vwap_lower2",
-        "vwapDist": "vwap_dist",
-        "sdStdDev": "sd_std_dev",
-        "dtpPhaseBars": "dtp_phase_bars",
-    }
+    include_top_level_extra: bool = False,
+) -> dict[str, Any]:
     raw_extra = parse_object(payload.get("extra"))
     extra = {key: coerce_scalar(value) for key, value in raw_extra.items()}
-    for from_key, to_key in alias_map.items():
+
+    if include_top_level_extra:
+        for key, value in payload.items():
+            if key in TV_INDICATOR_TOP_LEVEL_FIELDS or value is None or key in extra:
+                continue
+            extra[key] = coerce_scalar(value)
+
+    for from_key, to_key in TV_INDICATOR_ALIAS_MAP.items():
         if extra.get(from_key) is not None and extra.get(to_key) is None:
             extra[to_key] = extra.get(from_key)
 
@@ -126,29 +152,20 @@ def upsert_tv_indicator(
     bar_time_ms = to_finite_number(payload.get("bar_time_ms") if payload.get("bar_time_ms") is not None else extra.get("bar_time_ms"))
     raw_bar_index = payload.get("bar_index") if payload.get("bar_index") is not None else extra.get("bar_index")
     bar_index = to_finite_number(raw_bar_index)
-
-    if not symbol:
-        return jsonify_fn({"ok": False, "error": "Missing required field: symbol", "type": "indicator"}), 400
-    if not interval:
-        return jsonify_fn({"ok": False, "error": "Missing required field: interval", "type": "indicator", "symbol": symbol}), 400
-    if bar_time_ms is None or bar_time_ms <= 0:
-        return (
-            jsonify_fn({"ok": False, "error": "Invalid bar_time_ms", "type": "indicator", "symbol": symbol, "interval": interval}),
-            400,
-        )
-
     broker_mode = request_broker_mode(payload)
     environment = request_market_data_mode(payload)
+
     extra.update(
         {
             "symbol": symbol,
             "interval": interval,
-            "bar_time_ms": int(bar_time_ms),
             "environment": environment,
             "broker_mode": broker_mode,
             "data_environment": environment,
         }
     )
+    if bar_time_ms is not None:
+        extra["bar_time_ms"] = int(bar_time_ms)
     if exchange:
         extra["exchange"] = exchange
     if script_tag:
@@ -161,9 +178,53 @@ def upsert_tv_indicator(
         extra["bar_index"] = int(bar_index)
     extra.setdefault("source", "tradingview")
 
+    return {
+        "symbol": symbol,
+        "interval": interval,
+        "exchange": exchange,
+        "script_tag": script_tag,
+        "us_time": us_time,
+        "cn_time": cn_time,
+        "bar_time_ms": bar_time_ms,
+        "bar_index": bar_index,
+        "environment": environment,
+        "extra": extra,
+    }
+
+
+def upsert_tv_indicator(
+    payload: dict[str, Any],
+    *,
+    pb: Any,
+    normalize_environment: Callable[[Any, str], str],
+    escape_filter_string: Callable[[Any], str],
+    jsonify_fn: Callable[[dict[str, Any]], Any],
+):
+    normalized = _normalize_tv_indicator_payload(payload)
+    symbol = normalized["symbol"]
+    interval = normalized["interval"]
+    bar_time_ms = normalized["bar_time_ms"]
+    bar_index = normalized["bar_index"]
+    exchange = normalized["exchange"]
+    script_tag = normalized["script_tag"]
+    us_time = normalized["us_time"]
+    cn_time = normalized["cn_time"]
+    environment = normalized["environment"]
+    extra = normalized["extra"]
+
+    if not symbol:
+        return jsonify_fn({"ok": False, "error": "Missing required field: symbol", "type": "indicator"}), 400
+    if not interval:
+        return jsonify_fn({"ok": False, "error": "Missing required field: interval", "type": "indicator", "symbol": symbol}), 400
+    if bar_time_ms is None or bar_time_ms <= 0:
+        return (
+            jsonify_fn({"ok": False, "error": "Invalid bar_time_ms", "type": "indicator", "symbol": symbol, "interval": interval}),
+            400,
+        )
+
     dedup_key = f"{int(bar_time_ms)}_{symbol}_{interval}"
     existing = pb.get_first_record(
-        "tv_indicators",
+        TV_INDICATOR_COLLECTION,
         filter=(
             f'bar_time_ms = {int(bar_time_ms)} && '
             f'symbol = "{escape_filter_string(symbol)}" && '
@@ -175,7 +236,7 @@ def upsert_tv_indicator(
         return jsonify_fn({"ok": True, "msg": "duplicate indicator, skipped", "key": dedup_key})
 
     record = pb.create_record(
-        "tv_indicators",
+        TV_INDICATOR_COLLECTION,
         {
             "symbol": symbol,
             "environment": environment,
@@ -190,6 +251,80 @@ def upsert_tv_indicator(
         },
     )
     return jsonify_fn({"ok": True, "type": "indicator", "key": dedup_key, "id": str(record.get("id") or "")})
+
+
+def upsert_tv_indicator_audit(
+    payload: dict[str, Any],
+    *,
+    pb: Any,
+    normalize_environment: Callable[[Any, str], str],
+    escape_filter_string: Callable[[Any], str],
+    jsonify_fn: Callable[[dict[str, Any]], Any],
+):
+    normalized = _normalize_tv_indicator_payload(payload, include_top_level_extra=True)
+    symbol = normalized["symbol"]
+    interval = normalized["interval"]
+    bar_time_ms = normalized["bar_time_ms"]
+    bar_index = normalized["bar_index"]
+    exchange = normalized["exchange"]
+    script_tag = normalized["script_tag"]
+    us_time = normalized["us_time"]
+    cn_time = normalized["cn_time"]
+    environment = normalized["environment"]
+    extra = normalized["extra"]
+
+    if not symbol:
+        return jsonify_fn({"ok": False, "error": "Missing required field: symbol", "type": "indicator_audit"}), 400
+    if not interval:
+        return jsonify_fn(
+            {"ok": False, "error": "Missing required field: interval", "type": "indicator_audit", "symbol": symbol}
+        ), 400
+    if bar_time_ms is None or bar_time_ms <= 0:
+        return (
+            jsonify_fn(
+                {
+                    "ok": False,
+                    "error": "Invalid bar_time_ms",
+                    "type": "indicator_audit",
+                    "symbol": symbol,
+                    "interval": interval,
+                }
+            ),
+            400,
+        )
+
+    dedup_key = f"{int(bar_time_ms)}_{symbol}_{interval}_{environment}_{script_tag}"
+    existing = pb.get_first_record(
+        TV_INDICATOR_AUDIT_COLLECTION,
+        filter=(
+            f'bar_time_ms = {int(bar_time_ms)} && '
+            f'symbol = "{escape_filter_string(symbol)}" && '
+            f'interval = "{escape_filter_string(interval)}" && '
+            f'environment = "{escape_filter_string(environment)}" && '
+            f'script_tag = "{escape_filter_string(script_tag)}"'
+        ),
+    )
+    if existing:
+        return jsonify_fn(
+            {"ok": True, "type": "indicator_audit", "msg": "duplicate indicator_audit, skipped", "key": dedup_key}
+        )
+
+    record = pb.create_record(
+        TV_INDICATOR_AUDIT_COLLECTION,
+        {
+            "symbol": symbol,
+            "environment": environment,
+            "exchange": exchange,
+            "interval": interval,
+            "script_tag": script_tag,
+            "us_time": us_time,
+            "cn_time": cn_time,
+            "bar_time_ms": int(bar_time_ms),
+            "bar_index": int(bar_index) if bar_index is not None else None,
+            "extra": extra,
+        },
+    )
+    return jsonify_fn({"ok": True, "type": "indicator_audit", "key": dedup_key, "id": str(record.get("id") or "")})
 
 
 def upsert_tv_signal(

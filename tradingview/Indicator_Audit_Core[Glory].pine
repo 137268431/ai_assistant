@@ -1,0 +1,1746 @@
+//@version=6
+indicator(title="Indicator Audit Core[Glory]", overlay=true, max_labels_count=500)
+// ============================================
+// 自包含指标审计核心 v1 — 零 input.source / 零跨周期拉取 / 零重绘
+// 所有子指标内置极简计算, 仅依赖原生 OHLCV
+// ============================================
+// ──────────────────────────────────────
+// ① EMA Trend Matrix
+// ──────────────────────────────────────
+emaSlopeLookback = input.int(12, title="斜率回看周期", group="① EMA Trend Matrix")
+emaMinAngle      = input.float(0.01, title="最小斜率(%)", step=0.01, group="① EMA Trend Matrix")
+emaMinSpacing    = input.float(0.01, title="EMA最小间距(%)", step=0.01, group="① EMA Trend Matrix")
+// ──────────────────────────────────────
+// ② Fractal Pivot Scanner
+// ──────────────────────────────────────
+fractalPeriod  = input.int(4, title="分形周期", minval=2, group="② Fractal Pivot")
+donchianPeriod = input.int(20, title="Donchian周期", minval=1, group="② Fractal Pivot")
+// ──────────────────────────────────────
+// ③ SD Channel
+// ──────────────────────────────────────
+sdLength     = input.int(128, title="线性回归周期", minval=1, group="③ SD Channel")
+sdMult1      = input.float(1.0, title="通道倍数1", step=0.5, group="③ SD Channel")
+sdMult2      = input.float(2.0, title="通道倍数2", step=0.5, group="③ SD Channel")
+sdMult3      = input.float(3.0, title="通道倍数3", step=0.5, group="③ SD Channel")
+sdMult4      = input.float(4.0, title="通道倍数4", step=0.5, group="③ SD Channel")
+sdSignalBand = input.int(3, title="MR触发档位", minval=1, maxval=4, group="③ SD Channel")
+sdFilterBand = input.int(2, title="过滤档位", minval=1, maxval=4, group="③ SD Channel")
+// ──────────────────────────────────────
+// ④ DTP
+// ──────────────────────────────────────
+dtpSmaLength        = input.int(100, title="SMA周期", group="④ DTP")
+dtpAtrLength        = input.int(200, title="ATR周期", group="④ DTP")
+dtpMult1            = input.float(3.0, title="ATR倍数1", step=0.5, group="④ DTP")
+dtpMult2            = input.float(6.0, title="ATR倍数2", step=0.5, group="④ DTP")
+dtpMult3            = input.float(9.0, title="ATR倍数3", step=0.5, group="④ DTP")
+dtpMult4            = input.float(12.0, title="ATR倍数4", step=0.5, group="④ DTP")
+dtpSignalBand       = input.int(4, title="MR触发档位", minval=1, maxval=4, group="④ DTP")
+dtpMomentumLookback = input.int(12, title="动量回看", group="④ DTP")
+dtpTrendThreshold   = input.float(0.1, title="趋势切换阈值", step=0.05, group="④ DTP")
+// ──────────────────────────────────────
+// ⑤ ATR 仓位
+// ──────────────────────────────────────
+atrLength     = input.int(10, title="ATR周期", minval=1, group="⑤ ATR仓位")
+atrSmoothing  = input.string("RMA", title="平滑方式", options=["RMA", "SMA", "EMA", "WMA"], group="⑤ ATR仓位")
+atrMultiplier = input.float(1.5, title="ATR倍数", step=0.1, group="⑤ ATR仓位")
+// ──────────────────────────────────────
+// ⑥ cRSI
+// ──────────────────────────────────────
+crsiDomcycle   = input.int(20, title="主周期", minval=10, group="⑥ cRSI")
+crsiVibration  = input.int(6, title="平滑振动", minval=1, group="⑥ cRSI")
+crsiLeveling   = input.float(10.0, title="动态带百分位", minval=1, maxval=49, step=1, group="⑥ cRSI")
+crsiDivLookback = input.int(4, title="Pivot回看", minval=1, maxval=20, group="⑥ cRSI")
+crsiDivMaxBars  = input.int(30, title="背离最大间距", minval=10, maxval=200, group="⑥ cRSI")
+// ──────────────────────────────────────
+// ⑦ OBV RSI
+// ──────────────────────────────────────
+obvRsiLen      = input.int(10, title="OBV RSI周期", minval=1, group="⑦ OBV RSI")
+obvDivLookback = input.int(4, title="Pivot回看", minval=1, maxval=20, group="⑦ OBV RSI")
+obvDivMaxBars  = input.int(30, title="背离最大间距", minval=10, maxval=200, group="⑦ OBV RSI")
+// ──────────────────────────────────────
+// ⑧ 信号过滤
+// ──────────────────────────────────────
+tradingSession  = input.session("0945-1530", title="交易时间窗口", group="⑧ 信号过滤", tooltip="报警发送时间窗口\\n美股: 0930-1600\\n全天: 0000-0000")
+divType         = input.string("both", title="背离类型", options=["hidden", "regular", "both"], group="⑧ 信号过滤")
+emaTouchType    = input.string("slow", title="EMA触碰类型", options=["fast", "slow", "both"], group="⑧ 信号过滤")
+dtpEarlyBars    = input.int(12, title="DTP早期K线数", minval=1, maxval=48, group="⑧ 信号过滤")
+dtpMatureBars   = input.int(48, title="DTP成熟K线数", minval=12, maxval=200, group="⑧ 信号过滤")
+// ──────────────────────────────────────
+// ⑧b EMA-DTP 联动过滤器
+// ──────────────────────────────────────
+enableAdvancedFilter    = input.bool(true, title="启用高级过滤", group="⑧ 信号过滤")
+emaStrengthLookback     = input.int(20, title="EMA强度检测周期", minval=5, maxval=50, group="⑧ 信号过滤")
+emaWeakThreshold        = input.float(0.005, title="EMA平缓阈值(%)", step=0.001, minval=0.001, maxval=0.05, group="⑧ 信号过滤")
+dtpSwitchLookback       = input.int(10, title="DTP切换检测周期", minval=5, maxval=50, group="⑧ 信号过滤")
+dtpMaxSwitches          = input.int(3, title="DTP允许最大切换次数", minval=1, maxval=10, group="⑧ 信号过滤")
+oscillationLookback     = input.int(20, title="震荡市检测周期", minval=5, maxval=50, group="⑧ 信号过滤")
+oscillationThreshold    = input.float(0.4, title="相反信号频率阈值", step=0.05, minval=0.1, maxval=0.9, group="⑧ 信号过滤")
+// ──────────────────────────────────────
+// ⑧c 标的排除列表 (SD触及不触发指标)
+// ──────────────────────────────────────
+excludeSymbols          = input.string("SPY,QQQ,VIX", title="排除的标的(逗号分隔)", tooltip="这些标地不触发MR窗口，但总是发送指标快照报警", group="⑧ 信号过滤")
+// ──────────────────────────────────────
+// ⑨ 仓位管理
+// ──────────────────────────────────────
+positionAmount  = input.float(10000, title="单笔金额($)", step=500, minval=100, group="⑨ 仓位管理")
+maxLossPerTrade = input.float(150, title="单笔最大亏损($)", step=10, minval=10, group="⑨ 仓位管理")
+entryAtrMult    = input.float(1.0, title="限价(×ATR)", step=0.5, minval=0.5, maxval=5.0, group="⑨ 仓位管理")
+slAtrMult       = input.float(2.0, title="止损(×ATR)", step=1.0, minval=1.0, maxval=12.0, group="⑨ 仓位管理")
+rrRatio         = input.float(1.5, title="盈亏比", step=0.1, minval=0.5, maxval=10.0, group="⑨ 仓位管理")
+// ──────────────────────────────────────
+// ⑩ 显示 & 报警 & 调试
+// ──────────────────────────────────────
+alertResonance  = input.bool(false, title="交易信号报警", group="⑩ 报警", tooltip="Audit脚本默认关闭交易信号报警；如需交易信号请使用 Signal Alert Core")
+alertIndicator  = input.bool(true, title="指标审计报警", group="⑩ 报警", tooltip="每根confirmed K线发送所有指标快照（写入技术指标表），用于后续分析")
+// 主标签
+showBuySell     = input.bool(true, title="BUY/SELL标签", group="⑩ 显示")
+showSdMrLabel   = input.bool(true, title="SD MR标签", group="⑩ 显示")
+// 信号组件标记 (用于排查)
+showEmaTouch    = input.bool(true, title="EMA触及标记", group="⑩ 显示", tooltip="显示EMA触碰位置(做多/做空)")
+showFractalMark = input.bool(true, title="分形标记", group="⑩ 显示", tooltip="显示向上/向下分形位置")
+showDivCrsiMark = input.bool(true, title="cRSI背离标记", group="⑩ 显示", tooltip="显示cRSI多头/空头背离位置")
+showDivObvMark  = input.bool(true, title="OBV背离标记", group="⑩ 显示", tooltip="显示OBV多头/空头背离位置")
+showDivHidMark  = input.bool(true, title="隐藏背离标记", group="⑩ 显示", tooltip="显示隐藏背离位置")
+// 调试日志
+enableLogSignal = input.bool(true, title="信号日志", group="⑩ 调试")
+enableLogFilter = input.bool(true, title="过滤日志", group="⑩ 调试")
+enableLogState  = input.bool(false, title="状态日志", group="⑩ 调试")
+// ══════════════════════════════════════
+// 内置子指标计算
+// ══════════════════════════════════════
+confirmed = barstate.isconfirmed
+// 日志确认条件（避免重复写 enableLogXXX and barstate.isconfirmed）
+logSignalConfirm  = enableLogSignal and barstate.isconfirmed
+logFilterConfirm  = enableLogFilter and barstate.isconfirmed
+logStateConfirm   = enableLogState and barstate.isconfirmed
+// 报警确认条件（避免重复写 alertXXX and barstate.isconfirmed）
+alertEmaConfirm   = alertResonance and barstate.isconfirmed
+
+// ══════════════════════════════════════
+// 日线涨幅数据（Audit 脚本不做跨周期拉取）
+// 用户按不同 timeframe 分别建 alert，这里仅用当前图表数据滚动记录日线收盘。
+// ══════════════════════════════════════
+bool _newDayForAudit = nz(ta.change(time("D"))) != 0
+var float dClose1 = na
+var float dClose2 = na
+var float dClose3 = na
+var float dClose4 = na
+var float dClose5 = na
+if _newDayForAudit and not na(close[1])
+    dClose5 := dClose4
+    dClose4 := dClose3
+    dClose3 := dClose2
+    dClose2 := dClose1
+    dClose1 := close[1]
+float dClose = close
+
+// 当日涨幅：昨收 → 当前（实时更新）
+float realDayChangePct = na(dClose) or na(dClose1) ? 0 : (dClose - dClose1) / dClose1 * 100
+// 昨日涨幅：前天收盘 → 昨天收盘
+float realPrevDayChangePct = na(dClose1) or na(dClose2) ? 0 : (dClose1 - dClose2) / dClose2 * 100
+// 7日涨幅：5个交易日前收盘 → 当前
+float realWeekChangePct = na(dClose) or na(dClose5) ? 0 : (dClose - dClose5) / dClose5 * 100
+
+// ══════════════════════════════════════
+// 标的排除检测
+// ══════════════════════════════════════
+// 检查当前标的是否在排除列表中
+bool isSymbolExcluded = false
+if excludeSymbols != ""
+    // 将排除列表按逗号分割并去除空格
+    string[] excludeList = str.split(excludeSymbols, ",")
+    string currentTicker = syminfo.ticker
+    for i = 0 to array.size(excludeList) - 1
+        string excludedItem = array.get(excludeList, i)
+        // 去除空格后比较（不区分大小写）
+        string trimmedItem = str.replace_all(excludedItem, " ", "")
+        if str.lower(trimmedItem) != "" and str.contains(str.lower(currentTicker), str.lower(trimmedItem))
+            isSymbolExcluded := true
+            break
+
+// ══════════════════════════════════════
+// 报警时间过滤
+// ══════════════════════════════════════
+// inAlertWindow: 是否在交易时间窗口内 (由 input.session 控制)
+// canAlert: 允许发送报警的条件 (当前仅受时间窗口限制)
+inAlertWindow = not na(time(timeframe.period, tradingSession, syminfo.timezone))
+canAlert = inAlertWindow
+
+// ══════════════════════════════════════
+// MR 窗口状态机 (var 声明)
+// ══════════════════════════════════════
+var bool sdLowerMrActive = false   // SD 触及下轨，MR 窗口激活
+var bool sdUpperMrActive = false   // SD 触及上轨，MR 窗口激活
+var bool sdLowerMrUsed   = false   // 下轨窗口已消费
+var bool sdUpperMrUsed   = false   // 上轨窗口已消费
+// 方式 2: EMA 触碰 + 分形 组合状态 (按窗口拆分，避免混淆)
+// 上轨窗口 (sdUpperMr): 均值回归做空 + 顺势做多(需EMA)
+var bool sdUpperBullTouchSeen   = false  // 上轨窗口: 做多EMA触及
+var bool sdUpperBullFractalSeen = false  // 上轨窗口: 做多fractal向上
+var bool sdUpperBearFractalSeen = false  // 上轨窗口: 做空fractal向下
+// 下轨窗口 (sdLowerMr): 均值回归做多 + 顺势做空(需EMA)
+var bool sdLowerBullFractalSeen = false  // 下轨窗口: 做多fractal向上
+var bool sdLowerBearTouchSeen   = false  // 下轨窗口: 做空EMA触及
+var string sdLowerBearTouchLine = ""     // 下轨窗口: 做空EMA触及的线(快线/慢线)
+var bool sdLowerBearFractalSeen = false  // 下轨窗口: 做空fractal向下
+// 上轨窗口 EMA 触及线信息
+var string sdUpperBullTouchLine = ""     // 上轨窗口: 做多EMA触及的线(快线/慢线)
+// 背离收集状态（分别追踪cRSI和OBV）
+var bool bullCrsiDivSeen = false
+var bool bearCrsiDivSeen = false
+var bool bullObvDivSeen = false
+var bool bearObvDivSeen = false
+// 背离收集时间追踪
+var int bullCrsiDivBar = na
+var int bearCrsiDivBar = na
+var int bullObvDivBar = na
+var int bearObvDivBar = na
+var int bullCrsiDivTime = na
+var int bearCrsiDivTime = na
+var int bullObvDivTime = na
+var int bearObvDivTime = na
+// 信号消费状态
+var bool buySignalConsumed = false  // 做多信号已消费（防止同窗口重复触发）
+var bool sellSignalConsumed = false  // 做空信号已消费（防止同窗口重复触发）
+// 日志暂存（保存信号触发时的背离来源，用于报警内容）
+var bool lastBullCrsiDiv = false
+var bool lastBullObvDiv = false
+var bool lastBearCrsiDiv = false
+var bool lastBearObvDiv = false
+// ──────────────────────────────────────
+// 指标快照报警状态追踪
+// ──────────────────────────────────────
+var bool indicatorAlertActive = false  // 信号触发后激活，每日日清时重置
+// SD触及标志（只要触及过就一直保持，到收盘前都发指标快照）
+var bool sdLowerTouched = false  // 下轨触及标志，每日日清时重置
+var bool sdUpperTouched = false  // 上轨触及标志，每日日清时重置
+// ──────────────────────────────────────
+// EMA-DTP 联动过滤器状态追踪
+// ──────────────────────────────────────
+var int dtpPrevDir = 0  // 前一根K线的 dtpDir
+var int dtpSwitchCount = 0  // 检测周期内的切换次数
+var int componentMismatchCount = 0  // 组件不同向的计数
+
+// ══════════════════════════════════════
+// 每日盘前清理窗口（检测新交易日开始）
+// 归类说明（清理范围）:
+// - MR窗口状态: sdLower/Upper MrActive/MrUsed
+// - EMA/分形组件: sdUpper/Lower Bull/Bear TouchSeen/FractalSeen
+// - 背离组件: bull/bear × cRSI/OBV 的 Seen/Bar/Time
+// - 信号消费: buySignalConsumed/sellSignalConsumed
+// - 盘前标记: dailyResetNow/lastTradingDay
+// ══════════════════════════════════════
+var int lastTradingDay = 0
+int currentDay = dayofmonth(time)
+bool isNewTradingDay = currentDay != lastTradingDay
+bool dailyResetNow = false  // 当前K线是否执行了清理
+if isNewTradingDay
+    // 清理所有MR窗口状态
+    sdLowerMrActive := false
+    sdUpperMrActive := false
+    sdLowerMrUsed := false
+    sdUpperMrUsed := false
+    sdLowerTouched := false
+    sdUpperTouched := false
+    // 清理EMA/分形组件
+    sdUpperBullTouchSeen := false
+    sdUpperBullTouchLine := ""
+    sdUpperBullFractalSeen := false
+    sdUpperBearFractalSeen := false
+    sdLowerBullFractalSeen := false
+    sdLowerBearTouchSeen := false
+    sdLowerBearTouchLine := ""
+    sdLowerBearFractalSeen := false
+    // 清理背离组件（cRSI/OBV）
+    bullCrsiDivSeen := false
+    bearCrsiDivSeen := false
+    bullObvDivSeen := false
+    bearObvDivSeen := false
+    bullCrsiDivBar := na
+    bearCrsiDivBar := na
+    bullObvDivBar := na
+    bearObvDivBar := na
+    bullCrsiDivTime := na
+    bearCrsiDivTime := na
+    bullObvDivTime := na
+    bearObvDivTime := na
+    // 清理信号消费状态
+    buySignalConsumed := false
+    sellSignalConsumed := false
+    // 清理指标快照报警状态
+    indicatorAlertActive := false
+    dailyResetNow := true
+    lastTradingDay := currentDay
+    if confirmed
+        log.warning("{0} [MR·DAILY·RESET] 新交易日开始，清理所有MR窗口和信号组件 | date={1}", syminfo.ticker, str.format_time(time, "yyyy-MM-dd", "America/New_York"))
+        
+// ── ① EMA Trend Matrix ──
+emaFast    = ta.ema(close, 20)
+emaSlow    = ta.ema(close, 50)
+emaTrend   = ta.ema(close, 100)
+emaLongest = ta.ema(close, 200)
+calcSlope(float src) =>
+    (src - src[emaSlopeLookback]) / src[emaSlopeLookback] * 100
+slopeSlow  = calcSlope(emaSlow)
+slopeTrend = calcSlope(emaTrend)
+slopeLongest = calcSlope(emaLongest)
+spacingFastSlow  = math.abs(emaFast - emaSlow) / emaSlow * 100
+spacingSlowTrend = math.abs(emaSlow - emaTrend) / emaTrend * 100
+spacingTrendLongest = math.abs(emaTrend - emaLongest) / emaLongest * 100
+emaBullish = emaFast > emaSlow and emaSlow > emaTrend and emaTrend > emaLongest and slopeSlow > emaMinAngle and slopeTrend > emaMinAngle and slopeLongest > emaMinAngle and spacingFastSlow > emaMinSpacing and spacingSlowTrend > emaMinSpacing and spacingTrendLongest > emaMinSpacing
+emaBearish = emaFast < emaSlow and emaSlow < emaTrend and emaTrend < emaLongest and slopeSlow < -emaMinAngle and slopeTrend < -emaMinAngle and slopeLongest < -emaMinAngle and spacingFastSlow > emaMinSpacing and spacingSlowTrend > emaMinSpacing and spacingTrendLongest > emaMinSpacing
+// 纯EMA排列状态（不包含slope和spacing校验，只检查Fast/Slow/Trend三条线）
+emaBullishAlignOnly = emaFast > emaSlow and emaSlow > emaTrend
+emaBearishAlignOnly = emaFast < emaSlow and emaSlow < emaTrend
+trendDir = emaBullish ? 1 : emaBearish ? -1 : 0
+// EMA触及信号 (检查价格从反方向触及EMA: 多头=从上方回调触及, 空头=从下方反弹触及)
+// 多头触及: 前一根K线收盘在EMA上方, 当前K线最低价触及或穿过EMA
+bullTouchFast = confirmed and emaBullishAlignOnly and spacingFastSlow > emaMinSpacing and spacingSlowTrend > emaMinSpacing and spacingTrendLongest > emaMinSpacing and close[1] > emaFast[1] and low <= emaFast
+bearTouchFast = confirmed and emaBearishAlignOnly and spacingFastSlow > emaMinSpacing and spacingSlowTrend > emaMinSpacing and spacingTrendLongest > emaMinSpacing and close[1] < emaFast[1] and high >= emaFast
+bullTouchSlow = confirmed and emaBullishAlignOnly and spacingFastSlow > emaMinSpacing and spacingSlowTrend > emaMinSpacing and spacingTrendLongest > emaMinSpacing and close[1] > emaSlow[1] and low <= emaSlow
+bearTouchSlow = confirmed and emaBearishAlignOnly and spacingFastSlow > emaMinSpacing and spacingSlowTrend > emaMinSpacing and spacingTrendLongest > emaMinSpacing and close[1] < emaSlow[1] and high >= emaSlow
+emaBullTouch = emaTouchType == "fast" ? bullTouchFast : emaTouchType == "slow" ? bullTouchSlow : bullTouchFast or bullTouchSlow
+emaBearTouch = emaTouchType == "fast" ? bearTouchFast : emaTouchType == "slow" ? bearTouchSlow : bearTouchFast or bearTouchSlow
+// EMA触及日志 (整合版: 显示当前价格触及情况 + 失败原因 + 缺少方向)
+// 检测当前K线触及情况 (真正的触及: 从反方向接近)
+bool touchBullFast = close[1] > emaFast[1] and low <= emaFast
+bool touchBearFast = close[1] < emaFast[1] and high >= emaFast
+bool touchBullSlow = close[1] > emaSlow[1] and low <= emaSlow
+bool touchBearSlow = close[1] < emaSlow[1] and high >= emaSlow
+bool spacingOk = spacingFastSlow > emaMinSpacing and spacingSlowTrend > emaMinSpacing and spacingTrendLongest > emaMinSpacing
+// 收集触及信息
+string touchInfo = ""
+if spacingOk
+    if touchBullFast or touchBullSlow
+        touchInfo := "BullTouch"
+        if touchBullFast and touchBullSlow
+            touchInfo := touchInfo + "(F+S)"
+        else if touchBullFast
+            touchInfo := touchInfo + "(F)"
+        else
+            touchInfo := touchInfo + "(S)"
+    if touchBearFast or touchBearSlow
+        touchInfo := touchInfo == "" ? "BearTouch" : touchInfo + ",BearTouch"
+        if touchBearFast and touchBearSlow
+            touchInfo := touchInfo + "(F+S)"
+        else if touchBearFast
+            touchInfo := touchInfo + "(F)"
+        else
+            touchInfo := touchInfo + "(S)"
+else
+    if touchBullFast or touchBullSlow or touchBearFast or touchBearSlow
+        touchInfo := "TouchButSpacingFail"
+// 检查多头失败原因
+string bullFail = ""
+if not emaBullish and (touchBullFast or touchBullSlow)
+    if not emaBullishAlignOnly
+        bullFail := "❌Align"
+    else if not (slopeSlow > emaMinAngle and slopeTrend > emaMinAngle)
+        bullFail := "❌Slope"
+    else if not (spacingFastSlow > emaMinSpacing and spacingSlowTrend > emaMinSpacing)
+        bullFail := "❌Space"
+// 检查空头失败原因
+string bearFail = ""
+if not emaBearish and (touchBearFast or touchBearSlow)
+    if not emaBearishAlignOnly
+        bearFail := "❌Align"
+    else if not (slopeSlow < -emaMinAngle and slopeTrend < -emaMinAngle)
+        bearFail := "❌Slope"
+    else if not (spacingFastSlow > emaMinSpacing and spacingSlowTrend > emaMinSpacing)
+        bearFail := "❌Space"
+// 输出整合日志 (WARNING级别, 所有EMA触及情况, 包含失败原因)
+string failSummary = ""
+if bullFail != "" or bearFail != ""
+    failSummary := " | Bull:"
+    if bullFail != ""
+        failSummary := failSummary + bullFail
+    else
+        failSummary := failSummary + "✅"
+    failSummary := failSummary + ",Bear:"
+    if bearFail != ""
+        failSummary := failSummary + bearFail
+    else
+        failSummary := failSummary + "✅"
+
+if logStateConfirm
+    if touchInfo != "" or bullFail != "" or bearFail != ""
+        log.warning("{0} [EMA] {1}{2} | price={3}, Fast={4}, Slow={5}, Trend={6}, Long={7}", syminfo.ticker, touchInfo, failSummary, str.tostring(close, "#.##"), str.tostring(emaFast, "#.##"), str.tostring(emaSlow, "#.##"), str.tostring(emaTrend, "#.##"), str.tostring(emaLongest, "#.##"))
+        
+// 详细失败原因 (仅当有失败时显示, 避免被上一条日志冲掉)
+if bullFail != ""
+    string bullDetail = ""
+    if not (emaFast > emaSlow and emaSlow > emaTrend)
+        bullDetail := "Align: " + (emaFast > emaSlow ? "F>S✅" : "F<S❌") + "/" + (emaSlow > emaTrend ? "S>T✅" : "S<T❌")
+    else if not (slopeSlow > emaMinAngle and slopeTrend > emaMinAngle)
+        bullDetail := "Slope: slow=" + str.tostring(slopeSlow, "#.##") + "%, trend=" + str.tostring(slopeTrend, "#.##") + "% (需>=" + str.tostring(emaMinAngle, "#.##") + "%)"
+    else
+        bullDetail := "Space: FS=" + str.tostring(spacingFastSlow, "#.##") + "% , ST=" + str.tostring(spacingSlowTrend, "#.##") + "% (需>=" + str.tostring(emaMinSpacing, "#.##") + "%)"
+    log.warning("{0} [EMA·BULL·FAIL] {1}", syminfo.ticker, bullDetail)
+if bearFail != ""
+    string bearDetail = ""
+    if not (emaFast < emaSlow and emaSlow < emaTrend)
+        bearDetail := "Align: " + (emaFast < emaSlow ? "F<S✅" : "F>S❌") + "/" + (emaSlow < emaTrend ? "S<T✅" : "S>T❌")
+    else if not (slopeSlow < -emaMinAngle and slopeTrend < -emaMinAngle)
+        bearDetail := "Slope: slow=" + str.tostring(slopeSlow, "#.##") + "%, trend=" + str.tostring(slopeTrend, "#.##") + "% (需<=" + str.tostring(-emaMinAngle, "#.##") + "%)"
+    else
+        bearDetail := "Space: FS=" + str.tostring(spacingFastSlow, "#.##") + "% , ST=" + str.tostring(spacingSlowTrend, "#.##") + "% (需>=" + str.tostring(emaMinSpacing, "#.##") + "%)"
+    log.warning("{0} [EMA·BEAR·FAIL] {1}", syminfo.ticker, bearDetail)
+// 简化的FILTER日志: 仅在触及但未触发时, 显示失败的组件 (避免重复检查)
+if logFilterConfirm
+    // 检查前一根K线的触及情况 (已触发则忽略)
+    bool prevBullTouch = emaBullTouch[1] and not emaBullTouch
+    bool prevBearTouch = emaBearTouch[1] and not emaBearTouch
+    if prevBullTouch or prevBearTouch
+        string logTouchType = prevBullTouch ? "BULL" : "BEAR"
+        string logFail = prevBullTouch ? bullFail[1] : bearFail[1]
+        log.warning("{0} [FILTER·EMA {1} TOUCH] 触及但未触发: {2}", syminfo.ticker, logTouchType, logFail == "" ? "其他过滤" : logFail)
+            
+// ── ② Fractal Pivot Scanner ──
+// Williams分形: 左右各fractalPeriod根K线确认
+bool upFlagDown = true
+bool upFlagUp0  = true
+bool upFlagUp1  = true
+bool upFlagUp2  = true
+bool upFlagUp3  = true
+bool upFlagUp4  = true
+for i = 1 to fractalPeriod
+    upFlagDown := upFlagDown and (high[fractalPeriod - i] < high[fractalPeriod])
+    upFlagUp0  := upFlagUp0  and (high[fractalPeriod + i] < high[fractalPeriod])
+    upFlagUp1  := upFlagUp1  and (high[fractalPeriod + 1] <= high[fractalPeriod] and high[fractalPeriod + i + 1] < high[fractalPeriod])
+    upFlagUp2  := upFlagUp2  and (high[fractalPeriod + 1] <= high[fractalPeriod] and high[fractalPeriod + 2] <= high[fractalPeriod] and high[fractalPeriod + i + 2] < high[fractalPeriod])
+    upFlagUp3  := upFlagUp3  and (high[fractalPeriod + 1] <= high[fractalPeriod] and high[fractalPeriod + 2] <= high[fractalPeriod] and high[fractalPeriod + 3] <= high[fractalPeriod] and high[fractalPeriod + i + 3] < high[fractalPeriod])
+    upFlagUp4  := upFlagUp4  and (high[fractalPeriod + 1] <= high[fractalPeriod] and high[fractalPeriod + 2] <= high[fractalPeriod] and high[fractalPeriod + 3] <= high[fractalPeriod] and high[fractalPeriod + 4] <= high[fractalPeriod] and high[fractalPeriod + i + 4] < high[fractalPeriod])
+upFractal = upFlagDown and (upFlagUp0 or upFlagUp1 or upFlagUp2 or upFlagUp3 or upFlagUp4)
+bool dnFlagDown = true
+bool dnFlagUp0  = true
+bool dnFlagUp1  = true
+bool dnFlagUp2  = true
+bool dnFlagUp3  = true
+bool dnFlagUp4  = true
+for i = 1 to fractalPeriod
+    dnFlagDown := dnFlagDown and (low[fractalPeriod - i] > low[fractalPeriod])
+    dnFlagUp0  := dnFlagUp0  and (low[fractalPeriod + i] > low[fractalPeriod])
+    dnFlagUp1  := dnFlagUp1  and (low[fractalPeriod + 1] >= low[fractalPeriod] and low[fractalPeriod + i + 1] > low[fractalPeriod])
+    dnFlagUp2  := dnFlagUp2  and (low[fractalPeriod + 1] >= low[fractalPeriod] and low[fractalPeriod + 2] >= low[fractalPeriod] and low[fractalPeriod + i + 2] > low[fractalPeriod])
+    dnFlagUp3  := dnFlagUp3  and (low[fractalPeriod + 1] >= low[fractalPeriod] and low[fractalPeriod + 2] >= low[fractalPeriod] and low[fractalPeriod + 3] >= low[fractalPeriod] and low[fractalPeriod + i + 3] > low[fractalPeriod])
+    dnFlagUp4  := dnFlagUp4  and (low[fractalPeriod + 1] >= low[fractalPeriod] and low[fractalPeriod + 2] >= low[fractalPeriod] and low[fractalPeriod + 3] >= low[fractalPeriod] and low[fractalPeriod + 4] >= low[fractalPeriod] and low[fractalPeriod + i + 4] > low[fractalPeriod])
+downFractal = dnFlagDown and (dnFlagUp0 or dnFlagUp1 or dnFlagUp2 or dnFlagUp3 or dnFlagUp4)
+// Donchian过滤
+upperDonch = ta.highest(high, donchianPeriod)
+lowerDonch = ta.lowest(low, donchianPeriod)
+baseline   = (upperDonch + lowerDonch) / 2
+// 上分形=压力=空头信号, 下分形=支撑=多头信号
+// 分形有fractalPeriod根延迟, 当前bar检测到的是[fractalPeriod]位置的分形
+fractalBear = upFractal and (high[fractalPeriod] > baseline[fractalPeriod]) and confirmed
+fractalBull = downFractal and (low[fractalPeriod] < baseline[fractalPeriod]) and confirmed
+
+// ── ③ SD Channel ──
+rtReg    = ta.linreg(close, sdLength, 0)
+rtStdDev = ta.stdev(close, sdLength)
+sdSignalMult = sdSignalBand == 1 ? sdMult1 : sdSignalBand == 2 ? sdMult2 : sdSignalBand == 3 ? sdMult3 : sdMult4
+sdFilterMult = sdFilterBand == 1 ? sdMult1 : sdFilterBand == 2 ? sdMult2 : sdFilterBand == 3 ? sdMult3 : sdMult4
+sdLower = confirmed and low <= rtReg - sdSignalMult * rtStdDev     // 触及下轨 = 超卖
+sdUpper = confirmed and high >= rtReg + sdSignalMult * rtStdDev     // 触及上轨 = 超买
+rtFilterUpper = rtReg + sdFilterMult * rtStdDev
+rtFilterLower = rtReg - sdFilterMult * rtStdDev
+sdZone = confirmed ? (close > rtFilterUpper ? 1 : close < rtFilterLower ? -1 : 0) : na
+rtSlope = ta.linreg(close, sdLength, 0) - ta.linreg(close, sdLength, 1)
+sdTrend = rtSlope > 0 ? 1 : rtSlope < 0 ? -1 : 0
+
+// ── ④ DTP ──
+dtpAvg = ta.sma(close, dtpSmaLength)
+dtpAtr = ta.atr(dtpAtrLength)
+dtpBandMult = dtpSignalBand == 1 ? dtpMult1 : dtpSignalBand == 2 ? dtpMult2 : dtpSignalBand == 3 ? dtpMult3 : dtpMult4
+dtpMrBull = low <= dtpAvg - dtpBandMult * dtpAtr
+dtpMrBear = high >= dtpAvg + dtpBandMult * dtpAtr
+// 动量趋势状态机
+dtpAvgDiff = dtpAvg - dtpAvg[dtpMomentumLookback]
+dtpNorm = dtpAvgDiff / ta.percentile_linear_interpolation(dtpAvgDiff, 500, 100)
+// 提前计算 crossover/crossunder (避免警告)
+dtpNormCrossOver = ta.crossover(dtpNorm, dtpTrendThreshold)
+dtpNormCrossUnder = ta.crossunder(dtpNorm, -dtpTrendThreshold)
+var bool dtpTrendInit = false
+var bool dtpTrend = false
+var int dtpStartIdx = 0
+if confirmed
+    if dtpNormCrossOver and not dtpTrend
+        dtpTrend := true
+        dtpTrendInit := true
+        dtpStartIdx := bar_index
+    if dtpNormCrossUnder and dtpTrend
+        dtpTrend := false
+        dtpTrendInit := true
+        dtpStartIdx := bar_index
+dtpBullDir = dtpTrendInit and dtpTrend and close > dtpAvg
+dtpBearDir = dtpTrendInit and not dtpTrend and close < dtpAvg
+dtpDir = dtpBullDir ? 1 : dtpBearDir ? -1 : 0
+// DTP 趋势阶段追踪
+var int dtpPhaseBars = 0
+if dtpDir != 0 and dtpDir != dtpPrevDir
+    dtpPrevDir := dtpDir
+    dtpPhaseBars := 0
+if dtpDir != 0
+    dtpPhaseBars += 1
+bool sdConfirms = (dtpDir == 1 and sdTrend == 1) or (dtpDir == -1 and sdTrend == -1)
+string dtpPhase = dtpDir == 0 ? "neutral" : dtpPhaseBars <= dtpEarlyBars ? "early" : dtpPhaseBars > dtpMatureBars and sdConfirms ? "mature" : sdConfirms ? "confirmed" : "weakening"
+
+// ── ⑤ ATR 仓位 ──
+maFunc(float source, int len) =>
+    switch atrSmoothing
+        "RMA" => ta.rma(source, len)
+        "SMA" => ta.sma(source, len)
+        "EMA" => ta.ema(source, len)
+        "WMA" => ta.wma(source, len)
+float atrVal = maFunc(ta.tr(true), atrLength) * atrMultiplier
+float atrRaw = atrVal / atrMultiplier  // 原始ATR（无乘数），纯市场波动
+float atrPct = close > 0 ? atrRaw / close * 100 : 0.0  // ATR波动率百分比
+
+// ── ⑤b VWAP ──
+float vwapValue  = ta.vwap(hlc3)
+float vwapDev    = ta.stdev(hlc3, 20)
+float vwapUpper1 = vwapValue + 1.0 * vwapDev
+float vwapLower1 = vwapValue - 1.0 * vwapDev
+float vwapUpper2 = vwapValue + 2.0 * vwapDev
+float vwapLower2 = vwapValue - 2.0 * vwapDev
+float vwapDist   = (close - vwapValue) / vwapValue * 100  // 价格相对VWAP偏离百分比（正=高于，负=低于）
+bool  vwapBullish = close > vwapValue
+bool  vwapBearish = close < vwapValue
+
+// ── ⑥ cRSI ──
+crsiCyclelen     = crsiDomcycle / 2
+crsiCyclicmemory = crsiDomcycle * 2
+crsiTorque       = 2.0 / (crsiVibration + 1)
+crsiPhasingLag   = (crsiVibration - 1) / 2.0
+crsiUp   = ta.rma(math.max(ta.change(close), 0), crsiCyclelen)
+crsiDown = ta.rma(-math.min(ta.change(close), 0), crsiCyclelen)
+crsiRaw  = crsiDown == 0 ? 100 : crsiUp == 0 ? 0 : 100 - 100 / (1 + crsiUp / crsiDown)
+var float crsi = 0.0
+crsi := crsiTorque * (2 * crsiRaw - crsiRaw[math.round(crsiPhasingLag)]) + (1 - crsiTorque) * nz(crsi[1])
+// 动态带 (用内置percentile替代O(100×40)循环)
+float crsiUb = ta.percentile_linear_interpolation(crsi, crsiCyclicmemory, 100 - crsiLeveling)
+float crsiDb = ta.percentile_linear_interpolation(crsi, crsiCyclicmemory, crsiLeveling)
+crsiOB = crsi > crsiUb
+crsiOS = crsi < crsiDb
+
+// ── ⑦ OBV RSI ──
+srcChange = ta.change(close)
+obv = ta.cum(srcChange > 0 ? volume : srcChange < 0 ? -volume : 0)
+obvOsc = ta.rsi(obv, obvRsiLen)
+
+// ══════════════════════════════════════
+// 背离检测统一框架 — cRSI部分
+// ══════════════════════════════════════
+// 状态变量组织结构:
+// 1. Strict模式 (价格pivot + 指标pivot): prevCrsiPh/PlPrice/Rsi/Bar
+// 2. Sensitive模式 (价格pivot + 附近极值): prevCrsiPh/PlPriceW/RsiW/BarW
+// 3. 检测结果 (每根K线重置):
+//    - strict: crsiBearDivSignal/crsiBullDivSignal/crsiHidBearSignal/crsiHidBullSignal
+//    - sensitive: crsiWideBearDiv/crsiWideBullDiv/crsiWideHidBear/crsiWideHidBull
+
+// --- cRSI 背离状态追踪 ---
+// Strict模式: 上一个价格高点pivot及其对应的cRSI值
+var float prevCrsiPhPrice = na  // cRSI strict 高点价格
+var float prevCrsiPhRsi   = na  // cRSI strict 高点RSI值
+var int   prevCrsiPhBar   = na  // cRSI strict 高点Bar索引
+// Strict模式: 上一个价格低点pivot及其对应的cRSI值
+var float prevCrsiPlPrice = na  // cRSI strict 低点价格
+var float prevCrsiPlRsi   = na  // cRSI strict 低点RSI值
+var int   prevCrsiPlBar   = na  // cRSI strict 低点Bar索引
+// Sensitive模式: 上一个价格高点pivot及其附近的cRSI极值 (不需要cRSI也形成pivot)
+var float prevCrsiPhPriceW = na  // cRSI wide 高点价格
+var float prevCrsiPhRsiW   = na  // cRSI wide 高点附近RSI极值
+var int   prevCrsiPhBarW   = na  // cRSI wide 高点Bar索引
+// Sensitive模式: 上一个价格低点pivot及其附近的cRSI极值
+var float prevCrsiPlPriceW = na  // cRSI wide 低点价格
+var float prevCrsiPlRsiW   = na  // cRSI wide 低点附近RSI极值
+var int   prevCrsiPlBarW   = na  // cRSI wide 低点Bar索引
+
+// --- cRSI 背离检测结果 (每根K线重置) ---
+// Strict模式检测结果 (需要indicator也形成pivot)
+var bool crsiBearDivSignal = false  // cRSI strict 空头背离(价格新高,指标新低)
+var bool crsiBullDivSignal = false  // cRSI strict 多头背离(价格新低,指标新高)
+var bool crsiHidBearSignal = false  // cRSI strict 隐蔽空头背离(价格新低,指标新高)
+var bool crsiHidBullSignal = false  // cRSI strict 隐蔽多头背离(价格新高,指标新低)
+// Sensitive模式检测结果 (只需价格pivot,取附近极值)
+var bool crsiWideBearDiv = false  // cRSI wide 空头背离
+var bool crsiWideBullDiv = false  // cRSI wide 多头背离
+var bool crsiWideHidBear = false  // cRSI wide 隐蔽空头背离
+var bool crsiWideHidBull = false  // cRSI wide 隐蔽多头背离
+
+// 临时变量重置 (每根K线开头将检测结果清零)
+crsiBearDivSignal := false
+crsiBullDivSignal := false
+crsiHidBearSignal := false
+crsiHidBullSignal := false
+crsiWideBearDiv := false
+crsiWideBullDiv := false
+crsiWideHidBear := false
+crsiWideHidBull := false
+// --- cRSI Pivot 计算 ---
+float crsiPhPrice = ta.pivothigh(high, crsiDivLookback, crsiDivLookback)
+float crsiPlPrice = ta.pivotlow(low, crsiDivLookback, crsiDivLookback)
+float crsiPhRsi   = ta.pivothigh(crsi, crsiDivLookback, crsiDivLookback)
+float crsiPlRsi   = ta.pivotlow(crsi, crsiDivLookback, crsiDivLookback)
+int crsiPivotOffset = crsiDivLookback
+int crsiPivotWin  = crsiDivLookback
+float crsiPhRsiW  = not na(crsiPhPrice) ? ta.highest(crsi, crsiPivotWin * 2 + 1)[crsiPivotOffset] : na
+float crsiPlRsiW  = not na(crsiPlPrice) ? ta.lowest(crsi, crsiPivotWin * 2 + 1)[crsiPivotOffset] : na
+// Strict: pivot高点 (空头背离)
+if not na(crsiPhPrice) and not na(crsiPhRsi) and confirmed
+    int currBar = bar_index - crsiPivotOffset
+    if not na(prevCrsiPhPrice) and not na(prevCrsiPhBar)
+        int barDist = currBar - prevCrsiPhBar
+        if barDist > 0 and barDist <= crsiDivMaxBars
+            if crsiPhPrice > prevCrsiPhPrice and crsiPhRsi < prevCrsiPhRsi
+                crsiBearDivSignal := true
+            if crsiPhPrice < prevCrsiPhPrice and crsiPhRsi > prevCrsiPhRsi
+                crsiHidBearSignal := true
+    prevCrsiPhPrice := crsiPhPrice
+    prevCrsiPhRsi   := crsiPhRsi
+    prevCrsiPhBar   := bar_index - crsiPivotOffset
+// Strict: pivot低点 (多头背离)
+if not na(crsiPlPrice) and not na(crsiPlRsi) and confirmed
+    int currBar = bar_index - crsiPivotOffset
+    if not na(prevCrsiPlPrice) and not na(prevCrsiPlBar)
+        int barDist = currBar - prevCrsiPlBar
+        if barDist > 0 and barDist <= crsiDivMaxBars
+            if crsiPlPrice < prevCrsiPlPrice and crsiPlRsi > prevCrsiPlRsi
+                crsiBullDivSignal := true
+            if crsiPlPrice > prevCrsiPlPrice and crsiPlRsi < prevCrsiPlRsi
+                crsiHidBullSignal := true
+    prevCrsiPlPrice := crsiPlPrice
+    prevCrsiPlRsi   := crsiPlRsi
+    prevCrsiPlBar   := bar_index - crsiPivotOffset
+// Sensitive: pivot高点 (空头背离)
+// 调试: 每根bar输出crsi值和pivot检测结果
+if logStateConfirm
+    log.info("[CORE·cRSI] bar={0}, crsi={1}/{2}, ph={3}, pl={4}, high={5}", str.tostring(bar_index, "#"), str.tostring(crsi, "#.##"), str.tostring(crsiRaw, "#.##"), str.tostring(crsiPhPrice, "#.##"), str.tostring(crsiPlPrice, "#.##"), str.tostring(high, "#.##") + "/" + str.tostring(high[crsiDivLookback], "#.##"))
+if not na(crsiPhPrice) and confirmed
+    int currBar = bar_index - crsiPivotOffset
+    float currRsi = not na(crsiPhRsiW) ? crsiPhRsiW : crsi[crsiPivotOffset]
+    if logStateConfirm
+        log.info("[CORE·WIDE·PH] bar={0}, ph={1}, rsi={2}, prev={3}/{4}, dist={5}", str.tostring(currBar, "#"), str.tostring(crsiPhPrice, "#.##"), str.tostring(currRsi, "#.##"), str.tostring(prevCrsiPhPriceW, "#.##"), str.tostring(prevCrsiPhRsiW, "#.##"), str.tostring(prevCrsiPhBarW, "#") + "/" + str.tostring(not na(prevCrsiPhBarW) ? currBar - prevCrsiPhBarW : -1))
+    if not na(prevCrsiPhPriceW) and not na(prevCrsiPhBarW)
+        int barDist = currBar - prevCrsiPhBarW
+        if barDist > 0 and barDist <= crsiDivMaxBars
+            if crsiPhPrice > prevCrsiPhPriceW and currRsi < prevCrsiPhRsiW
+                crsiWideBearDiv := true
+                if logStateConfirm
+                    log.warning("[CORE·WIDE] cRSI·wide↓ triggered: price {0}>{1}, rsi {2}<{3}", str.tostring(crsiPhPrice, "#.##"), str.tostring(prevCrsiPhPriceW, "#.##"), str.tostring(currRsi, "#.##"), str.tostring(prevCrsiPhRsiW, "#.##"))
+            if crsiPhPrice < prevCrsiPhPriceW and currRsi > prevCrsiPhRsiW
+                crsiWideHidBear := true
+                if logStateConfirm
+                    log.warning("[CORE·WIDE] cRSI·wide↓hid triggered: price {0}<{1}, rsi {2}>{3}", str.tostring(crsiPhPrice, "#.##"), str.tostring(prevCrsiPhPriceW, "#.##"), str.tostring(currRsi, "#.##"), str.tostring(prevCrsiPhRsiW, "#.##"))
+    prevCrsiPhPriceW := crsiPhPrice
+    prevCrsiPhRsiW   := currRsi
+    prevCrsiPhBarW   := currBar
+// Sensitive: pivot低点 (多头背离)
+if not na(crsiPlPrice) and confirmed
+    int currBar = bar_index - crsiPivotOffset
+    float currRsi = not na(crsiPlRsiW) ? crsiPlRsiW : crsi[crsiPivotOffset]
+    if logStateConfirm
+        log.info("[CORE·WIDE·PL] bar={0}, pl={1}, rsi={2}, prev={3}/{4}, dist={5}", str.tostring(currBar, "#"), str.tostring(crsiPlPrice, "#.##"), str.tostring(currRsi, "#.##"), str.tostring(prevCrsiPlPriceW, "#.##"), str.tostring(prevCrsiPlRsiW, "#.##"), str.tostring(prevCrsiPlBarW, "#") + "/" + str.tostring(not na(prevCrsiPlBarW) ? currBar - prevCrsiPlBarW : -1))
+    if not na(prevCrsiPlPriceW) and not na(prevCrsiPlBarW)
+        int barDist = currBar - prevCrsiPlBarW
+        if barDist > 0 and barDist <= crsiDivMaxBars
+            if crsiPlPrice < prevCrsiPlPriceW and currRsi > prevCrsiPlRsiW
+                crsiWideBullDiv := true
+                if logStateConfirm
+                    log.warning("[CORE·WIDE] cRSI·wide↑ triggered: price {0}<{1}, rsi {2}>{3}", str.tostring(crsiPlPrice, "#.##"), str.tostring(prevCrsiPlPriceW, "#.##"), str.tostring(currRsi, "#.##"), str.tostring(prevCrsiPlRsiW, "#.##"))
+            if crsiPlPrice > prevCrsiPlPriceW and currRsi < prevCrsiPlRsiW
+                crsiWideHidBull := true
+                if logStateConfirm
+                    log.warning("[CORE·WIDE] cRSI·wide↑hid triggered: price {0}>{1}, rsi {2}<{3}", str.tostring(crsiPlPrice, "#.##"), str.tostring(prevCrsiPlPriceW, "#.##"), str.tostring(currRsi, "#.##"), str.tostring(prevCrsiPlRsiW, "#.##"))
+    prevCrsiPlPriceW := crsiPlPrice
+    prevCrsiPlRsiW   := currRsi
+    prevCrsiPlBarW   := currBar
+// 合并 strict + sensitive
+crsiBullDiv = crsiBullDivSignal or crsiWideBullDiv
+crsiBearDiv = crsiBearDivSignal or crsiWideBearDiv
+crsiHidBull = crsiHidBullSignal or crsiWideHidBull
+crsiHidBear = crsiHidBearSignal or crsiWideHidBear
+// --- OBV RSI 背离 ---
+float obvPhPrice = ta.pivothigh(high, obvDivLookback, obvDivLookback)
+float obvPlPrice = ta.pivotlow(low, obvDivLookback, obvDivLookback)
+float obvPhOsc   = ta.pivothigh(obvOsc, obvDivLookback, obvDivLookback)
+float obvPlOsc   = ta.pivotlow(obvOsc, obvDivLookback, obvDivLookback)
+int obvPivotOffset = obvDivLookback
+// Sensitive: 只需价格pivot, 取附近OBV RSI极值 (修正重绘: 使用 [obvPivotOffset] 延迟)
+int obvPivotWin  = obvDivLookback
+float obvPhOscW  = not na(obvPhPrice) ? ta.highest(obvOsc, obvPivotWin * 2 + 1)[obvPivotOffset] : na
+float obvPlOscW  = not na(obvPlPrice) ? ta.lowest(obvOsc, obvPivotWin * 2 + 1)[obvPivotOffset] : na
+// ══════════════════════════════════════
+// 背离检测统一框架 — OBV RSI部分
+// ══════════════════════════════════════
+// 状态变量组织结构:
+// 1. Strict模式 (价格pivot + 指标pivot): prevObvPh/PlPrice/Osc/Bar
+// 2. Sensitive模式 (价格pivot + 附近极值): prevObvPh/PlPriceW/OscW/BarW
+// 3. 检测结果 (每根K线重置):
+//    - strict: obvRegBearDiv/obvRegBullDiv/obvHidBearDiv/obvHidBullDiv
+//    - sensitive: obvWideBearDiv/obvWideBullDiv/obvWideHidBear/obvWideHidBull
+
+// --- OBV RSI 背离状态追踪 ---
+// Strict模式: 上一个价格高点pivot及其对应的OBV RSI值
+var float prevObvPhPrice = na  // OBV strict 高点价格
+var float prevObvPhOsc   = na  // OBV strict 高点OSCIATOR值
+var int   prevObvPhBar   = na  // OBV strict 高点Bar索引
+// Strict模式: 上一个价格低点pivot及其对应的OBV RSI值
+var float prevObvPlPrice = na  // OBV strict 低点价格
+var float prevObvPlOsc   = na  // OBV strict 低点OSCIATOR值
+var int   prevObvPlBar   = na  // OBV strict 低点Bar索引
+// Sensitive模式: 上一个价格高点pivot及其附近的OBV RSI极值
+var float prevObvPhPriceW = na  // OBV wide 高点价格
+var float prevObvPhOscW   = na  // OBV wide 高点附近OSCIATOR极值
+var int   prevObvPhBarW   = na  // OBV wide 高点Bar索引
+// Sensitive模式: 上一个价格低点pivot及其附近的OBV RSI极值
+var float prevObvPlPriceW = na  // OBV wide 低点价格
+var float prevObvPlOscW   = na  // OBV wide 低点附近OSCIATOR极值
+var int   prevObvPlBarW   = na  // OBV wide 低点Bar索引
+
+// --- OBV RSI 背离检测结果 (每根K线重置) ---
+// Strict模式检测结果 (需要indicator也形成pivot)
+var bool obvRegBearDiv = false  // OBV strict 空头背离(价格新高,指标新低)
+var bool obvRegBullDiv = false  // OBV strict 多头背离(价格新低,指标新高)
+var bool obvHidBearDiv = false  // OBV strict 隐蔽空头背离(价格新低,指标新高)
+var bool obvHidBullDiv = false  // OBV strict 隐蔽多头背离(价格新高,指标新低)
+// Sensitive模式检测结果 (只需价格pivot,取附近极值)
+var bool obvWideBearDiv = false  // OBV wide 空头背离
+var bool obvWideBullDiv = false  // OBV wide 多头背离
+var bool obvWideHidBear = false  // OBV wide 隐蔽空头背离
+var bool obvWideHidBull = false  // OBV wide 隐蔽多头背离
+
+// 临时变量重置 (每根K线开头将检测结果清零)
+obvRegBearDiv := false
+obvRegBullDiv := false
+obvHidBearDiv := false
+obvHidBullDiv := false
+obvWideBearDiv := false
+obvWideBullDiv := false
+obvWideHidBear := false
+obvWideHidBull := false
+// Strict: pivot高点 (空头背离)
+if not na(obvPhPrice) and not na(obvPhOsc) and confirmed
+    int currBar = bar_index - obvPivotOffset
+    if not na(prevObvPhPrice) and not na(prevObvPhBar)
+        int barDist = currBar - prevObvPhBar
+        if barDist > 0 and barDist <= obvDivMaxBars
+            if obvPhPrice > prevObvPhPrice and obvPhOsc < prevObvPhOsc
+                obvRegBearDiv := true
+            if obvPhPrice < prevObvPhPrice and obvPhOsc > prevObvPhOsc
+                obvHidBearDiv := true
+    prevObvPhPrice := obvPhPrice
+    prevObvPhOsc   := obvPhOsc
+    prevObvPhBar   := bar_index - obvPivotOffset
+// Strict: pivot低点 (多头背离)
+if not na(obvPlPrice) and not na(obvPlOsc) and confirmed
+    int currBar = bar_index - obvPivotOffset
+    if not na(prevObvPlPrice) and not na(prevObvPlBar)
+        int barDist = currBar - prevObvPlBar
+        if barDist > 0 and barDist <= obvDivMaxBars
+            if obvPlPrice < prevObvPlPrice and obvPlOsc > prevObvPlOsc
+                obvRegBullDiv := true
+            if obvPlPrice > prevObvPlPrice and obvPlOsc < prevObvPlOsc
+                obvHidBullDiv := true
+    prevObvPlPrice := obvPlPrice
+    prevObvPlOsc   := obvPlOsc
+    prevObvPlBar   := bar_index - obvPivotOffset
+// Sensitive: pivot高点 (空头背离)
+if not na(obvPhPrice) and confirmed
+    int currBar = bar_index - obvPivotOffset
+    float currOsc = not na(obvPhOscW) ? obvPhOscW : obvOsc[obvPivotOffset]
+    if not na(prevObvPhPriceW) and not na(prevObvPhBarW)
+        int barDist = currBar - prevObvPhBarW
+        if barDist > 0 and barDist <= obvDivMaxBars
+            if obvPhPrice > prevObvPhPriceW and currOsc < prevObvPhOscW
+                obvWideBearDiv := true
+                if logStateConfirm
+                    log.warning("[CORE·WIDE] OBV·wide↓ triggered: price {0}>{1}, osc {2}<{3}", str.tostring(obvPhPrice, "#.##"), str.tostring(prevObvPhPriceW, "#.##"), str.tostring(currOsc, "#.##"), str.tostring(prevObvPhOscW, "#.##"))
+            if obvPhPrice < prevObvPhPriceW and currOsc > prevObvPhOscW
+                obvWideHidBear := true
+                if logStateConfirm
+                    log.warning("[CORE·WIDE] OBV·wide↓hid triggered: price {0}<{1}, osc {2}>{3}", str.tostring(obvPhPrice, "#.##"), str.tostring(prevObvPhPriceW, "#.##"), str.tostring(currOsc, "#.##"), str.tostring(prevObvPhOscW, "#.##"))
+    prevObvPhPriceW := obvPhPrice
+    prevObvPhOscW   := currOsc
+    prevObvPhBarW   := currBar
+// Sensitive: pivot低点 (多头背离)
+if not na(obvPlPrice) and confirmed
+    int currBar = bar_index - obvPivotOffset
+    float currOsc = not na(obvPlOscW) ? obvPlOscW : obvOsc[obvPivotOffset]
+    if not na(prevObvPlPriceW) and not na(prevObvPlBarW)
+        int barDist = currBar - prevObvPlBarW
+        if barDist > 0 and barDist <= obvDivMaxBars
+            if obvPlPrice < prevObvPlPriceW and currOsc > prevObvPlOscW
+                obvWideBullDiv := true
+                if logStateConfirm
+                    log.warning("[CORE·WIDE] OBV·wide↑ triggered: price {0}<{1}, osc {2}>{3}", str.tostring(obvPlPrice, "#.##"), str.tostring(prevObvPlPriceW, "#.##"), str.tostring(currOsc, "#.##"), str.tostring(prevObvPlOscW, "#.##"))
+            if obvPlPrice > prevObvPlPriceW and currOsc < prevObvPlOscW
+                obvWideHidBull := true
+                if logStateConfirm
+                    log.warning("[CORE·WIDE] OBV·wide↑hid triggered: price {0}>{1}, osc {2}<{3}", str.tostring(obvPlPrice, "#.##"), str.tostring(prevObvPlPriceW, "#.##"), str.tostring(currOsc, "#.##"), str.tostring(prevObvPlOscW, "#.##"))
+    prevObvPlPriceW := obvPlPrice
+    prevObvPlOscW   := currOsc
+    prevObvPlBarW   := currBar
+// 合并 strict + sensitive
+obvBullDiv = obvRegBullDiv or obvWideBullDiv
+obvBearDiv = obvRegBearDiv or obvWideBearDiv
+obvHidBull = obvHidBullDiv or obvWideHidBull
+obvHidBear = obvHidBearDiv or obvWideHidBear
+
+// ══════════════════════════════════════
+// 背离汇总 (按divType过滤)
+// ══════════════════════════════════════
+regBullDiv = crsiBullDiv or obvBullDiv
+regBearDiv = crsiBearDiv or obvBearDiv
+hidBullDiv = crsiHidBull or obvHidBull
+hidBearDiv = crsiHidBear or obvHidBear
+anyBullDiv = divType == "hidden" ? hidBullDiv : divType == "regular" ? regBullDiv : regBullDiv or hidBullDiv
+anyBearDiv = divType == "hidden" ? hidBearDiv : divType == "regular" ? regBearDiv : regBearDiv or hidBearDiv
+
+// ══════════════════════════════════════
+// MR 窗口生命周期管理
+// ══════════════════════════════════════
+// 窗口激活规则:
+// 1. sdLower 触发 → 开启下轨窗口 (均值回归做多 + 顺势做空)
+// 2. sdUpper 触发 → 开启上轨窗口 (均值回归做空 + 顺势做多)
+// 3. 窗口切换时 → 重置所有信号组件 (防止跨窗口污染)
+// 4. 窗口状态不受交易时间限制 (全时段有效)
+
+// ── 窗口激活逻辑 (价格触及通道边缘时触发) ──
+// SD下轨触及 → 均值回归做多机会 / 顺势做空准备
+if sdLower and not sdLower[1] and not isSymbolExcluded
+    sdLowerMrActive := true
+    sdLowerMrUsed   := false
+    sdLowerTouched  := true  // 标记下轨已触及，指标快照持续发送到收盘
+    // 重置所有信号组件（防止上一个窗口的信号残留）
+    sdUpperBullTouchSeen := false
+    sdUpperBullTouchLine := ""
+    sdUpperBullFractalSeen := false
+    sdUpperBearFractalSeen := false
+    sdLowerBullFractalSeen := false
+    sdLowerBearTouchSeen := false
+    sdLowerBearTouchLine := ""
+    sdLowerBearFractalSeen := false
+    bullCrsiDivSeen := false
+    bearCrsiDivSeen := false
+    bullObvDivSeen := false
+    bearObvDivSeen := false
+    buySignalConsumed := false
+    sellSignalConsumed := false
+    log.warning("{0} [MR·OPEN·LOWER] sdLower 触及下轨 → MR窗口开启(可做多/做空), 重置所有信号组件", syminfo.ticker)
+// SD上轨触及 → 均值回归做空机会 / 顺势做多准备
+if sdUpper and not sdUpper[1] and not isSymbolExcluded
+    sdUpperMrActive := true
+    sdUpperMrUsed   := false
+    sdUpperTouched  := true  // 标记上轨已触及，指标快照持续发送到收盘
+    // 重置所有信号组件（防止上一个窗口的信号残留）
+    sdUpperBullTouchSeen := false
+    sdUpperBullTouchLine := ""
+    sdUpperBullFractalSeen := false
+    sdUpperBearFractalSeen := false
+    sdLowerBullFractalSeen := false
+    sdLowerBearTouchSeen := false
+    sdLowerBearTouchLine := ""
+    sdLowerBearFractalSeen := false
+    bullCrsiDivSeen := false
+    bearCrsiDivSeen := false
+    bullObvDivSeen := false
+    bearObvDivSeen := false
+    buySignalConsumed := false
+    sellSignalConsumed := false
+    log.warning("{0} [MR·OPEN·UPPER] sdUpper 触及上轨 → MR窗口开启(可做多/做空), 重置所有信号组件", syminfo.ticker)
+
+// ── 窗口有效性判断 (用于信号组装) ──
+// sdLowerMrValid: 下轨窗口是否可用 (已激活且未消费)
+sdLowerMrValid = sdLowerMrActive[1] and not sdLowerMrUsed  // 下轨窗口有效
+// sdUpperMrValid: 上轨窗口是否可用 (已激活且未消费)
+sdUpperMrValid = sdUpperMrActive[1] and not sdUpperMrUsed  // 上轨窗口有效
+
+// ══════════════════════════════════════
+// 信号组件收集（EMA触及 + 分形 + 背离，窗口内分批累积，集齐触发）
+// 收集规则: 同一个窗口内，各组件可不分先后到达
+// 注意: 仅在窗口有效期间收集，窗口切换后全部重置
+// ══════════════════════════════════════
+
+// ── EMA触及信号收集 ──
+// 上轨窗口(sdUpper): 收集EMA触及做多信号 (价格从高位回落触及EMA)
+if sdUpperMrValid and emaBullTouch and confirmed
+    sdUpperBullTouchSeen := true
+    // 确定是哪条EMA线被触及
+    if low <= emaFast and (emaTouchType == "fast" or emaTouchType == "both")
+        sdUpperBullTouchLine := "ema的快线"
+    else if low <= emaSlow and (emaTouchType == "slow" or emaTouchType == "both")
+        sdUpperBullTouchLine := "ema的慢线"
+    else
+        sdUpperBullTouchLine := "ema的快线"  // 默认值
+    log.warning("{0} [MR·EMA·BULL] sdUpperMr(上轨) + emaBullTouch[{1}] → sdUpperBullTouchSeen=true", syminfo.ticker, sdUpperBullTouchLine)
+// 下轨窗口(sdLower): 收集EMA触及做空信号 (价格从低位反弹触及EMA)
+if sdLowerMrValid and emaBearTouch and confirmed
+    sdLowerBearTouchSeen := true
+    // 确定是哪条EMA线被触及
+    if high >= emaFast and (emaTouchType == "fast" or emaTouchType == "both")
+        sdLowerBearTouchLine := "ema的快线"
+    else if high >= emaSlow and (emaTouchType == "slow" or emaTouchType == "both")
+        sdLowerBearTouchLine := "ema的慢线"
+    else
+        sdLowerBearTouchLine := "ema的快线"  // 默认值
+    log.warning("{0} [MR·EMA·BEAR] sdLowerMr(下轨) + emaBearTouch[{1}] → sdLowerBearTouchSeen=true", syminfo.ticker, sdLowerBearTouchLine)
+
+// ── Fractal分形信号收集 (两个窗口都收集) ──
+// 上轨窗口 + 做多分形向上
+if sdUpperMrValid and fractalBull and confirmed
+    sdUpperBullFractalSeen := true
+    log.warning("{0} [MR·FRAC·BULL] sdUpperMr(上轨) + fractalBull → sdUpperBullFractalSeen=true", syminfo.ticker)
+// 下轨窗口 + 做多分形向上
+if sdLowerMrValid and fractalBull and confirmed
+    sdLowerBullFractalSeen := true
+    log.warning("{0} [MR·FRAC·BULL] sdLowerMr(下轨) + fractalBull → sdLowerBullFractalSeen=true", syminfo.ticker)
+// 上轨窗口 + 做空分形向下
+if sdUpperMrValid and fractalBear and confirmed
+    sdUpperBearFractalSeen := true
+    log.warning("{0} [MR·FRAC·BEAR] sdUpperMr(上轨) + fractalBear → sdUpperBearFractalSeen=true", syminfo.ticker)
+// 下轨窗口 + 做空分形向下
+if sdLowerMrValid and fractalBear and confirmed
+    sdLowerBearFractalSeen := true
+    log.warning("{0} [MR·FRAC·BEAR] sdLowerMr(下轨) + fractalBear → sdLowerBearFractalSeen=true", syminfo.ticker)
+
+// ── 背离信号收集（cRSI / OBV，任一SD窗口有效时收集）──
+// cRSI背离收集
+if (sdUpperMrValid or sdLowerMrValid) and (crsiBullDiv or crsiHidBull) and confirmed
+    bullCrsiDivSeen := true
+    bullCrsiDivBar := bar_index
+    bullCrsiDivTime := time
+    string bullCrsiType = ""
+    if crsiBullDivSignal
+        bullCrsiType := "reg"
+    else if crsiWideBullDiv
+        bullCrsiType := "wide"
+    if crsiHidBullSignal
+        bullCrsiType := bullCrsiType == "" ? "hid" : bullCrsiType + ",hid"
+    else if crsiWideHidBull
+        bullCrsiType := bullCrsiType == "" ? "wHid" : bullCrsiType + ",wHid"
+    log.warning("{0} [MR·DIV·cRSI·BULL] cRSI多头背离({1}) → BullCrsiDivSeen=true | bar={2}, time={3}", syminfo.ticker, bullCrsiType, str.tostring(bar_index), str.format_time(time, "yyyy-MM-dd HH:mm", "America/New_York"))
+if (sdUpperMrValid or sdLowerMrValid) and (crsiBearDiv or crsiHidBear) and confirmed
+    bearCrsiDivSeen := true
+    bearCrsiDivBar := bar_index
+    bearCrsiDivTime := time
+    string bearCrsiType = ""
+    if crsiBearDivSignal
+        bearCrsiType := "reg"
+    else if crsiWideBearDiv
+        bearCrsiType := "wide"
+    if crsiHidBearSignal
+        bearCrsiType := bearCrsiType == "" ? "hid" : bearCrsiType + ",hid"
+    else if crsiWideHidBear
+        bearCrsiType := bearCrsiType == "" ? "wHid" : bearCrsiType + ",wHid"
+    log.warning("{0} [MR·DIV·cRSI·BEAR] cRSI空头背离({1}) → BearCrsiDivSeen=true | bar={2}, time={3}", syminfo.ticker, bearCrsiType, str.tostring(bar_index), str.format_time(time, "yyyy-MM-dd HH:mm", "America/New_York"))
+
+// OBV背离收集（在任一SD窗口有效时收集）
+if (sdUpperMrValid or sdLowerMrValid) and (obvBullDiv or obvHidBull) and confirmed
+    bullObvDivSeen := true
+    bullObvDivBar := bar_index
+    bullObvDivTime := time
+    string bullObvType = ""
+    if obvRegBullDiv
+        bullObvType := "reg"
+    else if obvWideBullDiv
+        bullObvType := "wide"
+    if obvHidBullDiv
+        bullObvType := bullObvType == "" ? "hid" : bullObvType + ",hid"
+    else if obvWideHidBull
+        bullObvType := bullObvType == "" ? "wHid" : bullObvType + ",wHid"
+    log.warning("{0} [MR·DIV·OBV·BULL] OBV多头背离({1}) → BullObvDivSeen=true | bar={2}, time={3}", syminfo.ticker, bullObvType, str.tostring(bar_index), str.format_time(time, "yyyy-MM-dd HH:mm", "America/New_York"))
+if (sdUpperMrValid or sdLowerMrValid) and (obvBearDiv or obvHidBear) and confirmed
+    bearObvDivSeen := true
+    bearObvDivBar := bar_index
+    bearObvDivTime := time
+    string bearObvType = ""
+    if obvRegBearDiv
+        bearObvType := "reg"
+    else if obvWideBearDiv
+        bearObvType := "wide"
+    if obvHidBearDiv
+        bearObvType := bearObvType == "" ? "hid" : bearObvType + ",hid"
+    else if obvWideHidBear
+        bearObvType := bearObvType == "" ? "wHid" : bearObvType + ",wHid"
+    log.warning("{0} [MR·DIV·OBV·BEAR] OBV空头背离({1}) → BearObvDivSeen=true | bar={2}, time={3}", syminfo.ticker, bearObvType, str.tostring(bar_index), str.format_time(time, "yyyy-MM-dd HH:mm", "America/New_York"))
+
+// ══════════════════════════════════════
+// 反向信号重置（必须先于信号汇总执行）
+// ══════════════════════════════════════
+// 做多组装中出现反向信号 → 清除做多信号
+if (sdUpperBullTouchSeen or sdUpperBullFractalSeen or bullCrsiDivSeen or bullObvDivSeen) and confirmed
+    // 检测反向fractal或任一反向背离
+    bool reverseFractal = fractalBear
+    bool reverseCrsiDiv = crsiBearDiv or crsiHidBear
+    bool reverseObvDiv = obvBearDiv or obvHidBear
+    if reverseFractal or reverseCrsiDiv or reverseObvDiv
+        sdUpperBullTouchSeen := false
+        sdUpperBullTouchLine := ""
+        sdUpperBullFractalSeen := false
+        bullCrsiDivSeen := false
+        bullObvDivSeen := false
+        buySignalConsumed := false
+        log.warning("{0} [MR·RESET·BULL→BEAR] 做多组装中检测到反向信号 → 清除做多信号 | fractal向下={1}, cRSI背离向下={2}, OBV背离向下={3}", syminfo.ticker, reverseFractal ? "1" : "0", reverseCrsiDiv ? "1" : "0", reverseObvDiv ? "1" : "0")
+// 做空组装中出现反向信号 → 清除做空信号
+if (sdLowerBearTouchSeen or sdLowerBearFractalSeen or bearCrsiDivSeen or bearObvDivSeen) and confirmed
+    // 检测反向fractal或任一反向背离
+    bool reverseFractal = fractalBull
+    bool reverseCrsiDiv = crsiBullDiv or crsiHidBull
+    bool reverseObvDiv = obvBullDiv or obvHidBull
+    if reverseFractal or reverseCrsiDiv or reverseObvDiv
+        sdLowerBearTouchSeen := false
+        sdLowerBearTouchLine := ""
+        sdLowerBearFractalSeen := false
+        bearCrsiDivSeen := false
+        bearObvDivSeen := false
+        sellSignalConsumed := false
+        log.warning("{0} [MR·RESET·BEAR→BULL] 做空组装中检测到反向信号 → 清除做空信号 | fractal向上={1}, cRSI背离向上={2}, OBV背离向上={3}", syminfo.ticker, reverseFractal ? "1" : "0", reverseCrsiDiv ? "1" : "0", reverseObvDiv ? "1" : "0")
+
+// ══════════════════════════════════════
+// EMA-DTP 联动过滤器检测逻辑
+// ══════════════════════════════════════
+
+// ── EMA 强度检测 ──
+float emaFastSlope = (emaFast - emaFast[emaStrengthLookback]) / emaFast[emaStrengthLookback] * 100
+float emaSlowSlope = (emaSlow - emaSlow[emaStrengthLookback]) / emaSlow[emaStrengthLookback] * 100
+float emaTrendSlope = (emaTrend - emaTrend[emaStrengthLookback]) / emaTrend[emaStrengthLookback] * 100
+
+// EMA 强势上升：3 条线斜率都为正且较大
+bool emaStrongBull = emaFastSlope > emaMinAngle and emaSlowSlope > emaMinAngle and emaTrendSlope > emaMinAngle
+
+// EMA 强势下降：3 条线斜率都为负且较大
+bool emaStrongBear = emaFastSlope < -emaMinAngle and emaSlowSlope < -emaMinAngle and emaTrendSlope < -emaMinAngle
+
+// EMA 平缓混乱：斜率不统一或都很小
+bool emaWeak = math.abs(emaFastSlope) < emaWeakThreshold or math.abs(emaSlowSlope) < emaWeakThreshold or
+               math.abs(emaTrendSlope) < emaWeakThreshold or
+               (emaFastSlope > 0 and emaSlowSlope < 0) or (emaFastSlope < 0 and emaSlowSlope > 0)
+
+// ── DTP 颜色变化检测 ──
+// DTP 红→蓝反向（从 -1 变为 1）
+bool dtpRedToBlueTurn = dtpPrevDir == -1 and dtpDir == 1
+
+// DTP 蓝→红反向（从 1 变为 -1）
+bool dtpBlueToRedTurn = dtpPrevDir == 1 and dtpDir == -1
+
+// DTP 蓝初中阶段
+bool dtpBlueEarly = dtpDir == 1 and dtpPhaseBars <= dtpEarlyBars
+
+// DTP 红初中阶段
+bool dtpRedEarly = dtpDir == -1 and dtpPhaseBars <= dtpEarlyBars
+
+// DTP 末期阶段（仅 mature，不包括 confirmed）
+bool dtpMaturePhase = dtpPhase == "mature"
+
+// ── DTP 频繁切换检测 ──
+if confirmed and dtpDir != dtpPrevDir and dtpDir != 0
+    dtpSwitchCount += 1
+
+// 重置计数（每 dtpSwitchLookback 根K线重置一次）
+if bar_index % dtpSwitchLookback == 0
+    dtpSwitchCount := 0
+
+// DTP 频繁切换
+bool dtpFrequentSwitch = dtpSwitchCount > dtpMaxSwitches
+
+// ── 震荡市检测（独立模块）──
+// 检查当前K线是否有相反方向的信号组件同时出现
+// 做多组件：fractal向上 或 cRSI背离向上 或 OBV背离向上
+bool hasBullComponent = fractalBull or crsiBullDiv or obvBullDiv
+
+// 做空组件：fractal向下 或 cRSI背离向下 或 OBV背离向下
+bool hasBearComponent = fractalBear or crsiBearDiv or obvBearDiv
+
+// 当前K线是否同时有相反方向的组件（市场混乱信号）
+bool componentMismatch = hasBullComponent and hasBearComponent
+
+// 计数相反信号出现的次数
+if confirmed and componentMismatch
+    componentMismatchCount += 1
+
+// 重置计数（每 oscillationLookback 根K线重置一次）
+if bar_index % oscillationLookback == 0
+    componentMismatchCount := 0
+
+// 计算组件不同向的频率
+float componentMismatchRatio = oscillationLookback > 0 ? componentMismatchCount / oscillationLookback : 0
+
+// 返回震荡市判断结果
+bool isOscillationMarket = enableAdvancedFilter and componentMismatchRatio > oscillationThreshold
+
+// ── 更新 dtpPrevDir（在所有检测完成后） ──
+if confirmed
+    dtpPrevDir := dtpDir
+
+// ══════════════════════════════════════
+// 信号汇总（在反向重置之后执行）
+// ══════════════════════════════════════
+// 合并背离信号（任一背离即可）— 必须在反向重置之后计算
+bool bullDivSeen = bullCrsiDivSeen or bullObvDivSeen
+bool bearDivSeen = bearCrsiDivSeen or bearObvDivSeen
+
+// ══════════════════════════════════════
+// EMA-DTP 联动过滤条件
+// ══════════════════════════════════════
+// 禁止 MR 做空信号 ← 满足任一条件：
+// - EMA 强势上升 + DTP 蓝初中阶段
+// - DTP 红→蓝反向
+bool blockMrShort = enableAdvancedFilter and ((emaStrongBull and dtpBlueEarly) or dtpRedToBlueTurn)
+
+// 禁止 MR 做多信号 ← 满足任一条件：
+// - EMA 强势下降 + DTP 红初中阶段
+// - DTP 蓝→红反向
+bool blockMrLong = enableAdvancedFilter and ((emaStrongBear and dtpRedEarly) or dtpBlueToRedTurn)
+
+// 禁止 EMA 触及信号 ← 满足任一条件：
+// - EMA 平缓混乱
+// - DTP 频繁切换
+bool blockEmaTrend = enableAdvancedFilter and (emaWeak or dtpFrequentSwitch)
+
+// 禁止所有信号（震荡市）
+bool blockAllSignals = isOscillationMarket
+
+// ══════════════════════════════════════
+// 信号组装（应用过滤条件）
+// ══════════════════════════════════════
+// SD上偏差: 做空=fractal向下+背离向下, 做多=fractal向上+EMA触及+背离向上
+// SD下偏差: 做多=fractal向上+背离向上, 做空=fractal向下+EMA触及+背离向下
+// 注意：信号组件不分先后，收集齐全即触发
+
+// 做多信号组成（两种情况：sdUpper需要EMA触及，sdLower不需要）
+bool buyComponent = ((sdUpperMrValid and sdUpperBullTouchSeen and sdUpperBullFractalSeen and bullDivSeen) or (sdLowerMrValid and sdLowerBullFractalSeen and bullDivSeen))
+
+// 做空信号组成（两种情况：sdUpper不需要EMA触及，sdLower需要）
+bool sellComponent = ((sdUpperMrValid and sdUpperBearFractalSeen and bearDivSeen) or (sdLowerMrValid and sdLowerBearTouchSeen and sdLowerBearFractalSeen and bearDivSeen))
+
+// 信号消费：满足后清除
+bool buySignalRaw  = buyComponent and not buySignalConsumed
+bool sellSignalRaw = sellComponent and not sellSignalConsumed
+
+// ══════════════════════════════════════
+// 非交易时间的信号
+// ══════════════════════════════════════
+bool buySignalOutOfHours  = buySignalRaw and not canAlert
+bool sellSignalOutOfHours = sellSignalRaw and not canAlert
+
+// 实际可发报警的信号（不考虑过滤，过滤在报警时判断）
+bool buySignal  = buySignalRaw and canAlert
+bool sellSignal = sellSignalRaw and canAlert
+
+// === 去重 ===
+bool buy_once  = buySignal and not buySignal[1]
+bool sell_once = sellSignal and not sellSignal[1]
+
+// label用（不受时段限制）
+bool buyLabelRaw  = buySignalRaw
+bool sellLabelRaw = sellSignalRaw
+
+// 保存背离来源用于报警内容（在清除前保存）
+if buySignalRaw and confirmed
+    lastBullCrsiDiv := bullCrsiDivSeen
+    lastBullObvDiv := bullObvDivSeen
+if sellSignalRaw and confirmed
+    lastBearCrsiDiv := bearCrsiDivSeen
+    lastBearObvDiv := bearObvDivSeen
+
+// ══════════════════════════════════════
+// 统一的过滤条件判断（供报警、Label、清除使用）
+// ══════════════════════════════════════
+bool shouldFilterBuy = false
+bool shouldFilterSell = false
+string filterReasonBuy = ""
+string filterReasonSell = ""
+
+// 做多信号过滤判断
+if buySignalRaw and confirmed
+    // 类型1: sdUpper+顺势做多 - 检查 blockEmaTrend
+    if sdUpperMrValid and sdUpperBullTouchSeen and sdUpperBullFractalSeen and bullDivSeen and blockEmaTrend
+        shouldFilterBuy := true
+        filterReasonBuy := emaWeak ? "EMA平缓混乱" : dtpFrequentSwitch ? "DTP频繁切换" : "其他"
+    // 类型2: sdLower+均值回归做多 - 检查 blockMrLong
+    else if sdLowerMrValid and sdLowerBullFractalSeen and bullDivSeen and (dtpRedEarly or (dtpDir == -1 and dtpPhase == "confirmed"))
+        shouldFilterBuy := true
+        filterReasonBuy := "DTP红初中"
+    // 震荡市检测
+    else if blockAllSignals and (sdUpperMrValid or sdLowerMrValid) and (sdUpperBullFractalSeen or sdLowerBullFractalSeen) and bullDivSeen
+        shouldFilterBuy := true
+        filterReasonBuy := "震荡市(" + str.tostring(componentMismatchRatio * 100, "#.#") + "%)"
+
+// 做空信号过滤判断
+if sellSignalRaw and confirmed
+    // 类型3: sdUpper+均值回归做空 - 检查 blockMrShort
+    if sdUpperMrValid and sdUpperBearFractalSeen and bearDivSeen and (dtpBlueEarly or (dtpDir == 1 and dtpPhase == "confirmed"))
+        shouldFilterSell := true
+        filterReasonSell := "DTP蓝初中"
+    // 类型4: sdLower+顺势做空 - 检查 blockEmaTrend
+    else if sdLowerMrValid and sdLowerBearTouchSeen and sdLowerBearFractalSeen and bearDivSeen and blockEmaTrend
+        shouldFilterSell := true
+        filterReasonSell := emaWeak ? "EMA平缓混乱" : dtpFrequentSwitch ? "DTP频繁切换" : "其他"
+    // 震荡市检测
+    else if blockAllSignals and (sdUpperMrValid or sdLowerMrValid) and (sdUpperBearFractalSeen or sdLowerBearFractalSeen) and bearDivSeen
+        shouldFilterSell := true
+        filterReasonSell := "震荡市(" + str.tostring(componentMismatchRatio * 100, "#.#") + "%)"
+
+// 消费MR窗口（根据实际触发的窗口精确标记，防止同一窗口二次触发）
+// ══════════════════════════════════════
+// 窗口消费标记（仅在信号实际触发且不被过滤时）
+// 如果信号被过滤，不标记窗口为已消费，允许继续累计
+// ══════════════════════════════════════
+if buy_once and not shouldFilterBuy
+    if sdUpperMrValid and sdUpperBullTouchSeen and sdUpperBullFractalSeen and bullDivSeen
+        sdUpperMrUsed := true
+    if sdLowerMrValid and sdLowerBullFractalSeen and bullDivSeen
+        sdLowerMrUsed := true
+if sell_once and not shouldFilterSell
+    if sdUpperMrValid and sdUpperBearFractalSeen and bearDivSeen
+        sdUpperMrUsed := true
+    if sdLowerMrValid and sdLowerBearTouchSeen and sdLowerBearFractalSeen and bearDivSeen
+        sdLowerMrUsed := true
+// ══════════════════════════════════════
+// 状态字符串（供日志和报警共用）
+// ══════════════════════════════════════
+string sdState      = sdZone == 1 ? "overbought" : sdZone == -1 ? "oversold" : "normal"
+string sdTrendState = sdTrend == 1 ? "up" : sdTrend == -1 ? "down" : "flat"
+string dtpState     = dtpDir == 1 ? "bullish" : dtpDir == -1 ? "bearish" : "neutral"
+
+// ══════════════════════════════════════
+// 诊断日志（按信号流程顺序）
+// L3·STATE    enableLogState  — 每根K线状态快照，按流程逐层打印
+// L3·ASSEMBLY enableLogState  — 仅窗口有效时，打印组装进度
+// L1·SIGNAL   enableLogSignal — 信号触发时打印
+// L2·FILTER   enableLogFilter — 组件到位但被过滤时打印
+// ══════════════════════════════════════
+
+// ── L3·TICK: 价格 + 子指标基础值 ──
+if logStateConfirm
+    string signalResult = buy_once ? "BUY✅" : sell_once ? "SELL✅" : "无信号"
+    string dtpInfo = dtpState + "/" + dtpPhase + "(" + str.tostring(dtpPhaseBars, "#") + ")"
+    string rsiInfo = crsiOB ? "OB" : crsiOS ? "OS" : "N"
+    log.info("{0} [L3·TICK] {1} | price={2}, sd={3}/{4}, dtp={5}, crsi={6}", syminfo.ticker, signalResult, str.tostring(close, "#"), sdState, sdTrendState, dtpInfo, rsiInfo)
+
+// ── L3·WINDOW: MR窗口状态（激活/有效/消费）──
+if logStateConfirm
+    string sdLowerMrStr = (sdLowerMrActive ? "ON" : "OFF") + ",valid=" + (sdLowerMrValid ? "1" : "0") + ",used=" + (sdLowerMrUsed ? "1" : "0")
+    string sdUpperMrStr = (sdUpperMrActive ? "ON" : "OFF") + ",valid=" + (sdUpperMrValid ? "1" : "0") + ",used=" + (sdUpperMrUsed ? "1" : "0")
+    string sdBandInfo = "sigMult=" + str.tostring(sdSignalMult, "#") + ",band" + str.tostring(sdSignalBand, "#") + "U=" + str.tostring(rtReg + sdSignalMult * rtStdDev, "#.##") + ",band" + str.tostring(sdSignalBand, "#") + "L=" + str.tostring(rtReg - sdSignalMult * rtStdDev, "#.##") + ",reg=" + str.tostring(rtReg, "#.##") + ",std=" + str.tostring(rtStdDev, "#.##")
+    log.info("{0} [L3·WINDOW] Lower({1}), Upper({2}) | {3}", syminfo.ticker, sdLowerMrStr, sdUpperMrStr, sdBandInfo)
+
+// ── L3·COMPONENT: 本根K线产生的原始组件 ──
+if logStateConfirm
+    string touchStr = (emaBullTouch ? "BullTouch" : "") + (emaBearTouch ? (emaBullTouch ? "+BearTouch" : "BearTouch") : "")
+    string fracStr  = (fractalBull ? "Frac↑" : "") + (fractalBear ? (fractalBull ? "+Frac↓" : "Frac↓") : "")
+    string sdStr    = (sdLower ? "SD↓" : "") + (sdUpper ? (sdLower ? "+SD↑" : "SD↑") : "")
+    string divStr   = (anyBullDiv ? "BullDiv(cRSI=" + (crsiBullDiv ? "1" : "0") + ",OBV=" + (obvBullDiv ? "1" : "0") + ")" : "") + (anyBearDiv ? (anyBullDiv ? "+" : "") + "BearDiv(cRSI=" + (crsiBearDiv ? "1" : "0") + ",OBV=" + (obvBearDiv ? "1" : "0") + ")" : "")
+    log.info("{0} [L3·COMPONENT] touch={1} | frac={2} | sd={3} | div={4}", syminfo.ticker, touchStr == "" ? "-" : touchStr, fracStr == "" ? "-" : fracStr, sdStr == "" ? "-" : sdStr, divStr == "" ? "-" : divStr)
+
+// ── L3·COLLECTED: 窗口内已累积组件 ──
+if logStateConfirm
+    string emaMrInfo = "U↑T=" + (sdUpperBullTouchSeen ? "1" : "0") + ",U↑F=" + (sdUpperBullFractalSeen ? "1" : "0") + ",U↓F=" + (sdUpperBearFractalSeen ? "1" : "0") + ",L↑F=" + (sdLowerBullFractalSeen ? "1" : "0") + ",L↓T=" + (sdLowerBearTouchSeen ? "1" : "0") + ",L↓F=" + (sdLowerBearFractalSeen ? "1" : "0")
+    string divInfo   = "bullCrsi=" + (bullCrsiDivSeen ? "1" : "0") + ",bullObv=" + (bullObvDivSeen ? "1" : "0") + ",bearCrsi=" + (bearCrsiDivSeen ? "1" : "0") + ",bearObv=" + (bearObvDivSeen ? "1" : "0")
+    log.info("{0} [L3·COLLECTED] {1} | div={2}", syminfo.ticker, emaMrInfo, divInfo)
+
+// ── L3·DIV: 背离细分（cRSI / OBV / 合并）──
+if logStateConfirm
+    log.info("{0} [L3·DIV·cRSI] reg↑={1},reg↓={2} | hid↑={3},hid↓={4} | wide↑={5},wide↓={6} | wHid↑={7},wHid↓={8}", syminfo.ticker, crsiBullDivSignal ? "1" : "0", crsiBearDivSignal ? "1" : "0", crsiHidBullSignal ? "1" : "0", crsiHidBearSignal ? "1" : "0", crsiWideBullDiv ? "1" : "0", crsiWideBearDiv ? "1" : "0", crsiWideHidBull ? "1" : "0", crsiWideHidBear ? "1" : "0")
+    log.info("{0} [L3·DIV·OBV]  reg↑={1},reg↓={2} | hid↑={3},hid↓={4} | wide↑={5},wide↓={6} | wHid↑={7},wHid↓={8}", syminfo.ticker, obvRegBullDiv ? "1" : "0", obvRegBearDiv ? "1" : "0", obvHidBullDiv ? "1" : "0", obvHidBearDiv ? "1" : "0", obvWideBullDiv ? "1" : "0", obvWideBearDiv ? "1" : "0", obvWideHidBull ? "1" : "0", obvWideHidBear ? "1" : "0")
+    log.info("{0} [L3·DIV·MERGED] anyBull={1}, anyBear={2}, OB={3}, OS={4}", syminfo.ticker, anyBullDiv ? "1" : "0", anyBearDiv ? "1" : "0", crsiOB ? "1" : "0", crsiOS ? "1" : "0")
+
+// ── L3·ASSEMBLY: 信号组装进度（仅窗口有效时）──
+if logStateConfirm and (sdLowerMrValid or sdUpperMrValid)
+    // sdUpper 做多（需EMA触及）
+    if sdUpperMrValid
+        string buyMissing = ""
+        if not sdUpperBullTouchSeen
+            buyMissing := "EMA↑"
+        if not sdUpperBullFractalSeen
+            buyMissing := buyMissing == "" ? "Frac↑" : buyMissing + ",Frac↑"
+        if not bullDivSeen
+            buyMissing := buyMissing == "" ? "Div↑" : buyMissing + ",Div↑"
+        if buyMissing != ""
+            string buyCollected = ""
+            if sdUpperBullTouchSeen
+                buyCollected := "✅EMA"
+            if sdUpperBullFractalSeen
+                buyCollected := buyCollected == "" ? "✅Frac" : buyCollected + "/✅Frac"
+            if bullDivSeen
+                string t = bullCrsiDivSeen and bullObvDivSeen ? "✅cRSI+OBV" : bullCrsiDivSeen ? "✅cRSI" : "✅OBV"
+                buyCollected := buyCollected == "" ? t : buyCollected + "/" + t
+            log.warning("{0} [L3·ASSEMBLY·BUY] sdUpper: 需{1} | 已{2}", syminfo.ticker, buyMissing, buyCollected == "" ? "未收集" : buyCollected)
+        else if not buySignalConsumed
+            log.warning("{0} [L3·ASSEMBLY·BUY·READY] ✅ 做多集齐! (sdUpper: EMA↑+Frac↑+Div↑)", syminfo.ticker)
+    // sdLower 做多（无需EMA触及）
+    if sdLowerMrValid
+        if not (sdLowerBullFractalSeen and bullDivSeen)
+            string buyMissing2 = ""
+            if not sdLowerBullFractalSeen
+                buyMissing2 := "Frac↑"
+            if not bullDivSeen
+                buyMissing2 := buyMissing2 == "" ? "Div↑" : buyMissing2 + ",Div↑"
+            string buyCollected2 = sdLowerBullFractalSeen ? "✅Frac" : ""
+            if bullDivSeen
+                string t = bullCrsiDivSeen and bullObvDivSeen ? "✅cRSI+OBV" : bullCrsiDivSeen ? "✅cRSI" : "✅OBV"
+                buyCollected2 := buyCollected2 == "" ? t : buyCollected2 + "/" + t
+            log.warning("{0} [L3·ASSEMBLY·BUY] sdLower: 需{1} | 已{2}", syminfo.ticker, buyMissing2, buyCollected2 == "" ? "未收集" : buyCollected2)
+        else if not buySignalConsumed
+            log.warning("{0} [L3·ASSEMBLY·BUY·READY] ✅ 做多集齐! (sdLower: Frac↑+Div↑)", syminfo.ticker)
+    // sdLower 做空（需EMA触及）
+    if sdLowerMrValid
+        string sellMissing = ""
+        if not sdLowerBearTouchSeen
+            sellMissing := "EMA↓"
+        if not sdLowerBearFractalSeen
+            sellMissing := sellMissing == "" ? "Frac↓" : sellMissing + ",Frac↓"
+        if not bearDivSeen
+            sellMissing := sellMissing == "" ? "Div↓" : sellMissing + ",Div↓"
+        if sellMissing != ""
+            string sellCollected = ""
+            if sdLowerBearTouchSeen
+                sellCollected := "✅EMA"
+            if sdLowerBearFractalSeen
+                sellCollected := sellCollected == "" ? "✅Frac" : sellCollected + "/✅Frac"
+            if bearDivSeen
+                string t = bearCrsiDivSeen and bearObvDivSeen ? "✅cRSI+OBV" : bearCrsiDivSeen ? "✅cRSI" : "✅OBV"
+                sellCollected := sellCollected == "" ? t : sellCollected + "/" + t
+            log.warning("{0} [L3·ASSEMBLY·SELL] sdLower: 需{1} | 已{2}", syminfo.ticker, sellMissing, sellCollected == "" ? "未收集" : sellCollected)
+        else if not sellSignalConsumed
+            log.warning("{0} [L3·ASSEMBLY·SELL·READY] ✅ 做空集齐! (sdLower: EMA↓+Frac↓+Div↓)", syminfo.ticker)
+    // sdUpper 做空（无需EMA触及）
+    if sdUpperMrValid
+        if not (sdUpperBearFractalSeen and bearDivSeen)
+            string sellMissing2 = ""
+            if not sdUpperBearFractalSeen
+                sellMissing2 := "Frac↓"
+            if not bearDivSeen
+                sellMissing2 := sellMissing2 == "" ? "Div↓" : sellMissing2 + ",Div↓"
+            string sellCollected2 = sdUpperBearFractalSeen ? "✅Frac" : ""
+            if bearDivSeen
+                string t = bearCrsiDivSeen and bearObvDivSeen ? "✅cRSI+OBV" : bearCrsiDivSeen ? "✅cRSI" : "✅OBV"
+                sellCollected2 := sellCollected2 == "" ? t : sellCollected2 + "/" + t
+            log.warning("{0} [L3·ASSEMBLY·SELL] sdUpper: 需{1} | 已{2}", syminfo.ticker, sellMissing2, sellCollected2 == "" ? "未收集" : sellCollected2)
+        else if not sellSignalConsumed
+            log.warning("{0} [L3·ASSEMBLY·SELL·READY] ✅ 做空集齐! (sdUpper: Frac↓+Div↓)", syminfo.ticker)
+
+// ── L1·SIGNAL: 信号触发（enableLogSignal）──
+if logSignalConfirm
+    string sdStr2 = sdState + "/" + sdTrendState
+    string dtpStr2 = dtpState + "/" + dtpPhase + "(" + str.tostring(dtpPhaseBars, "#") + ")"
+    if buy_once
+        string divStatus = "(cRSI=" + (lastBullCrsiDiv ? "1" : "0") + ",OBV=" + (lastBullObvDiv ? "1" : "0") + ")"
+        string sdWin = sdUpperMrValid ? "sdUpper" : "sdLower"
+        log.warning("{0} [L1·OPEN·BUY] price={1}, sd={2}, dtp={3}, window={4}, div={5}", syminfo.ticker, str.tostring(close, "#"), sdStr2, dtpStr2, sdWin, divStatus)
+    if sell_once
+        string divStatus = "(cRSI=" + (lastBearCrsiDiv ? "1" : "0") + ",OBV=" + (lastBearObvDiv ? "1" : "0") + ")"
+        string sdWin = sdLowerMrValid ? "sdLower" : "sdUpper"
+        log.warning("{0} [L1·OPEN·SELL] price={1}, sd={2}, dtp={3}, window={4}, div={5}", syminfo.ticker, str.tostring(close, "#"), sdStr2, dtpStr2, sdWin, divStatus)
+
+// ── L2·FILTER: 过滤原因（enableLogFilter）──
+if logFilterConfirm
+    if emaBullTouch and fractalBull and confirmed and canAlert and not sdUpperMrValid
+        string reason = not sdUpperMrActive ? "MR未触发" : not sdUpperMrActive[1] ? "MR同根K线触发(需下根生效)" : sdUpperMrUsed ? "窗口已消费" : "其他"
+        log.warning("{0} [L2·FILTER·BUY] sdUpperMrWindow无效: {1}", syminfo.ticker, reason)
+    if emaBearTouch and fractalBear and confirmed and canAlert and not sdLowerMrValid
+        string reason = not sdLowerMrActive ? "MR未触发" : not sdLowerMrActive[1] ? "MR同根K线触发(需下根生效)" : sdLowerMrUsed ? "窗口已消费" : "其他"
+        log.warning("{0} [L2·FILTER·SELL] sdLowerMrWindow无效: {1}", syminfo.ticker, reason)
+
+
+// ══════════════════════════════════════
+// 绘图 (内置, 无需Display Core)
+// ══════════════════════════════════════
+
+// 每日清理标注（只在清理发生的那根K线显示）
+plotshape(dailyResetNow and confirmed, title="Daily MR Reset", location=location.top, color=color.new(#9C27B0, 0), style=shape.labeldown, size=size.small, text="🔄")
+
+// EMA触及标记
+plotshape(showEmaTouch and (emaTouchType == "fast" or emaTouchType == "both") and bullTouchFast, title="EMA Bull Touch Fast", location=location.belowbar, color=color.new(#00C853, 0), style=shape.triangleup, size=size.small, text="E↑F")
+plotshape(showEmaTouch and (emaTouchType == "slow" or emaTouchType == "both") and bullTouchSlow, title="EMA Bull Touch Slow", location=location.belowbar, color=color.new(#64DD17, 0), style=shape.triangleup, size=size.tiny, text="E↑S")
+plotshape(showEmaTouch and (emaTouchType == "fast" or emaTouchType == "both") and bearTouchFast, title="EMA Bear Touch Fast", location=location.abovebar, color=color.new(#FF1744, 0), style=shape.triangledown, size=size.small, text="E↓F")
+plotshape(showEmaTouch and (emaTouchType == "slow" or emaTouchType == "both") and bearTouchSlow, title="EMA Bear Touch Slow", location=location.abovebar, color=color.new(#D50000, 0), style=shape.triangledown, size=size.tiny, text="E↓S")
+
+// SD MR标记
+plotshape(showSdMrLabel and sdLower, title="SD MR Bull", location=location.belowbar, color=color.new(#4CAF50, 0), style=shape.triangleup, size=size.tiny, text="SD↑")
+plotshape(showSdMrLabel and sdUpper, title="SD MR Bear", location=location.abovebar, color=color.new(#FF6F00, 0), style=shape.triangledown, size=size.tiny, text="SD↓")
+
+// cRSI & OBV 所有多头背离 (蓝色上箭头, tiny)
+plotshape(showDivCrsiMark ? (crsiBullDivSignal ? low - atrVal * 0.4 : na) : na, title="cRSI Reg Bull Div", location=location.absolute, color=color.new(#2196F3, 0), style=shape.triangleup, size=size.tiny, text="cR↑")
+plotshape(showDivCrsiMark ? (crsiWideBullDiv ? low - atrVal * 0.6 : na) : na, title="cRSI W Bull Div", location=location.absolute, color=color.new(#2196F3, 0), style=shape.triangleup, size=size.tiny, text="cW↑")
+plotshape(showDivObvMark ? (obvRegBullDiv ? low - atrVal * 0.8 : na) : na, title="OBV Reg Bull Div", location=location.absolute, color=color.new(#2196F3, 0), style=shape.triangleup, size=size.tiny, text="oR↑")
+plotshape(showDivObvMark ? (obvWideBullDiv ? low - atrVal * 1.0 : na) : na, title="OBV W Bull Div", location=location.absolute, color=color.new(#2196F3, 0), style=shape.triangleup, size=size.tiny, text="oW↑")
+// cRSI & OBV 所有隐藏多头背离 (蓝色上箭头, tiny)
+plotshape(showDivHidMark ? (crsiHidBullSignal ? low - atrVal * 1.2 : na) : na, title="cRSI Hid Bull", location=location.absolute, color=color.new(#2196F3, 0), style=shape.triangleup, size=size.tiny, text="cH↑")
+plotshape(showDivHidMark ? (crsiWideHidBull ? low - atrVal * 1.4 : na) : na, title="cRSI W Hid Bull", location=location.absolute, color=color.new(#2196F3, 0), style=shape.triangleup, size=size.tiny, text="cWH↑")
+plotshape(showDivHidMark ? (obvHidBullDiv ? low - atrVal * 1.6 : na) : na, title="OBV Hid Bull", location=location.absolute, color=color.new(#2196F3, 0), style=shape.triangleup, size=size.tiny, text="oH↑")
+plotshape(showDivHidMark ? (obvWideHidBull ? low - atrVal * 1.8 : na) : na, title="OBV W Hid Bull", location=location.absolute, color=color.new(#2196F3, 0), style=shape.triangleup, size=size.tiny, text="oWH↑")
+// cRSI & OBV 所有空头背离 (紫色下箭头, tiny)
+plotshape(showDivCrsiMark ? (crsiBearDivSignal ? high + atrVal * 0.4 : na) : na, title="cRSI Reg Bear Div", location=location.absolute, color=color.new(#9C27B0, 0), style=shape.triangledown, size=size.tiny, text="cR↓")
+plotshape(showDivCrsiMark ? (crsiWideBearDiv ? high + atrVal * 0.6 : na) : na, title="cRSI W Bear Div", location=location.absolute, color=color.new(#9C27B0, 0), style=shape.triangledown, size=size.tiny, text="cW↓")
+plotshape(showDivObvMark ? (obvRegBearDiv ? high + atrVal * 0.8 : na) : na, title="OBV Reg Bear Div", location=location.absolute, color=color.new(#9C27B0, 0), style=shape.triangledown, size=size.tiny, text="oR↓")
+plotshape(showDivObvMark ? (obvWideBearDiv ? high + atrVal * 1.0 : na) : na, title="OBV W Bear Div", location=location.absolute, color=color.new(#9C27B0, 0), style=shape.triangledown, size=size.tiny, text="oW↓")
+// cRSI & OBV 所有隐藏空头背离 (紫色下箭头, tiny)
+plotshape(showDivHidMark ? (crsiHidBearSignal ? high + atrVal * 1.2 : na) : na, title="cRSI Hid Bear", location=location.absolute, color=color.new(#9C27B0, 0), style=shape.triangledown, size=size.tiny, text="cH↓")
+plotshape(showDivHidMark ? (crsiWideHidBear ? high + atrVal * 1.4 : na) : na, title="cRSI W Hid Bear", location=location.absolute, color=color.new(#9C27B0, 0), style=shape.triangledown, size=size.tiny, text="cWH↓")
+plotshape(showDivHidMark ? (obvHidBearDiv ? high + atrVal * 1.6 : na) : na, title="OBV Hid Bear", location=location.absolute, color=color.new(#9C27B0, 0), style=shape.triangledown, size=size.tiny, text="oH↓")
+plotshape(showDivHidMark ? (obvWideHidBear ? high + atrVal * 1.8 : na) : na, title="OBV W Hid Bear", location=location.absolute, color=color.new(#9C27B0, 0), style=shape.triangledown, size=size.tiny, text="oWH↓")
+
+// Fractal分形标记
+plotshape(showFractalMark and fractalBull, title="Fractal Bull", location=location.belowbar, color=color.new(#009688, 0), style=shape.triangleup, size=size.tiny, text="F↑")
+plotshape(showFractalMark and fractalBear, title="Fractal Bear", location=location.abovebar, color=color.new(#F44336, 0), style=shape.triangledown, size=size.tiny, text="F↓")
+
+// ══════════════════════════════════════
+// 报警 (区分四种开仓类型, 包含信号组成描述)
+// ══════════════════════════════════════
+if (buy_once or sell_once) and alertEmaConfirm
+    // 时间字符串 & 信号ID（仅信号触发时计算）
+    // time 是 UTC 毫秒时间戳，需要先转换为纽约时间，再转换为北京时间
+    string usTime    = str.format_time(time, "yyyy-MM-dd HH:mm", "America/New_York")
+    string cnTime    = str.format_time(time, "yyyy-MM-dd HH:mm", "Asia/Shanghai")
+    string scriptTag = "IAC_v1_audit_20260528"
+    string signalId  = syminfo.ticker + "_" + str.format_time(time, "yyyyMMdd_HHmm", "America/New_York")
+
+    // ══ 买入信号 (两种类型) ══
+    if buy_once
+        // 检查是否被过滤
+        if shouldFilterBuy and logFilterConfirm
+            log.warning("{0} [FILTER·BUY] 做多信号被过滤: {1}", syminfo.ticker, filterReasonBuy)
+        else if not shouldFilterBuy
+            // ATR仓位计算（做多，仅做多信号时计算）
+            float longEntry  = close - atrVal * entryAtrMult
+            float longSLAtr  = longEntry - atrVal * slAtrMult
+            float longShares = longEntry > 0 ? math.ceil(positionAmount / longEntry) : 0
+            float longSLMax  = longShares > 0 ? longEntry - maxLossPerTrade / longShares : longSLAtr
+            float longSL     = math.max(longSLAtr, longSLMax)
+            float longSLDist = longEntry - longSL
+            float longTP     = longEntry + longSLDist * rrRatio
+            float longSlDistPct  = longEntry > 0 ? longSLDist / longEntry * 100 : 0.0
+            float longSlAtrRatio = atrRaw > 0 ? longSLDist / atrRaw : 0.0
+
+            // 类型1: sdUpper+顺势做多 (需EMA触及) - SD上轨+EMA触及+Fractal向上+背离向上
+            if sdUpperMrValid and sdUpperBullTouchSeen and sdUpperBullFractalSeen and bullDivSeen
+                // 使用保存的 EMA 线信息
+                string emaTouchLine = sdUpperBullTouchLine != "" ? sdUpperBullTouchLine : "ema的快线"
+                // 检查背离类型
+                string divSource = ""
+                if lastBullCrsiDiv and lastBullObvDiv
+                    divSource := "cRSI+OBV"
+                else if lastBullCrsiDiv
+                    divSource := "cRSI"
+                else if lastBullObvDiv
+                    divSource := "OBV"
+                // 计算背离收集到现在的时间差
+                int divBarAge = na
+                string divCollectTime = ""
+                if lastBullCrsiDiv and not na(bullCrsiDivBar)
+                    divBarAge := bar_index - bullCrsiDivBar
+                    divCollectTime := str.format_time(bullCrsiDivTime, "HH:mm", "America/New_York")
+                else if lastBullObvDiv and not na(bullObvDivBar)
+                    divBarAge := bar_index - bullObvDivBar
+                    divCollectTime := str.format_time(bullObvDivTime, "HH:mm", "America/New_York")
+                string reason = "SD上轨→顺势做多(fractal↑+EMA-touch↑[" + emaTouchLine + "]+div↑[" + divSource + "])"
+                string jsonPayload = '{"type":"signal","symbol":"' + syminfo.ticker + '","direction":"long","signal":"trend_sdUpper","limit_price":' + str.tostring(close, "#") + ',"entry":' + str.tostring(longEntry, "#.##") + ',"stop_loss":' + str.tostring(longSL, "#.##") + ',"take_profit":' + str.tostring(longTP, "#.##") + ',"rr":"' + str.tostring(rrRatio, "#.#") + ':1","shares":' + str.tostring(longShares, "#") + ',"us_time":"' + usTime + '","cn_time":"' + cnTime + '","signal_id":"' + signalId + '_trend_U","exchange":"' + syminfo.prefix + '","interval":"' + timeframe.period + '","extra":{"industry":"' + syminfo.industry + '","reason":"' + reason + '","sd_zone":"' + sdState + '","sd_trend":"' + sdTrendState + '","dtp_dir":"' + dtpState + '","dtp_phase":"' + dtpPhase + '","crsi_state":"' + (crsiOB ? "overbought" : crsiOS ? "oversold" : "normal") + '","day_change_pct":' + str.tostring(realDayChangePct, "#.##") + ',"prev_close_change_pct":' + str.tostring(realPrevDayChangePct, "#.##") + ',"change_7d":' + str.tostring(realWeekChangePct, "#.##") + ',"script_tag":"' + scriptTag + '","chart_tf":"' + timeframe.period + '","bar_time_ms":' + str.tostring(time, "#") + ',"bar_index":' + str.tostring(bar_index, "#") + ',"close":' + str.tostring(close, "#.##") + ',"atr":' + str.tostring(atrRaw, "#.####") + ',"atr_pct":' + str.tostring(atrPct, "#.##") + ',"sl_dist_pct":' + str.tostring(longSlDistPct, "#.##") + ',"sl_atr_ratio":' + str.tostring(longSlAtrRatio, "#.##") + '}}'
+                alert(jsonPayload, alert.freq_once_per_bar_close)
+                log.warning("{0} [ALERT·顺势做多] SD上轨+EMA[" + emaTouchLine + "]+Fractal↑+Div↑: dtp={1}/{2}({3}), rsi={4}", syminfo.ticker, dtpState, dtpPhase, str.tostring(dtpPhaseBars, "#"), crsiOB ? "OB" : crsiOS ? "OS" : "N")
+                if not na(divBarAge)
+                    log.warning("{0} [ALERT·DIV·AGE] 背离收集于 {1} (距今{2}根K线)", syminfo.ticker, divCollectTime, str.tostring(divBarAge, "#"))
+                log.warning("{0} [WEBHOOK·JSON] {1}", syminfo.ticker, jsonPayload)
+
+            // 类型2: sdLower+均值回归做多 (无需EMA触及) - SD下轨+Fractal向上+背离向上
+            if sdLowerMrValid and sdLowerBullFractalSeen and bullDivSeen
+                // 检查背离类型
+                string divSource = ""
+                if lastBullCrsiDiv and lastBullObvDiv
+                    divSource := "cRSI+OBV"
+                else if lastBullCrsiDiv
+                    divSource := "cRSI"
+                else if lastBullObvDiv
+                    divSource := "OBV"
+                // 计算背离收集到现在的时间差
+                int divBarAge = na
+                string divCollectTime = ""
+                if lastBullCrsiDiv and not na(bullCrsiDivBar)
+                    divBarAge := bar_index - bullCrsiDivBar
+                    divCollectTime := str.format_time(bullCrsiDivTime, "HH:mm", "America/New_York")
+                else if lastBullObvDiv and not na(bullObvDivBar)
+                    divBarAge := bar_index - bullObvDivBar
+                    divCollectTime := str.format_time(bullObvDivTime, "HH:mm", "America/New_York")
+                string reason = "SD下轨→均值回归做多(fractal↑+div↑[" + divSource + "])"
+                string jsonPayload = '{"type":"signal","symbol":"' + syminfo.ticker + '","direction":"long","signal":"mr_sdLower","limit_price":' + str.tostring(close, "#") + ',"entry":' + str.tostring(longEntry, "#.##") + ',"stop_loss":' + str.tostring(longSL, "#.##") + ',"take_profit":' + str.tostring(longTP, "#.##") + ',"rr":"' + str.tostring(rrRatio, "#.#") + ':1","shares":' + str.tostring(longShares, "#") + ',"us_time":"' + usTime + '","cn_time":"' + cnTime + '","signal_id":"' + signalId + '_mr_L","exchange":"' + syminfo.prefix + '","interval":"' + timeframe.period + '","extra":{"industry":"' + syminfo.industry + '","reason":"' + reason + '","sd_zone":"' + sdState + '","sd_trend":"' + sdTrendState + '","dtp_dir":"' + dtpState + '","dtp_phase":"' + dtpPhase + '","crsi_state":"' + (crsiOB ? "overbought" : crsiOS ? "oversold" : "normal") + '","day_change_pct":' + str.tostring(realDayChangePct, "#.##") + ',"prev_close_change_pct":' + str.tostring(realPrevDayChangePct, "#.##") + ',"change_7d":' + str.tostring(realWeekChangePct, "#.##") + ',"script_tag":"' + scriptTag + '","chart_tf":"' + timeframe.period + '","bar_time_ms":' + str.tostring(time, "#") + ',"bar_index":' + str.tostring(bar_index, "#") + ',"close":' + str.tostring(close, "#.##") + ',"atr":' + str.tostring(atrRaw, "#.####") + ',"atr_pct":' + str.tostring(atrPct, "#.##") + ',"sl_dist_pct":' + str.tostring(longSlDistPct, "#.##") + ',"sl_atr_ratio":' + str.tostring(longSlAtrRatio, "#.##") + '}}'
+                alert(jsonPayload, alert.freq_once_per_bar_close)
+                log.warning("{0} [ALERT·均值回归做多] SD下轨+Fractal↑+Div↑: dtp={1}/{2}({3}), rsi={4}", syminfo.ticker, dtpState, dtpPhase, str.tostring(dtpPhaseBars, "#"), crsiOB ? "OB" : crsiOS ? "OS" : "N")
+                if not na(divBarAge)
+                    log.warning("{0} [ALERT·DIV·AGE] 背离收集于 {1} (距今{2}根K线)", syminfo.ticker, divCollectTime, str.tostring(divBarAge, "#"))
+                log.warning("{0} [WEBHOOK·JSON] {1}", syminfo.ticker, jsonPayload)
+
+    // ══ 卖出信号 (两种类型) ══
+    if sell_once
+        // 检查是否被过滤
+        if shouldFilterSell and logFilterConfirm
+            log.warning("{0} [FILTER·SELL] 做空信号被过滤: {1}", syminfo.ticker, filterReasonSell)
+        else if not shouldFilterSell
+            // ATR仓位计算（做空，仅做空信号时计算）
+            float shortEntry  = close + atrVal * entryAtrMult
+            float shortSLAtr  = shortEntry + atrVal * slAtrMult
+            float shortShares = shortEntry > 0 ? math.ceil(positionAmount / shortEntry) : 0
+            float shortSLMax  = shortShares > 0 ? shortEntry + maxLossPerTrade / shortShares : shortSLAtr
+            float shortSL     = math.min(shortSLAtr, shortSLMax)
+            float shortSLDist = shortSL - shortEntry
+            float shortTP     = shortEntry - shortSLDist * rrRatio
+            float shortSlDistPct  = shortEntry > 0 ? shortSLDist / shortEntry * 100 : 0.0
+            float shortSlAtrRatio = atrRaw > 0 ? shortSLDist / atrRaw : 0.0
+
+            // 类型3: sdUpper+均值回归做空 (无需EMA触及) - SD上轨+Fractal向下+背离向下
+            if sdUpperMrValid and sdUpperBearFractalSeen and bearDivSeen
+                // 检查背离类型
+                string divSource = ""
+                if lastBearCrsiDiv and lastBearObvDiv
+                    divSource := "cRSI+OBV"
+                else if lastBearCrsiDiv
+                    divSource := "cRSI"
+                else if lastBearObvDiv
+                    divSource := "OBV"
+                // 计算背离收集到现在的时间差
+                int divBarAge = na
+                string divCollectTime = ""
+                if lastBearCrsiDiv and not na(bearCrsiDivBar)
+                    divBarAge := bar_index - bearCrsiDivBar
+                    divCollectTime := str.format_time(bearCrsiDivTime, "HH:mm", "America/New_York")
+                else if lastBearObvDiv and not na(bearObvDivBar)
+                    divBarAge := bar_index - bearObvDivBar
+                    divCollectTime := str.format_time(bearObvDivTime, "HH:mm", "America/New_York")
+                string reason = "SD上轨→均值回归做空(fractal↓+div↓[" + divSource + "])"
+                string jsonPayload = '{"type":"signal","symbol":"' + syminfo.ticker + '","direction":"short","signal":"mr_sdUpper","limit_price":' + str.tostring(close, "#") + ',"entry":' + str.tostring(shortEntry, "#.##") + ',"stop_loss":' + str.tostring(shortSL, "#.##") + ',"take_profit":' + str.tostring(shortTP, "#.##") + ',"rr":"' + str.tostring(rrRatio, "#.#") + ':1","shares":' + str.tostring(shortShares, "#") + ',"us_time":"' + usTime + '","cn_time":"' + cnTime + '","signal_id":"' + signalId + '_mr_U","exchange":"' + syminfo.prefix + '","interval":"' + timeframe.period + '","extra":{"industry":"' + syminfo.industry + '","reason":"' + reason + '","sd_zone":"' + sdState + '","sd_trend":"' + sdTrendState + '","dtp_dir":"' + dtpState + '","dtp_phase":"' + dtpPhase + '","crsi_state":"' + (crsiOB ? "overbought" : crsiOS ? "oversold" : "normal") + '","day_change_pct":' + str.tostring(realDayChangePct, "#.##") + ',"prev_close_change_pct":' + str.tostring(realPrevDayChangePct, "#.##") + ',"change_7d":' + str.tostring(realWeekChangePct, "#.##") + ',"script_tag":"' + scriptTag + '","chart_tf":"' + timeframe.period + '","bar_time_ms":' + str.tostring(time, "#") + ',"bar_index":' + str.tostring(bar_index, "#") + ',"close":' + str.tostring(close, "#.##") + ',"atr":' + str.tostring(atrRaw, "#.####") + ',"atr_pct":' + str.tostring(atrPct, "#.##") + ',"sl_dist_pct":' + str.tostring(shortSlDistPct, "#.##") + ',"sl_atr_ratio":' + str.tostring(shortSlAtrRatio, "#.##") + '}}'
+                alert(jsonPayload, alert.freq_once_per_bar_close)
+                log.warning("{0} [ALERT·均值回归做空] SD上轨+Fractal↓+Div↓: dtp={1}/{2}({3}), rsi={4}", syminfo.ticker, dtpState, dtpPhase, str.tostring(dtpPhaseBars, "#"), crsiOB ? "OB" : crsiOS ? "OS" : "N")
+                if not na(divBarAge)
+                    log.warning("{0} [ALERT·DIV·AGE] 背离收集于 {1} (距今{2}根K线)", syminfo.ticker, divCollectTime, str.tostring(divBarAge, "#"))
+                log.warning("{0} [WEBHOOK·JSON] {1}", syminfo.ticker, jsonPayload)
+
+            // 类型4: sdLower+顺势做空 (需EMA触及) - SD下轨+EMA触及+Fractal向下+背离向下
+            if sdLowerMrValid and sdLowerBearTouchSeen and sdLowerBearFractalSeen and bearDivSeen
+                // 使用保存的 EMA 线信息
+                string emaTouchLine = sdLowerBearTouchLine != "" ? sdLowerBearTouchLine : "ema的快线"
+                // 检查背离类型
+                string divSource = ""
+                if lastBearCrsiDiv and lastBearObvDiv
+                    divSource := "cRSI+OBV"
+                else if lastBearCrsiDiv
+                    divSource := "cRSI"
+                else if lastBearObvDiv
+                    divSource := "OBV"
+                // 计算背离收集到现在的时间差
+                int divBarAge = na
+                string divCollectTime = ""
+                if lastBearCrsiDiv and not na(bearCrsiDivBar)
+                    divBarAge := bar_index - bearCrsiDivBar
+                    divCollectTime := str.format_time(bearCrsiDivTime, "HH:mm", "America/New_York")
+                else if lastBearObvDiv and not na(bearObvDivBar)
+                    divBarAge := bar_index - bearObvDivBar
+                    divCollectTime := str.format_time(bearObvDivTime, "HH:mm", "America/New_York")
+                string reason = "SD下轨→顺势做空(fractal↓+EMA-touch↓[" + emaTouchLine + "]+div↓[" + divSource + "])"
+                string jsonPayload = '{"type":"signal","symbol":"' + syminfo.ticker + '","direction":"short","signal":"trend_sdLower","limit_price":' + str.tostring(close, "#") + ',"entry":' + str.tostring(shortEntry, "#.##") + ',"stop_loss":' + str.tostring(shortSL, "#.##") + ',"take_profit":' + str.tostring(shortTP, "#.##") + ',"rr":"' + str.tostring(rrRatio, "#.#") + ':1","shares":' + str.tostring(shortShares, "#") + ',"us_time":"' + usTime + '","cn_time":"' + cnTime + '","signal_id":"' + signalId + '_trend_L","exchange":"' + syminfo.prefix + '","interval":"' + timeframe.period + '","extra":{"industry":"' + syminfo.industry + '","reason":"' + reason + '","sd_zone":"' + sdState + '","sd_trend":"' + sdTrendState + '","dtp_dir":"' + dtpState + '","dtp_phase":"' + dtpPhase + '","crsi_state":"' + (crsiOB ? "overbought" : crsiOS ? "oversold" : "normal") + '","day_change_pct":' + str.tostring(realDayChangePct, "#.##") + ',"prev_close_change_pct":' + str.tostring(realPrevDayChangePct, "#.##") + ',"change_7d":' + str.tostring(realWeekChangePct, "#.##") + ',"script_tag":"' + scriptTag + '","chart_tf":"' + timeframe.period + '","bar_time_ms":' + str.tostring(time, "#") + ',"bar_index":' + str.tostring(bar_index, "#") + ',"close":' + str.tostring(close, "#.##") + ',"atr":' + str.tostring(atrRaw, "#.####") + ',"atr_pct":' + str.tostring(atrPct, "#.##") + ',"sl_dist_pct":' + str.tostring(shortSlDistPct, "#.##") + ',"sl_atr_ratio":' + str.tostring(shortSlAtrRatio, "#.##") + '}}'
+                alert(jsonPayload, alert.freq_once_per_bar_close)
+                log.warning("{0} [ALERT·顺势做空] SD下轨+EMA[" + emaTouchLine + "]+Fractal↓+Div↓: dtp={1}/{2}({3}), rsi={4}", syminfo.ticker, dtpState, dtpPhase, str.tostring(dtpPhaseBars, "#"), crsiOB ? "OB" : crsiOS ? "OS" : "N")
+                if not na(divBarAge)
+                    log.warning("{0} [ALERT·DIV·AGE] 背离收集于 {1} (距今{2}根K线)", syminfo.ticker, divCollectTime, str.tostring(divBarAge, "#"))
+                log.warning("{0} [WEBHOOK·JSON] {1}", syminfo.ticker, jsonPayload)
+// BUY/SELL标签 (区分四种开仓类型)
+// 类型1: sdUpper+顺势做多 (需EMA触及)
+if showBuySell and buyLabelRaw and sdUpperMrValid and sdUpperBullTouchSeen and sdUpperBullFractalSeen and bullDivSeen
+    // 使用保存的 EMA 线信息转换为标签
+    string emaTouchLabel = ""
+    if sdUpperBullTouchLine == "ema的快线"
+        emaTouchLabel := "E↑F"
+    else if sdUpperBullTouchLine == "ema的慢线"
+        emaTouchLabel := "E↑S"
+    else
+        emaTouchLabel := "E↑?"
+
+    // 拒绝原因
+    string rejectReason = ""
+    color labelColor = color.new(#00E676, 0)
+    if shouldFilterBuy
+        rejectReason := "\n⛔ " + filterReasonBuy
+        labelColor := color.new(#9E9E9E, 0)
+    else if not canAlert
+        rejectReason := "\n⏰ 非交易时间"
+        labelColor := color.new(#FFC107, 0)
+
+    label.new(bar_index, low - atrVal * 3, "SDU·顺势做多+" + emaTouchLabel + rejectReason, style=label.style_label_up, color=labelColor, textcolor=color.white, size=size.normal)
+
+// 类型2: sdLower+均值回归做多 (无需EMA触及)
+if showBuySell and buyLabelRaw and sdLowerMrValid and sdLowerBullFractalSeen and bullDivSeen
+    // 拒绝原因
+    string rejectReason = ""
+    color labelColor = color.new(#00E676, 0)
+    if shouldFilterBuy
+        rejectReason := "\n⛔ " + filterReasonBuy
+        labelColor := color.new(#9E9E9E, 0)
+    else if not canAlert
+        rejectReason := "\n⏰ 非交易时间"
+        labelColor := color.new(#FFC107, 0)
+
+    label.new(bar_index, low - atrVal * 3, "SDL·均值回归做多" + rejectReason, style=label.style_label_up, color=labelColor, textcolor=color.white, size=size.normal)
+
+// 类型3: sdUpper+均值回归做空 (无需EMA触及)
+if showBuySell and sellLabelRaw and sdUpperMrValid and sdUpperBearFractalSeen and bearDivSeen
+    // 拒绝原因
+    string rejectReason = ""
+    color labelColor = color.new(#FF1744, 0)
+    if shouldFilterSell
+        rejectReason := "\n⛔ " + filterReasonSell
+        labelColor := color.new(#9E9E9E, 0)
+    else if not canAlert
+        rejectReason := "\n⏰ 非交易时间"
+        labelColor := color.new(#FFC107, 0)
+
+    label.new(bar_index, high + atrVal * 3, "SDU·均值回归做空" + rejectReason, style=label.style_label_down, color=labelColor, textcolor=color.white, size=size.normal)
+
+// 类型4: sdLower+顺势做空 (需EMA触及)
+if showBuySell and sellLabelRaw and sdLowerMrValid and sdLowerBearTouchSeen and sdLowerBearFractalSeen and bearDivSeen
+    // 使用保存的 EMA 线信息转换为标签
+    string emaTouchLabel = ""
+    if sdLowerBearTouchLine == "ema的快线"
+        emaTouchLabel := "E↓F"
+    else if sdLowerBearTouchLine == "ema的慢线"
+        emaTouchLabel := "E↓S"
+    else
+        emaTouchLabel := "E↓?"
+
+    // 拒绝原因
+    string rejectReason = ""
+    color labelColor = color.new(#FF1744, 0)
+    if shouldFilterSell
+        rejectReason := "\n⛔ " + filterReasonSell
+        labelColor := color.new(#9E9E9E, 0)
+    else if not canAlert
+        rejectReason := "\n⏰ 非交易时间"
+        labelColor := color.new(#FFC107, 0)
+
+    label.new(bar_index, high + atrVal * 3, "SDL·顺势做空+" + emaTouchLabel + rejectReason, style=label.style_label_down, color=labelColor, textcolor=color.white, size=size.normal)
+    
+// ══════════════════════════════════════
+// 信号消费逻辑
+// ══════════════════════════════════════
+// 情况1：信号被过滤 → 清除组件，但保留 SD 窗口（允许重新积累）
+if buySignalRaw and confirmed and shouldFilterBuy
+    sdUpperBullTouchSeen := false
+    sdUpperBullTouchLine := ""
+    sdUpperBullFractalSeen := false
+    sdLowerBullFractalSeen := false
+    bullCrsiDivSeen := false
+    bullObvDivSeen := false
+    log.warning("{0} [SIGNAL·FILTERED·BUY] 做多信号被过滤: {1}，清除组件但保留SD窗口", syminfo.ticker, filterReasonBuy)
+
+if sellSignalRaw and confirmed and shouldFilterSell
+    sdUpperBearFractalSeen := false
+    sdLowerBearTouchSeen := false
+    sdLowerBearTouchLine := ""
+    sdLowerBearFractalSeen := false
+    bearCrsiDivSeen := false
+    bearObvDivSeen := false
+    log.warning("{0} [SIGNAL·FILTERED·SELL] 做空信号被过滤: {1}，清除组件但保留SD窗口", syminfo.ticker, filterReasonSell)
+
+// 情况2：信号实际触发（不被过滤） → 清除所有（包括 SD 窗口）并激活指标快照报警
+if buy_once and confirmed and not shouldFilterBuy
+    indicatorAlertActive := true
+    buySignalConsumed := true
+    sdUpperBullTouchSeen := false
+    sdUpperBullTouchLine := ""
+    sdUpperBullFractalSeen := false
+    sdLowerBullFractalSeen := false
+    bullCrsiDivSeen := false
+    bullObvDivSeen := false
+    log.warning("{0} [SIGNAL·CONSUMED·BUY] 做多信号触发并消费，清除所有做多组件", syminfo.ticker)
+
+if sell_once and confirmed and not shouldFilterSell
+    indicatorAlertActive := true
+    sellSignalConsumed := true
+    sdUpperBearFractalSeen := false
+    sdLowerBearTouchSeen := false
+    sdLowerBearTouchLine := ""
+    sdLowerBearFractalSeen := false
+    bearCrsiDivSeen := false
+    bearObvDivSeen := false
+    log.warning("{0} [SIGNAL·CONSUMED·SELL] 做空信号触发并消费，清除所有做空组件", syminfo.ticker)
+
+// ══════════════════════════════════════
+// 指标审计报警（每根 confirmed K 线发送）
+// type=indicator_audit，写入技术指标表，用于后续分析
+// 用户按不同 timeframe 分别建 alert，这里只发送当前图表周期数据
+// ══════════════════════════════════════
+if alertIndicator and confirmed
+    string _usTime    = str.format_time(time, "yyyy-MM-dd HH:mm", "America/New_York")
+    string _cnTime    = str.format_time(time, "yyyy-MM-dd HH:mm", "Asia/Shanghai")
+    string _scriptTag = "IAC_v1_audit_20260528"
+    string _p = '{"type":"indicator_audit"' +
+         ',"symbol":"'      + syminfo.ticker                      + '"' +
+         ',"exchange":"'    + syminfo.prefix                      + '"' +
+         ',"interval":"'    + timeframe.period                    + '"' +
+         ',"script_tag":"'   + _scriptTag                          + '"' +
+         ',"us_time":"'      + _usTime                             + '"' +
+         ',"cn_time":"'      + _cnTime                             + '"' +
+         ',"bar_time_ms":'    + str.tostring(time,          "#")    +
+         ',"bar_index":'     + str.tostring(bar_index,     "#")    +
+         ',"extra":{' +
+              '"close":'        + str.tostring(close,        "#.####") +
+              ',"high":'         + str.tostring(high,         "#.####") +
+              ',"low":'          + str.tostring(low,          "#.####") +
+              ',"open":'         + str.tostring(open,         "#.####") +
+              ',"volume":'       + str.tostring(volume,       "#")     +
+              ',"day_change_pct":' + (na(realDayChangePct) ? 'null' : str.tostring(realDayChangePct, "#.##")) +
+              ',"prev_close_change_pct":' + (na(realPrevDayChangePct) ? 'null' : str.tostring(realPrevDayChangePct, "#.##")) +
+              ',"change_7d":' + (na(realWeekChangePct) ? 'null' : str.tostring(realWeekChangePct, "#.##")) +
+              ',"vwap":'         + (na(vwapValue)  ? 'null' : str.tostring(vwapValue,  "#.####")) +
+              ',"vwap_upper1":'   + (na(vwapUpper1) ? 'null' : str.tostring(vwapUpper1, "#.####")) +
+              ',"vwap_lower1":'   + (na(vwapLower1) ? 'null' : str.tostring(vwapLower1, "#.####")) +
+              ',"vwap_upper2":'   + (na(vwapUpper2) ? 'null' : str.tostring(vwapUpper2, "#.####")) +
+              ',"vwap_lower2":'   + (na(vwapLower2) ? 'null' : str.tostring(vwapLower2, "#.####")) +
+              ',"vwap_dist":'     + (na(vwapDist)   ? 'null' : str.tostring(vwapDist,   "#.##"))  +
+              ',"vwap_bullish":'  + (vwapBullish ? "true" : "false")    +
+              ',"ema_fast":'      + str.tostring(emaFast,      "#.####") +
+              ',"ema_slow":'      + str.tostring(emaSlow,      "#.####") +
+              ',"ema_trend":'     + str.tostring(emaTrend,     "#.####") +
+              ',"ema_longest":'   + str.tostring(emaLongest,   "#.####") +
+              ',"slope_slow":'    + str.tostring(slopeSlow,    "#.####") +
+              ',"slope_trend":'   + str.tostring(slopeTrend,   "#.####") +
+              ',"slope_longest":' + str.tostring(slopeLongest, "#.####") +
+              ',"ema_bullish":'   + (emaBullish ? "true" : "false")     +
+              ',"ema_bearish":'   + (emaBearish ? "true" : "false")     +
+              ',"trend_dir":'     + str.tostring(trendDir,     "#")     +
+              ',"sd_reg":'        + str.tostring(rtReg,        "#.####") +
+              ',"sd_std_dev":'     + str.tostring(rtStdDev,     "#.####") +
+              ',"sd_zone":'       + str.tostring(nz(sdZone, 0),"#")     +
+              ',"sd_trend":'      + str.tostring(sdTrend,      "#")     +
+              ',"dtp_avg":'       + str.tostring(dtpAvg,       "#.####") +
+              ',"dtp_atr":'       + str.tostring(dtpAtr,       "#.####") +
+              ',"dtp_dir":'       + str.tostring(dtpDir,       "#")     +
+              ',"dtp_phase":"'    + dtpPhase                            + '"' +
+              ',"dtp_phase_bars":' + str.tostring(dtpPhaseBars,  "#")    +
+              ',"atr":'          + str.tostring(atrVal,        "#.####") +
+              ',"atr_raw":'       + str.tostring(atrRaw,        "#.####") +
+              ',"atr_pct":'       + str.tostring(atrPct,        "#.##")   +
+              ',"crsi":'         + str.tostring(crsi,          "#.##") +
+              ',"crsi_ub":'       + str.tostring(crsiUb,        "#.##") +
+              ',"crsi_db":'       + str.tostring(crsiDb,        "#.##") +
+              ',"crsi_ob":'       + (crsiOB ? "true" : "false")         +
+              ',"crsi_os":'       + (crsiOS ? "true" : "false")         +
+              ',"obv_rsi":'       + str.tostring(obvOsc,        "#.##") +
+              // cRSI 背离
+              ',"crsi_bull_div":'  + (crsiBullDiv  ? "true" : "false")  +
+              ',"crsi_bear_div":'  + (crsiBearDiv  ? "true" : "false")  +
+              ',"crsi_hid_bull":'  + (crsiHidBull  ? "true" : "false")  +
+              ',"crsi_hid_bear":'  + (crsiHidBear  ? "true" : "false")  +
+              // OBV 背离
+              ',"obv_bull_div":'   + (obvBullDiv   ? "true" : "false")  +
+              ',"obv_bear_div":'   + (obvBearDiv   ? "true" : "false")  +
+              ',"obv_hid_bull":'   + (obvHidBull   ? "true" : "false")  +
+              ',"obv_hid_bear":'   + (obvHidBear   ? "true" : "false")  +
+              // 分形信号
+              ',"fractal_bull":'  + (fractalBull  ? "true" : "false")  +
+              ',"fractal_bear":'  + (fractalBear  ? "true" : "false")  +
+              // SD 通道触及
+              ',"sd_lower":'      + (sdLower      ? "true" : "false")  +
+              ',"sd_upper":'      + (sdUpper      ? "true" : "false")  +
+              // EMA 触及
+              ',"ema_bull_touch":' + (emaBullTouch ? "true" : "false")  +
+              ',"ema_bear_touch":' + (emaBearTouch ? "true" : "false")  +
+              '}}'
+    alert(_p, alert.freq_once_per_bar_close)

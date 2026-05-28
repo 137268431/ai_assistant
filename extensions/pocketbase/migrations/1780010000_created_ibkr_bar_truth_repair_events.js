@@ -1,0 +1,268 @@
+/// <reference path="../pb_data/types.d.ts" />
+
+const IBKR_BAR_TRUTH_REPAIR_EVENTS_SCHEMA = {
+  "id": "_pb_ibkr_bar_truth_repair_events_",
+  "listRule": "",
+  "viewRule": "",
+  "createRule": "",
+  "updateRule": "",
+  "deleteRule": "",
+  "name": "ibkr_bar_truth_repair_events",
+  "type": "base",
+  "system": false,
+  "fields": [
+    {
+      "autogeneratePattern": "[a-z0-9]{15}",
+      "hidden": false,
+      "id": "text3208210256",
+      "max": 15,
+      "min": 15,
+      "name": "id",
+      "pattern": "^[a-z0-9]+$",
+      "presentable": false,
+      "primaryKey": true,
+      "required": true,
+      "system": true,
+      "type": "text"
+    },
+    {
+      "autogeneratePattern": "",
+      "hidden": false,
+      "id": "ibtre_operation_id",
+      "max": 200,
+      "min": 0,
+      "name": "operation_id",
+      "pattern": "",
+      "presentable": true,
+      "primaryKey": false,
+      "required": true,
+      "system": false,
+      "type": "text"
+    },
+    {
+      "hidden": false,
+      "id": "ibtre_environment",
+      "maxSelect": 1,
+      "name": "environment",
+      "presentable": true,
+      "required": false,
+      "system": false,
+      "type": "select",
+      "values": [
+        "live",
+        "paper",
+        "backtest"
+      ]
+    },
+    {
+      "autogeneratePattern": "",
+      "hidden": false,
+      "id": "ibtre_market_date",
+      "max": 40,
+      "min": 0,
+      "name": "market_date",
+      "pattern": "",
+      "presentable": true,
+      "primaryKey": false,
+      "required": true,
+      "system": false,
+      "type": "text"
+    },
+    {
+      "autogeneratePattern": "",
+      "hidden": false,
+      "id": "ibtre_symbol",
+      "max": 20,
+      "min": 0,
+      "name": "symbol",
+      "pattern": "",
+      "presentable": true,
+      "primaryKey": false,
+      "required": true,
+      "system": false,
+      "type": "text"
+    },
+    {
+      "autogeneratePattern": "",
+      "hidden": false,
+      "id": "ibtre_interval",
+      "max": 20,
+      "min": 0,
+      "name": "interval",
+      "pattern": "",
+      "presentable": true,
+      "primaryKey": false,
+      "required": true,
+      "system": false,
+      "type": "text"
+    },
+    {
+      "hidden": false,
+      "id": "ibtre_bar_time_ms",
+      "max": null,
+      "min": null,
+      "name": "bar_time_ms",
+      "onlyInt": true,
+      "presentable": false,
+      "required": true,
+      "system": false,
+      "type": "number"
+    },
+    {
+      "autogeneratePattern": "",
+      "hidden": false,
+      "id": "ibtre_us_time",
+      "max": 80,
+      "min": 0,
+      "name": "us_time",
+      "pattern": "",
+      "presentable": false,
+      "primaryKey": false,
+      "required": false,
+      "system": false,
+      "type": "text"
+    },
+    {
+      "hidden": false,
+      "id": "ibtre_action",
+      "maxSelect": 1,
+      "name": "action",
+      "presentable": true,
+      "required": true,
+      "system": false,
+      "type": "select",
+      "values": [
+        "upsert_ibkr_bar",
+        "replace_with_ibkr_bar",
+        "delete_extra_stored_bar"
+      ]
+    },
+    {
+      "autogeneratePattern": "",
+      "hidden": false,
+      "id": "ibtre_reason",
+      "max": 120,
+      "min": 0,
+      "name": "reason",
+      "pattern": "",
+      "presentable": false,
+      "primaryKey": false,
+      "required": false,
+      "system": false,
+      "type": "text"
+    },
+    {
+      "hidden": false,
+      "id": "ibtre_fields",
+      "maxSize": 1048576,
+      "name": "fields",
+      "presentable": false,
+      "required": false,
+      "system": false,
+      "type": "json"
+    },
+    {
+      "hidden": false,
+      "id": "ibtre_old_bar",
+      "maxSize": 1048576,
+      "name": "old_bar",
+      "presentable": false,
+      "required": false,
+      "system": false,
+      "type": "json"
+    },
+    {
+      "hidden": false,
+      "id": "ibtre_new_bar",
+      "maxSize": 1048576,
+      "name": "new_bar",
+      "presentable": false,
+      "required": false,
+      "system": false,
+      "type": "json"
+    },
+    {
+      "hidden": false,
+      "id": "ibtre_applied",
+      "name": "applied",
+      "presentable": false,
+      "required": false,
+      "system": false,
+      "type": "bool"
+    },
+    {
+      "hidden": false,
+      "id": "ibtre_verified",
+      "name": "verified",
+      "presentable": false,
+      "required": false,
+      "system": false,
+      "type": "bool"
+    },
+    {
+      "autogeneratePattern": "",
+      "hidden": false,
+      "id": "ibtre_error",
+      "max": 1000,
+      "min": 0,
+      "name": "error",
+      "pattern": "",
+      "presentable": false,
+      "primaryKey": false,
+      "required": false,
+      "system": false,
+      "type": "text"
+    },
+    {
+      "hidden": false,
+      "id": "autodate_ibtre_created",
+      "name": "created",
+      "onCreate": true,
+      "onUpdate": false,
+      "presentable": false,
+      "system": false,
+      "type": "autodate"
+    },
+    {
+      "hidden": false,
+      "id": "autodate_ibtre_updated",
+      "name": "updated",
+      "onCreate": true,
+      "onUpdate": true,
+      "presentable": false,
+      "system": false,
+      "type": "autodate"
+    }
+  ],
+  "indexes": [
+    "CREATE INDEX IF NOT EXISTS idx_ibkr_bar_truth_repair_operation ON ibkr_bar_truth_repair_events (operation_id, updated)",
+    "CREATE INDEX IF NOT EXISTS idx_ibkr_bar_truth_repair_symbol_date ON ibkr_bar_truth_repair_events (environment, market_date, symbol, interval, bar_time_ms)",
+    "CREATE INDEX IF NOT EXISTS idx_ibkr_bar_truth_repair_action ON ibkr_bar_truth_repair_events (environment, action, applied, verified)"
+  ]
+}
+
+function findIbkrBarTruthRepairEventsCollection(app) {
+  try {
+    return app.findCollectionByNameOrId("ibkr_bar_truth_repair_events")
+  } catch (e) {}
+  return null
+}
+
+migrate((app) => {
+  let collection = findIbkrBarTruthRepairEventsCollection(app)
+
+  if (collection) {
+    unmarshal(IBKR_BAR_TRUTH_REPAIR_EVENTS_SCHEMA, collection)
+  } else {
+    collection = new Collection(IBKR_BAR_TRUTH_REPAIR_EVENTS_SCHEMA)
+  }
+
+  return app.save(collection)
+}, (app) => {
+  const collection = findIbkrBarTruthRepairEventsCollection(app)
+  if (!collection) {
+    return null
+  }
+
+  return app.delete(collection)
+})

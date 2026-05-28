@@ -26,12 +26,16 @@ RUNTIME_PROXY_LONG_TIMEOUT_SECONDS = 300
 RUNTIME_PROXY_LONG_TIMEOUT_PATHS = {
     "/ibkr/data-quality/repair",
     "/ibkr/data-quality/truth-audit",
+    "/ibkr/data-quality/truth-repair",
+    "/ibkr/data-quality/tv-indicator-audit",
     "/ibkr/data-quality/daily-repair",
 }
 ASYNC_RUNTIME_OPERATION_STATE_PREFIX = "ibkr_runtime_async_operation:"
 ASYNC_RUNTIME_OPERATION_PATHS = {
     "/ibkr/data-quality/repair",
     "/ibkr/data-quality/truth-audit",
+    "/ibkr/data-quality/truth-repair",
+    "/ibkr/data-quality/tv-indicator-audit",
 }
 _ASYNC_OPERATION_LOCK = threading.RLock()
 _ASYNC_OPERATION_STATES: dict[str, dict[str, Any]] = {}

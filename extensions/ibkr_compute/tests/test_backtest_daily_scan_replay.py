@@ -78,6 +78,7 @@ class BacktestDailyScanReplayTests(unittest.TestCase):
             "premarket_cutoff_time": "09:25",
             "scan_session_mode": "extended",
             "scan_warmup_bars": 320,
+            "backtest_require_truth_proof": False,
         }
 
     def _cache_request(self):
@@ -233,6 +234,23 @@ class BacktestDailyScanReplayTests(unittest.TestCase):
         self.assertEqual(daily["candidate_count"], 0)
         self.assertEqual(daily["selected_count"], 0)
         self.assertEqual(daily["rejection_summary"]["premarket_volume_below_threshold"], 1)
+
+    def test_scan_replay_blocks_cache_and_scan_when_truth_proof_red(self):
+        self.service._load_trading_dates = lambda request: ["2026-04-22"]
+        self.service._load_scan_universe = lambda request, as_of_date="": [{"symbol": "NVDA", "exchange": "SMART"}]
+        self.service._build_backtest_truth_proof_gate = lambda symbols, request, **kwargs: {
+            "ok": False,
+            "status": "red",
+            "reason": "truth_audit_not_green",
+            "symbols": list(symbols or []),
+            "context": kwargs.get("context") or "",
+        }
+        self.service._evaluate_historical_scan_symbol = lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("proof red should block scan rebuild")
+        )
+
+        with self.assertRaisesRegex(ValueError, "data_quality_proof_not_green:truth_audit_not_green"):
+            self.service._build_daily_scan_replay_plan({**self.request, "backtest_require_truth_proof": True})
 
     def test_scan_replay_reuses_sd_admission_as_hard_gate_when_enabled(self):
         self.service._load_trading_dates = lambda request: ["2026-04-22"]

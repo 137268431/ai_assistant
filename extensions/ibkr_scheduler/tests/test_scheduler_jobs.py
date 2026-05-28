@@ -277,6 +277,37 @@ class SchedulerJobsTest(unittest.TestCase):
         self.assertFalse(cron_matches_minute(early["cron_expr"], datetime(2026, 4, 20, 13, 20, tzinfo=timezone.utc), early["cron_timezone"]))
         self.assertFalse(cron_matches_minute(handoff["cron_expr"], datetime(2026, 4, 20, 15, 5, tzinfo=timezone.utc), handoff["cron_timezone"]))
 
+    def test_active_window_progress_status_crons_match_0830_to_1100_every_five_minutes(self):
+        definition = next(item for item in scheduler_app_mod.CRON_DEFINITIONS if item["id"] == "ibkr_active_window_progress_status")
+        schedules = {item["id"]: item for item in definition["schedules"]}
+        preopen = schedules["preopen_0830_0855"]
+        early = schedules["open_0900_0955"]
+        mid = schedules["mid_1000_1055"]
+        handoff = schedules["handoff_1100"]
+
+        self.assertEqual(preopen["cron_expr"], "30,35,40,45,50,55 8 * * 1-5")
+        self.assertEqual(early["cron_expr"], "0,5,10,15,20,25,30,35,40,45,50,55 9 * * 1-5")
+        self.assertEqual(mid["cron_expr"], "0,5,10,15,20,25,30,35,40,45,50,55 10 * * 1-5")
+        self.assertEqual(handoff["cron_expr"], "0 11 * * 1-5")
+        self.assertEqual(definition["cron_timezone"], "America/New_York")
+        self.assertEqual(
+            scheduler_app_mod.NATIVE_API_HTTP_JOB_ENDPOINTS["ibkr_active_window_progress_status"],
+            ("POST", "/api/custom/system/jobs/active_window_progress_status"),
+        )
+
+        def matches_any(when_utc):
+            return any(
+                cron_matches_minute(schedule["cron_expr"], when_utc, schedule["cron_timezone"])
+                for schedule in schedules.values()
+            )
+
+        self.assertTrue(matches_any(datetime(2026, 4, 20, 12, 30, tzinfo=timezone.utc)))
+        self.assertTrue(matches_any(datetime(2026, 4, 20, 13, 55, tzinfo=timezone.utc)))
+        self.assertTrue(matches_any(datetime(2026, 4, 20, 14, 55, tzinfo=timezone.utc)))
+        self.assertTrue(matches_any(datetime(2026, 4, 20, 15, 0, tzinfo=timezone.utc)))
+        self.assertFalse(matches_any(datetime(2026, 4, 20, 12, 25, tzinfo=timezone.utc)))
+        self.assertFalse(matches_any(datetime(2026, 4, 20, 15, 5, tzinfo=timezone.utc)))
+
     def test_intraday_window_admission_cron_matches_regular_session_et(self):
         definition = next(item for item in scheduler_app_mod.CRON_DEFINITIONS if item["id"] == "ibkr_intraday_window_admission")
 

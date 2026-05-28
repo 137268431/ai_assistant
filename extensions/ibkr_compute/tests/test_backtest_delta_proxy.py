@@ -113,6 +113,7 @@ class BacktestDeltaProxyTests(unittest.TestCase):
             "compare_tv_signals": False,
             "persist_backtest_indicators": False,
             "preflight_backfill": False,
+            "backtest_require_truth_proof": False,
         }
         payload.update(overrides)
         return request_utils.normalize_request(payload)

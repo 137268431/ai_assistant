@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 
 import requests
@@ -13,6 +15,8 @@ from ibkr_compute.api.ops.data_quality_truth import (
     build_truth_audit_summary,
     resolve_truth_audit_window,
 )
+from ibkr_compute.api.ops.truth_repair import build_truth_repair_payload
+from ibkr_compute.api.ops.tv_indicator_audit import build_tv_indicator_audit_payload
 from ibkr_compute.api.route_request import (
     coerce_request_bool,
     coerce_request_int,
@@ -1098,6 +1102,219 @@ def build_ibkr_data_quality_truth_audit_response():
             "errors": errors,
         }
     ), 200
+
+
+def _state_record_data(record) -> dict:
+    raw_data = (record or {}).get("data") if isinstance(record, dict) else {}
+    if isinstance(raw_data, dict):
+        return dict(raw_data)
+    if isinstance(raw_data, str) and raw_data.strip():
+        try:
+            parsed = json.loads(raw_data)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _tv_indicator_audit_alert_fingerprint(alert_payload: dict) -> str:
+    summary = dict((alert_payload or {}).get("summary") or {})
+    mismatch_sample = list((alert_payload or {}).get("mismatches") or [])[:20]
+    fingerprint_payload = {
+        "status": str((alert_payload or {}).get("status") or ""),
+        "symbols": summary.get("symbols") or [],
+        "intervals": summary.get("intervals") or [],
+        "mismatch_count": summary.get("mismatch_count") or 0,
+        "missing_tables": summary.get("missing_tables") or [],
+        "error": summary.get("error") or "",
+        "mismatches": mismatch_sample,
+    }
+    encoded = json.dumps(fingerprint_payload, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha1(encoded.encode("utf-8")).hexdigest()
+
+
+def _emit_tv_indicator_audit_system_event(service, alert_payload: dict, *, environment: str, debounce_seconds: int) -> dict:
+    pb = getattr(service, "pb", None)
+    if pb is None:
+        return {"sent": False, "reason": "pb_unavailable"}
+    notify = getattr(pb, "notify_system_event", None)
+    if not callable(notify):
+        return {"sent": False, "reason": "notify_unavailable"}
+
+    status = str((alert_payload or {}).get("status") or "").strip().lower()
+    if status not in {"error", "unavailable"}:
+        return {"sent": False, "reason": "status_ok", "status": status}
+
+    summary = dict((alert_payload or {}).get("summary") or {})
+    fingerprint = _tv_indicator_audit_alert_fingerprint(alert_payload or {})
+    now_ms = int(time.time() * 1000)
+    runtime_environment = str(environment or summary.get("environment") or "live").strip().lower() or "live"
+    state_key = "tv_indicator_audit_alert"
+    state_date = "global"
+
+    try:
+        existing = pb.get_state(state_key, runtime_environment, state_date) if hasattr(pb, "get_state") else None
+        existing_data = _state_record_data(existing)
+        last_alert_ms = int(existing_data.get("last_alert_ms") or 0)
+        if (
+            int(debounce_seconds or 0) > 0
+            and existing_data.get("fingerprint") == fingerprint
+            and now_ms - last_alert_ms < int(debounce_seconds) * 1000
+        ):
+            return {
+                "sent": False,
+                "reason": "debounced",
+                "fingerprint": fingerprint,
+                "last_alert_ms": last_alert_ms,
+            }
+    except Exception:
+        existing_data = {}
+
+    title = "TradingView indicator audit mismatch" if status == "error" else "TradingView indicator audit unavailable"
+    level = "error" if status == "error" else "warning"
+    detail = {
+        "truth_source": "tradingview",
+        "environment": runtime_environment,
+        "status": status,
+        "summary": summary,
+        "mismatches": list((alert_payload or {}).get("mismatches") or [])[:20],
+        "fingerprint": fingerprint,
+    }
+    try:
+        result = notify(
+            title,
+            detail,
+            event_type="data_quality",
+            level=level,
+            source="ibkr_compute_tv_indicator_audit",
+            environment=runtime_environment,
+            message_id=f"tv_indicator_audit:{runtime_environment}:{fingerprint[:16]}",
+        )
+        if hasattr(pb, "upsert_state"):
+            pb.upsert_state(
+                state_key,
+                runtime_environment,
+                {
+                    **existing_data,
+                    "fingerprint": fingerprint,
+                    "last_alert_ms": now_ms,
+                    "last_status": status,
+                    "summary": summary,
+                },
+                date=state_date,
+            )
+        return {"sent": True, "fingerprint": fingerprint, "event": result or {}}
+    except Exception as exc:
+        return {"sent": False, "reason": f"notify_failed:{exc}", "fingerprint": fingerprint}
+
+
+def build_ibkr_data_quality_tv_indicator_audit_response():
+    _, service, unavailable = require_ibkr_service()
+    if unavailable:
+        return unavailable
+
+    payload = get_json_payload()
+    runtime_environment = resolve_market_data_mode(
+        payload.get("market_data_mode") or payload.get("data_environment")
+    )
+    symbols = _resolve_data_quality_symbols(service, payload)
+    if not symbols:
+        app_mod = get_app_module()
+        symbols = app_mod.normalize_symbols(payload.get("symbols") or ["SPY"])
+    intervals = (
+        payload.get("intervals")
+        or payload.get("timeframes")
+        or payload.get("timeframe")
+        or ["5", "15", "30", "60", "240", "D"]
+    )
+    window = payload.get("window")
+    if not isinstance(window, dict):
+        window = {
+            "start_ms": payload.get("start_ms") or payload.get("window_start_ms"),
+            "end_ms": payload.get("end_ms") or payload.get("window_end_ms"),
+            "before_ms": payload.get("before_ms"),
+        }
+    limit = coerce_request_int(payload.get("limit"), 100, minimum=1, maximum=5000)
+    alert_enabled = coerce_request_bool(payload.get("alert"), True)
+    debounce_seconds = coerce_request_int(payload.get("alert_debounce_seconds"), 900, minimum=0)
+    alert_results: list[dict] = []
+
+    def _emit_alert(alert_payload: dict) -> None:
+        alert_results.append(
+            _emit_tv_indicator_audit_system_event(
+                service,
+                alert_payload,
+                environment=runtime_environment,
+                debounce_seconds=debounce_seconds,
+            )
+        )
+
+    result = build_tv_indicator_audit_payload(
+        symbols=symbols,
+        intervals=intervals,
+        environment=runtime_environment,
+        limit=limit,
+        window=window,
+        emit_alert=_emit_alert if alert_enabled else None,
+    )
+    return jsonify(
+        {
+            **result,
+            "symbols": symbols,
+            "intervals": intervals,
+            "environment": runtime_environment,
+            "alert": {
+                "enabled": alert_enabled,
+                "debounce_seconds": debounce_seconds,
+                "results": alert_results,
+            },
+        }
+    ), 200
+
+
+def build_ibkr_data_quality_truth_repair_response():
+    _, service, unavailable = require_ibkr_service()
+    if unavailable:
+        return unavailable
+
+    payload = get_json_payload()
+    symbols = _resolve_data_quality_symbols(service, payload)
+    runtime_environment = resolve_market_data_mode(
+        payload.get("market_data_mode") or payload.get("data_environment")
+    )
+    market_date = str(payload.get("market_date") or "").strip()
+    if not market_date:
+        app_mod = get_app_module()
+        market_date = app_mod.current_market_date()
+    apply_changes = coerce_request_bool(payload.get("apply"), False)
+    delete_extra_bars = coerce_request_bool(payload.get("delete_extra_bars"), True)
+    confirm_refetch = coerce_request_bool(payload.get("confirm_refetch"), True)
+    persist_truth = coerce_request_bool(payload.get("persist"), True)
+    operation_id = str(payload.get("operation_id") or "").strip()
+
+    status_payload = get_service_status_snapshot(service)
+    gateway_running = bool((status_payload.get("gateway") or {}).get("running"))
+    session_authenticated = bool((status_payload.get("session") or {}).get("authenticated"))
+    if not gateway_running:
+        return jsonify({"ok": False, "error": "IBKR gateway not running", "market_date": market_date}), 409
+    if not session_authenticated:
+        return jsonify({"ok": False, "error": "IBKR session not authenticated", "market_date": market_date}), 409
+
+    try:
+        result = build_truth_repair_payload(
+            service=service,
+            symbols=symbols,
+            environment=runtime_environment,
+            market_date=market_date,
+            operation_id=operation_id,
+            apply_changes=apply_changes,
+            delete_extra_bars=delete_extra_bars,
+            confirm_refetch=confirm_refetch,
+            persist_truth=persist_truth,
+        )
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc), "market_date": market_date}), 400
+    return jsonify(result), 200
 
 
 def build_ibkr_data_quality_daily_rescan_response():

@@ -1594,6 +1594,20 @@ class BacktestScanReplayMixin:
                 universe_rows = self._load_scan_universe(request, as_of_date="")
                 universe_snapshot_fallback = bool(universe_rows)
             universe_hash = self._build_daily_selection_universe_hash(universe_rows)
+            universe_symbols = [
+                str((row or {}).get("symbol", "") or "").strip().upper()
+                for row in universe_rows or []
+                if str((row or {}).get("symbol", "") or "").strip()
+            ]
+            proof_gate = self._build_backtest_truth_proof_gate(
+                universe_symbols,
+                request,
+                date_from=trade_date,
+                date_to=trade_date,
+                context="daily_scan_replay_universe",
+            )
+            if not proof_gate.get("ok"):
+                raise ValueError(f"data_quality_proof_not_green:{proof_gate.get('reason') or 'unknown'}")
             cache_record = preloaded_cache_records.get(trade_date) if cache_summary.get("enabled") else None
             if cache_summary.get("enabled"):
                 if (

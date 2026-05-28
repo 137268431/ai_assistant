@@ -84,6 +84,8 @@ class IbkrApiBacktestProxyBoundaryTest(unittest.TestCase):
             ("POST", "ibkr/history/rebuild/start"): "/ibkr/history/rebuild/start",
             ("POST", "ibkr/data_quality/rescan"): "/ibkr/data-quality/scan",
             ("POST", "ibkr/data_quality/repair"): "/ibkr/data-quality/repair",
+            ("POST", "ibkr/data_quality/truth_repair"): "/ibkr/data-quality/truth-repair",
+            ("GET", "ibkr/data_quality/operation_status"): "/ibkr/data-quality/operation-status",
             ("GET", "ibkr/backtest-preload/status"): "/ibkr/backtest-preload/status",
             ("POST", "ibkr/backtest-preload/status"): "/ibkr/backtest-preload/status",
             ("GET", "ibkr/backtest_preload/status"): "/ibkr/backtest-preload/status",

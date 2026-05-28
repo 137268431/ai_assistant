@@ -315,6 +315,14 @@ def delete_rows_by_environment(conn: sqlite3.Connection, table: str, environment
     return delete_rows(conn, table, where="environment = ?", params=(str(environment or "live"),))
 
 
+def table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+        (str(table or ""),),
+    ).fetchone()
+    return bool(row)
+
+
 def _bar_environment_values(environment: str, *, include_legacy_empty: bool = True) -> list[str]:
     runtime_environment = str(environment or "live").strip().lower() or "live"
     values = [runtime_environment]
@@ -681,6 +689,11 @@ def delete_symbol_runtime_data(
     deleted["ibkr_reverse_signals"] = delete_rows(conn, "ibkr_reverse_signals", where=base_where, params=base_params)
     deleted["ibkr_bar_integrity"] = delete_rows(conn, "ibkr_bar_integrity", where=base_where, params=base_params)
     deleted["ibkr_bar_truth_audit"] = delete_rows(conn, "ibkr_bar_truth_audit", where=base_where, params=base_params)
+    deleted["ibkr_bar_truth_repair_events"] = (
+        delete_rows(conn, "ibkr_bar_truth_repair_events", where=base_where, params=base_params)
+        if table_exists(conn, "ibkr_bar_truth_repair_events")
+        else 0
+    )
 
     signal_where = f"{base_where} AND LOWER(COALESCE(status, '')) != 'executed'"
     signal_params: list[Any] = list(base_params)

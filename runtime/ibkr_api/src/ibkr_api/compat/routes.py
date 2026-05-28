@@ -78,6 +78,7 @@ NATIVE_CUSTOM_ROUTES = [
     "system/event",
     "system/healthz",
     "system/jobs/2fa_hourly_check",
+    "system/jobs/active_window_progress_status",
     "system/jobs/auth_edge_guard",
     "system/jobs/auth_pending_guard",
     "system/jobs/daily_report",

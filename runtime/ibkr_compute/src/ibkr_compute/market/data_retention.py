@@ -68,6 +68,12 @@ DEFAULT_RETENTION_POLICIES = (
         "kind": "date_text",
         "include_legacy_empty": False,
     },
+    {
+        "collection": "ibkr_bar_truth_repair_events",
+        "field": "market_date",
+        "kind": "date_text",
+        "include_legacy_empty": False,
+    },
 )
 
 

@@ -57,6 +57,7 @@ MONITORED_TABLES: tuple[dict[str, Any], ...] = (
     {"name": "ibkr_bar_integrity", "group": "quality", "critical": False, "retention": True, "date_field": "market_date"},
     {"name": "ibkr_bar_coverage_daily", "group": "quality", "critical": False, "retention": True, "date_field": "market_date"},
     {"name": "ibkr_bar_truth_audit", "group": "quality", "critical": False, "retention": True, "date_field": "market_date"},
+    {"name": "ibkr_bar_truth_repair_events", "group": "quality", "critical": False, "retention": True, "date_field": "market_date"},
     {"name": "ibkr_state", "group": "runtime", "critical": True},
     {"name": "config", "group": "runtime", "critical": True},
     {"name": "watchlist", "group": "runtime", "critical": True},
@@ -71,6 +72,7 @@ MONITORED_TABLES: tuple[dict[str, Any], ...] = (
     {"name": "ibkr_backtest_indicators", "group": "backtest", "critical": False},
     {"name": "tv_signals", "group": "compat", "critical": False},
     {"name": "tv_indicators", "group": "compat", "critical": False},
+    {"name": "tv_indicator_audit_snapshots", "group": "compat", "critical": False},
 )
 
 GROUP_LABELS = {

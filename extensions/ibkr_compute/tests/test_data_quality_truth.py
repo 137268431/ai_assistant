@@ -45,7 +45,11 @@ class DataQualityTruthHelpersTest(unittest.TestCase):
             "ok",
         )
         self.assertEqual(
-            classify_truth_audit_status({"indicator_mismatch_count": 1, "signal_mismatch_count": 1}),
+            classify_truth_audit_status({"matched_bar_count": 0}),
+            "unavailable",
+        )
+        self.assertEqual(
+            classify_truth_audit_status({"matched_bar_count": 78, "indicator_mismatch_count": 1, "signal_mismatch_count": 1}),
             "ok",
         )
         self.assertEqual(

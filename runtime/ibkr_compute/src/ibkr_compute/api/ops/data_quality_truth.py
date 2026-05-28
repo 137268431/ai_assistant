@@ -74,6 +74,8 @@ def classify_truth_audit_status(
     for key in TRUTH_AUDIT_ERROR_FIELDS:
         if int(summary.get(key, 0) or 0) > 0:
             return "error"
+    if int(summary.get("matched_bar_count", 0) or 0) <= 0:
+        return "unavailable"
     return "ok"
 
 
