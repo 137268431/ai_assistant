@@ -32,6 +32,7 @@ MANUAL_TARGET_SOURCES = {
     "screener_targets_tab",
 }
 CONTEXT_ACTIVE_TARGET_SOURCES = {"daily_scan", "intraday_window_admission"}
+TRADINGVIEW_TARGET_SOURCES = {"tradingview", "tv", "tv_webhook", "webhook_tv"}
 
 
 def _truthy_target_value(value) -> bool:
@@ -61,9 +62,19 @@ def _target_row_is_manual_active(row: dict | None) -> bool:
     return source.startswith("manual_") or source in MANUAL_TARGET_SOURCES
 
 
+def _target_row_is_tradingview_active(row: dict | None) -> bool:
+    extra = parse_json_object((row or {}).get("extra"))
+    source = str(extra.get("source") or "").strip().lower()
+    return source in TRADINGVIEW_TARGET_SOURCES
+
+
 def _effective_target_status(row: dict | None) -> str:
     status = str((row or {}).get("status") or "").strip().lower()
-    if status == "active" and not (_target_row_is_daily_scan_active(row) or _target_row_is_manual_active(row)):
+    if status == "active" and not (
+        _target_row_is_daily_scan_active(row)
+        or _target_row_is_manual_active(row)
+        or _target_row_is_tradingview_active(row)
+    ):
         return "candidate"
     return status
 

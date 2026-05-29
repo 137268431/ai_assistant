@@ -83,6 +83,7 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     as_dict = deps["as_dict"]
     load_daily_scan_state = deps["load_daily_scan_state"]
     count_active_today_targets = deps["count_active_today_targets"]
+    build_today_targets_response = deps.get("build_today_targets_response")
     build_statusz_compute_payload = deps["build_statusz_compute_payload"]
     build_statusz_live_readiness = deps["build_statusz_live_readiness"]
     build_statusz_runtime_payload = deps["build_statusz_runtime_payload"]
@@ -115,6 +116,53 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
                 "source": "ibkr-api",
                 "error": str(exc),
             }
+
+    def fallback_today_target_state(*, broker_mode: str, data_environment: str, market_date: str) -> dict[str, Any]:
+        fallback: dict[str, Any] = {
+            "active_target_date": market_date,
+            "active_target_count": count_active_today_targets(data_environment, market_date) if market_date else 0,
+        }
+        if not callable(build_today_targets_response) or not market_date:
+            return fallback
+        try:
+            payload, status_code = build_today_targets_response(
+                payload={
+                    "broker_mode": broker_mode,
+                    "market_data_mode": data_environment,
+                    "data_environment": data_environment,
+                    "environment": data_environment,
+                    "market_date": market_date,
+                    "date": market_date,
+                    "per_page": 200,
+                    "page": 1,
+                }
+            )
+        except Exception:
+            return fallback
+        if status_code != 200 or not isinstance(payload, dict):
+            return fallback
+        summary = as_dict(payload.get("summary"))
+        items = [dict(item) for item in payload.get("items") or [] if isinstance(item, dict)]
+        execution_symbols = [
+            str(item.get("symbol") or "").strip().upper()
+            for item in items
+            if bool(item.get("execution_eligible") or item.get("is_execution_eligible")) and str(item.get("symbol") or "").strip()
+        ]
+        observe_symbols = [
+            str(item.get("symbol") or "").strip().upper()
+            for item in items
+            if not bool(item.get("execution_eligible") or item.get("is_execution_eligible")) and str(item.get("symbol") or "").strip()
+        ]
+        fallback.update(
+            {
+                "active_target_count": int(summary.get("active_count") or fallback.get("active_target_count") or 0),
+                "execution_eligible_target_count": int(summary.get("execution_eligible_count") or len(execution_symbols)),
+                "execution_eligible_symbols": execution_symbols,
+                "observe_target_count": int(summary.get("observe_only_count") or len(observe_symbols)),
+                "observe_target_symbols": observe_symbols[:25],
+            }
+        )
+        return fallback
 
     @app.route("/api/custom/ibkr/runtime/config", methods=["GET"])
     def custom_ibkr_runtime_config() -> Response:
@@ -258,7 +306,11 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
         runtime_payload = as_dict(runtime_result.get("payload"))
         persisted_daily_scan = load_daily_scan_state(data_environment)
         fallback_active_target_date = str(persisted_daily_scan.get("market_date") or "").strip()
-        fallback_active_target_count = count_active_today_targets(data_environment, fallback_active_target_date) if fallback_active_target_date else 0
+        fallback_target_state = fallback_today_target_state(
+            broker_mode=environment,
+            data_environment=data_environment,
+            market_date=fallback_active_target_date,
+        )
 
         compute_data = build_statusz_compute_payload(compute_payload, include_engines)
         live_readiness = build_statusz_live_readiness(compute_payload, runtime_payload)
@@ -268,8 +320,7 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             live_readiness=live_readiness,
             fallback_state={
                 "daily_scan": persisted_daily_scan,
-                "active_target_date": fallback_active_target_date,
-                "active_target_count": fallback_active_target_count,
+                **fallback_target_state,
             },
         )
         service_topology = merge_service_topology(compute_data, runtime_data, backtest_health_payload)

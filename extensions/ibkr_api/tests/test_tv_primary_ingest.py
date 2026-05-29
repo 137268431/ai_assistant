@@ -2,6 +2,7 @@ import copy
 import re
 import sys
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 
@@ -13,6 +14,8 @@ for src_root in (SERVICE_SRC_ROOT, COMPUTE_SRC_ROOT):
 
 
 from ibkr_api.tradingview.tv_primary import TV_EVENT_COLLECTION, process_tv_primary_event
+from ibkr_api.signals.ingest import build_signal_ingest_response
+from ibkr_compute.market.timeframe_utils import ET
 
 
 class _FakePB:
@@ -133,6 +136,23 @@ def _process(pb, payload):
     )
 
 
+def _process_with_real_signal_ingest(pb, payload):
+    return process_tv_primary_event(
+        pb,
+        payload,
+        normalize_environment=_normalize_environment,
+        escape_filter_string=_escape,
+        build_signal_ingest_response=build_signal_ingest_response,
+        config_value=lambda key, default, environment: (
+            "FALSE" if key == "signal_manual_confirm_enabled" else _config_value(key, default, environment)
+        ),
+    )
+
+
+def _et_ms(text):
+    return int(datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=ET).timestamp() * 1000)
+
+
 class TvPrimaryIngestTests(unittest.TestCase):
     def test_pre_alert_upserts_target_and_dedupes_event(self):
         pb = _FakePB()
@@ -208,6 +228,48 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertEqual(saved["extra"]["source"], "tradingview")
         self.assertEqual(pb.records[TV_EVENT_COLLECTION][0]["broker_mode"], "paper")
 
+    def test_entry_without_us_time_uses_bar_time_for_signal_record(self):
+        pb = _FakePB()
+        pb.create_record(
+            "ibkr_targets",
+            {
+                "symbol": "AAPL",
+                "date": "2026-05-29",
+                "environment": "live",
+                "direction_bias": "long",
+                "score": 90,
+                "status": "active",
+                "extra": {"source": "tradingview", "activity_rank": 1},
+            },
+        )
+
+        response, status = _process_with_real_signal_ingest(
+            pb,
+            {
+                "source": "tv",
+                "event_type": "entry",
+                "event_id": "tv-entry-no-time",
+                "signal_id": "tv-entry-no-time",
+                "symbol": "AAPL",
+                "direction": "long",
+                "entry_price": 188.25,
+                "quantity": 12,
+                "stop_loss": 185.80,
+                "take_profit": 193.10,
+                "market_date": "2026-05-29",
+                "environment": "paper",
+                "bar_time_ms": _et_ms("2026-05-29 10:40:00"),
+                "activity_score": 91,
+                "quality_score": 100,
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
+        saved = pb.records["ibkr_signals"][0]
+        self.assertEqual(saved["us_time"], "2026-05-29 10:40:00")
+        self.assertEqual(saved["date"], "2026-05-29")
+
     def test_risk_update_routes_to_adjust_bracket_reverse_signal(self):
         pb = _FakePB()
         pb.create_record(
@@ -255,6 +317,7 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertEqual(reverse["source"], "tradingview")
         self.assertEqual(reverse["action_type"], "adjust_bracket")
         self.assertEqual(reverse["environment"], "paper")
+        self.assertEqual(reverse["priority"], 9)
         self.assertEqual(reverse["extra"]["sl_order_id"], "sl-100")
         self.assertEqual(reverse["extra"]["tp_order_id"], "tp-100")
         self.assertEqual(reverse["extra"]["new_sl"], 187.10)
@@ -280,6 +343,7 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertTrue(response["ok"])
         reverse = pb.records["ibkr_reverse_signals"][0]
         self.assertEqual(reverse["action_type"], "close")
+        self.assertEqual(reverse["priority"], 10)
         self.assertEqual(reverse["extra"]["reverse_kind"], "tv_exit")
 
 

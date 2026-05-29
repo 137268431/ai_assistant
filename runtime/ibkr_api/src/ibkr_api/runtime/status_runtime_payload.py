@@ -40,6 +40,17 @@ def _resolve_market_universe(
         fallback_active_target_count = int(fallback.get("active_target_count") or 0)
         if fallback_active_target_count > 0:
             market_universe["active_target_count"] = fallback_active_target_count
+    if int(market_universe.get("execution_eligible_target_count") or 0) <= 0:
+        fallback_execution_count = int(fallback.get("execution_eligible_target_count") or 0)
+        if fallback_execution_count > 0:
+            market_universe["execution_eligible_target_count"] = fallback_execution_count
+            market_universe["execution_eligible_symbols"] = list(fallback.get("execution_eligible_symbols") or [])
+            market_universe["no_execution_eligible_targets"] = False
+    if int(market_universe.get("observe_target_count") or 0) <= 0:
+        fallback_observe_count = int(fallback.get("observe_target_count") or 0)
+        if fallback_observe_count > 0:
+            market_universe["observe_target_count"] = fallback_observe_count
+            market_universe["observe_target_symbols"] = list(fallback.get("observe_target_symbols") or [])
     if not str(market_universe.get("active_target_date") or "").strip():
         fallback_market_date = str(fallback.get("active_target_date") or daily_scan.get("market_date") or "").strip()
         if fallback_market_date:

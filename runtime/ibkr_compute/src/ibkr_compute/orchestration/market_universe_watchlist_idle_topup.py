@@ -15,6 +15,7 @@ from .market_universe_support import (
     _service_mod,
     _target_row_is_daily_scan_active,
     _target_row_is_manual,
+    _target_row_is_tradingview_active,
 )
 
 from ibkr_compute.market.bar_freshness import DEFAULT_CLOSE_DELAY_SECONDS, latest_expected_extended_5m_ms
@@ -1399,7 +1400,11 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
                 or str((row or {}).get("status", "") or "").strip().lower() != "active"
             ):
                 continue
-            if _target_row_is_daily_scan_active(row) or _target_row_is_manual(row):
+            if (
+                _target_row_is_daily_scan_active(row)
+                or _target_row_is_manual(row)
+                or _target_row_is_tradingview_active(row)
+            ):
                 signal_symbols.add(symbol)
         return sorted(signal_symbols)
 

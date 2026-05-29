@@ -480,6 +480,10 @@
             };
         }
 
+        function buildSignalMarketDateFilter(range = getSignalTimeRange()) {
+            return `((us_time >= "${range.startTime}" && us_time <= "${range.endTime}") || (bar_time_ms >= ${range.startTimeMs} && bar_time_ms < ${range.endTimeMs}))`;
+        }
+
         function normalizeIndicatorIntervalValue(value) {
             const normalized = normalizeChartInterval(value, '5m');
             const map = {
@@ -1551,10 +1555,10 @@
                     console.warn('[Signals] 无法读取 signal_validity_minutes 配置，使用默认值 30 分钟:', e);
                     signalValidityMinutes = 30;
                 }
-                const { startTime, endTime } = getSignalTimeRange();
+                const timeRange = getSignalTimeRange();
 
-                // 构建 filter 条件（使用 us_time 而非 created，因为 created 是服务器时间）
-                const conditions = [`environment = "${currentEnvironment}"`, `us_time >= "${startTime}"`, `us_time <= "${endTime}"`];
+                // TV webhook 可能只带 bar_time_ms，保留 us_time 兼容旧数据。
+                const conditions = [`environment = "${currentEnvironment}"`, buildSignalMarketDateFilter(timeRange)];
 
                 if (filterSignalId) {
                     conditions.push(`signal_id = "${escapeFilterValue(filterSignalId)}"`);
@@ -1834,17 +1838,7 @@
         }
 
         async function loadSignalsForTabCounts() {
-            let startTime, endTime;
-
-            if (rangeStartDate && rangeEndDate) {
-                startTime = `${rangeStartDate} 00:00:00`;
-                endTime = `${rangeEndDate} 23:59:59`;
-            } else {
-                startTime = `${currentDate} 00:00:00`;
-                endTime = `${currentDate} 23:59:59`;
-            }
-
-            const baseConditions = [`environment = "${currentEnvironment}"`, `us_time >= "${startTime}"`, `us_time <= "${endTime}"`];
+            const baseConditions = [`environment = "${currentEnvironment}"`, buildSignalMarketDateFilter()];
             if (filterSignalId) {
                 baseConditions.push(`signal_id = "${escapeFilterValue(filterSignalId)}"`);
             }
@@ -2057,10 +2051,10 @@
                 // 先增加页码再请求
                 currentPage++;
                 const requestId = currentSignalsRequestId;
-                const { startTime, endTime } = getSignalTimeRange();
+                const timeRange = getSignalTimeRange();
 
-                // 构建 filter 条件（使用 us_time 而非 created，因为 created 是服务器时间）
-                const conditions = [`environment = "${currentEnvironment}"`, `us_time >= "${startTime}"`, `us_time <= "${endTime}"`];
+                // TV webhook 可能只带 bar_time_ms，保留 us_time 兼容旧数据。
+                const conditions = [`environment = "${currentEnvironment}"`, buildSignalMarketDateFilter(timeRange)];
 
                 if (filterSignalId) {
                     conditions.push(`signal_id = "${escapeFilterValue(filterSignalId)}"`);

@@ -231,6 +231,45 @@
                 && !Number(gateway?.pid || 0);
         }
 
+        function getIbkrRuntimeStatusCardModel(status = {}) {
+            const gateway = status?.gateway || {};
+            const session = status?.session || {};
+            const websocket = status?.websocket || {};
+            const runtimePhase = String(status?.runtime_phase || status?.status || '').trim().toLowerCase();
+            const gatewayActive = Boolean(gateway.running || gateway.reachable || status.gateway_running);
+            const authenticated = Boolean(session.authenticated || status.authenticated || status.session_authenticated);
+            const started = runtimePhase === 'running' || Boolean(status.startup_complete || session.running || gatewayActive);
+            const websocketReady = Boolean(websocket.ready || websocket.connected || status.websocket_ready);
+            if (started && authenticated) {
+                return {
+                    dotClass: 'dot-green',
+                    mainText: '运行中',
+                    subText: websocketReady ? 'Gateway / session / websocket ready' : 'Gateway / session ready',
+                    started,
+                    gatewayActive,
+                    authenticated,
+                };
+            }
+            if (started || gatewayActive) {
+                return {
+                    dotClass: 'dot-yellow',
+                    mainText: started ? '等待认证' : 'Gateway',
+                    subText: authenticated ? 'session authenticated' : '等待 IBKR session / 2FA',
+                    started,
+                    gatewayActive,
+                    authenticated,
+                };
+            }
+            return {
+                dotClass: 'dot-gray',
+                mainText: runtimePhase ? runtimePhase.toUpperCase() : '未启动',
+                subText: 'runtime 状态同步中',
+                started: false,
+                gatewayActive: false,
+                authenticated: false,
+            };
+        }
+
         function getEffectiveRuntimeStatusCardModel(status = latestRuntimeStatus, twoFactorState = latestTwoFactorState) {
             const runtimeStatus = getIbkrRuntimeStatusCardModel(status);
             if (!isTwoFactorVerifiedSuccess(twoFactorState)) return runtimeStatus;

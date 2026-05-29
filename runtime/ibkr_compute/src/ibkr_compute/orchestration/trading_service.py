@@ -47,7 +47,11 @@ from ibkr_compute.market.timeframe_utils import (
     classify_market_session_kind,
     interval_to_ms,
 )
-from ibkr_compute.orchestration.market_universe_support import _target_row_is_daily_scan_active, _target_row_is_manual
+from ibkr_compute.orchestration.market_universe_support import (
+    _target_row_is_daily_scan_active,
+    _target_row_is_manual,
+    _target_row_is_tradingview_active,
+)
 from ibkr_compute.universe.target_execution import target_row_execution_eligible
 from ibkr_compute.market.timeframe_builder import TimeframeBarBuilder
 from ibkr_compute.core.indicator_engine import indicator_ready_bar_count
@@ -491,7 +495,11 @@ class IBKRTradingService(
         active_rows = [
             row for row in rows
             if str(row.get("symbol", "")).strip().upper() not in market_monitors
-            and (_target_row_is_daily_scan_active(row) or _target_row_is_manual(row))
+            and (
+                _target_row_is_daily_scan_active(row)
+                or _target_row_is_manual(row)
+                or _target_row_is_tradingview_active(row)
+            )
             and target_row_execution_eligible(row)
         ]
         prioritized_rows = list(active_rows)

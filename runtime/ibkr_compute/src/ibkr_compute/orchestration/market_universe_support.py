@@ -24,6 +24,7 @@ MANUAL_TARGET_SOURCES = {
     "screener_targets_tab",
 }
 CONTEXT_ACTIVE_TARGET_SOURCES = {"daily_scan", "intraday_window_admission"}
+TRADINGVIEW_TARGET_SOURCES = {"tradingview", "tv", "tv_webhook", "webhook_tv"}
 DAILY_SCAN_RUNNING_STALE_SECONDS = 10 * 60
 DAILY_SCAN_FINAL_STATUSES = {"completed", "failed", "cancelled"}
 
@@ -69,6 +70,12 @@ def _target_row_is_daily_scan_active(row: dict | None) -> bool:
         or _truthy(extra.get("context_active"))
         or _truthy(extra.get("context_gate_passed"))
     )
+
+
+def _target_row_is_tradingview_active(row: dict | None) -> bool:
+    extra = _safe_extra(row)
+    source = str(extra.get("source") or "").strip().lower()
+    return source in TRADINGVIEW_TARGET_SOURCES
 
 
 def _safe_int(value, default: int = 0) -> int:

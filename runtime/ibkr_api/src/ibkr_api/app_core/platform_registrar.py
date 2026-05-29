@@ -82,6 +82,7 @@ def register_platform_routes(app, deps: dict[str, Any]) -> dict[str, Any]:
                 "as_dict": deps["as_dict"],
                 "load_daily_scan_state": deps["load_daily_scan_state"],
                 "count_active_today_targets": deps["count_active_today_targets"],
+                "build_today_targets_response": deps["build_today_targets_response"],
                 "build_statusz_compute_payload": deps["build_statusz_compute_payload"],
                 "build_statusz_live_readiness": deps["build_statusz_live_readiness"],
                 "build_statusz_runtime_payload": deps["build_statusz_runtime_payload"],

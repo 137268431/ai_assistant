@@ -19,6 +19,7 @@ MANUAL_TARGET_SOURCES = {
     "screener_targets_tab",
 }
 CONTEXT_ACTIVE_TARGET_SOURCES = {"daily_scan", "intraday_window_admission"}
+TRADINGVIEW_TARGET_SOURCES = {"tradingview", "tv", "tv_webhook", "webhook_tv"}
 FIXED_TRADE_BLOCKED_SYMBOLS = {"BOXX", "IBKR"}
 
 
@@ -73,6 +74,16 @@ def _target_row_is_daily_scan_active(row: dict | None) -> bool:
     )
 
 
+def _target_row_is_tradingview_active(row: dict | None) -> bool:
+    extra = _safe_extra(row)
+    source = str(extra.get("source") or "").strip().lower()
+    return source in TRADINGVIEW_TARGET_SOURCES
+
+
+def _target_row_is_execution_source(row: dict | None) -> bool:
+    return _target_row_is_daily_scan_active(row) or _target_row_is_manual(row) or _target_row_is_tradingview_active(row)
+
+
 def _get_trade_subscription_budget(api_app, environment: str) -> int | None:
     runtime_environment = _normalize_environment(environment)
     target_limit = max(
@@ -116,7 +127,7 @@ def _load_selected_active_trade_target_rows(environment: str, market_date: str |
         for row in rows
         if str(row.get("symbol", "")).strip().upper() not in market_monitor_symbols
         and str(row.get("symbol", "")).strip().upper() not in FIXED_TRADE_BLOCKED_SYMBOLS
-        and _target_row_is_daily_scan_active(row)
+        and _target_row_is_execution_source(row)
     ]
     prioritized_rows = list(active_rows)
 
@@ -198,7 +209,7 @@ def _load_qualified_trade_target_rows(environment: str, market_date: str | None 
             or symbol in seen
             or symbol in market_monitor_symbols
             or symbol in FIXED_TRADE_BLOCKED_SYMBOLS
-            or not (_target_row_is_daily_scan_active(row) or _target_row_is_manual(row))
+            or not _target_row_is_execution_source(row)
         ):
             continue
         qualified_rows.append(row)

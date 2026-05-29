@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from ibkr_api.orders.values import to_float, to_text
+from ibkr_compute.market.timeframe_utils import format_cn_time, format_us_time
 
 
 def as_object(value: Any) -> dict[str, Any]:
@@ -89,6 +90,10 @@ def build_signal_record_payload(payload: dict[str, Any], environment: str) -> tu
     incoming_extra = as_object(payload.get("extra"))
     if not symbol or not signal_id:
         return None, "Missing symbol or signal_id"
+    bar_time_ms = int(_to_number_or_default(payload.get("bar_time_ms"), 0))
+    us_time = to_text(payload.get("us_time")) or (format_us_time(bar_time_ms) if bar_time_ms > 0 else "")
+    cn_time = to_text(payload.get("cn_time")) or (format_cn_time(bar_time_ms) if bar_time_ms > 0 else "")
+    date_value = to_text(payload.get("date")) or us_time[:10]
 
     source_meta = normalize_signal_source_meta(
         first_defined(
@@ -114,10 +119,10 @@ def build_signal_record_payload(payload: dict[str, Any], environment: str) -> tu
         "exchange": to_text(payload.get("exchange")).upper(),
         "interval": to_text(payload.get("interval")),
         "reason": to_text(payload.get("reason")),
-        "us_time": to_text(payload.get("us_time")),
-        "cn_time": to_text(payload.get("cn_time")),
-        "date": to_text(payload.get("date")),
-        "bar_time_ms": int(_to_number_or_default(payload.get("bar_time_ms"), 0)),
+        "us_time": us_time,
+        "cn_time": cn_time,
+        "date": date_value,
+        "bar_time_ms": bar_time_ms,
         "bar_index": _to_int_or_none(payload.get("bar_index")),
         "script_tag": to_text(payload.get("script_tag")),
         "chart_tf": to_text(payload.get("chart_tf")),

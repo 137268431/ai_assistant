@@ -28,6 +28,7 @@ MANUAL_TARGET_SOURCES = {
     "screener_targets_tab",
 }
 CONTEXT_ACTIVE_TARGET_SOURCES = {"daily_scan", "intraday_window_admission"}
+TRADINGVIEW_TARGET_SOURCES = {"tradingview", "tv", "tv_webhook", "webhook_tv"}
 
 TimeStrings = Callable[[], dict[str, str]]
 
@@ -59,9 +60,19 @@ def target_row_is_manual_active(row: dict[str, Any] | None) -> bool:
     return source.startswith("manual_") or source in MANUAL_TARGET_SOURCES
 
 
+def target_row_is_tradingview_active(row: dict[str, Any] | None) -> bool:
+    extra = parse_json_object((row or {}).get("extra"))
+    source = to_text(extra.get("source")).lower()
+    return source in TRADINGVIEW_TARGET_SOURCES
+
+
 def effective_target_status(row: dict[str, Any] | None) -> str:
     status = to_text((row or {}).get("status")).lower()
-    if status == "active" and not (target_row_is_daily_scan_active(row) or target_row_is_manual_active(row)):
+    if status == "active" and not (
+        target_row_is_daily_scan_active(row)
+        or target_row_is_manual_active(row)
+        or target_row_is_tradingview_active(row)
+    ):
         return "candidate"
     return status
 
@@ -375,6 +386,7 @@ __all__ = [
     "MARKET_OPEN_CHECK_TIME_ET",
     "TOPUP_WINDOW_ET",
     "TODAY_TARGET_STATUSES",
+    "TRADINGVIEW_TARGET_SOURCES",
     "WATCHLIST_ROLE_TRADE",
     "build_bar_environment_filter",
     "build_daily_change_fields",
@@ -398,4 +410,5 @@ __all__ = [
     "pick_latest_signal",
     "pick_reason_list",
     "push_unique_text",
+    "target_row_is_tradingview_active",
 ]

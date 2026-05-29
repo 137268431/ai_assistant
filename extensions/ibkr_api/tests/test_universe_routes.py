@@ -688,6 +688,88 @@ class UniverseRoutesTest(unittest.TestCase):
         self.assertIn("方向一致技术条件 5/2", ready_explanation["passed"])
         self.assertEqual([], ready_explanation["missing"])
 
+    def test_today_targets_treats_tradingview_active_as_execution_layer(self):
+        pb = _MinimalPB()
+        pb._records["ibkr_targets"] = [
+            {
+                "id": "target-tv-active",
+                "symbol": "PLTR",
+                "environment": "live",
+                "date": "2026-05-29",
+                "status": "active",
+                "direction_bias": "short",
+                "score": 88,
+                "scan_reason": "tv_ranked",
+                "extra": {"source": "tradingview", "activity_rank": 1},
+            },
+            {
+                "id": "target-tv-candidate",
+                "symbol": "QQQ",
+                "environment": "live",
+                "date": "2026-05-29",
+                "status": "candidate",
+                "direction_bias": "long",
+                "score": 55,
+                "scan_reason": "tv_overflow",
+                "extra": {"source": "tradingview", "activity_rank": 11},
+            },
+        ]
+
+        payload, status_code = build_today_targets_response(
+            pb,
+            payload={"broker_mode": "paper", "market_data_mode": "live", "market_date": "2026-05-29"},
+            normalize_environment=lambda value, default="live": str(value or default).strip().lower() or default,
+            time_strings=lambda: {"us": "2026-05-29 10:45:00", "cn": "2026-05-29 22:45:00", "date": "2026-05-29"},
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertEqual(1, payload["summary"]["active_count"])
+        self.assertEqual(1, payload["summary"]["candidate_count"])
+        self.assertEqual(1, payload["summary"]["execution_eligible_count"])
+        self.assertEqual(1, payload["summary"]["observe_only_count"])
+        rows = {row["symbol"]: row for row in payload["items"]}
+        self.assertEqual("execution", rows["PLTR"]["target_layer"])
+        self.assertTrue(rows["PLTR"]["execution_eligible"])
+        self.assertEqual([], rows["PLTR"]["execution_blockers"])
+        self.assertEqual("observe", rows["QQQ"]["target_layer"])
+        self.assertFalse(rows["QQQ"]["execution_eligible"])
+        self.assertIn("target_not_active", rows["QQQ"]["execution_blockers"])
+
+    def test_today_targets_keeps_tradingview_watch_only_on_observe_layer(self):
+        pb = _MinimalPB()
+        pb._records["ibkr_targets"] = [
+            {
+                "id": "target-tv-watch",
+                "symbol": "NET",
+                "environment": "live",
+                "date": "2026-05-29",
+                "status": "active",
+                "direction_bias": "long",
+                "score": 81,
+                "scan_reason": "tv_watch",
+                "extra": {
+                    "source": "tradingview",
+                    "activity_rank": 2,
+                    "strategy_policy": {"setup_type": "watch_only", "allowed_sides": ["long"]},
+                },
+            }
+        ]
+
+        payload, status_code = build_today_targets_response(
+            pb,
+            payload={"broker_mode": "paper", "market_data_mode": "live", "market_date": "2026-05-29"},
+            normalize_environment=lambda value, default="live": str(value or default).strip().lower() or default,
+            time_strings=lambda: {"us": "2026-05-29 10:45:00", "cn": "2026-05-29 22:45:00", "date": "2026-05-29"},
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertEqual(1, payload["summary"]["active_count"])
+        self.assertEqual(0, payload["summary"]["execution_eligible_count"])
+        self.assertEqual(1, payload["summary"]["watch_only_count"])
+        row = payload["items"][0]
+        self.assertEqual("observe", row["target_layer"])
+        self.assertIn("watch_only", row["execution_blockers"])
+
     def test_today_targets_marks_watch_only_active_as_observe_layer(self):
         pb = _MinimalPB()
 

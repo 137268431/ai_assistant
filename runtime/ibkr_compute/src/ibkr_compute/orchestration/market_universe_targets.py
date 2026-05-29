@@ -19,6 +19,7 @@ from .market_universe_support import (
     _service_mod,
     _target_row_is_daily_scan_active,
     _target_row_is_manual,
+    _target_row_is_tradingview_active,
 )
 
 from . import market_universe_support as _market_universe_support
@@ -220,7 +221,11 @@ class TradingServiceMarketUniverseTargetsMixin:
             row
             for row in rows
             if str(row.get("status", "") or "").strip().lower() == "active"
-            and _target_row_is_daily_scan_active(row)
+            and (
+                _target_row_is_daily_scan_active(row)
+                or _target_row_is_manual(row)
+                or _target_row_is_tradingview_active(row)
+            )
         ]
         prioritized_rows = list(active_rows)
 

@@ -577,7 +577,7 @@ def _route_reverse(
         "data_environment": environment,
         "direction": side,
         "source": TRADINGVIEW_SOURCE,
-        "priority": 100 if event_type == "exit" else 90,
+        "priority": 10 if event_type == "exit" else 9,
         "strength": "strong",
         "score": _float(payload.get("quality_score"), 100.0),
         "triggered_signals": [item for item in (signal_id, _text(payload.get("position_id")), event_id) if item],

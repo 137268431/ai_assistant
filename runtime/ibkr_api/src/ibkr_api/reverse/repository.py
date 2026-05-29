@@ -127,7 +127,7 @@ def upsert_reverse_record(
         "environment": criteria["environment"],
         "direction": criteria["direction"],
         "source": to_text(data.get("source") or "indicator") or "indicator",
-        "priority": parse_integer(data.get("priority"), default=DEFAULT_REVERSE_PRIORITY, minimum=0),
+        "priority": parse_integer(data.get("priority"), default=DEFAULT_REVERSE_PRIORITY, minimum=1, maximum=10),
         "strength": to_text(data.get("strength") or "weak") or "weak",
         "score": _to_number(data.get("score"), 0),
         "triggered_signals": triggered_signals,

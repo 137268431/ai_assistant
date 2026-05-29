@@ -232,6 +232,16 @@ async function waitForPageReady(page, url) {
     '/ibkr_reverse_signals.html': () => page.waitForFunction(() => !document.querySelector('#signalsContainer .loading'), { timeout }),
     '/orders.html': () => page.waitForFunction(() => !document.querySelector('#ordersContainer .loading'), { timeout }),
     '/ibkr_order_details.html': () => page.waitForFunction(() => !document.querySelector('#detailsContainer .loading'), { timeout }),
+    '/ibkr_lifecycle_flow.html': () => page.waitForFunction(() => (
+      document.querySelectorAll('#nav .nav-item, #navContainer .nav-item').length > 0
+      && document.querySelectorAll('.page-context-bar').length === 1
+      && document.querySelectorAll('.page-bridge-link, .domain-tab').length > 0
+    ), { timeout }),
+    '/ibkr_trade_review.html': () => page.waitForFunction(() => (
+      document.querySelectorAll('#nav .nav-item, #navContainer .nav-item').length > 0
+      && document.querySelectorAll('.page-context-bar').length === 1
+      && document.querySelectorAll('.page-bridge-link, .domain-tab').length > 0
+    ), { timeout }),
     '/ibkr_config.html': () => page.waitForFunction(() => !/LOADING/i.test(document.getElementById('configContainer')?.innerText || ''), { timeout }),
   };
 

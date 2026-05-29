@@ -462,6 +462,7 @@ def _load_today_counts(environment: str, market_date: str) -> dict[str, Any]:
     data_env = _escape_filter_string(data_environment)
     start_us = _escape_filter_string(f"{date_token} 00:00:00")
     end_us = _escape_filter_string(f"{next_date} 00:00:00")
+    start_ms, end_ms = _market_date_bounds_ms(date_token)
     date_filter = _escape_filter_string(date_token)
     specs = {
         "ibkr_bars": (
@@ -470,7 +471,11 @@ def _load_today_counts(environment: str, market_date: str) -> dict[str, Any]:
         ),
         "ibkr_signals": (
             "ibkr_signals",
-            f'environment = "{data_env}" && us_time >= "{start_us}" && us_time < "{end_us}"',
+            (
+                f'environment = "{data_env}" && '
+                f'((us_time >= "{start_us}" && us_time < "{end_us}") || '
+                f"(bar_time_ms >= {start_ms} && bar_time_ms < {end_ms}))"
+            ),
         ),
         "tv_webhook_events": (
             "tv_webhook_events",

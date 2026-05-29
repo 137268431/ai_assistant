@@ -61,7 +61,10 @@ def _row_is_effective_daily_scan_active(row: dict[str, Any] | None) -> bool:
     if str((row or {}).get("status") or "").strip().lower() != "active":
         return False
     extra = _as_json_object((row or {}).get("extra"))
-    return str(extra.get("source") or "").strip().lower() == "daily_scan" and _truthy(extra.get("active_gate_passed"))
+    source = str(extra.get("source") or "").strip().lower()
+    if source == "daily_scan":
+        return _truthy(extra.get("active_gate_passed"))
+    return source in {"tradingview", "tv", "tv_webhook", "webhook_tv"}
 
 
 def count_active_today_targets(pb, environment: str, market_date: str, *, normalize_environment, escape_filter_string) -> int:
