@@ -17,6 +17,7 @@ from .market_universe_support import (
 )
 
 from . import market_universe_support as _market_universe_support
+from .market_universe_targets import _bar_pipeline_skip_reason
 
 
 def _service_mod():
@@ -50,6 +51,10 @@ class TradingServiceMarketUniverseActiveRepairMixin:
 
     def _run_active_repair_cycle(self):
         service_mod = _service_mod()
+        bar_skip_reason = _bar_pipeline_skip_reason(self, service_mod)
+        if bar_skip_reason:
+            service_mod.logger.info("Active target repair skipped: reason=%s", bar_skip_reason)
+            return
         if self._is_warmup_active():
             service_mod.logger.info("Active target repair skipped while startup warmup is active")
             return
@@ -134,6 +139,17 @@ class TradingServiceMarketUniverseActiveRepairMixin:
 
     def _run_watchlist_backfill_cycle(self):
         service_mod = _service_mod()
+        bar_skip_reason = _bar_pipeline_skip_reason(self, service_mod)
+        if bar_skip_reason:
+            service_mod.logger.info("Watchlist backfill skipped: reason=%s", bar_skip_reason)
+            self._set_watchlist_idle_topup_state(
+                running=False,
+                status="skipped",
+                skip_reason=bar_skip_reason,
+                last_stop_reason=bar_skip_reason,
+                skipped_count=_safe_int(self._watchlist_idle_topup_state.get("skipped_count"), 0) + 1,
+            )
+            return self._watchlist_idle_topup_state
         if self._is_warmup_active():
             service_mod.logger.info("Watchlist backfill skipped while startup warmup is active")
             self._set_watchlist_idle_topup_state(

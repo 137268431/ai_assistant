@@ -37,6 +37,22 @@ RequestsGet = Callable[..., requests.Response]
 AccountSnapshotProbe = Callable[[str], dict[str, Any]]
 
 ACCOUNT_SNAPSHOT_WARN_MS = 12_000.0
+BAR_PIPELINE_CONFIG_KEYS = (
+    "ibkr_legacy_bar_pipeline_enabled",
+    "ibkr_signal_source",
+    "ibkr_tv_primary_runtime_slim_enabled",
+    "ibkr_runtime_technical_pipeline_enabled",
+)
+FALSE_TEXT = {"0", "false", "no", "off", "disabled", "disable"}
+BAR_PIPELINE_DISABLED_STATUSES = {"disabled", "disabled_tv_primary", "legacy_bar_pipeline_disabled"}
+TV_PRIMARY_SIGNAL_SOURCES = {"tv", "tradingview", "webhook_tv", "tv_webhook"}
+TV_PRIMARY_SUPPRESSED_FLAG_CODES = {
+    "no_active_targets",
+    "no_execution_eligible_targets",
+    "data_freshness_delayed",
+    "data_freshness_offline",
+    "stale_active_symbols",
+}
 
 
 def _monitor_builder_error(stage: str, exc: Any, *, severity: str = "warning") -> dict[str, str]:
@@ -91,6 +107,152 @@ def _fallback_scheduler_summary(environment: str) -> dict[str, Any]:
         "native_job_count": 0,
         "compatibility_job_count": 0,
     }
+
+
+def _to_text(value: Any) -> str:
+    return str(value if value is not None else "").strip()
+
+
+def _false_text(value: Any) -> bool:
+    return _to_text(value).lower() in FALSE_TEXT
+
+
+def _as_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = _to_text(value).lower()
+    if not text:
+        return default
+    if text in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if text in FALSE_TEXT:
+        return False
+    return default
+
+
+def _bar_pipeline_candidate_disabled(candidate: dict[str, Any]) -> bool:
+    status = _to_text(candidate.get("status") or candidate.get("bar_pipeline_status")).lower()
+    reason = _to_text(candidate.get("reason") or candidate.get("bar_pipeline_reason")).lower()
+    if status in BAR_PIPELINE_DISABLED_STATUSES or reason == "legacy_bar_pipeline_disabled":
+        return True
+    if candidate.get("enabled") is False or candidate.get("legacy_bar_pipeline_enabled") is False:
+        return True
+    if _false_text(candidate.get("enabled")) or _false_text(candidate.get("legacy_bar_pipeline_enabled")):
+        return True
+    return False
+
+
+def _bar_pipeline_disabled(payload: dict[str, Any]) -> bool:
+    runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+    compute = payload.get("compute") if isinstance(payload.get("compute"), dict) else {}
+    config = payload.get("config") if isinstance(payload.get("config"), dict) else {}
+    candidates = [
+        payload.get("bar_pipeline"),
+        runtime.get("bar_pipeline"),
+        (runtime.get("data_backfill") or {}).get("bar_pipeline") if isinstance(runtime.get("data_backfill"), dict) else None,
+        runtime.get("data_backfill"),
+        (runtime.get("data_writer") or {}).get("bar_pipeline") if isinstance(runtime.get("data_writer"), dict) else None,
+        runtime.get("data_writer"),
+        (compute.get("data_backfill") or {}).get("bar_pipeline") if isinstance(compute.get("data_backfill"), dict) else None,
+        compute.get("data_backfill"),
+    ]
+    if any(_bar_pipeline_candidate_disabled(candidate) for candidate in candidates if isinstance(candidate, dict)):
+        return True
+    if _false_text(config.get("ibkr_legacy_bar_pipeline_enabled")):
+        return True
+    signal_source = _to_text(config.get("ibkr_signal_source")).lower()
+    if signal_source in TV_PRIMARY_SIGNAL_SOURCES and _as_bool(config.get("ibkr_tv_primary_runtime_slim_enabled"), True):
+        return True
+    runtime_mode = _to_text(runtime.get("runtime_mode") or payload.get("runtime_mode")).lower()
+    return "tv_primary" in runtime_mode
+
+
+def _bar_pipeline_disabled_payload(source: dict[str, Any] | None = None) -> dict[str, Any]:
+    reason = _to_text((source or {}).get("reason") or (source or {}).get("bar_pipeline_reason")) or "legacy_bar_pipeline_disabled"
+    return {"enabled": False, "status": "disabled_tv_primary", "reason": reason}
+
+
+def _apply_tv_primary_bar_pipeline_view(payload: dict[str, Any]) -> dict[str, Any]:
+    if not _bar_pipeline_disabled(payload):
+        return payload
+    payload["bar_pipeline"] = _bar_pipeline_disabled_payload(payload.get("bar_pipeline") if isinstance(payload.get("bar_pipeline"), dict) else {})
+    runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+    if runtime:
+        runtime["bar_pipeline"] = _bar_pipeline_disabled_payload(runtime.get("bar_pipeline") if isinstance(runtime.get("bar_pipeline"), dict) else {})
+        canonical = runtime.get("canonical_5m") if isinstance(runtime.get("canonical_5m"), dict) else {}
+        runtime["canonical_5m"] = {
+            **canonical,
+            "enabled": False,
+            "status": "disabled_tv_primary",
+            "phase": "disabled_tv_primary",
+            "running": False,
+            "pending_symbols": [],
+            "pending_symbols_total": 0,
+            "disabled_reason": "legacy_bar_pipeline_disabled",
+        }
+        data_backfill = runtime.get("data_backfill") if isinstance(runtime.get("data_backfill"), dict) else {}
+        runtime["data_backfill"] = {
+            **data_backfill,
+            "enabled": False,
+            "status": "disabled_tv_primary",
+            "reason": "legacy_bar_pipeline_disabled",
+            "active_requests": 0,
+            "active_symbols_total": 0,
+            "legacy_bar_pipeline_enabled": False,
+            "bar_pipeline": _bar_pipeline_disabled_payload(
+                data_backfill.get("bar_pipeline") if isinstance(data_backfill.get("bar_pipeline"), dict) else {}
+            ),
+        }
+        market_universe = runtime.get("market_universe") if isinstance(runtime.get("market_universe"), dict) else {}
+        if market_universe:
+            market_universe["bar_pipeline_status"] = "disabled_tv_primary"
+            if int(market_universe.get("active_target_count") or 0) > 0:
+                market_universe["no_active_targets"] = False
+            if int(market_universe.get("execution_eligible_target_count") or 0) > 0:
+                market_universe["no_execution_eligible_targets"] = False
+            runtime["market_universe"] = market_universe
+        payload["runtime"] = runtime
+    return payload
+
+
+def _status_from_flags(flags: list[dict[str, Any]]) -> str:
+    severities = {_to_text((item or {}).get("severity")).lower() for item in flags if isinstance(item, dict)}
+    if "error" in severities:
+        return "error"
+    if "warning" in severities:
+        return "warning"
+    return "ok"
+
+
+def _should_suppress_tv_primary_flag(payload: dict[str, Any], code: str) -> bool:
+    normalized_code = _to_text(code).split(":", 1)[0]
+    if normalized_code not in TV_PRIMARY_SUPPRESSED_FLAG_CODES:
+        return False
+    runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+    market_universe = runtime.get("market_universe") if isinstance(runtime.get("market_universe"), dict) else {}
+    if normalized_code == "no_active_targets":
+        return int(market_universe.get("active_target_count") or 0) > 0
+    if normalized_code == "no_execution_eligible_targets":
+        return int(market_universe.get("execution_eligible_target_count") or 0) > 0
+    return True
+
+
+def _filter_tv_primary_legacy_flags(payload: dict[str, Any]) -> dict[str, Any]:
+    if not _bar_pipeline_disabled(payload):
+        return payload
+    existing_flags = payload.get("flags") if isinstance(payload.get("flags"), list) else []
+    filtered_flags = [
+        dict(flag)
+        for flag in existing_flags
+        if isinstance(flag, dict)
+        and not _should_suppress_tv_primary_flag(payload, _to_text(flag.get("code")))
+    ]
+    payload["flags"] = filtered_flags
+    status = _status_from_flags(filtered_flags)
+    payload["status"] = status
+    if status == "ok":
+        payload["ok"] = True
+    return payload
 
 
 def _call_scheduler_status_lite(scheduler_status: SchedulerStatus, environment: str) -> dict[str, Any]:
@@ -288,6 +450,8 @@ def _account_snapshot_flags(probe: dict[str, Any]) -> list[dict[str, Any]]:
 def _history_backfill_detail(compute: dict[str, Any]) -> str:
     data_backfill = compute.get("data_backfill") if isinstance(compute.get("data_backfill"), dict) else {}
     if not data_backfill:
+        return ""
+    if _bar_pipeline_candidate_disabled(data_backfill):
         return ""
     parts: list[str] = []
     active_requests = int(data_backfill.get("active_requests") or 0)
@@ -507,9 +671,11 @@ def derive_monitor_service_map(
     scheduler_unavailable = scheduler_status == "unknown" and not bool(scheduler_summary.get("ok", True))
     compute_preload_active = _compute_startup_preload_active() or _scheduler_compute_preload_deferred()
     close_compute_deferred = _scheduler_close_compute_deferred()
+    bar_pipeline_disabled = _bar_pipeline_disabled(base_payload)
     scheduler_lag_compute_relevant = bool(scheduler_summary.get("dispatch_lag_compute_relevant", True))
     if (
         scheduler_status == "running"
+        and not bar_pipeline_disabled
         and scheduler_lag_compute_relevant
         and float(scheduler_summary.get("dispatch_lag_min") or 0) > 10
         and not compute_preload_active
@@ -542,10 +708,11 @@ def derive_monitor_service_map(
             "detail": _detail_parts(
                 "status unavailable" if scheduler_unavailable else "",
                 f"loop {int(float(scheduler_summary.get('loop_interval_seconds') or 0))}s" if scheduler_summary.get("loop_interval_seconds") else "",
+                "bar pipeline disabled_tv_primary" if bar_pipeline_disabled else "",
                 (
                     f"lag {float(scheduler_summary.get('dispatch_lag_min') or 0):.2f}m"
-                    if scheduler_summary.get("latest_ingested_bar_time_ms")
-                    else "awaiting bars"
+                    if scheduler_summary.get("latest_ingested_bar_time_ms") and not bar_pipeline_disabled
+                    else ("" if bar_pipeline_disabled else "awaiting bars")
                 ),
                 "non-compute ingest" if scheduler_summary.get("dispatch_lag_reason") == "non_compute_ingest_source" else "",
                 "deferred by compute preload" if compute_preload_active else "",
@@ -800,12 +967,15 @@ def build_system_monitor_payload(
     merged_payload["actual_runtime_environment"] = actual_runtime_environment
     merged_payload["runtime_environment_mismatch"] = actual_runtime_environment != runtime_environment
     try:
-        broker_config = load_effective_config_map(runtime_environment, monitor_config_keys)
-        data_config = load_effective_config_map(data_environment, monitor_config_keys)
+        effective_config_keys = tuple(dict.fromkeys((*monitor_config_keys, *BAR_PIPELINE_CONFIG_KEYS)))
+        broker_config = load_effective_config_map(runtime_environment, effective_config_keys)
+        data_config = load_effective_config_map(data_environment, effective_config_keys)
         merged_payload["config"] = {**data_config, **broker_config}
     except Exception as exc:
         builder_errors.append(_monitor_builder_error("config_map", exc))
         merged_payload["config"] = {}
+    merged_payload = _apply_tv_primary_bar_pipeline_view(merged_payload)
+    merged_payload = _filter_tv_primary_legacy_flags(merged_payload)
     try:
         merged_payload["recent_events"] = load_recent_system_events(runtime_environment, 20)
     except Exception as exc:
@@ -894,6 +1064,7 @@ def build_system_monitor_payload(
         if current_status == "ok":
             merged_payload["status"] = "warning"
         merged_payload["ok"] = False
+    merged_payload = _filter_tv_primary_legacy_flags(merged_payload)
     return merged_payload
 
 

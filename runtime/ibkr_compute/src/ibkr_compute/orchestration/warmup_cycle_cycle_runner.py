@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from datetime import datetime
 
+from .market_universe_targets import _bar_pipeline_skip_reason
 from .warmup_cycle_support import _service_mod
 
 class WarmupCycleRunnerMixin:
@@ -391,42 +392,61 @@ class WarmupCycleRunnerMixin:
                 }
             }
             if pending_map:
-                service_mod.logger.info(
-                    "Warmup backfilling pending symbols: %d of %d",
-                    len(pending_map),
-                    snapshot["symbols_total"],
-                )
-                step_started = time.perf_counter()
-                backfill_result = self.data_backfill.backfill_all(
-                    pending_map,
-                    symbol_meta=snapshot["symbol_meta"],
-                    intervals=[service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL],
-                    repair_symbols=list(pending_map.keys()),
-                    period_overrides=self._multi_timeframe_5m_period_overrides(pending_map.keys()),
-                )
-                warmup_timings["pending_backfill_s"] = round(
-                    time.perf_counter() - step_started,
-                    3,
-                )
-                backfill_written += sum(
-                    int(count or 0)
-                    for per_symbol in backfill_result.values()
-                    for count in per_symbol.values()
-                )
-                self.data_writer.flush()
-                if readiness["trading_gate_open"]:
-                    self._last_history_repair_at = time.time()
-                    self._last_history_repair_symbols = sorted(pending_map.keys())
-                step_started = time.perf_counter()
-                after_backfill_result = self._materialize_warmup_compute_symbols(
-                    list(pending_map.keys()),
-                    hydrate_signal_state=True,
-                )
-                warmup_timings["after_backfill_bootstrap_s"] = round(
-                    time.perf_counter() - step_started,
-                    3,
-                )
-                compute_result["after_backfill"] = after_backfill_result
+                bar_skip_reason = _bar_pipeline_skip_reason(self, service_mod)
+                if bar_skip_reason:
+                    service_mod.logger.info(
+                        "Warmup pending-symbol backfill skipped: symbols=%d reason=%s",
+                        len(pending_map),
+                        bar_skip_reason,
+                    )
+                    warmup_timings["pending_backfill_s"] = 0.0
+                    backfill_result = {
+                        "ok": True,
+                        "skipped": True,
+                        "reason": bar_skip_reason,
+                        "symbols": sorted(pending_map.keys()),
+                    }
+                    compute_result["after_backfill"] = {
+                        "skipped": True,
+                        "skip_reason": bar_skip_reason,
+                    }
+                else:
+                    service_mod.logger.info(
+                        "Warmup backfilling pending symbols: %d of %d",
+                        len(pending_map),
+                        snapshot["symbols_total"],
+                    )
+                    step_started = time.perf_counter()
+                    backfill_result = self.data_backfill.backfill_all(
+                        pending_map,
+                        symbol_meta=snapshot["symbol_meta"],
+                        intervals=[service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL],
+                        repair_symbols=list(pending_map.keys()),
+                        period_overrides=self._multi_timeframe_5m_period_overrides(pending_map.keys()),
+                    )
+                    warmup_timings["pending_backfill_s"] = round(
+                        time.perf_counter() - step_started,
+                        3,
+                    )
+                    backfill_written += sum(
+                        int(count or 0)
+                        for per_symbol in backfill_result.values()
+                        for count in per_symbol.values()
+                    )
+                    self.data_writer.flush()
+                    if readiness["trading_gate_open"]:
+                        self._last_history_repair_at = time.time()
+                        self._last_history_repair_symbols = sorted(pending_map.keys())
+                    step_started = time.perf_counter()
+                    after_backfill_result = self._materialize_warmup_compute_symbols(
+                        list(pending_map.keys()),
+                        hydrate_signal_state=True,
+                    )
+                    warmup_timings["after_backfill_bootstrap_s"] = round(
+                        time.perf_counter() - step_started,
+                        3,
+                    )
+                    compute_result["after_backfill"] = after_backfill_result
         except Exception as exc:
             last_error = str(exc)
             service_mod.logger.error("Warmup cycle failed: %s", exc)
@@ -706,4 +726,3 @@ class WarmupCycleRunnerMixin:
                         time.sleep(retry_delay_s)
                         if self._running:
                             self._warmup_wakeup.set()
-

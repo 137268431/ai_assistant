@@ -72,6 +72,26 @@ class DummyWarmupCycle(TradingServiceWarmupCycleMixin):
         }
 
 
+class NoBarPipelineConfig:
+    def get_for_environment(self, key, environment, default=None):
+        if key == "ibkr_legacy_bar_pipeline_enabled":
+            return False
+        return default
+
+    def get_bool_for_environment(self, key, environment, default=False):
+        return bool(self.get_for_environment(key, environment, default))
+
+
+class FailBackfill:
+    def backfill_all(self, *_args, **_kwargs):
+        raise AssertionError("backfill_all should not be called")
+
+
+class FailWriter:
+    def flush(self):
+        raise AssertionError("flush should not be called")
+
+
 class WarmupCycleStartupReleaseTest(unittest.TestCase):
     def test_release_startup_when_trade_gate_is_open_but_pending_symbols_remain(self):
         cycle = DummyWarmupCycle()
@@ -152,6 +172,7 @@ class WarmupCycleStartupReleaseTest(unittest.TestCase):
                     "ibkr_compute.orchestration.warmup_cycle._service_mod",
                     return_value=SimpleNamespace(
                         ENVIRONMENT="live",
+                        DATA_ENVIRONMENT="live",
                         DEFAULT_WARMUP_REQUIRED_INTERVAL="5m",
                     ),
                 ):
@@ -188,6 +209,27 @@ class WarmupCycleStartupReleaseTest(unittest.TestCase):
         self.assertEqual(cycle.plan_calls, [("AAPL", "SPY"), ("AAPL", "SPY")])
         self.assertEqual(len(cycle.repair_calls), 1)
         self.assertEqual(cycle.repair_calls[0][0], ["AAPL", "SPY"])
+
+    def test_warmup_indicator_backfill_skips_when_legacy_bar_pipeline_disabled(self):
+        cycle = DummyWarmupCycle()
+        cycle.config = NoBarPipelineConfig()
+        cycle.data_backfill = FailBackfill()
+        cycle.data_writer = FailWriter()
+
+        with mock.patch(
+            "ibkr_compute.orchestration.warmup_cycle_indicator_backfill._service_mod",
+            return_value=SimpleNamespace(
+                ENVIRONMENT="paper",
+                DATA_ENVIRONMENT="live",
+                logger=SimpleNamespace(info=lambda *args, **kwargs: None),
+            ),
+        ):
+            result = cycle._run_warmup_indicator_backfill({"symbols": ["AAPL"]})
+
+        self.assertTrue(result["skipped"])
+        self.assertEqual("legacy_bar_pipeline_disabled", result["skip_reason"])
+        self.assertEqual(0, result["written_total"])
+        self.assertEqual({}, result["backfill"])
 
 
 if __name__ == "__main__":

@@ -132,6 +132,20 @@ curl -X POST "https://pb.lzw-glory.top/api/collections/config/records" \
 
 ---
 
+### system_monitor_alert_* / system_monitor_account_snapshot_warning_consecutive_count
+
+IBKR Monitor 告警重复冷却与 account snapshot 探针降噪：
+
+| key | 默认值 | 行为 |
+|-----|--------|------|
+| `system_monitor_alert_error_cooldown_min` | `"15"` | error 级别同一 fingerprint 重复通知间隔 |
+| `system_monitor_alert_warning_cooldown_min` | `"60"` | warning 级别同一 fingerprint 重复通知间隔 |
+| `system_monitor_account_snapshot_warning_consecutive_count` | `"2"` | account snapshot warning 连续命中达到该次数后才发送 |
+
+> 仅延迟 account snapshot 探针类 warning；Session / WebSocket / 服务 down 等非 account snapshot 告警仍按原逻辑即时发送。
+
+---
+
 ### system_monitor_ws_message_age_*
 
 WebSocket 最近一条消息静默阈值，按交易时段区分：
@@ -232,6 +246,9 @@ curl -X DELETE "https://pb.lzw-glory.top/api/collections/config/records/CONFIG_I
 | `signal_action_token` | `""` | 飞书按钮验证 Token |
 | `reverse_signal_threshold` | `"6"` | 逆向信号通知阈值 |
 | `system_monitor_host_load_consecutive_count` | `"2"` | Host load 连续命中告警阈值 |
+| `system_monitor_alert_error_cooldown_min` | `"15"` | Monitor error 重复冷却分钟 |
+| `system_monitor_alert_warning_cooldown_min` | `"60"` | Monitor warning 重复冷却分钟 |
+| `system_monitor_account_snapshot_warning_consecutive_count` | `"2"` | 账户快照 warning 连续命中告警阈值 |
 | `system_monitor_ws_message_age_regular_warn_sec` | `"60"` | WebSocket 盘中 warning 阈值（秒） |
 | `system_monitor_ws_message_age_regular_critical_sec` | `"180"` | WebSocket 盘中 critical 阈值（秒） |
 | `system_monitor_ws_message_age_late_session_warn_sec` | `"600"` | WebSocket 盘后 warning 阈值（秒） |

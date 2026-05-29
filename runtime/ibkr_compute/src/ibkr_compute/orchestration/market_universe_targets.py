@@ -24,6 +24,8 @@ from .market_universe_support import (
 
 from . import market_universe_support as _market_universe_support
 
+_LEGACY_BAR_PIPELINE_CONFIG_KEY = "ibkr_legacy_bar_pipeline_enabled"
+
 
 def _service_mod():
     # Keep tests and legacy callers that patch market_universe._service_mod effective.
@@ -34,6 +36,77 @@ def _service_mod():
     if patched is not None:
         return patched()
     return _market_universe_support._service_mod()
+
+
+def _bool_config_value(value, default: bool) -> bool:
+    if value in (None, ""):
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"true", "1", "yes", "on", "enabled"}:
+        return True
+    if text in {"false", "0", "no", "off", "disabled"}:
+        return False
+    return bool(default)
+
+
+def _config_default_bool(config, key: str, default: bool) -> bool:
+    defaults = getattr(config, "DEFAULTS", {}) or {}
+    if key not in defaults:
+        return bool(default)
+    return _bool_config_value(defaults.get(key), default)
+
+
+def _config_bool_for_environment(config, key: str, environment: str, default: bool) -> bool:
+    getter = getattr(config, "get_for_environment", None)
+    if callable(getter):
+        try:
+            raw_value = getter(key, environment, None)
+            if raw_value not in (None, ""):
+                return _bool_config_value(raw_value, default)
+        except Exception:
+            pass
+    bool_getter = getattr(config, "get_bool_for_environment", None)
+    if callable(bool_getter):
+        try:
+            return bool(bool_getter(key, environment, default))
+        except TypeError:
+            try:
+                return bool(bool_getter(key, environment))
+            except Exception:
+                return bool(default)
+        except Exception:
+            return bool(default)
+    return bool(default)
+
+
+def _bar_pipeline_skip_reason(service, service_mod=None) -> str:
+    for attr_name in ("_runtime_slim_mode_enabled", "_runtime_tv_primary_mode"):
+        checker = getattr(service, attr_name, None)
+        if callable(checker):
+            try:
+                if bool(checker()):
+                    return "tv_primary_no_bar_writes"
+            except Exception:
+                pass
+
+    config = getattr(service, "config", None)
+    if config is None:
+        return ""
+    service_mod = service_mod or _service_mod()
+    default_enabled = _config_default_bool(config, _LEGACY_BAR_PIPELINE_CONFIG_KEY, True)
+    broker_env = str(getattr(service_mod, "ENVIRONMENT", "") or "").strip().lower()
+    data_env = str(getattr(service_mod, "DATA_ENVIRONMENT", "") or "").strip().lower()
+    enabled = _config_bool_for_environment(
+        config,
+        _LEGACY_BAR_PIPELINE_CONFIG_KEY,
+        broker_env or data_env or "live",
+        default_enabled,
+    )
+    if data_env and data_env != broker_env:
+        enabled = _config_bool_for_environment(config, _LEGACY_BAR_PIPELINE_CONFIG_KEY, data_env, enabled)
+    return "" if enabled else "legacy_bar_pipeline_disabled"
 
 
 class TradingServiceMarketUniverseTargetsMixin:
@@ -877,7 +950,8 @@ class TradingServiceMarketUniverseTargetsMixin:
                 or previous_trade_symbols != normalized_trade_symbols
             )
 
-        if added_symbols and reason not in {"startup", "session_restored"}:
+        bar_skip_reason = _bar_pipeline_skip_reason(self, service_mod)
+        if added_symbols and reason not in {"startup", "session_restored"} and not bar_skip_reason:
             added_map = {symbol: conid_map[symbol] for symbol in added_symbols if symbol in conid_map}
             service_mod.logger.info(
                 "Backfilling newly subscribed target symbols: %s",
@@ -885,6 +959,12 @@ class TradingServiceMarketUniverseTargetsMixin:
             )
             self.data_backfill.backfill_all(added_map, symbol_meta=self._symbol_meta, intervals=["5m"])
             self.data_writer.flush()
+        elif added_symbols and bar_skip_reason:
+            service_mod.logger.info(
+                "Skipping inline target backfill for %d newly subscribed symbols: reason=%s",
+                len(added_symbols),
+                bar_skip_reason,
+            )
         elif added_symbols:
             service_mod.logger.info(
                 "Skipping inline backfill during %s; warmup will backfill %d symbols asynchronously",

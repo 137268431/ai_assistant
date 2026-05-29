@@ -1,4 +1,5 @@
 import sys
+import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from ibkr_compute.broker.ib_gateway import _IBGatewayApp, _PendingRequest, _ib_timestamp_to_ms
 from ibkr_compute.market.data_backfill import DataBackfill
+from ibkr_compute.market.data_writer import DataWriter
 
 
 class _FakeBroker:
@@ -65,6 +67,7 @@ class _FakePB:
     def __init__(self, rows):
         self.rows = list(rows or [])
         self.calls = []
+        self.upsert_calls = []
 
     def get_records(self, collection, **kwargs):
         self.calls.append((collection, dict(kwargs)))
@@ -73,6 +76,24 @@ class _FakePB:
     def get_all_records(self, collection, **kwargs):
         self.calls.append((collection, dict(kwargs)))
         return list(self.rows)
+
+    def upsert_bars(self, batch):
+        self.upsert_calls.append(list(batch or []))
+        return {"ok": True, "created": len(batch or []), "updated": 0, "skipped": 0}
+
+
+class _NoopThread:
+    def __init__(self, *args, **kwargs):
+        self.started = False
+
+    def start(self):
+        self.started = True
+
+    def is_alive(self):
+        return False
+
+    def join(self, timeout=None):
+        del timeout
 
 
 class _FakeConfig:
@@ -365,7 +386,9 @@ class BackfillFutureGuardTest(unittest.TestCase):
                 return fallback
 
             def get_bool_for_environment(self, key, environment, fallback):
-                del key, environment
+                del environment
+                if key == "ibkr_legacy_bar_pipeline_enabled":
+                    return True
                 return fallback
 
         bar_ms = _et_ms(2026, 4, 17, 10, 45)
@@ -392,6 +415,68 @@ class BackfillFutureGuardTest(unittest.TestCase):
         self.assertEqual(status["last_trace"]["request_count"], 1)
         self.assertEqual(status["last_trace"]["written"], 1)
         self.assertGreaterEqual(status["recent_traces_total"], 1)
+
+    def test_backfill_all_skips_without_legacy_bar_pipeline(self):
+        writer = _FakeWriter()
+        broker = _FakeBroker([_history_bar(_et_ms(2026, 4, 17, 10, 45))])
+        backfill = DataBackfill(
+            data_writer=writer,
+            config=_FakeConfig({"ibkr_legacy_bar_pipeline_enabled": False}),
+            environment="live",
+            broker=broker,
+        )
+
+        with mock.patch("ibkr_compute.market.data_backfill_backfill.emit_large_operation_alert") as alert_mock:
+            result = backfill.backfill_all(
+                {"ZTS": 121665622},
+                symbol_meta={"ZTS": {"exchange": "BATS"}},
+                intervals=["5m"],
+                trace_source="unit_test_disabled",
+            )
+
+        self.assertEqual(result["ZTS"]["5m"], 0)
+        self.assertEqual(broker.calls, 0)
+        self.assertEqual(writer.pb_client.upsert_calls, [])
+        self.assertEqual(result.get("_meta")["reason"], "legacy_bar_pipeline_disabled")
+        self.assertTrue(result.get("_meta")["skipped"])
+        alert_mock.assert_not_called()
+
+        status = backfill.status()
+        self.assertFalse(status["legacy_bar_pipeline_enabled"])
+        self.assertEqual(status["bar_pipeline_status"], "disabled_tv_primary")
+        self.assertEqual(status["bar_pipeline_reason"], "legacy_bar_pipeline_disabled")
+        self.assertTrue(status["last_trace"]["skipped"])
+        self.assertEqual(status["last_trace"]["request_count"], 0)
+
+    def test_data_writer_skips_ibkr_bars_when_legacy_bar_pipeline_disabled(self):
+        pb = _FakePB([])
+        with tempfile.TemporaryDirectory() as tmp_dir, mock.patch(
+            "ibkr_compute.market.data_writer.threading.Thread",
+            _NoopThread,
+        ), mock.patch.object(
+            DataWriter,
+            "_build_queue_path",
+            return_value=str(Path(tmp_dir) / "pending.json"),
+        ):
+            writer = DataWriter(
+                pb,
+                config=_FakeConfig({"ibkr_legacy_bar_pipeline_enabled": False}),
+                environment="live",
+            )
+            try:
+                result = writer.write_bar({"symbol": "ZTS"})
+                status = writer.status()
+            finally:
+                writer.close()
+
+        self.assertFalse(result)
+        self.assertEqual(pb.upsert_calls, [])
+        self.assertEqual(status["writes"], 0)
+        self.assertEqual(status["errors"], 0)
+        self.assertEqual(status["pending_batch"], 0)
+        self.assertEqual(status["skips_disabled"], 1)
+        self.assertFalse(status["legacy_bar_pipeline_enabled"])
+        self.assertEqual(status["bar_pipeline_status"], "disabled_tv_primary")
 
     def test_latest_stored_bar_prefers_direct_sqlite_read(self):
         writer = _FakeWriter(rows=[{"bar_time_ms": 111}])

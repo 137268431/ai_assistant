@@ -696,6 +696,24 @@ class WatchlistIdleTopupCycleTest(unittest.TestCase):
         )
         self.assertEqual(self.service.bar_writer.flush_calls, len(self.service.data_backfill.backfill_all_calls))
 
+    def test_legacy_bar_pipeline_disabled_skips_without_backfill_or_flush(self):
+        self.service.config.values["ibkr_legacy_bar_pipeline_enabled"] = False
+
+        state = self.service._run_watchlist_idle_topup_cycle()
+
+        self.assertEqual("skipped", state["status"])
+        self.assertEqual("legacy_bar_pipeline_disabled", state["skip_reason"])
+        self.assertEqual([], self.service.data_backfill.backfill_all_calls)
+        self.assertEqual(0, self.service.bar_writer.flush_calls)
+
+    def test_legacy_bar_pipeline_disabled_skips_active_repair_scan(self):
+        self.service.config.values["ibkr_legacy_bar_pipeline_enabled"] = False
+        self.service.scan_bar_integrity = mock.Mock(side_effect=AssertionError("scan should not run"))
+
+        self.service._run_active_repair_cycle()
+
+        self.service.scan_bar_integrity.assert_not_called()
+
     def test_idle_topup_default_compute_payload_persists_signals_only_for_active_targets(self):
         state = self.service._run_watchlist_idle_topup_cycle()
 

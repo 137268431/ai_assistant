@@ -3,11 +3,51 @@ from __future__ import annotations
 import time
 from datetime import datetime
 
+BAR_PIPELINE_DISABLED_STATUS = "disabled_tv_primary"
+BAR_PIPELINE_DISABLED_STATUSES = {"disabled", BAR_PIPELINE_DISABLED_STATUS, "legacy_bar_pipeline_disabled"}
+FALSE_TEXT = {"0", "false", "no", "off", "disabled", "disable"}
+
 
 def _service_mod():
     from . import trading_service as service_mod
 
     return service_mod
+
+
+def _text(value) -> str:
+    return str(value if value is not None else "").strip()
+
+
+def _false_text(value) -> bool:
+    return _text(value).lower() in FALSE_TEXT
+
+
+def _bar_pipeline_candidate_disabled(candidate: dict) -> bool:
+    if not isinstance(candidate, dict):
+        return False
+    status = _text(candidate.get("status") or candidate.get("bar_pipeline_status")).lower()
+    reason = _text(candidate.get("reason") or candidate.get("bar_pipeline_reason")).lower()
+    if status in BAR_PIPELINE_DISABLED_STATUSES or reason == "legacy_bar_pipeline_disabled":
+        return True
+    if candidate.get("enabled") is False or candidate.get("legacy_bar_pipeline_enabled") is False:
+        return True
+    return _false_text(candidate.get("enabled")) or _false_text(candidate.get("legacy_bar_pipeline_enabled"))
+
+
+def _resolve_bar_pipeline_status(*payloads) -> dict:
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        nested = payload.get("bar_pipeline")
+        if isinstance(nested, dict) and nested:
+            return dict(nested)
+        if _bar_pipeline_candidate_disabled(payload):
+            return {
+                "enabled": False,
+                "status": BAR_PIPELINE_DISABLED_STATUS,
+                "reason": _text(payload.get("reason") or payload.get("bar_pipeline_reason")) or "legacy_bar_pipeline_disabled",
+            }
+    return {"enabled": True, "status": "enabled", "reason": ""}
 
 
 class TradingServiceRuntimeStatusMixin:
@@ -215,6 +255,10 @@ class TradingServiceRuntimeStatusMixin:
         auth_recovery = self._copy_auth_recovery_state()
         official_5m = self._copy_official_5m_state()
         direct_history_topup = self._copy_direct_topup_state()
+        data_writer_status = self.data_writer.status()
+        data_backfill_status = self.data_backfill.status()
+        bar_pipeline = _resolve_bar_pipeline_status(data_backfill_status, data_writer_status)
+        bar_pipeline_disabled = _bar_pipeline_candidate_disabled(bar_pipeline)
         due_bucket_ms = int(official_5m.get("last_due_bucket_ms", 0) or 0)
         completed_bucket_ms = int(official_5m.get("last_completed_bucket_ms", 0) or 0)
         cycle_started_at_ms = int(official_5m.get("cycle_started_at_ms", 0) or 0)
@@ -229,6 +273,20 @@ class TradingServiceRuntimeStatusMixin:
             round(max(0.0, (due_bucket_ms - completed_bucket_ms) / 1000.0), 1)
             if due_bucket_ms > completed_bucket_ms else 0.0
         )
+        if bar_pipeline_disabled:
+            official_5m.update(
+                {
+                    "enabled": False,
+                    "status": BAR_PIPELINE_DISABLED_STATUS,
+                    "phase": BAR_PIPELINE_DISABLED_STATUS,
+                    "running": False,
+                    "pending_symbols": [],
+                    "pending_symbols_total": 0,
+                    "pending_symbol_details": [],
+                    "missing_required_bars_total": 0,
+                    "disabled_reason": bar_pipeline.get("reason") or "legacy_bar_pipeline_disabled",
+                }
+            )
         websocket_status = self.ws_client.status()
         realtime_quotes = self.realtime_quote_book.status()
         warmup_state = self._copy_warmup_state()
@@ -295,7 +353,9 @@ class TradingServiceRuntimeStatusMixin:
         market_session_kind = str(market_session.get("kind") or "").strip().lower()
         live_freshness_required = market_session_kind in {"regular", "close_transition"}
         bar_freshness_status = "fresh"
-        if live_freshness_required:
+        if bar_pipeline_disabled:
+            bar_freshness_status = BAR_PIPELINE_DISABLED_STATUS
+        elif live_freshness_required:
             bar_freshness_status = (
                 "fresh"
                 if completed_bucket_ms > 0
@@ -304,7 +364,9 @@ class TradingServiceRuntimeStatusMixin:
                 else "stale"
             )
         indicator_freshness_status = "fresh"
-        if live_freshness_required:
+        if bar_pipeline_disabled:
+            indicator_freshness_status = BAR_PIPELINE_DISABLED_STATUS
+        elif live_freshness_required:
             indicator_freshness_status = (
                 "fresh"
                 if last_run_at > 0 and lag_since_last_run_s <= 90 and not stalled
@@ -331,9 +393,9 @@ class TradingServiceRuntimeStatusMixin:
             runtime_health = "unhealthy"
         elif str(resource_governor.get("status") or "").strip().lower() == "warning":
             runtime_health = "degraded"
-        if live_freshness_required and bar_freshness_status != "fresh":
+        if live_freshness_required and not bar_pipeline_disabled and bar_freshness_status != "fresh":
             runtime_health = "unhealthy"
-        elif live_freshness_required and indicator_freshness_status != "fresh" and runtime_health == "ok":
+        elif live_freshness_required and not bar_pipeline_disabled and indicator_freshness_status != "fresh" and runtime_health == "ok":
             runtime_health = "degraded"
         if stalled:
             runtime_health = "unhealthy"
@@ -362,14 +424,15 @@ class TradingServiceRuntimeStatusMixin:
             "websocket": websocket_status,
             "bar_aggregator": self.bar_aggregator.status(),
             "realtime_quotes": realtime_quotes,
+            "bar_pipeline": bar_pipeline,
             "canonical_5m": official_5m,
             "direct_history_topup": direct_history_topup,
             "host_resources": host_resources,
             "resource_governor": resource_governor,
             "watchlist_idle_topup": watchlist_idle_topup,
             "bar_repair_queue": bar_repair_queue,
-            "data_writer": self.data_writer.status(),
-            "data_backfill": self.data_backfill.status(),
+            "data_writer": data_writer_status,
+            "data_backfill": data_backfill_status,
             "data_retention": self.data_retention.status(),
             "order_placer": self.order_placer.status(),
             "order_tracker": self.order_tracker.status(),
@@ -480,6 +543,8 @@ class TradingServiceRuntimeStatusMixin:
                 "multi_timeframe_readiness": multi_timeframe_readiness,
                 "direct_history_topup": direct_history_topup,
                 "watchlist_idle_topup": watchlist_idle_topup,
+                "bar_pipeline_status": bar_pipeline.get("status") or "",
+                "bar_pipeline_reason": bar_pipeline.get("reason") or "",
                 "last_watchlist_refresh": (
                     datetime.fromtimestamp(self._last_watchlist_refresh_at, service_mod.ET).isoformat()
                     if self._last_watchlist_refresh_at else None

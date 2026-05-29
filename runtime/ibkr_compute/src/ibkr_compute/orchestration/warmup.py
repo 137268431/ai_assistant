@@ -602,12 +602,52 @@ class TradingServiceWarmupMixin:
             return {"open": True, "reason": str(state.get("trading_gate_reason") or "ready"), "source": "previous_warmup_snapshot"}
         return {"open": False, "reason": "remote_compute_status_missing", "source": source}
 
+    def _trade_readiness_from_tv_primary_slim(self, state: dict) -> dict | None:
+        slim_enabled = getattr(self, "_runtime_tv_primary_slim_mode_enabled", None)
+        if not callable(slim_enabled) or not slim_enabled():
+            return None
+
+        try:
+            snapshot = self._warmup_snapshot_from_subscriptions()
+        except Exception:
+            snapshot = self._trade_readiness_scope_snapshot(state)
+        trade_symbols = self._normalize_symbol_list(snapshot.get("trade_symbols") or [])
+        if not trade_symbols:
+            opener = getattr(self, "_open_slim_runtime_gate", None)
+            if callable(opener) and (
+                state.get("trading_gate_open")
+                or str(state.get("trading_gate_reason") or "") != "no_trade_symbols"
+            ):
+                opener("no_trade_symbols")
+                state = self._copy_warmup_state()
+            return {
+                "open": False,
+                "reason": "no_trade_symbols",
+                "phase": state.get("phase") or "blocked",
+                "source": "runtime_slim_mode",
+            }
+
+        if not state.get("trading_gate_open"):
+            opener = getattr(self, "_open_slim_runtime_gate", None)
+            if callable(opener):
+                opener("runtime_slim_mode")
+                state = self._copy_warmup_state()
+        return {
+            "open": True,
+            "reason": str(state.get("trading_gate_reason") or "runtime_slim_mode"),
+            "phase": state.get("phase") or "ready",
+            "source": "runtime_slim_mode",
+        }
+
     def _trade_readiness_snapshot(self) -> dict:
         if not self._running:
             return {"open": False, "reason": "runtime_stopped"}
         if not self.session_keeper.is_authenticated:
             return {"open": False, "reason": "session_unauthenticated"}
         state = self._copy_warmup_state()
+        tv_slim_current = self._trade_readiness_from_tv_primary_slim(state)
+        if tv_slim_current is not None:
+            return tv_slim_current
         slim_enabled = getattr(self, "_runtime_slim_mode_enabled", None)
         if callable(slim_enabled) and slim_enabled() and state.get("trading_gate_open"):
             return {
@@ -681,6 +721,20 @@ class TradingServiceWarmupMixin:
     def _schedule_warmup(self, reason: str = "subscriptions_changed", force: bool = False) -> bool:
         service_mod = _service_mod()
         snapshot = self._warmup_snapshot_from_subscriptions()
+        tv_slim_enabled = getattr(self, "_runtime_tv_primary_slim_mode_enabled", None)
+        if callable(tv_slim_enabled) and tv_slim_enabled():
+            self._open_slim_runtime_gate(reason=reason or "runtime_slim_mode")
+            state = self._copy_warmup_state()
+            service_mod.logger.info(
+                "Slim runtime warmup bypassed (%s): gate=%s reason=%s symbols=%d trade=%d monitor=%d",
+                reason,
+                "open" if state.get("trading_gate_open") else "closed",
+                state.get("trading_gate_reason") or "",
+                snapshot["symbols_total"],
+                snapshot["trade_symbols_total"],
+                snapshot["monitor_symbols_total"],
+            )
+            return False
         if snapshot["symbols_total"] == 0:
             self._set_warmup_state(
                 phase="idle",

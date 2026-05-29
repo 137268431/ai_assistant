@@ -872,6 +872,42 @@ class ControlPlaneSplitStackStatusMonitorTest(unittest.TestCase):
         self.assertEqual(runtime_view["websocket"]["tick_by_tick_subscribed_count"], 1)
         self.assertEqual(runtime_view["websocket"]["tick_by_tick_pending_count"], 0)
 
+    def test_statusz_runtime_view_marks_legacy_bar_pipeline_disabled(self):
+        runtime_payload = _sample_runtime_status_payload(authenticated=True)
+        runtime_payload["data_backfill"] = {
+            "total_backfilled": 123,
+            "active_requests": 2,
+            "active_symbols_total": 7,
+            "bar_pipeline": {
+                "enabled": False,
+                "status": "disabled_tv_primary",
+                "reason": "legacy_bar_pipeline_disabled",
+            },
+        }
+        runtime_payload["canonical_5m"] = {
+            "enabled": True,
+            "status": "stale",
+            "running": True,
+            "pending_symbols": ["AAPL"],
+            "pending_symbols_total": 1,
+            "last_error": "old canonical lag",
+        }
+
+        runtime_view = api_app_mod._build_statusz_runtime_payload(
+            runtime_payload,
+            False,
+            live_readiness={},
+        )
+
+        self.assertEqual(runtime_view["bar_pipeline"]["status"], "disabled_tv_primary")
+        self.assertFalse(runtime_view["bar_pipeline"]["enabled"])
+        self.assertEqual(runtime_view["canonical_5m"]["status"], "disabled_tv_primary")
+        self.assertFalse(runtime_view["canonical_5m"]["enabled"])
+        self.assertEqual(runtime_view["canonical_5m"]["pending_symbols_total"], 0)
+        self.assertEqual(runtime_view["data_backfill"]["status"], "disabled_tv_primary")
+        self.assertFalse(runtime_view["data_backfill"]["enabled"])
+        self.assertEqual(runtime_view["data_backfill"]["active_requests"], 0)
+
     def test_statusz_route_canonicalizes_reboot_starting_runtime_state(self):
         compute_result = {"ok": True, "payload": _sample_compute_status_payload(), "error": ""}
         runtime_result = {

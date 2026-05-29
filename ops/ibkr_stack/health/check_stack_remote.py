@@ -584,6 +584,91 @@ def latest_indicator_missing_grace(latest_bar_5m: dict | None, latest_indicator_
     }
 
 
+FALSE_TEXT = {"0", "false", "no", "off", "disabled", "disable"}
+BAR_PIPELINE_DISABLED_STATUSES = {"disabled", "disabled_tv_primary", "legacy_bar_pipeline_disabled"}
+TV_PRIMARY_SIGNAL_SOURCES = {"tv", "tradingview", "webhook_tv", "tv_webhook"}
+
+
+def _as_dict(value) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _text(value) -> str:
+    return str(value if value is not None else "").strip()
+
+
+def _false_text(value) -> bool:
+    return _text(value).lower() in FALSE_TEXT
+
+
+def _truthy_text(value, default=False) -> bool:
+    text = _text(value).lower()
+    if not text:
+        return bool(default)
+    if text in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if text in FALSE_TEXT:
+        return False
+    return bool(default)
+
+
+def config_item_map(runtime_config_payload: dict) -> dict:
+    items = runtime_config_payload.get("items") if isinstance(runtime_config_payload, dict) else []
+    result = {}
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        key = _text(item.get("key") or item.get("name"))
+        if not key:
+            continue
+        result[key] = item.get("value")
+    return result
+
+
+def _bar_pipeline_candidate_disabled(candidate: dict) -> bool:
+    status = _text(candidate.get("status") or candidate.get("bar_pipeline_status")).lower()
+    reason = _text(candidate.get("reason") or candidate.get("bar_pipeline_reason")).lower()
+    if status in BAR_PIPELINE_DISABLED_STATUSES or reason == "legacy_bar_pipeline_disabled":
+        return True
+    if candidate.get("enabled") is False or candidate.get("legacy_bar_pipeline_enabled") is False:
+        return True
+    return _false_text(candidate.get("enabled")) or _false_text(candidate.get("legacy_bar_pipeline_enabled"))
+
+
+def bar_pipeline_disabled(runtime_payload: dict, api_runtime_config_payload: dict | None = None) -> bool:
+    data_backfill = _as_dict(runtime_payload.get("data_backfill"))
+    data_writer = _as_dict(runtime_payload.get("data_writer"))
+    candidates = [
+        runtime_payload.get("bar_pipeline"),
+        data_backfill.get("bar_pipeline"),
+        data_backfill,
+        data_writer.get("bar_pipeline"),
+        data_writer,
+    ]
+    if any(_bar_pipeline_candidate_disabled(_as_dict(candidate)) for candidate in candidates if isinstance(candidate, dict)):
+        return True
+    config_map = config_item_map(api_runtime_config_payload or {})
+    if _false_text(config_map.get("ibkr_legacy_bar_pipeline_enabled")):
+        return True
+    signal_source = _text(config_map.get("ibkr_signal_source")).lower()
+    if signal_source in TV_PRIMARY_SIGNAL_SOURCES and _truthy_text(
+        config_map.get("ibkr_tv_primary_runtime_slim_enabled"),
+        default=True,
+    ):
+        return True
+    return False
+
+
+def disabled_data_freshness_window(targets: dict | None) -> dict:
+    return {
+        "required": False,
+        "reason": "bar_pipeline_disabled",
+        "label": "disabled_tv_primary",
+        "target_date": _text((targets or {}).get("target_date")),
+        "latest_bar_date": "",
+    }
+
+
 services = {
     name: systemd_status(name)
     for name in (
@@ -614,6 +699,18 @@ local_http = {
     "console_index": http_json(f"{CONSOLE}/index.html"),
     "pb_health": http_json(f"{PB}/api/health"),
 }
+runtime_payload = (
+    local_http.get("runtime_status", {}).get("json")
+    or local_http.get("compute_ibkr_status", {}).get("json")
+    or {}
+)
+api_status_payload = local_http.get("api_status", {}).get("json") or {}
+scheduler_status_payload = local_http.get("scheduler_status", {}).get("json") or {}
+compute_status_payload = local_http.get("compute_status", {}).get("json") or {}
+compute_health_payload = local_http.get("compute_health", {}).get("json") or {}
+storage_health_payload = local_http.get("api_storage_health", {}).get("json") or {}
+api_runtime_config_payload = local_http.get("api_runtime_config", {}).get("json") or {}
+legacy_bar_pipeline_disabled = bar_pipeline_disabled(runtime_payload, api_runtime_config_payload)
 
 conn = open_db()
 latest_bar_5m = latest_row(conn, "ibkr_bars", DATA_ENVIRONMENT, "interval=?", ("5m",))
@@ -636,7 +733,11 @@ for item in (latest_bar_5m, latest_indicator_5m, latest_signal):
         item["age_min"] = age_minutes(item["bar_time_ms"])
         item["bar_time_us"] = format_us(item["bar_time_ms"])
 
-data_freshness_window = classify_data_freshness_window(latest_bar_5m, targets)
+data_freshness_window = (
+    disabled_data_freshness_window(targets)
+    if legacy_bar_pipeline_disabled
+    else classify_data_freshness_window(latest_bar_5m, targets)
+)
 indicator_missing_grace = latest_indicator_missing_grace(
     latest_bar_5m,
     latest_indicator_5m,
@@ -693,16 +794,6 @@ elif (
 ):
     failures.append(f"db:latest_indicator_5m_stale:{latest_indicator_5m['age_min']}")
 
-runtime_payload = (
-    local_http.get("runtime_status", {}).get("json")
-    or local_http.get("compute_ibkr_status", {}).get("json")
-    or {}
-)
-api_status_payload = local_http.get("api_status", {}).get("json") or {}
-scheduler_status_payload = local_http.get("scheduler_status", {}).get("json") or {}
-compute_status_payload = local_http.get("compute_status", {}).get("json") or {}
-compute_health_payload = local_http.get("compute_health", {}).get("json") or {}
-storage_health_payload = local_http.get("api_storage_health", {}).get("json") or {}
 gateway = runtime_payload.get("gateway") or {}
 session = runtime_payload.get("session") or {}
 websocket = runtime_payload.get("websocket") or {}
@@ -838,7 +929,7 @@ elif preload_reason == "slow":
     )
 
 active_target_count = int(market_universe.get("active_target_count") or 0)
-if targets.get("eligible_count", 0) > 0 and active_target_count == 0:
+if not legacy_bar_pipeline_disabled and targets.get("eligible_count", 0) > 0 and active_target_count == 0:
     warnings.append("runtime:active_subscription_symbols_empty")
 
 report = {
@@ -876,6 +967,11 @@ report = {
         "runtime_summary": {
             "service_profile": runtime_service_profile,
             "service_topology": compact_service_topology(runtime_topology),
+            "bar_pipeline": {
+                "enabled": not legacy_bar_pipeline_disabled,
+                "status": "disabled_tv_primary" if legacy_bar_pipeline_disabled else "enabled",
+                "reason": "legacy_bar_pipeline_disabled" if legacy_bar_pipeline_disabled else "",
+            },
             "compute_startup_preload": compute_startup_preload,
             "compute_startup_preload_sla": compute_startup_preload_sla,
             "gateway": compact_status_block(gateway, ("running", "reachable", "status")),
@@ -891,7 +987,7 @@ report = {
             ),
             "market_universe": compact_status_block(
                 market_universe,
-                ("active_target_count", "pending_symbols_total", "subscription_count", "status"),
+                ("active_target_count", "pending_symbols_total", "subscription_count", "status", "bar_pipeline_status"),
             ),
         },
     },

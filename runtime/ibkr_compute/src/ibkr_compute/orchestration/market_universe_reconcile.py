@@ -17,6 +17,7 @@ from .market_universe_support import (
 )
 
 from . import market_universe_support as _market_universe_support
+from .market_universe_targets import _bar_pipeline_skip_reason
 
 
 def _service_mod():
@@ -150,7 +151,8 @@ class TradingServiceMarketUniverseReconcileMixin:
         except Exception as exc:
             backfill_result = {"ok": False, "symbols": normalized_symbols, "error": str(exc)}
 
-        if conid_map:
+        bar_skip_reason = _bar_pipeline_skip_reason(self, service_mod)
+        if conid_map and not bar_skip_reason:
             try:
                 symbol_meta = {symbol: self._symbol_meta.get(symbol, {}) for symbol in conid_map.keys()}
                 self.data_backfill.backfill_all(conid_map, symbol_meta=symbol_meta, intervals=["5m"])
@@ -170,6 +172,15 @@ class TradingServiceMarketUniverseReconcileMixin:
                     "resolved": sorted(conid_map.keys()),
                     "error": str(exc),
                 }
+        elif conid_map:
+            backfill_result = {
+                "ok": True,
+                "symbols": normalized_symbols,
+                "resolved": sorted(conid_map.keys()),
+                "missing": sorted(set(normalized_symbols) - set(conid_map.keys())),
+                "skipped": True,
+                "reason": bar_skip_reason,
+            }
 
         backtest_preload_result = {
             "ok": True,

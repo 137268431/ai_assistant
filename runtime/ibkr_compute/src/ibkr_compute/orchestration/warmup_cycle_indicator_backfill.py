@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import time
 
+from .market_universe_targets import _bar_pipeline_skip_reason
 from .warmup_cycle_support import _service_mod
 
 class WarmupCycleIndicatorBackfillMixin:
@@ -214,6 +215,18 @@ class WarmupCycleIndicatorBackfillMixin:
     def _run_warmup_indicator_backfill(self, snapshot: dict) -> dict:
         service_mod = _service_mod()
         period = "bar_only"
+        bar_skip_reason = _bar_pipeline_skip_reason(self, service_mod)
+        if bar_skip_reason:
+            service_mod.logger.info("Warmup indicator backfill skipped: reason=%s", bar_skip_reason)
+            return {
+                "period": period,
+                "plan": {},
+                "written_total": 0,
+                "backfill": {},
+                "prime": {},
+                "skipped": True,
+                "skip_reason": bar_skip_reason,
+            }
         max_passes = max(
             1,
             self.config.get_int_for_environment(

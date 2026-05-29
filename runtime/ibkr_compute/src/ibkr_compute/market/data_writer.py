@@ -39,6 +39,7 @@ BAR_FLUSH_RETRY_BACKOFF_SECONDS = max(0.5, float(os.environ.get("IBKR_BAR_FLUSH_
 BAR_DIRECT_SQLITE_ENABLED = _env_bool("IBKR_BAR_DIRECT_SQLITE_ENABLED", True)
 BAR_DIRECT_SQLITE_FALLBACK_API_ENABLED = _env_bool("IBKR_BAR_DIRECT_SQLITE_FALLBACK_API_ENABLED", True)
 BAR_DIRECT_SQLITE_TIMEOUT_SECONDS = max(1.0, float(os.environ.get("IBKR_BAR_DIRECT_SQLITE_TIMEOUT_SECONDS", "30.0")))
+LEGACY_BAR_PIPELINE_ENABLED = _env_bool("IBKR_LEGACY_BAR_PIPELINE_ENABLED", False)
 BAR_PENDING_QUEUE_DIR = str(os.environ.get("IBKR_BAR_PENDING_QUEUE_DIR") or "").strip()
 BAR_INGEST_CURSOR_STATE_KEY = "ibkr_bar_ingest_cursor"
 NON_COMPUTE_DISPATCH_SOURCES = {
@@ -73,6 +74,7 @@ class DataWriter:
         self.environment = str(environment or DEFAULT_ENVIRONMENT).strip().lower() or DEFAULT_ENVIRONMENT
         self._write_count = 0
         self._skip_count = 0
+        self._disabled_skip_count = 0
         self._error_count = 0
         self._direct_sqlite_write_count = 0
         self._api_write_count = 0
@@ -141,6 +143,27 @@ class DataWriter:
             ),
         )
 
+    def _legacy_bar_pipeline_enabled(self) -> bool:
+        if self.collection != "ibkr_bars":
+            return True
+        return self._get_bool_setting(
+            "ibkr_legacy_bar_pipeline_enabled",
+            LEGACY_BAR_PIPELINE_ENABLED,
+        )
+
+    def _legacy_bar_pipeline_status(self) -> dict:
+        enabled = self._legacy_bar_pipeline_enabled()
+        if self.collection != "ibkr_bars":
+            return {"enabled": True, "status": "not_applicable", "reason": ""}
+        return {
+            "enabled": enabled,
+            "status": "enabled" if enabled else "disabled_tv_primary",
+            "reason": "" if enabled else "legacy_bar_pipeline_disabled",
+        }
+
+    def _legacy_bar_pipeline_disabled(self) -> bool:
+        return self.collection == "ibkr_bars" and not self._legacy_bar_pipeline_enabled()
+
     def _build_queue_path(self) -> str:
         base_dir = BAR_PENDING_QUEUE_DIR or os.path.join(os.getcwd(), "runtime_state")
         os.makedirs(base_dir, exist_ok=True)
@@ -182,6 +205,11 @@ class DataWriter:
             self._persist_queue_locked()
 
     def write_bar(self, bar_data: dict) -> bool:
+        if self._legacy_bar_pipeline_disabled():
+            self._skip_count += 1
+            self._disabled_skip_count += 1
+            return False
+
         if not self._validate_bar(bar_data):
             logger.warning("Bar validation failed: %s %s", bar_data.get("symbol"), bar_data.get("us_time"))
             self._error_count += 1
@@ -380,6 +408,11 @@ class DataWriter:
     def _flush_batch(self, batch) -> bool:
         if not batch:
             return True
+        if self._legacy_bar_pipeline_disabled():
+            self._skip_count += len(batch)
+            self._disabled_skip_count += len(batch)
+            self._clear_inflight_batch()
+            return False
 
         max_attempts = self._retry_attempts()
         backoff_seconds = self._retry_backoff_seconds()
@@ -520,11 +553,17 @@ class DataWriter:
         with self._lock:
             pending = len(self._pending_batch)
             inflight = len(self._inflight_batch)
+        pipeline_status = self._legacy_bar_pipeline_status()
         return {
             "writes": self._write_count,
             "skips_dedup": self._skip_count,
+            "skips_disabled": self._disabled_skip_count,
             "errors": self._error_count,
             "collection": self.collection,
+            "legacy_bar_pipeline_enabled": pipeline_status["enabled"],
+            "bar_pipeline_status": pipeline_status["status"],
+            "bar_pipeline_reason": pipeline_status["reason"],
+            "bar_pipeline": pipeline_status,
             "pending_batch": pending,
             "inflight_batch": inflight,
             "batch_size": self._batch_size(),

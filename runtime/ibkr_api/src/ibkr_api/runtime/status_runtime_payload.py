@@ -4,6 +4,7 @@ from typing import Any
 
 from .status_runtime_sections import (
     build_auth_recovery_summary,
+    build_bar_pipeline_payload,
     build_canonical_5m_payload,
     build_daily_scan_payload,
     build_data_backfill_payload,
@@ -18,6 +19,51 @@ from .status_runtime_sections import (
 from .status_runtime_warmup import build_runtime_warmup_payload
 from .status_types import AsDict, NormalizeSymbolList, TrimArray, TrimObjectEntries
 from .effective_gate import build_effective_trading_gate
+
+FALSE_TEXT = {"0", "false", "no", "off", "disabled", "disable"}
+BAR_PIPELINE_DISABLED_STATUSES = {"disabled", "disabled_tv_primary", "legacy_bar_pipeline_disabled"}
+
+
+def _text(value: Any) -> str:
+    return str(value if value is not None else "").strip()
+
+
+def _false_text(value: Any) -> bool:
+    return _text(value).lower() in FALSE_TEXT
+
+
+def _bar_pipeline_candidate_disabled(candidate: dict[str, Any]) -> bool:
+    status = _text(candidate.get("status") or candidate.get("bar_pipeline_status")).lower()
+    reason = _text(candidate.get("reason") or candidate.get("bar_pipeline_reason")).lower()
+    if status in BAR_PIPELINE_DISABLED_STATUSES or reason == "legacy_bar_pipeline_disabled":
+        return True
+    if candidate.get("enabled") is False or candidate.get("legacy_bar_pipeline_enabled") is False:
+        return True
+    if _false_text(candidate.get("enabled")) or _false_text(candidate.get("legacy_bar_pipeline_enabled")):
+        return True
+    return False
+
+
+def _runtime_bar_pipeline_disabled(payload: dict[str, Any], *, as_dict: AsDict) -> bool:
+    candidates = [
+        as_dict(payload.get("bar_pipeline")),
+        as_dict(as_dict(payload.get("data_backfill")).get("bar_pipeline")),
+        as_dict(payload.get("data_backfill")),
+        as_dict(as_dict(payload.get("data_writer")).get("bar_pipeline")),
+        as_dict(payload.get("data_writer")),
+    ]
+    return any(_bar_pipeline_candidate_disabled(candidate) for candidate in candidates if candidate)
+
+
+def _resolve_bar_pipeline_payload(payload: dict[str, Any], *, as_dict: AsDict) -> dict[str, Any]:
+    for candidate in (
+        as_dict(payload.get("bar_pipeline")),
+        as_dict(as_dict(payload.get("data_backfill")).get("bar_pipeline")),
+        as_dict(as_dict(payload.get("data_writer")).get("bar_pipeline")),
+    ):
+        if candidate:
+            return candidate
+    return {}
 
 
 def _resolve_daily_scan(payload: dict[str, Any], fallback: dict[str, Any], *, as_dict: AsDict) -> dict[str, Any]:
@@ -81,6 +127,7 @@ def build_statusz_runtime_payload(
         normalize_symbol_list=normalize_symbol_list,
         trim_array=trim_array,
     )
+    bar_pipeline_disabled = _runtime_bar_pipeline_disabled(payload, as_dict=as_dict)
 
     runtime_view = {
         "ok": payload.get("ok") if payload else None,
@@ -105,12 +152,22 @@ def build_statusz_runtime_payload(
         "auth_recovery": build_auth_recovery_summary(payload.get("auth_recovery"), as_dict=as_dict),
         "websocket": build_websocket_payload(payload.get("websocket"), as_dict=as_dict),
         "realtime_quotes": build_realtime_quotes_payload(payload.get("realtime_quotes"), as_dict=as_dict),
+        "bar_pipeline": build_bar_pipeline_payload(
+            _resolve_bar_pipeline_payload(payload, as_dict=as_dict),
+            as_dict=as_dict,
+            disabled=bar_pipeline_disabled,
+        ),
         "canonical_5m": build_canonical_5m_payload(
             payload.get("canonical_5m"),
             as_dict=as_dict,
             trim_array=trim_array,
+            bar_pipeline_disabled=bar_pipeline_disabled,
         ),
-        "data_backfill": build_data_backfill_payload(payload.get("data_backfill"), as_dict=as_dict),
+        "data_backfill": build_data_backfill_payload(
+            payload.get("data_backfill"),
+            as_dict=as_dict,
+            bar_pipeline_disabled=bar_pipeline_disabled,
+        ),
         "order_tracker": build_order_tracker_payload(payload.get("order_tracker"), as_dict=as_dict),
         "order_flow": as_dict(payload.get("order_flow")),
         "warmup": warmup,

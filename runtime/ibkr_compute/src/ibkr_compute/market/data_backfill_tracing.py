@@ -444,12 +444,21 @@ class DataBackfillTracingMixin:
             duration = float((candidate or {}).get("duration_s", 0) or 0)
             if duration > float(slowest_recent.get("duration_s", 0) or 0):
                 slowest_recent = dict(candidate or {})
+        pipeline_status = (
+            self._legacy_bar_pipeline_status()
+            if hasattr(self, "_legacy_bar_pipeline_status")
+            else {"enabled": True, "status": "unknown", "reason": ""}
+        )
         return {
             "total_backfilled": self._backfill_count,
             "request_count": self._request_count,
             "retry_count": self._retry_count,
             "throttle_count": self._throttle_count,
             "environment": self.environment,
+            "legacy_bar_pipeline_enabled": pipeline_status["enabled"],
+            "bar_pipeline_status": pipeline_status["status"],
+            "bar_pipeline_reason": pipeline_status["reason"],
+            "bar_pipeline": pipeline_status,
             "intervals": list(self.default_intervals),
             "max_concurrency": self._max_concurrency(),
             "request_spacing_s": self._request_spacing(),

@@ -7,7 +7,15 @@ from ibkr_api.modes import request_market_data_mode
 
 
 MONITOR_ALERT_STATE_KEY = "system_monitor_alert"
-MONITOR_ALERT_COOLDOWN_MS = 15 * 60 * 1000
+DEFAULT_MONITOR_ALERT_ERROR_COOLDOWN_MIN = 15
+DEFAULT_MONITOR_ALERT_WARNING_COOLDOWN_MIN = 60
+DEFAULT_ACCOUNT_SNAPSHOT_WARNING_CONSECUTIVE_COUNT = 2
+MONITOR_ALERT_COOLDOWN_MS = DEFAULT_MONITOR_ALERT_ERROR_COOLDOWN_MIN * 60 * 1000
+ACCOUNT_SNAPSHOT_WARNING_CODES = {
+    "account_snapshot_degraded",
+    "account_snapshot_timeout",
+    "account_pnl_unavailable",
+}
 IB_CLIENT_SERVICE_LABELS = (
     ("ibkr-runtime", "Runtime"),
     ("ibkr-compute", "Compute"),
@@ -23,6 +31,7 @@ EmitSystemEvent = Callable[..., dict[str, Any]]
 GetStatePayload = Callable[[str, str], dict[str, Any]]
 UpsertState = Callable[[str, str, dict[str, Any], str], dict[str, Any]]
 BuildAdmissionPreview = Callable[[dict[str, Any]], Any]
+ConfigValue = Callable[[str, str, str], Any]
 
 
 def _to_text(value: Any) -> str:
@@ -38,6 +47,22 @@ def _to_int(value: Any, default: int = 0) -> int:
 
 def _as_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
+
+
+def _config_int(
+    config_value: ConfigValue | None,
+    key: str,
+    default: int,
+    environment: str,
+    *,
+    minimum: int = 0,
+) -> int:
+    try:
+        raw = config_value(key, str(default), environment) if callable(config_value) else default
+        value = _to_int(raw, default)
+    except Exception:
+        value = default
+    return max(minimum, value)
 
 
 def _service_counts_line(service_monitor: dict[str, Any]) -> str:
@@ -106,6 +131,48 @@ def _alert_flags(monitor_payload: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         flags.append(dict(item))
     return flags
+
+
+def _flag_codes(flags: list[dict[str, Any]]) -> list[str]:
+    return [_to_text(item.get("code")) for item in flags if _to_text(item.get("code"))]
+
+
+def _is_error_flag(item: dict[str, Any]) -> bool:
+    return _to_text(item.get("severity")).lower() == "error"
+
+
+def _is_account_snapshot_warning(item: dict[str, Any]) -> bool:
+    return (
+        _to_text(item.get("severity")).lower() == "warning"
+        and _to_text(item.get("code")) in ACCOUNT_SNAPSHOT_WARNING_CODES
+    )
+
+
+def _account_snapshot_warning_streak(state: dict[str, Any], flags: list[dict[str, Any]]) -> int:
+    if not any(_is_account_snapshot_warning(item) for item in flags):
+        return 0
+    return _to_int(state.get("account_snapshot_warning_streak"), 0) + 1
+
+
+def _filter_alert_flags(
+    flags: list[dict[str, Any]],
+    *,
+    account_snapshot_warning_streak: int,
+    account_snapshot_warning_consecutive_count: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if any(_is_error_flag(item) for item in flags) or account_snapshot_warning_consecutive_count <= 1:
+        return list(flags), []
+    alert_flags: list[dict[str, Any]] = []
+    suppressed_flags: list[dict[str, Any]] = []
+    for item in flags:
+        if (
+            _is_account_snapshot_warning(item)
+            and account_snapshot_warning_streak < account_snapshot_warning_consecutive_count
+        ):
+            suppressed_flags.append(item)
+        else:
+            alert_flags.append(item)
+    return alert_flags, suppressed_flags
 
 
 def _fingerprint(monitor_payload: dict[str, Any], flags: list[dict[str, Any]]) -> str:
@@ -248,6 +315,7 @@ def build_system_monitor_alert_guard_response(
     get_state_payload: GetStatePayload,
     upsert_state: UpsertState,
     build_admission_preview: BuildAdmissionPreview | None = None,
+    config_value: ConfigValue | None = None,
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
     environment = request_market_data_mode(request_payload)
@@ -256,9 +324,32 @@ def build_system_monitor_alert_guard_response(
     flags = _alert_flags(monitor_payload)
     state = _as_dict(get_state_payload(MONITOR_ALERT_STATE_KEY, environment).get("data"))
     current_ms = _to_int(datetime.now(timezone.utc).timestamp() * 1000, 0)
+    error_cooldown_min = _config_int(
+        config_value,
+        "system_monitor_alert_error_cooldown_min",
+        DEFAULT_MONITOR_ALERT_ERROR_COOLDOWN_MIN,
+        environment,
+        minimum=1,
+    )
+    warning_cooldown_min = _config_int(
+        config_value,
+        "system_monitor_alert_warning_cooldown_min",
+        DEFAULT_MONITOR_ALERT_WARNING_COOLDOWN_MIN,
+        environment,
+        minimum=1,
+    )
+    account_snapshot_warning_consecutive_count = _config_int(
+        config_value,
+        "system_monitor_account_snapshot_warning_consecutive_count",
+        DEFAULT_ACCOUNT_SNAPSHOT_WARNING_CONSECUTIVE_COUNT,
+        environment,
+        minimum=1,
+    )
+    account_snapshot_warning_streak = _account_snapshot_warning_streak(state, flags)
     next_state = {
         **state,
         "last_monitor_check_at": times["us"],
+        "account_snapshot_warning_streak": account_snapshot_warning_streak,
     }
 
     if not flags:
@@ -267,6 +358,7 @@ def build_system_monitor_alert_guard_response(
                 "last_monitor_issue_at": "",
                 "last_monitor_alert_hash": "",
                 "last_monitor_alert_ms": 0,
+                "account_snapshot_warning_streak": 0,
             }
         )
         upsert_state(MONITOR_ALERT_STATE_KEY, environment, next_state, times["date"])
@@ -279,16 +371,37 @@ def build_system_monitor_alert_guard_response(
             "source": "ibkr-api",
         }, 200
 
-    fingerprint = _fingerprint(monitor_payload, flags)
+    alert_flags, suppressed_flags = _filter_alert_flags(
+        flags,
+        account_snapshot_warning_streak=account_snapshot_warning_streak,
+        account_snapshot_warning_consecutive_count=account_snapshot_warning_consecutive_count,
+    )
+    if not alert_flags:
+        upsert_state(MONITOR_ALERT_STATE_KEY, environment, next_state, times["date"])
+        return {
+            "ok": True,
+            "environment": environment,
+            "job_id": "system_monitor_alert_guard",
+            "triggered": False,
+            "flag_codes": _flag_codes(flags),
+            "alert_flag_codes": [],
+            "suppressed_flag_codes": _flag_codes(suppressed_flags),
+            "account_snapshot_warning_streak": account_snapshot_warning_streak,
+            "state": next_state,
+            "source": "ibkr-api",
+        }, 200
+
+    fingerprint = _fingerprint(monitor_payload, alert_flags)
     last_hash = _to_text(state.get("last_monitor_alert_hash"))
     last_ms = _to_int(state.get("last_monitor_alert_ms"), 0)
-    should_notify = fingerprint != last_hash or last_ms <= 0 or (current_ms - last_ms) >= MONITOR_ALERT_COOLDOWN_MS
-    level = "error" if any(_to_text(item.get("severity")).lower() == "error" for item in flags) else "warning"
-    title = f"IBKR Monitor {'严重告警' if level == 'error' else '告警'}（{len(flags)}项）"
+    level = "error" if any(_is_error_flag(item) for item in alert_flags) else "warning"
+    cooldown_ms = (error_cooldown_min if level == "error" else warning_cooldown_min) * 60 * 1000
+    should_notify = fingerprint != last_hash or last_ms <= 0 or (current_ms - last_ms) >= cooldown_ms
+    title = f"IBKR Monitor {'严重告警' if level == 'error' else '告警'}（{len(alert_flags)}项）"
     event: dict[str, Any] = {}
     admission_preview: dict[str, Any] = {}
     if should_notify:
-        if _should_load_admission_preview(flags):
+        if _should_load_admission_preview(alert_flags):
             admission_preview = _load_admission_preview(
                 build_admission_preview,
                 environment=environment,
@@ -301,7 +414,7 @@ def build_system_monitor_alert_guard_response(
             title=title,
             detail=_detail(
                 monitor_payload,
-                flags,
+                alert_flags,
                 timestamp_us=times["us"],
                 admission_preview=admission_preview,
             ),
@@ -320,7 +433,10 @@ def build_system_monitor_alert_guard_response(
         "environment": environment,
         "job_id": "system_monitor_alert_guard",
         "triggered": bool(should_notify),
-        "flag_codes": [_to_text(item.get("code")) for item in flags],
+        "flag_codes": _flag_codes(flags),
+        "alert_flag_codes": _flag_codes(alert_flags),
+        "suppressed_flag_codes": _flag_codes(suppressed_flags),
+        "account_snapshot_warning_streak": account_snapshot_warning_streak,
         "admission_preview": admission_preview,
         "event": event,
         "state": next_state,

@@ -72,6 +72,9 @@ class TradingServiceSupportMixin:
     def _runtime_technical_pipeline_enabled(self) -> bool:
         return self._runtime_technical_pipeline_config_enabled() and not self._runtime_tv_primary_slim_enabled()
 
+    def _runtime_tv_primary_slim_mode_enabled(self) -> bool:
+        return self._runtime_tv_primary_slim_enabled() and not self._runtime_technical_pipeline_enabled()
+
     def _runtime_slim_mode_enabled(self) -> bool:
         return not self._runtime_technical_pipeline_enabled()
 
@@ -117,15 +120,32 @@ class TradingServiceSupportMixin:
 
     def _open_slim_runtime_gate(self, reason: str = "runtime_slim_mode"):
         snapshot = self._warmup_snapshot_from_subscriptions()
+        trade_symbols_total = int(snapshot.get("trade_symbols_total", 0) or 0)
+        if not getattr(self, "_running", False):
+            gate_open = False
+            gate_reason = "runtime_stopped"
+            phase = "blocked"
+        elif not bool(getattr(self.session_keeper, "is_authenticated", False)):
+            gate_open = False
+            gate_reason = "session_unauthenticated"
+            phase = "blocked"
+        elif trade_symbols_total <= 0:
+            gate_open = False
+            gate_reason = "no_trade_symbols"
+            phase = "blocked"
+        else:
+            gate_open = True
+            gate_reason = "runtime_slim_mode"
+            phase = "ready"
         self._set_warmup_state(
-            phase="ready",
-            reason=reason,
+            phase=phase,
+            reason=reason or gate_reason,
             requested_at=self._now_iso(),
             started_at=None,
             finished_at=self._now_iso(),
             last_error="",
-            trading_gate_open=True,
-            trading_gate_reason=reason,
+            trading_gate_open=gate_open,
+            trading_gate_reason=gate_reason,
             **self._warmup_scope_fields(snapshot),
             ready_symbols=snapshot["symbols_total"],
             ready_scan_symbols=snapshot["scan_symbols_total"],

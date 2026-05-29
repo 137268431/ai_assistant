@@ -40,6 +40,7 @@ def _empty_today_counts() -> dict[str, Any]:
         "main_orders": 0,
         "order_groups": 0,
         "ibkr_bars": 0,
+        "ibkr_indicators": 0,
         "ibkr_targets": 0,
         "events": 0,
         "take_profit_filled": 0,

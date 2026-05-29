@@ -542,10 +542,14 @@ def _build_runtime_summary_line(payload: dict) -> str:
 
 def _build_data_summary_line(payload: dict) -> str:
     remote_db = _safe_dict((_safe_dict(payload.get("remote")).get("db")))
+    runtime_summary = _safe_dict((_safe_dict(payload.get("remote")).get("runtime_summary")))
+    bar_pipeline = _safe_dict(runtime_summary.get("bar_pipeline"))
     latest_bar = _safe_dict(remote_db.get("latest_bar_5m"))
     latest_indicator = _safe_dict(remote_db.get("latest_indicator_5m"))
     latest_signal = _safe_dict(remote_db.get("latest_signal"))
     parts = []
+    if str(bar_pipeline.get("status") or "").strip().lower() == "disabled_tv_primary":
+        parts.append("bar pipeline disabled_tv_primary")
     if latest_bar:
         parts.append(
             f"bar5m {latest_bar.get('symbol') or '--'} age={latest_bar.get('age_min') if latest_bar.get('age_min') is not None else '--'}m"

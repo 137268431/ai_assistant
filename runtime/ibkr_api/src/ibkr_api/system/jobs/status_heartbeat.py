@@ -22,6 +22,15 @@ DEGRADED_SERVICE_STATUSES = {"degraded", "warning"}
 OFFLINE_SERVICE_STATUSES = {"offline", "error"}
 PARTIAL_RECOVERY_ISSUE_BASES = CONNECTION_ISSUE_CODES | {"services_offline", "services_degraded", "runtime", "summary"}
 TRUTHY_TEXT = {"1", "true", "yes", "on"}
+FALSE_TEXT = {"0", "false", "no", "off", "disabled", "disable"}
+BAR_PIPELINE_DISABLED_STATUSES = {"disabled", "disabled_tv_primary", "legacy_bar_pipeline_disabled"}
+TV_PRIMARY_SUPPRESSED_ISSUE_BASES = {
+    "no_active_targets",
+    "no_execution_eligible_targets",
+    "data_freshness_delayed",
+    "data_freshness_offline",
+    "stale_active_symbols",
+}
 IB_CLIENT_SERVICE_LABELS = (
     ("ibkr-runtime", "Runtime"),
     ("ibkr-compute", "Compute"),
@@ -112,6 +121,47 @@ def _truthy(value: Any, *, default: bool = False) -> bool:
     if not text:
         return default
     return text in TRUTHY_TEXT
+
+
+def _false_text(value: Any) -> bool:
+    return _to_text(value).lower() in FALSE_TEXT
+
+
+def _bar_pipeline_candidate_disabled(candidate: dict[str, Any]) -> bool:
+    status = _to_text(candidate.get("status") or candidate.get("bar_pipeline_status")).lower()
+    reason = _to_text(candidate.get("reason") or candidate.get("bar_pipeline_reason")).lower()
+    if status in BAR_PIPELINE_DISABLED_STATUSES or reason == "legacy_bar_pipeline_disabled":
+        return True
+    if candidate.get("enabled") is False or candidate.get("legacy_bar_pipeline_enabled") is False:
+        return True
+    return _false_text(candidate.get("enabled")) or _false_text(candidate.get("legacy_bar_pipeline_enabled"))
+
+
+def _bar_pipeline_disabled(snapshot_payload: dict[str, Any]) -> bool:
+    runtime = _as_dict(snapshot_payload.get("runtime"))
+    monitor = _as_dict(snapshot_payload.get("monitor"))
+    monitor_runtime = _as_dict(monitor.get("runtime"))
+    candidates = [
+        runtime.get("bar_pipeline"),
+        _as_dict(runtime.get("data_backfill")).get("bar_pipeline"),
+        runtime.get("data_backfill"),
+        _as_dict(runtime.get("data_writer")).get("bar_pipeline"),
+        runtime.get("data_writer"),
+        monitor_runtime.get("bar_pipeline"),
+        _as_dict(monitor_runtime.get("data_backfill")).get("bar_pipeline"),
+        monitor_runtime.get("data_backfill"),
+    ]
+    return any(_bar_pipeline_candidate_disabled(_as_dict(candidate)) for candidate in candidates if isinstance(candidate, dict))
+
+
+def _filter_tv_primary_legacy_flags(flags: list[dict[str, Any]], snapshot_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    if not _bar_pipeline_disabled(snapshot_payload):
+        return flags
+    return [
+        item
+        for item in flags
+        if _issue_base_code(item.get("code")) not in TV_PRIMARY_SUPPRESSED_ISSUE_BASES
+    ]
 
 
 def _today_order_count(today: dict[str, Any]) -> int:
@@ -284,6 +334,7 @@ def _runtime_health_snapshot(
         for item in (monitor.get("flags") or [])
         if isinstance(item, dict) and _to_text(item.get("code"))
     ]
+    flags = _filter_tv_primary_legacy_flags(flags, {"runtime": runtime, "monitor": monitor})
     alert_flags = [item for item in flags if _is_alert_flag(item)]
     counts = _as_dict(service_monitor.get("status_counts"))
     degraded_count = _to_int(counts.get("degraded"), 0) + _to_int(counts.get("warning"), 0)
@@ -307,6 +358,8 @@ def _runtime_health_snapshot(
     monitor_status = _normalized_status(monitor.get("status"))
     summary_status = _normalized_status(summary.get("status"))
     runtime_status = _normalized_status(runtime.get("status"))
+    if _bar_pipeline_disabled({"runtime": runtime, "monitor": monitor}) and monitor_status == "warning" and not alert_flags:
+        monitor_status = "ok"
     actionable_degraded_services = _actionable_degraded_services(
         degraded_services,
         alert_flags=alert_flags,

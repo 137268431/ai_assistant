@@ -21,6 +21,7 @@ from .market_universe_support import (
 from ibkr_compute.market.bar_freshness import DEFAULT_CLOSE_DELAY_SECONDS, latest_expected_extended_5m_ms
 
 from . import market_universe_support as _market_universe_support
+from .market_universe_targets import _bar_pipeline_skip_reason
 
 WATCHLIST_IDLE_TOPUP_MAX_SYMBOLS_HARD_CAP = 200
 WATCHLIST_IDLE_TOPUP_SIGNAL_BLOCKED_SYMBOLS = {"BOXX", "IBKR"}
@@ -312,6 +313,8 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
         hard_blockers = {
             "disabled",
             "warmup_active",
+            "legacy_bar_pipeline_disabled",
+            "tv_primary_no_bar_writes",
             "session_unauthenticated",
             "websocket_not_ready",
             "active_5m_not_fresh",
@@ -1112,6 +1115,9 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
 
         if not self._watchlist_idle_topup_enabled():
             blockers.append({"code": "disabled"})
+        bar_skip_reason = _bar_pipeline_skip_reason(self, service_mod)
+        if bar_skip_reason:
+            blockers.append({"code": bar_skip_reason})
         if not bool(applied_budget.get("enabled", True)):
             blockers.append(
                 {
@@ -1475,6 +1481,19 @@ class TradingServiceMarketUniverseWatchlistIdleTopupMixin:
                 applied_budget=applied_budget,
                 skipped_count=_safe_int(self._watchlist_idle_topup_state.get("skipped_count"), 0) + 1,
             )
+            return state
+
+        bar_skip_reason = _bar_pipeline_skip_reason(self, service_mod)
+        if bar_skip_reason:
+            state = self._set_watchlist_idle_topup_state(
+                running=False,
+                status="skipped",
+                skip_reason=bar_skip_reason,
+                last_stop_reason=bar_skip_reason,
+                applied_budget=applied_budget,
+                skipped_count=_safe_int(self._watchlist_idle_topup_state.get("skipped_count"), 0) + 1,
+            )
+            service_mod.logger.info("Watchlist idle topup skipped: reason=%s", bar_skip_reason)
             return state
 
         admitted, admission = self._watchlist_idle_topup_admission()

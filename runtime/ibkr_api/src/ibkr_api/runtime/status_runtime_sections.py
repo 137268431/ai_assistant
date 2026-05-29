@@ -4,6 +4,8 @@ from typing import Any
 
 from .status_types import AsDict, TrimArray, TrimObjectEntries
 
+BAR_PIPELINE_DISABLED_STATUS = "disabled_tv_primary"
+
 
 def _list_total(values: Any, fallback: Any = 0) -> int:
     if isinstance(values, list):
@@ -98,12 +100,14 @@ def build_canonical_5m_payload(
     *,
     as_dict: AsDict,
     trim_array: TrimArray,
+    bar_pipeline_disabled: bool = False,
 ) -> dict[str, Any]:
     canonical_5m = as_dict(canonical_payload)
     written_symbols = canonical_5m.get("written_symbols")
     pending_symbols = canonical_5m.get("pending_symbols")
-    return {
+    payload = {
         "enabled": bool(canonical_5m.get("enabled", True)),
+        "status": str(canonical_5m.get("status") or ""),
         "driver": str(canonical_5m.get("driver") or ""),
         "running": bool(canonical_5m.get("running")),
         "phase": str(canonical_5m.get("phase") or ""),
@@ -123,12 +127,73 @@ def build_canonical_5m_payload(
         "pending_symbols_total": _list_total(pending_symbols, canonical_5m.get("pending_symbols_total")),
         "last_error": str(canonical_5m.get("last_error") or ""),
     }
+    if bar_pipeline_disabled:
+        payload.update(
+            {
+                "enabled": False,
+                "status": BAR_PIPELINE_DISABLED_STATUS,
+                "driver": str(canonical_5m.get("driver") or "tv_primary"),
+                "running": False,
+                "phase": BAR_PIPELINE_DISABLED_STATUS,
+                "pending_symbols": [],
+                "pending_symbols_total": 0,
+                "last_error": "",
+                "disabled_reason": "legacy_bar_pipeline_disabled",
+            }
+        )
+    return payload
 
 
-def build_data_backfill_payload(data_backfill_payload: Any, *, as_dict: AsDict) -> dict[str, Any]:
+def build_data_backfill_payload(
+    data_backfill_payload: Any,
+    *,
+    as_dict: AsDict,
+    bar_pipeline_disabled: bool = False,
+) -> dict[str, Any]:
     data_backfill = as_dict(data_backfill_payload)
-    return {
+    bar_pipeline = as_dict(data_backfill.get("bar_pipeline"))
+    payload = {
+        "enabled": bool(data_backfill.get("enabled", True)),
+        "status": str(data_backfill.get("status") or data_backfill.get("bar_pipeline_status") or ""),
+        "reason": str(data_backfill.get("reason") or data_backfill.get("bar_pipeline_reason") or ""),
         "total_backfilled": int(data_backfill.get("total_backfilled") or 0),
+        "active_requests": int(data_backfill.get("active_requests") or 0),
+        "active_symbols_total": int(data_backfill.get("active_symbols_total") or 0),
+        "legacy_bar_pipeline_enabled": bool(data_backfill.get("legacy_bar_pipeline_enabled", True)),
+        "bar_pipeline": bar_pipeline,
+    }
+    if bar_pipeline_disabled:
+        pipeline_payload = {
+            "enabled": False,
+            "status": BAR_PIPELINE_DISABLED_STATUS,
+            "reason": "legacy_bar_pipeline_disabled",
+        }
+        payload.update(
+            {
+                "enabled": False,
+                "status": BAR_PIPELINE_DISABLED_STATUS,
+                "reason": "legacy_bar_pipeline_disabled",
+                "active_requests": 0,
+                "active_symbols_total": 0,
+                "legacy_bar_pipeline_enabled": False,
+                "bar_pipeline": pipeline_payload,
+            }
+        )
+    return payload
+
+
+def build_bar_pipeline_payload(bar_pipeline_payload: Any, *, as_dict: AsDict, disabled: bool = False) -> dict[str, Any]:
+    bar_pipeline = as_dict(bar_pipeline_payload)
+    if disabled:
+        return {
+            "enabled": False,
+            "status": BAR_PIPELINE_DISABLED_STATUS,
+            "reason": str(bar_pipeline.get("reason") or "legacy_bar_pipeline_disabled"),
+        }
+    return {
+        "enabled": bool(bar_pipeline.get("enabled", True)),
+        "status": str(bar_pipeline.get("status") or "enabled"),
+        "reason": str(bar_pipeline.get("reason") or ""),
     }
 
 
@@ -243,6 +308,7 @@ def build_market_universe_payload(
 
 __all__ = [
     "build_auth_recovery_summary",
+    "build_bar_pipeline_payload",
     "build_canonical_5m_payload",
     "build_daily_scan_payload",
     "build_data_backfill_payload",

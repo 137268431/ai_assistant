@@ -1753,6 +1753,142 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(payload["reason"], "subscription_budget_full")
         self.assertEqual(payload["admitted"], 0)
 
+    def _run_monitor_alert_guard(
+        self,
+        states=None,
+        events=None,
+        *,
+        flags=None,
+        status="warning",
+        config_overrides=None,
+        now_us="2026-04-23 12:05:00",
+        date="2026-04-23",
+        build_admission_preview=None,
+    ):
+        states = states if states is not None else {}
+        events = events if events is not None else []
+        flags = list(flags or [])
+        config_overrides = config_overrides or {}
+
+        def get_state_payload(state_key, environment):
+            return {"data": states.get((state_key, environment), {})}
+
+        def upsert_state(state_key, environment, data, state_date):
+            states[(state_key, environment)] = dict(data)
+            return data
+
+        def build_system_monitor_payload(environment):
+            return {
+                "status": status,
+                "flags": flags,
+                "runtime": {"session": {"authenticated": True}, "websocket": {"connected": True}},
+                "scheduler": {"latest_ingested_bar_time_ms": 1, "dispatch_lag_min": 0.0},
+                "service_monitor": {"status_counts": {"running": 8}, "services": {}},
+                "pocketbase": {"disk": {"filesystem": {"used_pct": 10}}},
+            }
+
+        payload, status_code = build_system_monitor_alert_guard_response(
+            payload={"environment": "live"},
+            normalize_environment=lambda value, default="live": str(value or default),
+            time_strings=lambda: {"us": now_us, "cn": "2026-04-24 00:05:00", "date": date},
+            build_system_monitor_payload=build_system_monitor_payload,
+            emit_system_event=lambda **kwargs: events.append(kwargs) or {"ok": True, "notified": True},
+            get_state_payload=get_state_payload,
+            upsert_state=upsert_state,
+            build_admission_preview=build_admission_preview,
+            config_value=lambda key, default, environment: config_overrides.get(key, default),
+        )
+        return payload, status_code, states, events
+
+    def test_system_monitor_alert_suppresses_first_account_snapshot_warning(self):
+        flag = {
+            "code": "account_snapshot_degraded",
+            "severity": "warning",
+            "title": "Account snapshot unavailable",
+            "detail": "read timeout",
+        }
+
+        payload, status_code, states, events = self._run_monitor_alert_guard(flags=[flag])
+
+        self.assertEqual(status_code, 200)
+        self.assertFalse(payload["triggered"])
+        self.assertEqual([], events)
+        self.assertEqual(["account_snapshot_degraded"], payload["flag_codes"])
+        self.assertEqual([], payload["alert_flag_codes"])
+        self.assertEqual(["account_snapshot_degraded"], payload["suppressed_flag_codes"])
+        self.assertEqual(1, payload["account_snapshot_warning_streak"])
+        self.assertEqual(1, states[("system_monitor_alert", "live")]["account_snapshot_warning_streak"])
+
+    def test_system_monitor_alert_emits_on_second_account_snapshot_warning(self):
+        flag = {
+            "code": "account_snapshot_degraded",
+            "severity": "warning",
+            "title": "Account snapshot unavailable",
+            "detail": "read timeout",
+        }
+        states = {}
+        events = []
+
+        self._run_monitor_alert_guard(states=states, events=events, flags=[flag])
+        payload, status_code, _, events = self._run_monitor_alert_guard(states=states, events=events, flags=[flag])
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["triggered"])
+        self.assertEqual(["account_snapshot_degraded"], payload["alert_flag_codes"])
+        self.assertEqual([], payload["suppressed_flag_codes"])
+        self.assertEqual(2, payload["account_snapshot_warning_streak"])
+        self.assertEqual(1, len(events))
+        self.assertEqual("IBKR Monitor 告警（1项）", events[0]["title"])
+
+    def test_system_monitor_alert_warning_uses_longer_cooldown(self):
+        flag = {
+            "code": "account_snapshot_degraded",
+            "severity": "warning",
+            "title": "Account snapshot unavailable",
+            "detail": "read timeout",
+        }
+        states = {}
+        events = []
+
+        self._run_monitor_alert_guard(states=states, events=events, flags=[flag])
+        self._run_monitor_alert_guard(states=states, events=events, flags=[flag])
+        state = states[("system_monitor_alert", "live")]
+        state["last_monitor_alert_ms"] = int(state["last_monitor_alert_ms"]) - 30 * 60 * 1000
+        payload, status_code, _, events = self._run_monitor_alert_guard(states=states, events=events, flags=[flag])
+
+        self.assertEqual(status_code, 200)
+        self.assertFalse(payload["triggered"])
+        self.assertEqual(1, len(events))
+        self.assertEqual(3, payload["account_snapshot_warning_streak"])
+
+    def test_system_monitor_alert_non_account_warning_still_emits_immediately(self):
+        flag = {"code": "websocket_not_ready", "severity": "warning", "title": "WS", "detail": "offline"}
+
+        payload, status_code, _, events = self._run_monitor_alert_guard(flags=[flag])
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["triggered"])
+        self.assertEqual(["websocket_not_ready"], payload["alert_flag_codes"])
+        self.assertEqual([], payload["suppressed_flag_codes"])
+        self.assertEqual(1, len(events))
+
+    def test_system_monitor_alert_error_bypasses_account_warning_streak_gate(self):
+        flag = {
+            "code": "account_runtime_unavailable",
+            "severity": "error",
+            "title": "Account runtime unavailable",
+            "detail": "session_authenticated=False",
+        }
+
+        payload, status_code, _, events = self._run_monitor_alert_guard(flags=[flag], status="error")
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["triggered"])
+        self.assertEqual(["account_runtime_unavailable"], payload["alert_flag_codes"])
+        self.assertEqual([], payload["suppressed_flag_codes"])
+        self.assertEqual(1, len(events))
+        self.assertEqual("error", events[0]["level"])
+
     def test_system_monitor_alert_includes_admission_preview_for_target_gap(self):
         states = {}
         events = []

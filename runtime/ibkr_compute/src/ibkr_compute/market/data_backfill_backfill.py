@@ -15,7 +15,110 @@ from .timeframe_utils import normalize_interval
 logger = logging.getLogger("ibkr_compute.market.data_backfill")
 
 
+class BackfillResult(dict):
+    """Dict-compatible result with optional out-of-band metadata."""
+
+    def __init__(self, *args, meta: Optional[Dict] = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.meta = dict(meta or {})
+
+    def get(self, key, default=None):
+        if key in {"_meta", "meta"}:
+            return self.meta or default
+        return super().get(key, default)
+
+
 class DataBackfillBackfillMixin:
+    def _legacy_bar_pipeline_enabled(self) -> bool:
+        config = self.config or getattr(self.data_writer, "config", None)
+        if not config or not hasattr(config, "get_bool_for_environment"):
+            return False
+        try:
+            return bool(
+                config.get_bool_for_environment(
+                    "ibkr_legacy_bar_pipeline_enabled",
+                    self.environment,
+                    False,
+                )
+            )
+        except Exception:
+            return False
+
+    def _legacy_bar_pipeline_status(self) -> dict:
+        enabled = self._legacy_bar_pipeline_enabled()
+        return {
+            "enabled": enabled,
+            "status": "enabled" if enabled else "disabled_tv_primary",
+            "reason": "" if enabled else "legacy_bar_pipeline_disabled",
+        }
+
+    def _record_skipped_backfill_trace(
+        self,
+        *,
+        source: str,
+        symbols: Sequence[str],
+        intervals: Sequence[str],
+        reason: str,
+        context: Optional[Dict] = None,
+    ) -> Dict:
+        summary = {
+            "trace_id": "",
+            "source": str(source or "history_backfill"),
+            "environment": self.environment,
+            "symbols_total": len(symbols or []),
+            "symbols": list(symbols or []),
+            "intervals": list(intervals or []),
+            "duration_s": 0.0,
+            "request_count": 0,
+            "retry_count": 0,
+            "throttle_count": 0,
+            "written": 0,
+            "ok": True,
+            "skipped": True,
+            "reason": reason,
+            "status": "disabled_tv_primary",
+            "trace_context": dict(context or {}) if isinstance(context, dict) else {},
+            "slowest_stage": {"stage": "", "duration_s": 0.0, "symbol": "", "interval": ""},
+            "error": "",
+            "request_samples": [],
+            "symbol_timings": [],
+            "symbol_outcomes": [
+                {
+                    "symbol": str(symbol or "").strip().upper(),
+                    "intervals": list(intervals or []),
+                    "ok": True,
+                    "skipped": True,
+                    "reason": reason,
+                    "request_count": 0,
+                    "rows": 0,
+                    "errors": [],
+                    "last_error": "",
+                    "hmds_no_data": False,
+                    "terminal_no_data": False,
+                    "max_attempt": 0,
+                }
+                for symbol in (symbols or [])
+            ],
+            "hmds_no_data_symbols": [],
+            "hmds_no_data_count": 0,
+            "request_error_symbols": [],
+            "request_error_count": 0,
+            "non_hmds_error_symbols": [],
+            "non_hmds_error_count": 0,
+            "finished_at_ms": int(time.time() * 1000),
+        }
+        with self._trace_lock:
+            self._last_trace = dict(summary)
+            self._recent_traces.append(dict(summary))
+        logger.info(
+            "History backfill skipped: source=%s symbols=%d intervals=%s reason=%s",
+            summary["source"],
+            summary["symbols_total"],
+            ",".join(summary["intervals"]) or "--",
+            reason,
+        )
+        return summary
+
     def _write_bars(self, bars: List[Dict]) -> int:
         return self._write_bars_with_trace(bars)
 
@@ -157,6 +260,34 @@ class DataBackfillBackfillMixin:
 
         if not conid_map:
             return results
+
+        if not self._legacy_bar_pipeline_enabled():
+            reason = "legacy_bar_pipeline_disabled"
+            symbols = sorted(str(symbol or "").strip().upper() for symbol in conid_map.keys())
+            trace_context_payload = dict(trace_context or {}) if isinstance(trace_context, dict) else {}
+            summary = self._record_skipped_backfill_trace(
+                source=trace_source,
+                symbols=symbols,
+                intervals=interval_list,
+                reason=reason,
+                context=trace_context_payload,
+            )
+            return BackfillResult(
+                results,
+                meta={
+                    "ok": True,
+                    "skipped": True,
+                    "reason": reason,
+                    "status": "disabled_tv_primary",
+                    "trace": summary,
+                    "symbols_total": len(symbols),
+                    "intervals": interval_list,
+                    "per_symbol": {
+                        symbol: {"ok": True, "skipped": True, "reason": reason}
+                        for symbol in symbols
+                    },
+                },
+            )
 
         worker_count = min(self._max_concurrency(), len(conid_map))
         trace_context_payload = dict(trace_context or {}) if isinstance(trace_context, dict) else {}

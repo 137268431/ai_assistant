@@ -11,6 +11,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from ibkr_compute.market.pocketbase_sqlite import delete_symbol_runtime_data
+from ibkr_compute.orchestration import market_universe as market_universe_mod
 from ibkr_compute.orchestration.market_universe import TradingServiceMarketUniverseMixin
 
 
@@ -135,6 +136,16 @@ class DummyDataWriter:
         self.flushed += 1
 
 
+class FailDataBackfill:
+    def backfill_all(self, *_args, **_kwargs):
+        raise AssertionError("backfill_all should not be called")
+
+
+class FailFlushWriter:
+    def flush(self):
+        raise AssertionError("flush should not be called")
+
+
 class DummySignalRouter:
     def forget_processed(self, _signal_ids):
         return None
@@ -198,6 +209,69 @@ class DummyPrimeUniverse(TradingServiceMarketUniverseMixin):
     def _schedule_interval_prime(self, symbols, source="universe_prime"):
         self.interval_prime = {"symbols": list(symbols), "source": source}
         return True
+
+
+class DummyMarketDataSink:
+    def __init__(self):
+        self.symbol_maps = []
+        self.removed = []
+
+    def set_symbol_map(self, symbol_map):
+        self.symbol_maps.append(dict(symbol_map or {}))
+
+    def remove_conids(self, conids):
+        self.removed.append(sorted(conids))
+
+
+class DummySubscriptionWs:
+    def __init__(self):
+        self.subscribed = []
+        self.unsubscribed = []
+
+    def subscribe(self, conid):
+        self.subscribed.append(int(conid))
+
+    def unsubscribe(self, conid):
+        self.unsubscribed.append(int(conid))
+
+
+class DummyLiveSubscriptionUniverse(TradingServiceMarketUniverseMixin):
+    def __init__(self):
+        self.config = DummyConfig()
+        self._subscription_lock = threading.RLock()
+        self._active_subscription_map = {}
+        self._active_subscription_symbols = []
+        self._active_trade_symbols = []
+        self._active_target_date = ""
+        self._last_target_refresh_at = 0.0
+        self._symbol_meta = {"AAPL": {"exchange": "SMART"}}
+        self.bar_aggregator = DummyMarketDataSink()
+        self.realtime_quote_book = DummyMarketDataSink()
+        self.ws_client = DummySubscriptionWs()
+        self.data_backfill = FailDataBackfill()
+        self.data_writer = FailFlushWriter()
+        self.scheduled_warmups = []
+        self.repair_calls = []
+
+    def _runtime_slim_mode_enabled(self):
+        return True
+
+    def _market_ws_symbols(self):
+        return []
+
+    def _schedule_warmup(self, reason="subscriptions_changed", force=False):
+        self.scheduled_warmups.append({"reason": reason, "force": force})
+        return True
+
+    def _repair_stale_realtime_quote_subscriptions(self, conid_map, monitor_symbols=None, reason=""):
+        self.repair_calls.append(
+            {
+                "conid_map": dict(conid_map or {}),
+                "monitor_symbols": list(monitor_symbols or []),
+                "reason": reason,
+            }
+        )
+        return False
 
 
 class UniversePrimeSignalSelectionTest(unittest.TestCase):
@@ -278,6 +352,55 @@ class UniversePrimeBacktestPreloadTest(unittest.TestCase):
         self.assertEqual("target_upsert", preload_call["trigger"])
         self.assertEqual("new_universe_symbol_default_backtest_preload", preload_call["reason"])
         self.assertTrue(result["interval_prime_started"])
+
+    def test_prime_skips_runtime_bar_backfill_in_slim_mode(self):
+        universe = DummyPrimeUniverse()
+        universe._runtime_slim_mode_enabled = lambda: True
+        fake_server = types.SimpleNamespace(
+            compute_lock=threading.RLock(),
+            _run_internal_compute=lambda payload: {"ok": True, "payload": payload, "captured_signals": []},
+        )
+
+        import ibkr_compute.api as compute_api_pkg
+
+        with mock.patch.dict(sys.modules, {"ibkr_compute.api.server": fake_server}), mock.patch.object(
+            compute_api_pkg,
+            "server",
+            fake_server,
+            create=True,
+        ):
+            result = universe._prime_universe_symbols(["aapl"], source="target_upsert")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual([], universe.data_backfill.calls)
+        self.assertEqual(0, universe.data_writer.flushed)
+        self.assertTrue(result["backfill"]["skipped"])
+        self.assertEqual("tv_primary_no_bar_writes", result["backfill"]["reason"])
+        self.assertEqual(["AAPL"], result["backtest_preload"]["symbols"])
+        self.assertTrue(result["interval_prime_started"])
+
+
+class UniverseTargetSubscriptionRuntimeSlimTest(unittest.TestCase):
+    def test_apply_live_subscriptions_keeps_subscribe_flow_but_skips_inline_backfill(self):
+        universe = DummyLiveSubscriptionUniverse()
+        service_mod = mock.Mock()
+        service_mod.ENVIRONMENT = "paper"
+        service_mod.DATA_ENVIRONMENT = "live"
+        service_mod.logger = mock.Mock()
+
+        with mock.patch.object(market_universe_mod, "_service_mod", return_value=service_mod):
+            universe._apply_live_subscriptions(
+                "2026-05-29",
+                {"AAPL": 265598},
+                reason="refresh",
+                trade_symbols=["AAPL"],
+            )
+
+        self.assertEqual([265598], universe.ws_client.subscribed)
+        self.assertEqual({"AAPL": 265598}, universe._active_subscription_map)
+        self.assertEqual(["AAPL"], universe._active_trade_symbols)
+        self.assertEqual([{"reason": "refresh", "force": False}], universe.scheduled_warmups)
+        self.assertEqual(1, len(universe.repair_calls))
 
 
 class UniverseTargetSubscriptionPlanTest(unittest.TestCase):
@@ -373,7 +496,7 @@ class UniverseTargetSubscriptionPlanTest(unittest.TestCase):
                     "symbol": "AAPL",
                     "status": "active",
                     "score": 99,
-                    "extra": {"source": "manual_page_add", "context_active": True},
+                    "extra": {"source": "external_import", "context_active": True},
                 },
                 {
                     "id": "target-msft",
@@ -399,7 +522,7 @@ class UniverseTargetSubscriptionPlanTest(unittest.TestCase):
         self.assertNotIn("TSLA", symbols)
         self.assertEqual([], selected_rows)
 
-    def test_manual_active_target_is_not_selected_as_trade_row(self):
+    def test_manual_active_target_is_selected_as_trade_row(self):
         universe = DummyTargetPlanUniverse(
             [
                 {"id": "target-aapl", "symbol": "AAPL", "status": "active", "score": 99, "extra": {"source": "manual_page_add"}},
@@ -408,8 +531,8 @@ class UniverseTargetSubscriptionPlanTest(unittest.TestCase):
 
         _target_date, symbols, _meta, selected_rows = universe._build_target_subscription_plan()
 
-        self.assertNotIn("AAPL", symbols)
-        self.assertEqual([], selected_rows)
+        self.assertIn("AAPL", symbols)
+        self.assertEqual(["AAPL"], [row["symbol"] for row in selected_rows])
 
 
 class UniverseRealtimeQuoteResubscribeTest(unittest.TestCase):
