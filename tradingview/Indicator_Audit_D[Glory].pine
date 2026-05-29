@@ -1,5 +1,5 @@
 //@version=6
-indicator(title="Indicator Audit Core[Glory]", shorttitle="IAC Audit", overlay=true, max_labels_count=20)
+indicator(title="Indicator Audit D[Glory]", shorttitle="IAC Audit", overlay=true, max_labels_count=20)
 
 // Lightweight TradingView indicator audit script.
 // One chart timeframe per alert. No request.security() and no trading signals.
@@ -7,7 +7,7 @@ indicator(title="Indicator Audit Core[Glory]", shorttitle="IAC Audit", overlay=t
 // ------------------------- Inputs -------------------------
 string groupMeta = "Audit"
 alertEnabled = input.bool(true, "Send indicator_audit alert", group=groupMeta)
-scriptTag = input.string("IAC_CORE_v1", "script_tag", group=groupMeta)
+scriptTag = input.string("IAC_D_v1", "script_tag", group=groupMeta)
 dataEnvironment = input.string("live", "environment", options=["live", "paper", "backtest"], group=groupMeta)
 
 string groupEma = "EMA Trend Matrix"

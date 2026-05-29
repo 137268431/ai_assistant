@@ -197,6 +197,55 @@ class TradingViewIngestTest(unittest.TestCase):
         self.assertEqual(response["type"], "indicator_audit")
         self.assertEqual(calls, [{"type": "audit_indicator", "symbol": "MSFT"}])
 
+    def test_webhook_tv_allows_indicator_audit_when_signal_ingest_disabled(self):
+        calls = []
+
+        def config_value(key, default, environment):
+            values = {
+                "tv_webhook_ingest_enabled": "FALSE",
+                "tv_indicator_audit_ingest_enabled": "TRUE",
+            }
+            return values.get(key, default)
+
+        handlers = tv_routes.register_tradingview_routes(
+            _FakeApp(),
+            deps={
+                "upsert_tv_indicator": lambda payload: {"ok": True, "type": "indicator"},
+                "upsert_tv_indicator_audit": lambda payload: calls.append(payload) or {"ok": True, "type": "indicator_audit"},
+                "upsert_tv_signal": lambda payload: {"ok": True, "type": "signal"},
+                "config_value": config_value,
+                "normalize_environment": self.normalize_environment,
+                "parse_boolean": lambda value, default: default if value is None else str(value).upper() == "TRUE",
+            },
+        )
+
+        request = SimpleNamespace(get_json=lambda silent=True: {"type": "indicator_audit", "symbol": "SPY"})
+        with mock.patch.object(tv_routes, "request", request):
+            response = handlers["webhook_tv"]()
+
+        self.assertEqual(response["type"], "indicator_audit")
+        self.assertEqual(calls, [{"type": "indicator_audit", "symbol": "SPY"}])
+
+    def test_webhook_tv_skips_indicator_audit_when_audit_ingest_disabled(self):
+        handlers = tv_routes.register_tradingview_routes(
+            _FakeApp(),
+            deps={
+                "upsert_tv_indicator": lambda payload: {"ok": True, "type": "indicator"},
+                "upsert_tv_indicator_audit": lambda payload: {"ok": True, "type": "indicator_audit"},
+                "upsert_tv_signal": lambda payload: {"ok": True, "type": "signal"},
+                "config_value": lambda key, default, environment: "FALSE" if key == "tv_indicator_audit_ingest_enabled" else "TRUE",
+                "normalize_environment": self.normalize_environment,
+                "parse_boolean": lambda value, default: default if value is None else str(value).upper() == "TRUE",
+            },
+        )
+
+        request = SimpleNamespace(get_json=lambda silent=True: {"type": "indicator_audit", "symbol": "SPY"})
+        with mock.patch.object(tv_routes, "request", request):
+            response = handlers["webhook_tv"]()
+
+        self.assertEqual(response["skipped"], True)
+        self.assertEqual(response["reason"], "tv_indicator_audit_ingest_enabled=false")
+
     def test_upsert_tv_signal_creates_record_with_rr_and_date(self):
         pb = _FakePB()
 

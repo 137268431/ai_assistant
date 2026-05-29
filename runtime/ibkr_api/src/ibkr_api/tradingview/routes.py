@@ -8,6 +8,8 @@ from ibkr_api.modes import request_market_data_mode
 
 
 INDICATOR_AUDIT_TYPES = {"indicator_audit", "audit_indicator"}
+INDICATOR_AUDIT_INGEST_CONFIG_KEY = "tv_indicator_audit_ingest_enabled"
+WEBHOOK_INGEST_CONFIG_KEY = "tv_webhook_ingest_enabled"
 
 
 def register_tradingview_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
@@ -23,18 +25,25 @@ def register_tradingview_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     def webhook_tv() -> Response:
         payload = request.get_json(silent=True) or {}
         environment = request_market_data_mode(payload)
-        enabled_value = config_value("tv_webhook_ingest_enabled", "TRUE", environment)
+        data_type = str(payload.get("type") or "signal").strip().lower().replace("-", "_") or "signal"
+        enabled_key = WEBHOOK_INGEST_CONFIG_KEY
+        enabled_default = "TRUE"
+        if data_type in INDICATOR_AUDIT_TYPES:
+            # Audit snapshots can be enabled independently while live signal ingest stays disabled.
+            webhook_value = config_value(WEBHOOK_INGEST_CONFIG_KEY, "TRUE", environment)
+            enabled_key = INDICATOR_AUDIT_INGEST_CONFIG_KEY
+            enabled_default = str(webhook_value or "TRUE")
+        enabled_value = config_value(enabled_key, enabled_default, environment)
         if not parse_boolean(enabled_value, True):
             return jsonify(
                 {
                     "ok": True,
                     "skipped": True,
-                    "reason": "tv_webhook_ingest_enabled=false",
+                    "reason": f"{enabled_key}=false",
                     "config_value": str(enabled_value or ""),
                 }
             )
 
-        data_type = str(payload.get("type") or "signal").strip().lower().replace("-", "_") or "signal"
         if data_type == "indicator":
             return upsert_tv_indicator(payload)
         if data_type in INDICATOR_AUDIT_TYPES:
@@ -47,4 +56,9 @@ def register_tradingview_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     return exports
 
 
-__all__ = ["INDICATOR_AUDIT_TYPES", "register_tradingview_routes"]
+__all__ = [
+    "INDICATOR_AUDIT_INGEST_CONFIG_KEY",
+    "INDICATOR_AUDIT_TYPES",
+    "WEBHOOK_INGEST_CONFIG_KEY",
+    "register_tradingview_routes",
+]
