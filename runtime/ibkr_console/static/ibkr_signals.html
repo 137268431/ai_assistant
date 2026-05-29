@@ -9,12 +9,11 @@
     <script>document.write(getCommonStyles());</script>
     <script>document.write('<style>' + getIndicatorModalStyles() + '</style>');</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-    <link rel="stylesheet" href="/assets/css/pages/ibkr_signals/page.css?v=20260530-signals-mode-1">
+    <link rel="stylesheet" href="/assets/css/pages/ibkr_signals/page.css?v=20260530-signals-compact-1">
 </head>
 <body>
     <div id="contextBar"></div>
     <div id="pageBridge"></div>
-    <div id="pageTopSection"></div>
 
     <div class="content">
         <section class="signals-command-bar" id="signalsCommandBar">
@@ -621,17 +620,6 @@
             return String(tone || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
         }
 
-        function renderSignalsModeChip(label, value, tone = '') {
-            const safeTone = sanitizeModeTone(tone);
-            const toneClass = safeTone ? ` tone-${safeTone}` : '';
-            return `
-                <span class="signals-mode-chip${toneClass}">
-                    <span class="signals-mode-label">${escapeHtml(label)}</span>
-                    <span class="signals-mode-value">${escapeHtml(value)}</span>
-                </span>
-            `;
-        }
-
         function renderPipelineMetaChip(label, value, tone = '') {
             const safeTone = sanitizeModeTone(tone);
             const toneClass = safeTone ? ` tone-${safeTone}` : '';
@@ -663,18 +651,6 @@
                     <span class="status-chip"><span class="dot" style="color:#F6AD55"></span>${escapeHtml(getSignalsStatusLabel())}</span>
                 </div>
             `;
-            }
-            const legacyTopSection = document.getElementById('pageTopSection');
-            if (legacyTopSection && typeof renderPageTopSection === 'function') {
-                legacyTopSection.innerHTML = renderPageTopSection({
-                    kicker: 'TV Primary',
-                    title: 'TradingView 信号执行台',
-                    copy: 'TradingView 负责策略事件；本系统只展示 webhook -> 确认 -> IBKR 执行 -> TP/SL 保护闭环。',
-                    metaHtml: `
-                        ${renderSignalsModeChip('Broker', getSignalsBrokerModeLabel(), currentBrokerMode)}
-                        ${renderSignalsModeChip('数据', getSignalsDataModeLabel(), getSignalsDataModeTone())}
-                    `
-                });
             }
         }
 
