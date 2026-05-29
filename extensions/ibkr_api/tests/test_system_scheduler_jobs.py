@@ -1922,11 +1922,15 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         card_text = "\n".join(element.get("content", "") for element in sent[0]["card"]["elements"] if element.get("tag") == "markdown")
         self.assertIn("**结论**", card_text)
         self.assertIn("**需要处理**", card_text)
-        self.assertIn("今日结果", card_text)
+        self.assertIn("TV webhook", card_text)
+        self.assertIn("Targets", card_text)
+        self.assertIn("Orders", card_text)
+        self.assertIn("Execution/Protection", card_text)
         self.assertIn("今日止盈/止损", card_text)
         self.assertIn("今日盈亏", card_text)
         self.assertEqual(sent[0]["card"]["header"]["template"], "green")
-        self.assertIn("bars 10", card_text)
+        self.assertNotIn("bars", card_text)
+        self.assertNotIn("日筛", card_text)
         self.assertNotIn("数据链路可能未落库", card_text)
 
     def test_daily_report_includes_protective_exit_and_pnl_stats(self):
@@ -2058,7 +2062,7 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(state["close_error"], "")
         self.assertEqual(len(sent), 0)
 
-    def test_daily_report_highlights_zero_bars_at_live_close(self):
+    def test_daily_report_ignores_zero_bars_in_tv_primary_notice(self):
         pb = _ReminderPB()
         sent = []
 
@@ -2075,11 +2079,12 @@ class SystemSchedulerJobsTest(unittest.TestCase):
 
         self.assertEqual(status_code, 200)
         self.assertTrue(payload["ok"])
-        self.assertEqual(sent[0]["card"]["header"]["template"], "orange")
+        self.assertEqual(sent[0]["card"]["header"]["template"], "green")
         card_text = "\n".join(element.get("content", "") for element in sent[0]["card"]["elements"] if element.get("tag") == "markdown")
-        self.assertIn("bars 0", card_text)
-        self.assertIn("数据链路可能未落库", card_text)
-        self.assertIn("Scheduler ingest", card_text)
+        self.assertNotIn("bars 0", card_text)
+        self.assertNotIn("数据链路可能未落库", card_text)
+        self.assertNotIn("Scheduler ingest", card_text)
+        self.assertIn("TV webhook", card_text)
 
     def test_system_summary_payload_uses_loaded_today_counts(self):
         payload = build_system_summary_payload(

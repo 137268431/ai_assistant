@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>订单</title>
     <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
-    <script src="common.js?v=20260528-night-session-review-entry-1"></script>
+    <script src="common.js?v=20260529-tv-primary-lean-1"></script>
     <script>document.write(getCommonStyles());</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
     <link rel="stylesheet" href="/assets/css/pages/orders/page.css">
@@ -579,7 +579,7 @@
         function brokerMatchLabel(value) {
             const normalized = String(value || '').trim().toLowerCase();
             if (normalized === 'matched') return 'MATCHED';
-            if (normalized === 'pb_shadow') return 'PB SHADOW';
+            if (normalized === 'pb_shadow') return 'STALE';
             return 'BROKER ONLY';
         }
 
@@ -610,7 +610,7 @@
                         <div class="mini-chip-row">
                             <span class="role-badge ${roleClass(order.role)}">${escapeHtml(getRoleText(order.role, order.order_type) || order.role || '-')}</span>
                             <span class="status-badge ${brokerStatusClass(order.status || order.status_key)}">${escapeHtml(order.status || order.status_key || '-')}</span>
-                            <span class="relation-badge ${brokerMatchClass(matchState)}">${escapeHtml(brokerMatchLabel(matchState))}</span>
+                            <span class="order-match-badge ${brokerMatchClass(matchState)}">${escapeHtml(brokerMatchLabel(matchState))}</span>
                         </div>
                     </div>
                     <div class="detail-grid">
@@ -641,7 +641,7 @@
                         <div>
                             <div class="group-symbol-row">
                                 <span class="group-symbol">${escapeHtml(title)}</span>
-                                <span class="relation-badge ${brokerMatchClass(matchState)}">${escapeHtml(brokerMatchLabel(matchState))}</span>
+                                <span class="order-match-badge ${brokerMatchClass(matchState)}">${escapeHtml(brokerMatchLabel(matchState))}</span>
                                 <span class="status-badge ${brokerStatusClass(latestStatus)}">${escapeHtml(latestStatus)}</span>
                             </div>
                             <div class="group-subtitle">group=${escapeHtml(groupKey)} · live=${escapeHtml(String(group.live_order_count || orders.length || 0))}</div>
@@ -700,7 +700,7 @@
                 <div class="broker-live-header">
                     <div>
                         <div class="section-title">Broker Live Open</div>
-                        <div class="broker-live-copy">以 IBKR 实时 open orders 为准；PB 订单链仅作为上下文补全${escapeHtml(fetchedText)}</div>
+                        <div class="broker-live-copy">以 IBKR 实时 open orders 为准；订单链仅作为上下文补全${escapeHtml(fetchedText)}</div>
                     </div>
                     <div class="broker-live-metrics">
                         <span class="status-chip"><span class="dot" style="color:#F6AD55"></span>live ${escapeHtml(String(getBrokerLiveCount()))}</span>
@@ -710,7 +710,7 @@
                         <span class="status-chip"><span class="dot" style="color:#ECC94B"></span>coverage ${escapeHtml(coverageState)}</span>
                     </div>
                 </div>
-                ${pbShadowGroups ? `<div class="broker-live-alert">PB shadow groups=${escapeHtml(String(pbShadowGroups))}：PB 仍活跃但 broker 未确认，需要单独核对。</div>` : ''}
+                ${pbShadowGroups ? `<div class="broker-live-alert">stale groups=${escapeHtml(String(pbShadowGroups))}：系统记录仍活跃但 broker 未确认，需要单独核对。</div>` : ''}
                 ${liveOrders.length
                     ? `<div class="broker-live-grid">${liveGroups.map(renderBrokerLiveGroup).join('')}</div>`
                     : '<div class="broker-live-empty">当前没有 broker 已确认仍在挂着的实时订单。</div>'}
@@ -806,7 +806,7 @@
             document.getElementById('pageTopSection').innerHTML = renderPageTopSection({
                 kicker: 'Execution Orders',
                 title: '订单链工作台',
-                copy: '按 signal 聚合 entry 订单、真实成交价、bracket 链路和 broker / PB 对账状态。',
+                copy: '按 signal 聚合 entry 订单、真实成交价、bracket 链路和 broker / 系统对账状态。',
                 statusHtml,
             });
         }
@@ -1444,7 +1444,7 @@
                 <div class="summary-card"><div class="summary-label">TRADE GROUPS</div><div class="summary-value">${formatCountValue(tradeGroupCount)}</div></div>
                 <div class="summary-card"><div class="summary-label">BROKER LIVE</div><div class="summary-value">${escapeHtml(String(getBrokerLiveCount()))}</div></div>
                 <div class="summary-card"><div class="summary-label">OPEN SIGNALS</div><div class="summary-value">${formatCountValue(openGroups)}</div></div>
-                ${currentOrdersSource === 'ibkr_order_details' ? '<div class="summary-hint">当前使用 ibkr_order_details 最新快照回退展示，可查看图表与交易组明细，但不提供撤单/平仓操作。</div>' : ''}
+                ${currentOrdersSource === 'ibkr_order_details' ? '<div class="summary-hint">当前使用 ibkr_order_details 最新快照回退展示，可查看交易组明细，但不提供撤单/平仓操作。</div>' : ''}
                 ${isOrdersDatasetPartial ? '<div class="summary-hint">首屏已加载，剩余订单后台补齐中</div>' : ''}
             `;
         }
@@ -1711,7 +1711,6 @@
                         <div class="mini-chip-row">
                             <span class="role-badge ${roleClass(order.role)}">${escapeHtml(getRoleText(order.role, order.order_type))}</span>
                             <span class="status-badge ${statusClass(order.status)}">${escapeHtml(ORDER_STATUS_TEXT[order.status] || order.status || '-')}</span>
-                            <span class="relation-badge ${relationClass(order.relation_status)}">${escapeHtml(order.relation_status || '-')}</span>
                         </div>
                     </div>
                     ${isPrimary ? renderCountdown(order, true) : ''}
@@ -1902,7 +1901,6 @@
                     <div class="action-panel">
                         <div class="action-row">
                             ${group.signal_id ? `<button class="action-btn btn-secondary" onclick="viewSignal('${encodeURIComponent(group.signal_id)}')">📡 信号</button>` : ''}
-                            ${group.symbol ? `<button class="action-btn btn-secondary" onclick="openTradeGroupChart('${encodeURIComponent(group.group_id)}')">📉 图表页</button>` : ''}
                             ${lifecycleFlowUrl ? `<a class="action-btn btn-secondary lifecycle-action" href="${lifecycleFlowUrl}">🧭 生命周期</a>` : ''}
                             ${renderSignalOrderDetailsButton(group)}
                         </div>
@@ -2547,18 +2545,6 @@
             if (filterSignalId) params.signal_id = filterSignalId;
             if (filterTradeGroupId) params.trade_group_id = filterTradeGroupId;
             return buildPageUrl('/ibkr_lifecycle_flow.html', params, { environment: currentEnvironment });
-        }
-
-        function openTradeGroupChart(groupId) {
-            const decoded = decodeURIComponent(groupId);
-            const group = allGroups.find((item) => item.trade_group_id === decoded || item.group_id === decoded || (item.tradeGroupIds || []).includes(decoded))
-                || allTradeGroups.find((item) => item.trade_group_id === decoded || item.group_id === decoded);
-            const params = buildGroupChartParams(group);
-            if (!params) {
-                showToast('暂无图表上下文');
-                return;
-            }
-            location.href = buildPageUrl('/ibkr_chart.html', params, { environment: currentEnvironment });
         }
 
         function viewSignalOrderDetails(signalId) {

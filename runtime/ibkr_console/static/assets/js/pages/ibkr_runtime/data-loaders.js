@@ -15,7 +15,6 @@
                 );
             }
             try {
-                const dataEnvFilter = buildDataEnvironmentFilter();
                 const brokerEnvFilter = buildBrokerEnvironmentFilter();
                 const readApiFetch = (collection, params, cacheOptions = {}) => (
                     typeof cachedApiFetch === 'function'
@@ -34,6 +33,7 @@
                 );
                 const coreCache = { ttlMs: 10000, ttl: 10000, force: Boolean(showToastOnSuccess) };
                 const listCache = { ttlMs: 15000, ttl: 15000, force: Boolean(showToastOnSuccess) };
+                const dataEnvFilter = buildDataEnvironmentFilter();
                 const [health, status, summary, monitorResp, cronResp, twoFactorResp, startupResp, runtimeConfigResp, brokerModeSwitchResp, signalsResp, ordersResp, eventsResp] = await Promise.all([
                     readCustomJson('/api/custom/ibkr/healthz', { retryAttempts: 3 }, coreCache),
                     readCustomJson('/api/custom/ibkr/statusz?lite=1', { retryAttempts: 3 }, coreCache),
@@ -80,77 +80,35 @@
                 latestStartupState = normalizeStartupUiState(startupState);
                 latestBrokerModeSwitchPreview = brokerModeSwitchResp || {};
                 const signalItems = toArray(signalsResp);
-                let latestBar = latestRuntimeBarsSnapshot[0] || null;
                 const latestSignal = signalItems[0] || null;
 
-                const renderRuntimeSnapshot = (resolvedSummary, indicatorItems = latestRuntimeIndicatorSnapshot, options = {}) => {
-                    const latestIndicator = indicatorItems[0] || null;
-                    const previousLoading = runtimeRecentDataLoading;
-                    runtimeRecentDataLoading = Boolean(options.dataLoading);
-                    try {
-                        renderHero(resolvedSummary, health, status, runtimeConfig, twoFactorState, latestStartupState, latestBar);
-                        renderOpsGrid(resolvedSummary, status, twoFactorState, latestStartupState, latestBar, latestIndicator, latestSignal);
-                        renderMetricCards(resolvedSummary, health, status, twoFactorState, latestBar);
-                        renderRuntimeDetail(resolvedSummary, health, status, twoFactorState, latestStartupState, latestBar, latestIndicator, latestSignal);
-                        renderConfigDetail(resolvedSummary, runtimeConfig, cronResp || {});
-                        renderPipelinePanel(resolvedSummary, status, twoFactorState, latestBar, latestIndicator, latestSignal);
-                        renderRuntimeFlowPrimaryAction(status, latestTwoFactorState);
-                        renderBrokerModeSwitchPanel(latestBrokerModeSwitchPreview, status, twoFactorState);
-                        renderServiceControlPanel(status, latestServiceMonitorPayload);
-                        renderIndicatorsTable(indicatorItems, { loading: Boolean(options.dataLoading) && !indicatorItems.length });
-                    } finally {
-                        runtimeRecentDataLoading = previousLoading;
-                    }
+                const renderRuntimeSnapshot = (resolvedSummary) => {
+                    renderHero(resolvedSummary, health, status, runtimeConfig, twoFactorState, latestStartupState, null);
+                    renderOpsGrid(resolvedSummary, status, twoFactorState, latestStartupState, null, null, latestSignal);
+                    renderMetricCards(resolvedSummary, health, status, twoFactorState, null);
+                    renderRuntimeDetail(resolvedSummary, health, status, twoFactorState, latestStartupState, null, null, latestSignal);
+                    renderConfigDetail(resolvedSummary, runtimeConfig, cronResp || {});
+                    renderRuntimeFlowPrimaryAction(status, latestTwoFactorState);
+                    renderBrokerModeSwitchPanel(latestBrokerModeSwitchPreview, status, twoFactorState);
+                    renderServiceControlPanel(status, latestServiceMonitorPayload);
                 };
 
-                const recentDataLoading = !latestBar;
-                renderRuntimeSnapshot(baseSummary, latestRuntimeIndicatorSnapshot, { dataLoading: recentDataLoading });
+                renderRuntimeSnapshot(baseSummary);
                 renderTwoFactorPanel(twoFactorState);
                 syncActionLocks();
                 if (refreshMode === 'boost' && !shouldKeepBoostRefresh(status, latestTwoFactorState, latestStartupState)) {
                     refreshMode = 'steady';
                     refreshBoostStartedAt = 0;
                 }
-                renderEngineTable(status);
                 renderServiceTopology(status);
-                void loadEngineDetail(loadId, status);
-                renderBarsTable(latestRuntimeBarsSnapshot, { loading: recentDataLoading && !latestRuntimeBarsSnapshot.length });
                 renderSignalsTable(signalItems);
                 renderOrdersTable(toArray(ordersResp));
                 renderEventsTable(toArray(eventsResp));
 
                 if (showToastOnSuccess) showToast('Runtime 数据已刷新');
 
-                const recentMarketDate = resolveRuntimeMarketDate(status);
-                const recentRecordFilter = `created >= "${escapeQueryValue(`${recentMarketDate} 00:00:00`)}" && ${dataEnvFilter}`;
-                const barsPromise = readApiFetch('ibkr_bars', {
-                    filter: recentRecordFilter,
-                    sort: '-bar_time_ms',
-                    perPage: 8,
-                }, listCache).catch((error) => {
-                    console.warn('加载最近 bars 失败:', error);
-                    return { items: [] };
-                });
-                const indicatorsPromise = readApiFetch('ibkr_indicators', {
-                    filter: recentRecordFilter,
-                    sort: '-bar_time_ms',
-                    perPage: 8,
-                }, listCache).catch((error) => {
-                    console.warn('加载最近 indicators 失败:', error);
-                    return { items: [] };
-                });
-
-                void Promise.all([
-                    barsPromise,
-                    indicatorsPromise,
-                    loadRuntimeTodayCounts(status).catch(() => null),
-                ]).then(([barsResp, indicatorsResp, todayCounts]) => {
+                void loadRuntimeTodayCounts(status).then((todayCounts) => {
                     if (loadId !== latestRuntimeLoadId) return;
-                    const barsItems = toArray(barsResp);
-                    const indicatorItems = toArray(indicatorsResp);
-                    latestRuntimeBarsSnapshot = barsItems;
-                    latestRuntimeIndicatorSnapshot = indicatorItems;
-                    latestBar = barsItems[0] || null;
                     const resolvedSummary = {
                         ...baseSummary,
                         today: {
@@ -158,10 +116,9 @@
                             ...(todayCounts || {}),
                         }
                     };
-                    renderRuntimeSnapshot(resolvedSummary, indicatorItems);
-                    renderBarsTable(barsItems);
+                    renderRuntimeSnapshot(resolvedSummary);
                     syncActionLocks();
-                });
+                }).catch(() => null);
             } catch (error) {
                 if (shouldIgnoreRuntimeLoadError(error, loadId)) return;
                 console.error('Runtime 加载失败:', error);

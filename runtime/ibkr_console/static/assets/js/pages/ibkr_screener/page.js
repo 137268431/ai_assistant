@@ -136,14 +136,6 @@
       document.getElementById('contextBar').innerHTML = renderPageContextBar('🔎 IBKR 筛选', {
         subtitle: '筛选 / 标的 / 标池'
       });
-      const systemLogicLink = document.getElementById('systemLogicLink');
-      if (systemLogicLink) {
-        systemLogicLink.href = buildPageUrl('/ibkr_system_logic.html', {}, {
-          environment: currentEnvironment,
-          brokerMode: currentBrokerMode,
-          dataEnvironment: currentEnvironment,
-        });
-      }
       document.getElementById('pageBridge').innerHTML = renderDomainTabs();
       bindTabEvents();
       bindScreenerViewEvents();

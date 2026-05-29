@@ -630,7 +630,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         140.5,
         "20 3 * * *",
         "每日 America/New_York 03:20",
-        "按 balanced_50g 策略清理可重建指标、旧日志、TV 兼容数据和旧回测产物。",
+        "按 tv_primary_lean 策略清理可重建指标、旧日志、TV 兼容数据和旧回测产物。",
         "兼容读取 pb_scheduler_enabled 和 storage_cleanup_enabled；仅删除安全过期数据，不自动 VACUUM。",
         beijing_cycle_label="北京时间 每日 15:20（美东夏令时）/ 16:20（美东冬令时）",
         et_cycle_label="美东时间 每日 03:20",

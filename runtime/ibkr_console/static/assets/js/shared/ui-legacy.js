@@ -1,6 +1,6 @@
 // ── 通用 CSS 样式 ──
 function getCommonStyles() {
-  return '<link rel="stylesheet" href="/assets/css/common.css?v=20260528-market-session-chip-1">';
+  return '<link rel="stylesheet" href="/assets/css/common.css?v=20260529-tv-primary-lean-1">';
 }
 
 // ── 全局 Loading 遮罩层 ──

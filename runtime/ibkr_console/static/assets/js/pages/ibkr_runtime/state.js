@@ -15,9 +15,6 @@ let currentEnvironment = currentBrokerMode;
         let latestNextActionModel = null;
         let latestRuntimeLoadId = 0;
         let hasLoadedRuntimeData = false;
-        let latestRuntimeBarsSnapshot = [];
-        let latestRuntimeIndicatorSnapshot = [];
-        let runtimeRecentDataLoading = false;
         let runtimePageClosing = false;
         let authActionFeedback = null;
         let actionPendingLabel = '';
@@ -32,7 +29,6 @@ let currentEnvironment = currentBrokerMode;
             app_login_handoff: '准备登录 IBKR App',
             panic_reset_2fa: '重开 2FA',
             broker_mode_switch: '切换 Paper / Live',
-            compute: '运行 Compute',
             emergency_all: '全部急停',
             recover_all: '恢复运行开关',
         };
@@ -57,7 +53,7 @@ let currentEnvironment = currentBrokerMode;
                 service: 'ibkr-runtime',
                 title: 'Runtime Service',
                 kicker: 'DATA PLANE',
-                copy: 'broker session / live bars / runtime state',
+                copy: 'broker session / execution runtime state',
                 highRiskRestart: true,
             },
             {
@@ -66,20 +62,6 @@ let currentEnvironment = currentBrokerMode;
                 kicker: 'BROKER',
                 copy: 'IBC + IB Gateway GUI/API',
                 highRiskRestart: true,
-            },
-            {
-                service: 'ibkr-compute',
-                title: 'Compute Service',
-                kicker: 'COMPUTE',
-                copy: 'indicators / signals / data quality',
-                highRiskRestart: false,
-            },
-            {
-                service: 'ibkr-backtest',
-                title: 'Backtest Service',
-                kicker: 'BACKTEST',
-                copy: 'replay / backtest worker / cleanup',
-                highRiskRestart: false,
             },
             {
                 service: 'ibkr-scheduler',

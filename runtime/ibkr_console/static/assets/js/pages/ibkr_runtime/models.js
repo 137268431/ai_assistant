@@ -13,41 +13,6 @@
             }, []);
         }
 
-        function normalizeWarmup(status) {
-            const warmup = status?.warmup || {};
-            const monitorSymbols = normalizeSymbolList(warmup.monitor_symbols);
-            const monitorSet = new Set(monitorSymbols);
-            const pendingSymbols = normalizeSymbolList(warmup.pending_symbols);
-            const fallbackBlockingPendingSymbols = pendingSymbols.filter((symbol) => !monitorSet.has(symbol));
-            const fallbackMonitorPendingSymbols = pendingSymbols.filter((symbol) => monitorSet.has(symbol));
-            return {
-                phase: String(warmup.phase || 'idle').trim().toLowerCase() || 'idle',
-                gate_open: Boolean(warmup.trading_gate_open),
-                gate_reason: String(warmup.trading_gate_reason || '').trim() || 'warmup_idle',
-                required_interval: String(warmup.required_interval || '5m'),
-                symbols_total: Number(warmup.symbols_total || 0) || 0,
-                trade_symbols_total: Number(warmup.trade_symbols_total || 0) || 0,
-                monitor_symbols_total: Number(warmup.monitor_symbols_total || 0) || 0,
-                ready_symbols: Number(warmup.ready_symbols || 0) || 0,
-                ready_trade_symbols: Number(warmup.ready_trade_symbols || 0) || 0,
-                ready_monitor_symbols: Number(warmup.ready_monitor_symbols || 0) || 0,
-                trade_symbols: normalizeSymbolList(warmup.trade_symbols),
-                monitor_symbols: monitorSymbols,
-                pending_symbols: pendingSymbols,
-                blocking_pending_symbols: Array.isArray(warmup.blocking_pending_symbols)
-                    ? normalizeSymbolList(warmup.blocking_pending_symbols)
-                    : fallbackBlockingPendingSymbols,
-                blocking_pending_symbols_total: Number(warmup.blocking_pending_symbols_total || fallbackBlockingPendingSymbols.length) || 0,
-                monitor_pending_symbols: Array.isArray(warmup.monitor_pending_symbols)
-                    ? normalizeSymbolList(warmup.monitor_pending_symbols)
-                    : fallbackMonitorPendingSymbols,
-                monitor_pending_symbols_total: Number(warmup.monitor_pending_symbols_total || fallbackMonitorPendingSymbols.length) || 0,
-                started_at: warmup.started_at || null,
-                finished_at: warmup.finished_at || null,
-                last_error: String(warmup.last_error || '').trim(),
-            };
-        }
-
         function getStartupStrategy(status) {
             const strategy = status?.startup_strategy || {};
             return {
@@ -82,182 +47,6 @@
                 ? 'server_boot 会发启动卡片'
                 : 'server_boot 不新发启动卡片';
             return `${manualStart}；${weeklyReauth}；${serverBoot}；${startupCard}`;
-        }
-
-        function normalizeComputeStartupPreload(payload = {}) {
-            const source = payload && typeof payload === 'object' ? payload : {};
-            const status = String(source.status || '').trim().toLowerCase()
-                || (source.running ? 'running' : (source.finished_at ? 'completed' : (source.scheduled ? 'scheduled' : 'idle')));
-            return {
-                enabled: source.enabled !== false,
-                shouldSchedule: source.should_schedule !== false,
-                scheduled: source.scheduled === true,
-                running: source.running === true,
-                status,
-                environments: Array.isArray(source.environments)
-                    ? source.environments.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean)
-                    : [],
-                envTotal: Number(source.env_total || 0) || 0,
-                envCompleted: Number(source.env_completed || 0) || 0,
-                symbolTotal: Number(source.symbol_total || 0) || 0,
-                symbolCompleted: Number(source.symbol_completed || 0) || 0,
-                readyCount: Number(source.ready_count || 0) || 0,
-                startedAt: source.started_at || null,
-                finishedAt: source.finished_at || null,
-                elapsedS: Number(source.elapsed_s || 0) || 0,
-                reason: String(source.reason || '').trim(),
-                error: String(source.error || '').trim(),
-            };
-        }
-
-        function getComputeStartupPreload(status, health, summary) {
-            return normalizeComputeStartupPreload(
-                status?.compute_startup_preload
-                || status?.compute?.compute_startup_preload
-                || health?.compute?.compute_startup_preload
-                || summary?.ibkr_compute?.compute_startup_preload
-                || {}
-            );
-        }
-
-        function formatComputeStartupPreloadSummary(preload) {
-            if (
-                preload.status === 'idle'
-                && !preload.scheduled
-                && !preload.startedAt
-                && !preload.finishedAt
-                && preload.envTotal <= 0
-                && preload.symbolTotal <= 0
-            ) {
-                return '--';
-            }
-            if (!preload.enabled) return 'DISABLED';
-            const parts = [];
-            if (preload.envTotal > 0) parts.push(`env ${preload.envCompleted}/${preload.envTotal}`);
-            if (preload.symbolTotal > 0) parts.push(`symbols ${preload.symbolCompleted}/${preload.symbolTotal}`);
-            if (preload.status === 'completed') parts.push(`startup ready ${preload.readyCount}/${preload.symbolTotal || 0}`);
-            else if (preload.readyCount > 0) parts.push(`ready ${preload.readyCount}/${preload.symbolTotal || 0}`);
-            if (preload.elapsedS > 0) parts.push(`elapsed ${formatSecondsLabel(preload.elapsedS)}`);
-            if (preload.status === 'failed') {
-                return `FAILED${parts.length ? ` · ${parts.join(' · ')}` : ''}${preload.error ? ` · ${preload.error}` : ''}`;
-            }
-            if (preload.status === 'completed') return `DONE${parts.length ? ` · ${parts.join(' · ')}` : ''}`;
-            if (preload.status === 'running') return `RUNNING${parts.length ? ` · ${parts.join(' · ')}` : ''}`;
-            if (preload.status === 'scheduled') return `SCHEDULED${preload.environments.length ? ` · ${preload.environments.join(', ')}` : ''}`;
-            if (preload.status === 'skipped') return `SKIPPED${preload.reason ? ` · ${preload.reason}` : ''}`;
-            return String(preload.status || '--').toUpperCase();
-        }
-
-        function formatComputeStartupPreloadTimestamp(value) {
-            const raw = String(value || '').trim();
-            if (!raw) return '--';
-            const formatted = formatTimeLabel(raw);
-            if (formatted && formatted !== '--' && formatted !== '-') return formatted;
-            return raw.replace('T', ' ').slice(0, 19);
-        }
-
-        function deriveDataHealth(latestBar) {
-            return buildIbkrDataHealth(latestBar?.bar_time_ms, {
-                symbol: latestBar?.symbol || '',
-                noDataStatus: runtimeRecentDataLoading && !latestBar ? 'loading' : 'no_data'
-            });
-        }
-
-        function deriveRealtimeMetrics(status, latestBar) {
-            const realtime = status?.realtime_compute || {};
-            const barAggregator = status?.bar_aggregator || {};
-            const lastRunMs = parseIsoMs(realtime.last_run);
-            const lastBarCloseMs = parseIsoMs(realtime.last_bar_close);
-            const barTimeMs = Number(latestBar?.bar_time_ms || 0) || 0;
-            const expectedCloseMs = barTimeMs > 0 ? barTimeMs + (intervalToMs(latestBar?.interval || '5m') || 0) : 0;
-            const closeDelayS = lastBarCloseMs > 0 && expectedCloseMs > 0
-                ? Math.max(0, (lastBarCloseMs - expectedCloseMs) / 1000)
-                : null;
-            const computeAfterCloseS = lastRunMs > 0 && lastBarCloseMs > 0
-                ? Math.max(0, (lastRunMs - lastBarCloseMs) / 1000)
-                : null;
-            const activeBars = Object.values(barAggregator.active_bars || {});
-            const activeTickAges = activeBars
-                .map((item) => Number(item?.last_update_age_s || 0))
-                .filter((item) => Number.isFinite(item));
-            return {
-                last_bar_close: realtime.last_bar_close || null,
-                last_compute_run: realtime.last_run || null,
-                close_delay_s: closeDelayS,
-                compute_after_close_s: computeAfterCloseS,
-                active_tick_lag_s: activeTickAges.length ? Math.max(...activeTickAges) : null,
-                active_symbol_count: activeBars.length,
-            };
-        }
-
-        function formatDurationCompact(totalSeconds) {
-            const seconds = Number(totalSeconds);
-            if (!Number.isFinite(seconds) || seconds < 0) return '--';
-            if (seconds < 60) return `${Math.round(seconds)}s`;
-            const hours = Math.floor(seconds / 3600);
-            const minutes = Math.floor((seconds % 3600) / 60);
-            const remainder = Math.round(seconds % 60);
-            if (hours > 0) return `${hours}h ${minutes}m`;
-            if (minutes > 0 && remainder > 0) return `${minutes}m ${remainder}s`;
-            return `${minutes}m`;
-        }
-
-        function getElapsedSeconds(startValue, endValue = null) {
-            const startMs = parseIsoMs(startValue);
-            if (startMs <= 0) return null;
-            const endMs = endValue ? parseIsoMs(endValue) : Date.now();
-            if (endMs <= 0 || endMs < startMs) return null;
-            return Math.max(0, Math.round((endMs - startMs) / 1000));
-        }
-
-        function getWarmupElapsedSeconds(warmup) {
-            return getElapsedSeconds(warmup?.started_at, warmup?.finished_at);
-        }
-
-        function deriveRealtimeComputeState(status) {
-            const realtime = status?.realtime_compute || {};
-            const inflight = realtime.inflight === true;
-            const stalled = realtime.stalled === true;
-            const queueSize = Number(realtime.queue_size || 0) || 0;
-            const inflightAgeS = Number(realtime.inflight_age_s);
-            const lastElapsedS = Number(realtime.last_elapsed_s);
-
-            if (stalled) {
-                return {
-                    phase: 'stalled',
-                    tone: 'error',
-                    title: 'Indicators 计算已卡住',
-                    summary: `started ${formatTimeLabel(realtime.last_started)} · age ${formatSecondsLabel(realtime.inflight_age_s)} · reason ${String(realtime.stall_reason || 'unknown')}`,
-                };
-            }
-
-            if (inflight) {
-                const longRunning = Number.isFinite(inflightAgeS) && inflightAgeS >= Math.max(60, Number.isFinite(lastElapsedS) ? lastElapsedS * 0.5 : 60);
-                return {
-                    phase: 'running',
-                    tone: longRunning ? 'warn' : 'info',
-                    title: longRunning
-                        ? `Indicators 计算耗时较长 · ${formatSecondsLabel(realtime.inflight_age_s)}`
-                        : `Indicators 正在计算 · ${formatSecondsLabel(realtime.inflight_age_s)}`,
-                    summary: `started ${formatTimeLabel(realtime.last_started)} · prev ${formatSecondsLabel(realtime.last_elapsed_s)} · queue ${queueSize}`,
-                };
-            }
-
-            if (queueSize > 0) {
-                return {
-                    phase: 'queued',
-                    tone: 'warn',
-                    title: `Indicators 等待计算 · queue ${queueSize}`,
-                    summary: `last run ${formatTimeLabel(realtime.last_run)} · lag ${formatSecondsLabel(realtime.lag_since_last_run_s)}`,
-                };
-            }
-
-            return {
-                phase: 'idle',
-                tone: 'ok',
-                title: 'Indicators 已追平',
-                summary: `last run ${formatTimeLabel(realtime.last_run)}`,
-            };
         }
 
         function parseSymbolList(rawValue) {
@@ -297,7 +86,7 @@
             const dataEnvFilter = buildDataEnvironmentFilter();
             const brokerEnvFilter = buildBrokerEnvironmentFilter();
             const marketDate = resolveRuntimeMarketDate(status);
-            const dataTodayFilterBase = `created >= "${escapeQueryValue(`${marketDate} 00:00:00`)}" && ${dataEnvFilter}`;
+            const signalTodayFilterBase = `created >= "${escapeQueryValue(`${marketDate} 00:00:00`)}" && ${dataEnvFilter}`;
             const brokerTodayFilterBase = `created >= "${escapeQueryValue(`${marketDate} 00:00:00`)}" && ${brokerEnvFilter}`;
             const targetDateFilter = `date = "${escapeQueryValue(marketDate)}" && ${dataEnvFilter}`;
             const readCountFetch = (collection, filter) => (
@@ -307,24 +96,18 @@
             );
 
             const [
-                barsCountResp,
-                indicatorsCountResp,
                 signalsCountResp,
                 ordersCountResp,
                 eventsCountResp,
                 targetsCountResp,
             ] = await Promise.all([
-                readCountFetch('ibkr_bars', dataTodayFilterBase).catch(() => null),
-                readCountFetch('ibkr_indicators', dataTodayFilterBase).catch(() => null),
-                readCountFetch('ibkr_signals', dataTodayFilterBase).catch(() => null),
+                readCountFetch('ibkr_signals', signalTodayFilterBase).catch(() => null),
                 readCountFetch('orders', brokerTodayFilterBase).catch(() => null),
                 readCountFetch('system_events', brokerTodayFilterBase).catch(() => null),
                 readCountFetch('ibkr_targets', targetDateFilter).catch(() => null),
             ]);
 
             return {
-                ibkr_bars: getTotalItems(barsCountResp),
-                ibkr_indicators: getTotalItems(indicatorsCountResp),
                 ibkr_signals: getTotalItems(signalsCountResp),
                 orders: getTotalItems(ordersCountResp),
                 events: getTotalItems(eventsCountResp),

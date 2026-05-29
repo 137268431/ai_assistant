@@ -487,10 +487,12 @@ def _view_buttons(
         order_id=resolved_order_id,
         date=resolved_date,
     )
+    tv_chart_url = to_text(_record_or_extra_value(source, "tv_chart_url", "chart_url", "tradingview_chart_url"))
     for label, url in (
         ("查看 Signals", signals_url),
         ("查看 Orders", orders_url),
         ("查看事件流", lifecycle_url),
+        ("打开 TV 图表", tv_chart_url),
     ):
         if not url:
             continue
@@ -519,12 +521,6 @@ def _source_lines(record_or_data: Any) -> list[str]:
 
 def _tv_context_lines(record_or_data: Any) -> list[str]:
     extra = get_signal_extra(record_or_data)
-    if to_text(extra.get("signal_source") or extra.get("source")).lower() not in {
-        "tradingview_webhook",
-        "tradingview",
-        "tv",
-    }:
-        return []
     fields = [
         ("TV event", first_defined(extra.get("event_type"), extra.get("tv_event_type"))),
         ("TV script", first_defined(record_value(record_or_data, "script_tag"), extra.get("script_tag"))),
@@ -534,7 +530,6 @@ def _tv_context_lines(record_or_data: Any) -> list[str]:
             first_defined(extra.get("timeframe_stack"), record_value(record_or_data, "chart_tf"), record_value(record_or_data, "interval")),
         ),
         ("Position ID", extra.get("position_id")),
-        ("TV reason", first_defined(record_value(record_or_data, "reason"), extra.get("reason"))),
     ]
     lines = [f"**{label}**: {to_text(value)}" for label, value in fields if to_text(value)]
     event_id = to_text(extra.get("tv_event_id"))
@@ -646,8 +641,7 @@ def build_signal_notification_card(record_or_data: Any, *, console_base_url: str
     ]
     body_lines.extend(_price_plan_lines(record_or_data))
     body_lines.extend(_planned_pnl_lines(record_or_data))
-    body_lines.extend(_market_metric_lines(record_or_data))
-    body_lines.extend(_source_lines(record_or_data))
+    body_lines.extend(_buying_power_lines(record_or_data))
     body_lines.extend(_tv_context_lines(record_or_data))
     body_lines.extend(_followup_lines(record_or_data))
     reason = to_text(record_value(record_or_data, "reason") or extra.get("reason"))
@@ -818,9 +812,7 @@ def build_signal_status_card(record_or_data: Any, *, message: str = "", console_
     ]
     body_lines.extend(_price_plan_lines(record_or_data))
     body_lines.extend(_planned_pnl_lines(record_or_data))
-    body_lines.extend(_market_metric_lines(record_or_data))
     body_lines.extend(_buying_power_lines(record_or_data))
-    body_lines.extend(_source_lines(record_or_data))
     body_lines.extend(_tv_context_lines(record_or_data))
     body_lines.extend(_followup_lines(record_or_data))
     if message:

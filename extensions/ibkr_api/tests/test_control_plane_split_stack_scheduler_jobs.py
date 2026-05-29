@@ -728,7 +728,7 @@ class ControlPlaneSplitStackSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(events[1]["title"], "IBKR 系统心跳异常")
         self.assertEqual(states[("system_notify_heartbeat", "paper")]["last_partial_recovery_at"], "2026-05-18 09:40:33")
 
-    def test_system_status_reminder_includes_backtest_service_semantics(self):
+    def test_system_status_reminder_omits_backtest_service_semantics(self):
         events = []
 
         payload, status_code = build_system_status_reminder_response(
@@ -774,15 +774,13 @@ class ControlPlaneSplitStackSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(payload["job_id"], "system_status_reminder")
         self.assertTrue(events)
         detail = events[0]["detail"]
-        self.assertIn("Backtest running", detail["系统服务"])
-        self.assertIn("worker idle", detail["Backtest"])
-        self.assertIn("client 81", detail["Backtest"])
-        self.assertIn("non-blocking", detail["Backtest"])
+        self.assertNotIn("Backtest", detail["系统服务"])
+        self.assertNotIn("Backtest", detail)
         self.assertIn("Runtime client 31", detail["IB ClientID"])
         self.assertIn("Compute client 51", detail["IB ClientID"])
         self.assertIn("API client 61", detail["IB ClientID"])
         self.assertIn("Scheduler client 71", detail["IB ClientID"])
-        self.assertIn("Backtest client 81", detail["IB ClientID"])
+        self.assertNotIn("Backtest client 81", detail["IB ClientID"])
         self.assertIn("running:8", detail["服务统计"])
 
     def test_system_monitor_alert_job_emits_on_warning_flags(self):

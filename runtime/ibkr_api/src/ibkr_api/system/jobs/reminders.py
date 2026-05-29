@@ -103,7 +103,6 @@ def _summary_detail(summary: dict[str, Any], monitor: dict[str, Any], *, phase: 
     gateway = _as_dict(runtime_inner.get("gateway"))
     session = _as_dict(runtime_inner.get("session"))
     websocket = _as_dict(runtime_inner.get("websocket"))
-    daily_scan = _as_dict(runtime_inner.get("daily_scan")) or _as_dict(summary.get("daily_scan"))
     services = _as_dict(_as_dict(monitor.get("service_monitor")).get("status_counts"))
     today = _as_dict(summary.get("today"))
     detail = {
@@ -116,17 +115,16 @@ def _summary_detail(summary: dict[str, Any], monitor: dict[str, Any], *, phase: 
         "Gateway": "running" if gateway.get("running") or gateway.get("reachable") else "offline",
         "Session": "authenticated" if session.get("authenticated") else "pending",
         "WebSocket": "connected" if websocket.get("connected") else "offline",
-        "DispatchLag": f"{float(scheduler.get('dispatch_lag_min') or 0):.2f}m" if scheduler.get("latest_ingested_bar_time_ms") else "awaiting bars",
-        "今日bars": str(_to_int(today.get("ibkr_bars"), 0)),
-        "今日signals": str(_to_int(today.get("ibkr_signals"), 0)),
-        "今日orders": str(_today_order_count(today)),
-        "今日events": str(_to_int(today.get("events"), 0)),
-        "日筛状态": _to_text(daily_scan.get("status")) or "unknown",
-        "日筛日期": _to_text(daily_scan.get("market_date")) or "",
+        "TV webhook": _tv_webhook_line(today),
+        "Targets": f"targets {_to_int(today.get('ibkr_targets'), 0)}",
+        "Orders": f"orders {_today_order_count(today)}",
+        "Execution/Protection": (
+            f"TP {_to_int(today.get('take_profit_filled'), 0)} | "
+            f"SL {_to_int(today.get('stop_loss_filled'), 0)} | "
+            f"protect_incomplete {_to_int(today.get('protection_incomplete'), 0)}"
+        ),
         "故障域统计": ", ".join(f"{key}:{value}" for key, value in sorted(services.items())) if services else "n/a",
     }
-    if _to_text(daily_scan.get("last_error")):
-        detail["日筛错误"] = _to_text(daily_scan.get("last_error"))
     return detail
 
 
@@ -136,10 +134,38 @@ def _target_summary_line(targets_payload: dict[str, Any]) -> str:
         f"total {_to_int(summary.get('total'))} | "
         f"active {_to_int(summary.get('active_count'))} | "
         f"candidate {_to_int(summary.get('candidate_count'))} | "
-        f"operable {_to_int(summary.get('operable_count'))} | "
-        f"ready {_to_int(summary.get('technical_ready_count'))} | "
-        f"signals {_to_int(summary.get('signaled_count'))}"
+        f"execution_eligible {_target_execution_eligible_count(summary)} | "
+        f"observe {_to_int(summary.get('observe_only_count'))} | "
+        f"watch {_to_int(summary.get('watch_only_count'))}"
     )
+
+
+def _target_execution_line(targets_payload: dict[str, Any]) -> str:
+    summary = _as_dict(targets_payload.get("summary"))
+    return (
+        f"executed {_to_int(summary.get('executed_count'), 0)} | "
+        f"awaiting {_to_int(summary.get('awaiting_confirm_count'), 0)} | "
+        f"pending {_to_int(summary.get('pending_count'), 0)} | "
+        f"submitted {_to_int(summary.get('submitted_count'), 0)} | "
+        f"protected {_to_int(summary.get('protected_active_count'), 0)} | "
+        f"protect_incomplete {_to_int(summary.get('protection_incomplete_count'), 0)}"
+    )
+
+
+def _target_execution_eligible_count(summary: dict[str, Any]) -> int:
+    return _to_int(summary.get("execution_eligible_count"), _to_int(summary.get("operable_count"), 0))
+
+
+def _tv_webhook_line(today: dict[str, Any]) -> str:
+    return (
+        f"webhooks {_to_int(today.get('tv_webhook_events'), 0)} | "
+        f"signals {_to_int(today.get('ibkr_signals'), 0)} | "
+        f"events {_to_int(today.get('events'), 0)}"
+    )
+
+
+def _orders_line(today: dict[str, Any]) -> str:
+    return f"orders {_today_order_count(today)}"
 
 
 def _format_signed_money(value: Any) -> str:
@@ -260,11 +286,6 @@ def _link_line(context: dict[str, Any]) -> str:
     )
 
 
-def _dispatch_lag_text(context: dict[str, Any]) -> str:
-    scheduler = _as_dict(context.get("scheduler"))
-    return f"{float(scheduler.get('dispatch_lag_min') or 0):.2f}m" if scheduler.get("latest_ingested_bar_time_ms") else "awaiting bars"
-
-
 def _close_issue_lines(
     summary: dict[str, Any],
     monitor: dict[str, Any],
@@ -311,16 +332,13 @@ def _close_issue_lines(
     }
     if service_issues:
         issues.append("故障域 " + _service_stats_line(service_issues))
-    daily_scan = _as_dict(context.get("daily_scan"))
-    scan_status = _status_text(daily_scan.get("status"), "")
-    scan_error = _to_text(daily_scan.get("last_error")) or _to_text(_as_dict(daily_scan.get("result")).get("error"))
-    if scan_status in {"failed", "error"}:
-        issues.append(f"日筛失败: {scan_error or 'unknown_error'}")
-    elif scan_error:
-        issues.append(f"日筛异常: {scan_error}")
     today = _as_dict(context.get("today"))
-    if _to_text(environment).lower() == "live" and _to_int(today.get("ibkr_bars"), 0) <= 0:
-        issues.append("收盘时今日 bars 为 0，数据链路可能未落库；如确认休市可忽略")
+    protection_incomplete = max(
+        _to_int(today.get("protection_incomplete"), 0),
+        _to_int(_as_dict(targets_payload.get("summary")).get("protection_incomplete_count"), 0),
+    )
+    if protection_incomplete > 0:
+        issues.append(f"保护不完整 {protection_incomplete}")
     return issues, blocking
 
 
@@ -335,12 +353,9 @@ def _close_conclusion(issue_lines: list[str], blocking: bool) -> str:
 def _close_operator_action(issue_lines: list[str], blocking: bool) -> str:
     if not issue_lines:
         return "无需处理；保留日报作为今日收盘审计。"
-    joined = "；".join(issue_lines)
-    if "bars 为 0" in joined:
-        return "优先检查 Scheduler ingest、Runtime WebSocket、watchlist/targets 写入；若当天美股休市可忽略。"
     if blocking:
-        return "先恢复 Gateway / Session / WebSocket 与核心服务，再检查今日数据是否完整。"
-    return "按需要检查日筛、服务统计与控制台详情，确认后无需重复处理。"
+        return "先恢复 Gateway / Session / WebSocket 与核心服务，再检查 TV webhook、orders 和保护单状态。"
+    return "按需要检查 TV webhook、targets、orders 与 execution/protection 状态，确认后无需重复处理。"
 
 
 def _close_report_template(issue_lines: list[str], blocking: bool) -> str:
@@ -394,15 +409,12 @@ def _build_close_report_card(
         {
             "tag": "markdown",
             "content": (
-                f"**今日结果**: bars {_to_int(today.get('ibkr_bars'), 0)} | "
-                f"signals {_to_int(today.get('ibkr_signals'), 0)} | "
-                f"orders {_today_order_count(today)} | "
-                f"events {_to_int(today.get('events'), 0)}\n"
+                f"**TV webhook**: {_tv_webhook_line(today)}\n"
+                f"**Targets**: {_target_summary_line(targets_payload)}\n"
+                f"**Orders**: {_orders_line(today)}\n"
+                f"**Execution/Protection**: {_target_execution_line(targets_payload)}\n"
                 f"**今日止盈/止损**: {_close_protection_line(today)}\n"
-                f"**今日盈亏**: {_close_pnl_line(today)}\n"
-                f"**今日标的**: {_target_summary_line(targets_payload)}\n"
-                f"**日筛**: {_to_text(daily_scan.get('status')) or 'unknown'}"
-                f"{(' · ' + _to_text(daily_scan.get('market_date'))) if _to_text(daily_scan.get('market_date')) else ''}"
+                f"**今日盈亏**: {_close_pnl_line(today)}"
             ),
         },
         {
@@ -410,7 +422,6 @@ def _build_close_report_card(
             "content": (
                 f"**系统链路**: {_system_line(context)}\n"
                 f"**IBKR链路**: {_link_line(context)}\n"
-                f"**DispatchLag**: {_dispatch_lag_text(context)}\n"
                 f"**故障域统计**: {_service_stats_line(services)}\n"
                 f"**关注点**: {issue_text}"
             ),
@@ -459,7 +470,6 @@ def _close_event_detail(
 ) -> dict[str, Any]:
     context = _close_context(summary, monitor, targets_payload)
     today = _as_dict(context.get("today"))
-    daily_scan = _as_dict(context.get("daily_scan"))
     services = _as_dict(context.get("services"))
     issue_lines, blocking = _close_issue_lines(summary, monitor, targets_payload, data_environment)
     detail = {
@@ -467,19 +477,14 @@ def _close_event_detail(
         "检查时间": _to_text(times.get("us")),
         "结论": _close_conclusion(issue_lines, blocking),
         "需要处理": _close_operator_action(issue_lines, blocking),
-        "今日结果": (
-            f"bars {_to_int(today.get('ibkr_bars'), 0)} | "
-            f"signals {_to_int(today.get('ibkr_signals'), 0)} | "
-            f"orders {_today_order_count(today)} | "
-            f"events {_to_int(today.get('events'), 0)}"
-        ),
+        "TV webhook": _tv_webhook_line(today),
+        "Targets": _target_summary_line(targets_payload),
+        "Orders": _orders_line(today),
+        "Execution/Protection": _target_execution_line(targets_payload),
         "今日止盈/止损": _close_protection_line(today),
         "今日盈亏": _close_pnl_line(today),
-        "今日标的": _target_summary_line(targets_payload),
-        "日筛": f"{_to_text(daily_scan.get('status')) or 'unknown'} {_to_text(daily_scan.get('market_date'))}".strip(),
         "系统链路": _system_line(context),
         "IBKR链路": _link_line(context),
-        "DispatchLag": _dispatch_lag_text(context),
         "故障域统计": _service_stats_line(services),
     }
     if issue_lines:

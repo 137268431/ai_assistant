@@ -22,18 +22,17 @@
       const score = Number(thresholds.tradability_score_gte || 60) || 60;
       const freshness = Number(thresholds.freshness_lte_min || 90) || 90;
       return {
-        title: definition?.title || 'READY 判定',
-        summary: definition?.summary || 'READY = 可操作条件通过 + 方向一致技术条件达到阈值；等待信号触发，不代表已执行。',
+        title: definition?.title || 'ELIGIBLE 判定',
+        summary: definition?.summary || 'ELIGIBLE = 标的可操作条件通过；等待 TV 信号触发，不代表已执行。',
         sections: [
           {
             label: '硬条件',
             items: [
-              '当日 5m bar 已更新',
-              `freshness <= ${freshness}m`,
+              `状态新鲜度 <= ${freshness}m`,
               'price > 0',
               `10D 均量 >= ${formatVolume(avgVolume)}`,
               `tradability_score >= ${score}`,
-              `方向一致技术条件 >= ${requiredFlags}`,
+              `方向/活跃条件 >= ${requiredFlags}`,
             ],
           },
           {
@@ -56,13 +55,13 @@
       return {
         title: `${row?.symbol || '标的'} READY`,
         summary: explanation.summary || (row?.technical_state === 'ready'
-          ? '已满足 READY 判定；等待信号触发，不代表已下单或成交。'
-          : '尚未达到 READY；先处理缺失条件，再等待 5m close 刷新。'),
+          ? '已满足 ELIGIBLE 判定；等待 TV 信号触发，不代表已下单或成交。'
+          : '尚未达到 ELIGIBLE；先处理缺失条件，再等待目标池刷新。'),
         tone: row?.technical_state === 'ready' ? 'good' : 'warn',
         sections: [
           { label: '已满足', items: passed },
           { label: '还缺', items: missing.length ? missing : ['当前无明显缺口'] },
-          { label: '方向标签', items: alignedFlags.length ? alignedFlags : ['暂无方向一致技术标签'] },
+          { label: '方向标签', items: alignedFlags.length ? alignedFlags : ['暂无方向一致标签'] },
         ],
       };
     }

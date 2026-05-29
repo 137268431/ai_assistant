@@ -24,22 +24,21 @@
       const isToday = isSelectedDateToday();
       const status = !isToday ? 'blocked' : (manualDailyScanState.running ? 'running' : manualDailyScanState.status);
       const statusMessage = isToday
-        ? (manualDailyScanState.running ? '正在补跑并刷新目标池...' : manualDailyScanState.message)
+        ? (manualDailyScanState.running ? '正在刷新目标池...' : (manualDailyScanState.message || '等待手动刷新目标池'))
         : `仅支持当前美东日期 ${getUsDate()}`;
       buttons.forEach((button) => {
         button.disabled = manualDailyScanState.running || !isToday;
-        button.textContent = manualDailyScanState.running ? '补跑中' : '补跑日筛';
+        button.textContent = manualDailyScanState.running ? '刷新中' : '刷新目标池';
         button.setAttribute('aria-busy', manualDailyScanState.running ? 'true' : 'false');
         button.classList.remove('is-running', 'is-success', 'is-error', 'is-blocked');
         if (status !== 'idle') button.classList.add(`is-${status}`);
         button.title = isToday
-          ? '手动补跑一次 08:20-09:20 ET 信号窗口预筛，刷新今日 candidate / active。'
+          ? '手动刷新今日目标池与活跃度排序；不会直接下单或确认信号。'
           : `只支持当前美东日期 ${getUsDate()}，当前选择 ${selectedDate || '--'}。`;
       });
       if (feedback) {
-        const shouldShowFeedback = status !== 'idle';
-        feedback.hidden = !shouldShowFeedback;
-        feedback.textContent = shouldShowFeedback ? statusMessage : '';
+        feedback.hidden = false;
+        feedback.textContent = statusMessage;
         feedback.dataset.status = status;
       }
     }
@@ -50,7 +49,7 @@
 
     function getRequestedTab() {
       const value = String(new URLSearchParams(window.location.search).get('tab') || '').trim().toLowerCase();
-      if (value === 'monitor') return 'monitor';
+      if (value === 'monitor') return 'watchlist';
       if (value === 'watchlist') return 'watchlist';
       if (value === 'targets') return 'targets';
       return 'screener';
@@ -237,12 +236,6 @@
           kicker: 'Pool',
           label: '标池',
           copy: getWatchlistRoleCopy('watchlist')
-        },
-        {
-          tab: 'monitor',
-          kicker: 'Market',
-          label: '市场监控',
-          copy: getWatchlistRoleCopy('monitor')
         }
       ];
       return `

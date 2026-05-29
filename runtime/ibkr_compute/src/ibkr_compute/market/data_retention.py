@@ -1,7 +1,7 @@
 """
 历史数据留存管理
 - 按环境清理超过留存窗口的历史行情链路数据
-- 默认保留近 365 天
+- 默认保留近 365 天；核心交易/审计表只由业务生命周期管理，不参与留存删除
 """
 
 from __future__ import annotations
@@ -19,6 +19,20 @@ DEFAULT_RETENTION_DAYS = max(30, int(os.environ.get("IBKR_HISTORY_RETENTION_DAYS
 RETENTION_BATCH_SIZE = max(20, int(os.environ.get("IBKR_HISTORY_RETENTION_BATCH_SIZE", "200")))
 RETENTION_STATE_KEY = "ibkr_history_retention"
 
+PROTECTED_CORE_COLLECTIONS = frozenset(
+    {
+        "orders",
+        "ibkr_orders",
+        "ibkr_order_details",
+        "ibkr_signals",
+        "ibkr_reverse_signals",
+        "ibkr_targets",
+        "watchlist",
+        "config",
+        "ibkr_state",
+    }
+)
+
 DEFAULT_RETENTION_POLICIES = (
     {
         "collection": "ibkr_bars",
@@ -28,24 +42,6 @@ DEFAULT_RETENTION_POLICIES = (
     },
     {
         "collection": "ibkr_indicators",
-        "field": "bar_time_ms",
-        "kind": "ms",
-        "include_legacy_empty": True,
-    },
-    {
-        "collection": "ibkr_signals",
-        "field": "bar_time_ms",
-        "kind": "ms",
-        "include_legacy_empty": True,
-    },
-    {
-        "collection": "ibkr_reverse_signals",
-        "field": "bar_time_ms",
-        "kind": "ms",
-        "include_legacy_empty": True,
-    },
-    {
-        "collection": "ibkr_targets",
         "field": "bar_time_ms",
         "kind": "ms",
         "include_legacy_empty": True,
@@ -180,6 +176,15 @@ class DataRetention:
         include_legacy_empty = bool(policy.get("include_legacy_empty"))
         filter_prefix = _build_environment_filter(environment, include_legacy_empty=include_legacy_empty)
 
+        if collection in PROTECTED_CORE_COLLECTIONS:
+            return {
+                "collection": collection,
+                "deleted": 0,
+                "errors": 0,
+                "batches": 0,
+                "skipped": True,
+                "reason": "protected_core_collection",
+            }
         if not collection or not field:
             return {"collection": collection, "deleted": 0, "errors": 1, "batches": 0, "skipped": True}
 
@@ -282,6 +287,7 @@ class DataRetention:
             "default_retention_days": DEFAULT_RETENTION_DAYS,
             "batch_size": RETENTION_BATCH_SIZE,
             "policies": [str(item.get("collection") or "") for item in self.policies],
+            "protected_collections": sorted(PROTECTED_CORE_COLLECTIONS),
             "environments": [],
             "total_deleted": 0,
             "total_errors": 0,
@@ -365,6 +371,7 @@ class DataRetention:
             "last_cleanup": self._last_cleanup,
             "total_deleted": self._total_deleted,
             "state_key": RETENTION_STATE_KEY,
+            "protected_collections": sorted(PROTECTED_CORE_COLLECTIONS),
             "policies": [str(item.get("collection") or "") for item in self.policies],
             "last_summary": self._last_summary,
         }

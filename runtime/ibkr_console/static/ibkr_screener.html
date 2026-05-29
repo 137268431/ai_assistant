@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>IBKR 筛选与标池</title>
   <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
-  <script src="/common.js?v=20260528-night-session-review-entry-1"></script>
+  <script src="/common.js?v=20260529-tv-primary-lean-1"></script>
   <script>document.write(getCommonStyles())</script>
   <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
-  <link rel="stylesheet" href="/assets/css/pages/ibkr_screener/page.css?v=20260527-execution-layer">
+  <link rel="stylesheet" href="/assets/css/pages/ibkr_screener/page.css?v=20260529-tv-primary-lean-1">
 </head>
 <body>
   <div id="nav"></div>
@@ -42,12 +42,7 @@
             <button class="subview-tab active" type="button" data-view="current">
               <div class="subview-tab-kicker">Current</div>
               <div class="subview-tab-label">当前标的榜</div>
-              <div class="subview-tab-copy">技术状态 / 信号 / 操作。</div>
-            </button>
-            <button class="subview-tab" type="button" data-view="window-progress">
-              <div class="subview-tab-kicker">Window</div>
-              <div class="subview-tab-label">窗口进度</div>
-              <div class="subview-tab-copy">上下轨窗口 / 组件 / Trace。</div>
+              <div class="subview-tab-copy">目标状态 / 信号 / 操作。</div>
             </button>
             <button class="subview-tab" type="button" data-view="universe">
               <div class="subview-tab-kicker">Universe</div>
@@ -70,7 +65,7 @@
               <div class="control-grid current-control-grid current-control-grid-primary">
                 <div class="field span-2 current-target-search-field">
                   <label for="currentTargetSearch">Symbol / Reason Search</label>
-                  <input id="currentTargetSearch" type="text" placeholder="AAPL / NVDA / waiting / EMA多头" />
+                  <input id="currentTargetSearch" type="text" placeholder="AAPL / NVDA / waiting / active" />
                 </div>
                 <div class="field">
                   <label for="currentSignalStateFilter">Signal State</label>
@@ -116,27 +111,17 @@
               </div>
               <div class="current-toolbar-actions">
                 <a id="todayTargetsJumpLink" class="mini-link" href="/ibkr_screener.html?tab=screener&view=current">打开当前标的工作台</a>
-                <a id="systemLogicLink" class="mini-link" href="/ibkr_system_logic.html">系统逻辑</a>
                 <button id="openUniverseViewBtn" class="mini-btn" type="button">切到全量筛选</button>
                 <button id="toggleCurrentAdvancedFiltersBtn" class="mini-btn current-filter-toggle" type="button" aria-expanded="false">更多筛选</button>
                 <div class="manual-daily-scan-cluster">
-                  <button id="rerunDailyScanBtn" data-manual-daily-scan-btn class="mini-btn scan-rerun-btn" type="button" onclick="rerunTodayDailyScan()">补跑日筛</button>
-                  <div id="manualDailyScanFeedback" class="manual-daily-scan-feedback" role="status" aria-live="polite" hidden></div>
+                  <button id="rerunDailyScanBtn" data-manual-daily-scan-btn class="mini-btn scan-rerun-btn" type="button" onclick="rerunTodayDailyScan()">刷新目标池</button>
+                  <div id="manualDailyScanFeedback" class="manual-daily-scan-feedback" role="status" aria-live="polite">等待手动刷新目标池</div>
                 </div>
               </div>
             </div>
 
             <div id="currentAdvancedFilters" class="current-advanced-filters">
               <div class="control-grid current-control-grid current-control-grid-advanced">
-                <div class="field">
-                  <label for="currentTechnicalStateFilter">Technical State</label>
-                  <select id="currentTechnicalStateFilter">
-                    <option value="">全部</option>
-                    <option value="ready">ready</option>
-                    <option value="watch">watch</option>
-                    <option value="stale">stale</option>
-                  </select>
-                </div>
                 <div class="field">
                   <label for="currentDirectionBiasFilter">Direction Bias</label>
                   <select id="currentDirectionBiasFilter">
@@ -157,12 +142,6 @@
                 </div>
                 <div class="field current-checkbox-field">
                   <div class="checkbox-row">
-                    <input id="currentReadyOnly" type="checkbox" />
-                    <label for="currentReadyOnly">仅技术 ready</label>
-                  </div>
-                </div>
-                <div class="field current-checkbox-field">
-                  <div class="checkbox-row">
                     <input id="currentSignaledOnly" type="checkbox" />
                     <label for="currentSignaledOnly">仅今日已出信号</label>
                   </div>
@@ -173,7 +152,7 @@
             <div class="table-header current-target-table-header">
               <div class="leaderboard-meta" id="currentTargetsMeta">等待加载...</div>
             </div>
-            <div class="leaderboard-note" id="currentTargetsMetaSecondary">08:20-09:20 ET 每 5 分钟覆盖预筛生成 candidate / active，09:25-11:00 ET 每 5 分钟增量入池，盘中按 5m close 刷新技术与信号阶段。</div>
+            <div class="leaderboard-note" id="currentTargetsMetaSecondary">08:20-09:20 ET 维护候选池，09:25-11:00 ET 按 IBKR 活跃度增量入池；盘中以 TV webhook 信号和 IBKR 执行状态为准。</div>
             <div class="pagination-bar pagination-bar-top">
               <div class="pagination-group" id="currentTargetsPaginationTop"></div>
               <div class="pagination-status" id="currentTargetsPaginationStatusTop">第 1 / 1 页</div>
@@ -183,15 +162,13 @@
                 <thead>
                   <tr>
                     <th>Symbol</th>
-                    <th>价格 / Freshness</th>
-                    <th>Targets</th>
-                    <th>Technical</th>
+                    <th>状态 / 分数</th>
                     <th>Signal</th>
                     <th>理由 / 操作</th>
                   </tr>
                 </thead>
                 <tbody id="currentTargetsTable">
-                  <tr><td colspan="6" class="loading">加载中...</td></tr>
+                  <tr><td colspan="4" class="loading">加载中...</td></tr>
                 </tbody>
               </table>
             </div>
@@ -210,7 +187,7 @@
             <div class="current-target-head">
               <div>
                 <div class="panel-title">窗口进度</div>
-                <div class="panel-copy">当前目标池的 5m bar、信号候选、窗口状态与过滤原因。</div>
+                <div class="panel-copy">旧窗口诊断仅保留为直接排障视图；主流程以 TV webhook、目标池和执行状态为准。</div>
               </div>
               <button id="refreshWindowProgressBtn" class="mini-btn" type="button">刷新窗口</button>
             </div>
@@ -245,13 +222,12 @@
             <div class="table-header current-target-table-header">
               <div class="leaderboard-meta" id="windowProgressMeta">等待加载...</div>
             </div>
-            <div class="leaderboard-note" id="windowProgressMetaSecondary">默认优先显示 signal_candidate / confirmed / blockers / near_expiry，再按剩余 bars、组件进度、freshness 和目标分排序。</div>
+            <div class="leaderboard-note" id="windowProgressMetaSecondary">默认优先显示 signal_candidate / confirmed / blockers / near_expiry，再按组件进度和目标分排序。</div>
             <div class="table-wrap desktop-table-wrap window-progress-table-wrap">
               <table class="window-progress-table">
                 <thead>
                   <tr>
                     <th>Symbol</th>
-                    <th>Latest 5m</th>
                     <th>Signal</th>
                     <th>Window</th>
                     <th>Blockers</th>
@@ -259,7 +235,7 @@
                   </tr>
                 </thead>
                 <tbody id="windowProgressTable">
-                  <tr><td colspan="6" class="loading">加载中...</td></tr>
+                  <tr><td colspan="5" class="loading">加载中...</td></tr>
                 </tbody>
               </table>
             </div>
@@ -272,7 +248,7 @@
         <div id="universeViewPanel" class="subview-panel">
         <section class="panel">
           <div class="panel-title">筛选条件</div>
-          <div class="panel-copy">按 symbol、市场、价格、波动、量能和目标状态过滤。</div>
+          <div class="panel-copy">按 symbol、市场、价格、量能和目标状态过滤。</div>
 
           <div class="filters">
             <div class="field">
@@ -316,10 +292,6 @@
               <input id="dayChangeMax" type="number" step="0.1" placeholder="20" />
             </div>
             <div class="field">
-              <label for="atrPctMin">ATR % Min</label>
-              <input id="atrPctMin" type="number" min="0" step="0.1" placeholder="2" />
-            </div>
-            <div class="field">
               <label for="avgVolumeMin">10D Avg Vol Min</label>
               <input id="avgVolumeMin" type="number" min="0" step="10000" placeholder="1000000" />
             </div>
@@ -332,17 +304,12 @@
               <input id="targetScoreMin" type="number" min="0" step="0.1" placeholder="5" />
             </div>
             <div class="field">
-              <label for="freshnessMax">Freshness Max Min</label>
-              <input id="freshnessMax" type="number" min="0" step="1" placeholder="90" />
-            </div>
-            <div class="field">
               <label for="sortBy">Sort</label>
               <select id="sortBy">
                 <option value="tradability_desc">按可操作分</option>
                 <option value="premarket_desc">按盘前量能</option>
                 <option value="target_desc">按目标池分数</option>
                 <option value="volume_desc">按10日均量</option>
-                <option value="freshness_asc">按bars新鲜度</option>
                 <option value="symbol_asc">按Symbol</option>
               </select>
             </div>
@@ -357,7 +324,7 @@
           <div class="action-grid">
             <button class="action-btn" onclick="loadScreener(true)">
               <strong>刷新筛选器</strong>
-              <span>重新从 compute 聚合最新 watchlist / bars / indicators / targets 数据。</span>
+              <span>刷新当前 watchlist / targets 数据。</span>
             </button>
             <button class="action-btn" onclick="selectVisibleRows()">
               <strong>全选过滤结果</strong>
@@ -369,7 +336,7 @@
             </button>
             <button class="action-btn" onclick="copyVisibleSymbols()">
               <strong>复制过滤结果代码</strong>
-              <span>把过滤后的 symbols 复制成逗号分隔文本，方便外部核对或回测复用。</span>
+              <span>把过滤后的 symbols 复制成逗号分隔文本，方便外部核对或 TV 报警组维护。</span>
             </button>
             <button class="action-btn" onclick="pushSelectedTargets()">
               <strong>写入今日 Targets</strong>
@@ -405,16 +372,15 @@
                   <th>选择</th>
                   <th>Symbol</th>
                   <th>市场 / 行业</th>
-                  <th>价格 / 涨跌</th>
-                  <th>波动 / 量能</th>
-                  <th>Freshness</th>
+                  <th>价格</th>
+                  <th>量能</th>
                   <th>Targets</th>
                   <th>可操作分</th>
                   <th>理由 / 操作</th>
                 </tr>
               </thead>
               <tbody id="screenerTable">
-                <tr><td colspan="9" class="loading">加载中...</td></tr>
+                <tr><td colspan="8" class="loading">加载中...</td></tr>
               </tbody>
             </table>
           </div>
@@ -660,14 +626,14 @@
     </section>
   </div>
 
-  <script src="/assets/js/pages/ibkr_screener/state.js?v=20260519-window-progress-signals"></script>
-  <script src="/assets/js/pages/ibkr_screener/utils-api.js?v=20260527-execution-layer"></script>
-  <script src="/assets/js/pages/ibkr_screener/navigation.js?v=20260506-window-status-tabs"></script>
-  <script src="/assets/js/pages/ibkr_screener/ready-rules.js?v=20260506-window-status-tabs"></script>
-  <script src="/assets/js/pages/ibkr_screener/summary.js?v=20260519-window-progress-signals"></script>
-  <script src="/assets/js/pages/ibkr_screener/current-targets.js?v=20260527-execution-layer"></script>
-  <script src="/assets/js/pages/ibkr_screener/universe.js?v=20260527-execution-layer"></script>
-  <script src="/assets/js/pages/ibkr_screener/targets-watchlist.js?v=20260509-watchlist-eligibility"></script>
-  <script src="/assets/js/pages/ibkr_screener/page.js?v=20260506-window-status-tabs"></script>
+  <script src="/assets/js/pages/ibkr_screener/state.js?v=20260529-tv-primary-lean-1"></script>
+  <script src="/assets/js/pages/ibkr_screener/utils-api.js?v=20260529-tv-primary-lean-1"></script>
+  <script src="/assets/js/pages/ibkr_screener/navigation.js?v=20260529-tv-primary-lean-2"></script>
+  <script src="/assets/js/pages/ibkr_screener/ready-rules.js?v=20260529-tv-primary-lean-2"></script>
+  <script src="/assets/js/pages/ibkr_screener/summary.js?v=20260529-tv-primary-lean-2"></script>
+  <script src="/assets/js/pages/ibkr_screener/current-targets.js?v=20260529-tv-primary-lean-1"></script>
+  <script src="/assets/js/pages/ibkr_screener/universe.js?v=20260529-tv-primary-lean-2"></script>
+  <script src="/assets/js/pages/ibkr_screener/targets-watchlist.js?v=20260529-tv-primary-lean-1"></script>
+  <script src="/assets/js/pages/ibkr_screener/page.js?v=20260529-tv-primary-lean-1"></script>
 </body>
 </html>

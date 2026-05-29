@@ -12,7 +12,18 @@ if str(SRC_ROOT) not in sys.path:
 
 os.environ.setdefault("PB_SQLITE_PATH", "/tmp/nonexistent_storage_cleanup_test.db")
 
-from ibkr_compute.market.storage_cleanup import DEFAULT_PROTECTED_BATCH_IDS, DEFAULT_PROTECTED_RUN_IDS, StorageCleanup
+from ibkr_compute.market.data_retention import (
+    DEFAULT_RETENTION_POLICIES,
+    DataRetention,
+    PROTECTED_CORE_COLLECTIONS as RETENTION_PROTECTED_COLLECTIONS,
+)
+from ibkr_compute.market.storage_cleanup import (
+    DEFAULT_PROFILE,
+    DEFAULT_PROTECTED_BATCH_IDS,
+    DEFAULT_PROTECTED_RUN_IDS,
+    PROTECTED_CORE_COLLECTIONS as STORAGE_PROTECTED_COLLECTIONS,
+    StorageCleanup,
+)
 
 
 ET = ZoneInfo("America/New_York")
@@ -138,14 +149,18 @@ class StorageCleanupTest(unittest.TestCase):
         self.assertEqual(pb.deleted, [])
         self.assertEqual(len(pb.records["ibkr_indicators"]), 1)
 
-    def test_active_signal_statuses_are_protected(self):
+    def test_default_profile_keeps_signal_and_order_tables(self):
         old_ms = 1700000000000
         pb = _FakePB(
             {
-                "ibkr_signals": [
-                    {"id": "old_expired", "environment": "live", "bar_time_ms": old_ms, "status": "expired"},
-                    {"id": "old_pending", "environment": "live", "bar_time_ms": old_ms, "status": "pending"},
-                ]
+                "ibkr_signals": [{"id": "old_expired", "environment": "live", "bar_time_ms": old_ms, "status": "expired"}],
+                "orders": [{"id": "old_order", "environment": "live", "bar_time_ms": old_ms, "status": "Filled"}],
+                "ibkr_order_details": [{"id": "old_detail", "environment": "live", "bar_time_ms": old_ms}],
+                "ibkr_reverse_signals": [{"id": "old_reverse", "environment": "live", "bar_time_ms": old_ms}],
+                "ibkr_targets": [{"id": "old_target", "environment": "live", "bar_time_ms": old_ms}],
+                "watchlist": [{"id": "watch", "environment": "live", "symbol": "AAPL"}],
+                "config": [{"id": "cfg", "environment": "live", "key": "storage_cleanup_profile"}],
+                "ibkr_state": [{"id": "state", "environment": "live", "state_key": "important"}],
             }
         )
         cleanup = StorageCleanup(pb, _FakeConfig(), default_environments=["live"])
@@ -153,9 +168,82 @@ class StorageCleanupTest(unittest.TestCase):
         result = cleanup.cleanup(dry_run=False, now=datetime(2026, 5, 9, 12, 0, tzinfo=ET))
 
         self.assertTrue(result["ok"])
-        remaining_ids = {row["id"] for row in pb.records["ibkr_signals"]}
-        self.assertNotIn("old_expired", remaining_ids)
-        self.assertIn("old_pending", remaining_ids)
+        self.assertEqual(result["profile"], DEFAULT_PROFILE)
+        self.assertEqual({row["id"] for row in pb.records["ibkr_signals"]}, {"old_expired"})
+        self.assertEqual({row["id"] for row in pb.records["orders"]}, {"old_order"})
+        self.assertEqual({row["id"] for row in pb.records["ibkr_order_details"]}, {"old_detail"})
+        self.assertEqual({row["id"] for row in pb.records["ibkr_reverse_signals"]}, {"old_reverse"})
+        self.assertEqual({row["id"] for row in pb.records["ibkr_targets"]}, {"old_target"})
+        self.assertEqual({row["id"] for row in pb.records["watchlist"]}, {"watch"})
+        self.assertEqual({row["id"] for row in pb.records["config"]}, {"cfg"})
+        self.assertEqual({row["id"] for row in pb.records["ibkr_state"]}, {"state"})
+
+    def test_balanced_50g_profile_aliases_to_tv_primary_lean(self):
+        pb = _FakePB(
+            {
+                "ibkr_indicators": [{"id": "ind", "environment": "live", "bar_time_ms": 1760000000000}],
+            }
+        )
+        cleanup = StorageCleanup(pb, _FakeConfig(), default_environments=["live"])
+
+        result = cleanup.cleanup(dry_run=False, profile="balanced_50g", now=datetime(2026, 5, 9, 12, 0, tzinfo=ET))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["requested_profile"], "balanced_50g")
+        self.assertEqual(result["profile"], DEFAULT_PROFILE)
+        self.assertEqual(result["profile_alias"], "balanced_50g")
+        self.assertEqual(pb.records["ibkr_indicators"], [])
+
+    def test_custom_storage_policy_cannot_delete_protected_core_collection(self):
+        pb = _FakePB(
+            {
+                "ibkr_signals": [{"id": "signal", "environment": "live", "bar_time_ms": 1700000000000}],
+            }
+        )
+        cleanup = StorageCleanup(
+            pb,
+            _FakeConfig(),
+            default_environments=["live"],
+            policies=[
+                {
+                    "collection": "ibkr_signals",
+                    "mode": "truncate_collection",
+                    "include_legacy_empty": True,
+                    "sort": "created",
+                }
+            ],
+        )
+
+        dry_result = cleanup.cleanup(dry_run=True, now=datetime(2026, 5, 9, 12, 0, tzinfo=ET))
+        real_result = cleanup.cleanup(dry_run=False, force=True, now=datetime(2026, 5, 9, 12, 0, tzinfo=ET))
+
+        self.assertTrue(dry_result["ok"])
+        self.assertTrue(real_result["ok"])
+        self.assertEqual({row["id"] for row in pb.records["ibkr_signals"]}, {"signal"})
+        self.assertEqual(pb.deleted, [])
+        policy_result = real_result["environments"][0]["policies"][0]
+        self.assertTrue(policy_result["skipped"])
+        self.assertEqual(policy_result["reason"], "protected_core_collection")
+
+    def test_tv_primary_lean_clears_indicators_and_uses_short_retention(self):
+        pb = _FakePB(
+            {
+                "ibkr_indicators": [{"id": "ind", "environment": "live", "bar_time_ms": 1760000000000}],
+                "ibkr_bars": [
+                    {"id": "old_bar", "environment": "live", "bar_time_ms": 1700000000000},
+                    {"id": "new_bar", "environment": "live", "bar_time_ms": 1788000000000},
+                ],
+                "system_events": [{"id": "old_event", "environment": "live", "created": "2026-03-01 00:00:00"}],
+            }
+        )
+        cleanup = StorageCleanup(pb, _FakeConfig(), default_environments=["live"])
+
+        result = cleanup.cleanup(dry_run=False, now=datetime(2026, 5, 9, 12, 0, tzinfo=ET))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(pb.records["ibkr_indicators"], [])
+        self.assertEqual({row["id"] for row in pb.records["ibkr_bars"]}, {"new_bar"})
+        self.assertFalse(any(row["id"] == "old_event" for row in pb.records["system_events"]))
 
     def test_backtest_cleanup_keeps_protected_and_recent_runs(self):
         protected_batch = DEFAULT_PROTECTED_BATCH_IDS[0]
@@ -204,6 +292,70 @@ class StorageCleanupTest(unittest.TestCase):
             {protected_batch, *(f"recent_batch_{index}" for index in range(5))},
         )
         self.assertEqual({row["id"] for row in pb.records["ibkr_backtest_trades"]}, {"protected_trade"})
+
+    def test_data_retention_default_policies_exclude_protected_core_tables(self):
+        policy_collections = {str(item.get("collection") or "") for item in DEFAULT_RETENTION_POLICIES}
+
+        self.assertFalse(policy_collections & RETENTION_PROTECTED_COLLECTIONS)
+        self.assertFalse(policy_collections & STORAGE_PROTECTED_COLLECTIONS)
+
+    def test_data_retention_keeps_protected_core_tables(self):
+        old_ms = 1700000000000
+        protected_records = {
+            "orders": [{"id": "order", "environment": "live", "bar_time_ms": old_ms}],
+            "ibkr_order_details": [{"id": "detail", "environment": "live", "bar_time_ms": old_ms}],
+            "ibkr_signals": [{"id": "signal", "environment": "live", "bar_time_ms": old_ms}],
+            "ibkr_reverse_signals": [{"id": "reverse", "environment": "live", "bar_time_ms": old_ms}],
+            "ibkr_targets": [{"id": "target", "environment": "live", "bar_time_ms": old_ms}],
+            "watchlist": [{"id": "watch", "environment": "live", "symbol": "AAPL"}],
+            "config": [{"id": "cfg", "environment": "live", "key": "ibkr_history_retention_enabled"}],
+            "ibkr_state": [{"id": "state", "environment": "live", "state_key": "important"}],
+        }
+        pb = _FakePB(
+            {
+                "ibkr_bars": [{"id": "old_bar", "environment": "live", "bar_time_ms": old_ms}],
+                "ibkr_indicators": [{"id": "old_indicator", "environment": "live", "bar_time_ms": old_ms}],
+                **protected_records,
+            }
+        )
+        retention = DataRetention(pb, _FakeConfig({"ibkr_history_retention_enabled": "true"}), default_environments=["live"])
+
+        result = retention.cleanup(retention_days=30, force=True, source="unit")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(pb.records["ibkr_bars"], [])
+        self.assertEqual(pb.records["ibkr_indicators"], [])
+        for collection, rows in protected_records.items():
+            self.assertEqual({row["id"] for row in pb.records[collection]}, {row["id"] for row in rows})
+
+    def test_data_retention_custom_policy_cannot_delete_protected_core_collection(self):
+        pb = _FakePB(
+            {
+                "ibkr_targets": [{"id": "target", "environment": "live", "bar_time_ms": 1700000000000}],
+            }
+        )
+        retention = DataRetention(
+            pb,
+            _FakeConfig({"ibkr_history_retention_enabled": "true"}),
+            default_environments=["live"],
+            policies=[
+                {
+                    "collection": "ibkr_targets",
+                    "field": "bar_time_ms",
+                    "kind": "ms",
+                    "include_legacy_empty": True,
+                }
+            ],
+        )
+
+        result = retention.cleanup(retention_days=30, force=True, source="unit")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual({row["id"] for row in pb.records["ibkr_targets"]}, {"target"})
+        self.assertEqual(pb.deleted, [])
+        policy_result = result["environments"][0]["collections"][0]
+        self.assertTrue(policy_result["skipped"])
+        self.assertEqual(policy_result["reason"], "protected_core_collection")
 
 
 if __name__ == "__main__":

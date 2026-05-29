@@ -809,9 +809,6 @@ def _open_issue_lines(
 ) -> tuple[list[str], bool]:
     issues: list[str] = []
     blocking = False
-    scan_issue = _scan_issue_text(targets_payload)
-    if scan_issue:
-        issues.append(scan_issue)
     summary_status = _to_text(summary.get("status")).lower()
     monitor_status = _to_text(monitor.get("status")).lower()
     if summary_status and summary_status not in {"running", "ok"}:
@@ -846,9 +843,6 @@ def _open_issue_lines(
     summary_counts = _as_dict(targets_payload.get("summary"))
     if _to_int(summary_counts.get("total"), 0) <= 0:
         issues.append("今日暂无 active / candidate 标的")
-    capture_issue = _opening_capture_issue_text(opening_capture)
-    if capture_issue:
-        issues.append(capture_issue)
     return issues, blocking
 
 
@@ -876,10 +870,8 @@ def _open_operator_action(
     if not issues:
         return "无需处理；重点关注今日标的、信号确认和大盘方向。"
     joined = "；".join(issues)
-    if "日筛" in joined:
-        return "先检查 compute / screener / targets 写入链路，修复后手动重跑 scan；未刷新前不要只按旧标的池操作。"
-    if "开盘采集" in joined or "今日暂无 active / candidate 标的" in joined:
-        return "先确认 09:25/open-report topup 扫描完成与 targets 写入；未刷新前不要按空池操作。"
+    if "今日暂无 active / candidate 标的" in joined:
+        return "先确认 targets 写入；未刷新前不要按空池操作。"
     if blocking:
         return "先恢复 Gateway / Session / WebSocket 与核心服务，再允许自动交易。"
     return "确认今日标的池与系统状态后再按策略执行。"
@@ -910,8 +902,6 @@ def _report_level(
 def _report_template(level: str, targets_payload: dict[str, Any]) -> str:
     if level == "error":
         return "red"
-    if _scan_issue_text(targets_payload):
-        return "orange"
     return "green" if level == "info" else "orange"
 
 
@@ -944,8 +934,7 @@ def _build_open_report_card(
         target_lines = ["今日暂无 active / candidate 标的。"]
     market_lines = [_format_market_line(item) for item in market_snapshots[:6]] or ["大盘监控数据暂不可用。"]
     service_line, link_line, services_line = _system_lines(summary, monitor)
-    issue_parts = [text for text in (_scan_issue_text(targets_payload), _opening_capture_issue_text(opening_capture)) if text]
-    issue_text = "；".join(issue_parts)
+    issue_text = ""
     level = _report_level(summary, monitor, targets_payload, opening_capture)
     market_session_fields = market_session_detail_fields(market_session_from_calendar(calendar))
     market_session_lines = "\n".join(f"**{key}**: {value}" for key, value in market_session_fields.items())
@@ -963,7 +952,6 @@ def _build_open_report_card(
                 f"**系统**: {service_line}\n"
                 f"**IBKR链路**: {link_line}\n"
                 f"**服务统计**: {services_line}"
-                f"{capture_block}"
                 f"{market_session_block}"
             ),
         },
@@ -1048,7 +1036,7 @@ def _build_market_closed_card(
         },
         {
             "tag": "markdown",
-            "content": "**处理**: 下一次真实开盘日会自动发送 09:30 开盘交易摘要；今日交易/日筛类任务按闭市处理。",
+            "content": "**处理**: 下一次真实开盘日会自动发送 09:30 开盘交易摘要；今日交易任务按闭市处理。",
         },
     ]
     system_url = _report_url(console_base_url, broker_mode, market_date, "system")
@@ -1102,8 +1090,7 @@ def _event_detail(
 ) -> dict[str, Any]:
     service_line, link_line, services_line = _system_lines(summary, monitor)
     market_line = " | ".join(_format_market_line(item) for item in market_snapshots[:3]) or "n/a"
-    issue_parts = [text for text in (_scan_issue_text(targets_payload), _opening_capture_issue_text(opening_capture)) if text]
-    issue_text = "；".join(issue_parts)
+    issue_text = ""
     detail = {
         "检查时间": _to_text(times.get("us")),
         "交易日": _to_text(targets_payload.get("market_date")) or _to_text(times.get("date")),
@@ -1117,9 +1104,7 @@ def _event_detail(
     }
     capture_line = _opening_capture_line(opening_capture)
     if capture_line:
-        detail["开盘采集"] = capture_line
-    if issue_text:
-        detail["需要关注"] = issue_text
+        detail["目标池刷新"] = capture_line
     detail.update(market_session_detail_fields(market_session_from_calendar(calendar)))
     return detail
 

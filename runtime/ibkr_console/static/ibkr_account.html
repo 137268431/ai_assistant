@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>IBKR 账户</title>
     <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
-    <script src="common.js?v=20260528-night-session-review-entry-1"></script>
+    <script src="common.js?v=20260529-tv-primary-lean-1"></script>
     <script>document.write(getCommonStyles());</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
     <link rel="stylesheet" href="/assets/css/pages/ibkr_account/page.css">
@@ -141,7 +141,6 @@
                 </div>
                 <div class="ticket-actions">
                     <button class="ticket-button primary" id="submitOrderButton" type="button" onclick="submitManualOrder()">提交 Bracket Order</button>
-                    <button class="ticket-button" id="openChartButton" type="button" onclick="openTicketChart()">打开图表</button>
                     <button class="ticket-button" id="resetOrderButton" type="button" onclick="resetManualOrderForm()">清空输入</button>
                 </div>
                 <div class="ticket-help">安全约束：未认证时不会提交；`LIVE` 环境会二次确认；`LMT` 要求 `止损 < 入场 < 止盈`（做多）或 `止盈 < 入场 < 止损`（做空）。</div>
@@ -337,7 +336,7 @@
                 all: '全部订单链',
                 matched: 'Matched',
                 broker_only: 'Broker Only',
-                pb_shadow: 'PB Stale / Needs Repair',
+                pb_shadow: 'Stale / Needs Repair',
                 cancelable: '可撤单',
                 editable: '可改单',
                 entry: 'ENTRY',
@@ -1553,9 +1552,9 @@
             const cards = [
                 ['IBKR Live Open', String(snapshot?.counts?.open_orders || liveOrders.length || 0), 'IBKR broker 已确认仍在挂着的订单'],
                 ['Signals / Brackets', `${liveGroups.length || 0} / ${rawGroupCount}`, '按 signal_id 聚合显示 / 原始 bracket 数'],
-                ['Matched Brackets', String(reconciliation.broker_matched_groups || 0), '已关联到 PB 的原始 bracket 数'],
-                ['Broker Only', String(reconciliation.broker_only_groups || 0), 'broker 有，PB 未匹配'],
-                ['PB Stale / Needs Repair', String(reconciliation.stale_pb_order_groups || reconciliation.pb_shadow_groups || pbOnlyGroups.length || 0), 'PB 仍活跃但 IBKR 未确认，需修复'],
+                ['Matched Brackets', String(reconciliation.broker_matched_groups || 0), '已关联到系统记录的 bracket 数'],
+                ['Broker Only', String(reconciliation.broker_only_groups || 0), 'broker 有，系统记录未匹配'],
+                ['Stale / Needs Repair', String(reconciliation.stale_pb_order_groups || reconciliation.pb_shadow_groups || pbOnlyGroups.length || 0), '系统记录仍活跃但 IBKR 未确认，需修复'],
                 ['Editable / Cancelable', `${snapshot?.counts?.editable_orders || 0} / ${snapshot?.counts?.cancelable_orders || 0}`, '可改 / 可撤'],
                 ['Outside RTH', String(snapshot?.counts?.outside_rth_orders || 0), '盘前盘后订单数'],
                 ['Remaining Qty', formatQty(computeBracketAwareRemainingQty(liveOrders)), '去重后的剩余待成交数量'],
@@ -1570,7 +1569,7 @@
                 extraNotes.push(`有 ${reconciliation.missing_client_order_id_orders} 条实时挂单缺少 client_order_id`)
             }
             if (Number(reconciliation.status_mismatch_orders || 0) > 0 || Number(reconciliation.quantity_mismatch_orders || 0) > 0 || Number(reconciliation.filled_qty_mismatch_orders || 0) > 0) {
-                extraNotes.push(`PB 对账差异: status=${reconciliation.status_mismatch_orders || 0} · qty=${reconciliation.quantity_mismatch_orders || 0} · filled=${reconciliation.filled_qty_mismatch_orders || 0}`)
+                extraNotes.push(`对账差异: status=${reconciliation.status_mismatch_orders || 0} · qty=${reconciliation.quantity_mismatch_orders || 0} · filled=${reconciliation.filled_qty_mismatch_orders || 0}`)
             }
 
             area.innerHTML = `
@@ -1590,7 +1589,7 @@
                         ${renderFilterChip('全部', 'all')}
                         ${renderFilterChip('Matched', 'matched')}
                         ${renderFilterChip('Broker Only', 'broker_only')}
-                        ${renderFilterChip('PB Stale / Needs Repair', 'pb_shadow')}
+                        ${renderFilterChip('Stale / Needs Repair', 'pb_shadow')}
                         ${renderFilterChip('可撤', 'cancelable')}
                         ${renderFilterChip('可改', 'editable')}
                         ${renderFilterChip('ENTRY', 'entry')}
@@ -1954,12 +1953,10 @@
                             <div>
                                 <div class="record-symbol">${escapeHtml(position.symbol || '--')}</div>
                                 <div class="summary-sub mono">conid=${escapeHtml(String(position.conid || '--'))} · acct=${escapeHtml(position.account || '--')}</div>
-                                <div class="summary-sub mono">${escapeHtml(relationCopy(position))}</div>
                             </div>
                             <div class="badge-row">
                                 <span class="${badgeClass(position.direction)}">${escapeHtml(String(position.direction || 'flat').toUpperCase())}</span>
                                 <span class="badge neutral">${escapeHtml(position.asset_class || 'ASSET')}</span>
-                                <span class="${relationBadgeClass(position?.relation?.status)}">${escapeHtml(relationLabel(position?.relation?.status))}</span>
                             </div>
                         </div>
                         <div class="metric-grid">
@@ -1972,7 +1969,6 @@
                             <div class="metric-item"><div class="metric-label">Realized</div><div class="metric-value ${valueClass(position.realized_pnl)}">${escapeHtml(formatSignedMoney(position.realized_pnl))}</div></div>
                         </div>
                         <div class="record-actions">
-                            <button class="action-btn view" type="button" onclick="openAccountChart(${escapeHtml(toJsStringLiteral(position.symbol || ''))})">图表页</button>
                             ${position?.relation?.signal_id ? `<button class="action-btn view" type="button" onclick="viewSignal(${escapeHtml(toJsStringLiteral(position.relation.signal_id))})">信号页</button>` : ''}
                             ${position?.relation?.trade_group_id ? `<button class="action-btn view" type="button" onclick="viewTradeGroup(${escapeHtml(toJsStringLiteral(position.relation.trade_group_id))}, ${escapeHtml(toJsStringLiteral(position?.relation?.signal_id || ''))})">订单页</button>` : ''}
                             <button class="action-btn close" type="button" onclick='closePosition(${JSON.stringify({ symbol: position.symbol, conid: position.conid, quantity: position.quantity, direction: position.direction, relation: position.relation || {} }).replace(/'/g, "&#39;")})'>市价平仓</button>
@@ -2024,7 +2020,6 @@
                         <div class="metric-item"><div class="metric-label">Signal / Group</div><div class="metric-value">${escapeHtml(signalId || '--')} / ${escapeHtml(tradeGroupId || '--')}</div></div>
                         <div class="metric-item"><div class="metric-label">Entry Unique</div><div class="metric-value">${escapeHtml(entryUniqueId || '--')}</div></div>
                         <div class="metric-item"><div class="metric-label">Recovery</div><div class="metric-value">${escapeHtml(formatRecoverySummary(order))}</div></div>
-                        <div class="metric-item"><div class="metric-label">PB Relation</div><div class="metric-value">${escapeHtml(String(pbContext.relation_status || '--').toUpperCase())}</div></div>
                     </div>
                     ${order?.order_description ? `<div class="record-copy mono">${escapeHtml(order.order_description)}</div>` : ''}
                     <div class="detail-row">
@@ -2045,7 +2040,6 @@
                         <pre class="raw-pre">${escapeHtml(JSON.stringify(rawPayload, null, 2))}</pre>
                     </details>
                     <div class="record-actions">
-                        <button class="action-btn view" type="button" onclick="openAccountChart(${toJsStringLiteral(order?.symbol || '')})">图表页</button>
                         ${signalId ? `<button class="action-btn view" type="button" onclick="viewSignal(${toJsStringLiteral(signalId)})">信号页</button>` : ''}
                         ${tradeGroupId ? `<button class="action-btn view" type="button" onclick="viewTradeGroup(${toJsStringLiteral(tradeGroupId)}, ${toJsStringLiteral(signalId)})">订单页</button>` : ''}
                         ${order?.can_modify ? `<button class="action-btn modify" type="button" onclick="modifyOrder(${toJsStringLiteral(order?.order_id || '')}, ${Number(order?.price || 0)}, ${Number(order?.total_quantity || 0)})">改单</button>` : ''}
@@ -2065,14 +2059,13 @@
                             <div class="summary-sub mono">broker=${escapeHtml(order?.broker_order_id || '--')} · unique=${escapeHtml(order?.unique_id || '--')}</div>
                         </div>
                         <div class="badge-row">
-                            <span class="badge warn">PB STALE</span>
+                            <span class="badge warn">STALE</span>
                             <span class="${badgeClass(String(statusText || '').toLowerCase())}">${escapeHtml(formatOrderStatusLabel(statusText))}</span>
                         </div>
                     </div>
                     <div class="metric-grid">
                         <div class="metric-item"><div class="metric-label">Quantity</div><div class="metric-value">${escapeHtml(formatQty(order?.quantity))}</div></div>
                         <div class="metric-item"><div class="metric-label">Filled</div><div class="metric-value">${escapeHtml(formatQty(order?.filled_qty))}</div></div>
-                        <div class="metric-item"><div class="metric-label">Relation</div><div class="metric-value">${escapeHtml(String(order?.relation_status || '--').toUpperCase())}</div></div>
                         <div class="metric-item"><div class="metric-label">Updated</div><div class="metric-value">${escapeHtml(formatTimeLabel(order?.updated))}</div></div>
                     </div>
                 </div>
@@ -2121,7 +2114,6 @@
                         ${(Array.isArray(group?.recovery_sources) ? group.recovery_sources : []).map((item) => `<span class="detail-pill">${escapeHtml(item)}</span>`).join('')}
                     </div>
                     <div class="record-actions">
-                        <button class="action-btn view" type="button" onclick="openAccountChart(${toJsStringLiteral(group?.symbol || '')})">图表页</button>
                         ${signalId ? `<button class="action-btn view" type="button" onclick="viewSignal(${toJsStringLiteral(signalId)})">信号页</button>` : ''}
                         ${tradeGroupId ? `<button class="action-btn view" type="button" onclick="viewTradeGroup(${toJsStringLiteral(tradeGroupId)}, ${toJsStringLiteral(signalId)})">订单页</button>` : ''}
                     </div>
@@ -2145,7 +2137,7 @@
                         </div>
                         <div class="badge-row">
                             ${renderOrderChainDirectionBadge(direction)}
-                            <span class="badge warn">PB STALE</span>
+                            <span class="badge warn">STALE</span>
                             <span class="${badgeClass(String(group?.latest_order_status || '').toLowerCase())}">${escapeHtml(formatOrderStatusLabel(group?.latest_order_status))}</span>
                         </div>
                     </div>
@@ -2156,7 +2148,6 @@
                         <div class="chain-summary-item"><div class="metric-label">Updated</div><div class="chain-summary-value">${escapeHtml(formatTimeLabel(group?.latest_updated))}</div></div>
                     </div>
                     <div class="record-actions">
-                        <button class="action-btn view" type="button" onclick="openAccountChart(${toJsStringLiteral(group?.symbol || '')})">图表页</button>
                         ${signalId ? `<button class="action-btn view" type="button" onclick="viewSignal(${toJsStringLiteral(signalId)})">信号页</button>` : ''}
                         ${tradeGroupId ? `<button class="action-btn view" type="button" onclick="viewTradeGroup(${toJsStringLiteral(tradeGroupId)}, ${toJsStringLiteral(signalId)})">订单页</button>` : ''}
                     </div>
@@ -2182,7 +2173,7 @@
                     ? `<button class="action-btn view" type="button" onclick="viewTradeGroup(${toJsStringAttribute(tradeGroupId)}, ${toJsStringAttribute(signalId)})">订单</button>`
                     : '';
             return renderOrderActionButtons([
-                symbol ? `<button class="action-btn view" type="button" onclick="openAccountChart(${toJsStringAttribute(symbol)})">图表</button>` : '',
+                symbol ? `` : '',
                 signalId ? `<button class="action-btn view" type="button" onclick="viewSignal(${toJsStringAttribute(signalId)})">信号</button>` : '',
                 orderButton,
             ]);
@@ -2369,7 +2360,7 @@
                     <td><span class="order-table-strong">${escapeHtml(roleSummary)}</span></td>
                     <td>
                         <div class="orders-cell-stack">
-                            <span class="badge warn">PB STALE</span>
+                            <span class="badge warn">STALE</span>
                             <span class="${badgeClass(String(group?.latest_order_status || '').toLowerCase())}">${escapeHtml(formatOrderStatusLabel(group?.latest_order_status))}</span>
                         </div>
                     </td>
@@ -2396,7 +2387,7 @@
                         <td>${escapeHtml(formatQty(order?.quantity))} / ${escapeHtml(formatQty(order?.filled_qty))}</td>
                         <td>${escapeHtml(formatOptionalMoney(order?.limit_price || order?.fill_price))}<br><span class="order-table-sub">Fee ${escapeHtml(formatOrderCommission(order))}</span></td>
                         <td><span class="order-table-strong">${escapeHtml(formatQty(remaining))}</span></td>
-                        <td><span class="order-muted">PB stale</span></td>
+                        <td><span class="order-muted">stale</span></td>
                     </tr>
                 `;
             }).join('');
@@ -2429,9 +2420,9 @@
             const pnlModel = computeStoredGroupPnl(group, orders);
             const relationBadges = [
                 exposure.hasOpenExposure ? '<span class="badge long">OPEN EXPOSURE</span>' : '',
-                group?.has_active_order ? '<span class="badge warn">PB ACTIVE</span>' : '',
+                group?.has_active_order ? '<span class="badge warn">ACTIVE</span>' : '',
                 group?.broker_matched ? '<span class="badge long">BROKER MATCHED</span>' : '',
-                group?.is_pb_shadow ? '<span class="badge warn">PB STALE</span>' : '',
+                group?.is_pb_shadow ? '<span class="badge warn">STALE</span>' : '',
             ].filter(Boolean).join('');
             const chainRow = `
                 <tr class="order-chain-row">
@@ -2443,7 +2434,7 @@
                     <td>
                         <div class="orders-cell-stack">
                             <span class="${badgeClass(String(group?.latest_order_status || '').toLowerCase())}">${escapeHtml(formatOrderStatusLabel(group?.latest_order_status))}</span>
-                            ${relationBadges || '<span class="badge neutral">PB HISTORY</span>'}
+                            ${relationBadges || '<span class="badge neutral">HISTORY</span>'}
                         </div>
                     </td>
                     <td>${renderOrderChainDirectionBadge(direction)}</td>
@@ -2501,14 +2492,14 @@
             const openExposureGroups = groups.filter((group) => computeStoredGroupExposure(group, getSortedOrderLegs(group?.orders)).hasOpenExposure).length;
             const activeGroups = groups.filter((group) => group?.has_active_order).length;
             if (meta) {
-                meta.textContent = `${groups.length} linked · ${orders.length} stored · PB + IBKR`;
+                meta.textContent = `${groups.length} linked · ${orders.length} stored · IBKR + stored`;
             }
 
             const ctaCard = `
                 <div class="surface-card history-cta-card">
                     <div>
                         <div class="summary-label">账户页内联历史</div>
-                        <div class="ticket-copy" style="margin-top:6px;">这里展示当前实盘持仓 / 实时挂单对应的 PB 订单链；完整跨日历史仍在订单页。</div>
+                        <div class="ticket-copy" style="margin-top:6px;">这里展示当前实盘持仓 / 实时挂单对应的订单链；完整跨日历史仍在订单页。</div>
                     </div>
                     <button class="action-btn view" type="button" onclick="openHistoryOrdersPage()" style="white-space:nowrap;flex-shrink:0;">打开订单页 →</button>
                 </div>
@@ -2524,10 +2515,10 @@
 
             const cards = [
                 ['Linked Groups', String(groups.length), '当前账户相关交易链'],
-                ['Stored Orders', String(orders.length), 'PB entry / TP / SL 记录'],
+                ['Stored Orders', String(orders.length), 'entry / TP / SL 记录'],
                 ['Open Exposure', String(openExposureGroups), 'entry 成交量大于 close/TP/SL 的链'],
                 [hasMissingCommission ? 'Gross P/L' : 'Net P/L', formatSignedMoney(realizedPnlValue), hasMissingCommission ? '已实现毛盈亏，手续费未同步' : '已实现净盈亏', valueClass(realizedPnlValue)],
-                ['PB Active', String(activeGroups), 'PB 仍标记活跃/计划中的链'],
+                ['Active Stored', String(activeGroups), '系统仍标记活跃/计划中的链'],
             ];
 
             area.innerHTML = `
@@ -2618,7 +2609,7 @@
                 pbOnlyGroupsCount: pbOnlyGroups.length,
                 visibleGroupCount,
             });
-            document.getElementById('ordersMeta').textContent = `${liveOrders.length} IBKR live · ${pbOnlyGroups.length} PB stale · signals ${liveGroups.length} · brackets ${rawLiveGroups.length} · showing ${visibleGroupCount}`;
+            document.getElementById('ordersMeta').textContent = `${liveOrders.length} IBKR live · ${pbOnlyGroups.length} stale · signals ${liveGroups.length} · brackets ${rawLiveGroups.length} · showing ${visibleGroupCount}`;
             const area = document.getElementById('ordersArea');
             renderOrdersSummary(snapshot, liveOrders, liveGroups, pbOnlyGroups, visibleGroupCount, rawLiveGroups.length);
 
@@ -2626,7 +2617,7 @@
             if (filteredBrokerOnlyGroups.length) {
                 sections.push(renderOrdersSection(
                     'Broker Only Live Signal Groups',
-                    '这些订单已被 IBKR broker 实时确认仍在挂着，但当前没有匹配到 PB 订单记录；同一 signal_id 会合并显示。',
+                    '这些订单已被 IBKR broker 实时确认仍在挂着，但当前没有匹配到 系统订单记录；同一 signal_id 会合并显示。',
                     filteredBrokerOnlyGroups,
                     renderLiveGroupTableRows,
                 ));
@@ -2641,8 +2632,8 @@
             }
             if (filteredPbOnlyGroups.length) {
                 sections.push(renderOrdersSection(
-                    'PB Stale / Needs Repair Chains',
-                    'PB 仍认为这些订单组处于活跃状态，但 IBKR 当前没有确认对应的实时挂单。它们只作为修复警告，不计入 IBKR Live Open / remaining。',
+                    'Stale / Needs Repair Chains',
+                    '系统记录仍认为这些订单组处于活跃状态，但 IBKR 当前没有确认对应的实时挂单。它们只作为修复警告，不计入 IBKR Live Open / remaining。',
                     filteredPbOnlyGroups,
                     renderPbShadowGroupTableRows,
                 ));
@@ -2786,24 +2777,6 @@
                 return;
             }
             await runAction('改单', '/api/custom/ibkr/orders/modify', body, `订单 ${orderId} 改单请求已发送`);
-        }
-
-        function openAccountChart(symbol) {
-            const normalized = String(symbol || '').trim().toUpperCase();
-            if (!normalized) {
-                showToast('缺少 symbol');
-                return;
-            }
-            window.location.href = buildPageUrl('/ibkr_chart.html', { symbol: normalized, interval: '5m' }, { environment: currentEnvironment });
-        }
-
-        function openTicketChart() {
-            const symbol = getManualOrderState().symbol;
-            if (!symbol) {
-                showToast('先输入 symbol');
-                return;
-            }
-            openAccountChart(symbol);
         }
 
         async function closePosition(position) {
@@ -2961,8 +2934,6 @@
         window.cancelAllOrders = cancelAllOrders;
         window.cancelOrder = cancelOrder;
         window.modifyOrder = modifyOrder;
-        window.openAccountChart = openAccountChart;
-        window.openTicketChart = openTicketChart;
         window.closePosition = closePosition;
         window.loadAccountSnapshot = loadAccountSnapshot;
         window.goRuntime = goRuntime;

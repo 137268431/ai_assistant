@@ -17,39 +17,19 @@ function renderPageBridge(items = []) {
 }
 
 function renderSystemBridge(activePage) {
-  const opsPages = [
-    '/ibkr_monitor.html',
-    '/ibkr_warmup.html',
-    '/ibkr_data_quality.html',
-    '/ibkr_history_rebuild.html'
-  ];
   return renderPageBridge([
     {
       path: '/ibkr_system.html',
       kicker: 'Overview',
       label: '总览',
-      copy: '健康 / 统计',
+      copy: 'TV / IBKR / runtime',
       active: activePage === '/ibkr_system.html'
-    },
-    {
-      path: '/ibkr_monitor.html',
-      kicker: 'Ops',
-      label: '运维',
-      copy: '监控 / 排障',
-      active: opsPages.includes(activePage)
-    },
-    {
-      path: '/ibkr_system_logic.html',
-      kicker: 'Logic',
-      label: '逻辑',
-      copy: '规则 / 调度',
-      active: activePage === '/ibkr_system_logic.html'
     },
     {
       path: '/ibkr_runtime.html',
       kicker: 'Console',
       label: '控制台',
-      copy: '启动 / 2FA',
+      copy: 'Gateway / 2FA',
       active: activePage === '/ibkr_runtime.html'
     },
     {
@@ -118,25 +98,22 @@ function renderExecutionBridge(activePage, params = {}) {
 }
 
 function renderAnalyticsBridge(activePage, options = {}) {
-  const chartParams = options && typeof options.chartParams === 'object' && options.chartParams
-    ? options.chartParams
-    : {};
-
   return renderPageBridge([
     {
-      path: '/ibkr_chart.html',
-      params: chartParams,
-      kicker: 'Chart',
-      label: '图表工作台',
-      copy: 'TV 图表 / 信号',
-      active: activePage === '/ibkr_chart.html'
+      path: '/ibkr_signals.html',
+      params: options && typeof options.signalParams === 'object' ? options.signalParams : {},
+      kicker: 'TV Webhook',
+      label: '信号执行',
+      copy: '预警 / 开仓 / 平仓',
+      active: activePage === '/ibkr_signals.html'
     },
     {
-      path: '/ibkr_stats.html',
-      kicker: 'Stats',
-      label: '统计',
-      copy: '收益 / 执行',
-      active: activePage === '/ibkr_stats.html'
+      path: '/ibkr_screener.html',
+      params: { tab: 'screener', view: 'current' },
+      kicker: 'Targets',
+      label: '今日标的',
+      copy: '活跃度 / 标池',
+      active: activePage === '/ibkr_screener.html'
     }
   ]);
 }
@@ -157,81 +134,25 @@ function renderHomeBridge() {
       copy: '筛选 / 标池'
     },
     {
-      path: '/ibkr_chart.html',
-      kicker: 'Chart',
-      label: '图表域',
-      copy: 'TV 图表 / 统计'
-    },
-    {
-      path: '/ibkr_system_logic.html',
-      kicker: 'Logic',
-      label: '逻辑',
-      copy: '代码规则 / 调度'
-    },
-    {
       path: '/ibkr_system.html',
       kicker: 'System',
       label: '系统域',
-      copy: '总览 / 运维 / 配置'
+      copy: '总览 / 控制台 / 配置'
     }
   ]);
 }
 
 function renderOpsBridge(activePage) {
-  const opsBridge = renderPageBridge([
-    {
-      path: '/ibkr_monitor.html',
-      kicker: 'Dashboard',
-      label: '监控大盘',
-      copy: '请求 / 订阅 / 主机',
-      active: activePage === '/ibkr_monitor.html'
-    },
-    {
-      path: '/ibkr_warmup.html',
-      kicker: 'Warmup',
-      label: '预热',
-      copy: 'startup / gate',
-      active: activePage === '/ibkr_warmup.html'
-    },
-    {
-      path: '/ibkr_data_quality.html',
-      kicker: 'Quality',
-      label: '数据质量',
-      copy: '缺口 / 修复',
-      active: activePage === '/ibkr_data_quality.html'
-    },
-    {
-      path: '/ibkr_history_rebuild.html',
-      kicker: 'Rebuild',
-      label: '历史重建',
-      copy: '高级恢复',
-      active: activePage === '/ibkr_history_rebuild.html'
-    }
-  ]);
-  return `${renderSystemBridge(activePage)}${opsBridge}`;
+  return renderSystemBridge(activePage);
 }
 
 function renderBacktestsBridge(activePage) {
   return renderPageBridge([
     {
-      path: '/ibkr_backtests.html',
-      kicker: 'Replay',
-      label: '回测工坊',
-      copy: '运行 / replay',
-      active: activePage === '/ibkr_backtests.html'
-    },
-    {
-      path: '/ibkr_chart.html',
-      kicker: 'Chart',
-      label: '图表工作台',
-      copy: 'TV 图表 / 信号',
-      active: activePage === '/ibkr_chart.html'
-    },
-    {
       path: '/ibkr_signals.html',
-      kicker: 'Signals',
-      label: '主信号',
-      copy: 'live 对照',
+      kicker: 'TV Webhook',
+      label: '信号执行',
+      copy: '预警 / 开仓 / 平仓',
       active: activePage === '/ibkr_signals.html'
     },
     {
@@ -241,6 +162,13 @@ function renderBacktestsBridge(activePage) {
       label: '筛选与标池',
       copy: '筛标 / 目标',
       active: activePage === '/ibkr_screener.html'
+    },
+    {
+      path: '/ibkr_system.html',
+      kicker: 'System',
+      label: '系统总览',
+      copy: '配置 / 运行态',
+      active: activePage === '/ibkr_system.html'
     }
   ]);
 }

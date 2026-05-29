@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>信号</title>
     <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
-    <script src="common.js?v=20260528-night-session-review-entry-1"></script>
+    <script src="common.js?v=20260529-tv-primary-lean-1"></script>
     <script>document.write(getCommonStyles());</script>
     <script>document.write('<style>' + getIndicatorModalStyles() + '</style>');</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
@@ -29,7 +29,6 @@
             <div class="signals-command-tools">
                 <div class="signals-command-date" id="datePicker"></div>
                 <input class="search-input signals-command-search" id="searchInput" placeholder="搜索股票/信号ID..." oninput="onSearchChange(this.value)">
-                <a class="mini-link signals-analysis-link" id="signalsAnalysisLink" href="/ibkr_stats.html#signal-rule-analysis">今日分析</a>
                 <div class="signals-command-refresh" id="signalsRefreshControl"></div>
             </div>
         </section>
@@ -613,18 +612,6 @@
                     <span class="status-chip"><span class="dot" style="color:#F6AD55"></span>${escapeHtml(getSignalsStatusLabel())}</span>
                 </div>
             `;
-            }
-            const analysisLink = document.getElementById('signalsAnalysisLink');
-            if (analysisLink) {
-                analysisLink.href = `${buildPageUrl('/ibkr_stats.html', {
-                    date: currentDate,
-                    broker_mode: currentBrokerMode,
-                    data_environment: currentEnvironment,
-                }, {
-                    environment: currentEnvironment,
-                    brokerMode: currentBrokerMode,
-                    dataEnvironment: currentEnvironment,
-                })}#signal-rule-analysis`;
             }
             const legacyTopSection = document.getElementById('pageTopSection');
             if (legacyTopSection && typeof renderPageTopSection === 'function') {
@@ -1984,63 +1971,6 @@
             return filtered.slice(0, start + itemsPerPage);
         }
 
-        // 构建 TV 信号上下文徽章
-        function buildIndicatorBadges(signal, latestIndicator) {
-            if (!latestIndicator && !signal.extra) return '';
-
-            const badges = [];
-
-            // 趋势方向
-            if (latestIndicator?.trend_dir === 1) {
-                badges.push('<span class="indicator-badge bullish">📈 多头</span>');
-            } else if (latestIndicator?.trend_dir === -1) {
-                badges.push('<span class="indicator-badge bearish">📉 空头</span>');
-            }
-
-            // EMA 多头/空头状态
-            if (latestIndicator?.ema_bullish) {
-                badges.push('<span class="indicator-badge badge-ema">EMA 多头</span>');
-            }
-            if (latestIndicator?.ema_bearish) {
-                badges.push('<span class="indicator-badge badge-ema">EMA 空头</span>');
-            }
-
-            // 日内涨幅（已在信号卡片标题行显示，此处不再重复）
-            // if (latestIndicator?.day_change_pct) {
-            //     const color = latestIndicator.day_change_pct > 0 ? 'var(--long)' : 'var(--short)';
-            //     badges.push(`<span class="indicator-badge" style="color:${color}">${latestIndicator.day_change_pct > 0 ? '+' : ''}${latestIndicator.day_change_pct.toFixed(2)}%</span>`);
-            // }
-
-            // 分形信号
-            if (latestIndicator?.fractal_bull) {
-                badges.push('<span class="indicator-badge badge-fractal">🔺 分形多</span>');
-            }
-            if (latestIndicator?.fractal_bear) {
-                badges.push('<span class="indicator-badge badge-fractal">🔻 分形空</span>');
-            }
-
-            // EMA 触及
-            if (latestIndicator?.ema_bull_touch) {
-                badges.push('<span class="indicator-badge badge-ema">EMA 支撑</span>');
-            }
-            if (latestIndicator?.ema_bear_touch) {
-                badges.push('<span class="indicator-badge badge-ema">EMA 压力</span>');
-            }
-
-            // 波动率 (从 latestIndicator 获取)
-            const signalExtra = getSignalExtra(signal);
-            const atrPct = latestIndicator?.atr_pct || signalExtra.atr_pct || 0;
-            if (atrPct > 0) {
-                const atrVolLevel = atrPct >= 3 ? 'high' : atrPct >= 1.5 ? 'medium' : 'low';
-                const atrVolLabel = atrVolLevel === 'high' ? '高波动' : atrVolLevel === 'medium' ? '中波动' : '低波动';
-                const slAtrRatio = latestIndicator?.sl_atr_ratio || signalExtra.sl_atr_ratio || 0;
-                const slAdequate = slAtrRatio >= 0.8;
-                badges.push(`<span class="indicator-badge badge-div">${atrVolLabel} ATR ${atrPct.toFixed(2)}%</span>`);
-                badges.push(`<span class="indicator-badge ${slAdequate ? 'badge-change-up' : 'badge-change-down'}">SL ${slAtrRatio.toFixed(2)}x ATR</span>`);
-            }
-
-            return badges.join('');
-        }
 
         // 构建大盘关联徽章
         function buildMarketIndexBadges(signal) {
@@ -2659,7 +2589,6 @@
                 const isPending = effectiveStatus === 'pending';
                 const showCountdown = isAwaitingConfirm || isPending;
 
-                // ATR波动率数据（优先从 latestIndicator 获取，没有则从 signal.extra 获取）
                 const latestIndicator = mergeIndicatorWithRealtimeQuote(signalIndicatorsMap[signal.id] || null) || signalIndicatorsMap[signal.id] || null;
                 const signalExtra = getSignalExtra(signal);
                 const relatedOrders = getRelatedOrdersForSignal(signal);
@@ -2679,35 +2608,9 @@
                 const expectedLoss = lossPerShare * shares;
                 const closeTimeMs = getSignalCloseTimeMs(signal);
                 const createdMs = getSignalCreatedMs(signal);
-                const computedAtMs = getSignalComputedAtMs(signal);
-                const firstSentAtMs = getSignalFirstSentAtMs(signal);
                 const signalWriteDelayMs = getLatencyMs(closeTimeMs, createdMs);
-                const computeMarkedDelayMs = getLatencyMs(closeTimeMs, computedAtMs);
-                const firstSentDelayMs = getLatencyMs(closeTimeMs, firstSentAtMs);
-                const atrPct = latestIndicator?.atr_pct || signalExtra.atr_pct || 0;
-                const slDistPct = latestIndicator?.sl_dist_pct || signalExtra.sl_dist_pct || 0;
-                const slAtrRatio = latestIndicator?.sl_atr_ratio || signalExtra.sl_atr_ratio || 0;
-                const atrVolLevel = atrPct >= 3 ? 'high' : atrPct >= 1.5 ? 'medium' : atrPct > 0 ? 'low' : null;
-                const atrVolLabel = atrVolLevel === 'high' ? '高波动' : atrVolLevel === 'medium' ? '中波动' : '低波动';
-                const slAdequate = slAtrRatio >= 0.8;  // SL距离至少0.8个ATR才算合理
-
-                // 波动率标签（用于标题行）
-                const volBadge = atrVolLevel ? `<span class="signal-interval">${atrVolLabel} ${atrPct.toFixed(2)}%</span>` : '';
-
-                // 构建 TV 信号上下文徽章
-                const indicatorBadges = buildIndicatorBadges(signal, latestIndicator);
-
                 // 构建大盘关联徽章
                 const marketIndexBadges = buildMarketIndexBadges(signal);
-
-                // 当日 / 前一日 / 近7日涨幅
-                let dayChangePct = '';
-                if (latestIndicator?.display_day_change_pct !== undefined || latestIndicator?.day_change_pct !== undefined) {
-                    const dayPct = latestIndicator?.display_day_change_pct ?? latestIndicator.day_change_pct;
-                    const prevClosePct = latestIndicator?.display_prev_close_change_pct ?? (latestIndicator.prev_close_change_pct || 0);
-                    const change7d = latestIndicator?.display_change_7d ?? (latestIndicator.change_7d || 0);
-                    dayChangePct = formatChangeTripletHtml(dayPct, prevClosePct, change7d);
-                }
 
                 // 时间周期 / 图表上下文
                 const intervalText = formatSignalInterval(signal.interval);
@@ -2737,10 +2640,6 @@
                 const closedPnl = buildClosedSignalPnl(signal, latestIndicator, relatedOrders);
                 const pnlPanelHtml = buildSignalPnlPanelHtml(signal, closedPnl, expectedProfitText, expectedLossText);
                 const indicatorStateText = getIndicatorEmptyState(signal, latestIndicator);
-                const chartStateText = hasChartContext ? '' : `(${indicatorStateText})`;
-                const indicatorButtonStateText = latestIndicator ? '' : `(${indicatorStateText})`;
-                const dayChangeText = dayChangePct || `<span style="color: var(--muted)">${escapeHtml(indicatorStateText)}</span>`;
-                const atrVolText = atrVolLevel ? `${atrVolLabel} ${atrPct.toFixed(2)}%` : indicatorStateText;
                 const directionText = String(signal.direction || 'unknown').toUpperCase();
                 const signalIdLiteral = escapeHtml(toJsStringLiteral(signal.signal_id || ''));
                 const recordIdLiteral = escapeHtml(toJsStringLiteral(signal.id || ''));
@@ -2807,22 +2706,6 @@
                                 <div class="signal-label">Webhook 入库耗时</div>
                                 <div class="signal-value">${escapeHtml(formatLatency(signalWriteDelayMs))}</div>
                             </div>
-                            <div class="signal-item">
-                                <div class="signal-label">路由标记耗时</div>
-                                <div class="signal-value">${escapeHtml(formatLatency(computeMarkedDelayMs))}</div>
-                            </div>
-                            <div class="signal-item">
-                                <div class="signal-label">首次飞书耗时</div>
-                                <div class="signal-value">${escapeHtml(formatLatency(firstSentDelayMs))}</div>
-                            </div>
-                            <div class="signal-item">
-                                <div class="signal-label">涨幅(当日/昨日/7日)</div>
-                                <div class="signal-value signal-daychange" style="font-size:11px;">${dayChangeText}</div>
-                            </div>
-                            <div class="signal-item">
-                                <div class="signal-label">波动率</div>
-                                <div class="signal-value">${escapeHtml(atrVolText)}</div>
-                            </div>
                         </div>
 
                         ${tvExecutionContextHtml}
@@ -2835,20 +2718,12 @@
                         ${pnlPanelHtml}
 
 
-                        ${marketIndexBadges ? `
-                            <div class="indicator-badges">
-                                ${marketIndexBadges}
-                            </div>
-                        ` : ''}
-
                         <div class="signal-actions" style="display:flex;flex-direction:column;gap:8px;">
                             <div class="action-btns-row">
                                 <button class="action-btn btn-view${latestIndicator ? '' : ' disabled'}${isDetailActive ? ' active' : ''}" onclick='showIndicatorDetails(${recordIdLiteral})' ${latestIndicator ? '' : 'disabled'}>
-                                    📨 TV Payload${indicatorButtonStateText}
+                                    📨 TV Payload
                                 </button>
-                                <button class="action-btn btn-view${hasChartContext ? '' : ' disabled'}" onclick='openSignalChartPage(${recordIdLiteral})' ${hasChartContext ? '' : 'disabled'}>
-                                    📈 TV 图表${chartStateText}
-                                </button>
+                                ${hasChartContext ? `<button class="action-btn btn-view" onclick='openSignalChartPage(${recordIdLiteral})'>📈 TV 图表</button>` : ''}
                                 ${lifecycleFlowUrl ? `<a class="action-btn btn-view" href="${lifecycleFlowUrl}">🧭 流程图</a>` : ''}
                                 <button class="action-btn btn-view${signal.signal_id ? '' : ' disabled'}" onclick='viewReverseSignal(${signalIdLiteral})' ${signal.signal_id ? '' : 'disabled'}>
                                     🔄 反向信号

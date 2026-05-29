@@ -27,7 +27,6 @@ IB_CLIENT_SERVICE_LABELS = (
     ("ibkr-compute", "Compute"),
     ("ibkr-api", "API"),
     ("ibkr-scheduler", "Scheduler"),
-    ("ibkr-backtest", "Backtest"),
 )
 
 NormalizeEnvironment = Callable[[Any, str], str]
@@ -221,25 +220,6 @@ def _service_counts_line(service_monitor: dict[str, Any]) -> str:
         if _to_int(count, 0) > 0
     )
     return " | ".join(parts) or "n/a"
-
-
-def _backtest_service_line(services: dict[str, Any]) -> str:
-    service = _as_dict(services.get("ibkr-backtest"))
-    if not service:
-        return ""
-    status = _to_text(service.get("status")) or "unknown"
-    worker = _to_text(service.get("worker_status") or service.get("readiness_phase"))
-    client_id = _to_int(service.get("ib_gateway_client_id"), 0)
-    active_runs = _to_int(service.get("active_runs"), 0)
-    queue_depth = _to_int(service.get("queue_depth"), 0)
-    parts = [f"Backtest {status}"]
-    if worker and worker.lower() != status.lower():
-        parts.append(f"worker {worker}")
-    if client_id:
-        parts.append(f"client {client_id}")
-    if active_runs or queue_depth:
-        parts.append(f"active {active_runs} / queue {queue_depth}")
-    return " | ".join(parts)
 
 
 def _service_client_id(service: dict[str, Any]) -> int:
@@ -513,9 +493,6 @@ def _status_overview(snapshot: dict[str, Any]) -> tuple[str, str]:
         f"Runtime {_to_text(runtime.get('status')) or 'unknown'}",
         f"Scheduler {_to_text(scheduler.get('status')) or 'unknown'}",
     ]
-    backtest_line = _backtest_service_line(services)
-    if backtest_line:
-        service_parts.append(backtest_line)
     service_line = " | ".join(service_parts)
     if not bool(snapshot.get("connection_snapshot_available", True)):
         connection_line = "Gateway unknown | Session unknown | WebSocket unknown"
@@ -625,14 +602,11 @@ def _heartbeat_title(snapshot: dict[str, Any], *, reminder: bool) -> str:
 
 def _heartbeat_detail(snapshot: dict[str, Any], *, timestamp_us: str) -> dict[str, Any]:
     runtime = _as_dict(snapshot.get("runtime"))
-    scheduler = _as_dict(snapshot.get("scheduler"))
-    daily_scan = _as_dict(snapshot.get("daily_scan"))
     today = _as_dict(snapshot.get("today"))
     service_monitor = _as_dict(snapshot.get("service_monitor"))
     services = _as_dict(snapshot.get("services"))
     human = _human_issue_detail(snapshot)
     services_line, connection_line = _status_overview(snapshot)
-    backtest_line = _backtest_service_line(services)
     client_ids_line = _ib_client_ids_line(services)
     detail = {
         "检查时间": timestamp_us,
@@ -644,21 +618,16 @@ def _heartbeat_detail(snapshot: dict[str, Any], *, timestamp_us: str) -> dict[st
         "服务统计": _service_counts_line(service_monitor),
         "IBKR链路": connection_line,
         "状态": _to_text(snapshot.get("monitor_status") or snapshot.get("summary_status")) or "unknown",
-        "DispatchLag": (
-            f"{float(scheduler.get('dispatch_lag_min') or 0):.2f}m"
-            if scheduler.get("latest_ingested_bar_time_ms")
-            else "awaiting bars"
-        ),
-        "数据": (
-            f"bars {_to_int(today.get('ibkr_bars'), 0)} | "
-            f"signals {_to_int(today.get('ibkr_signals'), 0)} | "
-            f"orders {_today_order_count(today)} | "
-            f"日筛 {_to_text(daily_scan.get('status')) or 'unknown'}"
+        "TV webhook": f"webhooks {_to_int(today.get('tv_webhook_events'), 0)} | signals {_to_int(today.get('ibkr_signals'), 0)} | events {_to_int(today.get('events'), 0)}",
+        "Targets": f"targets {_to_int(today.get('ibkr_targets'), 0)}",
+        "Orders": f"orders {_today_order_count(today)} | positions {_to_int(today.get('positions'), 0)}",
+        "Execution/Protection": (
+            f"TP {_to_int(today.get('take_profit_filled'), 0)} | "
+            f"SL {_to_int(today.get('stop_loss_filled'), 0)} | "
+            f"protect_incomplete {_to_int(today.get('protection_incomplete'), 0)}"
         ),
     }
     detail.update(market_session_detail_fields(_as_dict(runtime.get("market_session"))))
-    if backtest_line:
-        detail["Backtest"] = f"{backtest_line} | independent non-blocking"
     if client_ids_line:
         detail["IB ClientID"] = client_ids_line
     upstream_monitor = _as_dict(_as_dict(snapshot.get("monitor")).get("upstream_monitor"))
@@ -682,9 +651,6 @@ def _heartbeat_detail(snapshot: dict[str, Any], *, timestamp_us: str) -> dict[st
     compact_codes = _compact_issue_codes(snapshot)
     if compact_codes:
         detail["诊断码"] = compact_codes
-    last_bar_us = _to_text(_as_dict(runtime.get("latest_bar")).get("us_time"))
-    if last_bar_us:
-        detail["最新5m"] = last_bar_us
     return detail
 
 
@@ -738,109 +704,43 @@ def _target_label(item: dict[str, Any], *, include_signal_status: bool = False) 
     return f"{symbol}({','.join(parts)})" if parts else symbol
 
 
-def _target_chain_label(item: dict[str, Any], *, include_signal_status: bool = False) -> str:
-    symbol = _to_text(item.get("symbol")).upper()
-    if not symbol:
-        return ""
-    parts: list[str] = []
-    direction = _direction_label(item.get("direction_bias"))
-    if direction:
-        parts.append(direction)
-    if include_signal_status:
-        parts.append(_signal_status_label(item.get("latest_signal_status")) or "已触发")
-    else:
-        parts.append(_to_text(item.get("technical_state")) or "unknown")
-    return f"{symbol}({','.join(parts)})" if parts else symbol
-
-
 def _target_signal_summary(targets_payload: dict[str, Any]) -> dict[str, str]:
     summary = _as_dict(targets_payload.get("summary"))
     items = [_as_dict(item) for item in targets_payload.get("items") or [] if isinstance(item, dict)]
     trading_items = [item for item in items if _to_text(item.get("symbol"))]
     expired_items = [item for item in items if _to_text(item.get("latest_signal_status")).lower() == "expired"]
-    no_signal_items = [item for item in items if not bool(item.get("has_signal_today"))]
-    operable_waiting_items = [
-        item for item in trading_items if bool(item.get("is_operable")) and not bool(item.get("has_signal_today"))
-    ]
-    ready_waiting_items = [
+    signaled_items = [item for item in trading_items if bool(item.get("has_signal_today"))]
+    action_items = [
         item
         for item in trading_items
-        if _to_text(item.get("technical_state")).lower() == "ready" and not bool(item.get("has_signal_today"))
+        if _to_text(item.get("latest_signal_status")).lower()
+        in {"awaiting_confirm", "pending", "submitted", "protection_incomplete"}
     ]
-    signaled_items = [item for item in trading_items if bool(item.get("has_signal_today"))]
     return {
-        "今日标的": (
-            f"total {_to_int(summary.get('total'), len(trading_items))} | "
-            f"active {_to_int(summary.get('active_count'), 0)} | "
-            f"candidate {_to_int(summary.get('candidate_count'), 0)} | "
-            f"operable {_to_int(summary.get('operable_count'), 0)} | "
-            f"ready {_to_int(summary.get('technical_ready_count'), 0)} | "
+        "TV signals": (
             f"signals {_to_int(summary.get('signaled_count'), 0)} | "
             f"awaiting {_to_int(summary.get('awaiting_confirm_count'), 0)} | "
             f"pending {_to_int(summary.get('pending_count'), 0)} | "
             f"submitted {_to_int(summary.get('submitted_count'), 0)} | "
+            f"expired {len(expired_items)}"
+        ),
+        "Targets": (
+            f"total {_to_int(summary.get('total'), len(trading_items))} | "
+            f"active {_to_int(summary.get('active_count'), 0)} | "
+            f"candidate {_to_int(summary.get('candidate_count'), 0)} | "
+            f"execution_eligible {_to_int(summary.get('execution_eligible_count'), _to_int(summary.get('operable_count'), 0))} | "
+            f"observe {_to_int(summary.get('observe_only_count'), 0)} | "
+            f"watch {_to_int(summary.get('watch_only_count'), 0)}"
+        ),
+        "Execution/Protection": (
+            f"executed {_to_int(summary.get('executed_count'), 0)} | "
+            f"submitted {_to_int(summary.get('submitted_count'), 0)} | "
             f"protected {_to_int(summary.get('protected_active_count'), 0)} | "
-            f"protect_incomplete {_to_int(summary.get('protection_incomplete_count'), 0)} | "
-            f"expired {len(expired_items)} | "
-            f"no_signal {len(no_signal_items)}"
+            f"protect_incomplete {_to_int(summary.get('protection_incomplete_count'), 0)}"
         ),
-        "今日交易标的": _join_limited([_target_label(item, include_signal_status=True) for item in trading_items]),
-        "已过期标的": _join_limited([_target_label(item, include_signal_status=True) for item in expired_items]),
-        "未出信号标的": _join_limited([_target_label(item) for item in no_signal_items]),
-        "标的链路": (
-            f"可操作待信号 {len(operable_waiting_items)}: "
-            f"{_join_limited([_target_chain_label(item) for item in operable_waiting_items])} | "
-            f"技术就绪待信号 {len(ready_waiting_items)}: "
-            f"{_join_limited([_target_chain_label(item) for item in ready_waiting_items])} | "
-            f"已触发信号 {len(signaled_items)}: "
-            f"{_join_limited([_target_chain_label(item, include_signal_status=True) for item in signaled_items])}"
-        ),
+        "TV信号标的": _join_limited([_target_label(item, include_signal_status=True) for item in signaled_items]),
+        "待处理标的": _join_limited([_target_label(item, include_signal_status=True) for item in action_items]),
     }
-
-
-def _window_side_label(item: dict[str, Any]) -> str:
-    upper_valid = bool(item.get("sd_upper_valid"))
-    lower_valid = bool(item.get("sd_lower_valid"))
-    if upper_valid and lower_valid:
-        return "上下窗口"
-    if upper_valid:
-        return "上窗口"
-    if lower_valid:
-        return "下窗口"
-    status = _to_text(item.get("window_status") or item.get("status")).lower()
-    return {
-        "upper_active": "上窗口",
-        "lower_active": "下窗口",
-        "both_active": "上下窗口",
-        "near_expiry": "临近过期",
-    }.get(status, status)
-
-
-def _window_status_label(value: Any) -> str:
-    status = _to_text(value).lower()
-    return {
-        "upper_active": "上窗口",
-        "lower_active": "下窗口",
-        "both_active": "上下窗口",
-        "near_expiry": "临近过期",
-        "used": "已使用",
-        "expired": "已过期",
-        "no_window": "无窗口",
-        "blocked": "受阻",
-        "candidate": "候选信号",
-        "confirmed": "已确认",
-    }.get(status, status or "未知")
-
-
-def _window_item_label(item: dict[str, Any], *, active: bool) -> str:
-    symbol = _to_text(item.get("symbol")).upper()
-    if not symbol:
-        return ""
-    if active:
-        side = _window_side_label(item)
-        bars_remaining = _to_int(item.get("bars_remaining"), 0)
-        return f"{symbol}({side},{bars_remaining} bars)" if bars_remaining > 0 else f"{symbol}({side})"
-    return f"{symbol}({_window_status_label(item.get('window_status') or item.get('status'))})"
 
 
 def _window_status_value(item: dict[str, Any]) -> str:
@@ -860,63 +760,45 @@ def _window_count(
     return max(_to_int(summary.get(key), 0), sum(1 for item in items if predicate(item)))
 
 
-def _is_operable_waiting_target(item: dict[str, Any]) -> bool:
-    return bool(item.get("is_operable")) and not bool(item.get("has_signal_today"))
-
-
-def _active_window_item(item: dict[str, Any]) -> bool:
-    status = _window_status_value(item)
-    if (
-        status == "blocked"
-        or _to_text(item.get("trace_stage")).lower() == "blocked"
-        or _to_text(item.get("blocked_reason"))
-    ):
-        return False
-    return bool(item.get("sd_upper_valid") or item.get("sd_lower_valid")) or status in {
-        "upper_active",
-        "lower_active",
-        "both_active",
-        "near_expiry",
-    }
-
-
-def _window_reason(value: Any, *, max_len: int = 40) -> str:
+def _attention_reason(value: Any, *, max_len: int = 40) -> str:
     text = _to_text(value)
     if len(text) <= max_len:
         return text
     return f"{text[:max_len - 3]}..."
 
 
-def _window_attention_item(item: dict[str, Any], target: dict[str, Any]) -> bool:
+def _execution_attention_item(item: dict[str, Any], target: dict[str, Any]) -> bool:
     status = _window_status_value(item)
     if status in {"blocked", "near_expiry"} or _window_trace_error(item):
         return True
-    return _is_operable_waiting_target(target) and not _active_window_item(item)
+    return bool(target.get("is_execution_eligible")) and not bool(target.get("has_signal_today"))
 
 
-def _window_attention_label(item: dict[str, Any], target: dict[str, Any]) -> str:
+def _execution_attention_label(item: dict[str, Any], target: dict[str, Any]) -> str:
     symbol = _to_text(item.get("symbol")).upper()
     if not symbol:
         return ""
     status = _window_status_value(item)
     parts: list[str] = []
-    if status == "near_expiry":
-        parts.append(_window_side_label(item) or "临近过期")
-        bars_remaining = _to_int(item.get("bars_remaining"), 0)
-        if bars_remaining > 0:
-            parts.append(f"{bars_remaining} bars")
-    else:
-        status_label = _window_status_label(status)
-        if status_label:
-            parts.append(status_label)
-    if _is_operable_waiting_target(target):
-        parts.append("可操作待信号")
-    blocked_reason = _window_reason(item.get("blocked_reason") or item.get("filter_reason"))
+    status_label = {
+        "blocked": "受阻",
+        "near_expiry": "需复核",
+        "no_window": "待TV触发",
+        "used": "已处理",
+        "expired": "已过期",
+        "candidate": "候选",
+        "confirmed": "已确认",
+    }.get(status)
+    if status_label:
+        parts.append(status_label)
+    if bool(target.get("is_execution_eligible")) and not bool(target.get("has_signal_today")):
+        parts.append("execution_eligible待TV")
+    blocked_reason = _attention_reason(item.get("blocked_reason") or item.get("filter_reason"))
     if blocked_reason:
         parts.append(blocked_reason)
-    trace_error = _window_reason(_window_trace_error(item))
+    trace_error = _attention_reason(_window_trace_error(item))
     if trace_error:
-        parts.append(f"trace错误:{trace_error}")
+        parts.append(f"trace_error:{trace_error}")
     return f"{symbol}({','.join(parts)})" if parts else symbol
 
 
@@ -928,17 +810,13 @@ def _active_window_summary(active_window_payload: dict[str, Any], targets_payloa
     target_by_symbol = {_to_text(item.get("symbol")).upper(): item for item in target_items if _to_text(item.get("symbol"))}
     target_symbols = [_to_text(item.get("symbol")).upper() for item in target_items if _to_text(item.get("symbol"))]
     symbols = [symbol for symbol in target_symbols if symbol] or list(window_by_symbol)
-    active_items: list[dict[str, Any]] = []
     attention_items: list[dict[str, Any]] = []
     for symbol in symbols:
         item = window_by_symbol.get(symbol) or {"symbol": symbol, "window_status": "no_window"}
         target = target_by_symbol.get(symbol) or {}
-        if _active_window_item(item):
-            active_items.append(item)
-        if _window_attention_item(item, target):
+        if _execution_attention_item(item, target):
             attention_items.append(item)
 
-    valid_count = _window_count(summary, "window_valid_count", window_items, _active_window_item)
     blocked_count = _window_count(
         summary,
         "blocked_count",
@@ -957,25 +835,23 @@ def _active_window_summary(active_window_payload: dict[str, Any], targets_payloa
         window_items,
         lambda item: bool(_window_trace_error(item)),
     )
-    if valid_count <= 0 and not attention_items and blocked_count <= 0 and near_expiry_count <= 0 and trace_error_count <= 0:
+    candidate_count = _to_int(summary.get("current_candidate_signal_count"), _to_int(summary.get("candidate_signal_count"), 0))
+    attention_count = max(len(attention_items), blocked_count + near_expiry_count + trace_error_count)
+    if attention_count <= 0:
         return {}
 
     result = {
-        "窗口统计": (
-            f"active {_to_int(summary.get('window_active_count'), 0)} | "
-            f"valid {valid_count} | "
-            f"candidate {_to_int(summary.get('candidate_signal_count'), 0)} | "
-            f"blocked {blocked_count} | "
-            f"near_expiry {near_expiry_count} | "
+        "Execution关注": (
+            f"candidate {candidate_count} | "
+            f"deferred {blocked_count} | "
+            f"review {near_expiry_count} | "
             f"trace_error {trace_error_count}"
         )
     }
-    if active_items:
-        result["窗口已激活"] = _join_limited([_window_item_label(item, active=True) for item in active_items])
     if attention_items:
-        result["窗口异常"] = _join_limited(
+        result["待复核标的"] = _join_limited(
             [
-                _window_attention_label(item, target_by_symbol.get(_to_text(item.get("symbol")).upper()) or {})
+                _execution_attention_label(item, target_by_symbol.get(_to_text(item.get("symbol")).upper()) or {})
                 for item in attention_items
             ]
         )
@@ -1054,7 +930,7 @@ def _enrich_status_detail_with_targets(
     if active_window_payload:
         detail.update(_active_window_summary(active_window_payload, targets_payload))
         if active_window_payload.get("error"):
-            detail["窗口摘要错误"] = _to_text(active_window_payload.get("error"))
+            detail["Execution摘要错误"] = _to_text(active_window_payload.get("error"))
     return detail
 
 

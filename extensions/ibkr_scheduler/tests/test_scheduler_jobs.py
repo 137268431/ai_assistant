@@ -1558,7 +1558,7 @@ class SchedulerJobsTest(unittest.TestCase):
         self.assertEqual(request_payload["market_data_mode"], "live")
         self.assertEqual(request_payload["selected_mode"], "live")
         self.assertEqual(request_payload["source"], "ibkr_scheduler")
-        self.assertEqual(request_payload["profile"], "balanced_50g")
+        self.assertEqual(request_payload["profile"], "tv_primary_lean")
         self.assertFalse(request_payload["dry_run"])
         self.assertFalse(request_payload["force"])
 

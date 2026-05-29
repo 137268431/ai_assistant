@@ -495,7 +495,7 @@ class SchedulerService:
             return {
                 "dry_run": False,
                 "force": False,
-                "profile": "balanced_50g",
+                "profile": "tv_primary_lean",
                 "source": "ibkr_scheduler",
             }
         return {}

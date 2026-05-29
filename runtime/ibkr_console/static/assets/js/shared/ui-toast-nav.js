@@ -21,20 +21,14 @@ function showToast(msg, duration = 2500) {
 
 // ── 底部导航 ──
 function renderNav(activePage) {
-  const pages = [
+    const pages = [
     { path: '/index.html', icon: '🏠', label: '首页' },
     { path: '/ibkr_signals.html', aliases: ['/ibkr_signals.html', '/ibkr_reverse_signals.html', '/orders.html', '/ibkr_order_details.html', '/ibkr_lifecycle_flow.html', '/ibkr_trade_review.html', '/ibkr_account.html'], icon: '📡', label: '执行' },
     { path: '/ibkr_screener.html', aliases: ['/ibkr_screener.html', '/ibkr_watchlist.html', '/ibkr_targets.html'], icon: '🎯', label: '目标' },
-    { path: '/ibkr_chart.html', aliases: ['/ibkr_chart.html', '/ibkr_indicators.html', '/ibkr_stats.html', '/ibkr_backtests.html'], icon: '📈', label: '图表' },
     {
       path: '/ibkr_system.html',
       aliases: [
         '/ibkr_system.html',
-        '/ibkr_monitor.html',
-        '/ibkr_warmup.html',
-        '/ibkr_data_quality.html',
-        '/ibkr_history_rebuild.html',
-        '/ibkr_system_logic.html',
         '/ibkr_runtime.html',
         '/ibkr_config.html'
       ],

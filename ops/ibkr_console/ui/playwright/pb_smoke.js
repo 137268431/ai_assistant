@@ -1,8 +1,6 @@
 const fs = require('fs');
 const { chromium, devices, request } = require('playwright');
 const { waitForHomeOverviewReady, collectHomeOverviewIssues } = require('./home_overview_checks');
-const { runIndicatorTraceSurfaceCheck } = require('./indicator_trace_surface_check');
-const { runWheelScrollSurfaceCheck } = require('./wheel_scroll_surface_check');
 
 const DEFAULT_EMAIL = process.env.PB_EMAIL || '137268431@qq.com';
 const DEFAULT_PASSWORD = process.env.PB_PASSWORD || 'Asd@2750066';
@@ -16,23 +14,17 @@ const BRIDGE_MAX_SPREAD_PX = Number(process.env.PB_SMOKE_BRIDGE_SPREAD_MAX || 12
 const PANEL_ROW_HEIGHT_MAX_PX = Number(process.env.PB_SMOKE_PANEL_HEIGHT_MAX || 1400);
 const DEFAULT_TARGETS = [
   `${DEFAULT_CONSOLE_BASE}/index.html?environment=live`,
-  `${DEFAULT_CONSOLE_BASE}/ibkr_system.html?environment=live`,
-  `${DEFAULT_CONSOLE_BASE}/ibkr_runtime.html?environment=live`,
-  `${DEFAULT_CONSOLE_BASE}/ibkr_config.html?environment=global`,
-  `${DEFAULT_CONSOLE_BASE}/ibkr_monitor.html?environment=live`,
-  `${DEFAULT_CONSOLE_BASE}/ibkr_warmup.html?environment=live`,
-  `${DEFAULT_CONSOLE_BASE}/ibkr_data_quality.html?environment=live`,
-  `${DEFAULT_CONSOLE_BASE}/ibkr_history_rebuild.html?environment=live`,
-  `${DEFAULT_CONSOLE_BASE}/ibkr_screener.html?environment=live&tab=screener&view=current`,
   `${DEFAULT_CONSOLE_BASE}/ibkr_signals.html?environment=live`,
   `${DEFAULT_CONSOLE_BASE}/ibkr_reverse_signals.html?environment=live`,
   `${DEFAULT_CONSOLE_BASE}/orders.html?environment=live`,
   `${DEFAULT_CONSOLE_BASE}/ibkr_order_details.html?environment=live`,
+  `${DEFAULT_CONSOLE_BASE}/ibkr_lifecycle_flow.html?environment=live`,
+  `${DEFAULT_CONSOLE_BASE}/ibkr_trade_review.html?environment=live`,
   `${DEFAULT_CONSOLE_BASE}/ibkr_account.html?environment=live`,
-  `${DEFAULT_CONSOLE_BASE}/ibkr_indicators.html?environment=live`,
-  `${DEFAULT_CONSOLE_BASE}/ibkr_chart.html?environment=live`,
-  `${DEFAULT_CONSOLE_BASE}/ibkr_stats.html?environment=live`,
-  `${DEFAULT_CONSOLE_BASE}/ibkr_backtests.html?environment=live`,
+  `${DEFAULT_CONSOLE_BASE}/ibkr_screener.html?environment=live&tab=screener&view=current`,
+  `${DEFAULT_CONSOLE_BASE}/ibkr_system.html?environment=live`,
+  `${DEFAULT_CONSOLE_BASE}/ibkr_runtime.html?environment=live`,
+  `${DEFAULT_CONSOLE_BASE}/ibkr_config.html?environment=global`,
 ];
 const ARTIFACT_DIR = process.env.PB_SMOKE_ARTIFACT_DIR || '/tmp/ai_assistant_pb_smoke';
 const HELP_TEXT = `Usage: node pb_smoke.js [options]
@@ -43,19 +35,7 @@ Options:
   --mobile-only            Run mobile checks only
   --headed                 Launch browser in headed mode
   --target <url>           Restrict checks to one or more explicit targets
-  --with-indicator-trace   Append the indicator trace scenario even with explicit targets
-  --skip-indicator-trace   Skip the indicator trace scenario
-  --with-wheel-scroll      Append desktop wheel scroll surface checks even with explicit targets
-  --skip-wheel-scroll      Skip desktop wheel scroll surface checks
   -h, --help               Show this help
-
-Indicator trace default:
-  - enabled when no explicit --target is provided
-  - disabled when explicit --target is provided, unless --with-indicator-trace is set
-
-Wheel scroll default:
-  - enabled when no explicit --target is provided
-  - disabled when explicit --target is provided, unless --with-wheel-scroll is set
 `;
 
 function shouldIgnoreRequestFailure(req) {
@@ -74,8 +54,6 @@ function parseArgs(argv) {
     help: false,
     targets: [],
     targetsExplicit: false,
-    includeIndicatorTrace: null,
-    includeWheelScroll: null,
   };
   for (let i = 2; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -95,133 +73,12 @@ function parseArgs(argv) {
       opts.targets.push(argv[i + 1]);
       opts.targetsExplicit = true;
       i += 1;
-    } else if (arg === '--with-indicator-trace') {
-      opts.includeIndicatorTrace = true;
-    } else if (arg === '--skip-indicator-trace') {
-      opts.includeIndicatorTrace = false;
-    } else if (arg === '--with-wheel-scroll') {
-      opts.includeWheelScroll = true;
-    } else if (arg === '--skip-wheel-scroll') {
-      opts.includeWheelScroll = false;
     } else if (arg === '-h' || arg === '--help') {
       opts.help = true;
     }
   }
   if (!opts.targets.length) opts.targets = DEFAULT_TARGETS.slice();
-  if (opts.includeIndicatorTrace === null) {
-    opts.includeIndicatorTrace = !opts.targetsExplicit;
-  }
-  if (opts.includeWheelScroll === null) {
-    opts.includeWheelScroll = !opts.targetsExplicit;
-  }
   return opts;
-}
-
-function normalizeIndicatorTraceScenario(output) {
-  const result = output?.result || {};
-  const partial = Boolean(result?.partial);
-  const scenarioStatus = result?.trace?.status || (output?.ok ? 'ready' : 'indicator_trace_surface_failed');
-  const issues = [];
-  if (partial) {
-    issues.push(`trace_status:${scenarioStatus}`);
-  }
-  return {
-    name: 'indicator_trace_surface',
-    url: `${DEFAULT_CONSOLE_BASE}/ibkr_indicators.html?environment=live#indicator_trace_surface`,
-    final_url: result?.trace?.final_url || result?.seed?.symbol || '',
-    device: 'scenario',
-    title: 'indicator_trace_surface_check',
-    nav_count: 0,
-    bridge_count: 0,
-    layout: {
-      horizontal_overflow: false,
-      context_count: 0,
-      bridge_count: 0,
-      bridge_row_spread_max: 0,
-      panel_row_spread_max: 0,
-      bridge_rows: [],
-      panel_rows: [],
-      tall_panel_rows: [],
-      scroll_issues: [],
-    },
-    errors: output?.ok ? [] : [scenarioStatus || output?.error || 'indicator_trace_surface_failed'],
-    layout_issues: issues,
-    page_expectation_issues: [],
-    screenshot: '',
-    scenario: output,
-    scenario_status: scenarioStatus,
-    partial,
-  };
-}
-
-function buildScenarioShell(name, title, url) {
-  return {
-    name,
-    url,
-    final_url: url,
-    device: 'scenario',
-    title,
-    nav_count: 0,
-    bridge_count: 0,
-    layout: {
-      horizontal_overflow: false,
-      context_count: 0,
-      bridge_count: 0,
-      bridge_row_spread_max: 0,
-      panel_row_spread_max: 0,
-      bridge_rows: [],
-      panel_rows: [],
-      tall_panel_rows: [],
-      scroll_issues: [],
-    },
-    errors: [],
-    layout_issues: [],
-    page_expectation_issues: [],
-    screenshot: '',
-  };
-}
-
-function normalizeWheelScrollScenarios(output) {
-  const results = Array.isArray(output?.results) ? output.results : [];
-  if (!results.length) {
-    const scenario = buildScenarioShell(
-      'wheel_scroll_surface',
-      'wheel_scroll_surface_check',
-      `${DEFAULT_CONSOLE_BASE}/ibkr_chart.html?environment=live#wheel_scroll_surface`,
-    );
-    scenario.errors = [output?.error || 'wheel_scroll_surface_failed'];
-    scenario.scenario = output;
-    scenario.scenario_status = 'scenario_crashed';
-    scenario.partial = true;
-    return [scenario];
-  }
-
-  return results.map((item) => {
-    const name = item?.scenario || 'wheel_scroll_surface';
-    const status = item?.ok ? 'ready' : 'failed';
-    const scenario = buildScenarioShell(
-      name,
-      `${name}_check`,
-      item?.url || `${DEFAULT_CONSOLE_BASE}/ibkr_chart.html?environment=live`,
-    );
-    const issues = [];
-    if (item?.zoomChanged) issues.push('zoom_changed_on_wheel');
-    if (typeof item?.windowDelta === 'number' && item.windowDelta < 120) {
-      issues.push(`window_scroll_delta:${item.windowDelta}`);
-    }
-    if (typeof item?.modalDelta === 'number' && item.modalDelta < 80) {
-      issues.push(`modal_scroll_delta:${item.modalDelta}`);
-    }
-    scenario.final_url = item?.url || scenario.url;
-    scenario.errors = item?.ok
-      ? []
-      : (Array.isArray(item?.errors) && item.errors.length ? item.errors.slice(0, 4) : [`${name}_failed`]);
-    scenario.layout_issues = issues;
-    scenario.scenario = item;
-    scenario.scenario_status = status;
-    scenario.partial = !item?.ok;
-    return scenario;
-  });
 }
 
 function hasFailures(item) {
@@ -255,27 +112,12 @@ function collectIssuePreview(item) {
   return entries.slice(0, 3).join(', ');
 }
 
-function printRunSummary(results, opts) {
-  const scenarioResults = results.filter((item) => item?.device === 'scenario');
+function printRunSummary(results) {
   const pageResults = results.filter((item) => item?.device !== 'scenario');
   const failing = results.filter(hasFailures);
-  const traceScenario = scenarioResults.find((item) => item?.name === 'indicator_trace_surface');
-  const wheelScenarios = scenarioResults.filter((item) => String(item?.name || '').includes('wheel'));
-  const traceState = opts.includeIndicatorTrace
-    ? (traceScenario?.scenario_status || (traceScenario ? 'missing_status' : 'not_emitted'))
-    : 'disabled';
-  const wheelState = opts.includeWheelScroll
-    ? (!wheelScenarios.length
-      ? 'not_emitted'
-      : wheelScenarios.every((item) => item?.scenario_status === 'ready')
-        ? 'ready'
-        : wheelScenarios.map((item) => `${item?.name || 'wheel'}:${item?.scenario_status || 'missing_status'}`).join(','))
-    : 'disabled';
   const statusText = failing.length ? 'FAILED' : 'OK';
   const lines = [
-    `[pb-smoke] ${statusText} total=${results.length} pages=${pageResults.length} scenarios=${scenarioResults.length} failed=${failing.length}`,
-    `[pb-smoke] indicator_trace=${opts.includeIndicatorTrace ? 'enabled' : 'disabled'} status=${traceState}`,
-    `[pb-smoke] wheel_scroll=${opts.includeWheelScroll ? 'enabled' : 'disabled'} status=${wheelState}`,
+    `[pb-smoke] ${statusText} total=${results.length} pages=${pageResults.length} failed=${failing.length}`,
   ];
 
   failing.slice(0, 8).forEach((item) => {
@@ -284,10 +126,9 @@ function printRunSummary(results, opts) {
 
   const screenshots = failing.map((item) => item?.screenshot).filter(Boolean);
   if (screenshots.length) {
-    lines.push(`[pb-smoke] screenshots=${screenshots.length} dir=${ARTIFACT_DIR}`);
+    lines.push(`[pb-smoke] screenshots ${screenshots.join(' ')}`);
   }
-
-  process.stderr.write(`${lines.join('\n')}\n`);
+  lines.forEach((line) => console.error(line));
 }
 
 async function fetchToken() {
@@ -362,18 +203,6 @@ async function waitForPageReady(page, url) {
       const configText = document.getElementById('configArea')?.innerText || '';
       return refreshInfo && !refreshInfo.includes('加载中') && configText && !configText.includes('加载中');
     }, { timeout }),
-    '/ibkr_data_quality.html': () => page.waitForFunction(() => {
-      const refreshInfo = document.getElementById('refreshInfo')?.textContent || '';
-      const summaryInfo = document.getElementById('summaryInfo')?.textContent || '';
-      return (
-        refreshInfo &&
-        !refreshInfo.includes('等待加载') &&
-        !refreshInfo.includes('加载失败') &&
-        summaryInfo &&
-        !summaryInfo.includes('待加载') &&
-        document.querySelectorAll('#summaryGrid .summary-card').length > 0
-      );
-    }, { timeout }),
     '/ibkr_account.html': () => page.waitForFunction(() => {
       const refreshInfo = document.getElementById('refreshInfo')?.textContent || '';
       const overlayVisible = Array.from(document.querySelectorAll('.page-loading-overlay')).some((node) => {
@@ -403,48 +232,6 @@ async function waitForPageReady(page, url) {
     '/ibkr_reverse_signals.html': () => page.waitForFunction(() => !document.querySelector('#signalsContainer .loading'), { timeout }),
     '/orders.html': () => page.waitForFunction(() => !document.querySelector('#ordersContainer .loading'), { timeout }),
     '/ibkr_order_details.html': () => page.waitForFunction(() => !document.querySelector('#detailsContainer .loading'), { timeout }),
-    '/ibkr_indicators.html': () => page.waitForFunction(() => {
-      const overlayVisible = Array.from(document.querySelectorAll('.page-loading-overlay')).some((node) => {
-        const style = window.getComputedStyle(node);
-        const rect = node.getBoundingClientRect();
-        return (
-          style.display !== 'none' &&
-          style.visibility !== 'hidden' &&
-          style.opacity !== '0' &&
-          !node.classList.contains('is-hidden') &&
-          rect.width > 1 &&
-          rect.height > 1
-        );
-      });
-      return !document.querySelector('#indicatorsContainer .loading') && !overlayVisible;
-    }, { timeout }),
-    '/ibkr_stats.html': () => page.waitForFunction(() => {
-      const overlayVisible = Array.from(document.querySelectorAll('.page-loading-overlay')).some((node) => {
-        const style = window.getComputedStyle(node);
-        const rect = node.getBoundingClientRect();
-        return (
-          style.display !== 'none' &&
-          style.visibility !== 'hidden' &&
-          style.opacity !== '0' &&
-          !node.classList.contains('is-hidden') &&
-          rect.width > 1 &&
-          rect.height > 1
-        );
-      });
-      const textOf = (id) => String(document.getElementById(id)?.textContent || '').trim();
-      const tradesText = String(document.getElementById('tradesTable')?.textContent || '').trim();
-      return (
-        !overlayVisible &&
-        document.querySelectorAll('.stat-card').length >= 8 &&
-        document.querySelectorAll('canvas').length >= 4 &&
-        textOf('totalOrders') !== '' &&
-        textOf('totalOrders') !== '-' &&
-        textOf('totalSignals') !== '' &&
-        textOf('totalSignals') !== '-' &&
-        tradesText !== '' &&
-        !tradesText.includes('加载中')
-      );
-    }, { timeout }),
     '/ibkr_config.html': () => page.waitForFunction(() => !/LOADING/i.test(document.getElementById('configContainer')?.innerText || ''), { timeout }),
   };
 
@@ -619,11 +406,7 @@ async function collectPageExpectationIssues(page, url, mobile) {
   }
 
   const systemDomainExpectations = {
-    '/ibkr_system.html': { systemBridge: '总览', opsSummary: true },
-    '/ibkr_monitor.html': { systemBridge: '运维', opsBridge: '监控大盘', monitorOpsRoute: true },
-    '/ibkr_warmup.html': { systemBridge: '运维', opsBridge: '预热', warmupSummary: true, warmupGuide: true },
-    '/ibkr_data_quality.html': { systemBridge: '运维', opsBridge: '数据质量', qualityRoute: true },
-    '/ibkr_history_rebuild.html': { systemBridge: '运维', opsBridge: '历史重建', historyGuard: true },
+    '/ibkr_system.html': { systemBridge: '总览' },
     '/ibkr_runtime.html': { systemBridge: '控制台', runtimeSummary: true },
     '/ibkr_config.html': { systemBridge: '配置' },
   };
@@ -640,79 +423,13 @@ async function collectPageExpectationIssues(page, url, mobile) {
       if (!navTexts.some((text) => text.includes('系统'))) issues.push('system_domain_missing_bottom_system');
       if (navTexts.some((text) => text.includes('运维'))) issues.push('system_domain_legacy_bottom_ops');
       if (!bridgeLabels.includes(expected.systemBridge)) issues.push(`missing_system_bridge:${expected.systemBridge}`);
-      if (expected.opsBridge && !bridgeLabels.includes(expected.opsBridge)) issues.push(`missing_ops_bridge:${expected.opsBridge}`);
-      if (expected.opsSummary) {
-        const summaryText = String(document.getElementById('serviceTopologyArea')?.textContent || '');
-        const summaryLink = document.querySelector('#serviceTopologyArea .ops-summary-link');
-        const summaryLinkHref = String(summaryLink?.getAttribute('href') || '');
-        const serviceSummaryCards = Array.from(document.querySelectorAll('#serviceTopologyArea .ops-summary-card'));
-        const servicesCard = serviceSummaryCards.find((card) => {
-          const label = String(card.querySelector('.ops-summary-label')?.textContent || '').trim();
-          return label === 'Services';
-        });
-        const serviceCount = Number(String(servicesCard?.querySelector('.ops-summary-value')?.textContent || '0').trim());
-        if (!summaryText.includes('运维大盘')) issues.push('missing_system_ops_summary_copy');
-        if (!summaryLink || !/\/ibkr_monitor\.html/.test(summaryLinkHref)) {
-          issues.push(`missing_system_ops_summary_link:${summaryLinkHref || 'empty'}`);
-        }
-        if (!servicesCard) issues.push('missing_system_services_count_card');
-        if (Number.isFinite(serviceCount) && serviceCount < 8) issues.push(`system_services_count:${serviceCount}`);
-      }
-      if (expected.warmupSummary) {
-        const summaryText = String(document.getElementById('serviceTopologyBody')?.textContent || '');
-        const summaryLink = document.querySelector('#serviceTopologyBody .warmup-link-action');
-        const summaryLinkHref = String(summaryLink?.getAttribute('href') || '');
-        if (!summaryText.includes('运维大盘')) issues.push('missing_warmup_ops_summary_copy');
-        if (!summaryLink || !/\/ibkr_monitor\.html/.test(summaryLinkHref)) {
-          issues.push(`missing_warmup_ops_summary_link:${summaryLinkHref || 'empty'}`);
-        }
-      }
-      if (expected.warmupGuide) {
-        const guideText = String(document.querySelector('.warmup-guide-section')?.textContent || '');
-        if (!guideText.includes('交易闸门')) issues.push('missing_warmup_guide_gate');
-        if (!guideText.includes('数据质量')) issues.push('missing_warmup_guide_quality');
-        if (!guideText.includes('历史重建')) issues.push('missing_warmup_guide_rebuild');
-      }
-      if (expected.monitorOpsRoute) {
-        const routeLabels = Array.from(document.querySelectorAll('.ops-route-card .ops-route-name'))
-          .map((node) => String(node.textContent || '').trim())
-          .filter(Boolean);
-        ['监控大盘', '预热', '数据质量', '历史重建'].forEach((label) => {
-          if (!routeLabels.includes(label)) issues.push(`missing_monitor_ops_route:${label}`);
-        });
-        const systemServiceCount = document.querySelectorAll('#systemMonitorGrid .metric-card').length;
-        const systemMonitorText = String(document.getElementById('systemMonitorGrid')?.textContent || '');
-        if (systemServiceCount < 8) issues.push(`monitor_service_card_count:${systemServiceCount}`);
-        if (!systemMonitorText.includes('ibkr-backtest')) issues.push('monitor_service_missing_ibkr_backtest');
-      }
-      if (expected.qualityRoute) {
-        const routeText = String(document.querySelector('.quality-route-panel')?.textContent || '');
-        if (!routeText.includes('日常安全修复入口')) issues.push('missing_quality_route_copy');
-        if (!routeText.includes('预热') || !routeText.includes('历史重建')) issues.push('missing_quality_route_links');
-      }
-      if (expected.historyGuard) {
-        const guardText = String(document.querySelector('.rebuild-guard-panel')?.textContent || '');
-        const confirmBox = document.getElementById('confirmFullRebuild');
-        const startButton = document.getElementById('startButton');
-        if (!guardText.includes('最后恢复手段')) issues.push('missing_history_guard_copy');
-        if (!guardText.includes('预热') || !guardText.includes('数据质量')) issues.push('missing_history_guard_routes');
-        if (!confirmBox) issues.push('missing_history_rebuild_confirm');
-        if (startButton && !startButton.disabled && confirmBox && !confirmBox.checked) {
-          issues.push('history_rebuild_start_not_guarded');
-        }
-      }
       if (expected.runtimeSummary) {
         const summaryText = String(document.getElementById('serviceTopologyArea')?.textContent || '');
         const summaryLink = document.querySelector('#serviceTopologyArea .runtime-link-action');
-        const summaryLinkHref = String(summaryLink?.getAttribute('href') || '');
         const serviceControlCount = document.querySelectorAll('#serviceControlGrid .service-control-card').length;
-        const serviceControlText = String(document.getElementById('serviceControlGrid')?.textContent || '');
-        if (!summaryText.includes('运维大盘')) issues.push('missing_runtime_ops_summary_copy');
-        if (!summaryLink || !/\/ibkr_monitor\.html/.test(summaryLinkHref)) {
-          issues.push(`missing_runtime_ops_summary_link:${summaryLinkHref || 'empty'}`);
-        }
-        if (serviceControlCount < 5) issues.push(`runtime_service_control_count:${serviceControlCount}`);
-        if (!serviceControlText.includes('ibkr-backtest')) issues.push('runtime_service_control_missing_ibkr_backtest');
+        if (!summaryText.trim()) issues.push('missing_runtime_summary_copy');
+        if (summaryLink) issues.push('unexpected_runtime_summary_link');
+        if (serviceControlCount < 3) issues.push(`runtime_service_control_count:${serviceControlCount}`);
       }
       return issues;
     }, expectedSystemPage);
@@ -774,35 +491,21 @@ async function inspectPage(browser, token, url, mobile) {
   const path = new URL(finalUrl).pathname;
   const isHomePage = path === '/index.html' || path === '/';
   const allowWorkspacePanelSpread = new Set([
-    '/ibkr_chart.html',
+    '/index.html',
     '/ibkr_runtime.html',
-    '/ibkr_backtests.html',
   ]).has(path);
   const allowVisibleInitialOverlay = new Set([
     '/ibkr_runtime.html',
-    '/ibkr_indicators.html',
-    '/ibkr_monitor.html',
-    '/ibkr_warmup.html',
-    '/ibkr_data_quality.html',
-    '/ibkr_history_rebuild.html',
-    '/ibkr_backtests.html',
   ]).has(path);
   const allowMissingTopSection = new Set([
-    '/ibkr_indicators.html',
     '/ibkr_config.html',
-    '/ibkr_stats.html',
   ]).has(path);
-  const allowTwoBridgeShells = new Set([
-    '/ibkr_monitor.html',
-    '/ibkr_warmup.html',
-    '/ibkr_data_quality.html',
-    '/ibkr_history_rebuild.html',
-  ]).has(path);
+  const allowTwoBridgeShells = false;
 
   const layoutIssues = [];
   if (/\/login\.html/.test(finalUrl)) layoutIssues.push('redirected_to_login');
   if (!navTexts.length) layoutIssues.push('missing_nav');
-  if (navTexts.length && navTexts.length !== 5) layoutIssues.push(`nav_count:${navTexts.length}`);
+  if (navTexts.length && navTexts.length !== 4) layoutIssues.push(`nav_count:${navTexts.length}`);
   if (navTexts.some((text) => String(text || '').includes('运维'))) layoutIssues.push('legacy_ops_bottom_nav');
   if (navTexts.length && !navTexts.some((text) => String(text || '').includes('系统'))) layoutIssues.push('missing_system_bottom_nav');
   if (!layout.context_count) layoutIssues.push('missing_context_bar');
@@ -873,41 +576,8 @@ async function inspectPage(browser, token, url, mobile) {
   }
   await browser.close();
 
-  if (opts.includeIndicatorTrace) {
-    try {
-      const scenarioOutput = await runIndicatorTraceSurfaceCheck();
-      results.push(normalizeIndicatorTraceScenario(scenarioOutput));
-    } catch (error) {
-      results.push(normalizeIndicatorTraceScenario({
-        ok: false,
-        error: error?.message || String(error),
-        checked_at: new Date().toISOString(),
-        result: {
-          partial: true,
-          trace: {
-            status: 'scenario_crashed',
-            final_url: '',
-          },
-        },
-      }));
-    }
-  }
-
-  if (opts.includeWheelScroll) {
-    try {
-      const scenarioOutput = await runWheelScrollSurfaceCheck();
-      results.push(...normalizeWheelScrollScenarios(scenarioOutput));
-    } catch (error) {
-      results.push(...normalizeWheelScrollScenarios({
-        ok: false,
-        error: error?.message || String(error),
-        checked_at: new Date().toISOString(),
-      }));
-    }
-  }
-
   const failing = results.filter((item) => item.errors.length || item.layout_issues.length || item.page_expectation_issues.length);
-  printRunSummary(results, opts);
+  printRunSummary(results);
   console.log(JSON.stringify(results, null, 2));
   if (failing.length) {
     process.exit(1);

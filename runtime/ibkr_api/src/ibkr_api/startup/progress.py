@@ -304,16 +304,11 @@ def build_startup_card(
         f"**下一步**: {normalized.get('operator_action') or '等待系统继续推进'}",
     ]
     context_lines = [
-        f"**内部轮次**: {normalized.get('cycle_id') or '-'}",
         f"**环境**: {environment_tag(runtime_environment)}",
         f"**最近更新时间**: {normalized.get('last_update_at') or '-'}",
     ]
     if normalized.get("reason"):
         context_lines.append(f"**启动原因**: {normalized['reason']}")
-    if normalized.get("source"):
-        context_lines.append(f"**启动来源**: {normalized['source']}")
-    if normalized.get("runtime_phase"):
-        context_lines.append(f"**Runtime 阶段**: {normalized['runtime_phase']}")
     for key, value in normalized.get("fields", {}).items():
         context_lines.append(f"**{key}**: {value}")
     elements: list[dict[str, Any]] = [

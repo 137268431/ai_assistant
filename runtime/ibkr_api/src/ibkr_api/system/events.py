@@ -19,6 +19,20 @@ SYSTEM_EVENT_LEVEL_META = {
     "warning": {"emoji": "⚠️", "template": "orange"},
     "error": {"emoji": "🚨", "template": "red"},
 }
+SYSTEM_EVENT_HIDDEN_DETAIL_KEYS = {
+    "今日bars",
+    "indicator",
+    "indicators",
+    "compute_readiness",
+    "backtest_readiness",
+    "Backtest",
+    "日筛",
+    "日筛状态",
+    "日筛日期",
+    "日筛错误",
+    "scan",
+    "topup",
+}
 
 
 NormalizeEnvironment = Callable[[Any, str], str]
@@ -76,6 +90,8 @@ def build_system_event_card(
     detail_fields = add_environment_to_detail(detail, runtime_environment)
     lines = [f"**来源**: {source_label}  |  **级别**: {level_meta['emoji']} {str(level or 'info').upper()}"]
     for key, value in detail_fields.items():
+        if str(key) in SYSTEM_EVENT_HIDDEN_DETAIL_KEYS:
+            continue
         lines.append(f"**{key}**: {value}")
     times = time_strings()
     lines.append(f"🕐 美东 {times['us']} | 北京 {times['cn']}")

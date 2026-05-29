@@ -1,4 +1,4 @@
-// Static smoke marker: ops summary link markup lives in renderers.js (ops-summary-link /ibkr_monitor.html).
+// Static smoke marker: TV-primary summary link markup lives in renderers.js.
 function scheduleSystemRefresh() {
     if (refreshTimer) {
         clearTimeout(refreshTimer);

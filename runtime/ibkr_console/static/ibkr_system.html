@@ -5,21 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>IBKR Overview - Trading Flight</title>
     <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
-    <script src="common.js?v=20260528-night-session-review-entry-1"></script>
+    <script src="common.js?v=20260529-tv-primary-lean-1"></script>
     <script>document.write(getCommonStyles());</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
     <script src="/assets/js/shared/ibkr-page-core.js?v=20260507-shared-split"></script>
-    <script src="/assets/js/shared/ibkr-page-engine.js?v=20260507-shared-split"></script>
     <script src="/assets/js/shared/ibkr-page-auth.js?v=20260507-shared-split"></script>
     <script src="/assets/js/shared/ibkr-page-config.js?v=20260507-shared-split"></script>
     <script src="/assets/js/shared/ibkr-page.js?v=20260507-shared-split"></script>
-    <link rel="stylesheet" href="/assets/css/pages/ibkr_system/page.css?v=20260523-freshness-split">
+    <link rel="stylesheet" href="/assets/css/pages/ibkr_system/page.css?v=20260529-tv-primary-lean-1">
 </head>
 <body>
     <div class="page-loading-overlay" id="pageLoading">
         <div class="page-loading-card">
             <div class="page-loading-title" id="pageLoadingTitle">系统概览加载中</div>
-            <div class="page-loading-copy" id="pageLoadingCopy">正在同步 healthz / statusz / scheduler / freshness / events / 回测统计，请稍候。</div>
+            <div class="page-loading-copy" id="pageLoadingCopy">正在同步 TV webhook、IBKR execution、runtime 与 supporting ops 状态，请稍候。</div>
             <div class="page-loading-bars">
                 <div class="page-loading-bar"></div>
                 <div class="page-loading-bar"></div>
@@ -71,26 +70,25 @@
             </div>
 
             <div class="section">
-                <div class="section-header">🧭 运维摘要</div>
+                <div class="section-header">🧭 TV / IBKR / Runtime 摘要</div>
                 <div class="section-body" id="serviceTopologyArea">
                     <div class="loading-text">加载中...</div>
                 </div>
             </div>
 
-            <div class="section legacy-diagnostics">
-                <div class="section-header">⏱ IBKR Scheduler</div>
+            <div class="section">
+                <div class="section-header">⏱ Supporting Scheduler</div>
                 <div class="section-body" id="schedulerArea">
                     <div class="loading-text">加载中...</div>
                 </div>
             </div>
 
-            <div class="section legacy-diagnostics" id="todayStatsSection">
+            <div class="section" id="todayStatsSection">
                 <div class="section-header">📊 今日统计</div>
                 <div class="section-body">
                     <div class="stats-mini" id="todayStats">
                         <div class="stat-mini"><div class="stat-mini-label">ORDERS</div><div class="stat-mini-value">-</div></div>
-                        <div class="stat-mini"><div class="stat-mini-label">IBKR BARS</div><div class="stat-mini-value">-</div></div>
-                        <div class="stat-mini"><div class="stat-mini-label">IBKR IND</div><div class="stat-mini-value">-</div></div>
+                        <div class="stat-mini"><div class="stat-mini-label">TV WEBHOOK</div><div class="stat-mini-value">-</div></div>
                         <div class="stat-mini"><div class="stat-mini-label">IBKR SIG</div><div class="stat-mini-value">-</div></div>
                         <div class="stat-mini"><div class="stat-mini-label">TARGETS</div><div class="stat-mini-value">-</div></div>
                         <div class="stat-mini"><div class="stat-mini-label">EVENTS</div><div class="stat-mini-value">-</div></div>
@@ -98,16 +96,10 @@
                 </div>
             </div>
 
-            <div class="section legacy-diagnostics">
-                <div class="section-header">📡 数据延迟</div>
-                <div class="section-body" id="freshnessArea">
-                    <div class="loading-text">加载中...</div>
-                </div>
-            </div>
 
-            <div class="section legacy-diagnostics">
+            <div class="section">
                 <div class="section-header">
-                    <span>🗄 Storage / Tables</span>
+                    <span>🗄 Storage / Cleanup</span>
                     <span id="storageHealthMeta" style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace">--</span>
                 </div>
                 <div class="section-body" id="storageHealthArea">
@@ -117,7 +109,7 @@
 
             <div class="section">
                 <div class="section-header">
-                    <span>🔧 配置</span>
+                    <span>🔧 主链路配置</span>
                     <a id="configLink" href="/ibkr_config.html" style="font-size:10px;color:var(--accent);text-decoration:none;font-family:'JetBrains Mono',monospace">编辑 →</a>
                 </div>
                 <div class="section-body" id="configArea">
@@ -125,48 +117,21 @@
                 </div>
             </div>
 
-            <div class="overview-columns">
-                <div class="overview-column">
-                    <div class="section legacy-diagnostics">
-                        <div class="section-header">
-                            <span>⚙️ 计算引擎</span>
-                            <span id="engineCount" style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace">--</span>
-                        </div>
-                        <div class="section-body section-scroll engine-scroll" id="engineArea">
-                            <div class="loading-text">加载中...</div>
-                        </div>
-                    </div>
-
-                    <div class="section legacy-diagnostics">
-                        <div class="section-header">
-                            <span>🧪 最近回测统计</span>
-                            <span id="backtestCount" style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace">--</span>
-                        </div>
-                        <div class="section-body" id="backtestArea">
-                            <div class="loading-text">加载中...</div>
-                        </div>
-                    </div>
+            <div class="section">
+                <div class="section-header">
+                    <span>📋 最近事件</span>
+                    <span id="eventCount" style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace">--</span>
                 </div>
-
-                <div class="overview-column">
-                    <div class="section">
-                        <div class="section-header">
-                            <span>📋 最近事件</span>
-                            <span id="eventCount" style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace">--</span>
-                        </div>
-                        <div class="section-body section-scroll event-scroll" id="eventArea">
-                            <div class="loading-text">加载中...</div>
-                        </div>
-                    </div>
+                <div class="section-body section-scroll event-scroll" id="eventArea">
+                    <div class="loading-text">加载中...</div>
                 </div>
             </div>
         </div>
     </div>
 
-    <script src="/assets/js/pages/ibkr_system/state-api.js?v=20260523-cron-pagination"></script>
-    <script src="/assets/js/pages/ibkr_system/renderers.js?v=20260523-freshness-split"></script>
-    <script src="/assets/js/pages/ibkr_system/cards.js?v=20260507-system-split"></script>
-    <script src="/assets/js/pages/ibkr_system/actions.js?v=20260522-today-stats-cache"></script>
-    <script src="/assets/js/pages/ibkr_system/page.js?v=20260507-system-split"></script>
+    <script src="/assets/js/pages/ibkr_system/state-api.js?v=20260529-tv-primary-lean-1"></script>
+    <script src="/assets/js/pages/ibkr_system/renderers.js?v=20260529-tv-primary-lean-2"></script>
+    <script src="/assets/js/pages/ibkr_system/actions.js?v=20260529-tv-primary-lean-1"></script>
+    <script src="/assets/js/pages/ibkr_system/page.js?v=20260529-tv-primary-lean-1"></script>
 </body>
 </html>

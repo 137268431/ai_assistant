@@ -1042,7 +1042,7 @@ def build_order_group_status_card(
     environment = to_text(_record_or_extra_value(primary, "environment")) or "live"
     broker_badge = _broker_badge(environment)
     symbol = to_text(_record_or_extra_value(primary, "symbol")).upper() or "ORDER"
-    trade_group_id = to_text(_record_or_extra_value(primary, "trade_group_id", "entry_order_unique_id", "unique_id"))
+    trade_group_id = to_text(_record_or_extra_value(primary, "trade_group_id", "entry_order_unique_id"))
     signal_id = to_text(_record_or_extra_value(primary, "signal_id"))
     protection_model = _protection_state_model(rows)
     resolved_status = to_text(status or _group_status(rows) or _record_or_extra_value(primary, "status", "order_status", "current_status"))
@@ -1316,7 +1316,7 @@ def _trade_ledger_event_model(order_record: dict[str, Any], previous_order: dict
         }
 
     exec_id = _trade_ledger_exec_id(order_record)
-    trade_group_id = to_text(_record_or_extra_value(order_record, "trade_group_id", "entry_order_unique_id", "unique_id"))
+    trade_group_id = to_text(_record_or_extra_value(order_record, "trade_group_id", "entry_order_unique_id"))
     unique_id = to_text(_record_or_extra_value(order_record, "unique_id", "id"))
     digest_payload = {
         "environment": environment,
@@ -1370,7 +1370,6 @@ def build_order_callback_ledger_card(
     callback_type = to_text(event_model.get("callback_type")) or _trade_ledger_callback_type(order_record)
     event_label = to_text(event_model.get("event_label")) or status_text
     broker_order_id = to_text(_record_or_extra_value(order_record, "broker_order_id", "order_id", "orderId"))
-    unique_id = to_text(_record_or_extra_value(order_record, "unique_id", "id"))
     signal_id = to_text(_record_or_extra_value(order_record, "signal_id"))
     trade_group_id = to_text(_record_or_extra_value(order_record, "trade_group_id", "entry_order_unique_id"))
     direction = to_text(_record_or_extra_value(order_record, "position_side", "direction", "side"))
@@ -1392,7 +1391,7 @@ def build_order_callback_ledger_card(
         f"**回调类型**: {callback_type}",
         f"**状态**: {status_text}",
         f"**Symbol / Broker**: {symbol} / {broker_badge}",
-        f"**Broker订单ID / UniqueID**: {broker_order_id or '-'} / {unique_id or '-'}",
+        f"**Broker订单ID**: {broker_order_id or '-'}",
         f"**信号ID / 交易组**: {signal_id or '-'} / {trade_group_id or '-'}",
         f"**角色 / 类型 / 方向**: {_trade_ledger_role_label(order_record)} / {order_type or '-'} / {direction or '-'}",
         f"**数量 / 已成交**: {_format_quantity(_record_or_extra_value(order_record, 'quantity'))} / {_format_quantity(filled_qty)}",
@@ -1649,23 +1648,34 @@ def build_order_status_card(order_record: Any, *, status: str = "", message: str
     resolved_status = to_text(status or _record_or_extra_value(order_record, "status", "order_status", "current_status"))
     status_text = _status_text(resolved_status)
     order_id = to_text(_record_or_extra_value(order_record, "order_id", "broker_order_id", "ib_order_id"))
-    unique_id = to_text(_record_or_extra_value(order_record, "unique_id", "id"))
     signal_id = to_text(_record_or_extra_value(order_record, "signal_id"))
     trade_group_id = to_text(_record_or_extra_value(order_record, "trade_group_id", "entry_order_unique_id"))
     role = to_text(_record_or_extra_value(order_record, "role"))
     order_type = to_text(_record_or_extra_value(order_record, "order_type"))
+    direction = to_text(_record_or_extra_value(order_record, "position_side", "direction", "side", "action"))
+    quantity = to_float(_record_or_extra_value(order_record, "quantity"))
+    filled_qty = to_float(_record_or_extra_value(order_record, "filled_qty"))
+    remaining_qty = to_float(_record_or_extra_value(order_record, "remaining_qty", "remaining"))
+    if remaining_qty is None and quantity is not None and filled_qty is not None:
+        remaining_qty = max(0.0, quantity - filled_qty)
     pnl_line = _realized_pnl_line(_single_order_pnl_model(order_record))
+    protection_line = _protection_status_line([order_record])
+    reason = to_text(_record_or_extra_value(order_record, "status_reason", "reason", "message", "broker_last_error", "order_error"))
 
     body_lines = [
         f"**状态**: {status_text}",
         f"**Symbol**: {symbol}",
         f"**Broker**: {broker_badge}",
-        f"**订单ID / UniqueID**: {order_id or '-'} / {unique_id or '-'}",
+        f"**Broker订单ID**: {order_id or '-'}",
         f"**信号ID / 交易组**: {signal_id or '-'} / {trade_group_id or '-'}",
-        f"**角色 / 类型**: {role or '-'} / {order_type or '-'}",
-        f"**数量 / 已成交**: {_format_quantity(_record_or_extra_value(order_record, 'quantity'))} / {_format_quantity(_record_or_extra_value(order_record, 'filled_qty'))}",
-        f"**价格 / 止盈 / 止损**: {_format_price(_record_or_extra_value(order_record, 'price', 'limit_price', 'avg_price', 'avg_fill_price'))} / {_format_price(_record_or_extra_value(order_record, 'tp_price', 'take_profit'))} / {_format_price(_record_or_extra_value(order_record, 'sl_price', 'stop_loss'))}",
+        f"**角色 / 类型 / 方向**: {role or '-'} / {order_type or '-'} / {direction or '-'}",
+        f"**数量 / 已成交 / 剩余**: {_format_quantity(quantity)} / {_format_quantity(filled_qty)} / {_format_quantity(remaining_qty)}",
+        f"**均价 / 成交价**: {_format_price(_record_or_extra_value(order_record, 'avg_price', 'avg_fill_price'))} / {_format_price(_record_or_extra_value(order_record, 'fill_price', 'last_fill_price', 'execution_price', 'price', 'limit_price'))}",
     ]
+    if protection_line:
+        body_lines.append(protection_line)
+    if reason:
+        body_lines.append(f"**原因**: {reason}")
     if pnl_line:
         body_lines.append(pnl_line)
     if message:

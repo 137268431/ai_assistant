@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>订单明细</title>
     <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
-    <script src="common.js?v=20260528-night-session-review-entry-1"></script>
+    <script src="common.js?v=20260529-tv-primary-lean-1"></script>
     <script>document.write(getCommonStyles());</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
     <link rel="stylesheet" href="/assets/css/pages/ibkr_order_details/page.css">
@@ -683,7 +683,6 @@
 
                 <div class="action-row">
                     ${primary.signal_id ? `<button class="action-btn btn-secondary" onclick="viewSignal('${encodeURIComponent(primary.signal_id)}')">📡 查看信号</button>` : ''}
-                    ${primary.symbol ? `<button class="action-btn btn-secondary" onclick="openDetailChart('${encodeURIComponent(primary.id || primary.order_id || primary.trade_group_id || '')}')">📉 图表页</button>` : ''}
                     ${lifecycleFlowUrl ? `<a class="action-btn btn-secondary" href="${lifecycleFlowUrl}">🧭 流程图</a>` : ''}
                     ${primary.trade_group_id ? `<button class="action-btn btn-view" onclick="viewTradeGroup('${encodeURIComponent(primary.trade_group_id)}', '${encodeURIComponent(primary.signal_id || contextSignalId)}')">🔁 刷新本交易组</button>` : ''}
                 </div>
@@ -723,7 +722,6 @@
                     ${detail.reason ? `<div class="event-note">${escapeHtml(detail.reason)}</div>` : ''}
 
                     <div class="action-row">
-                        <button class="action-btn btn-secondary" onclick="openDetailChart('${encodeURIComponent(detail.id || detail.order_id || detail.trade_group_id || '')}')">📉 图表页</button>
                         ${lifecycleFlowUrl ? `<a class="action-btn btn-secondary" href="${lifecycleFlowUrl}">🧭 流程图</a>` : ''}
                         <button class="action-btn btn-view" onclick="viewTradeGroup('${encodeURIComponent(detail.trade_group_id)}', '${encodeURIComponent(detail.signal_id || contextSignalId)}')">📜 交易组</button>
                         <button class="action-btn btn-secondary" onclick="viewOrder('${encodeURIComponent(detail.order_id || detail.broker_order_id)}', '${encodeURIComponent(detail.signal_id || contextSignalId)}')">🔎 订单轨迹</button>
@@ -816,22 +814,6 @@
             if (tradeGroupId) params.trade_group_id = tradeGroupId;
             if (orderId) params.order_id = orderId;
             return buildPageUrl('/ibkr_lifecycle_flow.html', params, { environment: currentEnvironment });
-        }
-
-        function openDetailChart(detailRef) {
-            const decoded = decodeURIComponent(detailRef || '');
-            const detail = allDetails.find((item) =>
-                String(item.id || '') === decoded
-                || String(item.order_id || '') === decoded
-                || String(item.broker_order_id || '') === decoded
-                || String(item.trade_group_id || '') === decoded
-            );
-            const params = buildDetailChartParams(detail);
-            if (!params) {
-                showToast('暂无图表上下文');
-                return;
-            }
-            location.href = buildPageUrl('/ibkr_chart.html', params, { environment: currentEnvironment });
         }
 
         function viewSignal(signalId) {

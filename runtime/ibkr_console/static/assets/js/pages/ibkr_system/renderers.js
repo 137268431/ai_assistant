@@ -113,17 +113,91 @@ function getSchedulerStatusCardModel(summary = {}) {
     };
 }
 
+
+function getTvWebhookStatusCardModel(tvWebhook = {}) {
+    const enabledRaw = tvWebhook.enabled ?? tvWebhook.tv_webhook_ingest_enabled ?? true;
+    const enabled = !(String(enabledRaw).trim().toLowerCase() === 'false' || enabledRaw === false);
+    if (enabled) {
+        return {
+            dotClass: 'dot-green',
+            mainText: 'READY',
+            subText: 'TradingView webhook intake enabled',
+        };
+    }
+    return {
+        dotClass: 'dot-yellow',
+        mainText: 'DISABLED',
+        subText: 'TV webhook intake is turned off',
+    };
+}
+
+function getIbkrExecutionStatusCardModel(runtime = {}) {
+    const session = runtime?.session || {};
+    const authenticated = Boolean(session.authenticated || runtime.authenticated || runtime.session_authenticated);
+    const tradingEnabled = runtime.ibkr_trading_enabled !== false && runtime.trading_enabled !== false;
+    if (authenticated && tradingEnabled) {
+        return {
+            dotClass: 'dot-green',
+            mainText: 'READY',
+            subText: 'IBKR session 已认证 · execution enabled',
+        };
+    }
+    if (authenticated) {
+        return {
+            dotClass: 'dot-yellow',
+            mainText: 'GUARDED',
+            subText: 'IBKR session 已认证 · execution guard enabled',
+        };
+    }
+    return {
+        dotClass: 'dot-yellow',
+        mainText: 'PENDING',
+        subText: '等待 IBKR session / 2FA',
+    };
+}
+
+function getSystemRuntimeStatusCardModel(runtime = {}) {
+    const normalizedStatus = String(runtime?.status || runtime?.runtime_status || '').trim().toLowerCase();
+    const gateway = runtime?.gateway || {};
+    const session = runtime?.session || {};
+    const gatewayRunning = Boolean(gateway.running || runtime.gateway_running || runtime.ibkr_gateway_running);
+    const authenticated = Boolean(session.authenticated || runtime.authenticated || runtime.session_authenticated);
+    const websocketReady = Boolean(runtime?.websocket?.ready || runtime.websocket_ready || runtime.websocket_connected);
+    if (normalizedStatus === 'running' && gatewayRunning && authenticated) {
+        return {
+            dotClass: 'dot-green',
+            mainText: 'RUNNING',
+            subText: websocketReady ? 'Gateway / session / websocket ready' : 'Gateway / session ready',
+        };
+    }
+    if (normalizedStatus === 'running' || gatewayRunning || authenticated) {
+        return {
+            dotClass: 'dot-yellow',
+            mainText: normalizedStatus ? normalizedStatus.toUpperCase() : 'PARTIAL',
+            subText: [
+                gatewayRunning ? 'gateway up' : 'gateway pending',
+                authenticated ? 'session auth' : 'session pending',
+            ].join(' · '),
+        };
+    }
+    return {
+        dotClass: 'dot-gray',
+        mainText: normalizedStatus ? normalizedStatus.toUpperCase() : 'UNKNOWN',
+        subText: 'runtime status 同步中',
+    };
+}
+
 function renderStatus(health) {
     const dataEl = document.getElementById('dataStatus');
-    const dataStatusModel = getSystemIbkrDataStatusCardModel(health.ibkr_data || {});
-    dataEl.innerHTML = buildStatusCardMarkup(dataStatusModel.dotClass, dataStatusModel.mainText, dataStatusModel.subText);
+    const tvStatusModel = getTvWebhookStatusCardModel(health.tv_webhook || {});
+    dataEl.innerHTML = buildStatusCardMarkup(tvStatusModel.dotClass, tvStatusModel.mainText, tvStatusModel.subText);
 
     const compEl = document.getElementById('computeStatus');
-    const computeStatusModel = getIbkrComputeStatusCardModel(health.ibkr_compute || {});
-    compEl.innerHTML = buildStatusCardMarkup(computeStatusModel.dotClass, computeStatusModel.mainText, computeStatusModel.subText);
+    const executionStatusModel = getIbkrExecutionStatusCardModel(health.runtime || {});
+    compEl.innerHTML = buildStatusCardMarkup(executionStatusModel.dotClass, executionStatusModel.mainText, executionStatusModel.subText);
 
     const runtimeEl = document.getElementById('runtimeStatus');
-    const runtimeStatusModel = getIbkrRuntimeStatusCardModel(health.runtime || {});
+    const runtimeStatusModel = getSystemRuntimeStatusCardModel(health.runtime || {});
     runtimeEl.innerHTML = buildStatusCardMarkup(runtimeStatusModel.dotClass, runtimeStatusModel.mainText, runtimeStatusModel.subText);
 
     const schedulerEl = document.getElementById('schedulerStatus');
@@ -143,7 +217,7 @@ function renderServiceTopology(topologyPayload = {}) {
         ? topologyPayload.services
         : {};
     const serviceEntries = Object.entries(topology);
-    const monitorHref = buildPageUrl('/ibkr_monitor.html', {}, { environment: currentEnvironment });
+    const runtimeHref = buildPageUrl('/ibkr_runtime.html', {}, { environment: currentEnvironment });
     const brokerMode = typeof getCurrentBrokerMode === 'function' ? getCurrentBrokerMode() : currentEnvironment;
     const screenerHref = buildPageUrl('/ibkr_screener.html', {
         tab: 'screener',
@@ -162,11 +236,11 @@ function renderServiceTopology(topologyPayload = {}) {
                         <div>
                             <div class="ops-summary-kicker">Ops Routing</div>
                             <div class="ops-summary-title">服务拓扑摘要待同步</div>
-                            <div class="ops-summary-copy">总览页只保留入口和健康摘要；请求、订阅、主机和 PB 明细请在运维页排查。</div>
+                            <div class="ops-summary-copy">总览页只保留 TV webhook、IBKR execution、runtime 与 supporting ops 摘要。</div>
                         </div>
                     </div>
                     <div class="ops-summary-actions">
-                        <a class="ops-summary-link is-primary" href="${monitorHref}"><span>打开运维大盘</span><span aria-hidden="true">→</span></a>
+                        <a class="ops-summary-link is-primary" href="${runtimeHref}"><span>打开控制台</span><span aria-hidden="true">→</span></a>
                         <a class="ops-summary-link" href="${screenerHref}"><span>重选今日标的</span><span aria-hidden="true">→</span></a>
                     </div>
                 </div>
@@ -179,18 +253,18 @@ function renderServiceTopology(topologyPayload = {}) {
         return;
     }
 
-    const serviceOrder = ['ibkr-console', 'ibkr-api', 'ibkr-scheduler', 'ibkr-compute', 'ibkr-backtest', 'ibkr-runtime', 'ibkr-gateway', 'pocketbase'];
+    const serviceOrder = ['ibkr-console', 'ibkr-api', 'ibkr-scheduler', 'ibkr-compute', 'ibkr-runtime', 'ibkr-gateway', 'pocketbase'];
     const serviceSemantics = {
         'ibkr-console': 'console UI',
         'ibkr-api': 'API / control plane',
         'ibkr-scheduler': 'cron dispatch',
-        'ibkr-compute': 'indicators / signals / data quality',
-        'ibkr-backtest': 'replay / backtest worker',
-        'ibkr-runtime': 'broker session / live bars',
+        'ibkr-compute': 'supporting compute / cleanup APIs',
+        'ibkr-runtime': 'broker session / execution state',
         'ibkr-gateway': 'IB Gateway session',
         pocketbase: 'state / config store',
     };
-    const orderedEntries = serviceEntries.sort(([left], [right]) => {
+    const visibleServiceEntries = serviceEntries.filter(([key]) => key !== 'ibkr-backtest');
+    const orderedEntries = visibleServiceEntries.sort(([left], [right]) => {
         const leftIndex = serviceOrder.indexOf(left);
         const rightIndex = serviceOrder.indexOf(right);
         const leftWeight = leftIndex >= 0 ? leftIndex : 999;
@@ -201,16 +275,13 @@ function renderServiceTopology(topologyPayload = {}) {
     const normalizedServices = orderedEntries.map(([key, service]) => {
         const rawStatus = String(service?.status || 'unknown').trim().toLowerCase() || 'unknown';
         const workerStatus = String(service?.worker_status || service?.readiness_phase || '').trim().toLowerCase();
-        const backtestIdle = key === 'ibkr-backtest'
-            && !['degraded', 'warning', 'warn', 'error', 'offline', 'failed', 'stopped'].includes(rawStatus)
-            && (rawStatus === 'idle' || workerStatus === 'idle');
         const status = ['ok', 'ready', 'healthy', 'online', 'peer', 'external'].includes(rawStatus)
             ? 'running'
-            : (backtestIdle ? 'idle' : rawStatus);
+            : rawStatus;
         const semantic = serviceSemantics[key] || String(service?.kind || service?.fault_domain || 'service').trim();
         const detail = String(service?.detail || service?.responsibility || semantic || '').trim();
-        const operational = status === 'running' || backtestIdle;
-        const tone = backtestIdle ? 'neutral' : (operational ? 'ok' : (['offline', 'failed', 'error'].includes(status) ? 'danger' : (status === 'unknown' ? 'neutral' : 'warn')));
+        const operational = status === 'running';
+        const tone = operational ? 'ok' : (['offline', 'failed', 'error'].includes(status) ? 'danger' : (status === 'unknown' ? 'neutral' : 'warn'));
         return {
             key,
             status,
@@ -253,7 +324,7 @@ function renderServiceTopology(topologyPayload = {}) {
         {
             label: 'Operational',
             value: String(operationalCount),
-            copy: '完整服务拓扑请进运维大盘',
+            copy: 'supporting ops 仅作执行链路背景',
             tone: operationalCount === normalizedServices.length ? 'ok' : 'neutral',
         },
         {
@@ -263,7 +334,7 @@ function renderServiceTopology(topologyPayload = {}) {
             tone: attentionCount ? 'warn' : 'ok',
         },
     ];
-    const clientServiceKeys = new Set(['ibkr-runtime', 'ibkr-compute', 'ibkr-api', 'ibkr-scheduler', 'ibkr-backtest']);
+    const clientServiceKeys = new Set(['ibkr-runtime', 'ibkr-api', 'ibkr-scheduler']);
     const clientEntries = normalizedServices
         .filter((service) => service.clientId && clientServiceKeys.has(service.key))
         .map((service) => `${service.title.replace(/^ibkr-/, '')} ${service.clientId}`);
@@ -275,23 +346,6 @@ function renderServiceTopology(topologyPayload = {}) {
             tone: 'neutral',
         });
     }
-    const backtestService = normalizedServices.find((service) => service.key === 'ibkr-backtest');
-    if (backtestService) {
-        const workerLabel = String(backtestService.workerStatus || backtestService.readinessPhase || backtestService.status || '--').toUpperCase();
-        const backtestCopy = [
-            backtestService.semantic,
-            backtestService.clientId ? `IB client ${backtestService.clientId}` : '',
-            backtestService.detail || '仅表示服务/worker 状态',
-            '不等同最近回测统计',
-        ].filter(Boolean).join(' · ');
-        cards.push({
-            label: 'Backtest Service',
-            value: workerLabel,
-            copy: backtestCopy,
-            tone: backtestService.tone,
-        });
-    }
-
     el.innerHTML = `
         <div class="ops-summary-shell tone-${escapeHtml(overallTone)}">
             <div class="ops-summary-lead">
@@ -300,11 +354,11 @@ function renderServiceTopology(topologyPayload = {}) {
                     <div>
                         <div class="ops-summary-kicker">Ops Routing</div>
                         <div class="ops-summary-title">服务状态 ${escapeHtml(overallLabel)}</div>
-                        <div class="ops-summary-copy">总览页只看健康摘要；请求、订阅、主机、PB 磁盘与完整 split-stack 详情统一在运维大盘。</div>
+                        <div class="ops-summary-copy">总览页只看 TV webhook、IBKR execution、runtime 与 supporting ops 摘要。</div>
                     </div>
                 </div>
                 <div class="ops-summary-actions">
-                    <a class="ops-summary-link is-primary" href="${monitorHref}"><span>打开运维大盘</span><span aria-hidden="true">→</span></a>
+                    <a class="ops-summary-link is-primary" href="${runtimeHref}"><span>打开控制台</span><span aria-hidden="true">→</span></a>
                     <a class="ops-summary-link" href="${screenerHref}"><span>重选今日标的</span><span aria-hidden="true">→</span></a>
                 </div>
             </div>
@@ -326,7 +380,6 @@ function renderTodayStats(today) {
     const safeToday = hasData ? today : {};
     const stats = [
         { label: 'ORDERS', value: safeToday.orders },
-        { label: 'IBKR BARS', value: safeToday.ibkr_bars },
         { label: 'TV WEBHOOK', value: safeToday.tv_webhook_events },
         { label: 'IBKR SIG', value: safeToday.ibkr_signals },
         { label: 'TARGETS', value: safeToday.ibkr_targets },
@@ -338,267 +391,6 @@ function renderTodayStats(today) {
             <div class="stat-mini-value">${escapeHtml(hasData ? (item.value == null ? '-' : String(item.value)) : '-')}</div>
         </div>
     `).join('');
-}
-
-function getFreshnessAggregateVisual(item = {}) {
-    const status = String(item?.status || '').trim().toLowerCase();
-    const hasReadyPct = item?.ready_pct !== null && item?.ready_pct !== undefined && item?.ready_pct !== '';
-    const readyPct = hasReadyPct ? Number(item.ready_pct) : NaN;
-    const overdue = Number(item?.overdue || 0) || 0;
-    const missing = Number(item?.missing || 0) || 0;
-    const waiting5m = Number(item?.waiting_5m || 0) || 0;
-    const { due, total } = getFreshnessDueTotal(item);
-    const notDue = Number(item?.not_due || 0) || 0;
-    const quiet = Number(item?.quiet_extended || 0) || 0;
-    const pct = Number.isFinite(readyPct) ? Math.max(0, Math.min(100, readyPct)) : 0;
-
-    if (!item || (!total && !due && !status && !Number.isFinite(readyPct))) {
-        return { color: '#64748b', pct: 0, chipClass: 'is-empty', stateText: '暂无', chipText: '--' };
-    }
-    if (status === 'not_due' || (total > 0 && notDue >= total && due === 0)) {
-        return { color: '#38bdf8', pct: 0, chipClass: 'is-idle', stateText: '未到周期', chipText: 'NOT DUE' };
-    }
-    if (status === 'quiet_extended' || (total > 0 && quiet >= total && due === 0)) {
-        return { color: '#94a3b8', pct: 0, chipClass: 'is-idle', stateText: '扩展静默', chipText: 'QUIET' };
-    }
-    if (status === 'waiting_5m' || (waiting5m > 0 && due === 0)) {
-        return { color: '#38bdf8', pct, chipClass: 'is-idle', stateText: '等待 5m', chipText: 'WAIT 5M' };
-    }
-    if (overdue > 0 || missing > 0 || ['stale', 'overdue', 'missing', 'offline', 'error', 'critical', 'rollup_lag'].includes(status)) {
-        return { color: '#ef4444', pct, chipClass: 'is-stale', stateText: '超时', chipText: formatFreshnessPercent(readyPct) };
-    }
-    if (['warn', 'warning', 'delayed', 'degraded', 'partial'].includes(status) || (Number.isFinite(readyPct) && readyPct < 95)) {
-        return { color: '#f59e0b', pct, chipClass: 'is-warn', stateText: '部分延迟', chipText: formatFreshnessPercent(readyPct) };
-    }
-    return { color: '#22c55e', pct: Number.isFinite(readyPct) ? pct : 100, chipClass: 'is-fresh', stateText: '正常', chipText: formatFreshnessPercent(readyPct) };
-}
-
-function getFreshnessDueTotal(item = {}) {
-    const totalChecks = Number(item?.total_checks || 0) || 0;
-    const dueChecks = Number(item?.due_checks || 0) || 0;
-    if (totalChecks > 0) {
-        return { due: dueChecks, total: totalChecks };
-    }
-    return {
-        due: Number(item?.due_symbols || 0) || 0,
-        total: Number(item?.total_symbols || 0) || 0,
-    };
-}
-
-function isFreshnessIdleAggregate(item = {}) {
-    const status = String(item?.status || '').trim().toLowerCase();
-    if (status === 'not_due' || status === 'quiet_extended') return true;
-
-    const { due, total } = getFreshnessDueTotal(item);
-    const notDue = Number(item?.not_due || 0) || 0;
-    const quiet = Number(item?.quiet_extended || 0) || 0;
-    return total > 0 && due === 0 && (notDue >= total || quiet >= total || notDue + quiet >= total);
-}
-
-function formatFreshnessReadyPercent(item = {}) {
-    return isFreshnessIdleAggregate(item) ? '--' : formatFreshnessPercent(item?.ready_pct);
-}
-
-function getFreshnessExpectedLabel(item = {}) {
-    if (item?.expected_close_us) return String(item.expected_close_us);
-    if (item?.expected_close_ms) return formatTimeLabel(item.expected_close_ms);
-    return '--';
-}
-
-function renderFreshnessReasonPills(item = {}) {
-    const { due, total } = getFreshnessDueTotal(item);
-    const reasons = [
-        ['due', `${due}/${total}`],
-        ['ready', Number(item.ready || 0) || 0],
-        ['overdue', Number(item.overdue || 0) || 0],
-        ['missing', Number(item.missing || 0) || 0],
-        ['waiting5m', Number(item.waiting_5m || 0) || 0],
-        ['not due', Number(item.not_due || 0) || 0],
-        ['quiet', Number(item.quiet_extended || 0) || 0],
-    ];
-    return reasons
-        .filter(([, value], index) => index < 2 || Number(value || 0) > 0)
-        .map(([label, value]) => `<span class="freshness-reason"><strong>${escapeHtml(label)}</strong>${escapeHtml(String(value))}</span>`)
-        .join('');
-}
-
-function renderFreshnessScopeCards(scopes = {}) {
-    const scopeOrder = [
-        'realtime_5m',
-        'active_trading',
-        'active_higher_timeframes',
-        'daily_1d',
-        'watchlist_higher_timeframes',
-        'market_monitor',
-        'market_monitor_1d',
-    ];
-    const cards = scopeOrder
-        .map((name) => scopes?.[name])
-        .filter((scope) => scope && scope.overall)
-        .map((scope) => {
-            const overall = scope.overall || {};
-            const visual = getFreshnessAggregateVisual(overall);
-            const label = scope.label || scope.name || 'Freshness Scope';
-            const { due, total } = getFreshnessDueTotal(overall);
-            const subtitle = [
-                scope.monitor_only ? 'monitor' : (scope.best_effort ? 'best-effort' : (scope.critical ? 'critical' : 'support')),
-                `due ${due}/${total}`,
-                `ready ${Number(overall.ready || 0) || 0}`,
-                Number(overall.overdue || 0) > 0 ? `overdue ${Number(overall.overdue || 0)}` : '',
-                Number(overall.missing || 0) > 0 ? `missing ${Number(overall.missing || 0)}` : '',
-                Number(scope.symbols_total || overall.total_symbols || 0) > 0 ? `symbols ${Number(scope.symbols_total || overall.total_symbols || 0)}` : '',
-            ].filter(Boolean).join(' · ');
-            const monitorClass = scope.monitor_only ? ' is-monitor' : '';
-            return `<div class="freshness-card ${visual.chipClass}${monitorClass}">
-                <div class="freshness-card-head">
-                    <span class="freshness-label">${escapeHtml(label)}</span>
-                    <span class="freshness-chip ${visual.chipClass}">${escapeHtml(visual.chipText)}</span>
-                </div>
-                <div class="freshness-meta">
-                    <div class="freshness-meta-top">
-                        <span class="freshness-percent">${escapeHtml(formatFreshnessReadyPercent(overall))}</span>
-                        <span class="freshness-state" style="color:${visual.color}">${escapeHtml(visual.stateText)}</span>
-                    </div>
-                    <div class="freshness-time">${escapeHtml(subtitle || '--')}</div>
-                </div>
-                <div class="freshness-bar-bg"><div class="freshness-bar-fill" style="width:${visual.pct}%;background:${visual.color}"></div></div>
-                <div class="freshness-reasons">${renderFreshnessReasonPills(overall)}</div>
-            </div>`;
-        });
-    return cards.length ? `<div class="freshness-scope-grid">${cards.join('')}</div>` : '';
-}
-
-function renderLegacyFreshness(data) {
-    const byInterval = Array.isArray(data)
-        ? data.reduce((acc, item) => {
-            if (item && item.interval) acc[normalizeIbkrInterval(item.interval, item.interval)] = item;
-            return acc;
-        }, {})
-        : normalizeFreshnessItems(data).reduce((acc, item) => {
-            if (item && item.interval) acc[item.interval] = item;
-            return acc;
-        }, {});
-    if (!byInterval || Object.keys(byInterval).length === 0) {
-        return '<div class="loading-text">暂无数据</div>';
-    }
-
-    const cards = IBKR_FRESHNESS_INTERVALS.map((tf) => {
-        const item = byInterval[tf];
-        if (!item) {
-            const freshnessVisual = getIbkrFreshnessVisualState(null);
-            return `<div class="freshness-card ${freshnessVisual.chipClass}">
-                <div class="freshness-card-head">
-                    <span class="freshness-label">${tf}</span>
-                    <span class="freshness-chip ${freshnessVisual.chipClass}">${escapeHtml(freshnessVisual.ageLabel)}</span>
-                </div>
-                <div class="freshness-meta">
-                    <div class="freshness-meta-top">
-                        <span class="freshness-link" style="color:var(--muted)">--</span>
-                        <span class="freshness-state">${freshnessVisual.stateText}</span>
-                    </div>
-                    <div class="freshness-time">--</div>
-                </div>
-                <div class="freshness-bar-bg"><div class="freshness-bar-fill" style="width:${freshnessVisual.pct}%;background:${freshnessVisual.color}"></div></div>
-            </div>`;
-        }
-        const age = Math.max(0, Number(item.age_min || 0) || 0);
-        const freshnessVisual = getIbkrFreshnessVisualState(age);
-        const chartHref = item.symbol
-            ? buildPageUrl('/ibkr_chart.html', { symbol: item.symbol, interval: tf }, { environment: currentEnvironment })
-            : '';
-        const timeLabel = item.last_bar_time_ms
-            ? formatTimeLabel(item.last_bar_time_ms)
-            : (item.last_bar_time ? formatTimeLabel(item.last_bar_time) : '--');
-
-        return `<div class="freshness-card ${freshnessVisual.chipClass}">
-            <div class="freshness-card-head">
-                <span class="freshness-label">${tf}</span>
-                <span class="freshness-chip ${freshnessVisual.chipClass}">${escapeHtml(freshnessVisual.ageLabel)}</span>
-            </div>
-            <div class="freshness-meta">
-                <div class="freshness-meta-top">
-                    ${chartHref ? `<a class="freshness-link" href="${chartHref}">${escapeHtml(item.symbol || '--')}</a>` : '<span class="freshness-link" style="color:var(--muted)">--</span>'}
-                    <span class="freshness-state" style="color:${freshnessVisual.color}">${freshnessVisual.stateText}</span>
-                </div>
-                <div class="freshness-time">${escapeHtml(timeLabel)}</div>
-            </div>
-            <div class="freshness-bar-bg"><div class="freshness-bar-fill" style="width:${freshnessVisual.pct}%;background:${freshnessVisual.color}"></div></div>
-        </div>`;
-    });
-    return `<div class="freshness-grid">${cards.join('')}</div>`;
-}
-
-function renderFreshness(data) {
-    const el = document.getElementById('freshnessArea');
-    const normalized = normalizeFreshnessPayload(data);
-    if (!normalized.aggregate) {
-        el.innerHTML = renderLegacyFreshness(data);
-        return;
-    }
-
-    const byInterval = normalized.intervals.reduce((acc, item) => {
-        if (item && item.interval) acc[item.interval] = item;
-        return acc;
-    }, {});
-    const scopes = normalized.scopes || {};
-    const scopeCards = renderFreshnessScopeCards(scopes);
-    const overall = normalized.overall || {};
-    const overallVisual = getFreshnessAggregateVisual(overall);
-    const cards = IBKR_FRESHNESS_INTERVALS.map((tf) => {
-        const item = byInterval[tf] || normalizeFreshnessIntervalItem({ interval: tf }, tf);
-        const visual = getFreshnessAggregateVisual(item);
-        const expectedLabel = getFreshnessExpectedLabel(item);
-        const coverageLabel = formatFreshnessPercent(item.coverage_pct);
-        const sampleText = Array.isArray(item.sample_lag_symbols) && item.sample_lag_symbols.length
-            ? formatSymbolPreview(item.sample_lag_symbols, 5)
-            : '';
-
-        return `<div class="freshness-card ${visual.chipClass}">
-            <div class="freshness-card-head">
-                <span class="freshness-label">${escapeHtml(tf)}</span>
-                <span class="freshness-chip ${visual.chipClass}">${escapeHtml(visual.chipText)}</span>
-            </div>
-            <div class="freshness-meta">
-                <div class="freshness-meta-top">
-                    <span class="freshness-percent">${escapeHtml(formatFreshnessReadyPercent(item))}</span>
-                    <span class="freshness-state" style="color:${visual.color}">${escapeHtml(visual.stateText)}</span>
-                </div>
-                <div class="freshness-time freshness-expected">应更新 ${escapeHtml(expectedLabel)}</div>
-                <div class="freshness-time">覆盖 ${escapeHtml(coverageLabel)}</div>
-            </div>
-            <div class="freshness-bar-bg"><div class="freshness-bar-fill" style="width:${visual.pct}%;background:${visual.color}"></div></div>
-            <div class="freshness-reasons">${renderFreshnessReasonPills(item)}</div>
-            ${sampleText ? `<div class="freshness-samples">异常样例 ${escapeHtml(sampleText)}</div>` : ''}
-        </div>`;
-    });
-
-    const overallDue = Number(overall.due_checks ?? overall.due_symbols ?? 0) || 0;
-    const overallTotal = Number(overall.total_checks ?? overall.total_symbols ?? 0) || 0;
-    const overallMeta = [
-        `due ${overallDue}/${overallTotal}`,
-        `ready ${Number(overall.ready || 0) || 0}`,
-        `overdue ${Number(overall.overdue || 0) || 0}`,
-        `missing ${Number(overall.missing || 0) || 0}`,
-        Number(overall.waiting_5m || 0) > 0 ? `waiting5m ${Number(overall.waiting_5m || 0)}` : '',
-        Number(overall.not_due || 0) > 0 ? `not due ${Number(overall.not_due || 0)}` : '',
-        Number(overall.quiet_extended || 0) > 0 ? `quiet ${Number(overall.quiet_extended || 0)}` : '',
-    ].filter(Boolean);
-
-    el.innerHTML = `<div class="freshness-overall ${overallVisual.chipClass}">
-            <div>
-                <div class="freshness-overall-kicker">Trade Freshness</div>
-                <div class="freshness-overall-title">
-                    <span>${escapeHtml(formatFreshnessReadyPercent(overall))}</span>
-                    <span class="freshness-state" style="color:${overallVisual.color}">${escapeHtml(overallVisual.stateText)}</span>
-                </div>
-            </div>
-            <div class="freshness-overall-meta">
-                <span>coverage ${escapeHtml(formatFreshnessPercent(overall.coverage_pct))}</span>
-                ${overallMeta.map((item) => `<span>${escapeHtml(item)}</span>`).join('')}
-            </div>
-        </div>
-        ${scopeCards}
-        <div class="freshness-interval-grid">${cards.join('')}</div>`;
 }
 
 function formatStorageBytes(value) {
@@ -703,13 +495,27 @@ function renderStorageHealth(payload = {}) {
         },
     ];
 
-    const tablesByGroup = tables.reduce((acc, table) => {
+    const primaryTableNames = new Set([
+        'tv_webhook_events',
+        'ibkr_signals',
+        'ibkr_reverse_signals',
+        'ibkr_targets',
+        'orders',
+        'ibkr_order_details',
+        'ibkr_state',
+        'config',
+        'watchlist',
+        'system_events',
+    ]);
+    const tablesByGroup = tables
+        .filter((table) => primaryTableNames.has(String(table?.name || '')))
+        .reduce((acc, table) => {
         const group = String(table?.group || 'other');
         if (!acc[group]) acc[group] = [];
         acc[group].push(table);
         return acc;
     }, {});
-    const groupOrder = ['market', 'trading', 'quality', 'runtime', 'backtest', 'compat'];
+    const groupOrder = ['market', 'trading', 'runtime', 'compat'];
     const groupMarkup = groupOrder
         .filter((group) => Array.isArray(tablesByGroup[group]) && tablesByGroup[group].length)
         .map((group) => {
@@ -776,89 +582,6 @@ function renderStorageHealth(payload = {}) {
             <div class="storage-group-grid">${groupMarkup || '<div class="loading-text">暂无重点表快照</div>'}</div>
         </div>
     `;
-}
-
-function renderEngines(computeData) {
-    const el = document.getElementById('engineArea');
-    const countEl = document.getElementById('engineCount');
-    const preloadStatusLabel = buildStartupPreloadStatusLabel(computeData?.startup_preload);
-    const preloadSummary = buildStartupPreloadSummary(computeData?.startup_preload);
-    const preloadDetail = buildStartupPreloadDetail(computeData?.startup_preload);
-    const environmentReadySummary = buildIbkrEngineEnvironmentReadySummary(computeData?.engines, {
-        preferredOrder: [currentEnvironment],
-    });
-
-    if (!computeData || !computeData.engines || typeof computeData.engines !== 'object') {
-        const messages = ['无引擎数据'];
-        if (preloadSummary) messages.push(preloadSummary);
-        el.innerHTML = messages.map((item) => `<div class="loading-text">${escapeHtml(item)}</div>`).join('');
-        countEl.textContent = preloadStatusLabel || '0 engines';
-        return;
-    }
-
-    const engines = getSortedEngineEntries(computeData.engines);
-    const computeMeta = [];
-    if (Number(computeData.last_realtime_elapsed_s || 0) > 0) computeMeta.push(`last ${Number(computeData.last_realtime_elapsed_s || 0).toFixed(2)}s`);
-    if (Number(computeData.last_realtime_signals || 0) > 0) computeMeta.push(`sig ${Number(computeData.last_realtime_signals || 0)}`);
-    if (Number(computeData.queue_size || 0) > 0) computeMeta.push(`queue ${Number(computeData.queue_size || 0)}`);
-    const countParts = [`${computeData.ready_engines || 0}/${computeData.total_engines || engines.length} ready`];
-    if (environmentReadySummary) countParts.push(environmentReadySummary);
-    if (preloadStatusLabel) countParts.push(preloadStatusLabel);
-    if (computeMeta.length) countParts.push(computeMeta.join(' · '));
-    else if (!preloadStatusLabel) countParts.push('top 12');
-    countEl.textContent = countParts.join(' · ');
-
-    if (!engines.length) {
-        const messages = ['无引擎数据'];
-        if (preloadSummary) messages.push(preloadSummary);
-        if (preloadDetail) messages.push(preloadDetail);
-        el.innerHTML = messages.map((item) => `<div class="loading-text">${escapeHtml(item)}</div>`).join('');
-        return;
-    }
-
-    let html = '<div class="engine-summary">总览页只保留最关键的 12 条引擎概况；完整排查与动作控制请切到控制台。</div>';
-    if (environmentReadySummary) {
-        html += `<div class="engine-summary">环境 ready：${escapeHtml(environmentReadySummary)}</div>`;
-    }
-    if (preloadSummary) {
-        html += `<div class="engine-summary">${escapeHtml(preloadSummary)}</div>`;
-    }
-    if (preloadDetail) {
-        html += `<div class="engine-summary">${escapeHtml(preloadDetail)}</div>`;
-    }
-    html += '<div class="engine-grid">';
-    engines.slice(0, 12).forEach(([key, engine]) => {
-        const model = getIbkrEngineViewModel(key, engine, currentEnvironment);
-        html += `<div class="engine-card">
-            <div class="engine-card-head">
-                <div class="engine-card-title">
-                    <div class="engine-card-name">${escapeHtml(model.displayName)}</div>
-                    <div class="engine-card-sub">${escapeHtml(model.subtitle)}</div>
-                </div>
-                <span class="engine-state ${model.ready ? 'ready' : 'warming'}">${escapeHtml(model.readyLabel)}</span>
-            </div>
-            <div class="engine-meta-grid">
-                <div class="engine-meta-item">
-                    <span class="engine-meta-label">Bars</span>
-                    <span class="engine-meta-value">${escapeHtml(String(model.barCount))}</span>
-                </div>
-                <div class="engine-meta-item">
-                    <span class="engine-meta-label">Last Close</span>
-                    <span class="engine-meta-value">${escapeHtml(model.lastCloseLabel)}</span>
-                </div>
-                <div class="engine-meta-item">
-                    <span class="engine-meta-label">Last Bar</span>
-                    <span class="engine-meta-value">${escapeHtml(model.lastBarLabel)}</span>
-                </div>
-                <div class="engine-meta-item">
-                    <span class="engine-meta-label">Chart</span>
-                    <span class="engine-meta-value">${model.chartHref ? `<a class="engine-link" href="${model.chartHref}">打开图表</a>` : '--'}</span>
-                </div>
-            </div>
-        </div>`;
-    });
-    html += '</div>';
-    el.innerHTML = html;
 }
 
 function getSystemCronPageModel(key, rows = []) {
@@ -945,10 +668,10 @@ function renderSchedulerOverview(cronPayload = {}, summary = {}) {
             tone: scheduler.tone,
         },
         {
-            label: 'Dispatch Lag',
-            value: scheduler.dispatchLagLabel,
-            copy: `persisted ${scheduler.latestIngestedBarLabel} · dispatched ${scheduler.latestDispatchedBarLabel}`,
-            tone: scheduler.dispatchLagMin >= 10 ? 'error' : (scheduler.latestIngestedBarTimeMs ? 'ok' : 'warn'),
+            label: 'Job Health',
+            value: scheduler.statusCountSummary || '--',
+            copy: scheduler.hasJobState ? 'signal expiry / order guard / storage governor' : (scheduler.metaError || '状态同步中'),
+            tone: scheduler.ok ? (scheduler.stale ? 'warn' : 'ok') : 'error',
         },
         {
             label: 'Job Coverage',

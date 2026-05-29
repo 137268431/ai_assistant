@@ -318,7 +318,7 @@ class SignalIngressBuildersTest(unittest.TestCase):
             self.assertIn("**实际成交价**: 100.08", content)
             self.assertNotIn("**入场 / 止盈 / 止损**", content)
 
-    def test_signal_cards_include_market_context_metrics(self):
+    def test_signal_cards_omit_market_context_metrics(self):
         record = {
             "id": "sig-row-1",
             "signal_id": "sig-metrics",
@@ -343,9 +343,9 @@ class SignalIngressBuildersTest(unittest.TestCase):
 
         for card in (notification_card, status_card):
             content = card["elements"][0]["content"]
-            self.assertIn("**当前涨幅**: +2.34%", content)
-            self.assertIn("**ATR值 / ATR波动率**: 0.85 / 0.57% (低波动)", content)
-            self.assertIn("**止损ATR倍数**: 1.61x", content)
+            self.assertNotIn("**当前涨幅**", content)
+            self.assertNotIn("ATR", content)
+            self.assertNotIn("止损ATR倍数", content)
 
     def test_signal_cards_include_expected_profit_and_loss(self):
         cases = [
@@ -418,7 +418,7 @@ class SignalIngressBuildersTest(unittest.TestCase):
                 "environment": "live",
                 "status": "submitted",
                 "us_time": "2026-05-15 09:35:00",
-                "extra": {"trade_group_id": "tg-1"},
+                "extra": {"trade_group_id": "tg-1", "tv_chart_url": "https://www.tradingview.com/chart/abc"},
             },
             message="订单已提交",
             console_base_url="https://console.example.com",
@@ -432,6 +432,7 @@ class SignalIngressBuildersTest(unittest.TestCase):
         urls = [action.get("multi_url", {}).get("url", "") for action in actions]
 
         self.assertTrue(any("/ibkr_signals.html" in url and "signal_id=sig-life" in url for url in urls))
+        self.assertIn("https://www.tradingview.com/chart/abc", urls)
         self.assertTrue(
             any(
                 "/ibkr_lifecycle_flow.html" in url

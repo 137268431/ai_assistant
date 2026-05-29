@@ -13,11 +13,10 @@
       const summary = screenerPayload.summary || {};
       renderSummaryCards([
         { label: 'TOTAL', value: summary.total || 0, copy: '标的总数' },
-        { label: 'LIVE BARS', value: summary.with_live_bars || 0, copy: '已有 5m bar', className: 'teal' },
         { label: 'OPERABLE', value: summary.operable || 0, copy: '可操作标的', className: 'good' },
         { label: 'CANDIDATES', value: summary.candidate_targets || 0, copy: 'candidate 数', className: 'accent' },
         { label: 'ACTIVE', value: summary.active_targets || 0, copy: 'active 数', className: 'good' },
-        { label: 'DATA GAP', value: summary.incomplete_data || 0, copy: summary.incomplete_data ? '异步 API 补偿中' : '数据完整', className: summary.incomplete_data ? 'accent' : 'good' }
+        { label: 'REVIEW', value: summary.review_count || summary.incomplete_data || 0, copy: '需人工复核', className: summary.incomplete_data ? 'accent' : 'teal' }
       ]);
     }
 
@@ -26,7 +25,7 @@
       const readyTip = buildReadyDefinitionTip(todayTargetsPayload.workflow?.ready_definition || {});
       renderSummaryCards([
         { label: 'TOTAL', value: summary.total || 0, copy: '当日标的数' },
-        { label: 'READY', value: summary.technical_ready_count || 0, copy: 'ready 标的', className: 'good', tip: readyTip },
+        { label: 'ELIGIBLE', value: summary.technical_ready_count || 0, copy: '可触发 TV 信号', className: 'good', tip: readyTip },
         { label: 'SIGNALLED', value: summary.signaled_count || 0, copy: '已有信号', className: 'teal' },
         {
           label: 'NEEDS ACTION',
@@ -41,7 +40,7 @@
           className: 'teal'
         },
         { label: 'EXECUTED', value: summary.executed_count || 0, copy: '已执行', className: 'good' },
-        { label: 'STALE', value: summary.stale_count || 0, copy: '数据过期', className: 'accent' }
+        { label: 'REVIEW', value: summary.stale_count || 0, copy: '需复核', className: 'accent' }
       ]);
     }
 

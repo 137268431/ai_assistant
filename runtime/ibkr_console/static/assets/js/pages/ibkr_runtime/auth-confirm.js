@@ -38,15 +38,6 @@
                 if (action === 'probe') return '已触发认证检查；如果会话已恢复，状态会自动转为 success。';
                 return '已全量清空旧状态并重新拉起新的验证周期。';
             }
-            if (action === 'compute') {
-                const pieces = [];
-                if (payload.environments) pieces.push(`env=${payload.environments.join(',')}`);
-                if (payload.processed != null) pieces.push(`processed=${payload.processed}`);
-                if (payload.signals != null) pieces.push(`signals=${payload.signals}`);
-                if (payload.errors != null) pieces.push(`errors=${payload.errors}`);
-                if (payload.candidates != null) pieces.push(`candidates=${payload.candidates}`);
-                return `${action} 返回：${pieces.join(' · ') || 'ok'}`;
-            }
             if (action === 'recover_all') {
                 const updatedKeys = Array.isArray(payload.updated)
                     ? payload.updated.map(item => item.key).filter(Boolean).join(',')

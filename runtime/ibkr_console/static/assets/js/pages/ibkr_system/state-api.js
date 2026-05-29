@@ -12,7 +12,7 @@ let latestSchedulerCronSummary = null;
 let latestConfigCronSummary = null;
 let latestConfigCronDefinitions = [];
 
-const TODAY_STATS_KEYS = ['orders', 'ibkr_bars', 'ibkr_signals', 'ibkr_targets', 'tv_webhook_events', 'events'];
+const TODAY_STATS_KEYS = ['orders', 'tv_webhook_events', 'ibkr_signals', 'ibkr_targets', 'events'];
 const SYSTEM_SECONDARY_REFRESH_MS = 5 * 60 * 1000;
 const SYSTEM_CRON_PAGINATION_CONFIG = {
     schedulerOverview: {
@@ -157,8 +157,6 @@ function rememberSystemSecondarySnapshot(snapshot = {}) {
     lastSystemSecondaryLoadedAt = Date.now();
     lastSystemSecondarySnapshot = {
         eventsResp: snapshot.eventsResp || { items: [] },
-        backtestBatchResp: snapshot.backtestBatchResp || { items: [] },
-        backtestRunsResp: snapshot.backtestRunsResp || { items: [] },
         todayStats: cloneTodayStats(snapshot.todayStats || {}),
     };
     return lastSystemSecondarySnapshot;
@@ -167,8 +165,6 @@ function rememberSystemSecondarySnapshot(snapshot = {}) {
 function getLastSystemSecondarySnapshot() {
     return lastSystemSecondarySnapshot || {
         eventsResp: { items: [] },
-        backtestBatchResp: { items: [] },
-        backtestRunsResp: { items: [] },
         todayStats: {},
     };
 }

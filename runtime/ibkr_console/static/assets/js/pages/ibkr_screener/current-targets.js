@@ -29,11 +29,9 @@
         price_max: Number(document.getElementById('priceMax').value || NaN),
         day_change_min: Number(document.getElementById('dayChangeMin').value || NaN),
         day_change_max: Number(document.getElementById('dayChangeMax').value || NaN),
-        atr_pct_min: Number(document.getElementById('atrPctMin').value || NaN),
         avg_volume_min: Number(document.getElementById('avgVolumeMin').value || NaN),
         premarket_volume_min: Number(document.getElementById('premarketVolumeMin').value || NaN),
         target_score_min: Number(document.getElementById('targetScoreMin').value || NaN),
-        freshness_max: Number(document.getElementById('freshnessMax').value || NaN),
         operable_only: Boolean(document.getElementById('operableOnly').checked),
         sort_by: document.getElementById('sortBy').value || 'tradability_desc'
       };
@@ -44,11 +42,6 @@
       items.sort((left, right) => {
         if (sortBy === 'symbol_asc') {
           return String(left.symbol || '').localeCompare(String(right.symbol || ''));
-        }
-        if (sortBy === 'freshness_asc') {
-          const l = Number.isFinite(Number(left.freshness_min)) ? Number(left.freshness_min) : Number.MAX_SAFE_INTEGER;
-          const r = Number.isFinite(Number(right.freshness_min)) ? Number(right.freshness_min) : Number.MAX_SAFE_INTEGER;
-          return l - r || String(left.symbol || '').localeCompare(String(right.symbol || ''));
         }
         if (sortBy === 'premarket_desc') {
           return (Number(right.premarket_volume) || 0) - (Number(left.premarket_volume) || 0)
@@ -81,18 +74,13 @@
       return `<div class="reason-wrap">${reasons.slice(0, 4).map((item) => `<span class="reason-pill">${escapeHtml(item)}</span>`).join('')}</div>`;
     }
 
-    function buildChartUrl(symbol) {
-      return buildPageUrl('/ibkr_chart.html', {
-        symbol: symbol || '',
-        interval: '5m',
-      }, { environment: currentEnvironment });
+    function getTvChartUrl(row) {
+      return String(row?.tv_chart_url || row?.chart_url || row?.extra?.tv_chart_url || '').trim();
     }
 
-    function buildIndicatorUrl(symbol, marketDate) {
-      return buildPageUrl('/ibkr_indicators.html', {
-        date: marketDate || '',
-        search: symbol || '',
-      }, { environment: currentEnvironment });
+    function buildTvChartLink(row, label = 'TV') {
+      const url = getTvChartUrl(row);
+      return url ? `<a class="mini-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>` : '';
     }
 
     function buildSignalUrl(symbol, marketDate) {
@@ -192,15 +180,17 @@
 
       mount.innerHTML = rows.map((row) => {
         const signalStateKey = formatCurrentSignalState(row);
-        const chartUrl = buildChartUrl(row.symbol || '');
-        const indicatorUrl = buildIndicatorUrl(row.symbol || '', marketDate);
+        const tvChartUrl = getTvChartUrl(row);
+        const symbolHtml = tvChartUrl
+          ? `<a class="mobile-data-symbol" href="${escapeHtml(tvChartUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.symbol || '--')}</a>`
+          : `<span class="mobile-data-symbol">${escapeHtml(row.symbol || '--')}</span>`;
         const signalUrl = buildSignalUrl(row.symbol || '', marketDate);
         const flowUrl = buildLifecycleFlowUrl(row, marketDate);
         return `
           <article class="mobile-data-card">
             <div class="mobile-data-head">
               <div>
-                <a class="mobile-data-symbol" href="${chartUrl}">${escapeHtml(row.symbol || '--')}</a>
+                ${symbolHtml}
                 <div class="mobile-data-time">${escapeHtml(row.latest_us_time || '--')}</div>
                 <div class="mobile-data-subcopy">${escapeHtml(row.exchange || '--')} / ${escapeHtml(row.industry || '--')}</div>
               </div>
@@ -213,9 +203,7 @@
             <div class="mobile-chip-row">
               ${statusChip(row.target_status || '--', row.target_status || '')}
               ${statusChip(row.direction_bias || 'neutral', row.direction_bias || 'neutral')}
-              ${renderTechnicalStateWithTip(row)}
               ${statusChip(formatCurrentStateLabel(signalStateKey), signalStateKey)}
-              ${row.has_live_bar ? statusChip(formatFreshness(row.freshness_min), Number(row.freshness_min) <= 30 ? 'active' : 'candidate') : statusChip('无当日bar', 'stale')}
               ${dataQualityChip(row)}
               ${renderAdmissionScoreChip(row)}
               ${renderExecutionLayerPills(row)}
@@ -237,8 +225,7 @@
             ${(renderAdmissionControlRow(row) || getFailedGates(row).length) ? buildMobileSection('Admission / Gates', `${renderAdmissionControlRow(row)}${renderFailedGatesPills(row, 'failed_gates: none')}`) : ''}
 
             <div class="mobile-data-actions">
-              <a class="mini-link" href="${chartUrl}">Chart</a>
-              <a class="mini-link" href="${indicatorUrl}">指标</a>
+              ${buildTvChartLink(row, 'TV')}
               <a class="mini-link" href="${signalUrl}">信号</a>
               ${flowUrl ? `<a class="mini-link" href="${flowUrl}">流程图</a>` : ''}
             </div>
@@ -550,14 +537,8 @@
       return rows.sort((left, right) => {
         const priorityDiff = getWindowProgressPriority(left) - getWindowProgressPriority(right);
         if (priorityDiff !== 0) return priorityDiff;
-        const barsDiff = getWindowProgressNumber(left, ['bars_remaining', 'remaining_bars'], Number.MAX_SAFE_INTEGER)
-          - getWindowProgressNumber(right, ['bars_remaining', 'remaining_bars'], Number.MAX_SAFE_INTEGER);
-        if (barsDiff !== 0) return barsDiff;
         const progressDiff = getWindowComponentProgress(right) - getWindowComponentProgress(left);
         if (progressDiff !== 0) return progressDiff;
-        const freshnessDiff = getWindowProgressNumber(left, ['freshness_min', 'freshness_minutes'], Number.MAX_SAFE_INTEGER)
-          - getWindowProgressNumber(right, ['freshness_min', 'freshness_minutes'], Number.MAX_SAFE_INTEGER);
-        if (freshnessDiff !== 0) return freshnessDiff;
         const scoreDiff = getWindowProgressNumber(right, ['target_score', 'score'], 0)
           - getWindowProgressNumber(left, ['target_score', 'score'], 0);
         if (scoreDiff !== 0) return scoreDiff;
@@ -690,17 +671,6 @@
       `;
     }
 
-    function getWindowTraceUrl(row, marketDate) {
-      const explicit = String(coalesceValue(row, ['trace_url', 'trace_link', 'url'], '') || '').trim();
-      if (explicit) return explicit;
-      return buildPageUrl('/ibkr_chart.html', {
-        symbol: row.symbol || '',
-        interval: '5m',
-        date: marketDate || '',
-        trace: 1,
-      }, { environment: currentEnvironment });
-    }
-
     function getWindowCandidateLabel(row) {
       const signalState = getWindowSignalState(row);
       const candidate = coalesceValue({
@@ -797,7 +767,7 @@
     }
 
     function buildWindowActions(row, marketDate, { compact = false } = {}) {
-      const traceUrl = getWindowTraceUrl(row, marketDate);
+      const traceUrl = getTvChartUrl(row);
       const signalUrl = buildSignalUrl(row.symbol || '', marketDate);
       const flowUrl = buildLifecycleFlowUrl(row, marketDate);
       const chartText = compact ? 'Trace' : 'Chart Trace';
@@ -805,7 +775,7 @@
       return `
         <div class="row-actions window-row-actions">
           <a class="mini-link" href="${signalUrl}">Signals</a>
-          <a class="mini-link" href="${traceUrl}">${chartText}</a>
+          ${traceUrl ? `<a class="mini-link" href="${escapeHtml(traceUrl)}" target="_blank" rel="noopener noreferrer">${chartText}</a>` : ''}
           ${flowUrl ? `<a class="mini-link" href="${flowUrl}">${lifecycleText}</a>` : ''}
         </div>
       `;
@@ -821,7 +791,6 @@
 
       mount.innerHTML = rows.map((row) => {
         const status = getWindowProgressStatus(row);
-        const latestBar = coalesceValue(row, ['latest_5m_bar', 'latest_bar_us', 'latest_us_time', 'bar_time_us', 'latest_bar_time'], '--');
         const components = getWindowProgressObject(row, 'components');
         const collected = coalesceValue({
           ...row,
@@ -836,12 +805,11 @@
           <article class="mobile-data-card window-progress-card">
             <div class="mobile-data-head window-progress-mobile-head">
               <div>
-                <a class="mobile-data-symbol" href="${buildChartUrl(row.symbol || '')}">${escapeHtml(row.symbol || '--')}</a>
+                ${getTvChartUrl(row) ? `<a class="mobile-data-symbol" href="${escapeHtml(getTvChartUrl(row))}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.symbol || '--')}</a>` : `<span class="mobile-data-symbol">${escapeHtml(row.symbol || '--')}</span>`}
                 <div class="mobile-chip-row window-mobile-stage-row">
                   ${statusChip(formatWindowSignalStageLabel(row), getWindowSignalStage(row))}
                   ${isWindowProgressTargetCandidate(row) ? statusChip('target_candidate', 'target_candidate') : statusChip(row.target_status || 'active', row.target_status || 'active')}
                 </div>
-                <div class="mobile-data-time">Latest 5m · ${escapeHtml(latestBar || '--')}</div>
               </div>
               <div class="window-mobile-actions">
                 ${buildWindowActions(row, marketDate, { compact: true })}
@@ -850,9 +818,7 @@
 
             <div class="mobile-chip-row">
               ${statusChip(getWindowProgressStatusLabel(status), status)}
-              ${statusChip(formatFreshness(getWindowProgressFreshness(row)), isWindowProgressStale(row) ? 'stale' : 'active')}
               ${statusChip(`progress ${formatWindowComponentProgress(row)}`, 'config')}
-              ${statusChip(`left ${formatWindowProgressCount(coalesceValue(row, ['bars_remaining', 'remaining_bars'], NaN))}`, isWindowProgressNearExpiry(row) ? 'near_expiry' : 'neutral')}
               ${hasWindowDirectionConflict(row) ? statusChip('direction_conflict', 'direction_conflict') : ''}
               ${renderAdmissionScoreChip(row)}
               ${renderNeedsBackfillChip(row)}
@@ -889,24 +855,23 @@
         ? `${allRows.length} 条 · ${compactCounts}`
         : `${rows.length}/${allRows.length} 条 · 当前 ${selectedLabel} · ${compactCounts}`;
       metaSecondary.textContent = windowProgressPayload.computed_at_us
-        ? `计算时间 ${windowProgressPayload.computed_at_us}。筛选: ${selectedLabel}。排序: signal_candidate/confirmed/blockers/near_expiry, bars_remaining asc, component_progress desc, freshness_min asc, target_score desc。`
-        : `筛选: ${selectedLabel}。排序: signal_candidate/confirmed/blockers/near_expiry, bars_remaining asc, component_progress desc, freshness_min asc, target_score desc。`;
+        ? `计算时间 ${windowProgressPayload.computed_at_us}。筛选: ${selectedLabel}。排序: signal_candidate/confirmed/blockers/near_expiry, component_progress desc, target_score desc。`
+        : `筛选: ${selectedLabel}。排序: signal_candidate/confirmed/blockers/near_expiry, component_progress desc, target_score desc。`;
 
       if (!allRows.length) {
-        tbody.innerHTML = '<tr><td colspan="6" class="empty-state">当前没有窗口进度记录。</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" class="empty-state">当前没有窗口进度记录。</td></tr>';
         renderWindowProgressCards([], marketDate);
         return;
       }
       if (!rows.length) {
         const emptyMessage = `当前没有${selectedLabel}状态的窗口进度记录。`;
-        tbody.innerHTML = `<tr><td colspan="6" class="empty-state">${escapeHtml(emptyMessage)}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="5" class="empty-state">${escapeHtml(emptyMessage)}</td></tr>`;
         renderWindowProgressCards([], marketDate, emptyMessage);
         return;
       }
 
       tbody.innerHTML = rows.map((row) => {
         const status = getWindowProgressStatus(row);
-        const barsRemaining = coalesceValue(row, ['bars_remaining', 'remaining_bars'], NaN);
         const components = getWindowProgressObject(row, 'components');
         const collected = coalesceValue({
           ...row,
@@ -920,7 +885,7 @@
         return `
           <tr>
             <td>
-              <a class="symbol-link" href="${buildChartUrl(row.symbol || '')}">${escapeHtml(row.symbol || '--')}</a><br>
+              ${getTvChartUrl(row) ? `<a class="symbol-link" href="${escapeHtml(getTvChartUrl(row))}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.symbol || '--')}</a>` : `<span class="symbol-link">${escapeHtml(row.symbol || '--')}</span>`}<br>
               <div class="pill-row window-symbol-pills">
                 ${statusChip(getWindowProgressStatusLabel(status), status)}
                 ${isWindowProgressTargetCandidate(row) ? statusChip('target_candidate', 'target_candidate') : statusChip(row.target_status || 'active', row.target_status || 'active')}
@@ -929,14 +894,13 @@
               <span class="muted">target ${escapeHtml(formatNumber(coalesceValue(row, ['target_score', 'score'], 0), 1))}</span>
               ${renderAdmissionControlRow(row)}
             </td>
-            <td>${buildWindowLatestCell(row)}</td>
             <td>${buildWindowSignalCell(row)}</td>
             <td>
               <div class="window-side-grid">
                 <div>${formatWindowSide(row, 'upper')}</div>
                 <div>${formatWindowSide(row, 'lower')}</div>
               </div>
-              <div class="window-progress-subline muted mono">left ${escapeHtml(formatWindowProgressCount(barsRemaining))} · progress ${escapeHtml(formatWindowComponentProgress(row))}</div>
+              <div class="window-progress-subline muted mono">progress ${escapeHtml(formatWindowComponentProgress(row))}</div>
               <details class="window-components-details">
                 <summary>组件明细</summary>
                 <div class="window-components-detail-grid">
@@ -969,12 +933,15 @@
       mount.innerHTML = rows.map((row) => {
         const symbol = String(row.symbol || '').trim().toUpperCase();
         const checked = selectedSymbols.has(symbol) ? 'checked' : '';
-        const chartUrl = buildChartUrl(row.symbol || '');
+        const tvChartUrl = getTvChartUrl(row);
+        const symbolHtml = tvChartUrl
+          ? `<a class="mobile-data-symbol" href="${escapeHtml(tvChartUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.symbol || '--')}</a>`
+          : `<span class="mobile-data-symbol">${escapeHtml(row.symbol || '--')}</span>`;
         return `
           <article class="mobile-data-card">
             <div class="mobile-data-head">
               <div>
-                <a class="mobile-data-symbol" href="${chartUrl}">${escapeHtml(row.symbol || '--')}</a>
+                ${symbolHtml}
                 <div class="mobile-data-time">${escapeHtml(row.exchange || '--')} / ${escapeHtml(row.industry || '--')}</div>
                 <div class="mobile-data-subcopy">${escapeHtml(row.display_price_source || row.price_source || '--')}</div>
               </div>
@@ -989,14 +956,13 @@
               ${statusChip(row.direction_bias || 'neutral', row.direction_bias || 'neutral')}
               ${buildScorePill(row)}
               ${statusChip(row.is_operable ? '可操作' : '人工复核', row.is_operable ? 'active' : 'neutral')}
-              ${row.has_live_bar ? statusChip(formatFreshness(row.freshness_min), Number(row.freshness_min) <= 30 ? 'active' : 'candidate') : statusChip('无当日bar', 'stale')}
               ${dataQualityChip(row)}
               ${renderAdmissionScoreChip(row)}
             </div>
 
             <div class="mobile-data-grid">
-              ${buildMobileMetricCard('价格 / 涨跌', `${escapeHtml(formatPrice(row.display_price ?? row.price))}<br><span class="mobile-data-subcopy mono">${escapeHtml(formatPct(row.display_day_change_pct ?? row.day_change_pct))}</span>`)}
-              ${buildMobileMetricCard('ATR / 量能', `ATR ${escapeHtml(formatPct(row.atr_pct))}<br><span class="mobile-data-subcopy">10D ${escapeHtml(formatVolume(row.avg_10d_volume))} · PRE ${escapeHtml(formatVolume(row.premarket_volume))}</span>`)}
+              ${buildMobileMetricCard('价格', escapeHtml(formatPrice(row.display_price ?? row.price)))}
+              ${buildMobileMetricCard('量能', `<span class="mobile-data-subcopy">10D ${escapeHtml(formatVolume(row.avg_10d_volume))} · PRE ${escapeHtml(formatVolume(row.premarket_volume))}</span>`)}
             </div>
 
             ${buildMobileSection('筛选理由', escapeHtml(row.scan_reason || row.note || '--'))}
@@ -1005,7 +971,7 @@
             ${(renderAdmissionControlRow(row) || getFailedGates(row).length) ? buildMobileSection('Admission / Gates', `${renderAdmissionControlRow(row)}${renderFailedGatesPills(row, 'failed_gates: none')}`) : ''}
 
             <div class="mobile-data-actions">
-              <a class="mini-link" href="${chartUrl}">Chart</a>
+              ${buildTvChartLink(row, 'TV')}
             </div>
           </article>
         `;
@@ -1024,7 +990,7 @@
         <article class="mobile-data-card">
           <div class="mobile-data-head">
             <div>
-              <a class="mobile-data-symbol" href="${buildChartUrl(item.symbol || '')}">${escapeHtml(item.symbol || '--')}</a>
+              ${buildTvChartLink(item, item.symbol || '--') || `<span class="mobile-data-symbol">${escapeHtml(item.symbol || '--')}</span>`}
               <div class="mobile-data-time">${escapeHtml(item.exchange || '--')}</div>
               <div class="mobile-data-subcopy">${escapeHtml(item.date || '--')}</div>
             </div>
@@ -1042,7 +1008,7 @@
           ${buildMobileSection('理由', escapeHtml(item.scan_reason || '--'))}
 
           <div class="mobile-data-actions">
-            <a class="mini-link" href="${buildChartUrl(item.symbol || '')}">Chart</a>
+            ${buildTvChartLink(item, 'TV')}
             <button class="mini-btn" type="button" onclick="editDailyTargetItem('${escapeHtml(item.id || '')}')">编辑</button>
             <button class="mini-btn danger" type="button" onclick="removeDailyTargetItem('${escapeHtml(item.id || '')}', '${escapeHtml(item.symbol || '')}')">删除</button>
           </div>
@@ -1064,7 +1030,7 @@
           <article class="mobile-data-card">
             <div class="mobile-data-head">
               <div>
-                <a class="mobile-data-symbol" href="${buildChartUrl(item.symbol || '')}">${escapeHtml(item.symbol || '--')}</a>
+                ${buildTvChartLink(item, item.symbol || '--') || `<span class="mobile-data-symbol">${escapeHtml(item.symbol || '--')}</span>`}
                 <div class="mobile-data-time">${escapeHtml(item.exchange || '--')} / ${escapeHtml(item.industry || '--')}</div>
               </div>
               <div class="mobile-chip-row">
@@ -1085,7 +1051,7 @@
             ${(renderAdmissionControlRow(item) || getFailedGates(item).length) ? buildMobileSection('Admission / Gates', `${renderAdmissionControlRow(item)}${renderFailedGatesPills(item, 'failed_gates: none')}`) : ''}
 
             <div class="mobile-data-actions">
-              <a class="mini-link" href="${buildChartUrl(item.symbol || '')}">Chart</a>
+              ${buildTvChartLink(item, 'TV')}
               ${configItem
                 ? `<a class="mini-link" href="${getConfigPageUrl()}">改配置</a>`
                 : `<button class="mini-btn" type="button" onclick="editItem('${escapeHtml(item.id || '')}')">编辑</button>
@@ -1132,12 +1098,10 @@
     function getCurrentTargetFilters() {
       return {
         search: String(document.getElementById('currentTargetSearch')?.value || '').trim().toUpperCase(),
-        technical_state: document.getElementById('currentTechnicalStateFilter')?.value || '',
         signal_state: document.getElementById('currentSignalStateFilter')?.value || '',
         target_status: document.getElementById('currentTargetStatusFilter')?.value || '',
         execution_layer: document.getElementById('currentExecutionLayerFilter')?.value || '',
         direction_bias: document.getElementById('currentDirectionBiasFilter')?.value || '',
-        ready_only: Boolean(document.getElementById('currentReadyOnly')?.checked),
         signaled_only: Boolean(document.getElementById('currentSignaledOnly')?.checked),
         sort_by: document.getElementById('currentTargetSortBy')?.value || 'attention_asc',
         per_page: Number(document.getElementById('currentTargetPageSize')?.value || currentTargetState.perPage || 10) || 10,
@@ -1159,12 +1123,10 @@
         data_environment: currentEnvironment,
         market_date: marketDate,
         search: filters.search,
-        technical_state: filters.technical_state,
         signal_state: filters.signal_state,
         target_status: filters.target_status,
         execution_layer: filters.execution_layer,
         direction_bias: filters.direction_bias,
-        ready_only: filters.ready_only,
         signaled_only: filters.signaled_only,
         sort_by: filters.sort_by,
         page: currentTargetState.page,
@@ -1340,7 +1302,6 @@
       const filteredTotal = Math.max(0, Number(todayTargetsPayload.filtered_total || rows.length || 0) || 0);
       const currentPage = Math.max(1, Number(todayTargetsPayload.page || currentTargetState.page || 1) || 1);
       const totalPages = Math.max(1, Number(todayTargetsPayload.total_pages || 1) || 1);
-      const readyCount = rows.filter((row) => row.technical_state === 'ready').length;
       const needsActionCount = rows.filter((row) => ['awaiting_confirm', 'pending', 'submitted', 'protected_active', 'protection_incomplete'].includes(String(row.latest_signal_status || ''))).length;
       const signaledCount = rows.filter((row) => row.has_signal_today).length;
       const executionEligibleCount = Number(summary.execution_eligible_count || 0) || 0;
@@ -1352,12 +1313,12 @@
       const workflowTimingCopy = scanTimeEt === openCheckTimeEt
         ? `${scanTimeEt} ET 覆盖预筛；${topupWindowEt} ET 增量入池；${workflow.intraday_refresh_rule || '5m close-driven'}`
         : `${scanTimeEt} ET 覆盖预筛；${topupWindowEt} ET 增量入池；${openCheckTimeEt} ET 检查`;
-      meta.textContent = `${currentPage}/${totalPages} 页 · ${rows.length} 条 · exec ${executionEligibleCount} · observe ${observeOnlyCount} · ready ${readyCount} · signaled ${signaledCount} · action ${needsActionCount} · ${filteredTotal}/${summary.total || 0}`;
-      metaSecondary.textContent = `ready ${filteredSummary.ready_count || 0} · signaled ${filteredSummary.signaled_count || 0} · action ${filteredSummary.needs_action_count || 0} · watch_only ${watchOnlyCount}。${workflowTimingCopy}。`;
+      meta.textContent = `${currentPage}/${totalPages} 页 · ${rows.length} 条 · exec ${executionEligibleCount} · observe ${observeOnlyCount} · signaled ${signaledCount} · action ${needsActionCount} · ${filteredTotal}/${summary.total || 0}`;
+      metaSecondary.textContent = `signaled ${filteredSummary.signaled_count || 0} · action ${filteredSummary.needs_action_count || 0} · watch_only ${watchOnlyCount}。${workflowTimingCopy}。`;
       renderCurrentTargetPagination();
 
       if (!rows.length) {
-        tbody.innerHTML = '<tr><td colspan="6" class="empty-state">当前条件下没有符合的标的。</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="4" class="empty-state">当前条件下没有符合的标的。</td></tr>';
         renderCurrentTargetCards([], marketDate);
         return;
       }
@@ -1368,27 +1329,15 @@
           date: marketDateToken,
           search: row.symbol || '',
         }, { environment: currentEnvironment });
-        const indicatorUrl = buildPageUrl('/ibkr_indicators.html', {
-          date: marketDateToken,
-          search: row.symbol || '',
-        }, { environment: currentEnvironment });
-        const chartUrl = buildPageUrl('/ibkr_chart.html', {
-          symbol: row.symbol || '',
-          interval: '5m',
-        }, { environment: currentEnvironment });
+        const tvChartUrl = getTvChartUrl(row);
         const flowUrl = buildLifecycleFlowUrl(row, marketDateToken);
         return `
           <tr>
             <td>
-              <a class="symbol-link" href="${chartUrl}">${escapeHtml(row.symbol || '--')}</a><br>
+              ${tvChartUrl ? `<a class="symbol-link" href="${escapeHtml(tvChartUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.symbol || '--')}</a>` : `<span class="symbol-link">${escapeHtml(row.symbol || '--')}</span>`}<br>
               <span class="muted mono">${escapeHtml(row.latest_us_time || '--')}</span><br>
               <span class="muted">${escapeHtml(row.exchange || '--')} / ${escapeHtml(row.industry || '--')}</span>
               ${renderSymbolProfileSummary(row) ? `<div style="margin-top:8px;">${renderSymbolProfileSummary(row)}</div>` : ''}
-            </td>
-            <td>
-              <strong>${escapeHtml(formatPrice(row.display_price ?? row.price))}</strong><br>
-              <span class="mono">${escapeHtml(formatPct(row.display_day_change_pct ?? row.day_change_pct))}</span><br>
-              ${row.has_live_bar ? statusChip(formatFreshness(row.freshness_min), Number(row.freshness_min) <= 30 ? 'active' : 'candidate') : statusChip('无当日bar', 'stale')}
             </td>
             <td>
               ${statusChip(row.target_status || '--', row.target_status || '')}<br>
@@ -1396,10 +1345,6 @@
               <span class="muted">target ${escapeHtml(formatNumber(row.target_score || 0, 1))} · tradability ${escapeHtml(formatNumber(row.tradability_score || 0, 0))}</span>
               ${renderExecutionLayerPills(row)}
               ${renderAdmissionControlRow(row)}
-            </td>
-            <td>
-              ${renderTechnicalStateWithTip(row)}<br>
-              <div style="margin-top:8px;">${buildFlagPills(row.technical_flags, '暂无技术标签')}</div>
             </td>
             <td>
               ${statusChip(formatCurrentStateLabel(formatCurrentSignalState(row)), formatCurrentSignalState(row))}<br>
@@ -1432,8 +1377,7 @@
               </div>
               ${renderAdmissionDiagnosticsBlock(row)}
               <div class="row-actions" style="margin-top:12px;">
-                <a class="mini-link" href="${chartUrl}">Chart</a>
-                <a class="mini-link" href="${indicatorUrl}">指标</a>
+                ${buildTvChartLink(row, 'TV')}
                 <a class="mini-link" href="${signalUrl}">信号</a>
                 ${flowUrl ? `<a class="mini-link" href="${flowUrl}">流程图</a>` : ''}
               </div>
@@ -1450,8 +1394,8 @@
       window.clearTimeout(currentTargetState.searchDebounceId);
       const requestToken = ++currentTargetState.requestToken;
       document.getElementById('currentTargetsMeta').textContent = '正在加载当前标的...';
-      document.getElementById('currentTargetsMetaSecondary').textContent = '正在计算技术状态与今日信号聚合...';
-      document.getElementById('currentTargetsTable').innerHTML = '<tr><td colspan="6" class="empty-state">加载中...</td></tr>';
+      document.getElementById('currentTargetsMetaSecondary').textContent = '正在汇总目标状态与今日信号...';
+      document.getElementById('currentTargetsTable').innerHTML = '<tr><td colspan="4" class="empty-state">加载中...</td></tr>';
       renderMobileCardState('currentTargetsCards', '正在加载当前标的...');
       renderCurrentTargetPagination();
 

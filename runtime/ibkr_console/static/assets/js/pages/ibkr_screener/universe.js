@@ -114,7 +114,7 @@
     function renderTable() {
       const tbody = document.getElementById('screenerTable');
       if (!Array.isArray(filteredRows) || !filteredRows.length) {
-        tbody.innerHTML = '<tr><td colspan="9" class="empty">当前条件下没有符合的标的</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" class="empty">当前条件下没有符合的标的</td></tr>';
         renderScreenerCards([]);
         renderScreenerPagination([]);
         document.getElementById('tableMeta').textContent = '0 条结果';
@@ -131,7 +131,7 @@
               <input class="row-check" type="checkbox" ${checked} onchange="toggleSelection('${escapeHtml(row.symbol)}', this.checked)" />
             </td>
             <td>
-              <a class="symbol-link" href="${buildPageUrl('/ibkr_chart.html', { symbol: row.symbol, interval: '5m' }, { environment: currentEnvironment })}">${escapeHtml(row.symbol)}</a><br>
+              ${buildTvChartLink(row, row.symbol || '--') || `<span class="symbol-link">${escapeHtml(row.symbol || '--')}</span>`}<br>
               <span class="muted mono">${escapeHtml(row.display_price_source || row.price_source || '--')}</span>
               ${renderSymbolProfileSummary(row) ? `<div style="margin-top:8px;">${renderSymbolProfileSummary(row)}</div>` : ''}
             </td>
@@ -140,19 +140,11 @@
               <span class="muted">${escapeHtml(row.industry || '--')}</span>
             </td>
             <td>
-              <strong>${escapeHtml(formatPrice(row.display_price ?? row.price))}</strong><br>
-              <span class="mono">${escapeHtml(formatPct(row.display_day_change_pct ?? row.day_change_pct))}</span><br>
-              <span class="muted">7D ${escapeHtml(formatPct(row.change_7d))}</span>
+              <strong>${escapeHtml(formatPrice(row.display_price ?? row.price))}</strong>
             </td>
             <td>
-              <span class="mono">ATR ${escapeHtml(formatPct(row.atr_pct))}</span><br>
               <span class="muted">10D ${escapeHtml(formatVolume(row.avg_10d_volume))}</span><br>
               <span class="muted">PRE ${escapeHtml(formatVolume(row.premarket_volume))} · DAY ${escapeHtml(formatVolume(row.today_volume))}</span>
-            </td>
-            <td>
-              ${row.has_live_bar ? statusChip(formatFreshness(row.freshness_min), Number(row.freshness_min) <= 30 ? 'active' : 'candidate') : statusChip('无当日bar', '')}<br>
-              ${dataQualityChip(row)}<br>
-              <span class="muted">${escapeHtml(row.latest_us_time || '--')}</span>
             </td>
             <td>
               ${statusChip(row.target_status || 'none', row.target_status || '')}<br>
@@ -175,7 +167,7 @@
               </div>
               ${renderAdmissionDiagnosticsBlock(row)}
               <div style="margin-top:10px;">
-                <a class="mini-link" href="${buildPageUrl('/ibkr_chart.html', { symbol: row.symbol, interval: '5m' }, { environment: currentEnvironment })}">Chart</a>
+                ${buildTvChartLink(row, 'TV')}
               </div>
             </td>
           </tr>
@@ -184,7 +176,7 @@
       renderScreenerCards(pageRows);
       renderScreenerPagination(pageRows);
 
-      document.getElementById('tableMeta').textContent = `过滤 ${filteredRows.length} · 本页 ${pageRows.length} · 可操作 ${filteredRows.filter((row) => row.is_operable).length} · live bars ${filteredRows.filter((row) => row.has_live_bar).length} · 补偿中 ${filteredRows.filter((row) => Boolean(row?.data_quality?.needs_repair)).length}`;
+      document.getElementById('tableMeta').textContent = `过滤 ${filteredRows.length} · 本页 ${pageRows.length} · 可操作 ${filteredRows.filter((row) => row.is_operable).length} · candidate ${filteredRows.filter((row) => row.target_status === 'candidate').length} · active ${filteredRows.filter((row) => row.target_status === 'active').length}`;
       document.getElementById('tableMetaSecondary').textContent = `已选 ${filteredRows.filter((row) => selectedSymbols.has(String(row.symbol || '').trim().toUpperCase())).length} 条`;
     }
 
@@ -206,13 +198,9 @@
         if (!inRange(row.display_day_change_pct ?? row.day_change_pct, filters.day_change_min, filters.day_change_max)) {
           if (Number.isFinite(filters.day_change_min) || Number.isFinite(filters.day_change_max)) return false;
         }
-        if (Number.isFinite(filters.atr_pct_min) && Number(row.atr_pct || 0) < filters.atr_pct_min) return false;
         if (Number.isFinite(filters.avg_volume_min) && Number(row.avg_10d_volume || 0) < filters.avg_volume_min) return false;
         if (Number.isFinite(filters.premarket_volume_min) && Number(row.premarket_volume || 0) < filters.premarket_volume_min) return false;
         if (Number.isFinite(filters.target_score_min) && Number(row.target_score || 0) < filters.target_score_min) return false;
-        if (Number.isFinite(filters.freshness_max)) {
-          if (!Number.isFinite(Number(row.freshness_min)) || Number(row.freshness_min) > filters.freshness_max) return false;
-        }
         if (filters.operable_only && !row.is_operable) return false;
         return true;
       });
@@ -331,16 +319,16 @@
         overlay.setAttribute('role', 'presentation');
         overlay.innerHTML = `
           <div class="manual-daily-scan-confirm" role="dialog" aria-modal="true" aria-labelledby="manualDailyScanConfirmTitle" aria-describedby="manualDailyScanConfirmCopy">
-            <div class="manual-daily-scan-confirm-kicker">Manual Daily Scan</div>
-            <div id="manualDailyScanConfirmTitle" class="manual-daily-scan-confirm-title">确认补跑今日日筛</div>
+            <div class="manual-daily-scan-confirm-kicker">Target Refresh</div>
+            <div id="manualDailyScanConfirmTitle" class="manual-daily-scan-confirm-title">确认刷新今日目标池</div>
             <div id="manualDailyScanConfirmCopy" class="manual-daily-scan-confirm-copy">
-              <div>这会重新计算今日 <code>candidate / active</code>。</div>
+              <div>这会重新读取并排序今日 <code>candidate / active</code>。</div>
               <div>手动加入的标的会保留。</div>
               <div>不会直接下单，也不会触发信号确认。</div>
             </div>
             <div class="manual-daily-scan-confirm-actions">
               <button type="button" class="mini-btn" data-confirm-action="cancel">取消</button>
-              <button type="button" class="mini-btn scan-rerun-btn" data-confirm-action="confirm">确认补跑</button>
+              <button type="button" class="mini-btn scan-rerun-btn" data-confirm-action="confirm">确认刷新</button>
             </div>
           </div>
         `;
@@ -372,8 +360,8 @@
       if (manualDailyScanState.running) return;
       if (!isSelectedDateToday()) {
         manualDailyScanState.status = 'error';
-        manualDailyScanState.message = `补跑失败: 只支持当前美东日期 ${getUsDate()}`;
-        showToast(`只支持补跑当前美东日期 ${getUsDate()}`);
+        manualDailyScanState.message = `刷新失败: 只支持当前美东日期 ${getUsDate()}`;
+        showToast(`只支持刷新当前美东日期 ${getUsDate()}`);
         syncManualDailyScanButton();
         return;
       }
@@ -382,10 +370,10 @@
 
       manualDailyScanState.running = true;
       manualDailyScanState.status = 'running';
-      manualDailyScanState.message = '正在补跑并刷新目标池...';
+      manualDailyScanState.message = '正在刷新目标池...';
       syncManualDailyScanButton();
       try {
-        showLoading('正在补跑今日日筛...');
+        showLoading('正在刷新今日目标池...');
         const payload = await requestJson('/api/custom/system/scheduler/jobs/run', {
           method: 'POST',
           body: buildModePayload({
@@ -492,7 +480,7 @@
         console.error('loadScreener failed:', error);
         screenerLoadKey = '';
         document.getElementById('refreshInfo').textContent = '加载失败';
-        document.getElementById('screenerTable').innerHTML = `<tr><td colspan="9" class="empty">${escapeHtml(error.message || error)}</td></tr>`;
+        document.getElementById('screenerTable').innerHTML = `<tr><td colspan="8" class="empty">${escapeHtml(error.message || error)}</td></tr>`;
         renderMobileCardState('screenerCards', error.message || error);
         showToast(`加载失败: ${error.message || error}`);
       } finally {
@@ -511,11 +499,9 @@
         'priceMax',
         'dayChangeMin',
         'dayChangeMax',
-        'atrPctMin',
         'avgVolumeMin',
         'premarketVolumeMin',
         'targetScoreMin',
-        'freshnessMax',
         'sortBy',
         'screenerPageSize',
         'operableOnly'
@@ -551,14 +537,12 @@
 
     function bindCurrentTargetFilterEvents() {
       const immediateIds = [
-        'currentTechnicalStateFilter',
         'currentSignalStateFilter',
         'currentTargetStatusFilter',
         'currentExecutionLayerFilter',
         'currentDirectionBiasFilter',
         'currentTargetSortBy',
         'currentTargetPageSize',
-        'currentReadyOnly',
         'currentSignaledOnly',
       ];
       immediateIds.forEach((id) => {

@@ -16,11 +16,16 @@ logger = logging.getLogger(__name__)
 
 GIB = 1024 * 1024 * 1024
 STORAGE_CLEANUP_STATE_KEY = "ibkr_storage_cleanup"
-DEFAULT_PROFILE = "balanced_50g"
+DEFAULT_PROFILE = "tv_primary_lean"
+PROFILE_ALIASES = {
+    DEFAULT_PROFILE: DEFAULT_PROFILE,
+    "balanced_50g": DEFAULT_PROFILE,
+}
+SUPPORTED_PROFILES = tuple(PROFILE_ALIASES.keys())
 DEFAULT_BATCH_SIZE = max(20, int(os.environ.get("IBKR_STORAGE_CLEANUP_BATCH_SIZE", "200") or "200"))
 DEFAULT_RECENT_BACKTEST_LIMIT = max(
     5,
-    int(os.environ.get("IBKR_STORAGE_CLEANUP_RECENT_BACKTEST_LIMIT", "30") or "30"),
+    int(os.environ.get("IBKR_STORAGE_CLEANUP_RECENT_BACKTEST_LIMIT", "5") or "5"),
 )
 DEFAULT_PROTECTED_BATCH_IDS = ("3gf4ouzj7oyvlao",)
 DEFAULT_PROTECTED_RUN_IDS = ("bm9wl0lagddsd6a",)
@@ -36,16 +41,30 @@ ACTIVE_SIGNAL_STATUSES = {
     "partialfilled",
 }
 
+PROTECTED_CORE_COLLECTIONS = frozenset(
+    {
+        "orders",
+        "ibkr_orders",
+        "ibkr_order_details",
+        "ibkr_signals",
+        "ibkr_reverse_signals",
+        "ibkr_targets",
+        "watchlist",
+        "config",
+        "ibkr_state",
+    }
+)
+
 STANDARD_POLICIES: tuple[dict[str, Any], ...] = (
     {
-        "collection": "ibkr_bars",
-        "mode": "external",
-        "reason": "managed_by_ibkr_history_retention",
-        "retention_days": 450,
-        "critical": True,
+        "collection": "ibkr_indicators",
+        "mode": "truncate_collection",
+        "include_legacy_empty": True,
+        "reason": "rebuildable_indicator_cache",
+        "sort": "created",
     },
     {
-        "collection": "ibkr_indicators",
+        "collection": "ibkr_bars",
         "field": "bar_time_ms",
         "kind": "ms",
         "retention_days": 90,
@@ -53,65 +72,47 @@ STANDARD_POLICIES: tuple[dict[str, Any], ...] = (
         "sort": "bar_time_ms",
     },
     {
+        "collection": "tv_webhook_events",
+        "field": "created",
+        "kind": "created_text",
+        "retention_days": 90,
+        "include_legacy_empty": True,
+        "sort": "created",
+    },
+    {
+        "collection": "system_events",
+        "field": "created",
+        "kind": "created_text",
+        "retention_days": 30,
+        "sort": "created",
+    },
+    {
         "collection": "ibkr_bar_coverage_daily",
         "field": "market_date",
         "kind": "date_text",
-        "retention_days": 180,
+        "retention_days": 30,
         "sort": "market_date",
     },
     {
         "collection": "ibkr_bar_integrity",
         "field": "market_date",
         "kind": "date_text",
-        "retention_days": 180,
+        "retention_days": 30,
         "sort": "market_date",
     },
     {
         "collection": "ibkr_bar_truth_audit",
         "field": "market_date",
         "kind": "date_text",
-        "retention_days": 180,
+        "retention_days": 30,
         "sort": "market_date",
     },
     {
         "collection": "ibkr_bar_truth_repair_events",
         "field": "market_date",
         "kind": "date_text",
-        "retention_days": 180,
+        "retention_days": 30,
         "sort": "market_date",
-    },
-    {
-        "collection": "ibkr_signals",
-        "field": "bar_time_ms",
-        "kind": "ms",
-        "retention_days": 450,
-        "include_legacy_empty": True,
-        "status_not_in": sorted(ACTIVE_SIGNAL_STATUSES),
-        "sort": "bar_time_ms",
-    },
-    {
-        "collection": "ibkr_reverse_signals",
-        "field": "bar_time_ms",
-        "kind": "ms",
-        "retention_days": 450,
-        "include_legacy_empty": True,
-        "status_not_in": sorted(ACTIVE_SIGNAL_STATUSES),
-        "sort": "bar_time_ms",
-    },
-    {
-        "collection": "ibkr_targets",
-        "field": "bar_time_ms",
-        "kind": "ms",
-        "retention_days": 450,
-        "include_legacy_empty": True,
-        "sort": "bar_time_ms",
-    },
-    {
-        "collection": "system_events",
-        "field": "created",
-        "kind": "created_text",
-        "retention_days": 90,
-        "sort": "created",
     },
     {
         "collection": "tv_indicators",
@@ -128,23 +129,6 @@ STANDARD_POLICIES: tuple[dict[str, Any], ...] = (
         "retention_days": 30,
         "include_legacy_empty": True,
         "sort": "bar_time_ms",
-    },
-    {
-        "collection": "tv_signals",
-        "field": "bar_time_ms",
-        "kind": "ms",
-        "retention_days": 30,
-        "include_legacy_empty": True,
-        "status_not_in": sorted(ACTIVE_SIGNAL_STATUSES),
-        "sort": "bar_time_ms",
-    },
-    {
-        "collection": "ibkr_state",
-        "field": "date",
-        "kind": "date_hour_text",
-        "retention_days": 30,
-        "state_key": "ibkr_history_retention",
-        "sort": "date",
     },
 )
 
@@ -216,6 +200,15 @@ def _safe_identifier(name: str) -> str:
 
 def _safe_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _normalize_profile(value: Any) -> str:
+    return str(value or "").strip().lower() or DEFAULT_PROFILE
+
+
+def _resolve_profile(value: Any) -> tuple[str, str | None]:
+    requested = _normalize_profile(value)
+    return requested, PROFILE_ALIASES.get(requested)
 
 
 def _compact_payload(value: Any, *, max_items: int = 40, max_text: int = 900) -> Any:
@@ -494,6 +487,15 @@ class StorageCleanup:
         return " && ".join(pb_parts), " and ".join(sql_parts), tuple(sql_params), cutoff_value
 
     def _delete_records(self, collection: str, pb_filter: str, sort: str, *, dry_run: bool) -> dict[str, Any]:
+        if collection in PROTECTED_CORE_COLLECTIONS:
+            return {
+                "deleted": 0,
+                "errors": 0,
+                "batches": 0,
+                "dry_run": bool(dry_run),
+                "skipped": True,
+                "reason": "protected_core_collection",
+            }
         if dry_run:
             return {"deleted": 0, "errors": 0, "batches": 0, "dry_run": True}
 
@@ -546,7 +548,20 @@ class StorageCleanup:
 
     def _run_standard_policy(self, policy: dict[str, Any], environment: str, now_et: datetime, *, dry_run: bool) -> dict[str, Any]:
         collection = str(policy.get("collection") or "")
-        if str(policy.get("mode") or "") == "external":
+        mode = str(policy.get("mode") or "")
+        if collection in PROTECTED_CORE_COLLECTIONS:
+            return {
+                "collection": collection,
+                "mode": mode or "standard_retention",
+                "estimated": 0,
+                "deleted": 0,
+                "errors": 0,
+                "batches": 0,
+                "dry_run": bool(dry_run),
+                "skipped": True,
+                "reason": "protected_core_collection",
+            }
+        if mode == "external":
             return {
                 "collection": collection,
                 "mode": "external",
@@ -556,6 +571,20 @@ class StorageCleanup:
                 "deleted": 0,
                 "errors": 0,
                 "skipped": True,
+            }
+        if mode == "truncate_collection":
+            pb_filter = _build_environment_filter(environment, include_legacy_empty=bool(policy.get("include_legacy_empty")))
+            sql_where, sql_params = self._environment_sql_clause(environment, bool(policy.get("include_legacy_empty")))
+            count, count_source = self._count_sql(collection, sql_where, sql_params)
+            delete_result = self._delete_records(collection, pb_filter, str(policy.get("sort") or "created"), dry_run=dry_run)
+            return {
+                "collection": collection,
+                "mode": mode,
+                "reason": str(policy.get("reason") or ""),
+                "filter": pb_filter,
+                "estimated": int(count or 0) if count is not None else None,
+                "count_source": count_source,
+                **delete_result,
             }
 
         pb_filter, sql_where, sql_params, cutoff_value = self._policy_filters(policy, environment, now_et)
@@ -676,6 +705,19 @@ class StorageCleanup:
         sort: str,
         dry_run: bool,
     ) -> dict[str, Any]:
+        if collection in PROTECTED_CORE_COLLECTIONS:
+            return {
+                "collection": collection,
+                "field": field,
+                "mode": "backtest_retention_limit",
+                "estimated": 0,
+                "deleted": 0,
+                "errors": 0,
+                "batches": 0,
+                "dry_run": bool(dry_run),
+                "skipped": True,
+                "reason": "protected_core_collection",
+            }
         pb_filter, sql_where, sql_params = self._not_in_filters(field, keep_ids)
         count, count_source = self._count_sql(collection, sql_where, sql_params)
         delete_result = self._delete_records(collection, pb_filter, sort, dry_run=dry_run)
@@ -817,11 +859,14 @@ class StorageCleanup:
         now_et = now.astimezone(ET) if isinstance(now, datetime) else datetime.now(ET)
         day_token = now_et.strftime("%Y-%m-%d")
         source_name = str(source or "").strip().lower() or "manual"
-        requested_profile = str(profile or DEFAULT_PROFILE).strip() or DEFAULT_PROFILE
+        requested_profile, effective_profile = _resolve_profile(profile or DEFAULT_PROFILE)
         summary: dict[str, Any] = {
             "ok": True,
-            "profile": requested_profile,
-            "supported_profiles": [DEFAULT_PROFILE],
+            "profile": effective_profile or requested_profile,
+            "requested_profile": requested_profile,
+            "profile_alias": requested_profile if effective_profile and requested_profile != effective_profile else "",
+            "supported_profiles": list(SUPPORTED_PROFILES),
+            "protected_collections": sorted(PROTECTED_CORE_COLLECTIONS),
             "dry_run": bool(dry_run),
             "force": bool(force),
             "source": source_name,
@@ -834,7 +879,7 @@ class StorageCleanup:
             "needs_vacuum": False,
         }
 
-        if requested_profile != DEFAULT_PROFILE:
+        if not effective_profile:
             summary["ok"] = False
             summary["error"] = "unsupported_profile"
             self._last_summary = summary
@@ -889,7 +934,8 @@ class StorageCleanup:
                     day_token,
                     {
                         "completed": True,
-                        "profile": requested_profile,
+                        "profile": effective_profile,
+                        "requested_profile": requested_profile,
                         "source": source_name,
                         "executed_at": summary["executed_at"],
                         "total_deleted": env_result["total_deleted"],
@@ -907,6 +953,8 @@ class StorageCleanup:
     def status(self) -> dict[str, Any]:
         return {
             "profile": DEFAULT_PROFILE,
+            "supported_profiles": list(SUPPORTED_PROFILES),
+            "protected_collections": sorted(PROTECTED_CORE_COLLECTIONS),
             "batch_size": self.batch_size,
             "recent_backtest_limit": self.recent_backtest_limit,
             "state_key": STORAGE_CLEANUP_STATE_KEY,
@@ -917,6 +965,8 @@ class StorageCleanup:
 
 __all__ = [
     "DEFAULT_PROFILE",
+    "SUPPORTED_PROFILES",
+    "PROTECTED_CORE_COLLECTIONS",
     "STORAGE_CLEANUP_STATE_KEY",
     "StorageCleanup",
 ]

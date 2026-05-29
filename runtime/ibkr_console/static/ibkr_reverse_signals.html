@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>反向信号</title>
     <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
-    <script src="common.js?v=20260528-night-session-review-entry-1"></script>
+    <script src="common.js?v=20260529-tv-primary-lean-1"></script>
     <script>document.write(getCommonStyles());</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
     <link rel="stylesheet" href="/assets/css/pages/ibkr_reverse_signals/page.css">
@@ -609,9 +609,6 @@
             if (signal.signal_id || signal.origin_signal_id) {
                 buttons.push(`<button class="action-btn btn-details" onclick="viewSignal('${encodeURIComponent(signal.signal_id || signal.origin_signal_id)}')">📡 查看信号</button>`);
             }
-            if (signal.symbol) {
-                buttons.push(`<button class="action-btn btn-details" onclick="viewChartPage('${encodeURIComponent(signal.id)}')">📉 图表页</button>`);
-            }
             if (signal.trade_group_id) {
                 buttons.push(`<button class="action-btn btn-details" onclick="viewTradeGroup('${encodeURIComponent(signal.trade_group_id)}', '${encodeURIComponent(signal.signal_id || signal.origin_signal_id || '')}')">📜 交易组明细</button>`);
             } else if (hasOrderContext && (signal.signal_id || signal.origin_signal_id)) {
@@ -796,17 +793,6 @@
         function normalizeDateParam(value, fallback = '') {
             const text = String(value || '').trim();
             return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : fallback;
-        }
-
-        function viewChartPage(reverseId) {
-            const decoded = decodeURIComponent(reverseId);
-            const signal = allSignals.find((item) => item.id === decoded);
-            const params = buildReverseChartParams(signal);
-            if (!params) {
-                showToast('暂无图表上下文');
-                return;
-            }
-            location.href = buildPageUrl('/ibkr_chart.html', params, { environment: currentEnvironment });
         }
 
         function viewTradeGroup(tradeGroupId, signalId) {

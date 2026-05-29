@@ -330,7 +330,7 @@
             </div>
             <div class="card-bottom">
               <button class="btn primary" type="button" onclick="addDailyTargetCandidate(${index})" ${manualDateAllowed ? '' : 'disabled'}>${manualDateAllowed ? '加入目标池' : '仅支持当前交易日'}</button>
-              <a class="mini-link" href="${buildPageUrl('/ibkr_chart.html', { symbol: item.symbol || '', interval: '5m' }, { environment: currentEnvironment })}">查看图表</a>
+              ${buildTvChartLink(item, 'TV')}
             </div>
           </article>
         `;
@@ -369,7 +369,7 @@
           </td>
           <td>
             <div class="row-actions">
-              <a class="mini-link" href="${buildPageUrl('/ibkr_chart.html', { symbol: item.symbol || '', interval: '5m' }, { environment: currentEnvironment })}">Chart</a>
+              ${buildTvChartLink(item, 'TV')}
               <button class="mini-btn" type="button" onclick="editDailyTargetItem('${escapeHtml(item.id || '')}')">编辑</button>
               <button class="mini-btn danger" type="button" onclick="removeDailyTargetItem('${escapeHtml(item.id || '')}', '${escapeHtml(item.symbol || '')}')">删除</button>
             </div>
@@ -702,7 +702,7 @@
             ${(renderAdmissionControlRow(displayItem) || getFailedGates(displayItem).length) ? `<div class="card-copy" style="margin-top:8px;">${renderFailedGatesPills(displayItem, 'failed_gates: none')}</div>` : ''}
             <div class="card-bottom">
               <button class="btn primary" type="button" onclick="addCandidate(${index})">加入 ${escapeHtml(scopeLabel)} ${escapeHtml(roleLabel)}</button>
-              <a class="mini-link" href="${buildPageUrl('/ibkr_chart.html', { symbol: item.symbol || '', interval: '5m' }, { environment: currentEnvironment })}">查看图表</a>
+              ${buildTvChartLink(item, 'TV')}
             </div>
           </article>
         `;
@@ -824,7 +824,7 @@
               </td>
               <td>
                 <div class="row-actions">
-                  <a class="mini-link" href="${buildPageUrl('/ibkr_chart.html', { symbol: item.symbol || '', interval: '5m' }, { environment: currentEnvironment })}">Chart</a>
+                  ${buildTvChartLink(item, 'TV')}
                   ${configItem
                     ? `<a class="mini-link" href="${getConfigPageUrl()}">改配置</a>`
                     : `<button class="mini-btn" type="button" onclick="editItem('${escapeHtml(item.id || '')}')">编辑</button>

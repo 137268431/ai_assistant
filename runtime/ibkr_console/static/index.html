@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Trading Flight - 首页</title>
     <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
-    <script src="common.js?v=20260528-night-session-review-entry-1"></script>
+    <script src="common.js?v=20260529-tv-primary-lean-1"></script>
     <script>document.write(getCommonStyles());</script>
     <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
     <link rel="stylesheet" href="/assets/css/pages/index/page.css?v=20260522-market-compact">
@@ -32,7 +32,7 @@
                                 <div class="home-stack-title">Split Stack</div>
                                 <a id="overviewStackLink" href="/ibkr_system.html" class="home-stack-link">系统总览</a>
                             </div>
-                            <div class="home-stack-summary" id="overviewStackSummary">正在读取 runtime / compute / backtest / pocketbase 拆分状态...</div>
+                            <div class="home-stack-summary" id="overviewStackSummary">正在读取 TV webhook / IBKR execution / runtime / supporting ops 状态...</div>
                             <div class="home-stack-services" id="overviewServiceRows">
                                 <div class="home-stack-service" data-tone="neutral">
                                     <div class="home-stack-service-top">
@@ -203,15 +203,6 @@
                             <div class="home-quick-copy">从选股、信号、成交到止盈止损，一张图看当前交易走到哪一步。</div>
                         </a>
 
-                        <a id="actionChartLink" href="/ibkr_chart.html" class="home-quick-link">
-                            <div class="home-quick-link-top">
-                                <div class="home-quick-icon">📈</div>
-                                <div class="home-quick-arrow">OPEN</div>
-                            </div>
-                            <div class="home-quick-title">图表工作台</div>
-                            <div class="home-quick-copy">打开 TradingView 图表和标的信号上下文。</div>
-                        </a>
-
                         <a id="actionAccountLink" href="/ibkr_account.html" class="home-quick-link">
                             <div class="home-quick-link-top">
                                 <div class="home-quick-icon">💼</div>
@@ -227,22 +218,13 @@
                                 <div class="home-quick-arrow">OPEN</div>
                             </div>
                             <div class="home-quick-title">系统总览</div>
-                            <div class="home-quick-copy">快速确认 runtime、compute 和链路健康。</div>
+                            <div class="home-quick-copy">快速确认 TV webhook、IBKR 执行和 runtime 状态。</div>
                         </a>
 
-                        <a id="actionSystemLogicLink" href="/ibkr_system_logic.html" class="home-quick-link">
-                            <div class="home-quick-link-top">
-                                <div class="home-quick-icon">🧭</div>
-                                <div class="home-quick-arrow">OPEN</div>
-                            </div>
-                            <div class="home-quick-title">系统逻辑</div>
-                            <div class="home-quick-copy">按当前代码事实查看选标、信号、执行、订单流和调度规则。</div>
-                        </a>
                     </div>
 
                     <div class="home-tool-strip">
                         <a id="actionRuntimeLink" href="/ibkr_runtime.html" class="home-tool-chip">🎛️ 控制台</a>
-                        <a id="actionMonitorLink" href="/ibkr_monitor.html" class="home-tool-chip">🛠️ 运维</a>
                         <a id="actionConfigLink" href="/ibkr_config.html" class="home-tool-chip">⚙️ 配置</a>
                     </div>
                 </section>
@@ -256,7 +238,6 @@
                             <div class="home-panel-title">市场脉搏</div>
                             <div class="home-panel-copy">指数和风险情绪作为次级参考；首屏以 TV -> IBKR 执行闭环为主。</div>
                         </div>
-                        <a id="marketPanelLink" href="/ibkr_chart.html" class="home-inline-btn">打开图表</a>
                     </div>
                     <div class="home-panel-meta home-panel-meta-row" id="marketSummaryText">加载中...</div>
                     <div id="marketIndexGrid" class="home-market-grid home-panel-scroll">
@@ -395,14 +376,10 @@
                 actionOrdersLink: buildPageUrl('/orders.html'),
                 actionTradeReviewLink: buildPageUrl('/ibkr_trade_review.html', { date: getUsDate() }),
                 actionLifecycleLink: buildPageUrl('/ibkr_lifecycle_flow.html', { date: getUsDate() }),
-                actionChartLink: buildPageUrl('/ibkr_chart.html'),
                 actionAccountLink: buildPageUrl('/ibkr_account.html'),
                 actionSystemLink: buildPageUrl('/ibkr_system.html'),
-                actionSystemLogicLink: buildPageUrl('/ibkr_system_logic.html'),
                 actionRuntimeLink: buildPageUrl('/ibkr_runtime.html'),
-                actionMonitorLink: buildPageUrl('/ibkr_monitor.html'),
                 actionConfigLink: buildPageUrl('/ibkr_config.html', {}, { allowGlobal: true }),
-                marketPanelLink: buildPageUrl('/ibkr_chart.html'),
                 activityPanelLink: buildPageUrl('/ibkr_signals.html')
             };
 
@@ -514,31 +491,15 @@
             return normalized.toUpperCase();
         }
 
-        function buildHomeStackSummary(topology = {}, preloadState = null, computeSummary = {}) {
+        function buildHomeStackSummary(topology = {}) {
             const services = topology?.services || {};
             const hasRuntime = Boolean(services['ibkr-runtime']);
-            const hasCompute = Boolean(services['ibkr-compute']);
-            const hasBacktest = Boolean(services['ibkr-backtest']);
             const hasApi = Boolean(services['ibkr-api']);
             const hasScheduler = Boolean(services['ibkr-scheduler']);
-            const splitActive = hasRuntime && hasCompute && hasBacktest && hasApi && hasScheduler;
-            const parts = [splitActive ? 'Runtime / Compute / Backtest / API / Scheduler 已拆分' : 'Split stack 信息不完整'];
-            const readyEngines = Number(computeSummary?.ready_engines || 0) || 0;
-            const totalEngines = Number(computeSummary?.total_engines || 0) || 0;
-            if (totalEngines > 0) {
-                parts.push(`engines ${readyEngines}/${totalEngines}`);
-            }
-            if (preloadState && preloadState.enabled) {
-                if (preloadState.status === 'running') {
-                    parts.push(`preload ${preloadState.symbolCompleted}/${preloadState.symbolTotal || '--'}`);
-                } else if (preloadState.status === 'completed') {
-                    parts.push('preload done');
-                } else if (preloadState.status === 'scheduled') {
-                    parts.push('preload queued');
-                } else if (preloadState.status === 'failed') {
-                    parts.push('preload failed');
-                }
-            }
+            const hasGateway = Boolean(services['ibkr-gateway']);
+            const ready = hasRuntime && hasApi && hasScheduler && hasGateway;
+            const parts = [ready ? 'TV webhook / IBKR execution / runtime / supporting ops 已连接' : '主链路状态信息不完整'];
+            if (services.pocketbase) parts.push('storage connected');
             return parts.join(' · ');
         }
 
@@ -561,37 +522,26 @@
                 services,
             };
             const runtimeService = services['ibkr-runtime'] || {};
-            const computeService = services['ibkr-compute'] || {};
-            const backtestService = services['ibkr-backtest'] || {};
             const apiService = services['ibkr-api'] || {};
             const schedulerService = services['ibkr-scheduler'] || {};
             const gatewayService = services['ibkr-gateway'] || {};
             const pocketbaseService = services.pocketbase || {};
-            const computeSummary = summary?.ibkr_compute || {};
-            const preloadState = normalizeHomePreloadState(computeSummary.compute_startup_preload || {});
-            const readyEngines = Number(computeSummary.ready_engines || 0) || 0;
-            const totalEngines = Number(computeSummary.total_engines || 0) || 0;
             const runtimeRunning = normalizeHomeServiceStatus(runtimeService.status) === 'running';
             const gatewayRunning = normalizeHomeServiceStatus(gatewayService.status) === 'running';
             const runtimeAuthenticated = runtimeService.session_authenticated === true;
             const runtimeOperational = (runtimeRunning || runtimeAuthenticated) && gatewayRunning;
-            const computeStatusSource = computeService.status || computeSummary.status || 'unknown';
-            const computeStatus = normalizeHomeServiceStatus(computeStatusSource);
-            const computeReadinessPhase = String(computeService.readiness_phase || '').trim().toLowerCase();
-            const computePreloadActive = preloadState.status === 'running'
-                || preloadState.status === 'scheduled'
-                || computeReadinessPhase === 'preload'
-                || computeStatus === 'starting';
-            const computeHasNoReadyEngines = computeStatus === 'running' && totalEngines > 0 && readyEngines <= 0;
-            const computeFullyReady = computeStatus === 'running' && totalEngines > 0 && readyEngines >= totalEngines;
-            const computeReady = computeStatus === 'running' && !computeHasNoReadyEngines;
-            const computeWarming = computePreloadActive || computeHasNoReadyEngines;
 
-            summaryEl.textContent = buildHomeStackSummary(topology, preloadState, computeSummary);
+            summaryEl.textContent = buildHomeStackSummary(topology);
 
             const rows = [
                 {
-                    name: 'Runtime',
+                    name: 'TV Webhook',
+                    status: summary?.tv_webhook?.status || 'ready',
+                    label: summary?.tv_webhook?.enabled === false ? 'OFF' : 'READY',
+                    tone: summary?.tv_webhook?.enabled === false ? 'warning' : 'running'
+                },
+                {
+                    name: 'IBKR Exec',
                     status: runtimeService.status || summary?.ibkr_runtime?.status || 'unknown',
                     label: runtimeAuthenticated
                         ? 'AUTH'
@@ -601,43 +551,13 @@
                         : (runtimeRunning ? 'warning' : getHomeServiceTone(runtimeService.status || summary?.ibkr_runtime?.status || 'unknown'))
                 },
                 {
-                    name: 'Compute',
-                    status: computeStatusSource,
-                    label: preloadState.status === 'failed'
-                        ? 'FAILED'
-                        : computeFullyReady
-                        ? 'READY'
-                        : (computeWarming ? 'WARMING' : getHomeServiceLabel(computeStatusSource)),
-                    tone: preloadState.status === 'failed'
-                        ? 'warning'
-                        : (computeWarming ? 'warning' : (computeReady ? 'running' : getHomeServiceTone(computeStatusSource)))
+                    name: 'Runtime',
+                    status: runtimeService.status || summary?.ibkr_runtime?.status || 'unknown',
+                    label: runtimeRunning ? 'RUNNING' : getHomeServiceLabel(runtimeService.status || summary?.ibkr_runtime?.status || 'unknown'),
+                    tone: getHomeServiceTone(runtimeService.status || summary?.ibkr_runtime?.status || 'unknown')
                 },
                 {
-                    name: 'Backtest',
-                    status: backtestService.status || 'unknown',
-                    label: (() => {
-                        const workerStatus = String(backtestService.worker_status || backtestService.readiness_phase || '').trim().toUpperCase();
-                        if (workerStatus && workerStatus !== 'READY' && workerStatus !== 'UNKNOWN') return workerStatus;
-                        return getHomeServiceLabel(backtestService.status || 'unknown');
-                    })(),
-                    tone: (() => {
-                        const workerStatus = String(backtestService.worker_status || backtestService.readiness_phase || '').trim().toLowerCase();
-                        if (workerStatus === 'idle') return 'neutral';
-                        return getHomeServiceTone(backtestService.status || 'unknown');
-                    })()
-                },
-                {
-                    name: 'API',
-                    status: apiService.status || 'peer',
-                    label: String(apiService.status || '').trim().toLowerCase() === 'running' || String(apiService.status || '').trim().toLowerCase() === 'peer'
-                        ? 'OK'
-                        : String(apiService.status || 'peer').toUpperCase(),
-                    tone: String(apiService.status || '').trim().toLowerCase() === 'running'
-                        ? 'running'
-                        : (String(apiService.status || '').trim().toLowerCase() === 'peer' ? 'neutral' : getHomeServiceTone(apiService.status || 'peer'))
-                },
-                {
-                    name: 'Scheduler',
+                    name: 'Supporting Ops',
                     status: schedulerService.status || 'peer',
                     label: String(schedulerService.status || '').trim().toLowerCase() === 'running' || String(schedulerService.status || '').trim().toLowerCase() === 'peer'
                         ? 'OK'
@@ -647,7 +567,7 @@
                         : (String(schedulerService.status || '').trim().toLowerCase() === 'peer' ? 'neutral' : getHomeServiceTone(schedulerService.status || 'peer'))
                 },
                 {
-                    name: 'PocketBase',
+                    name: 'Storage',
                     status: pocketbaseService.status || 'external',
                     label: normalizeHomeServiceStatus(pocketbaseService.status || 'external') === 'external'
                         ? 'EXT'
@@ -688,8 +608,8 @@
             } catch (error) {
                 console.error('加载 split stack 摘要失败:', error);
                 cardEl.dataset.ready = 'ready';
-                summaryEl.textContent = 'Runtime / Compute / Backtest / API / Scheduler 已拆分状态不可用，进入系统总览查看。';
-                rowsEl.innerHTML = ['Runtime', 'Compute', 'Backtest', 'API', 'Scheduler', 'PocketBase'].map((name) => `
+                summaryEl.textContent = 'TV webhook / IBKR execution / runtime / supporting ops 状态不可用，进入系统总览查看。';
+                rowsEl.innerHTML = ['TV Webhook', 'IBKR Exec', 'Runtime', 'API', 'Scheduler', 'PocketBase'].map((name) => `
                     <div class="home-stack-service" data-tone="warning">
                         <div class="home-stack-service-top">
                             <span class="home-stack-service-name">${name}</span>
@@ -715,7 +635,7 @@
             const toolCount = document.querySelectorAll('#homeQuickLinks .home-tool-chip').length;
             const metaEl = document.getElementById('quickLinksMeta');
             if (!metaEl) return;
-            metaEl.textContent = `${primaryCount} 个主入口 · ${toolCount} 个补充工具 · 覆盖筛选 / 研究 / 执行 / 复盘 / 账户 / 系统`;
+            metaEl.textContent = `${primaryCount} 个主入口 · ${toolCount} 个补充工具 · 覆盖标的 / 执行 / 复盘 / 账户 / 系统`;
         }
 
         function buildTargetSignalUrl(symbol, marketDate) {
@@ -787,13 +707,6 @@
             setSectionState('homeTargets', 'ready');
             listEl.innerHTML = visibleItems.map((row) => {
                 const reasons = Array.isArray(row.operable_reasons) ? row.operable_reasons.slice(0, 3) : [];
-                const chartUrl = buildPageUrl('/ibkr_chart.html', {
-                    symbol: row.symbol || '',
-                    interval: '5m'
-	                }, {
-	                brokerMode: currentBrokerMode,
-	                dataEnvironment: currentEnvironment
-	            });
                 const signalUrl = buildTargetSignalUrl(row.symbol || '', marketDate);
                 return `
                     <article class="home-target-card">
@@ -820,7 +733,6 @@
                                 <span>${escapeHtml(formatPrice(row.price))}</span>
                             </div>
                             <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                                <a class="home-target-action" href="${chartUrl}">Chart</a>
                                 <a class="home-target-action" href="${signalUrl}">Signals</a>
                             </div>
                         </div>
@@ -1460,15 +1372,8 @@
                     }
                 }
 
-                const chartUrl = buildPageUrl('/ibkr_chart.html', {
-                    symbol,
-                    interval: '5m'
-                }, {
-                    brokerMode: currentBrokerMode,
-                    dataEnvironment: currentEnvironment
-                });
                 html += `
-                    <a class="home-market-card ${vixClass}" href="${chartUrl}">
+                    <article class="home-market-card ${vixClass}">
                         <div class="home-market-symbol">${escapeHtml(symbol)}${vixBadge ? ` · ${escapeHtml(vixBadge)}` : ''}</div>
                         <div class="home-market-price">${escapeHtml(formatPrice(displayPrice))}</div>
                         <div class="home-market-change">
@@ -1476,7 +1381,7 @@
                             <span class="${change7d > 0 ? 'positive' : (change7d < 0 ? 'negative' : 'neutral')}">7D ${escapeHtml(change7dText)}</span>
                         </div>
                         <div class="home-market-meta">${escapeHtml(item.data_source_text || 'NO DATA')} · ${escapeHtml(item.update_text || '--')}<br>${escapeHtml(item.freshness_text || '--')}</div>
-                    </a>
+                    </article>
                 `;
             });
 

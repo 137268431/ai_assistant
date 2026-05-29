@@ -130,7 +130,6 @@
                         source: 'runtime_page'
                     })
                 },
-                compute: { path: '/api/custom/ibkr/proxy', body: runtimeModePayload({ action: 'compute' }) },
                 emergency_all: { path: '/api/custom/ibkr/emergency-stop', body: runtimeModePayload({ action: 'all' }) },
                 recover_all: { path: '/api/custom/ibkr/recover', body: runtimeModePayload({ action: 'all' }) }
             };
@@ -460,7 +459,7 @@
                 title: `确认切换到 ${targetLabel}`,
                 message: [
                     `即将把真实运行模式从 ${currentLabel} 切换到 ${targetLabel}。`,
-                    '系统会写入运行 .env，并依次停止 runtime、重启 Gateway、Runtime、Compute、Scheduler 和 API。',
+                    '系统会写入运行 .env，并依次停止 runtime、重启 Gateway、Runtime、Scheduler 和 API。',
                     '只有当前账户无持仓、无 IBKR 挂单、无 PB active/stale 订单组时才会执行；切换后需要重新完成 2FA。'
                 ].join('\n'),
                 confirmText,
@@ -666,7 +665,7 @@
             }
             if (action === 'emergency_all' && !await showRuntimeConfirm({
                 title: '确认执行全部急停',
-                message: '这会关闭 compute / trading / bars publish / IBKR Scheduler，并停止当前 runtime。',
+                message: '这会关闭交易执行、行情写入、IBKR Scheduler，并停止当前 runtime。',
                 confirmLabel: '全部急停',
                 tone: 'danger',
             })) {
@@ -674,7 +673,7 @@
             }
             if (action === 'recover_all' && !await showRuntimeConfirm({
                 title: '确认恢复运行开关',
-                message: '这会恢复 compute / trading / bars publish / IBKR Scheduler 开关，但不会自动重启服务。',
+                message: '这会恢复交易执行、行情写入、IBKR Scheduler 开关，但不会自动重启服务。',
                 confirmLabel: '恢复',
                 tone: 'info',
             })) {

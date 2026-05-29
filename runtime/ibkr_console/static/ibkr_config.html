@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>配置管理</title>
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
-<script src="common.js?v=20260528-night-session-review-entry-1"></script>
+<script src="common.js?v=20260529-tv-primary-lean-1"></script>
 <script>document.write(getCommonStyles())</script>
 <link rel="stylesheet" href="/assets/css/ibkr-page-common.css">
 <link rel="stylesheet" href="/assets/css/pages/ibkr_config/page.css?v=20260518-fluid-shell">
@@ -227,6 +227,82 @@ const ACTIVE_CONFIG_KEYS = new Set([
   'storage_cleanup_disk_low_free_pct'
 ])
 
+const LEGACY_ADVANCED_CONFIG_KEYS = new Set([
+  'ibkr_compute_internal_url',
+  'ibkr_backtest_internal_url',
+  'ibkr_compute_enabled',
+  'ibkr_bar_publish_enabled',
+  'backtest_chat_id',
+  'system_data_gap_bar_lag_alert_min',
+  'system_data_gap_indicator_lag_alert_min',
+  'system_data_gap_alert_cooldown_min',
+  'system_data_gap_indicator_requires_targets',
+  'storage_cleanup_backtest_recent_limit',
+  'storage_cleanup_protected_batch_ids',
+  'storage_cleanup_protected_run_ids',
+  'ibkr_live_warmup_days',
+  'ibkr_restart_overlap_days'
+])
+
+LEGACY_ADVANCED_CONFIG_KEYS.forEach((key) => ACTIVE_CONFIG_KEYS.delete(key))
+
+const TV_PRIMARY_HIDDEN_CONFIG_KEYS = new Set([
+  'signal_window_max_bars',
+  'signal_strategy_profile',
+  'ibkr_signal_strategy_profile',
+  'exit_policy_profile',
+  'exit_policy_overrides',
+  'entry_limit_atr_mult',
+  'entry_limit_floor_bps',
+  'entry_limit_cap_bps',
+  'marketable_limit_bps',
+  'entry_breakout_marketable_quality_min',
+  'entry_reprice_policy',
+  'cooldown_bars_after_sl',
+  'cooldown_bars_after_reverse',
+  'atr_dynamic_stop_enabled',
+  'live_exit_policy_stop_update_enabled',
+  'atr_stop_min_profit_r',
+  'atr_stop_deviation_threshold',
+  'atr_stop_min_change',
+  'ibkr_daily_scan_min_atr_pct',
+  'ibkr_daily_scan_min_abs_day_change_pct',
+  'ibkr_daily_scan_runtime_topup_wait_sec',
+  'ibkr_daily_scan_runtime_topup_poll_sec',
+  'ibkr_active_repair_interval_min',
+  'ibkr_bar_publish_enabled',
+  'ibkr_compute_enabled',
+  'ibkr_compute_internal_url',
+  'ibkr_backtest_internal_url',
+  'backtest_chat_id',
+  'storage_cleanup_backtest_recent_limit',
+  'storage_cleanup_protected_batch_ids',
+  'storage_cleanup_protected_run_ids',
+  'system_data_gap_bar_lag_alert_min',
+  'system_data_gap_indicator_lag_alert_min',
+  'system_data_gap_alert_cooldown_min',
+  'system_data_gap_indicator_requires_targets',
+])
+
+const TV_PRIMARY_HIDDEN_CONFIG_PREFIXES = [
+  'sd_',
+  'orb_',
+  'intraday_',
+  'ibkr_watchlist_idle_topup_',
+  'ibkr_watchlist_backfill_',
+  'ibkr_watchlist_integrity_',
+  'ibkr_runtime_direct_topup_',
+  'ibkr_rollup_',
+  'ibkr_history_',
+  'ibkr_official_5m_',
+]
+
+function isTvPrimaryHiddenConfigKey(key) {
+  const text = String(key || '').trim()
+  return TV_PRIMARY_HIDDEN_CONFIG_KEYS.has(text)
+    || TV_PRIMARY_HIDDEN_CONFIG_PREFIXES.some((prefix) => text.startsWith(prefix))
+}
+
 function meta(displayName, groupName, sortOrder, defaultValue = '', description = '') {
   return {
     display_name: displayName,
@@ -317,10 +393,10 @@ const CONFIG_META = {
 
   watchlist_interval_min: meta('标的同步间隔', '标的订阅', 600, '5', '联动 sync_*: 同步窗口内按该间隔刷新 watchlist 股票池'),
   ibkr_target_refresh_sec: meta('目标订阅刷新秒数', '标的订阅', 610, '60', '按 ibkr_targets 刷新当日实时订阅列表'),
-  ibkr_daily_scan_time_et: meta('日筛起始时间', '标的订阅', 612, '08:20', '每日自动预筛起始时间，ET 时区；当前设计为 08:20-09:20 每 5 分钟覆盖重筛'),
-  ibkr_daily_scan_min_avg_10d_volume: meta('日筛最小10D均量', '标的订阅', 614, '100000', '自动日筛硬门槛：10 日平均成交量至少达到该值'),
-  ibkr_daily_scan_min_premarket_volume: meta('日筛最小盘前量', '标的订阅', 616, '5000', '自动日筛硬门槛：盘前累计成交量至少达到该值'),
-  ibkr_target_activity_gate_stages_json: meta('分阶段成交活跃门槛', '标的订阅', 617, '', 'JSON 配置 08:20-11:00 不同阶段的 activity any_of 门槛；盘前看 premarket_volume，开盘后看 regular_volume / elapsed_rvol'),
+  ibkr_daily_scan_time_et: meta('目标池刷新时间', '标的订阅', 612, '08:20', '每日维护候选池的起始时间，ET 时区；盘中以 TV webhook 激活信号为准'),
+  ibkr_daily_scan_min_avg_10d_volume: meta('目标池最小10D均量', '标的订阅', 614, '100000', '目标池硬门槛：10 日平均成交量至少达到该值'),
+  ibkr_daily_scan_min_premarket_volume: meta('目标池最小盘前量', '标的订阅', 616, '5000', '目标池硬门槛：盘前累计成交量至少达到该值'),
+  ibkr_target_activity_gate_stages_json: meta('分阶段活跃门槛', '标的订阅', 617, '', 'JSON 配置 08:20-11:00 不同阶段的 activity any_of 门槛；盘前看 premarket_volume，开盘后看 regular_volume / elapsed_rvol'),
   ibkr_daily_scan_min_atr_pct: meta('日筛最小 ATR%', '标的订阅', 618, '0.15', '自动日筛硬门槛：ATR 百分比至少达到该值'),
   ibkr_daily_scan_min_abs_day_change_pct: meta('日筛最小日涨跌%', '标的订阅', 619, '1.0', '自动日筛硬门槛：当日涨跌幅绝对值至少达到该值'),
   ibkr_daily_scan_runtime_topup_wait_sec: meta('日筛等待 Runtime 回补秒数', '标的订阅', 619.6, '20', '远程 compute 依赖 Runtime watchlist topup 时，若刚好遇到 5m close 后追新窗口，日筛最多等待这些秒数再判定数据完整性'),
@@ -367,8 +443,8 @@ const CONFIG_META = {
   intraday_window_admission_min_premarket_volume: meta('窗口准入最小盘前量', '动态准入 / Fundamentals', 673, '5000', '信号窗口入池硬门槛之一：盘前量不足时需 today volume 达到替代阈值'),
   intraday_window_admission_min_today_volume: meta('窗口准入最小当日量', '动态准入 / Fundamentals', 674, '10000', '11:00 后信号窗口入池兜底门槛；08:20-11:00 优先使用分阶段 regular_volume / elapsed_rvol activity gate'),
   intraday_window_admission_min_tradability_score: meta('窗口准入最小可交易分', '动态准入 / Fundamentals', 675, '60', '信号窗口入池硬门槛：tradability_score 低于该值时只展示 failed_gates，不自动提升到 active'),
-  ibkr_dynamic_admission_enabled: meta('日筛动态准入开关', '动态准入 / Fundamentals', 676, 'TRUE', '启用后 08:20-09:20 预筛按 symbol_profile/fundamentals、分阶段成交活跃门槛和市场画像动态调整 admission thresholds，并输出 failed_gates'),
-  ibkr_dynamic_admission_min_score: meta('日筛动态准入最低分', '动态准入 / Fundamentals', 677, '58', '日筛 dynamic_admission 的最低 admission_score；低于该分会进入 failed_gates 并降低自动入池优先级'),
+  ibkr_dynamic_admission_enabled: meta('目标池动态准入开关', '动态准入 / Fundamentals', 676, 'TRUE', '启用后按 symbol_profile/fundamentals、分阶段成交活跃门槛和市场画像动态调整 admission thresholds，并输出 failed_gates'),
+  ibkr_dynamic_admission_min_score: meta('目标池动态准入最低分', '动态准入 / Fundamentals', 677, '58', 'dynamic_admission 的最低 admission_score；低于该分会进入 failed_gates 并降低自动入池优先级'),
 
   ibkr_symbol_profile_enabled: meta('Symbol Profile 开关', '动态准入 / Fundamentals', 680, 'TRUE', '启用后 eligibility/screener/watchlist 可展示 symbol_profile，用于区分 ETF/ADR/普通股/行业等画像'),
   ibkr_symbol_profile_refresh_days: meta('Symbol Profile 刷新天数', '动态准入 / Fundamentals', 681, '30', 'symbol_profile 超过该天数后允许后台刷新；前端只展示最近画像，不直接触发交易'),
@@ -392,8 +468,8 @@ const CONFIG_META = {
   ibkr_watchlist_integrity_enabled: meta('底池完整性巡检', '行情链路', 740, 'TRUE', '启用后按批次巡检非目标标的的 5m bars 完整性，并将结果写入 ibkr_bar_integrity'),
   ibkr_watchlist_integrity_batch_size: meta('底池巡检批次', '行情链路', 750, '8', '每轮底池完整性巡检最多处理多少个非目标标的'),
   storage_cleanup_enabled: meta('存储治理开关', '存储治理', 780, 'TRUE', '开启后每日低峰清理可重建/可归档数据；不会删除 config / watchlist / bars 核心窗口 / 活跃信号订单'),
-  storage_cleanup_profile: meta('存储治理 Profile', '存储治理', 781, 'balanced_50g', 'balanced_50g=50G 硬盘平衡档：bars 仍由历史留存控制，指标/日志/TV/回测更短留存'),
-  storage_cleanup_backtest_recent_limit: meta('回测保留数量', '存储治理', 782, '30', '除保护的最佳 batch/run 外，保留最近多少个 backtest batch/run'),
+  storage_cleanup_profile: meta('存储治理 Profile', '存储治理', 781, 'tv_primary_lean', 'tv_primary_lean=TV-primary 瘦身档：指标缓存清空，bars/TV webhook 保留 90 天，质量/审计/系统事件保留 30 天'),
+  storage_cleanup_backtest_recent_limit: meta('回测保留数量', '存储治理', 782, '5', '除保护的最佳 batch/run 外，保留最近多少个 backtest batch/run；不影响实盘订单、信号或目标表'),
   storage_cleanup_protected_batch_ids: meta('保护回测 Batch IDs', '存储治理', 783, '3gf4ouzj7oyvlao', '逗号分隔，永不自动删除的回测 batch'),
   storage_cleanup_protected_run_ids: meta('保护回测 Run IDs', '存储治理', 784, 'bm9wl0lagddsd6a', '逗号分隔，永不自动删除的回测 run'),
   storage_cleanup_vacuum_warn_gb: meta('VACUUM 提醒GB', '存储治理', 785, '1.0', 'SQLite freelist 超过该 GB 时提示周末/手动 VACUUM，不自动压缩'),
@@ -570,7 +646,7 @@ const SELECT_CONFIGS = {
     { value: 'ibkr_compute', label: 'ibkr_compute (仅 Compute)' }
   ],
   storage_cleanup_profile: [
-    { value: 'balanced_50g', label: 'balanced_50g (50G 平衡档)' }
+    { value: 'tv_primary_lean', label: 'tv_primary_lean (TV-primary 瘦身档)' }
   ],
   ibkr_fundamentals_gate_profile: [
     { value: 'balanced', label: 'balanced (解释优先)' },
@@ -708,7 +784,7 @@ function renderConfigEnvironmentBar() {
     '⚙️ 配置管理',
     {
       allowGlobal: true,
-      subtitle: '统一查看与编辑 global / live / paper / backtest 运行配置。'
+      subtitle: '统一查看与编辑 global / live / paper 主链路配置。'
     }
   )
 }
@@ -723,6 +799,7 @@ function getVisibleConfigs() {
   return configs
     .filter(config => {
       if (!ACTIVE_CONFIG_KEYS.has(config.key)) return false
+      if (isTvPrimaryHiddenConfigKey(config.key)) return false
       const redirectKey = LEGACY_KEY_REDIRECTS[config.key]
       return !(redirectKey && keySet.has(redirectKey))
     })

@@ -6,7 +6,7 @@ async function loadSystemData(showToastOnSuccess = false) {
         setIbkrPageLoading(
             true,
             '系统概览加载中',
-            `正在拉取 ${getEnvironmentLabel(currentEnvironment)} 环境的健康状态、freshness、配置与最近事件。`
+            `正在拉取 ${getEnvironmentLabel(currentEnvironment)} 环境的 TV webhook、IBKR execution、runtime、supporting ops 与最近事件。`
         );
     }
     try {
@@ -93,20 +93,19 @@ async function loadSystemData(showToastOnSuccess = false) {
         if (loadId !== latestSystemLoadId) return;
 
         const cronDefinitions = Array.isArray(cronResp?.items) ? cronResp.items : [];
-        const coreCompute = buildSystemComputeSummary(computeHealth, computeStatus, summaryLite?.ibkr_compute || {});
-        const coreFreshnessPayload = summaryLite?.data_freshness || [];
+        const summaryConfig = summaryLite?.config && typeof summaryLite.config === 'object' ? summaryLite.config : {};
+        const tvWebhookEnabled = summaryConfig.tv_webhook_ingest_enabled ?? true;
+        const withTvWebhook = (snapshot = {}) => ({ ...snapshot, tv_webhook: { enabled: tvWebhookEnabled } });
         const summaryToday = summaryLite?.today && typeof summaryLite.today === 'object' ? summaryLite.today : {};
         const summaryTodayStats = rememberStableTodayStats(summaryToday);
-        renderStatus(buildSystemHealthSnapshot(
+        renderStatus(withTvWebhook(buildSystemHealthSnapshot(
             computeHealth,
             computeStatus,
-            coreFreshnessPayload,
-            summaryLite?.ibkr_compute || {},
+            [],
+            {},
             cronResp?.scheduler || {},
             { preserveIbkrData: true, loadingOnMissingIbkrData: true }
-        ));
-        renderFreshness(coreFreshnessPayload);
-        renderEngines(coreCompute);
+        )));
         renderConfig(summaryLite || {}, cronDefinitions);
         renderSchedulerOverview(cronResp || {}, summaryLite || {});
         renderServiceTopology(computeStatus?.service_topology || summaryLite?.service_topology || {});
@@ -141,27 +140,21 @@ async function loadSystemData(showToastOnSuccess = false) {
 
         let secondarySnapshot = getLastSystemSecondarySnapshot();
         if (shouldRefreshSystemSecondary(showToastOnSuccess)) {
-            const [eventsResp, signalCount, tvWebhookCount, orderCount, barCount, targetCount, eventCount, backtestBatchResp, backtestRunsResp] = await Promise.all([
+            const [eventsResp, signalCount, tvWebhookCount, orderCount, targetCount, eventCount] = await Promise.all([
                 safeApiFetch(secondaryErrors, 'system_events', 'system_events', { filter: brokerEnvFilterBase, sort: '-created', perPage: 8 }, { items: [] }, secondaryTimeoutMs),
                 safeCountFetch(secondaryErrors, 'count:ibkr_signals', 'ibkr_signals', dataTodayFilterBase),
                 safeCountFetch(secondaryErrors, 'count:tv_webhook_events', 'tv_webhook_events', targetDateFilter),
                 safeCountFetch(secondaryErrors, 'count:orders', 'orders', brokerTodayFilterBase),
-                safeCountFetch(secondaryErrors, 'count:ibkr_bars', 'ibkr_bars', dataTodayFilterBase),
                 safeCountFetch(secondaryErrors, 'count:ibkr_targets', 'ibkr_targets', targetDateFilter),
-                safeCountFetch(secondaryErrors, 'count:system_events', 'system_events', brokerTodayFilterBase),
-                safeApiFetch(secondaryErrors, 'ibkr_backtest_batches', 'ibkr_backtest_batches', { filter: dataEnvFilterBase, sort: '-updated', perPage: 1 }, { items: [] }, secondaryTimeoutMs),
-                safeApiFetch(secondaryErrors, 'ibkr_backtest_runs', 'ibkr_backtest_runs', { filter: dataEnvFilterBase, sort: '-updated', perPage: 2 }, { items: [] }, secondaryTimeoutMs)
+                safeCountFetch(secondaryErrors, 'count:system_events', 'system_events', brokerTodayFilterBase)
             ]);
             const mainOrderCount = summaryToday.main_orders == null
                 ? (summaryToday.order_groups == null ? orderCount : Number(summaryToday.order_groups || 0))
                 : Number(summaryToday.main_orders || 0);
             secondarySnapshot = rememberSystemSecondarySnapshot({
                 eventsResp,
-                backtestBatchResp,
-                backtestRunsResp,
                 todayStats: {
                     orders: mainOrderCount,
-                    ibkr_bars: barCount,
                     tv_webhook_events: tvWebhookCount,
                     ibkr_signals: signalCount,
                     ibkr_targets: targetCount,
@@ -174,30 +167,20 @@ async function loadSystemData(showToastOnSuccess = false) {
 
         const secondaryTodayStats = secondarySnapshot.todayStats || {};
         const eventsResp = secondarySnapshot.eventsResp || { items: [] };
-        const backtestBatchResp = secondarySnapshot.backtestBatchResp || { items: [] };
-        const backtestRunsResp = secondarySnapshot.backtestRunsResp || { items: [] };
         const todayStats = rememberStableTodayStats(mergeTodayStats(summaryTodayStats, secondaryTodayStats));
-        const freshnessPayload = summaryLite?.data_freshness || [];
-
-        renderStatus(buildSystemHealthSnapshot(
+        renderStatus(withTvWebhook(buildSystemHealthSnapshot(
             computeHealth,
             computeStatus,
-            freshnessPayload,
-            summaryLite?.ibkr_compute || {},
+            [],
+            {},
             cronResp?.scheduler || {},
-            { preserveIbkrData: !summaryLite?.data_freshness }
-        ));
+            { preserveIbkrData: false }
+        )));
         renderTodayStats(todayStats);
-        renderFreshness(freshnessPayload);
-        renderEngines(buildSystemComputeSummary(computeHealth, computeStatus, summaryLite?.ibkr_compute || {}));
         renderConfig(summaryLite || {}, cronDefinitions);
         renderSchedulerOverview(cronResp || {}, summaryLite || {});
         renderServiceTopology(computeStatus?.service_topology || summaryLite?.service_topology || {});
         renderStorageHealth(summaryLite?.storage_health || computeStatus?.storage_health || {});
-        renderBacktests(
-            Array.isArray(backtestBatchResp?.items) ? backtestBatchResp.items : [],
-            Array.isArray(backtestRunsResp?.items) ? backtestRunsResp.items : []
-        );
         renderEvents(Array.isArray(eventsResp?.items) ? eventsResp.items : []);
 
         setPageRefreshTime();
