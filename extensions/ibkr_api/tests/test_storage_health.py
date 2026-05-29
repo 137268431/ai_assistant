@@ -39,8 +39,8 @@ class StorageHealthTest(unittest.TestCase):
             )
             _create_table(
                 conn,
-                "ibkr_indicators",
-                ", symbol text default '' not null, interval text default '' not null, bar_time_ms numeric default 0 not null",
+                "tv_webhook_events",
+                ", symbol text default '' not null, event_type text default '' not null, date text default '' not null",
             )
             _create_table(conn, "ibkr_signals", ", bar_time_ms numeric default 0 not null, status text default '' not null")
             _create_table(conn, "ibkr_reverse_signals", ", bar_time_ms numeric default 0 not null")
@@ -62,9 +62,6 @@ class StorageHealthTest(unittest.TestCase):
                 "ibkr_backtest_targets",
                 "ibkr_backtest_daily_selection_cache",
                 "ibkr_backtest_indicators",
-                "tv_signals",
-                "tv_indicators",
-                "tv_indicator_audit_snapshots",
             ):
                 _create_table(conn, name, ", bar_time_ms numeric default 0 not null")
             conn.execute(
@@ -91,7 +88,7 @@ class StorageHealthTest(unittest.TestCase):
 
         self.assertEqual(payload["environment"], "live")
         self.assertIn(payload["status"], {"warning", "error"})
-        self.assertEqual(payload["summary"]["monitored_tables"], 26)
+        self.assertEqual(payload["summary"]["monitored_tables"], len(payload["tables"]))
         self.assertTrue(any(table["name"] == "ibkr_bars" for table in payload["tables"]))
         self.assertTrue(any(flag["code"] == "ibkr_bars_retention_lag" for flag in payload["flags"]))
         orders = next(table for table in payload["tables"] if table["name"] == "orders")

@@ -101,7 +101,8 @@
                     "close",
                     "cancel",
                     "adjust_sl",
-                    "adjust_tp"
+                    "adjust_tp",
+                    "adjust_bracket"
                 ]
             },
             {
@@ -210,7 +211,10 @@
                 "values": [
                     "signal",
                     "indicator",
-                    "manual"
+                    "manual",
+                    "tradingview",
+                    "system",
+                    "risk_guard"
                 ]
             },
             {

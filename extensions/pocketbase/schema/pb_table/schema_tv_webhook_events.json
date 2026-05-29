@@ -1,0 +1,338 @@
+[
+  {
+    "id": "_pb_tv_webhook_events_",
+    "listRule": "",
+    "viewRule": "",
+    "createRule": "",
+    "updateRule": "",
+    "deleteRule": "",
+    "name": "tv_webhook_events",
+    "type": "base",
+    "system": false,
+    "fields": [
+      {
+        "id": "text3208210256",
+        "name": "id",
+        "type": "text",
+        "required": true,
+        "presentable": false,
+        "hidden": false,
+        "system": true,
+        "primaryKey": true,
+        "min": 15,
+        "max": 15,
+        "pattern": "^[a-z0-9]+$",
+        "autogeneratePattern": "[a-z0-9]{15}"
+      },
+      {
+        "id": "tvwe_event_id",
+        "name": "event_id",
+        "type": "text",
+        "required": true,
+        "presentable": true,
+        "hidden": false,
+        "system": false,
+        "min": 0,
+        "max": 0,
+        "pattern": "",
+        "autogeneratePattern": ""
+      },
+      {
+        "id": "tvwe_event_type",
+        "name": "event_type",
+        "type": "select",
+        "required": true,
+        "presentable": true,
+        "hidden": false,
+        "system": false,
+        "maxSelect": 1,
+        "values": [
+          "pre_alert",
+          "entry",
+          "risk_update",
+          "exit",
+          "heartbeat"
+        ]
+      },
+      {
+        "id": "tvwe_symbol",
+        "name": "symbol",
+        "type": "text",
+        "required": false,
+        "presentable": true,
+        "hidden": false,
+        "system": false,
+        "min": 0,
+        "max": 0,
+        "pattern": "",
+        "autogeneratePattern": ""
+      },
+      {
+        "id": "tvwe_direction",
+        "name": "direction",
+        "type": "select",
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "system": false,
+        "maxSelect": 1,
+        "values": [
+          "long",
+          "short",
+          "neutral"
+        ]
+      },
+      {
+        "id": "tvwe_position_side",
+        "name": "position_side",
+        "type": "select",
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "system": false,
+        "maxSelect": 1,
+        "values": [
+          "long",
+          "short"
+        ]
+      },
+      {
+        "id": "tvwe_signal_id",
+        "name": "signal_id",
+        "type": "text",
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "system": false,
+        "min": 0,
+        "max": 0,
+        "pattern": "",
+        "autogeneratePattern": ""
+      },
+      {
+        "id": "tvwe_position_id",
+        "name": "position_id",
+        "type": "text",
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "system": false,
+        "min": 0,
+        "max": 0,
+        "pattern": "",
+        "autogeneratePattern": ""
+      },
+      {
+        "id": "tvwe_environment",
+        "name": "environment",
+        "type": "select",
+        "required": false,
+        "presentable": true,
+        "hidden": false,
+        "system": false,
+        "maxSelect": 1,
+        "values": [
+          "live",
+          "paper",
+          "backtest"
+        ]
+      },
+      {
+        "id": "tvwe_broker_mode",
+        "name": "broker_mode",
+        "type": "select",
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "system": false,
+        "maxSelect": 1,
+        "values": [
+          "live",
+          "paper",
+          "backtest"
+        ]
+      },
+      {
+        "id": "tvwe_date",
+        "name": "date",
+        "type": "text",
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "system": false,
+        "min": 0,
+        "max": 0,
+        "pattern": "",
+        "autogeneratePattern": ""
+      },
+      {
+        "id": "tvwe_bar_time_ms",
+        "name": "bar_time_ms",
+        "type": "number",
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "system": false,
+        "onlyInt": true,
+        "min": null,
+        "max": null
+      },
+      {
+        "id": "tvwe_script_tag",
+        "name": "script_tag",
+        "type": "text",
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "system": false,
+        "min": 0,
+        "max": 0,
+        "pattern": "",
+        "autogeneratePattern": ""
+      },
+      {
+        "id": "tvwe_strategy_version",
+        "name": "strategy_version",
+        "type": "text",
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "system": false,
+        "min": 0,
+        "max": 0,
+        "pattern": "",
+        "autogeneratePattern": ""
+      },
+      {
+        "id": "tvwe_timeframe_stack",
+        "name": "timeframe_stack",
+        "type": "text",
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "system": false,
+        "min": 0,
+        "max": 0,
+        "pattern": "",
+        "autogeneratePattern": ""
+      },
+      {
+        "id": "tvwe_chart_url",
+        "name": "tv_chart_url",
+        "type": "url",
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "system": false,
+        "exceptDomains": [],
+        "onlyDomains": []
+      },
+      {
+        "id": "tvwe_status",
+        "name": "status",
+        "type": "select",
+        "required": false,
+        "presentable": true,
+        "hidden": false,
+        "system": false,
+        "maxSelect": 1,
+        "values": [
+          "received",
+          "routed",
+          "skipped_duplicate",
+          "rejected",
+          "failed"
+        ]
+      },
+      {
+        "id": "tvwe_route_target",
+        "name": "route_target",
+        "type": "text",
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "system": false,
+        "min": 0,
+        "max": 0,
+        "pattern": "",
+        "autogeneratePattern": ""
+      },
+      {
+        "id": "tvwe_route_record_id",
+        "name": "route_record_id",
+        "type": "text",
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "system": false,
+        "min": 0,
+        "max": 0,
+        "pattern": "",
+        "autogeneratePattern": ""
+      },
+      {
+        "id": "tvwe_error_msg",
+        "name": "error_msg",
+        "type": "text",
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "system": false,
+        "min": 0,
+        "max": 0,
+        "pattern": "",
+        "autogeneratePattern": ""
+      },
+      {
+        "id": "tvwe_payload",
+        "name": "payload",
+        "type": "json",
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "system": false,
+        "maxSize": 2097152
+      },
+      {
+        "id": "tvwe_extra",
+        "name": "extra",
+        "type": "json",
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "system": false,
+        "maxSize": 2097152
+      },
+      {
+        "id": "autodate_tvwe_created",
+        "name": "created",
+        "type": "autodate",
+        "hidden": false,
+        "presentable": false,
+        "required": false,
+        "system": false,
+        "onCreate": true,
+        "onUpdate": false
+      },
+      {
+        "id": "autodate_tvwe_updated",
+        "name": "updated",
+        "type": "autodate",
+        "hidden": false,
+        "presentable": false,
+        "required": false,
+        "system": false,
+        "onCreate": true,
+        "onUpdate": true
+      }
+    ],
+    "indexes": [
+      "CREATE UNIQUE INDEX idx_tv_webhook_events_event_env ON tv_webhook_events (event_id, environment)",
+      "CREATE INDEX idx_tv_webhook_events_env_date_type ON tv_webhook_events (environment, date, event_type)",
+      "CREATE INDEX idx_tv_webhook_events_env_symbol_created ON tv_webhook_events (environment, symbol, created)",
+      "CREATE INDEX idx_tv_webhook_events_signal_id ON tv_webhook_events (signal_id)",
+      "CREATE INDEX idx_tv_webhook_events_position_id ON tv_webhook_events (position_id)",
+      "CREATE INDEX idx_tv_webhook_events_status ON tv_webhook_events (status)"
+    ]
+  }
+]

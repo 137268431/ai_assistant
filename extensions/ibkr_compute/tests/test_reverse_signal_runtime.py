@@ -92,11 +92,14 @@ class _FakeBroker:
 
 
 class _FakeOrderModifier:
-    def __init__(self, pb, *, broker=None, ok=True):
+    def __init__(self, pb, *, broker=None, ok=True, update_failures=None):
         self.pb = pb
         self.broker = broker or _FakeBroker([])
         self.ok = ok
         self.cancelled = []
+        self.update_failures = set(update_failures or [])
+        self.stop_updates = []
+        self.take_profit_updates = []
 
     def cancel_order(self, order_id):
         self.cancelled.append(str(order_id))
@@ -104,6 +107,18 @@ class _FakeOrderModifier:
             return {"ok": False, "error": "cancel rejected", "order_id": str(order_id)}
         self.pb.set_order_status(order_id, "Canceled")
         return {"ok": True, "order_id": str(order_id)}
+
+    def update_stop_loss(self, order_id, new_sl_price):
+        self.stop_updates.append((str(order_id), float(new_sl_price)))
+        if "stop_loss" in self.update_failures:
+            return {"ok": False, "error": "stop update rejected", "order_id": str(order_id)}
+        return {"ok": True, "order_id": str(order_id), "price": float(new_sl_price)}
+
+    def update_take_profit(self, order_id, new_tp_price):
+        self.take_profit_updates.append((str(order_id), float(new_tp_price)))
+        if "take_profit" in self.update_failures:
+            return {"ok": False, "error": "take profit update rejected", "order_id": str(order_id)}
+        return {"ok": True, "order_id": str(order_id), "price": float(new_tp_price)}
 
 
 class _FakeOrderLifecycle:
@@ -343,6 +358,126 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
         self.assertTrue(reverse_extra["ready_reentry"])
         self.assertTrue(reverse_extra["reentry_submitted"])
         self.assertEqual("sig-new-short", reverse_extra["reentry_signal_id"])
+
+    def test_adjust_bracket_updates_sl_and_tp_from_top_level_and_extra(self):
+        reverse = {
+            "id": "rev-adjust-bracket",
+            "symbol": "AAPL",
+            "action_type": "adjust_bracket",
+            "status": "pending",
+            "environment": "live",
+            "priority": 10,
+            "bar_time_ms": 1,
+            "sl_order_id": "sl-1003",
+            "new_sl": "181.25",
+            "extra": {
+                "tp_order_id": "tp-1002",
+                "new_tp": 190.75,
+            },
+        }
+        pb = _FakePB(reverse_rows=[reverse])
+        modifier = _FakeOrderModifier(pb)
+        handler = ReverseSignalHandler(pb, order_modifier=modifier, environment="live")
+
+        handler.check_and_process()
+
+        self.assertEqual([("sl-1003", 181.25)], modifier.stop_updates)
+        self.assertEqual([("tp-1002", 190.75)], modifier.take_profit_updates)
+        updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        extra = updated["extra"]
+        self.assertEqual("confirmed", updated["status"])
+        self.assertEqual("adjust_bracket_confirmed", updated["reason"])
+        self.assertEqual("confirmed", extra["adjust_bracket"])
+        self.assertTrue(extra["adjust_results"]["stop_loss"]["ok"])
+        self.assertTrue(extra["adjust_results"]["take_profit"]["ok"])
+        self.assertEqual(["stop_loss", "take_profit"], extra["adjust_bracket_result"]["succeeded_sides"])
+        self.assertEqual("confirmed", pb.acks[0]["status"])
+
+    def test_adjust_bracket_blocks_when_prices_or_orders_missing(self):
+        missing_prices = {
+            "id": "rev-adjust-no-prices",
+            "symbol": "AAPL",
+            "action_type": "adjust_bracket",
+            "status": "pending",
+            "environment": "live",
+            "priority": 10,
+            "bar_time_ms": 1,
+            "extra": {
+                "sl_order_id": "sl-1003",
+                "tp_order_id": "tp-1002",
+            },
+        }
+        pb = _FakePB(reverse_rows=[missing_prices])
+        modifier = _FakeOrderModifier(pb)
+        ReverseSignalHandler(pb, order_modifier=modifier, environment="live").check_and_process()
+
+        updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        extra = updated["extra"]
+        self.assertEqual("blocked", updated["status"])
+        self.assertIn("adjust_bracket_prices_missing_or_invalid", updated["reason"])
+        self.assertEqual([], modifier.stop_updates)
+        self.assertEqual([], modifier.take_profit_updates)
+        self.assertEqual("new_sl_missing_or_invalid", extra["adjust_results"]["stop_loss"]["reason"])
+        self.assertEqual("new_tp_missing_or_invalid", extra["adjust_results"]["take_profit"]["reason"])
+
+        missing_order = {
+            "id": "rev-adjust-no-order",
+            "symbol": "AAPL",
+            "action_type": "adjust_bracket",
+            "status": "pending",
+            "environment": "live",
+            "priority": 10,
+            "bar_time_ms": 1,
+            "extra": {"new_sl": 181.25},
+        }
+        pb = _FakePB(reverse_rows=[missing_order])
+        modifier = _FakeOrderModifier(pb)
+        ReverseSignalHandler(pb, order_modifier=modifier, environment="live").check_and_process()
+
+        updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        extra = updated["extra"]
+        self.assertEqual("blocked", updated["status"])
+        self.assertIn("adjust_bracket_targets_missing_or_invalid", updated["reason"])
+        self.assertEqual([], modifier.stop_updates)
+        self.assertEqual([], modifier.take_profit_updates)
+        self.assertEqual("sl_order_id_missing", extra["adjust_results"]["stop_loss"]["reason"])
+        self.assertEqual("not_requested", extra["adjust_results"]["take_profit"]["reason"])
+
+    def test_adjust_bracket_blocks_with_partial_failure_detail(self):
+        reverse = {
+            "id": "rev-adjust-partial",
+            "symbol": "AAPL",
+            "action_type": "adjust_bracket",
+            "status": "pending",
+            "environment": "live",
+            "priority": 10,
+            "bar_time_ms": 1,
+            "extra": {
+                "sl_order_id": "sl-1003",
+                "new_sl": 181.25,
+                "tp_order_id": "tp-1002",
+                "new_tp": 190.75,
+            },
+        }
+        pb = _FakePB(reverse_rows=[reverse])
+        modifier = _FakeOrderModifier(pb, update_failures={"take_profit"})
+        handler = ReverseSignalHandler(pb, order_modifier=modifier, environment="live")
+
+        handler.check_and_process()
+
+        self.assertEqual([("sl-1003", 181.25)], modifier.stop_updates)
+        self.assertEqual([("tp-1002", 190.75)], modifier.take_profit_updates)
+        updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        extra = updated["extra"]
+        self.assertEqual("blocked", updated["status"])
+        self.assertIn("adjust_bracket_partial_failed", updated["reason"])
+        self.assertEqual("partial_failed", extra["adjust_bracket"])
+        self.assertTrue(extra["adjust_results"]["stop_loss"]["ok"])
+        self.assertFalse(extra["adjust_results"]["take_profit"]["ok"])
+        self.assertEqual("broker_update_failed", extra["adjust_results"]["take_profit"]["reason"])
+        self.assertEqual(["stop_loss"], extra["adjust_bracket_result"]["succeeded_sides"])
+        self.assertEqual(["take_profit"], extra["adjust_bracket_result"]["failed_sides"])
+        self.assertEqual("blocked", pb.acks[0]["status"])
 
 
 if __name__ == "__main__":

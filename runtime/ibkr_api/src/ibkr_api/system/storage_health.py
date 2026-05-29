@@ -48,7 +48,7 @@ DISK_ERROR_FREE_PCT = max(
 
 MONITORED_TABLES: tuple[dict[str, Any], ...] = (
     {"name": "ibkr_bars", "group": "market", "critical": True, "retention": True, "interval_scoped": True},
-    {"name": "ibkr_indicators", "group": "market", "critical": True, "retention": True},
+    {"name": "tv_webhook_events", "group": "market", "critical": True, "retention": True, "date_field": "date"},
     {"name": "ibkr_signals", "group": "market", "critical": True, "retention": True},
     {"name": "ibkr_reverse_signals", "group": "market", "critical": False, "retention": True},
     {"name": "ibkr_targets", "group": "market", "critical": True, "retention": True},
@@ -70,9 +70,6 @@ MONITORED_TABLES: tuple[dict[str, Any], ...] = (
     {"name": "ibkr_backtest_targets", "group": "backtest", "critical": False},
     {"name": "ibkr_backtest_daily_selection_cache", "group": "backtest", "critical": False, "date_field": "market_date"},
     {"name": "ibkr_backtest_indicators", "group": "backtest", "critical": False},
-    {"name": "tv_signals", "group": "compat", "critical": False},
-    {"name": "tv_indicators", "group": "compat", "critical": False},
-    {"name": "tv_indicator_audit_snapshots", "group": "compat", "critical": False},
 )
 
 GROUP_LABELS = {

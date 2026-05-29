@@ -79,22 +79,22 @@ class ControlPlaneSplitStackWebhooksFeishuTest(unittest.TestCase):
         self.assertEqual(response.payload["ok"], True)
         self.assertEqual(response.headers["update_card_token"], "token-123")
 
-    def test_webhook_tv_indicator_route_uses_native_indicator_upsert(self):
-        sentinel = {"ok": True, "kind": "indicator"}
-        with mock.patch.object(api_app_mod.request, "get_json", return_value={"type": "indicator", "symbol": "AAPL"}):
-            with mock.patch.object(api_app_mod, "_upsert_tv_indicator", return_value=sentinel) as upsert_mock:
+    def test_webhook_tv_route_uses_tv_primary_processor(self):
+        sentinel = {"ok": True, "kind": "tv_primary"}
+        with mock.patch.object(api_app_mod.request, "get_json", return_value={"event_type": "entry", "symbol": "AAPL"}):
+            with mock.patch.object(api_app_mod, "_process_tv_primary_event", return_value=(sentinel, 200)) as process_mock:
                 payload = api_app_mod.webhook_tv()
         self.assertIs(payload, sentinel)
-        upsert_mock.assert_called_once_with({"type": "indicator", "symbol": "AAPL"})
+        process_mock.assert_called_once_with({"event_type": "entry", "symbol": "AAPL"})
 
-    def test_webhook_tv_indicator_skips_ingest_when_disabled(self):
+    def test_webhook_tv_skips_ingest_when_disabled(self):
         with mock.patch.object(
             api_app_mod.request,
             "get_json",
-            return_value={"type": "indicator", "symbol": "AAPL", "environment": "live"},
+            return_value={"event_type": "entry", "symbol": "AAPL", "environment": "live"},
         ):
             with mock.patch.object(api_app_mod, "_config_value", return_value="FALSE") as config_mock:
-                with mock.patch.object(api_app_mod, "_upsert_tv_indicator") as upsert_mock:
+                with mock.patch.object(api_app_mod, "_process_tv_primary_event") as process_mock:
                     payload = api_app_mod.webhook_tv()
 
         self.assertEqual(payload["ok"], True)
@@ -102,15 +102,7 @@ class ControlPlaneSplitStackWebhooksFeishuTest(unittest.TestCase):
         self.assertEqual(payload["reason"], "tv_webhook_ingest_enabled=false")
         self.assertEqual(payload["config_value"], "FALSE")
         config_mock.assert_called_once_with("tv_webhook_ingest_enabled", "TRUE", "live")
-        upsert_mock.assert_not_called()
-
-    def test_webhook_tv_signal_route_uses_native_signal_upsert(self):
-        sentinel = {"ok": True, "kind": "signal"}
-        with mock.patch.object(api_app_mod.request, "get_json", return_value={"symbol": "AAPL"}):
-            with mock.patch.object(api_app_mod, "_upsert_tv_signal", return_value=sentinel) as upsert_mock:
-                payload = api_app_mod.webhook_tv()
-        self.assertIs(payload, sentinel)
-        upsert_mock.assert_called_once_with({"symbol": "AAPL"})
+        process_mock.assert_not_called()
 
     def test_webhook_feishu_callback_url_verification_returns_challenge(self):
         with mock.patch.object(api_app_mod.request, "get_json", return_value={"type": "url_verification", "challenge": "abc"}):

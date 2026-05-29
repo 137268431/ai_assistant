@@ -95,10 +95,8 @@ def register_trading_routes(app, deps: dict[str, Any]) -> dict[str, Any]:
         register_tradingview_routes(
             app,
             deps={
-                "upsert_tv_indicator": deps["upsert_tv_indicator"],
-                "upsert_tv_signal": deps["upsert_tv_signal"],
+                "process_tv_primary_event": deps["process_tv_primary_event"],
                 "config_value": deps["config_value"],
-                "normalize_environment": deps["normalize_environment"],
                 "parse_boolean": deps["parse_boolean"],
             },
         )

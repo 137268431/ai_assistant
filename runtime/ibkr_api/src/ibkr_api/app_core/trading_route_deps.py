@@ -9,14 +9,6 @@ def build_trading_route_deps(
     pb: Any,
     runtime_base_url: str,
 ) -> dict[str, Any]:
-    def _upsert_tv_indicator_dep(payload: dict[str, Any]):
-        return globals_dict["_upsert_tv_indicator"](payload)
-
-    def _upsert_tv_indicator_audit_dep(payload: dict[str, Any]):
-        return globals_dict["_upsert_tv_indicator_audit"](payload)
-
-    _upsert_tv_indicator_dep.indicator_audit = _upsert_tv_indicator_audit_dep  # type: ignore[attr-defined]
-
     return {
         "pb": pb,
         "normalize_environment": globals_dict["_normalize_environment"],
@@ -78,9 +70,7 @@ def build_trading_route_deps(
             **kwargs,
         ),
         "build_reverse_ack_response": lambda *args, **kwargs: globals_dict["build_reverse_ack_response"](*args, **kwargs),
-        "upsert_tv_indicator": _upsert_tv_indicator_dep,
-        "upsert_tv_indicator_audit": _upsert_tv_indicator_audit_dep,
-        "upsert_tv_signal": lambda payload: globals_dict["_upsert_tv_signal"](payload),
+        "process_tv_primary_event": lambda payload: globals_dict["_process_tv_primary_event"](payload),
         "request_json_request": lambda method, base_url, path, params=None, json_body=None, timeout=5.0: globals_dict[
             "_request_json_request"
         ](

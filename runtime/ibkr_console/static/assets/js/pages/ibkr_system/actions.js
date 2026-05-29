@@ -141,10 +141,10 @@ async function loadSystemData(showToastOnSuccess = false) {
 
         let secondarySnapshot = getLastSystemSecondarySnapshot();
         if (shouldRefreshSystemSecondary(showToastOnSuccess)) {
-            const [eventsResp, signalCount, indicatorCount, orderCount, barCount, targetCount, eventCount, backtestBatchResp, backtestRunsResp] = await Promise.all([
+            const [eventsResp, signalCount, tvWebhookCount, orderCount, barCount, targetCount, eventCount, backtestBatchResp, backtestRunsResp] = await Promise.all([
                 safeApiFetch(secondaryErrors, 'system_events', 'system_events', { filter: brokerEnvFilterBase, sort: '-created', perPage: 8 }, { items: [] }, secondaryTimeoutMs),
                 safeCountFetch(secondaryErrors, 'count:ibkr_signals', 'ibkr_signals', dataTodayFilterBase),
-                safeCountFetch(secondaryErrors, 'count:ibkr_indicators', 'ibkr_indicators', dataTodayFilterBase),
+                safeCountFetch(secondaryErrors, 'count:tv_webhook_events', 'tv_webhook_events', targetDateFilter),
                 safeCountFetch(secondaryErrors, 'count:orders', 'orders', brokerTodayFilterBase),
                 safeCountFetch(secondaryErrors, 'count:ibkr_bars', 'ibkr_bars', dataTodayFilterBase),
                 safeCountFetch(secondaryErrors, 'count:ibkr_targets', 'ibkr_targets', targetDateFilter),
@@ -162,7 +162,7 @@ async function loadSystemData(showToastOnSuccess = false) {
                 todayStats: {
                     orders: mainOrderCount,
                     ibkr_bars: barCount,
-                    ibkr_indicators: indicatorCount,
+                    tv_webhook_events: tvWebhookCount,
                     ibkr_signals: signalCount,
                     ibkr_targets: targetCount,
                     events: eventCount,

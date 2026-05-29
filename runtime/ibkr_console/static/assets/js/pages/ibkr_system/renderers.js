@@ -144,10 +144,15 @@ function renderServiceTopology(topologyPayload = {}) {
         : {};
     const serviceEntries = Object.entries(topology);
     const monitorHref = buildPageUrl('/ibkr_monitor.html', {}, { environment: currentEnvironment });
+    const brokerMode = typeof getCurrentBrokerMode === 'function' ? getCurrentBrokerMode() : currentEnvironment;
     const screenerHref = buildPageUrl('/ibkr_screener.html', {
         tab: 'screener',
         view: 'current',
-    }, { environment: currentEnvironment });
+    }, {
+        environment: currentEnvironment,
+        brokerMode,
+        dataEnvironment: currentEnvironment,
+    });
     if (!serviceEntries.length) {
         el.innerHTML = `
             <div class="ops-summary-shell tone-neutral">
@@ -161,8 +166,8 @@ function renderServiceTopology(topologyPayload = {}) {
                         </div>
                     </div>
                     <div class="ops-summary-actions">
-                        <a class="ops-summary-link is-primary" href="${screenerHref}"><span>重选今日标的</span><span aria-hidden="true">→</span></a>
-                        <a class="ops-summary-link" href="${monitorHref}"><span>打开运维大盘</span><span aria-hidden="true">→</span></a>
+                        <a class="ops-summary-link is-primary" href="${monitorHref}"><span>打开运维大盘</span><span aria-hidden="true">→</span></a>
+                        <a class="ops-summary-link" href="${screenerHref}"><span>重选今日标的</span><span aria-hidden="true">→</span></a>
                     </div>
                 </div>
                 <div class="ops-summary-empty">
@@ -299,8 +304,8 @@ function renderServiceTopology(topologyPayload = {}) {
                     </div>
                 </div>
                 <div class="ops-summary-actions">
-                    <a class="ops-summary-link is-primary" href="${screenerHref}"><span>重选今日标的</span><span aria-hidden="true">→</span></a>
-                    <a class="ops-summary-link" href="${monitorHref}"><span>打开运维大盘</span><span aria-hidden="true">→</span></a>
+                    <a class="ops-summary-link is-primary" href="${monitorHref}"><span>打开运维大盘</span><span aria-hidden="true">→</span></a>
+                    <a class="ops-summary-link" href="${screenerHref}"><span>重选今日标的</span><span aria-hidden="true">→</span></a>
                 </div>
             </div>
             <div class="ops-summary-grid">
@@ -322,7 +327,7 @@ function renderTodayStats(today) {
     const stats = [
         { label: 'ORDERS', value: safeToday.orders },
         { label: 'IBKR BARS', value: safeToday.ibkr_bars },
-        { label: 'IBKR IND', value: safeToday.ibkr_indicators },
+        { label: 'TV WEBHOOK', value: safeToday.tv_webhook_events },
         { label: 'IBKR SIG', value: safeToday.ibkr_signals },
         { label: 'TARGETS', value: safeToday.ibkr_targets },
         { label: 'EVENTS', value: safeToday.events }

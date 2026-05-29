@@ -35,7 +35,7 @@ def _to_float(value: Any, default: float = 0.0) -> float:
 def _empty_today_counts() -> dict[str, Any]:
     return {
         "ibkr_signals": 0,
-        "ibkr_indicators": 0,
+        "tv_webhook_events": 0,
         "orders": 0,
         "main_orders": 0,
         "order_groups": 0,

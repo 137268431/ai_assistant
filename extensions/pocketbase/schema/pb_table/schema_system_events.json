@@ -36,7 +36,8 @@
                     "status_change",
                     "alert",
                     "compute_stats",
-                    "daily_report"
+                    "daily_report",
+                    "tv_webhook"
                 ]
             },
             {
@@ -66,7 +67,8 @@
                     "ibkr_compute",
                     "ibkr_api",
                     "pb",
-                    "manual"
+                    "manual",
+                    "tradingview"
                 ]
             },
             {

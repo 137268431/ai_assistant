@@ -12,7 +12,7 @@ let latestSchedulerCronSummary = null;
 let latestConfigCronSummary = null;
 let latestConfigCronDefinitions = [];
 
-const TODAY_STATS_KEYS = ['orders', 'ibkr_bars', 'ibkr_indicators', 'ibkr_signals', 'ibkr_targets', 'events'];
+const TODAY_STATS_KEYS = ['orders', 'ibkr_bars', 'ibkr_signals', 'ibkr_targets', 'tv_webhook_events', 'events'];
 const SYSTEM_SECONDARY_REFRESH_MS = 5 * 60 * 1000;
 const SYSTEM_CRON_PAGINATION_CONFIG = {
     schedulerOverview: {

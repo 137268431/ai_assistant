@@ -1,0 +1,768 @@
+//@version=6
+strategy(title="Signal Strategy Core[Glory]", overlay=true, max_labels_count=500, pyramiding=0, initial_capital=100000, default_qty_type=strategy.fixed, default_qty_value=1, process_orders_on_close=true, calc_on_every_tick=false)
+
+// TV-primary strategy v1.
+// Derived from Signal Alert Core[Glory]: EMA trend/touch, SD mean-reversion windows,
+// DTP direction, fractal pivots, cRSI/OBV divergence, ATR risk sizing.
+
+string STRATEGY_VERSION = "SSC_v1_20260529"
+string SCRIPT_TAG = "Signal_Strategy_Core[Glory]"
+string TIMEFRAME_STACK = "chart=" + timeframe.period
+
+// -----------------------------------------------------------------------------
+// Inputs
+// -----------------------------------------------------------------------------
+emaSlopeLookback = input.int(12, "Slope lookback", minval=1, group="01 EMA Trend Matrix")
+emaMinAngle = input.float(0.01, "Minimum slope (%)", step=0.01, group="01 EMA Trend Matrix")
+emaMinSpacing = input.float(0.01, "Minimum EMA spacing (%)", step=0.01, group="01 EMA Trend Matrix")
+emaTouchType = input.string("slow", "EMA touch type", options=["fast", "slow", "both"], group="01 EMA Trend Matrix")
+
+fractalPeriod = input.int(4, "Fractal pivot period", minval=2, maxval=20, group="02 Fractal Pivot")
+donchianPeriod = input.int(20, "Donchian period", minval=1, group="02 Fractal Pivot")
+
+sdLength = input.int(128, "Regression length", minval=20, group="03 SD Channel")
+sdMult1 = input.float(1.0, "Band multiplier 1", step=0.5, group="03 SD Channel")
+sdMult2 = input.float(2.0, "Band multiplier 2", step=0.5, group="03 SD Channel")
+sdMult3 = input.float(3.0, "Band multiplier 3", step=0.5, group="03 SD Channel")
+sdMult4 = input.float(4.0, "Band multiplier 4", step=0.5, group="03 SD Channel")
+sdSignalBand = input.int(3, "MR trigger band", minval=1, maxval=4, group="03 SD Channel")
+sdFilterBand = input.int(2, "Zone filter band", minval=1, maxval=4, group="03 SD Channel")
+mrWindowBars = input.int(48, "MR window bars", minval=2, maxval=200, group="03 SD Channel")
+
+dtpSmaLength = input.int(100, "DTP SMA length", minval=5, group="04 DTP")
+dtpAtrLength = input.int(200, "DTP ATR length", minval=5, group="04 DTP")
+dtpMomentumLookback = input.int(12, "DTP momentum lookback", minval=1, group="04 DTP")
+dtpTrendThreshold = input.float(0.10, "DTP trend threshold (ATR units)", step=0.05, group="04 DTP")
+dtpEarlyBars = input.int(12, "DTP early bars", minval=1, maxval=48, group="04 DTP")
+dtpMatureBars = input.int(48, "DTP mature bars", minval=12, maxval=200, group="04 DTP")
+
+atrLength = input.int(10, "ATR length", minval=1, group="05 Risk")
+atrSmoothing = input.string("RMA", "ATR smoothing", options=["RMA", "SMA", "EMA", "WMA"], group="05 Risk")
+atrMultiplier = input.float(1.5, "ATR multiplier", step=0.1, group="05 Risk")
+positionAmount = input.float(10000, "Notional per trade ($)", step=500, minval=100, group="05 Risk")
+maxLossPerTrade = input.float(150, "Max loss per trade ($)", step=10, minval=10, group="05 Risk")
+slAtrMult = input.float(2.0, "Stop loss (x ATR)", step=0.25, minval=0.25, maxval=12.0, group="05 Risk")
+rrRatio = input.float(1.5, "Reward/risk", step=0.1, minval=0.5, maxval=10.0, group="05 Risk")
+enableBreakeven = input.bool(true, "Trail stop to breakeven", group="05 Risk")
+breakevenAtR = input.float(1.0, "Breakeven trigger (R)", step=0.25, minval=0.25, group="05 Risk")
+breakevenOffsetR = input.float(0.05, "Breakeven offset (R)", step=0.01, minval=0.0, maxval=1.0, group="05 Risk")
+
+crsiDomcycle = input.int(20, "cRSI dominant cycle", minval=10, group="06 Oscillators")
+crsiVibration = input.int(6, "cRSI vibration", minval=1, group="06 Oscillators")
+crsiLeveling = input.float(10.0, "cRSI dynamic band percentile", minval=1, maxval=49, step=1, group="06 Oscillators")
+divLookback = input.int(4, "Divergence pivot lookback", minval=1, maxval=20, group="06 Oscillators")
+divMaxBars = input.int(30, "Divergence max age", minval=10, maxval=200, group="06 Oscillators")
+divType = input.string("both", "Divergence type", options=["hidden", "regular", "both"], group="06 Oscillators")
+obvRsiLen = input.int(10, "OBV RSI length", minval=1, group="06 Oscillators")
+
+tradingSession = input.session("0945-1530", "Trading session", group="07 TV Primary Events")
+enableAlerts = input.bool(true, "Emit TV-primary alert() payloads", group="07 TV Primary Events")
+preAlertThreshold = input.int(65, "Pre-alert activity score", minval=1, maxval=99, group="07 TV Primary Events")
+allowLong = input.bool(true, "Allow long entries", group="07 TV Primary Events")
+allowShort = input.bool(true, "Allow short entries", group="07 TV Primary Events")
+useDtpFilter = input.bool(true, "Filter MR entries against DTP", group="07 TV Primary Events")
+useEmaWeakFilter = input.bool(true, "Filter trend entries when EMA is weak", group="07 TV Primary Events")
+
+showBands = input.bool(true, "Show SD bands", group="08 Display")
+showEma = input.bool(true, "Show EMAs", group="08 Display")
+showMarkers = input.bool(true, "Show setup markers", group="08 Display")
+
+bool confirmed = barstate.isconfirmed
+bool inSession = not na(time(timeframe.period, tradingSession, syminfo.timezone))
+bool canTrade = confirmed and inSession
+int dailyTime = time("D")
+bool isNewTradingDay = not na(dailyTime[1]) and dailyTime != dailyTime[1]
+
+// -----------------------------------------------------------------------------
+// Helpers
+// -----------------------------------------------------------------------------
+fmtNum(float value) =>
+    na(value) ? "null" : str.tostring(value, "#.####")
+
+boolText(bool value) =>
+    value ? "true" : "false"
+
+jsonStr(string key, string value) =>
+    ',"' + key + '":"' + value + '"'
+
+jsonNum(string key, float value) =>
+    ',"' + key + '":' + fmtNum(value)
+
+jsonInt(string key, int value) =>
+    ',"' + key + '":' + str.tostring(value, "#")
+
+jsonBool(string key, bool value) =>
+    ',"' + key + '":' + boolText(value)
+
+symbolKey() =>
+    str.replace_all(syminfo.tickerid, ":", "_")
+
+eventId(string eventType, string suffix) =>
+    symbolKey() + "_" + eventType + "_" + str.tostring(time, "#") + "_" + str.tostring(bar_index, "#") + "_" + suffix
+
+positionId(string direction) =>
+    symbolKey() + "_" + direction + "_" + str.format_time(time, "yyyyMMdd_HHmm", "America/New_York") + "_" + str.tostring(bar_index, "#")
+
+basePayload(string eventType, string eventIdValue, string positionIdValue) =>
+    '{"source":"tv"' +
+     jsonStr("event_type", eventType) +
+     jsonStr("event_id", eventIdValue) +
+     jsonStr("position_id", positionIdValue) +
+     jsonStr("strategy_version", STRATEGY_VERSION) +
+     jsonStr("script_tag", SCRIPT_TAG) +
+     jsonStr("timeframe_stack", TIMEFRAME_STACK) +
+     ',"bar_time_ms":' + str.tostring(time, "#") +
+     jsonStr("symbol", syminfo.ticker) +
+     jsonStr("tickerid", syminfo.tickerid) +
+     jsonStr("exchange", syminfo.prefix) +
+     jsonStr("currency", syminfo.currency) +
+     jsonStr("session", tradingSession)
+
+appendSource(string existing, string nextValue) =>
+    existing == "" ? nextValue : existing + "+" + nextValue
+
+maFunc(float source, int len) =>
+    switch atrSmoothing
+        "SMA" => ta.sma(source, len)
+        "EMA" => ta.ema(source, len)
+        "WMA" => ta.wma(source, len)
+        => ta.rma(source, len)
+
+calcSlope(float source, int len) =>
+    not na(source[len]) and source[len] != 0.0 ? (source - source[len]) / source[len] * 100.0 : 0.0
+
+priceChanged(float oldValue, float newValue) =>
+    na(oldValue) or na(newValue) ? true : math.abs(oldValue - newValue) >= syminfo.mintick
+
+// -----------------------------------------------------------------------------
+// Core indicators
+// -----------------------------------------------------------------------------
+float emaFast = ta.ema(close, 20)
+float emaSlow = ta.ema(close, 50)
+float emaTrend = ta.ema(close, 100)
+float emaLongest = ta.ema(close, 200)
+
+float slopeSlow = calcSlope(emaSlow, emaSlopeLookback)
+float slopeTrend = calcSlope(emaTrend, emaSlopeLookback)
+float slopeLongest = calcSlope(emaLongest, emaSlopeLookback)
+float spacingFastSlow = emaSlow != 0.0 ? math.abs(emaFast - emaSlow) / emaSlow * 100.0 : 0.0
+float spacingSlowTrend = emaTrend != 0.0 ? math.abs(emaSlow - emaTrend) / emaTrend * 100.0 : 0.0
+float spacingTrendLongest = emaLongest != 0.0 ? math.abs(emaTrend - emaLongest) / emaLongest * 100.0 : 0.0
+bool spacingOk = spacingFastSlow > emaMinSpacing and spacingSlowTrend > emaMinSpacing and spacingTrendLongest > emaMinSpacing
+
+bool emaBullishAlign = emaFast > emaSlow and emaSlow > emaTrend and emaTrend > emaLongest
+bool emaBearishAlign = emaFast < emaSlow and emaSlow < emaTrend and emaTrend < emaLongest
+bool emaBullish = emaBullishAlign and slopeSlow > emaMinAngle and slopeTrend > emaMinAngle and slopeLongest > emaMinAngle and spacingOk
+bool emaBearish = emaBearishAlign and slopeSlow < -emaMinAngle and slopeTrend < -emaMinAngle and slopeLongest < -emaMinAngle and spacingOk
+int trendDir = emaBullish ? 1 : emaBearish ? -1 : 0
+
+bool bullTouchFast = confirmed and emaBullishAlign and spacingOk and close[1] > emaFast[1] and low <= emaFast
+bool bearTouchFast = confirmed and emaBearishAlign and spacingOk and close[1] < emaFast[1] and high >= emaFast
+bool bullTouchSlow = confirmed and emaBullishAlign and spacingOk and close[1] > emaSlow[1] and low <= emaSlow
+bool bearTouchSlow = confirmed and emaBearishAlign and spacingOk and close[1] < emaSlow[1] and high >= emaSlow
+bool emaBullTouch = emaTouchType == "fast" ? bullTouchFast : emaTouchType == "slow" ? bullTouchSlow : bullTouchFast or bullTouchSlow
+bool emaBearTouch = emaTouchType == "fast" ? bearTouchFast : emaTouchType == "slow" ? bearTouchSlow : bearTouchFast or bearTouchSlow
+string bullTouchLine = bullTouchFast and bullTouchSlow ? "fast+slow" : bullTouchFast ? "fast" : bullTouchSlow ? "slow" : "none"
+string bearTouchLine = bearTouchFast and bearTouchSlow ? "fast+slow" : bearTouchFast ? "fast" : bearTouchSlow ? "slow" : "none"
+
+float upperDonch = ta.highest(high, donchianPeriod)
+float lowerDonch = ta.lowest(low, donchianPeriod)
+float donchianBase = (upperDonch + lowerDonch) / 2.0
+float fractalPivotHigh = ta.pivothigh(high, fractalPeriod, fractalPeriod)
+float fractalPivotLow = ta.pivotlow(low, fractalPeriod, fractalPeriod)
+bool fractalBear = confirmed and not na(fractalPivotHigh) and fractalPivotHigh > donchianBase[fractalPeriod]
+bool fractalBull = confirmed and not na(fractalPivotLow) and fractalPivotLow < donchianBase[fractalPeriod]
+
+float sdReg = ta.linreg(close, sdLength, 0)
+float sdStd = ta.stdev(close, sdLength)
+float sdSignalMult = sdSignalBand == 1 ? sdMult1 : sdSignalBand == 2 ? sdMult2 : sdSignalBand == 3 ? sdMult3 : sdMult4
+float sdFilterMult = sdFilterBand == 1 ? sdMult1 : sdFilterBand == 2 ? sdMult2 : sdFilterBand == 3 ? sdMult3 : sdMult4
+float sdSignalUpper = sdReg + sdSignalMult * sdStd
+float sdSignalLower = sdReg - sdSignalMult * sdStd
+float sdFilterUpper = sdReg + sdFilterMult * sdStd
+float sdFilterLower = sdReg - sdFilterMult * sdStd
+bool sdLowerHit = confirmed and low <= sdSignalLower
+bool sdUpperHit = confirmed and high >= sdSignalUpper
+int sdZone = close > sdFilterUpper ? 1 : close < sdFilterLower ? -1 : 0
+float sdSlope = ta.linreg(close, sdLength, 0) - ta.linreg(close, sdLength, 1)
+int sdTrend = sdSlope > 0 ? 1 : sdSlope < 0 ? -1 : 0
+
+float dtpAvg = ta.sma(close, dtpSmaLength)
+float dtpAtr = ta.atr(dtpAtrLength)
+float dtpMomentum = dtpAvg - dtpAvg[dtpMomentumLookback]
+float dtpNorm = dtpAtr > 0.0 ? dtpMomentum / dtpAtr : 0.0
+bool dtpBullTurn = ta.crossover(dtpNorm, dtpTrendThreshold)
+bool dtpBearTurn = ta.crossunder(dtpNorm, -dtpTrendThreshold)
+var int dtpDirState = 0
+var int dtpStartBar = na
+if confirmed
+    if dtpDirState == 0
+        if dtpNorm > dtpTrendThreshold and close > dtpAvg
+            dtpDirState := 1
+            dtpStartBar := bar_index
+        else if dtpNorm < -dtpTrendThreshold and close < dtpAvg
+            dtpDirState := -1
+            dtpStartBar := bar_index
+    if dtpBullTurn
+        dtpDirState := 1
+        dtpStartBar := bar_index
+    if dtpBearTurn
+        dtpDirState := -1
+        dtpStartBar := bar_index
+int dtpDir = dtpDirState
+int dtpPhaseBars = na(dtpStartBar) ? 0 : bar_index - dtpStartBar + 1
+bool dtpConfirmsSd = (dtpDir == 1 and sdTrend == 1) or (dtpDir == -1 and sdTrend == -1)
+string dtpPhase = dtpDir == 0 ? "neutral" : dtpPhaseBars <= dtpEarlyBars ? "early" : dtpPhaseBars > dtpMatureBars and dtpConfirmsSd ? "mature" : dtpConfirmsSd ? "confirmed" : "weakening"
+
+float atrVal = maFunc(ta.tr(true), atrLength) * atrMultiplier
+float atrRaw = atrMultiplier != 0.0 ? atrVal / atrMultiplier : atrVal
+float atrPct = close > 0.0 ? atrRaw / close * 100.0 : 0.0
+
+int crsiCycleLen = math.max(1, int(math.round(crsiDomcycle / 2.0)))
+int crsiMemory = math.max(2, crsiDomcycle * 2)
+float crsiTorque = 2.0 / (crsiVibration + 1.0)
+int crsiLag = math.max(0, int(math.round((crsiVibration - 1.0) / 2.0)))
+float closeChange = ta.change(close)
+float crsiUp = ta.rma(math.max(closeChange, 0.0), crsiCycleLen)
+float crsiDown = ta.rma(-math.min(closeChange, 0.0), crsiCycleLen)
+float crsiRaw = crsiDown == 0.0 ? 100.0 : crsiUp == 0.0 ? 0.0 : 100.0 - 100.0 / (1.0 + crsiUp / crsiDown)
+var float crsi = na
+crsi := crsiTorque * (2.0 * crsiRaw - nz(crsiRaw[crsiLag], crsiRaw)) + (1.0 - crsiTorque) * nz(crsi[1], crsiRaw)
+float crsiUpperBand = ta.percentile_linear_interpolation(crsi, crsiMemory, 100.0 - crsiLeveling)
+float crsiLowerBand = ta.percentile_linear_interpolation(crsi, crsiMemory, crsiLeveling)
+bool crsiOB = crsi > crsiUpperBand
+bool crsiOS = crsi < crsiLowerBand
+
+float obvFlow = closeChange > 0.0 ? volume : closeChange < 0.0 ? -volume : 0.0
+float obv = ta.cum(obvFlow)
+float obvOsc = ta.rsi(obv, obvRsiLen)
+
+// -----------------------------------------------------------------------------
+// Divergence detection using confirmed price pivots.
+// -----------------------------------------------------------------------------
+bool includeRegularDiv = divType == "regular" or divType == "both"
+bool includeHiddenDiv = divType == "hidden" or divType == "both"
+
+var float prevHighPriceCrsi = na
+var float prevHighOscCrsi = na
+var int prevHighBarCrsi = na
+var float prevLowPriceCrsi = na
+var float prevLowOscCrsi = na
+var int prevLowBarCrsi = na
+var float prevHighPriceObv = na
+var float prevHighOscObv = na
+var int prevHighBarObv = na
+var float prevLowPriceObv = na
+var float prevLowOscObv = na
+var int prevLowBarObv = na
+
+bool crsiRegBearDiv = false
+bool crsiRegBullDiv = false
+bool crsiHidBearDiv = false
+bool crsiHidBullDiv = false
+bool obvRegBearDiv = false
+bool obvRegBullDiv = false
+bool obvHidBearDiv = false
+bool obvHidBullDiv = false
+
+float divPivotHigh = ta.pivothigh(high, divLookback, divLookback)
+float divPivotLow = ta.pivotlow(low, divLookback, divLookback)
+
+if confirmed and not na(divPivotHigh)
+    int currentPivotBar = bar_index - divLookback
+    float currentCrsiHigh = crsi[divLookback]
+    if not na(prevHighPriceCrsi) and not na(prevHighBarCrsi)
+        int barDistance = currentPivotBar - prevHighBarCrsi
+        if barDistance > 0 and barDistance <= divMaxBars
+            crsiRegBearDiv := includeRegularDiv and divPivotHigh > prevHighPriceCrsi and currentCrsiHigh < prevHighOscCrsi
+            crsiHidBearDiv := includeHiddenDiv and divPivotHigh < prevHighPriceCrsi and currentCrsiHigh > prevHighOscCrsi
+    prevHighPriceCrsi := divPivotHigh
+    prevHighOscCrsi := currentCrsiHigh
+    prevHighBarCrsi := currentPivotBar
+
+if confirmed and not na(divPivotLow)
+    int currentPivotBar = bar_index - divLookback
+    float currentCrsiLow = crsi[divLookback]
+    if not na(prevLowPriceCrsi) and not na(prevLowBarCrsi)
+        int barDistance = currentPivotBar - prevLowBarCrsi
+        if barDistance > 0 and barDistance <= divMaxBars
+            crsiRegBullDiv := includeRegularDiv and divPivotLow < prevLowPriceCrsi and currentCrsiLow > prevLowOscCrsi
+            crsiHidBullDiv := includeHiddenDiv and divPivotLow > prevLowPriceCrsi and currentCrsiLow < prevLowOscCrsi
+    prevLowPriceCrsi := divPivotLow
+    prevLowOscCrsi := currentCrsiLow
+    prevLowBarCrsi := currentPivotBar
+
+if confirmed and not na(divPivotHigh)
+    int currentPivotBar = bar_index - divLookback
+    float currentObvHigh = obvOsc[divLookback]
+    if not na(prevHighPriceObv) and not na(prevHighBarObv)
+        int barDistance = currentPivotBar - prevHighBarObv
+        if barDistance > 0 and barDistance <= divMaxBars
+            obvRegBearDiv := includeRegularDiv and divPivotHigh > prevHighPriceObv and currentObvHigh < prevHighOscObv
+            obvHidBearDiv := includeHiddenDiv and divPivotHigh < prevHighPriceObv and currentObvHigh > prevHighOscObv
+    prevHighPriceObv := divPivotHigh
+    prevHighOscObv := currentObvHigh
+    prevHighBarObv := currentPivotBar
+
+if confirmed and not na(divPivotLow)
+    int currentPivotBar = bar_index - divLookback
+    float currentObvLow = obvOsc[divLookback]
+    if not na(prevLowPriceObv) and not na(prevLowBarObv)
+        int barDistance = currentPivotBar - prevLowBarObv
+        if barDistance > 0 and barDistance <= divMaxBars
+            obvRegBullDiv := includeRegularDiv and divPivotLow < prevLowPriceObv and currentObvLow > prevLowOscObv
+            obvHidBullDiv := includeHiddenDiv and divPivotLow > prevLowPriceObv and currentObvLow < prevLowOscObv
+    prevLowPriceObv := divPivotLow
+    prevLowOscObv := currentObvLow
+    prevLowBarObv := currentPivotBar
+
+bool crsiBullDiv = crsiRegBullDiv or crsiHidBullDiv
+bool crsiBearDiv = crsiRegBearDiv or crsiHidBearDiv
+bool obvBullDiv = obvRegBullDiv or obvHidBullDiv
+bool obvBearDiv = obvRegBearDiv or obvHidBearDiv
+bool bullDivNow = crsiBullDiv or obvBullDiv
+bool bearDivNow = crsiBearDiv or obvBearDiv
+string bullDivSourceNow = ""
+bullDivSourceNow := crsiBullDiv ? appendSource(bullDivSourceNow, "cRSI") : bullDivSourceNow
+bullDivSourceNow := obvBullDiv ? appendSource(bullDivSourceNow, "OBV") : bullDivSourceNow
+string bearDivSourceNow = ""
+bearDivSourceNow := crsiBearDiv ? appendSource(bearDivSourceNow, "cRSI") : bearDivSourceNow
+bearDivSourceNow := obvBearDiv ? appendSource(bearDivSourceNow, "OBV") : bearDivSourceNow
+
+// -----------------------------------------------------------------------------
+// MR windows and component collection.
+// -----------------------------------------------------------------------------
+var bool lowerWindowActive = false
+var bool upperWindowActive = false
+var bool lowerWindowUsed = false
+var bool upperWindowUsed = false
+var int lowerWindowStart = na
+var int upperWindowStart = na
+
+var bool upperBullTouchSeen = false
+var string upperBullTouchLine = ""
+var bool upperBullFractalSeen = false
+var bool upperBearFractalSeen = false
+var bool lowerBullFractalSeen = false
+var bool lowerBearTouchSeen = false
+var string lowerBearTouchLine = ""
+var bool lowerBearFractalSeen = false
+
+var bool bullDivSeen = false
+var string bullDivSource = ""
+var int bullDivBar = na
+var bool bearDivSeen = false
+var string bearDivSource = ""
+var int bearDivBar = na
+
+if isNewTradingDay
+    lowerWindowActive := false
+    upperWindowActive := false
+    lowerWindowUsed := false
+    upperWindowUsed := false
+    lowerWindowStart := na
+    upperWindowStart := na
+    upperBullTouchSeen := false
+    upperBullTouchLine := ""
+    upperBullFractalSeen := false
+    upperBearFractalSeen := false
+    lowerBullFractalSeen := false
+    lowerBearTouchSeen := false
+    lowerBearTouchLine := ""
+    lowerBearFractalSeen := false
+    bullDivSeen := false
+    bullDivSource := ""
+    bullDivBar := na
+    bearDivSeen := false
+    bearDivSource := ""
+    bearDivBar := na
+
+if sdLowerHit
+    lowerWindowActive := true
+    lowerWindowUsed := false
+    lowerWindowStart := bar_index
+    lowerBullFractalSeen := false
+    lowerBearTouchSeen := false
+    lowerBearTouchLine := ""
+    lowerBearFractalSeen := false
+
+if sdUpperHit
+    upperWindowActive := true
+    upperWindowUsed := false
+    upperWindowStart := bar_index
+    upperBullTouchSeen := false
+    upperBullTouchLine := ""
+    upperBullFractalSeen := false
+    upperBearFractalSeen := false
+
+if lowerWindowActive and not na(lowerWindowStart) and bar_index - lowerWindowStart > mrWindowBars
+    lowerWindowActive := false
+if upperWindowActive and not na(upperWindowStart) and bar_index - upperWindowStart > mrWindowBars
+    upperWindowActive := false
+
+bool lowerWindowValid = lowerWindowActive and not lowerWindowUsed and not na(lowerWindowStart) and bar_index > lowerWindowStart and bar_index - lowerWindowStart <= mrWindowBars
+bool upperWindowValid = upperWindowActive and not upperWindowUsed and not na(upperWindowStart) and bar_index > upperWindowStart and bar_index - upperWindowStart <= mrWindowBars
+
+if lowerWindowActive and not lowerWindowUsed
+    lowerBullFractalSeen := lowerBullFractalSeen or fractalBull
+    if emaBearTouch
+        lowerBearTouchSeen := true
+        lowerBearTouchLine := bearTouchLine
+    lowerBearFractalSeen := lowerBearFractalSeen or fractalBear
+
+if upperWindowActive and not upperWindowUsed
+    if emaBullTouch
+        upperBullTouchSeen := true
+        upperBullTouchLine := bullTouchLine
+    upperBullFractalSeen := upperBullFractalSeen or fractalBull
+    upperBearFractalSeen := upperBearFractalSeen or fractalBear
+
+if bullDivNow
+    bullDivSeen := true
+    bullDivSource := bullDivSourceNow
+    bullDivBar := bar_index
+if bearDivNow
+    bearDivSeen := true
+    bearDivSource := bearDivSourceNow
+    bearDivBar := bar_index
+if bullDivSeen and not na(bullDivBar) and bar_index - bullDivBar > divMaxBars
+    bullDivSeen := false
+    bullDivSource := ""
+    bullDivBar := na
+if bearDivSeen and not na(bearDivBar) and bar_index - bearDivBar > divMaxBars
+    bearDivSeen := false
+    bearDivSource := ""
+    bearDivBar := na
+
+// -----------------------------------------------------------------------------
+// Setup assembly and filters.
+// -----------------------------------------------------------------------------
+bool setupLongTrendUpper = upperWindowValid and upperBullTouchSeen and upperBullFractalSeen and bullDivSeen
+bool setupLongMrLower = lowerWindowValid and lowerBullFractalSeen and bullDivSeen
+bool setupShortMrUpper = upperWindowValid and upperBearFractalSeen and bearDivSeen
+bool setupShortTrendLower = lowerWindowValid and lowerBearTouchSeen and lowerBearFractalSeen and bearDivSeen
+
+bool longRaw = allowLong and (setupLongTrendUpper or setupLongMrLower)
+bool shortRaw = allowShort and (setupShortMrUpper or setupShortTrendLower)
+string longSetup = setupLongTrendUpper ? "trend_sdUpper" : setupLongMrLower ? "mr_sdLower" : "none"
+string shortSetup = setupShortMrUpper ? "mr_sdUpper" : setupShortTrendLower ? "trend_sdLower" : "none"
+string longReason = setupLongTrendUpper ? "SD upper trend-continuation long: EMA touch + bull fractal + bull divergence" : setupLongMrLower ? "SD lower mean-reversion long: bull fractal + bull divergence" : "none"
+string shortReason = setupShortMrUpper ? "SD upper mean-reversion short: bear fractal + bear divergence" : setupShortTrendLower ? "SD lower trend-continuation short: EMA touch + bear fractal + bear divergence" : "none"
+
+bool emaWeak = math.abs(calcSlope(emaFast, emaSlopeLookback)) < emaMinAngle or math.abs(slopeSlow) < emaMinAngle or not spacingOk
+bool blockLong = false
+string blockLongReason = ""
+if useDtpFilter and setupLongMrLower and dtpDir == -1 and (dtpPhase == "early" or dtpPhase == "confirmed")
+    blockLong := true
+    blockLongReason := "dtp_bearish_early_or_confirmed"
+else if useEmaWeakFilter and setupLongTrendUpper and emaWeak
+    blockLong := true
+    blockLongReason := "ema_weak"
+
+bool blockShort = false
+string blockShortReason = ""
+if useDtpFilter and setupShortMrUpper and dtpDir == 1 and (dtpPhase == "early" or dtpPhase == "confirmed")
+    blockShort := true
+    blockShortReason := "dtp_bullish_early_or_confirmed"
+else if useEmaWeakFilter and setupShortTrendLower and emaWeak
+    blockShort := true
+    blockShortReason := "ema_weak"
+
+bool conflict = longRaw and shortRaw
+
+int scoreLongTrendUpper = (upperWindowValid ? 25 : 0) + (upperBullTouchSeen ? 25 : 0) + (upperBullFractalSeen ? 25 : 0) + (bullDivSeen ? 25 : 0)
+int scoreLongMrLower = (lowerWindowValid ? 34 : 0) + (lowerBullFractalSeen ? 33 : 0) + (bullDivSeen ? 33 : 0)
+int scoreShortMrUpper = (upperWindowValid ? 34 : 0) + (upperBearFractalSeen ? 33 : 0) + (bearDivSeen ? 33 : 0)
+int scoreShortTrendLower = (lowerWindowValid ? 25 : 0) + (lowerBearTouchSeen ? 25 : 0) + (lowerBearFractalSeen ? 25 : 0) + (bearDivSeen ? 25 : 0)
+int activityScore = math.max(math.max(scoreLongTrendUpper, scoreLongMrLower), math.max(scoreShortMrUpper, scoreShortTrendLower))
+string candidateDirection = scoreLongTrendUpper >= scoreLongMrLower and scoreLongTrendUpper >= scoreShortMrUpper and scoreLongTrendUpper >= scoreShortTrendLower ? "long" : scoreLongMrLower >= scoreShortMrUpper and scoreLongMrLower >= scoreShortTrendLower ? "long" : "short"
+string candidateSetup = activityScore == scoreLongTrendUpper ? "trend_sdUpper" : activityScore == scoreLongMrLower ? "mr_sdLower" : activityScore == scoreShortMrUpper ? "mr_sdUpper" : "trend_sdLower"
+string activityGrade = activityScore >= 100 ? "ready" : activityScore >= preAlertThreshold ? "pre_alert" : activityScore > 0 ? "building" : "quiet"
+
+string missingComponents = ""
+if candidateSetup == "trend_sdUpper"
+    missingComponents := not upperWindowValid ? appendSource(missingComponents, "upper_window") : missingComponents
+    missingComponents := not upperBullTouchSeen ? appendSource(missingComponents, "ema_bull_touch") : missingComponents
+    missingComponents := not upperBullFractalSeen ? appendSource(missingComponents, "bull_fractal") : missingComponents
+    missingComponents := not bullDivSeen ? appendSource(missingComponents, "bull_divergence") : missingComponents
+else if candidateSetup == "mr_sdLower"
+    missingComponents := not lowerWindowValid ? appendSource(missingComponents, "lower_window") : missingComponents
+    missingComponents := not lowerBullFractalSeen ? appendSource(missingComponents, "bull_fractal") : missingComponents
+    missingComponents := not bullDivSeen ? appendSource(missingComponents, "bull_divergence") : missingComponents
+else if candidateSetup == "mr_sdUpper"
+    missingComponents := not upperWindowValid ? appendSource(missingComponents, "upper_window") : missingComponents
+    missingComponents := not upperBearFractalSeen ? appendSource(missingComponents, "bear_fractal") : missingComponents
+    missingComponents := not bearDivSeen ? appendSource(missingComponents, "bear_divergence") : missingComponents
+else
+    missingComponents := not lowerWindowValid ? appendSource(missingComponents, "lower_window") : missingComponents
+    missingComponents := not lowerBearTouchSeen ? appendSource(missingComponents, "ema_bear_touch") : missingComponents
+    missingComponents := not lowerBearFractalSeen ? appendSource(missingComponents, "bear_fractal") : missingComponents
+    missingComponents := not bearDivSeen ? appendSource(missingComponents, "bear_divergence") : missingComponents
+missingComponents := missingComponents == "" ? "none" : missingComponents
+
+// -----------------------------------------------------------------------------
+// Position/risk state.
+// -----------------------------------------------------------------------------
+var string activePositionId = ""
+var string activeSignalId = ""
+var int activeDirection = 0
+var string activeSetup = ""
+var float activeEntry = na
+var float activeStop = na
+var float activeTarget = na
+var float activeQty = na
+var int activeEntryBar = na
+var bool activeBreakevenDone = false
+
+calcQty(float entryPrice) =>
+    entryPrice > 0.0 ? math.max(1.0, math.floor(positionAmount / entryPrice)) : 0.0
+
+calcLongStop(float entryPrice, float qty) =>
+    float atrStop = entryPrice - atrVal * slAtrMult
+    float riskStop = qty > 0.0 ? entryPrice - maxLossPerTrade / qty : atrStop
+    math.max(atrStop, riskStop)
+
+calcShortStop(float entryPrice, float qty) =>
+    float atrStop = entryPrice + atrVal * slAtrMult
+    float riskStop = qty > 0.0 ? entryPrice + maxLossPerTrade / qty : atrStop
+    math.min(atrStop, riskStop)
+
+buildEntryPayload(string eventIdValue, string positionIdValue, string direction, string setup, string reason, float qty, float entryPrice, float stopPrice, float targetPrice, string divSource, string touchLine) =>
+    float riskPerShare = direction == "long" ? entryPrice - stopPrice : stopPrice - entryPrice
+    basePayload("entry", eventIdValue, positionIdValue) +
+     jsonStr("signal_id", eventIdValue) +
+     jsonStr("direction", direction) +
+     jsonStr("position_side", direction) +
+     jsonStr("setup", setup) +
+     jsonStr("reason", reason) +
+     jsonNum("quantity", qty) +
+     jsonNum("shares", qty) +
+     jsonNum("entry_price", entryPrice) +
+     jsonNum("entry", entryPrice) +
+     jsonNum("stop_loss", stopPrice) +
+     jsonNum("take_profit", targetPrice) +
+     jsonNum("risk_per_share", riskPerShare) +
+     jsonNum("reward_risk", rrRatio) +
+     jsonStr("divergence_source", divSource == "" ? "none" : divSource) +
+     jsonStr("ema_touch_line", touchLine) +
+     jsonInt("activity_score", activityScore) +
+     jsonInt("quality_score", activityScore) +
+     jsonStr("activity_grade", activityGrade) +
+     jsonStr("sd_zone", sdZone == 1 ? "overbought" : sdZone == -1 ? "oversold" : "normal") +
+     jsonStr("sd_trend", sdTrend == 1 ? "up" : sdTrend == -1 ? "down" : "flat") +
+     jsonStr("dtp_dir", dtpDir == 1 ? "bullish" : dtpDir == -1 ? "bearish" : "neutral") +
+     jsonStr("dtp_phase", dtpPhase) +
+     jsonInt("dtp_phase_bars", dtpPhaseBars) +
+     jsonNum("atr", atrRaw) +
+     jsonNum("atr_pct", atrPct) +
+     jsonNum("close", close) +
+     jsonInt("bar_index", bar_index) +
+     '}'
+
+buildRiskPayload(string eventIdValue, string positionIdValue, string updateReason, float previousStop, float previousTarget, float newStop, float newTarget) =>
+    float riskPerShare = activeDirection == 1 ? activeEntry - newStop : newStop - activeEntry
+    basePayload("risk_update", eventIdValue, positionIdValue) +
+     jsonStr("signal_id", activeSignalId) +
+     jsonStr("direction", activeDirection == 1 ? "long" : "short") +
+     jsonStr("position_side", activeDirection == 1 ? "long" : "short") +
+     jsonStr("setup", activeSetup) +
+     jsonStr("update_reason", updateReason) +
+     jsonStr("risk_update_reason", updateReason) +
+     jsonNum("entry_price", activeEntry) +
+     jsonNum("quantity", activeQty) +
+     jsonNum("previous_stop_loss", previousStop) +
+     jsonNum("previous_take_profit", previousTarget) +
+     jsonNum("new_stop_loss", newStop) +
+     jsonNum("new_take_profit", newTarget) +
+     jsonNum("risk_per_share", riskPerShare) +
+     jsonNum("reward_risk", rrRatio) +
+     jsonNum("close", close) +
+     jsonInt("bar_index", bar_index) +
+     '}'
+
+buildExitPayload(string eventIdValue, string positionIdValue, string exitReason, float exitPrice) =>
+    float pnlPerShare = activeDirection == 1 ? exitPrice - activeEntry : activeEntry - exitPrice
+    basePayload("exit", eventIdValue, positionIdValue) +
+     jsonStr("signal_id", activeSignalId) +
+     jsonStr("direction", activeDirection == 1 ? "long" : "short") +
+     jsonStr("position_side", activeDirection == 1 ? "long" : "short") +
+     jsonStr("setup", activeSetup) +
+     jsonStr("exit_reason", exitReason) +
+     jsonNum("entry_price", activeEntry) +
+     jsonNum("exit_price", exitPrice) +
+     jsonNum("quantity", activeQty) +
+     jsonNum("stop_loss", activeStop) +
+     jsonNum("take_profit", activeTarget) +
+     jsonNum("pnl_per_share", pnlPerShare) +
+     jsonNum("pnl_estimate", pnlPerShare * activeQty) +
+     jsonInt("entry_bar_index", activeEntryBar) +
+     jsonInt("bar_index", bar_index) +
+     '}'
+
+buildPreAlertPayload(string eventIdValue, string pendingPositionId) =>
+    basePayload("pre_alert", eventIdValue, pendingPositionId) +
+     jsonStr("direction_bias", candidateDirection) +
+     jsonStr("candidate_direction", candidateDirection) +
+     jsonStr("candidate_setup", candidateSetup) +
+     jsonInt("activity_score", activityScore) +
+     jsonInt("quality_score", activityScore) +
+     jsonBool("qualified", true) +
+     jsonStr("activity_grade", activityGrade) +
+     jsonStr("missing_components", missingComponents) +
+     jsonBool("lower_window_valid", lowerWindowValid) +
+     jsonBool("upper_window_valid", upperWindowValid) +
+     jsonBool("bull_div_seen", bullDivSeen) +
+     jsonBool("bear_div_seen", bearDivSeen) +
+     jsonBool("ema_bull_touch_seen", upperBullTouchSeen) +
+     jsonBool("ema_bear_touch_seen", lowerBearTouchSeen) +
+     jsonBool("bull_fractal_seen", lowerBullFractalSeen or upperBullFractalSeen) +
+     jsonBool("bear_fractal_seen", lowerBearFractalSeen or upperBearFractalSeen) +
+     jsonStr("bull_divergence_source", bullDivSource == "" ? "none" : bullDivSource) +
+     jsonStr("bear_divergence_source", bearDivSource == "" ? "none" : bearDivSource) +
+     jsonStr("sd_zone", sdZone == 1 ? "overbought" : sdZone == -1 ? "oversold" : "normal") +
+     jsonStr("dtp_dir", dtpDir == 1 ? "bullish" : dtpDir == -1 ? "bearish" : "neutral") +
+     jsonStr("dtp_phase", dtpPhase) +
+     jsonNum("close", close) +
+     jsonNum("atr", atrRaw) +
+     jsonInt("bar_index", bar_index) +
+     '}'
+
+// -----------------------------------------------------------------------------
+// TV-primary event flow: pre_alert -> entry -> risk_update -> exit.
+// -----------------------------------------------------------------------------
+bool exitedNow = confirmed and activePositionId != "" and strategy.position_size == 0 and strategy.position_size[1] != 0
+if exitedNow
+    float exitPrice = strategy.closedtrades > 0 ? strategy.closedtrades.exit_price(strategy.closedtrades - 1) : close
+    string exitReason = "strategy_closed"
+    if activeDirection == 1
+        exitReason := math.abs(exitPrice - activeStop) <= syminfo.mintick * 2.0 ? "stop_loss" : math.abs(exitPrice - activeTarget) <= syminfo.mintick * 2.0 ? "take_profit" : exitReason
+    if activeDirection == -1
+        exitReason := math.abs(exitPrice - activeStop) <= syminfo.mintick * 2.0 ? "stop_loss" : math.abs(exitPrice - activeTarget) <= syminfo.mintick * 2.0 ? "take_profit" : exitReason
+    if enableAlerts
+        alert(buildExitPayload(eventId("exit", exitReason), activePositionId, exitReason, exitPrice), alert.freq_all)
+    activePositionId := ""
+    activeSignalId := ""
+    activeDirection := 0
+    activeSetup := ""
+    activeEntry := na
+    activeStop := na
+    activeTarget := na
+    activeQty := na
+    activeEntryBar := na
+    activeBreakevenDone := false
+
+bool flatForEntry = activePositionId == "" and strategy.position_size == 0 and not exitedNow
+bool enterLong = canTrade and flatForEntry and longRaw and not shortRaw and not blockLong and not conflict
+bool enterShort = canTrade and flatForEntry and shortRaw and not longRaw and not blockShort and not conflict
+
+bool preAlertNow = canTrade and flatForEntry and not enterLong and not enterShort and activityScore >= preAlertThreshold and activityScore < 100 and not conflict
+bool preAlertCross = preAlertNow and nz(activityScore[1], 0) < preAlertThreshold
+if enableAlerts and preAlertCross
+    string pendingId = "pending_" + candidateDirection + "_" + str.tostring(time, "#") + "_" + str.tostring(bar_index, "#")
+    alert(buildPreAlertPayload(eventId("pre_alert", candidateSetup), pendingId), alert.freq_all)
+
+if enterLong
+    float entryPrice = close
+    float qty = calcQty(entryPrice)
+    if qty > 0.0
+        float stopPrice = calcLongStop(entryPrice, qty)
+        float targetPrice = entryPrice + (entryPrice - stopPrice) * rrRatio
+        string posId = positionId("long")
+        string entryEventId = eventId("entry", longSetup)
+        activePositionId := posId
+        activeSignalId := entryEventId
+        activeDirection := 1
+        activeSetup := longSetup
+        activeEntry := entryPrice
+        activeStop := stopPrice
+        activeTarget := targetPrice
+        activeQty := qty
+        activeEntryBar := bar_index
+        activeBreakevenDone := false
+        string divSourceForEntry = bullDivSource == "" ? bullDivSourceNow : bullDivSource
+        strategy.entry("TV-L", strategy.long, qty=qty, comment=longSetup)
+        strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment="tv_risk")
+        lowerWindowUsed := setupLongMrLower ? true : lowerWindowUsed
+        upperWindowUsed := setupLongTrendUpper ? true : upperWindowUsed
+        bullDivSeen := false
+        bullDivSource := ""
+        bullDivBar := na
+        if enableAlerts
+            string touchLine = setupLongTrendUpper ? upperBullTouchLine : "none"
+            alert(buildEntryPayload(entryEventId, posId, "long", longSetup, longReason, qty, entryPrice, stopPrice, targetPrice, divSourceForEntry, touchLine), alert.freq_all)
+            alert(buildRiskPayload(eventId("risk_update", "initial"), posId, "initial_protection", na, na, stopPrice, targetPrice), alert.freq_all)
+
+if enterShort
+    float entryPrice = close
+    float qty = calcQty(entryPrice)
+    if qty > 0.0
+        float stopPrice = calcShortStop(entryPrice, qty)
+        float targetPrice = entryPrice - (stopPrice - entryPrice) * rrRatio
+        string posId = positionId("short")
+        string entryEventId = eventId("entry", shortSetup)
+        activePositionId := posId
+        activeSignalId := entryEventId
+        activeDirection := -1
+        activeSetup := shortSetup
+        activeEntry := entryPrice
+        activeStop := stopPrice
+        activeTarget := targetPrice
+        activeQty := qty
+        activeEntryBar := bar_index
+        activeBreakevenDone := false
+        string divSourceForEntry = bearDivSource == "" ? bearDivSourceNow : bearDivSource
+        strategy.entry("TV-S", strategy.short, qty=qty, comment=shortSetup)
+        strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment="tv_risk")
+        upperWindowUsed := setupShortMrUpper ? true : upperWindowUsed
+        lowerWindowUsed := setupShortTrendLower ? true : lowerWindowUsed
+        bearDivSeen := false
+        bearDivSource := ""
+        bearDivBar := na
+        if enableAlerts
+            string touchLine = setupShortTrendLower ? lowerBearTouchLine : "none"
+            alert(buildEntryPayload(entryEventId, posId, "short", shortSetup, shortReason, qty, entryPrice, stopPrice, targetPrice, divSourceForEntry, touchLine), alert.freq_all)
+            alert(buildRiskPayload(eventId("risk_update", "initial"), posId, "initial_protection", na, na, stopPrice, targetPrice), alert.freq_all)
+
+if confirmed and activePositionId != "" and strategy.position_size != 0 and enableBreakeven and not activeBreakevenDone
+    float previousStop = activeStop
+    float previousTarget = activeTarget
+    float initialRisk = activeDirection == 1 ? activeEntry - activeStop : activeStop - activeEntry
+    if initialRisk > 0.0 and activeDirection == 1 and close >= activeEntry + initialRisk * breakevenAtR
+        activeStop := math.max(activeStop, activeEntry + initialRisk * breakevenOffsetR)
+        activeBreakevenDone := priceChanged(previousStop, activeStop)
+    if initialRisk > 0.0 and activeDirection == -1 and close <= activeEntry - initialRisk * breakevenAtR
+        activeStop := math.min(activeStop, activeEntry - initialRisk * breakevenOffsetR)
+        activeBreakevenDone := priceChanged(previousStop, activeStop)
+    if activeBreakevenDone and enableAlerts
+        alert(buildRiskPayload(eventId("risk_update", "breakeven"), activePositionId, "breakeven_trail", previousStop, previousTarget, activeStop, activeTarget), alert.freq_all)
+
+if activePositionId != ""
+    if activeDirection == 1
+        strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment="tv_risk")
+    if activeDirection == -1
+        strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment="tv_risk")
+
+// -----------------------------------------------------------------------------
+// Visuals
+// -----------------------------------------------------------------------------
+plot(showEma ? emaFast : na, "EMA 20", color=color.new(color.teal, 0))
+plot(showEma ? emaSlow : na, "EMA 50", color=color.new(color.orange, 0))
+plot(showEma ? emaTrend : na, "EMA 100", color=color.new(color.blue, 35))
+plot(showEma ? emaLongest : na, "EMA 200", color=color.new(color.gray, 35))
+plot(showBands ? sdReg : na, "SD regression", color=color.new(color.white, 25))
+plot(showBands ? sdSignalUpper : na, "SD signal upper", color=color.new(color.red, 30))
+plot(showBands ? sdSignalLower : na, "SD signal lower", color=color.new(color.green, 30))
+plot(showBands ? sdFilterUpper : na, "SD filter upper", color=color.new(color.red, 75))
+plot(showBands ? sdFilterLower : na, "SD filter lower", color=color.new(color.green, 75))
+
+plotshape(showMarkers and sdLowerHit, "SD lower hit", location=location.belowbar, style=shape.triangleup, color=color.new(color.green, 0), size=size.tiny, text="SD-L")
+plotshape(showMarkers and sdUpperHit, "SD upper hit", location=location.abovebar, style=shape.triangledown, color=color.new(color.orange, 0), size=size.tiny, text="SD-U")
+plotshape(showMarkers and fractalBull, "Fractal bull", location=location.belowbar, style=shape.circle, color=color.new(color.aqua, 0), size=size.tiny, text="F+")
+plotshape(showMarkers and fractalBear, "Fractal bear", location=location.abovebar, style=shape.circle, color=color.new(color.fuchsia, 0), size=size.tiny, text="F-")
+plotshape(showMarkers and bullDivNow, "Bull divergence", location=location.belowbar, style=shape.diamond, color=color.new(color.lime, 0), size=size.tiny, text="D+")
+plotshape(showMarkers and bearDivNow, "Bear divergence", location=location.abovebar, style=shape.diamond, color=color.new(color.red, 0), size=size.tiny, text="D-")
+plotshape(showMarkers and enterLong, "TV entry long", location=location.belowbar, style=shape.labelup, color=color.new(color.green, 0), textcolor=color.white, size=size.small, text="TV LONG")
+plotshape(showMarkers and enterShort, "TV entry short", location=location.abovebar, style=shape.labeldown, color=color.new(color.red, 0), textcolor=color.white, size=size.small, text="TV SHORT")
+
+plot(activePositionId != "" ? activeStop : na, "Active stop", color=color.new(color.red, 0), style=plot.style_linebr, linewidth=2)
+plot(activePositionId != "" ? activeTarget : na, "Active target", color=color.new(color.green, 0), style=plot.style_linebr, linewidth=2)

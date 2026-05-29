@@ -59,7 +59,7 @@
 
     <div id="nav"></div>
 
-    <!-- 技术指标详情浮层（由 common.js 动态注入） -->
+    <!-- TV webhook 上下文浮层（复用 common.js 明细弹窗） -->
     <div id="indicatorModalContainer"></div>
 
     <script src="https://cdn.jsdelivr.net/npm/pocketbase@0.26.8/dist/pocketbase.umd.min.js"></script>
@@ -67,7 +67,7 @@
         const pb = createPocketBaseClient();
         let allSignals = [];
         let signalTabCountRecords = [];
-        let signalIndicatorsMap = {}; // { signalId: normalizedIndicator }
+        let signalIndicatorsMap = {}; // { signalRecordId: tv webhook context }
         let reverseSignalsMap = {};   // { symbol: [reverseSignals] }
         let currentDate = getCurrentEtDateString();
         let rangeStartDate = null;
@@ -424,14 +424,16 @@
 
         function buildSignalChartParams(signal) {
             if (!signal) return null;
-            const latestIndicator = signalIndicatorsMap[signal.id] || null;
-            const symbol = String(latestIndicator?.symbol || signal.symbol || '').trim().toUpperCase();
+            const extra = getSignalExtra(signal);
+            const context = signalIndicatorsMap[signal.id] || buildTvSignalContext(signal);
+            const symbol = String(context?.symbol || signal.symbol || '').trim().toUpperCase();
             if (!symbol) return null;
+            const tvChartUrl = String(extra.tv_chart_url || context?.tv_chart_url || '').trim();
             return {
                 symbol,
-                interval: normalizeChartInterval(latestIndicator?.interval || signal.interval, '5m'),
-                bar_time_ms: Number(latestIndicator?.bar_time_ms || signal.bar_time_ms || 0) || '',
-                indicator_id: latestIndicator?.id || ''
+                interval: normalizeChartInterval(context?.interval || signal.interval, '5m'),
+                bar_time_ms: Number(context?.bar_time_ms || signal.bar_time_ms || 0) || '',
+                tv_chart_url: tvChartUrl
             };
         }
 
@@ -496,6 +498,32 @@
             const symbol = String(signal?.symbol || '').trim().toUpperCase();
             const interval = normalizeIndicatorIntervalValue(signal?.interval);
             return symbol ? `${symbol}|${interval}` : '';
+        }
+
+        function buildTvSignalContext(signal) {
+            const extra = getSignalExtra(signal);
+            const snapshot = safeObject(extra.tv_snapshot);
+            const symbol = String(signal?.symbol || snapshot.symbol || '').trim().toUpperCase();
+            if (!symbol) return null;
+            const interval = normalizeChartInterval(signal?.chart_tf || signal?.interval || extra.entry_tf || extra.chart_tf || snapshot.interval, '5m');
+            const close = firstPositiveNumber(extra.close, snapshot.close, signal?.entry);
+            return {
+                id: signal?.id || signal?.signal_id || '',
+                symbol,
+                interval,
+                bar_time_ms: Number(signal?.bar_time_ms || extra.bar_time_ms || snapshot.bar_time_ms || 0) || 0,
+                close,
+                trend_dir: extra.direction_bias === 'long' || signal?.direction === 'long' ? 1 : (extra.direction_bias === 'short' || signal?.direction === 'short' ? -1 : 0),
+                atr_pct: firstPositiveNumber(extra.atr_pct, snapshot.atr_pct),
+                sl_atr_ratio: firstPositiveNumber(extra.sl_atr_ratio, snapshot.sl_atr_ratio),
+                day_change_pct: firstFiniteNumber(extra.day_change_pct, snapshot.day_change_pct),
+                display_day_change_pct: firstFiniteNumber(extra.day_change_pct, snapshot.day_change_pct),
+                display_prev_close_change_pct: firstFiniteNumber(extra.prev_close_change_pct, snapshot.prev_close_change_pct),
+                display_change_7d: firstFiniteNumber(extra.change_7d, snapshot.change_7d),
+                tv_chart_url: extra.tv_chart_url || snapshot.tv_chart_url || '',
+                source: 'tradingview_webhook',
+                raw_payload: snapshot,
+            };
         }
 
         function formatSignalInterval(interval) {
@@ -599,7 +627,17 @@
                 })}#signal-rule-analysis`;
             }
             const legacyTopSection = document.getElementById('pageTopSection');
-            if (legacyTopSection) legacyTopSection.innerHTML = '';
+            if (legacyTopSection && typeof renderPageTopSection === 'function') {
+                legacyTopSection.innerHTML = renderPageTopSection({
+                    kicker: 'TV Primary',
+                    title: 'TradingView 信号执行台',
+                    copy: 'TV 负责 bar / 指标 / 回测 / 图表；本系统负责 webhook 审计、人工确认、IBKR 执行和保护兜底。',
+                    metaHtml: `
+                        <span class="status-chip"><span class="dot" style="color:#4FD1C5"></span>${escapeHtml(getEnvironmentLabel(currentBrokerMode))}</span>
+                        <span class="status-chip"><span class="dot" style="color:#63B3ED"></span>${escapeHtml(getEnvironmentLabel(currentEnvironment))}</span>
+                    `
+                });
+            }
         }
 
         function renderSignalsPageChrome() {
@@ -701,11 +739,11 @@
         }
 
         function getIndicatorEmptyState(signal, latestIndicator) {
-            if (latestIndicator) return '数据缺失';
+            if (latestIndicator) return '已接收';
             const status = getEffectiveSignalStatus(signal);
             if (status === 'expired') return '已过期';
-            if (['awaiting_confirm', 'pending', 'submitted'].includes(status)) return '等待数据';
-            return '数据缺失';
+            if (['awaiting_confirm', 'pending', 'submitted'].includes(status)) return '等待 TV';
+            return '无 TV 上下文';
         }
 
         function formatSignalPrice(value, preferred = '数据缺失') {
@@ -1368,27 +1406,27 @@
             const latest = realtimeLatencySnapshot || {};
             const focusSymbol = resolveSignalsWorkspaceFocusSymbol();
             const refreshText = currentInterval > 0 ? `${currentInterval}s 自动刷新` : '手动刷新';
-            const scopeLabel = latest.symbol ? `${latest.symbol} 5m pipeline` : '5m pipeline';
+            const scopeLabel = latest.symbol ? `${latest.symbol} TV webhook` : 'TV webhook';
             const scopeSubtitle = latest.barCloseMs
-                ? `基于 ${formatEventTime(latest.barCloseMs)} ET 收盘 bar · 当前结果 ${getSignalsResultCount()} 条`
-                : `等待最新 5m 快照 · 当前结果 ${getSignalsResultCount()} 条`;
+                ? `最新 ${latest.eventType || 'event'} · ${formatEventTime(latest.barCloseMs)} ET · 当前结果 ${getSignalsResultCount()} 条`
+                : `等待 TradingView webhook · 当前结果 ${getSignalsResultCount()} 条`;
             const cards = [
                 {
-                    label: '实时 freshness',
+                    label: 'TV 事件新鲜度',
                     value: formatLatency(latest.dataFreshnessMs || 0),
-                    copy: '现在距离最新 5m bar 收盘的时间差',
+                    copy: '现在距离最新 TradingView 事件时间的差值',
                     tone: resolveLatencyTone('freshness', latest.dataFreshnessMs || 0),
                 },
                 {
-                    label: 'bar 入库',
+                    label: 'Webhook 入库',
                     value: formatLatency(latest.barIngestDelayMs || 0),
-                    copy: 'bar 收盘到写入 ibkr_bars',
+                    copy: 'TradingView bar 时间到系统接收写入',
                     tone: resolveLatencyTone('ingest', latest.barIngestDelayMs || 0),
                 },
                 {
-                    label: '指标计算',
-                    value: formatLatency(latest.indicatorComputeDelayMs || 0, latest.indicatorComputeFallback || '计算中'),
-                    copy: 'bar 收盘到最新指标计算完成',
+                    label: '事件类型',
+                    value: latest.eventType || latest.indicatorComputeFallback || '等待 TV',
+                    copy: latest.routeStatus ? `路由状态: ${latest.routeStatus}` : 'pre_alert / entry / risk_update / exit',
                     tone: resolveLatencyTone('compute', latest.indicatorComputeDelayMs || 0),
                 },
             ];
@@ -1430,72 +1468,50 @@
         }
 
         async function loadRealtimeLatencySnapshot(requestId = 0) {
-            const candidateSymbols = resolveLatencyCandidateSymbols();
-            const barConditions = [
+            const conditions = [
                 `environment = "${currentEnvironment}"`,
-                `interval = "5m"`,
+                `date = "${currentDate}"`,
             ];
-            const symbolFilter = buildLatencySymbolFilter(candidateSymbols);
-            if (symbolFilter) {
-                barConditions.push(symbolFilter);
+            const focusSymbol = resolveSignalsWorkspaceFocusSymbol();
+            if (focusSymbol) {
+                conditions.push(`symbol = "${escapeFilterValue(focusSymbol)}"`);
             }
 
-            const barParams = {
-                filter: barConditions.join(' && '),
-                sort: '-bar_time_ms,-created',
+            const params = {
+                filter: conditions.join(' && '),
+                sort: '-created',
                 perPage: 1,
                 page: 1
             };
-            const barResp = typeof cachedApiFetch === 'function'
-                ? await cachedApiFetch('ibkr_bars', barParams, {
+            const response = typeof cachedApiFetch === 'function'
+                ? await cachedApiFetch('tv_webhook_events', params, {
                     ttlMs: SIGNALS_FAST_CACHE_TTL_MS,
                     swrMs: SIGNALS_FAST_CACHE_TTL_MS,
-                    tags: ['signals-page', 'latency', currentEnvironment]
+                    tags: ['signals-page', 'tv-webhook-events', currentEnvironment]
                 })
-                : await apiFetch('ibkr_bars', barParams);
+                : await apiFetch('tv_webhook_events', params);
             if (requestId && requestId !== currentSignalsRequestId) return;
 
-            const latestBar = Array.isArray(barResp?.items) ? barResp.items[0] : null;
-            if (!latestBar) {
+            const latestEvent = Array.isArray(response?.items) ? response.items[0] : null;
+            if (!latestEvent) {
                 realtimeLatencySnapshot = null;
                 renderLatencySummary();
                 return;
             }
 
-            const barCloseMs = (Number(latestBar.bar_time_ms || 0) || 0) + intervalToMs(latestBar.interval || '5m');
-            const barCreatedMs = parseTimestampMs(latestBar.created);
-            const snapshot = {
-                symbol: String(latestBar.symbol || '').trim().toUpperCase(),
-                barTimeMs: Number(latestBar.bar_time_ms || 0) || 0,
-                barCloseMs,
-                dataFreshnessMs: barCloseMs > 0 ? Math.max(0, Date.now() - barCloseMs) : 0,
-                barIngestDelayMs: getLatencyMs(barCloseMs, barCreatedMs),
+            const eventMs = Number(latestEvent.bar_time_ms || latestEvent.extra?.bar_time_ms || 0) || parseTimestampMs(latestEvent.created);
+            const createdMs = parseTimestampMs(latestEvent.created);
+            realtimeLatencySnapshot = {
+                symbol: String(latestEvent.symbol || '').trim().toUpperCase(),
+                eventType: String(latestEvent.event_type || '').trim(),
+                routeStatus: String(latestEvent.status || '').trim(),
+                barTimeMs: eventMs,
+                barCloseMs: eventMs,
+                dataFreshnessMs: eventMs > 0 ? Math.max(0, Date.now() - eventMs) : 0,
+                barIngestDelayMs: getLatencyMs(eventMs, createdMs),
                 indicatorComputeDelayMs: 0,
-                indicatorComputeFallback: getIndicatorLatencyFallback(latestBar),
+                indicatorComputeFallback: latestEvent.event_type || '等待 TV webhook',
             };
-
-            if (snapshot.symbol && snapshot.barTimeMs) {
-                const indicatorParams = {
-                    filter: `environment = "${currentEnvironment}" && symbol = "${escapeFilterValue(snapshot.symbol)}" && bar_time_ms = ${snapshot.barTimeMs} && (interval = "5" || interval = "5m")`,
-                    sort: '-created',
-                    perPage: 1,
-                    page: 1
-                };
-                const indicatorResp = typeof cachedApiFetch === 'function'
-                    ? await cachedApiFetch('ibkr_indicators', indicatorParams, {
-                        ttlMs: SIGNALS_FAST_CACHE_TTL_MS,
-                        swrMs: SIGNALS_FAST_CACHE_TTL_MS,
-                        tags: ['signals-page', 'latency', currentEnvironment]
-                    })
-                    : await apiFetch('ibkr_indicators', indicatorParams);
-                if (requestId && requestId !== currentSignalsRequestId) return;
-                const latestIndicator = Array.isArray(indicatorResp?.items) ? indicatorResp.items[0] : null;
-                if (latestIndicator) {
-                    snapshot.indicatorComputeDelayMs = getLatencyMs(barCloseMs, parseTimestampMs(latestIndicator.created));
-                }
-            }
-
-            realtimeLatencySnapshot = snapshot;
             renderLatencySummary();
         }
 
@@ -1634,7 +1650,7 @@
                         console.error('加载延迟摘要失败:', error);
                     });
 
-                // 技术指标改为后台补齐，不阻塞首屏。
+                // TV webhook 上下文从信号 extra 后台补齐，不阻塞首屏。
                 loadSignalIndicatorsForSignals(allSignals, { replace: true, requestId })
                     .then(() => {
                         if (requestId !== currentSignalsRequestId) return;
@@ -1642,7 +1658,7 @@
                         updateCountdowns();
                     })
                     .catch((error) => {
-                        console.error('后台加载指标失败:', error);
+                        console.error('后台加载 TV 上下文失败:', error);
                     });
 
                 // Tab 数量仍保留，但不再跟随每次自动刷新全量重查。
@@ -1704,74 +1720,14 @@
                 signalIndicatorsMap = {};
             }
             if (!records.length) return;
-
-            const { startTimeMs, endTimeMs } = getSignalTimeRange();
-            const uniquePairs = [];
-            const pairSet = new Set();
-
-            records.forEach((signal) => {
-                const symbol = String(signal?.symbol || '').trim().toUpperCase();
-                if (!symbol) return;
-                const interval = normalizeIndicatorIntervalValue(signal?.interval);
-                const key = `${symbol}|${interval}`;
-                if (pairSet.has(key)) return;
-                pairSet.add(key);
-                uniquePairs.push({ symbol, interval, key });
-            });
-
-            if (!uniquePairs.length) return;
-
-            const latestByPair = {};
-            for (const pairChunk of chunkArray(uniquePairs, 8)) {
-                const pairFilter = pairChunk
-                    .map((item) => `(symbol = "${escapeFilterValue(item.symbol)}" && interval = "${escapeFilterValue(item.interval)}")`)
-                    .join(' || ');
-                const expectedKeys = new Set(pairChunk.map((item) => item.key));
-                const perPage = Math.min(200, pairChunk.length * 12);
-                const chunkLatestByPair = {};
-
-                for (let page = 1; page <= 2; page += 1) {
-                    const indicatorParams = {
-                        filter: `environment = "${currentEnvironment}" && (${pairFilter}) && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
-                        sort: '-bar_time_ms,-created',
-                        perPage,
-                        page
-                    };
-                    const result = typeof cachedApiFetch === 'function'
-                        ? await cachedApiFetch('ibkr_indicators', indicatorParams, {
-                            ttlMs: SIGNALS_DETAIL_CACHE_TTL_MS,
-                            swrMs: SIGNALS_DETAIL_CACHE_TTL_MS,
-                            tags: ['signals-page', 'signal-indicators', currentEnvironment]
-                        })
-                        : await apiFetch('ibkr_indicators', indicatorParams);
-                    if (requestId && requestId !== currentSignalsRequestId) return;
-
-                    const rows = Array.isArray(result?.items) ? result.items : [];
-                    rows.forEach((item) => {
-                        const key = `${String(item.symbol || '').trim().toUpperCase()}|${normalizeIndicatorIntervalValue(item.interval)}`;
-                        if (!chunkLatestByPair[key]) {
-                            chunkLatestByPair[key] = normalizeIndicatorRecord(item);
-                        }
-                    });
-
-                    if (Object.keys(chunkLatestByPair).length >= expectedKeys.size) {
-                        break;
-                    }
-                    if (rows.length < perPage) {
-                        break;
-                    }
-                }
-
-                Object.assign(latestByPair, chunkLatestByPair);
-            }
-
             if (requestId && requestId !== currentSignalsRequestId) return;
 
             const nextMap = replace ? {} : { ...signalIndicatorsMap };
             records.forEach((signal) => {
-                const key = buildSignalIndicatorKey(signal);
-                if (!key || !latestByPair[key]) return;
-                nextMap[signal.id] = latestByPair[key];
+                const context = buildTvSignalContext(signal);
+                if (context) {
+                    nextMap[signal.id] = context;
+                }
             });
             signalIndicatorsMap = nextMap;
         }
@@ -2028,7 +1984,7 @@
             return filtered.slice(0, start + itemsPerPage);
         }
 
-        // 构建技术指标徽章
+        // 构建 TV 信号上下文徽章
         function buildIndicatorBadges(signal, latestIndicator) {
             if (!latestIndicator && !signal.extra) return '';
 
@@ -2231,7 +2187,7 @@
                         renderSignals();
                     })
                     .catch((error) => {
-                        console.error('加载更多指标失败:', error);
+                        console.error('加载更多 TV 上下文失败:', error);
                     });
             } catch (error) {
                 console.error('加载更多失败:', error);
@@ -2712,7 +2668,7 @@
                 // 波动率标签（用于标题行）
                 const volBadge = atrVolLevel ? `<span class="signal-interval">${atrVolLabel} ${atrPct.toFixed(2)}%</span>` : '';
 
-                // 构建技术指标徽章
+                // 构建 TV 信号上下文徽章
                 const indicatorBadges = buildIndicatorBadges(signal, latestIndicator);
 
                 // 构建大盘关联徽章
@@ -2731,7 +2687,7 @@
                 const intervalText = formatSignalInterval(signal.interval);
                 const intervalBadge = intervalText ? `<span class="signal-interval">${intervalText}</span>` : '';
                 const chartParams = buildSignalChartParams(signal);
-                const hasChartContext = !!chartParams;
+                const hasChartContext = !!chartParams?.tv_chart_url;
                 const lifecycleFlowUrl = buildSignalLifecycleFlowUrl(signal);
                 const isSelected = isSameSignalId(signal.signal_id, selectedSignalId);
                 const isDetailActive = isSameSignalId(signal.signal_id, detailSignalId);
@@ -2860,10 +2816,10 @@
                         <div class="signal-actions" style="display:flex;flex-direction:column;gap:8px;">
                             <div class="action-btns-row">
                                 <button class="action-btn btn-view${latestIndicator ? '' : ' disabled'}${isDetailActive ? ' active' : ''}" onclick='showIndicatorDetails(${recordIdLiteral})' ${latestIndicator ? '' : 'disabled'}>
-                                    📊 技术指标${indicatorButtonStateText}
+                                    📨 TV Payload${indicatorButtonStateText}
                                 </button>
                                 <button class="action-btn btn-view${hasChartContext ? '' : ' disabled'}" onclick='openSignalChartPage(${recordIdLiteral})' ${hasChartContext ? '' : 'disabled'}>
-                                    📉 图表页${chartStateText}
+                                    📈 TV 图表${chartStateText}
                                 </button>
                                 ${lifecycleFlowUrl ? `<a class="action-btn btn-view" href="${lifecycleFlowUrl}">🧭 流程图</a>` : ''}
                                 <button class="action-btn btn-view${signal.signal_id ? '' : ' disabled'}" onclick='viewReverseSignal(${signalIdLiteral})' ${signal.signal_id ? '' : 'disabled'}>
@@ -3065,7 +3021,7 @@
             }
 
             if (!latestIndicator) {
-                showToast(`技术指标${getIndicatorEmptyState(signal, latestIndicator)}`);
+                showToast(`TV Payload${getIndicatorEmptyState(signal, latestIndicator)}`);
                 return;
             }
 
@@ -3076,11 +3032,11 @@
         function openSignalChartPage(signalId) {
             const signal = allSignals.find((item) => item.id === signalId);
             const params = buildSignalChartParams(signal);
-            if (!params) {
-                showToast('暂无图表上下文');
+            if (!params?.tv_chart_url) {
+                showToast('TV 未随 webhook 提供 chart url');
                 return;
             }
-            location.href = buildPageUrl('/ibkr_chart.html', params, { environment: currentEnvironment });
+            location.href = params.tv_chart_url;
         }
 
         window.onDateChange = function(startDate, endDate) {

@@ -154,16 +154,7 @@ from ibkr_api.system.scheduler_support import (
     scheduler_status as _scheduler_status_support,
 )
 from ibkr_api.system.summary_support import build_system_summary_payload as _build_system_summary_payload_support
-from ibkr_api.tradingview.ingest import (
-    upsert_tv_indicator as _upsert_tv_indicator_support,
-    upsert_tv_indicator_audit as _upsert_tv_indicator_audit_support,
-    upsert_tv_signal as _upsert_tv_signal_support,
-)
-from ibkr_api.tradingview.runtime_adapters import (
-    build_upsert_tv_indicator,
-    build_upsert_tv_indicator_audit,
-    build_upsert_tv_signal,
-)
+from ibkr_api.tradingview.tv_primary import process_tv_primary_event as _process_tv_primary_event_support
 from ibkr_compute.api.service_topology import build_service_topology
 from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_scheduler.cron_registry import build_cron_payload
@@ -325,28 +316,23 @@ def _market_date_bounds_ms(market_date: str) -> tuple[int, int]:
 
 
 def _sqlite_today_market_count(collection: str, environment: str, market_date: str) -> int | None:
-    if collection not in {"ibkr_bars", "ibkr_indicators"}:
+    if collection != "ibkr_bars":
         return None
     try:
         from ibkr_compute.market.pocketbase_sqlite import open_pb_sqlite
 
         start_ms, end_ms = _market_date_bounds_ms(market_date)
-        interval_clause = "interval = ?"
-        interval_params: tuple[str, ...] = ("5m",)
-        if collection == "ibkr_indicators":
-            interval_clause = "interval IN (?, ?)"
-            interval_params = ("5", "5m")
         with open_pb_sqlite(readonly=True, timeout=2.0) as conn:
             row = conn.execute(
                 f"""
                 SELECT COUNT(*) AS total
                 FROM {collection}
                 WHERE environment = ?
-                  AND {interval_clause}
+                  AND interval = ?
                   AND bar_time_ms >= ?
                   AND bar_time_ms < ?
                 """,
-                (str(environment or "live"), *interval_params, start_ms, end_ms),
+                (str(environment or "live"), "5m", start_ms, end_ms),
             ).fetchone()
         return int((row["total"] if row else 0) or 0)
     except Exception:
@@ -482,15 +468,13 @@ def _load_today_counts(environment: str, market_date: str) -> dict[str, Any]:
             "ibkr_bars",
             f'environment = "{data_env}" && interval = "5m" && us_time >= "{start_us}" && us_time < "{end_us}"',
         ),
-        "ibkr_indicators": (
-            "ibkr_indicators",
-            f'environment = "{data_env}" && '
-            f'(interval = "5" || interval = "5m") && '
-            f'us_time >= "{start_us}" && us_time < "{end_us}"',
-        ),
         "ibkr_signals": (
             "ibkr_signals",
             f'environment = "{data_env}" && us_time >= "{start_us}" && us_time < "{end_us}"',
+        ),
+        "tv_webhook_events": (
+            "tv_webhook_events",
+            f'environment = "{data_env}" && date = "{date_filter}"',
         ),
         "orders": (
             "orders",
@@ -509,7 +493,7 @@ def _load_today_counts(environment: str, market_date: str) -> dict[str, Any]:
     errors: dict[str, str] = {}
     for key, (collection, filter_expr) in specs.items():
         try:
-            count_environment = data_environment if key in {"ibkr_bars", "ibkr_indicators", "ibkr_signals", "ibkr_targets"} else runtime_environment
+            count_environment = data_environment if key in {"ibkr_bars", "ibkr_signals", "ibkr_targets", "tv_webhook_events"} else runtime_environment
             sqlite_count = _sqlite_today_market_count(collection, count_environment, date_token)
             counts[key] = sqlite_count if sqlite_count is not None else _pb_count_records(collection, filter_expr)
         except Exception as exc:
@@ -992,21 +976,21 @@ globals().update(_platform_route_handlers)
 
 
 _callback_toast = _callback_toast_support
-_upsert_tv_indicator = build_upsert_tv_indicator(
-    globals_dict=globals(),
-    pb=pb,
-    support=_upsert_tv_indicator_support,
-)
-_upsert_tv_indicator_audit = build_upsert_tv_indicator_audit(
-    globals_dict=globals(),
-    pb=pb,
-    support=_upsert_tv_indicator_audit_support,
-)
-_upsert_tv_signal = build_upsert_tv_signal(
-    globals_dict=globals(),
-    pb=pb,
-    support=_upsert_tv_signal_support,
-)
+
+
+def _process_tv_primary_event(payload: dict):
+    return _process_tv_primary_event_support(
+        pb,
+        payload=payload,
+        normalize_environment=_normalize_environment,
+        escape_filter_string=_escape_filter_string,
+        build_signal_ingest_response=build_signal_ingest_response,
+        config_value=_config_value,
+        send_interactive=_feishu_send_interactive,
+        update_interactive=_feishu_update_interactive,
+        signal_chat_id_fn=_signal_chat_id,
+        console_base_url=_console_base_url(),
+    )
 _dispatch_feishu_2fa_callback = build_dispatch_feishu_2fa_callback(
     globals_dict=globals(),
     pb_base_url=PB_BASE_URL,

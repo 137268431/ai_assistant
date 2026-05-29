@@ -4,10 +4,12 @@
 - cancel: 取消待成交订单
 - adjust_sl: 调整止损
 - adjust_tp: 调整止盈
+- adjust_bracket: 同时或单边调整止损/止盈
 """
 
 import json
 import logging
+import math
 import os
 import time
 from datetime import datetime
@@ -19,7 +21,7 @@ from ibkr_compute.core.time_utils import ET
 logger = logging.getLogger(__name__)
 
 
-REVERSE_ACTIONS = {"close", "cancel", "adjust_sl", "adjust_tp"}
+REVERSE_ACTIONS = {"close", "cancel", "adjust_sl", "adjust_tp", "adjust_bracket"}
 REVERSE_SIGNAL_COLLECTION = "ibkr_reverse_signals"
 
 ACTIVE_ORDER_STATUSES = {
@@ -543,6 +545,8 @@ class ReverseSignalHandler:
             return self._handle_adjust_sl(signal, detail)
         if action == "adjust_tp":
             return self._handle_adjust_tp(signal, detail)
+        if action == "adjust_bracket":
+            return self._handle_adjust_bracket(signal, detail)
 
         return self._mark_blocked(detail, "unsupported_reverse_action", action=action)
 
@@ -802,6 +806,140 @@ class ReverseSignalHandler:
             "reason": "adjust_tp_confirmed",
             "detail": detail,
         }
+
+    def _handle_adjust_bracket(self, signal: dict, detail: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        detail = detail or self._base_reverse_detail(signal, "adjust_bracket")
+        if not self.order_modifier:
+            return self._mark_blocked(detail, "adjust_bracket_dependency_missing")
+
+        self._append_state(detail, "adjust_bracket")
+        side_specs = {
+            "stop_loss": {
+                "order_key": "sl_order_id",
+                "price_key": "new_sl",
+                "update_method": self.order_modifier.update_stop_loss,
+                "missing_order_reason": "sl_order_id_missing",
+                "invalid_price_reason": "new_sl_missing_or_invalid",
+            },
+            "take_profit": {
+                "order_key": "tp_order_id",
+                "price_key": "new_tp",
+                "update_method": self.order_modifier.update_take_profit,
+                "missing_order_reason": "tp_order_id_missing",
+                "invalid_price_reason": "new_tp_missing_or_invalid",
+            },
+        }
+
+        results: Dict[str, Dict[str, Any]] = {}
+        valid_prices = 0
+        attempted_sides: List[str] = []
+        succeeded_sides: List[str] = []
+        failed_sides: List[str] = []
+
+        for side, spec in side_specs.items():
+            raw_price = self._signal_value(signal, spec["price_key"], None)
+            order_id = str(self._signal_value(signal, spec["order_key"]) or "").strip()
+            price = self._coerce_adjust_price(raw_price)
+            price_valid = price > 0
+            if price_valid:
+                valid_prices += 1
+
+            requested = bool(order_id) or raw_price not in (None, "")
+            side_detail = {
+                "requested": requested,
+                "order_id": order_id,
+                "new_price": price,
+                "price_valid": price_valid,
+                "price_key": spec["price_key"],
+                "order_key": spec["order_key"],
+            }
+
+            if not requested:
+                side_detail.update({"ok": True, "skipped": True, "reason": "not_requested"})
+                results[side] = side_detail
+                continue
+            if not price_valid:
+                side_detail.update({"ok": False, "skipped": True, "reason": spec["invalid_price_reason"]})
+                if raw_price not in (None, ""):
+                    side_detail["raw_price"] = raw_price
+                results[side] = side_detail
+                failed_sides.append(side)
+                continue
+            if not order_id:
+                side_detail.update({"ok": False, "skipped": True, "reason": spec["missing_order_reason"]})
+                results[side] = side_detail
+                failed_sides.append(side)
+                continue
+
+            attempted_sides.append(side)
+            try:
+                modify_result = spec["update_method"](order_id, price)
+            except Exception as exc:
+                modify_result = {"ok": False, "error": str(exc), "exception": type(exc).__name__}
+
+            ok = bool((modify_result or {}).get("ok"))
+            side_detail.update(
+                {
+                    "ok": ok,
+                    "skipped": False,
+                    "reason": "confirmed" if ok else "broker_update_failed",
+                    "result": dict(modify_result or {}),
+                }
+            )
+            results[side] = side_detail
+            if ok:
+                succeeded_sides.append(side)
+            else:
+                failed_sides.append(side)
+
+        detail["adjust_bracket"] = "started"
+        detail["adjust_results"] = results
+        detail["adjust_bracket_result"] = {
+            "attempted_sides": attempted_sides,
+            "succeeded_sides": succeeded_sides,
+            "failed_sides": failed_sides,
+        }
+
+        if valid_prices == 0:
+            detail["adjust_bracket"] = "blocked"
+            return self._mark_blocked(
+                detail,
+                "adjust_bracket_prices_missing_or_invalid",
+                failed_sides=failed_sides,
+            )
+        if not attempted_sides:
+            detail["adjust_bracket"] = "blocked"
+            return self._mark_blocked(
+                detail,
+                "adjust_bracket_targets_missing_or_invalid",
+                failed_sides=failed_sides,
+            )
+        if failed_sides:
+            partial = bool(succeeded_sides)
+            detail["adjust_bracket"] = "partial_failed" if partial else "failed"
+            return self._mark_blocked(
+                detail,
+                "adjust_bracket_partial_failed" if partial else "adjust_bracket_failed",
+                failed_sides=failed_sides,
+                succeeded_sides=succeeded_sides,
+            )
+
+        detail["adjust_bracket"] = "confirmed"
+        detail["result_status"] = "ok"
+        return {
+            "ok": True,
+            "ack_status": "confirmed",
+            "reason": "adjust_bracket_confirmed",
+            "detail": detail,
+        }
+
+    @staticmethod
+    def _coerce_adjust_price(value: Any) -> float:
+        try:
+            price = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        return price if math.isfinite(price) and price > 0 else 0.0
 
     def _related_trade_group_id(self, signal: dict) -> str:
         return str(
