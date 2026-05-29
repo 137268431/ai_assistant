@@ -802,7 +802,7 @@ async function inspectPage(browser, token, url, mobile) {
   const layoutIssues = [];
   if (/\/login\.html/.test(finalUrl)) layoutIssues.push('redirected_to_login');
   if (!navTexts.length) layoutIssues.push('missing_nav');
-  if (navTexts.length && navTexts.length !== 6) layoutIssues.push(`nav_count:${navTexts.length}`);
+  if (navTexts.length && navTexts.length !== 5) layoutIssues.push(`nav_count:${navTexts.length}`);
   if (navTexts.some((text) => String(text || '').includes('运维'))) layoutIssues.push('legacy_ops_bottom_nav');
   if (navTexts.length && !navTexts.some((text) => String(text || '').includes('系统'))) layoutIssues.push('missing_system_bottom_nav');
   if (!layout.context_count) layoutIssues.push('missing_context_bar');

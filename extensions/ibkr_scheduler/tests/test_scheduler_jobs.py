@@ -59,6 +59,19 @@ class _FakeConfig:
         self.overrides = {
             "ibkr_market_ws_symbols": "",
             "ibkr_scheduler_rollup_intervals": "",
+            "ibkr_runtime_technical_pipeline_enabled": "TRUE",
+            "ibkr_tv_primary_runtime_slim_enabled": "FALSE",
+            "pb_cron_system_heartbeat_enabled": "TRUE",
+            "pb_cron_system_data_gap_guard_enabled": "TRUE",
+            "pb_cron_ibkr_compute_runtime_enabled": "TRUE",
+            "pb_cron_ibkr_scan_runtime_enabled": "TRUE",
+            "pb_cron_ibkr_fundamentals_refresh_enabled": "TRUE",
+            "pb_cron_ibkr_active_window_progress_status_enabled": "TRUE",
+            "pb_cron_ibkr_early_expansion_topup_enabled": "TRUE",
+            "pb_cron_ibkr_intraday_window_admission_enabled": "TRUE",
+            "pb_cron_ibkr_data_quality_repair_sweep_enabled": "TRUE",
+            "pb_cron_ibkr_data_quality_truth_audit_enabled": "TRUE",
+            "pb_cron_ibkr_tv_indicator_audit_enabled": "TRUE",
         }
         self.overrides.update(overrides or {})
 
@@ -67,6 +80,13 @@ class _FakeConfig:
 
     def get_for_environment(self, key, environment, default=None):
         return self.overrides.get((key, environment), self.overrides.get(key, (default if default is not None else "")))
+
+class _DefaultOnlyConfig:
+    def refresh(self):
+        return None
+
+    def get_for_environment(self, key, environment, default=None):
+        return default if default is not None else ""
 
 
 class _FakePB:
@@ -400,6 +420,77 @@ class SchedulerJobsTest(unittest.TestCase):
             scheduler_app_mod.NATIVE_HTTP_JOB_ENDPOINTS["ibkr_tv_indicator_audit"],
             ("POST", "/ibkr/data-quality/tv-indicator-audit"),
         )
+
+    def test_tv_primary_slim_defaults_disable_technical_pipeline_but_keep_guards(self):
+        payload = {item["id"]: item for item in scheduler_app_mod.build_cron_payload(_DefaultOnlyConfig(), "live")}
+
+        technical_ids = {
+            "ibkr_compute_runtime",
+            "ibkr_scan_runtime",
+            "ibkr_fundamentals_refresh",
+            "ibkr_active_window_progress_status",
+            "ibkr_early_expansion_topup",
+            "ibkr_intraday_window_admission",
+            "system_data_gap_guard",
+            "ibkr_data_quality_repair_sweep",
+            "ibkr_data_quality_truth_audit_cycle",
+            "ibkr_tv_indicator_audit",
+        }
+        for job_id in technical_ids:
+            self.assertEqual(payload[job_id]["default_value"], "FALSE")
+            self.assertTrue(payload[job_id]["technical_pipeline_cron"])
+            self.assertFalse(payload[job_id]["technical_pipeline_enabled"])
+            self.assertFalse(payload[job_id]["effective_enabled"])
+
+        for job_id in {
+            "signal_expiry_check",
+            "order_expiry_check",
+            "order_detail_integrity_guard",
+            "ibkr_auth_edge_guard",
+            "ibkr_auth_pending_guard",
+            "ibkr_2fa_hourly_check",
+            "system_monitor_alert_guard",
+            "system_status_reminder",
+            "system_market_open_reminder",
+            "system_daily_report",
+        }:
+            self.assertFalse(payload[job_id]["technical_pipeline_cron"])
+            self.assertTrue(payload[job_id]["effective_enabled"])
+
+        self.assertFalse(payload["system_heartbeat"]["technical_pipeline_cron"])
+        self.assertEqual(payload["system_heartbeat"]["default_value"], "FALSE")
+        self.assertFalse(payload["system_heartbeat"]["effective_enabled"])
+
+    def test_technical_pipeline_gate_requires_global_and_job_switches(self):
+        cfg = _FakeConfig({
+            "ibkr_runtime_technical_pipeline_enabled": "FALSE",
+            "ibkr_tv_primary_runtime_slim_enabled": "FALSE",
+            "pb_cron_ibkr_compute_runtime_enabled": "TRUE",
+        })
+        disabled = {item["id"]: item for item in scheduler_app_mod.build_cron_payload(cfg, "live")}["ibkr_compute_runtime"]
+        self.assertTrue(disabled["cron_enabled"])
+        self.assertFalse(disabled["technical_pipeline_enabled"])
+        self.assertFalse(disabled["effective_enabled"])
+
+        cfg = _FakeConfig({
+            "ibkr_runtime_technical_pipeline_enabled": "TRUE",
+            "ibkr_tv_primary_runtime_slim_enabled": "FALSE",
+            "pb_cron_ibkr_compute_runtime_enabled": "TRUE",
+        })
+        enabled = {item["id"]: item for item in scheduler_app_mod.build_cron_payload(cfg, "live")}["ibkr_compute_runtime"]
+        self.assertTrue(enabled["cron_enabled"])
+        self.assertTrue(enabled["technical_pipeline_enabled"])
+        self.assertTrue(enabled["effective_enabled"])
+
+        cfg = _FakeConfig({
+            "ibkr_runtime_technical_pipeline_enabled": "TRUE",
+            "ibkr_tv_primary_runtime_slim_enabled": "TRUE",
+            "pb_cron_ibkr_compute_runtime_enabled": "TRUE",
+        })
+        tv_slim = {item["id"]: item for item in scheduler_app_mod.build_cron_payload(cfg, "live")}["ibkr_compute_runtime"]
+        self.assertTrue(tv_slim["technical_pipeline_enabled"])
+        self.assertTrue(tv_slim["tv_primary_runtime_slim_enabled"])
+        self.assertFalse(tv_slim["effective_enabled"])
 
     def test_scan_runtime_submits_async_job(self):
         pb = _FakePB()

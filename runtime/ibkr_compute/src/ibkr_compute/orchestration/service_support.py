@@ -38,6 +38,113 @@ class TradingServiceSupportMixin:
         )
         self.ws_client.set_order_updates_enabled(self.order_tracker.uses_websocket_updates())
 
+    def _runtime_signal_source_mode(self) -> str:
+        service_mod = _service_mod()
+        return str(
+            self.config.get_for_environment("ibkr_signal_source", service_mod.ENVIRONMENT, "tradingview")
+            or "tradingview"
+        ).strip().lower()
+
+    def _runtime_tv_primary_mode(self) -> bool:
+        return self._runtime_signal_source_mode() in {"tv", "tradingview", "webhook_tv"}
+
+    def _runtime_tv_primary_slim_enabled(self) -> bool:
+        service_mod = _service_mod()
+        return self._runtime_tv_primary_mode() and self.config.get_bool_for_environment(
+            "ibkr_tv_primary_runtime_slim_enabled",
+            service_mod.ENVIRONMENT,
+            self._runtime_config_default_bool("ibkr_tv_primary_runtime_slim_enabled", True),
+        )
+
+    def _runtime_config_default_bool(self, key: str, default: bool) -> bool:
+        defaults = getattr(self.config, "DEFAULTS", {}) or {}
+        value = str(defaults.get(key, str(default).lower()) or "").strip().lower()
+        return value in {"true", "1", "yes", "on"}
+
+    def _runtime_technical_pipeline_config_enabled(self) -> bool:
+        service_mod = _service_mod()
+        return self.config.get_bool_for_environment(
+            "ibkr_runtime_technical_pipeline_enabled",
+            service_mod.ENVIRONMENT,
+            self._runtime_config_default_bool("ibkr_runtime_technical_pipeline_enabled", False),
+        )
+
+    def _runtime_technical_pipeline_enabled(self) -> bool:
+        return self._runtime_technical_pipeline_config_enabled() and not self._runtime_tv_primary_slim_enabled()
+
+    def _runtime_slim_mode_enabled(self) -> bool:
+        return not self._runtime_technical_pipeline_enabled()
+
+    def _runtime_feed_technical_ticks_enabled(self) -> bool:
+        service_mod = _service_mod()
+        return self._runtime_technical_pipeline_enabled() and self.config.get_bool_for_environment(
+            "ibkr_runtime_feed_technical_ticks_enabled",
+            service_mod.ENVIRONMENT,
+            self._runtime_config_default_bool("ibkr_runtime_feed_technical_ticks_enabled", True),
+        )
+
+    def _runtime_background_thread_specs(self) -> list[tuple[str, str, object]]:
+        specs: list[tuple[str, str, object]] = [
+            ("_signal_thread", "signal-loop", self._signal_loop),
+            ("_subscription_thread", "target-refresh", self._subscription_refresh_loop),
+        ]
+        if self._runtime_technical_pipeline_enabled():
+            specs.extend(
+                [
+                    ("_active_repair_thread", "active-repair", self._active_repair_loop),
+                    ("_watchlist_backfill_thread", "watchlist-backfill", self._watchlist_backfill_loop),
+                    ("_compute_thread", "close-compute", self._compute_loop),
+                    ("_official_close_thread", "official-5m-close", self._official_5m_close_loop),
+                    ("_direct_topup_thread", "direct-history-topup", self._runtime_direct_topup_loop),
+                    ("_bar_close_thread", "bar-close-guard", self._bar_close_loop),
+                    ("_warmup_thread", "runtime-warmup", self._warmup_loop),
+                ]
+            )
+        return specs
+
+    def _start_runtime_background_threads(self) -> list[str]:
+        started: list[str] = []
+        for attr_name, thread_name, target in self._runtime_background_thread_specs():
+            thread = threading.Thread(
+                target=target,
+                daemon=True,
+                name=thread_name,
+            )
+            setattr(self, attr_name, thread)
+            thread.start()
+            started.append(thread_name)
+        return started
+
+    def _open_slim_runtime_gate(self, reason: str = "runtime_slim_mode"):
+        snapshot = self._warmup_snapshot_from_subscriptions()
+        self._set_warmup_state(
+            phase="ready",
+            reason=reason,
+            requested_at=self._now_iso(),
+            started_at=None,
+            finished_at=self._now_iso(),
+            last_error="",
+            trading_gate_open=True,
+            trading_gate_reason=reason,
+            **self._warmup_scope_fields(snapshot),
+            ready_symbols=snapshot["symbols_total"],
+            ready_scan_symbols=snapshot["scan_symbols_total"],
+            ready_subscription_symbols=snapshot["subscription_symbols_total"],
+            ready_trade_symbols=snapshot["trade_symbols_total"],
+            ready_monitor_symbols=snapshot["monitor_symbols_total"],
+            ready_symbols_list=snapshot["symbols"],
+            pending_symbols=[],
+            symbol_status=[],
+            integrity_pending_symbols=[],
+            integrity_repair_reasons={},
+            preflight_repair={},
+            backfill_written=0,
+            backfill_result={},
+            compute_result={},
+            timings={},
+            last_duration_s=0.0,
+        )
+
     def _host_resource_monitor_enabled(self) -> bool:
         service_mod = _service_mod()
         return self.config.get_bool_for_environment(
@@ -180,6 +287,8 @@ class TradingServiceSupportMixin:
 
     def _on_ws_market_tick(self, tick_data: dict):
         self.realtime_quote_book.on_tick(tick_data)
+        if not self._runtime_feed_technical_ticks_enabled():
+            return
         self.bar_aggregator.on_tick(tick_data)
         order_flow_manager = getattr(self, "order_flow_manager", None)
         if order_flow_manager is not None:

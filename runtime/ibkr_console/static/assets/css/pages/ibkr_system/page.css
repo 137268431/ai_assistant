@@ -1600,3 +1600,9 @@
         grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
     }
 }
+
+/* TV-primary slim mode: keep legacy bar/indicator/scan diagnostics available in code,
+   but remove them from the default execution-focused overview. */
+.legacy-diagnostics {
+    display: none !important;
+}

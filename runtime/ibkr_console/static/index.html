@@ -125,7 +125,7 @@
                         <div>
                             <div class="home-panel-kicker">Targets</div>
                             <div class="home-panel-title">今日目标池</div>
-                            <div class="home-panel-copy">查看 candidate / active 标的、核心理由和图表入口。</div>
+                            <div class="home-panel-copy">查看 TV webhook 激活的 candidate / active 标的、核心理由和执行入口。</div>
                         </div>
                         <a id="todayTargetsLink" href="/ibkr_screener.html?tab=screener&view=current" class="home-inline-btn">查看当前标的榜</a>
                     </div>
@@ -154,8 +154,8 @@
                                 <div class="home-quick-icon">🔎</div>
                                 <div class="home-quick-arrow">OPEN</div>
                             </div>
-                            <div class="home-quick-title">今日筛选</div>
-                            <div class="home-quick-copy">先看今天可操作标的和筛选理由。</div>
+                            <div class="home-quick-title">TV 目标池</div>
+                            <div class="home-quick-copy">先看 TradingView webhook 激活/候选标的。</div>
                         </a>
 
                         <a id="actionTargetsLink" href="/ibkr_screener.html?tab=screener&view=current" class="home-quick-link">
@@ -173,7 +173,7 @@
                                 <div class="home-quick-arrow">OPEN</div>
                             </div>
                             <div class="home-quick-title">信号管理</div>
-                            <div class="home-quick-copy">确认今天的信号、指标快照和执行上下文。</div>
+                            <div class="home-quick-copy">确认 TV 事件、IBKR 执行和保护状态。</div>
                         </a>
 
                         <a id="actionOrdersLink" href="/orders.html" class="home-quick-link">
@@ -209,7 +209,7 @@
                                 <div class="home-quick-arrow">OPEN</div>
                             </div>
                             <div class="home-quick-title">图表工作台</div>
-                            <div class="home-quick-copy">查看 K 线、指标轨迹和标的信号上下文。</div>
+                            <div class="home-quick-copy">打开 TradingView 图表和标的信号上下文。</div>
                         </a>
 
                         <a id="actionAccountLink" href="/ibkr_account.html" class="home-quick-link">
@@ -241,11 +241,9 @@
                     </div>
 
                     <div class="home-tool-strip">
-                        <a id="actionIndicatorsLink" href="/ibkr_indicators.html" class="home-tool-chip">📈 指标</a>
                         <a id="actionRuntimeLink" href="/ibkr_runtime.html" class="home-tool-chip">🎛️ 控制台</a>
                         <a id="actionMonitorLink" href="/ibkr_monitor.html" class="home-tool-chip">🛠️ 运维</a>
                         <a id="actionConfigLink" href="/ibkr_config.html" class="home-tool-chip">⚙️ 配置</a>
-                        <a id="actionBacktestsLink" href="/ibkr_backtests.html" class="home-tool-chip">🧪 回测</a>
                     </div>
                 </section>
             </div>
@@ -256,9 +254,9 @@
                         <div>
                             <div class="home-panel-kicker">Market</div>
                             <div class="home-panel-title">市场脉搏</div>
-                            <div class="home-panel-copy">保留指数和风险情绪摘要，但压缩成次级信息区，不抢交易首屏。</div>
+                            <div class="home-panel-copy">指数和风险情绪作为次级参考；首屏以 TV -> IBKR 执行闭环为主。</div>
                         </div>
-                        <a id="marketPanelLink" href="/ibkr_indicators.html" class="home-inline-btn">更多指标</a>
+                        <a id="marketPanelLink" href="/ibkr_chart.html" class="home-inline-btn">打开图表</a>
                     </div>
                     <div class="home-panel-meta home-panel-meta-row" id="marketSummaryText">加载中...</div>
                     <div id="marketIndexGrid" class="home-market-grid home-panel-scroll">
@@ -401,12 +399,10 @@
                 actionAccountLink: buildPageUrl('/ibkr_account.html'),
                 actionSystemLink: buildPageUrl('/ibkr_system.html'),
                 actionSystemLogicLink: buildPageUrl('/ibkr_system_logic.html'),
-                actionIndicatorsLink: buildPageUrl('/ibkr_indicators.html'),
                 actionRuntimeLink: buildPageUrl('/ibkr_runtime.html'),
                 actionMonitorLink: buildPageUrl('/ibkr_monitor.html'),
                 actionConfigLink: buildPageUrl('/ibkr_config.html', {}, { allowGlobal: true }),
-                actionBacktestsLink: buildPageUrl('/ibkr_backtests.html'),
-                marketPanelLink: buildPageUrl('/ibkr_indicators.html'),
+                marketPanelLink: buildPageUrl('/ibkr_chart.html'),
                 activityPanelLink: buildPageUrl('/ibkr_signals.html')
             };
 

@@ -11,7 +11,7 @@ SRC_ROOT = REPO_ROOT / "runtime" / "ibkr_compute" / "src"
 
 
 ORDER_FLOW_DEFAULTS = {
-    "ibkr_order_flow_enabled": "true",
+    "ibkr_order_flow_enabled": "false",
     "ibkr_order_flow_mode": "enforce",
     "ibkr_order_flow_active_limit": "3",
     "ibkr_order_flow_execution_pool_size": "3",
@@ -113,13 +113,13 @@ def _seed_config_values() -> dict[str, tuple[str, str]]:
     return {key: (value, default_value) for key, value, default_value in rows}
 
 
-def test_order_flow_defaults_enable_paper_enforce_with_hard_stop_guard() -> None:
+def test_order_flow_defaults_disable_local_confirmation_but_keep_hard_stop_guard() -> None:
     Config, _ = _load_config_modules()
 
     for key, expected in ORDER_FLOW_DEFAULTS.items():
         assert Config.DEFAULTS[key] == expected
 
-    assert Config().get_bool("ibkr_order_flow_enabled", False) is True
+    assert Config().get_bool("ibkr_order_flow_enabled", True) is False
     assert Config().get_for_environment("ibkr_order_flow_mode", "live") == "enforce"
     assert Config().get_bool("signal_manual_confirm_enabled", True) is False
     assert Config().get_bool("never_widen_stop_by_order_flow", False) is True

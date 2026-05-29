@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import threading
 import time
 from datetime import datetime
 
@@ -551,76 +550,44 @@ class TradingServiceStartupMixin:
             startup_ok = True
             self._start_host_resource_monitor()
             self.session_keeper.start()
-            self._signal_thread = threading.Thread(
-                target=self._signal_loop,
-                daemon=True,
-                name="signal-loop",
-            )
-            self._signal_thread.start()
-            self._subscription_thread = threading.Thread(
-                target=self._subscription_refresh_loop,
-                daemon=True,
-                name="target-refresh",
-            )
-            self._subscription_thread.start()
-            self._active_repair_thread = threading.Thread(
-                target=self._active_repair_loop,
-                daemon=True,
-                name="active-repair",
-            )
-            self._active_repair_thread.start()
-            self._watchlist_backfill_thread = threading.Thread(
-                target=self._watchlist_backfill_loop,
-                daemon=True,
-                name="watchlist-backfill",
-            )
-            self._watchlist_backfill_thread.start()
-            self._compute_thread = threading.Thread(
-                target=self._compute_loop,
-                daemon=True,
-                name="close-compute",
-            )
-            self._compute_thread.start()
-            self._official_close_thread = threading.Thread(
-                target=self._official_5m_close_loop,
-                daemon=True,
-                name="official-5m-close",
-            )
-            self._official_close_thread.start()
-            self._direct_topup_thread = threading.Thread(
-                target=self._runtime_direct_topup_loop,
-                daemon=True,
-                name="direct-history-topup",
-            )
-            self._direct_topup_thread.start()
-            self._bar_close_thread = threading.Thread(
-                target=self._bar_close_loop,
-                daemon=True,
-                name="bar-close-guard",
-            )
-            self._bar_close_thread.start()
-            self._warmup_thread = threading.Thread(
-                target=self._warmup_loop,
-                daemon=True,
-                name="runtime-warmup",
-            )
-            self._warmup_thread.start()
+            started_threads = self._start_runtime_background_threads()
+            slim_mode = self._runtime_slim_mode_enabled()
+            if slim_mode:
+                self._open_slim_runtime_gate()
+                service_mod.logger.info(
+                    "IBKR Runtime slim mode enabled; skipped local technical pipeline threads"
+                )
             self._sync_startup_progress(
                 action="update",
                 title="IBKR Runtime 启动中",
-                summary="核心线程已启动，正在进入 Warmup / 预检修复 / 历史回补。",
-                current_step="warmup",
-                current_blocker="等待 Warmup、预检修复与历史回补完成",
-                operator_action="等待 warmup 线程推进预检修复与交易门开放",
+                summary=(
+                    "Slim 核心线程已启动，已跳过本地技术链。"
+                    if slim_mode
+                    else "核心线程已启动，正在进入 Warmup / 预检修复 / 历史回补。"
+                ),
+                current_step="trading_gate" if slim_mode else "warmup",
+                current_blocker="Slim 模式不等待本地 Warmup" if slim_mode else "等待 Warmup、预检修复与历史回补完成",
+                operator_action=(
+                    "可继续观察 TV 信号路由、目标刷新与订单链路"
+                    if slim_mode
+                    else "等待 warmup 线程推进预检修复与交易门开放"
+                ),
                 steps={
                     "core_threads": {
                         "status": "done",
-                        "detail": "WebSocket、订单链路与后台线程已启动。",
+                        "detail": f"已启动线程: {', '.join(started_threads)}",
                     },
-                    "warmup": {
-                        "status": "running",
-                        "detail": "正在执行 Warmup、预检修复与历史回补。",
-                    },
+                    ("trading_gate" if slim_mode else "warmup"): (
+                        {
+                            "status": "done",
+                            "detail": "Slim 模式仅保留信号路由、目标刷新、Session/订单/资源线程。",
+                        }
+                        if slim_mode
+                        else {
+                            "status": "running",
+                            "detail": "正在执行 Warmup、预检修复与历史回补。",
+                        }
+                    ),
                 },
                 fields=self._build_startup_progress_fields(reason, source, trigger_login),
                 reason=reason,
@@ -630,7 +597,18 @@ class TradingServiceStartupMixin:
 
             self._schedule_retention()
 
-            if not self._active_subscription_symbols:
+            if slim_mode:
+                self._complete_startup_success(
+                    "IBKR Runtime 启动完成（Slim / TV-primary）",
+                    {
+                        "Runtime模式": "slim",
+                        "信号来源": self._runtime_signal_source_mode(),
+                        "本地技术链": "skipped",
+                        "MarketTick处理": "quote_book_only",
+                        "交易门": "open",
+                    },
+                )
+            elif not self._active_subscription_symbols:
                 self._complete_startup_success(
                     "IBKR Runtime 启动完成（无活动标的）",
                     {
@@ -642,9 +620,12 @@ class TradingServiceStartupMixin:
                         "交易门": "closed",
                     },
                 )
-            service_mod.logger.info(
-                "IBKR Trading Service core components started; waiting for warmup readiness"
-            )
+            if slim_mode:
+                service_mod.logger.info("IBKR Trading Service slim core components started")
+            else:
+                service_mod.logger.info(
+                    "IBKR Trading Service core components started; waiting for warmup readiness"
+                )
         except Exception as exc:
             startup_exit_notice = {
                 "event_type": "alert",

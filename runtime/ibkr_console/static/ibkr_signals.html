@@ -631,7 +631,7 @@
                 legacyTopSection.innerHTML = renderPageTopSection({
                     kicker: 'TV Primary',
                     title: 'TradingView 信号执行台',
-                    copy: 'TV 负责 bar / 指标 / 回测 / 图表；本系统负责 webhook 审计、人工确认、IBKR 执行和保护兜底。',
+                    copy: 'TradingView 负责策略事件；本系统只展示 webhook -> 确认 -> IBKR 执行 -> TP/SL 保护闭环。',
                     metaHtml: `
                         <span class="status-chip"><span class="dot" style="color:#4FD1C5"></span>${escapeHtml(getEnvironmentLabel(currentBrokerMode))}</span>
                         <span class="status-chip"><span class="dot" style="color:#63B3ED"></span>${escapeHtml(getEnvironmentLabel(currentEnvironment))}</span>
@@ -1420,7 +1420,7 @@
                 {
                     label: 'Webhook 入库',
                     value: formatLatency(latest.barIngestDelayMs || 0),
-                    copy: 'TradingView bar 时间到系统接收写入',
+                    copy: 'TradingView 事件到系统接收写入',
                     tone: resolveLatencyTone('ingest', latest.barIngestDelayMs || 0),
                 },
                 {
@@ -1438,7 +1438,7 @@
                 <section class="pipeline-strip-shell">
                     <div class="pipeline-strip-head">
                         <div class="pipeline-strip-scope">
-                            <div class="pipeline-strip-kicker">Pipeline Status</div>
+                            <div class="pipeline-strip-kicker">TV -> IBKR Execution Loop</div>
                             <div class="pipeline-strip-title">${escapeHtml(scopeLabel)}</div>
                             <div class="pipeline-strip-subtitle">${escapeHtml(scopeSubtitle)}</div>
                         </div>
@@ -2622,6 +2622,32 @@
                 return;
             }
 
+            function buildTvExecutionContextHtml(signal) {
+                const extra = getSignalExtra(signal);
+                const sourceText = String(extra.signal_source || extra.source || signal?.source || '').toLowerCase();
+                const hasTvContext = sourceText.includes('tradingview') || sourceText === 'tv' || Boolean(extra.tv_event_id || extra.event_type || extra.position_id || extra.tv_snapshot);
+                if (!hasTvContext) return '';
+                const items = [
+                    ['event', extra.event_type || extra.tv_event_type || 'entry'],
+                    ['script', signal.script_tag || extra.script_tag],
+                    ['version', extra.strategy_version || extra.script_version || extra.version],
+                    ['timeframe', extra.timeframe_stack || signal.chart_tf || signal.interval],
+                    ['position', extra.position_id],
+                    ['tv_event_id', extra.tv_event_id],
+                ].filter(([, value]) => String(value || '').trim());
+                if (!items.length) return '';
+                return `
+                    <div class="tv-execution-context" aria-label="TradingView execution context">
+                        <div class="tv-execution-kicker">TradingView payload context</div>
+                        <div class="tv-execution-chips">
+                            ${items.map(([label, value]) => `
+                                <span class="tv-execution-chip"><b>${escapeHtml(label)}</b>${escapeHtml(String(value))}</span>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+
             container.innerHTML = filtered.map(signal => {
                 const directionIcon = signal.direction === 'long' ? '📈' : '📉';
                 const directionClass = signal.direction === 'long' ? 'long' : 'short';
@@ -2724,6 +2750,7 @@
                 const protectionAlertHtml = buildProtectionIncompletePanel(signal);
                 const orderButtonClass = isProtectionIncomplete ? ' btn-protection' : '';
                 const orderButtonText = isProtectionIncomplete ? '🚨 订单处理' : '📋 订单';
+                const tvExecutionContextHtml = buildTvExecutionContextHtml(signal);
 
                 return `
                     <div class="signal-card${isSelected ? ' selected' : ''}${isProtectionIncomplete ? ' protection-incomplete' : ''}" data-signal-id="${escapeHtml(signal.signal_id || '')}" style="${selectedStyle}">
@@ -2773,15 +2800,15 @@
                                 <div class="signal-value">${escapeHtml(sharesAmountText)}</div>
                             </div>
                             <div class="signal-item">
-                                <div class="signal-label">bar 收盘</div>
+                                <div class="signal-label">TV 事件时间</div>
                                 <div class="signal-value">${escapeHtml(formatEventTime(closeTimeMs))}</div>
                             </div>
                             <div class="signal-item">
-                                <div class="signal-label">信号写入耗时</div>
+                                <div class="signal-label">Webhook 入库耗时</div>
                                 <div class="signal-value">${escapeHtml(formatLatency(signalWriteDelayMs))}</div>
                             </div>
                             <div class="signal-item">
-                                <div class="signal-label">计算标记耗时</div>
+                                <div class="signal-label">路由标记耗时</div>
                                 <div class="signal-value">${escapeHtml(formatLatency(computeMarkedDelayMs))}</div>
                             </div>
                             <div class="signal-item">
@@ -2798,6 +2825,7 @@
                             </div>
                         </div>
 
+                        ${tvExecutionContextHtml}
                         ${shouldShowSignalNote(signal.note) ? `<div class="signal-note signal-note-highlight"><strong>📋 备注:</strong> ${escapeHtml(signal.note)}</div>` : ''}
                         ${signal.reason ? `<div class="signal-note"><strong>📊 原因:</strong> ${escapeHtml(signal.reason)}</div>` : ''}
                         ${rejectionPanelHtml}

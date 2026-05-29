@@ -24,9 +24,8 @@ function renderNav(activePage) {
   const pages = [
     { path: '/index.html', icon: '🏠', label: '首页' },
     { path: '/ibkr_signals.html', aliases: ['/ibkr_signals.html', '/ibkr_reverse_signals.html', '/orders.html', '/ibkr_order_details.html', '/ibkr_lifecycle_flow.html', '/ibkr_trade_review.html', '/ibkr_account.html'], icon: '📡', label: '执行' },
-    { path: '/ibkr_screener.html', aliases: ['/ibkr_screener.html', '/ibkr_watchlist.html', '/ibkr_targets.html'], icon: '🔎', label: '标的' },
-    { path: '/ibkr_chart.html', aliases: ['/ibkr_chart.html', '/ibkr_indicators.html', '/ibkr_stats.html'], icon: '📈', label: '研究' },
-    { path: '/ibkr_backtests.html', icon: '🧪', label: '回测' },
+    { path: '/ibkr_screener.html', aliases: ['/ibkr_screener.html', '/ibkr_watchlist.html', '/ibkr_targets.html'], icon: '🎯', label: '目标' },
+    { path: '/ibkr_chart.html', aliases: ['/ibkr_chart.html', '/ibkr_indicators.html', '/ibkr_stats.html', '/ibkr_backtests.html'], icon: '📈', label: '图表' },
     {
       path: '/ibkr_system.html',
       aliases: [

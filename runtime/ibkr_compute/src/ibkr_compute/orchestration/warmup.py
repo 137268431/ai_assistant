@@ -608,6 +608,14 @@ class TradingServiceWarmupMixin:
         if not self.session_keeper.is_authenticated:
             return {"open": False, "reason": "session_unauthenticated"}
         state = self._copy_warmup_state()
+        slim_enabled = getattr(self, "_runtime_slim_mode_enabled", None)
+        if callable(slim_enabled) and slim_enabled() and state.get("trading_gate_open"):
+            return {
+                "open": True,
+                "reason": str(state.get("trading_gate_reason") or "runtime_slim_mode"),
+                "phase": state.get("phase"),
+                "source": "runtime_slim_mode",
+            }
         current = self._trade_readiness_from_current_compute(state)
         if current and current.get("open"):
             return {

@@ -98,9 +98,8 @@
       const pages = [
         { path: '/index.html', icon: '🏠', label: '首页' },
         { path: '/ibkr_signals.html', aliases: ['/ibkr_signals.html', '/ibkr_reverse_signals.html', '/orders.html', '/ibkr_order_details.html', '/ibkr_lifecycle_flow.html', '/ibkr_trade_review.html', '/ibkr_account.html'], icon: '📡', label: '执行' },
-        { path: '/ibkr_screener.html', aliases: ['/ibkr_screener.html', '/ibkr_watchlist.html', '/ibkr_targets.html'], icon: '🔎', label: '标的' },
-        { path: '/ibkr_chart.html', aliases: ['/ibkr_chart.html', '/ibkr_indicators.html', '/ibkr_stats.html'], icon: '📈', label: '研究' },
-        { path: '/ibkr_backtests.html', icon: '🧪', label: '回测' },
+        { path: '/ibkr_screener.html', aliases: ['/ibkr_screener.html', '/ibkr_watchlist.html', '/ibkr_targets.html'], icon: '🎯', label: '目标' },
+        { path: '/ibkr_chart.html', aliases: ['/ibkr_chart.html', '/ibkr_indicators.html', '/ibkr_stats.html', '/ibkr_backtests.html'], icon: '📈', label: '图表' },
         { path: '/ibkr_system.html', aliases: ['/ibkr_system.html', '/ibkr_monitor.html', '/ibkr_warmup.html', '/ibkr_data_quality.html', '/ibkr_history_rebuild.html', '/ibkr_system_logic.html', '/ibkr_runtime.html', '/ibkr_config.html'], icon: '🖥️', label: '系统' }
       ];
       return `
@@ -138,8 +137,7 @@
     renderAnalyticsBridge(activePage, options = {}) {
       const chartParams = options && typeof options.chartParams === 'object' && options.chartParams ? options.chartParams : {};
       return global.renderPageBridge([
-        { path: '/ibkr_indicators.html', kicker: 'Indicators', label: '指标列表', copy: '快览 / 指标', active: activePage === '/ibkr_indicators.html' },
-        { path: '/ibkr_chart.html', params: chartParams, kicker: 'Chart', label: '图表工作台', copy: '图表 / 信号', active: activePage === '/ibkr_chart.html' },
+        { path: '/ibkr_chart.html', params: chartParams, kicker: 'Chart', label: '图表工作台', copy: 'TV 图表 / 信号', active: activePage === '/ibkr_chart.html' },
         { path: '/ibkr_stats.html', kicker: 'Stats', label: '统计', copy: '收益 / 执行', active: activePage === '/ibkr_stats.html' }
       ]);
     },
@@ -147,8 +145,7 @@
       return global.renderPageBridge([
         { path: '/ibkr_signals.html', kicker: 'Execution', label: '执行域', copy: '信号 / 订单' },
         { path: '/ibkr_screener.html', params: { tab: 'screener', view: 'current' }, kicker: 'Targets', label: '标的域', copy: '筛选 / 标池' },
-        { path: '/ibkr_chart.html', kicker: 'Research', label: '研究域', copy: '图表 / 统计' },
-        { path: '/ibkr_backtests.html', kicker: 'Backtest', label: '回测域', copy: '回放 / 验证' },
+        { path: '/ibkr_chart.html', kicker: 'Chart', label: '图表域', copy: 'TV 图表 / 统计' },
         { path: '/ibkr_system_logic.html', kicker: 'Logic', label: '逻辑', copy: '代码规则 / 调度' },
         { path: '/ibkr_system.html', kicker: 'System', label: '系统域', copy: '总览 / 运维 / 配置' }
       ]);

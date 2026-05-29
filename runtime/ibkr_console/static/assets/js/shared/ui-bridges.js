@@ -124,18 +124,11 @@ function renderAnalyticsBridge(activePage, options = {}) {
 
   return renderPageBridge([
     {
-      path: '/ibkr_indicators.html',
-      kicker: 'Indicators',
-      label: '指标列表',
-      copy: '快览 / 指标',
-      active: activePage === '/ibkr_indicators.html'
-    },
-    {
       path: '/ibkr_chart.html',
       params: chartParams,
       kicker: 'Chart',
       label: '图表工作台',
-      copy: '图表 / 信号',
+      copy: 'TV 图表 / 信号',
       active: activePage === '/ibkr_chart.html'
     },
     {
@@ -165,15 +158,9 @@ function renderHomeBridge() {
     },
     {
       path: '/ibkr_chart.html',
-      kicker: 'Research',
-      label: '研究域',
-      copy: '图表 / 统计'
-    },
-    {
-      path: '/ibkr_backtests.html',
-      kicker: 'Backtest',
-      label: '回测域',
-      copy: '回放 / 验证'
+      kicker: 'Chart',
+      label: '图表域',
+      copy: 'TV 图表 / 统计'
     },
     {
       path: '/ibkr_system_logic.html',
@@ -237,7 +224,7 @@ function renderBacktestsBridge(activePage) {
       path: '/ibkr_chart.html',
       kicker: 'Chart',
       label: '图表工作台',
-      copy: 'bars / 指标',
+      copy: 'TV 图表 / 信号',
       active: activePage === '/ibkr_chart.html'
     },
     {

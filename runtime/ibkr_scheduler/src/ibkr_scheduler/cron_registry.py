@@ -85,6 +85,21 @@ def _definition(
         "runner_kind": runner_kind,
     }
 
+TECHNICAL_PIPELINE_CRON_IDS: set[str] = {
+    "ibkr_compute_runtime",
+    "ibkr_scan_runtime",
+    "ibkr_fundamentals_refresh",
+    "ibkr_active_window_progress_status",
+    "ibkr_early_expansion_topup",
+    "ibkr_intraday_window_admission",
+    "system_data_gap_guard",
+    "ibkr_data_quality_repair_sweep",
+    "ibkr_data_quality_truth_audit_cycle",
+    "ibkr_tv_indicator_audit",
+}
+TECHNICAL_PIPELINE_CONFIG_KEY = "ibkr_runtime_technical_pipeline_enabled"
+TV_PRIMARY_RUNTIME_SLIM_CONFIG_KEY = "ibkr_tv_primary_runtime_slim_enabled"
+
 
 CRON_DEFINITIONS: list[dict[str, Any]] = [
     _definition(
@@ -148,6 +163,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         hook_file="ibkr_system_monitor.pb.js",
         runner_kind="native_compute_dispatch",
         mode_scope="market_data",
+        default_value="FALSE",
         family="compute_dispatch",
     ),
     _definition(
@@ -163,6 +179,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         hook_file="ibkr_system_monitor.pb.js",
         runner_kind="native_api_http",
         mode_scope="market_data",
+        default_value="FALSE",
         family="system_monitor",
     ),
     _definition(
@@ -231,6 +248,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         runner_kind="native_http",
         mode_scope="market_data",
         cron_timezone="America/New_York",
+        default_value="FALSE",
         family="target_universe",
         schedules=[
             _schedule(
@@ -264,6 +282,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         runner_kind="native_api_http",
         mode_scope="market_data",
         cron_timezone="America/New_York",
+        default_value="FALSE",
         family="target_universe",
     ),
     _definition(
@@ -283,6 +302,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         runner_kind="native_api_http",
         mode_scope="market_data",
         cron_timezone="America/New_York",
+        default_value="FALSE",
         family="target_universe",
         schedules=[
             _schedule(
@@ -328,6 +348,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         runner_kind="native_api_http",
         mode_scope="market_data",
         cron_timezone="America/New_York",
+        default_value="FALSE",
         family="target_universe",
         schedules=[
             _schedule(
@@ -374,6 +395,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         runner_kind="native_api_http",
         mode_scope="market_data",
         cron_timezone="America/New_York",
+        default_value="FALSE",
         family="target_universe",
     ),
     _definition(
@@ -419,6 +441,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         hook_file="ibkr_system_monitor.pb.js",
         runner_kind="native_api_http",
         mode_scope="market_data",
+        default_value="FALSE",
         family="system_monitor",
     ),
     _definition(
@@ -434,6 +457,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         hook_file="ibkr_system_monitor.pb.js",
         runner_kind="native_http",
         mode_scope="market_data",
+        default_value="FALSE",
         family="data_quality",
         schedules=[
             _schedule("open_sweep", "40 9 * * 1-5", label="工作日 UTC 09:40"),
@@ -462,6 +486,7 @@ CRON_DEFINITIONS: list[dict[str, Any]] = [
         runner_kind="native_http",
         mode_scope="market_data",
         cron_timezone="America/New_York",
+        default_value="FALSE",
         family="data_quality",
         schedules=[
             _schedule(
@@ -764,12 +789,38 @@ def _schedule_description(definition: dict[str, Any]) -> str:
     return "；".join(parts)
 
 
+def _environment_config_bool(config: Any, key: str, environment: str, default: str) -> tuple[str, bool]:
+    raw = str(config.get_for_environment(key, environment, default) or default)
+    return raw, is_truthy_config_value(raw, default)
+
+
+def _is_technical_pipeline_cron(definition: dict[str, Any]) -> bool:
+    return str((definition or {}).get("id") or "").strip() in TECHNICAL_PIPELINE_CRON_IDS
+
+
 def build_effective_cron_definition(definition: dict[str, Any], config, environment: str, job_state: dict[str, Any] | None = None) -> dict[str, Any]:
     runtime_environment = str(environment or "live").strip().lower() or "live"
     scheduler_raw = str(config.get_for_environment("pb_scheduler_enabled", runtime_environment, "TRUE") or "TRUE")
     cron_raw = _definition_config_value(definition, config, runtime_environment)
+    technical_pipeline_raw, technical_pipeline_enabled = _environment_config_bool(
+        config,
+        TECHNICAL_PIPELINE_CONFIG_KEY,
+        runtime_environment,
+        "FALSE",
+    )
+    tv_primary_runtime_slim_raw, tv_primary_runtime_slim_enabled = _environment_config_bool(
+        config,
+        TV_PRIMARY_RUNTIME_SLIM_CONFIG_KEY,
+        runtime_environment,
+        "TRUE",
+    )
     scheduler_enabled = is_truthy_config_value(scheduler_raw)
     cron_enabled = is_truthy_config_value(cron_raw, definition["default_value"])
+    technical_pipeline_cron = _is_technical_pipeline_cron(definition)
+    technical_pipeline_allowed = (
+        not technical_pipeline_cron
+        or (technical_pipeline_enabled and not tv_primary_runtime_slim_enabled)
+    )
     state = job_state if isinstance(job_state, dict) else {}
     schedules = definition.get("schedules") if isinstance(definition.get("schedules"), list) else []
     return {
@@ -777,9 +828,15 @@ def build_effective_cron_definition(definition: dict[str, Any], config, environm
         "environment": runtime_environment,
         "scheduler_raw": scheduler_raw,
         "cron_raw": cron_raw,
+        "technical_pipeline_raw": technical_pipeline_raw,
+        "technical_pipeline_enabled": technical_pipeline_enabled,
+        "technical_pipeline_cron": technical_pipeline_cron,
+        "technical_pipeline_allowed": technical_pipeline_allowed,
+        "tv_primary_runtime_slim_raw": tv_primary_runtime_slim_raw,
+        "tv_primary_runtime_slim_enabled": tv_primary_runtime_slim_enabled,
         "scheduler_enabled": scheduler_enabled,
         "cron_enabled": cron_enabled,
-        "effective_enabled": scheduler_enabled and cron_enabled,
+        "effective_enabled": scheduler_enabled and cron_enabled and technical_pipeline_allowed,
         "job_state": state,
         "schedule_count": len(schedules),
         "schedule_ids": [

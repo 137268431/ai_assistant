@@ -41,14 +41,14 @@
 
             <div class="status-bar" id="statusBar">
                 <div class="status-card">
-                    <div class="status-label">IBKR DATA</div>
+                    <div class="status-label">TV WEBHOOK</div>
                     <div class="status-value" id="dataStatus">
                         <div class="status-main"><span class="status-dot dot-gray"></span><span class="status-main-text">--</span></div>
                         <div class="status-sub is-empty">--</div>
                     </div>
                 </div>
                 <div class="status-card">
-                    <div class="status-label">IBKR COMPUTE</div>
+                    <div class="status-label">IBKR EXECUTION</div>
                     <div class="status-value" id="computeStatus">
                         <div class="status-main"><span class="status-dot dot-gray"></span><span class="status-main-text">--</span></div>
                         <div class="status-sub is-empty">--</div>
@@ -62,7 +62,7 @@
                     </div>
                 </div>
                 <div class="status-card">
-                    <div class="status-label">SCHEDULER</div>
+                    <div class="status-label">SUPPORTING OPS</div>
                     <div class="status-value" id="schedulerStatus">
                         <div class="status-main"><span class="status-dot dot-gray"></span><span class="status-main-text">--</span></div>
                         <div class="status-sub is-empty">--</div>
@@ -77,14 +77,14 @@
                 </div>
             </div>
 
-            <div class="section">
+            <div class="section legacy-diagnostics">
                 <div class="section-header">⏱ IBKR Scheduler</div>
                 <div class="section-body" id="schedulerArea">
                     <div class="loading-text">加载中...</div>
                 </div>
             </div>
 
-            <div class="section" id="todayStatsSection">
+            <div class="section legacy-diagnostics" id="todayStatsSection">
                 <div class="section-header">📊 今日统计</div>
                 <div class="section-body">
                     <div class="stats-mini" id="todayStats">
@@ -98,14 +98,14 @@
                 </div>
             </div>
 
-            <div class="section">
+            <div class="section legacy-diagnostics">
                 <div class="section-header">📡 数据延迟</div>
                 <div class="section-body" id="freshnessArea">
                     <div class="loading-text">加载中...</div>
                 </div>
             </div>
 
-            <div class="section">
+            <div class="section legacy-diagnostics">
                 <div class="section-header">
                     <span>🗄 Storage / Tables</span>
                     <span id="storageHealthMeta" style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace">--</span>
@@ -127,7 +127,7 @@
 
             <div class="overview-columns">
                 <div class="overview-column">
-                    <div class="section">
+                    <div class="section legacy-diagnostics">
                         <div class="section-header">
                             <span>⚙️ 计算引擎</span>
                             <span id="engineCount" style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace">--</span>
@@ -137,7 +137,7 @@
                         </div>
                     </div>
 
-                    <div class="section">
+                    <div class="section legacy-diagnostics">
                         <div class="section-header">
                             <span>🧪 最近回测统计</span>
                             <span id="backtestCount" style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace">--</span>
