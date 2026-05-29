@@ -61,6 +61,7 @@ preAlertThreshold = input.int(65, "Pre-alert activity score", minval=1, maxval=9
 allowLong = input.bool(true, "Allow long entries", group="07 TV Primary Events")
 allowShort = input.bool(true, "Allow short entries", group="07 TV Primary Events")
 useDtpFilter = input.bool(true, "Filter MR entries against DTP", group="07 TV Primary Events")
+dtpMrFilterMode = input.string("平衡：只挡初期", "DTP MR filter mode", options=["严格：挡初期+确认", "平衡：只挡初期", "关闭：不挡MR"], group="07 TV Primary Events")
 useEmaWeakFilter = input.bool(true, "Filter trend entries when EMA is weak", group="07 TV Primary Events")
 
 displayPreset = input.string("核心交易流程", "Display preset", options=["核心交易流程", "指标辅助", "调试全量"], group="08 Display")
@@ -203,6 +204,13 @@ componentSummaryForSetup(string setup, bool upperWindowReady, bool lowerWindowRe
     bool divReady = setupUsesBullSide(setup) ? bullDivReady : bearDivReady
     componentSummaryText(setup, windowReady, emaReady, fractalReady, divReady)
 
+componentProgressForSetup(string setup, bool upperWindowReady, bool lowerWindowReady, bool upperBullTouchReady, bool lowerBearTouchReady, bool upperBullFractalReady, bool lowerBullFractalReady, bool upperBearFractalReady, bool lowerBearFractalReady, bool bullDivReady, bool bearDivReady) =>
+    bool windowReady = setupUsesUpperWindow(setup) ? upperWindowReady : lowerWindowReady
+    bool emaReady = setup == "trend_sdUpper" ? upperBullTouchReady : setup == "trend_sdLower" ? lowerBearTouchReady : true
+    bool fractalReady = setup == "trend_sdUpper" ? upperBullFractalReady : setup == "mr_sdLower" ? lowerBullFractalReady : setup == "mr_sdUpper" ? upperBearFractalReady : lowerBearFractalReady
+    bool divReady = setupUsesBullSide(setup) ? bullDivReady : bearDivReady
+    str.tostring(componentReadyCount(setup, windowReady, emaReady, fractalReady, divReady), "#") + "/" + str.tostring(componentTotalCount(setup), "#")
+
 compactMissingText(string value) =>
     string missingText = value == "" or value == "none" ? "齐" : value
     missingText := str.replace_all(missingText, "upper_window", "上轨窗")
@@ -221,16 +229,30 @@ waitComponentText(string value) =>
     missingText == "齐" ? "组件齐" : "等 " + missingText
 
 filterDisplayName(string reason) =>
-    reason == "dtp_bearish_early_or_confirmed" ? "DTP偏空" : reason == "dtp_bullish_early_or_confirmed" ? "DTP偏多" : reason == "ema_weak" ? "EMA弱" : reason == "long_short_conflict" ? "多空冲突" : reason == "" ? "过滤" : reason
+    reason == "dtp_bearish_early" ? "DTP偏空初期" : reason == "dtp_bullish_early" ? "DTP偏多初期" : reason == "dtp_bearish_early_or_confirmed" ? "DTP偏空" : reason == "dtp_bullish_early_or_confirmed" ? "DTP偏多" : reason == "ema_weak" ? "EMA弱" : reason == "long_short_conflict" ? "多空冲突" : reason == "" ? "过滤" : reason
 
 filterActionText(string reason, string direction) =>
-    reason == "dtp_bearish_early_or_confirmed" ? "DTP偏空，等转中性/多" : reason == "dtp_bullish_early_or_confirmed" ? "DTP偏多，等转中性/空" : reason == "ema_weak" ? "EMA偏弱，等快慢线走强" : reason == "long_short_conflict" ? "多空冲突，等单边明确" : reason == "" ? "过滤" + directionDisplayName(direction) + "，等条件恢复" : filterDisplayName(reason)
+    reason == "dtp_bearish_early" ? "DTP偏空初期，等过初期" : reason == "dtp_bullish_early" ? "DTP偏多初期，等过初期" : reason == "dtp_bearish_early_or_confirmed" ? "DTP偏空，等转弱/中性/多" : reason == "dtp_bullish_early_or_confirmed" ? "DTP偏多，等转弱/中性/空" : reason == "ema_weak" ? "EMA偏弱，等快慢线走强" : reason == "long_short_conflict" ? "多空冲突，等单边明确" : reason == "" ? "过滤" + directionDisplayName(direction) + "，等条件恢复" : filterDisplayName(reason)
 
 dtpPhaseDisplayName(string phase) =>
     phase == "early" ? "初期" : phase == "confirmed" ? "确认" : phase == "mature" ? "成熟" : phase == "weakening" ? "转弱" : "中性"
 
+dtpStateText(int direction, string phase) =>
+    (direction == 1 ? "DTP偏多" : direction == -1 ? "DTP偏空" : "DTP中性") + " · " + dtpPhaseDisplayName(phase)
+
+dtpMrBlocksPhase(string mode, string phase) =>
+    mode == "关闭：不挡MR" ? false : mode == "严格：挡初期+确认" ? (phase == "early" or phase == "confirmed") : phase == "early"
+
+dtpBlockReasonText(string direction, string mode) =>
+    direction == "long" ? (mode == "严格：挡初期+确认" ? "dtp_bearish_early_or_confirmed" : "dtp_bearish_early") : (mode == "严格：挡初期+确认" ? "dtp_bullish_early_or_confirmed" : "dtp_bullish_early")
+
+dtpEntryFilterText(string direction, int dtpDirection, string phase, string mode, bool enabled) =>
+    string stateText = dtpStateText(dtpDirection, phase)
+    bool adverse = direction == "long" ? dtpDirection == -1 : dtpDirection == 1
+    not enabled or mode == "关闭：不挡MR" ? stateText + " · DTP不拦" : adverse and mode == "平衡：只挡初期" ? stateText + " · 已过初期放行" : adverse and phase == "weakening" ? stateText + " · 转弱放行" : stateText
+
 flowLabelColor(string state, string direction) =>
-    state == "activate_lower" ? color.new(color.lime, 0) : state == "activate_upper" ? color.new(color.orange, 0) : state == "blocked" ? color.new(color.gray, 0) : direction == "short" ? color.new(color.red, 0) : color.new(color.green, 0)
+    state == "activate_lower" or state == "activate_upper" ? color.new(color.blue, 0) : state == "blocked" ? color.new(color.gray, 0) : direction == "short" ? color.new(color.red, 0) : color.new(color.green, 0)
 
 flowLabelStyle(string direction) =>
     direction == "short" ? label.style_label_down : label.style_label_up
@@ -556,18 +578,18 @@ string shortReason = setupShortMrUpper ? "SD upper mean-reversion short: bear fr
 bool emaWeak = math.abs(calcSlope(emaFast, emaSlopeLookback)) < emaMinAngle or math.abs(slopeSlow) < emaMinAngle or not spacingOk
 bool blockLong = false
 string blockLongReason = ""
-if useDtpFilter and setupLongMrLower and dtpDir == -1 and (dtpPhase == "early" or dtpPhase == "confirmed")
+if useDtpFilter and setupLongMrLower and dtpDir == -1 and dtpMrBlocksPhase(dtpMrFilterMode, dtpPhase)
     blockLong := true
-    blockLongReason := "dtp_bearish_early_or_confirmed"
+    blockLongReason := dtpBlockReasonText("long", dtpMrFilterMode)
 else if useEmaWeakFilter and setupLongTrendUpper and emaWeak
     blockLong := true
     blockLongReason := "ema_weak"
 
 bool blockShort = false
 string blockShortReason = ""
-if useDtpFilter and setupShortMrUpper and dtpDir == 1 and (dtpPhase == "early" or dtpPhase == "confirmed")
+if useDtpFilter and setupShortMrUpper and dtpDir == 1 and dtpMrBlocksPhase(dtpMrFilterMode, dtpPhase)
     blockShort := true
-    blockShortReason := "dtp_bullish_early_or_confirmed"
+    blockShortReason := dtpBlockReasonText("short", dtpMrFilterMode)
 else if useEmaWeakFilter and setupShortTrendLower and emaWeak
     blockShort := true
     blockShortReason := "ema_weak"
@@ -766,6 +788,7 @@ if enableAlerts and preAlertCross
     alert(buildPreAlertPayload(eventId("pre_alert", candidateSetup), pendingId), alert.freq_all)
 
 string candidateComponentText = componentSummaryForSetup(candidateSetup, upperWindowValid, lowerWindowValid, upperBullTouchSeen, lowerBearTouchSeen, upperBullFractalSeen, lowerBullFractalSeen, upperBearFractalSeen, lowerBearFractalSeen, bullDivSeen, bearDivSeen)
+string candidateProgressText = componentProgressForSetup(candidateSetup, upperWindowValid, lowerWindowValid, upperBullTouchSeen, lowerBearTouchSeen, upperBullFractalSeen, lowerBullFractalSeen, upperBearFractalSeen, lowerBearFractalSeen, bullDivSeen, bearDivSeen)
 string candidateWaitText = waitComponentText(missingComponents)
 var string lastPrepareVisualKey = ""
 var string lastBlockVisualKey = ""
@@ -774,17 +797,17 @@ if isNewTradingDay
     lastBlockVisualKey := ""
 
 if showFlowLabels and confirmed and lowerActivationEvent
-    label.new(bar_index, low - atrVal * 1.8, "激活 " + syminfo.ticker + "\nSD下轨观察窗\n候选: 回归多/顺势空", style=label.style_label_up, color=flowLabelColor("activate_lower", "long"), textcolor=color.white, size=size.small)
+    label.new(bar_index, low - atrVal * 1.4, "激活观察窗\n" + syminfo.ticker + " · SD下轨\n非开仓点，等组件", style=label.style_label_up, color=flowLabelColor("activate_lower", "long"), textcolor=color.white, size=size.small)
 
 if showFlowLabels and confirmed and upperActivationEvent
-    label.new(bar_index, high + atrVal * 1.8, "激活 " + syminfo.ticker + "\nSD上轨观察窗\n候选: 回归空/顺势多", style=label.style_label_down, color=flowLabelColor("activate_upper", "short"), textcolor=color.white, size=size.small)
+    label.new(bar_index, high + atrVal * 1.4, "激活观察窗\n" + syminfo.ticker + " · SD上轨\n非开仓点，等组件", style=label.style_label_down, color=flowLabelColor("activate_upper", "short"), textcolor=color.white, size=size.small)
 
 bool observeNow = preAlertNow
 bool prepareVisualNow = showFlowLabels and observeNow
 string prepareVisualKey = activityGrade + ":" + candidateDirection + ":" + candidateSetup + ":" + missingComponents + ":" + str.tostring(activityScore, "#")
 if prepareVisualNow and prepareVisualKey != lastPrepareVisualKey
     float prepareY = candidateDirection == "short" ? high + atrVal * 2.4 : low - atrVal * 2.4
-    string prepareText = "观察" + directionDisplayName(candidateDirection) + "\n原因: " + setupDisplayName(candidateSetup) + "\n组件: " + candidateComponentText + "\n" + candidateWaitText
+    string prepareText = "观察" + directionDisplayName(candidateDirection) + "\n" + setupDisplayName(candidateSetup) + "\n组件: " + candidateProgressText + "\n下一步: " + candidateWaitText
     label.new(bar_index, prepareY, prepareText, style=flowLabelStyle(candidateDirection), color=color.new(color.orange, 0), textcolor=color.white, size=size.normal)
     lastPrepareVisualKey := prepareVisualKey
 if not prepareVisualNow and activityScore == 0
@@ -797,8 +820,8 @@ string blockedSetup = blockedDirection == "long" ? longSetup : shortSetup
 string blockedReason = conflict ? "long_short_conflict" : blockedDirection == "long" ? blockLongReason : blockShortReason
 string blockedVisualKey = blockedDirection + ":" + blockedSetup + ":" + blockedReason
 if blockedVisualNow and blockedVisualKey != lastBlockVisualKey
-    float blockedY = blockedDirection == "short" ? high + atrVal * 2.9 : low - atrVal * 2.9
-    string blockedText = "过滤" + directionDisplayName(blockedDirection) + "\n原因: " + setupDisplayName(blockedSetup) + "\n组件齐\n" + filterActionText(blockedReason, blockedDirection)
+    float blockedY = blockedDirection == "short" ? high + atrVal * 4.0 : low - atrVal * 4.0
+    string blockedText = "过滤" + directionDisplayName(blockedDirection) + "\n" + setupDisplayName(blockedSetup) + "\n组件齐，未开仓\n" + filterActionText(blockedReason, blockedDirection)
     label.new(bar_index, blockedY, blockedText, style=flowLabelStyle(blockedDirection), color=flowLabelColor("blocked", blockedDirection), textcolor=color.white, size=size.small)
     lastBlockVisualKey := blockedVisualKey
 if not blockedNow and not longRaw and not shortRaw
@@ -826,7 +849,7 @@ if enterLong
         strategy.entry("TV-L", strategy.long, qty=qty, comment=entryComment("long", longSetup))
         strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment="平多 · TP/SL")
         if showFlowLabels
-            label.new(bar_index, low - atrVal * 3.1, "买入做多\n" + setupDisplayName(longSetup) + "\n组件齐 + DTP放行\nentry " + str.tostring(entryPrice, "#.##"), style=label.style_label_up, color=flowLabelColor("entry", "long"), textcolor=color.white, size=size.normal)
+            label.new(bar_index, low - atrVal * 3.1, "买入做多\n" + setupDisplayName(longSetup) + "\n组件齐 + 过滤通过\n" + dtpEntryFilterText("long", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\nentry " + str.tostring(entryPrice, "#.##"), style=label.style_label_up, color=flowLabelColor("entry", "long"), textcolor=color.white, size=size.normal)
         lowerWindowUsed := setupLongMrLower ? true : lowerWindowUsed
         upperWindowUsed := setupLongTrendUpper ? true : upperWindowUsed
         bullDivSeen := false
@@ -859,7 +882,7 @@ if enterShort
         strategy.entry("TV-S", strategy.short, qty=qty, comment=entryComment("short", shortSetup))
         strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment="平空 · TP/SL")
         if showFlowLabels
-            label.new(bar_index, high + atrVal * 3.1, "卖出做空\n" + setupDisplayName(shortSetup) + "\n组件齐 + DTP放行\nentry " + str.tostring(entryPrice, "#.##"), style=label.style_label_down, color=flowLabelColor("entry", "short"), textcolor=color.white, size=size.normal)
+            label.new(bar_index, high + atrVal * 3.1, "卖出做空\n" + setupDisplayName(shortSetup) + "\n组件齐 + 过滤通过\n" + dtpEntryFilterText("short", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\nentry " + str.tostring(entryPrice, "#.##"), style=label.style_label_down, color=flowLabelColor("entry", "short"), textcolor=color.white, size=size.normal)
         upperWindowUsed := setupShortMrUpper ? true : upperWindowUsed
         lowerWindowUsed := setupShortTrendLower ? true : lowerWindowUsed
         bearDivSeen := false
@@ -919,8 +942,8 @@ string statusDirection = activeDirection == -1 ? "做空" : activeDirection == 1
 string statusText = activePositionId != "" ? "持仓 " + statusDirection : enterLong ? "买入做多" : enterShort ? "卖出做空" : blockedNow ? "过滤" + directionDisplayName(blockedDirection) : observeNow ? "观察" + directionDisplayName(candidateDirection) : lowerWindowValid or upperWindowValid ? "窗口激活" : "等待"
 color statusColor = activePositionId != "" ? flowLabelColor("entry", activeDirection == -1 ? "short" : "long") : blockedNow ? flowLabelColor("blocked", blockedDirection) : observeNow ? color.new(color.orange, 0) : lowerWindowValid ? flowLabelColor("activate_lower", "long") : upperWindowValid ? flowLabelColor("activate_upper", "short") : color.new(color.gray, 20)
 string statusSetup = activePositionId != "" ? setupDisplayName(activeSetup) : blockedNow ? setupDisplayName(blockedSetup) : activityScore > 0 ? setupDisplayName(candidateSetup) : "--"
-string statusComponents = activePositionId != "" ? "组件齐 + DTP放行" : blockedNow ? "组件齐 · " + filterActionText(blockedReason, blockedDirection) : activityScore > 0 ? candidateComponentText : "--"
-string statusDtp = (dtpDir == 1 ? "偏多" : dtpDir == -1 ? "偏空" : "中性") + " · " + dtpPhaseDisplayName(dtpPhase)
+string statusComponents = activePositionId != "" ? "组件齐 + 过滤通过" : blockedNow ? "组件齐 · " + filterActionText(blockedReason, blockedDirection) : activityScore > 0 ? candidateProgressText + " · " + candidateWaitText : "--"
+string statusDtp = dtpStateText(dtpDir, dtpPhase)
 string statusRisk = activePositionId != "" ? "TP " + str.tostring(activeTarget, "#.##") + " / SL " + str.tostring(activeStop, "#.##") : "--"
 if confirmed
     if showStatusPanel
