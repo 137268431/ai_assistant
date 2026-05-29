@@ -181,7 +181,7 @@ class TradingViewIngestTest(unittest.TestCase):
         handlers = tv_routes.register_tradingview_routes(
             _FakeApp(),
             deps={
-                "process_tv_primary_event": lambda payload: calls.append(payload) or ({"ok": True, "type": "entry"}, 200),
+                "process_tv_primary_event": lambda payload, **_kwargs: calls.append(payload) or ({"ok": True, "type": "entry"}, 200),
                 "config_value": lambda key, default, environment: "TRUE",
                 "parse_boolean": lambda value, default: default if value is None else str(value).upper() == "TRUE",
             },
@@ -206,7 +206,7 @@ class TradingViewIngestTest(unittest.TestCase):
         handlers = tv_routes.register_tradingview_routes(
             _FakeApp(),
             deps={
-                "process_tv_primary_event": lambda payload: calls.append(payload) or ({"ok": True, "type": "entry"}, 200),
+                "process_tv_primary_event": lambda payload, **_kwargs: calls.append(payload) or ({"ok": True, "type": "entry"}, 200),
                 "config_value": config_value,
                 "parse_boolean": lambda value, default: default if value is None else str(value).upper() == "TRUE",
             },
@@ -224,7 +224,7 @@ class TradingViewIngestTest(unittest.TestCase):
         handlers = tv_routes.register_tradingview_routes(
             _FakeApp(),
             deps={
-                "process_tv_primary_event": lambda payload: ({"ok": False, "error": "bad"}, 400),
+                "process_tv_primary_event": lambda payload, **_kwargs: ({"ok": False, "error": "bad"}, 400),
                 "config_value": lambda key, default, environment: "TRUE",
                 "parse_boolean": lambda value, default: default if value is None else str(value).upper() == "TRUE",
             },

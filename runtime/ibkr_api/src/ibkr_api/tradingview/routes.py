@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from flask import Response, jsonify, request
@@ -18,6 +19,7 @@ def register_tradingview_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
 
     @app.route("/webhook/tv", methods=["POST"])
     def webhook_tv() -> Response:
+        api_received_at_ms = int(time.time() * 1000)
         payload = request.get_json(silent=True) or {}
         environment = request_market_data_mode(payload)
         enabled_value = config_value(WEBHOOK_INGEST_CONFIG_KEY, "TRUE", environment)
@@ -31,7 +33,7 @@ def register_tradingview_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
                 }
             )
 
-        result, status_code = process_tv_primary_event(payload)
+        result, status_code = process_tv_primary_event(payload, api_received_at_ms=api_received_at_ms)
         response = jsonify(result)
         return response if status_code == 200 else (response, status_code)
     exports["webhook_tv"] = webhook_tv

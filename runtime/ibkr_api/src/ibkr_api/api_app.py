@@ -983,10 +983,11 @@ globals().update(_platform_route_handlers)
 _callback_toast = _callback_toast_support
 
 
-def _process_tv_primary_event(payload: dict):
+def _process_tv_primary_event(payload: dict, *, api_received_at_ms: int | None = None):
     return _process_tv_primary_event_support(
         pb,
         payload=payload,
+        api_received_at_ms=api_received_at_ms,
         normalize_environment=_normalize_environment,
         escape_filter_string=_escape_filter_string,
         build_signal_ingest_response=build_signal_ingest_response,

@@ -63,9 +63,21 @@ allowShort = input.bool(true, "Allow short entries", group="07 TV Primary Events
 useDtpFilter = input.bool(true, "Filter MR entries against DTP", group="07 TV Primary Events")
 useEmaWeakFilter = input.bool(true, "Filter trend entries when EMA is weak", group="07 TV Primary Events")
 
+displayPreset = input.string("核心交易流程", "Display preset", options=["核心交易流程", "指标辅助", "调试全量"], group="08 Display")
+showFlowLabels = input.bool(true, "Show activation/prep/entry labels", group="08 Display")
+showStatusPanel = input.bool(true, "Show status panel", group="08 Display")
 showBands = input.bool(true, "Show SD bands", group="08 Display")
-showEma = input.bool(true, "Show EMAs", group="08 Display")
-showMarkers = input.bool(true, "Show setup markers", group="08 Display")
+showDtpLine = input.bool(true, "Show DTP trend line", group="08 Display")
+showEma = input.bool(true, "Show EMA fast/slow", group="08 Display")
+showDebugComponents = input.bool(false, "Show SD/F/D component markers", group="08 Display")
+
+bool displayIndicatorMode = displayPreset == "指标辅助"
+bool displayDebugMode = displayPreset == "调试全量"
+bool showEmaFastSlowLines = showEma or displayIndicatorMode or displayDebugMode
+bool showEmaContextLines = displayIndicatorMode or displayDebugMode
+bool showBandLines = showBands or displayIndicatorMode or displayDebugMode
+bool showDtpTrendLine = showDtpLine or displayIndicatorMode or displayDebugMode
+bool showComponentMarkers = showDebugComponents or displayDebugMode
 
 bool confirmed = barstate.isconfirmed
 bool inSession = not na(time(timeframe.period, tradingSession, syminfo.timezone))
@@ -91,6 +103,9 @@ jsonNum(string key, float value) =>
 jsonInt(string key, int value) =>
     ',"' + key + '":' + str.tostring(value, "#")
 
+jsonIntNullable(string key, int value) =>
+    ',"' + key + '":' + (na(value) ? "null" : str.tostring(value, "#"))
+
 jsonBool(string key, bool value) =>
     ',"' + key + '":' + boolText(value)
 
@@ -111,7 +126,11 @@ basePayload(string eventType, string eventIdValue, string positionIdValue) =>
      jsonStr("strategy_version", STRATEGY_VERSION) +
      jsonStr("script_tag", SCRIPT_TAG) +
      jsonStr("timeframe_stack", TIMEFRAME_STACK) +
+     jsonStr("interval", timeframe.period) +
      ',"bar_time_ms":' + str.tostring(time, "#") +
+     jsonIntNullable("bar_open_ms", time) +
+     jsonIntNullable("bar_close_ms", time_close) +
+     jsonIntNullable("pine_eval_ms", timenow) +
      jsonStr("symbol", syminfo.ticker) +
      jsonStr("tickerid", syminfo.tickerid) +
      jsonStr("exchange", syminfo.prefix) +
@@ -133,6 +152,36 @@ calcSlope(float source, int len) =>
 
 priceChanged(float oldValue, float newValue) =>
     na(oldValue) or na(newValue) ? true : math.abs(oldValue - newValue) >= syminfo.mintick
+
+setupDisplayName(string setup) =>
+    setup == "trend_sdUpper" ? "上轨顺势多" : setup == "mr_sdLower" ? "下轨回归多" : setup == "mr_sdUpper" ? "上轨回归空" : setup == "trend_sdLower" ? "下轨顺势空" : setup
+
+directionDisplayName(string direction) =>
+    direction == "short" ? "做空" : "做多"
+
+entryComment(string direction, string setup) =>
+    direction == "short" ? "SELL 空 · " + setup : "BUY 多 · " + setup
+
+compactMissingText(string value) =>
+    string missingText = value == "" or value == "none" ? "齐" : value
+    missingText := str.replace_all(missingText, "upper_window", "上轨窗")
+    missingText := str.replace_all(missingText, "lower_window", "下轨窗")
+    missingText := str.replace_all(missingText, "ema_bull_touch", "多EMA")
+    missingText := str.replace_all(missingText, "ema_bear_touch", "空EMA")
+    missingText := str.replace_all(missingText, "bull_fractal", "多F")
+    missingText := str.replace_all(missingText, "bear_fractal", "空F")
+    missingText := str.replace_all(missingText, "bull_divergence", "多背")
+    missingText := str.replace_all(missingText, "bear_divergence", "空背")
+    missingText
+
+filterDisplayName(string reason) =>
+    reason == "dtp_bearish_early_or_confirmed" ? "DTP偏空" : reason == "dtp_bullish_early_or_confirmed" ? "DTP偏多" : reason == "ema_weak" ? "EMA弱" : reason == "long_short_conflict" ? "多空冲突" : reason == "" ? "过滤" : reason
+
+flowLabelColor(string state, string direction) =>
+    state == "activate_lower" ? color.new(color.lime, 0) : state == "activate_upper" ? color.new(color.orange, 0) : state == "blocked" ? color.new(color.gray, 0) : direction == "short" ? color.new(color.red, 0) : color.new(color.green, 0)
+
+flowLabelStyle(string direction) =>
+    direction == "short" ? label.style_label_down : label.style_label_up
 
 // -----------------------------------------------------------------------------
 // Core indicators
@@ -661,6 +710,41 @@ if enableAlerts and preAlertCross
     string pendingId = "pending_" + candidateDirection + "_" + str.tostring(time, "#") + "_" + str.tostring(bar_index, "#")
     alert(buildPreAlertPayload(eventId("pre_alert", candidateSetup), pendingId), alert.freq_all)
 
+var string lastPrepareVisualKey = ""
+var string lastBlockVisualKey = ""
+if isNewTradingDay
+    lastPrepareVisualKey := ""
+    lastBlockVisualKey := ""
+
+if showFlowLabels and confirmed and sdLowerHit
+    label.new(bar_index, low - atrVal * 1.8, "激活 " + syminfo.ticker + "\n下轨窗口", style=label.style_label_up, color=flowLabelColor("activate_lower", "long"), textcolor=color.white, size=size.small)
+
+if showFlowLabels and confirmed and sdUpperHit
+    label.new(bar_index, high + atrVal * 1.8, "激活 " + syminfo.ticker + "\n上轨窗口", style=label.style_label_down, color=flowLabelColor("activate_upper", "short"), textcolor=color.white, size=size.small)
+
+bool prepareVisualNow = showFlowLabels and preAlertNow
+string prepareVisualKey = activityGrade + ":" + candidateDirection + ":" + candidateSetup
+if prepareVisualNow and prepareVisualKey != lastPrepareVisualKey
+    float prepareY = candidateDirection == "short" ? high + atrVal * 2.4 : low - atrVal * 2.4
+    string prepareText = "准备" + directionDisplayName(candidateDirection) + "\n" + setupDisplayName(candidateSetup) + "\nscore " + str.tostring(activityScore, "#") + " 缺 " + compactMissingText(missingComponents)
+    label.new(bar_index, prepareY, prepareText, style=flowLabelStyle(candidateDirection), color=color.new(color.orange, 0), textcolor=color.white, size=size.normal)
+    lastPrepareVisualKey := prepareVisualKey
+if not prepareVisualNow and activityScore == 0
+    lastPrepareVisualKey := ""
+
+bool blockedVisualNow = showFlowLabels and canTrade and flatForEntry and ((longRaw and (blockLong or conflict)) or (shortRaw and (blockShort or conflict)))
+string blockedDirection = longRaw and (blockLong or candidateDirection == "long") ? "long" : "short"
+string blockedSetup = blockedDirection == "long" ? longSetup : shortSetup
+string blockedReason = conflict ? "long_short_conflict" : blockedDirection == "long" ? blockLongReason : blockShortReason
+string blockedVisualKey = blockedDirection + ":" + blockedSetup + ":" + blockedReason
+if blockedVisualNow and blockedVisualKey != lastBlockVisualKey
+    float blockedY = blockedDirection == "short" ? high + atrVal * 2.9 : low - atrVal * 2.9
+    string blockedText = "过滤" + directionDisplayName(blockedDirection) + "\n" + setupDisplayName(blockedSetup) + "\n" + filterDisplayName(blockedReason)
+    label.new(bar_index, blockedY, blockedText, style=flowLabelStyle(blockedDirection), color=flowLabelColor("blocked", blockedDirection), textcolor=color.white, size=size.small)
+    lastBlockVisualKey := blockedVisualKey
+if not blockedVisualNow and not longRaw and not shortRaw
+    lastBlockVisualKey := ""
+
 if enterLong
     float entryPrice = close
     float qty = calcQty(entryPrice)
@@ -680,8 +764,10 @@ if enterLong
         activeEntryBar := bar_index
         activeBreakevenDone := false
         string divSourceForEntry = bullDivSource == "" ? bullDivSourceNow : bullDivSource
-        strategy.entry("TV-L", strategy.long, qty=qty, comment=longSetup)
-        strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment="tv_risk")
+        strategy.entry("TV-L", strategy.long, qty=qty, comment=entryComment("long", longSetup))
+        strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment="平多 · TP/SL")
+        if showFlowLabels
+            label.new(bar_index, low - atrVal * 3.1, "买入做多\n" + setupDisplayName(longSetup) + "\nentry " + str.tostring(entryPrice, "#.##"), style=label.style_label_up, color=flowLabelColor("entry", "long"), textcolor=color.white, size=size.normal)
         lowerWindowUsed := setupLongMrLower ? true : lowerWindowUsed
         upperWindowUsed := setupLongTrendUpper ? true : upperWindowUsed
         bullDivSeen := false
@@ -711,8 +797,10 @@ if enterShort
         activeEntryBar := bar_index
         activeBreakevenDone := false
         string divSourceForEntry = bearDivSource == "" ? bearDivSourceNow : bearDivSource
-        strategy.entry("TV-S", strategy.short, qty=qty, comment=shortSetup)
-        strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment="tv_risk")
+        strategy.entry("TV-S", strategy.short, qty=qty, comment=entryComment("short", shortSetup))
+        strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment="平空 · TP/SL")
+        if showFlowLabels
+            label.new(bar_index, high + atrVal * 3.1, "卖出做空\n" + setupDisplayName(shortSetup) + "\nentry " + str.tostring(entryPrice, "#.##"), style=label.style_label_down, color=flowLabelColor("entry", "short"), textcolor=color.white, size=size.normal)
         upperWindowUsed := setupShortMrUpper ? true : upperWindowUsed
         lowerWindowUsed := setupShortTrendLower ? true : lowerWindowUsed
         bearDivSeen := false
@@ -738,31 +826,69 @@ if confirmed and activePositionId != "" and strategy.position_size != 0 and enab
 
 if activePositionId != ""
     if activeDirection == 1
-        strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment="tv_risk")
+        strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment="平多 · TP/SL")
     if activeDirection == -1
-        strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment="tv_risk")
+        strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment="平空 · TP/SL")
 
 // -----------------------------------------------------------------------------
 // Visuals
 // -----------------------------------------------------------------------------
-plot(showEma ? emaFast : na, "EMA 20", color=color.new(color.teal, 0))
-plot(showEma ? emaSlow : na, "EMA 50", color=color.new(color.orange, 0))
-plot(showEma ? emaTrend : na, "EMA 100", color=color.new(color.blue, 35))
-plot(showEma ? emaLongest : na, "EMA 200", color=color.new(color.gray, 35))
-plot(showBands ? sdReg : na, "SD regression", color=color.new(color.white, 25))
-plot(showBands ? sdSignalUpper : na, "SD signal upper", color=color.new(color.red, 30))
-plot(showBands ? sdSignalLower : na, "SD signal lower", color=color.new(color.green, 30))
-plot(showBands ? sdFilterUpper : na, "SD filter upper", color=color.new(color.red, 75))
-plot(showBands ? sdFilterLower : na, "SD filter lower", color=color.new(color.green, 75))
+color dtpLineColor = dtpDir == 1 ? color.new(color.aqua, 0) : dtpDir == -1 ? color.new(color.red, 0) : color.new(color.gray, 25)
+plot(showEmaFastSlowLines ? emaFast : na, "EMA 20 快线", color=color.new(color.teal, 0))
+plot(showEmaFastSlowLines ? emaSlow : na, "EMA 50 慢线", color=color.new(color.orange, 0))
+plot(showEmaContextLines ? emaTrend : na, "EMA 100 趋势", color=color.new(color.blue, 35))
+plot(showEmaContextLines ? emaLongest : na, "EMA 200 长线", color=color.new(color.gray, 35))
+plot(showDtpTrendLine ? dtpAvg : na, "DTP 趋势线", color=dtpLineColor, linewidth=2)
+plot(showBandLines ? sdReg : na, "SD regression", color=color.new(color.white, 25))
+plot(showBandLines ? sdSignalUpper : na, "SD signal upper", color=color.new(color.red, 30))
+plot(showBandLines ? sdSignalLower : na, "SD signal lower", color=color.new(color.green, 30))
+plot(showBandLines ? sdFilterUpper : na, "SD filter upper", color=color.new(color.red, 75))
+plot(showBandLines ? sdFilterLower : na, "SD filter lower", color=color.new(color.green, 75))
 
-plotshape(showMarkers and sdLowerHit, "SD lower hit", location=location.belowbar, style=shape.triangleup, color=color.new(color.green, 0), size=size.tiny, text="SD-L")
-plotshape(showMarkers and sdUpperHit, "SD upper hit", location=location.abovebar, style=shape.triangledown, color=color.new(color.orange, 0), size=size.tiny, text="SD-U")
-plotshape(showMarkers and fractalBull, "Fractal bull", location=location.belowbar, style=shape.circle, color=color.new(color.aqua, 0), size=size.tiny, text="F+")
-plotshape(showMarkers and fractalBear, "Fractal bear", location=location.abovebar, style=shape.circle, color=color.new(color.fuchsia, 0), size=size.tiny, text="F-")
-plotshape(showMarkers and bullDivNow, "Bull divergence", location=location.belowbar, style=shape.diamond, color=color.new(color.lime, 0), size=size.tiny, text="D+")
-plotshape(showMarkers and bearDivNow, "Bear divergence", location=location.abovebar, style=shape.diamond, color=color.new(color.red, 0), size=size.tiny, text="D-")
-plotshape(showMarkers and enterLong, "TV entry long", location=location.belowbar, style=shape.labelup, color=color.new(color.green, 0), textcolor=color.white, size=size.small, text="TV LONG")
-plotshape(showMarkers and enterShort, "TV entry short", location=location.abovebar, style=shape.labeldown, color=color.new(color.red, 0), textcolor=color.white, size=size.small, text="TV SHORT")
+plotshape(showComponentMarkers and sdLowerHit, "SD lower hit", location=location.belowbar, style=shape.triangleup, color=color.new(color.green, 0), size=size.tiny, text="SD-L")
+plotshape(showComponentMarkers and sdUpperHit, "SD upper hit", location=location.abovebar, style=shape.triangledown, color=color.new(color.orange, 0), size=size.tiny, text="SD-U")
+plotshape(showComponentMarkers and fractalBull, "Fractal bull", location=location.belowbar, style=shape.circle, color=color.new(color.aqua, 0), size=size.tiny, text="F+")
+plotshape(showComponentMarkers and fractalBear, "Fractal bear", location=location.abovebar, style=shape.circle, color=color.new(color.fuchsia, 0), size=size.tiny, text="F-")
+plotshape(showComponentMarkers and bullDivNow, "Bull divergence", location=location.belowbar, style=shape.diamond, color=color.new(color.lime, 0), size=size.tiny, text="D+")
+plotshape(showComponentMarkers and bearDivNow, "Bear divergence", location=location.abovebar, style=shape.diamond, color=color.new(color.red, 0), size=size.tiny, text="D-")
 
-plot(activePositionId != "" ? activeStop : na, "Active stop", color=color.new(color.red, 0), style=plot.style_linebr, linewidth=2)
-plot(activePositionId != "" ? activeTarget : na, "Active target", color=color.new(color.green, 0), style=plot.style_linebr, linewidth=2)
+plot(activePositionId != "" ? activeStop : na, "SL 止损", color=color.new(color.red, 0), style=plot.style_linebr, linewidth=2)
+plot(activePositionId != "" ? activeTarget : na, "TP 目标", color=color.new(color.green, 0), style=plot.style_linebr, linewidth=2)
+
+var table flowStatus = table.new(position.top_right, 2, 7, border_width=1)
+string statusDirection = activeDirection == -1 ? "做空" : activeDirection == 1 ? "做多" : activityScore > 0 ? directionDisplayName(candidateDirection) : "--"
+string statusText = activePositionId != "" ? "持仓 " + statusDirection : enterLong ? "买入做多" : enterShort ? "卖出做空" : blockedVisualNow ? "过滤" + directionDisplayName(blockedDirection) : prepareVisualNow ? "准备" + directionDisplayName(candidateDirection) : lowerWindowValid or upperWindowValid ? "窗口激活" : "等待"
+color statusColor = activePositionId != "" ? flowLabelColor("entry", activeDirection == -1 ? "short" : "long") : blockedVisualNow ? flowLabelColor("blocked", blockedDirection) : prepareVisualNow ? color.new(color.orange, 0) : lowerWindowValid ? flowLabelColor("activate_lower", "long") : upperWindowValid ? flowLabelColor("activate_upper", "short") : color.new(color.gray, 20)
+string statusSetup = activePositionId != "" ? setupDisplayName(activeSetup) : activityScore > 0 ? setupDisplayName(candidateSetup) : "--"
+string statusRisk = activePositionId != "" ? "TP " + str.tostring(activeTarget, "#.##") + " / SL " + str.tostring(activeStop, "#.##") : "--"
+if confirmed
+    if showStatusPanel
+        table.cell(flowStatus, 0, 0, "流程", bgcolor=statusColor, text_color=color.white)
+        table.cell(flowStatus, 1, 0, statusText, bgcolor=color.new(color.black, 0), text_color=color.white)
+        table.cell(flowStatus, 0, 1, "标的", bgcolor=color.new(color.black, 15), text_color=color.white)
+        table.cell(flowStatus, 1, 1, syminfo.ticker + " · " + timeframe.period, bgcolor=color.new(color.black, 15), text_color=color.white)
+        table.cell(flowStatus, 0, 2, "方向", bgcolor=color.new(color.black, 15), text_color=color.white)
+        table.cell(flowStatus, 1, 2, statusDirection, bgcolor=color.new(color.black, 15), text_color=color.white)
+        table.cell(flowStatus, 0, 3, "Setup", bgcolor=color.new(color.black, 15), text_color=color.white)
+        table.cell(flowStatus, 1, 3, statusSetup, bgcolor=color.new(color.black, 15), text_color=color.white)
+        table.cell(flowStatus, 0, 4, "Score", bgcolor=color.new(color.black, 15), text_color=color.white)
+        table.cell(flowStatus, 1, 4, str.tostring(activityScore, "#") + " · 缺 " + compactMissingText(missingComponents), bgcolor=color.new(color.black, 15), text_color=color.white)
+        table.cell(flowStatus, 0, 5, "DTP", bgcolor=color.new(color.black, 15), text_color=color.white)
+        table.cell(flowStatus, 1, 5, (dtpDir == 1 ? "多" : dtpDir == -1 ? "空" : "中性") + " · " + dtpPhase, bgcolor=color.new(color.black, 15), text_color=color.white)
+        table.cell(flowStatus, 0, 6, "退出", bgcolor=color.new(color.black, 15), text_color=color.white)
+        table.cell(flowStatus, 1, 6, statusRisk, bgcolor=color.new(color.black, 15), text_color=color.white)
+    else
+        table.cell(flowStatus, 0, 0, "", bgcolor=color.new(color.black, 100), text_color=color.new(color.white, 100))
+        table.cell(flowStatus, 1, 0, "", bgcolor=color.new(color.black, 100), text_color=color.new(color.white, 100))
+        table.cell(flowStatus, 0, 1, "", bgcolor=color.new(color.black, 100), text_color=color.new(color.white, 100))
+        table.cell(flowStatus, 1, 1, "", bgcolor=color.new(color.black, 100), text_color=color.new(color.white, 100))
+        table.cell(flowStatus, 0, 2, "", bgcolor=color.new(color.black, 100), text_color=color.new(color.white, 100))
+        table.cell(flowStatus, 1, 2, "", bgcolor=color.new(color.black, 100), text_color=color.new(color.white, 100))
+        table.cell(flowStatus, 0, 3, "", bgcolor=color.new(color.black, 100), text_color=color.new(color.white, 100))
+        table.cell(flowStatus, 1, 3, "", bgcolor=color.new(color.black, 100), text_color=color.new(color.white, 100))
+        table.cell(flowStatus, 0, 4, "", bgcolor=color.new(color.black, 100), text_color=color.new(color.white, 100))
+        table.cell(flowStatus, 1, 4, "", bgcolor=color.new(color.black, 100), text_color=color.new(color.white, 100))
+        table.cell(flowStatus, 0, 5, "", bgcolor=color.new(color.black, 100), text_color=color.new(color.white, 100))
+        table.cell(flowStatus, 1, 5, "", bgcolor=color.new(color.black, 100), text_color=color.new(color.white, 100))
+        table.cell(flowStatus, 0, 6, "", bgcolor=color.new(color.black, 100), text_color=color.new(color.white, 100))
+        table.cell(flowStatus, 1, 6, "", bgcolor=color.new(color.black, 100), text_color=color.new(color.white, 100))

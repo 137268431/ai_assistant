@@ -515,6 +515,9 @@ if alertEnabled and confirmed
          ',"us_time":"' + usTime + '"' +
          ',"cn_time":"' + cnTime + '"' +
          ',"bar_time_ms":' + str.tostring(time, "#") +
+         ',"bar_open_ms":' + str.tostring(time, "#") +
+         ',"bar_close_ms":' + (na(time_close) ? "null" : str.tostring(time_close, "#")) +
+         ',"pine_eval_ms":' + (na(timenow) ? "null" : str.tostring(timenow, "#")) +
          ',"bar_index":' + str.tostring(bar_index, "#") +
          ',"extra":{' +
               '"open":' + jsonFloat(open, "#.####") +

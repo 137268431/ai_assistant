@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from ibkr_api.modes import request_broker_mode, request_market_data_mode
@@ -51,6 +52,34 @@ def _int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _epoch_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _timestamp_ms(value: Any) -> int:
+    if value in (None, ""):
+        return 0
+    try:
+        number = float(value)
+        if number > 1_000_000_000_000:
+            return int(number)
+        if number > 1_000_000_000:
+            return int(number * 1000)
+        return int(number)
+    except Exception:
+        pass
+    text = _text(value)
+    if not text:
+        return 0
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        return 0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp() * 1000)
+
+
 def _as_object(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return dict(value)
@@ -61,6 +90,155 @@ def _as_object(value: Any) -> dict[str, Any]:
             return {}
         return dict(parsed) if isinstance(parsed, dict) else {}
     return {}
+
+
+def _interval_text(payload: dict[str, Any]) -> str:
+    extra = _as_object(payload.get("extra"))
+    return _text(
+        payload.get("interval")
+        or payload.get("chart_tf")
+        or payload.get("entry_tf")
+        or payload.get("timeframe")
+        or payload.get("timeframe_stack")
+        or extra.get("interval")
+        or extra.get("chart_tf")
+        or extra.get("timeframe")
+        or extra.get("timeframe_stack")
+    )
+
+
+def _interval_ms(value: Any) -> int:
+    text = _text(value).lower()
+    if text.startswith("chart="):
+        text = text.split("=", 1)[1].strip()
+    if not text:
+        return 0
+    multipliers = {
+        "s": 1000,
+        "m": 60 * 1000,
+        "h": 60 * 60 * 1000,
+        "d": 24 * 60 * 60 * 1000,
+        "w": 7 * 24 * 60 * 60 * 1000,
+    }
+    if text in {"d", "1d", "day"}:
+        return multipliers["d"]
+    if text in {"w", "1w", "week"}:
+        return multipliers["w"]
+    suffix = text[-1:]
+    if suffix in multipliers:
+        amount = _float(text[:-1] or 1, 0.0)
+        return int(amount * multipliers[suffix]) if amount > 0 else 0
+    amount = _float(text, 0.0)
+    return int(amount * multipliers["m"]) if amount > 0 else 0
+
+
+def _payload_bar_open_ms(payload: dict[str, Any]) -> int:
+    extra = _as_object(payload.get("extra"))
+    return (
+        _timestamp_ms(payload.get("bar_open_ms"))
+        or _timestamp_ms(payload.get("bar_time_ms"))
+        or _timestamp_ms(payload.get("time_ms"))
+        or _timestamp_ms(payload.get("time"))
+        or _timestamp_ms(extra.get("bar_open_ms"))
+        or _timestamp_ms(extra.get("bar_time_ms"))
+    )
+
+
+def _payload_bar_close_ms(payload: dict[str, Any]) -> int:
+    extra = _as_object(payload.get("extra"))
+    explicit = (
+        _timestamp_ms(payload.get("bar_close_ms"))
+        or _timestamp_ms(payload.get("time_close_ms"))
+        or _timestamp_ms(payload.get("time_close"))
+        or _timestamp_ms(extra.get("bar_close_ms"))
+        or _timestamp_ms(extra.get("time_close_ms"))
+    )
+    if explicit:
+        return explicit
+    bar_open_ms = _payload_bar_open_ms(payload)
+    interval_ms = _interval_ms(_interval_text(payload))
+    return bar_open_ms + interval_ms if bar_open_ms > 0 and interval_ms > 0 else 0
+
+
+def _payload_pine_eval_ms(payload: dict[str, Any]) -> int:
+    extra = _as_object(payload.get("extra"))
+    return (
+        _timestamp_ms(payload.get("pine_eval_ms"))
+        or _timestamp_ms(payload.get("script_eval_ms"))
+        or _timestamp_ms(payload.get("timenow_ms"))
+        or _timestamp_ms(payload.get("timenow"))
+        or _timestamp_ms(payload.get("tv_fire_ms"))
+        or _timestamp_ms(payload.get("tv_fire_time"))
+        or _timestamp_ms(extra.get("pine_eval_ms"))
+        or _timestamp_ms(extra.get("timenow"))
+    )
+
+
+def _duration_ms(start_ms: int, end_ms: int) -> int | None:
+    if start_ms > 0 and end_ms > 0 and end_ms >= start_ms:
+        return int(end_ms - start_ms)
+    return None
+
+
+def _latency_trace(
+    payload: dict[str, Any],
+    *,
+    api_received_at_ms: int | None = None,
+    pb_created_at_ms: int | None = None,
+    route_finished_at_ms: int | None = None,
+) -> dict[str, Any]:
+    interval = _interval_text(payload)
+    bar_open_ms = _payload_bar_open_ms(payload)
+    bar_close_ms = _payload_bar_close_ms(payload)
+    pine_eval_ms = _payload_pine_eval_ms(payload)
+    api_received_ms = _int(api_received_at_ms, 0)
+    pb_created_ms = _int(pb_created_at_ms, 0)
+    route_finished_ms = _int(route_finished_at_ms, 0)
+    trace: dict[str, Any] = {}
+    if interval:
+        trace["interval"] = interval
+    for key, value in (
+        ("bar_open_ms", bar_open_ms),
+        ("bar_close_ms", bar_close_ms),
+        ("pine_eval_ms", pine_eval_ms),
+        ("api_received_at_ms", api_received_ms),
+        ("pb_created_at_ms", pb_created_ms),
+        ("route_finished_at_ms", route_finished_ms),
+    ):
+        if value > 0:
+            trace[key] = value
+    trace["bar_close_to_pine_eval_ms"] = _duration_ms(bar_close_ms, pine_eval_ms)
+    trace["pine_eval_to_api_received_ms"] = _duration_ms(pine_eval_ms, api_received_ms)
+    trace["api_received_to_pb_created_ms"] = _duration_ms(api_received_ms, pb_created_ms)
+    trace["pb_created_to_route_finished_ms"] = _duration_ms(pb_created_ms, route_finished_ms)
+    trace["bar_close_to_route_finished_ms"] = _duration_ms(bar_close_ms, route_finished_ms)
+    return {key: value for key, value in trace.items() if value not in ("", None)}
+
+
+def _extra_with_latency_trace(
+    base_extra: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    api_received_at_ms: int | None = None,
+    pb_created_at_ms: int | None = None,
+    route_finished_at_ms: int | None = None,
+) -> dict[str, Any]:
+    extra = dict(base_extra or {})
+    trace = {
+        **_as_object(extra.get("latency_trace")),
+        **_latency_trace(
+            payload,
+            api_received_at_ms=api_received_at_ms,
+            pb_created_at_ms=pb_created_at_ms,
+            route_finished_at_ms=route_finished_at_ms,
+        ),
+    }
+    if trace:
+        extra["latency_trace"] = trace
+    for key in ("bar_open_ms", "bar_close_ms", "pine_eval_ms", "interval"):
+        if trace.get(key) not in (None, "", 0):
+            extra.setdefault(key, trace[key])
+    return extra
 
 
 def _escape(escape_filter: Callable[[Any], str], value: Any) -> str:
@@ -185,11 +363,17 @@ def _event_id(payload: dict[str, Any], *, event_type: str) -> str:
     return f"{script}:{symbol}:{event_type}:{side}:{bar_time_ms}"
 
 
-def _base_extra(payload: dict[str, Any], event_id: str, event_type: str) -> dict[str, Any]:
+def _base_extra(
+    payload: dict[str, Any],
+    event_id: str,
+    event_type: str,
+    *,
+    api_received_at_ms: int | None = None,
+) -> dict[str, Any]:
     extra = _as_object(payload.get("extra"))
     activity_score = _float(payload.get("activity_score"), 0.0)
     quality_score = _float(payload.get("quality_score"), activity_score)
-    return {
+    base = {
         **extra,
         "source": TRADINGVIEW_SOURCE,
         "tv_event_id": event_id,
@@ -205,9 +389,18 @@ def _base_extra(payload: dict[str, Any], event_id: str, event_type: str) -> dict
         "tv_snapshot": _as_object(payload.get("tv_snapshot")),
         "reason": _text(payload.get("reason") or extra.get("reason")),
     }
+    return _extra_with_latency_trace(base, payload, api_received_at_ms=api_received_at_ms)
 
 
-def _event_record_payload(payload: dict[str, Any], *, event_id: str, event_type: str, environment: str, broker_mode: str) -> dict[str, Any]:
+def _event_record_payload(
+    payload: dict[str, Any],
+    *,
+    event_id: str,
+    event_type: str,
+    environment: str,
+    broker_mode: str,
+    api_received_at_ms: int | None = None,
+) -> dict[str, Any]:
     direction = _lower(payload.get("direction") or payload.get("direction_bias") or payload.get("candidate_direction"))
     position_side = _lower(payload.get("position_side") or payload.get("direction"))
     return {
@@ -221,7 +414,7 @@ def _event_record_payload(payload: dict[str, Any], *, event_id: str, event_type:
         "environment": environment,
         "broker_mode": broker_mode,
         "date": _market_date(payload),
-        "bar_time_ms": _int(payload.get("bar_time_ms") or payload.get("time_ms"), 0),
+        "bar_time_ms": _payload_bar_open_ms(payload),
         "script_tag": _text(payload.get("script_tag")),
         "strategy_version": _text(payload.get("strategy_version")),
         "timeframe_stack": _text(payload.get("timeframe_stack")),
@@ -231,7 +424,7 @@ def _event_record_payload(payload: dict[str, Any], *, event_id: str, event_type:
         "route_record_id": "",
         "error_msg": "",
         "payload": dict(payload),
-        "extra": _base_extra(payload, event_id, event_type),
+        "extra": _base_extra(payload, event_id, event_type, api_received_at_ms=api_received_at_ms),
     }
 
 
@@ -253,6 +446,22 @@ def _patch_event(pb: Any, event: dict[str, Any] | None, patch: dict[str, Any]) -
         pb.update_record(TV_EVENT_COLLECTION, str(event.get("id")), patch)
     except Exception:
         pass
+
+
+def _event_extra_with_final_latency(
+    event: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    api_received_at_ms: int,
+    route_finished_at_ms: int,
+) -> dict[str, Any]:
+    return _extra_with_latency_trace(
+        _as_object((event or {}).get("extra")),
+        payload,
+        api_received_at_ms=api_received_at_ms,
+        pb_created_at_ms=_timestamp_ms((event or {}).get("created")),
+        route_finished_at_ms=route_finished_at_ms,
+    )
 
 
 def _load_target(pb: Any, *, symbol: str, date: str, environment: str, escape_filter: Callable[[Any], str]) -> dict[str, Any] | None:
@@ -607,6 +816,7 @@ def process_tv_primary_event(
     pb: Any,
     payload: dict[str, Any],
     *,
+    api_received_at_ms: int | None = None,
     normalize_environment: Callable[[Any, str], str],
     escape_filter_string: Callable[[Any], str],
     build_signal_ingest_response: Callable[..., tuple[dict[str, Any], int]],
@@ -616,6 +826,7 @@ def process_tv_primary_event(
     signal_chat_id_fn: Callable[[str], str] | None = None,
     console_base_url: str = "",
 ) -> tuple[dict[str, Any], int]:
+    received_at_ms = _int(api_received_at_ms, 0) or _epoch_ms()
     data = dict(payload or {})
     if not _source_is_tv(data):
         return {"ok": False, "error": "invalid_source", "source": data.get("source")}, 400
@@ -638,10 +849,27 @@ def process_tv_primary_event(
             "id": existing.get("route_record_id") or existing.get("id"),
         }, 200
 
-    event = pb.create_record(
-        TV_EVENT_COLLECTION,
-        _event_record_payload(data, event_id=event_id, event_type=event_type, environment=environment, broker_mode=broker_mode),
-    )
+    try:
+        event = pb.create_record(
+            TV_EVENT_COLLECTION,
+            _event_record_payload(
+                data,
+                event_id=event_id,
+                event_type=event_type,
+                environment=environment,
+                broker_mode=broker_mode,
+                api_received_at_ms=received_at_ms,
+            ),
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": "tv_event_persist_failed",
+            "detail": str(exc),
+            "retryable": True,
+            "tv_event_id": event_id,
+            "event_type": event_type,
+        }, 503
     event = dict(event) if isinstance(event, dict) else {}
     try:
         if event_type == "heartbeat":
@@ -701,6 +929,7 @@ def process_tv_primary_event(
             "quality_score_too_low_for_late_window",
         }:
             event_status = "rejected"
+        route_finished_at_ms = _epoch_ms()
         _patch_event(
             pb,
             event,
@@ -709,14 +938,48 @@ def process_tv_primary_event(
                 "route_target": _text(route_payload.get("target")),
                 "route_record_id": _text(route_payload.get("id")),
                 "error_msg": _text(route_payload.get("error") or route_payload.get("reason")),
+                "extra": _event_extra_with_final_latency(
+                    event,
+                    data,
+                    api_received_at_ms=received_at_ms,
+                    route_finished_at_ms=route_finished_at_ms,
+                ),
             },
         )
         return {**route_payload, "tv_event_id": event_id, "event_type": event_type}, status_code
     except TvPrimaryError as exc:
-        _patch_event(pb, event, {"status": "rejected", "error_msg": exc.reason})
+        route_finished_at_ms = _epoch_ms()
+        _patch_event(
+            pb,
+            event,
+            {
+                "status": "rejected",
+                "error_msg": exc.reason,
+                "extra": _event_extra_with_final_latency(
+                    event,
+                    data,
+                    api_received_at_ms=received_at_ms,
+                    route_finished_at_ms=route_finished_at_ms,
+                ),
+            },
+        )
         return {"ok": False, "rejected": True, "reason": exc.reason, "tv_event_id": event_id, "event_type": event_type}, exc.status_code
     except Exception as exc:
-        _patch_event(pb, event, {"status": "failed", "error_msg": str(exc)})
+        route_finished_at_ms = _epoch_ms()
+        _patch_event(
+            pb,
+            event,
+            {
+                "status": "failed",
+                "error_msg": str(exc),
+                "extra": _event_extra_with_final_latency(
+                    event,
+                    data,
+                    api_received_at_ms=received_at_ms,
+                    route_finished_at_ms=route_finished_at_ms,
+                ),
+            },
+        )
         return {"ok": False, "error": str(exc), "tv_event_id": event_id, "event_type": event_type}, 500
 
 

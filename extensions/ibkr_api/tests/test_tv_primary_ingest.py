@@ -4,6 +4,7 @@ import sys
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest import mock
 
 
 SERVICE_SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_api" / "src"
@@ -81,6 +82,24 @@ class _FakePB:
         return rows
 
 
+class _LatencyFakePB(_FakePB):
+    def create_record(self, collection, data):
+        row = copy.deepcopy(data)
+        row.setdefault("id", self._next_id(collection))
+        if collection == TV_EVENT_COLLECTION:
+            row.setdefault("created", "2026-05-29 16:46:07.000Z")
+            row.setdefault("updated", "2026-05-29 16:46:07.000Z")
+        self.records.setdefault(collection, []).append(row)
+        return copy.deepcopy(row)
+
+
+class _FailingEventPB(_FakePB):
+    def create_record(self, collection, data):
+        if collection == TV_EVENT_COLLECTION:
+            raise RuntimeError("pb down")
+        return super().create_record(collection, data)
+
+
 def _escape(value):
     return str(value or "").replace("\\", "\\\\").replace('"', '\\"')
 
@@ -154,6 +173,63 @@ def _et_ms(text):
 
 
 class TvPrimaryIngestTests(unittest.TestCase):
+    def test_latency_trace_records_pine_api_pb_and_route_segments(self):
+        pb = _LatencyFakePB()
+        payload = {
+            "source": "tv",
+            "event_type": "pre_alert",
+            "event_id": "tv-latency-1",
+            "symbol": "RIO",
+            "direction_bias": "long",
+            "activity_score": 88,
+            "quality_score": 82,
+            "market_date": "2026-05-29",
+            "environment": "live",
+            "bar_time_ms": 1780073040000,
+            "bar_close_ms": 1780073160000,
+            "pine_eval_ms": 1780073161000,
+            "interval": "2",
+        }
+
+        with mock.patch("ibkr_api.tradingview.tv_primary._epoch_ms", return_value=1780073167025):
+            result, status_code = process_tv_primary_event(
+                pb,
+                payload,
+                api_received_at_ms=1780073166000,
+                normalize_environment=_normalize_environment,
+                escape_filter_string=_escape,
+                build_signal_ingest_response=_build_signal_ingest_response,
+                config_value=_config_value,
+            )
+        self.assertEqual(status_code, 200)
+        self.assertTrue(result["ok"])
+        trace = pb.records[TV_EVENT_COLLECTION][0]["extra"]["latency_trace"]
+        self.assertEqual(trace["bar_open_ms"], 1780073040000)
+        self.assertEqual(trace["bar_close_ms"], 1780073160000)
+        self.assertEqual(trace["pine_eval_ms"], 1780073161000)
+        self.assertEqual(trace["api_received_at_ms"], 1780073166000)
+        self.assertEqual(trace["bar_close_to_pine_eval_ms"], 1000)
+        self.assertEqual(trace["pine_eval_to_api_received_ms"], 5000)
+        self.assertEqual(trace["api_received_to_pb_created_ms"], 1000)
+        self.assertEqual(trace["pb_created_to_route_finished_ms"], 25)
+
+    def test_tv_event_persist_failure_returns_retryable_503(self):
+        payload = {
+            "source": "tv",
+            "event_type": "pre_alert",
+            "event_id": "tv-persist-fail",
+            "symbol": "RIO",
+            "direction_bias": "long",
+            "market_date": "2026-05-29",
+            "environment": "live",
+        }
+
+        result, status_code = _process(_FailingEventPB(), payload)
+
+        self.assertEqual(status_code, 503)
+        self.assertTrue(result["retryable"])
+        self.assertEqual(result["error"], "tv_event_persist_failed")
+
     def test_pre_alert_upserts_target_and_dedupes_event(self):
         pb = _FakePB()
         payload = {

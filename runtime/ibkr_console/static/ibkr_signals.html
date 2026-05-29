@@ -398,8 +398,15 @@
         }
 
         function normalizeChartInterval(value, fallback = '5m') {
-            const text = String(value || '').trim().toLowerCase();
+            let text = String(value || '').trim().toLowerCase();
+            if (text.startsWith('chart=')) text = text.split('=')[1] || '';
             const map = {
+                '1': '1m',
+                '1m': '1m',
+                '2': '2m',
+                '2m': '2m',
+                '3': '3m',
+                '3m': '3m',
                 '5': '5m',
                 '5m': '5m',
                 '15': '15m',
@@ -429,8 +436,8 @@
             const tvChartUrl = String(extra.tv_chart_url || context?.tv_chart_url || '').trim();
             return {
                 symbol,
-                interval: normalizeChartInterval(context?.interval || signal.interval, '5m'),
-                bar_time_ms: Number(context?.bar_time_ms || signal.bar_time_ms || 0) || '',
+                interval: normalizeChartInterval(getRecordIntervalValue(context) || getRecordIntervalValue(signal) || signal.interval, '5m'),
+                bar_time_ms: getRecordBarOpenMs(context) || getRecordBarOpenMs(signal) || '',
                 tv_chart_url: tvChartUrl
             };
         }
@@ -486,6 +493,9 @@
         function normalizeIndicatorIntervalValue(value) {
             const normalized = normalizeChartInterval(value, '5m');
             const map = {
+                '1m': '1',
+                '2m': '2',
+                '3m': '3',
                 '5m': '5',
                 '15m': '15',
                 '30m': '30',
@@ -498,7 +508,7 @@
 
         function buildSignalIndicatorKey(signal) {
             const symbol = String(signal?.symbol || '').trim().toUpperCase();
-            const interval = normalizeIndicatorIntervalValue(signal?.interval);
+            const interval = normalizeIndicatorIntervalValue(getRecordIntervalValue(signal) || signal?.interval);
             return symbol ? `${symbol}|${interval}` : '';
         }
 
@@ -507,13 +517,18 @@
             const snapshot = safeObject(extra.tv_snapshot);
             const symbol = String(signal?.symbol || snapshot.symbol || '').trim().toUpperCase();
             if (!symbol) return null;
-            const interval = normalizeChartInterval(signal?.chart_tf || signal?.interval || extra.entry_tf || extra.chart_tf || snapshot.interval, '5m');
+            const interval = normalizeChartInterval(signal?.chart_tf || signal?.interval || extra.entry_tf || extra.chart_tf || extra.timeframe_stack || snapshot.interval, '5m');
             const close = firstPositiveNumber(extra.close, snapshot.close, signal?.entry);
             return {
                 id: signal?.id || signal?.signal_id || '',
                 symbol,
                 interval,
+                timeframe_stack: extra.timeframe_stack || '',
                 bar_time_ms: Number(signal?.bar_time_ms || extra.bar_time_ms || snapshot.bar_time_ms || 0) || 0,
+                bar_open_ms: Number(signal?.bar_open_ms || extra.bar_open_ms || snapshot.bar_open_ms || 0) || 0,
+                bar_close_ms: Number(signal?.bar_close_ms || extra.bar_close_ms || snapshot.bar_close_ms || 0) || 0,
+                pine_eval_ms: Number(signal?.pine_eval_ms || extra.pine_eval_ms || snapshot.pine_eval_ms || 0) || 0,
+                latency_trace: safeObject(extra.latency_trace),
                 close,
                 trend_dir: extra.direction_bias === 'long' || signal?.direction === 'long' ? 1 : (extra.direction_bias === 'short' || signal?.direction === 'short' ? -1 : 0),
                 atr_pct: firstPositiveNumber(extra.atr_pct, snapshot.atr_pct),
@@ -533,6 +548,9 @@
             if (!raw) return '';
             const normalized = normalizeChartInterval(raw, raw.toLowerCase());
             const map = {
+                '1m': '1m',
+                '2m': '2m',
+                '3m': '3m',
                 '5m': '5m',
                 '15m': '15m',
                 '30m': '30m',
@@ -674,8 +692,21 @@
         }
 
         function intervalToMs(interval) {
-            const text = String(interval || '').trim().toLowerCase();
+            let text = String(interval || '').trim().toLowerCase();
+            if (text.startsWith('chart=')) text = text.split('=')[1] || '';
+            const numeric = Number(text);
+            if (Number.isFinite(numeric) && numeric > 0) return numeric * 60 * 1000;
+            const suffixMatch = text.match(/^(\d+(?:\.\d+)?)([smhdw])$/);
+            if (suffixMatch) {
+                const amount = Number(suffixMatch[1]);
+                const unit = suffixMatch[2];
+                const multipliers = { s: 1000, m: 60 * 1000, h: 60 * 60 * 1000, d: 24 * 60 * 60 * 1000, w: 7 * 24 * 60 * 60 * 1000 };
+                return amount * multipliers[unit];
+            }
             const map = {
+                '1m': 1 * 60 * 1000,
+                '2m': 2 * 60 * 1000,
+                '3m': 3 * 60 * 1000,
                 '5': 5 * 60 * 1000,
                 '5m': 5 * 60 * 1000,
                 '15': 15 * 60 * 1000,
@@ -696,17 +727,101 @@
 
         function parseTimestampMs(value) {
             if (value === null || value === undefined || value === '') return 0;
-            if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+            if (typeof value === 'number') {
+                if (!Number.isFinite(value)) return 0;
+                if (value > 1_000_000_000_000) return value;
+                if (value > 1_000_000_000) return value * 1000;
+                return value;
+            }
             const numeric = Number(value);
             if (Number.isFinite(numeric) && numeric > 1_000_000_000_000) return numeric;
+            if (Number.isFinite(numeric) && numeric > 1_000_000_000) return numeric * 1000;
             const parsed = Date.parse(String(value));
             return Number.isFinite(parsed) ? parsed : 0;
         }
 
-        function getSignalCloseTimeMs(signal) {
-            const barTimeMs = Number(signal?.bar_time_ms || signal?.extra?.bar_time_ms || 0) || 0;
+        function getRecordExtra(record) {
+            return parseRecordExtra(record);
+        }
+
+        function getLatencyTrace(record) {
+            const extra = getRecordExtra(record);
+            const trace = record?.latency_trace || extra?.latency_trace;
+            if (!trace) return {};
+            if (typeof trace === 'object') return trace;
+            try {
+                const parsed = JSON.parse(String(trace));
+                return parsed && typeof parsed === 'object' ? parsed : {};
+            } catch (_) {
+                return {};
+            }
+        }
+
+        function firstTimestampMs(...values) {
+            for (const value of values) {
+                const parsed = parseTimestampMs(value);
+                if (parsed > 0) return parsed;
+            }
+            return 0;
+        }
+
+        function getRecordIntervalValue(record) {
+            const extra = getRecordExtra(record);
+            const trace = getLatencyTrace(record);
+            return String(
+                record?.interval
+                || record?.chart_tf
+                || record?.entry_tf
+                || record?.timeframe_stack
+                || extra.interval
+                || extra.chart_tf
+                || extra.entry_tf
+                || extra.timeframe_stack
+                || trace.interval
+                || ''
+            ).trim();
+        }
+
+        function getRecordBarOpenMs(record) {
+            const extra = getRecordExtra(record);
+            const trace = getLatencyTrace(record);
+            return firstTimestampMs(
+                record?.bar_open_ms,
+                record?.bar_time_ms,
+                record?.time_ms,
+                extra.bar_open_ms,
+                extra.bar_time_ms,
+                trace.bar_open_ms
+            );
+        }
+
+        function getRecordBarCloseMs(record, fallbackInterval = '') {
+            const extra = getRecordExtra(record);
+            const trace = getLatencyTrace(record);
+            const explicit = firstTimestampMs(
+                record?.bar_close_ms,
+                record?.time_close_ms,
+                record?.time_close,
+                extra.bar_close_ms,
+                extra.time_close_ms,
+                trace.bar_close_ms
+            );
+            if (explicit > 0) return explicit;
+            const barTimeMs = getRecordBarOpenMs(record);
             if (!barTimeMs) return 0;
-            return barTimeMs + intervalToMs(signal?.interval || signal?.chart_tf || signal?.extra?.chart_tf || '5m');
+            const intervalValue = getRecordIntervalValue(record) || fallbackInterval;
+            const durationMs = intervalValue ? intervalToMs(intervalValue) : 0;
+            return durationMs > 0 ? barTimeMs + durationMs : 0;
+        }
+
+        function getRecordPineEvalMs(record) {
+            const extra = getRecordExtra(record);
+            const trace = getLatencyTrace(record);
+            return firstTimestampMs(record?.pine_eval_ms, extra.pine_eval_ms, trace.pine_eval_ms, record?.timenow, extra.timenow);
+        }
+
+        function getSignalCloseTimeMs(signal) {
+            return getRecordBarCloseMs(signal, '5m');
         }
 
         function getSignalCreatedMs(signal) {
@@ -730,8 +845,15 @@
             return end - start;
         }
 
-        function formatLatency(ms, fallback = '计算中') {
+        function hasLatencySpan(fromMs, toMs) {
+            const start = Number(fromMs || 0);
+            const end = Number(toMs || 0);
+            return Number.isFinite(start) && Number.isFinite(end) && start > 0 && end > 0 && end >= start;
+        }
+
+        function formatLatency(ms, fallback = '计算中', known = false) {
             const value = Number(ms || 0);
+            if (known && Number.isFinite(value) && value >= 0) return value < 1000 ? `${Math.round(value)}ms` : formatLatency(value, fallback, false);
             if (!Number.isFinite(value) || value <= 0) return fallback;
             if (value < 1000) return `${Math.round(value)}ms`;
             const totalSeconds = Math.round(value / 1000);
@@ -1313,14 +1435,19 @@
             };
         }
 
-        function resolveLatencyTone(kind, ms) {
+        function resolveLatencyTone(kind, ms, known = false) {
             const value = Number(ms || 0);
+            if (known && Number.isFinite(value) && value >= 0 && value < 1000) return 'ok';
             if (!Number.isFinite(value) || value <= 0) return 'muted';
 
             const seconds = value / 1000;
             const thresholds = {
                 freshness: { ok: 120, warn: 300 },
                 ingest: { ok: 5, warn: 15 },
+                tv_eval: { ok: 5, warn: 30 },
+                network: { ok: 5, warn: 15 },
+                api: { ok: 1, warn: 3 },
+                route: { ok: 1, warn: 5 },
                 compute: { ok: 15, warn: 45 },
                 write: { ok: 30, warn: 90 }
             };
@@ -1428,22 +1555,35 @@
             const routeStatus = latest.routeStatus || '待路由';
             const cards = [
                 {
-                    label: 'TV 事件新鲜度',
-                    value: formatLatency(latest.dataFreshnessMs || 0),
-                    copy: '现在距离最新 TradingView 事件时间的差值',
-                    tone: resolveLatencyTone('freshness', latest.dataFreshnessMs || 0),
+                    label: 'Bar收盘→Pine执行',
+                    value: formatLatency(latest.barCloseToPineEvalMs || 0, latest.pineEvalMs ? '计算中' : '缺少 Pine 时间', latest.barCloseToPineEvalKnown),
+                    copy: 'TradingView bar close 到脚本 alert() 执行',
+                    tone: resolveLatencyTone('tv_eval', latest.barCloseToPineEvalMs || 0, latest.barCloseToPineEvalKnown),
                 },
                 {
-                    label: 'Webhook 入库耗时',
-                    value: formatLatency(latest.barIngestDelayMs || 0),
-                    copy: 'TradingView 事件到系统接收写入',
-                    tone: resolveLatencyTone('ingest', latest.barIngestDelayMs || 0),
+                    label: 'Pine执行→API收到',
+                    value: formatLatency(latest.pineEvalToApiReceivedMs || 0, latest.pineEvalMs ? '等待 API trace' : '缺少 Pine 时间', latest.pineEvalToApiReceivedKnown),
+                    copy: 'TradingView webhook 投递与公网网络',
+                    tone: resolveLatencyTone('network', latest.pineEvalToApiReceivedMs || 0, latest.pineEvalToApiReceivedKnown),
+                },
+                {
+                    label: 'API收到→PB入库',
+                    value: formatLatency(latest.apiReceivedToPbCreatedMs || 0, latest.apiReceivedMs ? '等待 PB 时间' : '等待 API trace', latest.apiReceivedToPbCreatedKnown),
+                    copy: 'ibkr-api 接收后写入 tv_webhook_events',
+                    tone: resolveLatencyTone('api', latest.apiReceivedToPbCreatedMs || 0, latest.apiReceivedToPbCreatedKnown),
+                },
+                {
+                    label: 'PB入库→路由完成',
+                    value: formatLatency(latest.pbCreatedToRouteFinishedMs || 0, latest.routeFinishedMs ? '计算中' : '等待路由 trace', latest.pbCreatedToRouteFinishedKnown),
+                    copy: '写库后完成 target / signal / reverse 路由',
+                    tone: resolveLatencyTone('route', latest.pbCreatedToRouteFinishedMs || 0, latest.pbCreatedToRouteFinishedKnown),
                 },
             ];
             const metaChips = [
                 ['refresh', refreshText, 'muted'],
                 ['event', eventType, latest.eventType ? 'event' : 'muted'],
                 ['route', routeStatus, String(routeStatus).toLowerCase() === 'routed' ? 'ok' : 'muted'],
+                ['latest', formatLatency(latest.dataFreshnessMs || 0, '等待 TV'), resolveLatencyTone('freshness', latest.dataFreshnessMs || 0)],
                 ['broker', getSignalsBrokerModeLabel(), currentBrokerMode],
                 ['data', getSignalsDataModeLabel(), getSignalsDataModeTone()],
             ];
@@ -1486,6 +1626,7 @@
             const conditions = [
                 `environment = "${currentEnvironment}"`,
                 `date = "${currentDate}"`,
+                `event_type = "entry"`,
             ];
             const focusSymbol = resolveSignalsWorkspaceFocusSymbol();
             if (focusSymbol) {
@@ -1514,16 +1655,35 @@
                 return;
             }
 
-            const eventMs = Number(latestEvent.bar_time_ms || latestEvent.extra?.bar_time_ms || 0) || parseTimestampMs(latestEvent.created);
+            const latencyTrace = getLatencyTrace(latestEvent);
+            const barOpenMs = getRecordBarOpenMs(latestEvent);
+            const barCloseMs = getRecordBarCloseMs(latestEvent) || barOpenMs || parseTimestampMs(latestEvent.created);
+            const pineEvalMs = getRecordPineEvalMs(latestEvent);
+            const apiReceivedMs = firstTimestampMs(latencyTrace.api_received_at_ms);
             const createdMs = parseTimestampMs(latestEvent.created);
+            const pbCreatedMs = firstTimestampMs(latencyTrace.pb_created_at_ms, createdMs);
+            const routeFinishedMs = firstTimestampMs(latencyTrace.route_finished_at_ms, latestEvent.updated);
             realtimeLatencySnapshot = {
                 symbol: String(latestEvent.symbol || '').trim().toUpperCase(),
                 eventType: String(latestEvent.event_type || '').trim(),
                 routeStatus: String(latestEvent.status || '').trim(),
-                barTimeMs: eventMs,
-                barCloseMs: eventMs,
-                dataFreshnessMs: eventMs > 0 ? Math.max(0, Date.now() - eventMs) : 0,
-                barIngestDelayMs: getLatencyMs(eventMs, createdMs),
+                latencyTrace,
+                barTimeMs: barOpenMs,
+                barCloseMs,
+                pineEvalMs,
+                apiReceivedMs,
+                pbCreatedMs,
+                routeFinishedMs,
+                dataFreshnessMs: barCloseMs > 0 ? Math.max(0, Date.now() - barCloseMs) : 0,
+                barIngestDelayMs: getLatencyMs(barCloseMs, createdMs),
+                barCloseToPineEvalMs: getLatencyMs(barCloseMs, pineEvalMs),
+                pineEvalToApiReceivedMs: getLatencyMs(pineEvalMs, apiReceivedMs),
+                apiReceivedToPbCreatedMs: getLatencyMs(apiReceivedMs, pbCreatedMs),
+                pbCreatedToRouteFinishedMs: getLatencyMs(pbCreatedMs, routeFinishedMs),
+                barCloseToPineEvalKnown: hasLatencySpan(barCloseMs, pineEvalMs),
+                pineEvalToApiReceivedKnown: hasLatencySpan(pineEvalMs, apiReceivedMs),
+                apiReceivedToPbCreatedKnown: hasLatencySpan(apiReceivedMs, pbCreatedMs),
+                pbCreatedToRouteFinishedKnown: hasLatencySpan(pbCreatedMs, routeFinishedMs),
                 indicatorComputeDelayMs: 0,
                 indicatorComputeFallback: latestEvent.event_type || '等待 TV webhook',
             };
@@ -2185,13 +2345,13 @@
         };
 
         // 计算信号倒计时（从 bar_time_ms 开始，有效期从 config 读取）
-        function calculateCountdown(barTimeMs, intervalValue) {
-            if (!barTimeMs) return '等待数据';
+        function calculateCountdown(barTimeMs, intervalValue, closeTimeMs = 0) {
             const validityMinutes = signalValidityMinutes;
-            const closeTimeMs = Number(barTimeMs || 0) + intervalToMs(intervalValue || '5m');
+            const resolvedCloseTimeMs = Number(closeTimeMs || 0) || (Number(barTimeMs || 0) > 0 ? Number(barTimeMs || 0) + intervalToMs(intervalValue || '5m') : 0);
+            if (!resolvedCloseTimeMs) return '等待数据';
 
             // bar_time_ms 是 bar 开始时间，倒计时从 bar 收盘后开始计算有效期
-            const expiryTime = new Date(closeTimeMs + validityMinutes * 60 * 1000);
+            const expiryTime = new Date(resolvedCloseTimeMs + validityMinutes * 60 * 1000);
 
             // 获取 ET 当前时间：用 toISOString 提取 UTC 字符串，附加 ' UTC' 后缀确保 new Date 正确解析为 UTC
             const now = new Date();
@@ -2624,6 +2784,8 @@
                 const lossPerShare = hasTradePrices ? (isLong ? (entryPrice - stopLoss) : (stopLoss - entryPrice)) : 0;
                 const expectedProfit = profitPerShare * shares;
                 const expectedLoss = lossPerShare * shares;
+                const signalBarTimeMs = getRecordBarOpenMs(signal);
+                const signalIntervalValue = getRecordIntervalValue(signal) || signal.interval || signal.chart_tf || '5m';
                 const closeTimeMs = getSignalCloseTimeMs(signal);
                 const createdMs = getSignalCreatedMs(signal);
                 const signalWriteDelayMs = getLatencyMs(closeTimeMs, createdMs);
@@ -2631,7 +2793,7 @@
                 const marketIndexBadges = buildMarketIndexBadges(signal);
 
                 // 时间周期 / 图表上下文
-                const intervalText = formatSignalInterval(signal.interval);
+                const intervalText = formatSignalInterval(signalIntervalValue);
                 const intervalBadge = intervalText ? `<span class="signal-interval">${intervalText}</span>` : '';
                 const chartParams = buildSignalChartParams(signal);
                 const hasChartContext = !!chartParams?.tv_chart_url;
@@ -2684,8 +2846,8 @@
                             <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
                                 <div class="signal-status status-${statusClass}">${escapeHtml(statusText)}</div>
                                 ${showCountdown ? `
-                                <div class="countdown-display" data-bar-time="${signal.bar_time_ms || ''}" data-interval="${escapeHtml(signal.interval || '')}" style="font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--pending);">
-                                    ⏱️ <span class="countdown-value">${escapeHtml(calculateCountdown(signal.bar_time_ms, signal.interval))}</span>
+                                <div class="countdown-display" data-bar-time="${signalBarTimeMs || ''}" data-close-time="${closeTimeMs || ''}" data-interval="${escapeHtml(signalIntervalValue || '')}" style="font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--pending);">
+                                    ⏱️ <span class="countdown-value">${escapeHtml(calculateCountdown(signalBarTimeMs, signalIntervalValue, closeTimeMs))}</span>
                                 </div>
                                 ` : ''}
                             </div>
@@ -2721,7 +2883,7 @@
                                 <div class="signal-value">${escapeHtml(formatEventTime(closeTimeMs))}</div>
                             </div>
                             <div class="signal-item">
-                                <div class="signal-label">Webhook 入库耗时</div>
+                                <div class="signal-label">Bar收盘→信号入库</div>
                                 <div class="signal-value">${escapeHtml(formatLatency(signalWriteDelayMs))}</div>
                             </div>
                         </div>
@@ -2771,10 +2933,11 @@
             const countdownElements = document.querySelectorAll('.countdown-display');
             countdownElements.forEach(el => {
                 const barTime = el.getAttribute('data-bar-time');
+                const closeTime = el.getAttribute('data-close-time');
                 const intervalValue = el.getAttribute('data-interval') || '5m';
                 const valueEl = el.querySelector('.countdown-value');
-                if (valueEl && barTime) {
-                    const remainingMs = calculateRemainingMs(parseInt(barTime, 10), intervalValue);
+                if (valueEl && (barTime || closeTime)) {
+                    const remainingMs = calculateRemainingMs(parseInt(barTime || '0', 10), intervalValue, parseInt(closeTime || '0', 10));
                     valueEl.textContent = formatCountdown(remainingMs);
 
                     // 少于5分钟时显示警告样式
@@ -2792,11 +2955,11 @@
         }
 
         // 计算剩余毫秒数
-        function calculateRemainingMs(barTimeMs, intervalValue) {
-            if (!barTimeMs) return 0;
+        function calculateRemainingMs(barTimeMs, intervalValue, closeTimeMs = 0) {
             const validityMinutes = signalValidityMinutes;
-            const closeTimeMs = Number(barTimeMs || 0) + intervalToMs(intervalValue || '5m');
-            const expiryTime = new Date(closeTimeMs + validityMinutes * 60 * 1000);
+            const resolvedCloseTimeMs = Number(closeTimeMs || 0) || (Number(barTimeMs || 0) > 0 ? Number(barTimeMs || 0) + intervalToMs(intervalValue || '5m') : 0);
+            if (!resolvedCloseTimeMs) return 0;
+            const expiryTime = new Date(resolvedCloseTimeMs + validityMinutes * 60 * 1000);
             const now = new Date();
             const usEasternTime = new Date(now.toISOString().replace('T', ' ').slice(0, 19) + ' UTC');
             return expiryTime - usEasternTime;
