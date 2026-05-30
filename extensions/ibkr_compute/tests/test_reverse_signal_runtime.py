@@ -289,15 +289,17 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
 
         updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
         extra = updated["extra"]
-        self.assertEqual("blocked", updated["status"])
+        self.assertEqual("cancelled", updated["status"])
         self.assertTrue(extra["blocked"])
         self.assertFalse(extra["ready_reentry"])
         self.assertEqual("protection_incomplete", extra["reentry_blocked"]["reason"])
         self.assertEqual("blocked", extra["reverse_state"])
+        self.assertEqual("blocked", extra["ack_status_original"])
+        self.assertEqual("cancelled", extra["ack_status_normalized"])
         self.assertEqual([], placer.calls)
         self.assertEqual([], modifier.cancelled)
         self.assertEqual(0, lifecycle.calls)
-        self.assertEqual("blocked", pb.acks[0]["status"])
+        self.assertEqual("cancelled", pb.acks[0]["status"])
 
     def test_cancel_confirmed_creates_reentry_signal_and_closes_origin_signal(self):
         reverse = {
@@ -413,12 +415,14 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
 
         updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
         extra = updated["extra"]
-        self.assertEqual("blocked", updated["status"])
+        self.assertEqual("cancelled", updated["status"])
         self.assertIn("adjust_bracket_prices_missing_or_invalid", updated["reason"])
         self.assertEqual([], modifier.stop_updates)
         self.assertEqual([], modifier.take_profit_updates)
         self.assertEqual("new_sl_missing_or_invalid", extra["adjust_results"]["stop_loss"]["reason"])
         self.assertEqual("new_tp_missing_or_invalid", extra["adjust_results"]["take_profit"]["reason"])
+        self.assertEqual("blocked", extra["ack_status_original"])
+        self.assertEqual("cancelled", extra["ack_status_normalized"])
 
         missing_order = {
             "id": "rev-adjust-no-order",
@@ -436,7 +440,7 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
 
         updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
         extra = updated["extra"]
-        self.assertEqual("blocked", updated["status"])
+        self.assertEqual("cancelled", updated["status"])
         self.assertIn("adjust_bracket_targets_missing_or_invalid", updated["reason"])
         self.assertEqual([], modifier.stop_updates)
         self.assertEqual([], modifier.take_profit_updates)
@@ -469,7 +473,7 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
         self.assertEqual([("tp-1002", 190.75)], modifier.take_profit_updates)
         updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
         extra = updated["extra"]
-        self.assertEqual("blocked", updated["status"])
+        self.assertEqual("cancelled", updated["status"])
         self.assertIn("adjust_bracket_partial_failed", updated["reason"])
         self.assertEqual("partial_failed", extra["adjust_bracket"])
         self.assertTrue(extra["adjust_results"]["stop_loss"]["ok"])
@@ -477,7 +481,8 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
         self.assertEqual("broker_update_failed", extra["adjust_results"]["take_profit"]["reason"])
         self.assertEqual(["stop_loss"], extra["adjust_bracket_result"]["succeeded_sides"])
         self.assertEqual(["take_profit"], extra["adjust_bracket_result"]["failed_sides"])
-        self.assertEqual("blocked", pb.acks[0]["status"])
+        self.assertEqual("blocked", extra["ack_status_original"])
+        self.assertEqual("cancelled", pb.acks[0]["status"])
 
 
 if __name__ == "__main__":

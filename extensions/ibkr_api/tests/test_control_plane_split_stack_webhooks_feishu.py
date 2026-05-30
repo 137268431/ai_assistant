@@ -85,7 +85,7 @@ class ControlPlaneSplitStackWebhooksFeishuTest(unittest.TestCase):
             with mock.patch.object(api_app_mod, "_process_tv_primary_event", return_value=(sentinel, 200)) as process_mock:
                 payload = api_app_mod.webhook_tv()
         self.assertIs(payload, sentinel)
-        process_mock.assert_called_once_with({"event_type": "entry", "symbol": "AAPL"})
+        process_mock.assert_called_once_with({"event_type": "entry", "symbol": "AAPL"}, api_received_at_ms=mock.ANY)
 
     def test_webhook_tv_skips_ingest_when_disabled(self):
         with mock.patch.object(

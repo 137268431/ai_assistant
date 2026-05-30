@@ -33,6 +33,7 @@ IBKR_SRC_ROOT = cfg["ibkr_src_root"]
 sys.path.insert(0, IBKR_SRC_ROOT)
 from ibkr_compute.core.indicator_engine import IndicatorEngine
 from ibkr_compute.core.signal_generator import SignalGenerator
+from ibkr_compute.core.broker_mode import resolve_market_data_mode
 from ibkr_compute.market.timeframe_utils import classify_session, format_cn_time, format_us_time
 
 ET = ZoneInfo("America/New_York")
@@ -45,8 +46,12 @@ SCAN_SYMBOL_LIMIT = int(cfg["scan_symbol_limit"])
 SCAN_BARS_PER_SYMBOL = int(cfg["scan_bars_per_symbol"])
 KEEP_DATA = bool(cfg["keep_data"])
 REQUIRE_CLEAN_PAPER = bool(cfg["require_clean_paper"])
+ALLOW_LIVE_ALIAS = bool(cfg.get("allow_live_alias"))
 VALIDATION_PREFIX = str(cfg.get("validation_prefix") or "VAL").upper()
 VALIDATION_TAG = str(cfg.get("validation_tag") or "paper_replay_validation")
+REQUESTED_REPLAY_ENVIRONMENT = "paper"
+RESOLVED_REPLAY_ENVIRONMENT = resolve_market_data_mode(REQUESTED_REPLAY_ENVIRONMENT)
+WRITE_ENVIRONMENT = RESOLVED_REPLAY_ENVIRONMENT if ALLOW_LIVE_ALIAS else REQUESTED_REPLAY_ENVIRONMENT
 
 
 def open_db() -> sqlite3.Connection:
@@ -201,24 +206,26 @@ def find_recent_signal(
     return best
 
 
-def fetch_symbol_counts(symbol: str) -> tuple[dict, list[dict], list[dict], int]:
+def fetch_symbol_counts(symbol: str, environment: str) -> tuple[dict, list[dict], list[dict], int]:
+    runtime_environment = str(environment or "paper").strip().lower() or "paper"
     conn = open_db()
     try:
         counts = {
             "ibkr_bars": conn.execute(
-                "select count(*) from ibkr_bars where environment='paper' and symbol=?",
-                (symbol,),
+                "select count(*) from ibkr_bars where environment=? and symbol=?",
+                (runtime_environment, symbol),
             ).fetchone()[0],
             "ibkr_indicators": conn.execute(
-                "select count(*) from ibkr_indicators where environment='paper' and symbol=?",
-                (symbol,),
+                "select count(*) from ibkr_indicators where environment=? and symbol=?",
+                (runtime_environment, symbol),
             ).fetchone()[0],
             "ibkr_signals": conn.execute(
-                "select count(*) from ibkr_signals where environment='paper' and symbol=?",
-                (symbol,),
+                "select count(*) from ibkr_signals where environment=? and symbol=?",
+                (runtime_environment, symbol),
             ).fetchone()[0],
             "ibkr_state": conn.execute(
-                "select count(*) from ibkr_state where environment='paper'"
+                "select count(*) from ibkr_state where environment=?",
+                (runtime_environment,),
             ).fetchone()[0],
         }
         indicators = [
@@ -227,11 +234,11 @@ def fetch_symbol_counts(symbol: str) -> tuple[dict, list[dict], list[dict], int]
                 """
                 select symbol, interval, us_time, bar_time_ms, created
                 from ibkr_indicators
-                where environment='paper' and symbol=?
+                where environment=? and symbol=?
                 order by bar_time_ms desc, created desc
                 limit 3
                 """,
-                (symbol,),
+                (runtime_environment, symbol),
             ).fetchall()
         ]
         signals = [
@@ -240,11 +247,11 @@ def fetch_symbol_counts(symbol: str) -> tuple[dict, list[dict], list[dict], int]
                 """
                 select symbol, interval, us_time, bar_time_ms, direction, signal, status, signal_id, created
                 from ibkr_signals
-                where environment='paper' and symbol=?
+                where environment=? and symbol=?
                 order by bar_time_ms desc, created desc
                 limit 3
                 """,
-                (symbol,),
+                (runtime_environment, symbol),
             ).fetchall()
         ]
         state_count = counts["ibkr_state"]
@@ -253,23 +260,33 @@ def fetch_symbol_counts(symbol: str) -> tuple[dict, list[dict], list[dict], int]
         conn.close()
 
 
-def cleanup_validation_rows(symbol: str, created_paper_state: bool) -> dict:
+def cleanup_validation_rows(symbol: str, created_state: bool, environments: list[str]) -> dict:
+    cleanup_environments = []
+    for value in environments or []:
+        normalized = str(value or "").strip().lower()
+        if normalized and normalized not in cleanup_environments:
+            cleanup_environments.append(normalized)
+    if not cleanup_environments:
+        cleanup_environments = ["paper"]
+
     conn = open_db()
     cleanup = {
         "performed": True,
         "deleted": {},
+        "environments": cleanup_environments,
         "compute_restarted": False,
     }
     try:
-        for table in ("ibkr_signals", "ibkr_indicators", "ibkr_bars"):
-            cur = conn.execute(
-                f"delete from {table} where environment='paper' and symbol=?",
-                (symbol,),
-            )
-            cleanup["deleted"][table] = int(cur.rowcount or 0)
-        if created_paper_state:
-            cur = conn.execute("delete from ibkr_state where environment='paper'")
-            cleanup["deleted"]["ibkr_state"] = int(cur.rowcount or 0)
+        for environment in cleanup_environments:
+            for table in ("ibkr_signals", "ibkr_indicators", "ibkr_bars"):
+                cur = conn.execute(
+                    f"delete from {table} where environment=? and symbol=?",
+                    (environment, symbol),
+                )
+                cleanup["deleted"][f"{table}:{environment}"] = int(cur.rowcount or 0)
+            if created_state and environment == WRITE_ENVIRONMENT:
+                cur = conn.execute("delete from ibkr_state where environment=?", (environment,))
+                cleanup["deleted"][f"ibkr_state:{environment}"] = int(cur.rowcount or 0)
         conn.commit()
     finally:
         conn.close()
@@ -293,6 +310,15 @@ pre_counts = load_pre_counts(base_conn)
 base_conn.close()
 if REQUIRE_CLEAN_PAPER and any(pre_counts.values()):
     json_error(2, error="paper_environment_not_clean", pre_counts=pre_counts)
+if RESOLVED_REPLAY_ENVIRONMENT != REQUESTED_REPLAY_ENVIRONMENT and not ALLOW_LIVE_ALIAS:
+    json_error(
+        2,
+        error="paper_market_data_aliases_to_live",
+        requested_environment=REQUESTED_REPLAY_ENVIRONMENT,
+        resolved_environment=RESOLVED_REPLAY_ENVIRONMENT,
+        hint="Current compute config aliases paper market data to live. Re-run with --allow-live-alias only if writing and cleaning an isolated live validation symbol is acceptable.",
+        pre_counts=pre_counts,
+    )
 
 requested_symbol = str(cfg.get("symbol") or "").strip().upper()
 requested_signal_bar_ms = int(cfg.get("signal_bar_ms") or 0)
@@ -352,7 +378,7 @@ for idx, row in enumerate(source_rows, start=1):
     replay_bars.append({
         "symbol": validation_symbol,
         "exchange": str(row["exchange"] or "SMART").upper(),
-        "environment": "paper",
+        "environment": WRITE_ENVIRONMENT,
         "interval": "5m",
         "open": float(row["open"]),
         "high": float(row["high"]),
@@ -385,6 +411,9 @@ report = {
     "target_bar_us": format_us_time(target_bar_ms),
     "shift_ms": shift_ms,
     "pre_counts": pre_counts,
+    "requested_environment": REQUESTED_REPLAY_ENVIRONMENT,
+    "resolved_environment": RESOLVED_REPLAY_ENVIRONMENT,
+    "write_environment": WRITE_ENVIRONMENT,
 }
 cleanup = {"performed": False, "deleted": {}, "compute_restarted": False}
 created_paper_state = False
@@ -392,7 +421,7 @@ created_paper_state = False
 try:
     bars_resp = requests.post(
         f"{API}/api/custom/ibkr/bars",
-        json={"environment": "paper", "bars": replay_bars},
+        json={"environment": WRITE_ENVIRONMENT, "bars": replay_bars},
         timeout=120,
     )
     bars_resp.raise_for_status()
@@ -400,14 +429,26 @@ try:
 
     compute_resp = requests.post(
         f"{COMPUTE}/compute",
-        json={"environment": "paper", "source": "recompute", "force_rollup": True},
+        json={
+            "environment": WRITE_ENVIRONMENT,
+            "data_environment": WRITE_ENVIRONMENT,
+            "environments": [WRITE_ENVIRONMENT],
+            "symbols": [validation_symbol],
+            "persist_signal_symbols": [validation_symbol],
+            "source": "recompute",
+            "force_rollup": True,
+        },
         timeout=180,
     )
     compute_resp.raise_for_status()
     report["compute"] = safe_response_json(compute_resp)
 
-    paper_counts, latest_indicators, latest_signals, paper_state_count = fetch_symbol_counts(validation_symbol)
-    created_paper_state = paper_state_count > 0 and pre_counts.get("ibkr_state", 0) == 0
+    paper_counts, latest_indicators, latest_signals, paper_state_count = fetch_symbol_counts(validation_symbol, WRITE_ENVIRONMENT)
+    created_paper_state = (
+        WRITE_ENVIRONMENT == "paper"
+        and paper_state_count > 0
+        and pre_counts.get("ibkr_state", 0) == 0
+    )
 
     report["paper_counts"] = paper_counts
     report["latest_indicator"] = latest_indicators
@@ -423,7 +464,11 @@ try:
     )
 finally:
     if not KEEP_DATA:
-        cleanup = cleanup_validation_rows(validation_symbol, created_paper_state)
+        cleanup = cleanup_validation_rows(
+            validation_symbol,
+            created_paper_state,
+            [REQUESTED_REPLAY_ENVIRONMENT, RESOLVED_REPLAY_ENVIRONMENT, WRITE_ENVIRONMENT],
+        )
     report["cleanup"] = cleanup
 
 print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -446,6 +491,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation-prefix", default="VAL")
     parser.add_argument("--keep-data", action="store_true")
     parser.add_argument("--allow-dirty-paper", action="store_true")
+    parser.add_argument("--allow-live-alias", action="store_true")
     parser.add_argument("--json", action="store_true")
     return parser.parse_args()
 
@@ -480,6 +526,7 @@ def run_remote(args: argparse.Namespace) -> dict:
         "validation_tag": f"paper_replay_validation_{int(time.time())}",
         "keep_data": args.keep_data,
         "require_clean_paper": not args.allow_dirty_paper,
+        "allow_live_alias": args.allow_live_alias,
     }
     env_blob = base64.b64encode(json.dumps(config).encode("utf-8")).decode("ascii")
     cmd = [

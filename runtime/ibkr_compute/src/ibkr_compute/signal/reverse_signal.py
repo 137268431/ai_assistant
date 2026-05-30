@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 REVERSE_ACTIONS = {"close", "cancel", "adjust_sl", "adjust_tp", "adjust_bracket"}
 REVERSE_SIGNAL_COLLECTION = "ibkr_reverse_signals"
+REVERSE_PERSISTED_STATUSES = {"pending", "confirmed", "cancelled", "expired"}
+REVERSE_BLOCKED_PERSISTED_STATUS = "cancelled"
 
 ACTIVE_ORDER_STATUSES = {
     "APIPENDING",
@@ -475,7 +477,8 @@ class ReverseSignalHandler:
         detail = dict(result.get("detail") or {})
         detail.setdefault("executed_action", action)
         detail.setdefault("result_status", "ok" if result.get("ok") else "failed")
-        status = str(result.get("ack_status") or ("confirmed" if result.get("ok") else "blocked")).strip()
+        raw_status = str(result.get("ack_status") or ("confirmed" if result.get("ok") else "blocked")).strip()
+        status = self._persistable_ack_status(raw_status, detail)
         reason = str(
             result.get("reason")
             or (
@@ -495,6 +498,23 @@ class ReverseSignalHandler:
                 reason=reason,
                 detail=detail,
             )
+
+    @staticmethod
+    def _persistable_ack_status(status: str, detail: Dict[str, Any]) -> str:
+        normalized = str(status or "").strip().lower()
+        if not normalized:
+            normalized = "confirmed"
+        if normalized in REVERSE_PERSISTED_STATUSES:
+            return normalized
+
+        persisted = REVERSE_BLOCKED_PERSISTED_STATUS if normalized == "blocked" else "cancelled"
+        detail["ack_status_original"] = normalized
+        detail["ack_status_normalized"] = persisted
+        runtime_detail = detail.setdefault("reverse_runtime_detail", {})
+        if isinstance(runtime_detail, dict):
+            runtime_detail["ack_status_original"] = normalized
+            runtime_detail["ack_status_normalized"] = persisted
+        return persisted
 
     def _patch_reverse_signal_detail(
         self,

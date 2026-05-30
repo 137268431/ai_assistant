@@ -274,6 +274,13 @@ def _event_time_hhmm(payload: dict[str, Any]) -> tuple[int, int]:
                 return int(text[:2]), int(text[3:5])
             except Exception:
                 pass
+    bar_open_ms = _payload_bar_open_ms(payload)
+    if bar_open_ms > 0:
+        try:
+            event_dt = datetime.fromtimestamp(bar_open_ms / 1000.0, ET or timezone.utc)
+            return event_dt.hour, event_dt.minute
+        except Exception:
+            pass
     now = _now_et()
     return now.hour, now.minute
 

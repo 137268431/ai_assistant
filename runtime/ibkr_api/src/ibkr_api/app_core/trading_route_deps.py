@@ -70,7 +70,7 @@ def build_trading_route_deps(
             **kwargs,
         ),
         "build_reverse_ack_response": lambda *args, **kwargs: globals_dict["build_reverse_ack_response"](*args, **kwargs),
-        "process_tv_primary_event": lambda payload: globals_dict["_process_tv_primary_event"](payload),
+        "process_tv_primary_event": lambda payload, **kwargs: globals_dict["_process_tv_primary_event"](payload, **kwargs),
         "request_json_request": lambda method, base_url, path, params=None, json_body=None, timeout=5.0: globals_dict[
             "_request_json_request"
         ](
