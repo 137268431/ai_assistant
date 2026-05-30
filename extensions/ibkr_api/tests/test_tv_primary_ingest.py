@@ -63,10 +63,10 @@ class _FakePB:
     @staticmethod
     def _matches(row, filter_expr):
         text = str(filter_expr or "")
-        for field, value in re.findall(r'([A-Za-z0-9_]+)\\s*=\\s*"([^"]*)"', text):
+        for field, value in re.findall(r'([A-Za-z0-9_]+)\s*=\s*"([^"]*)"', text):
             if str(row.get(field) or "") != value:
                 return False
-        for field, value in re.findall(r'([A-Za-z0-9_]+)\\s*=\\s*(\\d+)', text):
+        for field, value in re.findall(r'([A-Za-z0-9_]+)\s*=\s*(\d+)', text):
             if str(row.get(field) or "0") != value:
                 return False
         return True
@@ -172,6 +172,31 @@ def _et_ms(text):
     return int(datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=ET).timestamp() * 1000)
 
 
+def _mtf_payload(status="warn", score=72.5, block_reason="none"):
+    return {
+        "timeframe_stack": "entry=2;confirm=5,15,60;mode=shadow_soft",
+        "entry_tf": "2",
+        "confirm_tfs": "5,15,60",
+        "mtf_status": status,
+        "mtf_score": score,
+        "mtf_block_reason": block_reason,
+        "mtf": {
+            "enabled": True,
+            "mode": "shadow_soft",
+            "entry_tf": "2",
+            "confirm_tfs": "5,15,60",
+            "status": status,
+            "score": score,
+            "block_reason": block_reason,
+            "states": {
+                "tf1": {"tf": "5", "status": "pass"},
+                "tf2": {"tf": "15", "status": "warn"},
+                "tf3": {"tf": "60", "status": "pass"},
+            },
+        },
+    }
+
+
 class TvPrimaryIngestTests(unittest.TestCase):
     def test_latency_trace_records_pine_api_pb_and_route_segments(self):
         pb = _LatencyFakePB()
@@ -243,6 +268,8 @@ class TvPrimaryIngestTests(unittest.TestCase):
             "market_date": "2026-05-29",
             "environment": "live",
             "us_time": "2026-05-29 09:36:00",
+            "bar_time_ms": _et_ms("2026-05-29 09:36:00"),
+            **_mtf_payload(),
         }
 
         response, status = _process(pb, payload)
@@ -252,12 +279,72 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertEqual(response["target"], "ibkr_targets")
         self.assertEqual(pb.records["ibkr_targets"][0]["status"], "active")
         self.assertEqual(pb.records["ibkr_targets"][0]["direction_bias"], "long")
+        target_extra = pb.records["ibkr_targets"][0]["extra"]
+        self.assertEqual(target_extra["activation_source"], "tradingview")
+        self.assertEqual(target_extra["first_tv_event_id"], "tv-pre-1")
+        self.assertEqual(target_extra["last_tv_event_id"], "tv-pre-1")
+        self.assertEqual(target_extra["entry_tf"], "2")
+        self.assertEqual(target_extra["confirm_tfs"], "5,15,60")
+        self.assertEqual(target_extra["mtf_status"], "warn")
+        self.assertEqual(target_extra["mtf_last_status"], "warn")
+        self.assertEqual(target_extra["mtf"]["status"], "warn")
+        event_extra = pb.records[TV_EVENT_COLLECTION][0]["extra"]
+        self.assertEqual(event_extra["mtf_status"], "warn")
+        self.assertEqual(event_extra["mtf"]["mode"], "shadow_soft")
         self.assertEqual(pb.records[TV_EVENT_COLLECTION][0]["status"], "routed")
 
         duplicate, duplicate_status = _process(pb, payload)
         self.assertEqual(duplicate_status, 200)
         self.assertTrue(duplicate["skipped"])
         self.assertEqual(len(pb.records[TV_EVENT_COLLECTION]), 1)
+
+    def test_pre_alert_preserves_first_activation_metadata_on_later_updates(self):
+        pb = _FakePB()
+        first_bar_ms = _et_ms("2026-05-29 09:36:00")
+        second_bar_ms = _et_ms("2026-05-29 09:41:00")
+
+        first, first_status = _process(pb, {
+            "source": "tv",
+            "event_type": "pre_alert",
+            "event_id": "tv-pre-first",
+            "symbol": "MSFT",
+            "direction_bias": "long",
+            "activity_score": 80,
+            "quality_score": 75,
+            "market_date": "2026-05-29",
+            "environment": "live",
+            "us_time": "2026-05-29 09:36:00",
+            "bar_time_ms": first_bar_ms,
+            **_mtf_payload(status="warn", score=70.0),
+        })
+        second, second_status = _process(pb, {
+            "source": "tv",
+            "event_type": "pre_alert",
+            "event_id": "tv-pre-second",
+            "symbol": "MSFT",
+            "direction_bias": "long",
+            "activity_score": 92,
+            "quality_score": 90,
+            "market_date": "2026-05-29",
+            "environment": "live",
+            "us_time": "2026-05-29 09:41:00",
+            "bar_time_ms": second_bar_ms,
+            **_mtf_payload(status="pass", score=100.0),
+        })
+
+        self.assertEqual(first_status, 200)
+        self.assertEqual(second_status, 200)
+        self.assertTrue(first["ok"])
+        self.assertTrue(second["ok"])
+        self.assertEqual(len(pb.records["ibkr_targets"]), 1)
+        extra = pb.records["ibkr_targets"][0]["extra"]
+        self.assertEqual(extra["first_tv_event_id"], "tv-pre-first")
+        self.assertEqual(extra["first_bar_time_ms"], first_bar_ms)
+        self.assertEqual(extra["last_tv_event_id"], "tv-pre-second")
+        self.assertEqual(extra["last_bar_time_ms"], second_bar_ms)
+        self.assertEqual(extra["mtf_last_status"], "pass")
+        self.assertEqual(extra["mtf_last_score"], 100.0)
+        self.assertEqual(extra["activity_rank"], 1)
 
     def test_entry_routes_to_ibkr_signals_with_tv_payload_aliases(self):
         pb = _FakePB()
@@ -291,6 +378,7 @@ class TvPrimaryIngestTests(unittest.TestCase):
                 "environment": "paper",
                 "us_time": "2026-05-29 09:45:00",
                 "activity_score": 91,
+                **_mtf_payload(status="pass", score=100.0),
             },
         )
 
@@ -302,7 +390,43 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertEqual(saved["entry"], 188.25)
         self.assertEqual(saved["shares"], 12)
         self.assertEqual(saved["extra"]["source"], "tradingview")
+        self.assertEqual(saved["extra"]["mtf_status"], "pass")
+        self.assertEqual(saved["extra"]["mtf_score"], 100.0)
+        self.assertEqual(saved["extra"]["entry_tf"], "2")
+        self.assertEqual(saved["extra"]["confirm_tfs"], "5,15,60")
+        self.assertEqual(saved["extra"]["mtf"]["status"], "pass")
         self.assertEqual(pb.records[TV_EVENT_COLLECTION][0]["broker_mode"], "paper")
+
+    def test_entry_with_mtf_block_rejects_without_creating_signal(self):
+        pb = _FakePB()
+
+        response, status = _process(
+            pb,
+            {
+                "source": "tv",
+                "event_type": "entry",
+                "event_id": "tv-entry-mtf-block",
+                "signal_id": "tv-entry-mtf-block",
+                "symbol": "AAPL",
+                "direction": "long",
+                "entry_price": 188.25,
+                "quantity": 12,
+                "stop_loss": 185.80,
+                "take_profit": 193.10,
+                "market_date": "2026-05-29",
+                "environment": "paper",
+                "us_time": "2026-05-29 09:45:00",
+                "activity_score": 91,
+                **_mtf_payload(status="block", score=0.0, block_reason="mtf_5m_15m_opposite"),
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(response["rejected"])
+        self.assertEqual(response["reason"], "mtf_blocked")
+        self.assertEqual(response["mtf_block_reason"], "mtf_5m_15m_opposite")
+        self.assertEqual(len(pb.records["ibkr_signals"]), 0)
+        self.assertEqual(pb.records[TV_EVENT_COLLECTION][0]["status"], "rejected")
 
     def test_entry_without_us_time_uses_bar_time_for_signal_record(self):
         pb = _FakePB()
@@ -419,7 +543,7 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertTrue(response["ok"])
         reverse = pb.records["ibkr_reverse_signals"][0]
         self.assertEqual(reverse["action_type"], "close")
-        self.assertEqual(reverse["priority"], 10)
+        self.assertEqual(reverse["priority"], 9)
         self.assertEqual(reverse["extra"]["reverse_kind"], "tv_exit")
 
 

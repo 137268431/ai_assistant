@@ -25,5 +25,6 @@ from ibkr_api.system.jobs.status_heartbeat import (
     build_system_heartbeat_response,
     build_system_status_reminder_response,
 )
+from ibkr_api.system.jobs.tv_pre_alert_target_summary import build_tv_pre_alert_target_summary_response
 
 __all__ = [name for name in globals() if not name.startswith("_")]

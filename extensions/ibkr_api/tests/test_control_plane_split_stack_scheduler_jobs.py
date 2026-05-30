@@ -20,6 +20,16 @@ class ControlPlaneSplitStackSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(payload["summary"]["repaired"], 1)
         builder_mock.assert_called_once()
 
+    def test_system_tv_pre_alert_target_summary_job_route_uses_native_builder(self):
+        from ibkr_api.system import job_routes as job_routes_mod
+
+        sentinel = {"ok": True, "new_count": 2, "source": "ibkr-api"}
+        with mock.patch.object(api_app_mod.request, "get_json", return_value={"environment": "live"}):
+            with mock.patch.object(job_routes_mod, "build_tv_pre_alert_target_summary_response", return_value=(sentinel, 200)) as builder_mock:
+                payload = api_app_mod.custom_system_job_tv_pre_alert_target_summary()
+        self.assertEqual(payload["new_count"], 2)
+        builder_mock.assert_called_once()
+
     def test_schedulerz_route_returns_scheduler_summary(self):
         scheduler_payload = {
             "ok": True,
@@ -364,11 +374,15 @@ class ControlPlaneSplitStackSchedulerJobsTest(unittest.TestCase):
         self.assertIn("system_monitor_alert_guard", item_ids)
         self.assertIn("system_status_reminder", item_ids)
         self.assertIn("system_daily_event_reconcile", item_ids)
+        self.assertIn("tv_pre_alert_target_summary", item_ids)
         market_open = next(item for item in items if item["id"] == "system_market_open_reminder")
         self.assertIn("system_scan_summary", market_open["deprecated_aliases"])
         reconcile = next(item for item in items if item["id"] == "system_daily_event_reconcile")
         self.assertEqual(reconcile["runner_kind"], "native_api_http")
         self.assertEqual(NATIVE_API_HTTP_JOB_ENDPOINTS["system_daily_event_reconcile"], ("POST", "/api/custom/system/jobs/daily_event_reconcile"))
+        tv_summary = next(item for item in items if item["id"] == "tv_pre_alert_target_summary")
+        self.assertEqual(tv_summary["runner_kind"], "native_api_http")
+        self.assertEqual(NATIVE_API_HTTP_JOB_ENDPOINTS["tv_pre_alert_target_summary"], ("POST", "/api/custom/system/jobs/tv_pre_alert_target_summary"))
 
     def test_system_heartbeat_job_persists_issue_state(self):
         states = {}

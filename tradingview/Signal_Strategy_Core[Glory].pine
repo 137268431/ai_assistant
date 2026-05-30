@@ -7,7 +7,6 @@ strategy(title="Signal Strategy Core[Glory]", overlay=true, max_labels_count=500
 
 string STRATEGY_VERSION = "SSC_v1_20260529"
 string SCRIPT_TAG = "Signal_Strategy_Core[Glory]"
-string TIMEFRAME_STACK = "chart=" + timeframe.period
 
 // -----------------------------------------------------------------------------
 // Inputs
@@ -63,6 +62,13 @@ allowShort = input.bool(true, "Allow short entries", group="07 TV Primary Events
 useDtpFilter = input.bool(true, "Filter MR entries against DTP", group="07 TV Primary Events")
 dtpMrFilterMode = input.string("平衡：只挡初期", "DTP MR filter mode", options=["严格：挡初期+确认", "平衡：只挡初期", "关闭：不挡MR"], group="07 TV Primary Events")
 useEmaWeakFilter = input.bool(true, "Filter trend entries when EMA is weak", group="07 TV Primary Events")
+enableMtf = input.bool(true, "Enable MTF confirmation", group="07 TV Primary Events")
+mtfMode = input.string("shadow_soft", "MTF mode", options=["shadow_soft", "display_only"], group="07 TV Primary Events")
+mtfConfirmTf1 = input.timeframe("5", "MTF confirm TF 1", group="07 TV Primary Events")
+mtfConfirmTf2 = input.timeframe("15", "MTF confirm TF 2", group="07 TV Primary Events")
+mtfConfirmTf3 = input.timeframe("60", "MTF confirm TF 3", group="07 TV Primary Events")
+string MTF_CONFIRM_TFS = mtfConfirmTf1 + "," + mtfConfirmTf2 + "," + mtfConfirmTf3
+string TIMEFRAME_STACK = enableMtf ? "entry=" + timeframe.period + ";confirm=" + MTF_CONFIRM_TFS + ";mode=" + mtfMode : "entry=" + timeframe.period + ";confirm=none;mode=off"
 
 displayPreset = input.string("核心交易流程", "Display preset", options=["核心交易流程", "指标辅助", "调试全量"], group="08 Display")
 showFlowLabels = input.bool(true, "Show activation/prep/entry labels", group="08 Display")
@@ -229,10 +235,10 @@ waitComponentText(string value) =>
     missingText == "齐" ? "组件齐" : "等 " + missingText
 
 filterDisplayName(string reason) =>
-    reason == "dtp_bearish_early" ? "DTP偏空初期" : reason == "dtp_bullish_early" ? "DTP偏多初期" : reason == "dtp_bearish_early_or_confirmed" ? "DTP偏空" : reason == "dtp_bullish_early_or_confirmed" ? "DTP偏多" : reason == "ema_weak" ? "EMA弱" : reason == "long_short_conflict" ? "多空冲突" : reason == "" ? "过滤" : reason
+    reason == "dtp_bearish_early" ? "DTP偏空初期" : reason == "dtp_bullish_early" ? "DTP偏多初期" : reason == "dtp_bearish_early_or_confirmed" ? "DTP偏空" : reason == "dtp_bullish_early_or_confirmed" ? "DTP偏多" : reason == "ema_weak" ? "EMA弱" : reason == "mtf_5m_15m_opposite" ? "MTF反向" : reason == "long_short_conflict" ? "多空冲突" : reason == "" ? "过滤" : reason
 
 filterActionText(string reason, string direction) =>
-    reason == "dtp_bearish_early" ? "DTP偏空初期，等过初期" : reason == "dtp_bullish_early" ? "DTP偏多初期，等过初期" : reason == "dtp_bearish_early_or_confirmed" ? "DTP偏空，等转弱/中性/多" : reason == "dtp_bullish_early_or_confirmed" ? "DTP偏多，等转弱/中性/空" : reason == "ema_weak" ? "EMA偏弱，等快慢线走强" : reason == "long_short_conflict" ? "多空冲突，等单边明确" : reason == "" ? "过滤" + directionDisplayName(direction) + "，等条件恢复" : filterDisplayName(reason)
+    reason == "dtp_bearish_early" ? "DTP偏空初期，等过初期" : reason == "dtp_bullish_early" ? "DTP偏多初期，等过初期" : reason == "dtp_bearish_early_or_confirmed" ? "DTP偏空，等转弱/中性/多" : reason == "dtp_bullish_early_or_confirmed" ? "DTP偏多，等转弱/中性/空" : reason == "ema_weak" ? "EMA偏弱，等快慢线走强" : reason == "mtf_5m_15m_opposite" ? "5m+15m 同时反向，等MTF转中性/同向" : reason == "long_short_conflict" ? "多空冲突，等单边明确" : reason == "" ? "过滤" + directionDisplayName(direction) + "，等条件恢复" : filterDisplayName(reason)
 
 dtpPhaseDisplayName(string phase) =>
     phase == "early" ? "初期" : phase == "confirmed" ? "确认" : phase == "mature" ? "成熟" : phase == "weakening" ? "转弱" : "中性"
@@ -250,6 +256,46 @@ dtpEntryFilterText(string direction, int dtpDirection, string phase, string mode
     string stateText = dtpStateText(dtpDirection, phase)
     bool adverse = direction == "long" ? dtpDirection == -1 : dtpDirection == 1
     not enabled or mode == "关闭：不挡MR" ? stateText + " · DTP不拦" : adverse and mode == "平衡：只挡初期" ? stateText + " · 已过初期放行" : adverse and phase == "weakening" ? stateText + " · 转弱放行" : stateText
+
+dirName(int direction) =>
+    direction == 1 ? "bullish" : direction == -1 ? "bearish" : "neutral"
+
+mtfEmaDirValue() =>
+    float fast = ta.ema(close, 20)
+    float slow = ta.ema(close, 50)
+    fast > slow ? 1 : fast < slow ? -1 : 0
+
+mtfDtpDirValue() =>
+    float avg = ta.sma(close, dtpSmaLength)
+    float atr = ta.atr(dtpAtrLength)
+    float momentum = avg - avg[dtpMomentumLookback]
+    float normalized = atr > 0.0 ? momentum / atr : 0.0
+    normalized > dtpTrendThreshold and close > avg ? 1 : normalized < -dtpTrendThreshold and close < avg ? -1 : 0
+
+mtfStateForDirection(string direction, int emaDirection, int dtpDirection) =>
+    int wanted = direction == "short" ? -1 : 1
+    int opposite = -wanted
+    bool failed = emaDirection == opposite and dtpDirection == opposite
+    bool supported = emaDirection == wanted or dtpDirection == wanted
+    failed ? "fail" : supported ? "pass" : "warn"
+
+mtfStatePoints(string state, float weight) =>
+    state == "pass" ? weight : state == "warn" ? weight * 0.5 : 0.0
+
+mtfScoreForStates(string state1, string state2, string state3) =>
+    enableMtf ? mtfStatePoints(state1, 45.0) + mtfStatePoints(state2, 35.0) + mtfStatePoints(state3, 20.0) : 0.0
+
+mtfDisplayMark(string state) =>
+    state == "pass" ? "✓" : state == "fail" ? "×" : "!"
+
+mtfStatusForStates(string state1, string state2, string state3) =>
+    enableMtf and mtfMode == "shadow_soft" and state1 == "fail" and state2 == "fail" ? "block" : enableMtf ? (state1 == "fail" or state2 == "fail" or state3 == "fail" ? "warn" : "pass") : "off"
+
+mtfBlockReasonForStates(string state1, string state2) =>
+    enableMtf and mtfMode == "shadow_soft" and state1 == "fail" and state2 == "fail" ? "mtf_5m_15m_opposite" : "none"
+
+mtfStateJson(string tf, string state, int emaDirection, int dtpDirection, float weight, float points) =>
+    '{"tf":"' + tf + '","status":"' + state + '","ema_dir":"' + dirName(emaDirection) + '","dtp_dir":"' + dirName(dtpDirection) + '","weight":' + str.tostring(weight, "#") + ',"points":' + str.tostring(points, "#.##") + '}'
 
 flowLabelColor(string state, string direction) =>
     state == "activate_lower" or state == "activate_upper" ? color.new(color.blue, 0) : state == "blocked" ? color.new(color.gray, 0) : direction == "short" ? color.new(color.red, 0) : color.new(color.green, 0)
@@ -336,6 +382,13 @@ int dtpDir = dtpDirState
 int dtpPhaseBars = na(dtpStartBar) ? 0 : bar_index - dtpStartBar + 1
 bool dtpConfirmsSd = (dtpDir == 1 and sdTrend == 1) or (dtpDir == -1 and sdTrend == -1)
 string dtpPhase = dtpDir == 0 ? "neutral" : dtpPhaseBars <= dtpEarlyBars ? "early" : dtpPhaseBars > dtpMatureBars and dtpConfirmsSd ? "mature" : dtpConfirmsSd ? "confirmed" : "weakening"
+
+int mtfTf1EmaDir = enableMtf ? request.security(syminfo.tickerid, mtfConfirmTf1, mtfEmaDirValue(), barmerge.gaps_off, barmerge.lookahead_off) : 0
+int mtfTf1DtpDir = enableMtf ? request.security(syminfo.tickerid, mtfConfirmTf1, mtfDtpDirValue(), barmerge.gaps_off, barmerge.lookahead_off) : 0
+int mtfTf2EmaDir = enableMtf ? request.security(syminfo.tickerid, mtfConfirmTf2, mtfEmaDirValue(), barmerge.gaps_off, barmerge.lookahead_off) : 0
+int mtfTf2DtpDir = enableMtf ? request.security(syminfo.tickerid, mtfConfirmTf2, mtfDtpDirValue(), barmerge.gaps_off, barmerge.lookahead_off) : 0
+int mtfTf3EmaDir = enableMtf ? request.security(syminfo.tickerid, mtfConfirmTf3, mtfEmaDirValue(), barmerge.gaps_off, barmerge.lookahead_off) : 0
+int mtfTf3DtpDir = enableMtf ? request.security(syminfo.tickerid, mtfConfirmTf3, mtfDtpDirValue(), barmerge.gaps_off, barmerge.lookahead_off) : 0
 
 float atrVal = maFunc(ta.tr(true), atrLength) * atrMultiplier
 float atrRaw = atrMultiplier != 0.0 ? atrVal / atrMultiplier : atrVal
@@ -575,12 +628,30 @@ string shortSetup = setupShortMrUpper ? "mr_sdUpper" : setupShortTrendLower ? "t
 string longReason = setupLongTrendUpper ? "SD upper trend-continuation long: EMA touch + bull fractal + bull divergence" : setupLongMrLower ? "SD lower mean-reversion long: bull fractal + bull divergence" : "none"
 string shortReason = setupShortMrUpper ? "SD upper mean-reversion short: bear fractal + bear divergence" : setupShortTrendLower ? "SD lower trend-continuation short: EMA touch + bear fractal + bear divergence" : "none"
 
+string mtfTf1LongState = mtfStateForDirection("long", mtfTf1EmaDir, mtfTf1DtpDir)
+string mtfTf2LongState = mtfStateForDirection("long", mtfTf2EmaDir, mtfTf2DtpDir)
+string mtfTf3LongState = mtfStateForDirection("long", mtfTf3EmaDir, mtfTf3DtpDir)
+string mtfTf1ShortState = mtfStateForDirection("short", mtfTf1EmaDir, mtfTf1DtpDir)
+string mtfTf2ShortState = mtfStateForDirection("short", mtfTf2EmaDir, mtfTf2DtpDir)
+string mtfTf3ShortState = mtfStateForDirection("short", mtfTf3EmaDir, mtfTf3DtpDir)
+float mtfLongScore = mtfScoreForStates(mtfTf1LongState, mtfTf2LongState, mtfTf3LongState)
+float mtfShortScore = mtfScoreForStates(mtfTf1ShortState, mtfTf2ShortState, mtfTf3ShortState)
+string mtfLongStatus = mtfStatusForStates(mtfTf1LongState, mtfTf2LongState, mtfTf3LongState)
+string mtfShortStatus = mtfStatusForStates(mtfTf1ShortState, mtfTf2ShortState, mtfTf3ShortState)
+string mtfLongBlockReason = mtfBlockReasonForStates(mtfTf1LongState, mtfTf2LongState)
+string mtfShortBlockReason = mtfBlockReasonForStates(mtfTf1ShortState, mtfTf2ShortState)
+bool mtfLongBlock = mtfLongStatus == "block"
+bool mtfShortBlock = mtfShortStatus == "block"
+
 bool emaWeak = math.abs(calcSlope(emaFast, emaSlopeLookback)) < emaMinAngle or math.abs(slopeSlow) < emaMinAngle or not spacingOk
 bool blockLong = false
 string blockLongReason = ""
 if useDtpFilter and setupLongMrLower and dtpDir == -1 and dtpMrBlocksPhase(dtpMrFilterMode, dtpPhase)
     blockLong := true
     blockLongReason := dtpBlockReasonText("long", dtpMrFilterMode)
+else if mtfLongBlock and longRaw
+    blockLong := true
+    blockLongReason := mtfLongBlockReason
 else if useEmaWeakFilter and setupLongTrendUpper and emaWeak
     blockLong := true
     blockLongReason := "ema_weak"
@@ -590,6 +661,9 @@ string blockShortReason = ""
 if useDtpFilter and setupShortMrUpper and dtpDir == 1 and dtpMrBlocksPhase(dtpMrFilterMode, dtpPhase)
     blockShort := true
     blockShortReason := dtpBlockReasonText("short", dtpMrFilterMode)
+else if mtfShortBlock and shortRaw
+    blockShort := true
+    blockShortReason := mtfShortBlockReason
 else if useEmaWeakFilter and setupShortTrendLower and emaWeak
     blockShort := true
     blockShortReason := "ema_weak"
@@ -625,6 +699,60 @@ else
     missingComponents := not lowerBearFractalSeen ? appendSource(missingComponents, "bear_fractal") : missingComponents
     missingComponents := not bearDivSeen ? appendSource(missingComponents, "bear_divergence") : missingComponents
 missingComponents := missingComponents == "" ? "none" : missingComponents
+
+mtfScoreForDirection(string direction) =>
+    direction == "short" ? mtfShortScore : mtfLongScore
+
+mtfStatusForDirection(string direction) =>
+    direction == "short" ? mtfShortStatus : mtfLongStatus
+
+mtfBlockReasonForDirection(string direction) =>
+    direction == "short" ? mtfShortBlockReason : mtfLongBlockReason
+
+mtfState1ForDirection(string direction) =>
+    direction == "short" ? mtfTf1ShortState : mtfTf1LongState
+
+mtfState2ForDirection(string direction) =>
+    direction == "short" ? mtfTf2ShortState : mtfTf2LongState
+
+mtfState3ForDirection(string direction) =>
+    direction == "short" ? mtfTf3ShortState : mtfTf3LongState
+
+mtfSummaryForDirection(string direction) =>
+    if not enableMtf
+        "off"
+    else
+        string s1 = mtfState1ForDirection(direction)
+        string s2 = mtfState2ForDirection(direction)
+        string s3 = mtfState3ForDirection(direction)
+        "MTF " + mtfConfirmTf1 + mtfDisplayMark(s1) + " " + mtfConfirmTf2 + mtfDisplayMark(s2) + " " + mtfConfirmTf3 + mtfDisplayMark(s3) + " score " + str.tostring(mtfScoreForDirection(direction), "#") + " " + mtfStatusForDirection(direction)
+
+mtfPayloadForDirection(string direction) =>
+    string s1 = mtfState1ForDirection(direction)
+    string s2 = mtfState2ForDirection(direction)
+    string s3 = mtfState3ForDirection(direction)
+    float p1 = mtfStatePoints(s1, 45.0)
+    float p2 = mtfStatePoints(s2, 35.0)
+    float p3 = mtfStatePoints(s3, 20.0)
+    string blockReason = mtfBlockReasonForDirection(direction)
+    jsonStr("entry_tf", timeframe.period) +
+     jsonStr("confirm_tfs", MTF_CONFIRM_TFS) +
+     jsonStr("mtf_status", mtfStatusForDirection(direction)) +
+     jsonNum("mtf_score", mtfScoreForDirection(direction)) +
+     jsonStr("mtf_block_reason", blockReason) +
+     ',"mtf":{"enabled":' + boolText(enableMtf) +
+     ',"mode":"' + mtfMode + '"' +
+     ',"entry_tf":"' + timeframe.period + '"' +
+     ',"confirm_tfs":"' + MTF_CONFIRM_TFS + '"' +
+     ',"score":' + str.tostring(mtfScoreForDirection(direction), "#.##") +
+     ',"status":"' + mtfStatusForDirection(direction) + '"' +
+     ',"block_reason":"' + blockReason + '"' +
+     ',"votes":{"pass":' + str.tostring((s1 == "pass" ? 1 : 0) + (s2 == "pass" ? 1 : 0) + (s3 == "pass" ? 1 : 0), "#") +
+     ',"warn":' + str.tostring((s1 == "warn" ? 1 : 0) + (s2 == "warn" ? 1 : 0) + (s3 == "warn" ? 1 : 0), "#") +
+     ',"fail":' + str.tostring((s1 == "fail" ? 1 : 0) + (s2 == "fail" ? 1 : 0) + (s3 == "fail" ? 1 : 0), "#") + '}' +
+     ',"states":{"tf1":' + mtfStateJson(mtfConfirmTf1, s1, mtfTf1EmaDir, mtfTf1DtpDir, 45.0, p1) +
+     ',"tf2":' + mtfStateJson(mtfConfirmTf2, s2, mtfTf2EmaDir, mtfTf2DtpDir, 35.0, p2) +
+     ',"tf3":' + mtfStateJson(mtfConfirmTf3, s3, mtfTf3EmaDir, mtfTf3DtpDir, 20.0, p3) + '}}'
 
 // -----------------------------------------------------------------------------
 // Position/risk state.
@@ -674,6 +802,7 @@ buildEntryPayload(string eventIdValue, string positionIdValue, string direction,
      jsonInt("activity_score", activityScore) +
      jsonInt("quality_score", activityScore) +
      jsonStr("activity_grade", activityGrade) +
+     mtfPayloadForDirection(direction) +
      jsonStr("sd_zone", sdZone == 1 ? "overbought" : sdZone == -1 ? "oversold" : "normal") +
      jsonStr("sd_trend", sdTrend == 1 ? "up" : sdTrend == -1 ? "down" : "flat") +
      jsonStr("dtp_dir", dtpDir == 1 ? "bullish" : dtpDir == -1 ? "bearish" : "neutral") +
@@ -734,6 +863,7 @@ buildPreAlertPayload(string eventIdValue, string pendingPositionId) =>
      jsonInt("quality_score", activityScore) +
      jsonBool("qualified", true) +
      jsonStr("activity_grade", activityGrade) +
+     mtfPayloadForDirection(candidateDirection) +
      jsonStr("missing_components", missingComponents) +
      jsonBool("lower_window_valid", lowerWindowValid) +
      jsonBool("upper_window_valid", upperWindowValid) +
@@ -807,7 +937,7 @@ bool prepareVisualNow = showFlowLabels and observeNow
 string prepareVisualKey = activityGrade + ":" + candidateDirection + ":" + candidateSetup + ":" + missingComponents + ":" + str.tostring(activityScore, "#")
 if prepareVisualNow and prepareVisualKey != lastPrepareVisualKey
     float prepareY = candidateDirection == "short" ? high + atrVal * 2.4 : low - atrVal * 2.4
-    string prepareText = "观察" + directionDisplayName(candidateDirection) + "\n" + setupDisplayName(candidateSetup) + "\n组件: " + candidateProgressText + "\n下一步: " + candidateWaitText
+    string prepareText = "观察" + directionDisplayName(candidateDirection) + "\n" + setupDisplayName(candidateSetup) + "\n组件: " + candidateComponentText + "\nMTF: " + mtfSummaryForDirection(candidateDirection) + "\n下一步: " + candidateWaitText
     label.new(bar_index, prepareY, prepareText, style=flowLabelStyle(candidateDirection), color=color.new(color.orange, 0), textcolor=color.white, size=size.normal)
     lastPrepareVisualKey := prepareVisualKey
 if not prepareVisualNow and activityScore == 0
@@ -821,7 +951,7 @@ string blockedReason = conflict ? "long_short_conflict" : blockedDirection == "l
 string blockedVisualKey = blockedDirection + ":" + blockedSetup + ":" + blockedReason
 if blockedVisualNow and blockedVisualKey != lastBlockVisualKey
     float blockedY = blockedDirection == "short" ? high + atrVal * 4.0 : low - atrVal * 4.0
-    string blockedText = "过滤" + directionDisplayName(blockedDirection) + "\n" + setupDisplayName(blockedSetup) + "\n组件齐，未开仓\n" + filterActionText(blockedReason, blockedDirection)
+    string blockedText = "过滤" + directionDisplayName(blockedDirection) + "\n" + setupDisplayName(blockedSetup) + "\n组件齐，未开仓\n" + mtfSummaryForDirection(blockedDirection) + "\n" + filterActionText(blockedReason, blockedDirection)
     label.new(bar_index, blockedY, blockedText, style=flowLabelStyle(blockedDirection), color=flowLabelColor("blocked", blockedDirection), textcolor=color.white, size=size.small)
     lastBlockVisualKey := blockedVisualKey
 if not blockedNow and not longRaw and not shortRaw
@@ -849,7 +979,7 @@ if enterLong
         strategy.entry("TV-L", strategy.long, qty=qty, comment=entryComment("long", longSetup))
         strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment="平多 · TP/SL")
         if showFlowLabels
-            label.new(bar_index, low - atrVal * 3.1, "买入做多\n" + setupDisplayName(longSetup) + "\n组件齐 + 过滤通过\n" + dtpEntryFilterText("long", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\nentry " + str.tostring(entryPrice, "#.##"), style=label.style_label_up, color=flowLabelColor("entry", "long"), textcolor=color.white, size=size.normal)
+            label.new(bar_index, low - atrVal * 3.1, "买入做多\n" + setupDisplayName(longSetup) + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("long") + "\n" + dtpEntryFilterText("long", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\nentry " + str.tostring(entryPrice, "#.##"), style=label.style_label_up, color=flowLabelColor("entry", "long"), textcolor=color.white, size=size.normal)
         lowerWindowUsed := setupLongMrLower ? true : lowerWindowUsed
         upperWindowUsed := setupLongTrendUpper ? true : upperWindowUsed
         bullDivSeen := false
@@ -882,7 +1012,7 @@ if enterShort
         strategy.entry("TV-S", strategy.short, qty=qty, comment=entryComment("short", shortSetup))
         strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment="平空 · TP/SL")
         if showFlowLabels
-            label.new(bar_index, high + atrVal * 3.1, "卖出做空\n" + setupDisplayName(shortSetup) + "\n组件齐 + 过滤通过\n" + dtpEntryFilterText("short", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\nentry " + str.tostring(entryPrice, "#.##"), style=label.style_label_down, color=flowLabelColor("entry", "short"), textcolor=color.white, size=size.normal)
+            label.new(bar_index, high + atrVal * 3.1, "卖出做空\n" + setupDisplayName(shortSetup) + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("short") + "\n" + dtpEntryFilterText("short", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\nentry " + str.tostring(entryPrice, "#.##"), style=label.style_label_down, color=flowLabelColor("entry", "short"), textcolor=color.white, size=size.normal)
         upperWindowUsed := setupShortMrUpper ? true : upperWindowUsed
         lowerWindowUsed := setupShortTrendLower ? true : lowerWindowUsed
         bearDivSeen := false
@@ -937,13 +1067,14 @@ plotshape(showComponentMarkers and bearDivNow, "Bear divergence", location=locat
 plot(activePositionId != "" ? activeStop : na, "SL 止损", color=color.new(color.red, 0), style=plot.style_linebr, linewidth=2)
 plot(activePositionId != "" ? activeTarget : na, "TP 目标", color=color.new(color.green, 0), style=plot.style_linebr, linewidth=2)
 
-var table flowStatus = table.new(position.top_right, 2, 7, border_width=1)
+var table flowStatus = table.new(position.top_right, 2, 8, border_width=1)
 string statusDirection = activeDirection == -1 ? "做空" : activeDirection == 1 ? "做多" : blockedNow ? directionDisplayName(blockedDirection) : activityScore > 0 ? directionDisplayName(candidateDirection) : "--"
 string statusText = activePositionId != "" ? "持仓 " + statusDirection : enterLong ? "买入做多" : enterShort ? "卖出做空" : blockedNow ? "过滤" + directionDisplayName(blockedDirection) : observeNow ? "观察" + directionDisplayName(candidateDirection) : lowerWindowValid or upperWindowValid ? "窗口激活" : "等待"
 color statusColor = activePositionId != "" ? flowLabelColor("entry", activeDirection == -1 ? "short" : "long") : blockedNow ? flowLabelColor("blocked", blockedDirection) : observeNow ? color.new(color.orange, 0) : lowerWindowValid ? flowLabelColor("activate_lower", "long") : upperWindowValid ? flowLabelColor("activate_upper", "short") : color.new(color.gray, 20)
 string statusSetup = activePositionId != "" ? setupDisplayName(activeSetup) : blockedNow ? setupDisplayName(blockedSetup) : activityScore > 0 ? setupDisplayName(candidateSetup) : "--"
-string statusComponents = activePositionId != "" ? "组件齐 + 过滤通过" : blockedNow ? "组件齐 · " + filterActionText(blockedReason, blockedDirection) : activityScore > 0 ? candidateProgressText + " · " + candidateWaitText : "--"
+string statusComponents = activePositionId != "" ? "组件齐 + 过滤通过" : blockedNow ? candidateComponentText + " · " + filterActionText(blockedReason, blockedDirection) : activityScore > 0 ? candidateComponentText + " · " + candidateWaitText : "--"
 string statusDtp = dtpStateText(dtpDir, dtpPhase)
+string statusMtf = activeDirection == -1 ? mtfSummaryForDirection("short") : activeDirection == 1 ? mtfSummaryForDirection("long") : blockedNow ? mtfSummaryForDirection(blockedDirection) : activityScore > 0 ? mtfSummaryForDirection(candidateDirection) : enableMtf ? "MTF 等待信号" : "off"
 string statusRisk = activePositionId != "" ? "TP " + str.tostring(activeTarget, "#.##") + " / SL " + str.tostring(activeStop, "#.##") : "--"
 if confirmed
     if showStatusPanel
@@ -959,8 +1090,10 @@ if confirmed
         table.cell(flowStatus, 1, 4, statusComponents, bgcolor=color.new(color.black, 15), text_color=color.white)
         table.cell(flowStatus, 0, 5, "DTP", bgcolor=color.new(color.black, 15), text_color=color.white)
         table.cell(flowStatus, 1, 5, statusDtp, bgcolor=color.new(color.black, 15), text_color=color.white)
-        table.cell(flowStatus, 0, 6, "退出", bgcolor=color.new(color.black, 15), text_color=color.white)
-        table.cell(flowStatus, 1, 6, statusRisk, bgcolor=color.new(color.black, 15), text_color=color.white)
+        table.cell(flowStatus, 0, 6, "MTF", bgcolor=color.new(color.black, 15), text_color=color.white)
+        table.cell(flowStatus, 1, 6, statusMtf, bgcolor=color.new(color.black, 15), text_color=color.white)
+        table.cell(flowStatus, 0, 7, "退出", bgcolor=color.new(color.black, 15), text_color=color.white)
+        table.cell(flowStatus, 1, 7, statusRisk, bgcolor=color.new(color.black, 15), text_color=color.white)
     else
         table.cell(flowStatus, 0, 0, "", bgcolor=color.new(color.black, 100), text_color=color.new(color.white, 100))
         table.cell(flowStatus, 1, 0, "", bgcolor=color.new(color.black, 100), text_color=color.new(color.white, 100))
@@ -976,3 +1109,5 @@ if confirmed
         table.cell(flowStatus, 1, 5, "", bgcolor=color.new(color.black, 100), text_color=color.new(color.white, 100))
         table.cell(flowStatus, 0, 6, "", bgcolor=color.new(color.black, 100), text_color=color.new(color.white, 100))
         table.cell(flowStatus, 1, 6, "", bgcolor=color.new(color.black, 100), text_color=color.new(color.white, 100))
+        table.cell(flowStatus, 0, 7, "", bgcolor=color.new(color.black, 100), text_color=color.new(color.white, 100))
+        table.cell(flowStatus, 1, 7, "", bgcolor=color.new(color.black, 100), text_color=color.new(color.white, 100))

@@ -61,6 +61,10 @@ class _FakeConfig:
         return None
 
     def get_for_environment(self, key, environment, default=None):
+        if key == "ibkr_runtime_technical_pipeline_enabled":
+            return "TRUE"
+        if key == "ibkr_tv_primary_runtime_slim_enabled":
+            return "FALSE"
         return "TRUE" if key.startswith("pb_") else (default or "")
 
 

@@ -20,6 +20,7 @@ from ibkr_api.system.jobs import (
     build_system_scan_summary_response,
     build_system_status_reminder_response,
     build_two_factor_hourly_check_response,
+    build_tv_pre_alert_target_summary_response,
     build_weekly_reauth_followup_response,
     build_weekly_reauth_reminder_response,
 )
@@ -436,6 +437,22 @@ def register_system_job_routes(app, *, deps: SystemDeps, exports: dict[str, Any]
         return response if status_code == 200 else (response, status_code)
 
     exports["custom_system_job_intraday_window_admission"] = custom_system_job_intraday_window_admission
+
+    @app.route("/api/custom/system/jobs/tv_pre_alert_target_summary", methods=["POST"])
+    def custom_system_job_tv_pre_alert_target_summary() -> Response:
+        payload, status_code = build_tv_pre_alert_target_summary_response(
+            pb,
+            payload=request.get_json(silent=True) or {},
+            normalize_environment=normalize_environment,
+            escape_filter_string=escape_filter_string,
+            time_strings=time_strings,
+            emit_system_event=emit_system_event,
+            config_value=config_value,
+        )
+        response = jsonify(payload)
+        return response if status_code == 200 else (response, status_code)
+
+    exports["custom_system_job_tv_pre_alert_target_summary"] = custom_system_job_tv_pre_alert_target_summary
 
     @app.route("/api/custom/system/jobs/monitor_alert_guard", methods=["POST"])
     def custom_system_job_monitor_alert_guard() -> Response:

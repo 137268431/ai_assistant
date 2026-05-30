@@ -354,13 +354,17 @@
               <div class="table-symbol">${escapeHtml(item.symbol || '--')}</div>
               <small>${escapeHtml(item.id || '')}</small>
             </div>
+            ${typeof buildTargetActivationHtml === 'function' ? buildTargetActivationHtml(item) : ''}
           </td>
           <td>${escapeHtml(item.exchange || '--')}</td>
           <td>${escapeHtml(item.date || '--')}</td>
           <td><span class="status-chip ${escapeHtml(item.direction_bias || 'neutral')}">${escapeHtml(item.direction_bias || 'neutral')}</span></td>
           <td>${escapeHtml(Number(item.score || 0).toFixed(1))}</td>
           <td><span class="status-chip ${escapeHtml(item.status || 'candidate')}">${escapeHtml(item.status || 'candidate')}</span></td>
-          <td>${escapeHtml(item.scan_reason || '--')}</td>
+          <td>
+            <div class="reason-copy">${escapeHtml(item.scan_reason || '--')}</div>
+            ${typeof buildTargetMtfContextHtml === 'function' ? buildTargetMtfContextHtml(item) : ''}
+          </td>
           <td>
             <div class="meta-stack">
               <span>${escapeHtml(item.us_time || '--')}</span>

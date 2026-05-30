@@ -30,6 +30,12 @@ SYSTEM_EVENT_HIDDEN_DETAIL_KEYS = {
     "日筛状态",
     "日筛日期",
     "日筛错误",
+    "dedupe_scope",
+    "broker_mode",
+    "data_environment",
+    "summary_window_key",
+    "window_start_ms",
+    "window_end_ms",
     "scan",
     "topup",
 }

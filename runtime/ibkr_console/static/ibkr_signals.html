@@ -2732,6 +2732,27 @@
 
             function buildTvExecutionContextHtml(signal) {
                 const extra = getSignalExtra(signal);
+                const parseObject = (value) => {
+                    if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+                    if (typeof value !== 'string' || !value.trim().startsWith('{')) return {};
+                    try {
+                        const parsed = JSON.parse(value);
+                        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+                    } catch (_) {
+                        return {};
+                    }
+                };
+                const formatTfList = (value) => Array.isArray(value)
+                    ? value.filter(Boolean).join(',')
+                    : String(value || '').trim();
+                const mtf = parseObject(extra.mtf || signal?.mtf);
+                const mtfStatus = String(extra.mtf_status || mtf.status || '').trim();
+                const mtfScore = extra.mtf_score !== undefined && extra.mtf_score !== null && extra.mtf_score !== '' ? extra.mtf_score : mtf.score;
+                const hasMtfScore = mtfScore !== undefined && mtfScore !== null && mtfScore !== '';
+                const mtfBlockReason = String(extra.mtf_block_reason || mtf.block_reason || '').trim();
+                const mtfSummary = mtfStatus
+                    ? `${mtfStatus}${hasMtfScore ? ` / ${formatNumber(mtfScore, 0)}` : ''}`
+                    : '';
                 const sourceText = String(extra.signal_source || extra.source || signal?.source || '').toLowerCase();
                 const hasTvContext = sourceText.includes('tradingview') || sourceText === 'tv' || Boolean(extra.tv_event_id || extra.event_type || extra.position_id || extra.tv_snapshot);
                 if (!hasTvContext) return '';
@@ -2740,6 +2761,10 @@
                     ['script', signal.script_tag || extra.script_tag],
                     ['version', extra.strategy_version || extra.script_version || extra.version],
                     ['timeframe', extra.timeframe_stack || signal.chart_tf || signal.interval],
+                    ['mtf', mtfSummary],
+                    ['entry_tf', extra.entry_tf || mtf.entry_tf],
+                    ['confirm_tfs', formatTfList(extra.confirm_tfs || mtf.confirm_tfs)],
+                    ['mtf_block', mtfBlockReason && mtfBlockReason !== 'none' ? mtfBlockReason : ''],
                     ['position', extra.position_id],
                     ['tv_event_id', extra.tv_event_id],
                 ].filter(([, value]) => String(value || '').trim());

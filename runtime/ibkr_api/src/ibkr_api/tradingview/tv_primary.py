@@ -92,6 +92,65 @@ def _as_object(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _joined_text(value: Any) -> str:
+    if isinstance(value, (list, tuple)):
+        return ",".join(_text(item) for item in value if _text(item))
+    return _text(value)
+
+
+def _mtf_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    extra = _as_object(payload.get("extra"))
+    mtf = _as_object(payload.get("mtf"))
+    extra_mtf = _as_object(extra.get("mtf"))
+    return {**extra_mtf, **mtf}
+
+
+def _entry_tf(payload: dict[str, Any]) -> str:
+    extra = _as_object(payload.get("extra"))
+    mtf = _mtf_payload(payload)
+    return _text(
+        payload.get("entry_tf")
+        or payload.get("chart_tf")
+        or extra.get("entry_tf")
+        or extra.get("chart_tf")
+        or mtf.get("entry_tf")
+    )
+
+
+def _confirm_tfs(payload: dict[str, Any]) -> str:
+    extra = _as_object(payload.get("extra"))
+    mtf = _mtf_payload(payload)
+    return _joined_text(payload.get("confirm_tfs") or extra.get("confirm_tfs") or mtf.get("confirm_tfs"))
+
+
+def _mtf_status(payload: dict[str, Any]) -> str:
+    extra = _as_object(payload.get("extra"))
+    mtf = _mtf_payload(payload)
+    return _lower(payload.get("mtf_status") or extra.get("mtf_status") or mtf.get("status"))
+
+
+def _mtf_score(payload: dict[str, Any]) -> float:
+    extra = _as_object(payload.get("extra"))
+    mtf = _mtf_payload(payload)
+    return _float(payload.get("mtf_score") or extra.get("mtf_score") or mtf.get("score"), 0.0)
+
+
+def _mtf_block_reason(payload: dict[str, Any]) -> str:
+    extra = _as_object(payload.get("extra"))
+    mtf = _mtf_payload(payload)
+    return _text(payload.get("mtf_block_reason") or extra.get("mtf_block_reason") or mtf.get("block_reason"))
+
+
+def _has_mtf_context(payload: dict[str, Any]) -> bool:
+    extra = _as_object(payload.get("extra"))
+    if _mtf_payload(payload):
+        return True
+    for key in ("mtf_status", "mtf_score", "mtf_block_reason", "confirm_tfs"):
+        if payload.get(key) not in (None, "") or extra.get(key) not in (None, ""):
+            return True
+    return False
+
+
 def _interval_text(payload: dict[str, Any]) -> str:
     extra = _as_object(payload.get("extra"))
     return _text(
@@ -109,6 +168,12 @@ def _interval_text(payload: dict[str, Any]) -> str:
 
 def _interval_ms(value: Any) -> int:
     text = _text(value).lower()
+    if "entry=" in text:
+        for part in text.split(";"):
+            key, _, raw_value = part.partition("=")
+            if key.strip() == "entry":
+                text = raw_value.strip()
+                break
     if text.startswith("chart="):
         text = text.split("=", 1)[1].strip()
     if not text:
@@ -378,6 +443,9 @@ def _base_extra(
     api_received_at_ms: int | None = None,
 ) -> dict[str, Any]:
     extra = _as_object(payload.get("extra"))
+    mtf = _mtf_payload(payload)
+    entry_tf = _entry_tf(payload)
+    confirm_tfs = _confirm_tfs(payload)
     activity_score = _float(payload.get("activity_score"), 0.0)
     quality_score = _float(payload.get("quality_score"), activity_score)
     base = {
@@ -388,7 +456,7 @@ def _base_extra(
         "position_id": _text(payload.get("position_id")),
         "script_tag": _text(payload.get("script_tag")),
         "strategy_version": _text(payload.get("strategy_version")),
-        "timeframe_stack": _text(payload.get("timeframe_stack")),
+        "timeframe_stack": _text(payload.get("timeframe_stack") or extra.get("timeframe_stack")),
         "tv_chart_url": _text(payload.get("tv_chart_url")),
         "activity_score": activity_score,
         "quality_score": quality_score,
@@ -396,6 +464,19 @@ def _base_extra(
         "tv_snapshot": _as_object(payload.get("tv_snapshot")),
         "reason": _text(payload.get("reason") or extra.get("reason")),
     }
+    if entry_tf:
+        base["entry_tf"] = entry_tf
+    if confirm_tfs:
+        base["confirm_tfs"] = confirm_tfs
+    if _has_mtf_context(payload):
+        base.update(
+            {
+                "mtf": mtf,
+                "mtf_status": _mtf_status(payload),
+                "mtf_score": _mtf_score(payload),
+                "mtf_block_reason": _mtf_block_reason(payload),
+            }
+        )
     return _extra_with_latency_trace(base, payload, api_received_at_ms=api_received_at_ms)
 
 
@@ -492,6 +573,47 @@ def _load_today_targets(pb: Any, *, date: str, environment: str, escape_filter: 
     return [dict(row) for row in (rows or []) if isinstance(row, dict)]
 
 
+def _activation_created_text(payload: dict[str, Any]) -> str:
+    explicit = _text(payload.get("us_time") or payload.get("time") or payload.get("timestamp"))
+    if explicit:
+        return explicit
+    bar_ms = _payload_bar_open_ms(payload)
+    if bar_ms > 0:
+        try:
+            return datetime.fromtimestamp(bar_ms / 1000.0, ET or timezone.utc).isoformat()
+        except Exception:
+            pass
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _target_activation_extra(
+    existing_extra: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    event_id: str,
+) -> dict[str, Any]:
+    bar_ms = _payload_bar_open_ms(payload)
+    first_bar_ms = _int(existing_extra.get("first_bar_time_ms"), 0) or bar_ms
+    result = {
+        "activation_source": _text(existing_extra.get("activation_source")) or TRADINGVIEW_SOURCE,
+        "first_tv_event_id": _text(existing_extra.get("first_tv_event_id")) or event_id,
+        "first_bar_time_ms": first_bar_ms,
+        "first_created": _text(existing_extra.get("first_created")) or _activation_created_text(payload),
+        "last_tv_event_id": event_id,
+        "last_bar_time_ms": bar_ms,
+        "last_created": _activation_created_text(payload),
+    }
+    if _has_mtf_context(payload):
+        result.update(
+            {
+                "mtf_last_status": _mtf_status(payload),
+                "mtf_last_score": _mtf_score(payload),
+                "mtf_last_block_reason": _mtf_block_reason(payload),
+            }
+        )
+    return {key: value for key, value in result.items() if value not in ("", None)}
+
+
 def _target_sort_key(row: dict[str, Any]) -> tuple[float, float, float, float, int, str]:
     extra = _as_object(row.get("extra"))
     score = _float(row.get("score"), _float(extra.get("activity_score"), 0.0))
@@ -554,7 +676,10 @@ def _upsert_target(
     if not symbol:
         raise TvPrimaryError("missing_symbol")
     date = _market_date(payload)
+    existing = _load_target(pb, symbol=symbol, date=date, environment=environment, escape_filter=escape_filter)
+    existing_extra = _as_object((existing or {}).get("extra"))
     extra = {
+        **existing_extra,
         **_base_extra(payload, event_id, event_type),
         "qualified": parse_boolean(payload.get("qualified"), True),
         "direction_bias": _direction_bias(payload),
@@ -563,6 +688,7 @@ def _upsert_target(
         "relative_opening_volume": _float(payload.get("relative_opening_volume"), 0.0),
         "opening_range_atr_pct": _float(payload.get("opening_range_atr_pct"), 0.0),
         "gap_pct": _float(payload.get("gap_pct"), 0.0),
+        **_target_activation_extra(existing_extra, payload, event_id=event_id),
     }
     direction_bias = extra["direction_bias"] if extra["direction_bias"] in {"long", "short", "neutral"} else "neutral"
     record = {
@@ -579,7 +705,6 @@ def _upsert_target(
         "environment": environment,
         "extra": extra,
     }
-    existing = _load_target(pb, symbol=symbol, date=date, environment=environment, escape_filter=escape_filter)
     if existing and existing.get("id"):
         saved = pb.update_record("ibkr_targets", str(existing.get("id")), record)
     else:
@@ -638,6 +763,17 @@ def _route_entry(
         raise TvPrimaryError("invalid_stop_loss")
     if take_profit <= 0:
         raise TvPrimaryError("invalid_take_profit")
+
+    if _mtf_status(payload) == "block":
+        return {
+            "ok": False,
+            "rejected": True,
+            "reason": "mtf_blocked",
+            "target": "",
+            "id": "",
+            "mtf": _mtf_payload(payload),
+            "mtf_block_reason": _mtf_block_reason(payload),
+        }, 200
 
     window_ok, window = _entry_window_status(payload, config_value=config_value, environment=broker_mode)
     if not window_ok:
@@ -793,7 +929,7 @@ def _route_reverse(
         "data_environment": environment,
         "direction": side,
         "source": TRADINGVIEW_SOURCE,
-        "priority": 10 if event_type == "exit" else 9,
+        "priority": 9,
         "strength": "strong",
         "score": _float(payload.get("quality_score"), 100.0),
         "triggered_signals": [item for item in (signal_id, _text(payload.get("position_id")), event_id) if item],
@@ -931,6 +1067,7 @@ def process_tv_primary_event(
             "outside_tv_entry_window",
             "no_new_entry_after",
             "target_not_active_by_activity_rank",
+            "mtf_blocked",
             "quality_window_rank_too_low",
             "activity_score_too_low_for_late_window",
             "quality_score_too_low_for_late_window",

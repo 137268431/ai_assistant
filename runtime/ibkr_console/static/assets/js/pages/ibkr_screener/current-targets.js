@@ -83,6 +83,137 @@
       return url ? `<a class="mini-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>` : '';
     }
 
+    function getTargetExtra(row) {
+      return typeof parseMaybeObject === 'function' ? parseMaybeObject(row?.extra) : getLifecycleContextObject(row?.extra);
+    }
+
+    function getTargetMtfObject(row) {
+      const extra = getTargetExtra(row);
+      const direct = typeof parseMaybeObject === 'function' ? parseMaybeObject(row?.mtf) : getLifecycleContextObject(row?.mtf);
+      const nested = typeof parseMaybeObject === 'function' ? parseMaybeObject(extra.mtf) : getLifecycleContextObject(extra.mtf);
+      return Object.keys(direct || {}).length ? direct : nested;
+    }
+
+    function pickTargetContextValue(row, keys) {
+      const extra = getTargetExtra(row);
+      const mtf = getTargetMtfObject(row);
+      const sources = [row || {}, extra, mtf];
+      for (const source of sources) {
+        for (const key of keys) {
+          const value = source?.[key];
+          if (value !== undefined && value !== null && value !== '') return value;
+        }
+      }
+      return '';
+    }
+
+    function formatTargetListText(value) {
+      if (Array.isArray(value)) return value.filter(Boolean).join(',');
+      return String(value || '').trim();
+    }
+
+    function formatTargetContextTime(value) {
+      const text = String(value || '').trim();
+      if (!text) return '';
+      const numeric = Number(text);
+      if (Number.isFinite(numeric) && numeric > 0) {
+        const ms = numeric > 1000000000000 ? numeric : numeric * 1000;
+        const date = new Date(ms);
+        if (!Number.isNaN(date.getTime())) {
+          return new Intl.DateTimeFormat('en-US', {
+            timeZone: 'America/New_York',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+          }).format(date);
+        }
+      }
+      const parsed = new Date(text);
+      if (!Number.isNaN(parsed.getTime()) && typeof formatMarketTime === 'function') {
+        return formatMarketTime(text, 'short');
+      }
+      return text;
+    }
+
+    function getMtfTone(status) {
+      const key = String(status || '').trim().toLowerCase();
+      if (key === 'pass') return 'active';
+      if (key === 'warn') return 'candidate';
+      if (key === 'block' || key === 'fail') return 'stale';
+      return 'neutral';
+    }
+
+    function buildTargetMtfContextHtml(row, { compact = false } = {}) {
+      const mtf = getTargetMtfObject(row);
+      const status = String(pickTargetContextValue(row, ['mtf_last_status', 'mtf_status']) || mtf.status || '').trim();
+      const pickedScore = pickTargetContextValue(row, ['mtf_last_score', 'mtf_score']);
+      const scoreValue = pickedScore !== '' ? pickedScore : mtf.score;
+      const entryTf = String(pickTargetContextValue(row, ['entry_tf', 'chart_tf']) || mtf.entry_tf || '').trim();
+      const confirmTfs = formatTargetListText(pickTargetContextValue(row, ['confirm_tfs']) || mtf.confirm_tfs);
+      const blockReason = String(pickTargetContextValue(row, ['mtf_last_block_reason', 'mtf_block_reason', 'block_reason']) || mtf.block_reason || '').trim();
+      const stack = String(pickTargetContextValue(row, ['timeframe_stack']) || mtf.timeframe_stack || '').trim();
+      const hasScore = scoreValue !== undefined && scoreValue !== null && scoreValue !== '';
+      if (!status && !hasScore && !entryTf && !confirmTfs && !stack) return '';
+      const chips = [
+        status ? statusChip(`MTF ${status}`, getMtfTone(status)) : '',
+        hasScore ? statusChip(`score ${formatNumber(scoreValue, 0)}`, getMtfTone(status)) : '',
+        entryTf ? statusChip(`entry ${entryTf}`, 'config') : '',
+        confirmTfs ? statusChip(`confirm ${confirmTfs}`, 'neutral') : '',
+        blockReason && blockReason !== 'none' ? statusChip(blockReason, 'stale') : '',
+      ].filter(Boolean).join('');
+      const stackLine = stack ? `<div class="muted mono">${escapeHtml(stack)}</div>` : '';
+      if (compact) return `<div class="pill-row">${chips}</div>${stackLine}`;
+      return `
+        <div class="reason-block" style="margin-top:8px;">
+          <div class="reason-label">MTF 多时间维度</div>
+          <div class="pill-row">${chips}</div>
+          ${stackLine}
+        </div>
+      `;
+    }
+
+    function buildTargetActivationHtml(row, { compact = false } = {}) {
+      const source = String(pickTargetContextValue(row, ['activation_source', 'source']) || '').trim();
+      const firstEvent = String(pickTargetContextValue(row, ['first_tv_event_id']) || '').trim();
+      const lastEvent = String(pickTargetContextValue(row, ['last_tv_event_id', 'tv_event_id']) || '').trim();
+      const firstBar = formatTargetContextTime(pickTargetContextValue(row, ['first_bar_time_ms']));
+      const lastBar = formatTargetContextTime(pickTargetContextValue(row, ['last_bar_time_ms', 'bar_time_ms']));
+      const firstCreated = formatTargetContextTime(pickTargetContextValue(row, ['first_created']));
+      const rank = pickTargetContextValue(row, ['activity_rank']);
+      const rankReason = String(pickTargetContextValue(row, ['rank_reason']) || '').trim();
+      const subscriptionRank = pickTargetContextValue(row, ['subscription_rank']);
+      const subscriptionSelected = pickTargetContextValue(row, ['subscription_selected']);
+      const withinBudget = pickTargetContextValue(row, ['within_subscription_budget']);
+      const subscriptionSelectedBool = typeof normalizeTruth === 'function' ? normalizeTruth(subscriptionSelected) : Boolean(subscriptionSelected);
+      const withinBudgetBool = typeof normalizeTruth === 'function' ? normalizeTruth(withinBudget) : Boolean(withinBudget);
+      const chips = [
+        source ? statusChip(`src ${source}`, 'config') : '',
+        rank ? statusChip(`rank ${rank}`, 'active') : '',
+        subscriptionRank ? statusChip(`sub ${subscriptionRank}`, subscriptionSelectedBool ? 'active' : 'candidate') : '',
+        withinBudget !== '' ? statusChip(withinBudgetBool ? 'budget yes' : 'budget no', withinBudgetBool ? 'active' : 'stale') : '',
+      ].filter(Boolean).join('');
+      const lines = [
+        firstEvent ? `first ${firstEvent}` : '',
+        firstBar ? `first bar ${firstBar}` : '',
+        firstCreated ? `created ${firstCreated}` : '',
+        lastEvent ? `last ${lastEvent}` : '',
+        lastBar ? `last bar ${lastBar}` : '',
+        rankReason ? `rank ${rankReason}` : '',
+      ].filter(Boolean);
+      if (!chips && !lines.length) return '';
+      const details = lines.length ? `<div class="muted mono">${escapeHtml(lines.join(' · '))}</div>` : '';
+      if (compact) return `<div class="pill-row">${chips}</div>${details}`;
+      return `
+        <div class="reason-block" style="margin-top:8px;">
+          <div class="reason-label">激活来源 / 排名</div>
+          <div class="pill-row">${chips}</div>
+          ${details}
+        </div>
+      `;
+    }
+
     function buildSignalUrl(symbol, marketDate) {
       return buildPageUrl('/ibkr_signals.html', {
         date: marketDate || '',
@@ -216,6 +347,7 @@
 
             ${renderCurrentSignalReason(row) ? buildMobileSection('信号拒绝/终止原因', renderCurrentSignalReason(row)) : ''}
             ${buildMobileSection('筛选理由', escapeHtml(row.scan_reason || row.note || '--'))}
+            ${(buildTargetActivationHtml(row, { compact: true }) || buildTargetMtfContextHtml(row, { compact: true })) ? buildMobileSection('TV 激活 / MTF', `${buildTargetActivationHtml(row, { compact: true })}${buildTargetMtfContextHtml(row, { compact: true })}`) : ''}
             ${renderSymbolProfileSummary(row) ? buildMobileSection('Symbol profile', renderSymbolProfileSummary(row)) : ''}
             ${buildMobileSection('当前阶段', `<strong>${escapeHtml(row.workflow_label || formatCurrentStateLabel(row.workflow_stage || row.attention_state || 'watch'))}</strong> · ${escapeHtml(row.workflow_summary || '--')}`)}
             ${renderExecutionLayerBlock(row)}
@@ -1006,6 +1138,7 @@
           </div>
 
           ${buildMobileSection('理由', escapeHtml(item.scan_reason || '--'))}
+          ${(buildTargetActivationHtml(item, { compact: true }) || buildTargetMtfContextHtml(item, { compact: true })) ? buildMobileSection('TV 激活 / MTF', `${buildTargetActivationHtml(item, { compact: true })}${buildTargetMtfContextHtml(item, { compact: true })}`) : ''}
 
           <div class="mobile-data-actions">
             ${buildTvChartLink(item, 'TV')}
@@ -1338,6 +1471,7 @@
               <span class="muted mono">${escapeHtml(row.latest_us_time || '--')}</span><br>
               <span class="muted">${escapeHtml(row.exchange || '--')} / ${escapeHtml(row.industry || '--')}</span>
               ${renderSymbolProfileSummary(row) ? `<div style="margin-top:8px;">${renderSymbolProfileSummary(row)}</div>` : ''}
+              ${buildTargetActivationHtml(row)}
             </td>
             <td>
               ${statusChip(row.target_status || '--', row.target_status || '')}<br>
@@ -1345,6 +1479,7 @@
               <span class="muted">target ${escapeHtml(formatNumber(row.target_score || 0, 1))} · tradability ${escapeHtml(formatNumber(row.tradability_score || 0, 0))}</span>
               ${renderExecutionLayerPills(row)}
               ${renderAdmissionControlRow(row)}
+              ${buildTargetMtfContextHtml(row)}
             </td>
             <td>
               ${statusChip(formatCurrentStateLabel(formatCurrentSignalState(row)), formatCurrentSignalState(row))}<br>
