@@ -93,6 +93,8 @@
             );
             const traceTimeline = Array.isArray(displayPayload?.traceTimeline) ? displayPayload.traceTimeline : [];
             const backtestEvents = Array.isArray(displayPayload?.backtestEvents) ? displayPayload.backtestEvents : [];
+            const tvEvents = Array.isArray(displayPayload?.tvEvents) ? displayPayload.tvEvents : [];
+            const orderEvents = Array.isArray(displayPayload?.orderEvents) ? displayPayload.orderEvents : [];
             const backtestLongEntryMarkers = buildBacktestEventScatter(
                 backtestEvents,
                 sortedFormalBars,
@@ -130,6 +132,54 @@
                     return type.startsWith('exit_') && type !== 'exit_take_profit' && type !== 'exit_stop_loss';
                 },
                 (event, bar) => event.price || bar.close
+            );
+            const tvPreAlertLongMarkers = buildBacktestEventScatter(
+                tvEvents,
+                sortedFormalBars,
+                '#22D3EE',
+                (event) => String(event?.event_type || '').toLowerCase() === 'pre_alert' && String(event?.direction || '').toLowerCase() !== 'short',
+                (event, bar) => event.price || Number(bar.low || 0) - markerOffset(indicatorMap.get(Number(bar.bar_time_ms || 0)) || {}, bar, 2.9),
+                formatTvEventLabel
+            );
+            const tvPreAlertShortMarkers = buildBacktestEventScatter(
+                tvEvents,
+                sortedFormalBars,
+                '#67E8F9',
+                (event) => String(event?.event_type || '').toLowerCase() === 'pre_alert' && String(event?.direction || '').toLowerCase() === 'short',
+                (event, bar) => event.price || Number(bar.high || 0) + markerOffset(indicatorMap.get(Number(bar.bar_time_ms || 0)) || {}, bar, 2.9),
+                formatTvEventLabel
+            );
+            const tvExitMarkers = buildBacktestEventScatter(
+                tvEvents,
+                sortedFormalBars,
+                '#60A5FA',
+                (event) => String(event?.event_type || '').toLowerCase() === 'exit',
+                (event, bar) => event.price || bar.close,
+                formatTvEventLabel
+            );
+            const liveLongEntryMarkers = buildBacktestEventScatter(
+                orderEvents,
+                sortedFormalBars,
+                '#16A34A',
+                (event) => String(event?.event_type || '').toLowerCase() === 'live_entry' && String(event?.direction || '').toLowerCase() !== 'short',
+                (event, bar) => event.price || bar.low,
+                formatOrderEventLabel
+            );
+            const liveShortEntryMarkers = buildBacktestEventScatter(
+                orderEvents,
+                sortedFormalBars,
+                '#DC2626',
+                (event) => String(event?.event_type || '').toLowerCase() === 'live_entry' && String(event?.direction || '').toLowerCase() === 'short',
+                (event, bar) => event.price || bar.high,
+                formatOrderEventLabel
+            );
+            const liveExitMarkers = buildBacktestEventScatter(
+                orderEvents,
+                sortedFormalBars,
+                '#FACC15',
+                (event) => String(event?.event_type || '').toLowerCase().startsWith('live_exit'),
+                (event, bar) => event.price || bar.close,
+                formatOrderEventLabel
             );
             const previewCandidateSignals = buildSignalScatter(
                 traceTimeline
@@ -291,9 +341,11 @@
             document.getElementById('chartPanelTitle').textContent = `${currentSymbol} · ${getIntervalLabel(currentInterval)}`;
             const compareSummary = comparePayload?.comparison?.summary || null;
             const barsMetaText = `${sortedFormalBars.length} bars${previewBar ? ' + live preview' : ''}`;
+            const preAlertCount = tvEvents.filter((event) => String(event?.event_type || '').toLowerCase() === 'pre_alert').length;
+            const liveExitCount = orderEvents.filter((event) => String(event?.event_type || '').toLowerCase().startsWith('live_exit')).length;
             document.getElementById('chartMeta').textContent = compareSummary
                 ? `${barsMetaText} · ${indicators.length} ind · ${signals.length} signals · compare bar ${compareSummary.bar_mismatch_count || 0} / ind ${compareSummary.indicator_mismatch_count || 0} / sig ${compareSummary.signal_mismatch_count || 0}`
-                : `${barsMetaText} · ${indicators.length} ind · ${signals.length} signals${backtestEvents.length ? ` · ${backtestEvents.length} backtest events` : ''} · ${latest?.us_time || sortedFormalBars[sortedFormalBars.length - 1]?.us_time || '--'}`;
+                : `${barsMetaText} · ${indicators.length} ind · ${signals.length} signals${preAlertCount ? ` · TV pre_alert ${preAlertCount}` : ''}${liveExitCount ? ` · exits ${liveExitCount}` : ''}${backtestEvents.length ? ` · ${backtestEvents.length} backtest events` : ''} · ${latest?.us_time || sortedFormalBars[sortedFormalBars.length - 1]?.us_time || '--'}`;
             note.textContent = !indicators.length
                 ? '当前窗口的 bars 尚未形成可展示的指标快照；EMA / VWAP / Osc 将暂时不可见。'
                 : currentInterval === '5m'
@@ -312,6 +364,9 @@
             }
             if (currentBacktestRunId && backtestEvents.length) {
                 note.textContent += ` 已叠加回测 ${currentBacktestRunId} 的买入 / 卖出 / TP / SL 标记。`;
+            }
+            if (preAlertCount || liveExitCount) {
+                note.textContent += ` 已叠加 TV pre_alert ${preAlertCount} 个、真实退出 ${liveExitCount} 个。`;
             }
             const freshnessStatus = String(payload?.meta?.freshness?.status || '').trim().toLowerCase();
             if (freshnessStatus && freshnessStatus !== 'ready') {
@@ -419,6 +474,12 @@
                 ...(isTradeSignalInterval() && chartLayerState.tradeSignals ? [
                     buildMarkerScatterSeries('LONG Signal', longSignals, withMainLabelLanes({ color: '#48BB78', symbol: 'circle', symbolSize: 12, showLabel: showTradeLabels, labelPosition: 'bottom', shadowBlur: 14, shadowColor: 'rgba(72,187,120,0.28)' })),
                     buildMarkerScatterSeries('SHORT Signal', shortSignals, withMainLabelLanes({ color: '#FC8181', symbol: 'circle', symbolSize: 12, showLabel: showTradeLabels, labelPosition: 'top', shadowBlur: 14, shadowColor: 'rgba(252,129,129,0.28)' })),
+                    buildMarkerScatterSeries('TV pre_alert Long', tvPreAlertLongMarkers, withMainLabelLanes({ color: '#22D3EE', symbol: 'diamond', symbolSize: 15, showLabel: true, labelPosition: 'bottom', shadowBlur: 16, shadowColor: 'rgba(34,211,238,0.34)' })),
+                    buildMarkerScatterSeries('TV pre_alert Short', tvPreAlertShortMarkers, withMainLabelLanes({ color: '#67E8F9', symbol: 'diamond', symbolSize: 15, showLabel: true, labelPosition: 'top', shadowBlur: 16, shadowColor: 'rgba(103,232,249,0.34)' })),
+                    buildMarkerScatterSeries('TV Exit', tvExitMarkers, withMainLabelLanes({ color: '#60A5FA', symbol: 'rect', symbolSize: 12, showLabel: showTradeLabels, labelPosition: 'top', shadowBlur: 12, shadowColor: 'rgba(96,165,250,0.28)' })),
+                    buildMarkerScatterSeries('Live Buy', liveLongEntryMarkers, withMainLabelLanes({ color: '#16A34A', symbol: 'pin', symbolSize: 14, showLabel: showTradeLabels, labelPosition: 'bottom', shadowBlur: 12, shadowColor: 'rgba(22,163,74,0.28)' })),
+                    buildMarkerScatterSeries('Live Sell', liveShortEntryMarkers, withMainLabelLanes({ color: '#DC2626', symbol: 'pin', symbolRotate: 180, symbolSize: 14, showLabel: showTradeLabels, labelPosition: 'top', shadowBlur: 12, shadowColor: 'rgba(220,38,38,0.28)' })),
+                    buildMarkerScatterSeries('Live Exit', liveExitMarkers, withMainLabelLanes({ color: '#FACC15', symbol: 'rect', symbolSize: 13, showLabel: true, labelPosition: 'top', shadowBlur: 14, shadowColor: 'rgba(250,204,21,0.3)' })),
                     buildMarkerScatterSeries('Blocked Trace', blockedTraceMarkers, withMainLabelLanes({ color: '#F97316', symbol: 'diamond', symbolSize: 13, showLabel: showTradeLabels, labelPosition: 'bottom', shadowBlur: 12, shadowColor: 'rgba(249,115,22,0.28)' })),
                     buildMarkerScatterSeries('Preview Signal', previewCandidateSignals, withMainLabelLanes({ color: '#FBBF24', symbol: 'diamond', symbolSize: 13, showLabel: showTradeLabels, labelPosition: 'top', shadowBlur: 12, shadowColor: 'rgba(251,191,36,0.26)' })),
                     buildMarkerScatterSeries('Backtest Buy', backtestLongEntryMarkers, withMainLabelLanes({ color: '#22C55E', symbol: 'pin', symbolSize: 14, showLabel: showTradeLabels, labelPosition: 'bottom', shadowBlur: 14, shadowColor: 'rgba(34,197,94,0.28)' })),

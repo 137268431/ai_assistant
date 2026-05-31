@@ -239,6 +239,10 @@
             const indicators = Array.isArray(payload?.indicators) ? payload.indicators : [];
             const signals = Array.isArray(payload?.signals) ? payload.signals : [];
             const backtestEvents = Array.isArray(payload?.backtestEvents) ? payload.backtestEvents : [];
+            const tvEvents = Array.isArray(payload?.tvEvents) ? payload.tvEvents : [];
+            const orderEvents = Array.isArray(payload?.orderEvents) ? payload.orderEvents : [];
+            const preAlertCount = tvEvents.filter((event) => String(event?.event_type || '').toLowerCase() === 'pre_alert').length;
+            const exitCount = orderEvents.filter((event) => String(event?.event_type || '').toLowerCase().startsWith('live_exit')).length;
             const focus = bars.length ? buildContext(payload, getEffectiveCursorIndex(payload), selectedSignalId) : null;
             const focusBar = focus?.bar || null;
             const latestBar = bars.length ? bars[bars.length - 1] : null;
@@ -250,7 +254,7 @@
             const freshnessState = getChartFreshnessChipState(payload);
             const chips = [
                 { text: `${currentSymbol || '--'} · ${getIntervalLabel(currentInterval)} · ${getRangeShortLabel(currentRangeKey)}`, className: currentSymbol ? '' : 'placeholder', title: getRangeLabel(currentRangeKey) },
-                { text: `${bars.length} bars · ${indicators.length} ind · ${signals.length} sig${backtestEvents.length ? ` · BT ${backtestEvents.length}` : ''}`, className: chartWorkspaceState === 'loading' ? 'loading' : '', title: '当前图表窗口实际绘制的数据量。' },
+                { text: `${bars.length} bars · ${indicators.length} ind · ${signals.length} sig${preAlertCount ? ` · PA ${preAlertCount}` : ''}${exitCount ? ` · Exit ${exitCount}` : ''}${backtestEvents.length ? ` · BT ${backtestEvents.length}` : ''}`, className: chartWorkspaceState === 'loading' ? 'loading' : '', title: '当前图表窗口实际绘制的数据量。PA 表示 TV pre_alert 入池事件。' },
                 { text: `Focus ${focusBar ? String(focusBar.us_time || '--').slice(5) : '--'}`, className: focusBar ? '' : 'placeholder', title: '当前复盘焦点时间。' },
                 { text: `Latest ${latestBar ? String(latestBar.us_time || '--').slice(5) : '--'}`, className: latestBar ? '' : 'placeholder', title: '当前窗口最后一根 bar。' },
                 { text: stateBadge.text.replace('工作区 ', ''), className: stateBadge.className, title: '图表工作区状态。' },
@@ -271,6 +275,10 @@
             const indicators = Array.isArray(payload?.indicators) ? payload.indicators : [];
             const signals = Array.isArray(payload?.signals) ? payload.signals : [];
             const backtestEvents = Array.isArray(payload?.backtestEvents) ? payload.backtestEvents : [];
+            const tvEvents = Array.isArray(payload?.tvEvents) ? payload.tvEvents : [];
+            const orderEvents = Array.isArray(payload?.orderEvents) ? payload.orderEvents : [];
+            const preAlertCount = tvEvents.filter((event) => String(event?.event_type || '').toLowerCase() === 'pre_alert').length;
+            const exitCount = orderEvents.filter((event) => String(event?.event_type || '').toLowerCase().startsWith('live_exit')).length;
             const focus = bars.length ? buildContext(payload, getEffectiveCursorIndex(payload), selectedSignalId) : null;
             const focusIndicator = focus?.indicator || null;
             const focusBar = focus?.bar || null;
@@ -282,6 +290,8 @@
                 { text: `K线 ${bars.length}`, title: '当前图表窗口实际绘制的 bars 数量。' },
                 { text: `指标 ${indicators.length}`, title: '当前窗口成功匹配到的指标快照数量。' },
                 { text: `信号 ${signals.length}`, title: '当前窗口内的交易信号数量。' },
+                ...(preAlertCount ? [{ text: `pre_alert ${preAlertCount}`, title: '当前窗口内 TradingView pre_alert 入池候选事件。' }] : []),
+                ...(exitCount ? [{ text: `退出 ${exitCount}`, title: '当前窗口内真实订单退出事件，含 EOD 强制平仓。' }] : []),
                 ...(backtestEvents.length ? [{ text: `回测 ${backtestEvents.length}`, title: '当前窗口内叠加的回测买卖事件。' }] : []),
                 { text: `范围 ${getRangeShortLabel(currentRangeKey)}`, title: getRangeLabel(currentRangeKey) },
                 { text: `焦点 ${focusBar ? String(focusBar.us_time || '--').slice(5) : '--'}`, title: '当前 focus bar 时间。' },
@@ -325,9 +335,13 @@
             const traceTimeline = Array.isArray(payload?.traceTimeline) ? payload.traceTimeline : [];
             const traceMap = new Map(traceTimeline.map((item) => [Number(item?.bar_time_ms || 0), item]));
             const signals = Array.isArray(payload?.signals) ? payload.signals : [];
+            const tvEvents = Array.isArray(payload?.tvEvents) ? payload.tvEvents : [];
+            const orderEvents = Array.isArray(payload?.orderEvents) ? payload.orderEvents : [];
             const safeIndex = Math.min(Math.max(Number(index) || 0, 0), bars.length - 1);
             const bar = bars[safeIndex] || null;
             const signalMatches = signals.filter((item) => Number(item?.bar_time_ms || 0) === Number(bar?.bar_time_ms || 0));
+            const tvEventMatches = tvEvents.filter((item) => Number(item?.bar_time_ms || 0) === Number(bar?.bar_time_ms || 0));
+            const orderEventMatches = orderEvents.filter((item) => Number(item?.bar_time_ms || 0) === Number(bar?.bar_time_ms || 0));
             const activeSignal = signalMatches.find((item) => String(item?.signal_id || item?.id || '') === String(signalId || ''))
                 || signalMatches[0]
                 || null;
@@ -343,6 +357,8 @@
                 indicator: exactIndicator || (isPreviewBar ? null : payload?.latestIndicator || null),
                 signalMatches,
                 activeSignal,
+                tvEventMatches,
+                orderEventMatches,
                 activeTraceSignal: traceSignalKey && String(signalId || '') === traceSignalKey ? traceSignal : null,
                 trace: exactTrace,
             };
@@ -357,11 +373,13 @@
         function getSignalBarIndices(payload) {
             const bars = Array.isArray(payload?.bars) ? payload.bars : [];
             const signals = Array.isArray(payload?.signals) ? payload.signals : [];
-            if (!bars.length || !signals.length) return [];
+            const tvEvents = Array.isArray(payload?.tvEvents) ? payload.tvEvents : [];
+            const orderEvents = Array.isArray(payload?.orderEvents) ? payload.orderEvents : [];
+            if (!bars.length || (!signals.length && !tvEvents.length && !orderEvents.length)) return [];
             const indexByMs = new Map(bars.map((bar, index) => [Number(bar?.bar_time_ms || 0), index]));
             return Array.from(new Set(
-                signals
-                    .map((signal) => indexByMs.get(Number(signal?.bar_time_ms || 0)))
+                [...signals, ...tvEvents, ...orderEvents]
+                    .map((item) => indexByMs.get(Number(item?.bar_time_ms || 0)))
                     .filter((index) => Number.isInteger(index) && index >= 0)
             )).sort((a, b) => a - b);
         }
@@ -498,7 +516,9 @@
             const deltaClass = !Number.isFinite(deltaValue) ? '' : deltaValue >= 0 ? 'positive' : 'negative';
             const focusLabel = hoverBarIndex >= 0 ? 'Cursor' : 'Focus';
             const compact = isCompactViewport();
-            const signalLabel = signal ? buildTradeSignalLabel(signal) : (isTradeSignalInterval() ? 'No trade signal' : 'Labels 仅 5m');
+            const signalLabel = signal
+                ? buildTradeSignalLabel(signal)
+                : (context?.tvEventMatches?.[0] ? getTvEventSummary(context.tvEventMatches[0]) : context?.orderEventMatches?.[0] ? getOrderEventSummary(context.orderEventMatches[0]) : (isTradeSignalInterval() ? 'No trade signal' : 'Labels 仅 5m'));
             const decisionSignal = getDecisionSignalContext(context);
             const riskSignal = signal || decisionSignal.traceSignal || null;
             const traceStage = getTraceStage(context?.trace);
@@ -581,10 +601,14 @@
             const cursorState = chartPointerLocked ? 'Locked cursor' : (hoverBarIndex >= 0 ? 'Hover cursor' : 'Latest focus');
             const signalPrimary = traceStage
                 ? traceLabel
-                : (signal ? traceLabel : (isTradeSignalInterval() ? '暂无信号' : '标签仅 5m'));
+                : (signal ? traceLabel : (context?.tvEventMatches?.[0] ? getTvEventSummary(context.tvEventMatches[0]) : context?.orderEventMatches?.[0] ? getOrderEventSummary(context.orderEventMatches[0]) : (isTradeSignalInterval() ? '暂无信号' : '标签仅 5m')));
             const signalSecondary = indicator
                 ? `CRSI ${formatNumber(indicator.crsi)} · OBV ${formatNumber(indicator.obv_rsi)} · ATR ${formatPercent(indicator.atr_pct)}`
                 : (isPreviewBar ? '预览 bar 收盘后生成 Osc 指标' : '--');
+            const eventSecondary = [
+                ...(Array.isArray(context?.tvEventMatches) ? context.tvEventMatches.slice(0, 2).map(getTvEventSummary) : []),
+                ...(Array.isArray(context?.orderEventMatches) ? context.orderEventMatches.slice(0, 2).map(getOrderEventSummary) : []),
+            ].join(' · ');
             const riskState = signal ? getRiskDistanceState(signal, getRiskReferencePrice(payload, context), bar) : null;
             const riskStats = signal ? getSignalRiskStats(payload, signal) : null;
             const riskPrimary = riskState?.valid
@@ -600,7 +624,7 @@
                 buildCursorCard('SD / ORB', isPreviewBar && !indicator ? '预览 bar 暂无正式指标' : `Regime ${getSdRegimeText(indicator?.sd_regime)} · Z ${formatOptionalNumber(indicator?.sd_close_z)}`, isPreviewBar && !indicator ? '收盘后计算 SD / ORB' : `Width ${formatOptionalNumber(indicator?.sd_width_rank)} · ORB ${getOrbBreakoutText(indicator)}`),
                 buildCursorCard('RVOL / Divergence', isPreviewBar && !indicator ? '预览中' : `RVOL20 ${formatOptionalNumber(indicator?.rvol_20)} · ${getTouchDetailText(indicator)}`, isPreviewBar && !indicator ? 'Touch / Div 待收盘确认' : getDivergenceDetailText(indicator)),
                 buildCursorCard('TP / SL', riskPrimary, riskSecondary),
-                buildCursorCard('Signal / Osc', isPreviewBar && !indicator ? '未收盘预览' : signalPrimary, `${traceStage ? `Stage ${traceStage} · ` : ''}${signalSecondary}`),
+                buildCursorCard('Signal / Osc', isPreviewBar && !indicator ? '未收盘预览' : signalPrimary, eventSecondary || `${traceStage ? `Stage ${traceStage} · ` : ''}${signalSecondary}`),
             ].join('');
             renderChartWorkspaceChrome(payload, { includeTrace });
         }

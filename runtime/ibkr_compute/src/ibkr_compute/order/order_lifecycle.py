@@ -374,12 +374,18 @@ class OrderLifecycle:
                 continue
 
             direction = "long" if position_qty > 0 else "short"
-            result = self.broker.place_market_close(
+            link_context = self._eod_close_link_context(symbol)
+            result = self._place_harvest_market_close(
                 conid=conid,
                 symbol=symbol,
                 direction=direction,
                 quantity=abs(int(round(position_qty))),
-                account_id=str(acct_id or self.account_id or "").strip(),
+                trade_group_id=str(link_context.get("trade_group_id") or ""),
+                entry_order_unique_id=str(link_context.get("entry_order_unique_id") or ""),
+                signal_id=str(link_context.get("signal_id") or ""),
+                source="eod_force_close",
+                wait_for_fill=True,
+                fill_timeout=max(1.0, self._get_config_float("eod_close_fill_timeout_sec", 5.0)),
             )
             if result.get("ok"):
                 closed += 1
@@ -391,6 +397,31 @@ class OrderLifecycle:
         self._eod_closed_today = True
         logger.info("EOD close complete: %d closed, %d errors", closed, errors)
         return {"closed": closed, "errors": errors}
+
+    def _eod_close_link_context(self, symbol: str) -> dict[str, str]:
+        rows = self._load_live_order_rows_for_symbol(symbol)
+        groups = self._order_flow_groups(rows) or self._group_rows_by_trade_group(rows)
+        candidates: list[dict] = []
+        for group in groups:
+            entry = group.get("entry") or {}
+            if not entry or not self._entry_is_filled(entry):
+                continue
+            candidates.append(group)
+        if not candidates:
+            return {}
+        group = self._latest_group(candidates)
+        entry = group.get("entry") or {}
+        extra = self._order_extra(entry)
+        return {
+            "trade_group_id": str(group.get("group_key") or self._order_group_key(entry) or ""),
+            "entry_order_unique_id": str(
+                entry.get("entry_order_unique_id")
+                or extra.get("entry_order_unique_id")
+                or entry.get("unique_id")
+                or ""
+            ),
+            "signal_id": str(entry.get("signal_id") or extra.get("signal_id") or ""),
+        }
 
     def daily_reset(self):
         self._eod_closed_today = False
@@ -1864,6 +1895,7 @@ class OrderLifecycle:
         trade_group_id: str,
         entry_order_unique_id: str,
         source: str,
+        signal_id: str = "",
         order_type: str = "MKT",
         limit_price: float = 0.0,
         wait_for_fill: bool = False,
@@ -1878,6 +1910,7 @@ class OrderLifecycle:
                 use_paper=self.environment == "paper",
                 trade_group_id=trade_group_id,
                 entry_order_unique_id=entry_order_unique_id,
+                signal_id=signal_id,
                 source=source,
                 order_type=order_type,
                 limit_price=limit_price,

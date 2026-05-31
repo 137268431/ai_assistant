@@ -316,6 +316,12 @@
             const backtestEvents = Array.isArray(response?.backtest_events)
                 ? response.backtest_events.slice().sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0))
                 : [];
+            const tvEvents = Array.isArray(response?.tv_events)
+                ? response.tv_events.slice().sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0))
+                : [];
+            const orderEvents = Array.isArray(response?.order_events)
+                ? response.order_events.slice().sort((a, b) => Number(a.bar_time_ms || 0) - Number(b.bar_time_ms || 0))
+                : [];
             const riskStats = response?.risk_stats && typeof response.risk_stats === 'object'
                 ? response.risk_stats
                 : {};
@@ -327,6 +333,8 @@
                 signals,
                 traceTimeline,
                 backtestEvents,
+                tvEvents,
+                orderEvents,
                 riskStats,
                 meta: response?.meta && typeof response.meta === 'object' ? response.meta : {}
             };

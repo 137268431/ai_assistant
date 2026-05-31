@@ -679,6 +679,45 @@
             return Number.isFinite(num) ? `${num > 0 ? '+' : ''}${formatPrice(num).replace('$', '$')}` : '--';
         }
 
+        function formatSignedMoney(value) {
+            const num = Number(value);
+            if (!Number.isFinite(num)) return '--';
+            return `${num > 0 ? '+' : num < 0 ? '-' : ''}$${Math.abs(num).toFixed(2)}`;
+        }
+
+        function formatEventPnlText(event) {
+            const pnl = Number(event?.pnl);
+            const pct = Number(event?.pnl_pct);
+            if (!Number.isFinite(pnl)) return '';
+            const pctText = Number.isFinite(pct) ? ` (${formatSignedPercent(pct)})` : '';
+            return `${formatSignedMoney(pnl)}${pctText}`;
+        }
+
+        function getTvEventSummary(event) {
+            const type = String(event?.event_type || '').trim().toLowerCase();
+            const dir = String(event?.direction || '').trim().toLowerCase();
+            if (type === 'pre_alert') {
+                const score = Number(event?.activity_score);
+                const scoreText = Number.isFinite(score) ? ` score ${score.toFixed(0)}` : '';
+                return `TV pre_alert ${dir || '--'}${scoreText}`;
+            }
+            if (type === 'entry') return `TV entry ${dir || '--'}`;
+            if (type === 'exit') return `TV exit ${dir || '--'}`;
+            if (type === 'risk_update') return 'TV risk_update';
+            return type ? `TV ${type}` : 'TV event';
+        }
+
+        function getOrderEventSummary(event) {
+            const type = String(event?.event_type || '').trim().toLowerCase();
+            const pnlText = formatEventPnlText(event);
+            if (type === 'live_exit_eod') return `EOD exit${pnlText ? ` · PnL ${pnlText}` : ''}`;
+            if (type === 'live_exit_tp') return `Live TP${pnlText ? ` · PnL ${pnlText}` : ''}`;
+            if (type === 'live_exit_sl') return `Live SL${pnlText ? ` · PnL ${pnlText}` : ''}`;
+            if (type.startsWith('live_exit')) return `Live exit${pnlText ? ` · PnL ${pnlText}` : ''}`;
+            if (type === 'live_entry') return `Live entry ${event?.direction || '--'} @ ${formatPrice(event?.price)}`;
+            return type || 'Order event';
+        }
+
         function getTrendText(value) {
             const num = Number(value || 0);
             if (num > 0) return '多头';

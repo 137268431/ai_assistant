@@ -31,6 +31,29 @@
             return 'BT';
         }
 
+        function formatTvEventLabel(event) {
+            const type = String(event?.event_type || '').trim().toLowerCase();
+            const direction = String(event?.direction || '').trim().toLowerCase();
+            if (type === 'pre_alert') return direction === 'short' ? 'TV pre_alert 空' : 'TV pre_alert 多';
+            if (type === 'entry') return direction === 'short' ? 'TV Entry 空' : 'TV Entry 多';
+            if (type === 'risk_update') return 'TV Risk';
+            if (type === 'exit') return 'TV Exit';
+            return 'TV';
+        }
+
+        function formatOrderEventLabel(event) {
+            const type = String(event?.event_type || '').trim().toLowerCase();
+            const direction = String(event?.direction || '').trim().toLowerCase();
+            const pnl = Number(event?.pnl);
+            const pnlText = Number.isFinite(pnl) ? ` ${pnl > 0 ? '+' : pnl < 0 ? '-' : ''}$${Math.abs(pnl).toFixed(0)}` : '';
+            if (type === 'live_entry') return direction === 'short' ? 'Live Sell' : 'Live Buy';
+            if (type === 'live_exit_tp') return `Live TP${pnlText}`;
+            if (type === 'live_exit_sl') return `Live SL${pnlText}`;
+            if (type === 'live_exit_eod') return `EOD Exit${pnlText}`;
+            if (type.startsWith('live_exit')) return `Live Exit${pnlText}`;
+            return 'Order';
+        }
+
         function buildBacktestEventScatter(events, bars, color, predicate, yResolver, labelBuilder = formatBacktestEventLabel) {
             const indexByMs = new Map(bars.map((bar, index) => [Number(bar.bar_time_ms || 0), index]));
             return (Array.isArray(events) ? events : []).map((event) => {
@@ -49,7 +72,12 @@
                     bar_index: xIndex,
                     bar_time_ms: barMs,
                     labelText: labelBuilder(event),
+                    event_type: event.event_type || '',
+                    event_source: event.source || '',
                     backtest_event_type: event.event_type || '',
+                    pnl: event.pnl ?? null,
+                    pnl_pct: event.pnl_pct ?? null,
+                    reason: event.reason || event.exit_reason || '',
                 };
             }).filter(Boolean);
         }
@@ -489,4 +517,3 @@
                 },
             };
         }
-

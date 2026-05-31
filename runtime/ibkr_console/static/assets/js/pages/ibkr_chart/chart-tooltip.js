@@ -23,6 +23,12 @@
             const riskSummary = riskSignal ? buildRiskSummary(riskSignal, payload, context, { compact: true }) : '';
             const dtpState = context?.trace ? getTraceDtpState(context.trace) : null;
             const dtpLabel = dtpState && (dtpState.phase || dtpState.dir) ? formatDtpStateLabel(dtpState) : '';
+            const tvEventLines = Array.isArray(context?.tvEventMatches)
+                ? context.tvEventMatches.map((event) => getTvEventSummary(event))
+                : [];
+            const orderEventLines = Array.isArray(context?.orderEventMatches)
+                ? context.orderEventMatches.map((event) => getOrderEventSummary(event))
+                : [];
             return `
                 <div style="font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.75;min-width:240px;">
                     <div style="font-size:12px;font-weight:700;color:#E2EAF4;margin-bottom:6px;">${escapeHtml(bar.us_time || '--')}</div>
@@ -43,6 +49,8 @@
                     ${riskSummary ? `<div style="color:#CBD5E1;">${escapeHtml(riskSummary)}</div>` : ''}
                     ${technicalDescription ? `<div style="color:#CBD5E1;">${escapeHtml(technicalDescription)}</div>` : ''}
                     ${traceText ? `<div style="margin-top:6px;color:${traceStage === 'blocked' ? '#FDBA74' : traceStage === 'confirmed' ? '#86EFAC' : '#FDE68A'};">${escapeHtml(traceText)}</div>` : ''}
+                    ${tvEventLines.length ? `<div style="margin-top:6px;color:#67E8F9;">${tvEventLines.map(escapeHtml).join('<br>')}</div>` : ''}
+                    ${orderEventLines.length ? `<div style="margin-top:6px;color:#FDE68A;">${orderEventLines.map(escapeHtml).join('<br>')}</div>` : ''}
                     <div style="margin-top:6px;color:${signal ? signalColor : bar?.preview || bar?.is_preview ? '#7DD3FC' : '#8BA4C4'};">${signalText}</div>
                 </div>
             `;

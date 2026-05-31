@@ -5,7 +5,7 @@ strategy(title="Signal Strategy Core[Glory]", overlay=true, max_labels_count=500
 // Derived from Signal Alert Core[Glory]: EMA trend/touch, SD mean-reversion windows,
 // DTP direction, fractal pivots, cRSI/OBV divergence, ATR risk sizing.
 
-string STRATEGY_VERSION = "SSC_v1_20260529"
+string STRATEGY_VERSION = "SSC_v1_20260530"
 string SCRIPT_TAG = "Signal_Strategy_Core[Glory]"
 
 // -----------------------------------------------------------------------------
@@ -57,6 +57,9 @@ obvRsiLen = input.int(10, "OBV RSI length", minval=1, group="06 Oscillators")
 tradingSession = input.session("0945-1530", "Trading session", group="07 TV Primary Events")
 enableAlerts = input.bool(true, "Emit TV-primary alert() payloads", group="07 TV Primary Events")
 preAlertThreshold = input.int(65, "Pre-alert activity score", minval=1, maxval=99, group="07 TV Primary Events")
+enableEodForceClose = input.bool(true, "Mirror system EOD force close", group="07 TV Primary Events")
+eodCloseHour = input.int(15, "EOD force close hour ET", minval=0, maxval=23, group="07 TV Primary Events")
+eodCloseMinute = input.int(55, "EOD force close minute ET", minval=0, maxval=59, group="07 TV Primary Events")
 allowLong = input.bool(true, "Allow long entries", group="07 TV Primary Events")
 allowShort = input.bool(true, "Allow short entries", group="07 TV Primary Events")
 useDtpFilter = input.bool(true, "Filter MR entries against DTP", group="07 TV Primary Events")
@@ -165,6 +168,15 @@ setupDisplayName(string setup) =>
 
 directionDisplayName(string direction) =>
     direction == "short" ? "做空" : "做多"
+
+exitReasonDisplayName(string reason) =>
+    reason == "take_profit" ? "TP止盈" : reason == "stop_loss" ? "SL止损" : reason == "force_flat_eod" or reason == "eod" ? "EOD强平" : reason == "strategy_closed" ? "策略退出" : reason
+
+fmtSignedMoney(float value) =>
+    na(value) ? "--" : (value >= 0.0 ? "+$" : "-$") + str.tostring(math.abs(value), "#.##")
+
+fmtSignedPct(float value) =>
+    na(value) ? "--" : (value >= 0.0 ? "+" : "-") + str.tostring(math.abs(value), "#.##") + "%"
 
 entryComment(string direction, string setup) =>
     direction == "short" ? "SELL 空 · " + setup : "BUY 多 · " + setup
@@ -767,6 +779,13 @@ var float activeTarget = na
 var float activeQty = na
 var int activeEntryBar = na
 var bool activeBreakevenDone = false
+var string pendingExitReason = ""
+var int eodForceCloseDay = na
+var string lastExitReason = ""
+var string lastExitTimeText = ""
+var float lastExitPrice = na
+var float lastExitPnl = na
+var float lastExitPnlPct = na
 
 calcQty(float entryPrice) =>
     entryPrice > 0.0 ? math.max(1.0, math.floor(positionAmount / entryPrice)) : 0.0
@@ -889,13 +908,20 @@ buildPreAlertPayload(string eventIdValue, string pendingPositionId) =>
 bool exitedNow = confirmed and activePositionId != "" and strategy.position_size == 0 and strategy.position_size[1] != 0
 if exitedNow
     float exitPrice = strategy.closedtrades > 0 ? strategy.closedtrades.exit_price(strategy.closedtrades - 1) : close
-    string exitReason = "strategy_closed"
-    if activeDirection == 1
+    string exitReason = pendingExitReason != "" ? pendingExitReason : "strategy_closed"
+    if pendingExitReason == "" and activeDirection == 1
         exitReason := math.abs(exitPrice - activeStop) <= syminfo.mintick * 2.0 ? "stop_loss" : math.abs(exitPrice - activeTarget) <= syminfo.mintick * 2.0 ? "take_profit" : exitReason
-    if activeDirection == -1
+    if pendingExitReason == "" and activeDirection == -1
         exitReason := math.abs(exitPrice - activeStop) <= syminfo.mintick * 2.0 ? "stop_loss" : math.abs(exitPrice - activeTarget) <= syminfo.mintick * 2.0 ? "take_profit" : exitReason
+    float exitPnlPerShare = activeDirection == 1 ? exitPrice - activeEntry : activeEntry - exitPrice
+    lastExitReason := exitReason
+    lastExitPrice := exitPrice
+    lastExitPnl := exitPnlPerShare * activeQty
+    lastExitPnlPct := activeEntry > 0.0 ? exitPnlPerShare / activeEntry * 100.0 : na
+    lastExitTimeText := str.format_time(time_close, "HH:mm", "America/New_York")
     if enableAlerts
         alert(buildExitPayload(eventId("exit", exitReason), activePositionId, exitReason, exitPrice), alert.freq_all)
+    pendingExitReason := ""
     activePositionId := ""
     activeSignalId := ""
     activeDirection := 0
@@ -925,12 +951,18 @@ var string lastBlockVisualKey = ""
 if isNewTradingDay
     lastPrepareVisualKey := ""
     lastBlockVisualKey := ""
+    eodForceCloseDay := na
 
 if showFlowLabels and confirmed and lowerActivationEvent
     label.new(bar_index, low - atrVal * 1.4, "激活观察窗\n" + syminfo.ticker + " · SD下轨\n非开仓点，等组件", style=label.style_label_up, color=flowLabelColor("activate_lower", "long"), textcolor=color.white, size=size.small)
 
 if showFlowLabels and confirmed and upperActivationEvent
     label.new(bar_index, high + atrVal * 1.4, "激活观察窗\n" + syminfo.ticker + " · SD上轨\n非开仓点，等组件", style=label.style_label_down, color=flowLabelColor("activate_upper", "short"), textcolor=color.white, size=size.small)
+
+if showFlowLabels and preAlertCross
+    float preAlertY = candidateDirection == "short" ? high + atrVal * 3.0 : low - atrVal * 3.0
+    string preAlertText = "PRE_ALERT 入池候选\n" + syminfo.ticker + " · " + directionDisplayName(candidateDirection) + "\n" + setupDisplayName(candidateSetup) + "\nScore " + str.tostring(activityScore, "#") + " · " + mtfSummaryForDirection(candidateDirection)
+    label.new(bar_index, preAlertY, preAlertText, style=flowLabelStyle(candidateDirection), color=color.new(color.aqua, 0), textcolor=color.black, size=size.normal)
 
 bool observeNow = preAlertNow
 bool prepareVisualNow = showFlowLabels and observeNow
@@ -1036,7 +1068,44 @@ if confirmed and activePositionId != "" and strategy.position_size != 0 and enab
     if activeBreakevenDone and enableAlerts
         alert(buildRiskPayload(eventId("risk_update", "breakeven"), activePositionId, "breakeven_trail", previousStop, previousTarget, activeStop, activeTarget), alert.freq_all)
 
-if activePositionId != ""
+int eodCloseHourNow = hour(time_close, "America/New_York")
+int eodCloseMinuteNow = minute(time_close, "America/New_York")
+bool eodCloseTimeReached = eodCloseHourNow > eodCloseHour or (eodCloseHourNow == eodCloseHour and eodCloseMinuteNow >= eodCloseMinute)
+bool eodCloseNow = confirmed and enableEodForceClose and activePositionId != "" and strategy.position_size != 0 and eodCloseTimeReached and (na(eodForceCloseDay) or eodForceCloseDay != dailyTime)
+if eodCloseNow
+    float eodExitPrice = close
+    float eodPnlPerShare = activeDirection == 1 ? eodExitPrice - activeEntry : activeEntry - eodExitPrice
+    string eodPositionId = activePositionId
+    int eodDirection = activeDirection
+    float eodEntry = activeEntry
+    float eodQty = activeQty
+    pendingExitReason := "force_flat_eod"
+    eodForceCloseDay := dailyTime
+    strategy.cancel_all()
+    strategy.close_all(comment="EOD 强制平仓")
+    lastExitReason := "force_flat_eod"
+    lastExitPrice := eodExitPrice
+    lastExitPnl := eodPnlPerShare * eodQty
+    lastExitPnlPct := eodEntry > 0.0 ? eodPnlPerShare / eodEntry * 100.0 : na
+    lastExitTimeText := str.format_time(time_close, "HH:mm", "America/New_York")
+    if enableAlerts
+        alert(buildExitPayload(eventId("exit", "force_flat_eod"), eodPositionId, "force_flat_eod", eodExitPrice), alert.freq_all)
+    if showFlowLabels
+        float eodY = eodDirection == -1 ? low - atrVal * 3.6 : high + atrVal * 3.6
+        label.new(bar_index, eodY, "EOD 强制平仓\n" + syminfo.ticker + " · " + str.format_time(time_close, "HH:mm", "America/New_York") + " ET\nPnL " + fmtSignedMoney(lastExitPnl), style=eodDirection == -1 ? label.style_label_up : label.style_label_down, color=color.new(color.blue, 0), textcolor=color.white, size=size.normal)
+    pendingExitReason := ""
+    activePositionId := ""
+    activeSignalId := ""
+    activeDirection := 0
+    activeSetup := ""
+    activeEntry := na
+    activeStop := na
+    activeTarget := na
+    activeQty := na
+    activeEntryBar := na
+    activeBreakevenDone := false
+
+if activePositionId != "" and not eodCloseNow
     if activeDirection == 1
         strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment="平多 · TP/SL")
     if activeDirection == -1
@@ -1075,7 +1144,8 @@ string statusSetup = activePositionId != "" ? setupDisplayName(activeSetup) : bl
 string statusComponents = activePositionId != "" ? "组件齐 + 过滤通过" : blockedNow ? candidateComponentText + " · " + filterActionText(blockedReason, blockedDirection) : activityScore > 0 ? candidateComponentText + " · " + candidateWaitText : "--"
 string statusDtp = dtpStateText(dtpDir, dtpPhase)
 string statusMtf = activeDirection == -1 ? mtfSummaryForDirection("short") : activeDirection == 1 ? mtfSummaryForDirection("long") : blockedNow ? mtfSummaryForDirection(blockedDirection) : activityScore > 0 ? mtfSummaryForDirection(candidateDirection) : enableMtf ? "MTF 等待信号" : "off"
-string statusRisk = activePositionId != "" ? "TP " + str.tostring(activeTarget, "#.##") + " / SL " + str.tostring(activeStop, "#.##") : "--"
+string lastExitText = lastExitReason != "" ? exitReasonDisplayName(lastExitReason) + " " + lastExitTimeText + " @ " + str.tostring(lastExitPrice, "#.##") + " · PnL " + fmtSignedMoney(lastExitPnl) + " (" + fmtSignedPct(lastExitPnlPct) + ")" : "--"
+string statusRisk = activePositionId != "" ? "TP " + str.tostring(activeTarget, "#.##") + " / SL " + str.tostring(activeStop, "#.##") : lastExitText
 if confirmed
     if showStatusPanel
         table.cell(flowStatus, 0, 0, "流程", bgcolor=statusColor, text_color=color.white)

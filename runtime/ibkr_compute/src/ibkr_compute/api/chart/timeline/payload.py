@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 from ibkr_compute.core.broker_mode import resolve_data_environment
 from ibkr_compute.core.timeline_builder import build_runtime_timeline
@@ -20,6 +21,8 @@ from ibkr_compute.api.chart.timeline.source import (
 
 BACKTEST_TRADE_COLLECTION = "ibkr_backtest_trades"
 BACKTEST_SIGNAL_COLLECTION = "ibkr_backtest_signals"
+TV_EVENT_COLLECTION = "tv_webhook_events"
+ORDER_COLLECTION = "orders"
 
 
 def _parse_extra(value) -> dict:
@@ -36,6 +39,302 @@ def _parse_extra(value) -> dict:
 
 def _escape_filter_string(value: str) -> str:
     return str(value or "").replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _coerce_int(value, default: int = 0) -> int:
+    try:
+        if value in (None, ""):
+            return default
+        return int(float(value))
+    except Exception:
+        return default
+
+
+def _coerce_float(value, default: float | None = 0.0) -> float | None:
+    try:
+        if value in (None, ""):
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _timestamp_ms(value) -> int:
+    if value in (None, ""):
+        return 0
+    try:
+        number = float(value)
+        if number > 1_000_000_000_000:
+            return int(number)
+        if number > 1_000_000_000:
+            return int(number * 1000)
+    except Exception:
+        pass
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return int(parsed.timestamp() * 1000)
+    except Exception:
+        return 0
+
+
+def _first_text(*values) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _first_number(*values) -> float | None:
+    for value in values:
+        parsed = _coerce_float(value, None)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _load_collection_records(collection: str, filter_expr: str, sort: str = "bar_time_ms", max_pages: int = 20) -> list[dict]:
+    api_app = _api_app()
+    pb = getattr(api_app, "pb", None)
+    if pb is None:
+        return []
+    try:
+        if hasattr(pb, "get_all_records"):
+            rows = pb.get_all_records(collection, filter=filter_expr, sort=sort, max_pages=max_pages)
+        elif hasattr(pb, "get_records"):
+            rows = pb.get_records(collection, filter=filter_expr, sort=sort, per_page=200, page=1)
+        else:
+            rows = []
+    except Exception:
+        return []
+    return [dict(row) for row in (rows or []) if isinstance(row, dict)]
+
+
+def _row_time_ms(row: dict) -> int:
+    return (
+        _coerce_int(row.get("bar_time_ms"), 0)
+        or _coerce_int(row.get("time_ms"), 0)
+        or _timestamp_ms(row.get("created"))
+        or _timestamp_ms(row.get("updated"))
+    )
+
+
+def _within_window(row: dict, start_ms: int, end_ms: int) -> bool:
+    bar_ms = _row_time_ms(row)
+    if bar_ms <= 0:
+        return False
+    if start_ms > 0 and bar_ms < start_ms:
+        return False
+    if end_ms > 0 and bar_ms > end_ms:
+        return False
+    return True
+
+
+def _environment_matches(row: dict, runtime_environment: str, data_environment: str) -> bool:
+    allowed = {str(runtime_environment or "").strip().lower(), str(data_environment or "").strip().lower()}
+    allowed.discard("")
+    row_environment = str(row.get("environment") or "").strip().lower()
+    row_broker_mode = str(row.get("broker_mode") or "").strip().lower()
+    if not row_environment and not row_broker_mode:
+        return True
+    return row_environment in allowed or row_broker_mode in allowed
+
+
+def _order_extra(row: dict | None) -> dict:
+    return _parse_extra((row or {}).get("extra"))
+
+
+def _order_role(row: dict | None) -> str:
+    row = row or {}
+    extra = _order_extra(row)
+    return str(row.get("role") or extra.get("role") or row.get("order_type") or "").strip().lower()
+
+
+def _order_status(row: dict | None) -> str:
+    return str((row or {}).get("status") or (row or {}).get("relation_status") or "").strip().upper()
+
+
+def _order_is_filled(row: dict | None) -> bool:
+    filled_qty = _coerce_float((row or {}).get("filled_qty"), 0.0) or 0.0
+    return filled_qty > 0 or _order_status(row) in {"FILLED", "EXECUTED", "CLOSED"}
+
+
+def _order_group_key(row: dict | None) -> str:
+    row = row or {}
+    extra = _order_extra(row)
+    return str(
+        row.get("trade_group_id")
+        or row.get("entry_order_unique_id")
+        or extra.get("trade_group_id")
+        or extra.get("entry_order_unique_id")
+        or row.get("parent_order_unique_id")
+        or extra.get("parent_order_unique_id")
+        or ""
+    ).strip()
+
+
+def _order_price(row: dict | None, *, role: str = "") -> float | None:
+    row = row or {}
+    extra = _order_extra(row)
+    result = extra.get("market_close_result")
+    result = result if isinstance(result, dict) else {}
+    role = str(role or _order_role(row)).strip().lower()
+    if role == "entry":
+        return _first_number(
+            row.get("filled_avg_price"),
+            row.get("avg_fill_price"),
+            row.get("filled_price"),
+            row.get("fill_price"),
+            row.get("entry_price"),
+            extra.get("entry_price"),
+            row.get("limit_price"),
+            extra.get("limit_price"),
+        )
+    return _first_number(
+        row.get("realized_exit_price"),
+        row.get("exit_price"),
+        extra.get("exit_price"),
+        row.get("filled_avg_price"),
+        row.get("avg_fill_price"),
+        row.get("filled_price"),
+        row.get("fill_price"),
+        result.get("avg_fill_price"),
+        result.get("average_price"),
+        result.get("avg_price"),
+        result.get("filled_price"),
+        result.get("fill_price"),
+        result.get("limit_price"),
+        row.get("limit_price"),
+        extra.get("limit_price"),
+    )
+
+
+def _directional_pnl(direction: str, entry_price: float | None, exit_price: float | None, quantity: float | None) -> float | None:
+    if not entry_price or not exit_price or not quantity:
+        return None
+    if str(direction or "").strip().lower() == "short":
+        return (entry_price - exit_price) * quantity
+    return (exit_price - entry_price) * quantity
+
+
+def _order_event_type(row: dict) -> str:
+    role = _order_role(row)
+    extra = _order_extra(row)
+    source_text = " ".join(
+        str(value or "").strip().lower()
+        for value in (
+            role,
+            row.get("order_type"),
+            row.get("status"),
+            row.get("relation_status"),
+            extra.get("source"),
+            extra.get("reason"),
+            extra.get("exit_reason"),
+            extra.get("submitted_via"),
+        )
+        if str(value or "").strip()
+    )
+    if role == "entry":
+        return "live_entry"
+    if role in {"take_profit", "tp"}:
+        return "live_exit_tp"
+    if role in {"stop_loss", "sl"}:
+        return "live_exit_sl"
+    if "eod" in source_text or "force_flat" in source_text:
+        return "live_exit_eod"
+    if role in {"close", "manual_close", "market_close", "close_order", "reverse_close"}:
+        return "live_exit"
+    return ""
+
+
+def _normalize_tv_event(row: dict) -> dict:
+    payload = _parse_extra(row.get("payload"))
+    extra = _parse_extra(row.get("extra"))
+    event_type = _first_text(row.get("event_type"), payload.get("event_type"), extra.get("event_type"))
+    direction = _first_text(
+        row.get("direction"),
+        row.get("position_side"),
+        payload.get("direction"),
+        payload.get("direction_bias"),
+        payload.get("candidate_direction"),
+    ).lower()
+    price = _first_number(
+        payload.get("exit_price"),
+        payload.get("entry_price"),
+        payload.get("entry"),
+        payload.get("close"),
+        extra.get("exit_price"),
+        extra.get("entry_price"),
+        extra.get("close"),
+    )
+    return {
+        "event_type": event_type,
+        "bar_time_ms": _row_time_ms(row),
+        "us_time": _first_text(row.get("us_time"), payload.get("us_time"), extra.get("us_time")),
+        "symbol": _first_text(row.get("symbol"), payload.get("symbol")).upper(),
+        "direction": direction if direction in {"long", "short", "neutral"} else "",
+        "signal_id": _first_text(row.get("signal_id"), payload.get("signal_id"), extra.get("signal_id")),
+        "position_id": _first_text(row.get("position_id"), payload.get("position_id"), extra.get("position_id")),
+        "setup": _first_text(payload.get("candidate_setup"), payload.get("setup"), payload.get("entry_setup"), extra.get("setup")),
+        "status": _first_text(row.get("status"), extra.get("status")),
+        "route_target": _first_text(row.get("route_target")),
+        "route_record_id": _first_text(row.get("route_record_id")),
+        "price": round(float(price), 4) if price is not None else 0,
+        "activity_score": _coerce_float(payload.get("activity_score"), _coerce_float(extra.get("activity_score"), 0.0)),
+        "quality_score": _coerce_float(payload.get("quality_score"), _coerce_float(extra.get("quality_score"), 0.0)),
+        "mtf_status": _first_text(payload.get("mtf_status"), extra.get("mtf_last_status"), extra.get("mtf_status")),
+        "mtf_score": _coerce_float(payload.get("mtf_score"), _coerce_float(extra.get("mtf_last_score"), 0.0)),
+        "source": TV_EVENT_COLLECTION,
+        "extra": {
+            "activity_grade": _first_text(payload.get("activity_grade"), extra.get("activity_grade")),
+            "target_status": _first_text(row.get("route_target")) == "ibkr_targets" and _first_text(row.get("status")) or "",
+            "missing_components": _first_text(payload.get("missing_components"), extra.get("missing_components")),
+        },
+    }
+
+
+def _normalize_order_event(row: dict, entry_by_group: dict[str, dict]) -> dict:
+    role = _order_role(row)
+    event_type = _order_event_type(row)
+    extra = _order_extra(row)
+    group_key = _order_group_key(row)
+    entry_row = entry_by_group.get(group_key) or {}
+    entry_extra = _order_extra(entry_row)
+    direction = _first_text(row.get("direction"), row.get("position_side"), entry_row.get("direction"), entry_row.get("position_side")).lower()
+    quantity = _first_number(row.get("filled_qty"), row.get("quantity"), entry_row.get("filled_qty"), entry_row.get("quantity")) or 0.0
+    price = _order_price(row, role=role)
+    entry_price = _order_price(entry_row, role="entry")
+    pnl = _first_number(row.get("realized_net_pnl"), row.get("realized_pnl"), row.get("realized_gross_pnl"), row.get("pnl"), extra.get("pnl"))
+    if pnl is None and event_type.startswith("live_exit"):
+        pnl = _directional_pnl(direction, entry_price, price, quantity)
+    pnl_pct = _first_number(row.get("pnl_pct"), extra.get("pnl_pct"))
+    if pnl_pct is None and pnl is not None and entry_price and quantity:
+        pnl_pct = pnl / (entry_price * quantity) * 100.0
+    return {
+        "event_type": event_type,
+        "bar_time_ms": _row_time_ms(row),
+        "us_time": _first_text(row.get("us_time"), extra.get("us_time")),
+        "symbol": _first_text(row.get("symbol"), row.get("ticker")).upper(),
+        "direction": direction if direction in {"long", "short"} else "",
+        "signal_id": _first_text(row.get("signal_id"), extra.get("signal_id"), entry_row.get("signal_id"), entry_extra.get("signal_id")),
+        "trade_group_id": group_key,
+        "entry_order_unique_id": _first_text(row.get("entry_order_unique_id"), extra.get("entry_order_unique_id"), entry_row.get("unique_id")),
+        "role": role,
+        "status": _first_text(row.get("status"), row.get("relation_status")),
+        "price": round(float(price), 4) if price is not None else 0,
+        "entry_price": round(float(entry_price), 4) if entry_price is not None else 0,
+        "quantity": round(float(quantity), 4),
+        "pnl": round(float(pnl), 4) if pnl is not None else None,
+        "pnl_pct": round(float(pnl_pct), 4) if pnl_pct is not None else None,
+        "reason": _first_text(extra.get("exit_reason"), extra.get("reason"), extra.get("source"), event_type),
+        "source": ORDER_COLLECTION,
+        "extra": {
+            "submitted_via": _first_text(extra.get("submitted_via")),
+            "source": _first_text(extra.get("source")),
+        },
+    }
 
 
 def _load_backtest_records(collection: str, run_id: str, symbol: str, start_ms: int, end_ms: int, time_field: str) -> list[dict]:
@@ -60,6 +359,66 @@ def _load_backtest_records(collection: str, run_id: str, symbol: str, start_ms: 
         )
         or []
     )
+
+
+def load_tv_chart_events(environment: str, data_environment: str, symbol: str, start_ms: int = 0, end_ms: int = 0) -> list[dict]:
+    normalized_symbol = str(symbol or "").strip().upper()
+    if not normalized_symbol:
+        return []
+    filter_parts = [f'symbol = "{_escape_filter_string(normalized_symbol)}"']
+    if start_ms > 0:
+        filter_parts.append(f"bar_time_ms >= {int(start_ms)}")
+    if end_ms > 0:
+        filter_parts.append(f"bar_time_ms <= {int(end_ms)}")
+    rows = _load_collection_records(TV_EVENT_COLLECTION, " && ".join(filter_parts), sort="bar_time_ms", max_pages=20)
+    events = []
+    for row in rows:
+        if not _environment_matches(row, environment, data_environment):
+            continue
+        event_type = str(row.get("event_type") or _parse_extra(row.get("payload")).get("event_type") or "").strip().lower()
+        if event_type in {"", "heartbeat"}:
+            continue
+        if not _within_window(row, start_ms, end_ms):
+            continue
+        event = _normalize_tv_event(row)
+        if event.get("bar_time_ms"):
+            events.append(event)
+    events.sort(key=lambda item: (int(item.get("bar_time_ms") or 0), str(item.get("event_type") or "")))
+    return events
+
+
+def load_order_chart_events(environment: str, symbol: str, start_ms: int = 0, end_ms: int = 0) -> list[dict]:
+    normalized_symbol = str(symbol or "").strip().upper()
+    if not normalized_symbol:
+        return []
+    filter_parts = [f'symbol = "{_escape_filter_string(normalized_symbol)}"']
+    if str(environment or "").strip():
+        filter_parts.append(f'environment = "{_escape_filter_string(environment)}"')
+    if end_ms > 0:
+        filter_parts.append(f"bar_time_ms <= {int(end_ms)}")
+    rows = _load_collection_records(ORDER_COLLECTION, " && ".join(filter_parts), sort="bar_time_ms", max_pages=30)
+    entry_by_group: dict[str, dict] = {}
+    for row in rows:
+        if _order_role(row) != "entry":
+            continue
+        group_key = _order_group_key(row)
+        if not group_key:
+            continue
+        existing = entry_by_group.get(group_key)
+        if existing is None or _row_time_ms(row) >= _row_time_ms(existing):
+            entry_by_group[group_key] = row
+    events = []
+    for row in rows:
+        event_type = _order_event_type(row)
+        if not event_type or not _within_window(row, start_ms, end_ms):
+            continue
+        if not _order_is_filled(row):
+            continue
+        event = _normalize_order_event(row, entry_by_group)
+        if event.get("bar_time_ms"):
+            events.append(event)
+    events.sort(key=lambda item: (int(item.get("bar_time_ms") or 0), str(item.get("event_type") or "")))
+    return events
 
 
 def _backtest_exit_event_type(exit_reason: str) -> str:
@@ -334,6 +693,8 @@ def build_chart_timeline_payload_from_source(
             "latest_indicator": None,
             "signals": [],
             "trace_timeline": [],
+            "tv_events": [],
+            "order_events": [],
             "meta": {
                 "environment": runtime_environment,
                 "broker_mode": runtime_environment,
@@ -349,6 +710,8 @@ def build_chart_timeline_payload_from_source(
                 "warmup_used": int(source.get("warmup_used", 0) or 0),
                 "signal_mode": "computed" if include_signals and normalized_interval == "5m" else "disabled",
                 "trace_mode": "computed" if include_trace else "disabled",
+                "tv_event_count": 0,
+                "order_event_count": 0,
                 "reason": "no_visible_bars",
                 **source_meta,
             },
@@ -427,6 +790,19 @@ def build_chart_timeline_payload_from_source(
         backtest_run_id,
         normalized_symbol,
     ) if str(backtest_run_id or "").strip() and normalized_interval == "5m" else {}
+    tv_events = load_tv_chart_events(
+        runtime_environment,
+        data_environment,
+        normalized_symbol,
+        start_ms=start_ms,
+        end_ms=end_ms,
+    ) if normalized_interval == "5m" else []
+    order_events = load_order_chart_events(
+        runtime_environment,
+        normalized_symbol,
+        start_ms=start_ms,
+        end_ms=end_ms,
+    ) if normalized_interval == "5m" else []
     payload = {
         "ok": True,
         "bars": bars,
@@ -434,6 +810,8 @@ def build_chart_timeline_payload_from_source(
         "latest_indicator": indicators[-1] if indicators else None,
         "signals": signals,
         "trace_timeline": trace_timeline,
+        "tv_events": tv_events,
+        "order_events": order_events,
         "meta": {
             "environment": runtime_environment,
             "symbol": normalized_symbol,
@@ -446,6 +824,8 @@ def build_chart_timeline_payload_from_source(
             "warmup_used": int(source.get("warmup_used", 0) or 0),
             "signal_mode": "computed" if include_signals and normalized_interval == "5m" else "disabled",
             "trace_mode": "computed" if include_trace else "disabled",
+            "tv_event_count": len(tv_events),
+            "order_event_count": len(order_events),
             **source_meta,
         },
     }
@@ -568,4 +948,6 @@ __all__ = [
     "build_chart_timeline_payload",
     "build_chart_timeline_payload_from_source",
     "load_backtest_chart_events",
+    "load_order_chart_events",
+    "load_tv_chart_events",
 ]
