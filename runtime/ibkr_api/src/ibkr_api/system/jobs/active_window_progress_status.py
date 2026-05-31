@@ -5,6 +5,10 @@ from typing import Any, Callable
 from urllib.parse import urlencode
 
 from ibkr_api.modes import request_broker_mode, request_market_data_mode
+from ibkr_api.system.jobs.legacy_target_universe import (
+    legacy_target_market_closed,
+    legacy_target_universe_suppressed,
+)
 
 
 NormalizeEnvironment = Callable[[Any, str], str]
@@ -447,6 +451,36 @@ def build_active_window_progress_status_response(
     dry_run = _truthy(request_payload.get("dry_run")) if "dry_run" in request_payload else False
     limit = max(1, min(200, _to_int(request_payload.get("limit"), 200)))
     heartbeat_interval_min = max(1, min(60, _to_int(request_payload.get("heartbeat_interval_min"), 5)))
+
+    suppressed, suppressed_reason, suppressed_detail = legacy_target_universe_suppressed(
+        config_value,
+        data_environment,
+        broker_mode=broker_mode,
+    )
+    if not suppressed:
+        suppressed, suppressed_reason, suppressed_detail = legacy_target_market_closed(market_date)
+    if suppressed:
+        return {
+            "ok": True,
+            "environment": broker_mode,
+            "broker_mode": broker_mode,
+            "market_data_mode": data_environment,
+            "data_environment": data_environment,
+            "market_date": market_date,
+            "job_id": JOB_ID,
+            "status": "skipped",
+            "skipped": True,
+            "reason": suppressed_reason,
+            "delivered": False,
+            "updated": False,
+            "sent": False,
+            "message_id": "",
+            "summary": {},
+            "heartbeat": {},
+            "delivery": {"action": "skipped", "success": True, "reason": suppressed_reason},
+            "source": "ibkr-api",
+            **suppressed_detail,
+        }, 200
 
     base_payload = {
         **request_payload,

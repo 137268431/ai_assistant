@@ -4,6 +4,7 @@ from typing import Any, Callable
 
 from ibkr_api.modes import request_broker_mode, request_market_data_mode
 from ibkr_api.system.jobs.early_expansion_topup import TOPUP_NOTIFY_STATE_KEY, notify_new_targets_from_scan
+from ibkr_api.system.jobs.legacy_target_universe import legacy_target_universe_suppressed
 from ibkr_api.system.jobs.market_calendar import build_market_calendar_snapshot
 from ibkr_api.system.jobs.open_report import (
     DEFAULT_OPEN_REPORT_TIME_ET,
@@ -598,7 +599,20 @@ def build_daily_event_reconcile_response(
             "job_id": "system_daily_event_reconcile",
         }, 200
 
+    legacy_suppressed, legacy_reason, legacy_detail = legacy_target_universe_suppressed(
+        config_value,
+        data_environment,
+        broker_mode=broker_mode,
+    )
     daily_scan = _load_daily_scan_state(get_state_payload, data_environment)
+    if legacy_suppressed:
+        daily_scan = {
+            "status": "skipped",
+            "market_date": market_date,
+            "result": {},
+            "skip_reason": legacy_reason,
+            "skip_detail": legacy_detail,
+        }
     daily_result = _as_dict(daily_scan.get("result"))
     daily_completed = _to_text(daily_scan.get("market_date")) == market_date and _to_text(daily_scan.get("status")).lower() == "completed"
     _update_event(
@@ -606,16 +620,19 @@ def build_daily_event_reconcile_response(
         _event(
             event_id="daily_scan_seed",
             title="08:20-09:20 预筛最终轮",
-            status="completed" if daily_completed else ("pending" if not _at_or_after(times, OPEN_REPORT_CUTOFF_ET) else "missed"),
+            status="skipped" if legacy_suppressed else (
+                "completed" if daily_completed else ("pending" if not _at_or_after(times, OPEN_REPORT_CUTOFF_ET) else "missed")
+            ),
             due_at_et=DAILY_SCAN_DUE_ET,
             cutoff_at_et=OPEN_REPORT_CUTOFF_ET,
-            source="ibkr_daily_scan_state",
+            source="tv_primary_slim" if legacy_suppressed else "ibkr_daily_scan_state",
             detail={
                 "scan_status": _to_text(daily_scan.get("status")),
                 "scan_market_date": _to_text(daily_scan.get("market_date")),
                 "active": _to_int(daily_result.get("active")),
                 "candidates": _to_int(daily_result.get("candidates")),
                 "new_targets": len(_new_targets(daily_result)),
+                **({"reason": legacy_reason, **legacy_detail} if legacy_suppressed else {}),
             },
             times=times,
         ),
@@ -635,7 +652,11 @@ def build_daily_event_reconcile_response(
     }
     quality_status = _to_text(quality_existing.get("status")) or "pending"
     repair_run_id = _to_text(quality_detail.get("repair_run_id"))
-    if not daily_completed and _to_text(daily_scan.get("market_date")) != market_date:
+    if legacy_suppressed:
+        quality_status = "skipped"
+        quality_detail.update({"reason": legacy_reason, **legacy_detail})
+        quality_detail.pop("repair_error", None)
+    elif not daily_completed and _to_text(daily_scan.get("market_date")) != market_date:
         quality_status = "pending" if not _after(times, TARGET_POOL_QUALITY_CUTOFF_ET) else "missed"
     elif not bool(quality_issue.get("issue")):
         quality_status = "completed" if _to_text(daily_scan.get("market_date")) == market_date else "pending"
@@ -731,7 +752,7 @@ def build_daily_event_reconcile_response(
             status=quality_status,
             due_at_et=TARGET_POOL_QUALITY_DUE_ET,
             cutoff_at_et=TARGET_POOL_QUALITY_CUTOFF_ET,
-            source="ibkr_daily_scan_state",
+            source="tv_primary_slim" if legacy_suppressed else "ibkr_daily_scan_state",
             detail=quality_detail,
             times=times,
         ),

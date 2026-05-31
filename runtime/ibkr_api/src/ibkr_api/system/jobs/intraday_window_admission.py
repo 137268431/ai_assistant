@@ -5,6 +5,10 @@ from typing import Any, Callable
 
 from ibkr_api.modes import request_market_data_mode
 from ibkr_api.orders.values import first_defined, parse_boolean, to_float, to_int, to_text
+from ibkr_api.system.jobs.legacy_target_universe import (
+    legacy_target_market_closed,
+    legacy_target_universe_suppressed,
+)
 from ibkr_api.universe.active_window_progress import build_active_window_items_for_symbols
 from ibkr_api.universe.maintenance import (
     call_universe_reconcile,
@@ -776,6 +780,28 @@ def build_intraday_window_admission_response(
 
     force = parse_boolean(request_payload.get("force"), False)
     dry_run = parse_boolean(first_defined(request_payload.get("dry_run"), request_payload.get("dryRun")), False)
+    suppressed, suppressed_reason, suppressed_detail = legacy_target_universe_suppressed(config_value, environment)
+    if not suppressed:
+        suppressed, suppressed_reason, suppressed_detail = legacy_target_market_closed(market_date)
+    if suppressed:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": suppressed_reason,
+            "environment": environment,
+            "data_environment": data_environment,
+            "market_date": market_date,
+            "dry_run": dry_run,
+            "force": force,
+            "job_id": "ibkr_intraday_window_admission",
+            "would_admit": 0,
+            "admitted": 0,
+            "admitted_symbols": [],
+            "eligible": 0,
+            "selected": 0,
+            "source": "ibkr-api",
+            **suppressed_detail,
+        }, 200
     start_et = to_text(request_payload.get("start_et") or "09:35")
     end_et = to_text(request_payload.get("end_et") or "15:30")
     if not force and not _is_admission_window(times, start_et=start_et, end_et=end_et):

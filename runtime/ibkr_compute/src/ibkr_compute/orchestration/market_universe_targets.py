@@ -499,11 +499,35 @@ class TradingServiceMarketUniverseTargetsMixin:
 
     def _run_daily_scan_if_due(self, reason: str = "poll") -> dict:
         service_mod = _service_mod()
+        data_environment = str(
+            getattr(service_mod, "DATA_ENVIRONMENT", None)
+            or getattr(service_mod, "ENVIRONMENT", None)
+            or "live"
+        ).strip().lower() or "live"
+        broker_environment = str(getattr(service_mod, "ENVIRONMENT", None) or data_environment).strip().lower() or data_environment
         self._refresh_watchlist_pool()
         market_date = self._current_market_date or self._market_date()
         state = self._copy_daily_scan_state()
         if str(state.get("market_date") or "") != market_date:
             state = self._set_daily_scan_state(**self._initial_daily_scan_state(market_date))
+
+        skip_reason, skip_detail = self._daily_scan_legacy_pipeline_skip_reason()
+        if skip_reason:
+            return self._skip_daily_scan_state(
+                market_date=market_date,
+                reason=reason,
+                skip_reason=skip_reason,
+                detail=skip_detail,
+            )
+
+        skip_reason, skip_detail = self._daily_scan_market_closed_skip_reason(market_date)
+        if skip_reason:
+            return self._skip_daily_scan_state(
+                market_date=market_date,
+                reason=reason,
+                skip_reason=skip_reason,
+                detail=skip_detail,
+            )
 
         if not self._scan_window_open():
             return {"ok": True, "skipped": True, "reason": "scan_window_not_open", "state": state}
@@ -601,9 +625,9 @@ class TradingServiceMarketUniverseTargetsMixin:
                     "errors": 0,
                     "rejection_summary": {},
                     "rejection_examples": [],
-                    "environments": [service_mod.DATA_ENVIRONMENT],
-                    "broker_mode": service_mod.ENVIRONMENT,
-                    "data_environment": service_mod.DATA_ENVIRONMENT,
+                    "environments": [data_environment],
+                    "broker_mode": broker_environment,
+                    "data_environment": data_environment,
                 },
             )
             self._notify_daily_scan_recovered(completed_state)
@@ -611,7 +635,7 @@ class TradingServiceMarketUniverseTargetsMixin:
             return {"ok": True, "ran": True, "state": completed_state}
 
         attempt_count = _safe_int(state.get("attempt_count"), 0) + 1
-        run_id = f"daily-scan-{service_mod.DATA_ENVIRONMENT}-{market_date}-{uuid.uuid4().hex[:10]}"
+        run_id = f"daily-scan-{data_environment}-{market_date}-{uuid.uuid4().hex[:10]}"
         try:
             from ibkr_compute.api.service_topology import uses_remote_compute_service
 
@@ -652,9 +676,9 @@ class TradingServiceMarketUniverseTargetsMixin:
                     result={},
                 )
                 scan_payload = {
-                    "environment": service_mod.DATA_ENVIRONMENT,
-                    "broker_mode": service_mod.ENVIRONMENT,
-                    "data_environment": service_mod.DATA_ENVIRONMENT,
+                    "environment": data_environment,
+                    "broker_mode": broker_environment,
+                    "data_environment": data_environment,
                     "async": True,
                     "run_id": run_id,
                     "trigger_source": reason,
@@ -686,9 +710,9 @@ class TradingServiceMarketUniverseTargetsMixin:
                 if not result.get("ok"):
                     status_payload = get_remote_scan_status(
                         {
-                            "environment": service_mod.DATA_ENVIRONMENT,
-                            "broker_mode": service_mod.ENVIRONMENT,
-                            "data_environment": service_mod.DATA_ENVIRONMENT,
+                            "environment": data_environment,
+                            "broker_mode": broker_environment,
+                            "data_environment": data_environment,
                             "date": market_date,
                             "run_id": run_id,
                         }
@@ -741,9 +765,9 @@ class TradingServiceMarketUniverseTargetsMixin:
                     result={},
                 )
                 scan_payload = {
-                    "environment": service_mod.DATA_ENVIRONMENT,
-                    "broker_mode": service_mod.ENVIRONMENT,
-                    "data_environment": service_mod.DATA_ENVIRONMENT,
+                    "environment": data_environment,
+                    "broker_mode": broker_environment,
+                    "data_environment": data_environment,
                 }
                 from ibkr_compute.api import server as compute_server
 

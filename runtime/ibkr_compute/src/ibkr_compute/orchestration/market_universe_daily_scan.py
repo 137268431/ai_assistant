@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ibkr_compute.market.calendar import build_local_nyse_calendar_snapshot
+
 from .market_universe_support import *
 from .market_universe_support import (
     _classify_daily_scan_failure,
@@ -52,11 +54,12 @@ class TradingServiceMarketUniverseDailyScanMixin:
 
     def _load_daily_scan_state(self, market_date: str) -> dict:
         service_mod = _service_mod()
+        environment = str(getattr(service_mod, "DATA_ENVIRONMENT", None) or getattr(service_mod, "ENVIRONMENT", None) or "live")
         target_date = str(market_date or self._market_date())
         try:
             state = self.pb.get_state(
                 service_mod.DAILY_SCAN_STATE_KEY,
-                service_mod.DATA_ENVIRONMENT,
+                environment,
                 date=service_mod.DAILY_SCAN_STATE_DATE,
             )
         except Exception:
@@ -78,6 +81,7 @@ class TradingServiceMarketUniverseDailyScanMixin:
 
     def _set_daily_scan_state(self, **updates) -> dict:
         service_mod = _service_mod()
+        environment = str(getattr(service_mod, "DATA_ENVIRONMENT", None) or getattr(service_mod, "ENVIRONMENT", None) or "live")
         with self._scan_state_lock:
             next_state = dict(self._daily_scan_state or self._initial_daily_scan_state())
             next_state.update(updates)
@@ -86,7 +90,7 @@ class TradingServiceMarketUniverseDailyScanMixin:
             try:
                 self.pb.upsert_state(
                     service_mod.DAILY_SCAN_STATE_KEY,
-                    service_mod.DATA_ENVIRONMENT,
+                    environment,
                     next_state,
                     date=service_mod.DAILY_SCAN_STATE_DATE,
                 )
@@ -96,33 +100,117 @@ class TradingServiceMarketUniverseDailyScanMixin:
 
     def _daily_scan_config_bool(self, key: str, default: bool = False) -> bool:
         service_mod = _service_mod()
+        environment = str(getattr(service_mod, "DATA_ENVIRONMENT", None) or getattr(service_mod, "ENVIRONMENT", None) or "live")
         config = getattr(self, "config", None)
         if config is not None and hasattr(config, "get_bool_for_environment"):
             try:
-                return bool(config.get_bool_for_environment(key, service_mod.DATA_ENVIRONMENT, default))
+                return bool(config.get_bool_for_environment(key, environment, default))
             except Exception:
                 return bool(default)
         return bool(default)
 
     def _daily_scan_config_int(self, key: str, default: int = 0) -> int:
         service_mod = _service_mod()
+        environment = str(getattr(service_mod, "DATA_ENVIRONMENT", None) or getattr(service_mod, "ENVIRONMENT", None) or "live")
         config = getattr(self, "config", None)
         if config is not None and hasattr(config, "get_int_for_environment"):
             try:
-                return int(config.get_int_for_environment(key, service_mod.DATA_ENVIRONMENT, default))
+                return int(config.get_int_for_environment(key, environment, default))
             except Exception:
                 return int(default)
         return int(default)
 
     def _daily_scan_config_text(self, key: str, default: str = "") -> str:
         service_mod = _service_mod()
+        environment = str(getattr(service_mod, "DATA_ENVIRONMENT", None) or getattr(service_mod, "ENVIRONMENT", None) or "live")
         config = getattr(self, "config", None)
         if config is not None and hasattr(config, "get_for_environment"):
             try:
-                return str(config.get_for_environment(key, service_mod.DATA_ENVIRONMENT, default) or default)
+                return str(config.get_for_environment(key, environment, default) or default)
             except Exception:
                 return str(default or "")
         return str(default or "")
+
+    def _daily_scan_legacy_pipeline_skip_reason(self) -> tuple[str, dict]:
+        checks = (
+            ("_runtime_tv_primary_slim_enabled", "tv_primary_slim_mode"),
+            ("_runtime_slim_mode_enabled", "technical_pipeline_disabled"),
+        )
+        for attr_name, reason in checks:
+            checker = getattr(self, attr_name, None)
+            if not callable(checker):
+                continue
+            try:
+                if bool(checker()):
+                    return reason, {"gate": attr_name}
+            except Exception:
+                continue
+
+        technical_checker = getattr(self, "_runtime_technical_pipeline_enabled", None)
+        if callable(technical_checker):
+            try:
+                if not bool(technical_checker()):
+                    return "technical_pipeline_disabled", {"gate": "_runtime_technical_pipeline_enabled"}
+            except Exception:
+                pass
+        return "", {}
+
+    def _daily_scan_market_closed_skip_reason(self, market_date: str) -> tuple[str, dict]:
+        snapshot = build_local_nyse_calendar_snapshot(market_date)
+        if bool(snapshot.get("is_closed")) or snapshot.get("is_trading_day") is False:
+            return "market_closed", {
+                "market_date": str(snapshot.get("market_date") or market_date),
+                "closed_reason": str(snapshot.get("closed_reason") or "closed"),
+                "next_open_us": str(snapshot.get("next_open_us") or ""),
+                "next_open_beijing": str(snapshot.get("next_open_beijing") or ""),
+                "calendar_source": str(snapshot.get("source") or ""),
+            }
+        return "", {"market_date": str(snapshot.get("market_date") or market_date), "calendar_source": str(snapshot.get("source") or "")}
+
+    def _skip_daily_scan_state(
+        self,
+        *,
+        market_date: str,
+        reason: str,
+        skip_reason: str,
+        detail: dict | None = None,
+    ) -> dict:
+        state = self._copy_daily_scan_state()
+        detail = dict(detail or {})
+        result = {
+            "ok": True,
+            "skipped": True,
+            "reason": skip_reason,
+            "date": market_date,
+            "market_date": market_date,
+            **detail,
+        }
+        existing_result = state.get("result") if isinstance(state.get("result"), dict) else {}
+        if (
+            str(state.get("market_date") or "") == market_date
+            and str(state.get("status") or "").strip().lower() == "skipped"
+            and str(existing_result.get("reason") or "") == skip_reason
+            and not str(state.get("next_retry_at") or "").strip()
+        ):
+            return {"ok": True, "skipped": True, "reason": skip_reason, "state": state, **detail}
+
+        skipped_state = self._set_daily_scan_state(
+            market_date=market_date,
+            status="skipped",
+            reason=reason,
+            run_id="",
+            started_at="",
+            finished_at=self._now_iso(),
+            last_error="",
+            result=result,
+            failure={},
+            diagnostics=detail,
+            next_retry_at="",
+            retry_cutoff_at="",
+            retry_block_reason=skip_reason,
+        )
+        self._reset_daily_scan_alert_state(market_date)
+        return {"ok": True, "skipped": True, "reason": skip_reason, "state": skipped_state, **detail}
 
     def _daily_scan_retry_delays(self) -> list[int]:
         raw = self._daily_scan_config_text("ibkr_daily_scan_retry_delays_sec", "60,120,240")
@@ -242,10 +330,9 @@ class TradingServiceMarketUniverseDailyScanMixin:
             "retry_block_reason": block_reason,
         }
         failed_state = self._set_daily_scan_state(
-            **base_updates,
+            **{**base_updates, "failure": final_failure},
             status="failed",
             finished_at=self._now_iso(),
-            failure=final_failure,
             retry_block_reason=block_reason,
             next_retry_at="",
             retry_cutoff_at=cutoff.isoformat(),
@@ -302,6 +389,12 @@ class TradingServiceMarketUniverseDailyScanMixin:
 
     def _poll_daily_scan_attempt(self, *, market_date: str, reason: str, state: dict) -> dict:
         service_mod = _service_mod()
+        data_environment = str(
+            getattr(service_mod, "DATA_ENVIRONMENT", None)
+            or getattr(service_mod, "ENVIRONMENT", None)
+            or "live"
+        ).strip().lower() or "live"
+        broker_environment = str(getattr(service_mod, "ENVIRONMENT", None) or data_environment).strip().lower() or data_environment
         run_id = str((state or {}).get("run_id") or "").strip()
         if not run_id:
             return {"ok": True, "skipped": True, "reason": "scan_running", "state": state}
@@ -310,9 +403,9 @@ class TradingServiceMarketUniverseDailyScanMixin:
 
             payload = get_remote_scan_status(
                 {
-                    "environment": service_mod.DATA_ENVIRONMENT,
-                    "broker_mode": service_mod.ENVIRONMENT,
-                    "data_environment": service_mod.DATA_ENVIRONMENT,
+                    "environment": data_environment,
+                    "broker_mode": broker_environment,
+                    "data_environment": data_environment,
                     "date": market_date,
                     "run_id": run_id,
                 }

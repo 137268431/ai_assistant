@@ -1219,6 +1219,38 @@ class SystemSchedulerJobsTest(unittest.TestCase):
             "compute_base_url": "http://compute",
         }
 
+    def test_daily_event_reconcile_skips_legacy_target_events_in_tv_primary_slim(self):
+        sent = []
+        events = []
+        states = {
+            ("ibkr_daily_scan_state", "live", "global"): {
+                "data": {
+                    "status": "completed",
+                    "market_date": "2026-05-22",
+                    "result": {"new_targets": [{"symbol": "BX", "status": "active"}]},
+                }
+            }
+        }
+        deps = self._daily_event_reconcile_deps(states, sent, events, now_us="2026-05-22 09:40:00")
+        deps["config_value"] = lambda key, default, environment: {
+            "ibkr_signal_source": "tradingview",
+            "ibkr_tv_primary_runtime_slim_enabled": "TRUE",
+        }.get(key, default)
+
+        payload, status_code = build_daily_event_reconcile_response(
+            payload={"broker_mode": "paper", "market_data_mode": "live", "dry_run": True},
+            **deps,
+        )
+
+        self.assertEqual(status_code, 200)
+        ledger_events = payload["ledger"]["events"]
+        self.assertEqual(ledger_events["daily_scan_seed"]["status"], "skipped")
+        self.assertEqual(ledger_events["target_pool_quality"]["status"], "skipped")
+        self.assertFalse(any(event_id.startswith("new_targets:seed") for event_id in ledger_events))
+        self.assertEqual(payload["actions"], [])
+        self.assertEqual(sent, [])
+        self.assertEqual(events, [])
+
     def test_daily_event_reconcile_sends_seed_new_targets_once(self):
         sent = []
         events = []
@@ -1668,6 +1700,31 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(reconcile_calls[0]["json_body"]["prime_symbols"], ["MSFT"])
         self.assertTrue(any(collection == "system_events" for collection, _ in pb.created))
 
+    def test_intraday_window_admission_skips_tv_primary_slim(self):
+        pb = _IntradayAdmissionPB()
+        request_calls = []
+
+        with mock.patch(
+            "ibkr_api.system.jobs.intraday_window_admission.build_active_window_items_for_symbols"
+        ) as window_mock:
+            payload, status_code = self._run_admission(
+                pb,
+                request_calls=request_calls,
+                config_overrides={
+                    "ibkr_signal_source": "tradingview",
+                    "ibkr_tv_primary_runtime_slim_enabled": "TRUE",
+                },
+            )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["skipped"])
+        self.assertEqual(payload["reason"], "tv_primary_slim_mode")
+        self.assertEqual(payload["admitted_symbols"], [])
+        self.assertEqual(pb.records["ibkr_targets"], [])
+        self.assertEqual(request_calls, [])
+        window_mock.assert_not_called()
+
     def test_intraday_window_admission_dry_run_does_not_write_or_reconcile(self):
         pb = _IntradayAdmissionPB()
         pb.records["watchlist"] = [
@@ -1888,6 +1945,28 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertEqual([], payload["suppressed_flag_codes"])
         self.assertEqual(1, len(events))
         self.assertEqual("error", events[0]["level"])
+
+    def test_system_monitor_alert_suppresses_legacy_target_gap_in_tv_primary_slim(self):
+        flag = {
+            "code": "no_active_targets",
+            "severity": "warning",
+            "title": "No active trade targets",
+            "detail": "watchlist 中存在交易标的，但当前 active target 数为 0",
+        }
+
+        payload, status_code, _states, events = self._run_monitor_alert_guard(
+            flags=[flag],
+            config_overrides={
+                "ibkr_signal_source": "tradingview",
+                "ibkr_tv_primary_runtime_slim_enabled": "TRUE",
+            },
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertFalse(payload["triggered"])
+        self.assertEqual(payload["flag_codes"], [])
+        self.assertEqual(payload["suppressed_flag_codes"], ["no_active_targets"])
+        self.assertEqual(events, [])
 
     def test_system_monitor_alert_includes_admission_preview_for_target_gap(self):
         states = {}

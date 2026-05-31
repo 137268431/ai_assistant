@@ -4,6 +4,10 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from ibkr_api.modes import request_market_data_mode
+from ibkr_api.system.jobs.legacy_target_universe import (
+    legacy_target_market_closed,
+    legacy_target_universe_suppressed,
+)
 
 
 MONITOR_ALERT_STATE_KEY = "system_monitor_alert"
@@ -16,6 +20,7 @@ ACCOUNT_SNAPSHOT_WARNING_CODES = {
     "account_snapshot_timeout",
     "account_pnl_unavailable",
 }
+LEGACY_TARGET_FLAG_CODES = {"no_active_targets", "no_execution_eligible_targets"}
 IB_CLIENT_SERVICE_LABELS = (
     ("ibkr-runtime", "Runtime"),
     ("ibkr-compute", "Compute"),
@@ -131,6 +136,19 @@ def _alert_flags(monitor_payload: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         flags.append(dict(item))
     return flags
+
+
+def _filter_legacy_target_flags(flags: list[dict[str, Any]], *, suppressed: bool) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not suppressed:
+        return flags, []
+    kept: list[dict[str, Any]] = []
+    removed: list[dict[str, Any]] = []
+    for item in flags:
+        if _to_text(item.get("code")) in LEGACY_TARGET_FLAG_CODES:
+            removed.append(item)
+        else:
+            kept.append(item)
+    return kept, removed
 
 
 def _flag_codes(flags: list[dict[str, Any]]) -> list[str]:
@@ -322,6 +340,10 @@ def build_system_monitor_alert_guard_response(
     times = time_strings()
     monitor_payload = _as_dict(build_system_monitor_payload(environment))
     flags = _alert_flags(monitor_payload)
+    legacy_suppressed, _legacy_reason, _legacy_detail = legacy_target_universe_suppressed(config_value, environment)
+    if not legacy_suppressed:
+        legacy_suppressed, _legacy_reason, _legacy_detail = legacy_target_market_closed(_to_text(times.get("date")))
+    flags, legacy_suppressed_flags = _filter_legacy_target_flags(flags, suppressed=legacy_suppressed)
     state = _as_dict(get_state_payload(MONITOR_ALERT_STATE_KEY, environment).get("data"))
     current_ms = _to_int(datetime.now(timezone.utc).timestamp() * 1000, 0)
     error_cooldown_min = _config_int(
@@ -367,6 +389,8 @@ def build_system_monitor_alert_guard_response(
             "environment": environment,
             "job_id": "system_monitor_alert_guard",
             "triggered": False,
+            "flag_codes": [],
+            "suppressed_flag_codes": _flag_codes(legacy_suppressed_flags),
             "state": next_state,
             "source": "ibkr-api",
         }, 200
@@ -385,7 +409,7 @@ def build_system_monitor_alert_guard_response(
             "triggered": False,
             "flag_codes": _flag_codes(flags),
             "alert_flag_codes": [],
-            "suppressed_flag_codes": _flag_codes(suppressed_flags),
+            "suppressed_flag_codes": _flag_codes(suppressed_flags + legacy_suppressed_flags),
             "account_snapshot_warning_streak": account_snapshot_warning_streak,
             "state": next_state,
             "source": "ibkr-api",
@@ -435,7 +459,7 @@ def build_system_monitor_alert_guard_response(
         "triggered": bool(should_notify),
         "flag_codes": _flag_codes(flags),
         "alert_flag_codes": _flag_codes(alert_flags),
-        "suppressed_flag_codes": _flag_codes(suppressed_flags),
+        "suppressed_flag_codes": _flag_codes(suppressed_flags + legacy_suppressed_flags),
         "account_snapshot_warning_streak": account_snapshot_warning_streak,
         "admission_preview": admission_preview,
         "event": event,

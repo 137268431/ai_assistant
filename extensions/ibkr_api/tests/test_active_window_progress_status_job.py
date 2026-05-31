@@ -249,6 +249,33 @@ class ActiveWindowProgressStatusJobTest(unittest.TestCase):
         self.assertFalse(events)
         self.assertFalse(states)
 
+    def test_tv_primary_slim_skips_without_building_or_sending_card(self):
+        states = {}
+        sends = []
+        updates = []
+        events = []
+        deps, progress_payloads, today_payloads = self._deps(states=states, sends=sends, updates=updates, events=events)
+        deps["config_value"] = lambda key, default, environment: {
+            "ibkr_signal_source": "tradingview",
+            "ibkr_tv_primary_runtime_slim_enabled": "TRUE",
+        }.get(key, default)
+
+        payload, status_code = build_active_window_progress_status_response(
+            payload={"broker_mode": "paper", "market_data_mode": "live"},
+            **deps,
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["skipped"])
+        self.assertEqual(payload["reason"], "tv_primary_slim_mode")
+        self.assertEqual(progress_payloads, [])
+        self.assertEqual(today_payloads, [])
+        self.assertFalse(sends)
+        self.assertFalse(updates)
+        self.assertFalse(events)
+        self.assertFalse(states)
+
     def test_update_failure_falls_back_to_send_and_replaces_state_message_id(self):
         states = {
             (ACTIVE_WINDOW_PROGRESS_CARD_STATE_KEY, "paper", "2026-05-28"): {

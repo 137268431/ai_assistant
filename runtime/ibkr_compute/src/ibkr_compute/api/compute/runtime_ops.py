@@ -15,6 +15,7 @@ from ibkr_compute.api.service_topology import is_runtime_remote_mode
 from ibkr_compute.core.payload_compact import compact_json_payload
 from ibkr_compute.core.time_utils import ET
 from ibkr_compute.core.broker_mode import resolve_market_data_mode
+from ibkr_compute.market.calendar import build_local_nyse_calendar_snapshot
 from ibkr_compute.workflows.daily_scanner import DEFAULT_SCAN_TIME_ET, DAILY_SCAN_MODE_SEED, DailyScanner
 
 
@@ -61,6 +62,100 @@ def _payload_bool(value, default: bool = False) -> bool:
     if text in {"0", "false", "no", "off"}:
         return False
     return bool(value)
+
+
+def _config_text_for_environment(config, key: str, environment: str, default: str = "") -> str:
+    defaults = getattr(config, "DEFAULTS", {}) or {}
+    fallback = str(defaults.get(key, default) if isinstance(defaults, dict) else default)
+    getter = getattr(config, "get_for_environment", None)
+    if callable(getter):
+        try:
+            return str(getter(key, environment, fallback) or "").strip()
+        except Exception:
+            return str(fallback or "").strip()
+    return str(fallback or "").strip()
+
+
+def _config_bool_for_environment(config, key: str, environment: str, default: bool = False) -> bool:
+    defaults = getattr(config, "DEFAULTS", {}) or {}
+    if isinstance(defaults, dict) and key in defaults:
+        default = _payload_bool(defaults.get(key), default)
+    bool_getter = getattr(config, "get_bool_for_environment", None)
+    if callable(bool_getter):
+        try:
+            return bool(bool_getter(key, environment, default))
+        except Exception:
+            pass
+    return _payload_bool(_config_text_for_environment(config, key, environment, str(default).lower()), default)
+
+
+def _scan_legacy_pipeline_skip_reason(api_app, environment: str) -> tuple[str, dict]:
+    cfg = getattr(api_app, "cfg", None)
+    if cfg is None:
+        return "", {}
+    env = str(environment or "live").strip().lower() or "live"
+    signal_source = _config_text_for_environment(cfg, "ibkr_signal_source", env, "ibkr_compute").lower()
+    tv_primary = signal_source in {"tv", "tradingview", "webhook_tv"}
+    tv_slim = _config_bool_for_environment(cfg, "ibkr_tv_primary_runtime_slim_enabled", env, False)
+    if tv_primary and tv_slim:
+        return "tv_primary_slim_mode", {
+            "environment": env,
+            "signal_source": signal_source,
+            "ibkr_tv_primary_runtime_slim_enabled": tv_slim,
+        }
+    technical_enabled = _config_bool_for_environment(cfg, "ibkr_runtime_technical_pipeline_enabled", env, True)
+    if not technical_enabled:
+        return "technical_pipeline_disabled", {
+            "environment": env,
+            "ibkr_runtime_technical_pipeline_enabled": technical_enabled,
+        }
+    return "", {}
+
+
+def _scan_market_closed_skip(date_str: str) -> tuple[str, dict]:
+    snapshot = build_local_nyse_calendar_snapshot(date_str)
+    if bool(snapshot.get("is_closed")) or snapshot.get("is_trading_day") is False:
+        return "market_closed", {
+            "market_date": str(snapshot.get("market_date") or date_str),
+            "closed_reason": str(snapshot.get("closed_reason") or "closed"),
+            "next_open_us": str(snapshot.get("next_open_us") or ""),
+            "next_open_beijing": str(snapshot.get("next_open_beijing") or ""),
+            "calendar_source": str(snapshot.get("source") or ""),
+        }
+    return "", {"market_date": str(snapshot.get("market_date") or date_str), "calendar_source": str(snapshot.get("source") or "")}
+
+
+def _scan_skip_payload(
+    api_app,
+    *,
+    requested_environments: list[str],
+    enabled_environments: list[str],
+    date_str: str,
+    reason: str,
+    detail: dict,
+    force_scan: bool,
+    scan_mode: str,
+    scan_windows: list[dict] | None = None,
+) -> dict:
+    payload = {
+        "ok": True,
+        "skipped": True,
+        "reason": reason,
+        "date": date_str,
+        "market_date": date_str,
+        "environment": enabled_environments[0] if enabled_environments else "live",
+        "requested_environments": requested_environments,
+        "environments": enabled_environments,
+        "force": force_scan,
+        "mode": scan_mode,
+        "scan_windows": list(scan_windows or []),
+        "status": "skipped",
+        "finished_at": datetime.now(ET).isoformat(),
+        "last_error": "",
+        **dict(detail or {}),
+    }
+    _persist_latest_daily_scan_state(api_app, payload)
+    return payload
 
 
 def _parse_hhmm(value, default: tuple[int, int] | None = None) -> tuple[int, int] | None:
@@ -455,7 +550,43 @@ def build_scan_response(payload=None):
 
     force_scan = _payload_bool(payload.get("force"), False)
     scan_mode = _normalize_scan_mode(payload.get("mode"))
+    date_str = api_app.current_market_date()
     scan_windows = [_scan_window_state(api_app, env) for env in enabled_environments]
+
+    if not force_scan:
+        closed_reason, closed_detail = _scan_market_closed_skip(date_str)
+        if closed_reason:
+            return jsonify(
+                _scan_skip_payload(
+                    api_app,
+                    requested_environments=requested_environments,
+                    enabled_environments=enabled_environments,
+                    date_str=date_str,
+                    reason=closed_reason,
+                    detail=closed_detail,
+                    force_scan=force_scan,
+                    scan_mode=scan_mode,
+                    scan_windows=scan_windows,
+                )
+            )
+
+        for environment in enabled_environments:
+            pipeline_reason, pipeline_detail = _scan_legacy_pipeline_skip_reason(api_app, environment)
+            if pipeline_reason:
+                return jsonify(
+                    _scan_skip_payload(
+                        api_app,
+                        requested_environments=requested_environments,
+                        enabled_environments=enabled_environments,
+                        date_str=date_str,
+                        reason=pipeline_reason,
+                        detail=pipeline_detail,
+                        force_scan=force_scan,
+                        scan_mode=scan_mode,
+                        scan_windows=scan_windows,
+                    )
+                )
+
     blocked_windows = [window for window in scan_windows if not window["open"]]
     if blocked_windows and not force_scan:
         return jsonify({
@@ -477,7 +608,6 @@ def build_scan_response(payload=None):
             scan_windows=scan_windows,
         )
 
-    date_str = api_app.current_market_date()
     scanner = DailyScanner(pb_client=api_app.pb, engines=api_app.engines)
     result = scanner.run_scan(date_str, environments=enabled_environments, mode=scan_mode)
     api_app.last_scan_time = time.time()

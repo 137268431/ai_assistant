@@ -806,6 +806,44 @@ class RemoteDailyScanDelegationTest(unittest.TestCase):
         self.assertEqual(result["state"]["result"]["error"], "all_scanned_symbols_missing_technical_snapshots")
         self.assertEqual(service.events[0]["title"], "IBKR 盘前日筛重试中")
 
+    def test_daily_scan_skips_tv_primary_slim_without_retry_alert(self):
+        service = _DummyMarketUniverse()
+        service._runtime_tv_primary_slim_enabled = lambda: True
+
+        with mock.patch("ibkr_compute.api.compute_status_client.trigger_remote_scan") as trigger_mock:
+            result = service._run_daily_scan_if_due(reason="poll")
+
+        trigger_mock.assert_not_called()
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["reason"], "tv_primary_slim_mode")
+        self.assertEqual(result["state"]["status"], "skipped")
+        self.assertEqual(service.events, [])
+
+    def test_daily_scan_skips_closed_market_and_clears_retry_state(self):
+        service = _DummyMarketUniverse()
+        service._current_market_date = "2026-05-31"
+        service._daily_scan_state = {
+            **service._initial_daily_scan_state("2026-05-31"),
+            "status": "retry_wait",
+            "last_error": "compute_scan_stalled",
+            "next_retry_at": "2026-05-31T08:52:00-04:00",
+            "retry_count": 1,
+        }
+
+        with mock.patch("ibkr_compute.api.compute_status_client.trigger_remote_scan") as trigger_mock:
+            result = service._run_daily_scan_if_due(reason="poll")
+
+        trigger_mock.assert_not_called()
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["reason"], "market_closed")
+        self.assertEqual(result["closed_reason"], "weekend")
+        self.assertEqual(result["state"]["status"], "skipped")
+        self.assertEqual(result["state"]["last_error"], "")
+        self.assertEqual(result["state"]["next_retry_at"], "")
+        self.assertEqual(service.events, [])
+
     def test_daily_scan_waits_when_compute_preload_is_running(self):
         service = _DummyMarketUniverse()
         compute_status = {

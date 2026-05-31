@@ -4,6 +4,25 @@ import time
 
 from .warmup_cycle_support import _service_mod
 
+
+def _data_environment(service_mod) -> str:
+    environment = str(
+        getattr(service_mod, "DATA_ENVIRONMENT", None)
+        or getattr(service_mod, "ENVIRONMENT", None)
+        or "live"
+    ).strip().lower()
+    return environment or "live"
+
+
+def _broker_environment(service_mod, data_environment: str | None = None) -> str:
+    broker = str(getattr(service_mod, "ENVIRONMENT", None) or data_environment or "live").strip().lower()
+    return broker or (data_environment or "live")
+
+
+def _has_explicit_data_environment(service_mod) -> bool:
+    return bool(str(getattr(service_mod, "DATA_ENVIRONMENT", "") or "").strip())
+
+
 class WarmupCycleRemoteReadinessMixin:
     def _warmup_uses_remote_compute_service(self) -> bool:
         from ibkr_compute.api.service_topology import uses_remote_compute_service
@@ -12,12 +31,13 @@ class WarmupCycleRemoteReadinessMixin:
 
     def _load_warmup_compute_cursors(self) -> int:
         service_mod = _service_mod()
+        data_environment = _data_environment(service_mod)
         if self._warmup_uses_remote_compute_service():
             return 0
         from ibkr_compute.api import server as compute_server
 
         with compute_server.compute_lock:
-            return int(compute_server.load_persisted_compute_cursors(service_mod.DATA_ENVIRONMENT) or 0)
+            return int(compute_server.load_persisted_compute_cursors(data_environment) or 0)
 
     def _materialize_warmup_compute_symbols(
         self,
@@ -27,12 +47,13 @@ class WarmupCycleRemoteReadinessMixin:
         persist_latest_indicator: bool = False,
     ) -> dict:
         service_mod = _service_mod()
+        data_environment = _data_environment(service_mod)
         if self._warmup_uses_remote_compute_service():
             return {}
         from ibkr_compute.api import server as compute_server
 
         return compute_server.materialize_engines_from_storage(
-            service_mod.DATA_ENVIRONMENT,
+            data_environment,
             symbols or [],
             service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL,
             hydrate_signal_state=hydrate_signal_state,
@@ -41,6 +62,8 @@ class WarmupCycleRemoteReadinessMixin:
 
     def _trigger_remote_warmup_prime(self, symbols: list[str] | None, *, source: str = "warmup") -> dict:
         service_mod = _service_mod()
+        data_environment = _data_environment(service_mod)
+        broker_environment = _broker_environment(service_mod, data_environment)
         if not self._warmup_uses_remote_compute_service():
             return {"ok": True, "skipped": True, "reason": "local_compute_mode"}
         normalized_symbols = self._normalize_symbol_list(symbols or [])
@@ -56,15 +79,21 @@ class WarmupCycleRemoteReadinessMixin:
         errors = 0
         for index in range(0, len(normalized_symbols), chunk_size):
             chunk = normalized_symbols[index:index + chunk_size]
-            result = trigger_remote_prime({
-                "environments": [service_mod.DATA_ENVIRONMENT],
-                "market_data_mode": service_mod.DATA_ENVIRONMENT,
-                "broker_mode": service_mod.ENVIRONMENT,
+            payload = {
+                "environments": [data_environment],
                 "symbols": chunk,
                 "intervals": intervals,
                 "persist_latest_indicator": False,
                 "source": source,
-            })
+            }
+            if _has_explicit_data_environment(service_mod):
+                payload.update(
+                    {
+                        "market_data_mode": data_environment,
+                        "broker_mode": broker_environment,
+                    }
+                )
+            result = trigger_remote_prime(payload)
             results.append(result)
             if result.get("ok") is False:
                 errors += 1
@@ -93,11 +122,12 @@ class WarmupCycleRemoteReadinessMixin:
             return False
 
         service_mod = _service_mod()
+        data_environment = _data_environment(service_mod)
         retry_delay_s = max(
             1,
             self.config.get_int_for_environment(
                 "ibkr_warmup_remote_compute_retry_sec",
-                service_mod.DATA_ENVIRONMENT,
+                data_environment,
                 5,
             ),
         )
@@ -115,6 +145,7 @@ class WarmupCycleRemoteReadinessMixin:
 
     def _collect_remote_warmup_readiness(self, snapshot: dict) -> dict:
         service_mod = _service_mod()
+        data_environment = _data_environment(service_mod)
         from ibkr_compute.api.compute_status_client import (
             get_remote_compute_status,
             is_compute_status_payload,
@@ -192,7 +223,7 @@ class WarmupCycleRemoteReadinessMixin:
                     }
                     continue
                 engine_state = dict(
-                    engines.get(f"{service_mod.DATA_ENVIRONMENT}/{symbol}/{required_interval}") or {}
+                    engines.get(f"{data_environment}/{symbol}/{required_interval}") or {}
                 )
                 if engine_state:
                     status_by_symbol[symbol] = {
@@ -342,6 +373,7 @@ class WarmupCycleRemoteReadinessMixin:
 
     def _collect_warmup_readiness(self, snapshot: dict) -> dict:
         service_mod = _service_mod()
+        data_environment = _data_environment(service_mod)
 
         if self._warmup_uses_remote_compute_service():
             return self._collect_remote_warmup_readiness(snapshot)
@@ -352,7 +384,7 @@ class WarmupCycleRemoteReadinessMixin:
         for symbol in snapshot["symbols"]:
             engine = compute_server.engines.get(
                 (
-                    service_mod.DATA_ENVIRONMENT,
+                    data_environment,
                     symbol,
                     service_mod.DEFAULT_WARMUP_REQUIRED_INTERVAL,
                 )

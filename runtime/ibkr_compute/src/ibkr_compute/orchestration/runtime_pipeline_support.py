@@ -22,6 +22,24 @@ def _service_mod():
     return service_mod
 
 
+def _data_environment(service_mod) -> str:
+    environment = str(
+        getattr(service_mod, "DATA_ENVIRONMENT", None)
+        or getattr(service_mod, "ENVIRONMENT", None)
+        or "live"
+    ).strip().lower()
+    return environment or "live"
+
+
+def _broker_environment(service_mod, data_environment: str | None = None) -> str:
+    broker = str(getattr(service_mod, "ENVIRONMENT", None) or data_environment or "live").strip().lower()
+    return broker or (data_environment or "live")
+
+
+def _has_explicit_data_environment(service_mod) -> bool:
+    return bool(str(getattr(service_mod, "DATA_ENVIRONMENT", "") or "").strip())
+
+
 class _ThreadingProxy:
     def __getattr__(self, name):
         facade = _facade_module()
@@ -60,6 +78,8 @@ class RuntimePipelineSupportMixin:
 
     def _schedule_interval_prime(self, symbols: list[str], source: str = "startup") -> bool:
             service_mod = _service_mod()
+            data_environment = _data_environment(service_mod)
+            broker_environment = _broker_environment(service_mod, data_environment)
             normalized_symbols = [
                 str(symbol or "").strip().upper()
                 for symbol in (symbols or [])
@@ -104,16 +124,20 @@ class RuntimePipelineSupportMixin:
                                 if not self._running:
                                     break
                                 chunk = normalized_symbols[index:index + service_mod.STARTUP_BACKGROUND_PRIME_CHUNK_SIZE]
-                                result = trigger_remote_prime(
-                                    {
-                                        "environments": [service_mod.DATA_ENVIRONMENT],
-                                        "market_data_mode": service_mod.DATA_ENVIRONMENT,
-                                        "broker_mode": service_mod.ENVIRONMENT,
-                                        "symbols": chunk,
-                                        "intervals": [interval],
-                                        "persist_latest_indicator": False,
-                                    }
-                                )
+                                payload = {
+                                    "environments": [data_environment],
+                                    "symbols": chunk,
+                                    "intervals": [interval],
+                                    "persist_latest_indicator": False,
+                                }
+                                if _has_explicit_data_environment(service_mod):
+                                    payload.update(
+                                        {
+                                            "market_data_mode": data_environment,
+                                            "broker_mode": broker_environment,
+                                        }
+                                    )
+                                result = trigger_remote_prime(payload)
                                 if result.get("ok") is False:
                                     raise RuntimeError(
                                         str(result.get("error") or f"remote_prime_failed:{interval}")
@@ -131,7 +155,7 @@ class RuntimePipelineSupportMixin:
 
                     try:
                         with compute_server.compute_lock:
-                            compute_server.load_persisted_compute_cursors(service_mod.DATA_ENVIRONMENT)
+                            compute_server.load_persisted_compute_cursors(data_environment)
                     except Exception as exc:
                         service_mod.logger.warning("Interval prime cursor preload failed: %s", exc)
 
@@ -148,7 +172,7 @@ class RuntimePipelineSupportMixin:
                             chunk = normalized_symbols[index:index + service_mod.STARTUP_BACKGROUND_PRIME_CHUNK_SIZE]
                             with compute_server.compute_lock:
                                 compute_server.materialize_engines_from_storage(
-                                    service_mod.DATA_ENVIRONMENT,
+                                    data_environment,
                                     chunk,
                                     interval,
                                     persist_latest_indicator=False,
@@ -194,13 +218,20 @@ class RuntimePipelineSupportMixin:
             rollup_intervals: list[str] | None = None,
         ) -> dict:
             service_mod = _service_mod()
+            data_environment = _data_environment(service_mod)
+            broker_environment = _broker_environment(service_mod, data_environment)
             try:
                 payload = {
                     "source": source,
-                    "environments": [service_mod.DATA_ENVIRONMENT],
-                    "market_data_mode": service_mod.DATA_ENVIRONMENT,
-                    "broker_mode": service_mod.ENVIRONMENT,
+                    "environments": [data_environment],
                 }
+                if _has_explicit_data_environment(service_mod):
+                    payload.update(
+                        {
+                            "market_data_mode": data_environment,
+                            "broker_mode": broker_environment,
+                        }
+                    )
                 if persist_signals is not None:
                     payload["persist_signals"] = bool(persist_signals)
                 if persist_signal_symbols is not None:
