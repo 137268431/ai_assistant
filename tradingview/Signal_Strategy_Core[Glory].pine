@@ -84,6 +84,7 @@ displayPreset = input.string("核心交易流程", "Display preset", options=["�
 showFlowLabels = input.bool(true, "Show activation/prep/entry labels", group="08 Display")
 showStatusPanel = input.bool(true, "Show status panel", group="08 Display")
 showBands = input.bool(true, "Show SD bands", group="08 Display")
+showSdHelperLines = input.bool(false, "Show SD regression/filter lines", group="08 Display")
 showDtpLine = input.bool(true, "Show DTP trend line", group="08 Display")
 showEma = input.bool(true, "Show EMA fast/slow", group="08 Display")
 showDebugComponents = input.bool(false, "Show SD/F/D component markers", group="08 Display")
@@ -95,6 +96,7 @@ bool displayDebugMode = displayPreset == "调试全量"
 bool showEmaFastSlowLines = showEma or displayIndicatorMode or displayDebugMode
 bool showEmaContextLines = displayIndicatorMode or displayDebugMode
 bool showBandLines = showBands or displayIndicatorMode or displayDebugMode
+bool showSdHelperBandLines = showSdHelperLines or displayIndicatorMode or displayDebugMode
 bool showDtpTrendLine = showDtpLine or displayIndicatorMode or displayDebugMode
 bool showComponentMarkers = showDebugComponents or displayDebugMode
 
@@ -1286,19 +1288,19 @@ plot(showEmaFastSlowLines ? emaSlow : na, "EMA 50 慢线", color=color.new(color
 plot(showEmaContextLines ? emaTrend : na, "EMA 100 趋势", color=color.new(color.blue, 35))
 plot(showEmaContextLines ? emaLongest : na, "EMA 200 长线", color=color.new(color.gray, 35))
 plot(showDtpTrendLine ? dtpAvg : na, "DTP 趋势线", color=dtpLineColor, linewidth=2)
-plot(showBandLines ? sdReg : na, "SD regression", color=color.new(color.white, 25))
+plot(showSdHelperBandLines ? sdReg : na, "SD regression", color=color.new(color.white, 25))
 plot(showBandLines ? sdSignalUpper : na, "SD signal upper", color=color.new(color.red, 30))
 plot(showBandLines ? sdSignalLower : na, "SD signal lower", color=color.new(color.green, 30))
-plot(showBandLines ? sdFilterUpper : na, "SD filter upper", color=color.new(color.red, 75))
-plot(showBandLines ? sdFilterLower : na, "SD filter lower", color=color.new(color.green, 75))
+plot(showSdHelperBandLines ? sdFilterUpper : na, "SD filter upper", color=color.new(color.red, 75))
+plot(showSdHelperBandLines ? sdFilterLower : na, "SD filter lower", color=color.new(color.green, 75))
 
 bool showAnyFractalMarkers = showComponentMarkers or showFractalMarkers
 plotshape(showComponentMarkers and sdLowerHit, "SD lower hit", location=location.belowbar, style=shape.triangleup, color=color.new(color.green, 0), size=size.tiny, text="SD-L")
 plotshape(showComponentMarkers and sdUpperHit, "SD upper hit", location=location.abovebar, style=shape.triangledown, color=color.new(color.orange, 0), size=size.tiny, text="SD-U")
 plotshape(showAnyFractalMarkers and fractalBull, "Fractal bull", location=location.belowbar, style=shape.circle, color=color.new(color.aqua, 0), size=size.tiny, text="F+", offset=-fractalPeriod)
 plotshape(showAnyFractalMarkers and fractalBear, "Fractal bear", location=location.abovebar, style=shape.circle, color=color.new(color.fuchsia, 0), size=size.tiny, text="F-", offset=-fractalPeriod)
-plotshape(showEmaCrossMarkers and emaGoldenCross, "EMA20/50 golden cross", location=location.belowbar, style=shape.triangleup, color=color.new(color.lime, 0), size=size.small, text="20/50+")
-plotshape(showEmaCrossMarkers and emaDeathCross, "EMA20/50 death cross", location=location.abovebar, style=shape.triangledown, color=color.new(color.red, 0), size=size.small, text="20/50-")
+plotshape(showEmaCrossMarkers and emaGoldenCross, "EMA20/50 golden cross", location=location.belowbar, style=shape.triangleup, color=color.new(color.lime, 0), size=size.small, text="20/50金叉")
+plotshape(showEmaCrossMarkers and emaDeathCross, "EMA20/50 death cross", location=location.abovebar, style=shape.triangledown, color=color.new(color.red, 0), size=size.small, text="20/50死叉")
 plotshape(showComponentMarkers and bullDivNow, "Bull divergence", location=location.belowbar, style=shape.diamond, color=color.new(color.lime, 0), size=size.tiny, text="D+")
 plotshape(showComponentMarkers and bearDivNow, "Bear divergence", location=location.abovebar, style=shape.diamond, color=color.new(color.red, 0), size=size.tiny, text="D-")
 

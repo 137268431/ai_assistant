@@ -55,6 +55,7 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         source = self.source
 
         self.assertIn('positionAmount = input.float(5000, "Notional per trade ($)", step=500, minval=100, group="05 Risk")', source)
+        self.assertIn('sdSignalBand = input.int(4, "MR trigger band", minval=1, maxval=4, group="03 SD Channel")', source)
         self.assertIn('useVolatilityFilter = input.bool(true, "Block low-volatility entries", group="05 Risk")', source)
         self.assertIn('minAtrPctForEntry = input.float(0.08, "Minimum ATR% for entry", step=0.01, minval=0.0, group="05 Risk")', source)
         self.assertIn("bool lowVolatilityEntryBlocked = useVolatilityFilter and atrPct < minAtrPctForEntry", source)
@@ -66,10 +67,17 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
 
         self.assertIn('showFractalMarkers = input.bool(true, "Show fractal markers", group="08 Display")', source)
         self.assertIn('showEmaCrossMarkers = input.bool(true, "Show EMA20/50 cross markers", group="08 Display")', source)
+        self.assertIn('showSdHelperLines = input.bool(false, "Show SD regression/filter lines", group="08 Display")', source)
+        self.assertIn("bool showSdHelperBandLines = showSdHelperLines or displayIndicatorMode or displayDebugMode", source)
+        self.assertIn('plot(showBandLines ? sdSignalUpper : na, "SD signal upper"', source)
+        self.assertIn('plot(showSdHelperBandLines ? sdReg : na, "SD regression"', source)
+        self.assertIn('plot(showSdHelperBandLines ? sdFilterUpper : na, "SD filter upper"', source)
         self.assertIn('plotshape(showAnyFractalMarkers and fractalBull, "Fractal bull"', source)
         self.assertIn("offset=-fractalPeriod", source)
         self.assertIn('plotshape(showEmaCrossMarkers and emaGoldenCross, "EMA20/50 golden cross"', source)
         self.assertIn('plotshape(showEmaCrossMarkers and emaDeathCross, "EMA20/50 death cross"', source)
+        self.assertIn('text="20/50金叉"', source)
+        self.assertIn('text="20/50死叉"', source)
 
     def test_window_activation_pre_alert_is_non_directional(self):
         source = self.source
