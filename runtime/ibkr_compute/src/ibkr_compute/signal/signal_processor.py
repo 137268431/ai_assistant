@@ -268,11 +268,11 @@ class SignalProcessor:
     def _symbol_daily_entry_limit(self) -> int:
         getter = getattr(self.config, "get_int_for_environment", None)
         if not callable(getter):
-            return 2
+            return 3
         try:
-            return max(0, int(getter("intraday_symbol_daily_entry_limit", self.environment, 2)))
+            return max(0, int(getter("intraday_symbol_daily_entry_limit", self.environment, 3)))
         except Exception:
-            return 2
+            return 3
 
     @staticmethod
     def _market_date(et_now: datetime) -> str:

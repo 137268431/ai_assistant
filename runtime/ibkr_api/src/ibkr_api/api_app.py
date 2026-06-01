@@ -984,6 +984,8 @@ _callback_toast = _callback_toast_support
 
 
 def _process_tv_primary_event(payload: dict, *, api_received_at_ms: int | None = None):
+    environment = resolve_data_environment((payload or {}).get("market_data_mode") or (payload or {}).get("data_environment") or (payload or {}).get("environment"))
+    async_route = _parse_boolean(_config_value("tv_webhook_async_route_enabled", "TRUE", environment), True)
     return _process_tv_primary_event_support(
         pb,
         payload=payload,
@@ -996,6 +998,8 @@ def _process_tv_primary_event(payload: dict, *, api_received_at_ms: int | None =
         update_interactive=_feishu_update_interactive,
         signal_chat_id_fn=_signal_chat_id,
         console_base_url=_console_base_url(),
+        async_route=async_route,
+        spool_on_persist_failure=async_route,
     )
 _dispatch_feishu_2fa_callback = build_dispatch_feishu_2fa_callback(
     globals_dict=globals(),

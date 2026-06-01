@@ -27,6 +27,7 @@ class _FakePB:
             "ibkr_signals": [],
             "ibkr_reverse_signals": [],
             "orders": [],
+            "watchlist": [],
         }
         self._counters = {}
 
@@ -144,14 +145,14 @@ def _build_signal_ingest_response(pb, *, payload, **_kwargs):
     }, 200
 
 
-def _process(pb, payload):
+def _process(pb, payload, *, config_value=_config_value):
     return process_tv_primary_event(
         pb,
         payload,
         normalize_environment=_normalize_environment,
         escape_filter_string=_escape,
         build_signal_ingest_response=_build_signal_ingest_response,
-        config_value=_config_value,
+        config_value=config_value,
     )
 
 
@@ -296,7 +297,207 @@ class TvPrimaryIngestTests(unittest.TestCase):
         duplicate, duplicate_status = _process(pb, payload)
         self.assertEqual(duplicate_status, 200)
         self.assertTrue(duplicate["skipped"])
+        self.assertEqual(duplicate["status"], "duplicate")
+        self.assertEqual(duplicate["reason"], "duplicate_tv_event")
+        self.assertEqual(duplicate["route_status"], "routed")
         self.assertEqual(len(pb.records[TV_EVENT_COLLECTION]), 1)
+
+    def test_pre_alert_without_direction_leaves_target_direction_bias_empty(self):
+        pb = _FakePB()
+        payload = {
+            "source": "tv",
+            "event_type": "pre_alert",
+            "event_id": "tv-pre-no-direction",
+            "symbol": "TSLA",
+            "activity_score": 84,
+            "quality_score": 80,
+            "market_date": "2026-05-29",
+            "environment": "live",
+            "us_time": "2026-05-29 09:37:00",
+            "bar_time_ms": _et_ms("2026-05-29 09:37:00"),
+        }
+
+        response, status = _process(pb, payload)
+
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
+        target = pb.records["ibkr_targets"][0]
+        self.assertEqual(target["direction_bias"], "")
+        self.assertEqual(target["extra"]["direction_bias"], "")
+        self.assertEqual(pb.records[TV_EVENT_COLLECTION][0]["direction"], "")
+
+    def test_entry_accepts_same_day_tv_target_without_direction_or_active_rank(self):
+        pb = _FakePB()
+
+        def config_value(key, default, environment):
+            if key == "tv_max_active_targets":
+                return "0"
+            return _config_value(key, default, environment)
+
+        pre_alert, pre_alert_status = _process(
+            pb,
+            {
+                "source": "tv",
+                "event_type": "pre_alert",
+                "event_id": "tv-pre-no-dir-candidate",
+                "symbol": "NVDA",
+                "activity_score": 88,
+                "quality_score": 87,
+                "market_date": "2026-05-29",
+                "environment": "live",
+                "us_time": "2026-05-29 09:36:00",
+                "bar_time_ms": _et_ms("2026-05-29 09:36:00"),
+            },
+            config_value=config_value,
+        )
+        self.assertEqual(pre_alert_status, 200)
+        self.assertTrue(pre_alert["ok"])
+        self.assertEqual(pb.records["ibkr_targets"][0]["status"], "candidate")
+        self.assertEqual(pb.records["ibkr_targets"][0]["direction_bias"], "")
+
+        response, status = _process(
+            pb,
+            {
+                "source": "tv",
+                "event_type": "entry",
+                "event_id": "tv-entry-no-dir-target",
+                "signal_id": "tv-entry-no-dir-target",
+                "symbol": "NVDA",
+                "direction": "long",
+                "entry_price": 122.50,
+                "quantity": 8,
+                "stop_loss": 120.40,
+                "take_profit": 127.90,
+                "market_date": "2026-05-29",
+                "environment": "paper",
+                "us_time": "2026-05-29 09:45:00",
+                "activity_score": 88,
+                "quality_score": 90,
+                **_mtf_payload(status="pass", score=100.0),
+            },
+            config_value=config_value,
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
+        saved = pb.records["ibkr_signals"][0]
+        self.assertEqual(saved["symbol"], "NVDA")
+        self.assertEqual(saved["direction"], "long")
+        self.assertEqual(saved["extra"]["admission_reason"], "same_day_tv_pre_alert_target")
+        self.assertTrue(saved["extra"]["has_same_day_tv_target"])
+        self.assertEqual(pb.records[TV_EVENT_COLLECTION][-1]["status"], "routed")
+
+    def test_entry_uses_trade_watchlist_as_authorized_universe_without_active_rank(self):
+        pb = _FakePB()
+        pb.create_record(
+            "watchlist",
+            {"symbol": "AMD", "environment": "live", "symbol_role": "trade"},
+        )
+        pb.create_record(
+            "watchlist",
+            {"symbol": "SPY", "environment": "live", "symbol_role": "market_monitor"},
+        )
+
+        def config_value(key, default, environment):
+            values = {
+                "tv_entry_requires_active_target": "FALSE",
+                "tv_entry_requires_authorized_symbol": "TRUE",
+                "tv_entry_window_enforce_enabled": "TRUE",
+            }
+            return values.get(key, _config_value(key, default, environment))
+
+        response, status = _process(
+            pb,
+            {
+                "source": "tv",
+                "event_type": "entry",
+                "event_id": "tv-entry-watchlist-authorized",
+                "signal_id": "tv-entry-watchlist-authorized",
+                "symbol": "AMD",
+                "direction": "long",
+                "entry_price": 168.25,
+                "quantity": 29,
+                "stop_loss": 166.80,
+                "take_profit": 172.10,
+                "market_date": "2026-05-29",
+                "environment": "paper",
+                "us_time": "2026-05-29 09:45:00",
+                "activity_score": 91,
+                **_mtf_payload(status="pass", score=100.0),
+            },
+            config_value=config_value,
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
+        saved = pb.records["ibkr_signals"][0]
+        self.assertEqual(saved["symbol"], "AMD")
+        self.assertEqual(saved["extra"]["admission_reason"], "authorized_symbol")
+        self.assertEqual(saved["extra"]["authorized_symbol_source"], "watchlist")
+
+        rejected, rejected_status = _process(
+            pb,
+            {
+                "source": "tv",
+                "event_type": "entry",
+                "event_id": "tv-entry-watchlist-rejected",
+                "signal_id": "tv-entry-watchlist-rejected",
+                "symbol": "SPY",
+                "direction": "long",
+                "entry_price": 500.25,
+                "quantity": 10,
+                "stop_loss": 498.80,
+                "take_profit": 506.10,
+                "market_date": "2026-05-29",
+                "environment": "paper",
+                "us_time": "2026-05-29 09:45:00",
+                "activity_score": 91,
+                **_mtf_payload(status="pass", score=100.0),
+            },
+            config_value=config_value,
+        )
+
+        self.assertEqual(rejected_status, 200)
+        self.assertTrue(rejected["rejected"])
+        self.assertEqual(rejected["reason"], "symbol_not_authorized_for_tv_entry")
+
+    def test_async_route_persists_received_event_before_routing(self):
+        pb = _FakePB()
+        jobs = []
+        payload = {
+            "source": "tv",
+            "event_type": "pre_alert",
+            "event_id": "tv-pre-async",
+            "symbol": "TSLA",
+            "activity_score": 84,
+            "quality_score": 80,
+            "market_date": "2026-05-29",
+            "environment": "live",
+            "us_time": "2026-05-29 09:37:00",
+            "bar_time_ms": _et_ms("2026-05-29 09:37:00"),
+        }
+
+        response, status = process_tv_primary_event(
+            pb,
+            payload,
+            normalize_environment=_normalize_environment,
+            escape_filter_string=_escape,
+            build_signal_ingest_response=_build_signal_ingest_response,
+            config_value=_config_value,
+            async_route=True,
+            route_executor=jobs.append,
+        )
+
+        self.assertEqual(status, 202)
+        self.assertTrue(response["queued"])
+        self.assertEqual(pb.records[TV_EVENT_COLLECTION][0]["status"], "received")
+        self.assertEqual(pb.records["ibkr_targets"], [])
+        self.assertEqual(len(jobs), 1)
+
+        jobs[0]()
+
+        self.assertEqual(pb.records[TV_EVENT_COLLECTION][0]["status"], "routed")
+        self.assertEqual(pb.records["ibkr_targets"][0]["symbol"], "TSLA")
 
     def test_pre_alert_preserves_first_activation_metadata_on_later_updates(self):
         pb = _FakePB()

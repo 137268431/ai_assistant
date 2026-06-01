@@ -51,6 +51,82 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
             source,
         )
 
+    def test_fast_in_defaults_volatility_filter_and_marker_toggles(self):
+        source = self.source
+
+        self.assertIn('positionAmount = input.float(5000, "Notional per trade ($)", step=500, minval=100, group="05 Risk")', source)
+        self.assertIn('useVolatilityFilter = input.bool(true, "Block low-volatility entries", group="05 Risk")', source)
+        self.assertIn('minAtrPctForEntry = input.float(0.08, "Minimum ATR% for entry", step=0.01, minval=0.0, group="05 Risk")', source)
+        self.assertIn("bool lowVolatilityEntryBlocked = useVolatilityFilter and atrPct < minAtrPctForEntry", source)
+        self.assertIn('blockLongReason := "low_volatility"', source)
+        self.assertIn('blockShortReason := "low_volatility"', source)
+        self.assertIn('jsonBool("volatility_filter_enabled", useVolatilityFilter)', source)
+        self.assertIn('jsonNum("min_atr_pct_for_entry", minAtrPctForEntry)', source)
+        self.assertIn('jsonBool("volatility_entry_blocked", lowVolatilityEntryBlocked)', source)
+
+        self.assertIn('showFractalMarkers = input.bool(true, "Show fractal markers", group="08 Display")', source)
+        self.assertIn('showEmaCrossMarkers = input.bool(true, "Show EMA20/50 cross markers", group="08 Display")', source)
+        self.assertIn('plotshape(showAnyFractalMarkers and fractalBull, "Fractal bull"', source)
+        self.assertIn("offset=-fractalPeriod", source)
+        self.assertIn('plotshape(showEmaCrossMarkers and emaGoldenCross, "EMA20/50 golden cross"', source)
+        self.assertIn('plotshape(showEmaCrossMarkers and emaDeathCross, "EMA20/50 death cross"', source)
+
+    def test_window_activation_pre_alert_is_non_directional(self):
+        source = self.source
+        prealert_start = source.index("buildPreAlertPayload")
+        prealert_end = source.index("// TV-primary event flow")
+        prealert_section = source[prealert_start:prealert_end]
+
+        self.assertIn("buildPreAlertPayload(string eventIdValue, string pendingPositionId, string activationWindow)", source)
+        self.assertIn('jsonStr("pre_alert_stage", "window_activation")', prealert_section)
+        self.assertIn('jsonStr("activation_window", activationWindow)', prealert_section)
+        self.assertIn('jsonNum("activation_window_upper", sdSignalUpper)', prealert_section)
+        self.assertIn('jsonNum("activation_window_lower", sdSignalLower)', prealert_section)
+        self.assertIn('jsonBool("entry_decides_direction", true)', prealert_section)
+        self.assertNotIn("direction_bias", prealert_section)
+        self.assertNotIn("candidate_direction", prealert_section)
+        self.assertNotIn("position_side", prealert_section)
+        self.assertNotIn("mtfPayloadForDirection(candidateDirection)", prealert_section)
+        self.assertNotIn("if enableAlerts and preAlertCross", source)
+        self.assertIn('alert(buildPreAlertPayload(eventId("pre_alert", "window_lower"), pendingLowerId, "lower"), alert.freq_all)', source)
+        self.assertIn('alert(buildPreAlertPayload(eventId("pre_alert", "window_upper"), pendingUpperId, "upper"), alert.freq_all)', source)
+
+    def test_sd_window_resets_only_on_activation_events(self):
+        source = self.source
+
+        self.assertIn("bool lowerActivationEvent = sdLowerHit and (not lowerWindowActive or lowerWindowUsed or na(lowerWindowStart) or bar_index - lowerWindowStart > mrWindowBars)", source)
+        self.assertIn("bool upperActivationEvent = sdUpperHit and (not upperWindowActive or upperWindowUsed or na(upperWindowStart) or bar_index - upperWindowStart > mrWindowBars)", source)
+        self.assertIn("if lowerActivationEvent\n    lowerWindowActive := true", source)
+        self.assertIn("if upperActivationEvent\n    upperWindowActive := true", source)
+        self.assertNotIn("if sdLowerHit\n    lowerWindowActive := true", source)
+        self.assertNotIn("if sdUpperHit\n    upperWindowActive := true", source)
+
+    def test_entry_logic_requires_window_and_two_of_three_direction_components(self):
+        source = self.source
+
+        self.assertIn("directionComponentCount(bool fractalReady, bool divReady, bool emaCrossReady)", source)
+        self.assertIn("directionComponentsReady(bool fractalReady, bool divReady, bool emaCrossReady)", source)
+        self.assertIn("int longTrendUpperDirectionComponents = directionComponentCount(upperBullFractalSeen, bullDivSeen, upperBullEmaCrossSeen)", source)
+        self.assertIn("int longMrLowerDirectionComponents = directionComponentCount(lowerBullFractalSeen, bullDivSeen, lowerBullEmaCrossSeen)", source)
+        self.assertIn("int shortMrUpperDirectionComponents = directionComponentCount(upperBearFractalSeen, bearDivSeen, upperBearEmaCrossSeen)", source)
+        self.assertIn("int shortTrendLowerDirectionComponents = directionComponentCount(lowerBearFractalSeen, bearDivSeen, lowerBearEmaCrossSeen)", source)
+        self.assertIn("bool setupLongTrendUpper = upperWindowValid and upperBullTouchSeen and longTrendUpperDirectionComponents >= 2", source)
+        self.assertIn("bool setupLongMrLower = lowerWindowValid and longMrLowerDirectionComponents >= 2", source)
+        self.assertIn("bool setupShortMrUpper = upperWindowValid and shortMrUpperDirectionComponents >= 2", source)
+        self.assertIn("bool setupShortTrendLower = lowerWindowValid and lowerBearTouchSeen and shortTrendLowerDirectionComponents >= 2", source)
+        self.assertIn("int scoreLongTrendUpper = math.min(100,", source)
+        self.assertIn("int scoreLongMrLower = math.min(100,", source)
+        self.assertIn("int scoreShortMrUpper = math.min(100,", source)
+        self.assertIn("int scoreShortTrendLower = math.min(100,", source)
+
+    def test_risk_update_sequence_is_incremented_and_serialized(self):
+        source = self.source
+
+        self.assertIn("var int activeRiskUpdateSeq = 0", source)
+        self.assertIn('jsonInt("risk_update_seq", activeRiskUpdateSeq)', source)
+        self.assertIn("activeRiskUpdateSeq := activeRiskUpdateSeq + 1\n            alert(buildRiskPayload(eventId(\"risk_update\", \"initial\")", source)
+        self.assertIn("activeRiskUpdateSeq := activeRiskUpdateSeq + 1\n        alert(buildRiskPayload(eventId(\"risk_update\", reasonForEvent)", source)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -55,6 +55,25 @@ ORDER_FLOW_DEFAULTS = {
     "cvd_divergence_take_profit_enabled": "true",
 }
 
+TV_PRIMARY_DEFAULTS = {
+    "ibkr_require_target_direction_alignment": "false",
+    "max_strategy_open_positions": "12",
+    "intraday_symbol_daily_entry_limit": "3",
+    "position_limit_max": "36",
+    "tv_max_active_targets": "100",
+    "tv_max_same_direction_targets": "0",
+    "tv_entry_requires_active_target": "false",
+    "tv_entry_requires_authorized_symbol": "true",
+    "tv_primary_trade_universe_symbols": "",
+    "tv_webhook_async_route_enabled": "true",
+    "tv_quality_window_rank_enforce_enabled": "false",
+    "tv_risk_update_seq_guard_enabled": "true",
+    "tv_risk_update_require_monotonic_seq": "true",
+    "tv_risk_update_never_widen_stop": "true",
+    "tv_risk_update_missing_child_order_retry_pending": "true",
+    "tv_risk_update_retry_missing_child_orders": "true",
+}
+
 
 def _load_config_modules():
     import importlib.util
@@ -145,6 +164,37 @@ def test_order_flow_seed_values_match_defaults() -> None:
     seed_values = _seed_config_values()
 
     for key, expected in ORDER_FLOW_DEFAULTS.items():
+        assert key in seed_values
+        seed_value, seed_default = seed_values[key]
+        assert seed_value.lower() == expected.lower()
+        assert seed_default.lower() == expected.lower()
+
+
+def test_tv_primary_defaults_are_widened_and_hardened() -> None:
+    Config, _ = _load_config_modules()
+
+    for key, expected in TV_PRIMARY_DEFAULTS.items():
+        assert Config.DEFAULTS[key] == expected
+
+    cfg = Config()
+    assert cfg.get_bool("ibkr_require_target_direction_alignment", True) is False
+    assert cfg.get_int("max_strategy_open_positions", 0) == 12
+    assert cfg.get_int("intraday_symbol_daily_entry_limit", 0) == 3
+    assert cfg.get_int("position_limit_max", 0) == 36
+    assert cfg.get_bool("tv_entry_requires_active_target", True) is False
+    assert cfg.get_bool("tv_entry_requires_authorized_symbol", False) is True
+    assert cfg.get_bool("tv_webhook_async_route_enabled", False) is True
+    assert cfg.get_bool("tv_quality_window_rank_enforce_enabled", True) is False
+    assert cfg.get_bool("tv_risk_update_seq_guard_enabled", False) is True
+    assert cfg.get_bool("tv_risk_update_require_monotonic_seq", False) is True
+    assert cfg.get_bool("tv_risk_update_never_widen_stop", False) is True
+    assert cfg.get_bool("tv_risk_update_retry_missing_child_orders", False) is True
+
+
+def test_tv_primary_seed_values_match_defaults() -> None:
+    seed_values = _seed_config_values()
+
+    for key, expected in TV_PRIMARY_DEFAULTS.items():
         assert key in seed_values
         seed_value, seed_default = seed_values[key]
         assert seed_value.lower() == expected.lower()

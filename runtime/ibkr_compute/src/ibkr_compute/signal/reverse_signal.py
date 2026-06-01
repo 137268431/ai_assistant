@@ -15,7 +15,7 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from ibkr_compute.core.broker_mode import configured_broker_mode, normalize_broker_mode
+from ibkr_compute.core.broker_mode import configured_broker_mode, normalize_broker_mode, resolve_data_environment
 from ibkr_compute.core.time_utils import ET
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,7 @@ REVERSE_CONFIRM_POLL_SECONDS = max(0.0, float(os.environ.get("IBKR_REVERSE_CONFI
 class ReverseSignalHandler:
     def __init__(self, pb_client, order_placer=None, order_modifier=None,
                  order_lifecycle=None, signal_processor=None,
-                 conid_resolver=None, environment: str = ""):
+                 conid_resolver=None, environment: str = "", config=None):
         self.pb_client = pb_client
         self.order_placer = order_placer
         self.order_modifier = order_modifier
@@ -60,6 +60,7 @@ class ReverseSignalHandler:
         self.signal_processor = signal_processor
         self.conid_resolver = conid_resolver
         self.environment = normalize_broker_mode(environment, configured_broker_mode())
+        self.config = config or getattr(order_lifecycle, "config", None) or getattr(signal_processor, "config", None)
         self._processed_ids = set()
 
     def check_and_process(self):
@@ -81,7 +82,8 @@ class ReverseSignalHandler:
                     continue
 
                 result = self._process_reverse(r, action)
-                self._processed_ids.add(rid)
+                if not self._is_retryable_result(result):
+                    self._processed_ids.add(rid)
 
                 try:
                     self._ack_reverse_signal(r, action, result)
@@ -172,6 +174,17 @@ class ReverseSignalHandler:
             return float(value)
         except (TypeError, ValueError):
             return float(default)
+
+    @staticmethod
+    def _coerce_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return int(default)
+
+    @staticmethod
+    def _is_retryable_result(result: Dict[str, Any]) -> bool:
+        return str((result or {}).get("ack_status") or "").strip().lower() == "pending"
 
     @staticmethod
     def _order_status(order: Dict[str, Any]) -> str:
@@ -304,6 +317,28 @@ class ReverseSignalHandler:
             "ok": False,
             "ack_status": "blocked",
             "reason": f"reverse blocked: {block_detail['reason']}",
+            "detail": detail,
+        }
+
+    @classmethod
+    def _mark_retryable_blocked(cls, detail: Dict[str, Any], reason: str, **context: Any) -> Dict[str, Any]:
+        cls._append_state(detail, "pending_retry")
+        detail["blocked"] = True
+        detail["ready_reentry"] = False
+        detail["reentry_submitted"] = False
+        detail["result_status"] = "pending_retry"
+        block_detail = {"reason": str(reason or "pending_retry"), "retryable": True}
+        block_detail.update({key: value for key, value in context.items() if value not in (None, "")})
+        detail["reentry_blocked"] = block_detail
+        runtime_detail = detail.setdefault("reverse_runtime_detail", {})
+        runtime_detail["blocked_reason"] = block_detail["reason"]
+        runtime_detail["retryable"] = True
+        if context:
+            runtime_detail["blocked_context"] = dict(context)
+        return {
+            "ok": False,
+            "ack_status": "pending",
+            "reason": f"reverse pending retry: {block_detail['reason']}",
             "detail": detail,
         }
 
@@ -827,6 +862,280 @@ class ReverseSignalHandler:
             "detail": detail,
         }
 
+    def _config_bool(self, key: str, default: bool = False) -> bool:
+        config = self.config
+        getter = getattr(config, "get_bool_for_environment", None)
+        if callable(getter):
+            try:
+                return bool(getter(key, self.environment, default))
+            except Exception:
+                pass
+        getter = getattr(config, "get_bool", None)
+        if callable(getter):
+            try:
+                return bool(getter(key, default))
+            except Exception:
+                pass
+        try:
+            from ibkr_compute.core.config import Config
+
+            raw_default = str(Config.DEFAULTS.get(key, str(default).lower()) or "").strip().lower()
+            return raw_default in {"1", "true", "yes", "on"}
+        except Exception:
+            return bool(default)
+
+    def _config_has_value(self, key: str) -> bool:
+        checker = getattr(self.config, "has_value_for_environment", None)
+        if callable(checker):
+            try:
+                return bool(checker(key, self.environment))
+            except Exception:
+                return False
+        return False
+
+    def _config_bool_prefer(self, keys: Tuple[str, ...], default: bool = False) -> bool:
+        for key in keys:
+            if self._config_has_value(key):
+                return self._config_bool(key, default)
+        return self._config_bool(keys[0], default) if keys else bool(default)
+
+    @classmethod
+    def _source_tokens(cls, signal: dict) -> set[str]:
+        extra = cls._signal_extra(signal)
+        values = [
+            signal.get("source"),
+            signal.get("event_type"),
+            signal.get("reason"),
+            signal.get("action_type"),
+            extra.get("source"),
+            extra.get("event_type"),
+            extra.get("tv_event_type"),
+            extra.get("reverse_kind"),
+            extra.get("reason"),
+            extra.get("risk_update_reason"),
+            extra.get("action_type"),
+        ]
+        return {str(value or "").strip().lower() for value in values if str(value or "").strip()}
+
+    @classmethod
+    def _is_tv_risk_update_signal(cls, signal: dict) -> bool:
+        tokens = cls._source_tokens(signal)
+        if "risk_update" in tokens or "tv_risk_update" in tokens:
+            return True
+        return any("risk_update" in token for token in tokens) and bool(tokens & {"tv", "tradingview"})
+
+    @classmethod
+    def _is_order_flow_signal(cls, signal: dict) -> bool:
+        return any("order_flow" in token for token in cls._source_tokens(signal))
+
+    def _missing_child_order_retry_pending_enabled(self, signal: dict) -> bool:
+        return self._is_tv_risk_update_signal(signal) and self._config_bool_prefer(
+            ("tv_risk_update_missing_child_order_retry_pending", "tv_risk_update_retry_missing_child_orders"),
+            True,
+        )
+
+    def _incoming_risk_update_seq(self, signal: dict) -> int:
+        return self._coerce_int(self._signal_value(signal, "risk_update_seq", 0), 0)
+
+    def _origin_signal_record(self, signal: dict) -> Dict[str, Any]:
+        signal_id = str(
+            self._signal_value(signal, "origin_signal_id")
+            or self._signal_value(signal, "signal_id")
+            or self._signal_value(signal, "source_signal_id")
+            or ""
+        ).strip()
+        getter = getattr(self.pb_client, "get_first_record", None)
+        if not signal_id or not callable(getter):
+            return {}
+        raw_candidates = (
+            self._signal_value(signal, "data_environment"),
+            self._signal_value(signal, "market_data_mode"),
+            self._signal_value(signal, "signal_environment"),
+            self._signal_value(signal, "environment"),
+            self._signal_value(signal, "broker_mode"),
+            self.environment,
+        )
+        environments: List[str] = []
+        for raw in raw_candidates:
+            if raw in (None, ""):
+                continue
+            for candidate in (resolve_data_environment(raw), normalize_broker_mode(raw, self.environment)):
+                if candidate and candidate not in environments:
+                    environments.append(candidate)
+        for environment in environments:
+            try:
+                record = getter(
+                    "ibkr_signals",
+                    filter=(
+                        f'signal_id = "{self._escape_filter_value(signal_id)}" && '
+                        f'environment = "{self._escape_filter_value(environment)}"'
+                    ),
+                )
+                if isinstance(record, dict) and record:
+                    return dict(record)
+            except Exception as exc:
+                logger.debug("Failed to load origin signal for risk update guard from %s: %s", environment, exc)
+        return {}
+
+    def _stored_risk_update_seq(self, signal: dict) -> Tuple[Optional[int], str, Dict[str, Any]]:
+        prior_keys = (
+            "last_risk_update_seq",
+            "last_applied_risk_update_seq",
+            "tv_last_risk_update_seq",
+            "applied_risk_update_seq",
+            "previous_risk_update_seq",
+            "risk_update_seq_prior",
+        )
+        signal_extra = self._signal_extra(signal)
+        for source_name, payload in (("reverse_signal.extra", signal_extra), ("reverse_signal", signal)):
+            for key in prior_keys:
+                if key not in payload:
+                    continue
+                value = self._coerce_int(payload.get(key), 0)
+                if value > 0:
+                    return value, f"{source_name}.{key}", {}
+
+        origin = self._origin_signal_record(signal)
+        origin_extra = self._as_dict(origin.get("extra"))
+        origin_prior_keys = prior_keys + ("risk_update_seq", "tv_risk_update_seq")
+        for source_name, payload in (("origin_signal.extra", origin_extra), ("origin_signal", origin)):
+            for key in origin_prior_keys:
+                if key not in payload:
+                    continue
+                value = self._coerce_int(payload.get(key), 0)
+                if value > 0:
+                    return value, f"{source_name}.{key}", origin
+        return None, "", origin
+
+    def _risk_update_sequence_status(self, signal: dict) -> Dict[str, Any]:
+        if not self._is_tv_risk_update_signal(signal):
+            return {"enabled": False, "reason": "not_tv_risk_update"}
+        if not self._config_bool_prefer(
+            ("tv_risk_update_seq_guard_enabled", "tv_risk_update_require_monotonic_seq"),
+            True,
+        ):
+            return {"enabled": False, "reason": "config_disabled"}
+        incoming_seq = self._incoming_risk_update_seq(signal)
+        if incoming_seq <= 0:
+            return {"enabled": True, "incoming_seq": incoming_seq, "guarded": False, "reason": "incoming_seq_missing"}
+        prior_seq, prior_source, origin = self._stored_risk_update_seq(signal)
+        if prior_seq is None:
+            return {
+                "enabled": True,
+                "incoming_seq": incoming_seq,
+                "guarded": False,
+                "reason": "prior_seq_unavailable",
+                "origin_signal_found": bool(origin),
+            }
+        stale = incoming_seq <= int(prior_seq)
+        return {
+            "enabled": True,
+            "incoming_seq": incoming_seq,
+            "prior_seq": int(prior_seq),
+            "prior_source": prior_source,
+            "guarded": stale,
+            "reason": "stale_or_duplicate_seq" if stale else "monotonic_seq_ok",
+        }
+
+    def _risk_update_stop_guard_enabled(self, signal: dict) -> Tuple[bool, str]:
+        if self._is_tv_risk_update_signal(signal) and self._config_bool("tv_risk_update_never_widen_stop", True):
+            return True, "tv_risk_update_never_widen_stop"
+        if self._is_order_flow_signal(signal) and self._config_bool("never_widen_stop_by_order_flow", True):
+            return True, "never_widen_stop_by_order_flow"
+        return False, ""
+
+    def _current_stop_price(self, signal: dict) -> Tuple[float, str]:
+        keys = (
+            "previous_stop_loss",
+            "current_stop_loss",
+            "existing_stop_loss",
+            "old_stop_loss",
+            "current_sl",
+            "old_sl",
+            "stop_loss",
+            "stop_price",
+        )
+        for key in keys:
+            value = self._coerce_adjust_price(self._signal_value(signal, key, 0))
+            if value > 0:
+                return value, f"reverse_signal.{key}"
+
+        origin = self._origin_signal_record(signal)
+        origin_extra = self._as_dict(origin.get("extra"))
+        origin_keys = (
+            "last_risk_update_stop_loss",
+            "current_stop_loss",
+            "stop_loss",
+            "stop_price",
+            "initial_stop_loss",
+            "original_stop_loss",
+        )
+        for source_name, payload in (("origin_signal.extra", origin_extra), ("origin_signal", origin)):
+            for key in origin_keys:
+                if key not in payload:
+                    continue
+                value = self._coerce_adjust_price(payload.get(key))
+                if value > 0:
+                    return value, f"{source_name}.{key}"
+        return 0.0, ""
+
+    def _stop_widen_check(self, signal: dict, new_stop: float) -> Dict[str, Any]:
+        enabled, guard_key = self._risk_update_stop_guard_enabled(signal)
+        status = {"enabled": enabled, "guard_key": guard_key}
+        if not enabled:
+            return status
+        current_stop, source = self._current_stop_price(signal)
+        direction = str(
+            self._signal_value(signal, "position_side")
+            or self._signal_value(signal, "direction")
+            or self._signal_value(signal, "current_direction")
+            or ""
+        ).strip().lower()
+        status.update({"current_stop": current_stop, "current_stop_source": source, "direction": direction})
+        if current_stop <= 0 or new_stop <= 0 or direction not in {"long", "short"}:
+            status["blocked"] = False
+            status["reason"] = "comparison_unavailable"
+            return status
+        widens = new_stop < current_stop - 1e-9 if direction == "long" else new_stop > current_stop + 1e-9
+        status["blocked"] = bool(widens)
+        status["reason"] = "stop_would_widen" if widens else "stop_not_widened"
+        return status
+
+    def _persist_risk_update_state(self, signal: dict, detail: Dict[str, Any], results: Dict[str, Dict[str, Any]]) -> None:
+        if not self._is_tv_risk_update_signal(signal):
+            return
+        origin = self._origin_signal_record(signal)
+        updater = getattr(self.pb_client, "update_record", None)
+        if not origin or not origin.get("id") or not callable(updater):
+            detail.setdefault("risk_update_persistence", {})["origin_signal_found"] = bool(origin)
+            return
+
+        extra = self._as_dict(origin.get("extra"))
+        incoming_seq = self._incoming_risk_update_seq(signal)
+        stop_detail = results.get("stop_loss") or {}
+        tp_detail = results.get("take_profit") or {}
+        patch_extra = {
+            **extra,
+            "last_risk_update_at": self._now_iso(),
+            "last_risk_update_reason": str(self._signal_value(signal, "risk_update_reason") or ""),
+        }
+        if incoming_seq > 0:
+            patch_extra["last_risk_update_seq"] = incoming_seq
+            patch_extra["tv_last_risk_update_seq"] = incoming_seq
+        if stop_detail.get("ok") and float(stop_detail.get("new_price") or 0) > 0:
+            patch_extra["last_risk_update_stop_loss"] = float(stop_detail.get("new_price") or 0)
+        if tp_detail.get("ok") and float(tp_detail.get("new_price") or 0) > 0:
+            patch_extra["last_risk_update_take_profit"] = float(tp_detail.get("new_price") or 0)
+        try:
+            updater("ibkr_signals", str(origin.get("id")), {"extra": patch_extra})
+            detail["risk_update_persistence"] = {
+                "origin_signal_id": str(origin.get("signal_id") or ""),
+                "last_risk_update_seq": incoming_seq if incoming_seq > 0 else None,
+                "updated": True,
+            }
+        except Exception as exc:
+            detail["risk_update_persistence"] = {"updated": False, "error": str(exc)}
+
     def _handle_adjust_bracket(self, signal: dict, detail: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         detail = detail or self._base_reverse_detail(signal, "adjust_bracket")
         if not self.order_modifier:
@@ -850,10 +1159,22 @@ class ReverseSignalHandler:
             },
         }
 
+        sequence_status = self._risk_update_sequence_status(signal)
+        detail["risk_update_sequence"] = sequence_status
+        if sequence_status.get("guarded"):
+            detail["adjust_bracket"] = "skipped_stale_seq"
+            detail["result_status"] = "stale_risk_update"
+            return {
+                "ok": True,
+                "ack_status": "confirmed",
+                "reason": "risk_update_seq_stale",
+                "detail": detail,
+            }
+
         results: Dict[str, Dict[str, Any]] = {}
+        side_inputs: Dict[str, Tuple[Dict[str, Any], Dict[str, Any], Any, str, float, bool, bool]] = {}
         valid_prices = 0
-        attempted_sides: List[str] = []
-        succeeded_sides: List[str] = []
+        retryable_missing_order_sides: List[str] = []
         failed_sides: List[str] = []
 
         for side, spec in side_specs.items():
@@ -873,6 +1194,79 @@ class ReverseSignalHandler:
                 "price_key": spec["price_key"],
                 "order_key": spec["order_key"],
             }
+            side_inputs[side] = (spec, side_detail, raw_price, order_id, price, price_valid, requested)
+
+            if side == "stop_loss" and requested and price_valid:
+                stop_guard = self._stop_widen_check(signal, price)
+                side_detail["stop_widen_guard"] = stop_guard
+                if stop_guard.get("blocked"):
+                    side_detail.update({"ok": False, "skipped": True, "reason": "stop_widen_blocked"})
+                    results = {
+                        name: dict(item[1])
+                        for name, item in side_inputs.items()
+                    }
+                    for name, item in side_inputs.items():
+                        if name in results:
+                            continue
+                        results[name] = dict(item[1])
+                    detail["adjust_bracket"] = "blocked"
+                    detail["adjust_results"] = results
+                    detail["adjust_bracket_result"] = {
+                        "attempted_sides": [],
+                        "succeeded_sides": [],
+                        "failed_sides": ["stop_loss"],
+                    }
+                    blocked_reason = (
+                        "order_flow_stop_widen_blocked"
+                        if stop_guard.get("guard_key") == "never_widen_stop_by_order_flow"
+                        else "risk_update_stop_widen_blocked"
+                    )
+                    return self._mark_blocked(
+                        detail,
+                        blocked_reason,
+                        guard_key=stop_guard.get("guard_key"),
+                        direction=stop_guard.get("direction"),
+                        current_stop=stop_guard.get("current_stop"),
+                        new_stop=price,
+                    )
+
+            if requested and price_valid and not order_id and self._missing_child_order_retry_pending_enabled(signal):
+                side_detail.update({"ok": False, "skipped": True, "reason": spec["missing_order_reason"], "retryable": True})
+                retryable_missing_order_sides.append(side)
+
+        if retryable_missing_order_sides:
+            for side, (_, side_detail, raw_price, _, price, price_valid, requested) in side_inputs.items():
+                if side in retryable_missing_order_sides:
+                    results[side] = dict(side_detail)
+                    continue
+                if not requested:
+                    side_detail.update({"ok": True, "skipped": True, "reason": "not_requested"})
+                elif not price_valid:
+                    side_detail.update({"ok": False, "skipped": True, "reason": side_specs[side]["invalid_price_reason"]})
+                    if raw_price not in (None, ""):
+                        side_detail["raw_price"] = raw_price
+                else:
+                    side_detail.update({"ok": True, "skipped": True, "reason": "deferred_until_child_orders_resolved"})
+                results[side] = dict(side_detail)
+            detail["adjust_bracket"] = "pending_retry"
+            detail["adjust_results"] = results
+            detail["adjust_bracket_result"] = {
+                "attempted_sides": [],
+                "succeeded_sides": [],
+                "failed_sides": retryable_missing_order_sides,
+            }
+            return self._mark_retryable_blocked(
+                detail,
+                "risk_update_child_order_id_missing",
+                missing_sides=retryable_missing_order_sides,
+                missing_order_keys=[side_specs[side]["order_key"] for side in retryable_missing_order_sides],
+            )
+
+        attempted_sides: List[str] = []
+        succeeded_sides: List[str] = []
+        failed_sides = []
+
+        for side, (spec, side_detail, raw_price, order_id, price, price_valid, requested) in side_inputs.items():
 
             if not requested:
                 side_detail.update({"ok": True, "skipped": True, "reason": "not_requested"})
@@ -946,6 +1340,7 @@ class ReverseSignalHandler:
 
         detail["adjust_bracket"] = "confirmed"
         detail["result_status"] = "ok"
+        self._persist_risk_update_state(signal, detail, results)
         return {
             "ok": True,
             "ack_status": "confirmed",

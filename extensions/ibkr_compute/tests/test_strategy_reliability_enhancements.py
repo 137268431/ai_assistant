@@ -33,6 +33,7 @@ class FakeConfig:
             "signal_validity_minutes": 30,
             "cooldown_bars_after_sl": 6,
             "cooldown_bars_after_reverse": 3,
+            "intraday_symbol_daily_entry_limit": 2,
         }
         return int(values.get(key, default))
 
