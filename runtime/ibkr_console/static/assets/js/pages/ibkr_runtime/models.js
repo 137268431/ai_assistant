@@ -372,9 +372,66 @@
             return model;
         }
 
+        function renderRuntimeOperationWatchBanner(operation = activeRuntimeOperation) {
+            const banner = document.getElementById('authActionBanner');
+            if (!banner || !operation) return false;
+            const progress = deriveRuntimeOperationProgress(operation);
+            if (!progress) return false;
+            const startedAt = Number(operation.startedAt || 0) || 0;
+            const elapsedMs = startedAt > 0 ? Math.max(0, Date.now() - startedAt) : 0;
+            const elapsedLabel = elapsedMs > 0 ? formatSecondsLabel(elapsedMs / 1000) : '--';
+            const deadlineMs = Number(operation.deadlineMs || 0) || 0;
+            const remainingMs = deadlineMs > 0 ? Math.max(0, deadlineMs - Date.now()) : 0;
+            const remainingLabel = operation.terminal === true
+                ? '已结束'
+                : (remainingMs > 0 ? `${formatSecondsLabel(remainingMs / 1000)} 内持续追踪` : '等待最终状态');
+            const stepHtml = progress.steps.map((step) => `
+                <div class="runtime-operation-step ${escapeHtml(step.state)}">
+                    <span class="runtime-operation-dot"></span>
+                    <span>${escapeHtml(step.label)}</span>
+                </div>
+            `).join('');
+            const actionLabel = escapeHtml(operation.label || getRuntimeActionLabel(operation.action));
+            const retryButtonHtml = progress.failed
+                ? `<button class="auth-banner-btn" onclick="handleRuntimeAction('${escapeHtml(operation.action)}')">重试 ${actionLabel}</button>`
+                : (progress.success
+                    ? `<button class="auth-banner-btn" onclick="loadRuntimeData(true)">刷新确认状态</button>`
+                    : `<button class="auth-banner-btn" disabled>追踪中，请勿重复点击</button>`);
+            const feedbackClass = progress.failed ? 'error' : (progress.success ? 'ok' : progress.tone || 'info');
+            banner.className = `auth-banner runtime-operation-watch ${escapeHtml(progress.tone || 'info')}`;
+            banner.innerHTML = `
+                <div class="auth-banner-main">
+                    <div class="auth-banner-head">
+                        <span class="auth-banner-kicker">Operation Watch</span>
+                        <span class="auth-banner-pill">${actionLabel}</span>
+                        <span class="auth-banner-pill">${escapeHtml(remainingLabel)}</span>
+                    </div>
+                    <div class="auth-banner-title">${escapeHtml(progress.title)}</div>
+                    <div class="auth-banner-copy">${escapeHtml(progress.copy)}</div>
+                    <div class="runtime-operation-steps">${stepHtml}</div>
+                    <div class="auth-banner-meta">
+                        <span class="auth-banner-pill">已用时 ${escapeHtml(elapsedLabel)}</span>
+                        <span class="auth-banner-pill">阶段 ${escapeHtml(progress.phase || operation.phase || '--')}</span>
+                        ${operation.reason ? `<span class="auth-banner-pill">${escapeHtml(operation.reason)}</span>` : ''}
+                    </div>
+                    <div class="auth-banner-feedback ${escapeHtml(feedbackClass)}">${escapeHtml(progress.message || operation.message || '')}</div>
+                </div>
+                <div class="auth-banner-side">
+                    ${retryButtonHtml}
+                    <button class="auth-banner-btn auth-banner-btn-secondary" onclick="loadRuntimeData(true)">刷新状态</button>
+                    <a class="auth-banner-link" href="${escapeHtml(buildPageUrl('/ibkr_monitor.html', {}, { environment: currentEnvironment }))}">查看监控大盘</a>
+                    <div class="auth-banner-hint">这个追踪条会在成功或确认失败后自动解锁按钮；处理中请不要重复触发 Gateway / 2FA 动作。</div>
+                </div>
+            `;
+            return true;
+        }
+
         function renderAuthActionBanner(model = latestNextActionModel) {
             const banner = document.getElementById('authActionBanner');
             if (!banner) return;
+            if (activeRuntimeOperation && renderRuntimeOperationWatchBanner(activeRuntimeOperation)) {
+                return;
+            }
             if (!model || model.visible !== true) {
                 banner.className = 'auth-banner is-hidden';
                 banner.innerHTML = '';
@@ -531,7 +588,8 @@
         function syncActionLocks() {
             document.querySelectorAll('.action-btn, .runtime-secondary-action').forEach((button) => {
                 const action = String(button?.dataset?.action || '').trim();
-                const lockReason = actionPending ? '' : getTwoFactorActionLockReason(action);
+                const operationLockReason = actionPending ? '' : getActiveRuntimeOperationLockReason(action);
+                const lockReason = operationLockReason || (actionPending ? '' : getTwoFactorActionLockReason(action));
                 let probeReason = '';
                 if (!actionPending && !lockReason && action === 'probe') {
                     const state = deriveTwoFactorUiState(latestTwoFactorState);
@@ -550,12 +608,15 @@
                     : (lockReason || probeReason || '');
             });
             document.querySelectorAll('.service-action-btn').forEach((button) => {
-                button.disabled = actionPending;
-                button.title = actionPending ? '动作执行中，请稍候。' : '';
+                const [serviceName, action] = String(button?.dataset?.serviceAction || '').split(':');
+                const operationLockReason = actionPending ? '' : getRuntimeServiceActionLockReason(serviceName, action);
+                button.disabled = actionPending || Boolean(operationLockReason);
+                button.title = actionPending ? '动作执行中，请稍候。' : operationLockReason;
             });
             document.querySelectorAll('.broker-mode-switch-btn').forEach((button) => {
                 const lockReason = String(button?.dataset?.lockReason || '').trim();
-                button.disabled = actionPending || Boolean(lockReason);
-                button.title = actionPending ? '动作执行中，请稍候。' : lockReason;
+                const operationLockReason = actionPending ? '' : getActiveRuntimeOperationLockReason('gateway_restart');
+                button.disabled = actionPending || Boolean(operationLockReason) || Boolean(lockReason);
+                button.title = actionPending ? '动作执行中，请稍候。' : (operationLockReason || lockReason);
             });
         }

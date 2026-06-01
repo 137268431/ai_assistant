@@ -79,6 +79,7 @@
                 const startupState = startupResp?.state || {};
                 latestStartupState = normalizeStartupUiState(startupState);
                 latestBrokerModeSwitchPreview = brokerModeSwitchResp || {};
+                reconcileActiveRuntimeOperation(latestRuntimeStatus, latestTwoFactorState, latestStartupState);
                 const signalItems = toArray(signalsResp);
                 const latestSignal = signalItems[0] || null;
 

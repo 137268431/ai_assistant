@@ -7,6 +7,7 @@
 
         document.addEventListener('DOMContentLoaded', async () => {
             if (!ensureIbkrPageAuth()) return;
+            restoreActiveRuntimeOperation();
             window.addEventListener('pagehide', () => {
                 runtimePageClosing = true;
                 latestRuntimeLoadId += 1;

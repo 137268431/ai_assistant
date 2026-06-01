@@ -18,6 +18,12 @@ let currentEnvironment = currentBrokerMode;
         let runtimePageClosing = false;
         let authActionFeedback = null;
         let actionPendingLabel = '';
+        let activeRuntimeOperation = null;
+        const RUNTIME_OPERATION_WATCH_ACTIONS = new Set(['start', 'gateway_restart', 'panic_reset_2fa']);
+        const RUNTIME_OPERATION_LOCK_ACTIONS = new Set(['start', 'gateway_restart', 'reauth_force_new', 'panic_reset_2fa']);
+        const RUNTIME_OPERATION_STORAGE_PREFIX = 'ibkr_runtime_operation_watch';
+        const RUNTIME_OPERATION_TTL_MS = 3 * 60 * 1000;
+        const RUNTIME_OPERATION_SUCCESS_VISIBLE_MS = 45 * 1000;
         const CHALLENGE_RESET_RECOMMEND_MS = 120 * 1000;
         const RUNTIME_ACTION_LABELS = {
             start: '启动 Runtime 线程',

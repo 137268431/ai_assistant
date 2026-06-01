@@ -336,13 +336,14 @@ assert(!/screener-domain-bridge[\s\S]{0,240}page-bridge-copy[\s\S]{0,80}display:
 assert(!/screener-domain-tab\.page-bridge-link[\s\S]{0,120}min-height:\s*42px/.test(screenerCss), 'screener_bridge_compact_height');
 
 const runtimeHtml = readStatic('ibkr_runtime.html');
-const runtimeContextFixVersion = '20260528-night-session-review-entry-1';
+const runtimeContextFixVersion = '20260529-tv-primary-lean-1';
 const commonJs = readStatic('common.js');
 assert(commonJs.includes(`sharedBundleVersion = '${runtimeContextFixVersion}'`), 'common_missing_runtime_context_fix_cachebuster');
 assert(runtimeHtml.includes(`common.js?v=${runtimeContextFixVersion}`), 'runtime_html_missing_runtime_context_fix_cachebuster');
 assert(commonJs.includes('cachedPageJson') && commonJs.includes('cachedMarketCalendar'), 'common_missing_cache_helper_exports');
 assert(!commonJs.includes('20260526-market-calendar-context'), 'common_still_has_market_calendar_cachebuster');
 assert(!runtimeHtml.includes('common.js?v=20260526-market-calendar-context'), 'runtime_html_still_has_market_calendar_cachebuster');
+const runtimeCss = readStatic('assets/css/pages/ibkr_runtime/page.css');
 const runtimeJs = readPageScriptBundle(
   'ibkr_runtime.html',
   'assets/js/pages/ibkr_runtime/',
@@ -356,6 +357,10 @@ assert(runtimeJs.includes('/api/custom/ibkr/services/action'), 'runtime_missing_
 assert(includesAll(runtimeJs, ['ibkr-runtime', 'ibkr-gateway', 'ibkr-compute', 'ibkr-backtest', 'ibkr-scheduler']), 'runtime_service_control_missing_core_services');
 assert(includesAll(runtimeJs, ["service: 'ibkr-backtest'", 'Backtest Service']), 'runtime_service_control_missing_backtest_card');
 assert(includesAll(runtimeJs, ['shouldShowServiceStopAction', '停止服务', "'stop'"]), 'runtime_service_control_missing_stop_action');
+assert(includesAll(runtimeJs, ['activeRuntimeOperation', 'RUNTIME_OPERATION_WATCH_ACTIONS', 'startRuntimeOperationWatch', 'deriveRuntimeOperationProgress', 'getActiveRuntimeOperationLockReason']), 'runtime_missing_operation_watch_state');
+assert(includesAll(runtimeJs, ['请求可能已提交', '正在追踪 Gateway / 2FA / Session 状态', '追踪中，请勿重复点击']), 'runtime_missing_operation_watch_copy');
+assert(includesAll(runtimeCss, ['runtime-operation-watch', 'runtime-operation-steps', 'runtimeOperationPulse']), 'runtime_missing_operation_watch_styles');
+assert(runtimeHtml.includes('20260601-operation-watch-1'), 'runtime_missing_operation_watch_cachebuster');
 assert(includesAll(runtimeHtml, ['appLoginHandoffSection', 'action-login-primary', 'runtimeFlowToggleButton', 'runtime-secondary-actions', '全部急停', '恢复运行开关', 'runtime-control-danger']), 'runtime_trimmed_controls_missing');
 assert(runtimeJs.includes('recover_all') && runtimeJs.includes('/api/custom/ibkr/recover'), 'runtime_missing_recover_action');
 const runtimeExpectedStaticActions = ['app_login_handoff', 'start', 'probe', 'compute', 'emergency_all', 'recover_all'];

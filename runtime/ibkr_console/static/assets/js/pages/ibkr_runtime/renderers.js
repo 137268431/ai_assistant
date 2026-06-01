@@ -444,11 +444,12 @@
                 ? 'error'
                 : (!switchRequired ? 'info' : (allowed ? 'ok' : (blockers.length ? 'warn' : 'info')));
             const firstBlocker = blockers[0]?.message || payload.error || '';
-            const lockReason = actionPending
+            const operationLockReason = actionPending ? '' : getActiveRuntimeOperationLockReason('gateway_restart');
+            const lockReason = operationLockReason || (actionPending
                 ? ''
                 : (!switchRequired
                     ? `当前已经是 ${formatBrokerModeSwitchLabel(targetMode, { compact: true })}。`
-                    : (!allowed ? (firstBlocker || '切换预检未通过。') : ''));
+                    : (!allowed ? (firstBlocker || '切换预检未通过。') : '')));
             const buttonLabel = switchRequired
                 ? `一键切换到 ${targetMode.toUpperCase()}`
                 : `已在 ${targetMode.toUpperCase()}`;
@@ -558,6 +559,8 @@
                 const restartLabel = moduleDef.highRiskRestart ? '输入服务名后重启' : '重启服务';
                 const primaryAction = shouldShowServiceStopAction(statusText) ? 'stop' : 'start';
                 const primaryLabel = primaryAction === 'stop' ? '停止服务' : '启动服务';
+                const primaryLockReason = getRuntimeServiceActionLockReason(moduleDef.service, primaryAction);
+                const restartLockReason = getRuntimeServiceActionLockReason(moduleDef.service, 'restart');
                 return `
                     <div class="service-control-card ${escapeHtml(tone)}">
                         <div class="service-control-card-head">
@@ -574,8 +577,8 @@
                             <span class="mini-tag"><span class="mini-label">OWNER</span>${escapeHtml(owner)}</span>
                         </div>
                         <div class="service-control-actions">
-                            <button class="service-action-btn ${primaryAction === 'stop' ? 'stop' : ''}" type="button" data-service-action="${escapeHtml(moduleDef.service)}:${escapeHtml(primaryAction)}" onclick="handleServiceAction('${escapeHtml(moduleDef.service)}', '${escapeHtml(primaryAction)}')" ${actionPending ? 'disabled' : ''}>${escapeHtml(primaryLabel)}</button>
-                            <button class="service-action-btn restart" type="button" data-service-action="${escapeHtml(moduleDef.service)}:restart" onclick="handleServiceAction('${escapeHtml(moduleDef.service)}', 'restart')" ${actionPending ? 'disabled' : ''}>${escapeHtml(restartLabel)}</button>
+                            <button class="service-action-btn ${primaryAction === 'stop' ? 'stop' : ''}" type="button" data-service-action="${escapeHtml(moduleDef.service)}:${escapeHtml(primaryAction)}" title="${escapeHtml(primaryLockReason)}" onclick="handleServiceAction('${escapeHtml(moduleDef.service)}', '${escapeHtml(primaryAction)}')" ${actionPending || Boolean(primaryLockReason) ? 'disabled' : ''}>${escapeHtml(primaryLabel)}</button>
+                            <button class="service-action-btn restart" type="button" data-service-action="${escapeHtml(moduleDef.service)}:restart" title="${escapeHtml(restartLockReason)}" onclick="handleServiceAction('${escapeHtml(moduleDef.service)}', 'restart')" ${actionPending || Boolean(restartLockReason) ? 'disabled' : ''}>${escapeHtml(restartLabel)}</button>
                         </div>
                     </div>
                 `;

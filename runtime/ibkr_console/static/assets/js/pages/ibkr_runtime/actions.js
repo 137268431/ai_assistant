@@ -313,11 +313,21 @@
             const target = overrideTarget || getRuntimeActionMap()[action];
             if (!target) return;
 
+            const longOperation = isRuntimeOperationWatchAction(action);
+            const operationReason = target?.body?.reason || '';
             actionPendingLabel = formatRuntimePendingLabel(action, target?.body?.reason || '');
             setActionState(true);
             const pendingMessage = actionPendingLabel;
             document.getElementById('lastAction').textContent = pendingMessage;
             setAuthActionFeedback(pendingMessage, 'info');
+            if (longOperation) {
+                startRuntimeOperationWatch(action, {
+                    reason: operationReason,
+                    source: target?.body?.source || 'runtime_page',
+                    phase: 'submitted',
+                    message: `${getRuntimeActionLabel(action)} 请求已发送，正在追踪 Gateway / 2FA / Session 状态，请不要重复点击。`,
+                });
+            }
             try {
                 const payload = await withTimeout(
                     requestIbkrEnvironmentJson(target.path, currentEnvironment, {
@@ -329,9 +339,30 @@
                     `动作 ${action}`
                 );
                 const message = summarizeAction(action, payload, target);
-                document.getElementById('lastAction').textContent = `最近动作：${message}`;
-                setAuthActionFeedback(`最近动作：${message}`, payload?.ok === false ? 'error' : 'ok');
-                showToast(message);
+                if (longOperation && payload?.ok === false) {
+                    finishActiveRuntimeOperation('failed', message, { blocker: payload });
+                    document.getElementById('lastAction').textContent = `最近动作：${message}`;
+                    setAuthActionFeedback(`最近动作：${message}`, 'error');
+                    showToast(message);
+                    return;
+                }
+                const trackingMessage = longOperation
+                    ? `${message} · 已进入状态追踪；请等待 Gateway / 2FA / Session 自动更新，不要重复点击。`
+                    : message;
+                document.getElementById('lastAction').textContent = `最近动作：${trackingMessage}`;
+                setAuthActionFeedback(`最近动作：${trackingMessage}`, payload?.ok === false ? 'error' : 'ok');
+                showToast(trackingMessage);
+                if (longOperation) {
+                    if (action === 'gateway_restart' && payload?.gateway_restarted === true && payload?.startup_cycle_planned === false) {
+                        finishActiveRuntimeOperation('success', trackingMessage, { phase: 'gateway' });
+                    } else {
+                        updateActiveRuntimeOperation({
+                            phase: payload?.accepted === true || Number(payload?.status_code || 0) === 202 ? 'submitted' : 'gateway',
+                            status: 'watching',
+                            message: trackingMessage,
+                        });
+                    }
+                }
                 if (payload?.accepted === true || Number(payload?.status_code || 0) === 202 || ['start', 'gateway_restart', 'reauth', 'reauth_force_new', 'probe', 'panic_reset_2fa', 'app_login_handoff'].includes(action)) {
                     boostRuntimeRefresh();
                 }
@@ -346,6 +377,9 @@
                     && blockerPayload?.blocker_code === 'market_data_session_conflict'
                 ) {
                     const message = blockerPayload.message || '检测到 IBKR 行情会话被另一个 IP 占用；请退出其他登录后再重启 Gateway。';
+                    if (longOperation) {
+                        finishActiveRuntimeOperation('failed', message, { blocker: blockerPayload });
+                    }
                     document.getElementById('lastAction').textContent = message;
                     setAuthActionFeedback(message, 'error');
                     showToast(message);
@@ -354,9 +388,22 @@
                 const rawMessage = String(error?.message || error || '');
                 const timedOut = rawMessage.includes('timed out');
                 const likelySubmitted = ['start', 'gateway_restart', 'reauth', 'reauth_force_new', 'probe', 'panic_reset_2fa', 'app_login_handoff'].includes(action);
-                const message = timedOut && likelySubmitted
+                const message = timedOut && likelySubmitted && longOperation
+                    ? `动作响应超时：${action} · 请求可能已提交，后台仍在执行；正在追踪 Gateway / 2FA / Session 状态，请不要重复点击。`
+                    : timedOut && likelySubmitted
                     ? `动作响应超时：${action} · 已解除按钮锁并继续刷新；请先观察最新状态，避免重复触发。`
                     : `动作失败：${action} · ${rawMessage}`;
+                if (longOperation) {
+                    if (timedOut && likelySubmitted) {
+                        updateActiveRuntimeOperation({
+                            phase: 'gateway',
+                            status: 'watching',
+                            message,
+                        });
+                    } else {
+                        finishActiveRuntimeOperation('failed', message, { error: rawMessage });
+                    }
+                }
                 document.getElementById('lastAction').textContent = message;
                 setAuthActionFeedback(message, timedOut && likelySubmitted ? 'warn' : 'error');
                 showToast(message);
@@ -549,6 +596,14 @@
                 showToast(message);
                 return;
             }
+            const operationLockReason = getRuntimeServiceActionLockReason(moduleDef.service, normalizedAction);
+            if (operationLockReason) {
+                document.getElementById('lastAction').textContent = `最近动作：${operationLockReason}`;
+                setAuthActionFeedback(`最近动作：${operationLockReason}`, 'warn');
+                showToast(operationLockReason);
+                syncActionLocks();
+                return;
+            }
             const runtimeMismatch = getRuntimeEnvironmentMismatch();
             if (runtimeMismatch && ['ibkr-runtime', 'ibkr-gateway'].includes(moduleDef.service)) {
                 document.getElementById('lastAction').textContent = runtimeMismatch.message;
@@ -565,6 +620,17 @@
             const pendingMessage = actionPendingLabel;
             document.getElementById('lastAction').textContent = pendingMessage;
             setAuthActionFeedback(pendingMessage, 'info');
+            const serviceWatchAction = moduleDef.service === 'ibkr-gateway' && normalizedAction === 'restart'
+                ? 'gateway_restart'
+                : '';
+            if (serviceWatchAction) {
+                startRuntimeOperationWatch(serviceWatchAction, {
+                    reason: `service_control_${moduleDef.service}_${normalizedAction}`,
+                    source: 'runtime_page_service_control',
+                    phase: 'submitted',
+                    message: 'IB Gateway 服务重启请求已发送，正在追踪 Gateway / 2FA / Session 状态，请不要重复点击。',
+                });
+            }
             try {
                 const payload = await requestIbkrEnvironmentJson('/api/custom/ibkr/services/action', currentEnvironment, {
                     method: 'POST',
@@ -583,6 +649,21 @@
                 document.getElementById('lastAction').textContent = `最近动作：${message}`;
                 setAuthActionFeedback(`最近动作：${message}`, payload?.ok === false ? 'error' : 'ok');
                 showToast(message);
+                if (serviceWatchAction) {
+                    const delegatedPayload = payload?.payload && typeof payload.payload === 'object' ? payload.payload : {};
+                    if (payload?.ok === false) {
+                        finishActiveRuntimeOperation('failed', message, { payload });
+                    } else if (delegatedPayload.gateway_restarted === true && delegatedPayload.startup_cycle_planned === false) {
+                        finishActiveRuntimeOperation('success', `${message} · Gateway 已重启。`, { phase: 'gateway' });
+                    } else {
+                        updateActiveRuntimeOperation({
+                            phase: 'gateway',
+                            status: 'watching',
+                            message: `${message} · 已进入状态追踪；请等待 Gateway / 2FA / Session 自动更新，不要重复点击。`,
+                        });
+                        boostRuntimeRefresh();
+                    }
+                }
                 renderServiceControlPanel(latestRuntimeStatus, latestServiceMonitorPayload);
                 await loadRuntimeData(false);
             } catch (error) {
@@ -602,6 +683,9 @@
                         message
                     }
                 };
+                if (serviceWatchAction) {
+                    finishActiveRuntimeOperation('failed', message, { blocker: blockerPayload, error: error?.message || String(error || '') });
+                }
                 document.getElementById('lastAction').textContent = message;
                 setAuthActionFeedback(message, 'error');
                 renderServiceControlPanel(latestRuntimeStatus, latestServiceMonitorPayload);
@@ -643,6 +727,14 @@
 
         async function handleRuntimeAction(action, overrideTarget = null) {
             if (actionPending) return;
+            const operationLockReason = getActiveRuntimeOperationLockReason(action);
+            if (operationLockReason) {
+                document.getElementById('lastAction').textContent = `最近动作：${operationLockReason}`;
+                setAuthActionFeedback(`最近动作：${operationLockReason}`, 'warn');
+                showToast(operationLockReason);
+                syncActionLocks();
+                return;
+            }
             const guardedActions = new Set(['start', 'stop', 'gateway_restart', 'reauth', 'reauth_force_new', 'probe', 'app_login_handoff', 'panic_reset_2fa', 'emergency_all', 'recover_all']);
             const runtimeMismatch = getRuntimeEnvironmentMismatch();
             if (runtimeMismatch && guardedActions.has(action)) {
