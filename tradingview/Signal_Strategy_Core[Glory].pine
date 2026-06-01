@@ -1054,12 +1054,19 @@ bool enterShort = canTrade and flatForEntry and shortRaw and not longRaw and not
 
 bool preAlertNow = canTrade and flatForEntry and not enterLong and not enterShort and activityScore >= preAlertThreshold and activityScore < 100 and not conflict
 bool preAlertCross = preAlertNow and nz(activityScore[1], 0) < preAlertThreshold
-if enableAlerts and canTrade and flatForEntry and lowerActivationEvent
+var bool observationNoticeSentToday = false
+if isNewTradingDay
+    observationNoticeSentToday := false
+bool lowerObservationNotice = canTrade and flatForEntry and lowerActivationEvent and not observationNoticeSentToday
+bool upperObservationNotice = canTrade and flatForEntry and upperActivationEvent and not observationNoticeSentToday and not lowerObservationNotice
+if enableAlerts and lowerObservationNotice
     string pendingLowerId = "pending_window_lower_" + str.tostring(time, "#") + "_" + str.tostring(bar_index, "#")
     alert(buildPreAlertPayload(eventId("pre_alert", "window_lower"), pendingLowerId, "lower"), alert.freq_all)
-if enableAlerts and canTrade and flatForEntry and upperActivationEvent
+if enableAlerts and upperObservationNotice
     string pendingUpperId = "pending_window_upper_" + str.tostring(time, "#") + "_" + str.tostring(bar_index, "#")
     alert(buildPreAlertPayload(eventId("pre_alert", "window_upper"), pendingUpperId, "upper"), alert.freq_all)
+if lowerObservationNotice or upperObservationNotice
+    observationNoticeSentToday := true
 
 string candidateComponentText = componentSummaryForSetup(candidateSetup, upperWindowValid, lowerWindowValid, upperBullTouchSeen, lowerBearTouchSeen, upperBullFractalSeen, lowerBullFractalSeen, upperBearFractalSeen, lowerBearFractalSeen, upperBullEmaCrossSeen, lowerBullEmaCrossSeen, upperBearEmaCrossSeen, lowerBearEmaCrossSeen, bullDivSeen, bearDivSeen)
 string candidateProgressText = componentProgressForSetup(candidateSetup, upperWindowValid, lowerWindowValid, upperBullTouchSeen, lowerBearTouchSeen, upperBullFractalSeen, lowerBullFractalSeen, upperBearFractalSeen, lowerBearFractalSeen, upperBullEmaCrossSeen, lowerBullEmaCrossSeen, upperBearEmaCrossSeen, lowerBearEmaCrossSeen, bullDivSeen, bearDivSeen)
@@ -1071,10 +1078,10 @@ if isNewTradingDay
     lastBlockVisualKey := ""
     eodForceCloseDay := na
 
-if showFlowLabels and confirmed and lowerActivationEvent
+if showFlowLabels and lowerObservationNotice
     label.new(bar_index, low - atrVal * 1.4, "观察池入选\n" + syminfo.ticker + " · SD下轨观察\n非开仓点，等组件", style=label.style_label_up, color=flowLabelColor("activate_lower", "long"), textcolor=color.white, size=size.small)
 
-if showFlowLabels and confirmed and upperActivationEvent
+if showFlowLabels and upperObservationNotice
     label.new(bar_index, high + atrVal * 1.4, "观察池入选\n" + syminfo.ticker + " · SD上轨观察\n非开仓点，等组件", style=label.style_label_down, color=flowLabelColor("activate_upper", "short"), textcolor=color.white, size=size.small)
 
 if showFlowLabels and preAlertCross
