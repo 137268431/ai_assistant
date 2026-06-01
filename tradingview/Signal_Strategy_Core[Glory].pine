@@ -82,6 +82,7 @@ string TIMEFRAME_STACK = enableMtf ? "entry=" + timeframe.period + ";confirm=" +
 
 displayPreset = input.string("核心交易流程", "Display preset", options=["核心交易流程", "指标辅助", "调试全量"], group="08 Display")
 showFlowLabels = input.bool(true, "Show activation/prep/entry labels", group="08 Display")
+flowLabelTransparency = input.int(30, "Flow label background transparency", minval=0, maxval=100, group="08 Display")
 showStatusPanel = input.bool(true, "Show status panel", group="08 Display")
 showBands = input.bool(true, "Show SD bands", group="08 Display")
 showSdHelperLines = input.bool(false, "Show SD regression/filter lines", group="08 Display")
@@ -193,7 +194,7 @@ exitPnlLabelText(string reason, string timeText, float price, float pnl, float p
     exitReasonDisplayName(reason) + "\n" + syminfo.ticker + " · " + timeText + " ET @ " + str.tostring(price, "#.##") + "\nPnL " + fmtSignedMoney(pnl) + " (" + fmtSignedPct(pnlPct) + ")"
 
 exitPnlLabelColor(float pnl) =>
-    na(pnl) ? color.new(color.gray, 5) : pnl > 0.0 ? color.new(color.green, 0) : pnl < 0.0 ? color.new(color.red, 0) : color.new(color.gray, 5)
+    na(pnl) ? color.new(color.gray, flowLabelTransparency) : pnl > 0.0 ? color.new(color.green, flowLabelTransparency) : pnl < 0.0 ? color.new(color.red, flowLabelTransparency) : color.new(color.gray, flowLabelTransparency)
 
 entryComment(string direction, string setup) =>
     direction == "short" ? "SELL 空 · " + setup : "BUY 多 · " + setup
@@ -344,8 +345,14 @@ mtfBlockReasonForStates(string state1, string state2) =>
 mtfStateJson(string tf, string state, int emaDirection, int dtpDirection, float weight, float points) =>
     '{"tf":"' + tf + '","status":"' + state + '","ema_dir":"' + dirName(emaDirection) + '","dtp_dir":"' + dirName(dtpDirection) + '","weight":' + str.tostring(weight, "#") + ',"points":' + str.tostring(points, "#.##") + '}'
 
+flowBaseColor(string state, string direction) =>
+    state == "activate_lower" or state == "activate_upper" ? color.blue : state == "blocked" ? color.gray : direction == "short" ? color.red : color.green
+
 flowLabelColor(string state, string direction) =>
-    state == "activate_lower" or state == "activate_upper" ? color.new(color.blue, 0) : state == "blocked" ? color.new(color.gray, 0) : direction == "short" ? color.new(color.red, 0) : color.new(color.green, 0)
+    color.new(flowBaseColor(state, direction), flowLabelTransparency)
+
+flowStatusColor(string state, string direction) =>
+    color.new(flowBaseColor(state, direction), 0)
 
 flowLabelStyle(string direction) =>
     direction == "short" ? label.style_label_down : label.style_label_up
@@ -1090,7 +1097,7 @@ string prepareVisualKey = activityGrade + ":" + candidateDirection + ":" + candi
 if prepareVisualNow and prepareVisualKey != lastPrepareVisualKey
     float prepareY = candidateDirection == "short" ? high + atrVal * 2.4 : low - atrVal * 2.4
     string prepareText = "观察" + directionDisplayName(candidateDirection) + "\n" + setupDisplayName(candidateSetup) + "\n组件: " + candidateComponentText + "\nMTF: " + mtfSummaryForDirection(candidateDirection) + "\n下一步: " + candidateWaitText
-    label.new(bar_index, prepareY, prepareText, style=flowLabelStyle(candidateDirection), color=color.new(color.orange, 0), textcolor=color.white, size=size.normal)
+    label.new(bar_index, prepareY, prepareText, style=flowLabelStyle(candidateDirection), color=color.new(color.orange, flowLabelTransparency), textcolor=color.white, size=size.normal)
     lastPrepareVisualKey := prepareVisualKey
 if not prepareVisualNow and activityScore == 0
     lastPrepareVisualKey := ""
@@ -1313,7 +1320,7 @@ plot(visibleTarget, "TP 目标/检查点", color=color.new(color.green, 0), styl
 var table flowStatus = table.new(position.top_right, 2, 8, border_width=1)
 string statusDirection = activeDirection == -1 ? "做空" : activeDirection == 1 ? "做多" : blockedNow ? directionDisplayName(blockedDirection) : activityScore > 0 ? directionDisplayName(candidateDirection) : "--"
 string statusText = activePositionId != "" ? "持仓 " + statusDirection : enterLong ? "买入做多" : enterShort ? "卖出做空" : blockedNow ? "过滤" + directionDisplayName(blockedDirection) : observeNow ? "观察" + directionDisplayName(candidateDirection) : lowerWindowValid or upperWindowValid ? "窗口激活" : "等待"
-color statusColor = activePositionId != "" ? flowLabelColor("entry", activeDirection == -1 ? "short" : "long") : blockedNow ? flowLabelColor("blocked", blockedDirection) : observeNow ? color.new(color.orange, 0) : lowerWindowValid ? flowLabelColor("activate_lower", "long") : upperWindowValid ? flowLabelColor("activate_upper", "short") : color.new(color.gray, 20)
+color statusColor = activePositionId != "" ? flowStatusColor("entry", activeDirection == -1 ? "short" : "long") : blockedNow ? flowStatusColor("blocked", blockedDirection) : observeNow ? color.new(color.orange, 0) : lowerWindowValid ? flowStatusColor("activate_lower", "long") : upperWindowValid ? flowStatusColor("activate_upper", "short") : color.new(color.gray, 20)
 string statusSetup = activePositionId != "" ? setupDisplayName(activeSetup) : blockedNow ? setupDisplayName(blockedSetup) : activityScore > 0 ? setupDisplayName(candidateSetup) : "--"
 string statusComponents = activePositionId != "" ? "组件齐 + 过滤通过" : blockedNow ? candidateComponentText + " · " + filterActionText(blockedReason, blockedDirection) : activityScore > 0 ? candidateComponentText + " · " + candidateWaitText : "--"
 string statusDtp = dtpStateText(dtpDir, dtpPhase)

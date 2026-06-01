@@ -640,12 +640,12 @@ def _pnl_outcome_label(value: Any) -> str:
     return "持平"
 
 
-def _realized_group_pnl_model(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
-    if not rows:
-        return None
-    entry_order = pick_primary_order_row(rows) or {}
-    exit_order = _exit_order_row(rows)
-    if not exit_order:
+def _realized_pnl_model_for_entry_exit(
+    entry_order: dict[str, Any] | None,
+    exit_order: dict[str, Any] | None,
+    rows: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not entry_order or not exit_order:
         return None
 
     net_pnl, net_field = _stored_net_pnl(exit_order)
@@ -665,6 +665,8 @@ def _realized_group_pnl_model(rows: list[dict[str, Any]]) -> dict[str, Any] | No
         "fill_price",
         "avg_price",
         "avg_fill_price",
+        "avgFillPrice",
+        "avgPrice",
         "actual_fill_price",
         "entry_fill_price",
         "limit_price",
@@ -676,8 +678,13 @@ def _realized_group_pnl_model(rows: list[dict[str, Any]]) -> dict[str, Any] | No
         "fill_price",
         "avg_price",
         "avg_fill_price",
+        "avgFillPrice",
+        "avgPrice",
         "actual_fill_price",
         "exit_fill_price",
+        "last_fill_price",
+        "lastFillPrice",
+        "execution_price",
         "price",
         "limit_price",
         "tp_price",
@@ -717,6 +724,14 @@ def _realized_group_pnl_model(rows: list[dict[str, Any]]) -> dict[str, Any] | No
         "quantity": quantity,
         "exit_role": normalized_exit.get("role") or to_text(_record_or_extra_value(exit_order, "role")) or "exit",
     }
+
+
+def _realized_group_pnl_model(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not rows:
+        return None
+    entry_order = pick_primary_order_row(rows) or {}
+    exit_order = _exit_order_row(rows)
+    return _realized_pnl_model_for_entry_exit(entry_order, exit_order, rows)
 
 
 def _realized_pnl_detail(model: dict[str, Any]) -> str:
@@ -1193,6 +1208,58 @@ def _trade_ledger_fill_price(order_record: Any) -> float:
     )
 
 
+def _trade_ledger_exit_fill_pnl_candidate(order_record: Any, event_model: dict[str, Any]) -> bool:
+    role = normalize_order_row(order_record).get("role") or to_text(_record_or_extra_value(order_record, "role"))
+    if role not in EXIT_ORDER_ROLES:
+        return False
+    if to_text(event_model.get("event_type")) != "fill":
+        return False
+    filled_qty = first_defined(to_float(event_model.get("filled_qty")), _trade_ledger_filled_qty(order_record))
+    return bool(filled_qty and filled_qty > 0)
+
+
+def _trade_ledger_related_rows_for_pnl(
+    pb: Any,
+    order_record: dict[str, Any],
+    event_model: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if not _trade_ledger_exit_fill_pnl_candidate(order_record, event_model):
+        return []
+    environment = to_text(event_model.get("environment") or _record_or_extra_value(order_record, "environment")) or "live"
+    try:
+        context = _order_group_context(pb, order_record, environment=environment)
+    except Exception:
+        return []
+    return [dict(row) for row in (context.get("related_rows") or []) if isinstance(row, dict)]
+
+
+def _trade_ledger_exit_pnl_model(
+    order_record: Any,
+    event_model: dict[str, Any],
+    *,
+    related_rows: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    if not _trade_ledger_exit_fill_pnl_candidate(order_record, event_model):
+        return None
+
+    exit_order = dict(order_record) if isinstance(order_record, dict) else {}
+    if not exit_order:
+        return None
+    if _status_key(_record_or_extra_value(exit_order, "status", "order_status", "current_status")) not in {
+        "filled",
+        "closed",
+        "executed",
+    }:
+        exit_order["status"] = "Filled"
+    if _trade_ledger_filled_qty(exit_order) <= 0 and to_float(event_model.get("filled_qty")):
+        exit_order["filled_qty"] = to_float(event_model.get("filled_qty"))
+
+    rows = dedupe_order_rows([exit_order, *(related_rows or [])])
+    entry_order = next((row for row in rows if normalize_order_row(row).get("role") == "entry"), None)
+    model = _realized_pnl_model_for_entry_exit(entry_order, exit_order, rows) if entry_order else None
+    return model or _single_order_pnl_model(exit_order)
+
+
 def _trade_ledger_notified_keys(extra: Any) -> set[str]:
     source = ensure_object(extra)
     raw_keys = source.get("feishu_trade_ledger_notified_keys")
@@ -1348,7 +1415,10 @@ def _trade_ledger_event_model(order_record: dict[str, Any], previous_order: dict
     }
 
 
-def _trade_ledger_template(event_model: dict[str, Any], status: str) -> str:
+def _trade_ledger_template(event_model: dict[str, Any], status: str, pnl_value: Any = None) -> str:
+    parsed_pnl = to_float(pnl_value)
+    if parsed_pnl is not None and parsed_pnl < 0:
+        return "red"
     if event_model.get("event_type") == "fill" or status in {"Filled", "Closed", "Executed"}:
         return "green"
     if status in {"Canceled", "Cancelled", "Rejected", "Expired", "Inactive"}:
@@ -1361,6 +1431,7 @@ def build_order_callback_ledger_card(
     event_model: dict[str, Any],
     *,
     console_base_url: str = "",
+    related_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     environment = to_text(_record_or_extra_value(order_record, "environment")) or "live"
     broker_badge = _broker_badge(environment)
@@ -1385,6 +1456,9 @@ def build_order_callback_ledger_card(
     )
     if previous_filled_qty and previous_filled_qty > 0 and fill_delta > 0:
         fill_line = f"{fill_line}（前次 {_format_quantity(previous_filled_qty)}）"
+    pnl_model = _trade_ledger_exit_pnl_model(order_record, event_model, related_rows=related_rows)
+    pnl_line = _realized_pnl_line(pnl_model)
+    title_pnl = f" · {_pnl_outcome_label(pnl_model.get('value'))} {_format_signed_money(pnl_model.get('value'))}" if pnl_model else ""
 
     body_lines = [
         f"**回调判定**: {event_label}",
@@ -1398,6 +1472,8 @@ def build_order_callback_ledger_card(
         f"**均价 / 最新成交价**: {_format_price(_trade_ledger_fill_price(order_record))} / {_format_price(_record_or_extra_value(order_record, 'last_fill_price', 'lastFillPrice', 'execution_price'))}",
         fill_line,
     ]
+    if pnl_line:
+        body_lines.append(pnl_line)
     exec_id = to_text(event_model.get("exec_id"))
     if exec_id:
         body_lines.append(f"**Exec ID**: {exec_id}")
@@ -1413,9 +1489,9 @@ def build_order_callback_ledger_card(
         "header": {
             "title": {
                 "tag": "plain_text",
-                "content": f"🧾 订单真实回调 · {broker_badge} · {_trade_ledger_role_label(order_record)} · {event_label} · {symbol}",
+                "content": f"🧾 订单真实回调 · {broker_badge} · {_trade_ledger_role_label(order_record)} · {event_label}{title_pnl} · {symbol}",
             },
-            "template": _trade_ledger_template(event_model, status),
+            "template": _trade_ledger_template(event_model, status, pnl_model.get("value") if pnl_model else None),
         },
         "elements": elements,
     }
@@ -1481,7 +1557,13 @@ def sync_order_callback_ledger_notification(
     if not callable(send_interactive) or not trade_ledger_chat_id:
         return {"success": False, "skipped": True, "reason": "missing_send_target", "notify_key": notify_key}
 
-    card = build_order_callback_ledger_card(order_record, event_model, console_base_url=console_base_url)
+    related_rows = _trade_ledger_related_rows_for_pnl(pb, order_record, event_model)
+    card = build_order_callback_ledger_card(
+        order_record,
+        event_model,
+        console_base_url=console_base_url,
+        related_rows=related_rows,
+    )
     try:
         result = dict(send_interactive(card, trade_ledger_chat_id, event_model.get("environment") or "live") or {})
     except Exception as exc:

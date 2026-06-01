@@ -899,11 +899,169 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
         self.assertIn("真实回调", send_calls[0][0]["header"]["title"]["content"])
         self.assertIn("成交增量", card_text)
         self.assertIn("101", card_text)
+        self.assertNotIn("实际盈亏", card_text)
         self.assertEqual(pb.updated[0][2]["extra"]["feishu_trade_ledger_message_id"], "ledger-msg-1")
         self.assertIn(
             pb.updated[0][2]["extra"]["feishu_trade_ledger_notify_key"],
             pb.updated[0][2]["extra"]["feishu_trade_ledger_notified_keys"],
         )
+
+    def test_sync_order_callback_ledger_notification_includes_exit_loss_from_group_prices(self):
+        class _LedgerPB:
+            def __init__(self):
+                self.entry = {
+                    "id": "order-entry",
+                    "unique_id": "sig-1_entry",
+                    "order_type": "Entry",
+                    "symbol": "AAPL",
+                    "environment": "live",
+                    "status": "Closed",
+                    "role": "entry",
+                    "broker_order_id": "101",
+                    "order_id": "101",
+                    "trade_group_id": "sig-1_entry",
+                    "entry_order_unique_id": "sig-1_entry",
+                    "signal_id": "sig-1",
+                    "direction": "long",
+                    "quantity": 10,
+                    "filled_qty": 10,
+                    "fill_price": 100.0,
+                }
+                self.order = {
+                    "id": "order-close",
+                    "unique_id": "sig-1_close",
+                    "order_type": "MKT",
+                    "symbol": "AAPL",
+                    "environment": "live",
+                    "status": "Submitted",
+                    "role": "close",
+                    "broker_order_id": "102",
+                    "order_id": "102",
+                    "trade_group_id": "sig-1_entry",
+                    "entry_order_unique_id": "sig-1_entry",
+                    "signal_id": "sig-1",
+                    "direction": "sell",
+                    "quantity": 10,
+                    "filled_qty": 10,
+                    "fill_price": 99.0,
+                    "extra": {
+                        "environment": "live",
+                        "broker_realtime_callback": True,
+                        "ib_callback_type": "execDetails",
+                        "broker_callback_received_at": "2026-04-22 09:40:00",
+                    },
+                }
+                self.updated = []
+
+            def get_records(self, collection, **kwargs):
+                return [self.entry, self.order] if collection == "orders" else []
+
+            def update_record(self, collection, record_id, patch):
+                self.updated.append((collection, record_id, patch))
+                self.order = {**self.order, **patch}
+                return dict(self.order)
+
+        pb = _LedgerPB()
+        previous = {**pb.order, "filled_qty": 0, "extra": {"environment": "live"}}
+        send_calls = []
+
+        result = sync_order_callback_ledger_notification(
+            pb,
+            pb.order,
+            previous_order=previous,
+            send_interactive=lambda card, chat_id, environment: send_calls.append((card, chat_id, environment))
+            or {"success": True, "message_id": "ledger-msg-loss"},
+            trade_ledger_chat_id="ledger-chat-test",
+            console_base_url="https://console.example.com",
+        )
+
+        self.assertEqual(result["event_type"], "fill")
+        self.assertEqual(len(send_calls), 1)
+        card = send_calls[0][0]
+        content = card["elements"][0]["content"]
+        title = card["header"]["title"]["content"]
+        self.assertIn("亏损 -$10.00", title)
+        self.assertEqual("red", card["header"]["template"])
+        self.assertIn("**实际盈亏**: 亏损 -$10.00", content)
+        self.assertIn("平仓 @99.00", content)
+        self.assertIn("10股", content)
+        self.assertIn("未计手续费", content)
+
+    def test_sync_order_callback_ledger_notification_includes_short_exit_profit(self):
+        class _LedgerPB:
+            def __init__(self):
+                self.entry = {
+                    "id": "order-entry",
+                    "unique_id": "sig-short_entry",
+                    "order_type": "Entry",
+                    "symbol": "TSLA",
+                    "environment": "paper",
+                    "status": "Closed",
+                    "role": "entry",
+                    "broker_order_id": "201",
+                    "order_id": "201",
+                    "trade_group_id": "sig-short_entry",
+                    "entry_order_unique_id": "sig-short_entry",
+                    "signal_id": "sig-short",
+                    "direction": "short",
+                    "quantity": 4,
+                    "filled_qty": 4,
+                    "fill_price": 100.0,
+                }
+                self.order = {
+                    "id": "order-close",
+                    "unique_id": "sig-short_close",
+                    "order_type": "MKT",
+                    "symbol": "TSLA",
+                    "environment": "paper",
+                    "status": "Filled",
+                    "role": "close",
+                    "broker_order_id": "202",
+                    "order_id": "202",
+                    "trade_group_id": "sig-short_entry",
+                    "entry_order_unique_id": "sig-short_entry",
+                    "signal_id": "sig-short",
+                    "direction": "buy",
+                    "quantity": 4,
+                    "filled_qty": 4,
+                    "fill_price": 95.0,
+                    "extra": {
+                        "environment": "paper",
+                        "broker_realtime_callback": True,
+                        "ib_callback_type": "execDetails",
+                        "broker_callback_received_at": "2026-04-22 09:45:00",
+                    },
+                }
+                self.updated = []
+
+            def get_records(self, collection, **kwargs):
+                return [self.entry, self.order] if collection == "orders" else []
+
+            def update_record(self, collection, record_id, patch):
+                self.updated.append((collection, record_id, patch))
+                self.order = {**self.order, **patch}
+                return dict(self.order)
+
+        pb = _LedgerPB()
+        previous = {**pb.order, "filled_qty": 0, "extra": {"environment": "paper"}}
+        send_calls = []
+
+        sync_order_callback_ledger_notification(
+            pb,
+            pb.order,
+            previous_order=previous,
+            send_interactive=lambda card, chat_id, environment: send_calls.append((card, chat_id, environment))
+            or {"success": True, "message_id": "ledger-msg-profit"},
+            trade_ledger_chat_id="ledger-chat-test",
+            console_base_url="https://console.example.com",
+        )
+
+        card = send_calls[0][0]
+        content = card["elements"][0]["content"]
+        self.assertIn("盈利 +$20.00", card["header"]["title"]["content"])
+        self.assertEqual("green", card["header"]["template"])
+        self.assertIn("**实际盈亏**: 盈利 +$20.00", content)
+        self.assertIn("平仓 @95.00", content)
 
     def test_sync_order_callback_ledger_notification_skips_submitted_open_order_noise(self):
         class _LedgerPB:

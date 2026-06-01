@@ -51,6 +51,27 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
             source,
         )
 
+    def test_flow_label_backgrounds_are_configurably_transparent(self):
+        source = self.source
+        label_lines = [line for line in source.splitlines() if "label.new(" in line]
+
+        self.assertIn(
+            'flowLabelTransparency = input.int(70, "Flow label background transparency", minval=0, maxval=100, group="08 Display")',
+            source,
+        )
+        self.assertIn("flowBaseColor(string state, string direction) =>", source)
+        self.assertIn("color.new(flowBaseColor(state, direction), flowLabelTransparency)", source)
+        self.assertIn("flowStatusColor(string state, string direction) =>", source)
+        self.assertIn("color.new(flowBaseColor(state, direction), 0)", source)
+        self.assertIn("color=color.new(color.orange, flowLabelTransparency)", source)
+        self.assertIn("color statusColor = activePositionId != \"\" ? flowStatusColor", source)
+        self.assertIn("color.new(color.green, flowLabelTransparency)", source)
+        self.assertIn("color.new(color.red, flowLabelTransparency)", source)
+        self.assertFalse(
+            [line for line in label_lines if "color.new(" in line and ", 0)" in line],
+            "flow labels should not use opaque inline label backgrounds",
+        )
+
     def test_fast_in_defaults_volatility_filter_and_marker_toggles(self):
         source = self.source
 
