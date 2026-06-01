@@ -785,6 +785,106 @@ def _upsert_target(
     return dict(refreshed or saved or record)
 
 
+def _ensure_entry_backfill_target(
+    pb: Any,
+    payload: dict[str, Any],
+    *,
+    event_id: str,
+    signal_id: str,
+    direction: str,
+    environment: str,
+    escape_filter: Callable[[Any], str],
+    existing_target: dict[str, Any] | None,
+) -> dict[str, Any]:
+    symbol = _symbol(payload)
+    date = _market_date(payload)
+    existing = dict(existing_target or {})
+    existing_status = _text(existing.get("status")).lower()
+    existing_id = _text(existing.get("id"))
+    if existing_id and existing_status == "active":
+        return {
+            "ok": True,
+            "action": "unchanged",
+            "reason": "active_target_exists",
+            "target_id": existing_id,
+            "status": existing_status,
+            "previous_status": existing_status,
+            "target": existing,
+        }
+    if existing_id and existing_status not in {"", "candidate"}:
+        return {
+            "ok": True,
+            "action": "skipped",
+            "reason": "target_status_not_backfilled",
+            "target_id": existing_id,
+            "status": existing_status,
+            "previous_status": existing_status,
+            "target": existing,
+        }
+
+    existing_extra = _as_object(existing.get("extra"))
+    previous_source = _text(existing_extra.get("source"))
+    backfill_reason = "missing_pre_alert_or_candidate" if not existing_id else "candidate_entry_upgrade"
+    activity_score = _float(payload.get("activity_score"), _float(existing.get("score"), 0.0))
+    direction_bias = direction if direction in {"long", "short"} else _direction_bias(payload)
+    allowed_sides = [direction_bias] if direction_bias in {"long", "short"} else []
+    extra = {
+        **existing_extra,
+        **_base_extra(payload, event_id, "entry"),
+        **_target_activation_extra(existing_extra, payload, event_id=event_id),
+        "source": TRADINGVIEW_SOURCE,
+        "previous_source": previous_source if previous_source and previous_source != TRADINGVIEW_SOURCE else "",
+        "entry_backfilled_target": True,
+        "entry_backfill_reason": backfill_reason,
+        "entry_backfill_previous_status": existing_status,
+        "entry_signal_id": signal_id,
+        "target_admission_reason": "entry_signal_backfill",
+        "active_gate_passed": True,
+        "context_active": True,
+        "context_gate_passed": True,
+        "context_allowed_sides": allowed_sides,
+        "direction_bias": direction_bias,
+        "strategy_policy": {
+            **(existing_extra.get("strategy_policy") if isinstance(existing_extra.get("strategy_policy"), dict) else {}),
+            "setup_type": "tradingview_entry_backfill",
+            "allowed_sides": allowed_sides,
+            "avoid_new_entries": False,
+        },
+    }
+    extra = {key: value for key, value in extra.items() if value not in ("", None)}
+    record = {
+        "symbol": symbol,
+        "exchange": _text(payload.get("exchange") or existing.get("exchange")),
+        "date": date,
+        "direction_bias": direction_bias,
+        "score": activity_score,
+        "scan_reason": _text(payload.get("reason") or payload.get("setup") or existing.get("scan_reason") or "tv_entry_backfill"),
+        "status": "active",
+        "us_time": _text(payload.get("us_time") or existing.get("us_time")),
+        "cn_time": _text(payload.get("cn_time") or existing.get("cn_time")),
+        "bar_time_ms": _payload_bar_open_ms(payload) or _int(existing.get("bar_time_ms"), 0),
+        "environment": environment,
+        "extra": extra,
+    }
+    if existing_id:
+        saved = pb.update_record("ibkr_targets", existing_id, record)
+        action = "updated"
+    else:
+        saved = pb.create_record("ibkr_targets", record)
+        action = "created"
+    refreshed = _load_target(pb, symbol=symbol, date=date, environment=environment, escape_filter=escape_filter)
+    target = dict(refreshed or saved or record)
+    return {
+        "ok": True,
+        "action": action,
+        "reason": backfill_reason,
+        "target_id": _text(target.get("id")),
+        "status": _text(target.get("status")),
+        "previous_status": existing_status,
+        "target": target,
+    }
+
+
 def _entry_window_status(
     payload: dict[str, Any], *, config_value: Callable[[str, str, str], str] | None, environment: str) -> tuple[bool, str]:
     if not _config_bool(config_value, "tv_entry_window_enforce_enabled", True, environment):
@@ -895,6 +995,20 @@ def _route_entry(
             raise TvPrimaryError("quality_score_too_low_for_late_window", 200)
 
     signal_id = _text(payload.get("signal_id")) or event_id
+    target_backfill = _ensure_entry_backfill_target(
+        pb,
+        payload,
+        event_id=event_id,
+        signal_id=signal_id,
+        direction=direction,
+        environment=environment,
+        escape_filter=escape_filter,
+        existing_target=target,
+    )
+    if isinstance(target_backfill.get("target"), dict):
+        target = dict(target_backfill["target"])
+        target_extra = _as_object(target.get("extra"))
+    target_backfill_meta = {key: value for key, value in target_backfill.items() if key != "target"}
     extra = {
         **_base_extra(payload, event_id, event_type),
         "execution_window": window,
@@ -904,6 +1018,8 @@ def _route_entry(
         "has_same_day_tv_target": has_same_day_tv_target,
         "activity_rank": target_extra.get("activity_rank"),
         "target_id": _text((target or {}).get("id")),
+        "target_backfilled": target_backfill_meta.get("action") in {"created", "updated"},
+        "target_backfill": target_backfill_meta,
         "source": TRADINGVIEW_SOURCE,
         "signal_source": "tradingview_webhook",
     }

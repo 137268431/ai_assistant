@@ -1072,10 +1072,10 @@ if isNewTradingDay
     eodForceCloseDay := na
 
 if showFlowLabels and confirmed and lowerActivationEvent
-    label.new(bar_index, low - atrVal * 1.4, "激活观察窗\n" + syminfo.ticker + " · SD下轨\n非开仓点，等组件", style=label.style_label_up, color=flowLabelColor("activate_lower", "long"), textcolor=color.white, size=size.small)
+    label.new(bar_index, low - atrVal * 1.4, "观察池入选\n" + syminfo.ticker + " · SD下轨观察\n非开仓点，等组件", style=label.style_label_up, color=flowLabelColor("activate_lower", "long"), textcolor=color.white, size=size.small)
 
 if showFlowLabels and confirmed and upperActivationEvent
-    label.new(bar_index, high + atrVal * 1.4, "激活观察窗\n" + syminfo.ticker + " · SD上轨\n非开仓点，等组件", style=label.style_label_down, color=flowLabelColor("activate_upper", "short"), textcolor=color.white, size=size.small)
+    label.new(bar_index, high + atrVal * 1.4, "观察池入选\n" + syminfo.ticker + " · SD上轨观察\n非开仓点，等组件", style=label.style_label_down, color=flowLabelColor("activate_upper", "short"), textcolor=color.white, size=size.small)
 
 if showFlowLabels and preAlertCross
     float preAlertY = candidateDirection == "short" ? high + atrVal * 3.0 : low - atrVal * 3.0

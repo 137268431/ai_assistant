@@ -99,6 +99,23 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         self.assertIn('alert(buildPreAlertPayload(eventId("pre_alert", "window_lower"), pendingLowerId, "lower"), alert.freq_all)', source)
         self.assertIn('alert(buildPreAlertPayload(eventId("pre_alert", "window_upper"), pendingUpperId, "upper"), alert.freq_all)', source)
 
+    def test_activation_labels_mark_observe_pool_not_entry(self):
+        source = self.source
+        activation_lines = "\n".join(
+            line
+            for line in source.splitlines()
+            if line.strip().startswith("label.new") and (
+                'flowLabelColor("activate_lower"' in line or 'flowLabelColor("activate_upper"' in line
+            )
+        )
+
+        self.assertIn('"观察池入选\\n" + syminfo.ticker + " · SD下轨观察\\n非开仓点，等组件"', source)
+        self.assertIn('"观察池入选\\n" + syminfo.ticker + " · SD上轨观察\\n非开仓点，等组件"', source)
+        self.assertNotIn("BUY", activation_lines)
+        self.assertNotIn("entry", activation_lines)
+        self.assertNotIn("买入做多", activation_lines)
+        self.assertNotIn("卖出做空", activation_lines)
+
     def test_sd_window_resets_only_on_activation_events(self):
         source = self.source
 
