@@ -680,6 +680,270 @@ class TradingServiceSignalsMixin:
             return {}
         return dict(quote or {}) if isinstance(quote, dict) else {}
 
+    def _entry_guard_fresh_quote(
+        self,
+        symbol: str,
+        direction: str,
+        max_age_s: float,
+    ) -> tuple[dict, float, str, bool]:
+        quote = self._entry_guard_quote(symbol)
+        quote_age_s = self._safe_float(quote.get("quote_age_s"), -1.0) if quote else -1.0
+        reference_price, reference_source = self._guard_reference_price(quote, direction)
+        fresh_quote = bool(
+            quote
+            and quote_age_s >= 0
+            and quote_age_s <= max_age_s
+            and reference_price > 0
+        )
+        return quote, reference_price, reference_source, fresh_quote
+
+    def _entry_temp_quote_subscriptions(self) -> dict:
+        subscriptions = getattr(self, "_entry_temp_quote_subscription_map", None)
+        if not isinstance(subscriptions, dict):
+            subscriptions = {}
+            setattr(self, "_entry_temp_quote_subscription_map", subscriptions)
+        return subscriptions
+
+    def _entry_active_subscription_map(self) -> dict:
+        source = getattr(self, "_active_subscription_map", None)
+        if not isinstance(source, dict):
+            return {}
+        result = {}
+        for symbol, conid in source.items():
+            normalized_symbol = str(symbol or "").strip().upper()
+            try:
+                normalized_conid = int(conid or 0)
+            except (TypeError, ValueError):
+                normalized_conid = 0
+            if normalized_symbol and normalized_conid > 0:
+                result[normalized_symbol] = normalized_conid
+        return result
+
+    def _entry_refresh_quote_symbol_map(self):
+        active_map = self._entry_active_subscription_map()
+        temp_map = {
+            str(symbol or "").strip().upper(): int((meta or {}).get("conid") or 0)
+            for symbol, meta in self._entry_temp_quote_subscriptions().items()
+            if str(symbol or "").strip() and int((meta or {}).get("conid") or 0) > 0
+        }
+        combined = {**active_map, **temp_map}
+        reverse_map = {int(conid): symbol for symbol, conid in combined.items() if int(conid or 0) > 0}
+        for attr in ("bar_aggregator", "realtime_quote_book"):
+            target = getattr(self, attr, None)
+            setter = getattr(target, "set_symbol_map", None)
+            if callable(setter):
+                try:
+                    setter(reverse_map)
+                except Exception as exc:
+                    _service_mod().logger.debug("Failed to refresh %s symbol map: %s", attr, exc)
+
+    def _entry_release_temp_quote_subscription(self, symbol: str):
+        normalized_symbol = str(symbol or "").strip().upper()
+        if not normalized_symbol:
+            return
+        active_map = self._entry_active_subscription_map()
+        if normalized_symbol in active_map:
+            return
+        subscriptions = self._entry_temp_quote_subscriptions()
+        meta = subscriptions.pop(normalized_symbol, None)
+        conid = int((meta or {}).get("conid") or 0)
+        if conid > 0:
+            unsubscriber = getattr(getattr(self, "ws_client", None), "unsubscribe", None)
+            if callable(unsubscriber):
+                try:
+                    unsubscriber(conid)
+                except Exception as exc:
+                    _service_mod().logger.debug("Temporary quote unsubscribe failed for %s/%s: %s", normalized_symbol, conid, exc)
+        self._entry_refresh_quote_symbol_map()
+
+    def _entry_cleanup_temp_quote_subscriptions(self):
+        now_ts = time.time()
+        subscriptions = self._entry_temp_quote_subscriptions()
+        expired = [
+            symbol
+            for symbol, meta in list(subscriptions.items())
+            if now_ts >= float((meta or {}).get("expires_at") or 0.0)
+        ]
+        for symbol in expired:
+            self._entry_release_temp_quote_subscription(symbol)
+
+    def _entry_temp_quote_capacity_available(self, symbol: str) -> tuple[bool, str]:
+        normalized_symbol = str(symbol or "").strip().upper()
+        subscriptions = self._entry_temp_quote_subscriptions()
+        if normalized_symbol in subscriptions or normalized_symbol in self._entry_active_subscription_map():
+            return True, ""
+
+        temp_limit = max(0, int(self._config_float("entry_pre_submit_temp_subscription_limit", 8)))
+        if temp_limit > 0 and len(subscriptions) >= temp_limit:
+            return False, "temp_subscription_limit"
+
+        total_limit = max(0, int(self._config_float("ibkr_total_subscription_limit", 80)))
+        if total_limit > 0:
+            status_getter = getattr(getattr(self, "ws_client", None), "status", None)
+            status = {}
+            if callable(status_getter):
+                try:
+                    status = status_getter() or {}
+                except Exception:
+                    status = {}
+            active_count = int(status.get("subscribed_count") or 0) + int(status.get("pending_count") or 0)
+            if active_count >= total_limit:
+                return False, "total_subscription_limit"
+        return True, ""
+
+    def _entry_resolve_conid(self, symbol: str) -> int:
+        resolver = getattr(self, "conid_resolver", None)
+        resolve = getattr(resolver, "resolve", None)
+        if not callable(resolve):
+            return 0
+        try:
+            return int(resolve(symbol) or 0)
+        except Exception as exc:
+            _service_mod().logger.warning("Entry quote conid resolve failed for %s: %s", symbol, exc)
+            return 0
+
+    def _entry_request_temp_quote_subscription(self, symbol: str, conid: int, ttl_s: float) -> tuple[bool, str]:
+        normalized_symbol = str(symbol or "").strip().upper()
+        normalized_conid = int(conid or 0)
+        if not normalized_symbol or normalized_conid <= 0:
+            return False, "conid_unavailable"
+        ok, reason = self._entry_temp_quote_capacity_available(normalized_symbol)
+        if not ok:
+            return False, reason or "capacity_full"
+
+        now_ts = time.time()
+        self._entry_temp_quote_subscriptions()[normalized_symbol] = {
+            "conid": normalized_conid,
+            "created_at": now_ts,
+            "expires_at": now_ts + max(1.0, float(ttl_s or 0.0)),
+            "source": "entry_pre_submit",
+        }
+        self._entry_refresh_quote_symbol_map()
+        subscriber = getattr(getattr(self, "ws_client", None), "subscribe", None)
+        if callable(subscriber):
+            try:
+                subscriber(normalized_conid)
+            except Exception as exc:
+                self._entry_release_temp_quote_subscription(normalized_symbol)
+                _service_mod().logger.warning("Temporary quote subscribe failed for %s/%s: %s", normalized_symbol, normalized_conid, exc)
+                return False, "subscribe_failed"
+        return True, ""
+
+    def _entry_wait_for_fresh_quote(
+        self,
+        symbol: str,
+        direction: str,
+        max_age_s: float,
+        timeout_s: float,
+    ) -> tuple[dict, float, str, bool]:
+        deadline = time.monotonic() + max(0.0, float(timeout_s or 0.0))
+        while True:
+            quote, reference_price, reference_source, fresh = self._entry_guard_fresh_quote(symbol, direction, max_age_s)
+            if fresh or time.monotonic() >= deadline:
+                return quote, reference_price, reference_source, fresh
+            time.sleep(0.05)
+
+    def _entry_request_quote_snapshot(
+        self,
+        symbol: str,
+        conid: int,
+        timeout_s: float,
+    ) -> tuple[dict, str]:
+        requester = getattr(getattr(self, "ws_client", None), "request_market_data_snapshot", None)
+        if not callable(requester):
+            requester = getattr(getattr(self, "broker", None), "request_market_data_snapshot", None)
+        if not callable(requester):
+            return {}, "snapshot_unavailable"
+        try:
+            result = requester(conid=int(conid or 0), symbol=str(symbol or "").strip().upper(), timeout=float(timeout_s or 0.0))
+        except Exception as exc:
+            return {}, str(exc) or "snapshot_failed"
+        if not isinstance(result, dict):
+            return {}, "snapshot_empty"
+        if result.get("ok") is False:
+            return {}, str(result.get("error") or "snapshot_failed")
+        quote = result.get("quote") if isinstance(result.get("quote"), dict) else {}
+        if not quote:
+            quote = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+        if quote:
+            return dict(quote), ""
+        return {}, str(result.get("error") or "snapshot_empty")
+
+    def _entry_acquire_fresh_quote(
+        self,
+        symbol: str,
+        direction: str,
+        max_age_s: float,
+    ) -> tuple[dict, float, str, bool, dict, str]:
+        started = time.monotonic()
+        diagnostics = {
+            "quote_acquire_source": "none",
+            "quote_acquire_wait_ms": 0,
+            "quote_acquire_error": "",
+            "temporary_quote_subscription": False,
+        }
+        if not self._config_bool("entry_pre_submit_quote_acquire_enabled", True):
+            diagnostics["quote_acquire_error"] = "quote_acquire_disabled"
+            return {}, 0.0, "", False, diagnostics, "entry_guard_no_fresh_quote"
+
+        self._entry_cleanup_temp_quote_subscriptions()
+        conid = self._entry_resolve_conid(symbol)
+        diagnostics["quote_acquire_conid"] = conid or None
+        if conid <= 0:
+            diagnostics["quote_acquire_error"] = "conid_unavailable"
+            return {}, 0.0, "", False, diagnostics, "entry_guard_quote_conid_unavailable"
+
+        ttl_s = max(1.0, self._config_float("entry_pre_submit_temp_subscription_ttl_sec", 30.0))
+        subscribe_ok, subscribe_reason = self._entry_request_temp_quote_subscription(symbol, conid, ttl_s)
+        diagnostics["temporary_quote_subscription"] = bool(subscribe_ok)
+        if not subscribe_ok:
+            diagnostics["quote_acquire_error"] = subscribe_reason or "capacity_full"
+            reason = (
+                "entry_guard_quote_capacity_full"
+                if subscribe_reason in {"temp_subscription_limit", "total_subscription_limit", "capacity_full"}
+                else "entry_guard_no_fresh_quote"
+            )
+            diagnostics["quote_acquire_wait_ms"] = round((time.monotonic() - started) * 1000.0, 1)
+            return {}, 0.0, "", False, diagnostics, reason
+
+        wait_s = max(0.0, self._config_float("entry_pre_submit_quote_wait_sec", 2.0))
+        quote, reference_price, reference_source, fresh = self._entry_wait_for_fresh_quote(
+            symbol,
+            direction,
+            max_age_s,
+            wait_s,
+        )
+        if fresh:
+            diagnostics["quote_acquire_source"] = "temp_ws"
+            diagnostics["quote_acquire_wait_ms"] = round((time.monotonic() - started) * 1000.0, 1)
+            return quote, reference_price, reference_source, True, diagnostics, ""
+
+        diagnostics["quote_acquire_error"] = "subscribe_timeout"
+        if not self._config_bool("entry_pre_submit_snapshot_enabled", True):
+            diagnostics["quote_acquire_wait_ms"] = round((time.monotonic() - started) * 1000.0, 1)
+            return quote, reference_price, reference_source, False, diagnostics, "entry_guard_quote_subscribe_timeout"
+
+        snapshot_timeout_s = max(0.1, self._config_float("entry_pre_submit_snapshot_timeout_sec", 2.0))
+        snapshot_quote, snapshot_error = self._entry_request_quote_snapshot(symbol, conid, snapshot_timeout_s)
+        if snapshot_quote:
+            # Snapshot implementations may either update the quote book through listeners or return a quote directly.
+            quote, reference_price, reference_source, fresh = self._entry_guard_fresh_quote(symbol, direction, max_age_s)
+            if not fresh:
+                quote = snapshot_quote
+                quote.setdefault("quote_age_s", 0.0)
+                quote_age_s = self._safe_float(quote.get("quote_age_s"), 0.0)
+                reference_price, reference_source = self._guard_reference_price(quote, direction)
+                fresh = bool(quote_age_s >= 0 and quote_age_s <= max_age_s and reference_price > 0)
+            if fresh:
+                diagnostics["quote_acquire_source"] = "snapshot"
+                diagnostics["quote_acquire_error"] = ""
+                diagnostics["quote_acquire_wait_ms"] = round((time.monotonic() - started) * 1000.0, 1)
+                return quote, reference_price, reference_source, True, diagnostics, ""
+
+        diagnostics["quote_acquire_error"] = snapshot_error or "snapshot_timeout"
+        diagnostics["quote_acquire_wait_ms"] = round((time.monotonic() - started) * 1000.0, 1)
+        return quote, reference_price, reference_source, False, diagnostics, "entry_guard_quote_snapshot_timeout"
+
     def _guard_reference_price(self, quote: dict, direction: str) -> tuple[float, str]:
         last_price = self._quote_price(quote, "last_price")
         if last_price > 0:
@@ -782,10 +1046,27 @@ class TradingServiceSignalsMixin:
         max_drift_r = max(0.0, self._config_float("entry_pre_submit_max_adverse_drift_r", 0.50))
         live_environment = environment in {"live", "paper"}
 
-        quote = self._entry_guard_quote(symbol)
-        quote_age_s = self._safe_float(quote.get("quote_age_s"), -1.0) if quote else -1.0
-        reference_price, reference_source = self._guard_reference_price(quote, direction)
-        fresh_quote = bool(quote and quote_age_s >= 0 and quote_age_s <= max_age_s and reference_price > 0)
+        quote, reference_price, reference_source, fresh_quote = self._entry_guard_fresh_quote(
+            symbol,
+            direction,
+            max_age_s,
+        )
+        quote_acquire_diagnostics = {
+            "quote_acquire_source": "cached_ws" if fresh_quote else "none",
+            "quote_acquire_wait_ms": 0,
+            "quote_acquire_error": "",
+            "temporary_quote_subscription": False,
+        }
+        guard_reason = "entry_guard_no_fresh_quote"
+        if live_environment and not fresh_quote:
+            (
+                quote,
+                reference_price,
+                reference_source,
+                fresh_quote,
+                quote_acquire_diagnostics,
+                guard_reason,
+            ) = self._entry_acquire_fresh_quote(symbol, direction, max_age_s)
 
         extra = self._signal_extra(sig)
         diagnostics = {
@@ -796,6 +1077,7 @@ class TradingServiceSignalsMixin:
             "quote_age_s": quote.get("quote_age_s") if quote else None,
             "pre_submit_reference_price": round(reference_price, 4) if reference_price > 0 else None,
             "pre_submit_reference_source": reference_source,
+            **quote_acquire_diagnostics,
             "price_drift_r": 0.0,
             "reprice_source": "",
             "entry_limit_offset": self._safe_float(extra.get("entry_limit_offset"), 0.0),
@@ -806,8 +1088,9 @@ class TradingServiceSignalsMixin:
         }
 
         if live_environment and not fresh_quote:
-            sig["extra"] = {**extra, **diagnostics, "status_reason": "entry_guard_no_fresh_quote"}
-            return False, sig, "entry_guard_no_fresh_quote"
+            status_reason = guard_reason or "entry_guard_no_fresh_quote"
+            sig["extra"] = {**extra, **diagnostics, "status_reason": status_reason}
+            return False, sig, status_reason
 
         if not fresh_quote:
             sig["extra"] = {**extra, **diagnostics}
@@ -1675,6 +1958,27 @@ class TradingServiceSignalsMixin:
             if signal_extra.get(key) not in (None, "")
         }
         exit_policy_fields.update(self._live_trailing_stop_metadata(signal_extra))
+        quote_guard_fields = {
+            key: signal_extra.get(key)
+            for key in (
+                "pre_submit_guard",
+                "quote_age_s",
+                "pre_submit_reference_price",
+                "pre_submit_reference_source",
+                "quote_acquire_source",
+                "quote_acquire_wait_ms",
+                "quote_acquire_error",
+                "quote_acquire_conid",
+                "temporary_quote_subscription",
+                "price_drift_r",
+                "price_drift_threshold_r",
+                "price_drift_exceeds_threshold",
+                "original_entry",
+                "original_stop_loss",
+                "original_take_profit",
+            )
+            if signal_extra.get(key) not in (None, "")
+        }
         buying_power_guard = (
             dict(signal_extra.get("buying_power_guard"))
             if isinstance(signal_extra.get("buying_power_guard"), dict)
@@ -1788,6 +2092,7 @@ class TradingServiceSignalsMixin:
                 **order_extra,
                 **harvest_fields,
                 **exit_policy_fields,
+                **quote_guard_fields,
                 **buying_power_fields,
                 "order_flow": signal_extra.get("order_flow", {}),
                 "order_flow_shadow": signal_extra.get("order_flow_shadow", {}),

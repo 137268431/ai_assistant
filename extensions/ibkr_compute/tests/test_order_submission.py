@@ -302,6 +302,7 @@ class FakeQuoteBook:
     def __init__(self, quotes):
         self.quotes = dict(quotes or {})
         self.calls = []
+        self.symbol_map = {}
 
     def get_quote(self, symbol):
         normalized_symbol = str(symbol or "").strip().upper()
@@ -309,9 +310,49 @@ class FakeQuoteBook:
         quote = self.quotes.get(normalized_symbol)
         return dict(quote or {}) if quote else None
 
+    def set_quote(self, symbol, quote):
+        self.quotes[str(symbol or "").strip().upper()] = dict(quote or {})
+
+    def set_symbol_map(self, symbol_map):
+        self.symbol_map = dict(symbol_map or {})
+
+
+class FakeWsClient:
+    def __init__(self, quote_book=None, quotes_on_subscribe=None, snapshot_result=None, subscribed_count=0, pending_count=0):
+        self.quote_book = quote_book
+        self.quotes_on_subscribe = dict(quotes_on_subscribe or {})
+        self.snapshot_result = snapshot_result
+        self.subscribed_count = subscribed_count
+        self.pending_count = pending_count
+        self.subscribed = []
+        self.unsubscribed = []
+        self.snapshots = []
+
+    def status(self):
+        return {
+            "subscribed_count": self.subscribed_count,
+            "pending_count": self.pending_count,
+        }
+
+    def subscribe(self, conid):
+        self.subscribed.append(int(conid))
+        for symbol, quote in self.quotes_on_subscribe.items():
+            if self.quote_book:
+                self.quote_book.set_quote(symbol, quote)
+
+    def unsubscribe(self, conid):
+        self.unsubscribed.append(int(conid))
+
+    def request_market_data_snapshot(self, **kwargs):
+        self.snapshots.append(dict(kwargs))
+        result = self.snapshot_result
+        if callable(result):
+            result = result(**kwargs)
+        return dict(result or {"ok": False, "error": "snapshot_timeout"})
+
 
 class FakeSignalService(TradingServiceSignalsMixin):
-    def __init__(self, signal, *, lifecycle, pb, quote_book=None, config=None, account_snapshot=None):
+    def __init__(self, signal, *, lifecycle, pb, quote_book=None, config=None, account_snapshot=None, ws_client=None):
         self.session_keeper = FakeSessionKeeper()
         self.signal_router = FakeSignalRouter([signal])
         self.signal_processor = FakeSignalProcessor()
@@ -322,6 +363,7 @@ class FakeSignalService(TradingServiceSignalsMixin):
         self.pb = pb
         self.config = config or FakeConfig()
         self.realtime_quote_book = quote_book or FakeQuoteBook({})
+        self.ws_client = ws_client
         self.account_snapshot_provider = lambda: dict(account_snapshot or {
             "ok": True,
             "summary": {"buying_power": 100000, "net_liquidation": 120000},
@@ -1308,6 +1350,123 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
         self.assertEqual(103.25, ack_order["stop_loss"])
         self.assertEqual(97.25, ack_order["take_profit"])
         self.assertEqual("passive", ack_order["extra"]["entry_limit_intent"])
+
+    def test_entry_guard_temporarily_subscribes_for_missing_quote(self):
+        signal = self._signal("AAPL")
+        pb = FakeSignalPBClient({"id": "row-aapl", "extra": {"source": "ibkr_compute"}})
+        quote_book = FakeQuoteBook({})
+        ws_client = FakeWsClient(
+            quote_book=quote_book,
+            quotes_on_subscribe={
+                "AAPL": {
+                    "last_price": 100.1,
+                    "bid": 100.05,
+                    "ask": 100.15,
+                    "quote_age_s": 0.0,
+                }
+            },
+        )
+        service = FakeSignalService(
+            signal,
+            lifecycle=FakeLifecycle(),
+            pb=pb,
+            quote_book=quote_book,
+            ws_client=ws_client,
+            config=FakeConfig({"entry_pre_submit_quote_wait_sec": 0}),
+        )
+
+        service._process_signals()
+
+        self.assertEqual(["sig-aapl"], service.signal_router.processed)
+        self.assertEqual(1, len(service.order_placer.calls))
+        self.assertEqual([123], ws_client.subscribed)
+        self.assertEqual([], ws_client.snapshots)
+        ack_order = pb.acks[-1]["order"]
+        self.assertEqual("temp_ws", ack_order["extra"]["quote_acquire_source"])
+        self.assertTrue(ack_order["extra"]["temporary_quote_subscription"])
+        self.assertEqual(0.0, ack_order["extra"]["quote_age_s"])
+
+    def test_entry_guard_uses_snapshot_after_temporary_subscription_timeout(self):
+        signal = self._signal("AAPL")
+        pb = FakeSignalPBClient({"id": "row-aapl", "extra": {"source": "ibkr_compute"}})
+        quote_book = FakeQuoteBook({})
+        ws_client = FakeWsClient(
+            quote_book=quote_book,
+            snapshot_result={
+                "ok": True,
+                "quote": {
+                    "last_price": 100.1,
+                    "bid": 100.05,
+                    "ask": 100.15,
+                    "quote_age_s": 0.0,
+                },
+            },
+        )
+        service = FakeSignalService(
+            signal,
+            lifecycle=FakeLifecycle(),
+            pb=pb,
+            quote_book=quote_book,
+            ws_client=ws_client,
+            config=FakeConfig({"entry_pre_submit_quote_wait_sec": 0}),
+        )
+
+        service._process_signals()
+
+        self.assertEqual(["sig-aapl"], service.signal_router.processed)
+        self.assertEqual(1, len(service.order_placer.calls))
+        self.assertEqual([123], ws_client.subscribed)
+        self.assertEqual(1, len(ws_client.snapshots))
+        ack_order = pb.acks[-1]["order"]
+        self.assertEqual("snapshot", ack_order["extra"]["quote_acquire_source"])
+        self.assertEqual(100.1, ack_order["extra"]["pre_submit_reference_price"])
+
+    def test_entry_guard_rejects_when_quote_capacity_is_full(self):
+        signal = self._signal("AAPL")
+        pb = FakeSignalPBClient({"id": "row-aapl", "extra": {"source": "ibkr_compute"}})
+        ws_client = FakeWsClient(subscribed_count=1)
+        service = FakeSignalService(
+            signal,
+            lifecycle=FakeLifecycle(),
+            pb=pb,
+            quote_book=FakeQuoteBook({}),
+            ws_client=ws_client,
+            config=FakeConfig({"ibkr_total_subscription_limit": 1}),
+        )
+
+        service._process_signals()
+
+        self.assertEqual(["sig-aapl"], service.signal_router.processed)
+        self.assertEqual([], service.order_placer.calls)
+        self.assertEqual([], ws_client.subscribed)
+        patch = pb.updates[-1][2]
+        self.assertEqual("rejected", _broker_execution(patch)["status"])
+        self.assertEqual("entry_guard_quote_capacity_full", patch["extra"]["status_reason"])
+        self.assertEqual("total_subscription_limit", patch["extra"]["quote_acquire_error"])
+
+    def test_entry_guard_rejects_when_subscription_and_snapshot_do_not_return_quote(self):
+        signal = self._signal("AAPL")
+        pb = FakeSignalPBClient({"id": "row-aapl", "extra": {"source": "ibkr_compute"}})
+        ws_client = FakeWsClient(snapshot_result={"ok": False, "error": "snapshot_timeout"})
+        service = FakeSignalService(
+            signal,
+            lifecycle=FakeLifecycle(),
+            pb=pb,
+            quote_book=FakeQuoteBook({}),
+            ws_client=ws_client,
+            config=FakeConfig({"entry_pre_submit_quote_wait_sec": 0}),
+        )
+
+        service._process_signals()
+
+        self.assertEqual(["sig-aapl"], service.signal_router.processed)
+        self.assertEqual([], service.order_placer.calls)
+        self.assertEqual([123], ws_client.subscribed)
+        self.assertEqual(1, len(ws_client.snapshots))
+        patch = pb.updates[-1][2]
+        self.assertEqual("rejected", _broker_execution(patch)["status"])
+        self.assertEqual("entry_guard_quote_snapshot_timeout", patch["extra"]["status_reason"])
+        self.assertEqual("snapshot_timeout", patch["extra"]["quote_acquire_error"])
 
     def test_buying_power_guard_blocks_signal_before_order_submission(self):
         signal = self._signal("AAPL")

@@ -355,11 +355,69 @@ class _IBGatewayApp(EWrapper, EClient):
         return number
 
     def _emit_tick(self, ticker_id: int):
-        payload = dict(self._ticker_payloads.get(ticker_id) or {})
-        if not payload:
+        current = self._ticker_payloads.get(ticker_id)
+        if not current:
             return
-        payload["_updated"] = int(time.time() * 1000)
+        current["_updated"] = int(time.time() * 1000)
+        payload = dict(current)
         self._emit_market_payload(payload)
+        ctx = self._pending_requests.get(int(ticker_id))
+        if ctx and ctx.kind == "market_data_snapshot" and self._payload_has_quote(payload):
+            ctx.items = [payload]
+
+    def _ticker_payload_for_update(self, ticker_id: int) -> Optional[dict]:
+        normalized = int(ticker_id)
+        payload = self._ticker_payloads.get(normalized)
+        if payload is not None:
+            return payload
+        meta = self._ticker_meta.get(normalized)
+        if not meta:
+            return None
+        payload = dict(meta)
+        self._ticker_payloads[normalized] = payload
+        return payload
+
+    @staticmethod
+    def _payload_has_quote(payload: dict | None) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        for key in ("31", "84", "86", "last_price", "last", "bid", "ask", "bid_price", "ask_price"):
+            if _safe_float(payload.get(key), 0.0) > 0:
+                return True
+        return False
+
+    @staticmethod
+    def _quote_from_market_payload(payload: dict | None) -> dict:
+        payload = dict(payload or {})
+
+        def positive_or_none(*keys: str) -> float | None:
+            for key in keys:
+                value = _safe_float(payload.get(key), 0.0)
+                if value > 0:
+                    return value
+            return None
+
+        def non_negative_or_none(*keys: str) -> float | None:
+            for key in keys:
+                if key not in payload:
+                    continue
+                value = _safe_float(payload.get(key), -1.0)
+                if value >= 0:
+                    return value
+            return None
+
+        return {
+            "symbol": str(payload.get("symbol") or "").upper(),
+            "conid": int(payload.get("conid") or payload.get("conidEx") or 0),
+            "last_price": positive_or_none("31", "last_price", "last"),
+            "bid": positive_or_none("84", "bid", "bid_price"),
+            "ask": positive_or_none("86", "ask", "ask_price"),
+            "last_size": non_negative_or_none("7059", "last_size", "lastSize", "size"),
+            "volume": non_negative_or_none("87", "volume", "vol"),
+            "bid_size": non_negative_or_none("bid_size"),
+            "ask_size": non_negative_or_none("ask_size"),
+            "updated_ms": int(payload.get("_updated") or 0),
+        }
 
     def _emit_market_payload(self, payload: dict):
         with self._listener_lock:
@@ -371,7 +429,9 @@ class _IBGatewayApp(EWrapper, EClient):
                 logger.exception("Market data listener failed")
 
     def tickPrice(self, tickerId: int, field: int, price: float, _attrib):  # noqa: N802
-        payload = self._ticker_payloads.setdefault(int(tickerId), dict(self._ticker_meta.get(int(tickerId)) or {}))
+        payload = self._ticker_payload_for_update(int(tickerId))
+        if payload is None:
+            return
         if field == TICK_LAST_PRICE:
             payload["31"] = float(price)
         elif field == TICK_BID_PRICE:
@@ -383,7 +443,9 @@ class _IBGatewayApp(EWrapper, EClient):
         self._emit_tick(int(tickerId))
 
     def tickSize(self, tickerId: int, field: int, size: int):  # noqa: N802
-        payload = self._ticker_payloads.setdefault(int(tickerId), dict(self._ticker_meta.get(int(tickerId)) or {}))
+        payload = self._ticker_payload_for_update(int(tickerId))
+        if payload is None:
+            return
         if field == TICK_LAST_SIZE:
             payload["7059"] = int(size)
         elif field == TICK_VOLUME:
@@ -396,7 +458,9 @@ class _IBGatewayApp(EWrapper, EClient):
 
     def tickGeneric(self, tickerId: int, field: int, value: float):  # noqa: N802
         if field == TICK_LAST_TIMESTAMP:
-            payload = self._ticker_payloads.setdefault(int(tickerId), dict(self._ticker_meta.get(int(tickerId)) or {}))
+            payload = self._ticker_payload_for_update(int(tickerId))
+            if payload is None:
+                return
             payload["_updated"] = int(float(value) * 1000)
             self._emit_tick(int(tickerId))
 
@@ -406,12 +470,24 @@ class _IBGatewayApp(EWrapper, EClient):
         parts = str(value or "").split(";")
         if len(parts) < 6:
             return
-        payload = self._ticker_payloads.setdefault(int(tickerId), dict(self._ticker_meta.get(int(tickerId)) or {}))
+        payload = self._ticker_payload_for_update(int(tickerId))
+        if payload is None:
+            return
         payload["31"] = _safe_float(parts[0], 0.0)
         payload["7059"] = _safe_float(parts[1], 0.0)
         payload["87"] = _safe_float(parts[3], 0.0)
         payload["_updated"] = _safe_int(parts[5], int(time.time() * 1000))
         self._emit_tick(int(tickerId))
+
+    def tickSnapshotEnd(self, reqId: int):  # noqa: N802
+        with self._state_lock:
+            self._last_message_at = time.time()
+        ctx = self._pending_requests.get(int(reqId))
+        if ctx and ctx.kind == "market_data_snapshot":
+            payload = dict(self._ticker_payloads.get(int(reqId)) or {})
+            if payload:
+                ctx.items = [payload]
+            ctx.event.set()
 
     def tickByTickAllLast(  # noqa: N802
         self,
@@ -971,6 +1047,112 @@ class _IBGatewayApp(EWrapper, EClient):
             [],
         )
         return self._await(req_id, ctx, timeout)
+
+    def request_market_data_snapshot(
+        self,
+        *,
+        conid: int,
+        symbol: str = "",
+        exchange: str = "SMART",
+        sec_type: str = "STK",
+        currency: str = "USD",
+        timeout: float = DEFAULT_CONNECT_TIMEOUT_SECONDS,
+        contract_details: Optional[dict] = None,
+    ) -> Dict[str, Any]:
+        try:
+            normalized_timeout = max(0.1, float(timeout or DEFAULT_CONNECT_TIMEOUT_SECONDS))
+            request_timeout = max(1, int(math.ceil(normalized_timeout)))
+            self._ensure_ready(request_timeout, "request_market_data_snapshot")
+
+            details = dict(contract_details or {})
+            normalized_conid = int(details.get("conid") or conid or 0)
+            normalized_symbol = str(details.get("symbol") or symbol or "").upper()
+            if normalized_conid <= 0 and not normalized_symbol:
+                return {"ok": False, "error": "missing_contract", "quote": {}, "payload": {}}
+
+            contract = Contract()
+            contract.conId = normalized_conid
+            contract.symbol = normalized_symbol
+            contract.secType = str(details.get("sec_type") or sec_type or "STK").upper()
+            contract.exchange = str(details.get("exchange") or details.get("primary_exchange") or exchange or "SMART")
+            contract.currency = str(details.get("currency") or currency or "USD").upper()
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": str(exc),
+                "source": "ibkr_market_data_snapshot",
+                "quote": {},
+                "payload": {},
+            }
+
+        req_id, ctx = self._next_request("market_data_snapshot")
+        meta = {
+            "tickerId": req_id,
+            "reqId": req_id,
+            "conid": int(normalized_conid),
+            "conidEx": int(normalized_conid),
+            "symbol": normalized_symbol,
+            "snapshot": True,
+            "broker_quote_snapshot": True,
+        }
+        self._ticker_meta[req_id] = meta
+        self._ticker_payloads[req_id] = dict(meta)
+        deadline = time.time() + normalized_timeout
+        first_quote_at = 0.0
+        try:
+            try:
+                self.reqMarketDataType(1)
+            except Exception:
+                logger.debug("reqMarketDataType(1) failed before snapshot conid=%s", normalized_conid, exc_info=True)
+            self.reqMktData(req_id, contract, "233", True, False, [])
+
+            while True:
+                now_ts = time.time()
+                remaining = deadline - now_ts
+                payload = dict(self._ticker_payloads.get(req_id) or {})
+                has_quote = self._payload_has_quote(payload)
+                if has_quote:
+                    if first_quote_at <= 0:
+                        first_quote_at = now_ts
+                    if ctx.event.is_set() or now_ts - first_quote_at >= 0.15 or remaining <= 0:
+                        break
+                elif ctx.event.is_set() or remaining <= 0:
+                    break
+
+                wait_for = min(0.05, max(0.0, remaining))
+                if wait_for > 0:
+                    ctx.event.wait(wait_for)
+
+            payload = dict(self._ticker_payloads.get(req_id) or {})
+            quote = self._quote_from_market_payload(payload)
+            if self._payload_has_quote(payload):
+                return {
+                    "ok": True,
+                    "source": "ibkr_market_data_snapshot",
+                    "quote": quote,
+                    "payload": payload,
+                    **quote,
+                }
+            error = str(ctx.error or "")
+            return {
+                "ok": False,
+                "error": error or ("market_data_snapshot_no_quote" if ctx.event.is_set() else "market_data_snapshot_timeout"),
+                "source": "ibkr_market_data_snapshot",
+                "quote": quote,
+                "payload": payload,
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": str(exc),
+                "source": "ibkr_market_data_snapshot",
+                "quote": {},
+                "payload": {},
+            }
+        finally:
+            self._pending_requests.pop(req_id, None)
+            self._ticker_meta.pop(req_id, None)
+            self._ticker_payloads.pop(req_id, None)
 
     def request_open_orders(
         self,
@@ -1764,6 +1946,43 @@ class BrokerAdapter:
             bar_size=bar_size,
             end_datetime=end_datetime,
             use_rth=use_rth,
+            timeout=timeout,
+            contract_details=contract,
+        )
+
+    def request_market_data_snapshot(
+        self,
+        *,
+        conid: int = 0,
+        symbol: str = "",
+        exchange: str = "SMART",
+        sec_type: str = "",
+        timeout: float = 3.0,
+    ) -> Dict[str, Any]:
+        try:
+            contract = self.resolve_contract(symbol=symbol, conid=conid, exchange=exchange, sec_type=sec_type)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": str(exc),
+                "source": "ibkr_market_data_snapshot",
+                "quote": {},
+                "payload": {},
+            }
+        if not contract:
+            return {
+                "ok": False,
+                "error": f"contract_not_found:{symbol or conid}",
+                "source": "ibkr_market_data_snapshot",
+                "quote": {},
+                "payload": {},
+            }
+        return self.client.request_market_data_snapshot(
+            conid=int(contract.get("conid") or conid or 0),
+            symbol=str(contract.get("symbol") or symbol or "").upper(),
+            exchange=str(contract.get("exchange") or exchange or "SMART"),
+            sec_type=str(contract.get("sec_type") or sec_type or "STK"),
+            currency=str(contract.get("currency") or "USD"),
             timeout=timeout,
             contract_details=contract,
         )

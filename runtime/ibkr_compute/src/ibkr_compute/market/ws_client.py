@@ -135,6 +135,48 @@ class IBKRWebSocketClient:
         except Exception:
             logger.exception("Failed to unsubscribe %s", normalized)
 
+    def request_market_data_snapshot(
+        self,
+        conid: int,
+        symbol: str = "",
+        exchange: str = "SMART",
+        timeout: float = 3.0,
+    ) -> dict:
+        try:
+            normalized = int(conid)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "invalid_conid", "quote": {}, "payload": {}}
+        requester = getattr(self.broker, "request_market_data_snapshot", None)
+        if not callable(requester):
+            return {
+                "ok": False,
+                "error": "broker_market_data_snapshot_unavailable",
+                "conid": normalized,
+                "symbol": str(symbol or "").upper(),
+                "quote": {},
+                "payload": {},
+            }
+        try:
+            return dict(
+                requester(
+                    conid=normalized,
+                    symbol=str(symbol or ""),
+                    exchange=str(exchange or "SMART"),
+                    timeout=timeout,
+                )
+                or {}
+            )
+        except Exception as exc:
+            logger.warning("Market data snapshot failed conid=%s symbol=%s: %s", normalized, symbol, exc)
+            return {
+                "ok": False,
+                "error": str(exc),
+                "conid": normalized,
+                "symbol": str(symbol or "").upper(),
+                "quote": {},
+                "payload": {},
+            }
+
     def subscribe_tick_by_tick(self, conid: int, tick_type: str = "Last"):
         try:
             normalized = int(conid)
