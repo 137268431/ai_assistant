@@ -768,6 +768,19 @@ def _is_same_day_tv_pre_alert_target(target: dict[str, Any] | None) -> bool:
     return bool(_text(extra.get("first_tv_event_id") or extra.get("last_tv_event_id")))
 
 
+def _target_extra_has_entry_activation(extra: dict[str, Any] | None) -> bool:
+    payload = _as_object(extra)
+    strategy_policy = payload.get("strategy_policy") if isinstance(payload.get("strategy_policy"), dict) else {}
+    setup_type = _lower(strategy_policy.get("setup_type"))
+    return bool(
+        _lower(payload.get("event_type")) == "entry"
+        or parse_boolean(payload.get("entry_backfilled_target"), False)
+        or _text(payload.get("entry_signal_id"))
+        or _lower(payload.get("target_admission_reason")) == "entry_signal_backfill"
+        or setup_type == "tradingview_entry_backfill"
+    )
+
+
 def _load_today_targets(pb: Any, *, date: str, environment: str, escape_filter: Callable[[Any], str]) -> list[dict[str, Any]]:
     filter_expr = f'date = "{_escape(escape_filter, date)}" && environment = "{_escape(escape_filter, environment)}"'
     try:
@@ -843,22 +856,12 @@ def _rerank_targets(
         if _lower(extra.get("source")) == TRADINGVIEW_SOURCE and _text(row.get("status")).lower() in {"candidate", "active"}:
             tv_rows.append(row)
     tv_rows.sort(key=_target_sort_key)
-    max_active = _config_int(config_value, "tv_max_active_targets", 10, environment)
-    max_same_dir = _config_int(config_value, "tv_max_same_direction_targets", 7, environment)
-    direction_counts: dict[str, int] = {}
-    active_count = 0
     for index, row in enumerate(tv_rows, start=1):
-        symbol = _text(row.get("symbol")).upper()
-        direction = _lower(row.get("direction_bias") or _as_object(row.get("extra")).get("direction_bias")) or "neutral"
-        eligible_by_total = active_count < max_active if max_active > 0 else False
-        eligible_by_dir = direction == "neutral" or max_same_dir <= 0 or direction_counts.get(direction, 0) < max_same_dir
-        next_status = "active" if eligible_by_total and eligible_by_dir else "candidate"
-        reason = "tv_activity_rank_active" if next_status == "active" else "tv_activity_rank_overflow"
-        if next_status == "active":
-            active_count += 1
-            if direction != "neutral":
-                direction_counts[direction] = direction_counts.get(direction, 0) + 1
-        extra = {**_as_object(row.get("extra")), "activity_rank": index, "rank_reason": reason}
+        row_extra = _as_object(row.get("extra"))
+        entry_activated = _target_extra_has_entry_activation(row_extra)
+        next_status = "active" if _text(row.get("status")).lower() == "active" and entry_activated else "candidate"
+        reason = "tv_entry_active" if next_status == "active" else "tv_candidate_rank"
+        extra = {**row_extra, "activity_rank": index, "rank_reason": reason}
         if _text(row.get("status")) != next_status or _as_object(row.get("extra")).get("activity_rank") != index:
             try:
                 pb.update_record("ibkr_targets", str(row.get("id")), {"status": next_status, "extra": extra})
@@ -882,6 +885,8 @@ def _upsert_target(
     date = _market_date(payload)
     existing = _load_target(pb, symbol=symbol, date=date, environment=environment, escape_filter=escape_filter)
     existing_extra = _as_object((existing or {}).get("extra"))
+    existing_status = _text((existing or {}).get("status")).lower()
+    keep_active = existing_status == "active" and _target_extra_has_entry_activation(existing_extra)
     extra = {
         **existing_extra,
         **_base_extra(payload, event_id, event_type),
@@ -902,7 +907,7 @@ def _upsert_target(
         "direction_bias": direction_bias,
         "score": _float(payload.get("activity_score"), 0.0),
         "scan_reason": _text(payload.get("reason") or payload.get("setup") or "tv_pre_alert"),
-        "status": "candidate",
+        "status": "active" if keep_active else "candidate",
         "us_time": _text(payload.get("us_time")),
         "cn_time": _text(payload.get("cn_time")),
         "bar_time_ms": _int(payload.get("bar_time_ms"), 0),
@@ -934,7 +939,9 @@ def _ensure_entry_backfill_target(
     existing = dict(existing_target or {})
     existing_status = _text(existing.get("status")).lower()
     existing_id = _text(existing.get("id"))
-    if existing_id and existing_status == "active":
+    existing_extra = _as_object(existing.get("extra"))
+    existing_entry_active = existing_status == "active" and _target_extra_has_entry_activation(existing_extra)
+    if existing_id and existing_entry_active:
         return {
             "ok": True,
             "action": "unchanged",
@@ -944,7 +951,7 @@ def _ensure_entry_backfill_target(
             "previous_status": existing_status,
             "target": existing,
         }
-    if existing_id and existing_status not in {"", "candidate"}:
+    if existing_id and existing_status not in {"", "candidate", "active"}:
         return {
             "ok": True,
             "action": "skipped",
@@ -955,9 +962,13 @@ def _ensure_entry_backfill_target(
             "target": existing,
         }
 
-    existing_extra = _as_object(existing.get("extra"))
     previous_source = _text(existing_extra.get("source"))
-    backfill_reason = "missing_pre_alert_or_candidate" if not existing_id else "candidate_entry_upgrade"
+    if not existing_id:
+        backfill_reason = "missing_pre_alert_or_candidate"
+    elif existing_status == "active":
+        backfill_reason = "active_entry_upgrade"
+    else:
+        backfill_reason = "candidate_entry_upgrade"
     activity_score = _float(payload.get("activity_score"), _float(existing.get("score"), 0.0))
     direction_bias = direction if direction in {"long", "short"} else _direction_bias(payload)
     allowed_sides = [direction_bias] if direction_bias in {"long", "short"} else []
@@ -1051,6 +1062,7 @@ def _route_entry(
     update_interactive: Callable[..., Any] | None,
     signal_chat_id_fn: Callable[[str], str] | None,
     console_base_url: str,
+    strategy_capacity_getter: Callable[[str], dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], int]:
     symbol = _symbol(payload)
     direction = _lower(payload.get("direction") or payload.get("position_side"))
@@ -1120,9 +1132,11 @@ def _route_entry(
                     config_value=config_value,
                     escape_filter=escape_filter,
                 )
-            if _text((target or {}).get("status")).lower() != "active":
+                admission_reason = "self_activated_entry"
+            else:
                 raise TvPrimaryError("target_not_active_by_activity_rank", 200)
-        admission_reason = "legacy_active_target" if requires_target else "legacy_target_check_disabled"
+        if not admission_reason:
+            admission_reason = "legacy_active_target" if requires_target else "legacy_target_check_disabled"
 
     target_extra = _as_object((target or {}).get("extra"))
     if window == "quality":
@@ -1201,6 +1215,7 @@ def _route_entry(
         update_interactive=update_interactive,
         signal_chat_id_fn=signal_chat_id_fn,
         console_base_url=console_base_url,
+        strategy_capacity_getter=strategy_capacity_getter,
     )
 
 
@@ -1397,6 +1412,7 @@ def _route_persisted_tv_event(
     update_interactive: Callable[..., Any] | None,
     signal_chat_id_fn: Callable[[str], str] | None,
     console_base_url: str,
+    strategy_capacity_getter: Callable[[str], dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], int]:
     try:
         if event_type == "heartbeat":
@@ -1435,6 +1451,7 @@ def _route_persisted_tv_event(
                 update_interactive=update_interactive,
                 signal_chat_id_fn=signal_chat_id_fn,
                 console_base_url=console_base_url,
+                strategy_capacity_getter=strategy_capacity_getter,
             )
         else:
             route_payload, status_code = _route_reverse(
@@ -1525,6 +1542,7 @@ def process_tv_primary_event(
     update_interactive: Callable[..., Any] | None = None,
     signal_chat_id_fn: Callable[[str], str] | None = None,
     console_base_url: str = "",
+    strategy_capacity_getter: Callable[[str], dict[str, Any]] | None = None,
     async_route: bool = False,
     spool_on_persist_failure: bool = False,
     route_executor: Callable[[Callable[[], None]], Any] | None = None,
@@ -1566,6 +1584,7 @@ def process_tv_primary_event(
                     update_interactive=update_interactive,
                     signal_chat_id_fn=signal_chat_id_fn,
                     console_base_url=console_base_url,
+                    strategy_capacity_getter=strategy_capacity_getter,
                 )
 
             _dispatch_route_async(route_existing, route_executor=route_executor)
@@ -1646,6 +1665,7 @@ def process_tv_primary_event(
                 update_interactive=update_interactive,
                 signal_chat_id_fn=signal_chat_id_fn,
                 console_base_url=console_base_url,
+                strategy_capacity_getter=strategy_capacity_getter,
             )
 
         dispatched = _dispatch_route_async(route_current, route_executor=route_executor)
@@ -1677,6 +1697,7 @@ def process_tv_primary_event(
         update_interactive=update_interactive,
         signal_chat_id_fn=signal_chat_id_fn,
         console_base_url=console_base_url,
+        strategy_capacity_getter=strategy_capacity_getter,
     )
 
 

@@ -6,6 +6,7 @@ from flask import Response, jsonify, request
 
 from ibkr_api.app_core.route_cache import RouteSWRCache, cache_seconds, canonical_cache_key, request_cache_bypass
 from ibkr_api.modes import request_broker_mode, request_market_data_mode
+from ibkr_api.runtime.strategy_capacity import normalize_strategy_capacity_snapshot, unavailable_strategy_capacity
 
 
 _SIGNAL_ROUTE_CACHE = RouteSWRCache("signals")
@@ -47,7 +48,17 @@ def register_signal_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
     config_value = deps["config_value"]
     notify_order_status = deps.get("notify_order_status")
     notify_order_callback_ledger = deps.get("notify_order_callback_ledger")
+    fetch_runtime_status = deps.get("fetch_runtime_status")
     exports: dict[str, Any] = {}
+
+    def strategy_capacity_snapshot(environment: str) -> dict[str, Any]:
+        if not callable(fetch_runtime_status):
+            return unavailable_strategy_capacity("runtime_status_fetcher_unavailable")
+        result = fetch_runtime_status(environment)
+        payload = as_dict((result or {}).get("payload") if isinstance(result, dict) else {})
+        if not payload:
+            return unavailable_strategy_capacity((result or {}).get("error") if isinstance(result, dict) else "runtime_status_unavailable")
+        return normalize_strategy_capacity_snapshot(payload)
 
     @app.route("/api/custom/ibkr/signal", methods=["POST"])
     def custom_ibkr_signal() -> Response:
@@ -61,6 +72,7 @@ def register_signal_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             update_interactive=feishu_update_interactive,
             signal_chat_id_fn=signal_chat_id,
             console_base_url=console_base_url(),
+            strategy_capacity_getter=strategy_capacity_snapshot,
         )
         if status_code < 400:
             _clear_signal_sensitive_read_caches()
@@ -80,6 +92,7 @@ def register_signal_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             update_interactive=feishu_update_interactive,
             signal_chat_id_fn=signal_chat_id,
             console_base_url=console_base_url(),
+            strategy_capacity_getter=strategy_capacity_snapshot,
         )
         if status_code < 400:
             _clear_signal_sensitive_read_caches()

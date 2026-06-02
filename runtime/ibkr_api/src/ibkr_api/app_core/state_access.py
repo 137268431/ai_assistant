@@ -64,7 +64,16 @@ def _row_is_effective_daily_scan_active(row: dict[str, Any] | None) -> bool:
     source = str(extra.get("source") or "").strip().lower()
     if source == "daily_scan":
         return _truthy(extra.get("active_gate_passed"))
-    return source in {"tradingview", "tv", "tv_webhook", "webhook_tv"}
+    if source in {"tradingview", "tv", "tv_webhook", "webhook_tv"}:
+        strategy_policy = extra.get("strategy_policy") if isinstance(extra.get("strategy_policy"), dict) else {}
+        return bool(
+            str(extra.get("event_type") or "").strip().lower() == "entry"
+            or _truthy(extra.get("entry_backfilled_target"))
+            or str(extra.get("entry_signal_id") or "").strip()
+            or str(extra.get("target_admission_reason") or "").strip().lower() == "entry_signal_backfill"
+            or str(strategy_policy.get("setup_type") or "").strip().lower() == "tradingview_entry_backfill"
+        )
+    return False
 
 
 def count_active_today_targets(pb, environment: str, market_date: str, *, normalize_environment, escape_filter_string) -> int:

@@ -112,6 +112,7 @@ from ibkr_api.runtime.status_support import (
     fetch_runtime_status as _fetch_runtime_status_support,
     merge_service_topology as _merge_service_topology_support,
 )
+from ibkr_api.runtime.strategy_capacity import normalize_strategy_capacity_snapshot, unavailable_strategy_capacity
 from ibkr_api.runtime.two_factor import normalize_two_factor_state_with_runtime as _normalize_two_factor_state_with_runtime_support
 from ibkr_api.startup.progress import (
     default_startup_steps as _default_startup_steps,
@@ -843,6 +844,14 @@ def _fetch_runtime_status(environment: str) -> dict[str, Any]:
     )
 
 
+def _strategy_capacity_snapshot(environment: str) -> dict[str, Any]:
+    result = _fetch_runtime_status(environment)
+    payload = _as_dict(result.get("payload") if isinstance(result, dict) else {})
+    if not payload:
+        return unavailable_strategy_capacity(result.get("error") if isinstance(result, dict) else "runtime_status_unavailable")
+    return normalize_strategy_capacity_snapshot(payload)
+
+
 def _fetch_runtime_health(environment: str) -> dict[str, Any]:
     return _fetch_runtime_health_support(
         environment,
@@ -998,6 +1007,7 @@ def _process_tv_primary_event(payload: dict, *, api_received_at_ms: int | None =
         update_interactive=_feishu_update_interactive,
         signal_chat_id_fn=_signal_chat_id,
         console_base_url=_console_base_url(),
+        strategy_capacity_getter=_strategy_capacity_snapshot,
         async_route=async_route,
         spool_on_persist_failure=async_route,
     )

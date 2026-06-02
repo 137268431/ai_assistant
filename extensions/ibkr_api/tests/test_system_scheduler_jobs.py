@@ -1660,7 +1660,7 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertEqual(events[0][4]["error"], "scanner exploded")
         self.assertEqual(events[0][4]["elapsed_s"], 3.456)
 
-    def test_intraday_window_admission_adds_valid_window_target_and_reconciles(self):
+    def test_intraday_window_admission_adds_valid_window_candidate_and_reconciles_without_signals(self):
         pb = _IntradayAdmissionPB()
         pb.records["watchlist"] = [
             {"id": "wl-1", "symbol": "MSFT", "environment": "live", "symbol_role": "trade", "exchange": "NASDAQ"}
@@ -1693,11 +1693,14 @@ class SystemSchedulerJobsTest(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["admitted_symbols"], ["MSFT"])
         target = next(row for row in pb.records["ibkr_targets"] if row["symbol"] == "MSFT")
-        self.assertEqual(target["status"], "active")
+        self.assertEqual(target["status"], "candidate")
         self.assertEqual(target["direction_bias"], "long")
         self.assertEqual(target["extra"]["intraday_window_admission"]["window_status"], "upper_active")
+        self.assertFalse(target["extra"]["execution_eligible"])
+        self.assertEqual(target["extra"]["target_layer"], "observe")
         reconcile_calls = [call for call in request_calls if call["path"] == "/ibkr/universe/reconcile"]
         self.assertEqual(reconcile_calls[0]["json_body"]["prime_symbols"], ["MSFT"])
+        self.assertFalse(reconcile_calls[0]["json_body"]["emit_signals"])
         self.assertTrue(any(collection == "system_events" for collection, _ in pb.created))
 
     def test_intraday_window_admission_skips_tv_primary_slim(self):

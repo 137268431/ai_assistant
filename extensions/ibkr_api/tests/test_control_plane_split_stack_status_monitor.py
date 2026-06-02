@@ -155,6 +155,30 @@ class ControlPlaneSplitStackStatusMonitorTest(unittest.TestCase):
         self.assertEqual(second["_cache"]["state"], "hit")
         self.assertEqual(second["items"][0]["value"], "cached")
 
+    def test_strategy_capacity_route_normalizes_runtime_status(self):
+        runtime_payload = {
+            "strategy_capacity": {
+                "available": True,
+                "strategy_capacity_used": 7,
+                "max_strategy_open_positions": 20,
+                "strategy_open_positions": 5,
+                "open_strategy_entry_orders": 2,
+                "strategy_capacity_remaining": 13,
+            }
+        }
+
+        with mock.patch.object(api_app_mod, "_fetch_runtime_status", return_value={"ok": True, "payload": runtime_payload, "error": ""}):
+            with mock.patch.object(api_app_mod.request, "args", {"broker_mode": "paper", "data_environment": "live"}):
+                payload = api_app_mod.custom_ibkr_strategy_capacity()
+
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["available"])
+        self.assertEqual(payload["broker_mode"], "paper")
+        self.assertEqual(payload["data_environment"], "live")
+        self.assertEqual(payload["strategy_capacity"]["strategy_capacity_used"], 7)
+        self.assertEqual(payload["strategy_capacity"]["max_strategy_open_positions"], 20)
+        self.assertEqual(payload["strategy_capacity"]["strategy_capacity_remaining"], 13)
+
     def test_api_status_reports_native_routes(self):
         scheduler_payload = {
             "ok": True,
@@ -202,6 +226,7 @@ class ControlPlaneSplitStackStatusMonitorTest(unittest.TestCase):
         self.assertIn("ibkr/signals/pending", payload["compatibility"]["native_custom_routes"])
         self.assertIn("ibkr/startup/progress", payload["compatibility"]["native_custom_routes"])
         self.assertIn("ibkr/startup/status", payload["compatibility"]["native_custom_routes"])
+        self.assertIn("ibkr/strategy-capacity", payload["compatibility"]["native_custom_routes"])
         self.assertIn("ibkr/statusz", payload["compatibility"]["native_custom_routes"])
         self.assertIn("ibkr/reverse/calculate", payload["compatibility"]["native_custom_routes"])
         self.assertIn("order/cancel", payload["compatibility"]["native_webhook_routes"])

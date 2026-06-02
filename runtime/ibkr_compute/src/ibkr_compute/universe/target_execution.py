@@ -7,6 +7,8 @@ from typing import Any
 EXECUTION_TARGET_LAYER = "execution"
 OBSERVE_TARGET_LAYER = "observe"
 WATCH_ONLY_SETUP_TYPES = {"watch_only"}
+TRADINGVIEW_TARGET_SOURCES = {"tradingview", "tv", "tv_webhook", "webhook_tv"}
+ENTRY_ACTIVATION_SETUP_TYPES = {"tradingview_entry_backfill"}
 
 
 def _to_text(value: Any) -> str:
@@ -67,6 +69,26 @@ def _source_uses_active_gate(extra: dict[str, Any]) -> bool:
     return _to_text(extra.get("source")).lower() in {"daily_scan", "intraday_window_admission"}
 
 
+def target_extra_has_entry_activation(extra: dict[str, Any] | None) -> bool:
+    payload = dict(extra or {})
+    strategy_policy = payload.get("strategy_policy") if isinstance(payload.get("strategy_policy"), dict) else {}
+    setup_type = _to_text(strategy_policy.get("setup_type")).lower()
+    admission_reason = _to_text(payload.get("target_admission_reason")).lower()
+    event_type = _to_text(payload.get("event_type")).lower()
+    return bool(
+        event_type == "entry"
+        or _truthy(payload.get("entry_backfilled_target"))
+        or _to_text(payload.get("entry_signal_id"))
+        or admission_reason == "entry_signal_backfill"
+        or setup_type in ENTRY_ACTIVATION_SETUP_TYPES
+    )
+
+
+def _source_requires_entry_activation(extra: dict[str, Any]) -> bool:
+    source = _to_text(extra.get("source")).lower()
+    return source in TRADINGVIEW_TARGET_SOURCES or source == "intraday_window_admission"
+
+
 def _data_quality_ready(extra: dict[str, Any], default: bool = True) -> bool:
     data_quality = extra.get("data_quality")
     if not isinstance(data_quality, dict):
@@ -113,7 +135,7 @@ def build_target_execution_metadata(
             or _truthy(payload.get("context_active"))
             or _truthy(payload.get("context_gate_passed"))
         )
-        if not _source_uses_active_gate(payload) and not _source_is_manual(payload):
+        if _source_is_manual(payload) or not _source_uses_active_gate(payload):
             active_gate = True
     else:
         active_gate = _truthy(active_gate_passed)
@@ -127,6 +149,8 @@ def build_target_execution_metadata(
     blockers: list[str] = []
     if target_status != "active":
         blockers.append("target_not_active")
+    if target_status == "active" and _source_requires_entry_activation(payload) and not target_extra_has_entry_activation(payload):
+        blockers.append("entry_signal_missing")
     if not active_gate:
         blockers.append("active_gate_not_passed")
     if not data_ready:
@@ -197,6 +221,7 @@ __all__ = [
     "OBSERVE_TARGET_LAYER",
     "apply_target_execution_metadata",
     "build_target_execution_metadata",
+    "target_extra_has_entry_activation",
     "normalize_execution_sides",
     "parse_target_extra",
     "target_row_execution_eligible",

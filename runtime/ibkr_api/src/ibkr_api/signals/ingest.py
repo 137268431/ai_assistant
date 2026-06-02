@@ -36,6 +36,29 @@ NormalizeEnvironment = Callable[[Any, str], str]
 EscapeFilterString = Callable[[Any], str]
 ConfigValue = Callable[[str, str, str], str]
 SignalChatId = Callable[[str], str]
+StrategyCapacityGetter = Callable[[str], dict[str, Any]]
+
+
+def _attach_strategy_capacity(
+    record: dict[str, Any],
+    strategy_capacity_getter: StrategyCapacityGetter | None,
+    broker_mode: str,
+) -> dict[str, Any]:
+    if not callable(strategy_capacity_getter):
+        return record
+    try:
+        capacity = strategy_capacity_getter(broker_mode)
+    except Exception as exc:
+        capacity = {"available": False, "error": str(exc), "source": "runtime_status"}
+    if not isinstance(capacity, dict):
+        return record
+    return {
+        **record,
+        "extra": {
+            **get_signal_extra(record),
+            "strategy_capacity": capacity,
+        },
+    }
 
 
 def _sync_signal_notification_after_upsert(
@@ -48,10 +71,12 @@ def _sync_signal_notification_after_upsert(
     update_interactive: UpdateInteractive | None,
     signal_chat_id: str,
     console_base_url: str,
+    strategy_capacity_getter: StrategyCapacityGetter | None = None,
 ) -> dict[str, Any]:
     current_status = effective_broker_signal_status(record, broker_mode, data_environment)
     if current_status not in {"awaiting_confirm", "pending", "rejected"}:
         return {}
+    record = _attach_strategy_capacity(record, strategy_capacity_getter, broker_mode)
     extra = get_signal_extra(record)
     message_id = to_text(extra.get("feishu_signal_message_id"))
     if current_status == "rejected":
@@ -190,7 +215,9 @@ def _sync_refreshed_signal_card(
     update_interactive: UpdateInteractive | None,
     signal_chat_id: str,
     console_base_url: str,
+    strategy_capacity_getter: StrategyCapacityGetter | None = None,
 ) -> dict[str, Any]:
+    record = _attach_strategy_capacity(record, strategy_capacity_getter, broker_mode)
     extra = get_signal_extra(record)
     status = effective_broker_signal_status(record, broker_mode, data_environment)
     requires_reconfirm = status == "awaiting_confirm" and bool(extra.get("followup_requires_reconfirm"))
@@ -219,6 +246,7 @@ def _handle_active_symbol_policy(
     update_interactive: UpdateInteractive | None,
     signal_chat_id: str,
     console_base_url: str,
+    strategy_capacity_getter: StrategyCapacityGetter | None = None,
 ) -> tuple[dict[str, Any] | None, int | None, dict[str, Any]]:
     active = find_active_symbol_signal(
         pb,
@@ -248,6 +276,7 @@ def _handle_active_symbol_policy(
                 update_interactive=update_interactive,
                 signal_chat_id=signal_chat_id,
                 console_base_url=console_base_url,
+                strategy_capacity_getter=strategy_capacity_getter,
             )
             extra_patch = notify_result.get("extra_patch") if isinstance(notify_result, dict) else None
             if isinstance(extra_patch, dict) and extra_patch and to_text(saved_row.get("id")):
@@ -285,6 +314,7 @@ def _handle_active_symbol_policy(
                     update_interactive=update_interactive,
                     signal_chat_id=signal_chat_id,
                     console_base_url=console_base_url,
+                    strategy_capacity_getter=strategy_capacity_getter,
                 )
                 extra_patch = notify_result.get("extra_patch") if isinstance(notify_result, dict) else None
                 if isinstance(extra_patch, dict) and extra_patch and to_text(saved_row.get("id")):
@@ -315,6 +345,7 @@ def _handle_active_symbol_policy(
                     update_interactive=update_interactive,
                     signal_chat_id=signal_chat_id,
                     console_base_url=console_base_url,
+                    strategy_capacity_getter=strategy_capacity_getter,
                 )
                 extra_patch = notify_result.get("extra_patch") if isinstance(notify_result, dict) else None
                 if isinstance(extra_patch, dict) and extra_patch and to_text(saved_row.get("id")):
@@ -405,6 +436,7 @@ def build_signal_ingest_response(
     update_interactive: UpdateInteractive | None = None,
     signal_chat_id_fn: SignalChatId | None = None,
     console_base_url: str = "",
+    strategy_capacity_getter: StrategyCapacityGetter | None = None,
 ) -> tuple[dict[str, Any], int]:
     broker_mode = _request_signal_broker_mode(payload)
     environment = request_market_data_mode(payload)
@@ -459,6 +491,7 @@ def build_signal_ingest_response(
                 update_interactive=update_interactive,
                 signal_chat_id=_signal_chat_id(signal_chat_id_fn, broker_mode),
                 console_base_url=console_base_url,
+                strategy_capacity_getter=strategy_capacity_getter,
             )
             if policy_response is not None and policy_status is not None:
                 return policy_response, policy_status
@@ -481,6 +514,7 @@ def build_signal_ingest_response(
                 update_interactive=update_interactive,
                 signal_chat_id=_signal_chat_id(signal_chat_id_fn, broker_mode),
                 console_base_url=console_base_url,
+                strategy_capacity_getter=strategy_capacity_getter,
             )
             extra_patch = notify_result.get("extra_patch") if isinstance(notify_result, dict) else None
             if isinstance(extra_patch, dict) and extra_patch and to_text(saved_row.get("id")):
@@ -514,6 +548,7 @@ def build_signals_ingest_response(
     update_interactive: UpdateInteractive | None = None,
     signal_chat_id_fn: SignalChatId | None = None,
     console_base_url: str = "",
+    strategy_capacity_getter: StrategyCapacityGetter | None = None,
 ) -> tuple[dict[str, Any], int]:
     request_payload = payload or {}
     items = request_payload.get("items") if isinstance(request_payload.get("items"), list) else []
@@ -577,6 +612,7 @@ def build_signals_ingest_response(
                     update_interactive=update_interactive,
                     signal_chat_id=_signal_chat_id(signal_chat_id_fn, broker_mode),
                     console_base_url=console_base_url,
+                    strategy_capacity_getter=strategy_capacity_getter,
                 )
                 if policy_response is not None:
                     action_name = to_text(policy_response.get("action"))
@@ -611,6 +647,7 @@ def build_signals_ingest_response(
                     update_interactive=update_interactive,
                     signal_chat_id=_signal_chat_id(signal_chat_id_fn, broker_mode),
                     console_base_url=console_base_url,
+                    strategy_capacity_getter=strategy_capacity_getter,
                 )
                 extra_patch = notify_result.get("extra_patch") if isinstance(notify_result, dict) else None
                 if isinstance(extra_patch, dict) and extra_patch and to_text(saved_row.get("id")):

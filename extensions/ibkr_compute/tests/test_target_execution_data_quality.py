@@ -11,11 +11,30 @@ from ibkr_compute.universe.target_execution import build_target_execution_metada
 
 
 class TargetExecutionDataQualityTest(unittest.TestCase):
-    def test_tradingview_active_target_is_execution_eligible_source(self):
+    def test_tradingview_pre_alert_active_target_requires_entry_activation(self):
         row = {
             "status": "active",
             "direction_bias": "short",
             "extra": {"source": "tradingview", "activity_rank": 1},
+        }
+        payload = build_target_execution_metadata(row["extra"], direction_bias=row["direction_bias"], status=row["status"])
+
+        self.assertFalse(_target_row_is_tradingview_active(row))
+        self.assertFalse(payload["execution_eligible"])
+        self.assertEqual("observe", payload["target_layer"])
+        self.assertIn("entry_signal_missing", payload["execution_blockers"])
+
+    def test_tradingview_entry_backfilled_target_is_execution_eligible_source(self):
+        row = {
+            "status": "active",
+            "direction_bias": "short",
+            "extra": {
+                "source": "tradingview",
+                "activity_rank": 1,
+                "entry_backfilled_target": True,
+                "entry_signal_id": "sig-tv-entry",
+                "strategy_policy": {"setup_type": "tradingview_entry_backfill", "allowed_sides": ["short"]},
+            },
         }
         payload = build_target_execution_metadata(row["extra"], direction_bias=row["direction_bias"], status=row["status"])
 

@@ -202,6 +202,36 @@ class OrderTrackerIdentityTest(unittest.TestCase):
         self.assertEqual(192.93, upsert["limit_price"])
         self.assertEqual(192.93, upsert["sl_price"])
 
+    def test_sync_filled_order_uses_broker_execution_time(self):
+        pb_client = FakePBClient()
+        tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="paper")
+
+        tracker._sync_to_pb(
+            {
+                "orderId": "95",
+                "ticker": "ZTS",
+                "side": "SELL",
+                "orderType": "LMT",
+                "totalSize": 64,
+                "filledQuantity": 64,
+                "avgPrice": 77.21,
+                "price": 77.21,
+                "status": "Filled",
+                "cOID": "entry_ZTS_short_20260601_111046_harvest",
+                "lastExecutionTime": "20260601  11:11:02",
+            }
+        )
+
+        self.assertEqual(1, len(pb_client.upserts))
+        upsert = pb_client.upserts[0]
+        self.assertEqual("Filled", upsert["status"])
+        self.assertEqual("2026-06-01 11:11:02", upsert["us_time"])
+        self.assertEqual("2026-06-01 23:11:02", upsert["cn_time"])
+        self.assertEqual("2026-06-01 11:11:02", upsert["fill_time"])
+        self.assertEqual("2026-06-01 11:11:02", upsert["fill_us_time"])
+        self.assertEqual("2026-06-01 23:11:02", upsert["fill_cn_time"])
+        self.assertEqual("20260601  11:11:02", upsert["extra"]["last_execution_time"])
+
     def test_sync_exit_order_keeps_position_side_from_chain_identity(self):
         pb_client = FakePBClient()
         tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="live")

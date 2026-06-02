@@ -143,6 +143,7 @@ class Config:
         "ibkr_target_filter_on": "false",
         "ibkr_target_subscription_limit": "80",
         "ibkr_total_subscription_limit": "80",
+        "entry_pre_submit_temp_subscription_limit": "8",
         "ibkr_target_refresh_sec": "60",
         "ibkr_realtime_quote_stale_resubscribe_sec": "600",
         "ibkr_realtime_quote_resubscribe_cooldown_sec": "300",

@@ -130,6 +130,62 @@ class LifecycleFlowApiTest(unittest.TestCase):
         actual_fill_events = [event for event in payload["events"] if event.get("fill_source") == "actual_ibkr"]
         self.assertEqual([], actual_fill_events)
 
+    def test_order_fill_event_uses_broker_last_execution_time(self):
+        payload, status_code = self.build(
+            {
+                "ibkr_signals": [
+                    {"symbol": "AAPL", "signal_id": "sig-fill-time", "status": "submitted", "entry": 100, "shares": 10, "bar_time_ms": 1780326480000}
+                ],
+                "orders": [
+                    {
+                        "symbol": "AAPL",
+                        "signal_id": "sig-fill-time",
+                        "trade_group_id": "tg-fill-time",
+                        "order_id": "95",
+                        "role": "entry",
+                        "status": "Filled",
+                        "quantity": 10,
+                        "filled_qty": 10,
+                        "fill_price": 100.25,
+                        "bar_time_ms": 1780374293000,
+                        "extra": {"last_execution_time": "20260601  11:11:02"},
+                    }
+                ],
+            },
+            {"signal_id": "sig-fill-time", "trade_group_id": "tg-fill-time"},
+        )
+
+        self.assertEqual(status_code, 200)
+        entry_filled = [event for event in payload["events"] if event["event_type"] == "entry_filled"]
+        self.assertEqual(1, len(entry_filled))
+        self.assertEqual("2026-06-01 11:11:02", entry_filled[0]["us_time"])
+        self.assertNotEqual("2026-06-02 00:24:53", entry_filled[0]["us_time"])
+
+    def test_closed_signal_status_uses_closed_at_not_sync_updated_time(self):
+        payload, status_code = self.build(
+            {
+                "ibkr_signals": [
+                    {
+                        "symbol": "AAPL",
+                        "signal_id": "sig-closed-time",
+                        "status": "closed",
+                        "entry": 100,
+                        "shares": 10,
+                        "bar_time_ms": 1780326480000,
+                        "updated": "2026-06-02 04:24:53.481Z",
+                        "extra": {"closed_at": "2026-06-01T11:38:04.424136-04:00", "status_reason": "closed_by_stop_loss"},
+                    }
+                ],
+            },
+            {"signal_id": "sig-closed-time"},
+        )
+
+        self.assertEqual(status_code, 200)
+        status_events = [event for event in payload["events"] if event["source"] == "ibkr_signals.status"]
+        self.assertEqual(1, len(status_events))
+        self.assertEqual("2026-06-01 11:38:04", status_events[0]["us_time"])
+        self.assertNotEqual("2026-06-02 00:24:53", status_events[0]["us_time"])
+
     def test_signal_expired_uses_expired_at_instead_of_signal_bar_time(self):
         signal_bar_ms = 1778852700000
         expired_at = "2026-05-15T14:15:27Z"

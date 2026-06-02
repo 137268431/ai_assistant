@@ -560,6 +560,13 @@ class ReverseSignalHandler:
                 },
             }
             updater("ibkr_signals", str(record.get("id")), patch)
+            self._demote_origin_target_after_close(
+                record,
+                origin_signal_id=origin_signal_id,
+                environment=environment,
+                reason=status_reason,
+                detail=detail,
+            )
             detail["origin_signal_status_patch"] = {
                 "signal_id": origin_signal_id,
                 "status": "closed",
@@ -567,6 +574,33 @@ class ReverseSignalHandler:
             }
         except Exception as exc:
             detail["origin_signal_status_patch_error"] = str(exc)
+
+    def _demote_origin_target_after_close(
+        self,
+        record: dict,
+        *,
+        origin_signal_id: str,
+        environment: str,
+        reason: str,
+        detail: Dict[str, Any],
+    ) -> None:
+        try:
+            from ibkr_compute.universe.target_lifecycle import demote_entry_activated_targets_after_close
+
+            symbol = str(record.get("symbol") or "").strip().upper()
+            result = demote_entry_activated_targets_after_close(
+                self.pb_client,
+                symbol=symbol,
+                environment=str(record.get("environment") or environment or self.environment),
+                signal_id=origin_signal_id,
+                dates=[record.get("date"), datetime.now(ET).strftime("%Y-%m-%d")],
+                reason=reason,
+                now_iso=self._now_iso(),
+                logger=logger,
+            )
+            detail["origin_target_deactivation"] = result
+        except Exception as exc:
+            detail["origin_target_deactivation_error"] = str(exc)
 
     def _mark_origin_signal_resolved(self, signal: dict, detail: Dict[str, Any]) -> None:
         origin_signal_id = str(
@@ -608,6 +642,13 @@ class ReverseSignalHandler:
                 },
             }
             updater("ibkr_signals", str(record.get("id")), patch)
+            self._demote_origin_target_after_close(
+                record,
+                origin_signal_id=origin_signal_id,
+                environment=environment,
+                reason=str(patch.get("note") or "closed_by_reverse_signal"),
+                detail=detail,
+            )
             detail["origin_signal_status_patch"] = {
                 "signal_id": origin_signal_id,
                 "status": "closed",

@@ -9,6 +9,7 @@ from typing import Any
 from flask import Response, jsonify, request
 
 from ibkr_api.modes import request_broker_mode, request_market_data_mode
+from ibkr_api.runtime.strategy_capacity import normalize_strategy_capacity_snapshot, unavailable_strategy_capacity
 from ibkr_api.system.service_state import canonicalize_topology
 
 
@@ -163,6 +164,31 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
             }
         )
         return fallback
+
+    @app.route("/api/custom/ibkr/strategy-capacity", methods=["GET"])
+    def custom_ibkr_strategy_capacity() -> Response:
+        mode_payload = requested_mode_payload()
+        environment = request_broker_mode(mode_payload)
+        data_environment = request_market_data_mode(mode_payload)
+        runtime_result = fetch_runtime_status(environment)
+        runtime_payload = as_dict(runtime_result.get("payload"))
+        if not runtime_payload:
+            capacity = unavailable_strategy_capacity(runtime_result.get("error") or "runtime_status_unavailable")
+        else:
+            capacity = normalize_strategy_capacity_snapshot(runtime_payload)
+        payload = {
+            "ok": True,
+            "available": bool(capacity.get("available")),
+            "broker_mode": environment,
+            "environment": environment,
+            "data_environment": data_environment,
+            "strategy_capacity": capacity,
+            "source": "ibkr-api",
+        }
+        if not payload["available"]:
+            payload["error"] = str(capacity.get("error") or runtime_result.get("error") or "strategy_capacity_unavailable")
+        return jsonify(payload)
+    exports["custom_ibkr_strategy_capacity"] = custom_ibkr_strategy_capacity
 
     @app.route("/api/custom/ibkr/runtime/config", methods=["GET"])
     def custom_ibkr_runtime_config() -> Response:

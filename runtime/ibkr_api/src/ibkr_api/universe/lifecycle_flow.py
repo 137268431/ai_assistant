@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 from ibkr_api.modes import request_broker_mode, request_market_data_mode
 from ibkr_api.orders.values import first_defined, to_float, to_int, to_text
@@ -24,6 +25,7 @@ TimeStrings = Callable[[], dict[str, str]]
 
 SUPPORTED_LIVE_ENVIRONMENTS = {"live", "paper"}
 SUPPORTED_MODES = {"auto", "live", "paper", "backtest"}
+ET = ZoneInfo("America/New_York")
 
 LANE_DEFINITIONS = [
     {"key": "selection", "label": "选股入选", "copy": "为什么进入候选池 / 今日标的"},
@@ -252,6 +254,12 @@ def _parse_time_text_ms(text: Any) -> int:
     value = _safe_text(text)
     if not value:
         return 0
+    compact = " ".join(value.split())
+    for fmt in ("%Y%m%d %H:%M:%S", "%Y%m%d %H:%M"):
+        try:
+            return int(datetime.strptime(compact, fmt).replace(tzinfo=ET).timestamp() * 1000)
+        except ValueError:
+            pass
     try:
         normalized = value.replace("Z", "+00:00")
         parsed_dt = datetime.fromisoformat(normalized)
@@ -801,6 +809,9 @@ def _signal_status_time_ms(status: str, row: dict[str, Any], extra: dict[str, An
     elif normalized in {"blocked", "dropped", "skipped", "protection_incomplete"}:
         ms_keys[:0] = ["blocked_at_ms", "dropped_at_ms", "skipped_at_ms"]
         text_keys[:0] = ["blocked_at", "dropped_at", "skipped_at", "status_repaired_at"]
+    elif normalized in {"closed", "completed"}:
+        ms_keys[:0] = ["closed_at_ms", "closed_bar_time_ms", "exit_fill_bar_time_ms"]
+        text_keys[:0] = ["closed_at", "completed_at", "exit_fill_time"]
     if allow_bar_time:
         ms_keys.append("bar_time_ms")
     value = _first_time_from_sources(sources, ms_keys=tuple(ms_keys), text_keys=tuple(text_keys))
@@ -825,6 +836,28 @@ def _role(row: dict[str, Any]) -> str:
 
 def _order_time_ms(row: dict[str, Any]) -> int:
     return _event_time_ms(row, _json_object(row.get("extra")))
+
+
+def _order_fill_time_ms(row: dict[str, Any], extra: dict[str, Any] | None = None, fallback_ts_ms: int = 0) -> int:
+    sources = [extra or {}, row or {}]
+    value = _first_time_from_sources(
+        sources,
+        ms_keys=(
+            "filled_bar_time_ms",
+            "fill_bar_time_ms",
+            "trade_time_ms",
+            "last_execution_time_ms",
+            "lastExecutionTimeMs",
+        ),
+        text_keys=(
+            "last_execution_time",
+            "lastExecutionTime",
+            "fill_time",
+            "filled_us_time",
+            "trade_time",
+        ),
+    )
+    return value or fallback_ts_ms
 
 
 def _order_submission_time_ms(row: dict[str, Any], extra: dict[str, Any] | None = None, fallback_ts_ms: int = 0) -> int:
@@ -1528,6 +1561,7 @@ def _build_live_events(
                 )
 
         if aggregate_qty > 0 and aggregate_price > 0:
+            aggregate_ts_ms = _order_fill_time_ms(row, extra, ts_ms)
             is_partial = quantity > 0 and aggregate_qty < quantity - 0.0001
             if role == "entry":
                 event_type = "entry_partially_filled" if is_partial else "entry_filled"
@@ -1540,7 +1574,7 @@ def _build_live_events(
                         state="partially_filled" if is_partial else "done",
                         label="开仓部分成交" if is_partial else "开仓已成交",
                         reason="actual_order_fill" if not matched_fills else "actual_execution_fills_aggregated",
-                        ts_ms=ts_ms,
+                        ts_ms=aggregate_ts_ms,
                         symbol=row_symbol,
                         signal_id=row_signal_id,
                         trade_group_id=row_trade_group,
@@ -1565,7 +1599,7 @@ def _build_live_events(
                         state="partially_filled" if is_partial else "terminal",
                         label="部分止盈成交" if is_partial else "止盈平仓",
                         reason="actual_take_profit_fill",
-                        ts_ms=ts_ms,
+                        ts_ms=aggregate_ts_ms,
                         symbol=row_symbol,
                         signal_id=row_signal_id,
                         trade_group_id=row_trade_group,
@@ -1590,7 +1624,7 @@ def _build_live_events(
                         state="partially_filled" if is_partial else "terminal",
                         label="部分止损成交" if is_partial else "止损平仓",
                         reason="actual_stop_loss_fill",
-                        ts_ms=ts_ms,
+                        ts_ms=aggregate_ts_ms,
                         symbol=row_symbol,
                         signal_id=row_signal_id,
                         trade_group_id=row_trade_group,
@@ -1624,7 +1658,7 @@ def _build_live_events(
                         state="terminal",
                         label=label,
                         reason=close_reason or "actual_close_fill",
-                        ts_ms=ts_ms,
+                        ts_ms=aggregate_ts_ms,
                         symbol=row_symbol,
                         signal_id=row_signal_id,
                         trade_group_id=row_trade_group,

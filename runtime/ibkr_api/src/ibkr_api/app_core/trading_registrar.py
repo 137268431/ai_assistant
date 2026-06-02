@@ -38,6 +38,7 @@ def register_trading_routes(app, deps: dict[str, Any]) -> dict[str, Any]:
                 "build_signal_confirm_webhook_response": deps["build_signal_confirm_webhook_response"],
                 "build_signal_cancel_webhook_response": deps["build_signal_cancel_webhook_response"],
                 "config_value": deps["config_value"],
+                "fetch_runtime_status": deps["fetch_runtime_status"],
             },
         )
     )

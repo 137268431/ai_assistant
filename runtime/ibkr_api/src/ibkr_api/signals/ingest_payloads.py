@@ -39,6 +39,36 @@ def _to_int_or_none(value: Any) -> int | None:
     return int(parsed) if parsed is not None else None
 
 
+def normalize_risk_reward_value(raw_value: Any, entry: Any, stop_loss: Any, take_profit: Any) -> str:
+    direct_value = to_float(raw_value)
+    if direct_value is not None:
+        return f"{direct_value:.2f}"
+
+    text = to_text(raw_value).strip()
+    if text:
+        normalized_text = text.replace("：", ":")
+        if ":" in normalized_text:
+            numerator_text, denominator_text = (normalized_text.split(":", 1) + [""])[:2]
+            numerator = to_float(numerator_text)
+            denominator = to_float(denominator_text)
+            if numerator is not None and denominator not in {None, 0}:
+                return f"{(numerator / float(denominator)):.2f}"
+        ratio_value = to_float(normalized_text)
+        if ratio_value is not None:
+            return f"{ratio_value:.2f}"
+
+    entry_price = to_float(entry)
+    stop_loss_price = to_float(stop_loss)
+    take_profit_price = to_float(take_profit)
+    if entry_price is None or stop_loss_price is None or take_profit_price is None:
+        return text
+    risk = abs(entry_price - stop_loss_price)
+    reward = abs(take_profit_price - entry_price)
+    if risk <= 0:
+        return text
+    return f"{(reward / risk):.2f}"
+
+
 def normalize_signal_source_meta(raw_value: Any) -> dict[str, str]:
     raw = to_text(raw_value).lower()
     if raw in {"tv", "tradingview", "webhook_tv", "tv_webhook", "signal"}:
@@ -113,7 +143,12 @@ def build_signal_record_payload(payload: dict[str, Any], environment: str) -> tu
         "entry": _to_number_or_default(payload.get("entry"), 0),
         "stop_loss": _to_number_or_default(payload.get("stop_loss"), 0),
         "take_profit": _to_number_or_default(payload.get("take_profit"), 0),
-        "rr": to_text(payload.get("rr")),
+        "rr": normalize_risk_reward_value(
+            payload.get("rr"),
+            payload.get("entry"),
+            payload.get("stop_loss"),
+            payload.get("take_profit"),
+        ),
         "shares": _to_number_or_default(payload.get("shares"), 0),
         "signal_id": signal_id,
         "exchange": to_text(payload.get("exchange")).upper(),
@@ -164,5 +199,6 @@ __all__ = [
     "as_object",
     "build_signal_record_payload",
     "first_defined",
+    "normalize_risk_reward_value",
     "normalize_signal_source_meta",
 ]

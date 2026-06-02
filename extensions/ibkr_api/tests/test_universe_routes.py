@@ -700,7 +700,13 @@ class UniverseRoutesTest(unittest.TestCase):
                 "direction_bias": "short",
                 "score": 88,
                 "scan_reason": "tv_ranked",
-                "extra": {"source": "tradingview", "activity_rank": 1},
+                "extra": {
+                    "source": "tradingview",
+                    "activity_rank": 1,
+                    "entry_backfilled_target": True,
+                    "entry_signal_id": "pltr-entry",
+                    "strategy_policy": {"setup_type": "tradingview_entry_backfill", "allowed_sides": ["short"]},
+                },
             },
             {
                 "id": "target-tv-candidate",
@@ -750,6 +756,8 @@ class UniverseRoutesTest(unittest.TestCase):
                 "extra": {
                     "source": "tradingview",
                     "activity_rank": 2,
+                    "entry_backfilled_target": True,
+                    "entry_signal_id": "net-entry",
                     "strategy_policy": {"setup_type": "watch_only", "allowed_sides": ["long"]},
                 },
             }

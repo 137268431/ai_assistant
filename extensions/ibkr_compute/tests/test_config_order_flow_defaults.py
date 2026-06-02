@@ -60,6 +60,7 @@ TV_PRIMARY_DEFAULTS = {
     "max_strategy_open_positions": "12",
     "intraday_symbol_daily_entry_limit": "3",
     "position_limit_max": "36",
+    "entry_pre_submit_temp_subscription_limit": "8",
     "tv_max_active_targets": "100",
     "tv_max_same_direction_targets": "0",
     "tv_entry_requires_active_target": "false",

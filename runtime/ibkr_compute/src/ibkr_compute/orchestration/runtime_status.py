@@ -63,6 +63,11 @@ class TradingServiceRuntimeStatusMixin:
             except Exception:
                 return default
 
+        try:
+            strategy_capacity = self._strategy_capacity_snapshot()
+        except Exception as exc:
+            strategy_capacity = {"available": False, "capacity_full": False, "capacity_check_error": str(exc)}
+
         return {
             "symbol": config_text("ibkr_market_calendar_symbol", "SPY").upper(),
             "exchange": config_text("ibkr_market_calendar_exchange", "SMART").upper(),
@@ -305,6 +310,21 @@ class TradingServiceRuntimeStatusMixin:
             active_subscription_symbols = list(self._active_subscription_symbols)
         active_subscription_set = set(active_subscription_symbols)
         active_trade_symbol_set = set(self._active_trade_symbols)
+        candidate_target_symbols: list[str] = []
+        target_rows_getter = getattr(self, "_today_target_rows", None)
+        if callable(target_rows_getter):
+            try:
+                _target_date, target_rows = target_rows_getter()
+                candidate_target_symbols = self._normalize_symbol_list(
+                    [
+                        row.get("symbol")
+                        for row in (target_rows or [])
+                        if isinstance(row, dict)
+                        and _text(row.get("status")).lower() == "candidate"
+                    ]
+                )
+            except Exception:
+                candidate_target_symbols = []
         try:
             execution_eligible_symbols = self._normalize_symbol_list((self._active_target_direction_biases() or {}).keys())
         except Exception:
@@ -315,10 +335,12 @@ class TradingServiceRuntimeStatusMixin:
             symbol for symbol in scan_symbols
             if symbol not in active_trade_symbol_set
         ]
-        no_active_targets = bool(scan_symbols) and not bool(active_trade_symbol_set)
+        no_active_targets = bool(scan_symbols) and not bool(active_trade_symbol_set) and not bool(candidate_target_symbols)
         no_execution_eligible_targets = bool(active_trade_symbol_set) and not bool(execution_eligible_symbol_set)
         if active_trade_symbol_set:
             trade_universe_status = "ready"
+        elif candidate_target_symbols:
+            trade_universe_status = "observing_candidates"
         elif scan_symbols:
             trade_universe_status = "no_active_targets"
         else:
@@ -388,6 +410,10 @@ class TradingServiceRuntimeStatusMixin:
         host_resources = self._host_resources_snapshot()
         resource_governor = self._resource_governor_snapshot()
         watchlist_idle_topup = self._watchlist_idle_topup_status()
+        try:
+            strategy_capacity = self._strategy_capacity_snapshot()
+        except Exception as exc:
+            strategy_capacity = {"available": False, "capacity_full": False, "capacity_check_error": str(exc)}
         runtime_health = "ok"
         if str(resource_governor.get("status") or "").strip().lower() == "critical":
             runtime_health = "unhealthy"
@@ -437,6 +463,7 @@ class TradingServiceRuntimeStatusMixin:
             "order_placer": self.order_placer.status(),
             "order_tracker": self.order_tracker.status(),
             "order_lifecycle": self.order_lifecycle.status(),
+            "strategy_capacity": strategy_capacity if isinstance(strategy_capacity, dict) else {"available": False},
             "order_flow": (
                 self.order_flow_manager.status()
                 if getattr(self, "order_flow_manager", None) is not None
@@ -497,6 +524,8 @@ class TradingServiceRuntimeStatusMixin:
                 "market_ws_symbols": list(market_ws_symbols),
                 "active_target_date": self._active_target_date,
                 "active_target_count": len(self._active_trade_symbols),
+                "candidate_target_count": len(candidate_target_symbols),
+                "candidate_target_symbols": list(candidate_target_symbols[:25]),
                 "execution_eligible_target_count": len(execution_eligible_symbols),
                 "execution_eligible_symbols": list(execution_eligible_symbols),
                 "observe_target_count": len(observe_target_symbols),

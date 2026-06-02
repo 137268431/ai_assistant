@@ -44,6 +44,13 @@ def _format_quantity(value: Any) -> str:
     return f"{parsed:.2f}"
 
 
+def _format_count(value: Any, default: int = 0) -> str:
+    parsed = to_float(value)
+    if parsed is None:
+        return str(default)
+    return str(int(parsed))
+
+
 def _format_money(value: Any) -> str:
     parsed = to_float(value)
     if parsed is None:
@@ -250,6 +257,25 @@ def _planned_pnl_lines(record_or_data: Any) -> list[str]:
     if expected_profit <= 0 or expected_loss >= 0:
         return []
     return [f"**预计盈利 / 预计亏损**: {_format_signed_money(expected_profit)} / {_format_signed_money(expected_loss)}"]
+
+
+def _strategy_capacity_lines(record_or_data: Any) -> list[str]:
+    extra = get_signal_extra(record_or_data)
+    capacity = extra.get("strategy_capacity")
+    if not isinstance(capacity, dict):
+        capacity = record_value(record_or_data, "strategy_capacity")
+    if not isinstance(capacity, dict):
+        return []
+    if capacity.get("available") is False:
+        return ["**开仓占用**: 数据暂不可用"]
+
+    used = _format_count(capacity.get("strategy_capacity_used"))
+    limit = _format_count(capacity.get("max_strategy_open_positions"))
+    positions = _format_count(capacity.get("strategy_open_positions"))
+    entries = _format_count(capacity.get("open_strategy_entry_orders"))
+    remaining_value = capacity.get("strategy_capacity_remaining")
+    remaining = "-" if remaining_value in (None, "") else _format_count(remaining_value)
+    return [f"**开仓占用**: {used}/{limit}（持仓 {positions} + Entry {entries}，剩余 {remaining}）"]
 
 
 def _atr_volatility_text(value: Any) -> str:
@@ -641,6 +667,7 @@ def build_signal_notification_card(record_or_data: Any, *, console_base_url: str
     ]
     body_lines.extend(_price_plan_lines(record_or_data))
     body_lines.extend(_planned_pnl_lines(record_or_data))
+    body_lines.extend(_strategy_capacity_lines(record_or_data))
     body_lines.extend(_buying_power_lines(record_or_data))
     body_lines.extend(_tv_context_lines(record_or_data))
     body_lines.extend(_followup_lines(record_or_data))
@@ -812,6 +839,7 @@ def build_signal_status_card(record_or_data: Any, *, message: str = "", console_
     ]
     body_lines.extend(_price_plan_lines(record_or_data))
     body_lines.extend(_planned_pnl_lines(record_or_data))
+    body_lines.extend(_strategy_capacity_lines(record_or_data))
     body_lines.extend(_buying_power_lines(record_or_data))
     body_lines.extend(_tv_context_lines(record_or_data))
     body_lines.extend(_followup_lines(record_or_data))

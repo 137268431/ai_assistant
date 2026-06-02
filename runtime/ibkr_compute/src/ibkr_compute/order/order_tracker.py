@@ -11,7 +11,7 @@ import logging
 import threading
 from typing import Any, Callable, Dict, List, Optional
 from datetime import datetime, timezone
-from ibkr_compute.core.time_utils import ET
+from ibkr_compute.core.time_utils import CN, ET
 
 from ibkr_compute.broker import BrokerAdapter
 
@@ -107,6 +107,37 @@ class OrderTracker:
             except Exception:
                 return {}
         return {}
+
+    @classmethod
+    def _parse_ibkr_execution_time_ms(cls, value: Any) -> int:
+        text = cls._normalize_text(value)
+        if not text:
+            return 0
+        compact = " ".join(text.split())
+        for fmt in ("%Y%m%d %H:%M:%S", "%Y%m%d %H:%M"):
+            try:
+                return int(datetime.strptime(compact, fmt).replace(tzinfo=ET).timestamp() * 1000)
+            except ValueError:
+                pass
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=ET)
+            return int(parsed.timestamp() * 1000)
+        except ValueError:
+            return 0
+
+    @staticmethod
+    def _time_fields_from_ms(timestamp_ms: int) -> dict:
+        ms = int(timestamp_ms or 0)
+        if ms <= 0:
+            ms = int(time.time() * 1000)
+        utc_dt = datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
+        return {
+            "us_time": utc_dt.astimezone(ET).strftime("%Y-%m-%d %H:%M:%S"),
+            "cn_time": utc_dt.astimezone(CN).strftime("%Y-%m-%d %H:%M:%S"),
+            "bar_time_ms": ms,
+        }
 
     @classmethod
     def _normalize_trade_direction(cls, value: Any) -> str:
@@ -1217,7 +1248,7 @@ class OrderTracker:
             coid = str(order.get("cOID") or order.get("coid") or order.get("order_ref") or order.get("orderRef") or "").strip()
             symbol = order.get("ticker", "")
             status = self._extract_order_status(order)
-            now_str = datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S")
+            now_times = self._time_fields_from_ms(int(time.time() * 1000))
             order_id_filter = self._escape_filter_value(order_id)
             coid_filter = self._escape_filter_value(coid)
             runtime_environment = self.environment
@@ -1347,6 +1378,26 @@ class OrderTracker:
                         or position_side
                     )
 
+                existing_extra = self._ensure_object((existing_order or {}).get("extra"))
+                event_times = dict(now_times)
+                fill_times: dict[str, Any] = {}
+                if mapped_status == "Filled":
+                    execution_ms = self._parse_ibkr_execution_time_ms(
+                        order.get("lastExecutionTime")
+                        or order.get("lastFillTime")
+                        or order.get("last_execution_time")
+                    )
+                    if execution_ms <= 0:
+                        execution_ms = int(existing_extra.get("filled_bar_time_ms") or 0)
+                    if execution_ms > 0:
+                        event_times = self._time_fields_from_ms(execution_ms)
+                        fill_times = {
+                            "fill_time": event_times["us_time"],
+                            "fill_us_time": event_times["us_time"],
+                            "fill_cn_time": event_times["cn_time"],
+                            "fill_bar_time_ms": event_times["bar_time_ms"],
+                        }
+
                 extra = {
                     "source": "order_tracker",
                     "seen_live": bool(order.get("_seen_live")),
@@ -1426,10 +1477,12 @@ class OrderTracker:
                     "filled_qty": fill_qty,
                     "fill_price": avg_price,
                     "commission": commission,
-                    "us_time": now_str,
-                    "bar_time_ms": int(time.time() * 1000),
+                    "us_time": event_times["us_time"],
+                    "cn_time": event_times["cn_time"],
+                    "bar_time_ms": event_times["bar_time_ms"],
                     "extra": extra,
                 }
+                order_payload.update(fill_times)
                 if role == "stop_loss" and limit_price > 0:
                     order_payload["sl_price"] = limit_price
                 elif role == "take_profit" and limit_price > 0:

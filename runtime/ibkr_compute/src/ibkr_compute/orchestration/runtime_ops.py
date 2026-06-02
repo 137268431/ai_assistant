@@ -1100,6 +1100,60 @@ class TradingServiceRuntimeOpsMixin:
             service_mod.logger.error("Failed to update signal after entry fill: %s", exc)
         return ""
 
+    def _demote_entry_target_after_signal_close(
+        self,
+        *,
+        signal_record: dict[str, Any] | None,
+        signal_id: str,
+        symbol: str,
+        environment: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        pb = getattr(self, "pb", None)
+        if not pb:
+            return {"ok": False, "reason": "pb_unavailable"}
+        service_mod = _service_mod()
+        try:
+            from ibkr_compute.universe.target_lifecycle import demote_entry_activated_targets_after_close
+
+            current_market_date = str(getattr(self, "_current_market_date", "") or "").strip()
+            if not current_market_date:
+                market_date_fn = getattr(self, "_market_date", None)
+                if callable(market_date_fn):
+                    current_market_date = str(market_date_fn() or "").strip()
+            if not current_market_date:
+                current_market_date = datetime.now(service_mod.ET).strftime("%Y-%m-%d")
+            dates = [
+                (signal_record or {}).get("date"),
+                current_market_date,
+            ]
+            result = demote_entry_activated_targets_after_close(
+                pb,
+                symbol=symbol,
+                environment=environment,
+                signal_id=signal_id,
+                dates=dates,
+                reason=reason,
+                now_iso=self._now_iso_for_signal_patch(),
+                logger=service_mod.logger,
+            )
+            if int((result or {}).get("demoted") or 0) > 0:
+                service_mod.logger.info(
+                    "Demoted entry-activated target after signal close: symbol=%s signal_id=%s demoted=%s",
+                    symbol,
+                    signal_id,
+                    result.get("demoted"),
+                )
+            return result
+        except Exception as exc:
+            service_mod.logger.warning(
+                "Failed to demote entry-activated target after signal close: symbol=%s signal_id=%s error=%s",
+                symbol,
+                signal_id,
+                exc,
+            )
+            return {"ok": False, "reason": "exception", "error": str(exc)}
+
     def _update_signal_after_exit_fill(
         self,
         order: dict,
@@ -1192,6 +1246,13 @@ class TradingServiceRuntimeOpsMixin:
                             },
                         },
                     )
+                self._demote_entry_target_after_signal_close(
+                    signal_record=signal_record,
+                    signal_id=signal_id,
+                    symbol=symbol,
+                    environment=data_environment,
+                    reason=str(existing_extra.get("status_reason") or "signal_already_closed"),
+                )
                 return False
 
             trade_group_id = self._trade_group_id_for_exit(signal_record, exit_order_for_pnl)
@@ -1241,6 +1302,13 @@ class TradingServiceRuntimeOpsMixin:
                     "note": status_reason,
                     "extra": extra,
                 },
+            )
+            self._demote_entry_target_after_signal_close(
+                signal_record=signal_record,
+                signal_id=signal_id,
+                symbol=symbol,
+                environment=data_environment,
+                reason=status_reason,
             )
             return True
         except Exception as exc:

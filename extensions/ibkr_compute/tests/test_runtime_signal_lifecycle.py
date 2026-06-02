@@ -30,6 +30,8 @@ class _FakePB:
             "sig-row-1": {
                 "id": "sig-row-1",
                 "signal_id": "SIG_1",
+                "symbol": "AAPL",
+                "date": "2026-05-06",
                 "environment": "live",
                 "status": "submitted",
                 "entry": 100.0,
@@ -40,6 +42,8 @@ class _FakePB:
             "sig-row-2": {
                 "id": "sig-row-2",
                 "signal_id": "SIG_2",
+                "symbol": "MSFT",
+                "date": "2026-05-06",
                 "environment": "live",
                 "status": "protection_incomplete",
                 "extra": {
@@ -52,12 +56,20 @@ class _FakePB:
                 },
             }
         }
+        self.targets = []
         self.updated = []
         self.acked = []
         self.events = []
 
     def get_records(self, collection, filter=None, sort=None, per_page=100, page=1):
-        rows = self.orders if collection == "orders" else []
+        if collection == "orders":
+            rows = self.orders
+        elif collection == "ibkr_signals":
+            rows = list(self.signals.values())
+        elif collection == "ibkr_targets":
+            rows = self.targets
+        else:
+            rows = []
         text = str(filter or "")
         unique_id = self._extract(text, "unique_id")
         entry_unique_id = self._extract(text, "entry_order_unique_id")
@@ -66,9 +78,18 @@ class _FakePB:
         signal_id = self._extract(text, "signal_id")
         trade_group_id = self._extract(text, "trade_group_id")
         environment = self._extract(text, "environment")
+        symbol = self._extract(text, "symbol")
+        date = self._extract(text, "date")
+        status = self._extract(text, "status")
         result = []
         for row in rows:
             if environment and row.get("environment") != environment:
+                continue
+            if symbol and row.get("symbol") != symbol:
+                continue
+            if date and row.get("date") != date:
+                continue
+            if status and row.get("status") != status:
                 continue
             if signal_id and row.get("signal_id") != signal_id:
                 continue
@@ -84,6 +105,9 @@ class _FakePB:
                 continue
             result.append(copy.deepcopy(row))
         return result[:per_page]
+
+    def get_all_records(self, collection, filter=None, sort=None, max_pages=10):
+        return self.get_records(collection, filter=filter, sort=sort, per_page=200, page=1)
 
     def get_first_record(self, collection, filter=None, sort=None):
         if collection != "ibkr_signals":
@@ -105,6 +129,15 @@ class _FakePB:
                     current = copy.deepcopy(row)
                     current.update(copy.deepcopy(patch))
                     self.orders[idx] = current
+                    self.updated.append((collection, str(record_id), copy.deepcopy(patch)))
+                    return copy.deepcopy(current)
+            raise KeyError(record_id)
+        if collection == "ibkr_targets":
+            for idx, row in enumerate(self.targets):
+                if str(row.get("id")) == str(record_id):
+                    current = copy.deepcopy(row)
+                    current.update(copy.deepcopy(patch))
+                    self.targets[idx] = current
                     self.updated.append((collection, str(record_id), copy.deepcopy(patch)))
                     return copy.deepcopy(current)
             raise KeyError(record_id)
@@ -244,6 +277,10 @@ class _FakeOrderModifier:
 
 class _FakeService(TradingServiceRuntimeOpsMixin):
     def __init__(self):
+        from ibkr_compute.orchestration import trading_service as service_mod
+
+        service_mod.ENVIRONMENT = "live"
+        service_mod.DATA_ENVIRONMENT = "live"
         self.pb = _FakePB()
         self.signal_processor = _FakeSignalProcessor()
         self.order_lifecycle = _FakeOrderLifecycle()
@@ -251,9 +288,16 @@ class _FakeService(TradingServiceRuntimeOpsMixin):
     def _now_iso(self):
         return "2026-05-06T12:00:00Z"
 
+    def _market_date(self):
+        return "2026-05-06"
+
 
 class _FakeSignalsService(TradingServiceSignalsMixin):
     def __init__(self):
+        from ibkr_compute.orchestration import trading_service as service_mod
+
+        service_mod.ENVIRONMENT = "live"
+        service_mod.DATA_ENVIRONMENT = "live"
         self.pb = _FakePB()
         self.order_lifecycle = _FakeOrderLifecycle()
 
@@ -728,6 +772,161 @@ class RuntimeSignalLifecycleTest(unittest.TestCase):
         self.assertEqual(3, event["detail"]["连续止损上限"])
         self.assertEqual("no", event["detail"]["熔断状态"])
         self.assertEqual(3, event["detail"]["冷却K线"])
+
+    def test_exit_fill_demotes_entry_activated_target_to_candidate(self):
+        service = _FakeService()
+        service.pb.signals["sig-row-1"]["status"] = "protected_active"
+        service.pb.targets.append(
+            {
+                "id": "target-1",
+                "symbol": "AAPL",
+                "date": "2026-05-06",
+                "environment": "live",
+                "status": "active",
+                "direction_bias": "long",
+                "extra": {
+                    "source": "tradingview",
+                    "entry_signal_id": "SIG_1",
+                    "entry_backfilled_target": True,
+                    "execution_eligible": True,
+                    "target_layer": "execution",
+                },
+            }
+        )
+        service.pb.orders.append(
+            {
+                "id": "order-sl-1",
+                "unique_id": "sl_SIG_1",
+                "entry_order_unique_id": "entry_SIG_1",
+                "order_id": "1003",
+                "broker_order_id": "1003",
+                "signal_id": "SIG_1",
+                "trade_group_id": "group_SIG_1",
+                "role": "stop_loss",
+                "status": "Filled",
+                "environment": "live",
+            }
+        )
+
+        service._on_order_fill(
+            {
+                "orderId": "1003",
+                "ticker": "AAPL",
+                "side": "SELL",
+                "orderType": "STP",
+                "status": "FILLED",
+                "parentId": "1001",
+                "cOID": "sl_SIG_1",
+            }
+        )
+
+        target = service.pb.targets[0]
+        self.assertEqual("candidate", target["status"])
+        self.assertTrue(target["extra"]["deactivated_after_close"])
+        self.assertEqual("SIG_1", target["extra"]["deactivated_signal_id"])
+        self.assertEqual("closed_by_stop_loss", target["extra"]["deactivated_reason"])
+        self.assertFalse(target["extra"]["execution_eligible"])
+        self.assertEqual("observe", target["extra"]["target_layer"])
+        self.assertIn("deactivated_after_close", target["extra"]["execution_blockers"])
+
+    def test_exit_fill_keeps_target_active_when_another_signal_is_open(self):
+        service = _FakeService()
+        service.pb.signals["sig-row-1"]["status"] = "protected_active"
+        service.pb.signals["sig-row-3"] = {
+            "id": "sig-row-3",
+            "signal_id": "SIG_3",
+            "symbol": "AAPL",
+            "date": "2026-05-06",
+            "environment": "live",
+            "status": "submitted",
+            "extra": {"source": "ibkr_compute"},
+        }
+        service.pb.targets.append(
+            {
+                "id": "target-1",
+                "symbol": "AAPL",
+                "date": "2026-05-06",
+                "environment": "live",
+                "status": "active",
+                "direction_bias": "long",
+                "extra": {"source": "tradingview", "entry_signal_id": "SIG_1"},
+            }
+        )
+        service.pb.orders.append(
+            {
+                "id": "order-tp-1",
+                "unique_id": "tp_SIG_1",
+                "entry_order_unique_id": "entry_SIG_1",
+                "order_id": "1002",
+                "broker_order_id": "1002",
+                "signal_id": "SIG_1",
+                "trade_group_id": "group_SIG_1",
+                "role": "take_profit",
+                "status": "Filled",
+                "environment": "live",
+            }
+        )
+
+        service._on_order_fill(
+            {
+                "orderId": "1002",
+                "ticker": "AAPL",
+                "side": "SELL",
+                "orderType": "LMT",
+                "status": "FILLED",
+                "parentId": "1001",
+                "cOID": "tp_SIG_1",
+            }
+        )
+
+        target = service.pb.targets[0]
+        self.assertEqual("active", target["status"])
+        self.assertNotIn("deactivated_after_close", target["extra"])
+
+    def test_exit_fill_does_not_demote_manual_target(self):
+        service = _FakeService()
+        service.pb.signals["sig-row-1"]["status"] = "protected_active"
+        service.pb.targets.append(
+            {
+                "id": "target-1",
+                "symbol": "AAPL",
+                "date": "2026-05-06",
+                "environment": "live",
+                "status": "active",
+                "direction_bias": "long",
+                "extra": {"source": "manual_page_add", "entry_signal_id": "SIG_1"},
+            }
+        )
+        service.pb.orders.append(
+            {
+                "id": "order-tp-1",
+                "unique_id": "tp_SIG_1",
+                "entry_order_unique_id": "entry_SIG_1",
+                "order_id": "1002",
+                "broker_order_id": "1002",
+                "signal_id": "SIG_1",
+                "trade_group_id": "group_SIG_1",
+                "role": "take_profit",
+                "status": "Filled",
+                "environment": "live",
+            }
+        )
+
+        service._on_order_fill(
+            {
+                "orderId": "1002",
+                "ticker": "AAPL",
+                "side": "SELL",
+                "orderType": "LMT",
+                "status": "FILLED",
+                "parentId": "1001",
+                "cOID": "tp_SIG_1",
+            }
+        )
+
+        target = service.pb.targets[0]
+        self.assertEqual("active", target["status"])
+        self.assertNotIn("deactivated_after_close", target["extra"])
 
     def test_take_profit_fill_closes_protected_active_signal(self):
         service = _FakeService()

@@ -174,6 +174,7 @@ class DummyTargetPlanUniverse(TradingServiceMarketUniverseMixin):
             {
                 "ibkr_target_subscription_limit": 10,
                 "ibkr_total_subscription_limit": 10,
+                "entry_pre_submit_temp_subscription_limit": 0,
             }
         )
         self.pb = DummyTargetPlanPB(rows)
@@ -407,11 +408,12 @@ class UniverseTargetSubscriptionPlanTest(unittest.TestCase):
     def test_old_daily_scan_active_gate_target_is_selected_as_trade_row(self):
         universe = DummyTargetPlanUniverse(
             [
-                {"id": "target-spy", "symbol": "SPY", "status": "active", "score": 99, "extra": {"source": "manual_page_add"}},
+                {"id": "target-spy", "symbol": "SPY", "status": "active", "direction_bias": "long", "score": 99, "extra": {"source": "manual_page_add"}},
                 {
                     "id": "target-aapl",
                     "symbol": "AAPL",
                     "status": "active",
+                    "direction_bias": "long",
                     "score": 80,
                     "extra": {"source": "daily_scan", "active_gate_passed": True},
                 },
@@ -436,6 +438,7 @@ class UniverseTargetSubscriptionPlanTest(unittest.TestCase):
                     "id": "target-aapl",
                     "symbol": "AAPL",
                     "status": "active",
+                    "direction_bias": "long",
                     "score": 80,
                     "extra": {"source": "daily_scan", "context_active": True},
                 },
@@ -443,6 +446,7 @@ class UniverseTargetSubscriptionPlanTest(unittest.TestCase):
                     "id": "target-msft",
                     "symbol": "MSFT",
                     "status": "active",
+                    "direction_bias": "short",
                     "score": 70,
                     "extra": {"source": "intraday_window_admission", "context_gate_passed": "passed"},
                 },
@@ -452,8 +456,8 @@ class UniverseTargetSubscriptionPlanTest(unittest.TestCase):
         _target_date, symbols, _meta, selected_rows = universe._build_target_subscription_plan()
 
         self.assertIn("AAPL", symbols)
-        self.assertIn("MSFT", symbols)
-        self.assertEqual(["AAPL", "MSFT"], [row["symbol"] for row in selected_rows])
+        self.assertNotIn("MSFT", symbols)
+        self.assertEqual(["AAPL"], [row["symbol"] for row in selected_rows])
 
     def test_status_sync_keeps_unselected_active_target_active(self):
         universe = DummyTargetPlanUniverse(
@@ -462,6 +466,7 @@ class UniverseTargetSubscriptionPlanTest(unittest.TestCase):
                     "id": "target-aapl",
                     "symbol": "AAPL",
                     "status": "active",
+                    "direction_bias": "long",
                     "score": 90,
                     "extra": {"source": "daily_scan", "context_active": True},
                 },
@@ -469,6 +474,7 @@ class UniverseTargetSubscriptionPlanTest(unittest.TestCase):
                     "id": "target-msft",
                     "symbol": "MSFT",
                     "status": "active",
+                    "direction_bias": "short",
                     "score": 80,
                     "extra": {"source": "daily_scan", "context_active": True},
                 },
@@ -525,7 +531,7 @@ class UniverseTargetSubscriptionPlanTest(unittest.TestCase):
     def test_manual_active_target_is_selected_as_trade_row(self):
         universe = DummyTargetPlanUniverse(
             [
-                {"id": "target-aapl", "symbol": "AAPL", "status": "active", "score": 99, "extra": {"source": "manual_page_add"}},
+                {"id": "target-aapl", "symbol": "AAPL", "status": "active", "direction_bias": "long", "score": 99, "extra": {"source": "manual_page_add"}},
             ]
         )
 
@@ -533,6 +539,48 @@ class UniverseTargetSubscriptionPlanTest(unittest.TestCase):
 
         self.assertIn("AAPL", symbols)
         self.assertEqual(["AAPL"], [row["symbol"] for row in selected_rows])
+
+    def test_tradingview_pre_alert_active_is_demoted_to_candidate(self):
+        universe = DummyTargetPlanUniverse(
+            [
+                {
+                    "id": "target-wpm",
+                    "symbol": "WPM",
+                    "status": "active",
+                    "score": 90,
+                    "extra": {"source": "tradingview", "event_type": "pre_alert", "activity_rank": 1},
+                },
+            ]
+        )
+
+        target_date, symbols, _meta, selected_rows = universe._build_target_subscription_plan()
+        universe._mark_target_statuses(target_date, selected_rows)
+
+        self.assertNotIn("WPM", symbols)
+        self.assertEqual([], selected_rows)
+        rows_by_id = {row["id"]: row for row in universe.pb.rows}
+        self.assertEqual("candidate", rows_by_id["target-wpm"]["status"])
+        self.assertFalse(rows_by_id["target-wpm"]["extra"]["within_subscription_budget"])
+
+    def test_trade_budget_reserves_entry_quote_slots(self):
+        rows = [
+            {
+                "id": f"target-{index}",
+                "symbol": f"SYM{index}",
+                "status": "active",
+                "direction_bias": "long",
+                "score": 100 - index,
+                "extra": {"source": "daily_scan", "active_gate_passed": True},
+            }
+            for index in range(6)
+        ]
+        universe = DummyTargetPlanUniverse(rows)
+        universe.config.values["entry_pre_submit_temp_subscription_limit"] = 2
+
+        _target_date, _symbols, _meta, selected_rows = universe._build_target_subscription_plan()
+
+        self.assertEqual(5, len(selected_rows))
+        self.assertEqual(["SYM0", "SYM1", "SYM2", "SYM3", "SYM4"], [row["symbol"] for row in selected_rows])
 
 
 class UniverseRealtimeQuoteResubscribeTest(unittest.TestCase):

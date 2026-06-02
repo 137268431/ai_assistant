@@ -485,12 +485,17 @@ class IBKRTradingService(
             for symbol in (list(self._watchlist_monitor_symbols or []) + configured_monitors)
             if str(symbol or "").strip()
         }
-        target_limit = max(0, int(self.config.get_int_for_environment("ibkr_target_subscription_limit", DATA_ENVIRONMENT, 80) or 0))
-        total_limit = max(0, int(self.config.get_int_for_environment("ibkr_total_subscription_limit", DATA_ENVIRONMENT, 80) or 0))
-        trade_budget = target_limit if target_limit > 0 else None
-        if total_limit > 0:
-            remaining = max(0, total_limit - len(market_monitors))
-            trade_budget = remaining if trade_budget is None else min(trade_budget, remaining)
+        budget_getter = getattr(self, "_get_trade_subscription_budget", None)
+        if callable(budget_getter):
+            trade_budget = budget_getter()
+        else:
+            target_limit = max(0, int(self.config.get_int_for_environment("ibkr_target_subscription_limit", DATA_ENVIRONMENT, 80) or 0))
+            total_limit = max(0, int(self.config.get_int_for_environment("ibkr_total_subscription_limit", DATA_ENVIRONMENT, 80) or 0))
+            reserve = max(0, int(self.config.get_int_for_environment("entry_pre_submit_temp_subscription_limit", DATA_ENVIRONMENT, 8) or 0))
+            trade_budget = target_limit if target_limit > 0 else None
+            if total_limit > 0:
+                remaining = max(0, total_limit - len(market_monitors) - reserve)
+                trade_budget = remaining if trade_budget is None else min(trade_budget, remaining)
 
         active_rows = [
             row for row in rows

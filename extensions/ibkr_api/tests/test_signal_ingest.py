@@ -11,6 +11,7 @@ for src_root in (SERVICE_SRC_ROOT, COMPUTE_SRC_ROOT):
         sys.path.insert(0, str(src_root))
 
 from ibkr_api.signals.ingest import build_signal_ingest_response, build_signals_ingest_response
+from ibkr_api.signals.ingest_payloads import build_signal_record_payload, normalize_risk_reward_value
 from ibkr_api.signals.notifications import build_signal_notification_card, build_signal_status_card
 from ibkr_api.orders.notifications import build_order_group_status_card, build_order_status_card
 
@@ -127,6 +128,42 @@ class SignalIngressBuildersTest(unittest.TestCase):
         self.escape_filter_string = lambda value: str(value or "").replace("\\", "\\\\").replace('"', '\\"')
         self.config_value = lambda key, default, environment: "true" if key == "signal_manual_confirm_enabled" else default
         self.signal_chat_id_fn = lambda environment: f"signal-chat-{environment}"
+
+    def test_signal_payload_backfills_missing_risk_reward_from_prices(self):
+        record, error = build_signal_record_payload(
+            {
+                "symbol": "GLW",
+                "signal_id": "sig-rr",
+                "direction": "short",
+                "entry": 192.57,
+                "stop_loss": 196.4533,
+                "take_profit": 186.745,
+            },
+            "live",
+        )
+
+        self.assertEqual("", error)
+        self.assertEqual("1.50", record["rr"])
+
+    def test_signal_payload_normalizes_explicit_risk_reward_text(self):
+        self.assertEqual("2.00", normalize_risk_reward_value("2:1", 100, 98, 104))
+        self.assertEqual("1.75", normalize_risk_reward_value("1.75", 100, 98, 104))
+
+    def test_signal_payload_keeps_rr_blank_when_risk_is_invalid(self):
+        record, error = build_signal_record_payload(
+            {
+                "symbol": "AAPL",
+                "signal_id": "sig-invalid-rr",
+                "direction": "long",
+                "entry": 100,
+                "stop_loss": 100,
+                "take_profit": 105,
+            },
+            "live",
+        )
+
+        self.assertEqual("", error)
+        self.assertEqual("", record["rr"])
 
     def test_signal_ingest_creates_signal_with_manual_confirm_and_notification_metadata(self):
         pb = _FakePB()
@@ -389,6 +426,53 @@ class SignalIngressBuildersTest(unittest.TestCase):
             status_card = build_signal_status_card(record, message="信号已确认，等待执行", console_base_url="https://console.example.com")
             for card in (notification_card, status_card):
                 self.assertIn(expected_line, card["elements"][0]["content"])
+
+    def test_signal_cards_include_strategy_capacity_when_available(self):
+        record = {
+            "id": "sig-row-capacity",
+            "signal_id": "sig-capacity",
+            "symbol": "AAPL",
+            "direction": "long",
+            "environment": "live",
+            "status": "pending",
+            "entry": 100.0,
+            "stop_loss": 98.0,
+            "take_profit": 104.0,
+            "shares": 10,
+            "extra": {
+                "strategy_capacity": {
+                    "available": True,
+                    "strategy_capacity_used": 7,
+                    "max_strategy_open_positions": 20,
+                    "strategy_open_positions": 5,
+                    "open_strategy_entry_orders": 2,
+                    "strategy_capacity_remaining": 13,
+                }
+            },
+        }
+
+        notification_card = build_signal_notification_card(record, console_base_url="https://console.example.com")
+        status_card = build_signal_status_card(record, message="信号已确认，等待执行", console_base_url="https://console.example.com")
+
+        for card in (notification_card, status_card):
+            self.assertIn("**开仓占用**: 7/20（持仓 5 + Entry 2，剩余 13）", card["elements"][0]["content"])
+
+    def test_signal_cards_show_strategy_capacity_unavailable(self):
+        record = {
+            "id": "sig-row-capacity",
+            "signal_id": "sig-capacity-unavailable",
+            "symbol": "AAPL",
+            "direction": "long",
+            "environment": "live",
+            "status": "pending",
+            "extra": {"strategy_capacity": {"available": False, "error": "runtime_down"}},
+        }
+
+        notification_card = build_signal_notification_card(record, console_base_url="https://console.example.com")
+        status_card = build_signal_status_card(record, message="信号已确认，等待执行", console_base_url="https://console.example.com")
+
+        for card in (notification_card, status_card):
+            self.assertIn("**开仓占用**: 数据暂不可用", card["elements"][0]["content"])
 
     def test_signal_cards_skip_expected_profit_and_loss_when_plan_incomplete(self):
         record = {

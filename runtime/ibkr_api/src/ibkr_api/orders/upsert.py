@@ -6,7 +6,7 @@ from typing import Any, Callable
 from ibkr_api.modes import request_broker_mode
 from ibkr_api.orders.details import build_order_detail_payload
 from ibkr_api.orders.relationships import get_order_status_transition_text, resolve_order_relationship
-from ibkr_api.orders.timestamps import resolve_order_status_event_times
+from ibkr_api.orders.timestamps import format_timestamp_ms, resolve_order_status_event_times
 from ibkr_api.orders.values import ensure_object, first_defined, to_float, to_int, to_text
 
 
@@ -60,8 +60,43 @@ def build_order_record_payload(payload: dict[str, Any], existing_row: dict[str, 
             "bar_time_ms": payload.get("bar_time_ms") if payload.get("bar_time_ms") is not None else extra.get("bar_time_ms"),
         },
     )
+    filled_event_times: dict[str, Any] | None = None
+    if status == "Filled":
+        incoming_fill_bar_time_ms = to_int(
+            first_defined(payload.get("fill_bar_time_ms"), extra.get("fill_bar_time_ms")),
+            0,
+        )
+        existing_fill_bar_time_ms = to_int(existing_extra.get("filled_bar_time_ms"), 0)
+        selected_fill_bar_time_ms = incoming_fill_bar_time_ms or existing_fill_bar_time_ms
+        fill_base_times = format_timestamp_ms(selected_fill_bar_time_ms) if selected_fill_bar_time_ms > 0 else event_times
+        filled_event_times = {
+            "us_time": str(
+                first_defined(
+                    payload.get("fill_us_time"),
+                    extra.get("fill_us_time"),
+                    payload.get("fill_time"),
+                    extra.get("fill_time"),
+                    existing_extra.get("filled_us_time"),
+                    fill_base_times["us_time"],
+                )
+                or fill_base_times["us_time"]
+            ),
+            "cn_time": str(
+                first_defined(
+                    payload.get("fill_cn_time"),
+                    extra.get("fill_cn_time"),
+                    existing_extra.get("filled_cn_time"),
+                    fill_base_times["cn_time"],
+                )
+                or fill_base_times["cn_time"]
+            ),
+            "bar_time_ms": selected_fill_bar_time_ms or event_times["bar_time_ms"],
+        }
+        event_times = dict(filled_event_times)
     resolved_order_time = first_defined(payload.get("order_time"), extra.get("order_time"), existing.get("order_time"), event_times["us_time"]) or event_times["us_time"]
     resolved_fill_time = first_defined(payload.get("fill_time"), existing.get("fill_time"), existing_extra.get("fill_time"), "")
+    if status == "Filled" and not resolved_fill_time and filled_event_times:
+        resolved_fill_time = filled_event_times["us_time"]
     status_history_previous = (
         previous_status
         if previous_status and previous_status != status
@@ -98,9 +133,10 @@ def build_order_record_payload(payload: dict[str, Any], existing_row: dict[str, 
     if resolved_fill_time:
         patch_extra["fill_time"] = resolved_fill_time
     if status == "Filled":
-        patch_extra["filled_us_time"] = str(first_defined(payload.get("fill_us_time"), resolved_fill_time, event_times["us_time"]) or event_times["us_time"])
-        patch_extra["filled_cn_time"] = str(first_defined(payload.get("fill_cn_time"), event_times["cn_time"]) or event_times["cn_time"])
-        patch_extra["filled_bar_time_ms"] = to_int(first_defined(payload.get("fill_bar_time_ms"), event_times["bar_time_ms"]), event_times["bar_time_ms"])
+        resolved_filled_times = filled_event_times or event_times
+        patch_extra["filled_us_time"] = resolved_filled_times["us_time"]
+        patch_extra["filled_cn_time"] = resolved_filled_times["cn_time"]
+        patch_extra["filled_bar_time_ms"] = to_int(resolved_filled_times["bar_time_ms"], event_times["bar_time_ms"])
     elif existing_extra.get("filled_us_time"):
         patch_extra["filled_us_time"] = existing_extra.get("filled_us_time")
         patch_extra["filled_cn_time"] = existing_extra.get("filled_cn_time") or ""

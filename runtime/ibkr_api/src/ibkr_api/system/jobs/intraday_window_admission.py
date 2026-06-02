@@ -234,9 +234,10 @@ def _load_today_targets(
 def _trade_budget(config_value: ConfigValue, environment: str, monitor_count: int) -> int | None:
     target_limit = _config_int(config_value, "ibkr_target_subscription_limit", 80, environment)
     total_limit = _config_int(config_value, "ibkr_total_subscription_limit", 80, environment)
+    entry_quote_reserve = _config_int(config_value, "entry_pre_submit_temp_subscription_limit", 8, environment)
     budget: int | None = target_limit if target_limit > 0 else None
     if total_limit > 0:
-        total_budget = max(0, total_limit - max(0, int(monitor_count or 0)))
+        total_budget = max(0, total_limit - max(0, int(monitor_count or 0)) - max(0, int(entry_quote_reserve or 0)))
         budget = total_budget if budget is None else min(budget, total_budget)
     return budget
 
@@ -583,15 +584,17 @@ def _target_extra(
     payload = {
         **existing_extra,
         "source": existing_source or WINDOW_ADMISSION_SOURCE,
-        "active_gate_passed": True,
-        "context_active": True,
-        "context_gate_passed": True,
+        "active_gate_passed": False,
+        "context_active": False,
+        "context_gate_passed": False,
+        "candidate_gate_passed": True,
+        "observe_gate_passed": True,
         "context_allowed_sides": [direction_bias] if direction_bias in {"long", "short"} else [],
         "strategy_policy": {
             **(existing_extra.get("strategy_policy") if isinstance(existing_extra.get("strategy_policy"), dict) else {}),
             "setup_type": "intraday_window_admission",
             "allowed_sides": [direction_bias] if direction_bias in {"long", "short"} else [],
-            "avoid_new_entries": False,
+            "avoid_new_entries": True,
         },
         "screener_snapshot": {
             "symbol": to_text(item.get("symbol")).upper(),
@@ -644,8 +647,8 @@ def _target_extra(
     return apply_target_execution_metadata(
         payload,
         direction_bias=direction_bias,
-        status="active",
-        active_gate_passed=True,
+        status="candidate",
+        active_gate_passed=False,
         data_quality_ready=True,
     )
 
@@ -1023,7 +1026,7 @@ def build_intraday_window_admission_response(
                 "direction_bias": normalize_direction_bias(row.get("direction_bias"), default="neutral"),
                 "score": score,
                 "scan_reason": row["scan_reason"],
-                "status": "active",
+                "status": "candidate",
                 "us_time": to_text(item.get("latest_us_time") or times.get("us")),
                 "cn_time": to_text(item.get("latest_cn_time") or format_cn_time(to_int(item.get("latest_bar_time_ms"), 0)) or times.get("cn")),
                 "bar_time_ms": to_int(item.get("latest_bar_time_ms"), computed_at_ms),
@@ -1082,7 +1085,7 @@ def build_intraday_window_admission_response(
                     "source": WINDOW_ADMISSION_SOURCE,
                     "reason": "intraday_window_admission",
                     "prime_symbols": admitted_symbols,
-                    "emit_signals": True,
+                    "emit_signals": False,
                 },
                 request_json_request=request_json_request,
                 compute_base_url=compute_base_url,
@@ -1241,9 +1244,9 @@ def build_intraday_window_admission_response(
                 "symbol": row["symbol"],
                 "score": row["score"],
                 "direction_bias": row["direction_bias"],
-                "execution_eligible": True,
-                "target_layer": "execution",
-                "execution_blockers": [],
+                "execution_eligible": False,
+                "target_layer": "observe",
+                "execution_blockers": ["target_not_active"],
                 "window_status": row["window_status"],
                 "trace_stage": row["trace_stage"],
                 "bars_remaining": row["bars_remaining"],

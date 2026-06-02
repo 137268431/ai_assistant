@@ -87,11 +87,17 @@ def _load_scan_settings(
         runtime_environment,
         80,
     )
+    entry_quote_reserve_raw = api_app.cfg.get_int_for_environment(
+        "entry_pre_submit_temp_subscription_limit",
+        runtime_environment,
+        8,
+    )
     target_limit = max(0, int(target_limit_raw or 0))
     total_limit = max(0, int(total_limit_raw or 0))
+    entry_quote_reserve = max(0, int(entry_quote_reserve_raw or 0))
     trade_budget: int | None = target_limit if target_limit > 0 else None
     if total_limit > 0:
-        total_budget = max(0, total_limit - monitor_count)
+        total_budget = max(0, total_limit - monitor_count - entry_quote_reserve)
         trade_budget = total_budget if trade_budget is None else min(trade_budget, total_budget)
 
     return {
@@ -159,6 +165,7 @@ def _load_scan_settings(
         "monitor_count": monitor_count,
         "target_subscription_limit": target_limit,
         "total_subscription_limit": total_limit,
+        "entry_quote_subscription_reserve": entry_quote_reserve,
         "trade_subscription_budget": trade_budget,
         "active_target_limit": max(
             0,

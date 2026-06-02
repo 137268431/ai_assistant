@@ -288,12 +288,12 @@ class DailyTradeReviewTest(unittest.TestCase):
         self.assertIn("ibkr/analytics/daily-trade-review", compat)
         self.assertIn("/ibkr_trade_review.html", bridge)
 
-    def test_active_target_policy_accepts_intraday_context_and_manual_sources(self):
+    def test_active_target_policy_keeps_intraday_context_as_candidate_until_entry(self):
         intraday = {"status": "active", "extra": {"source": "intraday_window_admission", "context_gate_passed": True}}
         manual = {"status": "active", "extra": {"source": "manual_page_add"}}
         stale = {"status": "active", "extra": {"source": "daily_scan", "active_gate_passed": False}}
-        self.assertTrue(target_row_is_daily_scan_active(intraday))
-        self.assertEqual("active", effective_target_status(intraday))
+        self.assertFalse(target_row_is_daily_scan_active(intraday))
+        self.assertEqual("candidate", effective_target_status(intraday))
         self.assertEqual("active", effective_target_status(manual))
         self.assertEqual("candidate", effective_target_status(stale))
 

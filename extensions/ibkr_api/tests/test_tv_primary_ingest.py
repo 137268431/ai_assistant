@@ -278,7 +278,7 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(response["ok"])
         self.assertEqual(response["target"], "ibkr_targets")
-        self.assertEqual(pb.records["ibkr_targets"][0]["status"], "active")
+        self.assertEqual(pb.records["ibkr_targets"][0]["status"], "candidate")
         self.assertEqual(pb.records["ibkr_targets"][0]["direction_bias"], "long")
         target_extra = pb.records["ibkr_targets"][0]["extra"]
         self.assertEqual(target_extra["activation_source"], "tradingview")
@@ -546,6 +546,50 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertEqual(extra["mtf_last_status"], "pass")
         self.assertEqual(extra["mtf_last_score"], 100.0)
         self.assertEqual(extra["activity_rank"], 1)
+        self.assertEqual(pb.records["ibkr_targets"][0]["status"], "candidate")
+
+    def test_pre_alert_does_not_demote_entry_activated_target(self):
+        pb = _FakePB()
+        pb.create_record(
+            "ibkr_targets",
+            {
+                "symbol": "WPM",
+                "date": "2026-05-29",
+                "environment": "live",
+                "direction_bias": "long",
+                "score": 92,
+                "status": "active",
+                "extra": {
+                    "source": "tradingview",
+                    "event_type": "entry",
+                    "entry_backfilled_target": True,
+                    "entry_signal_id": "wpm-entry-1",
+                    "strategy_policy": {"setup_type": "tradingview_entry_backfill", "allowed_sides": ["long"]},
+                },
+            },
+        )
+
+        response, status = _process(pb, {
+            "source": "tv",
+            "event_type": "pre_alert",
+            "event_id": "wpm-pre-after-entry",
+            "symbol": "WPM",
+            "direction_bias": "long",
+            "activity_score": 85,
+            "quality_score": 80,
+            "market_date": "2026-05-29",
+            "environment": "live",
+            "us_time": "2026-05-29 10:05:00",
+            "bar_time_ms": _et_ms("2026-05-29 10:05:00"),
+        })
+
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
+        target = pb.records["ibkr_targets"][0]
+        self.assertEqual(target["status"], "active")
+        self.assertTrue(target["extra"]["entry_backfilled_target"])
+        self.assertEqual(target["extra"]["entry_signal_id"], "wpm-entry-1")
+        self.assertEqual(target["extra"]["rank_reason"], "tv_entry_active")
 
     def test_entry_routes_to_ibkr_signals_with_tv_payload_aliases(self):
         pb = _FakePB()

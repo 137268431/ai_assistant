@@ -63,7 +63,7 @@ def _truthy(value) -> bool:
 def _target_row_is_daily_scan_active(row: dict | None) -> bool:
     extra = _safe_extra(row)
     source = str(extra.get("source") or "").strip().lower()
-    if source not in CONTEXT_ACTIVE_TARGET_SOURCES:
+    if source != "daily_scan":
         return False
     return (
         _truthy(extra.get("active_gate_passed"))
@@ -72,10 +72,23 @@ def _target_row_is_daily_scan_active(row: dict | None) -> bool:
     )
 
 
+def _target_extra_has_entry_activation(extra: dict | None) -> bool:
+    payload = dict(extra or {})
+    strategy_policy = payload.get("strategy_policy") if isinstance(payload.get("strategy_policy"), dict) else {}
+    setup_type = str(strategy_policy.get("setup_type") or "").strip().lower()
+    return bool(
+        str(payload.get("event_type") or "").strip().lower() == "entry"
+        or _truthy(payload.get("entry_backfilled_target"))
+        or str(payload.get("entry_signal_id") or "").strip()
+        or str(payload.get("target_admission_reason") or "").strip().lower() == "entry_signal_backfill"
+        or setup_type == "tradingview_entry_backfill"
+    )
+
+
 def _target_row_is_tradingview_active(row: dict | None) -> bool:
     extra = _safe_extra(row)
     source = str(extra.get("source") or "").strip().lower()
-    return source in TRADINGVIEW_TARGET_SOURCES
+    return source in TRADINGVIEW_TARGET_SOURCES and _target_extra_has_entry_activation(extra)
 
 
 def _safe_int(value, default: int = 0) -> int:

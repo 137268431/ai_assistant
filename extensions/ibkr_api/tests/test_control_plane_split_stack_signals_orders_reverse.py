@@ -1,5 +1,6 @@
 from control_plane_split_stack_helpers import *
 from ibkr_api.orders.notifications import sync_order_callback_ledger_notification, sync_order_status_notification
+from ibkr_api.orders.upsert import build_order_record_payload
 
 
 class _RequestArgs(dict):
@@ -717,6 +718,119 @@ class ControlPlaneSplitStackSignalsOrdersReverseTest(unittest.TestCase):
         fake_pb.update_record.assert_not_called()
         fake_pb.create_record.assert_not_called()
         notify_order_status.assert_not_called()
+
+    def test_order_record_payload_preserves_existing_fill_time_on_filled_heartbeat(self):
+        existing_row = {
+            "id": "order-1",
+            "unique_id": "zts-entry",
+            "order_type": "Entry",
+            "order_id": "95",
+            "broker_order_id": "95",
+            "symbol": "ZTS",
+            "environment": "paper",
+            "direction": "short",
+            "quantity": 64,
+            "limit_price": 77.21,
+            "status": "Filled",
+            "filled_qty": 64,
+            "fill_price": 77.21,
+            "signal_id": "sig-zts",
+            "trade_group_id": "zts-group",
+            "entry_order_unique_id": "zts-entry",
+            "role": "entry",
+            "relation_status": "closed",
+            "position_side": "short",
+            "order_time": "2026-06-01 11:08:00",
+            "fill_time": "",
+            "bar_time_ms": 1780326662000,
+            "us_time": "2026-06-01 11:11:02",
+            "cn_time": "2026-06-01 23:11:02",
+            "extra": {
+                "filled_us_time": "2026-06-01 11:11:02",
+                "filled_cn_time": "2026-06-01 23:11:02",
+                "filled_bar_time_ms": 1780326662000,
+            },
+        }
+        request_payload = {
+            "environment": "paper",
+            "unique_id": "zts-entry",
+            "order_type": "Entry",
+            "order_id": "95",
+            "broker_order_id": "95",
+            "symbol": "ZTS",
+            "direction": "short",
+            "quantity": 64,
+            "limit_price": 77.21,
+            "status": "Filled",
+            "filled_qty": 64,
+            "fill_price": 77.21,
+            "signal_id": "sig-zts",
+            "trade_group_id": "zts-group",
+            "entry_order_unique_id": "zts-entry",
+            "role": "entry",
+            "us_time": "2026-06-02 00:24:53",
+            "cn_time": "2026-06-02 12:24:53",
+            "bar_time_ms": 1780374293000,
+            "extra": {"broker_update_source": "poll"},
+        }
+
+        record = build_order_record_payload(request_payload, existing_row, "paper")
+
+        self.assertEqual("2026-06-01 11:11:02", record["us_time"])
+        self.assertEqual("2026-06-01 23:11:02", record["cn_time"])
+        self.assertEqual(1780326662000, record["bar_time_ms"])
+        self.assertEqual("2026-06-01 11:11:02", record["fill_time"])
+        self.assertEqual("2026-06-01 11:11:02", record["extra"]["filled_us_time"])
+        self.assertEqual(1780326662000, record["extra"]["filled_bar_time_ms"])
+
+    def test_order_record_payload_accepts_explicit_fill_time_correction(self):
+        existing_row = {
+            "id": "order-1",
+            "unique_id": "zts-entry",
+            "order_type": "Entry",
+            "order_id": "95",
+            "broker_order_id": "95",
+            "symbol": "ZTS",
+            "environment": "paper",
+            "direction": "short",
+            "quantity": 64,
+            "limit_price": 77.21,
+            "status": "Filled",
+            "filled_qty": 64,
+            "fill_price": 77.21,
+            "signal_id": "sig-zts",
+            "trade_group_id": "zts-group",
+            "entry_order_unique_id": "zts-entry",
+            "role": "entry",
+            "relation_status": "closed",
+            "position_side": "short",
+            "bar_time_ms": 1780374293000,
+            "us_time": "2026-06-02 00:24:53",
+            "cn_time": "2026-06-02 12:24:53",
+            "extra": {
+                "filled_us_time": "2026-06-02 00:24:53",
+                "filled_cn_time": "2026-06-02 12:24:53",
+                "filled_bar_time_ms": 1780374293000,
+            },
+        }
+        request_payload = {
+            "environment": "paper",
+            "unique_id": "zts-entry",
+            "order_type": "Entry",
+            "symbol": "ZTS",
+            "status": "Filled",
+            "fill_us_time": "2026-06-01 11:11:02",
+            "fill_cn_time": "2026-06-01 23:11:02",
+            "fill_bar_time_ms": 1780326662000,
+        }
+
+        record = build_order_record_payload(request_payload, existing_row, "paper")
+
+        self.assertEqual("2026-06-01 11:11:02", record["us_time"])
+        self.assertEqual("2026-06-01 23:11:02", record["cn_time"])
+        self.assertEqual(1780326662000, record["bar_time_ms"])
+        self.assertEqual("2026-06-01 11:11:02", record["fill_time"])
+        self.assertEqual("2026-06-01 11:11:02", record["extra"]["filled_us_time"])
 
     def test_build_order_upsert_response_notifies_on_non_idempotent_submit(self):
         request_payload = {

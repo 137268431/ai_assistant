@@ -92,6 +92,7 @@
         // Signal validity configuration (from config table, default 30 minutes)
         let signalValidityMinutes = 30;
         let realtimeLatencySnapshot = null;
+        let strategyCapacitySnapshot = null;
         const CONFIG_CACHE_TTL_MS = 5 * 60 * 1000;
         const SIGNALS_FAST_CACHE_TTL_MS = 15000;
         const SIGNALS_DETAIL_CACHE_TTL_MS = 30000;
@@ -649,6 +650,72 @@
             `;
         }
 
+        function normalizeStrategyCapacitySnapshot(payload) {
+            const capacity = safeObject(payload?.strategy_capacity);
+            if (!capacity || Object.keys(capacity).length === 0) {
+                return { available: false };
+            }
+            const used = Math.max(0, Math.trunc(toFiniteNumber(capacity.strategy_capacity_used) ?? 0));
+            const limit = Math.max(0, Math.trunc(toFiniteNumber(capacity.max_strategy_open_positions) ?? 0));
+            const positions = Math.max(0, Math.trunc(toFiniteNumber(capacity.strategy_open_positions) ?? 0));
+            const entries = Math.max(0, Math.trunc(toFiniteNumber(capacity.open_strategy_entry_orders) ?? 0));
+            const remainingRaw = toFiniteNumber(capacity.strategy_capacity_remaining);
+            return {
+                ...capacity,
+                available: payload?.available !== false && capacity.available !== false,
+                strategy_capacity_used: used,
+                max_strategy_open_positions: limit,
+                strategy_open_positions: positions,
+                open_strategy_entry_orders: entries,
+                strategy_capacity_remaining: remainingRaw === null ? Math.max(0, limit - used) : Math.max(0, Math.trunc(remainingRaw)),
+            };
+        }
+
+        function formatStrategyCapacityChip() {
+            const capacity = strategyCapacitySnapshot;
+            if (!capacity) return '开仓占用 --';
+            if (capacity.available === false) return '开仓占用 暂不可用';
+            const used = capacity.strategy_capacity_used ?? 0;
+            const limit = capacity.max_strategy_open_positions ?? 0;
+            const positions = capacity.strategy_open_positions ?? 0;
+            const entries = capacity.open_strategy_entry_orders ?? 0;
+            const remaining = capacity.strategy_capacity_remaining ?? Math.max(0, limit - used);
+            return `开仓占用 ${used}/${limit} · 持仓 ${positions} + Entry ${entries} · 剩余 ${remaining}`;
+        }
+
+        function strategyCapacityChipColor() {
+            const capacity = strategyCapacitySnapshot;
+            if (!capacity || capacity.available === false) return '#A0AEC0';
+            const limit = Number(capacity.max_strategy_open_positions || 0);
+            if (limit <= 0) return '#A0AEC0';
+            if (capacity.capacity_full || Number(capacity.strategy_capacity_remaining || 0) <= 0) return '#FC8181';
+            if (Number(capacity.strategy_capacity_used || 0) >= limit * 0.8) return '#F6AD55';
+            return '#68D391';
+        }
+
+        async function loadStrategyCapacitySnapshot({ force = false, requestId = 0 } = {}) {
+            const modePayload = buildModePayload({}, { brokerMode: currentBrokerMode, dataEnvironment: currentEnvironment });
+            const query = new URLSearchParams(modePayload).toString();
+            const path = `/api/custom/ibkr/strategy-capacity?${query}`;
+            try {
+                const payload = typeof cachedCustomJson === 'function'
+                    ? await cachedCustomJson(path, currentEnvironment, {}, {
+                        ttlMs: SIGNALS_FAST_CACHE_TTL_MS,
+                        swrMs: SIGNALS_FAST_CACHE_TTL_MS,
+                        force,
+                        tags: ['signals-page', 'strategy-capacity', currentBrokerMode, currentEnvironment]
+                    })
+                    : await customJsonFetch(path, currentEnvironment);
+                if (requestId && requestId !== currentSignalsRequestId) return;
+                strategyCapacitySnapshot = normalizeStrategyCapacitySnapshot(payload);
+            } catch (error) {
+                if (requestId && requestId !== currentSignalsRequestId) return;
+                strategyCapacitySnapshot = { available: false, error: String(error?.message || error || 'strategy_capacity_unavailable') };
+                console.warn('[Signals] 开仓占用加载失败:', error);
+            }
+            renderSignalsTopSection();
+        }
+
         function renderSignalsTopSection() {
             const scopeParts = [];
             if (filterSignalId) scopeParts.push(`signal_id=${summarizeHeaderValue(filterSignalId, 18)}`);
@@ -667,6 +734,7 @@
                     <span class="status-chip"><span class="dot" style="color:#4FD1C5"></span>结果 ${escapeHtml(String(getSignalsResultCount()))}</span>
                     <span class="status-chip"><span class="dot" style="color:#63B3ED"></span>${escapeHtml(getSignalsDirectionLabel())}</span>
                     <span class="status-chip"><span class="dot" style="color:#F6AD55"></span>${escapeHtml(getSignalsStatusLabel())}</span>
+                    <span class="status-chip"><span class="dot" style="color:${strategyCapacityChipColor()}"></span>${escapeHtml(formatStrategyCapacityChip())}</span>
                 </div>
             `;
             }
@@ -1732,6 +1800,11 @@
 
             // 重置为第一页
             currentPage = 1;
+            strategyCapacitySnapshot = null;
+            renderSignalsTopSection();
+            loadStrategyCapacitySnapshot({ force, requestId }).catch((error) => {
+                console.warn('[Signals] 开仓占用后台加载失败:', error);
+            });
 
             try {
                 // Load signal validity configuration from config table

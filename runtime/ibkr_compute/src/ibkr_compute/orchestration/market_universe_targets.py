@@ -3,6 +3,7 @@ from __future__ import annotations
 import requests
 
 from ibkr_compute.market.pocketbase_sqlite import normalize_exchange_value
+from ibkr_compute.universe.target_execution import target_row_execution_eligible
 
 from .market_universe_support import *
 from .market_universe_support import (
@@ -241,12 +242,16 @@ class TradingServiceMarketUniverseTargetsMixin:
         service_mod = _service_mod()
         return max(0, self.config.get_int_for_environment("ibkr_total_subscription_limit", service_mod.DATA_ENVIRONMENT, 80))
 
+    def _get_entry_temp_subscription_reserve(self) -> int:
+        service_mod = _service_mod()
+        return max(0, self.config.get_int_for_environment("entry_pre_submit_temp_subscription_limit", service_mod.DATA_ENVIRONMENT, 8))
+
     def _get_trade_subscription_budget(self) -> int | None:
         target_limit = self._get_target_subscription_limit()
         total_limit = self._get_total_subscription_limit()
         trade_budget = target_limit if target_limit > 0 else None
         if total_limit > 0:
-            remaining_budget = max(0, total_limit - len(self._market_ws_symbols()))
+            remaining_budget = max(0, total_limit - len(self._market_ws_symbols()) - self._get_entry_temp_subscription_reserve())
             trade_budget = remaining_budget if trade_budget is None else min(trade_budget, remaining_budget)
         return trade_budget
 
@@ -299,6 +304,7 @@ class TradingServiceMarketUniverseTargetsMixin:
                 or _target_row_is_manual(row)
                 or _target_row_is_tradingview_active(row)
             )
+            and target_row_execution_eligible(row)
         ]
         prioritized_rows = list(active_rows)
 
@@ -410,7 +416,7 @@ class TradingServiceMarketUniverseTargetsMixin:
                     "subscription_selected": subscription_selected,
                 }
             )
-            desired = "active"
+            desired = "active" if target_row_execution_eligible(row) else "candidate"
             current = str(row.get("status", "") or "").strip().lower()
             if current == desired and extra == _safe_extra(row):
                 continue

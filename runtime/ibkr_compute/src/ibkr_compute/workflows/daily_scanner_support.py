@@ -77,7 +77,7 @@ def _truthy(value: Any) -> bool:
 def _target_row_is_daily_scan_active(row: dict | None) -> bool:
     extra = _safe_extra(row)
     source = str(extra.get("source") or "").strip().lower()
-    if source not in CONTEXT_ACTIVE_TARGET_SOURCES:
+    if source != "daily_scan":
         return False
     return (
         _truthy(extra.get("active_gate_passed"))

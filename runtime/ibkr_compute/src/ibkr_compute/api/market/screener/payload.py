@@ -47,7 +47,7 @@ def _truthy_target_value(value) -> bool:
 def _target_row_is_daily_scan_active(row: dict | None) -> bool:
     extra = parse_json_object((row or {}).get("extra"))
     source = str(extra.get("source") or "").strip().lower()
-    if source not in CONTEXT_ACTIVE_TARGET_SOURCES:
+    if source != "daily_scan":
         return False
     return (
         _truthy_target_value(extra.get("active_gate_passed"))
@@ -65,7 +65,14 @@ def _target_row_is_manual_active(row: dict | None) -> bool:
 def _target_row_is_tradingview_active(row: dict | None) -> bool:
     extra = parse_json_object((row or {}).get("extra"))
     source = str(extra.get("source") or "").strip().lower()
-    return source in TRADINGVIEW_TARGET_SOURCES
+    strategy_policy = extra.get("strategy_policy") if isinstance(extra.get("strategy_policy"), dict) else {}
+    return source in TRADINGVIEW_TARGET_SOURCES and bool(
+        str(extra.get("event_type") or "").strip().lower() == "entry"
+        or _truthy_target_value(extra.get("entry_backfilled_target"))
+        or str(extra.get("entry_signal_id") or "").strip()
+        or str(extra.get("target_admission_reason") or "").strip().lower() == "entry_signal_backfill"
+        or str(strategy_policy.get("setup_type") or "").strip().lower() == "tradingview_entry_backfill"
+    )
 
 
 def _effective_target_status(row: dict | None) -> str:

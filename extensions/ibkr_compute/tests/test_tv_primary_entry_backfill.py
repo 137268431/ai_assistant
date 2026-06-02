@@ -166,6 +166,34 @@ class TvPrimaryEntryBackfillTests(unittest.TestCase):
         self.assertTrue(signal_payload["extra"]["target_backfilled"])
         self.assertEqual(signal_payload["extra"]["target_backfill"]["action"], "updated")
 
+    def test_authorized_entry_adds_activation_metadata_to_legacy_active_target(self):
+        pb = DummyPocketBase([
+            {
+                "id": "target-active-prealert",
+                "symbol": "WPM",
+                "exchange": "NYSE",
+                "date": "2026-06-01",
+                "environment": "live",
+                "direction_bias": "neutral",
+                "score": 40,
+                "status": "active",
+                "extra": {"source": "tradingview", "event_type": "pre_alert"},
+            }
+        ])
+
+        result, status, signal_payload = _route_with_dummy_signal(pb, _entry_payload())
+
+        self.assertEqual(status, 200)
+        self.assertTrue(result["ok"])
+        target = pb.targets[0]
+        self.assertEqual(target["status"], "active")
+        self.assertEqual(target["direction_bias"], "long")
+        self.assertTrue(target["extra"]["entry_backfilled_target"])
+        self.assertEqual(target["extra"]["entry_backfill_reason"], "active_entry_upgrade")
+        self.assertEqual(target["extra"]["entry_signal_id"], "WPM_entry_1")
+        self.assertTrue(signal_payload["extra"]["target_backfilled"])
+        self.assertEqual(signal_payload["extra"]["target_backfill"]["action"], "updated")
+
     def test_authorized_entry_does_not_reactivate_removed_target(self):
         pb = DummyPocketBase([
             {

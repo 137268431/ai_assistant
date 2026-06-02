@@ -7,6 +7,7 @@ from ibkr_api.orders.values import ensure_object, first_defined, parse_boolean, 
 from ibkr_api.universe.maintenance import parse_json_object
 from ibkr_compute.core.broker_mode import normalize_broker_mode, resolve_data_environment
 from ibkr_compute.market.timeframe_utils import ET, classify_session, format_cn_time, format_us_time, interval_to_chart_tf, ms_to_et
+from ibkr_compute.universe.target_execution import target_extra_has_entry_activation
 
 
 LIVE_ENVIRONMENT = "live"
@@ -45,7 +46,7 @@ def truthy_target_value(value: Any) -> bool:
 def target_row_is_daily_scan_active(row: dict[str, Any] | None) -> bool:
     extra = parse_json_object((row or {}).get("extra"))
     source = to_text(extra.get("source")).lower()
-    if source not in CONTEXT_ACTIVE_TARGET_SOURCES:
+    if source != "daily_scan":
         return False
     return (
         truthy_target_value(extra.get("active_gate_passed"))
@@ -63,7 +64,7 @@ def target_row_is_manual_active(row: dict[str, Any] | None) -> bool:
 def target_row_is_tradingview_active(row: dict[str, Any] | None) -> bool:
     extra = parse_json_object((row or {}).get("extra"))
     source = to_text(extra.get("source")).lower()
-    return source in TRADINGVIEW_TARGET_SOURCES
+    return source in TRADINGVIEW_TARGET_SOURCES and target_extra_has_entry_activation(extra)
 
 
 def effective_target_status(row: dict[str, Any] | None) -> str:
