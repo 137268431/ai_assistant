@@ -59,6 +59,10 @@ def _utc_minutes_ago(minutes: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat().replace("+00:00", "Z")
 
 
+def _utc_ms(year: int, month: int, day: int, hour: int, minute: int = 0, second: int = 0) -> int:
+    return int(datetime(year, month, day, hour, minute, second, tzinfo=timezone.utc).timestamp() * 1000)
+
+
 class _FakePocketBase:
     def __init__(self, records):
         self.records = {collection: [dict(row) for row in rows] for collection, rows in records.items()}
@@ -1213,6 +1217,159 @@ class SystemMonitorSupportTest(unittest.TestCase):
         self.assertEqual(signal_counts["pending_count"], 0)
         self.assertEqual(signal_counts["broker_scoped_ignored_count"], 0)
         self.assertEqual(signal_counts["broker_scoped_handled_count"], 2)
+
+    def test_tv_flow_execution_failure_still_alerts_intraday_current_market_date(self):
+        pb = _FakePocketBase(
+            {
+                "tv_webhook_events": [],
+                "ibkr_signals": [],
+                "ibkr_reverse_signals": [
+                    {
+                        "id": "rev_close_failed",
+                        "symbol": "SMCI",
+                        "status": "cancelled",
+                        "source": "tradingview",
+                        "environment": "paper",
+                        "action_type": "close",
+                        "reason": "reverse blocked: conid_unresolved",
+                        "created": "2026-06-02 13:55:00Z",
+                        "updated": "2026-06-02 13:56:00Z",
+                        "extra": {
+                            "result_status": "reentry_blocked",
+                            "reentry_blocked": {"reason": "conid_unresolved"},
+                        },
+                    }
+                ],
+            }
+        )
+
+        summary = build_tv_flow_monitor_summary(
+            pb,
+            data_environment="live",
+            runtime_environment="paper",
+            config_map={"tv_flow_failed_lookback_min": "120", "eod_close_time": "15:55"},
+            now_ms=_utc_ms(2026, 6, 2, 14, 0),
+        )
+
+        self.assertEqual(summary["status"], "error")
+        self.assertTrue(summary["action_monitor"]["active"])
+        self.assertIn("tv_flow_execution_action_failed", {item["code"] for item in summary["flags"]})
+        self.assertEqual(summary["actions"]["tv_failed_count"], 1)
+        self.assertEqual(summary["actions"]["tv_failed_raw_count"], 1)
+        self.assertEqual(summary["actions"]["tv_failed_suppressed_after_eod_count"], 0)
+
+    def test_tv_flow_execution_failure_is_suppressed_after_eod(self):
+        pb = _FakePocketBase(
+            {
+                "tv_webhook_events": [],
+                "ibkr_signals": [],
+                "ibkr_reverse_signals": [
+                    {
+                        "id": "rev_close_failed",
+                        "symbol": "SMCI",
+                        "status": "cancelled",
+                        "source": "tradingview",
+                        "environment": "paper",
+                        "action_type": "close",
+                        "reason": "reverse blocked: conid_unresolved",
+                        "created": "2026-06-02 19:55:00Z",
+                        "updated": "2026-06-02 19:56:00Z",
+                        "extra": {
+                            "result_status": "reentry_blocked",
+                            "reentry_blocked": {"reason": "conid_unresolved"},
+                        },
+                    }
+                ],
+            }
+        )
+
+        summary = build_tv_flow_monitor_summary(
+            pb,
+            data_environment="live",
+            runtime_environment="paper",
+            config_map={"tv_flow_failed_lookback_min": "120", "eod_close_time": "15:55"},
+            now_ms=_utc_ms(2026, 6, 2, 20, 5),
+        )
+
+        self.assertEqual(summary["status"], "ok")
+        self.assertFalse(summary["action_monitor"]["active"])
+        self.assertNotIn("tv_flow_execution_action_failed", {item["code"] for item in summary["flags"]})
+        self.assertEqual(summary["actions"]["tv_failed_count"], 0)
+        self.assertEqual(summary["actions"]["tv_failed_raw_count"], 1)
+        self.assertEqual(summary["actions"]["tv_failed_suppressed_after_eod_count"], 1)
+
+    def test_tv_flow_previous_market_date_failures_are_suppressed_before_eod(self):
+        pb = _FakePocketBase(
+            {
+                "tv_webhook_events": [],
+                "ibkr_signals": [],
+                "ibkr_reverse_signals": [
+                    {
+                        "id": "rev_close_failed_old",
+                        "symbol": "SMCI",
+                        "status": "cancelled",
+                        "source": "tradingview",
+                        "environment": "paper",
+                        "action_type": "close",
+                        "reason": "reverse blocked: conid_unresolved",
+                        "created": "2026-06-01 19:55:00Z",
+                        "updated": "2026-06-01 19:56:00Z",
+                        "extra": {
+                            "result_status": "reentry_blocked",
+                            "reentry_blocked": {"reason": "conid_unresolved"},
+                        },
+                    }
+                ],
+            }
+        )
+
+        summary = build_tv_flow_monitor_summary(
+            pb,
+            data_environment="live",
+            runtime_environment="paper",
+            config_map={"tv_flow_failed_lookback_min": "1440", "eod_close_time": "15:55"},
+            now_ms=_utc_ms(2026, 6, 2, 13, 0),
+        )
+
+        self.assertEqual(summary["status"], "ok")
+        self.assertTrue(summary["action_monitor"]["active"])
+        self.assertEqual(summary["actions"]["tv_failed_count"], 0)
+        self.assertEqual(summary["actions"]["tv_failed_raw_count"], 1)
+        self.assertEqual(summary["actions"]["tv_failed_suppressed_cross_day_count"], 1)
+
+    def test_tv_flow_pending_actions_are_suppressed_after_eod(self):
+        pb = _FakePocketBase(
+            {
+                "tv_webhook_events": [],
+                "ibkr_signals": [],
+                "ibkr_reverse_signals": [
+                    {
+                        "id": "rev_pending",
+                        "symbol": "SMCI",
+                        "status": "pending",
+                        "source": "tradingview",
+                        "environment": "paper",
+                        "action_type": "close",
+                        "created": "2026-06-02 19:40:00Z",
+                        "updated": "2026-06-02 19:40:00Z",
+                    }
+                ],
+            }
+        )
+
+        summary = build_tv_flow_monitor_summary(
+            pb,
+            data_environment="live",
+            runtime_environment="paper",
+            config_map={"tv_flow_action_pending_stuck_warn_min": "15", "eod_close_time": "15:55"},
+            now_ms=_utc_ms(2026, 6, 2, 20, 10),
+        )
+
+        self.assertEqual(summary["status"], "ok")
+        self.assertEqual(summary["actions"]["tv_pending_count"], 0)
+        self.assertEqual(summary["actions"]["tv_pending_raw_count"], 1)
+        self.assertEqual(summary["actions"]["tv_pending_suppressed_after_eod_count"], 1)
+        self.assertNotIn("tv_flow_tv_action_pending_stuck", {item["code"] for item in summary["flags"]})
 
     def test_monitor_payload_merges_tv_flow_flags_from_pb_client_alias(self):
         pb = _FakePocketBase(

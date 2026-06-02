@@ -293,6 +293,179 @@ class StorageCleanupTest(unittest.TestCase):
         )
         self.assertEqual({row["id"] for row in pb.records["ibkr_backtest_trades"]}, {"protected_trade"})
 
+    def test_tv_transient_cleanup_dry_run_estimates_without_deleting(self):
+        pb = _FakePB(
+            {
+                "ibkr_signals": [
+                    {
+                        "id": "stale_signal",
+                        "signal_id": "sig-stale",
+                        "environment": "live",
+                        "status": "pending",
+                        "order_id": "",
+                        "created": "2026-06-01 13:48:00Z",
+                        "updated": "2026-06-01 14:00:00Z",
+                        "extra": {
+                            "broker_mode": "paper",
+                            "execution_by_mode": {"paper": {"status": "rejected"}},
+                        },
+                    }
+                ],
+                "ibkr_reverse_signals": [
+                    {
+                        "id": "stale_reverse",
+                        "environment": "paper",
+                        "source": "tradingview",
+                        "status": "cancelled",
+                        "action_type": "adjust_bracket",
+                        "reason": "reverse blocked: adjust_bracket_targets_missing_or_invalid",
+                        "created": "2026-06-01 13:48:00Z",
+                        "updated": "2026-06-01 14:00:00Z",
+                    }
+                ],
+            }
+        )
+        cleanup = StorageCleanup(pb, _FakeConfig(), default_environments=["live"])
+
+        result = cleanup.cleanup(dry_run=True, now=datetime(2026, 6, 2, 4, 0, tzinfo=ET))
+
+        tv_cleanup = result["environments"][0]["tv_transient_cleanup"]
+        self.assertTrue(result["ok"])
+        self.assertEqual(tv_cleanup["estimated"], 2)
+        self.assertEqual(tv_cleanup["deleted"], 0)
+        self.assertEqual({row["id"] for row in pb.records["ibkr_signals"]}, {"stale_signal"})
+        self.assertEqual({row["id"] for row in pb.records["ibkr_reverse_signals"]}, {"stale_reverse"})
+
+    def test_tv_transient_cleanup_deletes_only_paper_eod_candidates(self):
+        pb = _FakePB(
+            {
+                "orders": [{"id": "order", "environment": "paper", "signal_id": "sig-has-order"}],
+                "ibkr_signals": [
+                    {
+                        "id": "delete_signal",
+                        "signal_id": "sig-delete",
+                        "environment": "live",
+                        "status": "pending",
+                        "order_id": "",
+                        "created": "2026-06-01 13:48:00Z",
+                        "updated": "2026-06-01 14:00:00Z",
+                        "extra": {
+                            "broker_mode": "paper",
+                            "execution_by_mode": {"paper": {"status": "expired"}},
+                        },
+                    },
+                    {
+                        "id": "keep_live_signal",
+                        "signal_id": "sig-live",
+                        "environment": "live",
+                        "status": "pending",
+                        "order_id": "",
+                        "created": "2026-06-01 13:48:00Z",
+                        "updated": "2026-06-01 14:00:00Z",
+                        "extra": {
+                            "broker_mode": "live",
+                            "execution_by_mode": {"live": {"status": "expired"}},
+                        },
+                    },
+                    {
+                        "id": "keep_order_signal",
+                        "signal_id": "sig-has-order",
+                        "environment": "live",
+                        "status": "pending",
+                        "order_id": "",
+                        "created": "2026-06-01 13:48:00Z",
+                        "updated": "2026-06-01 14:00:00Z",
+                        "extra": {
+                            "broker_mode": "paper",
+                            "execution_by_mode": {"paper": {"status": "rejected"}},
+                        },
+                    },
+                    {
+                        "id": "keep_intraday_signal",
+                        "signal_id": "sig-current",
+                        "environment": "live",
+                        "status": "pending",
+                        "order_id": "",
+                        "created": "2026-06-02 13:48:00Z",
+                        "updated": "2026-06-02 14:00:00Z",
+                        "extra": {
+                            "broker_mode": "paper",
+                            "execution_by_mode": {"paper": {"status": "rejected"}},
+                        },
+                    },
+                ],
+                "ibkr_reverse_signals": [
+                    {
+                        "id": "delete_reverse",
+                        "environment": "paper",
+                        "source": "tradingview",
+                        "status": "cancelled",
+                        "action_type": "close",
+                        "reason": "reverse blocked: conid_unresolved",
+                        "created": "2026-06-01 13:48:00Z",
+                        "updated": "2026-06-01 14:00:00Z",
+                    },
+                    {
+                        "id": "keep_confirmed_reverse",
+                        "environment": "paper",
+                        "source": "tradingview",
+                        "status": "confirmed",
+                        "action_type": "close",
+                        "reason": "reverse blocked: conid_unresolved",
+                        "created": "2026-06-01 13:48:00Z",
+                        "updated": "2026-06-01 14:00:00Z",
+                    },
+                    {
+                        "id": "keep_live_reverse",
+                        "environment": "live",
+                        "source": "tradingview",
+                        "status": "cancelled",
+                        "action_type": "close",
+                        "reason": "reverse blocked: conid_unresolved",
+                        "created": "2026-06-01 13:48:00Z",
+                        "updated": "2026-06-01 14:00:00Z",
+                    },
+                    {
+                        "id": "keep_order_reverse",
+                        "environment": "paper",
+                        "source": "tradingview",
+                        "status": "cancelled",
+                        "action_type": "close",
+                        "reason": "reverse blocked: conid_unresolved",
+                        "created": "2026-06-01 13:48:00Z",
+                        "updated": "2026-06-01 14:00:00Z",
+                        "extra": {"broker_order_id": "123"},
+                    },
+                    {
+                        "id": "keep_intraday_reverse",
+                        "environment": "paper",
+                        "source": "tradingview",
+                        "status": "cancelled",
+                        "action_type": "close",
+                        "reason": "reverse blocked: conid_unresolved",
+                        "created": "2026-06-02 13:48:00Z",
+                        "updated": "2026-06-02 14:00:00Z",
+                    },
+                ],
+            }
+        )
+        cleanup = StorageCleanup(pb, _FakeConfig(), default_environments=["live"])
+
+        result = cleanup.cleanup(dry_run=False, now=datetime(2026, 6, 2, 10, 30, tzinfo=ET))
+
+        tv_cleanup = result["environments"][0]["tv_transient_cleanup"]
+        self.assertTrue(result["ok"])
+        self.assertEqual(tv_cleanup["estimated"], 2)
+        self.assertEqual(tv_cleanup["deleted"], 2)
+        self.assertEqual(
+            {row["id"] for row in pb.records["ibkr_signals"]},
+            {"keep_live_signal", "keep_order_signal", "keep_intraday_signal"},
+        )
+        self.assertEqual(
+            {row["id"] for row in pb.records["ibkr_reverse_signals"]},
+            {"keep_confirmed_reverse", "keep_live_reverse", "keep_order_reverse", "keep_intraday_reverse"},
+        )
+
     def test_data_retention_default_policies_exclude_protected_core_tables(self):
         policy_collections = {str(item.get("collection") or "") for item in DEFAULT_RETENTION_POLICIES}
 

@@ -4,6 +4,7 @@ import inspect
 import time
 from datetime import datetime, timezone
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -39,11 +40,13 @@ RequestsGet = Callable[..., requests.Response]
 AccountSnapshotProbe = Callable[[str], dict[str, Any]]
 
 ACCOUNT_SNAPSHOT_WARN_MS = 12_000.0
+ET = ZoneInfo("America/New_York")
 TV_FLOW_RECEIVED_STUCK_DEFAULT_MIN = 2
 TV_FLOW_ACTION_PENDING_STUCK_DEFAULT_MIN = 15
 TV_FLOW_FAILED_LOOKBACK_DEFAULT_MIN = 24 * 60
 TV_FLOW_PENDING_LOOKBACK_DEFAULT_MIN = 24 * 60
 TV_FLOW_SAMPLE_LIMIT_DEFAULT = 5
+TV_FLOW_EOD_CLOSE_TIME_DEFAULT = "15:55"
 TV_FLOW_EVENT_FETCH_MAX_PAGES = 4
 TV_FLOW_ACTION_FETCH_MAX_PAGES = 10
 BAR_PIPELINE_CONFIG_KEYS = (
@@ -58,6 +61,7 @@ TV_FLOW_CONFIG_KEYS = (
     "tv_flow_failed_lookback_min",
     "tv_flow_pending_lookback_min",
     "tv_flow_record_sample_limit",
+    "eod_close_time",
 )
 FALSE_TEXT = {"0", "false", "no", "off", "disabled", "disable"}
 BAR_PIPELINE_DISABLED_STATUSES = {"disabled", "disabled_tv_primary", "legacy_bar_pipeline_disabled"}
@@ -241,6 +245,57 @@ def _format_age(age_ms: int) -> str:
         return f"{minutes}m"
     hours = minutes / 60
     return f"{hours:.1f}h"
+
+
+def _parse_hhmm(value: Any, default: str = TV_FLOW_EOD_CLOSE_TIME_DEFAULT) -> tuple[int, int]:
+    text = _to_text(value) or default
+    try:
+        hour_text, minute_text = text.split(":", 1)
+        hour = max(0, min(23, int(hour_text)))
+        minute = max(0, min(59, int(minute_text)))
+        return hour, minute
+    except Exception:
+        return _parse_hhmm(default, "15:55") if default != "15:55" else (15, 55)
+
+
+def _et_datetime_from_ms(value_ms: int) -> datetime:
+    return datetime.fromtimestamp(max(0, int(value_ms or 0)) / 1000.0, ET)
+
+
+def _record_et_date(row: dict[str, Any], *, updated: bool = False) -> str:
+    stamp = _record_updated_ms(row) if updated else _record_created_ms(row)
+    if stamp <= 0:
+        return ""
+    return _et_datetime_from_ms(stamp).strftime("%Y-%m-%d")
+
+
+def _tv_action_monitor_window(config_values: dict[str, Any], observed_ms: int) -> dict[str, Any]:
+    hour, minute = _parse_hhmm(config_values.get("eod_close_time"), TV_FLOW_EOD_CLOSE_TIME_DEFAULT)
+    now_et = _et_datetime_from_ms(observed_ms)
+    cutoff = now_et.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return {
+        "active": now_et < cutoff,
+        "market_date": now_et.strftime("%Y-%m-%d"),
+        "cutoff_et": cutoff.strftime("%Y-%m-%d %H:%M:%S"),
+        "eod_close_time": f"{hour:02d}:{minute:02d}",
+        "now_et": now_et.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def _filter_tv_action_window_rows(
+    rows: list[dict[str, Any]],
+    *,
+    window: dict[str, Any],
+    updated: bool = False,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    if not bool(window.get("active")):
+        return [], {"suppressed_after_eod_count": len(rows), "suppressed_cross_day_count": 0}
+    market_date = _to_text(window.get("market_date"))
+    scoped = [row for row in rows if not market_date or _record_et_date(row, updated=updated) == market_date]
+    return scoped, {
+        "suppressed_after_eod_count": 0,
+        "suppressed_cross_day_count": max(0, len(rows) - len(scoped)),
+    }
 
 
 def _load_records(
@@ -566,6 +621,7 @@ def build_tv_flow_monitor_summary(
     action_stuck_ms = action_stuck_min * 60 * 1000
     failed_lookback_ms = failed_lookback_min * 60 * 1000
     pending_lookback_ms = pending_lookback_min * 60 * 1000
+    action_window = _tv_action_monitor_window(config_values, observed_ms)
 
     event_environment = _escape_filter_value(data_environment)
     recent_event_rows = _load_records(
@@ -637,15 +693,26 @@ def build_tv_flow_monitor_summary(
         for row in processed_reverse_rows
         if _is_within_lookback(row, observed_ms, failed_lookback_ms, updated=True)
     ]
-    tv_signal_pending = [row for row in pending_signal_rows if _is_tv_action(row)]
-    tv_reverse_pending = [row for row in pending_reverse_rows if _is_tv_action(row)]
+    tv_signal_pending_raw = [row for row in pending_signal_rows if _is_tv_action(row)]
+    tv_reverse_pending_raw = [row for row in pending_reverse_rows if _is_tv_action(row)]
     non_tv_signal_pending = [row for row in pending_signal_rows if not _is_tv_action(row)]
     non_tv_reverse_pending = [row for row in pending_reverse_rows if not _is_tv_action(row)]
-    tv_reverse_failed = _latest_rows(
+    tv_reverse_failed_raw = _latest_rows(
         [row for row in processed_reverse_rows if _is_tv_action(row) and _is_failed_processed_tv_action(row)],
         updated=True,
     )
-    tv_pending_all = _latest_rows(tv_signal_pending + tv_reverse_pending)
+    tv_pending_all_raw = _latest_rows(tv_signal_pending_raw + tv_reverse_pending_raw)
+    tv_pending_all, tv_pending_window_stats = _filter_tv_action_window_rows(
+        tv_pending_all_raw,
+        window=action_window,
+    )
+    tv_reverse_failed, tv_failed_window_stats = _filter_tv_action_window_rows(
+        tv_reverse_failed_raw,
+        window=action_window,
+        updated=True,
+    )
+    tv_signal_pending = [row for row in tv_signal_pending_raw if row in tv_pending_all]
+    tv_reverse_pending = [row for row in tv_reverse_pending_raw if row in tv_pending_all]
     non_tv_pending_all = _latest_rows(non_tv_signal_pending + non_tv_reverse_pending)
     tv_pending_stuck = _old_rows(tv_pending_all, observed_ms, action_stuck_ms)
 
@@ -743,6 +810,13 @@ def build_tv_flow_monitor_summary(
         "observed_at_ms": observed_ms,
         "mode": "event_driven",
         "heartbeat_required": False,
+        "action_monitor": {
+            "active": bool(action_window.get("active")),
+            "market_date": action_window.get("market_date"),
+            "now_et": action_window.get("now_et"),
+            "cutoff_et": action_window.get("cutoff_et"),
+            "eod_close_time": action_window.get("eod_close_time"),
+        },
         "thresholds": {
             "received_stuck_warn_min": received_stuck_min,
             "action_pending_stuck_warn_min": action_stuck_min,
@@ -765,11 +839,17 @@ def build_tv_flow_monitor_summary(
         },
         "actions": {
             "tv_pending_count": len(tv_pending_all),
+            "tv_pending_raw_count": len(tv_pending_all_raw),
+            "tv_pending_suppressed_after_eod_count": tv_pending_window_stats["suppressed_after_eod_count"],
+            "tv_pending_suppressed_cross_day_count": tv_pending_window_stats["suppressed_cross_day_count"],
             "tv_pending_stuck_count": len(tv_pending_stuck),
             "tv_pending_oldest_age_ms": _oldest_age_ms(tv_pending_all, observed_ms),
             "tv_pending": _sample_rows(tv_pending_all, now_ms=observed_ms, record_type="action", limit=sample_limit),
             "tv_pending_stuck": _sample_rows(tv_pending_stuck, now_ms=observed_ms, record_type="action", limit=sample_limit),
             "tv_failed_count": len(tv_reverse_failed),
+            "tv_failed_raw_count": len(tv_reverse_failed_raw),
+            "tv_failed_suppressed_after_eod_count": tv_failed_window_stats["suppressed_after_eod_count"],
+            "tv_failed_suppressed_cross_day_count": tv_failed_window_stats["suppressed_cross_day_count"],
             "tv_failed": _sample_rows(tv_reverse_failed, now_ms=observed_ms, record_type="action", limit=sample_limit),
             "non_tv_pending_count": len(non_tv_pending_all),
             "non_tv_pending": _sample_rows(non_tv_pending_all, now_ms=observed_ms, record_type="action", limit=sample_limit),
@@ -778,14 +858,17 @@ def build_tv_flow_monitor_summary(
                 "raw_pending_count": len(pending_signal_rows_raw),
                 **pending_signal_broker_stats,
                 "tv_pending_count": len(tv_signal_pending),
+                "tv_pending_raw_count": len(tv_signal_pending_raw),
                 "non_tv_pending_count": len(non_tv_signal_pending),
             },
             "reverse": {
                 "pending_count": len(pending_reverse_rows),
                 "tv_pending_count": len(tv_reverse_pending),
+                "tv_pending_raw_count": len(tv_reverse_pending_raw),
                 "non_tv_pending_count": len(non_tv_reverse_pending),
                 "processed_recent_count": len(processed_reverse_rows),
                 "tv_failed_count": len(tv_reverse_failed),
+                "tv_failed_raw_count": len(tv_reverse_failed_raw),
             },
         },
         "flags": flags,

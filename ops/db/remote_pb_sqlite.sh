@@ -162,7 +162,7 @@ protected_backup_tables = {
     item.strip()
     for item in os.getenv(
         'PB_SQLITE_PROTECTED_BACKUP_TABLES',
-        'config,watchlist,ibkr_state,ibkr_targets,orders,ibkr_order_details,ibkr_bars,ibkr_indicators,ibkr_signals',
+        'config,watchlist,ibkr_state,ibkr_targets,orders,ibkr_order_details,ibkr_bars,ibkr_indicators,ibkr_signals,ibkr_reverse_signals',
     ).split(',')
     if item.strip()
 }

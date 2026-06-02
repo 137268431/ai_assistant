@@ -29,6 +29,25 @@ DEFAULT_RECENT_BACKTEST_LIMIT = max(
 )
 DEFAULT_PROTECTED_BATCH_IDS = ("3gf4ouzj7oyvlao",)
 DEFAULT_PROTECTED_RUN_IDS = ("bm9wl0lagddsd6a",)
+TV_TRANSIENT_SIGNAL_TERMINAL_STATUSES = {
+    "rejected",
+    "expired",
+    "blocked",
+    "validation_rejected",
+    "submit_failed",
+}
+TV_TRANSIENT_REVERSE_REASONS = {
+    "adjust_bracket_targets_missing_or_invalid",
+    "conid_unresolved",
+}
+TV_TRANSIENT_REVERSE_ACTION_TYPES = {"adjust_bracket", "close"}
+TV_TRANSIENT_REVERSE_SOURCE_VALUES = {
+    "tv",
+    "tradingview",
+    "tv_webhook",
+    "webhook_tv",
+    "tradingview_webhook",
+}
 
 ACTIVE_SIGNAL_STATUSES = {
     "pending",
@@ -228,6 +247,56 @@ def _compact_payload(value: Any, *, max_items: int = 40, max_text: int = 900) ->
     if isinstance(value, str) and len(value) > max_text:
         return value[:max_text] + "..."
     return value
+
+
+def _as_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return {}
+        return dict(parsed) if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _timestamp_ms(value: Any) -> int:
+    if value in (None, ""):
+        return 0
+    if isinstance(value, (int, float)):
+        number = float(value)
+        if number <= 0:
+            return 0
+        return int(number if number >= 100_000_000_000 else number * 1000)
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    try:
+        number = float(text)
+    except Exception:
+        number = 0.0
+    if number > 0:
+        return int(number if number >= 100_000_000_000 else number * 1000)
+    normalized = text.replace("Z", "+00:00")
+    if " " in normalized and "T" not in normalized:
+        normalized = normalized.replace(" ", "T", 1)
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except Exception:
+        return 0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp() * 1000)
+
+
+def _parse_hhmm(value: Any, default: str = "15:55") -> tuple[int, int]:
+    text = str(value or default).strip() or default
+    try:
+        hour_text, minute_text = text.split(":", 1)
+        return max(0, min(23, int(hour_text))), max(0, min(59, int(minute_text)))
+    except Exception:
+        return (15, 55)
 
 
 class StorageCleanup:
@@ -545,6 +614,249 @@ class StorageCleanup:
             if len(rows) < self.batch_size:
                 break
         return {"deleted": deleted, "errors": errors, "batches": batches, "dry_run": False}
+
+    def _fetch_pb_records(self, collection: str, pb_filter: str, sort: str, *, max_pages: int = 20) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        per_page = min(500, max(20, self.batch_size))
+        for page in range(1, max(1, int(max_pages or 1)) + 1):
+            batch = self.pb_client.get_records(
+                collection,
+                filter=pb_filter or None,
+                sort=sort or None,
+                per_page=per_page,
+                page=page,
+            ) or []
+            rows.extend(dict(item) for item in batch if isinstance(item, dict))
+            if len(batch) < per_page:
+                break
+        return rows
+
+    def _delete_record_ids(self, collection: str, record_ids: list[str], *, dry_run: bool) -> dict[str, Any]:
+        safe_ids = [str(record_id or "").strip() for record_id in record_ids if str(record_id or "").strip()]
+        if dry_run or not safe_ids:
+            return {"deleted": 0, "errors": 0, "batches": 0, "dry_run": bool(dry_run)}
+        deleted = 0
+        errors = 0
+        batches = 0
+        for offset in range(0, len(safe_ids), self.batch_size):
+            batch_ids = safe_ids[offset:offset + self.batch_size]
+            batches += 1
+            try:
+                if hasattr(self.pb_client, "delete_records"):
+                    self.pb_client.delete_records(
+                        collection,
+                        batch_ids,
+                        timeout=60,
+                        batch_size=min(100, max(1, self.batch_size)),
+                    )
+                    deleted += len(batch_ids)
+                else:
+                    for record_id in batch_ids:
+                        self.pb_client.delete_record(collection, record_id)
+                        deleted += 1
+            except Exception as exc:
+                logger.warning(
+                    "TV transient cleanup delete failed: collection=%s count=%s error=%s",
+                    collection,
+                    len(batch_ids),
+                    exc,
+                )
+                errors += len(batch_ids)
+        return {"deleted": deleted, "errors": errors, "batches": batches, "dry_run": False}
+
+    def _past_eod_lifecycle(
+        self,
+        row: dict[str, Any],
+        now_et: datetime,
+        *,
+        environment: str,
+        updated: bool = True,
+    ) -> bool:
+        stamp = _timestamp_ms(row.get("updated") if updated else row.get("created"))
+        if stamp <= 0:
+            stamp = _timestamp_ms(row.get("created") or row.get("bar_time_ms"))
+        if stamp <= 0:
+            return False
+        row_et = datetime.fromtimestamp(stamp / 1000.0, ET)
+        hour, minute = _parse_hhmm(self._config_value("eod_close_time", environment, "15:55"), "15:55")
+        row_cutoff = row_et.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        return now_et >= row_cutoff
+
+    @staticmethod
+    def _broker_mode_from_extra(extra: dict[str, Any]) -> str:
+        for key in ("broker_mode", "last_runtime_broker_mode"):
+            text = str(extra.get(key) or "").strip().lower()
+            if text in {"paper", "sim", "simulated", "simulation"}:
+                return "paper"
+            if text in {"live", "prod", "production"}:
+                return "live"
+        return ""
+
+    @staticmethod
+    def _execution_status(extra: dict[str, Any], broker_mode: str) -> str:
+        execution_by_mode = extra.get("execution_by_mode") if isinstance(extra.get("execution_by_mode"), dict) else {}
+        payload = execution_by_mode.get(broker_mode) if isinstance(execution_by_mode, dict) else {}
+        return str((payload or {}).get("status") or "").strip().lower() if isinstance(payload, dict) else ""
+
+    def _has_matching_order(self, signal_id: str, broker_environment: str) -> bool:
+        text = str(signal_id or "").strip()
+        if not text:
+            return False
+        for environment in (broker_environment, "live"):
+            try:
+                rows = self.pb_client.get_records(
+                    "orders",
+                    filter=f'signal_id = "{_pb_quote(text)}" && environment = "{_pb_quote(environment)}"',
+                    sort="-created",
+                    per_page=1,
+                    page=1,
+                )
+            except Exception:
+                rows = []
+            if rows:
+                return True
+        return False
+
+    @staticmethod
+    def _has_direct_order_trace(row: dict[str, Any], extra: dict[str, Any]) -> bool:
+        keys = (
+            "order_id",
+            "broker_order_id",
+            "entry_order_unique_id",
+            "order_unique_id",
+            "parent_order_unique_id",
+            "trade_group_id",
+        )
+        nested_payloads = (
+            _as_object(extra.get("reverse_runtime_detail")),
+            _as_object(extra.get("reentry_blocked")),
+        )
+        return any(
+            str(row.get(key) or extra.get(key) or "").strip()
+            or any(str(payload.get(key) or "").strip() for payload in nested_payloads)
+            for key in keys
+        )
+
+    def _tv_transient_signal_candidate(self, row: dict[str, Any], now_et: datetime, *, environment: str) -> bool:
+        extra = _as_object(row.get("extra"))
+        if str(row.get("environment") or "").strip().lower() != "live":
+            return False
+        if str(row.get("status") or "").strip().lower() not in {"pending", "awaiting_confirm"}:
+            return False
+        if self._broker_mode_from_extra(extra) != "paper":
+            return False
+        if self._execution_status(extra, "paper") not in TV_TRANSIENT_SIGNAL_TERMINAL_STATUSES:
+            return False
+        if str(row.get("order_id") or "").strip():
+            return False
+        if self._has_matching_order(str(row.get("signal_id") or ""), "paper"):
+            return False
+        return self._past_eod_lifecycle(row, now_et, environment=environment, updated=True)
+
+    @staticmethod
+    def _tv_reverse_failure_reason(row: dict[str, Any], extra: dict[str, Any]) -> str:
+        runtime_detail = _as_object(extra.get("reverse_runtime_detail"))
+        blocked_detail = _as_object(extra.get("reentry_blocked"))
+        candidates = (
+            extra.get("flow_error_code"),
+            extra.get("error"),
+            blocked_detail.get("reason"),
+            runtime_detail.get("blocked_reason"),
+            row.get("reason"),
+        )
+        for candidate in candidates:
+            text = str(candidate or "").strip().lower()
+            for reason in TV_TRANSIENT_REVERSE_REASONS:
+                if reason in text:
+                    return reason
+        return ""
+
+    def _tv_transient_reverse_candidate(self, row: dict[str, Any], now_et: datetime, *, environment: str) -> bool:
+        extra = _as_object(row.get("extra"))
+        if str(row.get("environment") or "").strip().lower() != "paper":
+            return False
+        if str(row.get("source") or extra.get("source") or "").strip().lower() not in TV_TRANSIENT_REVERSE_SOURCE_VALUES:
+            return False
+        if str(row.get("status") or "").strip().lower() not in {"cancelled", "canceled", "expired"}:
+            return False
+        if str(row.get("action_type") or "").strip().lower() not in TV_TRANSIENT_REVERSE_ACTION_TYPES:
+            return False
+        if not self._tv_reverse_failure_reason(row, extra):
+            return False
+        if self._has_direct_order_trace(row, extra):
+            return False
+        return self._past_eod_lifecycle(row, now_et, environment=environment, updated=True)
+
+    def _run_tv_transient_cleanup(self, environment: str, now_et: datetime, *, dry_run: bool) -> dict[str, Any]:
+        if not self._config_bool("storage_cleanup_tv_transient_enabled", environment, True):
+            return {
+                "enabled": False,
+                "skipped": True,
+                "reason": "storage_cleanup_tv_transient_disabled",
+                "estimated": 0,
+                "deleted": 0,
+                "errors": 0,
+                "collections": [],
+            }
+
+        signal_rows: list[dict[str, Any]] = []
+        for status in ("pending", "awaiting_confirm"):
+            signal_rows.extend(
+                self._fetch_pb_records(
+                    "ibkr_signals",
+                    f'environment = "live" && status = "{status}"',
+                    "-updated",
+                )
+            )
+        signal_ids = [
+            str(row.get("id") or "").strip()
+            for row in signal_rows
+            if self._tv_transient_signal_candidate(row, now_et, environment=environment)
+        ]
+
+        reverse_rows: list[dict[str, Any]] = []
+        for status in ("cancelled", "canceled", "expired"):
+            reverse_rows.extend(
+                self._fetch_pb_records(
+                    "ibkr_reverse_signals",
+                    f'environment = "paper" && status = "{status}"',
+                    "-updated",
+                )
+            )
+        reverse_ids = [
+            str(row.get("id") or "").strip()
+            for row in reverse_rows
+            if self._tv_transient_reverse_candidate(row, now_et, environment=environment)
+        ]
+
+        signal_delete = self._delete_record_ids("ibkr_signals", signal_ids, dry_run=dry_run)
+        reverse_delete = self._delete_record_ids("ibkr_reverse_signals", reverse_ids, dry_run=dry_run)
+        collections = [
+            {
+                "collection": "ibkr_signals",
+                "estimated": len(signal_ids),
+                **signal_delete,
+            },
+            {
+                "collection": "ibkr_reverse_signals",
+                "estimated": len(reverse_ids),
+                **reverse_delete,
+            },
+        ]
+        return {
+            "enabled": True,
+            "skipped": False,
+            "broker_environment": "paper",
+            "data_environment": "live",
+            "estimated": len(signal_ids) + len(reverse_ids),
+            "deleted": int(signal_delete.get("deleted") or 0) + int(reverse_delete.get("deleted") or 0),
+            "errors": int(signal_delete.get("errors") or 0) + int(reverse_delete.get("errors") or 0),
+            "dry_run": bool(dry_run),
+            "reasons": sorted(TV_TRANSIENT_REVERSE_REASONS),
+            "reverse_source_values": sorted(TV_TRANSIENT_REVERSE_SOURCE_VALUES),
+            "signal_terminal_statuses": sorted(TV_TRANSIENT_SIGNAL_TERMINAL_STATUSES),
+            "collections": collections,
+        }
 
     def _run_standard_policy(self, policy: dict[str, Any], environment: str, now_et: datetime, *, dry_run: bool) -> dict[str, Any]:
         collection = str(policy.get("collection") or "")
@@ -893,6 +1205,7 @@ class StorageCleanup:
                 "skipped": False,
                 "policies": [],
                 "backtest": {},
+                "tv_transient_cleanup": {},
                 "total_deleted": 0,
                 "total_errors": 0,
             }
@@ -922,6 +1235,11 @@ class StorageCleanup:
             for policy_result in backtest_result.get("policies") or []:
                 env_result["total_deleted"] += int(policy_result.get("deleted") or 0)
                 env_result["total_errors"] += int(policy_result.get("errors") or 0)
+
+            tv_transient_result = self._run_tv_transient_cleanup(environment, now_et, dry_run=dry_run)
+            env_result["tv_transient_cleanup"] = tv_transient_result
+            env_result["total_deleted"] += int(tv_transient_result.get("deleted") or 0)
+            env_result["total_errors"] += int(tv_transient_result.get("errors") or 0)
 
             env_result["disk_after"] = self._disk_snapshot()
             env_result["needs_vacuum"] = self._needs_vacuum(env_result["disk_after"], environment)
@@ -960,6 +1278,14 @@ class StorageCleanup:
             "state_key": STORAGE_CLEANUP_STATE_KEY,
             "last_summary": self._last_summary,
             "policies": [str(policy.get("collection") or "") for policy in self.policies],
+            "tv_transient_cleanup": {
+                "enabled_default": True,
+                "broker_environment": "paper",
+                "data_environment": "live",
+                "reverse_reasons": sorted(TV_TRANSIENT_REVERSE_REASONS),
+                "reverse_source_values": sorted(TV_TRANSIENT_REVERSE_SOURCE_VALUES),
+                "signal_terminal_statuses": sorted(TV_TRANSIENT_SIGNAL_TERMINAL_STATUSES),
+            },
         }
 
 
