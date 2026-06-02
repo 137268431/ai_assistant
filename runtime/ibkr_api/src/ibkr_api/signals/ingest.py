@@ -5,17 +5,10 @@ from typing import Any, Callable
 from ibkr_api.modes import request_broker_mode, request_market_data_mode
 from ibkr_api.orders.values import parse_boolean, to_text
 from ibkr_api.signals.ingest_active_policy import (
-    BROKER_CONTROLLED_SIGNAL_STATUSES,
-    MUTABLE_SIGNAL_STATUSES,
-    PROTECTION_BLOCK_SIGNAL_STATUSES,
-    STRONG_REVERSE_SCORE,
     build_active_signal_refresh_payload,
     build_confirmed_signal_reconfirm_payload,
-    build_reverse_record_payload,
-    build_reverse_suppressed_patch,
+    build_opposite_entry_block_patch as build_base_opposite_entry_block_patch,
     build_same_direction_followup_patch,
-    build_stale_active_close_patch,
-    build_superseded_patch,
     calculate_signal_strength,
     changed_execution_fields,
     effective_broker_signal_status,
@@ -148,12 +141,18 @@ def _update_signal_row(pb: Any, record: dict[str, Any], patch: dict[str, Any]) -
     return dict(updated) if isinstance(updated, dict) else {**record, **patch}
 
 
-def _create_or_update_reverse_record(pb: Any, payload: dict[str, Any], escape_filter_string: EscapeFilterString) -> dict[str, Any]:
-    from ibkr_api.reverse.repository import upsert_reverse_record
-
-    result = upsert_reverse_record(pb, payload, escape_filter=escape_filter_string)
-    record = result.get("record") if isinstance(result, dict) else None
-    return dict(record) if isinstance(record, dict) else {}
+def _build_opposite_entry_block_patch(active: dict[str, Any], prepared: dict[str, Any]) -> dict[str, Any]:
+    patch = build_base_opposite_entry_block_patch(active, prepared, reason="blocked_opposite_entry_requires_tv_exit")
+    extra = patch.get("extra") if isinstance(patch.get("extra"), dict) else {}
+    return {
+        "extra": {
+            **extra,
+            "reverse_policy": "tv_exit_required",
+            "opposite_entry_blocked": True,
+            "opposite_entry_block_reason": "blocked_opposite_entry_requires_tv_exit",
+            "required_execution_action": "tv_exit",
+        }
+    }
 
 
 def _active_signal_has_order_trace(
@@ -371,134 +370,28 @@ def _handle_active_symbol_policy(
 
     strength = calculate_signal_strength(prepared)
     prepared = _apply_signal_strength(prepared)
-    if active_status in PROTECTION_BLOCK_SIGNAL_STATUSES:
-        saved_row = _update_signal_row(
-            pb,
-            active,
-            build_reverse_suppressed_patch(active, prepared, reason="protection_incomplete_blocks_auto_reverse"),
-        )
-        return (
-            {
-                "ok": True,
-                "signal_id": active_signal_id,
-                "reverse_signal_id": incoming_signal_id,
-                "target": "ibkr_signals",
-                "id": to_text(saved_row.get("id")),
-                "action": "blocked_reverse_protection_incomplete",
-                "status": to_text(saved_row.get("status")),
-                "signal_strength_score": strength["score"],
-                "signal_strength_level": strength["level"],
-            },
-            200,
-            prepared,
-        )
-
-    if float(strength.get("score") or 0.0) < STRONG_REVERSE_SCORE:
-        saved_row = _update_signal_row(
-            pb,
-            active,
-            build_reverse_suppressed_patch(active, prepared, reason="reverse_signal_below_strong_threshold"),
-        )
-        return (
-            {
-                "ok": True,
-                "signal_id": active_signal_id,
-                "reverse_signal_id": incoming_signal_id,
-                "target": "ibkr_signals",
-                "id": to_text(saved_row.get("id")),
-                "action": "suppressed_weak_reverse_signal",
-                "status": to_text(saved_row.get("status")),
-                "signal_strength_score": strength["score"],
-                "signal_strength_level": strength["level"],
-            },
-            200,
-            prepared,
-        )
-
-    if active_status in BROKER_CONTROLLED_SIGNAL_STATUSES and not _active_signal_has_order_trace(
+    saved_row = _update_signal_row(
         pb,
         active,
-        broker_mode,
-        escape_filter_string,
-    ):
-        reason = "stale_active_signal_without_order_trace"
-        _update_signal_row(
-            pb,
-            active,
-            build_stale_active_close_patch(
-                active,
-                prepared,
-                reason=reason,
-                broker_mode=broker_mode,
-                data_environment=environment,
-            ),
-        )
-        prepared["extra"] = {
-            **get_signal_extra(prepared),
-            "reverse_policy": "skip_stale_active_without_order_trace",
-            "stale_active_signal_id": active_signal_id,
-            "stale_active_signal_status": active_status,
-        }
-        return None, None, prepared
-
-    if active_status in MUTABLE_SIGNAL_STATUSES:
-        _update_signal_row(
-            pb,
-            active,
-            build_superseded_patch(active, prepared, broker_mode=broker_mode, data_environment=environment),
-        )
-        prepared["extra"] = {
-            **get_signal_extra(prepared),
-            "reverse_policy": "supersede_unsubmitted_signal",
-            "reverse_source_signal_id": active_signal_id,
-        }
-        return None, None, prepared
-
-    if active_status in BROKER_CONTROLLED_SIGNAL_STATUSES:
-        reverse_payload = build_reverse_record_payload(
-            active,
-            prepared,
-            broker_mode,
-            data_environment=environment,
-            active_status=active_status,
-        )
-        reverse_record = _create_or_update_reverse_record(pb, reverse_payload, escape_filter_string)
-        active_extra = get_signal_extra(active)
-        reverse_id = to_text(reverse_record.get("id"))
-        saved_row = _update_signal_row(
-            pb,
-            active,
-            {
-                "extra": {
-                    **active_extra,
-                    "reverse_policy": "full_auto_reverse",
-                    "reverse_signal_id": reverse_id,
-                    "latest_reverse_source_signal_id": incoming_signal_id,
-                    "latest_reverse_queued_at": reverse_payload.get("us_time") or "",
-                    "signal_strength_score": strength["score"],
-                    "signal_strength_level": strength["level"],
-                    "suppressed_reason": "queued_full_auto_reverse_before_reentry",
-                }
-            },
-        )
-        return (
-            {
-                "ok": True,
-                "signal_id": active_signal_id,
-                "reverse_source_signal_id": incoming_signal_id,
-                "reverse_id": reverse_id,
-                "target": "ibkr_reverse_signals",
-                "id": to_text(saved_row.get("id")),
-                "action": "queued_full_auto_reverse",
-                "status": to_text(saved_row.get("status")),
-                "signal_strength_score": strength["score"],
-                "signal_strength_level": strength["level"],
-            },
-            200,
-            prepared,
-        )
-
-    return None, None, prepared
+        _build_opposite_entry_block_patch(active, prepared),
+    )
+    return (
+        {
+            "ok": True,
+            "signal_id": active_signal_id,
+            "blocked_signal_id": incoming_signal_id,
+            "target": "ibkr_signals",
+            "id": to_text(saved_row.get("id")),
+            "action": "blocked_opposite_entry_requires_tv_exit",
+            "reason": "blocked_opposite_entry_requires_tv_exit",
+            "blocked": True,
+            "status": to_text(saved_row.get("status")),
+            "signal_strength_score": strength["score"],
+            "signal_strength_level": strength["level"],
+        },
+        200,
+        prepared,
+    )
 
 
 def build_signal_ingest_response(

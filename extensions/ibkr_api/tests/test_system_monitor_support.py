@@ -1,5 +1,6 @@
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 SERVICE_SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_api" / "src"
@@ -7,6 +8,7 @@ if str(SERVICE_SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SERVICE_SRC_ROOT))
 
 from ibkr_api.system.monitor_support import build_system_monitor_payload
+from ibkr_api.system.monitor_support import build_tv_flow_monitor_summary
 from ibkr_api.system.monitor_support import derive_monitor_service_map
 from ibkr_api.system.scheduler_support import build_scheduler_summary
 from ibkr_api.system.scheduler_support import scheduler_status
@@ -51,6 +53,44 @@ def _healthy_split_stack_payload(backtest_status):
         "backtest": backtest_status,
         "service_topology": _backtest_topology(),
     }
+
+
+def _utc_minutes_ago(minutes: int) -> str:
+    return (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat().replace("+00:00", "Z")
+
+
+class _FakePocketBase:
+    def __init__(self, records):
+        self.records = {collection: [dict(row) for row in rows] for collection, rows in records.items()}
+
+    def get_records(self, collection, filter=None, sort=None, per_page=200, page=1):
+        rows = [dict(row) for row in self.records.get(collection, []) if self._matches(row, filter or "")]
+        rows = self._sort(rows, sort or "")
+        start = (int(page or 1) - 1) * int(per_page or 200)
+        end = start + int(per_page or 200)
+        return rows[start:end]
+
+    def _matches(self, row, filter_expr):
+        for raw_part in str(filter_expr or "").split("&&"):
+            part = raw_part.strip()
+            if not part:
+                continue
+            if " = " not in part:
+                continue
+            field, value = part.split(" = ", 1)
+            field = field.strip()
+            value = value.strip().strip('"')
+            if str(row.get(field, "")) != value:
+                return False
+        return True
+
+    def _sort(self, rows, sort_expr):
+        fields = [field.strip() for field in str(sort_expr or "").split(",") if field.strip()]
+        for field in reversed(fields):
+            descending = field.startswith("-")
+            name = field[1:] if descending else field
+            rows.sort(key=lambda row: row.get(name) or "", reverse=descending)
+        return rows
 
 
 class SystemMonitorSupportTest(unittest.TestCase):
@@ -910,6 +950,200 @@ class SystemMonitorSupportTest(unittest.TestCase):
         scheduler = payload["service_monitor"]["services"]["ibkr-scheduler"]
         self.assertEqual(scheduler["status"], "running")
         self.assertIn("bar pipeline disabled_tv_primary", scheduler["detail"])
+
+    def test_tv_flow_summary_flags_event_driven_stuck_and_pending_actions(self):
+        pb = _FakePocketBase(
+            {
+                "tv_webhook_events": [
+                    {
+                        "id": "evt_received_old",
+                        "event_id": "tv:AAPL:entry:old",
+                        "event_type": "entry",
+                        "symbol": "AAPL",
+                        "status": "received",
+                        "environment": "live",
+                        "created": _utc_minutes_ago(8),
+                    },
+                    {
+                        "id": "evt_failed",
+                        "event_id": "tv:MSFT:entry:failed",
+                        "event_type": "entry",
+                        "symbol": "MSFT",
+                        "status": "failed",
+                        "environment": "live",
+                        "error_msg": "route exploded",
+                        "created": _utc_minutes_ago(4),
+                        "updated": _utc_minutes_ago(3),
+                    },
+                    {
+                        "id": "evt_heartbeat_old",
+                        "event_id": "tv:heartbeat:old",
+                        "event_type": "heartbeat",
+                        "symbol": "",
+                        "status": "received",
+                        "environment": "live",
+                        "created": _utc_minutes_ago(60),
+                    },
+                ],
+                "ibkr_signals": [
+                    {
+                        "id": "sig_tv_old",
+                        "signal_id": "sig-tv-old",
+                        "symbol": "NVDA",
+                        "status": "pending",
+                        "environment": "live",
+                        "extra": {"source": "tradingview", "tv_event_id": "tv:NVDA:entry:old"},
+                        "created": _utc_minutes_ago(25),
+                    },
+                    {
+                        "id": "sig_compute_pending",
+                        "signal_id": "sig-compute",
+                        "symbol": "AMD",
+                        "status": "pending",
+                        "environment": "live",
+                        "extra": {"source": "ibkr_compute"},
+                        "created": _utc_minutes_ago(2),
+                    },
+                ],
+                "ibkr_reverse_signals": [
+                    {
+                        "id": "rev_tv_old",
+                        "symbol": "TSLA",
+                        "status": "pending",
+                        "source": "tradingview",
+                        "environment": "paper",
+                        "action_type": "close",
+                        "created": _utc_minutes_ago(30),
+                    },
+                    {
+                        "id": "rev_tv_failed",
+                        "symbol": "META",
+                        "status": "cancelled",
+                        "source": "tradingview",
+                        "environment": "paper",
+                        "action_type": "close",
+                        "reason": "execution action blocked: close_order_failed",
+                        "created": _utc_minutes_ago(12),
+                        "updated": _utc_minutes_ago(11),
+                        "extra": {
+                            "result_status": "reentry_blocked",
+                            "blocked": True,
+                            "flow_error_code": "tv_action_close_order_failed",
+                            "reentry_blocked": {"reason": "close_order_failed"},
+                        },
+                    },
+                    {
+                        "id": "rev_tv_confirmed_no_reentry",
+                        "symbol": "APH",
+                        "status": "confirmed",
+                        "source": "tradingview",
+                        "environment": "paper",
+                        "action_type": "close",
+                        "reason": "tv_exit_confirmed_no_reentry",
+                        "created": _utc_minutes_ago(6),
+                        "updated": _utc_minutes_ago(5),
+                        "extra": {
+                            "result_status": "tv_exit_confirmed",
+                            "auto_reentry_disabled": True,
+                            "reentry_blocked": {"reason": "tv_primary_exit_requires_next_tv_entry"},
+                        },
+                    }
+                ],
+            }
+        )
+
+        summary = build_tv_flow_monitor_summary(
+            pb,
+            data_environment="live",
+            runtime_environment="paper",
+            config_map={
+                "tv_flow_received_stuck_warn_min": "2",
+                "tv_flow_action_pending_stuck_warn_min": "15",
+                "tv_flow_failed_lookback_min": "120",
+            },
+        )
+
+        codes = {item["code"] for item in summary["flags"]}
+        self.assertFalse(summary["heartbeat_required"])
+        self.assertEqual(summary["mode"], "event_driven")
+        self.assertIn("tv_flow_received_stuck", codes)
+        self.assertIn("tv_flow_route_failed", codes)
+        self.assertIn("tv_flow_tv_action_pending_stuck", codes)
+        self.assertIn("tv_flow_non_tv_pending_actions", codes)
+        self.assertIn("tv_flow_execution_action_failed", codes)
+        self.assertEqual(summary["events"]["heartbeat_ignored_count"], 1)
+        self.assertEqual(summary["events"]["received_stuck_count"], 1)
+        self.assertEqual(summary["events"]["route_failed_count"], 1)
+        self.assertEqual(summary["actions"]["tv_pending_stuck_count"], 2)
+        self.assertEqual(summary["actions"]["tv_failed_count"], 1)
+        self.assertEqual(summary["actions"]["non_tv_pending_count"], 1)
+        self.assertEqual(summary["status"], "error")
+
+    def test_monitor_payload_merges_tv_flow_flags_from_pb_client_alias(self):
+        pb = _FakePocketBase(
+            {
+                "tv_webhook_events": [
+                    {
+                        "id": "evt_received_old",
+                        "event_id": "tv:AAPL:entry:old",
+                        "event_type": "entry",
+                        "symbol": "AAPL",
+                        "status": "received",
+                        "environment": "live",
+                        "created": _utc_minutes_ago(10),
+                    }
+                ],
+                "ibkr_signals": [],
+                "ibkr_reverse_signals": [],
+            }
+        )
+        payload = build_system_monitor_payload(
+            "live",
+            normalize_environment=lambda value, default="live": str(value or default).strip().lower() or default,
+            fetch_compute_monitor=lambda environment: {
+                "ok": True,
+                "status_code": 200,
+                "payload": {
+                    "ok": True,
+                    "status": "ok",
+                    "environment": environment,
+                    "flags": [],
+                    "runtime": {
+                        "status": "running",
+                        "runtime_phase": "running",
+                        "gateway": {"running": True, "reachable": True},
+                        "session": {"authenticated": True},
+                        "websocket": {"connected": True, "ready": True},
+                    },
+                    "compute": {"status": "running", "total_engines": 1, "ready_engines": 1},
+                    "service_topology": {"services": {}},
+                },
+            },
+            as_dict=lambda value: dict(value) if isinstance(value, dict) else {},
+            config_refresh=lambda: None,
+            scheduler_status=lambda environment: {"ok": True, "status": "running", "environment": environment, "jobs": {}},
+            build_cron_payload=lambda config, environment, jobs: [],
+            config=object(),
+            build_scheduler_summary=lambda environment, scheduler_payload: {"status": "running", "loop_interval_seconds": 30, "job_count": 0},
+            augment_scheduler_summary=lambda summary, items: summary,
+            request_json=lambda *args, **kwargs: {"ok": True, "status_code": 200, "payload": {}},
+            pb_base_url="http://127.0.0.1:8090",
+            console_base_url="https://quant.lzw-glory.top",
+            probe_console_status=lambda *_args, **_kwargs: {"ok": True, "status_code": 200, "target_url": "https://quant.lzw-glory.top/index.html", "error": ""},
+            load_effective_config_map=lambda *args, **kwargs: {"tv_flow_received_stuck_warn_min": "2"},
+            monitor_config_keys=("ibkr_target_refresh_sec",),
+            load_recent_system_events=lambda *args, **kwargs: [],
+            enrich_monitor_payload_with_pocketbase_disk=lambda payload: payload,
+            derive_monitor_service_map=derive_monitor_service_map,
+            merge_service_topology=lambda *payloads: {"services": {}},
+            build_service_topology=lambda: {"services": {}},
+            pb_client=pb,
+            service_profile="api",
+        )
+
+        self.assertEqual(payload["tv_flow"]["events"]["received_stuck_count"], 1)
+        self.assertIn("tv_flow_received_stuck", {item["code"] for item in payload["flags"]})
+        self.assertEqual(payload["status"], "warning")
 
     def test_monitor_payload_flags_slow_account_snapshot(self):
         payload = build_system_monitor_payload(

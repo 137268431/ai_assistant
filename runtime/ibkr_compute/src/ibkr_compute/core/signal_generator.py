@@ -4,7 +4,7 @@
 移植 Pine Script Signal_Alert_Core[Glory] 中的完整信号逻辑:
   1. SD通道触及 → 开启 MR 窗口
   2. 窗口内收集组件: EMA触及 + Fractal + 背离
-  3. 反向信号重置
+  3. 方向切换重置
   4. 信号组装 (4种类型) + 过滤
   5. 消费/清除逻辑
   6. 仓位计算
@@ -221,7 +221,7 @@ class SignalGenerator:
                 self.bear_obv_div_seen = True
                 events.append("记录 OBV 空头背离")
 
-        # ── 3. 反向信号重置 ──
+        # ── 3. 方向切换重置 ──
         bull_components_exist = (
             self.sd_upper_bull_touch_seen or self.sd_upper_bull_fractal_seen
             or self.sd_lower_bull_fractal_seen

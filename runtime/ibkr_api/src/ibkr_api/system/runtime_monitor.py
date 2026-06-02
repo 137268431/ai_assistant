@@ -261,6 +261,7 @@ def build_system_monitor_payload(
             merge_service_topology=globals_dict["_merge_service_topology"],
             build_service_topology=build_service_topology,
             account_snapshot_probe=_account_snapshot_probe,
+            pb_client=globals_dict.get("pb"),
             service_profile=str(os.environ.get("IBKR_SERVICE_PROFILE") or "api"),
         )
 

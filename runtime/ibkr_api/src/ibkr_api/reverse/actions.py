@@ -6,6 +6,7 @@ from ibkr_api.reverse.common import (
     escape_filter_string,
     fetch_reverse_record,
     get_reverse_extra,
+    is_tradingview_reverse_source,
     merge_record_patch,
     normalize_reverse_record,
     record_value,
@@ -25,7 +26,7 @@ def _coerce_patch_number(value: Any, fallback: Any) -> Any:
 def _update_reverse_record(pb: Any, record: Any, patch: dict[str, Any]) -> Any:
     record_id = str(record_value(record, "id") or "").strip()
     if not record_id:
-        raise ValueError("Reverse signal not found")
+        raise ValueError("Execution action not found")
     updated = pb.update_record("ibkr_reverse_signals", record_id, patch)
     return updated if updated is not None else merge_record_patch(record, patch)
 
@@ -48,7 +49,7 @@ def _build_dispatch_cancel_patch(record: Any, *, reason: str, now_text: str) -> 
     extra = get_reverse_extra(record)
     return {
         "status": "cancelled",
-        "reason": reason or "页面取消反转信号",
+        "reason": reason or "页面取消执行动作",
         "processed_time": now_text,
         "extra": {
             **extra,
@@ -105,7 +106,9 @@ def build_reverse_dispatch_response(
     try:
         record = fetch_reverse_record(pb, reverse_id, escape_filter=escape_filter)
         if not record or not record_value(record, "id"):
-            return {"error": "Reverse signal not found"}, 404
+            return {"error": "Execution action not found"}, 404
+        if not is_tradingview_reverse_source(record):
+            return {"error": "Execution action is not TradingView sourced", "reason": "non_tv_action_disabled"}, 400
 
         if str(record_value(record, "status") or "") != "pending":
             return {"success": True, "signal": normalize_reverse_record(record)}, 200
@@ -118,7 +121,7 @@ def build_reverse_dispatch_response(
                 notify_status,
                 "cancel",
                 updated,
-                reason or "页面已取消该反转信号",
+                reason or "页面已取消该执行动作",
             )
             return {"success": True, "signal": normalize_reverse_record(updated)}, 200
 
@@ -128,7 +131,7 @@ def build_reverse_dispatch_response(
             notify_status,
             "execute_request",
             updated,
-            reason or "已请求 IBKR 优先执行该反转动作",
+            reason or "已请求 IBKR 优先执行该执行动作",
         )
         return {"success": True, "signal": normalize_reverse_record(updated)}, 200
     except Exception as exc:
@@ -192,7 +195,9 @@ def build_reverse_ack_response(
     try:
         record = fetch_reverse_record(pb, reverse_id, escape_filter=escape_filter)
         if not record or not record_value(record, "id"):
-            return {"error": "Reverse signal not found"}, 404
+            return {"error": "Execution action not found"}, 404
+        if not is_tradingview_reverse_source(record):
+            return {"error": "Execution action is not TradingView sourced", "reason": "non_tv_action_disabled"}, 400
 
         patch = _build_ack_patch(record, {**payload, "status": status, "reason": reason}, now_text=resolve_timestamp_text(clock))
         updated = _update_reverse_record(pb, record, patch)

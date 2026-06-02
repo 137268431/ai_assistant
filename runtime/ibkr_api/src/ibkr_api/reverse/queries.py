@@ -9,6 +9,7 @@ from ibkr_api.reverse.common import (
     build_date_range,
     clamp_reverse_limit,
     escape_filter_string,
+    is_tradingview_reverse_source,
     normalize_environment_value,
     normalize_reverse_record,
     normalize_status_filters,
@@ -31,6 +32,7 @@ def _load_reverse_records(
             REVERSE_SIGNALS_COLLECTION,
             filter=(
                 f'environment = "{escape_filter(runtime_environment)}" && '
+                f'source = "{escape_filter("tradingview")}" && '
                 f'bar_time_ms >= {date_range["start_ms"]} && '
                 f'bar_time_ms <= {date_range["end_ms"]}'
             ),
@@ -43,7 +45,10 @@ def _load_reverse_records(
     return list(
         pb.get_records(
             REVERSE_SIGNALS_COLLECTION,
-            filter=f'environment = "{escape_filter(runtime_environment)}"',
+            filter=(
+                f'environment = "{escape_filter(runtime_environment)}" && '
+                f'source = "{escape_filter("tradingview")}"'
+            ),
             sort="-created",
             per_page=per_page,
             page=1,
@@ -81,6 +86,7 @@ def build_reverse_list_response(
         signals = [
             normalize_reverse_record(record, default_environment=runtime_environment)
             for record in records
+            if is_tradingview_reverse_source(record)
         ]
         if normalized_symbol:
             signals = [signal for signal in signals if signal.get("symbol") == normalized_symbol]
@@ -113,7 +119,8 @@ def build_reverse_pending_response(
             REVERSE_SIGNALS_COLLECTION,
             filter=(
                 'status = "pending" && '
-                f'environment = "{escape_filter(runtime_environment)}"'
+                f'environment = "{escape_filter(runtime_environment)}" && '
+                f'source = "{escape_filter("tradingview")}"'
             ),
             sort="-priority,-bar_time_ms",
             per_page=per_page,
@@ -123,6 +130,7 @@ def build_reverse_pending_response(
             "ibkr_signals": [
                 normalize_reverse_record(record, default_environment=runtime_environment)
                 for record in records
+                if is_tradingview_reverse_source(record)
             ],
             "broker_mode": runtime_environment,
             "data_environment": data_environment,

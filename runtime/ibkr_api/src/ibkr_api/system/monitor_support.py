@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import inspect
+import time
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 import requests
@@ -37,15 +39,30 @@ RequestsGet = Callable[..., requests.Response]
 AccountSnapshotProbe = Callable[[str], dict[str, Any]]
 
 ACCOUNT_SNAPSHOT_WARN_MS = 12_000.0
+TV_FLOW_RECEIVED_STUCK_DEFAULT_MIN = 2
+TV_FLOW_ACTION_PENDING_STUCK_DEFAULT_MIN = 15
+TV_FLOW_FAILED_LOOKBACK_DEFAULT_MIN = 24 * 60
+TV_FLOW_PENDING_LOOKBACK_DEFAULT_MIN = 24 * 60
+TV_FLOW_SAMPLE_LIMIT_DEFAULT = 5
+TV_FLOW_EVENT_FETCH_MAX_PAGES = 4
+TV_FLOW_ACTION_FETCH_MAX_PAGES = 10
 BAR_PIPELINE_CONFIG_KEYS = (
     "ibkr_legacy_bar_pipeline_enabled",
     "ibkr_signal_source",
     "ibkr_tv_primary_runtime_slim_enabled",
     "ibkr_runtime_technical_pipeline_enabled",
 )
+TV_FLOW_CONFIG_KEYS = (
+    "tv_flow_received_stuck_warn_min",
+    "tv_flow_action_pending_stuck_warn_min",
+    "tv_flow_failed_lookback_min",
+    "tv_flow_pending_lookback_min",
+    "tv_flow_record_sample_limit",
+)
 FALSE_TEXT = {"0", "false", "no", "off", "disabled", "disable"}
 BAR_PIPELINE_DISABLED_STATUSES = {"disabled", "disabled_tv_primary", "legacy_bar_pipeline_disabled"}
 TV_PRIMARY_SIGNAL_SOURCES = {"tv", "tradingview", "webhook_tv", "tv_webhook"}
+TV_FLOW_SOURCE_VALUES = {"tv", "tradingview", "tv_webhook", "webhook_tv", "tradingview_webhook"}
 TV_PRIMARY_SUPPRESSED_FLAG_CODES = {
     "no_active_targets",
     "no_execution_eligible_targets",
@@ -128,6 +145,557 @@ def _as_bool(value: Any, default: bool = False) -> bool:
     if text in FALSE_TEXT:
         return False
     return default
+
+
+def _to_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except Exception:
+        return int(default)
+
+
+def _bounded_config_int(
+    config_map: dict[str, Any],
+    key: str,
+    default: int,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    value = _to_int(config_map.get(key), default)
+    return max(int(minimum), min(int(maximum), value))
+
+
+def _escape_filter_value(value: Any) -> str:
+    return _to_text(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _as_object(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _timestamp_ms(value: Any) -> int:
+    if value in (None, ""):
+        return 0
+    if isinstance(value, (int, float)):
+        number = float(value)
+        if number <= 0:
+            return 0
+        return int(number if number >= 100_000_000_000 else number * 1000)
+    text = _to_text(value)
+    if not text:
+        return 0
+    try:
+        number = float(text)
+    except Exception:
+        number = 0.0
+    if number > 0:
+        return int(number if number >= 100_000_000_000 else number * 1000)
+    normalized = text.replace("Z", "+00:00")
+    if " " in normalized and "T" not in normalized:
+        normalized = normalized.replace(" ", "T", 1)
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except Exception:
+        return 0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp() * 1000)
+
+
+def _record_created_ms(row: dict[str, Any]) -> int:
+    return _timestamp_ms(row.get("created") or row.get("created_at") or row.get("bar_time_ms"))
+
+
+def _record_updated_ms(row: dict[str, Any]) -> int:
+    return _timestamp_ms(row.get("updated") or row.get("updated_at") or row.get("created") or row.get("bar_time_ms"))
+
+
+def _age_ms(row: dict[str, Any], now_ms: int, *, updated: bool = False) -> int:
+    stamp = _record_updated_ms(row) if updated else _record_created_ms(row)
+    return max(0, int(now_ms - stamp)) if stamp > 0 else 0
+
+
+def _format_age(age_ms: int) -> str:
+    if age_ms <= 0:
+        return "unknown age"
+    seconds = int(age_ms / 1000)
+    if seconds < 120:
+        return f"{seconds}s"
+    minutes = int(seconds / 60)
+    if minutes < 120:
+        return f"{minutes}m"
+    hours = minutes / 60
+    return f"{hours:.1f}h"
+
+
+def _load_records(
+    pb: Any,
+    collection: str,
+    *,
+    filter_expr: str,
+    sort: str = "-created",
+    per_page: int = 200,
+    max_pages: int = 1,
+) -> list[dict[str, Any]]:
+    getter = getattr(pb, "get_all_records", None)
+    if callable(getter):
+        rows = getter(collection, filter=filter_expr or None, sort=sort or None, max_pages=max(1, int(max_pages or 1))) or []
+        return [dict(item) for item in rows if isinstance(item, dict)]
+
+    get_records = getattr(pb, "get_records", None)
+    if not callable(get_records):
+        raise RuntimeError("pocketbase_get_records_unavailable")
+
+    rows: list[dict[str, Any]] = []
+    bounded_per_page = max(1, min(500, int(per_page or 200)))
+    for page in range(1, max(1, int(max_pages or 1)) + 1):
+        batch = get_records(
+            collection,
+            filter=filter_expr or None,
+            sort=sort or None,
+            per_page=bounded_per_page,
+            page=page,
+        ) or []
+        rows.extend(dict(item) for item in batch if isinstance(item, dict))
+        if len(batch) < bounded_per_page:
+            break
+    return rows
+
+
+def _load_status_records(
+    pb: Any,
+    collection: str,
+    *,
+    environment: str,
+    statuses: tuple[str, ...],
+    sort: str = "-created",
+    max_pages: int = 1,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    escaped_environment = _escape_filter_value(environment)
+    for status in statuses:
+        rows.extend(
+            _load_records(
+                pb,
+                collection,
+                filter_expr=f'status = "{_escape_filter_value(status)}" && environment = "{escaped_environment}"',
+                sort=sort,
+                max_pages=max_pages,
+            )
+        )
+    return rows
+
+
+def _status_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        status = _to_text(row.get("status")).lower() or "unknown"
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+def _type_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        event_type = _to_text(row.get("event_type")).lower() or "unknown"
+        counts[event_type] = counts.get(event_type, 0) + 1
+    return counts
+
+
+def _row_label(row: dict[str, Any]) -> str:
+    symbol = _to_text(row.get("symbol")).upper()
+    event_type = _to_text(row.get("event_type") or row.get("action_type") or row.get("signal")).lower()
+    event_id = _to_text(row.get("event_id") or row.get("signal_id") or row.get("id"))
+    parts = [part for part in (symbol, event_type, event_id) if part]
+    return " ".join(parts) or "record"
+
+
+def _row_sample(row: dict[str, Any], *, now_ms: int, record_type: str) -> dict[str, Any]:
+    extra = _as_object(row.get("extra"))
+    runtime_detail = _as_object(extra.get("reverse_runtime_detail"))
+    blocked_detail = _as_object(extra.get("reentry_blocked"))
+    return {
+        "type": record_type,
+        "id": _to_text(row.get("id")),
+        "symbol": _to_text(row.get("symbol")).upper(),
+        "status": _to_text(row.get("status")).lower(),
+        "event_type": _to_text(row.get("event_type") or extra.get("event_type")).lower(),
+        "event_id": _to_text(row.get("event_id") or extra.get("tv_event_id")),
+        "signal_id": _to_text(row.get("signal_id") or extra.get("origin_signal_id")),
+        "action_type": _to_text(row.get("action_type") or extra.get("action_type")).lower(),
+        "source": _to_text(row.get("source") or extra.get("source") or extra.get("signal_source")).lower(),
+        "created": _to_text(row.get("created")),
+        "updated": _to_text(row.get("updated")),
+        "age_ms": _age_ms(row, now_ms),
+        "age": _format_age(_age_ms(row, now_ms)),
+        "error": _to_text(
+            row.get("error_msg")
+            or extra.get("flow_error_code")
+            or extra.get("error")
+            or blocked_detail.get("reason")
+            or runtime_detail.get("blocked_reason")
+            or extra.get("reason")
+        ),
+    }
+
+
+def _sample_rows(rows: list[dict[str, Any]], *, now_ms: int, record_type: str, limit: int) -> list[dict[str, Any]]:
+    return [_row_sample(row, now_ms=now_ms, record_type=record_type) for row in rows[: max(0, int(limit or 0))]]
+
+
+def _is_heartbeat_event(row: dict[str, Any]) -> bool:
+    return _to_text(row.get("event_type")).lower() == "heartbeat"
+
+
+def _is_within_lookback(row: dict[str, Any], now_ms: int, lookback_ms: int, *, updated: bool = False) -> bool:
+    age = _age_ms(row, now_ms, updated=updated)
+    return age <= 0 or age <= int(lookback_ms)
+
+
+def _is_tv_action(row: dict[str, Any]) -> bool:
+    extra = _as_object(row.get("extra"))
+    values = {
+        _to_text(row.get("source")).lower(),
+        _to_text(row.get("signal_source")).lower(),
+        _to_text(extra.get("source")).lower(),
+        _to_text(extra.get("signal_source")).lower(),
+        _to_text(extra.get("route_source")).lower(),
+    }
+    if values & TV_FLOW_SOURCE_VALUES:
+        return True
+    if _to_text(extra.get("tv_event_id")):
+        return True
+    return _to_text(extra.get("reverse_kind")).lower().startswith("tv_")
+
+
+def _is_failed_processed_tv_action(row: dict[str, Any]) -> bool:
+    extra = _as_object(row.get("extra"))
+    runtime_detail = _as_object(extra.get("reverse_runtime_detail"))
+    blocked_detail = _as_object(extra.get("reentry_blocked"))
+    status = _to_text(row.get("status")).lower()
+    result_status = _to_text(row.get("result_status") or extra.get("result_status")).lower()
+    reason = _to_text(row.get("reason") or extra.get("reason")).lower()
+    failure_markers = (extra.get("flow_error_code"), extra.get("error"))
+    if any(_to_text(marker) for marker in failure_markers):
+        return True
+    if extra.get("blocked") is True:
+        return True
+    if result_status in {"failed", "reentry_blocked", "pending_retry", "blocked"}:
+        return True
+    if status == "confirmed":
+        return False
+    if _to_text(blocked_detail.get("reason") or runtime_detail.get("blocked_reason")):
+        return True
+    if status in {"cancelled", "canceled", "expired"} and any(
+        token in reason for token in ("blocked", "failed", "missing", "invalid", "unconfirmed", "被阻止")
+    ):
+        return True
+    return False
+
+
+def _old_rows(rows: list[dict[str, Any]], now_ms: int, threshold_ms: int) -> list[dict[str, Any]]:
+    return sorted(
+        [row for row in rows if _age_ms(row, now_ms) >= int(threshold_ms) > 0],
+        key=lambda item: _age_ms(item, now_ms),
+        reverse=True,
+    )
+
+
+def _oldest_age_ms(rows: list[dict[str, Any]], now_ms: int) -> int:
+    ages = [_age_ms(row, now_ms) for row in rows]
+    return max(ages) if ages else 0
+
+
+def _latest_rows(rows: list[dict[str, Any]], *, updated: bool = False) -> list[dict[str, Any]]:
+    stamp = _record_updated_ms if updated else _record_created_ms
+    return sorted(rows, key=stamp, reverse=True)
+
+
+def _tv_flow_flag(
+    *,
+    severity: str,
+    code: str,
+    title: str,
+    detail: str,
+    samples: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    flag: dict[str, Any] = {
+        "severity": severity,
+        "code": code,
+        "title": title,
+        "detail": detail,
+    }
+    if samples:
+        flag["samples"] = samples
+    return flag
+
+
+def build_tv_flow_monitor_summary(
+    pb: Any,
+    *,
+    data_environment: str,
+    runtime_environment: str,
+    config_map: dict[str, Any] | None = None,
+    now_ms: int | None = None,
+) -> dict[str, Any]:
+    config_values = config_map if isinstance(config_map, dict) else {}
+    observed_ms = int(now_ms or time.time() * 1000)
+    received_stuck_min = _bounded_config_int(
+        config_values,
+        "tv_flow_received_stuck_warn_min",
+        TV_FLOW_RECEIVED_STUCK_DEFAULT_MIN,
+        minimum=1,
+        maximum=240,
+    )
+    action_stuck_min = _bounded_config_int(
+        config_values,
+        "tv_flow_action_pending_stuck_warn_min",
+        TV_FLOW_ACTION_PENDING_STUCK_DEFAULT_MIN,
+        minimum=1,
+        maximum=24 * 60,
+    )
+    failed_lookback_min = _bounded_config_int(
+        config_values,
+        "tv_flow_failed_lookback_min",
+        TV_FLOW_FAILED_LOOKBACK_DEFAULT_MIN,
+        minimum=1,
+        maximum=7 * 24 * 60,
+    )
+    pending_lookback_min = _bounded_config_int(
+        config_values,
+        "tv_flow_pending_lookback_min",
+        TV_FLOW_PENDING_LOOKBACK_DEFAULT_MIN,
+        minimum=1,
+        maximum=7 * 24 * 60,
+    )
+    sample_limit = _bounded_config_int(
+        config_values,
+        "tv_flow_record_sample_limit",
+        TV_FLOW_SAMPLE_LIMIT_DEFAULT,
+        minimum=1,
+        maximum=20,
+    )
+    received_stuck_ms = received_stuck_min * 60 * 1000
+    action_stuck_ms = action_stuck_min * 60 * 1000
+    failed_lookback_ms = failed_lookback_min * 60 * 1000
+    pending_lookback_ms = pending_lookback_min * 60 * 1000
+
+    event_environment = _escape_filter_value(data_environment)
+    recent_event_rows = _load_records(
+        pb,
+        "tv_webhook_events",
+        filter_expr=f'environment = "{event_environment}"',
+        sort="-created",
+        per_page=100,
+        max_pages=1,
+    )
+    received_rows = _load_status_records(
+        pb,
+        "tv_webhook_events",
+        environment=data_environment,
+        statuses=("received",),
+        max_pages=TV_FLOW_EVENT_FETCH_MAX_PAGES,
+    )
+    failed_rows = _load_status_records(
+        pb,
+        "tv_webhook_events",
+        environment=data_environment,
+        statuses=("failed",),
+        max_pages=TV_FLOW_EVENT_FETCH_MAX_PAGES,
+    )
+    pending_signal_rows = _load_status_records(
+        pb,
+        "ibkr_signals",
+        environment=data_environment,
+        statuses=("pending", "awaiting_confirm"),
+        max_pages=TV_FLOW_ACTION_FETCH_MAX_PAGES,
+    )
+    pending_reverse_rows = _load_status_records(
+        pb,
+        "ibkr_reverse_signals",
+        environment=runtime_environment,
+        statuses=("pending",),
+        sort="-priority,-bar_time_ms",
+        max_pages=TV_FLOW_ACTION_FETCH_MAX_PAGES,
+    )
+    processed_reverse_rows = _load_status_records(
+        pb,
+        "ibkr_reverse_signals",
+        environment=runtime_environment,
+        statuses=("cancelled", "expired", "confirmed"),
+        sort="-updated",
+        max_pages=TV_FLOW_ACTION_FETCH_MAX_PAGES,
+    )
+
+    recent_non_heartbeat = [row for row in recent_event_rows if not _is_heartbeat_event(row)]
+    received_non_heartbeat = [row for row in received_rows if not _is_heartbeat_event(row)]
+    received_stuck = _old_rows(received_non_heartbeat, observed_ms, received_stuck_ms)
+    failed_recent = [
+        row
+        for row in failed_rows
+        if not _is_heartbeat_event(row) and _is_within_lookback(row, observed_ms, failed_lookback_ms, updated=True)
+    ]
+    failed_recent = _latest_rows(failed_recent, updated=True)
+
+    pending_signal_rows = [row for row in pending_signal_rows if _is_within_lookback(row, observed_ms, pending_lookback_ms)]
+    pending_reverse_rows = [row for row in pending_reverse_rows if _is_within_lookback(row, observed_ms, pending_lookback_ms)]
+    processed_reverse_rows = [
+        row
+        for row in processed_reverse_rows
+        if _is_within_lookback(row, observed_ms, failed_lookback_ms, updated=True)
+    ]
+    tv_signal_pending = [row for row in pending_signal_rows if _is_tv_action(row)]
+    tv_reverse_pending = [row for row in pending_reverse_rows if _is_tv_action(row)]
+    non_tv_signal_pending = [row for row in pending_signal_rows if not _is_tv_action(row)]
+    non_tv_reverse_pending = [row for row in pending_reverse_rows if not _is_tv_action(row)]
+    tv_reverse_failed = _latest_rows(
+        [row for row in processed_reverse_rows if _is_tv_action(row) and _is_failed_processed_tv_action(row)],
+        updated=True,
+    )
+    tv_pending_all = _latest_rows(tv_signal_pending + tv_reverse_pending)
+    non_tv_pending_all = _latest_rows(non_tv_signal_pending + non_tv_reverse_pending)
+    tv_pending_stuck = _old_rows(tv_pending_all, observed_ms, action_stuck_ms)
+
+    flags: list[dict[str, Any]] = []
+    if received_stuck:
+        oldest = received_stuck[0]
+        flags.append(
+            _tv_flow_flag(
+                severity="warning",
+                code="tv_flow_received_stuck",
+                title="TradingView events stuck before routing",
+                detail=(
+                    f"{len(received_stuck)} received TV event(s) older than {received_stuck_min}m; "
+                    f"oldest {_row_label(oldest)} age {_format_age(_age_ms(oldest, observed_ms))}"
+                ),
+                samples=_sample_rows(received_stuck, now_ms=observed_ms, record_type="tv_event", limit=sample_limit),
+            )
+        )
+    if failed_recent:
+        latest = failed_recent[0]
+        latest_error = _to_text(latest.get("error_msg")) or "route_failed"
+        flags.append(
+            _tv_flow_flag(
+                severity="error",
+                code="tv_flow_route_failed",
+                title="TradingView route failed",
+                detail=(
+                    f"{len(failed_recent)} TV route failure(s) in the last {failed_lookback_min}m; "
+                    f"latest {_row_label(latest)}: {latest_error}"
+                ),
+                samples=_sample_rows(failed_recent, now_ms=observed_ms, record_type="tv_event", limit=sample_limit),
+            )
+        )
+    if tv_pending_stuck:
+        oldest = tv_pending_stuck[0]
+        stuck_signal_count = sum(1 for row in tv_pending_stuck if row in tv_signal_pending)
+        stuck_reverse_count = len(tv_pending_stuck) - stuck_signal_count
+        flags.append(
+            _tv_flow_flag(
+                severity="warning",
+                code="tv_flow_tv_action_pending_stuck",
+                title="TradingView execution actions pending too long",
+                detail=(
+                    f"{len(tv_pending_stuck)} TV action(s) pending older than {action_stuck_min}m "
+                    f"(signals {stuck_signal_count}, reverse {stuck_reverse_count}); "
+                    f"oldest {_row_label(oldest)} age {_format_age(_age_ms(oldest, observed_ms))}"
+                ),
+                samples=_sample_rows(tv_pending_stuck, now_ms=observed_ms, record_type="action", limit=sample_limit),
+            )
+        )
+    if non_tv_pending_all:
+        flags.append(
+            _tv_flow_flag(
+                severity="info",
+                code="tv_flow_non_tv_pending_actions",
+                title="Non-TV pending actions present",
+                detail=(
+                    f"{len(non_tv_pending_all)} non-TV pending action(s) are in scope "
+                    f"(signals {len(non_tv_signal_pending)}, reverse {len(non_tv_reverse_pending)})"
+                ),
+                samples=_sample_rows(non_tv_pending_all, now_ms=observed_ms, record_type="action", limit=sample_limit),
+            )
+        )
+    if tv_reverse_failed:
+        latest = tv_reverse_failed[0]
+        extra = _as_object(latest.get("extra"))
+        runtime_detail = _as_object(extra.get("reverse_runtime_detail"))
+        blocked_detail = _as_object(extra.get("reentry_blocked"))
+        failure_reason = (
+            _to_text(extra.get("flow_error_code"))
+            or _to_text(blocked_detail.get("reason"))
+            or _to_text(runtime_detail.get("blocked_reason"))
+            or _to_text(latest.get("reason"))
+            or "execution_action_failed"
+        )
+        flags.append(
+            _tv_flow_flag(
+                severity="error",
+                code="tv_flow_execution_action_failed",
+                title="TradingView execution action failed",
+                detail=(
+                    f"{len(tv_reverse_failed)} TV execution action failure(s) in the last {failed_lookback_min}m; "
+                    f"latest {_row_label(latest)}: {failure_reason}"
+                ),
+                samples=_sample_rows(tv_reverse_failed, now_ms=observed_ms, record_type="action", limit=sample_limit),
+            )
+        )
+
+    status = _status_from_flags(flags)
+    return {
+        "ok": status == "ok",
+        "status": status,
+        "environment": data_environment,
+        "broker_mode": runtime_environment,
+        "observed_at_ms": observed_ms,
+        "mode": "event_driven",
+        "heartbeat_required": False,
+        "thresholds": {
+            "received_stuck_warn_min": received_stuck_min,
+            "action_pending_stuck_warn_min": action_stuck_min,
+            "route_failed_lookback_min": failed_lookback_min,
+            "pending_action_lookback_min": pending_lookback_min,
+            "sample_limit": sample_limit,
+        },
+        "events": {
+            "recent_count": len(recent_non_heartbeat),
+            "heartbeat_ignored_count": len(recent_event_rows) - len(recent_non_heartbeat),
+            "status_counts": _status_counts(recent_non_heartbeat),
+            "event_type_counts": _type_counts(recent_non_heartbeat),
+            "latest": _row_sample(recent_non_heartbeat[0], now_ms=observed_ms, record_type="tv_event") if recent_non_heartbeat else {},
+            "received_count": len(received_non_heartbeat),
+            "received_stuck_count": len(received_stuck),
+            "received_oldest_age_ms": _oldest_age_ms(received_non_heartbeat, observed_ms),
+            "received_stuck": _sample_rows(received_stuck, now_ms=observed_ms, record_type="tv_event", limit=sample_limit),
+            "route_failed_count": len(failed_recent),
+            "route_failed": _sample_rows(failed_recent, now_ms=observed_ms, record_type="tv_event", limit=sample_limit),
+        },
+        "actions": {
+            "tv_pending_count": len(tv_pending_all),
+            "tv_pending_stuck_count": len(tv_pending_stuck),
+            "tv_pending_oldest_age_ms": _oldest_age_ms(tv_pending_all, observed_ms),
+            "tv_pending": _sample_rows(tv_pending_all, now_ms=observed_ms, record_type="action", limit=sample_limit),
+            "tv_pending_stuck": _sample_rows(tv_pending_stuck, now_ms=observed_ms, record_type="action", limit=sample_limit),
+            "tv_failed_count": len(tv_reverse_failed),
+            "tv_failed": _sample_rows(tv_reverse_failed, now_ms=observed_ms, record_type="action", limit=sample_limit),
+            "non_tv_pending_count": len(non_tv_pending_all),
+            "non_tv_pending": _sample_rows(non_tv_pending_all, now_ms=observed_ms, record_type="action", limit=sample_limit),
+            "signals": {
+                "pending_count": len(pending_signal_rows),
+                "tv_pending_count": len(tv_signal_pending),
+                "non_tv_pending_count": len(non_tv_signal_pending),
+            },
+            "reverse": {
+                "pending_count": len(pending_reverse_rows),
+                "tv_pending_count": len(tv_reverse_pending),
+                "non_tv_pending_count": len(non_tv_reverse_pending),
+                "processed_recent_count": len(processed_reverse_rows),
+                "tv_failed_count": len(tv_reverse_failed),
+            },
+        },
+        "flags": flags,
+    }
 
 
 def _bar_pipeline_candidate_disabled(candidate: dict[str, Any]) -> bool:
@@ -838,6 +1406,8 @@ def build_system_monitor_payload(
     build_service_topology: BuildServiceTopology,
     account_snapshot_probe: AccountSnapshotProbe | None = None,
     service_profile: str = "api",
+    pocketbase_client: Any | None = None,
+    pb_client: Any | None = None,
 ) -> dict[str, Any]:
     runtime_environment = normalize_broker_mode(environment, configured_broker_mode())
     data_environment = resolve_data_environment(runtime_environment)
@@ -967,7 +1537,7 @@ def build_system_monitor_payload(
     merged_payload["actual_runtime_environment"] = actual_runtime_environment
     merged_payload["runtime_environment_mismatch"] = actual_runtime_environment != runtime_environment
     try:
-        effective_config_keys = tuple(dict.fromkeys((*monitor_config_keys, *BAR_PIPELINE_CONFIG_KEYS)))
+        effective_config_keys = tuple(dict.fromkeys((*monitor_config_keys, *BAR_PIPELINE_CONFIG_KEYS, *TV_FLOW_CONFIG_KEYS)))
         broker_config = load_effective_config_map(runtime_environment, effective_config_keys)
         data_config = load_effective_config_map(data_environment, effective_config_keys)
         merged_payload["config"] = {**data_config, **broker_config}
@@ -981,6 +1551,22 @@ def build_system_monitor_payload(
     except Exception as exc:
         builder_errors.append(_monitor_builder_error("recent_events", exc))
         merged_payload["recent_events"] = []
+    tv_flow_pb = pocketbase_client if pocketbase_client is not None else pb_client
+    if tv_flow_pb is not None:
+        try:
+            tv_flow = build_tv_flow_monitor_summary(
+                tv_flow_pb,
+                data_environment=data_environment,
+                runtime_environment=runtime_environment,
+                config_map=merged_payload.get("config") if isinstance(merged_payload.get("config"), dict) else {},
+            )
+            merged_payload["tv_flow"] = tv_flow
+            tv_flow_flags = tv_flow.get("flags") if isinstance(tv_flow.get("flags"), list) else []
+            if tv_flow_flags:
+                merged_payload["flags"] = _merge_unique_flags(merged_payload.get("flags"), tv_flow_flags)
+                _set_status_from_flags(merged_payload, tv_flow_flags)
+        except Exception as exc:
+            builder_errors.append(_monitor_builder_error("tv_flow", exc))
     merged_payload["source"] = "ibkr-api"
     merged_payload["upstream_monitor"] = {
         "ok": base_monitor_ok,
@@ -1069,6 +1655,7 @@ def build_system_monitor_payload(
 
 
 __all__ = [
+    "build_tv_flow_monitor_summary",
     "build_system_monitor_payload",
     "derive_monitor_service_map",
     "probe_console_status",

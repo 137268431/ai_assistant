@@ -1610,7 +1610,7 @@ def _build_live_events(
                 close_reason = _lower(first_defined(row.get("reason"), extra.get("reason"), extra.get("close_reason")))
                 if "reverse" in close_reason:
                     event_type = "exit_reverse"
-                    label = "反向信号平仓"
+                    label = "TV 退出平仓"
                 elif "eod" in close_reason or "end" in close_reason:
                     event_type = "exit_eod"
                     label = "收盘/EOD 平仓"

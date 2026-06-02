@@ -1911,7 +1911,7 @@
             signalIndicatorsMap = nextMap;
         }
 
-        // 加载反向信号映射（按 symbol 分组）
+        // 加载执行动作映射（按 symbol 分组）
         async function loadReverseSignalsMap() {
             reverseSignalsMap = {};
 
@@ -1928,7 +1928,7 @@
             const symbols = Object.keys(latestSignalTimeBySymbol);
             if (symbols.length === 0) return;
 
-            // 找到所有 symbol 中信号的最早时间（确保不漏掉任何反向信号）
+            // 找到所有 symbol 中信号的最早时间（确保不漏掉任何执行动作）
             const earliestTime = Object.values(latestSignalTimeBySymbol).reduce((min, time) => {
                 return new Date(time) < new Date(min) ? time : min;
             }, '');
@@ -1940,7 +1940,7 @@
                 for (const symbolChunk of chunkArray(symbols, 12)) {
                     const symbolFilter = symbolChunk.map(s => `symbol = "${escapeFilterValue(s)}"`).join(' || ');
                     const rows = await fetchCollectionFullList('ibkr_reverse_signals', {
-                        filter: `environment = "${currentBrokerMode}" && (${symbolFilter}) && status = "confirmed" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
+                        filter: `environment = "${currentBrokerMode}" && source = "tradingview" && (${symbolFilter}) && status = "confirmed" && bar_time_ms >= ${startTimeMs} && bar_time_ms < ${endTimeMs}`,
                         sort: '-created',
                         maxPages: 4
                     });
@@ -1958,9 +1958,9 @@
                     reverseSignalsMap[symbol] = [latestBySymbol[symbol]];
                 });
 
-                console.log('[ReverseSignals] 加载完成:', reverseSignalsMap);
+                console.log('[ExecutionActions] 加载完成:', reverseSignalsMap);
             } catch (error) {
-                console.error('加载反向信号失败:', error);
+                console.error('加载执行动作失败:', error);
             }
         }
 
@@ -2935,7 +2935,7 @@
                                 ${hasChartContext ? `<button class="action-btn btn-view" onclick='openSignalChartPage(${recordIdLiteral})'>📈 TV 图表</button>` : ''}
                                 ${lifecycleFlowUrl ? `<a class="action-btn btn-view" href="${lifecycleFlowUrl}">🧭 流程图</a>` : ''}
                                 <button class="action-btn btn-view${signal.signal_id ? '' : ' disabled'}" onclick='viewReverseSignal(${signalIdLiteral})' ${signal.signal_id ? '' : 'disabled'}>
-                                    🔄 反向信号
+                                    ⚡ 执行动作
                                 </button>
                                 <button class="action-btn btn-view${orderButtonClass}${signal.signal_id ? '' : ' disabled'}" onclick='viewSignalOrders(${signalIdLiteral})' ${signal.signal_id ? '' : 'disabled'}>
                                     ${orderButtonText}
@@ -3117,11 +3117,11 @@
 
         function viewReverseSignal(signalId) {
             if (!signalId) {
-                showToast('无法找到反向信号');
+                showToast('无法找到执行动作');
                 return;
             }
-            // 跳转到反向信号页面并按 signal_id 筛选
-            location.href = buildPageUrl('/ibkr_reverse_signals.html', { signal_id: signalId, date: currentDate });
+            // 跳转到执行动作页面并按 signal_id 筛选
+            location.href = buildPageUrl('/ibkr_execution_actions.html', { signal_id: signalId, date: currentDate });
         }
 
         function showIndicatorDetails(signalId) {

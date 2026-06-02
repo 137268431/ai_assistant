@@ -55,12 +55,12 @@ function renderExecutionBridge(activePage, params = {}) {
       active: activePage === '/ibkr_signals.html'
     },
     {
-      path: '/ibkr_reverse_signals.html',
+      path: '/ibkr_execution_actions.html',
       params: bridgeParams,
-      kicker: 'Reverse',
-      label: '反转信号',
+      kicker: 'Actions',
+      label: '执行动作',
       copy: '平仓 / 调整',
-      active: activePage === '/ibkr_reverse_signals.html'
+      active: ['/ibkr_execution_actions.html'].includes(activePage)
     },
     {
       path: '/orders.html',

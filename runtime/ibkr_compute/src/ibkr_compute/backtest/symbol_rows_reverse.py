@@ -312,7 +312,7 @@ class BacktestSymbolRowsReverseMixin:
             "adjust_tp": 5.0,
             "close": 7.0,
         }
-        triggered_signals = ["信号反转"]
+        triggered_signals = ["方向冲突"]
         price_patch = self._build_backtest_reverse_price_patch(target, action_type, current_price)
         return {
             "score": score_map.get(action_type, 2.0),

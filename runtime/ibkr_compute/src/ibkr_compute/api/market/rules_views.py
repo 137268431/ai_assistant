@@ -35,7 +35,7 @@ CORE_TWO_SETUP_RETAINED_SETUPS = (
         "direction": "short",
         "family": "mean_reversion",
         "role": "core_alpha",
-        "summary": "SD 均值回归做空：只保留 short 方向，要求上轨/超买后的反转证据和做空过滤通过。",
+        "summary": "SD 均值回归做空：只保留 short 方向，要求上轨/超买后的回落证据和做空过滤通过。",
     },
 )
 CORE_TWO_SETUP_NON_CORE_SETUPS = (
@@ -154,7 +154,7 @@ SYSTEM_LOGIC_COVERAGE_DOMAINS = [
     },
     {
         "id": "order_lifecycle",
-        "label": "订单 / 生命周期 / 反向信号",
+        "label": "订单 / 生命周期 / 执行动作",
         "source_modules": [
             "ibkr_api.orders",
             "ibkr_api.reverse",
@@ -929,8 +929,8 @@ def _system_flow_panel(environment: str) -> dict:
             {
                 "id": "orders",
                 "label": "订单生命周期",
-                "summary": "信号确认后进入订单、成交、保护单、平仓/反向信号和 lifecycle event 可视化链路。",
-                "links": ["/ibkr_lifecycle_flow.html", "/ibkr_reverse_signals.html"],
+                "summary": "信号确认后进入订单、成交、保护单、平仓/执行动作和 lifecycle event 可视化链路。",
+                "links": ["/ibkr_lifecycle_flow.html", "/ibkr_execution_actions.html"],
             },
             {
                 "id": "scheduler_quality",
@@ -1614,8 +1614,8 @@ def _orders_panel(environment: str) -> dict:
     app_mod.cfg.refresh()
     cfg = app_mod.cfg
     return {
-        "title": "订单生命周期与反向信号",
-        "subtitle": "确认后的信号会进入订单、成交、保护单、平仓/反向和生命周期事件链路。",
+        "title": "订单生命周期与执行动作",
+        "subtitle": "确认后的信号会进入订单、成交、保护单、平仓/执行动作和生命周期事件链路。",
         "coverage_domains": ["order_lifecycle"],
         "source_refs": [
             "ibkr_api.orders.*",
@@ -1653,13 +1653,13 @@ def _orders_panel(environment: str) -> dict:
                 ],
             },
             {
-                "title": "反向信号",
-                "copy": "反向信号用于平仓、调整或翻向；默认不开启直接 flip。",
+                "title": "TV 执行动作",
+                "copy": "TV 执行动作用于平仓或调整；相反方向 entry 必须先由 TV exit 串联退出。",
                 "lines": [
                     _config_line(cfg, "reverse_flip_enabled", environment, "false"),
                     _config_line(cfg, "reverse_signal_threshold", environment, "6"),
-                    "reverse_signal.py 负责反向条件计算，ibkr_api.reverse 负责 ack / dispatch / pending。",
-                    "反向结果会关联原 signal_id / trade_group_id，便于生命周期链路追踪。",
+                    "TV webhook 负责触发执行动作，ibkr_api.reverse 负责兼容 ack / dispatch / pending。",
+                    "执行结果会关联原 signal_id / trade_group_id，便于生命周期链路追踪。",
                 ],
             },
         ],

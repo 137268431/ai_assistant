@@ -1,5 +1,5 @@
 """
-反向信号处理
+执行动作处理
 - close: 平仓
 - cancel: 取消待成交订单
 - adjust_sl: 调整止损
@@ -25,6 +25,7 @@ REVERSE_ACTIONS = {"close", "cancel", "adjust_sl", "adjust_tp", "adjust_bracket"
 REVERSE_SIGNAL_COLLECTION = "ibkr_reverse_signals"
 REVERSE_PERSISTED_STATUSES = {"pending", "confirmed", "cancelled", "expired"}
 REVERSE_BLOCKED_PERSISTED_STATUS = "cancelled"
+TRADINGVIEW_REVERSE_SOURCES = {"tradingview", "tv", "tv_webhook", "webhook_tv"}
 
 ACTIVE_ORDER_STATUSES = {
     "APIPENDING",
@@ -77,6 +78,15 @@ class ReverseSignalHandler:
                 if rid in self._processed_ids:
                     continue
 
+                if not self._is_tradingview_reverse_signal(r):
+                    result = self._expire_non_tv_reverse_signal(r)
+                    self._processed_ids.add(rid)
+                    try:
+                        self._ack_reverse_signal(r, "expire_non_tv_action", result)
+                    except Exception as e:
+                        logger.debug("Failed to expire non-TV execution action: %s", e)
+                    continue
+
                 action = str(r.get("action_type", "") or "").lower()
                 if action not in REVERSE_ACTIONS:
                     continue
@@ -88,7 +98,7 @@ class ReverseSignalHandler:
                 try:
                     self._ack_reverse_signal(r, action, result)
                 except Exception as e:
-                    logger.debug("Failed to update reverse signal status: %s", e)
+                    logger.debug("Failed to update execution action status: %s", e)
 
         except Exception as e:
             logger.error("Reverse signal check failed: %s", e)
@@ -128,6 +138,29 @@ class ReverseSignalHandler:
         extra = cls._signal_extra(signal)
         value = extra.get(key)
         return default if value in (None, "") else value
+
+    @classmethod
+    def _is_tradingview_reverse_signal(cls, signal: dict) -> bool:
+        source = str(cls._signal_value(signal, "source") or "").strip().lower()
+        return source in TRADINGVIEW_REVERSE_SOURCES
+
+    @staticmethod
+    def _expire_non_tv_reverse_signal(signal: dict) -> Dict[str, Any]:
+        source = str((signal or {}).get("source") or "").strip().lower()
+        extra = ReverseSignalHandler._as_dict((signal or {}).get("extra"))
+        if not source:
+            source = str(extra.get("source") or "").strip().lower()
+        return {
+            "ok": False,
+            "ack_status": "expired",
+            "reason": "legacy_non_tv_action_disabled",
+            "detail": {
+                "result_status": "expired_non_tv_action",
+                "flow_error_code": "tv_action_non_tv_source",
+                "source": source,
+                "tv_primary_only": True,
+            },
+        }
 
     @classmethod
     def _signal_list(cls, signal: dict, *keys: str) -> List[str]:
@@ -343,6 +376,9 @@ class ReverseSignalHandler:
         }
 
     def _mark_ready_reentry(self, signal: dict, detail: Dict[str, Any], reason: str = "ready_reentry") -> Dict[str, Any]:
+        if self._is_tradingview_reverse_signal(signal):
+            return self._mark_tv_exit_confirmed(signal, detail, reason)
+
         self._append_state(detail, "ready_reentry")
         detail["ready_reentry"] = True
         detail["reentry_submitted"] = False
@@ -382,7 +418,33 @@ class ReverseSignalHandler:
             "detail": detail,
         }
 
+    def _mark_tv_exit_confirmed(self, signal: dict, detail: Dict[str, Any], reason: str) -> Dict[str, Any]:
+        self._append_state(detail, "tv_exit_confirmed")
+        detail["ready_reentry"] = False
+        detail["reentry_submitted"] = False
+        detail["blocked"] = False
+        detail["result_status"] = "tv_exit_confirmed"
+        detail["auto_reentry_disabled"] = True
+        detail["reentry_blocked"] = {
+            "reason": "tv_primary_exit_requires_next_tv_entry",
+            "next_step": "wait_for_tradingview_entry",
+            "message": "old order/position is safe; automatic reentry is disabled in TV-primary mode",
+        }
+        runtime_detail = detail.setdefault("reverse_runtime_detail", {})
+        runtime_detail["ready_reason"] = reason
+        runtime_detail["auto_reentry_disabled"] = True
+        runtime_detail["next_step"] = "wait_for_tradingview_entry"
+        self._mark_origin_signal_tv_exit_resolved(signal, detail)
+        return {
+            "ok": True,
+            "ack_status": "confirmed",
+            "reason": "tv_exit_confirmed_no_reentry",
+            "detail": detail,
+        }
+
     def _submit_reentry_signal(self, signal: dict, detail: Dict[str, Any]) -> Dict[str, Any]:
+        if self._is_tradingview_reverse_signal(signal):
+            return {"submitted": False, "reason": "tv_primary_auto_reentry_disabled"}
         payload = self._reentry_signal_payload(signal)
         if not payload:
             return {"submitted": False, "reason": "reentry_payload_missing"}
@@ -456,6 +518,55 @@ class ReverseSignalHandler:
     def _reentry_signal_payload(self, signal: dict) -> Dict[str, Any]:
         payload = self._signal_value(signal, "reentry_signal_payload", {})
         return self._as_dict(payload)
+
+    def _mark_origin_signal_tv_exit_resolved(self, signal: dict, detail: Dict[str, Any]) -> None:
+        origin_signal_id = str(
+            self._signal_value(signal, "origin_signal_id")
+            or self._signal_value(signal, "signal_id")
+            or self._signal_value(signal, "source_signal_id")
+            or ""
+        ).strip()
+        if not origin_signal_id:
+            return
+        getter = getattr(self.pb_client, "get_first_record", None)
+        updater = getattr(self.pb_client, "update_record", None)
+        if not callable(getter) or not callable(updater):
+            return
+        environment = normalize_broker_mode(self._signal_value(signal, "broker_mode") or self._signal_value(signal, "environment"), self.environment)
+        try:
+            record = getter(
+                "ibkr_signals",
+                filter=(
+                    f'signal_id = "{self._escape_filter_value(origin_signal_id)}" && '
+                    f'environment = "{self._escape_filter_value(environment)}"'
+                ),
+            )
+            if not record or not record.get("id"):
+                return
+            extra = self._as_dict(record.get("extra"))
+            action = str(detail.get("executed_action") or signal.get("action_type") or "").strip()
+            status_reason = f"closed_by_tv_execution_action_{action}" if action else "closed_by_tv_execution_action"
+            patch = {
+                "status": "closed",
+                "note": status_reason,
+                "extra": {
+                    **extra,
+                    "status_reason": status_reason,
+                    "execution_policy": "tv_exit_required",
+                    "execution_stage": "old_risk_resolved",
+                    "execution_action_id": str(signal.get("id") or ""),
+                    "execution_action_resolved_at": self._now_iso(),
+                    "next_entry_source": "tradingview",
+                },
+            }
+            updater("ibkr_signals", str(record.get("id")), patch)
+            detail["origin_signal_status_patch"] = {
+                "signal_id": origin_signal_id,
+                "status": "closed",
+                "note": patch["note"],
+            }
+        except Exception as exc:
+            detail["origin_signal_status_patch_error"] = str(exc)
 
     def _mark_origin_signal_resolved(self, signal: dict, detail: Dict[str, Any]) -> None:
         origin_signal_id = str(
@@ -577,11 +688,11 @@ class ReverseSignalHandler:
             else:
                 signal.update(patch)
         except Exception as exc:
-            logger.debug("Failed to patch reverse signal detail: %s", exc)
+            logger.debug("Failed to patch execution action detail: %s", exc)
 
     def _process_reverse(self, signal: dict, action: str) -> Dict[str, Any]:
         symbol = str(self._signal_value(signal, "symbol") or "").upper()
-        logger.info("Processing reverse signal: %s %s", action, symbol)
+        logger.info("Processing execution action: %s %s", action, symbol)
 
         detail = self._base_reverse_detail(signal, action)
         if self._has_protection_incomplete(signal):

@@ -5,8 +5,10 @@ import unittest
 from pathlib import Path
 
 SERVICE_SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_api" / "src"
-if str(SERVICE_SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SERVICE_SRC_ROOT))
+COMPUTE_SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "src"
+for src_root in (SERVICE_SRC_ROOT, COMPUTE_SRC_ROOT):
+    if str(src_root) not in sys.path:
+        sys.path.insert(0, str(src_root))
 
 from ibkr_api.signals.ingest import build_signal_ingest_response, build_signals_ingest_response
 from ibkr_api.signals.notifications import build_signal_notification_card, build_signal_status_card
@@ -1351,7 +1353,7 @@ class SignalIngressBuildersTest(unittest.TestCase):
         self.assertEqual(row["entry"], 180.0)
         self.assertEqual(row["extra"]["suppressed_reason"], "same_direction_order_trace_active")
 
-    def test_signal_ingest_suppresses_weak_reverse_against_broker_order(self):
+    def test_signal_ingest_blocks_weak_opposite_entry_against_broker_order(self):
         pb = _FakePB(
             [
                 {
@@ -1389,13 +1391,16 @@ class SignalIngressBuildersTest(unittest.TestCase):
         )
 
         self.assertEqual(status_code, 200)
-        self.assertEqual(payload["action"], "suppressed_weak_reverse_signal")
+        self.assertEqual(payload["action"], "blocked_opposite_entry_requires_tv_exit")
+        self.assertEqual(payload["reason"], "blocked_opposite_entry_requires_tv_exit")
+        self.assertTrue(payload["blocked"])
         self.assertEqual(len(pb.created), 0)
         extra = pb.signals["sig-row-1"]["extra"]
-        self.assertEqual(extra["latest_suppressed_reverse_signal_id"], "sig-weak-short")
-        self.assertEqual(extra["latest_suppressed_reverse_reason"], "reverse_signal_below_strong_threshold")
+        self.assertEqual(extra["latest_blocked_opposite_entry_signal_id"], "sig-weak-short")
+        self.assertEqual(extra["latest_blocked_opposite_entry_reason"], "blocked_opposite_entry_requires_tv_exit")
+        self.assertEqual(extra["required_execution_action"], "tv_exit")
 
-    def test_signal_ingest_queues_full_auto_reverse_for_strong_opposite_broker_signal(self):
+    def test_signal_ingest_blocks_strong_opposite_entry_without_reverse_record(self):
         pb = _FakePB(
             [
                 {
@@ -1435,19 +1440,15 @@ class SignalIngressBuildersTest(unittest.TestCase):
         )
 
         self.assertEqual(status_code, 200)
-        self.assertEqual(payload["action"], "queued_full_auto_reverse")
-        self.assertEqual(payload["target"], "ibkr_reverse_signals")
-        reverse_rows = [row for collection, row in pb.created if collection == "ibkr_reverse_signals"]
-        self.assertEqual(len(reverse_rows), 1)
-        reverse = reverse_rows[0]
-        self.assertEqual(reverse["action_type"], "cancel")
-        self.assertEqual(reverse["source"], "signal")
-        self.assertEqual(reverse["extra"]["reverse_stage"], "cancel_old_order")
-        self.assertEqual(reverse["extra"]["new_direction"], "short")
-        self.assertEqual(reverse["extra"]["reentry_signal_payload"]["signal_id"], "sig-strong-short")
-        self.assertEqual(pb.signals["sig-row-1"]["extra"]["reverse_policy"], "full_auto_reverse")
+        self.assertEqual(payload["action"], "blocked_opposite_entry_requires_tv_exit")
+        self.assertEqual(payload["target"], "ibkr_signals")
+        self.assertEqual([], [row for collection, row in pb.created if collection == "ibkr_reverse_signals"])
+        extra = pb.signals["sig-row-1"]["extra"]
+        self.assertEqual(extra["latest_blocked_opposite_entry_signal_id"], "sig-strong-short")
+        self.assertEqual(extra["latest_blocked_opposite_entry_direction"], "short")
+        self.assertEqual(extra["reverse_policy"], "tv_exit_required")
 
-    def test_signal_ingest_skips_reverse_when_broker_signal_has_no_order_trace(self):
+    def test_signal_ingest_blocks_opposite_entry_even_without_order_trace(self):
         pb = _FakePB(
             [
                 {
@@ -1488,15 +1489,13 @@ class SignalIngressBuildersTest(unittest.TestCase):
 
         self.assertEqual(status_code, 200)
         self.assertEqual(payload["target"], "ibkr_signals")
-        self.assertEqual(payload["action"], "created")
+        self.assertEqual(payload["action"], "blocked_opposite_entry_requires_tv_exit")
         self.assertEqual([], [row for collection, row in pb.created if collection == "ibkr_reverse_signals"])
-        self.assertEqual(pb.signals["sig-row-1"]["status"], "closed")
-        self.assertEqual(pb.signals["sig-row-1"]["extra"]["closed_reason"], "stale_active_signal_without_order_trace")
-        created_signals = [row for collection, row in pb.created if collection == "ibkr_signals"]
-        self.assertEqual(len(created_signals), 1)
-        self.assertEqual(created_signals[0]["extra"]["stale_active_signal_id"], "sig-old")
+        self.assertEqual(pb.signals["sig-row-1"]["status"], "protected_active")
+        self.assertEqual(pb.signals["sig-row-1"]["extra"]["latest_blocked_opposite_entry_signal_id"], "sig-strong-short")
+        self.assertEqual([], [row for collection, row in pb.created if collection == "ibkr_signals"])
 
-    def test_signal_ingest_blocks_reverse_when_protection_incomplete(self):
+    def test_signal_ingest_blocks_opposite_entry_when_protection_incomplete(self):
         pb = _FakePB(
             [
                 {
@@ -1534,10 +1533,10 @@ class SignalIngressBuildersTest(unittest.TestCase):
         )
 
         self.assertEqual(status_code, 200)
-        self.assertEqual(payload["action"], "blocked_reverse_protection_incomplete")
+        self.assertEqual(payload["action"], "blocked_opposite_entry_requires_tv_exit")
         self.assertEqual([], [row for collection, row in pb.created if collection == "ibkr_reverse_signals"])
         extra = pb.signals["sig-row-1"]["extra"]
-        self.assertEqual(extra["latest_suppressed_reverse_reason"], "protection_incomplete_blocks_auto_reverse")
+        self.assertEqual(extra["latest_blocked_opposite_entry_reason"], "blocked_opposite_entry_requires_tv_exit")
 
     def test_signal_status_card_labels_protected_active(self):
         card = build_signal_status_card(

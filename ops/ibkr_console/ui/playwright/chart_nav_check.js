@@ -125,8 +125,8 @@ async function inspect(browser, token, spec, mobile = false) {
   const specs = [
     { name: 'signals_to_chart', url: buildTargetUrl('/ibkr_signals.html', dates.signals.date) },
     dates.reverse.unavailable
-      ? { name: 'reverse_to_chart', skipped: true, reason: dates.reverse.reason }
-      : { name: 'reverse_to_chart', url: buildTargetUrl('/ibkr_reverse_signals.html', dates.reverse.date) },
+      ? { name: 'execution_actions_to_chart', skipped: true, reason: dates.reverse.reason }
+      : { name: 'execution_actions_to_chart', url: buildTargetUrl('/ibkr_execution_actions.html', dates.reverse.date) },
     dates.orders.unavailable
       ? { name: 'orders_to_chart', skipped: true, reason: dates.orders.reason }
       : { name: 'orders_to_chart', url: buildTargetUrl('/ibkr_orders.html', dates.orders.date) },

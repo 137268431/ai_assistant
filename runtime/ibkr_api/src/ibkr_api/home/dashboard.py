@@ -224,7 +224,8 @@ def build_home_dashboard_response(
 
     signal_long_count = count_records(pb, "ibkr_signals", f'{today_data_filter} && direction = "long"')
     signal_short_count = count_records(pb, "ibkr_signals", f'{today_data_filter} && direction = "short"')
-    reverse_rows = load_records(pb, "ibkr_reverse_signals", filter_expr=today_broker_filter, sort="-created", per_page=500, max_pages=2)
+    tv_action_filter = f'{today_broker_filter} && source = "tradingview"'
+    execution_action_rows = load_records(pb, "ibkr_reverse_signals", filter_expr=tv_action_filter, sort="-created", per_page=500, max_pages=2)
     today_orders = load_records(pb, "orders", filter_expr=today_broker_filter, sort="-created", per_page=500, max_pages=2)
     recent_signals = load_records(pb, "ibkr_signals", filter_expr=today_data_filter, sort="-created", per_page=4, max_pages=1)
 
@@ -232,7 +233,7 @@ def build_home_dashboard_response(
     positions_long = count_records(pb, "orders", f'{position_base_filter} && (position_side = "long" || direction = "long")')
     positions_short = count_records(pb, "orders", f'{position_base_filter} && (position_side = "short" || direction = "short")')
 
-    pending_reverse = len([row for row in reverse_rows if not bool(row.get("processed"))])
+    pending_execution_actions = len([row for row in execution_action_rows if to_text(row.get("status")).lower() == "pending"])
     order_summary = _summarize_entry_orders(today_orders)
     pnl_summary = _calculate_pnl(today_orders)
     recent_entry_orders = [row for row in today_orders if _is_entry_order(row)][:4]
@@ -248,9 +249,13 @@ def build_home_dashboard_response(
             "short": signal_short_count,
             "total": signal_long_count + signal_short_count,
         },
+        "execution_actions": {
+            "pending": pending_execution_actions,
+            "total": len(execution_action_rows),
+        },
         "reverse_signals": {
-            "pending": pending_reverse,
-            "total": len(reverse_rows),
+            "pending": pending_execution_actions,
+            "total": len(execution_action_rows),
         },
         "orders": {
             "long": order_summary["long"],

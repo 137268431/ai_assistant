@@ -233,9 +233,9 @@
                 atr_stop_adjust: 'ATR 止损调整',
                 exit_policy_stop_adjust: '策略止损调整',
                 target_policy_stop_adjust: '目标策略止损调整',
-                reverse_adjust_sl: '反转调止损',
-                reverse_adjust_tp: '反转调止盈',
-                reverse_action: '特殊/反转事件',
+                reverse_adjust_sl: '执行动作调止损',
+                reverse_adjust_tp: '执行动作调止盈',
+                reverse_action: '特殊/执行事件',
                 signal_skipped: '信号跳过',
                 signal_dropped: '信号丢弃',
             };
@@ -299,7 +299,7 @@
             return `
                 <div class="detail-card">
                     <div class="subhead">回测审计链路</div>
-                    <div class="foot-note">按 run 内实际行串起：今日/焦点日标的 → 信号 → 成交 → 止盈止损 → SL/TP 调整 → 反转等特殊事件。</div>
+                    <div class="foot-note">按 run 内实际行串起：今日/焦点日标的 → 信号 → 成交 → 止盈止损 → SL/TP 调整 → 执行/风控等特殊事件。</div>
                     <div class="detail-list" style="margin-top: 12px;">
                         <div class="detail-item"><div class="detail-item-label">Focus Date</div><div class="detail-item-value mono">${escapeHtml(audit.focus_date || focusDay.date || '--')}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Focus Symbols</div><div class="detail-item-value">${escapeHtml(focusSymbols.join(', ') || '--')}</div></div>
@@ -391,8 +391,8 @@
             const samples = Array.isArray(metrics.backtest_reverse_samples) ? metrics.backtest_reverse_samples : [];
             return `
                 <div class="detail-card">
-                    <div class="subhead">反转验证</div>
-                    <div class="foot-note">回测反转留痕，不回写 live。</div>
+                    <div class="subhead">执行动作验证</div>
+                    <div class="foot-note">回测执行动作留痕，不回写 live。</div>
                     <div style="margin: 10px 0 14px;">${detailStatusTag(status)}</div>
                     <div class="detail-list">
                         <div class="detail-item"><div class="detail-item-label">Collection</div><div class="detail-item-value mono">${escapeHtml(capture.collection || 'ibkr_backtest_reverse_signals')}</div></div>
@@ -402,7 +402,7 @@
                         <div class="detail-item"><div class="detail-item-label">Action Breakdown</div><div class="detail-item-value">${escapeHtml(formatBreakdown(metrics.backtest_reverse_action_breakdown || {}))}</div></div>
                         <div class="detail-item"><div class="detail-item-label">Strength Breakdown</div><div class="detail-item-value">${escapeHtml(formatBreakdown(metrics.backtest_reverse_strength_breakdown || {}))}</div></div>
                     </div>
-                    ${samples.length ? `<div class="note-box mono" style="margin-top: 14px;">${escapeHtml(JSON.stringify(samples, null, 2))}</div>` : '<div class="empty-state" style="margin-top: 14px;">暂无反转动作。</div>'}
+                    ${samples.length ? `<div class="note-box mono" style="margin-top: 14px;">${escapeHtml(JSON.stringify(samples, null, 2))}</div>` : '<div class="empty-state" style="margin-top: 14px;">暂无执行动作。</div>'}
                     ${errors.length ? `<div class="note-box mono" style="margin-top: 14px;">${escapeHtml(JSON.stringify(errors, null, 2))}</div>` : ''}
                 </div>
             `;
@@ -426,7 +426,7 @@
             return `
                 <div class="detail-card">
                     <div class="subhead">回测分析</div>
-                    <div class="foot-note">系统会结合收益、回撤、成交率、反转动作和 TV 对齐结果，自动产出这期回测的判断与优化方向。</div>
+                    <div class="foot-note">系统会结合收益、回撤、成交率、执行动作和 TV 对齐结果，自动产出这期回测的判断与优化方向。</div>
                     <div style="margin: 10px 0 14px;">${detailStatusTag(verdict)}</div>
                     <div class="note-box">${escapeHtml(summary.headline || recommendation.headline || '当前 run 尚未产出分析摘要。')}</div>
                     <div class="detail-list" style="margin-top: 14px;">

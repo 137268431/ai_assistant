@@ -3,8 +3,10 @@ import unittest
 from pathlib import Path
 
 SERVICE_SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_api" / "src"
-if str(SERVICE_SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SERVICE_SRC_ROOT))
+COMPUTE_SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "src"
+for src_root in (SERVICE_SRC_ROOT, COMPUTE_SRC_ROOT):
+    if str(src_root) not in sys.path:
+        sys.path.insert(0, str(src_root))
 
 from ibkr_api.reverse_actions import build_reverse_ack_response, build_reverse_dispatch_response
 from ibkr_api.reverse_common import normalize_reverse_record
@@ -130,6 +132,7 @@ def _reverse_record(
     bar_time_ms=0,
     created="2026-04-22T12:00:00Z",
     extra=None,
+    source="tradingview",
 ):
     payload = {
         "id": record_id,
@@ -144,7 +147,7 @@ def _reverse_record(
         "bar_time_ms": bar_time_ms,
         "us_time": "2026-04-22 08:00:00",
         "cn_time": "2026-04-22 20:00:00",
-        "source": "indicator",
+        "source": source,
         "priority": priority,
         "environment": environment,
         "created": created,
@@ -216,7 +219,7 @@ class ReverseQueryTests(unittest.TestCase):
         self.assertEqual(status_code, 200)
         self.assertEqual([item["id"] for item in payload["ibkr_signals"]], ["rev-1"])
         self.assertEqual(len(pb.get_records_calls), 2)
-        self.assertEqual(pb.get_records_calls[1]["filter"], 'environment = "live"')
+        self.assertEqual(pb.get_records_calls[1]["filter"], 'environment = "live" && source = "tradingview"')
 
     def test_reverse_pending_returns_only_pending_rows(self):
         pb = _FakePB(
@@ -268,10 +271,23 @@ class ReverseActionTests(unittest.TestCase):
 
         self.assertEqual(status_code, 200)
         self.assertEqual(payload["signal"]["status"], "cancelled")
-        self.assertEqual(payload["signal"]["reason"], "页面取消反转信号")
+        self.assertEqual(payload["signal"]["reason"], "页面取消执行动作")
         self.assertEqual(payload["signal"]["result_status"], "cancelled_by_page")
         self.assertEqual(notifications[0][0], "cancel")
-        self.assertEqual(notifications[0][2]["message"], "页面已取消该反转信号")
+        self.assertEqual(notifications[0][2]["message"], "页面已取消该执行动作")
+
+
+    def test_reverse_dispatch_rejects_non_tv_execution_action(self):
+        pb = _FakePB([_reverse_record("rev-legacy", source="indicator")])
+
+        payload, status_code = build_reverse_dispatch_response(
+            pb,
+            payload={"reverse_id": "rev-legacy", "action": "execute"},
+        )
+
+        self.assertEqual(status_code, 400)
+        self.assertEqual(payload["reason"], "non_tv_action_disabled")
+        self.assertEqual(pb.update_calls, [])
 
     def test_reverse_dispatch_skips_non_pending_records(self):
         pb = _FakePB([_reverse_record("rev-1", status="confirmed")])

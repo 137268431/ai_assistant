@@ -18,6 +18,7 @@ DEFAULT_REVERSE_THRESHOLD = 6
 ACTIVE_ENTRY_ORDER_LIMIT = 20
 REVERSE_DEDUPE_LOOKBACK_LIMIT = 50
 ALLOWED_REVERSE_ACTION_TYPES = ("cancel", "close", "adjust_sl", "adjust_tp")
+TRADINGVIEW_REVERSE_SOURCES = {"tradingview", "tv", "tv_webhook", "webhook_tv"}
 
 
 def normalize_environment_value(value: Any, default: str = LIVE_ENVIRONMENT) -> str:
@@ -61,6 +62,12 @@ def first_non_empty(*values: Any) -> Any:
 
 def get_reverse_extra(record_or_data: Any) -> dict[str, Any]:
     return ensure_object(record_value(record_or_data, "extra"))
+
+
+def is_tradingview_reverse_source(record_or_data: Any) -> bool:
+    extra = get_reverse_extra(record_or_data)
+    source = to_text(record_value(record_or_data, "source") or extra.get("source")).lower()
+    return source in TRADINGVIEW_REVERSE_SOURCES
 
 
 def merge_reverse_extra(record_or_data: Any, patch: dict[str, Any] | None) -> dict[str, Any]:
@@ -175,12 +182,14 @@ __all__ = [
     "ORDERS_COLLECTION",
     "REVERSE_DEDUPE_LOOKBACK_LIMIT",
     "REVERSE_SIGNALS_COLLECTION",
+    "TRADINGVIEW_REVERSE_SOURCES",
     "build_date_range",
     "clamp_reverse_limit",
     "ensure_object",
     "escape_filter_string",
     "first_non_empty",
     "get_reverse_extra",
+    "is_tradingview_reverse_source",
     "merge_record_patch",
     "merge_reverse_extra",
     "normalize_environment_value",

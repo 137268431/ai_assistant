@@ -417,6 +417,31 @@ def build_reverse_suppressed_patch(existing: dict[str, Any], incoming: dict[str,
     }
 
 
+def build_opposite_entry_block_patch(existing: dict[str, Any], incoming: dict[str, Any], *, reason: str) -> dict[str, Any]:
+    existing_extra = get_signal_extra(existing)
+    incoming_extra = ensure_object(incoming.get("extra"))
+    incoming_signal_id = to_text(incoming.get("signal_id"))
+    strength = calculate_signal_strength(incoming)
+    now_text = _now_iso_utc()
+    return {
+        "extra": {
+            **existing_extra,
+            "blocked_opposite_entry_signal_ids": _append_unique(
+                existing_extra.get("blocked_opposite_entry_signal_ids"),
+                incoming_signal_id,
+            ),
+            "latest_blocked_opposite_entry_signal_id": incoming_signal_id,
+            "latest_blocked_opposite_entry_at": now_text,
+            "latest_blocked_opposite_entry_reason": reason,
+            "latest_blocked_opposite_entry_direction": to_text(incoming.get("direction")).lower(),
+            "latest_blocked_opposite_entry_extra": incoming_extra,
+            "suppressed_reason": reason,
+            "signal_strength_score": strength["score"],
+            "signal_strength_level": strength["level"],
+        }
+    }
+
+
 def build_stale_active_close_patch(
     existing: dict[str, Any],
     incoming: dict[str, Any],
@@ -524,7 +549,7 @@ def build_reverse_record_payload(
         "priority": 1,
         "strength": strength["level"],
         "score": strength["score"],
-        "triggered_signals": strength["triggered_signals"] or ["信号反转"],
+        "triggered_signals": strength["triggered_signals"] or ["方向冲突"],
         "action_type": action_type,
         "status": "pending",
         "reason": "strong_reverse_signal_auto_reversal",
@@ -575,6 +600,7 @@ __all__ = [
     "build_confirmed_signal_reconfirm_payload",
     "build_reverse_record_payload",
     "build_reverse_suppressed_patch",
+    "build_opposite_entry_block_patch",
     "build_same_direction_followup_patch",
     "build_stale_active_close_patch",
     "build_superseded_patch",

@@ -97,7 +97,7 @@
     renderNav(activePage) {
       const pages = [
         { path: '/index.html', icon: '🏠', label: '首页' },
-        { path: '/ibkr_signals.html', aliases: ['/ibkr_signals.html', '/ibkr_reverse_signals.html', '/orders.html', '/ibkr_order_details.html', '/ibkr_lifecycle_flow.html', '/ibkr_trade_review.html', '/ibkr_account.html'], icon: '📡', label: '执行' },
+        { path: '/ibkr_signals.html', aliases: ['/ibkr_signals.html', '/ibkr_execution_actions.html', '/orders.html', '/ibkr_order_details.html', '/ibkr_lifecycle_flow.html', '/ibkr_trade_review.html', '/ibkr_account.html'], icon: '📡', label: '执行' },
         { path: '/ibkr_screener.html', aliases: ['/ibkr_screener.html', '/ibkr_watchlist.html', '/ibkr_targets.html'], icon: '🎯', label: '目标' },
         { path: '/ibkr_system.html', aliases: ['/ibkr_system.html', '/ibkr_runtime.html', '/ibkr_config.html'], icon: '🖥️', label: '系统' }
       ];
@@ -123,7 +123,7 @@
       const bridgeParams = params && typeof params === 'object' ? params : {};
       return global.renderPageBridge([
         { path: '/ibkr_signals.html', params: bridgeParams, kicker: 'Signals', label: '主信号', copy: '确认 / 执行', active: activePage === '/ibkr_signals.html' },
-        { path: '/ibkr_reverse_signals.html', params: bridgeParams, kicker: 'Reverse', label: '反转信号', copy: '平仓 / 调整', active: activePage === '/ibkr_reverse_signals.html' },
+        { path: '/ibkr_execution_actions.html', params: bridgeParams, kicker: 'Actions', label: '执行动作', copy: '平仓 / 调整', active: ['/ibkr_execution_actions.html'].includes(activePage) },
         { path: '/orders.html', params: bridgeParams, kicker: 'Orders', label: '订单', copy: '状态 / 操作', active: activePage === '/orders.html' || activePage === '/ibkr_order_details.html' },
         { path: '/ibkr_lifecycle_flow.html', params: bridgeParams, kicker: 'Lifecycle', label: '生命周期', copy: '流程 / 事件', active: activePage === '/ibkr_lifecycle_flow.html' },
         { path: '/ibkr_trade_review.html', params: bridgeParams, kicker: 'Review', label: '每日复盘', copy: '原因 / 问题', active: activePage === '/ibkr_trade_review.html' },

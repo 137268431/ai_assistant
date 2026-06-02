@@ -103,6 +103,34 @@ def _build_reverse_response(record: Any, created: bool) -> tuple[dict[str, Any],
     }, 200
 
 
+def _build_disabled_tv_primary_only_response(
+    *,
+    broker_mode: str,
+    data_environment: str,
+    symbol: str,
+    direction: str,
+    forced_action_type: str,
+) -> tuple[dict[str, Any], int]:
+    return {
+        "success": True,
+        "created": False,
+        "duplicate": False,
+        "reason": "disabled_tv_primary_only",
+        "signal": None,
+        "broker_mode": broker_mode,
+        "data_environment": data_environment,
+        "analysis": _build_analysis_payload(
+            symbol=symbol,
+            direction=direction,
+            target_state="tv_primary_only",
+            strength="weak",
+            score=0,
+            action_type=forced_action_type or "none",
+            triggered_signals=[],
+        ),
+    }, 200
+
+
 def _resolve_score_override(value: Any) -> float | None:
     if value is None or value == "":
         return None
@@ -177,7 +205,7 @@ def _notify_if_threshold_met(
     notify_reverse_signal(
         record,
         {
-            "message": "检测到指标反转信号，等待 IBKR 执行" if created else "检测到重复指标反转信号，已刷新现有记录",
+            "message": "检测到指标执行动作，等待 IBKR 执行" if created else "检测到重复指标执行动作，已刷新现有记录",
         },
     )
 
@@ -207,101 +235,13 @@ def build_reverse_calculate_response(
     direction = to_text(data.get("direction")).lower()
     forced_action_type = to_text(data.get("force_action_type") or data.get("action_type")).lower()
 
-    if not symbol or not direction:
-        return {"error": "Missing symbol or direction"}, 400
-    if direction not in {"long", "short"}:
-        return {"error": "Invalid direction"}, 400
-    if forced_action_type and forced_action_type not in ALLOWED_REVERSE_ACTION_TYPES:
-        return {"error": f"Invalid force_action_type: {forced_action_type}"}, 400
-
-    try:
-        if escape_filter is None:
-            active_order = active_order_loader(pb, symbol, direction, broker_mode)
-        else:
-            active_order = active_order_loader(pb, symbol, direction, broker_mode, escape_filter=escape_filter)
-        order_context = order_context_builder(active_order)
-
-        if not order_context or (order_context.get("direction") and order_context.get("direction") != direction):
-            return _build_no_target_response(
-                symbol=symbol,
-                direction=direction,
-                forced_action_type=forced_action_type,
-            )
-
-        if forced_action_type in {"adjust_sl", "adjust_tp", "close"} and order_context.get("target_state") != "filled_position":
-            return {"error": f"Action {forced_action_type} requires filled_position"}, 400
-        if forced_action_type == "cancel" and order_context.get("target_state") != "pending_entry":
-            return {"error": "Action cancel requires pending_entry"}, 400
-
-        if escape_filter is None:
-            indicator_record = indicator_loader(pb, symbol, data_environment)
-        else:
-            indicator_record = indicator_loader(pb, symbol, data_environment, escape_filter=escape_filter)
-        if not indicator_record:
-            return {"error": "No ibkr_indicators found for symbol"}, 404
-
-        analysis = indicator_analyzer(direction, indicator_record)
-        score_override = _resolve_score_override(data.get("score_override"))
-        score = analysis.get("score") if score_override is None else score_override
-        score = float(score or 0)
-        effective_triggered_signals = _build_effective_triggered_signals(data, analysis, forced_action_type)
-        strength = map_strength(score)
-        action_type = resolve_indicator_action(score, order_context.get("target_state"), forced_action_type)
-
-        if (not forced_action_type and score <= 0) or not effective_triggered_signals:
-            return _build_no_conditions_response(
-                symbol=symbol,
-                direction=direction,
-                order_context=order_context,
-                strength=strength,
-                score=score,
-                action_type=action_type,
-                triggered_signals=effective_triggered_signals,
-            )
-
-        extra_data = _build_extra_data(
-            payload=data,
-            analysis=analysis,
-            order_context=order_context,
-            direction=direction,
-            forced_action_type=forced_action_type,
-            broker_mode=broker_mode,
-            data_environment=data_environment,
-        )
-        upsert_payload = {
-            "environment": broker_mode,
-            "broker_mode": broker_mode,
-            "data_environment": data_environment,
-            "symbol": symbol,
-            "direction": direction,
-            "source": "indicator",
-            "priority": data.get("priority") if data.get("priority") is not None else DEFAULT_REVERSE_PRIORITY,
-            "strength": strength,
-            "score": score,
-            "triggered_signals": effective_triggered_signals,
-            "action_type": action_type,
-            "status": "pending",
-            "extra": extra_data,
-            "bar_time_ms": record_value(indicator_record, "bar_time_ms"),
-            "us_time": record_value(indicator_record, "us_time") or "",
-            "cn_time": record_value(indicator_record, "cn_time") or "",
-        }
-
-        if escape_filter is None:
-            upsert_result = reverse_upsert_builder(pb, upsert_payload)
-        else:
-            upsert_result = reverse_upsert_builder(pb, upsert_payload, escape_filter=escape_filter)
-        threshold = int(threshold_loader(pb, broker_mode))
-        _notify_if_threshold_met(
-            threshold=threshold,
-            score=score,
-            created=bool(upsert_result.get("created")),
-            record=upsert_result.get("record"),
-            notify_reverse_signal=notify_reverse_signal,
-        )
-        return _build_reverse_response(upsert_result.get("record"), bool(upsert_result.get("created")))
-    except Exception as exc:
-        return {"error": str(exc)}, 500
+    return _build_disabled_tv_primary_only_response(
+        broker_mode=broker_mode,
+        data_environment=data_environment,
+        symbol=symbol,
+        direction=direction,
+        forced_action_type=forced_action_type,
+    )
 
 
 __all__ = ["build_reverse_calculate_response"]

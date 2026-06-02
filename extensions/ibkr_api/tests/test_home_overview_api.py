@@ -74,7 +74,7 @@ class _HomePB:
         end_match = re.search(r"bar_time_ms < (\d+)", text)
         if end_match and int(row.get("bar_time_ms") or 0) >= int(end_match.group(1)):
             return False
-        for field in ("direction", "status", "order_type"):
+        for field in ("direction", "status", "order_type", "source"):
             match = re.search(rf'{field} = "([^"]*)"', text)
             if match and str(row.get(field, "")) != match.group(1):
                 return False
@@ -97,8 +97,9 @@ class HomeOverviewApiTest(unittest.TestCase):
                 {"environment": "paper", "direction": "long", "symbol": "TSLA", "bar_time_ms": start_ms + 3, "created": "2026-04-23 09:37:00"},
             ],
             "ibkr_reverse_signals": [
-                {"environment": "paper", "symbol": "AAPL", "processed": False, "bar_time_ms": start_ms + 4, "created": "2026-04-23 09:40:00"},
-                {"environment": "paper", "symbol": "MSFT", "processed": True, "bar_time_ms": start_ms + 5, "created": "2026-04-23 09:41:00"},
+                {"environment": "paper", "source": "tradingview", "symbol": "AAPL", "status": "pending", "bar_time_ms": start_ms + 4, "created": "2026-04-23 09:40:00"},
+                {"environment": "paper", "source": "tradingview", "symbol": "MSFT", "status": "confirmed", "bar_time_ms": start_ms + 5, "created": "2026-04-23 09:41:00"},
+                {"environment": "paper", "source": "indicator", "symbol": "NVDA", "status": "pending", "bar_time_ms": start_ms + 5, "created": "2026-04-23 09:42:00"},
             ],
             "orders": [
                 {"environment": "paper", "symbol": "AAPL", "status": "Filled", "order_type": "Entry", "role": "entry", "direction": "long", "position_side": "long", "trade_group_id": "g1", "fill_price": 100, "filled_qty": 10, "commission": 1, "bar_time_ms": start_ms + 6, "created": "2026-04-23 09:45:00"},
@@ -115,6 +116,7 @@ class HomeOverviewApiTest(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual(payload["summary"]["signals"], {"long": 1, "short": 1, "total": 2})
+        self.assertEqual(payload["summary"]["execution_actions"], {"pending": 1, "total": 2})
         self.assertEqual(payload["summary"]["reverse_signals"]["pending"], 1)
         self.assertEqual(payload["summary"]["orders"], {"long": 1, "short": 1, "total": 2})
         self.assertEqual(payload["summary"]["positions"], {"long": 2, "short": 1, "total": 3})

@@ -843,7 +843,7 @@ function inferPathCacheProfile(path) {
   if (text.includes('/account_snapshot')) return 'runtimeStatus';
   if (text.includes('/backtest') || text.includes('/data_quality') || text.includes('/history/')) return 'historyList';
   if (text.includes('/screener') || text.includes('/today-targets') || text.includes('/active-window-progress') || text.includes('/daily-trade-review')) return 'tradingList';
-  if (text.includes('/signals') || text.includes('/orders') || text.includes('/reverse')) return 'tradingList';
+  if (text.includes('/signals') || text.includes('/orders') || text.includes('/reverse') || text.includes('/execution_actions')) return 'tradingList';
   return 'tradingList';
 }
 
@@ -855,7 +855,7 @@ function inferIbkrCacheInvalidationTags(pathOrTags) {
   if (text.includes('watchlist') || text.includes('targets') || text.includes('screener')) tags.push('watchlist', 'targets', 'screener', 'tradingList');
   if (text.includes('orders') || text.includes('account')) tags.push('orders', 'account', 'runtimeStatus', 'summary');
   if (text.includes('signal')) tags.push('ibkr_signals', 'signals', 'summary', 'tradingList');
-  if (text.includes('reverse')) tags.push('reverse', 'ibkr_signals', 'orders', 'tradingList');
+  if (text.includes('reverse') || text.includes('execution_actions')) tags.push('reverse', 'ibkr_signals', 'orders', 'tradingList');
   if (text.includes('data_quality') || text.includes('history') || text.includes('warmup') || text.includes('repair') || text.includes('scan')) {
     tags.push('dataQuality', 'historyList', 'marketData', 'runtimeStatus', 'system');
   }

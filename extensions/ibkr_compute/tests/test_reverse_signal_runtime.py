@@ -13,8 +13,13 @@ from ibkr_compute.signal.reverse_signal import REVERSE_SIGNAL_COLLECTION, Revers
 
 class _FakePB:
     def __init__(self, *, reverse_rows=None, order_rows=None, signal_rows=None):
+        normalized_reverse_rows = []
+        for row in reverse_rows or []:
+            item = copy.deepcopy(row)
+            item.setdefault("source", "tradingview")
+            normalized_reverse_rows.append(item)
         self.records = {
-            REVERSE_SIGNAL_COLLECTION: [copy.deepcopy(row) for row in (reverse_rows or [])],
+            REVERSE_SIGNAL_COLLECTION: normalized_reverse_rows,
             "orders": [copy.deepcopy(row) for row in (order_rows or [])],
             "ibkr_signals": [copy.deepcopy(row) for row in (signal_rows or [])],
         }
@@ -202,10 +207,12 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
         self.assertEqual("confirmed", extra["cancel_old_order"])
         self.assertTrue(extra["cancel_confirmation"]["confirmed"])
         self.assertEqual("broker_open_orders", extra["cancel_confirmation"]["source"])
-        self.assertTrue(extra["ready_reentry"])
+        self.assertFalse(extra["ready_reentry"])
         self.assertFalse(extra["reentry_submitted"])
         self.assertFalse(extra["blocked"])
-        self.assertEqual("ready_reentry", pb.acks[0]["detail"]["result_status"])
+        self.assertTrue(extra["auto_reentry_disabled"])
+        self.assertEqual("tv_exit_confirmed", pb.acks[0]["detail"]["result_status"])
+        self.assertEqual("tv_exit_confirmed_no_reentry", pb.acks[0]["reason"])
 
     def test_close_position_requires_flat_confirmation_before_ready_reentry(self):
         reverse = {
@@ -253,9 +260,10 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
         self.assertEqual("started", extra["cooldown"])
         self.assertEqual(["AAPL"], processor.removed)
         self.assertEqual([("AAPL", 2, "cooldown_after_reverse_close")], processor.cooldowns)
-        self.assertTrue(extra["ready_reentry"])
+        self.assertFalse(extra["ready_reentry"])
         self.assertFalse(extra["blocked"])
-        self.assertIn("ready_reentry", extra["reverse_state_path"])
+        self.assertTrue(extra["auto_reentry_disabled"])
+        self.assertIn("tv_exit_confirmed", extra["reverse_state_path"])
 
     def test_protection_incomplete_blocks_without_broker_actions(self):
         reverse = {
@@ -301,7 +309,7 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
         self.assertEqual(0, lifecycle.calls)
         self.assertEqual("cancelled", pb.acks[0]["status"])
 
-    def test_cancel_confirmed_creates_reentry_signal_and_closes_origin_signal(self):
+    def test_tv_cancel_confirmed_does_not_create_reentry_signal_and_closes_origin_signal(self):
         reverse = {
             "id": "rev-reentry",
             "symbol": "AAPL",
@@ -348,18 +356,16 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
         handler.check_and_process()
 
         reentry_rows = [row for collection, row in pb.created if collection == "ibkr_signals"]
-        self.assertEqual(1, len(reentry_rows))
-        self.assertEqual("sig-new-short", reentry_rows[0]["signal_id"])
-        self.assertEqual("pending", reentry_rows[0]["status"])
-        self.assertTrue(reentry_rows[0]["extra"]["reverse_reentry"])
-        self.assertEqual("auto_reverse", reentry_rows[0]["extra"]["signal_confirmation_mode"])
+        self.assertEqual([], reentry_rows)
         origin = pb.records["ibkr_signals"][0]
         self.assertEqual("closed", origin["status"])
-        self.assertEqual("old_risk_resolved", origin["extra"]["reverse_stage"])
+        self.assertEqual("old_risk_resolved", origin["extra"]["execution_stage"])
+        self.assertEqual("tv_exit_required", origin["extra"]["execution_policy"])
         reverse_extra = pb.records[REVERSE_SIGNAL_COLLECTION][0]["extra"]
-        self.assertTrue(reverse_extra["ready_reentry"])
-        self.assertTrue(reverse_extra["reentry_submitted"])
-        self.assertEqual("sig-new-short", reverse_extra["reentry_signal_id"])
+        self.assertFalse(reverse_extra["ready_reentry"])
+        self.assertFalse(reverse_extra["reentry_submitted"])
+        self.assertTrue(reverse_extra["auto_reentry_disabled"])
+        self.assertEqual("tv_exit_confirmed", reverse_extra["result_status"])
 
     def test_adjust_bracket_updates_sl_and_tp_from_top_level_and_extra(self):
         reverse = {
@@ -655,6 +661,31 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
         self.assertEqual("stop_widen_blocked", extra["adjust_results"]["stop_loss"]["reason"])
         self.assertEqual([], modifier.stop_updates)
         self.assertEqual("cancelled", pb.acks[0]["status"])
+
+    def test_non_tv_pending_execution_action_expires_without_broker_actions(self):
+        reverse = {
+            "id": "rev-legacy-indicator",
+            "symbol": "AAPL",
+            "source": "indicator",
+            "action_type": "cancel",
+            "status": "pending",
+            "environment": "live",
+            "priority": 10,
+            "bar_time_ms": 1,
+            "extra": {"trade_group_id": "grp-legacy"},
+        }
+        pb = _FakePB(reverse_rows=[reverse])
+        modifier = _FakeOrderModifier(pb)
+
+        ReverseSignalHandler(pb, order_modifier=modifier, environment="live").check_and_process()
+
+        updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        self.assertEqual("expired", updated["status"])
+        self.assertEqual("legacy_non_tv_action_disabled", updated["reason"])
+        self.assertEqual("expired_non_tv_action", updated["extra"]["result_status"])
+        self.assertTrue(updated["extra"]["tv_primary_only"])
+        self.assertEqual([], modifier.cancelled)
+        self.assertEqual("expired", pb.acks[0]["status"])
 
 
 if __name__ == "__main__":

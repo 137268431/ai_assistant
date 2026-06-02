@@ -217,7 +217,7 @@ class BacktestAnalysisMixin:
         if request.get("symbol_source") == "daily_scan_replay" and target_count > 0:
             strengths.append(f"历史盘前选股已成功回放，共覆盖 {historical_targeting.get('target_date_count', 0)} 个交易日。")
         if reverse_count > max(0, trade_count):
-            risks.append("反转动作次数多于成交笔数，说明冲突阈值可能偏敏感。")
+            risks.append("执行动作次数多于成交笔数，说明冲突阈值可能偏敏感。")
 
         if signal_fill_rate < 35:
             suggestions.append("优先提高信号成交率：复查入场条件、滑点假设、盘前 cutoff 和 session_mode。")
@@ -232,7 +232,7 @@ class BacktestAnalysisMixin:
         if tv_status in {"warn", "fail", "error"}:
             suggestions.append("先消除 TV 对齐漂移，再解读策略优劣，避免把数据问题当作策略问题。")
         if reverse_cancel >= max(2, reverse_adjust + 1):
-            suggestions.append("反转动作以 cancel 为主，建议复查 indicator_conflict 的弱冲突阈值，避免过早放弃仓位。")
+            suggestions.append("执行动作以 cancel 为主，建议复查 indicator_conflict 的弱冲突阈值，避免过早放弃仓位。")
         if request.get("symbol_source") == "daily_scan_replay" and target_count <= 1:
             suggestions.append("历史盘前标的过少，建议扩大回放底池，或放宽 premarket cutoff 前的准备窗口。")
         if win_rate >= 55 and win_loss_ratio < 1:

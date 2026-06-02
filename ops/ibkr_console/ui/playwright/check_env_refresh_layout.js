@@ -32,8 +32,8 @@ const TARGETS = [
     refreshSelector: '#refreshBtn.page-refresh-trigger.is-compact',
   },
   {
-    name: 'reverse',
-    url: `${PAGE_BASE}/ibkr_reverse_signals.html?environment=live`,
+    name: 'execution_actions',
+    url: `${PAGE_BASE}/ibkr_execution_actions.html?environment=live`,
     expectHeaderBadge: false,
     contextSwitcherSelector: '#contextBar .env-switcher-select',
     refreshSelector: '#refreshBtn.page-refresh-trigger.is-compact',
@@ -137,7 +137,7 @@ async function waitForReady(page, targetName) {
     case 'orders':
       await page.waitForFunction(() => !document.querySelector('#ordersContainer .loading'), { timeout: TIMEOUT_MS });
       return;
-    case 'reverse':
+    case 'execution_actions':
       await page.waitForSelector('#refreshBtn.page-refresh-trigger.is-compact', { timeout: TIMEOUT_MS });
       await page.waitForSelector('#contextBar .env-switcher-select', { timeout: TIMEOUT_MS });
       return;

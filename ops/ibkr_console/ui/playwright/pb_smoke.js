@@ -15,7 +15,7 @@ const PANEL_ROW_HEIGHT_MAX_PX = Number(process.env.PB_SMOKE_PANEL_HEIGHT_MAX || 
 const DEFAULT_TARGETS = [
   `${DEFAULT_CONSOLE_BASE}/index.html?environment=live`,
   `${DEFAULT_CONSOLE_BASE}/ibkr_signals.html?environment=live`,
-  `${DEFAULT_CONSOLE_BASE}/ibkr_reverse_signals.html?environment=live`,
+  `${DEFAULT_CONSOLE_BASE}/ibkr_execution_actions.html?environment=live`,
   `${DEFAULT_CONSOLE_BASE}/orders.html?environment=live`,
   `${DEFAULT_CONSOLE_BASE}/ibkr_order_details.html?environment=live`,
   `${DEFAULT_CONSOLE_BASE}/ibkr_lifecycle_flow.html?environment=live`,
@@ -229,7 +229,7 @@ async function waitForPageReady(page, url) {
       );
     }, { timeout }),
     '/ibkr_signals.html': () => page.waitForFunction(() => !document.querySelector('#signalsContainer .loading'), { timeout }),
-    '/ibkr_reverse_signals.html': () => page.waitForFunction(() => !document.querySelector('#signalsContainer .loading'), { timeout }),
+    '/ibkr_execution_actions.html': () => page.waitForFunction(() => !document.querySelector('#signalsContainer .loading'), { timeout }),
     '/orders.html': () => page.waitForFunction(() => !document.querySelector('#ordersContainer .loading'), { timeout }),
     '/ibkr_order_details.html': () => page.waitForFunction(() => !document.querySelector('#detailsContainer .loading'), { timeout }),
     '/ibkr_lifecycle_flow.html': () => page.waitForFunction(() => (
