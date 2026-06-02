@@ -1079,6 +1079,141 @@ class SystemMonitorSupportTest(unittest.TestCase):
         self.assertEqual(summary["actions"]["non_tv_pending_count"], 1)
         self.assertEqual(summary["status"], "error")
 
+    def test_tv_flow_summary_ignores_other_broker_pending_signals(self):
+        pb = _FakePocketBase(
+            {
+                "tv_webhook_events": [],
+                "ibkr_signals": [
+                    {
+                        "id": "sig_paper_rejected",
+                        "signal_id": "sig-paper-rejected",
+                        "symbol": "MRVL",
+                        "status": "pending",
+                        "environment": "live",
+                        "extra": {
+                            "source": "tradingview",
+                            "broker_mode": "paper",
+                            "last_runtime_broker_mode": "paper",
+                            "execution_by_mode": {
+                                "paper": {"status": "rejected", "note": "entry_guard_no_fresh_quote"}
+                            },
+                        },
+                        "created": _utc_minutes_ago(30),
+                    },
+                    {
+                        "id": "sig_paper_expired",
+                        "signal_id": "sig-paper-expired",
+                        "symbol": "NVO",
+                        "status": "pending",
+                        "environment": "live",
+                        "extra": {
+                            "source": "tradingview",
+                            "broker_mode": "paper",
+                            "last_runtime_broker_mode": "paper",
+                            "execution_by_mode": {"paper": {"status": "expired", "note": "signal_expired"}},
+                        },
+                        "created": _utc_minutes_ago(28),
+                    },
+                    {
+                        "id": "sig_live_pending",
+                        "signal_id": "sig-live-pending",
+                        "symbol": "AAPL",
+                        "status": "pending",
+                        "environment": "live",
+                        "extra": {
+                            "source": "tradingview",
+                            "broker_mode": "live",
+                            "execution_by_mode": {"live": {"status": "pending"}},
+                        },
+                        "created": _utc_minutes_ago(27),
+                    },
+                    {
+                        "id": "sig_legacy_pending",
+                        "signal_id": "sig-legacy-pending",
+                        "symbol": "TSLA",
+                        "status": "pending",
+                        "environment": "live",
+                        "extra": {"source": "tradingview", "tv_event_id": "tv:TSLA:entry:legacy"},
+                        "created": _utc_minutes_ago(26),
+                    },
+                ],
+                "ibkr_reverse_signals": [],
+            }
+        )
+
+        summary = build_tv_flow_monitor_summary(
+            pb,
+            data_environment="live",
+            runtime_environment="live",
+            config_map={"tv_flow_action_pending_stuck_warn_min": "15"},
+        )
+
+        codes = {item["code"] for item in summary["flags"]}
+        signal_counts = summary["actions"]["signals"]
+        self.assertIn("tv_flow_tv_action_pending_stuck", codes)
+        self.assertEqual(summary["actions"]["tv_pending_stuck_count"], 2)
+        self.assertEqual(signal_counts["raw_pending_count"], 4)
+        self.assertEqual(signal_counts["pending_count"], 2)
+        self.assertEqual(signal_counts["broker_scoped_ignored_count"], 2)
+        self.assertEqual(signal_counts["broker_scoped_handled_count"], 0)
+
+    def test_tv_flow_summary_ignores_current_broker_terminal_execution_status(self):
+        pb = _FakePocketBase(
+            {
+                "tv_webhook_events": [],
+                "ibkr_signals": [
+                    {
+                        "id": "sig_paper_rejected",
+                        "signal_id": "sig-paper-rejected",
+                        "symbol": "MRVL",
+                        "status": "pending",
+                        "environment": "live",
+                        "extra": {
+                            "source": "tradingview",
+                            "broker_mode": "paper",
+                            "last_runtime_broker_mode": "paper",
+                            "execution_by_mode": {
+                                "paper": {"status": "rejected", "note": "entry_guard_no_fresh_quote"}
+                            },
+                        },
+                        "created": _utc_minutes_ago(30),
+                    },
+                    {
+                        "id": "sig_paper_expired",
+                        "signal_id": "sig-paper-expired",
+                        "symbol": "NVO",
+                        "status": "pending",
+                        "environment": "live",
+                        "extra": {
+                            "source": "tradingview",
+                            "broker_mode": "paper",
+                            "last_runtime_broker_mode": "paper",
+                            "execution_by_mode": {"paper": {"status": "expired", "note": "signal_expired"}},
+                        },
+                        "created": _utc_minutes_ago(28),
+                    },
+                ],
+                "ibkr_reverse_signals": [],
+            }
+        )
+
+        summary = build_tv_flow_monitor_summary(
+            pb,
+            data_environment="live",
+            runtime_environment="paper",
+            config_map={"tv_flow_action_pending_stuck_warn_min": "15"},
+        )
+
+        signal_counts = summary["actions"]["signals"]
+        self.assertEqual(summary["status"], "ok")
+        self.assertNotIn("tv_flow_tv_action_pending_stuck", {item["code"] for item in summary["flags"]})
+        self.assertEqual(summary["actions"]["tv_pending_count"], 0)
+        self.assertEqual(summary["actions"]["tv_pending_stuck_count"], 0)
+        self.assertEqual(signal_counts["raw_pending_count"], 2)
+        self.assertEqual(signal_counts["pending_count"], 0)
+        self.assertEqual(signal_counts["broker_scoped_ignored_count"], 0)
+        self.assertEqual(signal_counts["broker_scoped_handled_count"], 2)
+
     def test_monitor_payload_merges_tv_flow_flags_from_pb_client_alias(self):
         pb = _FakePocketBase(
             {

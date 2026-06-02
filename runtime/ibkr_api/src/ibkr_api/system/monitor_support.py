@@ -63,6 +63,20 @@ FALSE_TEXT = {"0", "false", "no", "off", "disabled", "disable"}
 BAR_PIPELINE_DISABLED_STATUSES = {"disabled", "disabled_tv_primary", "legacy_bar_pipeline_disabled"}
 TV_PRIMARY_SIGNAL_SOURCES = {"tv", "tradingview", "webhook_tv", "tv_webhook"}
 TV_FLOW_SOURCE_VALUES = {"tv", "tradingview", "tv_webhook", "webhook_tv", "tradingview_webhook"}
+TV_FLOW_BROKER_MODES = {"live", "paper"}
+TV_FLOW_HANDLED_SIGNAL_STATUSES = {
+    "submitted",
+    "protected_active",
+    "protection_incomplete",
+    "executed",
+    "rejected",
+    "expired",
+    "closed",
+    "blocked",
+    "duplicate_existing_broker_order",
+    "validation_rejected",
+    "submit_failed",
+}
 TV_PRIMARY_SUPPRESSED_FLAG_CODES = {
     "no_active_targets",
     "no_execution_eligible_targets",
@@ -369,6 +383,78 @@ def _is_tv_action(row: dict[str, Any]) -> bool:
     return _to_text(extra.get("reverse_kind")).lower().startswith("tv_")
 
 
+def _broker_mode_value(value: Any) -> str:
+    text = _to_text(value).lower()
+    if text in {"prod", "production"}:
+        text = "live"
+    elif text in {"sim", "simulated", "simulation"}:
+        text = "paper"
+    return text if text in TV_FLOW_BROKER_MODES else ""
+
+
+def _signal_explicit_broker_mode(row: dict[str, Any], extra: dict[str, Any]) -> str:
+    for value in (row.get("broker_mode"), extra.get("broker_mode")):
+        broker_mode = _broker_mode_value(value)
+        if broker_mode:
+            return broker_mode
+    return ""
+
+
+def _signal_execution_payload(extra: dict[str, Any], broker_mode: str) -> dict[str, Any]:
+    execution_by_mode = _as_object(extra.get("execution_by_mode"))
+    return _as_object(execution_by_mode.get(broker_mode))
+
+
+def _signal_execution_status(extra: dict[str, Any], broker_mode: str) -> str:
+    return _to_text(_signal_execution_payload(extra, broker_mode).get("status")).lower()
+
+
+def _signal_pending_filter_reason(row: dict[str, Any], runtime_environment: str) -> str:
+    extra = _as_object(row.get("extra"))
+    runtime_broker = _broker_mode_value(runtime_environment)
+    if not runtime_broker:
+        return ""
+
+    current_status = _signal_execution_status(extra, runtime_broker)
+    if current_status in TV_FLOW_HANDLED_SIGNAL_STATUSES:
+        return "broker_scoped_handled"
+    if current_status:
+        return ""
+
+    explicit_broker = _signal_explicit_broker_mode(row, extra)
+    if explicit_broker and explicit_broker != runtime_broker:
+        return "broker_scoped_other_broker"
+    if explicit_broker == runtime_broker:
+        return ""
+
+    last_runtime_broker = _broker_mode_value(extra.get("last_runtime_broker_mode"))
+    if last_runtime_broker and last_runtime_broker != runtime_broker:
+        return "broker_scoped_other_broker"
+    return ""
+
+
+def _filter_pending_signal_rows_for_broker(
+    rows: list[dict[str, Any]],
+    *,
+    runtime_environment: str,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    filtered: list[dict[str, Any]] = []
+    stats = {
+        "broker_scoped_ignored_count": 0,
+        "broker_scoped_handled_count": 0,
+    }
+    for row in rows:
+        reason = _signal_pending_filter_reason(row, runtime_environment)
+        if reason == "broker_scoped_other_broker":
+            stats["broker_scoped_ignored_count"] += 1
+            continue
+        if reason == "broker_scoped_handled":
+            stats["broker_scoped_handled_count"] += 1
+            continue
+        filtered.append(row)
+    return filtered, stats
+
+
 def _is_failed_processed_tv_action(row: dict[str, Any]) -> bool:
     extra = _as_object(row.get("extra"))
     runtime_detail = _as_object(extra.get("reverse_runtime_detail"))
@@ -538,7 +624,13 @@ def build_tv_flow_monitor_summary(
     ]
     failed_recent = _latest_rows(failed_recent, updated=True)
 
-    pending_signal_rows = [row for row in pending_signal_rows if _is_within_lookback(row, observed_ms, pending_lookback_ms)]
+    pending_signal_rows_raw = [
+        row for row in pending_signal_rows if _is_within_lookback(row, observed_ms, pending_lookback_ms)
+    ]
+    pending_signal_rows, pending_signal_broker_stats = _filter_pending_signal_rows_for_broker(
+        pending_signal_rows_raw,
+        runtime_environment=runtime_environment,
+    )
     pending_reverse_rows = [row for row in pending_reverse_rows if _is_within_lookback(row, observed_ms, pending_lookback_ms)]
     processed_reverse_rows = [
         row
@@ -683,6 +775,8 @@ def build_tv_flow_monitor_summary(
             "non_tv_pending": _sample_rows(non_tv_pending_all, now_ms=observed_ms, record_type="action", limit=sample_limit),
             "signals": {
                 "pending_count": len(pending_signal_rows),
+                "raw_pending_count": len(pending_signal_rows_raw),
+                **pending_signal_broker_stats,
                 "tv_pending_count": len(tv_signal_pending),
                 "non_tv_pending_count": len(non_tv_signal_pending),
             },
