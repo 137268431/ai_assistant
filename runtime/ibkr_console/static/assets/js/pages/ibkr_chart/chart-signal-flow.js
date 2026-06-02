@@ -22,11 +22,15 @@
             const type = String(event?.event_type || '').trim().toLowerCase();
             const direction = String(event?.direction || '').trim().toLowerCase();
             if (type === 'entry_filled') return direction === 'short' ? 'BT Sell' : 'BT Buy';
-            if (type === 'exit_take_profit') return 'BT TP';
-            if (type === 'exit_stop_loss') return 'BT SL';
+            if (type === 'exit_take_profit') return 'BT TP止盈';
+            if (type === 'exit_stop_loss') return 'BT SL止损';
             if (type === 'exit_reverse') return 'BT Rev';
             if (type === 'exit_eod') return 'BT EOD';
             if (type === 'exit_last_bar') return 'BT Exit';
+            if (type.startsWith('exit_') || type === 'exit') {
+                const reasonLabel = getExitReasonLabel(getEventExitReason(event) || type.replace(/^exit_?/, ''));
+                if (reasonLabel) return `BT ${reasonLabel}`;
+            }
             if (type.startsWith('signal_')) return 'BT Sig';
             return 'BT';
         }
@@ -37,8 +41,22 @@
             if (type === 'pre_alert') return direction === 'short' ? 'TV pre_alert 空' : 'TV pre_alert 多';
             if (type === 'entry') return direction === 'short' ? 'TV Entry 空' : 'TV Entry 多';
             if (type === 'risk_update') return 'TV Risk';
-            if (type === 'exit') return 'TV Exit';
+            if (type === 'exit') return formatTvExitLabel(event);
             return 'TV';
+        }
+
+        function formatTvExitLabel(event) {
+            const reason = getEventExitReason(event);
+            return {
+                take_profit: 'TV TP/止盈',
+                safety_tp: 'TV TP/止盈',
+                tp: 'TV TP/止盈',
+                stop_loss: 'TV SL/止损',
+                sl: 'TV SL/止损',
+                runner_stop: 'TV Trail TP/跟踪止盈',
+                force_flat_eod: 'TV EOD',
+                eod: 'TV EOD',
+            }[reason] || 'TV Exit';
         }
 
         function formatOrderEventLabel(event) {
@@ -47,10 +65,10 @@
             const pnl = Number(event?.pnl);
             const pnlText = Number.isFinite(pnl) ? ` ${pnl > 0 ? '+' : pnl < 0 ? '-' : ''}$${Math.abs(pnl).toFixed(0)}` : '';
             if (type === 'live_entry') return direction === 'short' ? 'Live Sell' : 'Live Buy';
-            if (type === 'live_exit_tp') return `Live TP${pnlText}`;
-            if (type === 'live_exit_sl') return `Live SL${pnlText}`;
-            if (type === 'live_exit_eod') return `EOD Exit${pnlText}`;
-            if (type.startsWith('live_exit')) return `Live Exit${pnlText}`;
+            if (type.startsWith('live_exit')) {
+                const label = getExitReasonLabel(getEventExitReason(event));
+                return `${label || 'Live Exit'}${pnlText}`;
+            }
             return 'Order';
         }
 
@@ -78,6 +96,7 @@
                     pnl: event.pnl ?? null,
                     pnl_pct: event.pnl_pct ?? null,
                     reason: event.reason || event.exit_reason || '',
+                    exit_reason: getEventExitReason(event),
                 };
             }).filter(Boolean);
         }

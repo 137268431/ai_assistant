@@ -401,6 +401,129 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
         self.assertEqual(["stop_loss", "take_profit"], extra["adjust_bracket_result"]["succeeded_sides"])
         self.assertEqual("confirmed", pb.acks[0]["status"])
 
+    def test_adjust_bracket_uses_requested_sides_before_available_order_ids(self):
+        reverse = {
+            "id": "rev-adjust-bracket-requested-sides",
+            "symbol": "AAPL",
+            "action_type": "adjust_bracket",
+            "status": "pending",
+            "environment": "live",
+            "priority": 10,
+            "bar_time_ms": 1,
+            "extra": {
+                "sl_order_id": "sl-1003",
+                "tp_order_id": "tp-1002",
+                "new_sl": 181.25,
+                "new_tp": 190.75,
+                "requested_sides": ["stop_loss"],
+            },
+        }
+        pb = _FakePB(reverse_rows=[reverse])
+        modifier = _FakeOrderModifier(pb)
+        handler = ReverseSignalHandler(pb, order_modifier=modifier, environment="live")
+
+        handler.check_and_process()
+
+        self.assertEqual([("sl-1003", 181.25)], modifier.stop_updates)
+        self.assertEqual([], modifier.take_profit_updates)
+        updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        extra = updated["extra"]
+        self.assertEqual("confirmed", updated["status"])
+        self.assertEqual("adjust_bracket_confirmed", updated["reason"])
+        self.assertEqual(["stop_loss"], extra["requested_sides"])
+        self.assertTrue(extra["requested_sides_explicit"])
+        self.assertTrue(extra["adjust_results"]["stop_loss"]["ok"])
+        self.assertEqual("not_requested", extra["adjust_results"]["take_profit"]["reason"])
+        self.assertEqual(["stop_loss"], extra["adjust_bracket_result"]["succeeded_sides"])
+
+    def test_adjust_bracket_infers_requested_sides_from_price_fields_not_order_ids(self):
+        reverse = {
+            "id": "rev-adjust-bracket-inferred-side",
+            "symbol": "AAPL",
+            "action_type": "adjust_bracket",
+            "status": "pending",
+            "environment": "live",
+            "priority": 10,
+            "bar_time_ms": 1,
+            "extra": {
+                "sl_order_id": "sl-1003",
+                "tp_order_id": "tp-1002",
+                "new_sl": 181.25,
+            },
+        }
+        pb = _FakePB(reverse_rows=[reverse])
+        modifier = _FakeOrderModifier(pb)
+        handler = ReverseSignalHandler(pb, order_modifier=modifier, environment="live")
+
+        handler.check_and_process()
+
+        self.assertEqual([("sl-1003", 181.25)], modifier.stop_updates)
+        self.assertEqual([], modifier.take_profit_updates)
+        updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        extra = updated["extra"]
+        self.assertEqual("confirmed", updated["status"])
+        self.assertEqual("adjust_bracket_confirmed", updated["reason"])
+        self.assertFalse(extra["requested_sides_explicit"])
+        self.assertTrue(extra["adjust_results"]["stop_loss"]["ok"])
+        self.assertEqual("not_requested", extra["adjust_results"]["take_profit"]["reason"])
+        self.assertEqual(["stop_loss"], extra["adjust_bracket_result"]["succeeded_sides"])
+
+    def test_adjust_bracket_confirms_explicit_noop_runner_activation(self):
+        reverse = {
+            "id": "rev-adjust-bracket-noop",
+            "symbol": "AAPL",
+            "source": "tradingview",
+            "action_type": "adjust_bracket",
+            "status": "pending",
+            "environment": "live",
+            "priority": 10,
+            "bar_time_ms": 1,
+            "extra": {
+                "event_type": "risk_update",
+                "reverse_kind": "tv_risk_update",
+                "origin_signal_id": "tv-entry-1",
+                "risk_update_seq": 2,
+                "risk_update_reason": "runner_activation",
+                "requested_sides": [],
+                "runner_enabled": True,
+                "runner_active": True,
+                "target_role": "safety_tp",
+                "safety_take_profit": 196.10,
+                "runner_activation_price": 190.70,
+                "runner_activation_r": 1.0,
+            },
+        }
+        signals = [
+            {
+                "id": "sig-row-1",
+                "signal_id": "tv-entry-1",
+                "environment": "live",
+                "symbol": "AAPL",
+                "direction": "long",
+                "status": "submitted",
+                "extra": {"runner_active": False},
+            }
+        ]
+        pb = _FakePB(reverse_rows=[reverse], signal_rows=signals)
+        modifier = _FakeOrderModifier(pb)
+        handler = ReverseSignalHandler(pb, order_modifier=modifier, environment="live")
+
+        handler.check_and_process()
+
+        self.assertEqual([], modifier.stop_updates)
+        self.assertEqual([], modifier.take_profit_updates)
+        updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        extra = updated["extra"]
+        self.assertEqual("confirmed", updated["status"])
+        self.assertEqual("adjust_bracket_noop", updated["reason"])
+        self.assertEqual("confirmed_noop", extra["adjust_bracket"])
+        self.assertTrue(extra["requested_sides_explicit"])
+        self.assertEqual([], extra["adjust_bracket_result"]["attempted_sides"])
+        origin_extra = pb.records["ibkr_signals"][0]["extra"]
+        self.assertTrue(origin_extra["runner_active"])
+        self.assertEqual("safety_tp", origin_extra["target_role"])
+        self.assertEqual(190.70, origin_extra["runner_activation_price"])
+
     def test_adjust_bracket_blocks_when_prices_or_orders_missing(self):
         missing_prices = {
             "id": "rev-adjust-no-prices",
@@ -425,10 +548,34 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
         self.assertIn("adjust_bracket_prices_missing_or_invalid", updated["reason"])
         self.assertEqual([], modifier.stop_updates)
         self.assertEqual([], modifier.take_profit_updates)
-        self.assertEqual("new_sl_missing_or_invalid", extra["adjust_results"]["stop_loss"]["reason"])
-        self.assertEqual("new_tp_missing_or_invalid", extra["adjust_results"]["take_profit"]["reason"])
+        self.assertEqual("not_requested", extra["adjust_results"]["stop_loss"]["reason"])
+        self.assertEqual("not_requested", extra["adjust_results"]["take_profit"]["reason"])
         self.assertEqual("blocked", extra["ack_status_original"])
         self.assertEqual("cancelled", extra["ack_status_normalized"])
+
+        invalid_price = {
+            "id": "rev-adjust-invalid-price",
+            "symbol": "AAPL",
+            "action_type": "adjust_bracket",
+            "status": "pending",
+            "environment": "live",
+            "priority": 10,
+            "bar_time_ms": 1,
+            "extra": {
+                "sl_order_id": "sl-1003",
+                "new_sl": 0,
+            },
+        }
+        pb = _FakePB(reverse_rows=[invalid_price])
+        modifier = _FakeOrderModifier(pb)
+        ReverseSignalHandler(pb, order_modifier=modifier, environment="live").check_and_process()
+
+        updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        extra = updated["extra"]
+        self.assertEqual("cancelled", updated["status"])
+        self.assertIn("adjust_bracket_prices_missing_or_invalid", updated["reason"])
+        self.assertEqual("new_sl_missing_or_invalid", extra["adjust_results"]["stop_loss"]["reason"])
+        self.assertEqual("not_requested", extra["adjust_results"]["take_profit"]["reason"])
 
         missing_order = {
             "id": "rev-adjust-no-order",

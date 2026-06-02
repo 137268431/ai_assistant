@@ -43,9 +43,10 @@ maxLossPerTrade = input.float(150, "Max loss per trade ($)", step=10, minval=10,
 slAtrMult = input.float(2.0, "Stop loss (x ATR)", step=0.25, minval=0.25, maxval=12.0, group="05 Risk")
 rrRatio = input.float(1.5, "Reward/risk", step=0.1, minval=0.5, maxval=10.0, group="05 Risk")
 enableBreakeven = input.bool(true, "Trail stop to breakeven", group="05 Risk")
-enableTpCheckpointRunner = input.bool(true, "TP checkpoint runner", group="05 Risk")
+enableTpCheckpointRunner = input.bool(true, "Enable runner mode", group="05 Risk")
 runnerOnlyTrendSetups = input.bool(true, "Runner only trend setups", group="05 Risk")
-tpCheckpointLockR = input.float(0.20, "TP checkpoint lock (R)", step=0.05, minval=0.0, maxval=3.0, group="05 Risk")
+runnerActivationR = input.float(1.0, "Runner activation (R)", step=0.25, minval=0.25, maxval=10.0, group="05 Risk")
+tpCheckpointLockR = input.float(0.20, "Runner activation lock (R)", step=0.05, minval=0.0, maxval=3.0, group="05 Risk")
 runnerTrailAtrMult = input.float(2.5, "Runner trail (x ATR)", step=0.25, minval=0.25, maxval=12.0, group="05 Risk")
 runnerSafetyR = input.float(4.0, "Runner safety TP (R)", step=0.5, minval=1.0, maxval=20.0, group="05 Risk")
 breakevenAtR = input.float(1.0, "Breakeven trigger (R)", step=0.25, minval=0.25, group="05 Risk")
@@ -131,6 +132,9 @@ jsonIntNullable(string key, int value) =>
 jsonBool(string key, bool value) =>
     ',"' + key + '":' + boolText(value)
 
+jsonRequestedSides(string requestedSides) =>
+    ',"requested_sides":' + (requestedSides == "stop_loss" ? '["stop_loss"]' : requestedSides == "take_profit" ? '["take_profit"]' : requestedSides == "stop_loss,take_profit" ? '["stop_loss","take_profit"]' : '[]')
+
 symbolKey() =>
     str.replace_all(syminfo.tickerid, ":", "_")
 
@@ -208,10 +212,22 @@ setupUsesBullSide(string setup) =>
 setupUsesRunner(string setup) =>
     enableTpCheckpointRunner and (not runnerOnlyTrendSetups or setup == "trend_sdUpper" or setup == "trend_sdLower")
 
-calcRunnerSafetyTarget(float entryPrice, float stopPrice, int direction) =>
+calcTargetAtR(float entryPrice, float stopPrice, int direction, float rMultiple) =>
     float risk = direction == 1 ? entryPrice - stopPrice : stopPrice - entryPrice
-    float safetyR = math.max(rrRatio, runnerSafetyR)
-    direction == 1 ? entryPrice + risk * safetyR : entryPrice - risk * safetyR
+    direction == 1 ? entryPrice + risk * rMultiple : entryPrice - risk * rMultiple
+
+calcRunnerActivationTarget(float entryPrice, float stopPrice, int direction) =>
+    calcTargetAtR(entryPrice, stopPrice, direction, runnerActivationR)
+
+calcRunnerSafetyTarget(float entryPrice, float stopPrice, int direction) =>
+    float safetyR = math.max(math.max(rrRatio, runnerSafetyR), runnerActivationR)
+    calcTargetAtR(entryPrice, stopPrice, direction, safetyR)
+
+exitTouchesTarget(int direction, float exitPrice, float targetPrice) =>
+    not na(targetPrice) and (math.abs(exitPrice - targetPrice) <= syminfo.mintick * 2.0 or (direction == 1 ? exitPrice >= targetPrice : exitPrice <= targetPrice))
+
+exitTouchesStop(int direction, float exitPrice, float stopPrice) =>
+    not na(stopPrice) and (math.abs(exitPrice - stopPrice) <= syminfo.mintick * 2.0 or (direction == 1 ? exitPrice <= stopPrice : exitPrice >= stopPrice))
 
 setupUsesEmaTouch(string setup) =>
     setup == "trend_sdUpper" or setup == "trend_sdLower"
@@ -864,12 +880,12 @@ var string activeSetup = ""
 var float activeEntry = na
 var float activeStop = na
 var float activeTarget = na
-var float activeCheckpointTarget = na
+var float activeRunnerActivation = na
 var float activeInitialRisk = na
 var float activeQty = na
 var int activeEntryBar = na
 var bool activeRunnerMode = false
-var bool activeTargetCheckpointHit = false
+var bool activeRunnerActive = false
 var float activeRunnerExtreme = na
 var bool activeBreakevenDone = false
 var int activeRiskUpdateSeq = 0
@@ -894,8 +910,9 @@ calcShortStop(float entryPrice, float qty) =>
     float riskStop = qty > 0.0 ? entryPrice + maxLossPerTrade / qty : atrStop
     math.min(atrStop, riskStop)
 
-buildEntryPayload(string eventIdValue, string positionIdValue, string direction, string setup, string reason, float qty, float entryPrice, float stopPrice, float targetPrice, float checkpointPrice, bool runnerMode, string divSource, string touchLine) =>
+buildEntryPayload(string eventIdValue, string positionIdValue, string direction, string setup, string reason, float qty, float entryPrice, float stopPrice, float targetPrice, float runnerActivationPrice, bool runnerMode, string divSource, string touchLine) =>
     float riskPerShare = direction == "long" ? entryPrice - stopPrice : stopPrice - entryPrice
+    float targetCheckpoint = runnerMode ? runnerActivationPrice : targetPrice
     basePayload("entry", eventIdValue, positionIdValue) +
      jsonStr("signal_id", eventIdValue) +
      jsonStr("direction", direction) +
@@ -908,10 +925,16 @@ buildEntryPayload(string eventIdValue, string positionIdValue, string direction,
      jsonNum("entry", entryPrice) +
      jsonNum("stop_loss", stopPrice) +
      jsonNum("take_profit", targetPrice) +
-     jsonNum("target_checkpoint", checkpointPrice) +
+     jsonNum("target_checkpoint", targetCheckpoint) +
      jsonNum("safety_take_profit", targetPrice) +
+     jsonNum("runner_activation_price", runnerActivationPrice) +
+     jsonNum("runner_activation_r", runnerActivationR) +
+     jsonBool("runner_enabled", runnerMode) +
+     jsonBool("runner_active", false) +
      jsonBool("tp_checkpoint_runner", runnerMode) +
      jsonBool("target_is_hard", not runnerMode) +
+     jsonBool("target_checkpoint_is_exit", not runnerMode) +
+     jsonStr("target_role", runnerMode ? "safety_tp" : "hard_tp") +
      jsonNum("risk_per_share", riskPerShare) +
      jsonNum("reward_risk", rrRatio) +
      jsonStr("divergence_source", divSource == "" ? "none" : divSource) +
@@ -932,8 +955,10 @@ buildEntryPayload(string eventIdValue, string positionIdValue, string direction,
      jsonInt("bar_index", bar_index) +
      '}'
 
-buildRiskPayload(string eventIdValue, string positionIdValue, string updateReason, float previousStop, float previousTarget, float newStop, float newTarget) =>
-    float riskPerShare = activeDirection == 1 ? activeEntry - newStop : newStop - activeEntry
+buildRiskPayload(string eventIdValue, string positionIdValue, string updateReason, string requestedSides, float previousStop, float previousTarget, float newStop, float newTarget) =>
+    float effectiveStop = na(newStop) ? activeStop : newStop
+    float riskPerShare = activeDirection == 1 ? activeEntry - effectiveStop : effectiveStop - activeEntry
+    float targetCheckpoint = activeRunnerMode ? activeRunnerActivation : activeTarget
     basePayload("risk_update", eventIdValue, positionIdValue) +
      jsonStr("signal_id", activeSignalId) +
      jsonStr("direction", activeDirection == 1 ? "long" : "short") +
@@ -942,15 +967,24 @@ buildRiskPayload(string eventIdValue, string positionIdValue, string updateReaso
      jsonStr("update_reason", updateReason) +
      jsonStr("risk_update_reason", updateReason) +
      jsonInt("risk_update_seq", activeRiskUpdateSeq) +
+     jsonRequestedSides(requestedSides) +
      jsonNum("entry_price", activeEntry) +
      jsonNum("quantity", activeQty) +
      jsonNum("previous_stop_loss", previousStop) +
      jsonNum("previous_take_profit", previousTarget) +
      jsonNum("new_stop_loss", newStop) +
      jsonNum("new_take_profit", newTarget) +
-     jsonNum("target_checkpoint", activeCheckpointTarget) +
+     jsonNum("target_checkpoint", targetCheckpoint) +
+     jsonNum("take_profit", activeTarget) +
+     jsonNum("safety_take_profit", activeTarget) +
+     jsonNum("runner_activation_price", activeRunnerActivation) +
+     jsonNum("runner_activation_r", runnerActivationR) +
+     jsonBool("runner_enabled", activeRunnerMode) +
+     jsonBool("runner_active", activeRunnerActive) +
      jsonBool("tp_checkpoint_runner", activeRunnerMode) +
-     jsonBool("target_checkpoint_hit", activeTargetCheckpointHit) +
+     jsonBool("target_checkpoint_hit", activeRunnerActive) +
+     jsonBool("target_checkpoint_is_exit", not activeRunnerMode) +
+     jsonStr("target_role", activeRunnerMode ? "safety_tp" : "hard_tp") +
      jsonNum("risk_per_share", riskPerShare) +
      jsonNum("reward_risk", rrRatio) +
      jsonNum("close", close) +
@@ -959,6 +993,7 @@ buildRiskPayload(string eventIdValue, string positionIdValue, string updateReaso
 
 buildExitPayload(string eventIdValue, string positionIdValue, string exitReason, float exitPrice) =>
     float pnlPerShare = activeDirection == 1 ? exitPrice - activeEntry : activeEntry - exitPrice
+    float targetCheckpoint = activeRunnerMode ? activeRunnerActivation : activeTarget
     basePayload("exit", eventIdValue, positionIdValue) +
      jsonStr("signal_id", activeSignalId) +
      jsonStr("direction", activeDirection == 1 ? "long" : "short") +
@@ -970,9 +1005,16 @@ buildExitPayload(string eventIdValue, string positionIdValue, string exitReason,
      jsonNum("quantity", activeQty) +
      jsonNum("stop_loss", activeStop) +
      jsonNum("take_profit", activeTarget) +
-     jsonNum("target_checkpoint", activeCheckpointTarget) +
+     jsonNum("target_checkpoint", targetCheckpoint) +
+     jsonNum("safety_take_profit", activeTarget) +
+     jsonNum("runner_activation_price", activeRunnerActivation) +
+     jsonNum("runner_activation_r", runnerActivationR) +
+     jsonBool("runner_enabled", activeRunnerMode) +
+     jsonBool("runner_active", activeRunnerActive) +
      jsonBool("tp_checkpoint_runner", activeRunnerMode) +
-     jsonBool("target_checkpoint_hit", activeTargetCheckpointHit) +
+     jsonBool("target_checkpoint_hit", activeRunnerActive) +
+     jsonBool("target_checkpoint_is_exit", not activeRunnerMode) +
+     jsonStr("target_role", activeRunnerMode ? "safety_tp" : "hard_tp") +
      jsonNum("pnl_per_share", pnlPerShare) +
      jsonNum("pnl_estimate", pnlPerShare * activeQty) +
      jsonInt("entry_bar_index", activeEntryBar) +
@@ -1020,12 +1062,12 @@ bool exitedNow = confirmed and activePositionId != "" and strategy.position_size
 if exitedNow
     float exitPrice = strategy.closedtrades > 0 ? strategy.closedtrades.exit_price(strategy.closedtrades - 1) : close
     string exitReason = pendingExitReason != "" ? pendingExitReason : "strategy_closed"
-    if pendingExitReason == "" and activeDirection == 1
-        exitReason := math.abs(exitPrice - activeStop) <= syminfo.mintick * 2.0 ? "stop_loss" : math.abs(exitPrice - activeTarget) <= syminfo.mintick * 2.0 ? "take_profit" : exitReason
-    if pendingExitReason == "" and activeDirection == -1
-        exitReason := math.abs(exitPrice - activeStop) <= syminfo.mintick * 2.0 ? "stop_loss" : math.abs(exitPrice - activeTarget) <= syminfo.mintick * 2.0 ? "take_profit" : exitReason
+    if pendingExitReason == ""
+        bool targetExit = exitTouchesTarget(activeDirection, exitPrice, activeTarget)
+        bool stopExit = exitTouchesStop(activeDirection, exitPrice, activeStop)
+        exitReason := targetExit ? "take_profit" : stopExit ? "stop_loss" : exitReason
     float exitPnlPerShare = activeDirection == 1 ? exitPrice - activeEntry : activeEntry - exitPrice
-    if exitReason == "stop_loss" and activeTargetCheckpointHit and exitPnlPerShare > 0.0
+    if exitReason == "stop_loss" and activeRunnerActive and exitPnlPerShare > 0.0
         exitReason := "runner_stop"
     lastExitReason := exitReason
     lastExitPrice := exitPrice
@@ -1045,12 +1087,12 @@ if exitedNow
     activeEntry := na
     activeStop := na
     activeTarget := na
-    activeCheckpointTarget := na
+    activeRunnerActivation := na
     activeInitialRisk := na
     activeQty := na
     activeEntryBar := na
     activeRunnerMode := false
-    activeTargetCheckpointHit := false
+    activeRunnerActive := false
     activeRunnerExtreme := na
     activeBreakevenDone := false
     activeRiskUpdateSeq := 0
@@ -1121,9 +1163,10 @@ if enterLong
     float qty = calcQty(entryPrice)
     if qty > 0.0
         float stopPrice = calcLongStop(entryPrice, qty)
-        float checkpointPrice = entryPrice + (entryPrice - stopPrice) * rrRatio
         bool runnerMode = setupUsesRunner(longSetup)
-        float targetPrice = runnerMode ? calcRunnerSafetyTarget(entryPrice, stopPrice, 1) : checkpointPrice
+        float hardTargetPrice = calcTargetAtR(entryPrice, stopPrice, 1, rrRatio)
+        float runnerActivationPrice = runnerMode ? calcRunnerActivationTarget(entryPrice, stopPrice, 1) : na
+        float targetPrice = runnerMode ? calcRunnerSafetyTarget(entryPrice, stopPrice, 1) : hardTargetPrice
         string posId = positionId("long")
         string entryEventId = eventId("entry", longSetup)
         activePositionId := posId
@@ -1133,18 +1176,18 @@ if enterLong
         activeEntry := entryPrice
         activeStop := stopPrice
         activeTarget := targetPrice
-        activeCheckpointTarget := checkpointPrice
+        activeRunnerActivation := runnerActivationPrice
         activeInitialRisk := entryPrice - stopPrice
         activeQty := qty
         activeEntryBar := bar_index
         activeRunnerMode := runnerMode
-        activeTargetCheckpointHit := false
+        activeRunnerActive := false
         activeRunnerExtreme := high
         activeBreakevenDone := false
         activeRiskUpdateSeq := 0
         string divSourceForEntry = bullDivSource == "" ? bullDivSourceNow : bullDivSource
         strategy.entry("TV-L", strategy.long, qty=qty, comment=entryComment("long", longSetup))
-        strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment="平多 · TP/SL")
+        strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment="平多 · TP/SL", comment_profit="平多 · TP止盈", comment_loss="平多 · SL止损")
         if showFlowLabels
             label.new(bar_index, low - atrVal * 3.1, "买入做多\n" + setupDisplayName(longSetup) + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("long") + "\n" + dtpEntryFilterText("long", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\nentry " + str.tostring(entryPrice, "#.##"), style=label.style_label_up, color=flowLabelColor("entry", "long"), textcolor=color.white, size=size.normal)
         lowerWindowUsed := setupLongMrLower ? true : lowerWindowUsed
@@ -1154,18 +1197,19 @@ if enterLong
         bullDivBar := na
         if enableAlerts
             string touchLine = setupLongTrendUpper ? upperBullTouchLine : "none"
-            alert(buildEntryPayload(entryEventId, posId, "long", longSetup, longReason, qty, entryPrice, stopPrice, targetPrice, checkpointPrice, runnerMode, divSourceForEntry, touchLine), alert.freq_all)
+            alert(buildEntryPayload(entryEventId, posId, "long", longSetup, longReason, qty, entryPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode, divSourceForEntry, touchLine), alert.freq_all)
             activeRiskUpdateSeq := activeRiskUpdateSeq + 1
-            alert(buildRiskPayload(eventId("risk_update", "initial"), posId, "initial_protection", na, na, stopPrice, targetPrice), alert.freq_all)
+            alert(buildRiskPayload(eventId("risk_update", "initial"), posId, "initial_protection", "stop_loss,take_profit", na, na, stopPrice, targetPrice), alert.freq_all)
 
 if enterShort
     float entryPrice = close
     float qty = calcQty(entryPrice)
     if qty > 0.0
         float stopPrice = calcShortStop(entryPrice, qty)
-        float checkpointPrice = entryPrice - (stopPrice - entryPrice) * rrRatio
         bool runnerMode = setupUsesRunner(shortSetup)
-        float targetPrice = runnerMode ? calcRunnerSafetyTarget(entryPrice, stopPrice, -1) : checkpointPrice
+        float hardTargetPrice = calcTargetAtR(entryPrice, stopPrice, -1, rrRatio)
+        float runnerActivationPrice = runnerMode ? calcRunnerActivationTarget(entryPrice, stopPrice, -1) : na
+        float targetPrice = runnerMode ? calcRunnerSafetyTarget(entryPrice, stopPrice, -1) : hardTargetPrice
         string posId = positionId("short")
         string entryEventId = eventId("entry", shortSetup)
         activePositionId := posId
@@ -1175,18 +1219,18 @@ if enterShort
         activeEntry := entryPrice
         activeStop := stopPrice
         activeTarget := targetPrice
-        activeCheckpointTarget := checkpointPrice
+        activeRunnerActivation := runnerActivationPrice
         activeInitialRisk := stopPrice - entryPrice
         activeQty := qty
         activeEntryBar := bar_index
         activeRunnerMode := runnerMode
-        activeTargetCheckpointHit := false
+        activeRunnerActive := false
         activeRunnerExtreme := low
         activeBreakevenDone := false
         activeRiskUpdateSeq := 0
         string divSourceForEntry = bearDivSource == "" ? bearDivSourceNow : bearDivSource
         strategy.entry("TV-S", strategy.short, qty=qty, comment=entryComment("short", shortSetup))
-        strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment="平空 · TP/SL")
+        strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment="平空 · TP/SL", comment_profit="平空 · TP止盈", comment_loss="平空 · SL止损")
         if showFlowLabels
             label.new(bar_index, high + atrVal * 3.1, "卖出做空\n" + setupDisplayName(shortSetup) + "\n组件齐 + 过滤通过\n" + mtfSummaryForDirection("short") + "\n" + dtpEntryFilterText("short", dtpDir, dtpPhase, dtpMrFilterMode, useDtpFilter) + "\nentry " + str.tostring(entryPrice, "#.##"), style=label.style_label_down, color=flowLabelColor("entry", "short"), textcolor=color.white, size=size.normal)
         upperWindowUsed := setupShortMrUpper ? true : upperWindowUsed
@@ -1196,14 +1240,15 @@ if enterShort
         bearDivBar := na
         if enableAlerts
             string touchLine = setupShortTrendLower ? lowerBearTouchLine : "none"
-            alert(buildEntryPayload(entryEventId, posId, "short", shortSetup, shortReason, qty, entryPrice, stopPrice, targetPrice, checkpointPrice, runnerMode, divSourceForEntry, touchLine), alert.freq_all)
+            alert(buildEntryPayload(entryEventId, posId, "short", shortSetup, shortReason, qty, entryPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode, divSourceForEntry, touchLine), alert.freq_all)
             activeRiskUpdateSeq := activeRiskUpdateSeq + 1
-            alert(buildRiskPayload(eventId("risk_update", "initial"), posId, "initial_protection", na, na, stopPrice, targetPrice), alert.freq_all)
+            alert(buildRiskPayload(eventId("risk_update", "initial"), posId, "initial_protection", "stop_loss,take_profit", na, na, stopPrice, targetPrice), alert.freq_all)
 
 if confirmed and activePositionId != "" and strategy.position_size != 0
     float previousStop = activeStop
     float previousTarget = activeTarget
     string riskUpdateReason = ""
+    bool runnerStateChanged = false
     float initialRisk = activeInitialRisk > 0.0 ? activeInitialRisk : activeDirection == 1 ? activeEntry - activeStop : activeStop - activeEntry
     if activeRunnerMode
         activeRunnerExtreme := activeDirection == 1 ? math.max(nz(activeRunnerExtreme, high), high) : math.min(nz(activeRunnerExtreme, low), low)
@@ -1216,28 +1261,35 @@ if confirmed and activePositionId != "" and strategy.position_size != 0
             activeBreakevenDone := priceChanged(previousStop, activeStop)
         if activeBreakevenDone
             riskUpdateReason := "breakeven_trail"
-    if activeRunnerMode and not activeTargetCheckpointHit and not na(activeCheckpointTarget)
-        bool checkpointTouched = activeDirection == 1 ? high >= activeCheckpointTarget : low <= activeCheckpointTarget
-        if checkpointTouched
-            activeTargetCheckpointHit := true
+    if activeRunnerMode and not activeRunnerActive and not na(activeRunnerActivation)
+        bool activationTouched = activeDirection == 1 ? high >= activeRunnerActivation : low <= activeRunnerActivation
+        if activationTouched
+            activeRunnerActive := true
+            runnerStateChanged := true
             float lockStop = activeDirection == 1 ? activeEntry + initialRisk * tpCheckpointLockR : activeEntry - initialRisk * tpCheckpointLockR
             lockStop := activeDirection == 1 ? math.min(lockStop, close - syminfo.mintick) : math.max(lockStop, close + syminfo.mintick)
             float lockedStop = activeDirection == 1 ? math.max(activeStop, lockStop) : math.min(activeStop, lockStop)
+            riskUpdateReason := "runner_activation"
             if priceChanged(activeStop, lockedStop)
                 activeStop := lockedStop
-                riskUpdateReason := "tp_checkpoint_runner"
-    if activeRunnerMode and activeTargetCheckpointHit
+                riskUpdateReason := "runner_activation"
+    if activeRunnerMode and activeRunnerActive
         float trailStop = activeDirection == 1 ? activeRunnerExtreme - atrVal * runnerTrailAtrMult : activeRunnerExtreme + atrVal * runnerTrailAtrMult
         trailStop := activeDirection == 1 ? math.min(trailStop, close - syminfo.mintick) : math.max(trailStop, close + syminfo.mintick)
         bool trailImproved = activeDirection == 1 ? trailStop > activeStop : trailStop < activeStop
         if trailImproved
             activeStop := trailStop
             riskUpdateReason := riskUpdateReason == "" ? "runner_trail_stop" : riskUpdateReason
-    bool riskChanged = priceChanged(previousStop, activeStop) or priceChanged(previousTarget, activeTarget)
+    bool stopChanged = priceChanged(previousStop, activeStop)
+    bool targetChanged = priceChanged(previousTarget, activeTarget)
+    bool riskChanged = stopChanged or targetChanged or runnerStateChanged
     if riskChanged and enableAlerts
         string reasonForEvent = riskUpdateReason == "" ? "risk_update" : riskUpdateReason
+        string requestedSides = stopChanged and targetChanged ? "stop_loss,take_profit" : stopChanged ? "stop_loss" : targetChanged ? "take_profit" : ""
+        float eventNewStop = stopChanged ? activeStop : na
+        float eventNewTarget = targetChanged ? activeTarget : na
         activeRiskUpdateSeq := activeRiskUpdateSeq + 1
-        alert(buildRiskPayload(eventId("risk_update", reasonForEvent), activePositionId, reasonForEvent, previousStop, previousTarget, activeStop, activeTarget), alert.freq_all)
+        alert(buildRiskPayload(eventId("risk_update", reasonForEvent), activePositionId, reasonForEvent, requestedSides, previousStop, previousTarget, eventNewStop, eventNewTarget), alert.freq_all)
 
 int eodCloseHourNow = hour(time_close, "America/New_York")
 int eodCloseMinuteNow = minute(time_close, "America/New_York")
@@ -1272,21 +1324,21 @@ if eodCloseNow
     activeEntry := na
     activeStop := na
     activeTarget := na
-    activeCheckpointTarget := na
+    activeRunnerActivation := na
     activeInitialRisk := na
     activeQty := na
     activeEntryBar := na
     activeRunnerMode := false
-    activeTargetCheckpointHit := false
+    activeRunnerActive := false
     activeRunnerExtreme := na
     activeBreakevenDone := false
     activeRiskUpdateSeq := 0
 
 if activePositionId != "" and not eodCloseNow
     if activeDirection == 1
-        strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment="平多 · TP/SL")
+        strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget, comment="平多 · TP/SL", comment_profit="平多 · TP止盈", comment_loss="平多 · SL止损")
     if activeDirection == -1
-        strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment="平空 · TP/SL")
+        strategy.exit("TV-S-RISK", from_entry="TV-S", stop=activeStop, limit=activeTarget, comment="平空 · TP/SL", comment_profit="平空 · TP止盈", comment_loss="平空 · SL止损")
 
 // -----------------------------------------------------------------------------
 // Visuals
@@ -1313,9 +1365,13 @@ plotshape(showEmaCrossMarkers and emaDeathCross, "EMA20/50 death cross", locatio
 plotshape(showComponentMarkers and bullDivNow, "Bull divergence", location=location.belowbar, style=shape.diamond, color=color.new(color.lime, 0), size=size.tiny, text="D+")
 plotshape(showComponentMarkers and bearDivNow, "Bear divergence", location=location.abovebar, style=shape.diamond, color=color.new(color.red, 0), size=size.tiny, text="D-")
 
-float visibleTarget = activePositionId != "" ? (activeRunnerMode ? (activeTargetCheckpointHit ? na : activeCheckpointTarget) : activeTarget) : na
-plot(activePositionId != "" ? activeStop : na, "SL 止损", color=color.new(color.red, 0), style=plot.style_linebr, linewidth=2)
-plot(visibleTarget, "TP 目标/检查点", color=color.new(color.green, 0), style=plot.style_linebr, linewidth=2)
+float visibleHardTarget = activePositionId != "" and not activeRunnerMode ? activeTarget : na
+float visibleSafetyTarget = activePositionId != "" and activeRunnerMode ? activeTarget : na
+float visibleRunnerActivation = activePositionId != "" and activeRunnerMode and not activeRunnerActive ? activeRunnerActivation : na
+plot(activePositionId != "" ? activeStop : na, "SL / Trailing SL", color=color.new(color.red, 0), style=plot.style_linebr, linewidth=2)
+plot(visibleHardTarget, "TP 真实止盈", color=color.new(color.green, 0), style=plot.style_linebr, linewidth=2)
+plot(visibleSafetyTarget, "Safety TP 真实止盈", color=color.new(color.lime, 0), style=plot.style_linebr, linewidth=2)
+plot(visibleRunnerActivation, "Runner Activation", color=color.new(color.blue, 0), style=plot.style_linebr, linewidth=2)
 
 var table flowStatus = table.new(position.top_right, 2, 8, border_width=1)
 string statusDirection = activeDirection == -1 ? "做空" : activeDirection == 1 ? "做多" : blockedNow ? directionDisplayName(blockedDirection) : activityScore > 0 ? directionDisplayName(candidateDirection) : "--"
@@ -1326,7 +1382,7 @@ string statusComponents = activePositionId != "" ? "组件齐 + 过滤通过" : 
 string statusDtp = dtpStateText(dtpDir, dtpPhase)
 string statusMtf = activeDirection == -1 ? mtfSummaryForDirection("short") : activeDirection == 1 ? mtfSummaryForDirection("long") : blockedNow ? mtfSummaryForDirection(blockedDirection) : activityScore > 0 ? mtfSummaryForDirection(candidateDirection) : enableMtf ? "MTF 等待信号" : "off"
 string lastExitText = lastExitReason != "" ? exitReasonDisplayName(lastExitReason) + " " + lastExitTimeText + " @ " + str.tostring(lastExitPrice, "#.##") + " · PnL " + fmtSignedMoney(lastExitPnl) + " (" + fmtSignedPct(lastExitPnlPct) + ")" : "--"
-string runnerRiskText = activeTargetCheckpointHit ? "Runner / SL " + str.tostring(activeStop, "#.##") : "TP点 " + str.tostring(activeCheckpointTarget, "#.##") + " / SL " + str.tostring(activeStop, "#.##")
+string runnerRiskText = activeRunnerActive ? "Runner ON / Safety TP " + str.tostring(activeTarget, "#.##") + " / Trail SL " + str.tostring(activeStop, "#.##") : "Runner " + str.tostring(runnerActivationR, "#.##") + "R " + str.tostring(activeRunnerActivation, "#.##") + " / Safety TP " + str.tostring(activeTarget, "#.##") + " / SL " + str.tostring(activeStop, "#.##")
 string statusRisk = activePositionId != "" ? (activeRunnerMode ? runnerRiskText : "TP " + str.tostring(activeTarget, "#.##") + " / SL " + str.tostring(activeStop, "#.##")) : lastExitText
 if confirmed
     if showStatusPanel

@@ -269,6 +269,15 @@ def _normalize_tv_event(row: dict) -> dict:
         extra.get("entry_price"),
         extra.get("close"),
     )
+    exit_reason = _first_text(row.get("exit_reason"), payload.get("exit_reason"), extra.get("exit_reason"))
+    exit_fill_role = _first_text(
+        row.get("exit_fill_role"),
+        payload.get("exit_fill_role"),
+        payload.get("fill_role"),
+        extra.get("exit_fill_role"),
+        extra.get("fill_role"),
+    )
+    reason = _first_text(row.get("reason"), payload.get("reason"), extra.get("reason"), exit_reason)
     return {
         "event_type": event_type,
         "bar_time_ms": _row_time_ms(row),
@@ -282,6 +291,9 @@ def _normalize_tv_event(row: dict) -> dict:
         "route_target": _first_text(row.get("route_target")),
         "route_record_id": _first_text(row.get("route_record_id")),
         "price": round(float(price), 4) if price is not None else 0,
+        "reason": reason,
+        "exit_reason": exit_reason,
+        "exit_fill_role": exit_fill_role,
         "activity_score": _coerce_float(payload.get("activity_score"), _coerce_float(extra.get("activity_score"), 0.0)),
         "quality_score": _coerce_float(payload.get("quality_score"), _coerce_float(extra.get("quality_score"), 0.0)),
         "mtf_status": _first_text(payload.get("mtf_status"), extra.get("mtf_last_status"), extra.get("mtf_status")),
@@ -291,6 +303,9 @@ def _normalize_tv_event(row: dict) -> dict:
             "activity_grade": _first_text(payload.get("activity_grade"), extra.get("activity_grade")),
             "target_status": _first_text(row.get("route_target")) == "ibkr_targets" and _first_text(row.get("status")) or "",
             "missing_components": _first_text(payload.get("missing_components"), extra.get("missing_components")),
+            "reason": reason,
+            "exit_reason": exit_reason,
+            "exit_fill_role": exit_fill_role,
         },
     }
 

@@ -510,12 +510,39 @@
             return flatByBroker || extra.close_old_position === 'skipped_flat';
         }
 
+        function getCloseExitReason(signal) {
+            const extra = signal?.extra || {};
+            const values = [
+                signal?.exit_reason,
+                extra.exit_reason,
+                signal?.reason,
+                extra.reason,
+                signal?.exit_fill_role,
+                extra.exit_fill_role,
+                signal?.fill_role,
+                extra.fill_role,
+            ].map((value) => String(value || '').trim().toLowerCase()).filter(Boolean);
+            for (const text of values) {
+                if (/(runner|trailing|trail).*stop|runner_stop|trail_stop|trailing_stop/.test(text)) return 'runner_stop';
+                if (/safety_take_profit|safety_tp|take_profit|\btp\b|profit|limit/.test(text)) return 'take_profit';
+                if (/stop_loss|\bsl\b|loss|stop/.test(text)) return 'stop_loss';
+            }
+            return '';
+        }
+
         function getActionView(actionType, signal = null) {
             if (isNoOldPosition(signal)) {
                 return { text: '无旧仓', cls: 'action-neutral' };
             }
+            if (actionType === 'close') {
+                const text = {
+                    take_profit: '止盈退出',
+                    runner_stop: '跟踪止盈',
+                    stop_loss: '止损退出',
+                }[getCloseExitReason(signal)] || '平旧仓';
+                return { text, cls: 'action-close' };
+            }
             const text = {
-                close: '平旧仓',
                 cancel: '撤旧挂单',
                 adjust_sl: '调止损',
                 adjust_tp: '调止盈',

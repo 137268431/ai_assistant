@@ -11,31 +11,59 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
     def setUpClass(cls):
         cls.source = PINE_PATH.read_text(encoding="utf-8")
 
-    def test_tp_checkpoint_runner_uses_safety_target_and_trailing_stop(self):
+    def test_runner_uses_separate_activation_and_safety_tp(self):
         source = self.source
 
-        self.assertIn('enableTpCheckpointRunner = input.bool(true, "TP checkpoint runner", group="05 Risk")', source)
+        self.assertIn('enableTpCheckpointRunner = input.bool(true, "Enable runner mode", group="05 Risk")', source)
+        self.assertIn('runnerActivationR = input.float(1.0, "Runner activation (R)", step=0.25, minval=0.25, maxval=10.0, group="05 Risk")', source)
+        self.assertIn('runnerSafetyR = input.float(4.0, "Runner safety TP (R)", step=0.5, minval=1.0, maxval=20.0, group="05 Risk")', source)
         self.assertIn("setupUsesRunner(string setup)", source)
+        self.assertIn("calcRunnerActivationTarget(float entryPrice, float stopPrice, int direction)", source)
         self.assertIn("calcRunnerSafetyTarget(float entryPrice, float stopPrice, int direction)", source)
-        self.assertIn("activeTargetCheckpointHit := true", source)
+        self.assertIn("float runnerActivationPrice = runnerMode ? calcRunnerActivationTarget(entryPrice, stopPrice, 1) : na", source)
+        self.assertIn("float targetPrice = runnerMode ? calcRunnerSafetyTarget(entryPrice, stopPrice, 1) : hardTargetPrice", source)
+        self.assertIn("float runnerActivationPrice = runnerMode ? calcRunnerActivationTarget(entryPrice, stopPrice, -1) : na", source)
+        self.assertIn("float targetPrice = runnerMode ? calcRunnerSafetyTarget(entryPrice, stopPrice, -1) : hardTargetPrice", source)
+        self.assertIn('strategy.exit("TV-L-RISK", from_entry="TV-L", stop=activeStop, limit=activeTarget', source)
+        self.assertIn('comment_profit="平多 · TP止盈"', source)
+        self.assertIn("exitTouchesTarget(int direction, float exitPrice, float targetPrice)", source)
+        self.assertIn('exitReason := targetExit ? "take_profit" : stopExit ? "stop_loss" : exitReason', source)
+        self.assertIn("activeRunnerActive := true", source)
         self.assertIn('reason == "runner_stop" ? "跟踪止盈"', source)
-        self.assertIn('if exitReason == "stop_loss" and activeTargetCheckpointHit and exitPnlPerShare > 0.0', source)
-        self.assertIn('riskUpdateReason := "tp_checkpoint_runner"', source)
+        self.assertIn('if exitReason == "stop_loss" and activeRunnerActive and exitPnlPerShare > 0.0', source)
+        self.assertIn('riskUpdateReason := "runner_activation"', source)
         self.assertIn('riskUpdateReason := riskUpdateReason == "" ? "runner_trail_stop" : riskUpdateReason', source)
+        self.assertNotIn('riskUpdateReason := "tp_checkpoint_runner"', source)
 
-        trail_index = source.index("if activeRunnerMode and activeTargetCheckpointHit")
+        activation_index = source.index("if activeRunnerMode and not activeRunnerActive")
+        trail_index = source.index("if activeRunnerMode and activeRunnerActive")
         alert_index = source.index("if riskChanged and enableAlerts")
+        self.assertLess(activation_index, trail_index)
         self.assertLess(trail_index, alert_index)
 
-    def test_entry_payload_marks_runner_checkpoint_and_hard_target_state(self):
+    def test_payload_and_plots_distinguish_runner_activation_from_true_tp(self):
         source = self.source
 
-        self.assertIn("jsonNum(\"target_checkpoint\", checkpointPrice)", source)
+        self.assertIn("jsonNum(\"take_profit\", targetPrice)", source)
+        self.assertIn("jsonNum(\"target_checkpoint\", targetCheckpoint)", source)
         self.assertIn("jsonNum(\"safety_take_profit\", targetPrice)", source)
+        self.assertIn("jsonNum(\"runner_activation_price\", runnerActivationPrice)", source)
+        self.assertIn("jsonNum(\"runner_activation_r\", runnerActivationR)", source)
+        self.assertIn("jsonBool(\"runner_enabled\", runnerMode)", source)
+        self.assertIn("jsonBool(\"runner_active\", false)", source)
         self.assertIn("jsonBool(\"tp_checkpoint_runner\", runnerMode)", source)
         self.assertIn("jsonBool(\"target_is_hard\", not runnerMode)", source)
-        self.assertIn("buildEntryPayload(entryEventId, posId, \"long\", longSetup, longReason, qty, entryPrice, stopPrice, targetPrice, checkpointPrice, runnerMode", source)
-        self.assertIn("buildEntryPayload(entryEventId, posId, \"short\", shortSetup, shortReason, qty, entryPrice, stopPrice, targetPrice, checkpointPrice, runnerMode", source)
+        self.assertIn("jsonBool(\"target_checkpoint_is_exit\", not runnerMode)", source)
+        self.assertIn('jsonStr("target_role", runnerMode ? "safety_tp" : "hard_tp")', source)
+        self.assertIn("buildEntryPayload(entryEventId, posId, \"long\", longSetup, longReason, qty, entryPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode", source)
+        self.assertIn("buildEntryPayload(entryEventId, posId, \"short\", shortSetup, shortReason, qty, entryPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode", source)
+        self.assertIn("jsonRequestedSides(string requestedSides)", source)
+        self.assertIn('string requestedSides = stopChanged and targetChanged ? "stop_loss,take_profit" : stopChanged ? "stop_loss" : targetChanged ? "take_profit" : ""', source)
+        self.assertIn("float eventNewTarget = targetChanged ? activeTarget : na", source)
+        self.assertIn('plot(visibleHardTarget, "TP 真实止盈"', source)
+        self.assertIn('plot(visibleSafetyTarget, "Safety TP 真实止盈"', source)
+        self.assertIn('plot(visibleRunnerActivation, "Runner Activation"', source)
+        self.assertNotIn('plot(visibleTarget, "TP 目标/检查点"', source)
 
     def test_exit_labels_show_pnl_amount_and_percent(self):
         source = self.source
@@ -56,7 +84,7 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         label_lines = [line for line in source.splitlines() if "label.new(" in line]
 
         self.assertIn(
-            'flowLabelTransparency = input.int(70, "Flow label background transparency", minval=0, maxval=100, group="08 Display")',
+            'flowLabelTransparency = input.int(30, "Flow label background transparency", minval=0, maxval=100, group="08 Display")',
             source,
         )
         self.assertIn("flowBaseColor(string state, string direction) =>", source)
@@ -76,7 +104,7 @@ class TradingViewStrategyCorePineTest(unittest.TestCase):
         source = self.source
 
         self.assertIn('positionAmount = input.float(5000, "Notional per trade ($)", step=500, minval=100, group="05 Risk")', source)
-        self.assertIn('sdSignalBand = input.int(4, "MR trigger band", minval=1, maxval=4, group="03 SD Channel")', source)
+        self.assertIn('sdSignalBand = input.int(3, "MR trigger band", minval=1, maxval=4, group="03 SD Channel")', source)
         self.assertIn('useVolatilityFilter = input.bool(true, "Block low-volatility entries", group="05 Risk")', source)
         self.assertIn('minAtrPctForEntry = input.float(0.08, "Minimum ATR% for entry", step=0.01, minval=0.0, group="05 Risk")', source)
         self.assertIn("bool lowVolatilityEntryBlocked = useVolatilityFilter and atrPct < minAtrPctForEntry", source)

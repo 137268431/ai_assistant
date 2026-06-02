@@ -472,6 +472,139 @@ def _shares(payload: dict[str, Any]) -> float:
     return _float(payload.get("shares") or payload.get("quantity") or payload.get("qty"), 0.0)
 
 
+def _payload_first(payload: dict[str, Any], *keys: str, default: Any = None) -> Any:
+    extra = _as_object(payload.get("extra"))
+    for source in (payload, extra):
+        for key in keys:
+            if not isinstance(source, dict) or key not in source:
+                continue
+            value = source.get(key)
+            if value not in (None, "", []):
+                return value
+    return default
+
+
+def _payload_has_any(payload: dict[str, Any], *keys: str) -> bool:
+    extra = _as_object(payload.get("extra"))
+    for source in (payload, extra):
+        for key in keys:
+            if isinstance(source, dict) and key in source and source.get(key) not in (None, "", []):
+                return True
+    return False
+
+
+def _payload_has_key(payload: dict[str, Any], *keys: str) -> bool:
+    extra = _as_object(payload.get("extra"))
+    for source in (payload, extra):
+        if not isinstance(source, dict):
+            continue
+        for key in keys:
+            if key in source:
+                return True
+    return False
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, list):
+            value = parsed
+        else:
+            return [part.strip() for part in text.split(",") if part.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [_text(item) for item in value if _text(item)]
+    if value in (None, ""):
+        return []
+    return [_text(value)]
+
+
+def _normalize_requested_side(value: Any) -> str:
+    text = _lower(value)
+    aliases = {
+        "sl": "stop_loss",
+        "stop": "stop_loss",
+        "stoploss": "stop_loss",
+        "stop_loss": "stop_loss",
+        "new_sl": "stop_loss",
+        "new_stop_loss": "stop_loss",
+        "tp": "take_profit",
+        "takeprofit": "take_profit",
+        "take_profit": "take_profit",
+        "new_tp": "take_profit",
+        "new_take_profit": "take_profit",
+    }
+    return aliases.get(text, "")
+
+
+def _requested_sides(payload: dict[str, Any]) -> list[str]:
+    raw = _payload_first(payload, "requested_sides", "requested_side", "adjust_sides", "adjust_side", default=None)
+    sides: list[str] = []
+    for item in _string_list(raw):
+        side = _normalize_requested_side(item)
+        if side and side not in sides:
+            sides.append(side)
+    return sides
+
+
+def _runner_fields(payload: dict[str, Any], *, take_profit: float, event_type: str) -> dict[str, Any]:
+    runner_enabled = parse_boolean(
+        _payload_first(payload, "runner_enabled", "tp_checkpoint_runner", "enable_runner", "runner_mode", default=False),
+        False,
+    )
+    runner_active_default = False if event_type == "entry" else False
+    runner_active = parse_boolean(_payload_first(payload, "runner_active", "active_runner_mode", default=runner_active_default), runner_active_default)
+    safety_take_profit = _float(
+        _payload_first(payload, "safety_take_profit", "safety_tp", "runner_safety_tp", default=None),
+        0.0,
+    )
+    runner_activation_price = _float(
+        _payload_first(payload, "runner_activation_price", "runner_activation", "target_checkpoint", "tp_checkpoint", default=None),
+        0.0,
+    )
+    runner_activation_r = _float(
+        _payload_first(payload, "runner_activation_r", "runnerActivationR", "runner_activation_R", default=None),
+        0.0,
+    )
+    target_checkpoint = _float(_payload_first(payload, "target_checkpoint", "tp_checkpoint", default=None), 0.0)
+    target_role = _lower(_payload_first(payload, "target_role", default=""))
+    if target_role not in {"hard_tp", "safety_tp"}:
+        target_role = "safety_tp" if runner_enabled else "hard_tp"
+
+    fields: dict[str, Any] = {
+        "runner_enabled": runner_enabled,
+        "runner_active": runner_active,
+        "target_role": target_role,
+        "target_is_hard": target_role == "hard_tp",
+        "tp_checkpoint_runner": runner_enabled,
+    }
+    if safety_take_profit > 0:
+        fields["safety_take_profit"] = safety_take_profit
+    elif runner_enabled and take_profit > 0:
+        fields["safety_take_profit"] = take_profit
+    if runner_activation_price > 0:
+        fields["runner_activation_price"] = runner_activation_price
+    if runner_activation_r > 0:
+        fields["runner_activation_r"] = runner_activation_r
+    if target_checkpoint > 0:
+        fields["target_checkpoint"] = target_checkpoint
+    elif runner_enabled and runner_activation_price > 0:
+        fields["target_checkpoint"] = runner_activation_price
+    if runner_enabled:
+        fields["target_checkpoint_is_exit"] = False
+    elif "target_checkpoint" in fields:
+        fields["target_checkpoint_is_exit"] = parse_boolean(
+            _payload_first(payload, "target_checkpoint_is_exit", default=True),
+            True,
+        )
+    return fields
+
+
 def _source_is_tv(payload: dict[str, Any]) -> bool:
     source = _lower(payload.get("source") or payload.get("signal_source") or "tv")
     return source in {"tv", "tradingview", "webhook_tv", "tv_webhook", ""}
@@ -927,7 +1060,16 @@ def _route_entry(
         raise TvPrimaryError("invalid_direction")
     entry_price = _entry_price(payload)
     stop_loss = _float(payload.get("stop_loss") or payload.get("sl"), 0.0)
-    take_profit = _float(payload.get("take_profit") or payload.get("tp"), 0.0)
+    raw_take_profit = _float(payload.get("take_profit") or payload.get("tp"), 0.0)
+    raw_runner_enabled = parse_boolean(
+        _payload_first(payload, "runner_enabled", "tp_checkpoint_runner", "enable_runner", "runner_mode", default=False),
+        False,
+    )
+    safety_take_profit = _float(
+        _payload_first(payload, "safety_take_profit", "safety_tp", "runner_safety_tp", default=None),
+        0.0,
+    )
+    take_profit = safety_take_profit if raw_runner_enabled and safety_take_profit > 0 else raw_take_profit
     if entry_price <= 0:
         raise TvPrimaryError("invalid_entry")
     if stop_loss <= 0:
@@ -1022,6 +1164,8 @@ def _route_entry(
         "target_backfill": target_backfill_meta,
         "source": TRADINGVIEW_SOURCE,
         "signal_source": "tradingview_webhook",
+        "take_profit": take_profit,
+        **_runner_fields(payload, take_profit=take_profit, event_type=event_type),
     }
     signal_payload = {
         **payload,
@@ -1112,18 +1256,50 @@ def _route_reverse(
     if side not in {"long", "short"}:
         raise TvPrimaryError("invalid_position_side")
     signal_id = _text(payload.get("signal_id"))
+    exit_reason = _text(_payload_first(payload, "exit_reason", default=""))
+    risk_update_reason = _text(_payload_first(payload, "risk_update_reason", "update_reason", default=""))
     extra = {
         **_base_extra(payload, event_id, event_type),
         "origin_signal_id": signal_id,
         "position_id": _text(payload.get("position_id")),
-        "exit_reason": _text(payload.get("exit_reason")),
-        "risk_update_reason": _text(payload.get("risk_update_reason") or payload.get("update_reason")),
-        "risk_update_seq": _int(payload.get("risk_update_seq"), 0),
-        "new_sl": _float(payload.get("new_stop_loss") or payload.get("new_sl"), 0.0),
-        "new_tp": _float(payload.get("new_take_profit") or payload.get("new_tp"), 0.0),
-        "previous_stop_loss": _float(payload.get("previous_stop_loss"), 0.0),
-        "previous_take_profit": _float(payload.get("previous_take_profit"), 0.0),
+        **_runner_fields(payload, take_profit=_float(_payload_first(payload, "take_profit", "tp", default=0), 0.0), event_type=event_type),
     }
+    if event_type == "exit":
+        extra.update(
+            {
+                "exit_reason": exit_reason,
+                "exit_fill_role": _text(_payload_first(payload, "exit_fill_role", "fill_role", default="")),
+            }
+        )
+    else:
+        extra.update(
+            {
+                "risk_update_reason": risk_update_reason,
+                "risk_update_seq": _int(_payload_first(payload, "risk_update_seq", default=0), 0),
+            }
+        )
+        requested_sides = _requested_sides(payload)
+        requested_sides_explicit = _payload_has_key(payload, "requested_sides", "requested_side", "adjust_sides", "adjust_side")
+        if requested_sides_explicit:
+            extra["requested_sides"] = requested_sides
+        if _payload_has_any(payload, "new_stop_loss", "new_sl") and (
+            not requested_sides_explicit or "stop_loss" in requested_sides
+        ):
+            extra["new_sl"] = _float(_payload_first(payload, "new_stop_loss", "new_sl"), 0.0)
+        if _payload_has_any(payload, "new_take_profit", "new_tp") and (
+            not requested_sides_explicit or "take_profit" in requested_sides
+        ):
+            extra["new_tp"] = _float(_payload_first(payload, "new_take_profit", "new_tp"), 0.0)
+        if _payload_has_any(payload, "previous_stop_loss", "previous_sl", "current_stop_loss", "current_sl"):
+            extra["previous_stop_loss"] = _float(
+                _payload_first(payload, "previous_stop_loss", "previous_sl", "current_stop_loss", "current_sl"),
+                0.0,
+            )
+        if _payload_has_any(payload, "previous_take_profit", "previous_tp", "current_take_profit", "current_tp"):
+            extra["previous_take_profit"] = _float(
+                _payload_first(payload, "previous_take_profit", "previous_tp", "current_take_profit", "current_tp"),
+                0.0,
+            )
     action_type = "close" if event_type == "exit" else "adjust_bracket"
     if action_type == "adjust_bracket":
         extra.update(_resolve_child_orders(pb, signal_id=signal_id, environment=broker_mode, escape_filter=escape_filter))
@@ -1140,7 +1316,7 @@ def _route_reverse(
         "triggered_signals": [item for item in (signal_id, _text(payload.get("position_id")), event_id) if item],
         "action_type": action_type,
         "status": "pending",
-        "reason": _text(payload.get("exit_reason") or payload.get("risk_update_reason") or event_type),
+        "reason": exit_reason or risk_update_reason or event_type,
         "bar_time_ms": _int(payload.get("bar_time_ms"), 0),
         "us_time": _text(payload.get("us_time")),
         "cn_time": _text(payload.get("cn_time")),

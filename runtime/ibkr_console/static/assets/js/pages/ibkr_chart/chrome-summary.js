@@ -562,7 +562,7 @@
                     buildCursorCard('EMA / VWAP', '--', '--'),
                     buildCursorCard('SD / Fractal', '--', '--'),
                     buildCursorCard('Touch / Divergence', '--', '--'),
-                    buildCursorCard('TP / SL', '--', '等待信号风险位'),
+                    buildCursorCard('TP / Runner / SL', '--', '等待信号风险位'),
                     buildCursorCard('Signal / Osc', chartWorkspaceState === 'error' ? '加载失败' : '--', chartWorkspaceState === 'error' ? '请检查 ibkr_bars / 网络状态' : '--'),
                 ].join('');
                 renderChartWorkspaceChrome(payload, { includeTrace });
@@ -612,10 +612,10 @@
             const riskState = signal ? getRiskDistanceState(signal, getRiskReferencePrice(payload, context), bar) : null;
             const riskStats = signal ? getSignalRiskStats(payload, signal) : null;
             const riskPrimary = riskState?.valid
-                ? `${riskState.targetLabel} ${formatPrice(riskState.takeProfit)} / SL ${formatPrice(riskState.stopLoss)}`
+                ? formatRiskPriceLine(riskState)
                 : (signal ? 'TP/SL 缺失' : '无信号风险位');
             const riskSecondary = riskState?.valid
-                ? `${riskState.targetLabel} ${formatRiskDistance(riskState.tpRemainingPct, riskState.tpCrossed)} · SL ${formatRiskDistance(riskState.slRemainingPct, riskState.slCrossed)} · ${formatRiskWinRate(riskStats, { compact: true })}`
+                ? `${formatRiskDistanceLine(riskState)} · ${formatRiskWinRate(riskStats, { compact: true })}`
                 : (signal ? '无法计算距离或胜率' : '聚焦信号后显示距离/胜率');
             document.getElementById('cursorStrip').innerHTML = [
                 buildCursorCard('Bar Start (ET)', getIbkrBarStartLabel(bar), `Close ${getIbkrBarCloseLabel(bar)} · ${cursorState}`),
@@ -623,7 +623,7 @@
                 buildCursorCard('EMA / VWAP', isPreviewBar && !indicator ? '预览 bar 暂无正式均线' : chain.primary, isPreviewBar && !indicator ? '收盘后生成 EMA / VWAP' : chain.secondary),
                 buildCursorCard('SD / ORB', isPreviewBar && !indicator ? '预览 bar 暂无正式指标' : `Regime ${getSdRegimeText(indicator?.sd_regime)} · Z ${formatOptionalNumber(indicator?.sd_close_z)}`, isPreviewBar && !indicator ? '收盘后计算 SD / ORB' : `Width ${formatOptionalNumber(indicator?.sd_width_rank)} · ORB ${getOrbBreakoutText(indicator)}`),
                 buildCursorCard('RVOL / Divergence', isPreviewBar && !indicator ? '预览中' : `RVOL20 ${formatOptionalNumber(indicator?.rvol_20)} · ${getTouchDetailText(indicator)}`, isPreviewBar && !indicator ? 'Touch / Div 待收盘确认' : getDivergenceDetailText(indicator)),
-                buildCursorCard('TP / SL', riskPrimary, riskSecondary),
+                buildCursorCard('TP / Runner / SL', riskPrimary, riskSecondary),
                 buildCursorCard('Signal / Osc', isPreviewBar && !indicator ? '未收盘预览' : signalPrimary, eventSecondary || `${traceStage ? `Stage ${traceStage} · ` : ''}${signalSecondary}`),
             ].join('');
             renderChartWorkspaceChrome(payload, { includeTrace });

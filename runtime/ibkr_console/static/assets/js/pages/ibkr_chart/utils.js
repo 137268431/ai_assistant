@@ -456,7 +456,7 @@
                 { key: 'emaTouch', label: 'EMA Touch', shortLabel: 'Touch', disabled: false, swatches: ['#00C853', '#D50000'], description: 'EMA touch 多空提示' },
                 { key: 'divergence', label: 'Divergence', shortLabel: 'Div', disabled: false, swatches: ['#2196F3', '#9C27B0'], description: '背离提示标记' },
                 { key: 'tradeSignals', label: 'Trade Signals', shortLabel: 'Signal', disabled: !isTradeSignalInterval(), swatches: ['#48BB78', '#FC8181'], description: '多空交易信号' },
-                { key: 'riskLevels', label: 'Risk Levels', shortLabel: 'Risk', disabled: !isTradeSignalInterval(), swatches: ['#38BDF8', '#F97316'], description: '生成信号的 TP/Target 与 SL 水平线、距离和历史胜率' },
+                { key: 'riskLevels', label: 'Risk Levels', shortLabel: 'Risk', disabled: !isTradeSignalInterval(), swatches: ['#38BDF8', '#FBBF24', '#F97316'], description: '真实 TP/Safety TP、Runner Activation 与 SL/Trailing SL 水平线' },
                 { key: 'lifecycle', label: 'Signal Flow', shortLabel: 'Flow', disabled: !isTradeSignalInterval(), swatches: ['#4ADE80', '#F97316', '#38BDF8'], description: 'SD窗口、组件收集、候选/过滤/确认生命周期' },
                 { key: 'volume', label: 'Volume', shortLabel: 'Vol', disabled: false, swatches: ['#38BDF8'], description: '成交量柱体' },
             ].filter((item) => !item.disabled);
@@ -474,6 +474,58 @@
                 if (Number.isFinite(num)) return num;
             }
             return NaN;
+        }
+
+        function normalizeChartFlag(value, fallback = false) {
+            if (value === undefined || value === null || value === '') return fallback;
+            if (typeof value === 'boolean') return value;
+            if (typeof value === 'number') return value !== 0;
+            const text = String(value).trim().toLowerCase();
+            if (['true', '1', 'yes', 'y', 'on'].includes(text)) return true;
+            if (['false', '0', 'no', 'n', 'off'].includes(text)) return false;
+            return fallback;
+        }
+
+        function normalizeExitReason(...values) {
+            const tokens = [];
+            values.forEach((value) => {
+                if (value === undefined || value === null || value === '') return;
+                tokens.push(String(value).trim().toLowerCase());
+            });
+            const text = tokens.join(' ');
+            if (!text) return '';
+            if (/(runner|trailing|trail|target_checkpoint).*stop|runner_stop|trail_stop|trailing_stop/.test(text)) return 'runner_stop';
+            if (/force_flat_eod|eod|end_of_day/.test(text)) return 'force_flat_eod';
+            if (/safety_take_profit|take_profit|live_exit_tp|\btp\b|profit|limit/.test(text)) return 'take_profit';
+            if (/stop_loss|live_exit_sl|\bsl\b|loss|stop/.test(text)) return 'stop_loss';
+            return tokens[0] || '';
+        }
+
+        function getEventExitReason(event) {
+            const extra = parseRecordExtra(event?.extra);
+            return normalizeExitReason(
+                event?.exit_reason,
+                event?.exit_fill_role,
+                event?.fill_role,
+                event?.reason,
+                event?.role,
+                extra.exit_reason,
+                extra.exit_fill_role,
+                extra.fill_role,
+                extra.reason,
+                event?.event_type
+            );
+        }
+
+        function getExitReasonLabel(reason, { compact = false } = {}) {
+            const normalized = normalizeExitReason(reason);
+            const map = {
+                take_profit: compact ? 'TP' : 'TP止盈',
+                stop_loss: compact ? 'SL' : 'SL止损',
+                runner_stop: compact ? 'Trail TP' : '跟踪止盈',
+                force_flat_eod: compact ? 'EOD' : 'EOD',
+            };
+            return map[normalized] || (normalized ? humanizeToken(normalized) : '');
         }
 
         function getRiskStatsKey(symbol, direction, signalName) {
@@ -530,6 +582,14 @@
             const targetState = extra.target_state && typeof extra.target_state === 'object'
                 ? extra.target_state
                 : {};
+            const targetRole = String(signal?.target_role || extra.target_role || '').trim().toLowerCase();
+            const runnerEnabled = normalizeChartFlag(
+                signal?.runner_enabled ?? extra.runner_enabled ?? extra.tp_checkpoint_runner,
+                false
+            );
+            if (targetRole === 'safety_tp' || runnerEnabled || Number.isFinite(coerceFiniteNumber(signal?.safety_take_profit, extra.safety_take_profit))) {
+                return 'Safety TP';
+            }
             const targetMode = String(settings.target_mode || targetState.target_mode || '').trim().toLowerCase();
             return targetMode && targetMode !== 'hard_rr' ? 'Target' : 'TP';
         }
@@ -541,8 +601,24 @@
             const extra = getSignalExtra(signal);
             const direction = String(signal.direction || extra.direction || '').trim().toLowerCase();
             const entry = coerceFiniteNumber(signal.entry, signal.limit_price, extra.entry, extra.entry_price, bar?.close);
-            const takeProfit = coerceFiniteNumber(signal.take_profit, signal.initial_take_profit, extra.take_profit, extra.initial_take_profit);
+            const safetyTakeProfit = coerceFiniteNumber(signal.safety_take_profit, extra.safety_take_profit);
+            const targetRole = String(signal.target_role || extra.target_role || '').trim().toLowerCase();
+            const runnerEnabled = normalizeChartFlag(
+                signal.runner_enabled ?? extra.runner_enabled ?? extra.tp_checkpoint_runner,
+                targetRole === 'safety_tp' || Number.isFinite(safetyTakeProfit)
+            );
+            const targetCheckpointIsExit = normalizeChartFlag(signal.target_checkpoint_is_exit ?? extra.target_checkpoint_is_exit, !runnerEnabled);
+            const runnerActivationPrice = coerceFiniteNumber(
+                signal.runner_activation_price,
+                extra.runner_activation_price,
+                targetCheckpointIsExit ? NaN : signal.target_checkpoint,
+                targetCheckpointIsExit ? NaN : extra.target_checkpoint
+            );
+            const takeProfit = runnerEnabled && Number.isFinite(safetyTakeProfit)
+                ? safetyTakeProfit
+                : coerceFiniteNumber(signal.take_profit, signal.initial_take_profit, extra.take_profit, extra.initial_take_profit, safetyTakeProfit);
             const stopLoss = coerceFiniteNumber(signal.stop_loss, signal.initial_stop_loss, extra.stop_loss, extra.initial_stop_loss);
+            const runnerActivationR = coerceFiniteNumber(signal.runner_activation_r, extra.runner_activation_r);
             let rr = coerceFiniteNumber(signal.rr, extra.rr);
             const targetLabel = getRiskTargetLabel(signal);
             const invalidBase = direction !== 'long' && direction !== 'short';
@@ -562,7 +638,12 @@
                 direction,
                 entry,
                 takeProfit,
+                safetyTakeProfit: Number.isFinite(safetyTakeProfit) ? safetyTakeProfit : null,
                 stopLoss,
+                runnerEnabled,
+                runnerActivationPrice: Number.isFinite(runnerActivationPrice) ? runnerActivationPrice : null,
+                runnerActivationR: Number.isFinite(runnerActivationR) ? runnerActivationR : null,
+                targetRole: targetRole || (runnerEnabled ? 'safety_tp' : 'hard_tp'),
                 rr: Number.isFinite(rr) ? rr : null,
                 targetLabel,
                 targetMode: String(
@@ -598,18 +679,27 @@
             const slRemaining = plan.direction === 'short'
                 ? plan.stopLoss - reference
                 : reference - plan.stopLoss;
+            const activationPrice = Number(plan.runnerActivationPrice);
+            const hasRunnerActivation = Number.isFinite(activationPrice) && activationPrice > 0;
+            const runnerActivationRemaining = hasRunnerActivation
+                ? (plan.direction === 'short' ? reference - activationPrice : activationPrice - reference)
+                : NaN;
             return {
                 ...plan,
                 referencePrice: reference,
                 hasDistances: true,
                 tpRemaining,
                 slRemaining,
+                runnerActivationRemaining,
                 tpRemainingPct: tpRemaining / reference * 100,
                 slRemainingPct: slRemaining / reference * 100,
+                runnerActivationRemainingPct: hasRunnerActivation ? runnerActivationRemaining / reference * 100 : NaN,
                 tpEntryPct: (plan.direction === 'short' ? plan.entry - plan.takeProfit : plan.takeProfit - plan.entry) / plan.entry * 100,
                 slEntryPct: (plan.direction === 'short' ? plan.stopLoss - plan.entry : plan.entry - plan.stopLoss) / plan.entry * 100,
+                runnerActivationEntryPct: hasRunnerActivation ? (plan.direction === 'short' ? plan.entry - activationPrice : activationPrice - plan.entry) / plan.entry * 100 : NaN,
                 tpCrossed: tpRemaining < 0,
                 slCrossed: slRemaining < 0,
+                runnerActivationCrossed: hasRunnerActivation ? runnerActivationRemaining < 0 : false,
             };
         }
 
@@ -626,6 +716,36 @@
             return `${num >= 0 ? '+' : '-'}${Math.abs(num).toFixed(1)}%`;
         }
 
+        function getRunnerActivationLabel(risk, { compact = false } = {}) {
+            const r = Number(risk?.runnerActivationR);
+            if (Number.isFinite(r)) {
+                const text = r.toFixed(2).replace(/\.?0+$/, '');
+                return compact ? `Run ${text}R` : `Runner ${text}R`;
+            }
+            return compact ? 'Run' : 'Runner Activation';
+        }
+
+        function formatRiskPriceLine(risk, { compact = false } = {}) {
+            if (!risk?.valid) return 'TP/SL 缺失';
+            const parts = [`${risk.targetLabel} ${formatPrice(risk.takeProfit)}`];
+            if (Number.isFinite(Number(risk.runnerActivationPrice)) && Number(risk.runnerActivationPrice) > 0) {
+                parts.push(`${getRunnerActivationLabel(risk, { compact })} ${formatPrice(risk.runnerActivationPrice)}`);
+            }
+            parts.push(`${risk.runnerEnabled ? 'Trailing SL' : 'SL'} ${formatPrice(risk.stopLoss)}`);
+            return parts.join(' / ');
+        }
+
+        function formatRiskDistanceLine(risk, { compact = false, html = false } = {}) {
+            if (!risk?.valid) return '无法计算距离';
+            const separator = html ? '<br>' : (compact ? ' / ' : ' · ');
+            const parts = [`${risk.targetLabel} ${formatRiskDistance(risk.tpRemainingPct, risk.tpCrossed)}`];
+            if (Number.isFinite(Number(risk.runnerActivationPrice)) && Number(risk.runnerActivationPrice) > 0) {
+                parts.push(`${getRunnerActivationLabel(risk, { compact })} ${formatRiskDistance(risk.runnerActivationRemainingPct, risk.runnerActivationCrossed)}`);
+            }
+            parts.push(`${risk.runnerEnabled ? 'Trailing SL' : 'SL'} ${formatRiskDistance(risk.slRemainingPct, risk.slCrossed)}`);
+            return parts.join(separator);
+        }
+
         function buildRiskSummary(signal, payload = getChartDisplayPayload(), context = null, { compact = false } = {}) {
             const risk = getRiskDistanceState(signal, getRiskReferencePrice(payload, context), context?.bar || null);
             const stats = getSignalRiskStats(payload, signal);
@@ -633,11 +753,11 @@
                 return compact ? 'TP/SL --' : 'TP/SL 缺失或价格顺序异常';
             }
             const rrText = risk.rr !== null ? `RR ${Number(risk.rr).toFixed(2).replace(/\.00$/, '')}` : 'RR --';
-            const priceLine = `${risk.targetLabel} ${formatPrice(risk.takeProfit)} / SL ${formatPrice(risk.stopLoss)}`;
+            const priceLine = formatRiskPriceLine(risk, { compact });
             if (compact) {
-                return `${priceLine} · ${formatRiskLineDistance(risk.tpRemainingPct)} / ${formatRiskLineDistance(risk.slRemainingPct)} · ${formatRiskWinRate(stats, { compact: true })}`;
+                return `${priceLine} · ${formatRiskDistanceLine(risk, { compact: true })} · ${formatRiskWinRate(stats, { compact: true })}`;
             }
-            return `${priceLine}<br>${rrText} · ${risk.targetLabel} ${formatRiskDistance(risk.tpRemainingPct, risk.tpCrossed)} · SL ${formatRiskDistance(risk.slRemainingPct, risk.slCrossed)}<br>${formatRiskWinRate(stats)} · 历史胜率不代表未来`;
+            return `${priceLine}<br>${rrText} · ${formatRiskDistanceLine(risk)}<br>${formatRiskWinRate(stats)} · 历史胜率不代表未来`;
         }
 
         function formatNumber(value, digits = 2) {
@@ -702,7 +822,10 @@
                 return `TV pre_alert ${dir || '--'}${scoreText}`;
             }
             if (type === 'entry') return `TV entry ${dir || '--'}`;
-            if (type === 'exit') return `TV exit ${dir || '--'}`;
+            if (type === 'exit') {
+                const reasonLabel = getExitReasonLabel(getEventExitReason(event));
+                return `TV ${reasonLabel || 'exit'} ${dir || '--'}`;
+            }
             if (type === 'risk_update') return 'TV risk_update';
             return type ? `TV ${type}` : 'TV event';
         }
@@ -710,10 +833,10 @@
         function getOrderEventSummary(event) {
             const type = String(event?.event_type || '').trim().toLowerCase();
             const pnlText = formatEventPnlText(event);
-            if (type === 'live_exit_eod') return `EOD exit${pnlText ? ` · PnL ${pnlText}` : ''}`;
-            if (type === 'live_exit_tp') return `Live TP${pnlText ? ` · PnL ${pnlText}` : ''}`;
-            if (type === 'live_exit_sl') return `Live SL${pnlText ? ` · PnL ${pnlText}` : ''}`;
-            if (type.startsWith('live_exit')) return `Live exit${pnlText ? ` · PnL ${pnlText}` : ''}`;
+            if (type.startsWith('live_exit')) {
+                const reasonLabel = getExitReasonLabel(getEventExitReason(event));
+                return `${reasonLabel || 'Live exit'}${pnlText ? ` · PnL ${pnlText}` : ''}`;
+            }
             if (type === 'live_entry') return `Live entry ${event?.direction || '--'} @ ${formatPrice(event?.price)}`;
             return type || 'Order event';
         }

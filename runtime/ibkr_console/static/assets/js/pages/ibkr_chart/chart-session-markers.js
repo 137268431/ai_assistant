@@ -172,16 +172,21 @@
                 const statsText = Number(stats?.sample_count || 0) > 0 ? ` · ${formatRiskWinRate(stats, { compact: true })}` : '';
                 const makeLine = (price, type) => {
                     const isTarget = type === 'target';
-                    const color = isTarget ? '#38BDF8' : '#F97316';
-                    const distanceText = formatRiskLineDistance(isTarget ? plan.risk.tpRemainingPct : plan.risk.slRemainingPct);
-                    const labelText = isTarget
+                    const isActivation = type === 'activation';
+                    const color = isActivation ? '#FBBF24' : isTarget ? '#38BDF8' : '#F97316';
+                    const distanceText = formatRiskLineDistance(
+                        isActivation ? plan.risk.runnerActivationRemainingPct : isTarget ? plan.risk.tpRemainingPct : plan.risk.slRemainingPct
+                    );
+                    const labelText = isActivation
+                        ? `${getRunnerActivationLabel(plan.risk)} ${formatPrice(price)} ${distanceText}`
+                        : isTarget
                         ? `${plan.risk.targetLabel} ${formatPrice(price)} ${distanceText}${statsText}`
-                        : `SL ${formatPrice(price)} ${distanceText}`;
+                        : `${plan.risk.runnerEnabled ? 'Trailing SL' : 'SL'} ${formatPrice(price)} ${distanceText}`;
                     const lineStyle = {
                         color,
-                        width: plan.isFocus ? 1.7 : 1.15,
-                        type: isTarget ? 'dashed' : 'dotted',
-                        opacity: plan.isFocus ? 0.92 : 0.58,
+                        width: isActivation ? (plan.isFocus ? 1.45 : 1.05) : (plan.isFocus ? 1.7 : 1.15),
+                        type: isActivation ? 'dotted' : isTarget ? 'dashed' : 'dotted',
+                        opacity: isActivation ? (plan.isFocus ? 0.86 : 0.50) : (plan.isFocus ? 0.92 : 0.58),
                     };
                     const endpoint = {
                         coord: [Math.max(plan.index, xEnd), price],
@@ -214,6 +219,9 @@
                 };
                 return [
                     makeLine(plan.risk.takeProfit, 'target'),
+                    ...(Number.isFinite(Number(plan.risk.runnerActivationPrice)) && Number(plan.risk.runnerActivationPrice) > 0
+                        ? [makeLine(plan.risk.runnerActivationPrice, 'activation')]
+                        : []),
                     makeLine(plan.risk.stopLoss, 'stop'),
                 ];
             });

@@ -598,6 +598,62 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertEqual(saved["extra"]["mtf"]["status"], "pass")
         self.assertEqual(pb.records[TV_EVENT_COLLECTION][0]["broker_mode"], "paper")
 
+    def test_entry_persists_runner_safety_tp_metadata(self):
+        pb = _FakePB()
+        pb.create_record(
+            "ibkr_targets",
+            {
+                "symbol": "AAPL",
+                "date": "2026-05-29",
+                "environment": "live",
+                "direction_bias": "long",
+                "score": 90,
+                "status": "active",
+                "extra": {"source": "tradingview", "activity_rank": 1},
+            },
+        )
+
+        response, status = _process(
+            pb,
+            {
+                "source": "tv",
+                "event_type": "entry",
+                "event_id": "tv-entry-runner-1",
+                "signal_id": "tv-entry-runner-1",
+                "symbol": "AAPL",
+                "direction": "long",
+                "entry_price": 188.25,
+                "quantity": 12,
+                "stop_loss": 185.80,
+                "take_profit": 190.70,
+                "safety_take_profit": 196.10,
+                "runner_activation_price": 190.70,
+                "runner_activation_r": 1.0,
+                "runner_enabled": True,
+                "runner_active": False,
+                "target_role": "safety_tp",
+                "market_date": "2026-05-29",
+                "environment": "paper",
+                "us_time": "2026-05-29 09:45:00",
+                "activity_score": 91,
+                **_mtf_payload(status="pass", score=100.0),
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
+        saved = pb.records["ibkr_signals"][0]
+        self.assertEqual(saved["take_profit"], 196.10)
+        self.assertEqual(saved["extra"]["take_profit"], 196.10)
+        self.assertEqual(saved["extra"]["safety_take_profit"], 196.10)
+        self.assertEqual(saved["extra"]["runner_activation_price"], 190.70)
+        self.assertEqual(saved["extra"]["runner_activation_r"], 1.0)
+        self.assertTrue(saved["extra"]["runner_enabled"])
+        self.assertFalse(saved["extra"]["runner_active"])
+        self.assertEqual(saved["extra"]["target_role"], "safety_tp")
+        self.assertFalse(saved["extra"]["target_is_hard"])
+        self.assertFalse(saved["extra"]["target_checkpoint_is_exit"])
+
     def test_entry_with_mtf_block_rejects_without_creating_signal(self):
         pb = _FakePB()
 
@@ -723,6 +779,101 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertEqual(reverse["extra"]["tp_order_id"], "tp-100")
         self.assertEqual(reverse["extra"]["new_sl"], 187.10)
 
+    def test_risk_update_preserves_requested_sides_for_stop_only_runner_trail(self):
+        pb = _FakePB()
+        pb.create_record(
+            "orders",
+            {
+                "signal_id": "tv-entry-1",
+                "environment": "paper",
+                "role": "stop_loss",
+                "status": "Submitted",
+                "broker_order_id": "sl-100",
+            },
+        )
+        pb.create_record(
+            "orders",
+            {
+                "signal_id": "tv-entry-1",
+                "environment": "paper",
+                "role": "take_profit",
+                "status": "Submitted",
+                "broker_order_id": "tp-100",
+            },
+        )
+
+        response, status = _process(
+            pb,
+            {
+                "source": "tv",
+                "event_type": "risk_update",
+                "event_id": "tv-risk-stop-only",
+                "symbol": "AAPL",
+                "position_side": "long",
+                "signal_id": "tv-entry-1",
+                "new_stop_loss": 187.10,
+                "new_take_profit": 196.10,
+                "requested_sides": ["stop_loss"],
+                "risk_update_reason": "runner_trail",
+                "runner_enabled": True,
+                "runner_active": True,
+                "runner_activation_price": 190.70,
+                "runner_activation_r": 1.0,
+                "safety_take_profit": 196.10,
+                "environment": "paper",
+                "market_data_mode": "live",
+                "bar_time_ms": 1770001200000,
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
+        reverse = pb.records["ibkr_reverse_signals"][0]
+        self.assertEqual(reverse["action_type"], "adjust_bracket")
+        self.assertEqual(reverse["extra"]["requested_sides"], ["stop_loss"])
+        self.assertEqual(reverse["extra"]["sl_order_id"], "sl-100")
+        self.assertEqual(reverse["extra"]["tp_order_id"], "tp-100")
+        self.assertEqual(reverse["extra"]["new_sl"], 187.10)
+        self.assertNotIn("new_tp", reverse["extra"])
+        self.assertTrue(reverse["extra"]["runner_enabled"])
+        self.assertTrue(reverse["extra"]["runner_active"])
+        self.assertEqual(reverse["extra"]["target_role"], "safety_tp")
+
+    def test_risk_update_preserves_explicit_noop_runner_activation(self):
+        pb = _FakePB()
+
+        response, status = _process(
+            pb,
+            {
+                "source": "tv",
+                "event_type": "risk_update",
+                "event_id": "tv-risk-runner-noop",
+                "symbol": "AAPL",
+                "position_side": "long",
+                "signal_id": "tv-entry-1",
+                "requested_sides": [],
+                "risk_update_reason": "runner_activation",
+                "runner_enabled": True,
+                "runner_active": True,
+                "runner_activation_price": 190.70,
+                "runner_activation_r": 1.0,
+                "safety_take_profit": 196.10,
+                "environment": "paper",
+                "market_data_mode": "live",
+                "bar_time_ms": 1770001200000,
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
+        reverse = pb.records["ibkr_reverse_signals"][0]
+        self.assertEqual(reverse["action_type"], "adjust_bracket")
+        self.assertEqual(reverse["extra"]["requested_sides"], [])
+        self.assertNotIn("new_sl", reverse["extra"])
+        self.assertNotIn("new_tp", reverse["extra"])
+        self.assertTrue(reverse["extra"]["runner_enabled"])
+        self.assertTrue(reverse["extra"]["runner_active"])
+
     def test_exit_routes_to_close_reverse_signal(self):
         pb = _FakePB()
         response, status = _process(
@@ -746,6 +897,42 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertEqual(reverse["action_type"], "close")
         self.assertEqual(reverse["priority"], 9)
         self.assertEqual(reverse["extra"]["reverse_kind"], "tv_exit")
+
+    def test_exit_preserves_exit_reason_and_runner_metadata(self):
+        pb = _FakePB()
+        response, status = _process(
+            pb,
+            {
+                "source": "tv",
+                "event_type": "exit",
+                "event_id": "tv-exit-runner-1",
+                "symbol": "AAPL",
+                "position_side": "long",
+                "signal_id": "tv-entry-1",
+                "exit_reason": "runner_stop",
+                "exit_fill_role": "stop_loss",
+                "runner_enabled": True,
+                "runner_active": True,
+                "runner_activation_price": 190.70,
+                "runner_activation_r": 1.0,
+                "safety_take_profit": 196.10,
+                "target_role": "safety_tp",
+                "environment": "paper",
+                "market_data_mode": "live",
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
+        reverse = pb.records["ibkr_reverse_signals"][0]
+        self.assertEqual(reverse["action_type"], "close")
+        self.assertEqual(reverse["reason"], "runner_stop")
+        self.assertEqual(reverse["extra"]["exit_reason"], "runner_stop")
+        self.assertEqual(reverse["extra"]["exit_fill_role"], "stop_loss")
+        self.assertTrue(reverse["extra"]["runner_enabled"])
+        self.assertTrue(reverse["extra"]["runner_active"])
+        self.assertEqual(reverse["extra"]["runner_activation_price"], 190.70)
+        self.assertEqual(reverse["extra"]["safety_take_profit"], 196.10)
 
 
 if __name__ == "__main__":

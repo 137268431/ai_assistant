@@ -1155,6 +1155,57 @@ class ReverseSignalHandler:
             return True, "never_widen_stop_by_order_flow"
         return False, ""
 
+    @classmethod
+    def _signal_has_value(cls, signal: dict, key: str) -> bool:
+        if not isinstance(signal, dict):
+            return False
+        if key in signal and signal.get(key) not in (None, "", []):
+            return True
+        extra = cls._signal_extra(signal)
+        return key in extra and extra.get(key) not in (None, "", [])
+
+    @classmethod
+    def _signal_has_key(cls, signal: dict, key: str) -> bool:
+        if not isinstance(signal, dict):
+            return False
+        if key in signal:
+            return True
+        extra = cls._signal_extra(signal)
+        return key in extra
+
+    @staticmethod
+    def _normalize_adjust_side(value: Any) -> str:
+        text = str(value or "").strip().lower().replace("-", "_")
+        aliases = {
+            "sl": "stop_loss",
+            "stop": "stop_loss",
+            "stoploss": "stop_loss",
+            "stop_loss": "stop_loss",
+            "new_sl": "stop_loss",
+            "new_stop_loss": "stop_loss",
+            "tp": "take_profit",
+            "takeprofit": "take_profit",
+            "take_profit": "take_profit",
+            "new_tp": "take_profit",
+            "new_take_profit": "take_profit",
+        }
+        return aliases.get(text, "")
+
+    def _requested_adjust_sides(self, signal: dict) -> Tuple[set[str], bool, str]:
+        for key in ("requested_sides", "requested_side", "adjust_sides", "adjust_side"):
+            if not self._signal_has_key(signal, key):
+                continue
+            sides = {
+                normalized
+                for normalized in (self._normalize_adjust_side(item) for item in self._signal_list(signal, key))
+                if normalized
+            }
+            explicit_flag = str(self._signal_value(signal, "requested_sides_explicit", "")).strip().lower()
+            if key == "requested_sides" and not sides and explicit_flag in {"false", "0", "no"}:
+                continue
+            return sides, True, key
+        return set(), False, ""
+
     def _current_stop_price(self, signal: dict) -> Tuple[float, str]:
         keys = (
             "previous_stop_loss",
@@ -1230,6 +1281,21 @@ class ReverseSignalHandler:
             "last_risk_update_at": self._now_iso(),
             "last_risk_update_reason": str(self._signal_value(signal, "risk_update_reason") or ""),
         }
+        for key in (
+            "runner_enabled",
+            "runner_active",
+            "target_role",
+            "target_is_hard",
+            "tp_checkpoint_runner",
+            "target_checkpoint",
+            "target_checkpoint_is_exit",
+            "take_profit",
+            "safety_take_profit",
+            "runner_activation_price",
+            "runner_activation_r",
+        ):
+            if self._signal_has_value(signal, key):
+                patch_extra[key] = self._signal_value(signal, key)
         if incoming_seq > 0:
             patch_extra["last_risk_update_seq"] = incoming_seq
             patch_extra["tv_last_risk_update_seq"] = incoming_seq
@@ -1282,8 +1348,15 @@ class ReverseSignalHandler:
                 "detail": detail,
             }
 
+        explicit_requested_sides, has_explicit_requested_sides, requested_sides_source = self._requested_adjust_sides(signal)
+        if has_explicit_requested_sides:
+            detail["requested_sides"] = sorted(explicit_requested_sides)
+        detail["requested_sides_source"] = requested_sides_source
+        detail["requested_sides_explicit"] = has_explicit_requested_sides
+
         results: Dict[str, Dict[str, Any]] = {}
         side_inputs: Dict[str, Tuple[Dict[str, Any], Dict[str, Any], Any, str, float, bool, bool]] = {}
+        inferred_requested_sides: List[str] = []
         valid_prices = 0
         retryable_missing_order_sides: List[str] = []
         failed_sides: List[str] = []
@@ -1293,10 +1366,12 @@ class ReverseSignalHandler:
             order_id = str(self._signal_value(signal, spec["order_key"]) or "").strip()
             price = self._coerce_adjust_price(raw_price)
             price_valid = price > 0
-            if price_valid:
+            has_price_field = self._signal_has_value(signal, spec["price_key"])
+            requested = side in explicit_requested_sides if has_explicit_requested_sides else has_price_field
+            if requested and not has_explicit_requested_sides:
+                inferred_requested_sides.append(side)
+            if requested and price_valid:
                 valid_prices += 1
-
-            requested = bool(order_id) or raw_price not in (None, "")
             side_detail = {
                 "requested": requested,
                 "order_id": order_id,
@@ -1304,6 +1379,7 @@ class ReverseSignalHandler:
                 "price_valid": price_valid,
                 "price_key": spec["price_key"],
                 "order_key": spec["order_key"],
+                "price_field_present": has_price_field,
             }
             side_inputs[side] = (spec, side_detail, raw_price, order_id, price, price_valid, requested)
 
@@ -1345,6 +1421,9 @@ class ReverseSignalHandler:
                 side_detail.update({"ok": False, "skipped": True, "reason": spec["missing_order_reason"], "retryable": True})
                 retryable_missing_order_sides.append(side)
 
+        if not has_explicit_requested_sides:
+            detail["inferred_requested_sides"] = inferred_requested_sides
+
         if retryable_missing_order_sides:
             for side, (_, side_detail, raw_price, _, price, price_valid, requested) in side_inputs.items():
                 if side in retryable_missing_order_sides:
@@ -1372,6 +1451,26 @@ class ReverseSignalHandler:
                 missing_sides=retryable_missing_order_sides,
                 missing_order_keys=[side_specs[side]["order_key"] for side in retryable_missing_order_sides],
             )
+
+        if has_explicit_requested_sides and not explicit_requested_sides:
+            for side, (_, side_detail, *_rest) in side_inputs.items():
+                side_detail.update({"ok": True, "skipped": True, "reason": "not_requested"})
+                results[side] = dict(side_detail)
+            detail["adjust_bracket"] = "confirmed_noop"
+            detail["adjust_results"] = results
+            detail["adjust_bracket_result"] = {
+                "attempted_sides": [],
+                "succeeded_sides": [],
+                "failed_sides": [],
+            }
+            detail["result_status"] = "ok"
+            self._persist_risk_update_state(signal, detail, results)
+            return {
+                "ok": True,
+                "ack_status": "confirmed",
+                "reason": "adjust_bracket_noop",
+                "detail": detail,
+            }
 
         attempted_sides: List[str] = []
         succeeded_sides: List[str] = []
