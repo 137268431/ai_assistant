@@ -43,10 +43,10 @@ class _HomePB:
     def get_records(self, collection, filter=None, sort=None, per_page=200, page=1):
         self.calls.append({"type": "records", "collection": collection, "filter": filter or "", "per_page": per_page, "page": page})
         rows = self._filtered(collection, filter or "")
-        if sort == "-created":
+        if sort and "-bar_time_ms" in sort:
+            rows = sorted(rows, key=lambda row: (int(row.get("bar_time_ms") or 0), str(row.get("created") or "")), reverse=True)
+        elif sort == "-created":
             rows = sorted(rows, key=lambda row: str(row.get("created") or ""), reverse=True)
-        elif sort == "-bar_time_ms":
-            rows = sorted(rows, key=lambda row: int(row.get("bar_time_ms") or 0), reverse=True)
         start = max(0, int(page - 1) * int(per_page))
         return [dict(row) for row in rows[start:start + int(per_page)]]
 
@@ -68,12 +68,24 @@ class _HomePB:
             return False
         if 'interval = "1d"' in text and row.get("interval") != "1d":
             return False
-        start_match = re.search(r"bar_time_ms >= (\d+)", text)
-        if start_match and int(row.get("bar_time_ms") or 0) < int(start_match.group(1)):
-            return False
-        end_match = re.search(r"bar_time_ms < (\d+)", text)
-        if end_match and int(row.get("bar_time_ms") or 0) >= int(end_match.group(1)):
-            return False
+        market_time_match = re.search(
+            r'\(\(us_time >= "([^"]*)" && us_time <= "([^"]*)"\) \|\| \(bar_time_ms >= (\d+) && bar_time_ms < (\d+)\)\)',
+            text,
+        )
+        if market_time_match:
+            us_time = str(row.get("us_time") or "")
+            us_time_matches = bool(us_time) and market_time_match.group(1) <= us_time <= market_time_match.group(2)
+            bar_time_ms = int(row.get("bar_time_ms") or 0)
+            bar_time_matches = int(market_time_match.group(3)) <= bar_time_ms < int(market_time_match.group(4))
+            if not us_time_matches and not bar_time_matches:
+                return False
+        else:
+            start_match = re.search(r"bar_time_ms >= (\d+)", text)
+            if start_match and int(row.get("bar_time_ms") or 0) < int(start_match.group(1)):
+                return False
+            end_match = re.search(r"bar_time_ms < (\d+)", text)
+            if end_match and int(row.get("bar_time_ms") or 0) >= int(end_match.group(1)):
+                return False
         for field in ("direction", "status", "order_type", "source"):
             match = re.search(rf'{field} = "([^"]*)"', text)
             if match and str(row.get(field, "")) != match.group(1):
@@ -87,12 +99,32 @@ class _HomePB:
         return True
 
 
+def _runtime_account_request(*, positions=None, status_code=200, error=""):
+    def fake_request(method, base_url, path, params=None, timeout=0, **kwargs):
+        return {
+            "ok": status_code < 400,
+            "status_code": status_code,
+            "payload": {
+                "ok": status_code < 400,
+                "environment": "paper",
+                "account_id": "DU123",
+                "positions": list(positions or []),
+                "counts": {"open_positions": len([item for item in (positions or []) if float(item.get("quantity", 0) or 0) != 0])},
+                **({"error": error} if error else {}),
+            },
+            "error": error,
+        }
+
+    return fake_request
+
+
 class HomeOverviewApiTest(unittest.TestCase):
-    def test_dashboard_aggregates_without_full_list_reads(self):
+    def test_dashboard_aligns_signal_order_and_gateway_position_counts(self):
         start_ms = 1776916800000  # 2026-04-23 00:00 ET
         rows = {
             "ibkr_signals": [
                 {"environment": "live", "direction": "long", "symbol": "AAPL", "bar_time_ms": start_ms + 1, "created": "2026-04-23 09:35:00"},
+                {"environment": "live", "direction": "long", "symbol": "AMD", "us_time": "2026-04-23 09:34:00", "bar_time_ms": 0, "created": "2026-04-23 09:34:02"},
                 {"environment": "live", "direction": "short", "symbol": "MSFT", "bar_time_ms": start_ms + 2, "created": "2026-04-23 09:36:00"},
                 {"environment": "paper", "direction": "long", "symbol": "TSLA", "bar_time_ms": start_ms + 3, "created": "2026-04-23 09:37:00"},
             ],
@@ -102,9 +134,11 @@ class HomeOverviewApiTest(unittest.TestCase):
                 {"environment": "paper", "source": "indicator", "symbol": "NVDA", "status": "pending", "bar_time_ms": start_ms + 5, "created": "2026-04-23 09:42:00"},
             ],
             "orders": [
-                {"environment": "paper", "symbol": "AAPL", "status": "Filled", "order_type": "Entry", "role": "entry", "direction": "long", "position_side": "long", "trade_group_id": "g1", "fill_price": 100, "filled_qty": 10, "commission": 1, "bar_time_ms": start_ms + 6, "created": "2026-04-23 09:45:00"},
-                {"environment": "paper", "symbol": "AAPL", "status": "Filled", "order_type": "TakeProfit", "role": "take_profit", "direction": "long", "position_side": "long", "trade_group_id": "g1", "fill_price": 110, "filled_qty": 10, "commission": 1, "bar_time_ms": start_ms + 7, "created": "2026-04-23 10:10:00"},
-                {"environment": "paper", "symbol": "MSFT", "status": "Filled", "order_type": "Entry", "role": "entry", "direction": "short", "position_side": "short", "trade_group_id": "g2", "fill_price": 50, "filled_qty": 2, "bar_time_ms": start_ms + 8, "created": "2026-04-23 09:50:00"},
+                {"environment": "paper", "symbol": "AAPL", "status": "Filled", "order_type": "Entry", "role": "entry", "direction": "long", "position_side": "long", "signal_id": "sig-a", "trade_group_id": "g1", "fill_price": 100, "filled_qty": 10, "commission": 1, "bar_time_ms": start_ms + 6, "created": "2026-04-23 09:45:00"},
+                {"environment": "paper", "symbol": "AAPL", "status": "Filled", "order_type": "Entry", "role": "entry", "direction": "long", "position_side": "long", "signal_id": "sig-a", "trade_group_id": "g1", "fill_price": 100, "filled_qty": 5, "commission": 1, "bar_time_ms": start_ms + 6, "created": "2026-04-23 09:45:10"},
+                {"environment": "paper", "symbol": "AAPL", "status": "Filled", "order_type": "TakeProfit", "role": "take_profit", "direction": "long", "position_side": "long", "signal_id": "sig-a", "trade_group_id": "g1", "fill_price": 110, "filled_qty": 10, "commission": 1, "bar_time_ms": start_ms + 7, "created": "2026-04-23 10:10:00"},
+                {"environment": "paper", "symbol": "MSFT", "status": "Filled", "order_type": "Entry", "role": "entry", "direction": "short", "position_side": "short", "signal_id": "sig-b", "trade_group_id": "g2", "fill_price": 50, "filled_qty": 2, "bar_time_ms": start_ms + 8, "created": "2026-04-23 09:50:00"},
+                {"environment": "paper", "symbol": "ORPHAN", "status": "Submitted", "order_type": "StopLoss", "role": "stop_loss", "direction": "short", "position_side": "short", "signal_id": "orphan", "trade_group_id": "orphan", "bar_time_ms": start_ms + 9, "created": "2026-04-23 09:51:00"},
                 {"environment": "paper", "symbol": "OLD", "status": "Filled", "order_type": "Entry", "role": "entry", "direction": "long", "position_side": "long", "bar_time_ms": start_ms - 1, "created": "2026-04-22 09:50:00"},
             ],
         }
@@ -112,17 +146,54 @@ class HomeOverviewApiTest(unittest.TestCase):
             _HomePB(rows),
             payload={"broker_mode": "paper", "market_data_mode": "live", "market_date": "2026-04-23"},
             time_strings=lambda: {"date": "2026-04-23"},
+            request_json_request=_runtime_account_request(
+                positions=[
+                    {"symbol": "AAPL", "quantity": 100},
+                    {"symbol": "MSFT", "quantity": -20},
+                    {"symbol": "FLAT", "quantity": 0},
+                ],
+            ),
+            runtime_base_url="http://runtime.local",
         )
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["summary"]["signals"], {"long": 1, "short": 1, "total": 2})
+        self.assertEqual(payload["summary"]["signals"], {"long": 2, "short": 1, "total": 3})
         self.assertEqual(payload["summary"]["execution_actions"], {"pending": 1, "total": 2})
         self.assertEqual(payload["summary"]["reverse_signals"]["pending"], 1)
-        self.assertEqual(payload["summary"]["orders"], {"long": 1, "short": 1, "total": 2})
-        self.assertEqual(payload["summary"]["positions"], {"long": 2, "short": 1, "total": 3})
+        self.assertEqual(payload["summary"]["orders"], {"long": 1, "short": 1, "total": 2, "entry_order_count": 3})
+        self.assertEqual(
+            payload["summary"]["positions"],
+            {"long": 1, "short": 1, "total": 2, "available": True, "source": "runtime_account", "account_id": "DU123"},
+        )
         self.assertAlmostEqual(payload["summary"]["pnl"]["total"], 98.0)
         self.assertEqual(payload["summary"]["pnl"]["win_count"], 1)
         self.assertEqual(payload["recent_activity"][0]["type"], "order")
+
+    def test_dashboard_does_not_fallback_to_historical_entries_for_positions(self):
+        start_ms = 1776916800000
+        rows = {
+            "ibkr_signals": [],
+            "ibkr_reverse_signals": [],
+            "orders": [
+                {"environment": "paper", "symbol": "OLD1", "status": "Filled", "order_type": "Entry", "role": "entry", "direction": "long", "position_side": "long", "bar_time_ms": start_ms - 1, "created": "2026-04-22 09:50:00"},
+                {"environment": "paper", "symbol": "OLD2", "status": "Filled", "order_type": "Entry", "role": "entry", "direction": "short", "position_side": "short", "bar_time_ms": start_ms - 2, "created": "2026-04-22 09:55:00"},
+            ],
+        }
+
+        payload, status = build_home_dashboard_response(
+            _HomePB(rows),
+            payload={"broker_mode": "paper", "market_data_mode": "live", "market_date": "2026-04-23"},
+            time_strings=lambda: {"date": "2026-04-23"},
+            request_json_request=_runtime_account_request(status_code=503, error="runtime offline"),
+            runtime_base_url="http://runtime.local",
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["summary"]["positions"]["long"], 0)
+        self.assertEqual(payload["summary"]["positions"]["short"], 0)
+        self.assertEqual(payload["summary"]["positions"]["total"], 0)
+        self.assertFalse(payload["summary"]["positions"]["available"])
+        self.assertEqual(payload["summary"]["positions"]["error"], "runtime offline")
 
     def test_market_payload_merges_config_watchlist_quotes_and_daily_fallback(self):
         rows = {

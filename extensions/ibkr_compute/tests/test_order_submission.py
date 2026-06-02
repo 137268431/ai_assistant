@@ -1,5 +1,7 @@
+import os
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_compute" / "src"
@@ -84,6 +86,23 @@ class FakeOrderPBClient:
         return {"success": True}
 
 
+class FakeOrderAndSignalPBClient(FakeOrderPBClient):
+    def __init__(self, record):
+        super().__init__()
+        self.record = dict(record)
+        self.updates = []
+        self.lookups = []
+
+    def get_first_record(self, collection, filter=None):
+        self.lookups.append((collection, filter))
+        return dict(self.record) if collection == "ibkr_signals" else {}
+
+    def update_record(self, collection, record_id, data):
+        self.updates.append((collection, record_id, dict(data)))
+        self.record.update(dict(data))
+        return dict(self.record)
+
+
 class FakeSignalPBClient:
     def __init__(self, record):
         self.record = dict(record)
@@ -122,7 +141,9 @@ class FakeBracketBroker:
         call_index = len(self.calls)
         self.calls.append(dict(kwargs))
         suffix = str(kwargs.get("order_ref_suffix") or "").strip()
-        group = "NFLX_short_20260506_101500" + (f"_{suffix}" if suffix else "")
+        group = str(kwargs.get("trade_group_id") or kwargs.get("bracket_group") or "").strip()
+        if not group:
+            group = "NFLX_short_20260506_101500" + (f"_{suffix}" if suffix else "")
         base_order_id = 101 + call_index * 10
         family = kwargs.get("order_family_type") or "bracket_oco"
         return {
@@ -131,6 +152,7 @@ class FakeBracketBroker:
             "tp_coid": f"tp_{group}",
             "sl_coid": f"sl_{group}",
             "bracket_group": group,
+            "trade_group_id": group,
             "oca_group": group if family == "bracket_oco" else "",
             "order_family_type": family,
             "quantity": kwargs.get("quantity"),
@@ -157,6 +179,32 @@ class FakeMarketCloseBroker:
             "bracket_group": "close_NFLX_20260506_101500",
             "order_type": "LMT",
             "limit_price": 101.25,
+        }
+
+
+class FakeUnconfirmedMarketCloseBroker(FakeMarketCloseBroker):
+    def place_market_close(self, **kwargs):
+        self.calls.append(dict(kwargs))
+        return {
+            "ok": False,
+            "submitted": False,
+            "error": "order_submission_unconfirmed",
+            "order_ids": ["157"],
+            "entry_coid": "close_BA_20260603_101500",
+            "bracket_group": "close_BA_20260603_101500",
+        }
+
+
+class FakeRejectedMarketCloseBroker(FakeMarketCloseBroker):
+    def place_market_close(self, **kwargs):
+        self.calls.append(dict(kwargs))
+        return {
+            "ok": False,
+            "submitted": False,
+            "error": "broker_rejected_order",
+            "order_ids": ["158"],
+            "entry_coid": "close_BA_20260603_101501",
+            "bracket_group": "close_BA_20260603_101501",
         }
 
 
@@ -598,6 +646,54 @@ class BrokerAdapterOrderSubmissionTest(unittest.TestCase):
         self.assertEqual(1, tp_order.ocaType)
         self.assertEqual(1, sl_order.ocaType)
 
+    def test_place_bracket_order_uses_explicit_sanitized_trade_group_for_order_refs(self):
+        adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
+        adapter.client = FakeClient(
+            submission_result={
+                "ok": True,
+                "orders": {"101": {"ok": True}, "102": {"ok": True}, "103": {"ok": True}},
+                "missing_order_ids": [],
+            }
+        )
+        adapter.resolve_contract = lambda **kwargs: {
+            "conid": 123,
+            "symbol": "NFLX",
+            "sec_type": "STK",
+            "exchange": "SMART",
+            "currency": "USD",
+        }
+
+        original_order = ib_gateway.Order
+        original_contract = ib_gateway.Contract
+        try:
+            ib_gateway.Order = FakeOrder
+            ib_gateway.Contract = FakeContract
+            result = ib_gateway.BrokerAdapter.place_bracket_order(
+                adapter,
+                conid=123,
+                symbol="NFLX",
+                direction="short",
+                quantity=7,
+                entry_price=600.0,
+                take_profit_price=580.0,
+                stop_loss_price=610.0,
+                trade_group_id="tv/sig 1:ABC",
+            )
+        finally:
+            ib_gateway.Order = original_order
+            ib_gateway.Contract = original_contract
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("tv_sig_1_ABC", result["bracket_group"])
+        self.assertEqual("tv_sig_1_ABC", result["trade_group_id"])
+        self.assertEqual("tv_sig_1_ABC", result["oca_group"])
+        entry_order = adapter.client.placed_orders[0][1]
+        tp_order = adapter.client.placed_orders[1][1]
+        sl_order = adapter.client.placed_orders[2][1]
+        self.assertEqual("entry_tv_sig_1_ABC", entry_order.orderRef)
+        self.assertEqual("tp_tv_sig_1_ABC", tp_order.orderRef)
+        self.assertEqual("sl_tv_sig_1_ABC", sl_order.orderRef)
+
     def test_place_partial_harvest_bracket_uses_single_entry_with_partial_tp_and_no_oca(self):
         adapter = ib_gateway.BrokerAdapter.__new__(ib_gateway.BrokerAdapter)
         adapter.client = FakeClient(
@@ -970,6 +1066,83 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
         self.assertEqual("active", close_row["relation_status"])
         self.assertEqual("LMT", close_row["extra"]["market_close_result"]["order_type"])
 
+    def test_unconfirmed_market_close_prewrites_pending_close_mapping(self):
+        pb_client = FakeOrderAndSignalPBClient(
+            {
+                "id": "sig-ba-row",
+                "signal_id": "sig-ba",
+                "environment": "live",
+                "extra": {
+                    "trade_group_id": "TV_BA_GROUP",
+                    "execution_by_mode": {
+                        "paper": {
+                            "trade_group_id": "TV_BA_GROUP",
+                            "bracket_group": "TV_BA_GROUP",
+                            "entry_order_unique_id": "entry_TV_BA_GROUP",
+                        }
+                    },
+                },
+            }
+        )
+        broker = FakeUnconfirmedMarketCloseBroker()
+        placer = OrderPlacer(pb_client=pb_client, broker=broker, account_id="DU123", environment="paper")
+
+        result = placer.place_market_close(
+            conid=123,
+            symbol="BA",
+            direction="long",
+            quantity=9,
+            signal_id="sig-ba",
+            source="reverse_signal_close",
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(1, len(pb_client.upserts))
+        close_row = pb_client.upserts[0]
+        self.assertEqual("close_BA_20260603_101500", close_row["unique_id"])
+        self.assertEqual("157", close_row["broker_order_id"])
+        self.assertEqual("close", close_row["role"])
+        self.assertEqual("Submitted", close_row["status"])
+        self.assertEqual("active", close_row["relation_status"])
+        self.assertEqual("TV_BA_GROUP", close_row["trade_group_id"])
+        self.assertEqual("entry_TV_BA_GROUP", close_row["entry_order_unique_id"])
+        self.assertEqual("sig-ba", close_row["signal_id"])
+        self.assertTrue(close_row["extra"]["submission_unconfirmed"])
+        self.assertTrue(close_row["extra"]["order_submission_unconfirmed"])
+        self.assertEqual("order_submission_unconfirmed", close_row["extra"]["submission_error"])
+
+    def test_rejected_market_close_does_not_prewrite_active_close_mapping(self):
+        pb_client = FakeOrderAndSignalPBClient(
+            {
+                "id": "sig-ba-row",
+                "signal_id": "sig-ba",
+                "environment": "live",
+                "extra": {
+                    "trade_group_id": "TV_BA_GROUP",
+                    "execution_by_mode": {
+                        "paper": {
+                            "trade_group_id": "TV_BA_GROUP",
+                            "entry_order_unique_id": "entry_TV_BA_GROUP",
+                        }
+                    },
+                },
+            }
+        )
+        broker = FakeRejectedMarketCloseBroker()
+        placer = OrderPlacer(pb_client=pb_client, broker=broker, account_id="DU123", environment="paper")
+
+        result = placer.place_market_close(
+            conid=123,
+            symbol="BA",
+            direction="long",
+            quantity=9,
+            signal_id="sig-ba",
+            source="reverse_signal_close",
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual([], pb_client.upserts)
+
     def test_pb_upserts_use_canonical_bracket_trade_group_and_oco_metadata(self):
         pb_client = FakeOrderPBClient()
         broker = FakeBracketBroker()
@@ -1004,6 +1177,63 @@ class OrderPlacerBracketMetadataTest(unittest.TestCase):
         self.assertEqual("entry_NFLX_short_20260506_101500", pb_client.upserts[0]["unique_id"])
         self.assertEqual("entry_NFLX_short_20260506_101500", pb_client.upserts[1]["parent_order_unique_id"])
         self.assertEqual("entry_NFLX_short_20260506_101500", pb_client.upserts[2]["parent_order_unique_id"])
+
+    def test_bracket_order_links_origin_signal_execution_metadata_in_live_data_env(self):
+        pb_client = FakeOrderAndSignalPBClient(
+            {
+                "id": "signal-row-1",
+                "signal_id": "sig-nflx",
+                "environment": "live",
+                "extra": {
+                    "trade_group_id": "TV_GROUP_1",
+                    "execution_by_mode": {"paper": {"status": "pending"}},
+                },
+            }
+        )
+        broker = FakeBracketBroker()
+        placer = OrderPlacer(pb_client=pb_client, broker=broker, account_id="DU123", environment="paper")
+
+        with mock.patch.dict(os.environ, {"IBKR_MARKET_DATA_MODE": "live"}):
+            result = placer.place_bracket_order(
+                conid=123,
+                symbol="NFLX",
+                direction="short",
+                quantity=7,
+                entry_price=600.0,
+                take_profit_price=580.0,
+                stop_loss_price=610.0,
+                signal_id="sig-nflx",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("TV_GROUP_1", broker.calls[0]["trade_group_id"])
+        self.assertEqual("TV_GROUP_1", result["trade_group_id"])
+        self.assertEqual("TV_GROUP_1", result["bracket_group"])
+        self.assertEqual(3, len(pb_client.upserts))
+        entry, tp, sl = pb_client.upserts
+        self.assertEqual("TV_GROUP_1", entry["trade_group_id"])
+        self.assertEqual("TV_GROUP_1", tp["trade_group_id"])
+        self.assertEqual("TV_GROUP_1", sl["trade_group_id"])
+        self.assertEqual("entry_TV_GROUP_1", entry["unique_id"])
+        self.assertEqual("101", entry["order_id"])
+        self.assertEqual("102", tp["order_id"])
+        self.assertEqual("103", sl["order_id"])
+        self.assertEqual("entry", entry["role"])
+        self.assertEqual("take_profit", tp["role"])
+        self.assertEqual("stop_loss", sl["role"])
+        self.assertTrue(any('environment = "live"' in lookup[1] for lookup in pb_client.lookups))
+        patch = pb_client.updates[-1][2]
+        broker_execution = patch["extra"]["execution_by_mode"]["paper"]
+        self.assertEqual("pending", broker_execution["status"])
+        self.assertEqual("TV_GROUP_1", broker_execution["trade_group_id"])
+        self.assertEqual("TV_GROUP_1", broker_execution["bracket_group"])
+        self.assertEqual("101", broker_execution["entry_order_id"])
+        self.assertEqual("102", broker_execution["tp_order_id"])
+        self.assertEqual("103", broker_execution["sl_order_id"])
+        self.assertEqual("entry_TV_GROUP_1", broker_execution["entry_order_unique_id"])
+        self.assertEqual("tp_TV_GROUP_1", broker_execution["tp_order_unique_id"])
+        self.assertEqual("sl_TV_GROUP_1", broker_execution["sl_order_unique_id"])
+        self.assertTrue(broker_execution["protection_complete"])
 
     def test_harvest_bracket_uses_single_entry_with_partial_tp_metadata(self):
         pb_client = FakeOrderPBClient()

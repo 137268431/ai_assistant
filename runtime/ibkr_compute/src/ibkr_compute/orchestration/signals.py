@@ -456,8 +456,11 @@ class TradingServiceSignalsMixin:
                     }
                 else:
                     extra = self._signal_extra(sig)
+                    trade_group_id = str(extra.get("trade_group_id") or extra.get("bracket_group") or signal_id).strip()
                     sig["extra"] = {
                         **extra,
+                        "trade_group_id": trade_group_id,
+                        "bracket_group": trade_group_id,
                         "intraday_harvest_profile": "intraday_volatility_harvest_v1",
                         "partial_harvest_requested": True,
                         "intraday_harvest_split_requested": False,
@@ -472,6 +475,7 @@ class TradingServiceSignalsMixin:
                         stop_loss_price=sig["stop_loss"],
                         use_paper=service_mod.ENVIRONMENT == "paper",
                         signal_id=signal_id,
+                        trade_group_id=trade_group_id,
                         settings=harvest_settings,
                     )
 
@@ -1899,7 +1903,7 @@ class TradingServiceSignalsMixin:
         entry_unique_id = result.get("entry_coid") or result.get("bracket_group") or ""
         tp_unique_id = result.get("tp_coid") or ""
         sl_unique_id = result.get("sl_coid") or ""
-        trade_group_id = result.get("bracket_group") or entry_unique_id
+        trade_group_id = result.get("trade_group_id") or result.get("bracket_group") or entry_unique_id
         order_family_type = str(result.get("order_family_type") or ("bracket_oco" if trade_group_id else "")).strip()
         raw_oca_group = str(result.get("oca_group") or "").strip()
         oca_group = raw_oca_group or (trade_group_id if order_family_type == "bracket_oco" else "")
@@ -2010,6 +2014,9 @@ class TradingServiceSignalsMixin:
                     "order_type": "TakeProfit",
                     "role": "take_profit",
                     "relation_status": "planned",
+                    "trade_group_id": trade_group_id,
+                    "bracket_group": trade_group_id,
+                    "entry_order_unique_id": entry_unique_id,
                     "parent_order_unique_id": entry_unique_id,
                     "sibling_order_unique_id": sl_unique_id,
                     "quantity": tp_quantity,
@@ -2033,6 +2040,9 @@ class TradingServiceSignalsMixin:
                     "order_type": "StopLoss",
                     "role": "stop_loss",
                     "relation_status": "planned",
+                    "trade_group_id": trade_group_id,
+                    "bracket_group": trade_group_id,
+                    "entry_order_unique_id": entry_unique_id,
                     "parent_order_unique_id": entry_unique_id,
                     "sibling_order_unique_id": tp_unique_id,
                     "quantity": sl_quantity,

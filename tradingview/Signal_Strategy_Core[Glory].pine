@@ -138,11 +138,26 @@ jsonRequestedSides(string requestedSides) =>
 symbolKey() =>
     str.replace_all(syminfo.tickerid, ":", "_")
 
+barTimeKey() =>
+    str.format_time(time, "yyyyMMdd_HHmm", "America/New_York")
+
+tradeGroupId(string direction, string setup) =>
+    symbolKey() + "_" + direction + "_" + barTimeKey() + "_" + timeframe.period + "_" + setup
+
+entryOrderSignal(string tradeGroupIdValue) =>
+    "entry_" + tradeGroupIdValue
+
+tpOrderSignal(string tradeGroupIdValue) =>
+    "tp_" + tradeGroupIdValue
+
+slOrderSignal(string tradeGroupIdValue) =>
+    "sl_" + tradeGroupIdValue
+
 eventId(string eventType, string suffix) =>
-    symbolKey() + "_" + eventType + "_" + str.tostring(time, "#") + "_" + str.tostring(bar_index, "#") + "_" + suffix
+    symbolKey() + "_" + eventType + "_" + barTimeKey() + "_" + str.tostring(bar_index, "#") + "_" + suffix
 
 positionId(string direction) =>
-    symbolKey() + "_" + direction + "_" + str.format_time(time, "yyyyMMdd_HHmm", "America/New_York") + "_" + str.tostring(bar_index, "#")
+    symbolKey() + "_" + direction + "_" + barTimeKey() + "_" + str.tostring(bar_index, "#")
 
 basePayload(string eventType, string eventIdValue, string positionIdValue) =>
     '{"source":"tv"' +
@@ -153,6 +168,7 @@ basePayload(string eventType, string eventIdValue, string positionIdValue) =>
      jsonStr("script_tag", SCRIPT_TAG) +
      jsonStr("timeframe_stack", TIMEFRAME_STACK) +
      jsonStr("interval", timeframe.period) +
+     jsonStr("bar_time_key", barTimeKey()) +
      ',"bar_time_ms":' + str.tostring(time, "#") +
      jsonIntNullable("bar_open_ms", time) +
      jsonIntNullable("bar_close_ms", time_close) +
@@ -875,6 +891,7 @@ volatilityPayload() =>
 // -----------------------------------------------------------------------------
 var string activePositionId = ""
 var string activeSignalId = ""
+var string activeTradeGroupId = ""
 var int activeDirection = 0
 var string activeSetup = ""
 var float activeEntry = na
@@ -910,11 +927,20 @@ calcShortStop(float entryPrice, float qty) =>
     float riskStop = qty > 0.0 ? entryPrice + maxLossPerTrade / qty : atrStop
     math.min(atrStop, riskStop)
 
-buildEntryPayload(string eventIdValue, string positionIdValue, string direction, string setup, string reason, float qty, float entryPrice, float stopPrice, float targetPrice, float runnerActivationPrice, bool runnerMode, string divSource, string touchLine) =>
+buildEntryPayload(string eventIdValue, string signalIdValue, string tradeGroupIdValue, string positionIdValue, string direction, string setup, string reason, float qty, float entryPrice, float stopPrice, float targetPrice, float runnerActivationPrice, bool runnerMode, string divSource, string touchLine) =>
     float riskPerShare = direction == "long" ? entryPrice - stopPrice : stopPrice - entryPrice
     float targetCheckpoint = runnerMode ? runnerActivationPrice : targetPrice
     basePayload("entry", eventIdValue, positionIdValue) +
-     jsonStr("signal_id", eventIdValue) +
+     jsonStr("signal_id", signalIdValue) +
+     jsonStr("trade_group_id", tradeGroupIdValue) +
+     jsonStr("bracket_group", tradeGroupIdValue) +
+     jsonStr("entry_order_unique_id", entryOrderSignal(tradeGroupIdValue)) +
+     jsonStr("tp_order_unique_id", tpOrderSignal(tradeGroupIdValue)) +
+     jsonStr("sl_order_unique_id", slOrderSignal(tradeGroupIdValue)) +
+     jsonStr("entry_coid", entryOrderSignal(tradeGroupIdValue)) +
+     jsonStr("tp_coid", tpOrderSignal(tradeGroupIdValue)) +
+     jsonStr("sl_coid", slOrderSignal(tradeGroupIdValue)) +
+     jsonStr("signal_key_policy", "bar_time_trade_group_v1") +
      jsonStr("direction", direction) +
      jsonStr("position_side", direction) +
      jsonStr("setup", setup) +
@@ -961,6 +987,16 @@ buildRiskPayload(string eventIdValue, string positionIdValue, string updateReaso
     float targetCheckpoint = activeRunnerMode ? activeRunnerActivation : activeTarget
     basePayload("risk_update", eventIdValue, positionIdValue) +
      jsonStr("signal_id", activeSignalId) +
+     jsonStr("origin_signal_id", activeSignalId) +
+     jsonStr("trade_group_id", activeTradeGroupId) +
+     jsonStr("bracket_group", activeTradeGroupId) +
+     jsonStr("entry_order_unique_id", entryOrderSignal(activeTradeGroupId)) +
+     jsonStr("tp_order_unique_id", tpOrderSignal(activeTradeGroupId)) +
+     jsonStr("sl_order_unique_id", slOrderSignal(activeTradeGroupId)) +
+     jsonStr("entry_coid", entryOrderSignal(activeTradeGroupId)) +
+     jsonStr("tp_coid", tpOrderSignal(activeTradeGroupId)) +
+     jsonStr("sl_coid", slOrderSignal(activeTradeGroupId)) +
+     jsonStr("signal_key_policy", "bar_time_trade_group_v1") +
      jsonStr("direction", activeDirection == 1 ? "long" : "short") +
      jsonStr("position_side", activeDirection == 1 ? "long" : "short") +
      jsonStr("setup", activeSetup) +
@@ -996,6 +1032,16 @@ buildExitPayload(string eventIdValue, string positionIdValue, string exitReason,
     float targetCheckpoint = activeRunnerMode ? activeRunnerActivation : activeTarget
     basePayload("exit", eventIdValue, positionIdValue) +
      jsonStr("signal_id", activeSignalId) +
+     jsonStr("origin_signal_id", activeSignalId) +
+     jsonStr("trade_group_id", activeTradeGroupId) +
+     jsonStr("bracket_group", activeTradeGroupId) +
+     jsonStr("entry_order_unique_id", entryOrderSignal(activeTradeGroupId)) +
+     jsonStr("tp_order_unique_id", tpOrderSignal(activeTradeGroupId)) +
+     jsonStr("sl_order_unique_id", slOrderSignal(activeTradeGroupId)) +
+     jsonStr("entry_coid", entryOrderSignal(activeTradeGroupId)) +
+     jsonStr("tp_coid", tpOrderSignal(activeTradeGroupId)) +
+     jsonStr("sl_coid", slOrderSignal(activeTradeGroupId)) +
+     jsonStr("signal_key_policy", "bar_time_trade_group_v1") +
      jsonStr("direction", activeDirection == 1 ? "long" : "short") +
      jsonStr("position_side", activeDirection == 1 ? "long" : "short") +
      jsonStr("setup", activeSetup) +
@@ -1082,6 +1128,7 @@ if exitedNow
     pendingExitReason := ""
     activePositionId := ""
     activeSignalId := ""
+    activeTradeGroupId := ""
     activeDirection := 0
     activeSetup := ""
     activeEntry := na
@@ -1168,9 +1215,11 @@ if enterLong
         float runnerActivationPrice = runnerMode ? calcRunnerActivationTarget(entryPrice, stopPrice, 1) : na
         float targetPrice = runnerMode ? calcRunnerSafetyTarget(entryPrice, stopPrice, 1) : hardTargetPrice
         string posId = positionId("long")
+        string tradeGroup = tradeGroupId("long", longSetup)
         string entryEventId = eventId("entry", longSetup)
         activePositionId := posId
-        activeSignalId := entryEventId
+        activeSignalId := tradeGroup
+        activeTradeGroupId := tradeGroup
         activeDirection := 1
         activeSetup := longSetup
         activeEntry := entryPrice
@@ -1197,7 +1246,7 @@ if enterLong
         bullDivBar := na
         if enableAlerts
             string touchLine = setupLongTrendUpper ? upperBullTouchLine : "none"
-            alert(buildEntryPayload(entryEventId, posId, "long", longSetup, longReason, qty, entryPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode, divSourceForEntry, touchLine), alert.freq_all)
+            alert(buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, "long", longSetup, longReason, qty, entryPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode, divSourceForEntry, touchLine), alert.freq_all)
             activeRiskUpdateSeq := activeRiskUpdateSeq + 1
             alert(buildRiskPayload(eventId("risk_update", "initial"), posId, "initial_protection", "stop_loss,take_profit", na, na, stopPrice, targetPrice), alert.freq_all)
 
@@ -1211,9 +1260,11 @@ if enterShort
         float runnerActivationPrice = runnerMode ? calcRunnerActivationTarget(entryPrice, stopPrice, -1) : na
         float targetPrice = runnerMode ? calcRunnerSafetyTarget(entryPrice, stopPrice, -1) : hardTargetPrice
         string posId = positionId("short")
+        string tradeGroup = tradeGroupId("short", shortSetup)
         string entryEventId = eventId("entry", shortSetup)
         activePositionId := posId
-        activeSignalId := entryEventId
+        activeSignalId := tradeGroup
+        activeTradeGroupId := tradeGroup
         activeDirection := -1
         activeSetup := shortSetup
         activeEntry := entryPrice
@@ -1240,7 +1291,7 @@ if enterShort
         bearDivBar := na
         if enableAlerts
             string touchLine = setupShortTrendLower ? lowerBearTouchLine : "none"
-            alert(buildEntryPayload(entryEventId, posId, "short", shortSetup, shortReason, qty, entryPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode, divSourceForEntry, touchLine), alert.freq_all)
+            alert(buildEntryPayload(entryEventId, activeSignalId, activeTradeGroupId, posId, "short", shortSetup, shortReason, qty, entryPrice, stopPrice, targetPrice, runnerActivationPrice, runnerMode, divSourceForEntry, touchLine), alert.freq_all)
             activeRiskUpdateSeq := activeRiskUpdateSeq + 1
             alert(buildRiskPayload(eventId("risk_update", "initial"), posId, "initial_protection", "stop_loss,take_profit", na, na, stopPrice, targetPrice), alert.freq_all)
 
@@ -1319,6 +1370,7 @@ if eodCloseNow
     pendingExitReason := ""
     activePositionId := ""
     activeSignalId := ""
+    activeTradeGroupId := ""
     activeDirection := 0
     activeSetup := ""
     activeEntry := na

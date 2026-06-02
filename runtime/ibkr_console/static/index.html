@@ -86,7 +86,7 @@
                                 </div>
                             </div>
                             <div class="home-stat-label">当前持仓</div>
-                            <div class="home-stat-foot">已成交 Entry</div>
+                            <div class="home-stat-foot">Gateway snapshot</div>
                         </a>
 
                         <a id="pnlCardLink" href="/orders.html" class="home-stat-card" data-tone="neutral">
@@ -1002,6 +1002,7 @@
             const reverseSignals = summary.reverse_signals || {};
             const orders = summary.orders || {};
             const positions = summary.positions || {};
+            const positionsAvailable = positions.available !== false;
             const pnlSummary = summary.pnl || {};
             const pnl = Number(pnlSummary.total || 0);
             const marketDate = payload.market_date || getUsDate();
@@ -1011,8 +1012,11 @@
             document.getElementById('reverseSignalsPending').textContent = formatNumber(reverseSignals.pending || 0, 0);
             document.getElementById('todayOrdersLong').textContent = formatNumber(orders.long || 0, 0);
             document.getElementById('todayOrdersShort').textContent = formatNumber(orders.short || 0, 0);
-            document.getElementById('activePositionsLong').textContent = formatNumber(positions.long || 0, 0);
-            document.getElementById('activePositionsShort').textContent = formatNumber(positions.short || 0, 0);
+            document.getElementById('activePositionsLong').textContent = positionsAvailable ? formatNumber(positions.long || 0, 0) : '--';
+            document.getElementById('activePositionsShort').textContent = positionsAvailable ? formatNumber(positions.short || 0, 0) : '--';
+            document.getElementById('positionsLink').title = positionsAvailable
+                ? 'Gateway 真实持仓快照'
+                : `Gateway 持仓暂不可用${positions.error ? `: ${positions.error}` : ''}`;
 
             const pnlEl = document.getElementById('todayPnL');
             document.getElementById('todayPnLWinCount').textContent = formatNumber(pnlSummary.win_count || pnlSummary.winCount || 0, 0);
@@ -1030,7 +1034,7 @@
             setCardTone('signalsLink', Number(signals.total || 0) > 0 ? 'long' : 'neutral');
             setCardTone('reverseSignalsLink', Number(reverseSignals.pending || 0) > 0 ? 'short' : 'neutral');
             setCardTone('ordersLink', Number(orders.total || 0) > 0 ? 'long' : 'neutral');
-            setCardTone('positionsLink', Number(positions.total || 0) > 0 ? 'long' : 'neutral');
+            setCardTone('positionsLink', positionsAvailable && Number(positions.total || 0) > 0 ? 'long' : 'neutral');
             setCardTone('pnlCardLink', pnl > 0 ? 'long' : (pnl < 0 ? 'short' : 'neutral'));
             renderOverviewMeta(marketDate);
             renderRecentActivityItems(payload.recent_activity || []);

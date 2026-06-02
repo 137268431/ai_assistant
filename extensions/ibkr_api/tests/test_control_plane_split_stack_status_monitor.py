@@ -128,7 +128,7 @@ class ControlPlaneSplitStackStatusMonitorTest(unittest.TestCase):
         ]
 
         with mock.patch.object(api_app_mod.pb, "get_runtime_config", return_value=rows):
-            with mock.patch.object(api_app_mod, "_fetch_runtime_status", return_value={"payload": {"environment": "live"}}):
+            with mock.patch.object(api_app_mod, "_fetch_runtime_health", return_value={"payload": {"environment": "live"}}):
                 with mock.patch.object(api_app_mod.request, "args", {"environment": "live"}):
                     payload = api_app_mod.custom_ibkr_runtime_config()
 
@@ -145,7 +145,7 @@ class ControlPlaneSplitStackStatusMonitorTest(unittest.TestCase):
         rows = [{"key": "alpha", "value": "cached", "environment": "live", "updated": "2026-04-22 00:05:00"}]
 
         with mock.patch.object(api_app_mod.pb, "get_runtime_config", return_value=rows) as config_mock:
-            with mock.patch.object(api_app_mod, "_fetch_runtime_status", return_value={"payload": {"environment": "live"}}):
+            with mock.patch.object(api_app_mod, "_fetch_runtime_health", return_value={"payload": {"environment": "live"}}):
                 with mock.patch.object(api_app_mod.request, "args", {"environment": "live", "scope": "all"}):
                     first = api_app_mod.custom_ibkr_runtime_config()
                     second = api_app_mod.custom_ibkr_runtime_config()
@@ -178,6 +178,23 @@ class ControlPlaneSplitStackStatusMonitorTest(unittest.TestCase):
         self.assertEqual(payload["strategy_capacity"]["strategy_capacity_used"], 7)
         self.assertEqual(payload["strategy_capacity"]["max_strategy_open_positions"], 20)
         self.assertEqual(payload["strategy_capacity"]["strategy_capacity_remaining"], 13)
+
+    def test_strategy_capacity_route_respects_unavailable_runtime_snapshot(self):
+        runtime_payload = {
+            "strategy_capacity": {
+                "available": False,
+                "error": "omitted_from_status_snapshot",
+                "max_strategy_open_positions": 20,
+            }
+        }
+
+        with mock.patch.object(api_app_mod, "_fetch_runtime_status", return_value={"ok": True, "payload": runtime_payload, "error": ""}):
+            with mock.patch.object(api_app_mod.request, "args", {"broker_mode": "paper", "data_environment": "live"}):
+                payload = api_app_mod.custom_ibkr_strategy_capacity()
+
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["available"])
+        self.assertEqual(payload["error"], "omitted_from_status_snapshot")
 
     def test_api_status_reports_native_routes(self):
         scheduler_payload = {

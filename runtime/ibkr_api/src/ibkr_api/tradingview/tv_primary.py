@@ -504,6 +504,37 @@ def _payload_has_key(payload: dict[str, Any], *keys: str) -> bool:
     return False
 
 
+def _payload_text_first(payload: dict[str, Any], *keys: str, default: Any = "") -> str:
+    return _text(_payload_first(payload, *keys, default=default))
+
+
+def _trade_group_id(payload: dict[str, Any], default: str = "") -> str:
+    return _payload_text_first(
+        payload,
+        "trade_group_id",
+        "tradeGroupId",
+        "trade_group",
+        "bracket_group",
+        "bracketGroup",
+        default=default,
+    )
+
+
+def _origin_signal_id(payload: dict[str, Any], default: str = "") -> str:
+    return _payload_text_first(
+        payload,
+        "origin_signal_id",
+        "originSignalId",
+        "entry_signal_id",
+        "entrySignalId",
+        "signal_id_orig",
+        "signalIdOrig",
+        "signal_id",
+        "signalId",
+        default=default,
+    )
+
+
 def _string_list(value: Any) -> list[str]:
     if isinstance(value, str):
         text = value.strip()
@@ -640,6 +671,8 @@ def _base_extra(
     confirm_tfs = _confirm_tfs(payload)
     activity_score = _float(payload.get("activity_score"), 0.0)
     quality_score = _float(payload.get("quality_score"), activity_score)
+    link_trade_group_id = _trade_group_id(payload)
+    link_origin_signal_id = _origin_signal_id(payload)
     base = {
         **extra,
         "source": TRADINGVIEW_SOURCE,
@@ -656,6 +689,22 @@ def _base_extra(
         "tv_snapshot": _as_object(payload.get("tv_snapshot")),
         "reason": _text(payload.get("reason") or extra.get("reason")),
     }
+    if link_trade_group_id:
+        base["trade_group_id"] = link_trade_group_id
+        base["bracket_group"] = link_trade_group_id
+    if link_origin_signal_id and event_type in {"risk_update", "exit"}:
+        base["origin_signal_id"] = link_origin_signal_id
+    for key, aliases in {
+        "entry_order_unique_id": ("entry_order_unique_id", "entryOrderUniqueId", "entry_coid", "entryCoid"),
+        "tp_order_unique_id": ("tp_order_unique_id", "take_profit_order_unique_id", "tp_coid", "tpCoid"),
+        "sl_order_unique_id": ("sl_order_unique_id", "stop_loss_order_unique_id", "sl_coid", "slCoid"),
+        "entry_coid": ("entry_coid", "entryCoid", "entry_order_unique_id", "entryOrderUniqueId"),
+        "tp_coid": ("tp_coid", "tpCoid", "tp_order_unique_id", "take_profit_order_unique_id"),
+        "sl_coid": ("sl_coid", "slCoid", "sl_order_unique_id", "stop_loss_order_unique_id"),
+    }.items():
+        value = _payload_text_first(payload, *aliases)
+        if value:
+            base[key] = value
     if entry_tf:
         base["entry_tf"] = entry_tf
     if confirm_tfs:
@@ -1151,6 +1200,7 @@ def _route_entry(
             raise TvPrimaryError("quality_score_too_low_for_late_window", 200)
 
     signal_id = _text(payload.get("signal_id")) or event_id
+    trade_group_id = _trade_group_id(payload, default=signal_id)
     target_backfill = _ensure_entry_backfill_target(
         pb,
         payload,
@@ -1178,6 +1228,9 @@ def _route_entry(
         "target_backfill": target_backfill_meta,
         "source": TRADINGVIEW_SOURCE,
         "signal_source": "tradingview_webhook",
+        "trade_group_id": trade_group_id,
+        "bracket_group": trade_group_id,
+        "entry_order_linkage_policy": "tv_signal_id_trade_group",
         "take_profit": take_profit,
         **_runner_fields(payload, take_profit=take_profit, event_type=event_type),
     }
@@ -1192,6 +1245,8 @@ def _route_entry(
         "direction": direction,
         "signal": _text(payload.get("entry_setup") or payload.get("signal") or "tv_entry"),
         "signal_id": signal_id,
+        "trade_group_id": trade_group_id,
+        "bracket_group": trade_group_id,
         "entry": entry_price,
         "stop_loss": stop_loss,
         "take_profit": take_profit,
@@ -1270,7 +1325,8 @@ def _route_reverse(
     side = _lower(payload.get("position_side") or payload.get("direction"))
     if side not in {"long", "short"}:
         raise TvPrimaryError("invalid_position_side")
-    signal_id = _text(payload.get("signal_id"))
+    signal_id = _origin_signal_id(payload)
+    trade_group_id = _trade_group_id(payload)
     exit_reason = _text(_payload_first(payload, "exit_reason", default=""))
     risk_update_reason = _text(_payload_first(payload, "risk_update_reason", "update_reason", default=""))
     extra = {
@@ -1279,6 +1335,9 @@ def _route_reverse(
         "position_id": _text(payload.get("position_id")),
         **_runner_fields(payload, take_profit=_float(_payload_first(payload, "take_profit", "tp", default=0), 0.0), event_type=event_type),
     }
+    if trade_group_id:
+        extra["trade_group_id"] = trade_group_id
+        extra["bracket_group"] = trade_group_id
     if event_type == "exit":
         extra.update(
             {
@@ -1328,7 +1387,7 @@ def _route_reverse(
         "priority": 9,
         "strength": "strong",
         "score": _float(payload.get("quality_score"), 100.0),
-        "triggered_signals": [item for item in (signal_id, _text(payload.get("position_id")), event_id) if item],
+        "triggered_signals": [item for item in (signal_id, trade_group_id, _text(payload.get("position_id")), event_id) if item],
         "action_type": action_type,
         "status": "pending",
         "reason": exit_reason or risk_update_reason or event_type,

@@ -117,7 +117,11 @@ def _build_ibkr_status_response() -> tuple[dict, int]:
         }, 200
     _maybe_restore_ibkr_service(service, refresh_auth=False, block=False)
     status_payload = get_service_status_snapshot(service)
-    status_payload["runtime_control"] = get_ibkr_runtime_control(_ibkr_service_environment(service))
+    runtime_environment = normalize_broker_mode(
+        status_payload.get("broker_mode") or status_payload.get("environment"),
+        "live",
+    )
+    status_payload["runtime_control"] = get_ibkr_runtime_control(runtime_environment)
     status_payload["service_profile"] = get_service_profile()
     status_payload["runtime_mode"] = get_runtime_mode()
     status_payload["service_topology"] = build_service_topology(service=service, service_status=status_payload)

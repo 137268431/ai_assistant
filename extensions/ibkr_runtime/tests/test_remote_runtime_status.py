@@ -71,6 +71,7 @@ class RemoteRuntimeTopologyTest(unittest.TestCase):
             {
                 "IBKR_SERVICE_PROFILE": "compute",
                 "IBKR_RUNTIME_MODE": "remote",
+                "IBKR_TOPOLOGY_FETCH_RUNTIME_STATUS": "true",
                 "IBKR_RUNTIME_INTERNAL_URL": "http://127.0.0.1:5101",
             },
             clear=False,
@@ -108,7 +109,7 @@ class RemoteRuntimeTopologyTest(unittest.TestCase):
         gateway_service = topology["services"]["ibkr-gateway"]
         self.assertEqual(runtime_service["status"], "expected_remote")
         self.assertFalse(runtime_service["session_authenticated"])
-        self.assertEqual(gateway_service["status"], "offline")
+        self.assertEqual(gateway_service["status"], "expected_remote")
 
 
 class RemoteRuntimeSnapshotResolverTest(unittest.TestCase):

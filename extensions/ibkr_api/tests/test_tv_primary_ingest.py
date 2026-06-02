@@ -635,6 +635,9 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertEqual(saved["entry"], 188.25)
         self.assertEqual(saved["shares"], 12)
         self.assertEqual(saved["extra"]["source"], "tradingview")
+        self.assertEqual(saved["extra"]["trade_group_id"], "tv-entry-1")
+        self.assertEqual(saved["extra"]["bracket_group"], "tv-entry-1")
+        self.assertEqual(saved["extra"]["entry_order_linkage_policy"], "tv_signal_id_trade_group")
         self.assertEqual(saved["extra"]["mtf_status"], "pass")
         self.assertEqual(saved["extra"]["mtf_score"], 100.0)
         self.assertEqual(saved["extra"]["entry_tf"], "2")
@@ -803,6 +806,7 @@ class TvPrimaryIngestTests(unittest.TestCase):
                 "symbol": "AAPL",
                 "position_side": "long",
                 "signal_id": "tv-entry-1",
+                "trade_group_id": "tv-entry-1",
                 "new_stop_loss": 187.10,
                 "new_take_profit": 194.40,
                 "risk_update_reason": "breakeven_trail",
@@ -819,9 +823,40 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertEqual(reverse["action_type"], "adjust_bracket")
         self.assertEqual(reverse["environment"], "paper")
         self.assertEqual(reverse["priority"], 9)
+        self.assertEqual(reverse["extra"]["origin_signal_id"], "tv-entry-1")
+        self.assertEqual(reverse["extra"]["trade_group_id"], "tv-entry-1")
         self.assertEqual(reverse["extra"]["sl_order_id"], "sl-100")
         self.assertEqual(reverse["extra"]["tp_order_id"], "tp-100")
         self.assertEqual(reverse["extra"]["new_sl"], 187.10)
+
+    def test_risk_update_uses_origin_signal_alias_without_symbol_only_linkage(self):
+        pb = _FakePB()
+
+        response, status = _process(
+            pb,
+            {
+                "source": "tv",
+                "event_type": "risk_update",
+                "event_id": "tv-risk-origin-alias",
+                "symbol": "AAPL",
+                "position_side": "long",
+                "origin_signal_id": "tv-entry-alias-1",
+                "trade_group_id": "tv-entry-alias-1",
+                "new_stop_loss": 187.10,
+                "risk_update_reason": "breakeven_trail",
+                "environment": "paper",
+                "market_data_mode": "live",
+                "bar_time_ms": 1770001200000,
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
+        reverse = pb.records["ibkr_reverse_signals"][0]
+        self.assertEqual(reverse["action_type"], "adjust_bracket")
+        self.assertEqual(reverse["extra"]["origin_signal_id"], "tv-entry-alias-1")
+        self.assertEqual(reverse["extra"]["trade_group_id"], "tv-entry-alias-1")
+        self.assertNotIn("sl_order_id", reverse["extra"])
 
     def test_risk_update_preserves_requested_sides_for_stop_only_runner_trail(self):
         pb = _FakePB()

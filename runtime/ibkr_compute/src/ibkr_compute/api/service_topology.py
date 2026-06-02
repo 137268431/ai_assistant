@@ -136,8 +136,10 @@ def _derive_gateway_status(runtime_mode: str, service_profile: str, service_stat
     gateway = (service_status or {}).get("gateway") or {}
     if bool(gateway.get("running")) or bool(gateway.get("reachable")):
         return "running"
-    if service_profile == "runtime" or runtime_mode == "remote":
+    if service_profile == "runtime":
         return "offline"
+    if runtime_mode == "remote":
+        return "expected_remote"
     return "embedded"
 
 
@@ -145,6 +147,8 @@ def _select_topology_status_payload(runtime_mode: str, service_profile: str, pay
     if service_profile == "runtime" or runtime_mode != "remote":
         return payload
     if is_runtime_status_payload(payload):
+        return payload
+    if str(os.environ.get("IBKR_TOPOLOGY_FETCH_RUNTIME_STATUS") or "").strip().lower() not in {"1", "true", "yes", "on"}:
         return payload
     remote_payload = get_remote_runtime_status()
     if is_runtime_status_payload(remote_payload):

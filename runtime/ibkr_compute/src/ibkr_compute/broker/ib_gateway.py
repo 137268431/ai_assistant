@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import logging
 import math
 import threading
@@ -1635,6 +1636,31 @@ class BrokerAdapter:
             order.firmQuoteOnly = False
 
     @staticmethod
+    def _sanitize_order_ref_group(value: Any, max_length: int = 180) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        safe_chars: list[str] = []
+        last_was_separator = False
+        for ch in text:
+            if ch.isascii() and (ch.isalnum() or ch in {"_", "-"}):
+                safe_chars.append(ch)
+                last_was_separator = ch in {"_", "-"}
+            elif not last_was_separator:
+                safe_chars.append("_")
+                last_was_separator = True
+        safe = "".join(safe_chars).strip("_-")
+        if not safe:
+            return ""
+        max_length = max(16, int(max_length or 180))
+        if len(safe) <= max_length:
+            return safe
+        digest = hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()[:10]
+        keep = max(1, max_length - len(digest) - 1)
+        prefix = safe[:keep].rstrip("_-") or safe[:keep]
+        return f"{prefix}_{digest}"
+
+    @staticmethod
     def _normalize_order_price(price: float, min_tick: float = 0.01) -> float:
         try:
             value = Decimal(str(price or 0))
@@ -2528,6 +2554,8 @@ class BrokerAdapter:
         tif: str = "DAY",
         account_id: str = "",
         order_ref_suffix: str = "",
+        trade_group_id: str = "",
+        bracket_group: str = "",
         order_family_type: str = "",
     ) -> dict:
         contract_info = self.resolve_contract(symbol=symbol, conid=conid)
@@ -2543,10 +2571,14 @@ class BrokerAdapter:
         order_ids = self._next_bracket_order_ids()
         side = "BUY" if str(direction).lower() == "long" else "SELL"
         close_side = "SELL" if side == "BUY" else "BUY"
-        stamp = datetime.now(ET).strftime("%Y%m%d_%H%M%S")
-        suffix = str(order_ref_suffix or "").strip()
-        safe_suffix = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in suffix)
-        group = f"{contract.symbol}_{direction}_{stamp}" + (f"_{safe_suffix}" if safe_suffix else "")
+        explicit_group = self._sanitize_order_ref_group(trade_group_id or bracket_group)
+        if explicit_group:
+            group = explicit_group
+        else:
+            stamp = datetime.now(ET).strftime("%Y%m%d_%H%M%S")
+            suffix = str(order_ref_suffix or "").strip()
+            safe_suffix = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in suffix)
+            group = f"{contract.symbol}_{direction}_{stamp}" + (f"_{safe_suffix}" if safe_suffix else "")
         entry_quantity = int(quantity or 0)
         tp_quantity = int(take_profit_quantity if take_profit_quantity is not None else entry_quantity)
         sl_quantity = int(stop_loss_quantity if stop_loss_quantity is not None else entry_quantity)
@@ -2630,6 +2662,7 @@ class BrokerAdapter:
                 "error": str(exc),
                 "order_ids": [str(order_ids[0]), str(order_ids[1]), str(order_ids[2])],
                 "bracket_group": group,
+                "trade_group_id": group,
                 "oca_group": oca_group,
                 "order_family_type": order_family_type,
                 "quantity": entry_quantity,
@@ -2688,6 +2721,7 @@ class BrokerAdapter:
                     "missing_protection_roles": missing_roles,
                     "order_ids": [str(order_ids[0]), str(order_ids[1]), str(order_ids[2])],
                     "bracket_group": group,
+                    "trade_group_id": group,
                     "oca_group": oca_group,
                     "order_family_type": order_family_type,
                     "quantity": entry_quantity,
@@ -2712,6 +2746,7 @@ class BrokerAdapter:
                 "missing_protection_roles": missing_roles,
                 "order_ids": [str(order_ids[0]), str(order_ids[1]), str(order_ids[2])],
                 "bracket_group": group,
+                "trade_group_id": group,
                 "oca_group": oca_group,
                 "order_family_type": order_family_type,
                 "quantity": entry_quantity,
@@ -2730,6 +2765,7 @@ class BrokerAdapter:
             "ok": True,
             "order_ids": [str(order_ids[0]), str(order_ids[1]), str(order_ids[2])],
             "bracket_group": group,
+            "trade_group_id": group,
             "oca_group": oca_group,
             "order_family_type": order_family_type,
             "quantity": entry_quantity,

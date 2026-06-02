@@ -219,6 +219,28 @@ class ReverseSignalHandler:
     def _is_retryable_result(result: Dict[str, Any]) -> bool:
         return str((result or {}).get("ack_status") or "").strip().lower() == "pending"
 
+    @classmethod
+    def _close_submission_unconfirmed_fields(cls, result: Dict[str, Any]) -> Tuple[bool, List[str], str]:
+        if not isinstance(result, dict):
+            return False, [], ""
+        error = str(result.get("error") or "").strip().lower()
+        order_ids = cls._signal_list(
+            result,
+            "order_ids",
+            "submitted_order_ids",
+            "broker_order_ids",
+            "submitted_broker_order_ids",
+        )
+        order_ref = str(
+            result.get("entry_coid")
+            or result.get("bracket_group")
+            or result.get("order_ref")
+            or result.get("orderRef")
+            or result.get("trade_group_id")
+            or ""
+        ).strip()
+        return "order_submission_unconfirmed" in error, order_ids, order_ref
+
     @staticmethod
     def _order_status(order: Dict[str, Any]) -> str:
         return str(
@@ -827,6 +849,25 @@ class ReverseSignalHandler:
         detail["close_old_position"] = "submitted" if result.get("ok") else "failed"
         detail["close_result"] = dict(result or {})
         if not result.get("ok"):
+            submission_unconfirmed, pending_order_ids, pending_order_ref = self._close_submission_unconfirmed_fields(result)
+            if submission_unconfirmed:
+                detail["close_old_position"] = "submission_unconfirmed"
+                detail["close_submission_unconfirmed"] = True
+                detail["pending_close_order_ids"] = pending_order_ids
+                detail["pending_close_order_ref"] = pending_order_ref
+                runtime_detail = detail.setdefault("reverse_runtime_detail", {})
+                runtime_detail["close_submission_unconfirmed"] = True
+                runtime_detail["pending_close_order_ids"] = list(pending_order_ids)
+                runtime_detail["pending_close_order_ref"] = pending_order_ref
+                blocked = self._mark_blocked(
+                    detail,
+                    "close_order_submission_unconfirmed",
+                    error=str((result or {}).get("error") or ""),
+                    pending_close_order_ids=pending_order_ids,
+                    pending_close_order_ref=pending_order_ref,
+                )
+                blocked["reason"] = "close_order_submission_unconfirmed"
+                return blocked
             return self._mark_blocked(
                 detail,
                 "close_order_failed",
@@ -1081,10 +1122,7 @@ class ReverseSignalHandler:
         return any("order_flow" in token for token in cls._source_tokens(signal))
 
     def _missing_child_order_retry_pending_enabled(self, signal: dict) -> bool:
-        return self._is_tv_risk_update_signal(signal) and self._config_bool_prefer(
-            ("tv_risk_update_missing_child_order_retry_pending", "tv_risk_update_retry_missing_child_orders"),
-            True,
-        )
+        return False
 
     def _incoming_risk_update_seq(self, signal: dict) -> int:
         return self._coerce_int(self._signal_value(signal, "risk_update_seq", 0), 0)
@@ -1247,6 +1285,572 @@ class ReverseSignalHandler:
             return sides, True, key
         return set(), False, ""
 
+    def _origin_signal_id(self, signal: dict) -> str:
+        return str(
+            self._signal_value(signal, "origin_signal_id")
+            or self._signal_value(signal, "signal_id")
+            or self._signal_value(signal, "source_signal_id")
+            or ""
+        ).strip()
+
+    @staticmethod
+    def _normalize_order_role(value: Any) -> str:
+        text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+        aliases = {
+            "sl": "stop_loss",
+            "stp": "stop_loss",
+            "stop": "stop_loss",
+            "stoploss": "stop_loss",
+            "stop_loss": "stop_loss",
+            "stop_order": "stop_loss",
+            "stoploss_order": "stop_loss",
+            "stop_loss_order": "stop_loss",
+            "repair_sl": "stop_loss",
+            "tp": "take_profit",
+            "takeprofit": "take_profit",
+            "take_profit": "take_profit",
+            "take_profit_order": "take_profit",
+            "takeprofit_order": "take_profit",
+            "profit_target": "take_profit",
+            "target": "take_profit",
+            "repair_tp": "take_profit",
+        }
+        return aliases.get(text, "")
+
+    @classmethod
+    def _child_order_role(cls, order: Dict[str, Any]) -> str:
+        extra = cls._as_dict((order or {}).get("extra"))
+        for key in ("role", "order_role", "leg_role"):
+            role = cls._normalize_order_role((order or {}).get(key) or extra.get(key))
+            if role:
+                return role
+        for key in ("order_type", "orderType", "type"):
+            role = cls._normalize_order_role((order or {}).get(key) or extra.get(key))
+            if role:
+                return role
+        for ref in cls._order_ref_values(order or {}):
+            lowered = ref.lower()
+            if lowered.startswith(("sl_", "stop_loss_", "stoploss_")):
+                return "stop_loss"
+            if lowered.startswith(("tp_", "take_profit_", "takeprofit_")):
+                return "take_profit"
+        return ""
+
+    @staticmethod
+    def _broker_order_id_value(payload: Dict[str, Any], *, allow_record_id: bool = False) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        extra = ReverseSignalHandler._as_dict(payload.get("extra"))
+        keys = ("broker_order_id", "order_id", "orderId", "ib_order_id", "ibOrderId")
+        for key in keys:
+            value = payload.get(key)
+            if value in (None, ""):
+                value = extra.get(key)
+            text = str(value or "").strip()
+            if text:
+                return text
+        if allow_record_id:
+            return str(payload.get("id") or extra.get("id") or "").strip()
+        return ""
+
+    @classmethod
+    def _child_order_id_from_order(cls, order: Dict[str, Any], *, allow_record_id: bool = False) -> str:
+        return cls._broker_order_id_value(order or {}, allow_record_id=allow_record_id)
+
+    @staticmethod
+    def _side_order_id_keys(side: str) -> Tuple[str, ...]:
+        if side == "stop_loss":
+            return (
+                "sl_order_id",
+                "stop_loss_order_id",
+                "stop_order_id",
+                "stopLossOrderId",
+                "slOrderId",
+            )
+        if side == "take_profit":
+            return (
+                "tp_order_id",
+                "take_profit_order_id",
+                "takeProfitOrderId",
+                "profit_target_order_id",
+                "tpOrderId",
+            )
+        return ()
+
+    @classmethod
+    def _any_order_id_from_payload(cls, payload: Any, depth: int = 0) -> str:
+        if depth > 8 or payload in (None, ""):
+            return ""
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                return ""
+        if isinstance(payload, dict):
+            oid = cls._broker_order_id_value(payload, allow_record_id=False)
+            if oid:
+                return oid
+            for key in ("order", "payload", "result", "detail", "details"):
+                oid = cls._any_order_id_from_payload(payload.get(key), depth + 1)
+                if oid:
+                    return oid
+        return ""
+
+    @classmethod
+    def _child_order_id_from_payload(cls, payload: Any, side: str, depth: int = 0) -> str:
+        if depth > 5 or payload in (None, ""):
+            return ""
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                return ""
+        if isinstance(payload, (list, tuple)):
+            for item in payload:
+                oid = cls._child_order_id_from_payload(item, side, depth + 1)
+                if oid:
+                    return oid
+            return ""
+        if not isinstance(payload, dict):
+            return ""
+
+        extra = cls._as_dict(payload.get("extra"))
+        for key in cls._side_order_id_keys(side):
+            value = payload.get(key)
+            if value in (None, ""):
+                value = extra.get(key)
+            text = str(value or "").strip()
+            if text:
+                return text
+
+        for key in ("order_ids", "submitted_order_ids", "broker_order_ids", "submitted_broker_order_ids"):
+            values = payload.get(key)
+            if values in (None, ""):
+                values = extra.get(key)
+            if isinstance(values, str):
+                try:
+                    values = json.loads(values)
+                except Exception:
+                    values = [part.strip() for part in values.split(",")]
+            if isinstance(values, (list, tuple)):
+                index = 2 if side == "stop_loss" else 1 if side == "take_profit" else -1
+                if 0 <= index < len(values):
+                    text = str(values[index] or "").strip()
+                    if text:
+                        return text
+
+        role = cls._normalize_order_role(
+            payload.get("role")
+            or payload.get("order_role")
+            or payload.get("leg_role")
+            or payload.get("order_type")
+            or payload.get("orderType")
+            or extra.get("role")
+            or extra.get("order_type")
+        )
+        if role == side:
+            oid = cls._any_order_id_from_payload(payload, depth + 1)
+            if oid:
+                return oid
+
+        side_containers = {
+            "stop_loss": ("stop_loss_order", "stop_order", "sl_order", "stop_loss", "sl"),
+            "take_profit": ("take_profit_order", "tp_order", "profit_target_order", "take_profit", "tp"),
+        }
+        for key in side_containers.get(side, ()):
+            oid = cls._child_order_id_from_payload(payload.get(key), side, depth + 1)
+            if oid:
+                return oid
+            oid = cls._child_order_id_from_payload(extra.get(key), side, depth + 1)
+            if oid:
+                return oid
+
+        for key in ("child_orders", "orders", "order_results", "submitted_orders", "legs"):
+            oid = cls._child_order_id_from_payload(payload.get(key), side, depth + 1)
+            if oid:
+                return oid
+            oid = cls._child_order_id_from_payload(extra.get(key), side, depth + 1)
+            if oid:
+                return oid
+
+        for key in ("order", "payload", "result", "detail", "details"):
+            oid = cls._child_order_id_from_payload(payload.get(key), side, depth + 1)
+            if oid:
+                return oid
+        return ""
+
+    @classmethod
+    def _group_from_stable_ref(cls, value: Any) -> str:
+        text = str(value or "").strip()
+        lowered = text.lower()
+        for prefix in ("entry_", "tp_", "sl_", "take_profit_", "stop_loss_", "stoploss_"):
+            if lowered.startswith(prefix):
+                return text[len(prefix):].strip()
+        for suffix in ("_entry", "_take_profit", "_stop_loss", "_stoploss"):
+            if lowered.endswith(suffix):
+                return text[: -len(suffix)].strip()
+        return ""
+
+    @classmethod
+    def _payload_values(cls, payload: Any, keys: Tuple[str, ...]) -> List[str]:
+        if payload in (None, ""):
+            return []
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                return []
+        if not isinstance(payload, dict):
+            return []
+        extra = cls._as_dict(payload.get("extra"))
+        values: List[str] = []
+        for key in keys:
+            for source in (payload, extra):
+                raw = source.get(key) if isinstance(source, dict) else None
+                if raw in (None, ""):
+                    continue
+                if isinstance(raw, (list, tuple, set)):
+                    values.extend(str(item or "").strip() for item in raw)
+                elif isinstance(raw, str):
+                    stripped = raw.strip()
+                    if not stripped:
+                        continue
+                    try:
+                        parsed = json.loads(stripped)
+                    except Exception:
+                        parsed = None
+                    if isinstance(parsed, list):
+                        values.extend(str(item or "").strip() for item in parsed)
+                    else:
+                        values.extend(part.strip() for part in stripped.split(",") if part.strip())
+                else:
+                    values.append(str(raw or "").strip())
+        return cls._unique_nonempty(values)
+
+    def _risk_update_broker_mode(self, signal: dict) -> str:
+        return normalize_broker_mode(
+            self._signal_value(signal, "broker_mode") or self._signal_value(signal, "environment"),
+            self.environment,
+        )
+
+    def _origin_execution_payload(self, origin: Dict[str, Any], broker_mode: str) -> Tuple[Dict[str, Any], str]:
+        extra = self._as_dict((origin or {}).get("extra"))
+        execution_by_mode = self._as_dict(extra.get("execution_by_mode"))
+        if not execution_by_mode:
+            return {}, ""
+        mode_candidates = self._unique_nonempty(
+            [
+                broker_mode,
+                self.environment,
+                normalize_broker_mode(broker_mode, self.environment),
+                str((origin or {}).get("broker_mode") or ""),
+                str(extra.get("broker_mode") or ""),
+                str(extra.get("last_ack_broker_mode") or ""),
+            ]
+        )
+        for mode in mode_candidates:
+            payload = self._as_dict(execution_by_mode.get(mode))
+            if payload:
+                return payload, mode
+        for mode, payload in execution_by_mode.items():
+            if isinstance(payload, dict):
+                return dict(payload), str(mode or "")
+        return {}, ""
+
+    def _bracket_trade_group_candidates(
+        self,
+        signal: dict,
+        origin: Dict[str, Any],
+        execution_payload: Dict[str, Any],
+    ) -> List[str]:
+        keys = (
+            "trade_group_id",
+            "bracket_group",
+            "entry_order_unique_id",
+            "entry_coid",
+            "tp_coid",
+            "sl_coid",
+            "cOID",
+            "coid",
+            "orderRef",
+            "order_ref",
+            "parent_order_unique_id",
+            "oca_group",
+        )
+        values: List[str] = [self._related_trade_group_id(signal)]
+        for payload in (signal, self._signal_extra(signal), origin, self._as_dict((origin or {}).get("extra")), execution_payload):
+            values.extend(self._payload_values(payload, keys))
+        expanded = list(values)
+        for value in values:
+            group = self._group_from_stable_ref(value)
+            if group:
+                expanded.append(group)
+        return self._unique_nonempty(expanded)
+
+    def _stable_bracket_refs(
+        self,
+        signal: dict,
+        origin: Dict[str, Any],
+        execution_payload: Dict[str, Any],
+        related_orders: List[Dict[str, Any]],
+        trade_group_ids: List[str],
+    ) -> List[str]:
+        keys = (
+            "broker_order_id",
+            "order_id",
+            "orderId",
+            "unique_id",
+            "entry_order_unique_id",
+            "parent_order_unique_id",
+            "sibling_order_unique_id",
+            "entry_coid",
+            "tp_coid",
+            "sl_coid",
+            "cOID",
+            "coid",
+            "orderRef",
+            "order_ref",
+            "trade_group_id",
+            "bracket_group",
+            "oca_group",
+            "submitted_order_ids",
+            "order_ids",
+        )
+        refs: List[str] = []
+        refs.extend(trade_group_ids or [])
+        origin_signal_id = self._origin_signal_id(signal)
+        if origin_signal_id:
+            refs.append(origin_signal_id)
+        for group in trade_group_ids or []:
+            refs.extend([f"entry_{group}", f"tp_{group}", f"sl_{group}"])
+        for payload in (signal, self._signal_extra(signal), origin, self._as_dict((origin or {}).get("extra")), execution_payload):
+            refs.extend(self._payload_values(payload, keys))
+        for side in ("stop_loss", "take_profit"):
+            oid = self._child_order_id_from_payload(execution_payload, side)
+            if oid:
+                refs.append(oid)
+        for order in related_orders or []:
+            refs.extend(self._order_ref_values(order))
+        return self._unique_nonempty(refs)
+
+    def _fetch_bracket_child_orders(
+        self,
+        *,
+        trade_group_ids: List[str],
+        origin_signal_id: str,
+        environment: str,
+    ) -> List[Dict[str, Any]]:
+        getter = getattr(self.pb_client, "get_records", None)
+        if not callable(getter):
+            return []
+        env_filter = self._escape_filter_value(environment)
+        filters: List[str] = []
+        roles = ("stop_loss", "take_profit")
+        for role in roles:
+            role_filter = self._escape_filter_value(role)
+            for group in trade_group_ids or []:
+                group_filter = self._escape_filter_value(group)
+                filters.extend(
+                    [
+                        f'environment = "{env_filter}" && role = "{role_filter}" && trade_group_id = "{group_filter}"',
+                        f'environment = "{env_filter}" && role = "{role_filter}" && entry_order_unique_id = "{group_filter}"',
+                        f'environment = "{env_filter}" && role = "{role_filter}" && bracket_group = "{group_filter}"',
+                    ]
+                )
+            if origin_signal_id:
+                signal_filter = self._escape_filter_value(origin_signal_id)
+                filters.append(f'environment = "{env_filter}" && role = "{role_filter}" && signal_id = "{signal_filter}"')
+
+        rows: List[Dict[str, Any]] = []
+        seen = set()
+        for filter_expr in filters:
+            try:
+                records = getter("orders", filter=filter_expr, per_page=100)
+            except Exception:
+                records = []
+            for record in records or []:
+                key = str(record.get("id") or self._child_order_id_from_order(record) or json.dumps(record, sort_keys=True))
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append(dict(record))
+        return rows
+
+    def _select_child_order_id_from_orders(self, orders: List[Dict[str, Any]], side: str) -> Tuple[str, Dict[str, Any]]:
+        for order in orders or []:
+            if self._child_order_role(order) != side:
+                continue
+            if not self._is_active_order(order):
+                continue
+            order_id = self._child_order_id_from_order(order)
+            if order_id:
+                return order_id, dict(order)
+        return "", {}
+
+    def _live_order_matches_bracket_linkage(
+        self,
+        order: Dict[str, Any],
+        *,
+        trade_group_ids: List[str],
+        stable_refs: List[str],
+    ) -> bool:
+        refs = set(self._order_ref_values(order))
+        ref_set = set(stable_refs or [])
+        group_set = set(trade_group_ids or [])
+        if refs & ref_set:
+            return True
+        order_group = self._order_trade_group(order)
+        if order_group and order_group in group_set:
+            return True
+        for ref in refs:
+            parsed_group = self._group_from_stable_ref(ref)
+            if parsed_group and parsed_group in group_set:
+                return True
+        return False
+
+    def _select_child_order_id_from_live_orders(
+        self,
+        orders: List[Dict[str, Any]],
+        side: str,
+        *,
+        trade_group_ids: List[str],
+        stable_refs: List[str],
+    ) -> Tuple[str, Dict[str, Any]]:
+        for order in orders or []:
+            if not self._is_active_order(order):
+                continue
+            if self._child_order_role(order) != side:
+                continue
+            if not self._live_order_matches_bracket_linkage(
+                order,
+                trade_group_ids=trade_group_ids,
+                stable_refs=stable_refs,
+            ):
+                continue
+            order_id = self._child_order_id_from_order(order, allow_record_id=True)
+            if order_id:
+                return order_id, dict(order)
+        return "", {}
+
+    def _resolve_adjust_bracket_child_order_ids(self, signal: dict, missing_sides: List[str]) -> Dict[str, Any]:
+        broker_mode = self._risk_update_broker_mode(signal)
+        origin_signal_id = self._origin_signal_id(signal)
+        origin = self._origin_signal_record(signal) if origin_signal_id else {}
+        execution_payload, execution_mode = self._origin_execution_payload(origin, broker_mode)
+        trade_group_ids = self._bracket_trade_group_candidates(signal, origin, execution_payload)
+        explicit_child_ids = self._unique_nonempty(
+            [
+                self._signal_value(signal, "sl_order_id"),
+                self._signal_value(signal, "tp_order_id"),
+            ]
+        )
+        linkage_order_ids = self._unique_nonempty(self._related_order_ids_from_signal(signal) + explicit_child_ids)
+        detail: Dict[str, Any] = {
+            "broker_mode": broker_mode,
+            "origin_signal_id": origin_signal_id,
+            "origin_signal_found": bool(origin),
+            "origin_execution_mode": execution_mode,
+            "trade_group_ids": trade_group_ids,
+            "linkage_order_ids": linkage_order_ids,
+            "sources": {},
+        }
+        resolved: Dict[str, str] = {}
+
+        for side in missing_sides:
+            order_id = self._child_order_id_from_payload(execution_payload, side)
+            if order_id:
+                resolved[side] = order_id
+                detail["sources"][side] = "origin_signal.execution_by_mode"
+
+        unresolved = [side for side in missing_sides if side not in resolved]
+        related_orders: List[Dict[str, Any]] = []
+        if unresolved:
+            related_orders = self._fetch_bracket_child_orders(
+                trade_group_ids=trade_group_ids,
+                origin_signal_id=origin_signal_id,
+                environment=broker_mode,
+            )
+            detail["orders_table_checked"] = len(related_orders)
+            for side in list(unresolved):
+                order_id, order = self._select_child_order_id_from_orders(related_orders, side)
+                if order_id:
+                    resolved[side] = order_id
+                    detail["sources"][side] = "orders_table"
+                    detail.setdefault("orders_table_matches", {})[side] = {
+                        "order_id": order_id,
+                        "record_id": str(order.get("id") or ""),
+                        "role": str(order.get("role") or ""),
+                    }
+            unresolved = [side for side in missing_sides if side not in resolved]
+
+        if unresolved:
+            stable_refs = self._stable_bracket_refs(signal, origin, execution_payload, related_orders, trade_group_ids)
+            detail["stable_refs"] = stable_refs
+            live_checked, live_orders, live_error = self._load_live_open_orders()
+            detail["live_open_orders_checked"] = bool(live_checked)
+            if live_error:
+                detail["live_open_orders_error"] = live_error
+            if live_checked:
+                detail["live_open_orders_count"] = len(live_orders)
+                for side in list(unresolved):
+                    order_id, order = self._select_child_order_id_from_live_orders(
+                        live_orders,
+                        side,
+                        trade_group_ids=trade_group_ids,
+                        stable_refs=stable_refs,
+                    )
+                    if order_id:
+                        resolved[side] = order_id
+                        detail["sources"][side] = "broker_open_orders"
+                        detail.setdefault("live_open_order_matches", {})[side] = {
+                            "order_id": order_id,
+                            "order_ref": str(order.get("orderRef") or order.get("cOID") or ""),
+                            "status": self._order_status(order),
+                        }
+
+        unresolved = [side for side in missing_sides if side not in resolved]
+        linkage_exists = bool(origin_signal_id or trade_group_ids or linkage_order_ids)
+        detail["linkage_exists"] = linkage_exists
+        detail["resolved_order_ids"] = dict(resolved)
+        detail["unresolved_sides"] = unresolved
+        return {
+            "resolved": resolved,
+            "unresolved_sides": unresolved,
+            "linkage_exists": linkage_exists,
+            "detail": detail,
+        }
+
+    def _build_adjust_resolution_block_results(
+        self,
+        *,
+        side_inputs: Dict[str, Tuple[Dict[str, Any], Dict[str, Any], Any, str, float, bool, bool]],
+        blocked_sides: List[str],
+        reason: str,
+    ) -> Dict[str, Dict[str, Any]]:
+        results: Dict[str, Dict[str, Any]] = {}
+        blocked = set(blocked_sides or [])
+        for side, (spec, side_detail, raw_price, order_id, price, price_valid, requested) in side_inputs.items():
+            if not requested:
+                side_detail.update({"ok": True, "skipped": True, "reason": "not_requested"})
+            elif not price_valid:
+                side_detail.update({"ok": False, "skipped": True, "reason": spec["invalid_price_reason"]})
+                if raw_price not in (None, ""):
+                    side_detail["raw_price"] = raw_price
+            elif side in blocked:
+                side_detail.update({"ok": False, "skipped": True, "reason": reason})
+            else:
+                side_detail.update(
+                    {
+                        "ok": True,
+                        "skipped": True,
+                        "reason": "deferred_due_to_child_order_resolution_block",
+                        "order_id": order_id,
+                        "new_price": price,
+                    }
+                )
+            results[side] = dict(side_detail)
+        return results
+
     def _current_stop_price(self, signal: dict) -> Tuple[float, str]:
         keys = (
             "previous_stop_loss",
@@ -1399,8 +2003,6 @@ class ReverseSignalHandler:
         side_inputs: Dict[str, Tuple[Dict[str, Any], Dict[str, Any], Any, str, float, bool, bool]] = {}
         inferred_requested_sides: List[str] = []
         valid_prices = 0
-        retryable_missing_order_sides: List[str] = []
-        failed_sides: List[str] = []
 
         for side, spec in side_specs.items():
             raw_price = self._signal_value(signal, spec["price_key"], None)
@@ -1458,40 +2060,51 @@ class ReverseSignalHandler:
                         new_stop=price,
                     )
 
-            if requested and price_valid and not order_id and self._missing_child_order_retry_pending_enabled(signal):
-                side_detail.update({"ok": False, "skipped": True, "reason": spec["missing_order_reason"], "retryable": True})
-                retryable_missing_order_sides.append(side)
-
         if not has_explicit_requested_sides:
             detail["inferred_requested_sides"] = inferred_requested_sides
 
-        if retryable_missing_order_sides:
-            for side, (_, side_detail, raw_price, _, price, price_valid, requested) in side_inputs.items():
-                if side in retryable_missing_order_sides:
-                    results[side] = dict(side_detail)
+        missing_order_sides = [
+            side
+            for side, (_, _, _, order_id, _, price_valid, requested) in side_inputs.items()
+            if requested and price_valid and not order_id
+        ]
+        if missing_order_sides:
+            resolution = self._resolve_adjust_bracket_child_order_ids(signal, missing_order_sides)
+            detail["child_order_resolution"] = resolution.get("detail", {})
+            for side, order_id in (resolution.get("resolved") or {}).items():
+                if side not in side_inputs:
                     continue
-                if not requested:
-                    side_detail.update({"ok": True, "skipped": True, "reason": "not_requested"})
-                elif not price_valid:
-                    side_detail.update({"ok": False, "skipped": True, "reason": side_specs[side]["invalid_price_reason"]})
-                    if raw_price not in (None, ""):
-                        side_detail["raw_price"] = raw_price
-                else:
-                    side_detail.update({"ok": True, "skipped": True, "reason": "deferred_until_child_orders_resolved"})
-                results[side] = dict(side_detail)
-            detail["adjust_bracket"] = "pending_retry"
-            detail["adjust_results"] = results
-            detail["adjust_bracket_result"] = {
-                "attempted_sides": [],
-                "succeeded_sides": [],
-                "failed_sides": retryable_missing_order_sides,
-            }
-            return self._mark_retryable_blocked(
-                detail,
-                "risk_update_child_order_id_missing",
-                missing_sides=retryable_missing_order_sides,
-                missing_order_keys=[side_specs[side]["order_key"] for side in retryable_missing_order_sides],
-            )
+                spec, side_detail, raw_price, _old_order_id, price, price_valid, requested = side_inputs[side]
+                side_detail["order_id"] = order_id
+                side_detail["order_id_source"] = (resolution.get("detail", {}).get("sources") or {}).get(side, "")
+                side_inputs[side] = (spec, side_detail, raw_price, order_id, price, price_valid, requested)
+
+            unresolved_sides = list(resolution.get("unresolved_sides") or [])
+            if unresolved_sides and self._is_tv_risk_update_signal(signal):
+                block_reason = (
+                    "risk_update_child_order_id_unresolved"
+                    if resolution.get("linkage_exists")
+                    else "risk_update_linkage_missing"
+                )
+                side_reason = "child_order_id_unresolved" if resolution.get("linkage_exists") else "linkage_missing"
+                results = self._build_adjust_resolution_block_results(
+                    side_inputs=side_inputs,
+                    blocked_sides=unresolved_sides,
+                    reason=side_reason,
+                )
+                detail["adjust_bracket"] = "blocked"
+                detail["adjust_results"] = results
+                detail["adjust_bracket_result"] = {
+                    "attempted_sides": [],
+                    "succeeded_sides": [],
+                    "failed_sides": unresolved_sides,
+                }
+                return self._mark_blocked(
+                    detail,
+                    block_reason,
+                    missing_sides=unresolved_sides,
+                    missing_order_keys=[side_specs[side]["order_key"] for side in unresolved_sides],
+                )
 
         if has_explicit_requested_sides and not explicit_requested_sides:
             for side, (_, side_detail, *_rest) in side_inputs.items():

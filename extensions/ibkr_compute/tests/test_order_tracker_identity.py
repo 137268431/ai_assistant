@@ -304,6 +304,170 @@ class OrderTrackerIdentityTest(unittest.TestCase):
         self.assertEqual("long", upsert["position_side"])
         self.assertEqual(0.43, upsert["commission"])
 
+    def test_sync_order_id_only_close_callback_preserves_existing_close_identity(self):
+        pb_client = FakePBClient(
+            rows=[
+                {
+                    "id": "ba-close",
+                    "unique_id": "close_BA_20260529_103000",
+                    "order_id": "157",
+                    "broker_order_id": "157",
+                    "order_type": "MKT",
+                    "symbol": "BA",
+                    "direction": "long",
+                    "position_side": "long",
+                    "trade_group_id": "BA_long_20260529_101112",
+                    "signal_id": "BA_20260529_1010_mr_L",
+                    "entry_order_unique_id": "entry_BA_long_20260529_101112",
+                    "parent_order_unique_id": "entry_BA_long_20260529_101112",
+                    "role": "close",
+                    "status": "Submitted",
+                    "quantity": 8,
+                    "environment": "live",
+                }
+            ]
+        )
+        tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="live")
+
+        tracker._sync_to_pb(
+            {
+                "orderId": "157",
+                "status": "Filled",
+                "totalSize": 0,
+                "filledQuantity": 8,
+                "avgPrice": 183.42,
+            }
+        )
+
+        self.assertEqual(1, len(pb_client.upserts))
+        upsert = pb_client.upserts[0]
+        self.assertEqual("close_BA_20260529_103000", upsert["unique_id"])
+        self.assertEqual("close", upsert["role"])
+        self.assertEqual("BA_long_20260529_101112", upsert["trade_group_id"])
+        self.assertEqual("BA_20260529_1010_mr_L", upsert["signal_id"])
+        self.assertEqual("entry_BA_long_20260529_101112", upsert["entry_order_unique_id"])
+        self.assertEqual("entry_BA_long_20260529_101112", upsert["parent_order_unique_id"])
+        self.assertEqual("MKT", upsert["order_type"])
+        self.assertEqual("BA", upsert["symbol"])
+        self.assertEqual(8, upsert["quantity"])
+        self.assertEqual(8, upsert["filled_qty"])
+
+    def test_sync_order_id_only_callback_does_not_bias_to_entry_when_identity_missing(self):
+        pb_client = FakePBClient(
+            rows=[
+                {
+                    "id": "old-entry",
+                    "unique_id": "entry_OTHER_long_20260529_093000",
+                    "order_id": "157",
+                    "broker_order_id": "157",
+                    "order_type": "LMT",
+                    "symbol": "OTHER",
+                    "trade_group_id": "OTHER_long_20260529_093000",
+                    "entry_order_unique_id": "entry_OTHER_long_20260529_093000",
+                    "role": "entry",
+                    "status": "Filled",
+                    "relation_status": "closed",
+                    "quantity": 1,
+                    "environment": "live",
+                },
+                {
+                    "id": "ba-close",
+                    "unique_id": "close_BA_20260529_103000",
+                    "order_id": "157",
+                    "broker_order_id": "157",
+                    "order_type": "MKT",
+                    "symbol": "BA",
+                    "direction": "long",
+                    "position_side": "long",
+                    "trade_group_id": "BA_long_20260529_101112",
+                    "signal_id": "BA_20260529_1010_mr_L",
+                    "entry_order_unique_id": "entry_BA_long_20260529_101112",
+                    "parent_order_unique_id": "entry_BA_long_20260529_101112",
+                    "role": "close",
+                    "status": "Submitted",
+                    "relation_status": "active",
+                    "quantity": 8,
+                    "environment": "live",
+                },
+            ]
+        )
+        tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="live")
+
+        tracker._sync_to_pb(
+            {
+                "orderId": "157",
+                "status": "Filled",
+                "totalSize": 0,
+                "filledQuantity": 8,
+                "avgPrice": 183.42,
+            }
+        )
+
+        self.assertEqual(1, len(pb_client.upserts))
+        upsert = pb_client.upserts[0]
+        self.assertEqual("close_BA_20260529_103000", upsert["unique_id"])
+        self.assertEqual("close", upsert["role"])
+        self.assertEqual("BA_long_20260529_101112", upsert["trade_group_id"])
+        self.assertEqual("MKT", upsert["order_type"])
+
+    def test_sync_mkt_order_id_only_callback_prefers_active_close_candidate(self):
+        pb_client = FakePBClient(
+            rows=[
+                {
+                    "id": "ambiguous-entry",
+                    "unique_id": "entry_BA_long_20260529_101112",
+                    "order_id": "157",
+                    "broker_order_id": "157",
+                    "order_type": "LMT",
+                    "symbol": "BA",
+                    "trade_group_id": "BA_long_20260529_101112",
+                    "entry_order_unique_id": "entry_BA_long_20260529_101112",
+                    "role": "entry",
+                    "status": "Submitted",
+                    "relation_status": "active",
+                    "quantity": 8,
+                    "environment": "live",
+                },
+                {
+                    "id": "ba-close",
+                    "unique_id": "close_BA_20260529_103000",
+                    "order_id": "157",
+                    "broker_order_id": "157",
+                    "order_type": "MKT",
+                    "symbol": "BA",
+                    "direction": "long",
+                    "position_side": "long",
+                    "trade_group_id": "BA_long_20260529_101112",
+                    "signal_id": "BA_20260529_1010_mr_L",
+                    "entry_order_unique_id": "entry_BA_long_20260529_101112",
+                    "parent_order_unique_id": "entry_BA_long_20260529_101112",
+                    "role": "close",
+                    "status": "Submitted",
+                    "relation_status": "active",
+                    "quantity": 8,
+                    "environment": "live",
+                },
+            ]
+        )
+        tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="live")
+
+        tracker._sync_to_pb(
+            {
+                "orderId": "157",
+                "orderType": "MKT",
+                "status": "Filled",
+                "totalSize": 0,
+                "filledQuantity": 8,
+                "avgPrice": 183.42,
+            }
+        )
+
+        self.assertEqual(1, len(pb_client.upserts))
+        upsert = pb_client.upserts[0]
+        self.assertEqual("close_BA_20260529_103000", upsert["unique_id"])
+        self.assertEqual("close", upsert["role"])
+        self.assertEqual("MKT", upsert["order_type"])
+
     def test_realtime_callback_metadata_syncs_to_pb(self):
         pb_client = FakePBClient()
         tracker = OrderTracker(pb_client=pb_client, broker=FakeBroker(), environment="live")

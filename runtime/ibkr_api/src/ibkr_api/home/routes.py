@@ -51,6 +51,8 @@ def register_home_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
                 pb,
                 payload=query_payload,
                 time_strings=time_strings,
+                request_json_request=request_json_request,
+                runtime_base_url=runtime_base_url,
             ),
             ttl_seconds=cache_seconds("IBKR_ROUTE_CACHE_HOME_DASHBOARD_TTL_SEC", 15.0),
             stale_seconds=cache_seconds("IBKR_ROUTE_CACHE_HOME_DASHBOARD_STALE_SEC", 45.0),

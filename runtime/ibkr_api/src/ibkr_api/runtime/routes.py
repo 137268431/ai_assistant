@@ -204,7 +204,7 @@ def register_runtime_routes(app, *, deps: dict[str, Any]) -> dict[str, Any]:
         environment = requested_environment
         runtime_payload: dict[str, Any] = {}
         try:
-            runtime_result = fetch_runtime_status(requested_environment)
+            runtime_result = fetch_runtime_health(requested_environment)
             runtime_payload = as_dict(runtime_result.get("payload"))
             if runtime_payload:
                 environment = normalize_environment(

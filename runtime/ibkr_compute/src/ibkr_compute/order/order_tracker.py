@@ -727,6 +727,16 @@ class OrderTracker:
                 matches = symbol_matches
 
         normalized_role = self._normalize_text(role)
+        if not normalized_role:
+            close_matches = [
+                item for item in matches
+                if self._normalize_text(item.get("role")) == "close"
+                or self._normalize_text(item.get("unique_id")).lower().startswith("close_")
+            ]
+            if len(close_matches) == 1:
+                return close_matches[0]
+            if len(close_matches) > 1:
+                matches = close_matches
         if normalized_role:
             role_matches = [
                 item for item in matches
@@ -1255,15 +1265,18 @@ class OrderTracker:
 
             if hasattr(self.pb_client, "upsert_order"):
                 normalized_side = str(order.get("side", "")).upper()
-                quantity = order.get("totalSize", order.get("quantity", 0))
+                quantity = order.get("totalSize") if order.get("totalSize") not in (None, "") else order.get("quantity", 0)
                 fill_qty = order.get("filledQuantity", 0)
+                incoming_quantity_was_zero = self._to_float(quantity, 0.0) <= 0
+                if incoming_quantity_was_zero and self._to_float(fill_qty, 0.0) > 0:
+                    quantity = fill_qty
                 avg_price = order.get("avgPrice", 0)
                 commission = abs(self._to_float(order.get("commission"), 0.0))
                 limit_price = self._to_float(order.get("price", 0), 0.0)
                 stop_trigger_price = self._to_float(order.get("auxPrice", order.get("stop_price", 0)), 0.0)
                 parent_id = order.get("parentId") or ""
-                order_type = order.get("orderType", "Entry") or "Entry"
-                upper_type = str(order_type).upper()
+                order_type = order.get("orderType") if order.get("orderType") not in (None, "") else order.get("order_type", "")
+                upper_type = str(order_type or "").upper()
                 if not parent_id:
                     role = "entry"
                     if coid.lower().startswith("close_"):
@@ -1303,14 +1316,34 @@ class OrderTracker:
                     matches = self.pb_client.get_records("orders", filter=coid_order_filter, sort="-updated", per_page=1)
                     existing_order = matches[0] if matches else None
                 if not existing_order and order_id:
+                    broker_id_lookup_role = (
+                        ""
+                        if (not coid and not parent_id and upper_type in {"", "MKT", "MARKET"})
+                        else role
+                    )
                     existing_order = self._find_pb_order_by_broker_id(
                         order_id,
                         runtime_environment=runtime_environment,
                         symbol=symbol,
-                        role=role,
+                        role=broker_id_lookup_role,
                     )
 
                 if existing_order:
+                    if not self._normalize_text(symbol):
+                        symbol = str(existing_order.get("symbol") or "").strip().upper()
+                    if not self._normalize_text(order_type):
+                        existing_order_type = self._normalize_text(existing_order.get("order_type") or existing_order.get("orderType"))
+                        if existing_order_type:
+                            order_type = existing_order_type
+                            upper_type = str(order_type).upper()
+                    if incoming_quantity_was_zero:
+                        existing_quantity = existing_order.get("quantity")
+                        if self._to_float(existing_quantity, 0.0) <= 0:
+                            existing_quantity = existing_order.get("totalSize") or existing_order.get("total_size")
+                        if self._to_float(existing_quantity, 0.0) <= 0:
+                            existing_quantity = existing_order.get("filled_qty") or existing_order.get("filledQuantity")
+                        if self._to_float(existing_quantity, 0.0) > self._to_float(quantity, 0.0):
+                            quantity = existing_quantity
                     canonical_unique_id = str(existing_order.get("unique_id") or canonical_unique_id or order_id).strip()
                     signal_id = signal_id or str(existing_order.get("signal_id") or "").strip()
                     trade_group_id = str(existing_order.get("trade_group_id") or trade_group_id or "").strip()
@@ -1358,6 +1391,8 @@ class OrderTracker:
                     trade_group_id = entry_order_unique_id or canonical_unique_id
                 if not entry_order_unique_id:
                     entry_order_unique_id = canonical_unique_id
+                if not self._normalize_text(order_type):
+                    order_type = "MKT" if role == "close" else "Entry"
 
                 position_side = self._infer_position_side(
                     side=normalized_side,

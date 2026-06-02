@@ -419,6 +419,27 @@ class OrderLifecycleRiskLimitTests(unittest.TestCase):
         self.assertEqual("error", pb.events[0]["level"])
         self.assertIn("止盈/止损", pb.events[0]["detail"]["缺失保护"])
 
+    def test_missing_protection_ignores_active_or_filled_close_orders(self):
+        for close_status in ("Submitted", "Filled"):
+            with self.subTest(close_status=close_status):
+                pb = _FakePB(
+                    orders=self._order_flow_rows(
+                        tp_status="Canceled",
+                        sl_status="Canceled",
+                        close_status=close_status,
+                    )
+                )
+                lifecycle = OrderLifecycle(pb_client=pb, environment="paper", config=_FakeConfig({}))
+
+                issues = lifecycle._detect_missing_protection_after_fill(
+                    [{"ticker": "NFLX", "position": -114, "conid": 123}],
+                    open_orders=[],
+                )
+
+                self.assertEqual([], issues)
+                self.assertEqual([], pb.upserts)
+                self.assertEqual([], pb.events)
+
     def test_strategy_capacity_excludes_fixed_positions_and_counts_open_entries(self):
         lifecycle = OrderLifecycle(
             config=_FakeConfig({

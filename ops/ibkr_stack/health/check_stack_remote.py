@@ -587,6 +587,15 @@ def latest_indicator_missing_grace(latest_bar_5m: dict | None, latest_indicator_
 FALSE_TEXT = {"0", "false", "no", "off", "disabled", "disable"}
 BAR_PIPELINE_DISABLED_STATUSES = {"disabled", "disabled_tv_primary", "legacy_bar_pipeline_disabled"}
 TV_PRIMARY_SIGNAL_SOURCES = {"tv", "tradingview", "webhook_tv", "tv_webhook"}
+CONFIG_DEFAULTS = {
+    "ibkr_legacy_bar_pipeline_enabled": "false",
+    "ibkr_signal_source": "tradingview",
+    "ibkr_tv_primary_runtime_slim_enabled": "true",
+    "ibkr_runtime_technical_pipeline_enabled": "false",
+    "ibkr_official_5m_enabled": "false",
+    "ibkr_warmup_indicator_backfill_enabled": "false",
+}
+CONFIG_KEYS = tuple(CONFIG_DEFAULTS.keys())
 
 
 def _as_dict(value) -> dict:
@@ -613,8 +622,9 @@ def _truthy_text(value, default=False) -> bool:
 
 
 def config_item_map(runtime_config_payload: dict) -> dict:
+    config = runtime_config_payload.get("config") if isinstance(runtime_config_payload, dict) else {}
+    result = dict(config) if isinstance(config, dict) else {}
     items = runtime_config_payload.get("items") if isinstance(runtime_config_payload, dict) else []
-    result = {}
     for item in items or []:
         if not isinstance(item, dict):
             continue
@@ -622,6 +632,37 @@ def config_item_map(runtime_config_payload: dict) -> dict:
         if not key:
             continue
         result[key] = item.get("value")
+    return result
+
+
+def db_config_item_map(conn, *environments: str) -> dict:
+    result = dict(CONFIG_DEFAULTS)
+    best_rank = {key: 0 for key in CONFIG_KEYS}
+    normalized_envs = []
+    for raw_env in environments:
+        env = _text(raw_env).lower()
+        if env and env not in {"global", ""} and env not in normalized_envs:
+            normalized_envs.append(env)
+    rank_by_env = {"": 1, "global": 1}
+    for rank, env in enumerate(reversed(normalized_envs), start=2):
+        rank_by_env[env] = rank
+
+    placeholders = ",".join("?" for _ in CONFIG_KEYS)
+    rows = conn.execute(
+        f"select key, value, environment from config where key in ({placeholders})",
+        CONFIG_KEYS,
+    ).fetchall()
+    for row in rows:
+        key = _text(row["key"])
+        if key not in result:
+            continue
+        value = row["value"]
+        if value in (None, ""):
+            continue
+        rank = rank_by_env.get(_text(row["environment"]).lower(), -1)
+        if rank >= best_rank.get(key, 0):
+            best_rank[key] = rank
+            result[key] = value
     return result
 
 
@@ -635,7 +676,11 @@ def _bar_pipeline_candidate_disabled(candidate: dict) -> bool:
     return _false_text(candidate.get("enabled")) or _false_text(candidate.get("legacy_bar_pipeline_enabled"))
 
 
-def bar_pipeline_disabled(runtime_payload: dict, api_runtime_config_payload: dict | None = None) -> bool:
+def bar_pipeline_disabled(
+    runtime_payload: dict,
+    api_runtime_config_payload: dict | None = None,
+    config_map: dict | None = None,
+) -> bool:
     data_backfill = _as_dict(runtime_payload.get("data_backfill"))
     data_writer = _as_dict(runtime_payload.get("data_writer"))
     candidates = [
@@ -647,12 +692,14 @@ def bar_pipeline_disabled(runtime_payload: dict, api_runtime_config_payload: dic
     ]
     if any(_bar_pipeline_candidate_disabled(_as_dict(candidate)) for candidate in candidates if isinstance(candidate, dict)):
         return True
-    config_map = config_item_map(api_runtime_config_payload or {})
-    if _false_text(config_map.get("ibkr_legacy_bar_pipeline_enabled")):
+    resolved_config = config_item_map(api_runtime_config_payload or {})
+    if isinstance(config_map, dict):
+        resolved_config.update(config_map)
+    if _false_text(resolved_config.get("ibkr_legacy_bar_pipeline_enabled")):
         return True
-    signal_source = _text(config_map.get("ibkr_signal_source")).lower()
+    signal_source = _text(resolved_config.get("ibkr_signal_source")).lower()
     if signal_source in TV_PRIMARY_SIGNAL_SOURCES and _truthy_text(
-        config_map.get("ibkr_tv_primary_runtime_slim_enabled"),
+        resolved_config.get("ibkr_tv_primary_runtime_slim_enabled"),
         default=True,
     ):
         return True
@@ -695,24 +742,39 @@ local_http = {
     "api_storage_health": http_json(f"{API}/api/custom/system/storagez?environment={ENVIRONMENT}"),
     "api_runtime_config": http_json(f"{API}/api/custom/ibkr/runtime/config?environment={ENVIRONMENT}"),
     "scheduler_health": http_json(f"{SCHEDULER}/health"),
-    "scheduler_status": http_json(f"{SCHEDULER}/status"),
+    "scheduler_status": http_json(f"{SCHEDULER}/status?lite=1"),
     "console_index": http_json(f"{CONSOLE}/index.html"),
     "pb_health": http_json(f"{PB}/api/health"),
 }
-runtime_payload = (
-    local_http.get("runtime_status", {}).get("json")
-    or local_http.get("compute_ibkr_status", {}).get("json")
-    or {}
-)
+runtime_status_payload = local_http.get("runtime_status", {}).get("json") or {}
+compute_ibkr_status_payload = local_http.get("compute_ibkr_status", {}).get("json") or {}
+runtime_health_payload = local_http.get("runtime_health", {}).get("json") or {}
+runtime_payload = runtime_status_payload or compute_ibkr_status_payload or runtime_health_payload or {}
 api_status_payload = local_http.get("api_status", {}).get("json") or {}
 scheduler_status_payload = local_http.get("scheduler_status", {}).get("json") or {}
 compute_status_payload = local_http.get("compute_status", {}).get("json") or {}
 compute_health_payload = local_http.get("compute_health", {}).get("json") or {}
 storage_health_payload = local_http.get("api_storage_health", {}).get("json") or {}
 api_runtime_config_payload = local_http.get("api_runtime_config", {}).get("json") or {}
-legacy_bar_pipeline_disabled = bar_pipeline_disabled(runtime_payload, api_runtime_config_payload)
 
 conn = open_db()
+config_load_error = ""
+try:
+    db_config_map = db_config_item_map(conn, DATA_ENVIRONMENT, ENVIRONMENT)
+except Exception as exc:
+    db_config_map = dict(CONFIG_DEFAULTS)
+    config_load_error = str(exc)
+api_config_map = config_item_map(api_runtime_config_payload)
+effective_config_map = (
+    {**db_config_map, **api_config_map}
+    if config_load_error
+    else {**api_config_map, **db_config_map}
+)
+legacy_bar_pipeline_disabled = bar_pipeline_disabled(
+    runtime_payload,
+    api_runtime_config_payload,
+    effective_config_map,
+)
 latest_bar_5m = latest_row(conn, "ibkr_bars", DATA_ENVIRONMENT, "interval=?", ("5m",))
 latest_indicator_5m = latest_row(
     conn,
@@ -746,6 +808,8 @@ indicator_missing_grace = latest_indicator_missing_grace(
 
 failures = []
 warnings = []
+if config_load_error:
+    warnings.append(f"db:config_load_error:{config_load_error}")
 
 for service, status in services.items():
     if not status.get("ok"):
@@ -803,10 +867,12 @@ canonical_5m = runtime_payload.get("canonical_5m") or {}
 bar_freshness = market_universe.get("bar_freshness") or {}
 runtime_service_profile = str(runtime_payload.get("service_profile") or "").strip().lower()
 runtime_topology = (
-    api_status_payload.get("service_topology")
-    or scheduler_status_payload.get("service_topology")
-    or runtime_payload.get("service_topology")
+    runtime_payload.get("service_topology")
+    or runtime_health_payload.get("service_topology")
+    or compute_health_payload.get("service_topology")
     or compute_status_payload.get("service_topology")
+    or api_status_payload.get("service_topology")
+    or scheduler_status_payload.get("service_topology")
     or {}
 )
 runtime_topology_services = runtime_topology.get("services") or {}
@@ -971,6 +1037,10 @@ report = {
                 "enabled": not legacy_bar_pipeline_disabled,
                 "status": "disabled_tv_primary" if legacy_bar_pipeline_disabled else "enabled",
                 "reason": "legacy_bar_pipeline_disabled" if legacy_bar_pipeline_disabled else "",
+            },
+            "config": {
+                "effective": {key: effective_config_map.get(key) for key in CONFIG_KEYS},
+                "load_error": config_load_error,
             },
             "compute_startup_preload": compute_startup_preload,
             "compute_startup_preload_sla": compute_startup_preload_sla,

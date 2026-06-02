@@ -31,6 +31,8 @@ def normalize_strategy_capacity_snapshot(runtime_payload: Any) -> dict[str, Any]
     raw = _as_dict(payload.get("strategy_capacity"))
     if not raw:
         raw = _as_dict(_as_dict(payload.get("order_lifecycle")).get("strategy_capacity"))
+    if raw and "available" in raw and not _to_bool(raw.get("available")):
+        return unavailable_strategy_capacity(raw.get("error") or "strategy_capacity_unavailable")
     if not raw:
         max_positions = _to_int(_as_dict(payload.get("order_lifecycle")).get("max_strategy_open_positions"), 0)
         if max_positions <= 0:

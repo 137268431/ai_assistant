@@ -74,7 +74,7 @@ class TradingServiceRuntimeStatusMixin:
             "sec_type": config_text("ibkr_market_calendar_sec_type", "STK").upper(),
         }
 
-    def _runtime_market_session_snapshot(self, service_mod) -> dict:
+    def _runtime_market_session_snapshot(self, service_mod, *, refresh_ibkr_calendar: bool = True) -> dict:
         from ibkr_compute.market.calendar import (
             IBKR_SCHEDULE_SOURCE,
             build_ibkr_calendar_snapshot,
@@ -120,6 +120,39 @@ class TradingServiceRuntimeStatusMixin:
                     if key in payload
                 }
                 return merged
+
+        if not refresh_ibkr_calendar:
+            payload = build_local_nyse_calendar_snapshot(
+                market_date,
+                symbol=contract_args["symbol"],
+                exchange=contract_args["exchange"],
+                sec_type=contract_args["sec_type"],
+                source_error="ibkr_calendar_refresh_omitted",
+                now=now,
+            )
+            session = build_market_session_from_calendar(payload, now=now) if payload else {}
+            merged = {**fallback, **session} if session else fallback
+            merged["calendar"] = {
+                key: payload.get(key)
+                for key in (
+                    "source",
+                    "source_error",
+                    "market_date",
+                    "symbol",
+                    "exchange",
+                    "sec_type",
+                    "schedule_kind",
+                    "time_zone_id",
+                    "is_trading_day",
+                    "is_closed",
+                    "closed_reason",
+                    "session",
+                    "next_open_us",
+                    "next_open_beijing",
+                )
+                if key in payload
+            }
+            return merged
 
         source_error = ""
         payload = {}
@@ -256,7 +289,10 @@ class TradingServiceRuntimeStatusMixin:
                 stalled = True
                 stall_reason = "lagging"
 
-        market_session = self._runtime_market_session_snapshot(service_mod)
+        market_session = self._runtime_market_session_snapshot(
+            service_mod,
+            refresh_ibkr_calendar=refresh_auth,
+        )
         auth_recovery = self._copy_auth_recovery_state()
         official_5m = self._copy_official_5m_state()
         direct_history_topup = self._copy_direct_topup_state()
@@ -410,10 +446,14 @@ class TradingServiceRuntimeStatusMixin:
         host_resources = self._host_resources_snapshot()
         resource_governor = self._resource_governor_snapshot()
         watchlist_idle_topup = self._watchlist_idle_topup_status()
-        try:
-            strategy_capacity = self._strategy_capacity_snapshot()
-        except Exception as exc:
-            strategy_capacity = {"available": False, "capacity_full": False, "capacity_check_error": str(exc)}
+        order_lifecycle_status = self.order_lifecycle.status()
+        strategy_capacity = {
+            "available": False,
+            "capacity_full": False,
+            "max_strategy_open_positions": int(order_lifecycle_status.get("max_strategy_open_positions") or 0),
+            "source": "runtime_status_lightweight",
+            "error": "omitted_from_status_snapshot",
+        }
         runtime_health = "ok"
         if str(resource_governor.get("status") or "").strip().lower() == "critical":
             runtime_health = "unhealthy"
@@ -462,7 +502,7 @@ class TradingServiceRuntimeStatusMixin:
             "data_retention": self.data_retention.status(),
             "order_placer": self.order_placer.status(),
             "order_tracker": self.order_tracker.status(),
-            "order_lifecycle": self.order_lifecycle.status(),
+            "order_lifecycle": order_lifecycle_status,
             "strategy_capacity": strategy_capacity if isinstance(strategy_capacity, dict) else {"available": False},
             "order_flow": (
                 self.order_flow_manager.status()
