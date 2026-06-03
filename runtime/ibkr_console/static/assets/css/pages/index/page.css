@@ -361,6 +361,13 @@
             white-space: nowrap;
         }
 
+        .home-stat-detail {
+            display: flex;
+            flex-wrap: wrap;
+            white-space: normal;
+            row-gap: 3px;
+        }
+
         .home-stat-subline .long {
             color: var(--long);
         }
@@ -1170,7 +1177,7 @@
 }
 
 .home-stat-card {
-    min-height: 108px;
+    min-height: 128px;
     padding: 13px;
     gap: 8px;
     border-radius: 16px;

@@ -171,6 +171,24 @@ class _FakeSignalProcessor:
         self.cooldowns.append((symbol, bars, reason))
 
 
+def _submitted_child_orders(*order_ids, environment="live"):
+    rows = []
+    for order_id in order_ids:
+        text = str(order_id)
+        role = "stop_loss" if text.startswith("sl") else "take_profit" if text.startswith("tp") else ""
+        rows.append(
+            {
+                "id": f"order-{text}",
+                "broker_order_id": text,
+                "order_id": text,
+                "role": role,
+                "status": "Submitted",
+                "environment": environment,
+            }
+        )
+    return rows
+
+
 class ReverseSignalRuntimeTests(unittest.TestCase):
     def test_cancel_pending_bracket_requires_inactive_confirmation_before_ready_reentry(self):
         reverse = {
@@ -214,6 +232,32 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
         self.assertEqual("tv_exit_confirmed", pb.acks[0]["detail"]["result_status"])
         self.assertEqual("tv_exit_confirmed_no_reentry", pb.acks[0]["reason"])
 
+    def test_cancel_without_traceable_order_expires_without_gateway(self):
+        reverse = {
+            "id": "rev-cancel-no-order",
+            "symbol": "AAPL",
+            "action_type": "cancel",
+            "status": "pending",
+            "environment": "live",
+            "priority": 10,
+            "bar_time_ms": 1,
+            "extra": {"new_direction": "short"},
+        }
+        pb = _FakePB(reverse_rows=[reverse])
+        broker = _FakeBroker(open_orders=[{"orderId": "1001", "status": "Submitted"}])
+        modifier = _FakeOrderModifier(pb, broker=broker)
+
+        ReverseSignalHandler(pb, order_modifier=modifier, environment="live").check_and_process()
+
+        updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        extra = updated["extra"]
+        self.assertEqual("expired", updated["status"])
+        self.assertIn("traceable_order_required_for_cancel", updated["reason"])
+        self.assertEqual("real_order_preflight", extra["invalidated_by"])
+        self.assertTrue(extra["gateway_request_blocked"])
+        self.assertEqual([], modifier.cancelled)
+        self.assertEqual([], broker.calls)
+
     def test_close_position_requires_flat_confirmation_before_ready_reentry(self):
         reverse = {
             "id": "rev-close",
@@ -224,9 +268,20 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
             "environment": "live",
             "priority": 10,
             "bar_time_ms": 1,
-            "extra": {"new_direction": "short"},
+            "extra": {"new_direction": "short", "origin_signal_id": "sig-close"},
         }
-        pb = _FakePB(reverse_rows=[reverse])
+        signals = [
+            {
+                "id": "sig-close-row",
+                "signal_id": "sig-close",
+                "environment": "live",
+                "symbol": "AAPL",
+                "direction": "long",
+                "status": "protected_active",
+                "extra": {"execution_by_mode": {"live": {"status": "filled"}}},
+            }
+        ]
+        pb = _FakePB(reverse_rows=[reverse], signal_rows=signals)
         lifecycle = _FakeOrderLifecycle(
             [
                 [{"ticker": "AAPL", "position": 10}],
@@ -264,6 +319,36 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
         self.assertFalse(extra["blocked"])
         self.assertTrue(extra["auto_reentry_disabled"])
         self.assertIn("tv_exit_confirmed", extra["reverse_state_path"])
+
+    def test_close_without_real_order_evidence_expires_without_gateway_lookup(self):
+        reverse = {
+            "id": "rev-close-no-order",
+            "symbol": "AAPL",
+            "conid": 123,
+            "action_type": "close",
+            "status": "pending",
+            "environment": "live",
+            "priority": 10,
+            "bar_time_ms": 1,
+            "extra": {"new_direction": "short"},
+        }
+        pb = _FakePB(reverse_rows=[reverse])
+        lifecycle = _FakeOrderLifecycle([[{"ticker": "AAPL", "position": 10}]])
+        placer = _FakeOrderPlacer()
+
+        ReverseSignalHandler(pb, order_lifecycle=lifecycle, order_placer=placer, environment="live").check_and_process()
+
+        updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        extra = updated["extra"]
+        self.assertEqual("expired", updated["status"])
+        self.assertIn("real_filled_order_required_for_close", updated["reason"])
+        self.assertEqual("real_order_preflight", extra["invalidated_by"])
+        self.assertEqual("real_filled_order_required_for_close", extra["invalidated_reason"])
+        self.assertTrue(extra["gateway_request_blocked"])
+        self.assertFalse(extra["execution_preflight"]["real_order_confirmed"])
+        self.assertEqual(0, lifecycle.calls)
+        self.assertEqual([], placer.calls)
+        self.assertEqual("expired", pb.acks[0]["status"])
 
     def test_tv_exit_origin_rejected_cancels_without_position_lookup(self):
         reverse = {
@@ -322,7 +407,7 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
             "environment": "live",
             "priority": 10,
             "bar_time_ms": 1,
-            "extra": {"new_direction": "short"},
+            "extra": {"new_direction": "short", "origin_signal_id": "sig-close-unconfirmed"},
         }
         close_result = {
             "ok": False,
@@ -331,7 +416,18 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
             "order_ids": ["157"],
             "entry_coid": "close_AAPL_20260603_101500",
         }
-        pb = _FakePB(reverse_rows=[reverse])
+        signals = [
+            {
+                "id": "sig-close-unconfirmed-row",
+                "signal_id": "sig-close-unconfirmed",
+                "environment": "live",
+                "symbol": "AAPL",
+                "direction": "long",
+                "status": "protected_active",
+                "extra": {"execution_by_mode": {"live": {"status": "filled"}}},
+            }
+        ]
+        pb = _FakePB(reverse_rows=[reverse], signal_rows=signals)
         lifecycle = _FakeOrderLifecycle([[{"ticker": "AAPL", "position": 10}]])
         placer = _FakeOrderPlacer(result=close_result)
         handler = ReverseSignalHandler(
@@ -482,7 +578,7 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
                 "new_tp": 190.75,
             },
         }
-        pb = _FakePB(reverse_rows=[reverse])
+        pb = _FakePB(reverse_rows=[reverse], order_rows=_submitted_child_orders("sl-1003", "tp-1002"))
         modifier = _FakeOrderModifier(pb)
         handler = ReverseSignalHandler(pb, order_modifier=modifier, environment="live")
 
@@ -517,7 +613,7 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
                 "requested_sides": ["stop_loss"],
             },
         }
-        pb = _FakePB(reverse_rows=[reverse])
+        pb = _FakePB(reverse_rows=[reverse], order_rows=_submitted_child_orders("sl-1003", "tp-1002"))
         modifier = _FakeOrderModifier(pb)
         handler = ReverseSignalHandler(pb, order_modifier=modifier, environment="live")
 
@@ -550,7 +646,7 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
                 "new_sl": 181.25,
             },
         }
-        pb = _FakePB(reverse_rows=[reverse])
+        pb = _FakePB(reverse_rows=[reverse], order_rows=_submitted_child_orders("sl-1003", "tp-1002"))
         modifier = _FakeOrderModifier(pb)
         handler = ReverseSignalHandler(pb, order_modifier=modifier, environment="live")
 
@@ -637,7 +733,7 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
                 "tp_order_id": "tp-1002",
             },
         }
-        pb = _FakePB(reverse_rows=[missing_prices])
+        pb = _FakePB(reverse_rows=[missing_prices], order_rows=_submitted_child_orders("sl-1003", "tp-1002"))
         modifier = _FakeOrderModifier(pb)
         ReverseSignalHandler(pb, order_modifier=modifier, environment="live").check_and_process()
 
@@ -665,7 +761,7 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
                 "new_sl": 0,
             },
         }
-        pb = _FakePB(reverse_rows=[invalid_price])
+        pb = _FakePB(reverse_rows=[invalid_price], order_rows=_submitted_child_orders("sl-1003"))
         modifier = _FakeOrderModifier(pb)
         ReverseSignalHandler(pb, order_modifier=modifier, environment="live").check_and_process()
 
@@ -692,12 +788,64 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
 
         updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
         extra = updated["extra"]
-        self.assertEqual("cancelled", updated["status"])
-        self.assertIn("adjust_bracket_targets_missing_or_invalid", updated["reason"])
+        self.assertEqual("expired", updated["status"])
+        self.assertIn("real_child_order_required_for_adjust", updated["reason"])
         self.assertEqual([], modifier.stop_updates)
         self.assertEqual([], modifier.take_profit_updates)
-        self.assertEqual("sl_order_id_missing", extra["adjust_results"]["stop_loss"]["reason"])
-        self.assertEqual("not_requested", extra["adjust_results"]["take_profit"]["reason"])
+        self.assertEqual("real_order_preflight", extra["invalidated_by"])
+        self.assertTrue(extra["gateway_request_blocked"])
+
+    def test_adjust_bracket_does_not_modify_init_child_order(self):
+        reverse = {
+            "id": "rev-adjust-init-order",
+            "symbol": "AAPL",
+            "action_type": "adjust_bracket",
+            "status": "pending",
+            "environment": "live",
+            "priority": 10,
+            "bar_time_ms": 1,
+            "extra": {
+                "origin_signal_id": "tv-entry-init",
+                "trade_group_id": "grp-init",
+                "sl_order_id": "sl-init",
+                "new_sl": 181.25,
+            },
+        }
+        orders = [
+            {
+                "id": "sl-init-row",
+                "broker_order_id": "sl-init",
+                "order_id": "sl-init",
+                "trade_group_id": "grp-init",
+                "role": "stop_loss",
+                "status": "Init",
+                "environment": "live",
+            }
+        ]
+        signals = [
+            {
+                "id": "sig-init-row",
+                "signal_id": "tv-entry-init",
+                "environment": "live",
+                "symbol": "AAPL",
+                "direction": "long",
+                "status": "submitted",
+                "extra": {"execution_by_mode": {"live": {"status": "submitted"}}},
+            }
+        ]
+        pb = _FakePB(reverse_rows=[reverse], order_rows=orders, signal_rows=signals)
+        modifier = _FakeOrderModifier(pb)
+
+        ReverseSignalHandler(pb, order_modifier=modifier, environment="live").check_and_process()
+
+        updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
+        extra = updated["extra"]
+        self.assertEqual("expired", updated["status"])
+        self.assertIn("real_child_order_required_for_adjust", updated["reason"])
+        self.assertEqual("real_order_preflight", extra["invalidated_by"])
+        self.assertEqual(["INIT"], extra["execution_preflight"]["pb_order_statuses"])
+        self.assertEqual([], modifier.stop_updates)
+        self.assertTrue(extra["gateway_request_blocked"])
 
     def test_adjust_bracket_blocks_with_partial_failure_detail(self):
         reverse = {
@@ -715,7 +863,7 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
                 "new_tp": 190.75,
             },
         }
-        pb = _FakePB(reverse_rows=[reverse])
+        pb = _FakePB(reverse_rows=[reverse], order_rows=_submitted_child_orders("sl-1003", "tp-1002"))
         modifier = _FakeOrderModifier(pb, update_failures={"take_profit"})
         handler = ReverseSignalHandler(pb, order_modifier=modifier, environment="live")
 
@@ -903,18 +1051,15 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
 
         updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
         extra = updated["extra"]
-        self.assertEqual("cancelled", updated["status"])
-        self.assertIn("risk_update_linkage_missing", updated["reason"])
-        self.assertEqual("linkage_missing", extra["adjust_results"]["stop_loss"]["reason"])
-        self.assertFalse(extra["child_order_resolution"]["linkage_exists"])
+        self.assertEqual("expired", updated["status"])
+        self.assertIn("real_child_order_required_for_adjust", updated["reason"])
+        self.assertEqual("real_order_preflight", extra["invalidated_by"])
         self.assertTrue(extra["gateway_request_blocked"])
-        self.assertTrue(extra["child_order_resolution"]["gateway_request_blocked"])
         self.assertEqual("not_executable", extra["execution_readiness"])
-        self.assertEqual("risk_update_linkage_missing", extra["execution_blocked_reason"])
-        self.assertEqual("missing", extra["order_linkage_status"])
+        self.assertEqual("real_child_order_required_for_adjust", extra["execution_blocked_reason"])
         self.assertEqual([], modifier.stop_updates)
         self.assertEqual([], broker.calls)
-        self.assertEqual("cancelled", pb.acks[0]["status"])
+        self.assertEqual("expired", pb.acks[0]["status"])
 
     def test_tv_risk_update_trade_group_hint_only_defers_without_gateway(self):
         reverse = {
@@ -951,20 +1096,14 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
 
         updated = pb.records[REVERSE_SIGNAL_COLLECTION][0]
         extra = updated["extra"]
-        self.assertEqual("pending", updated["status"])
-        self.assertIn("risk_update_local_order_linkage_missing", updated["reason"])
-        self.assertEqual("local_order_linkage_missing", extra["adjust_results"]["stop_loss"]["reason"])
-        self.assertFalse(extra["child_order_resolution"]["linkage_exists"])
-        self.assertTrue(extra["child_order_resolution"]["linkage_hint_exists"])
-        self.assertFalse(extra["child_order_resolution"]["gateway_lookup_allowed"])
+        self.assertEqual("expired", updated["status"])
+        self.assertIn("real_child_order_required_for_adjust", updated["reason"])
+        self.assertEqual("real_order_preflight", extra["invalidated_by"])
         self.assertTrue(extra["gateway_request_blocked"])
-        self.assertTrue(extra["child_order_resolution"]["gateway_request_blocked"])
-        self.assertEqual("deferred", extra["execution_readiness"])
-        self.assertEqual("local_order_linkage_missing", extra["order_linkage_status"])
-        self.assertEqual("young_waiting_local_order_linkage", extra["missing_child_order_defer"]["reason"])
+        self.assertEqual("not_executable", extra["execution_readiness"])
         self.assertEqual([], modifier.stop_updates)
         self.assertEqual([], broker.calls)
-        self.assertEqual("pending", pb.acks[0]["status"])
+        self.assertEqual("expired", pb.acks[0]["status"])
 
     def test_tv_risk_update_origin_rejected_cancels_without_gateway(self):
         reverse = {
@@ -1015,13 +1154,10 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
         extra = updated["extra"]
         self.assertEqual("cancelled", updated["status"])
         self.assertIn("risk_update_origin_order_not_active", updated["reason"])
-        self.assertEqual("origin_order_not_active", extra["adjust_results"]["stop_loss"]["reason"])
-        self.assertTrue(extra["child_order_resolution"]["origin_execution_terminal"])
-        self.assertFalse(extra["child_order_resolution"]["gateway_lookup_allowed"])
+        self.assertEqual("real_order_preflight", extra["invalidated_by"])
         self.assertTrue(extra["gateway_request_blocked"])
         self.assertEqual("not_executable", extra["execution_readiness"])
         self.assertEqual("origin_order_not_active", extra["order_linkage_status"])
-        self.assertEqual("origin_execution_terminal", extra["missing_child_order_defer"]["reason"])
         self.assertEqual([], modifier.stop_updates)
         self.assertEqual([], broker.calls)
         self.assertEqual("cancelled", pb.acks[0]["status"])
@@ -1249,7 +1385,7 @@ class ReverseSignalRuntimeTests(unittest.TestCase):
                 "new_sl": 180.5,
             },
         }
-        pb = _FakePB(reverse_rows=[reverse])
+        pb = _FakePB(reverse_rows=[reverse], order_rows=_submitted_child_orders("sl-1003"))
         modifier = _FakeOrderModifier(pb)
         ReverseSignalHandler(pb, order_modifier=modifier, environment="live").check_and_process()
 

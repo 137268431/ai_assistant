@@ -52,7 +52,8 @@
                                 </div>
                             </div>
                             <div class="home-stat-label">今日信号</div>
-                            <div class="home-stat-foot">LONG / SHORT</div>
+                            <div class="home-stat-subline home-stat-detail" id="todaySignalsStatusSummary">待确认 - / 待执行 - / 挂单 -</div>
+                            <div class="home-stat-foot" id="todaySignalsFoot">成交保护 - / 已平仓 - / 终止 -</div>
                         </a>
 
                         <a id="reverseSignalsLink" href="/ibkr_execution_actions.html" class="home-stat-card" data-tone="neutral">
@@ -73,7 +74,9 @@
                                 </div>
                             </div>
                             <div class="home-stat-label">今日订单</div>
-                            <div class="home-stat-foot">LONG / SHORT</div>
+                            <div class="home-stat-subline home-stat-detail" id="todayOrdersStatusSummary">今日: 已成交 - / 挂单 - / 已取消 -</div>
+                            <div class="home-stat-subline home-stat-detail" id="todayOrdersGroupSummary">已平仓 - / 交易组 - / Entry单 -</div>
+                            <div class="home-stat-foot" id="todayOrdersFoot">当前挂单组 - · 可取消组 - · 可改单组 -</div>
                         </a>
 
                         <a id="positionsLink" href="/ibkr_account.html" class="home-stat-card" data-tone="neutral">
@@ -84,8 +87,9 @@
                                     <span class="short" id="activePositionsShort">-</span>
                                 </div>
                             </div>
-                            <div class="home-stat-label">当前持仓</div>
-                            <div class="home-stat-foot">Gateway snapshot</div>
+                            <div class="home-stat-label" id="positionsStateLabel">当前持仓</div>
+                            <div class="home-stat-subline home-stat-detail" id="positionsLiveOrdersSummary">当前挂单组 -</div>
+                            <div class="home-stat-foot" id="positionsFoot">Gateway snapshot</div>
                         </a>
 
                         <a id="pnlCardLink" href="/orders.html" class="home-stat-card" data-tone="neutral">
@@ -1016,14 +1020,39 @@
             const orders = summary.orders || {};
             const positions = summary.positions || {};
             const positionsAvailable = positions.available !== false;
+            const liveOrders = summary.live_orders || {};
+            const liveOrdersAvailable = liveOrders.available === true;
             const pnlSummary = summary.pnl || {};
             const pnl = Number(pnlSummary.realized_net_pnl ?? pnlSummary.total ?? 0);
             const marketDate = payload.market_date || getUsDate();
             const actionBreakdown = reverseSignals.pending_by_action || summary.execution_actions?.pending_by_action || {};
             const pendingActions = Number(reverseSignals.pending || summary.execution_actions?.pending || 0);
+            const signalStatusCounts = signals.status_counts || {};
+            const orderStatusCounts = orders.status_counts || {};
+            const orderGroupStatusCounts = orders.group_status_counts || {};
+            const liveOrderGroupCount = liveOrdersAvailable ? Number(liveOrders.total_groups ?? liveOrders.total ?? 0) : 0;
+            const liveOrderLegCount = liveOrdersAvailable ? Number(liveOrders.leg_total ?? liveOrders.total ?? 0) : 0;
+            const liveOrderCancelableGroupCount = liveOrdersAvailable ? Number(liveOrders.cancelable_groups ?? liveOrders.cancelable ?? 0) : 0;
+            const liveOrderEditableGroupCount = liveOrdersAvailable ? Number(liveOrders.editable_groups ?? liveOrders.editable ?? 0) : 0;
+            const positionTotal = Number(positions.total || 0);
+            const setText = (id, value) => {
+                const el = document.getElementById(id);
+                if (el) el.textContent = value;
+            };
+            const count = (source, key) => Number(source?.[key] || 0);
 
             document.getElementById('todaySignalsLong').textContent = formatNumber(signals.long || 0, 0);
             document.getElementById('todaySignalsShort').textContent = formatNumber(signals.short || 0, 0);
+            setText(
+                'todaySignalsStatusSummary',
+                `待确认 ${formatNumber(count(signalStatusCounts, 'awaiting_confirm'), 0)} / 待执行 ${formatNumber(count(signalStatusCounts, 'pending'), 0)} / 挂单 ${formatNumber(count(signalStatusCounts, 'submitted'), 0)}`
+            );
+            const signalTerminalRaw = signals.terminal_count ?? (count(signalStatusCounts, 'expired') + count(signalStatusCounts, 'rejected'));
+            const signalTerminalCount = Number(signalTerminalRaw || 0);
+            setText(
+                'todaySignalsFoot',
+                `成交保护 ${formatNumber(count(signalStatusCounts, 'protected_active'), 0)} / 已平仓 ${formatNumber(count(signalStatusCounts, 'closed'), 0)} / 终止 ${formatNumber(signalTerminalCount, 0)}`
+            );
             document.getElementById('reverseSignalsPending').textContent = formatNumber(pendingActions, 0);
             const actionSegments = [
                 `平仓 ${formatNumber(actionBreakdown.close || 0, 0)}`,
@@ -1036,15 +1065,51 @@
             document.getElementById('reverseSignalsBreakdown').textContent = actionSegments.join(' / ');
             document.getElementById('todayOrdersLong').textContent = formatNumber(orders.long || 0, 0);
             document.getElementById('todayOrdersShort').textContent = formatNumber(orders.short || 0, 0);
+            setText(
+                'todayOrdersStatusSummary',
+                `今日: 已成交 ${formatNumber(count(orderStatusCounts, 'filled'), 0)} / 挂单 ${formatNumber(count(orderStatusCounts, 'working'), 0)} / 已取消 ${formatNumber(count(orderStatusCounts, 'cancelled'), 0)}`
+            );
+            setText(
+                'todayOrdersGroupSummary',
+                `已平仓 ${formatNumber(count(orderGroupStatusCounts, 'closed'), 0)} / 交易组 ${formatNumber(orders.total || 0, 0)} / Entry单 ${formatNumber(orders.entry_order_count || 0, 0)}`
+            );
+            setText(
+                'todayOrdersFoot',
+                liveOrdersAvailable
+                    ? `当前挂单组 ${formatNumber(liveOrderGroupCount, 0)} · 可取消组 ${formatNumber(liveOrderCancelableGroupCount, 0)} · 可改单组 ${formatNumber(liveOrderEditableGroupCount, 0)}`
+                    : `当前挂单组接口不可用${liveOrders.error ? ` · ${liveOrders.error}` : ''}`
+            );
+            document.getElementById('ordersLink').title = liveOrdersAvailable
+                ? `Gateway 当前挂单组 ${formatNumber(liveOrderGroupCount, 0)}；订单腿 ${formatNumber(liveOrderLegCount, 0)}: Entry ${formatNumber(liveOrders.entry || 0, 0)} / TP ${formatNumber(liveOrders.take_profit || 0, 0)} / SL ${formatNumber(liveOrders.stop_loss || 0, 0)} / Close ${formatNumber(liveOrders.close || 0, 0)}`
+                : `Gateway 当前挂单组暂不可用${liveOrders.error ? `: ${liveOrders.error}` : ''}`;
             document.getElementById('activePositionsLong').textContent = positionsAvailable ? formatNumber(positions.long || 0, 0) : '--';
             document.getElementById('activePositionsShort').textContent = positionsAvailable ? formatNumber(positions.short || 0, 0) : '--';
+            setText(
+                'positionsStateLabel',
+                positionsAvailable
+                    ? (positionTotal > 0 ? '当前持仓' : '无实际持仓')
+                    : '持仓接口不可用'
+            );
+            setText(
+                'positionsLiveOrdersSummary',
+                liveOrdersAvailable
+                    ? `当前挂单组 ${formatNumber(liveOrderGroupCount, 0)} · 订单腿 Entry ${formatNumber(liveOrders.entry || 0, 0)} / TP ${formatNumber(liveOrders.take_profit || 0, 0)} / SL ${formatNumber(liveOrders.stop_loss || 0, 0)}`
+                    : `当前挂单组接口不可用${liveOrders.error ? ` · ${liveOrders.error}` : ''}`
+            );
+            setText(
+                'positionsFoot',
+                positionsAvailable
+                    ? (positionTotal > 0 ? 'Gateway 真实持仓快照' : 'Gateway 已确认无实际持仓')
+                    : `Gateway 持仓暂不可用${positions.error ? ` · ${positions.error}` : ''}`
+            );
             document.getElementById('positionsLink').title = positionsAvailable
-                ? 'Gateway 真实持仓快照'
+                ? `${positionTotal > 0 ? 'Gateway 真实持仓快照' : 'Gateway 已确认无实际持仓'}；当前挂单组 ${liveOrdersAvailable ? formatNumber(liveOrderGroupCount, 0) : '不可用'}；订单腿 ${liveOrdersAvailable ? formatNumber(liveOrderLegCount, 0) : '不可用'}`
                 : `Gateway 持仓暂不可用${positions.error ? `: ${positions.error}` : ''}`;
 
             const pnlEl = document.getElementById('todayPnL');
             const pnlExitCount = Number(pnlSummary.exit_count || pnlSummary.exitCount || 0);
             const pnlMissingCount = Number(pnlSummary.missing_count || pnlSummary.missingCount || 0);
+            const pnlCommissionMissingCount = Number(pnlSummary.commission_missing_count || pnlSummary.commissionMissingCount || 0);
             const pnlCommission = Number(pnlSummary.commission || 0);
             document.getElementById('todayPnLWinCount').textContent = formatNumber(pnlSummary.win_count || pnlSummary.winCount || 0, 0);
             document.getElementById('todayPnLLossCount').textContent = formatNumber(pnlSummary.loss_count || pnlSummary.lossCount || 0, 0);
@@ -1059,20 +1124,29 @@
             pnlEl.className = pnlExitCount > 0
                 ? (pnl > 0 ? 'long' : (pnl < 0 ? 'short' : 'neutral'))
                 : 'neutral';
-            const pnlFootSegments = [`实际净盈亏已扣手续费`, `手续费 $${formatNumber(Math.abs(pnlCommission), 2)}`];
+            const commissionSourceLabel = String(pnlSummary.commission_source_label || 'IBKR commissionReport').trim();
+            const pnlBrokerMode = String(payload.broker_mode || currentBrokerMode || '').trim().toLowerCase();
+            const commissionEnvironmentLabel = String(pnlSummary.commission_environment_label || (pnlBrokerMode === 'paper' ? 'Paper 模拟' : '')).trim();
+            const pnlFootSegments = [`实际净盈亏已扣手续费`, `手续费 $${formatNumber(Math.abs(pnlCommission), 2)}`, commissionSourceLabel];
+            if (commissionEnvironmentLabel) {
+                pnlFootSegments.push(commissionEnvironmentLabel);
+            }
+            if (pnlMissingCount > 0 || pnlCommissionMissingCount > 0) {
+                pnlFootSegments.push('手续费未完整同步');
+            }
             if (pnlMissingCount > 0) {
                 pnlFootSegments.push(`缺失 ${formatNumber(pnlMissingCount, 0)}`);
             }
             document.getElementById('todayPnLFoot').textContent = pnlFootSegments.join(' · ');
             const estimatedExitCount = Number(pnlSummary.estimated_exit_count || pnlSummary.estimatedExitCount || 0);
             document.getElementById('pnlCardLink').title = estimatedExitCount > 0
-                ? '主值只统计 Gateway 真实成交和真实手续费；预估盈亏仅作诊断，不混入实际值。'
-                : '主值只统计 Gateway 真实成交和真实手续费。';
+                ? '主值只统计 Gateway 真实成交和 IBKR commissionReport 手续费；预估盈亏仅作诊断，不混入实际值。Paper 为 IBKR 模拟手续费。'
+                : '主值只统计 Gateway 真实成交和 IBKR commissionReport 手续费。Paper 为 IBKR 模拟手续费。';
 
             setCardTone('signalsLink', Number(signals.total || 0) > 0 ? 'long' : 'neutral');
             setCardTone('reverseSignalsLink', pendingActions > 0 ? 'short' : 'neutral');
-            setCardTone('ordersLink', Number(orders.total || 0) > 0 ? 'long' : 'neutral');
-            setCardTone('positionsLink', positionsAvailable && Number(positions.total || 0) > 0 ? 'long' : 'neutral');
+            setCardTone('ordersLink', Number(orders.total || 0) > 0 ? 'long' : (liveOrderGroupCount > 0 ? 'candidate' : 'neutral'));
+            setCardTone('positionsLink', positionsAvailable && positionTotal > 0 ? 'long' : (liveOrderGroupCount > 0 ? 'candidate' : 'neutral'));
             setCardTone('pnlCardLink', pnl > 0 ? 'long' : (pnl < 0 ? 'short' : 'neutral'));
             renderOverviewMeta(marketDate);
             renderRecentActivityItems(payload.recent_activity || []);

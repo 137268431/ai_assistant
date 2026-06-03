@@ -3,6 +3,7 @@ import sys
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SERVICE_SRC_ROOT = Path(__file__).resolve().parents[3] / "runtime" / "ibkr_api" / "src"
 if str(SERVICE_SRC_ROOT) not in sys.path:
@@ -397,6 +398,186 @@ class TwoFactorBuildersTest(unittest.TestCase):
         self.assertEqual(409, status_code)
         self.assertFalse(payload["ok"])
         self.assertTrue(payload["runtime_environment_mismatch"])
+
+    def test_panic_reset_builder_returns_fallback_when_runtime_action_fails(self):
+        pb = _FakePB(
+            state_rows=[
+                {
+                    "id": "state-1",
+                    "state_key": "ibkr_2fa",
+                    "environment": "live",
+                    "date": "global",
+                    "data": {"status": "triggered", "message_id": "msg-reset"},
+                }
+            ]
+        )
+        fetch_calls = []
+
+        payload, status_code = build_two_factor_panic_reset_response(
+            pb,
+            payload={"environment": "live", "reason": "operator_panic"},
+            normalize_environment=self.normalize_environment,
+            as_dict=self.as_dict,
+            request_json_request=lambda *args, **kwargs: {
+                "ok": False,
+                "status_code": 0,
+                "payload": {},
+                "target_url": "http://runtime/ibkr/panic-reset",
+                "error": "runtime action timed out",
+            },
+            runtime_base_url="http://runtime",
+            fetch_runtime_status=lambda environment: fetch_calls.append(environment) or self.runtime_status,
+            inspect_runtime_environment=self.inspect_runtime_environment,
+            build_runtime_environment_mismatch_payload=self.build_mismatch_payload,
+        )
+
+        self.assertEqual(202, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["accepted"])
+        self.assertTrue(payload["fallback"])
+        self.assertEqual([], fetch_calls)
+        self.assertEqual("runtime action timed out", payload["state"]["runtime_status_error"])
+        self.assertEqual(
+            [("ibkr-runtime", "stop"), ("ibkr-gateway", "restart"), ("ibkr-runtime", "start")],
+            [(item["service"], item["action"]) for item in payload["recovery_plan"]["operations"]],
+        )
+        self.assertTrue(payload["recovery_plan"]["dry_run"])
+        self.assertEqual("panic-reset", payload["recovery_plan"]["route_context"])
+
+    def test_panic_reset_builder_executes_confirmed_fallback_when_runtime_action_fails(self):
+        pb = _FakePB()
+        completed = mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("ibkr_api.two_factor.runtime_actions.subprocess.run", return_value=completed) as run_mock:
+            payload, status_code = build_two_factor_panic_reset_response(
+                pb,
+                payload={"environment": "live", "confirm_text": "重开2FA"},
+                normalize_environment=self.normalize_environment,
+                as_dict=self.as_dict,
+                request_json_request=lambda *args, **kwargs: {
+                    "ok": False,
+                    "status_code": 0,
+                    "payload": {},
+                    "error": "runtime action timed out",
+                },
+                runtime_base_url="http://runtime",
+                fetch_runtime_status=lambda environment: self.runtime_status,
+                inspect_runtime_environment=self.inspect_runtime_environment,
+                build_runtime_environment_mismatch_payload=self.build_mismatch_payload,
+            )
+
+        self.assertEqual(202, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["fallback_executed"])
+        self.assertFalse(payload["recovery_plan"]["dry_run"])
+        self.assertEqual(
+            [
+                mock.call(["systemctl", "stop", "ibkr-runtime"], capture_output=True, text=True, timeout=30.0),
+                mock.call(["systemctl", "restart", "ibkr-gateway"], capture_output=True, text=True, timeout=90.0),
+                mock.call(["systemctl", "start", "ibkr-runtime"], capture_output=True, text=True, timeout=45.0),
+            ],
+            run_mock.mock_calls,
+        )
+
+    def test_panic_reset_builder_allows_fallback_when_status_inspection_fails(self):
+        pb = _FakePB()
+
+        payload, status_code = build_two_factor_panic_reset_response(
+            pb,
+            payload={"environment": "live"},
+            normalize_environment=self.normalize_environment,
+            as_dict=self.as_dict,
+            request_json_request=lambda *args, **kwargs: {
+                "ok": False,
+                "status_code": 0,
+                "payload": {},
+                "error": "connection refused",
+            },
+            runtime_base_url="http://runtime",
+            fetch_runtime_status=lambda environment: self.runtime_status,
+            inspect_runtime_environment=lambda environment: (_ for _ in ()).throw(TimeoutError("status timed out")),
+            build_runtime_environment_mismatch_payload=self.build_mismatch_payload,
+        )
+
+        self.assertEqual(202, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["fallback"])
+        self.assertEqual("connection refused", payload["state"]["runtime_status_error"])
+        self.assertEqual("live", payload["state"]["actual_runtime_environment"])
+
+    def test_panic_reset_builder_keeps_successful_runtime_action_response(self):
+        pb = _FakePB(
+            state_rows=[
+                {
+                    "id": "state-1",
+                    "state_key": "ibkr_2fa",
+                    "environment": "live",
+                    "date": "global",
+                    "data": {"status": "recovering"},
+                }
+            ]
+        )
+        captured = {}
+
+        def request_json_request(method, base_url, path, params=None, json_body=None, timeout=5.0):
+            captured.update({
+                "method": method,
+                "base_url": base_url,
+                "path": path,
+                "json_body": copy.deepcopy(json_body),
+                "timeout": timeout,
+            })
+            return {
+                "ok": True,
+                "status_code": 200,
+                "payload": {"ok": True, "status": "starting"},
+                "target_url": f"{base_url}{path}",
+                "error": "",
+            }
+
+        payload, status_code = build_two_factor_panic_reset_response(
+            pb,
+            payload={"environment": "live", "source": "runtime_page"},
+            normalize_environment=self.normalize_environment,
+            as_dict=self.as_dict,
+            request_json_request=request_json_request,
+            runtime_base_url="http://runtime",
+            fetch_runtime_status=lambda environment: self.runtime_status,
+            inspect_runtime_environment=self.inspect_runtime_environment,
+            build_runtime_environment_mismatch_payload=self.build_mismatch_payload,
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertNotIn("fallback", payload)
+        self.assertEqual("/ibkr/panic-reset", captured["path"])
+        self.assertTrue(captured["json_body"]["restart_gateway"])
+        self.assertEqual("starting", payload["payload"]["status"])
+
+    def test_panic_reset_builder_does_not_fail_when_followup_status_fetch_raises(self):
+        pb = _FakePB()
+
+        payload, status_code = build_two_factor_panic_reset_response(
+            pb,
+            payload={"environment": "live"},
+            normalize_environment=self.normalize_environment,
+            as_dict=self.as_dict,
+            request_json_request=lambda *args, **kwargs: {
+                "ok": True,
+                "status_code": 200,
+                "payload": {"ok": True, "status": "starting"},
+                "error": "",
+            },
+            runtime_base_url="http://runtime",
+            fetch_runtime_status=lambda environment: (_ for _ in ()).throw(TimeoutError("followup status timed out")),
+            inspect_runtime_environment=self.inspect_runtime_environment,
+            build_runtime_environment_mismatch_payload=self.build_mismatch_payload,
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["state"]["panic_reset_status_fallback"])
+        self.assertEqual("followup status timed out", payload["state"]["runtime_status_error"])
 
     def test_waiting_confirm_downgrades_when_gateway_never_reaches_2fa(self):
         state = {

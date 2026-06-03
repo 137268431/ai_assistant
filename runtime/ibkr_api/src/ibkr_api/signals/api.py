@@ -5,13 +5,17 @@ from typing import Any, Callable
 
 from ibkr_api.modes import request_broker_mode, request_market_data_mode
 from ibkr_api.orders.upsert import build_order_upsert_response
-from ibkr_api.orders.values import ensure_object
+from ibkr_api.orders.values import ensure_object, first_defined, to_float
 from ibkr_api.signals.ack import build_signal_ack_orders
 from ibkr_api.signals.notifications import sync_signal_status_notification
 
 
 _BROKER_SIGNAL_FINAL_STATUSES = {
     "submitted",
+    "submitted_waiting_fill",
+    "filled_repricing_protection",
+    "filled_position",
+    "protected_active",
     "rejected",
     "expired",
     "blocked",
@@ -19,7 +23,87 @@ _BROKER_SIGNAL_FINAL_STATUSES = {
     "validation_rejected",
     "submit_failed",
     "protection_incomplete",
+    "protection_reprice_failed",
+    "entry_missed_limit_cap",
+    "ignored_no_broker_position",
+    "stale_signal",
+    "signal_clock_skew",
+    "stale_signal/signal_clock_skew",
+    "executed",
+    "closed",
 }
+
+_SIGNAL_ACK_DISPLAY_EXTRA_KEYS = (
+    "tv_reference_entry",
+    "tv_reference_entry_price",
+    "tv_reference_stop_loss",
+    "tv_reference_sl",
+    "tv_reference_take_profit",
+    "tv_reference_tp",
+    "reference_entry",
+    "reference_entry_price",
+    "reference_stop_loss",
+    "reference_sl",
+    "reference_take_profit",
+    "reference_tp",
+    "original_entry",
+    "original_stop_loss",
+    "original_take_profit",
+    "initial_entry",
+    "initial_stop_loss",
+    "initial_take_profit",
+    "tv_reference",
+    "tv_reference_prices",
+    "tv_reference_plan",
+    "pre_submit_reference_price",
+    "pre_submit_reference_source",
+    "submitted_entry_limit_price",
+    "submitted_limit_cap_price",
+    "submitted_limit_price",
+    "submitted_price",
+    "entry_limit_cap_price",
+    "limit_cap_price",
+    "bounded_limit_price",
+    "submitted_limit_cap_bps",
+    "entry_limit_cap_bps",
+    "limit_cap_bps",
+    "submitted_limit_cap_applied",
+    "entry_limit_cap_applied",
+    "limit_cap_applied",
+    "entry_price_plan",
+    "entry_limit_intent",
+    "entry_repriced",
+    "actual_fill_price",
+    "entry_fill_price",
+    "executed_price",
+    "final_stop_loss",
+    "final_sl",
+    "final_take_profit",
+    "final_tp",
+    "protection_final_stop_loss",
+    "protection_final_take_profit",
+    "protection_rebase_result",
+    "protection_reprice_result",
+    "entry_slippage_bps",
+    "actual_slippage_bps",
+    "fill_slippage_bps",
+    "slippage_bps",
+    "entry_slippage_r",
+    "actual_slippage_r",
+    "fill_slippage_r",
+    "slippage_r",
+    "risk_r",
+    "initial_risk_r",
+    "adaptive_priority",
+    "adaptivePriority",
+    "ib_algo_adaptive_priority",
+    "order_adaptive_priority",
+    "adaptive_order_priority",
+    "ibkr_adaptive_priority",
+    "adaptive",
+    "algo",
+    "order_algo",
+)
 
 
 def _utc_now_iso() -> str:
@@ -36,6 +120,59 @@ def _broker_execution_status(extra: dict[str, Any], broker_mode: str) -> str:
     if not isinstance(broker_map, dict):
         return ""
     return str(broker_map.get("status") or "").strip().lower()
+
+
+def _copy_present_fields(target: dict[str, Any], *sources: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(target if isinstance(target, dict) else {})
+    for key in _SIGNAL_ACK_DISPLAY_EXTRA_KEYS:
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            value = source.get(key)
+            if value not in (None, ""):
+                merged[key] = value
+                break
+    return merged
+
+
+def _with_signal_ack_display_extra(
+    signal_extra: dict[str, Any],
+    *,
+    order_input: dict[str, Any],
+    order_extra: dict[str, Any],
+) -> dict[str, Any]:
+    merged = _copy_present_fields(signal_extra, order_extra, order_input)
+    submitted_limit = first_defined(
+        order_extra.get("submitted_entry_limit_price"),
+        order_extra.get("submitted_limit_cap_price"),
+        order_extra.get("submitted_limit_price"),
+        order_extra.get("submitted_price"),
+        order_extra.get("entry_limit_cap_price"),
+        order_extra.get("limit_cap_price"),
+        order_extra.get("bounded_limit_price"),
+        order_input.get("submitted_entry_limit_price"),
+        order_input.get("submitted_limit_price"),
+        order_input.get("limit_price"),
+    )
+    if submitted_limit not in (None, ""):
+        merged["submitted_entry_limit_price"] = submitted_limit
+
+    actual_fill = first_defined(
+        order_extra.get("actual_fill_price"),
+        order_extra.get("entry_fill_price"),
+        order_extra.get("executed_price"),
+        order_input.get("actual_fill_price"),
+        order_input.get("entry_fill_price"),
+        order_input.get("executed_price"),
+        order_input.get("fill_price"),
+        order_input.get("avg_fill_price"),
+        order_input.get("avgPrice"),
+    )
+    if (to_float(actual_fill) or 0.0) > 0:
+        merged["actual_fill_price"] = actual_fill
+        merged["entry_fill_price"] = first_defined(merged.get("entry_fill_price"), actual_fill)
+        merged["executed_price"] = first_defined(merged.get("executed_price"), actual_fill)
+    return merged
 
 
 def _signal_consumed_for_broker(
@@ -350,6 +487,11 @@ def build_signals_ack_response(
             signal_extra["protection_complete"] = bool(order_extra.get("protection_complete"))
         if order_extra.get("missing_order_ids") is not None:
             signal_extra["missing_order_ids"] = order_extra.get("missing_order_ids")
+        signal_extra = _with_signal_ack_display_extra(
+            signal_extra,
+            order_input=order_input,
+            order_extra=order_extra,
+        )
 
         ack_orders = build_signal_ack_orders(signal_record, payload, broker_mode)
         primary_status = "Init"

@@ -212,6 +212,8 @@ class OrderPlacer:
         take_profit_quantity: int | None = None,
         stop_loss_quantity: int | None = None,
         order_family_type: str = "",
+        entry_algo_strategy: str = "",
+        entry_adaptive_priority: str = "",
     ) -> Dict[str, Any]:
         acct_id = self.get_active_account_id(use_paper)
         order_extra_payload = dict(order_extra or {})
@@ -253,6 +255,8 @@ class OrderPlacer:
             order_ref_suffix=str(order_ref_suffix or ""),
             trade_group_id=resolved_trade_group_id,
             order_family_type=resolved_family_type,
+            entry_algo_strategy=str(entry_algo_strategy or ""),
+            entry_adaptive_priority=str(entry_adaptive_priority or ""),
         )
         if result.get("ok"):
             self._order_count += 1
@@ -345,6 +349,8 @@ class OrderPlacer:
             "stop_loss_quantity": int(result.get("stop_loss_quantity") or sl_quantity),
             "order_extra": dict(order_extra_payload),
             "price_normalization": dict(result.get("price_normalization") or {}),
+            "entry_algo_strategy": str(result.get("entry_algo_strategy") or entry_algo_strategy or ""),
+            "entry_adaptive_priority": str(result.get("entry_adaptive_priority") or entry_adaptive_priority or ""),
             "raw_response": result.get("raw"),
         }
 

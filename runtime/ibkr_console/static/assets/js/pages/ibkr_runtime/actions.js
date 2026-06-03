@@ -126,6 +126,7 @@
                         restart_gateway: true,
                         restart_runtime: true,
                         trigger_login: true,
+                        confirm_text: '重开2FA',
                         reason: 'panic_reset_2fa',
                         source: 'runtime_page'
                     })
@@ -811,9 +812,17 @@
             await executeRuntimeAction(action, overrideTarget);
         }
 
+        function openRuntimeSystemStatus() {
+            const target = typeof buildPageUrl === 'function'
+                ? buildPageUrl('/ibkr_system.html', {}, { environment: currentEnvironment, allowGlobal: true })
+                : `/ibkr_system.html?environment=${encodeURIComponent(currentEnvironment || currentBrokerMode || 'paper')}`;
+            window.location.href = target;
+        }
+
         window.handleRuntimeAction = handleRuntimeAction;
         window.handleBrokerModeSwitch = handleBrokerModeSwitch;
         window.handleServiceAction = handleServiceAction;
         window.runPrimaryAuthAction = runPrimaryAuthAction;
         window.runSecondaryAuthAction = runSecondaryAuthAction;
+        window.openRuntimeSystemStatus = openRuntimeSystemStatus;
         window.submitTwoFactorResponse = submitTwoFactorResponse;

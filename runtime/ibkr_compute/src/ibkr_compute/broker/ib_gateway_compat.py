@@ -6,6 +6,7 @@ try:
     from ibapi.contract import Contract
     from ibapi.execution import ExecutionFilter
     from ibapi.order import Order
+    from ibapi.tag_value import TagValue
     from ibapi.wrapper import EWrapper
 
     IBAPI_AVAILABLE = True
@@ -33,6 +34,11 @@ except Exception as exc:  # pragma: no cover - import availability depends on ru
     class ExecutionFilter:  # type: ignore[override]
         pass
 
+    class TagValue:  # type: ignore[override]
+        def __init__(self, tag: str = "", value: str = ""):
+            self.tag = tag
+            self.value = value
+
 
 __all__ = [
     "CommissionReport",
@@ -43,4 +49,5 @@ __all__ = [
     "IBAPI_AVAILABLE",
     "IBAPI_IMPORT_ERROR",
     "Order",
+    "TagValue",
 ]

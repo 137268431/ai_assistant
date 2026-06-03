@@ -1258,6 +1258,45 @@ class SystemMonitorSupportTest(unittest.TestCase):
         self.assertEqual(summary["actions"]["tv_failed_raw_count"], 1)
         self.assertEqual(summary["actions"]["tv_failed_suppressed_after_eod_count"], 0)
 
+    def test_tv_flow_safe_preflight_invalidation_is_not_execution_failure(self):
+        pb = _FakePocketBase(
+            {
+                "tv_webhook_events": [],
+                "ibkr_signals": [],
+                "ibkr_reverse_signals": [
+                    {
+                        "id": "rev_close_no_order",
+                        "symbol": "AAPL",
+                        "status": "expired",
+                        "source": "tradingview",
+                        "environment": "paper",
+                        "action_type": "close",
+                        "reason": "execution invalidated: real_filled_order_required_for_close",
+                        "created": "2026-06-02 13:55:00Z",
+                        "updated": "2026-06-02 13:56:00Z",
+                        "extra": {
+                            "result_status": "invalidated",
+                            "invalidated_by": "real_order_preflight",
+                            "gateway_request_blocked": True,
+                        },
+                    }
+                ],
+            }
+        )
+
+        summary = build_tv_flow_monitor_summary(
+            pb,
+            data_environment="live",
+            runtime_environment="paper",
+            config_map={"tv_flow_failed_lookback_min": "120", "eod_close_time": "15:55"},
+            now_ms=_utc_ms(2026, 6, 2, 14, 0),
+        )
+
+        self.assertEqual(summary["status"], "ok")
+        self.assertNotIn("tv_flow_execution_action_failed", {item["code"] for item in summary["flags"]})
+        self.assertEqual(summary["actions"]["tv_failed_count"], 0)
+        self.assertEqual(summary["actions"]["tv_failed_raw_count"], 0)
+
     def test_tv_flow_execution_failure_is_suppressed_after_eod(self):
         pb = _FakePocketBase(
             {

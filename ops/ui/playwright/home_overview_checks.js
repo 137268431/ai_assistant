@@ -38,6 +38,14 @@ async function collectHomeOverviewIssues(page, mobile = false) {
     const stackLink = document.getElementById('overviewStackLink');
     const configLink = document.getElementById('actionConfigLink');
     const toolChips = Array.from(document.querySelectorAll('#homeQuickLinks .home-tool-chip'));
+    const signalsStatus = document.getElementById('todaySignalsStatusSummary');
+    const signalsFoot = document.getElementById('todaySignalsFoot');
+    const ordersStatus = document.getElementById('todayOrdersStatusSummary');
+    const ordersGroup = document.getElementById('todayOrdersGroupSummary');
+    const ordersFoot = document.getElementById('todayOrdersFoot');
+    const positionsLabel = document.getElementById('positionsStateLabel');
+    const positionsLiveOrders = document.getElementById('positionsLiveOrdersSummary');
+    const positionsFoot = document.getElementById('positionsFoot');
 
     const tipText = String(tip?.textContent || '').trim();
     const sdSummaryText = String(sdSummary?.textContent || '').trim();
@@ -53,6 +61,14 @@ async function collectHomeOverviewIssues(page, mobile = false) {
     const stackRowStatuses = stackRows
       .map((row) => String(row.querySelector('.home-stack-service-status')?.textContent || '').trim())
       .filter(Boolean);
+    const signalsStatusText = String(signalsStatus?.textContent || '').trim();
+    const signalsFootText = String(signalsFoot?.textContent || '').trim();
+    const ordersStatusText = String(ordersStatus?.textContent || '').trim();
+    const ordersGroupText = String(ordersGroup?.textContent || '').trim();
+    const ordersFootText = String(ordersFoot?.textContent || '').trim();
+    const positionsLabelText = String(positionsLabel?.textContent || '').trim();
+    const positionsLiveOrdersText = String(positionsLiveOrders?.textContent || '').trim();
+    const positionsFootText = String(positionsFoot?.textContent || '').trim();
 
     if (!tip) issues.push('missing_targets_time_tip');
     if (!sdSummary) issues.push('missing_targets_sd_summary');
@@ -88,6 +104,38 @@ async function collectHomeOverviewIssues(page, mobile = false) {
       }
     });
     if (stackRowStatuses.length < 5) issues.push(`overview_stack_status_count:${stackRowStatuses.length}`);
+    if (!signalsStatus) issues.push('missing_home_signals_status_summary');
+    if (!signalsFoot) issues.push('missing_home_signals_foot');
+    if (!ordersStatus) issues.push('missing_home_orders_status_summary');
+    if (!ordersGroup) issues.push('missing_home_orders_group_summary');
+    if (!ordersFoot) issues.push('missing_home_orders_foot');
+    if (!positionsLabel) issues.push('missing_home_positions_state_label');
+    if (!positionsLiveOrders) issues.push('missing_home_positions_live_orders_summary');
+    if (!positionsFoot) issues.push('missing_home_positions_foot');
+    if (signalsStatus && (!signalsStatusText.includes('待确认') || !signalsStatusText.includes('待执行') || !signalsStatusText.includes('挂单'))) {
+      issues.push(`signals_status_summary_text:${signalsStatusText || 'empty'}`);
+    }
+    if (signalsFoot && (!signalsFootText.includes('成交保护') || !signalsFootText.includes('已平仓') || !signalsFootText.includes('终止'))) {
+      issues.push(`signals_foot_text:${signalsFootText || 'empty'}`);
+    }
+    if (ordersStatus && (!ordersStatusText.includes('已成交') || !ordersStatusText.includes('挂单') || !ordersStatusText.includes('已取消'))) {
+      issues.push(`orders_status_summary_text:${ordersStatusText || 'empty'}`);
+    }
+    if (ordersGroup && (!ordersGroupText.includes('交易组') || !ordersGroupText.includes('Entry单'))) {
+      issues.push(`orders_group_summary_text:${ordersGroupText || 'empty'}`);
+    }
+    if (ordersFoot && (!ordersFootText.includes('当前挂单组') || !ordersFootText.includes('可取消组') || !ordersFootText.includes('可改单组'))) {
+      issues.push(`orders_foot_missing_live_open_order_groups:${ordersFootText || 'empty'}`);
+    }
+    if (positionsLabel && !/(当前持仓|无实际持仓|持仓接口不可用)/.test(positionsLabelText)) {
+      issues.push(`positions_state_label_text:${positionsLabelText || 'empty'}`);
+    }
+    if (positionsLiveOrders && (!positionsLiveOrdersText.includes('当前挂单组') || !positionsLiveOrdersText.includes('订单腿'))) {
+      issues.push(`positions_live_orders_text:${positionsLiveOrdersText || 'empty'}`);
+    }
+    if (positionsFoot && !/Gateway/.test(positionsFootText)) {
+      issues.push(`positions_foot_text:${positionsFootText || 'empty'}`);
+    }
 
     return issues;
   }, {

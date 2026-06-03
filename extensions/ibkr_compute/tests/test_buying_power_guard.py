@@ -72,6 +72,39 @@ class BuyingPowerGuardHelperTest(unittest.TestCase):
         self.assertIsNone(guard["remaining"])
         self.assertIsNone(guard["remaining_after"])
 
+    def test_guard_unavailable_when_snapshot_summary_is_empty(self):
+        guard = build_buying_power_guard({}, requested_exposure=3000)
+
+        self.assertEqual("unavailable", guard["state"])
+        self.assertFalse(guard["available"])
+        self.assertEqual("account_snapshot_unavailable", guard["reason"])
+        self.assertIsNone(guard["remaining"])
+        self.assertIsNone(guard["remaining_after"])
+
+    def test_guard_unavailable_for_synthetic_zero_snapshot_summary(self):
+        guard = build_buying_power_guard(
+            {
+                "account_code": "DU123",
+                "account_type": "",
+                "net_liquidation": 0,
+                "available_funds": 0,
+                "buying_power": 0,
+                "excess_liquidity": 0,
+                "equity_with_loan": 0,
+                "gross_position_value": 0,
+                "total_cash_value": 0,
+                "initial_margin": 0,
+                "maintenance_margin": 0,
+            },
+            requested_exposure=3000,
+        )
+
+        self.assertEqual("unavailable", guard["state"])
+        self.assertFalse(guard["available"])
+        self.assertEqual("account_snapshot_unavailable", guard["reason"])
+        self.assertIsNone(guard["remaining"])
+        self.assertIsNone(guard["remaining_after"])
+
     def test_guard_treats_explicit_zero_buying_power_as_real_balance(self):
         guard = build_buying_power_guard(
             {"buying_power": 0, "net_liquidation": 100000},

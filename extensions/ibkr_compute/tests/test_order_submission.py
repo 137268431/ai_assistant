@@ -1736,7 +1736,19 @@ class LiveSignalCapacityLifecycleTest(unittest.TestCase):
             config=FakeConfig({"entry_pre_submit_guard_enabled": "false"}),
             account_snapshot={
                 "ok": False,
-                "summary": {},
+                "summary": {
+                    "account_code": "DU123",
+                    "account_type": "",
+                    "net_liquidation": 0,
+                    "available_funds": 0,
+                    "buying_power": 0,
+                    "excess_liquidity": 0,
+                    "equity_with_loan": 0,
+                    "gross_position_value": 0,
+                    "total_cash_value": 0,
+                    "initial_margin": 0,
+                    "maintenance_margin": 0,
+                },
                 "buying_power_guard": {
                     "state": "unavailable",
                     "reason": "gateway_unavailable",

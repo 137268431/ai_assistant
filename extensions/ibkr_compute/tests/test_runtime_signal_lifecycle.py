@@ -1189,6 +1189,38 @@ class RuntimeSignalLifecycleTest(unittest.TestCase):
             row["extra"]["protection_incomplete_diagnostic"]["reason"],
         )
 
+    def test_submit_failure_with_traceable_order_ids_requests_cancel_sync(self):
+        service = _FakeSignalsService()
+
+        class _CancelModifier:
+            def __init__(self):
+                self.cancelled = []
+
+            def cancel_order(self, order_id):
+                self.cancelled.append(str(order_id))
+                return {"ok": True, "order_id": str(order_id)}
+
+        modifier = _CancelModifier()
+        service.order_modifier = modifier
+        sig = {"signal_id": "SIG_1", "symbol": "AAPL", "direction": "long"}
+        result = {
+            "ok": False,
+            "error": "order_submission_unconfirmed:missing=1005",
+            "order_ids": ["1003", "1004", "1005"],
+            "missing_order_ids": ["1005"],
+            "bracket_group": "AAPL_long_group",
+            "protection_complete": False,
+        }
+
+        service._mark_signal_submit_failed(sig, result)
+
+        row = service.pb.signals["sig-row-1"]
+        cancel_sync = row["extra"]["submit_failed_cancel_sync"]
+        self.assertEqual(["1003", "1004", "1005"], modifier.cancelled)
+        self.assertTrue(cancel_sync["attempted"])
+        self.assertFalse(cancel_sync["gateway_request_blocked"])
+        self.assertEqual("cancel_sync_requested", cancel_sync["reason"])
+
     def test_validation_rejection_persists_human_reason_and_direction_context(self):
         service = _FakeSignalsService()
         service.signal_processor = SimpleNamespace(target_direction_provider=lambda: {"AAPL": "long"})
@@ -1205,6 +1237,38 @@ class RuntimeSignalLifecycleTest(unittest.TestCase):
         self.assertEqual(extra["target_direction_at_validation"], "long")
         self.assertEqual(extra["target_direction_source"], "active_target_direction_provider")
         self.assertIn("方向不匹配", extra["rejection_reason_human"])
+
+    def test_process_signals_expires_before_readiness_waiting(self):
+        service = _FakeSignalsService()
+        processed = []
+        expired = []
+
+        class _Router:
+            def fetch_pending_signals(self):
+                return [{"signal_id": "SIG_OLD", "symbol": "AAPL", "direction": "long"}]
+
+            def claim_signal(self, signal_id):
+                return True
+
+            def mark_processed(self, signal_id):
+                processed.append(signal_id)
+
+            def release_signal(self, signal_id):
+                raise AssertionError("expired signal should be finalized, not released")
+
+        service.session_keeper = SimpleNamespace(is_authenticated=True)
+        service.signal_router = _Router()
+        service._is_fixed_position_signal = lambda sig: False
+        service._mark_signal_validation_expired = lambda sig: expired.append(sig["signal_id"])
+        service.signal_processor = SimpleNamespace(
+            _is_signal_expired=lambda sig, now: True,
+            validate_signal=lambda sig: self.fail("expired signal should not wait on readiness"),
+        )
+
+        service._process_signals()
+
+        self.assertEqual(["SIG_OLD"], expired)
+        self.assertEqual(["SIG_OLD"], processed)
 
     def test_ack_submission_surfaces_protection_incomplete_status(self):
         service = _FakeSignalsService()

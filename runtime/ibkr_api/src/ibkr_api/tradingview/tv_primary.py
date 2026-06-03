@@ -23,6 +23,10 @@ TV_EVENT_TYPES = {"pre_alert", "entry", "risk_update", "exit", "heartbeat"}
 TV_EVENT_COLLECTION = "tv_webhook_events"
 TRADINGVIEW_SOURCE = "tradingview"
 TV_WEBHOOK_SPOOL_DIR_ENV = "IBKR_TV_WEBHOOK_SPOOL_DIR"
+TV_REAL_ACTIVE_ORDER_STATUSES = {"presubmitted", "pre_submitted", "submitted"}
+TV_REAL_FILLED_ORDER_STATUSES = {"executed", "filled", "partially_filled", "partiallyfilled", "protected_active"}
+TV_REAL_ORDER_STATUSES = TV_REAL_ACTIVE_ORDER_STATUSES | TV_REAL_FILLED_ORDER_STATUSES
+TV_TERMINAL_ORDER_STATUSES = {"cancelled", "canceled", "closed", "error", "expired", "failed", "inactive", "not_submitted", "rejected"}
 
 logger = logging.getLogger(__name__)
 
@@ -1436,35 +1440,263 @@ def _active_order_id(row: dict[str, Any]) -> str:
     return _text(row.get("broker_order_id") or row.get("order_id") or row.get("unique_id"))
 
 
-def _resolve_child_orders(pb: Any, *, signal_id: str, environment: str, escape_filter: Callable[[Any], str]) -> dict[str, str]:
-    if not signal_id:
-        return {}
-    try:
-        rows = pb.get_records(
-            "orders",
-            filter=(
-                f'signal_id = "{_escape(escape_filter, signal_id)}" && '
-                f'environment = "{_escape(escape_filter, environment)}"'
-            ),
-            sort="-created",
-            per_page=100,
-            page=1,
-        )
-    except Exception:
-        return {}
-    result: dict[str, str] = {}
-    for row in rows or []:
-        if not isinstance(row, dict):
+def _status_key(value: Any) -> str:
+    return _lower(value)
+
+
+def _order_status_key(row: dict[str, Any]) -> str:
+    return _status_key(row.get("status") or row.get("order_status") or row.get("orderStatus") or row.get("state"))
+
+
+def _order_role(row: dict[str, Any]) -> str:
+    extra = _as_object(row.get("extra"))
+    return _lower(row.get("role") or row.get("order_role") or row.get("order_type") or row.get("orderType") or extra.get("role"))
+
+
+def _unique_text(values: list[Any]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = _text(value)
+        if not text or text in seen:
             continue
-        role = _lower(row.get("role") or row.get("order_type"))
-        status = _lower(row.get("status"))
-        if status in {"filled", "closed", "cancelled", "canceled", "rejected", "expired"}:
+        seen.add(text)
+        result.append(text)
+    return result
+
+
+def _fetch_tv_related_orders(
+    pb: Any,
+    *,
+    signal_id: str,
+    trade_group_id: str,
+    environment: str,
+    escape_filter: Callable[[Any], str],
+) -> list[dict[str, Any]]:
+    filters: list[str] = []
+    env_filter = _escape(escape_filter, environment)
+    if signal_id:
+        filters.append(
+            f'signal_id = "{_escape(escape_filter, signal_id)}" && '
+            f'environment = "{env_filter}"'
+        )
+    if trade_group_id:
+        group_filter = _escape(escape_filter, trade_group_id)
+        filters.extend(
+            [
+                f'trade_group_id = "{group_filter}" && environment = "{env_filter}"',
+                f'bracket_group = "{group_filter}" && environment = "{env_filter}"',
+                f'entry_order_unique_id = "{group_filter}" && environment = "{env_filter}"',
+            ]
+        )
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for filter_expr in filters:
+        try:
+            records = pb.get_records("orders", filter=filter_expr, sort="-created", per_page=100, page=1)
+        except Exception:
+            records = []
+        for row in records or []:
+            if not isinstance(row, dict):
+                continue
+            key = _text(row.get("id") or row.get("broker_order_id") or row.get("order_id") or json.dumps(row, sort_keys=True))
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(dict(row))
+    return rows
+
+
+def _resolve_child_orders(
+    pb: Any,
+    *,
+    signal_id: str,
+    trade_group_id: str = "",
+    environment: str,
+    escape_filter: Callable[[Any], str],
+) -> dict[str, str]:
+    rows = _fetch_tv_related_orders(
+        pb,
+        signal_id=signal_id,
+        trade_group_id=trade_group_id,
+        environment=environment,
+        escape_filter=escape_filter,
+    )
+    result: dict[str, str] = {}
+    for row in rows:
+        role = _order_role(row)
+        status = _order_status_key(row)
+        if status not in TV_REAL_ACTIVE_ORDER_STATUSES:
             continue
         if role in {"stop_loss", "stoploss"} and not result.get("sl_order_id"):
             result["sl_order_id"] = _active_order_id(row)
         if role in {"take_profit", "takeprofit"} and not result.get("tp_order_id"):
             result["tp_order_id"] = _active_order_id(row)
     return result
+
+
+def _origin_signal_record(
+    pb: Any,
+    *,
+    signal_id: str,
+    environment: str,
+    broker_mode: str,
+    escape_filter: Callable[[Any], str],
+) -> dict[str, Any]:
+    if not signal_id:
+        return {}
+    environments = _unique_text([environment, broker_mode])
+    for candidate in environments:
+        try:
+            row = pb.get_first_record(
+                "ibkr_signals",
+                filter=(
+                    f'signal_id = "{_escape(escape_filter, signal_id)}" && '
+                    f'environment = "{_escape(escape_filter, candidate)}"'
+                ),
+                sort="-created",
+            )
+        except Exception:
+            row = None
+        if isinstance(row, dict) and row.get("id"):
+            return dict(row)
+    return {}
+
+
+def _origin_execution_payload(origin: dict[str, Any], *, environment: str, broker_mode: str) -> tuple[dict[str, Any], str]:
+    extra = _as_object((origin or {}).get("extra"))
+    by_mode = _as_object(extra.get("execution_by_mode"))
+    for mode in _unique_text([broker_mode, environment, extra.get("last_ack_broker_mode"), extra.get("last_runtime_broker_mode")]):
+        payload = _as_object(by_mode.get(mode))
+        if payload:
+            return payload, mode
+    for mode, payload in by_mode.items():
+        if isinstance(payload, dict):
+            return dict(payload), _text(mode)
+    return {}, ""
+
+
+def _origin_status_key(origin: dict[str, Any], execution_payload: dict[str, Any]) -> str:
+    extra = _as_object((origin or {}).get("extra"))
+    return _status_key(
+        (execution_payload or {}).get("status")
+        or (execution_payload or {}).get("order_status")
+        or (execution_payload or {}).get("orderStatus")
+        or (execution_payload or {}).get("primary_order_status")
+        or extra.get("last_execution_status")
+        or extra.get("status")
+        or (origin or {}).get("status")
+    )
+
+
+def _reverse_execution_preflight(
+    pb: Any,
+    *,
+    event_type: str,
+    signal_id: str,
+    trade_group_id: str,
+    environment: str,
+    broker_mode: str,
+    extra: dict[str, Any],
+    escape_filter: Callable[[Any], str],
+) -> dict[str, Any]:
+    origin = _origin_signal_record(
+        pb,
+        signal_id=signal_id,
+        environment=environment,
+        broker_mode=broker_mode,
+        escape_filter=escape_filter,
+    )
+    execution_payload, execution_mode = _origin_execution_payload(origin, environment=environment, broker_mode=broker_mode)
+    origin_status = _origin_status_key(origin, execution_payload)
+    related_orders = _fetch_tv_related_orders(
+        pb,
+        signal_id=signal_id,
+        trade_group_id=trade_group_id,
+        environment=broker_mode,
+        escape_filter=escape_filter,
+    )
+    real_active_orders = [row for row in related_orders if _order_status_key(row) in TV_REAL_ACTIVE_ORDER_STATUSES]
+    real_filled_orders = [row for row in related_orders if _order_status_key(row) in TV_REAL_FILLED_ORDER_STATUSES]
+    active_child_order_ids = {
+        key: value
+        for key, value in {
+            "sl_order_id": extra.get("sl_order_id"),
+            "tp_order_id": extra.get("tp_order_id"),
+        }.items()
+        if _text(value)
+    }
+    origin_real = origin_status in TV_REAL_ORDER_STATUSES
+    origin_filled = origin_status in TV_REAL_FILLED_ORDER_STATUSES
+    origin_terminal = origin_status in TV_TERMINAL_ORDER_STATUSES
+    action = "close" if event_type == "exit" else "adjust_bracket"
+    ok = False
+    reason = "ok"
+    ack_status = "pending"
+    order_linkage_status = ""
+
+    if event_type == "exit":
+        ok = bool(origin_filled or real_filled_orders)
+        if not ok:
+            if origin_terminal:
+                reason = "tv_exit_origin_order_not_active"
+                ack_status = "cancelled"
+                order_linkage_status = "origin_order_not_active"
+            else:
+                reason = "real_filled_order_required_for_close"
+                ack_status = "expired"
+    else:
+        ok = bool(active_child_order_ids or real_active_orders or origin_real)
+        if not ok:
+            if origin_terminal:
+                reason = "risk_update_origin_order_not_active"
+                ack_status = "cancelled"
+                order_linkage_status = "origin_order_not_active"
+            else:
+                reason = "real_child_order_required_for_adjust"
+                ack_status = "expired"
+
+    return {
+        "ok": ok,
+        "action": action,
+        "reason": reason,
+        "ack_status": ack_status,
+        "gateway_request_blocked": not ok,
+        "real_order_required": True,
+        "real_order_confirmed": bool(origin_real or real_active_orders or real_filled_orders),
+        "filled_order_or_position_confirmed": bool(origin_filled or real_filled_orders),
+        "broker_mode": broker_mode,
+        "data_environment": environment,
+        "origin_signal_id": signal_id,
+        "origin_signal_found": bool(origin),
+        "origin_execution_mode": execution_mode,
+        "origin_execution_status": origin_status,
+        "origin_execution_terminal": origin_terminal,
+        "trade_group_id": trade_group_id,
+        "order_ids": _unique_text([_active_order_id(row) for row in related_orders]),
+        "resolved_child_order_ids": active_child_order_ids,
+        "pb_order_count": len(related_orders),
+        "pb_order_statuses": sorted({_order_status_key(row).upper() for row in related_orders if _order_status_key(row)}),
+        "order_linkage_status": order_linkage_status,
+    }
+
+
+def _preflight_invalidated_extra(preflight: dict[str, Any]) -> dict[str, Any]:
+    reason = _text(preflight.get("reason")) or "real_order_preflight_failed"
+    return {
+        "execution_preflight": dict(preflight),
+        "result_status": "invalidated",
+        "invalidated_by": "real_order_preflight",
+        "invalidated_reason": reason,
+        "gateway_request_blocked": True,
+        "execution_readiness": "not_executable",
+        "execution_blocked_reason": reason,
+        "execution_blocked_message": (
+            "Execution action invalidated at TV ingest because no confirmed real broker order/position "
+            "was available for the requested follow-up action."
+        ),
+        "order_linkage_status": _text(preflight.get("order_linkage_status")),
+    }
 
 
 def _route_reverse(
@@ -1540,7 +1772,30 @@ def _route_reverse(
             )
     action_type = "close" if event_type == "exit" else "adjust_bracket"
     if action_type == "adjust_bracket":
-        extra.update(_resolve_child_orders(pb, signal_id=signal_id, environment=broker_mode, escape_filter=escape_filter))
+        extra.update(
+            _resolve_child_orders(
+                pb,
+                signal_id=signal_id,
+                trade_group_id=trade_group_id,
+                environment=broker_mode,
+                escape_filter=escape_filter,
+            )
+        )
+    preflight = _reverse_execution_preflight(
+        pb,
+        event_type=event_type,
+        signal_id=signal_id,
+        trade_group_id=trade_group_id,
+        environment=environment,
+        broker_mode=broker_mode,
+        extra=extra,
+        escape_filter=escape_filter,
+    )
+    reverse_status = "pending" if preflight.get("ok") else _text(preflight.get("ack_status") or "expired")
+    reverse_reason = exit_reason or risk_update_reason or event_type
+    if not preflight.get("ok"):
+        extra.update(_preflight_invalidated_extra(preflight))
+        reverse_reason = f"execution invalidated: {_text(preflight.get('reason')) or 'real_order_preflight_failed'}"
     reverse_payload = {
         "symbol": symbol,
         "broker_mode": broker_mode,
@@ -1553,8 +1808,8 @@ def _route_reverse(
         "score": _float(payload.get("quality_score"), 100.0),
         "triggered_signals": [item for item in (signal_id, trade_group_id, _text(payload.get("position_id")), event_id) if item],
         "action_type": action_type,
-        "status": "pending",
-        "reason": exit_reason or risk_update_reason or event_type,
+        "status": reverse_status,
+        "reason": reverse_reason,
         "bar_time_ms": _int(payload.get("bar_time_ms"), 0),
         "us_time": _text(payload.get("us_time")),
         "cn_time": _text(payload.get("cn_time")),

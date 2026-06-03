@@ -66,6 +66,7 @@
                 if (loadId !== latestRuntimeLoadId) return;
 
                 const runtimeConfig = Array.isArray(runtimeConfigResp?.items) ? runtimeConfigResp.items : [];
+                renderRuntimeFaultRecoveryStrip({ visible: false });
                 const baseSummary = {
                     ...(summary || {}),
                     today: {
@@ -125,6 +126,10 @@
                 console.error('Runtime 加载失败:', error);
                 document.getElementById('refreshInfo').textContent = '加载失败';
                 document.getElementById('lastAction').textContent = `加载失败：${error.message || error}`;
+                renderRuntimeFaultRecoveryStrip({
+                    visible: true,
+                    message: `加载失败：${error.message || error}`
+                });
                 showToast(`加载失败: ${error.message || error}`);
             } finally {
                 refreshInFlight = false;

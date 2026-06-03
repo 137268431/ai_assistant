@@ -447,6 +447,13 @@ class TradingServiceRuntimeStatusMixin:
         resource_governor = self._resource_governor_snapshot()
         watchlist_idle_topup = self._watchlist_idle_topup_status()
         order_lifecycle_status = self.order_lifecycle.status()
+        gateway_status = self.gateway_manager.status()
+        broker_status = gateway_status.get("broker") if isinstance(gateway_status.get("broker"), dict) else {}
+        account_data_circuit = (
+            broker_status.get("account_data_circuit")
+            if isinstance(broker_status.get("account_data_circuit"), dict)
+            else {}
+        )
         strategy_capacity = {
             "available": False,
             "capacity_full": False,
@@ -458,6 +465,8 @@ class TradingServiceRuntimeStatusMixin:
         if str(resource_governor.get("status") or "").strip().lower() == "critical":
             runtime_health = "unhealthy"
         elif str(resource_governor.get("status") or "").strip().lower() == "warning":
+            runtime_health = "degraded"
+        if bool(account_data_circuit.get("active")) and runtime_health == "ok":
             runtime_health = "degraded"
         if live_freshness_required and not bar_pipeline_disabled and bar_freshness_status != "fresh":
             runtime_health = "unhealthy"
@@ -484,7 +493,8 @@ class TradingServiceRuntimeStatusMixin:
             "ib_gateway_client_id": broker_client_id,
             "broker_client_id": broker_client_id,
             "market_session": market_session,
-            "gateway": self.gateway_manager.status(),
+            "gateway": gateway_status,
+            "account_data_circuit": account_data_circuit,
             "auth_recovery": auth_recovery,
             "session": session_status,
             "websocket": websocket_status,

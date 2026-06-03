@@ -99,8 +99,17 @@ class _HomePB:
         return True
 
 
-def _runtime_account_request(*, positions=None, status_code=200, error=""):
+def _runtime_account_request(*, positions=None, live_open_orders=None, live_order_groups=None, counts=None, status_code=200, error=""):
     def fake_request(method, base_url, path, params=None, timeout=0, **kwargs):
+        position_rows = list(positions or [])
+        live_rows = list(live_open_orders or [])
+        resolved_counts = {
+            "open_positions": len([item for item in position_rows if float(item.get("quantity", 0) or 0) != 0]),
+            "open_orders": len(live_rows),
+            "cancelable_orders": len([item for item in live_rows if item.get("can_cancel")]),
+            "editable_orders": len([item for item in live_rows if item.get("can_modify")]),
+            **(counts or {}),
+        }
         return {
             "ok": status_code < 400,
             "status_code": status_code,
@@ -108,12 +117,24 @@ def _runtime_account_request(*, positions=None, status_code=200, error=""):
                 "ok": status_code < 400,
                 "environment": "paper",
                 "account_id": "DU123",
-                "positions": list(positions or []),
-                "counts": {"open_positions": len([item for item in (positions or []) if float(item.get("quantity", 0) or 0) != 0])},
+                "positions": position_rows,
+                "live_open_orders": live_rows,
+                "live_order_groups": list(live_order_groups or []),
+                "counts": resolved_counts,
                 **({"error": error} if error else {}),
             },
             "error": error,
         }
+
+    return fake_request
+
+
+def _nested_runtime_account_request(*, positions=None, live_open_orders=None, live_order_groups=None):
+    base_request = _runtime_account_request(positions=positions, live_open_orders=live_open_orders, live_order_groups=live_order_groups)
+
+    def fake_request(method, base_url, path, params=None, timeout=0, **kwargs):
+        result = base_request(method, base_url, path, params=params, timeout=timeout, **kwargs)
+        return {**result, "payload": {"ok": True, "payload": result["payload"]}}
 
     return fake_request
 
@@ -123,9 +144,18 @@ class HomeOverviewApiTest(unittest.TestCase):
         start_ms = 1776916800000  # 2026-04-23 00:00 ET
         rows = {
             "ibkr_signals": [
-                {"environment": "live", "direction": "long", "symbol": "AAPL", "bar_time_ms": start_ms + 1, "created": "2026-04-23 09:35:00"},
-                {"environment": "live", "direction": "long", "symbol": "AMD", "us_time": "2026-04-23 09:34:00", "bar_time_ms": 0, "created": "2026-04-23 09:34:02"},
-                {"environment": "live", "direction": "short", "symbol": "MSFT", "bar_time_ms": start_ms + 2, "created": "2026-04-23 09:36:00"},
+                {"environment": "live", "direction": "long", "symbol": "AAPL", "status": "pending", "bar_time_ms": start_ms + 1, "created": "2026-04-23 09:35:00"},
+                {
+                    "environment": "live",
+                    "direction": "long",
+                    "symbol": "AMD",
+                    "status": "awaiting_confirm",
+                    "extra": {"execution_by_mode": {"paper": {"status": "submitted"}}},
+                    "us_time": "2026-04-23 09:34:00",
+                    "bar_time_ms": 0,
+                    "created": "2026-04-23 09:34:02",
+                },
+                {"environment": "live", "direction": "short", "symbol": "MSFT", "status": "rejected", "bar_time_ms": start_ms + 2, "created": "2026-04-23 09:36:00"},
                 {"environment": "paper", "direction": "long", "symbol": "TSLA", "bar_time_ms": start_ms + 3, "created": "2026-04-23 09:37:00"},
             ],
             "ibkr_reverse_signals": [
@@ -141,6 +171,8 @@ class HomeOverviewApiTest(unittest.TestCase):
                 {"environment": "paper", "symbol": "AAPL", "status": "Filled", "order_id": "1002", "broker_order_id": "1002", "order_type": "Entry", "role": "entry", "direction": "long", "position_side": "long", "signal_id": "sig-a", "trade_group_id": "g1", "fill_price": 100, "filled_qty": 5, "commission": 1, "bar_time_ms": start_ms + 6, "created": "2026-04-23 09:45:10"},
                 {"environment": "paper", "symbol": "AAPL", "status": "Filled", "order_id": "2001", "broker_order_id": "2001", "order_type": "TakeProfit", "role": "take_profit", "direction": "long", "position_side": "long", "signal_id": "sig-a", "trade_group_id": "g1", "fill_price": 110, "filled_qty": 10, "commission": 1, "bar_time_ms": start_ms + 7, "created": "2026-04-23 10:10:00"},
                 {"environment": "paper", "symbol": "MSFT", "status": "Filled", "order_id": "1003", "broker_order_id": "1003", "order_type": "Entry", "role": "entry", "direction": "short", "position_side": "short", "signal_id": "sig-b", "trade_group_id": "g2", "fill_price": 50, "filled_qty": 2, "bar_time_ms": start_ms + 8, "created": "2026-04-23 09:50:00"},
+                {"environment": "paper", "symbol": "NVDA", "status": "Submitted", "order_id": "1004", "broker_order_id": "1004", "order_type": "Entry", "role": "entry", "direction": "long", "position_side": "long", "signal_id": "sig-c", "trade_group_id": "g3", "bar_time_ms": start_ms + 8, "created": "2026-04-23 09:50:20"},
+                {"environment": "paper", "symbol": "TSLA", "status": "Canceled", "order_id": "1005", "broker_order_id": "1005", "order_type": "Entry", "role": "entry", "direction": "short", "position_side": "short", "signal_id": "sig-d", "trade_group_id": "g4", "bar_time_ms": start_ms + 8, "created": "2026-04-23 09:50:40"},
                 {"environment": "paper", "symbol": "ORPHAN", "status": "Submitted", "order_type": "StopLoss", "role": "stop_loss", "direction": "short", "position_side": "short", "signal_id": "orphan", "trade_group_id": "orphan", "bar_time_ms": start_ms + 9, "created": "2026-04-23 09:51:00"},
                 {"environment": "paper", "symbol": "OLD", "status": "Filled", "order_type": "Entry", "role": "entry", "direction": "long", "position_side": "long", "bar_time_ms": start_ms - 1, "created": "2026-04-22 09:50:00"},
             ],
@@ -160,12 +192,37 @@ class HomeOverviewApiTest(unittest.TestCase):
                     {"symbol": "MSFT", "quantity": -20},
                     {"symbol": "FLAT", "quantity": 0},
                 ],
+                live_open_orders=[
+                    {"order_id": "1004", "client_order_id": "coid-g3", "order_type": "LMT", "can_cancel": True, "can_modify": True},
+                    {"order_id": "2002", "parent_id": "1001", "client_order_id": "coid-g1-tp", "order_type": "LMT", "can_cancel": True, "can_modify": True},
+                    {"order_id": "2003", "parent_id": "1001", "client_order_id": "coid-g1-sl", "order_type": "STP", "can_cancel": True, "can_modify": False},
+                    {"order_id": "3001", "client_order_id": "close_msft", "role": "close", "order_type": "MKT", "can_cancel": False, "can_modify": False},
+                ],
             ),
             runtime_base_url="http://runtime.local",
         )
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["summary"]["signals"], {"long": 2, "short": 1, "total": 3})
+        self.assertEqual(
+            payload["summary"]["signals"],
+            {
+                "long": 2,
+                "short": 1,
+                "total": 3,
+                "status_counts": {
+                    "awaiting_confirm": 0,
+                    "pending": 1,
+                    "submitted": 1,
+                    "protected_active": 0,
+                    "protection_incomplete": 0,
+                    "executed": 0,
+                    "closed": 0,
+                    "expired": 0,
+                    "rejected": 1,
+                },
+                "terminal_count": 1,
+            },
+        )
         expected_action_breakdown = {"close": 1, "cancel": 1, "adjust": 1, "other": 1}
         self.assertEqual(
             payload["summary"]["execution_actions"],
@@ -173,15 +230,58 @@ class HomeOverviewApiTest(unittest.TestCase):
         )
         self.assertEqual(payload["summary"]["reverse_signals"]["pending"], 4)
         self.assertEqual(payload["summary"]["reverse_signals"]["pending_by_action"], expected_action_breakdown)
-        self.assertEqual(payload["summary"]["orders"], {"long": 1, "short": 1, "total": 2, "entry_order_count": 3})
+        self.assertEqual(
+            payload["summary"]["orders"],
+            {
+                "long": 2,
+                "short": 2,
+                "total": 4,
+                "entry_order_count": 5,
+                "status_counts": {"working": 1, "filled": 3, "cancelled": 1, "closed": 0, "other": 0},
+                "group_status_counts": {"open": 1, "filled": 1, "closed": 1, "cancelled": 1, "other": 0},
+            },
+        )
         self.assertEqual(
             payload["summary"]["positions"],
-            {"long": 1, "short": 1, "total": 2, "available": True, "source": "runtime_account", "account_id": "DU123"},
+            {
+                "long": 1,
+                "short": 1,
+                "total": 2,
+                "available": True,
+                "empty_confirmed": False,
+                "source": "runtime_account",
+                "flat_count": 1,
+                "position_rows": 3,
+                "account_id": "DU123",
+            },
+        )
+        self.assertEqual(
+            payload["summary"]["live_orders"],
+            {
+                "total": 4,
+                "leg_total": 4,
+                "total_groups": 3,
+                "cancelable": 3,
+                "cancelable_groups": 2,
+                "editable": 2,
+                "editable_groups": 2,
+                "available": True,
+                "detail_available": True,
+                "group_detail_available": True,
+                "source": "runtime_account",
+                "entry": 1,
+                "take_profit": 1,
+                "stop_loss": 1,
+                "close": 1,
+                "other": 0,
+            },
         )
         self.assertAlmostEqual(payload["summary"]["pnl"]["total"], 97.67)
         self.assertAlmostEqual(payload["summary"]["pnl"]["realized_gross_pnl"], 100.0)
         self.assertAlmostEqual(payload["summary"]["pnl"]["commission"], 2.33)
         self.assertEqual(payload["summary"]["pnl"]["source"], "gateway_execution_fills")
+        self.assertEqual(payload["summary"]["pnl"]["commission_source_label"], "IBKR commissionReport")
+        self.assertEqual(payload["summary"]["pnl"]["commission_environment_label"], "Paper 模拟")
         self.assertEqual(payload["summary"]["pnl"]["win_count"], 1)
         self.assertEqual(payload["recent_activity"][0]["type"], "order")
 
@@ -210,6 +310,105 @@ class HomeOverviewApiTest(unittest.TestCase):
         self.assertEqual(payload["summary"]["positions"]["total"], 0)
         self.assertFalse(payload["summary"]["positions"]["available"])
         self.assertEqual(payload["summary"]["positions"]["error"], "runtime offline")
+        self.assertFalse(payload["summary"]["live_orders"]["available"])
+        self.assertEqual(payload["summary"]["live_orders"]["error"], "runtime offline")
+
+    def test_dashboard_distinguishes_empty_positions_from_open_orders(self):
+        payload, status = build_home_dashboard_response(
+            _HomePB({"ibkr_signals": [], "ibkr_reverse_signals": [], "orders": [], "ibkr_execution_fills": []}),
+            payload={"broker_mode": "paper", "market_data_mode": "live", "market_date": "2026-04-23"},
+            time_strings=lambda: {"date": "2026-04-23"},
+            request_json_request=_runtime_account_request(
+                positions=[],
+                live_open_orders=[
+                    {"order_id": "5001", "client_order_id": "entry_empty_case", "order_type": "LMT", "can_cancel": True, "can_modify": True},
+                ],
+            ),
+            runtime_base_url="http://runtime.local",
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["summary"]["positions"]["available"])
+        self.assertTrue(payload["summary"]["positions"]["empty_confirmed"])
+        self.assertEqual(payload["summary"]["positions"]["total"], 0)
+        self.assertEqual(payload["summary"]["live_orders"]["total"], 1)
+        self.assertEqual(payload["summary"]["live_orders"]["leg_total"], 1)
+        self.assertEqual(payload["summary"]["live_orders"]["total_groups"], 1)
+        self.assertEqual(payload["summary"]["live_orders"]["entry"], 1)
+
+    def test_dashboard_accepts_nested_runtime_account_payload(self):
+        payload, status = build_home_dashboard_response(
+            _HomePB({"ibkr_signals": [], "ibkr_reverse_signals": [], "orders": [], "ibkr_execution_fills": []}),
+            payload={"broker_mode": "paper", "market_data_mode": "live", "market_date": "2026-04-23"},
+            time_strings=lambda: {"date": "2026-04-23"},
+            request_json_request=_nested_runtime_account_request(
+                positions=[{"symbol": "AAPL", "quantity": 10}],
+                live_open_orders=[{"order_id": "6001", "client_order_id": "entry_nested", "order_type": "LMT", "can_cancel": True}],
+            ),
+            runtime_base_url="http://runtime.local",
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["summary"]["positions"]["available"])
+        self.assertEqual(payload["summary"]["positions"]["long"], 1)
+        self.assertTrue(payload["summary"]["live_orders"]["available"])
+        self.assertEqual(payload["summary"]["live_orders"]["total"], 1)
+        self.assertEqual(payload["summary"]["live_orders"]["total_groups"], 1)
+
+    def test_dashboard_counts_bracket_live_orders_as_one_group(self):
+        payload, status = build_home_dashboard_response(
+            _HomePB({"ibkr_signals": [], "ibkr_reverse_signals": [], "orders": [], "ibkr_execution_fills": []}),
+            payload={"broker_mode": "paper", "market_data_mode": "live", "market_date": "2026-04-23"},
+            time_strings=lambda: {"date": "2026-04-23"},
+            request_json_request=_runtime_account_request(
+                positions=[],
+                live_open_orders=[
+                    {"order_id": "7001", "client_order_id": "entry_combo", "order_type": "LMT", "can_cancel": True, "can_modify": True},
+                    {"order_id": "7002", "parent_id": "7001", "client_order_id": "tp_combo", "order_type": "LMT", "can_cancel": True, "can_modify": True},
+                    {"order_id": "7003", "parent_id": "7001", "client_order_id": "sl_combo", "order_type": "STP", "can_cancel": True, "can_modify": False},
+                ],
+            ),
+            runtime_base_url="http://runtime.local",
+        )
+
+        self.assertEqual(status, 200)
+        live_orders = payload["summary"]["live_orders"]
+        self.assertEqual(live_orders["total"], 3)
+        self.assertEqual(live_orders["leg_total"], 3)
+        self.assertEqual(live_orders["total_groups"], 1)
+        self.assertEqual(live_orders["cancelable"], 3)
+        self.assertEqual(live_orders["cancelable_groups"], 1)
+        self.assertEqual(live_orders["editable"], 2)
+        self.assertEqual(live_orders["editable_groups"], 1)
+        self.assertEqual(live_orders["entry"], 1)
+        self.assertEqual(live_orders["take_profit"], 1)
+        self.assertEqual(live_orders["stop_loss"], 1)
+
+    def test_dashboard_prefers_runtime_live_order_groups(self):
+        payload, status = build_home_dashboard_response(
+            _HomePB({"ibkr_signals": [], "ibkr_reverse_signals": [], "orders": [], "ibkr_execution_fills": []}),
+            payload={"broker_mode": "paper", "market_data_mode": "live", "market_date": "2026-04-23"},
+            time_strings=lambda: {"date": "2026-04-23"},
+            request_json_request=_runtime_account_request(
+                positions=[],
+                live_open_orders=[
+                    {"order_id": "8001", "client_order_id": "unlinked_a", "order_type": "LMT", "can_cancel": True, "can_modify": False},
+                    {"order_id": "8002", "client_order_id": "unlinked_b", "order_type": "STP", "can_cancel": False, "can_modify": True},
+                ],
+                live_order_groups=[
+                    {"group_key": "runtime-group", "live_order_count": 2, "cancelable_orders": 1, "editable_orders": 1},
+                ],
+            ),
+            runtime_base_url="http://runtime.local",
+        )
+
+        self.assertEqual(status, 200)
+        live_orders = payload["summary"]["live_orders"]
+        self.assertEqual(live_orders["total"], 2)
+        self.assertEqual(live_orders["leg_total"], 2)
+        self.assertEqual(live_orders["total_groups"], 1)
+        self.assertEqual(live_orders["cancelable_groups"], 1)
+        self.assertEqual(live_orders["editable_groups"], 1)
 
     def test_market_payload_merges_config_watchlist_quotes_and_daily_fallback(self):
         rows = {
@@ -286,6 +485,13 @@ class HomeOverviewApiTest(unittest.TestCase):
 
         self.assertIn("/api/custom/ibkr/home-dashboard", index_html)
         self.assertIn("/api/custom/ibkr/home-market", index_html)
+        self.assertIn('id="todaySignalsStatusSummary"', index_html)
+        self.assertIn('id="todayOrdersFoot"', index_html)
+        self.assertIn('id="positionsLiveOrdersSummary"', index_html)
+        self.assertIn("summary.live_orders", index_html)
+        self.assertIn("当前挂单组", index_html)
+        self.assertIn("订单腿", index_html)
+        self.assertIn("IBKR commissionReport", index_html)
         self.assertNotIn("getFullList", index_html)
         self.assertNotIn("pocketbase.umd.min.js", index_html)
         self.assertIn('Cache-Control "no-cache"', caddy)

@@ -173,6 +173,20 @@ def _et_ms(text):
     return int(datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=ET).timestamp() * 1000)
 
 
+def _create_origin_signal(pb, signal_id, *, environment="live", broker_mode="paper", status="submitted"):
+    return pb.create_record(
+        "ibkr_signals",
+        {
+            "signal_id": signal_id,
+            "environment": environment,
+            "symbol": "AAPL",
+            "direction": "long",
+            "status": status,
+            "extra": {"execution_by_mode": {broker_mode: {"status": status}}},
+        },
+    )
+
+
 def _mtf_payload(status="warn", score=72.5, block_reason="none"):
     return {
         "timeframe_stack": "entry=2;confirm=5,15,60;mode=shadow_soft",
@@ -953,6 +967,9 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertEqual(reverse["extra"]["origin_signal_id"], "tv-entry-alias-1")
         self.assertEqual(reverse["extra"]["trade_group_id"], "tv-entry-alias-1")
         self.assertNotIn("sl_order_id", reverse["extra"])
+        self.assertEqual("expired", reverse["status"])
+        self.assertEqual("real_order_preflight", reverse["extra"]["invalidated_by"])
+        self.assertTrue(reverse["extra"]["gateway_request_blocked"])
 
     def test_risk_update_preserves_requested_sides_for_stop_only_runner_trail(self):
         pb = _FakePB()
@@ -1016,6 +1033,7 @@ class TvPrimaryIngestTests(unittest.TestCase):
 
     def test_risk_update_preserves_explicit_noop_runner_activation(self):
         pb = _FakePB()
+        _create_origin_signal(pb, "tv-entry-1")
 
         response, status = _process(
             pb,
@@ -1051,6 +1069,7 @@ class TvPrimaryIngestTests(unittest.TestCase):
 
     def test_risk_update_coalesces_same_type_pending_update(self):
         pb = _FakePB()
+        _create_origin_signal(pb, "tv-entry-coalesce-1")
 
         for event_id, seq, new_stop in (
             ("tv-risk-breakeven-1", 1, 187.10),
@@ -1086,6 +1105,7 @@ class TvPrimaryIngestTests(unittest.TestCase):
 
     def test_risk_update_keeps_different_types_pending(self):
         pb = _FakePB()
+        _create_origin_signal(pb, "tv-entry-types-1")
 
         for event_id, reason, seq in (
             ("tv-risk-breakeven-type", "breakeven_trail", 1),
@@ -1117,6 +1137,7 @@ class TvPrimaryIngestTests(unittest.TestCase):
 
     def test_risk_update_stale_seq_does_not_overwrite_newer_same_type(self):
         pb = _FakePB()
+        _create_origin_signal(pb, "tv-entry-stale-1")
 
         for event_id, seq, new_stop in (
             ("tv-risk-runner-newer", 5, 190.50),
@@ -1150,6 +1171,7 @@ class TvPrimaryIngestTests(unittest.TestCase):
 
     def test_exit_routes_to_close_reverse_signal(self):
         pb = _FakePB()
+        _create_origin_signal(pb, "tv-entry-1", status="filled")
         response, status = _process(
             pb,
             {
@@ -1172,8 +1194,35 @@ class TvPrimaryIngestTests(unittest.TestCase):
         self.assertEqual(reverse["priority"], 9)
         self.assertEqual(reverse["extra"]["reverse_kind"], "tv_exit")
 
+    def test_exit_without_real_order_evidence_expires_at_ingest(self):
+        pb = _FakePB()
+        response, status = _process(
+            pb,
+            {
+                "source": "tv",
+                "event_type": "exit",
+                "event_id": "tv-exit-no-real-order",
+                "symbol": "AAPL",
+                "position_side": "long",
+                "signal_id": "tv-entry-missing",
+                "exit_reason": "take_profit",
+                "environment": "paper",
+                "market_data_mode": "live",
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
+        self.assertEqual("expired", response["status"])
+        reverse = pb.records["ibkr_reverse_signals"][0]
+        self.assertEqual("expired", reverse["status"])
+        self.assertIn("real_filled_order_required_for_close", reverse["reason"])
+        self.assertEqual("real_order_preflight", reverse["extra"]["invalidated_by"])
+        self.assertTrue(reverse["extra"]["gateway_request_blocked"])
+
     def test_exit_close_reverse_signals_do_not_coalesce(self):
         pb = _FakePB()
+        _create_origin_signal(pb, "tv-entry-exit-1", status="filled")
 
         for event_id in ("tv-exit-no-coalesce-1", "tv-exit-no-coalesce-2"):
             response, status = _process(
@@ -1198,6 +1247,7 @@ class TvPrimaryIngestTests(unittest.TestCase):
 
     def test_exit_preserves_exit_reason_and_runner_metadata(self):
         pb = _FakePB()
+        _create_origin_signal(pb, "tv-entry-1", status="filled")
         response, status = _process(
             pb,
             {

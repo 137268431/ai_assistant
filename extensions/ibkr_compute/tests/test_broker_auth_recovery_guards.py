@@ -59,6 +59,41 @@ class BrokerReadyGuardTest(unittest.TestCase):
         self.assertTrue(ready)
         connect_mock.assert_called_once_with("127.0.0.1", 4001, 31)
 
+    def test_account_data_circuit_fails_fast_after_repeated_timeouts(self):
+        app = _IBGatewayApp("127.0.0.1", 4001, 31)
+        app._ensure_ready = mock.Mock(return_value={"ready": True})
+        app.reqPositions = mock.Mock()
+
+        for _ in range(4):
+            app._record_account_data_issue("positions", "positions_timeout")
+
+        with self.assertRaisesRegex(TimeoutError, "account_data_circuit_open"):
+            app.request_positions(timeout=1)
+
+        app.reqPositions.assert_not_called()
+        self.assertTrue(app.status()["account_data_circuit"]["active"])
+
+    def test_account_data_circuit_clears_after_success(self):
+        app = _IBGatewayApp("127.0.0.1", 4001, 31)
+        for _ in range(4):
+            app._record_account_data_issue("account_summary", "account_summary_timeout")
+
+        self.assertTrue(app.status()["account_data_circuit"]["active"])
+
+        app._record_account_data_success("account_summary")
+
+        self.assertFalse(app.status()["account_data_circuit"]["active"])
+        self.assertEqual(0, app.status()["account_data_circuit"]["recent_failure_count"])
+
+    def test_account_data_unsubscribed_errors_contribute_to_circuit(self):
+        app = _IBGatewayApp("127.0.0.1", 4001, 31)
+        for _ in range(4):
+            app.error(-1, 2100, "API client has been unsubscribed from account data.")
+
+        circuit = app.status()["account_data_circuit"]
+        self.assertTrue(circuit["active"])
+        self.assertEqual(4, circuit["recent_failure_count"])
+
 
 class _DummyStaleBrokerService(TradingServiceAuthRecoveryMixin):
     def __init__(self):

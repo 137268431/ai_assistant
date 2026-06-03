@@ -46,6 +46,28 @@ INACTIVE_ORDER_STATUSES = {
     "INACTIVE",
     "REJECTED",
 }
+REAL_ACTIVE_ORDER_STATUSES = {
+    "PRESUBMITTED",
+    "PRE_SUBMITTED",
+    "SUBMITTED",
+}
+REAL_FILLED_ORDER_STATUSES = {
+    "EXECUTED",
+    "FILLED",
+    "PARTIALLYFILLED",
+    "PARTIALLY_FILLED",
+    "PROTECTED_ACTIVE",
+}
+REAL_ORDER_STATUSES = REAL_ACTIVE_ORDER_STATUSES | REAL_FILLED_ORDER_STATUSES
+TRACEABLE_CANCEL_ORDER_STATUSES = REAL_ACTIVE_ORDER_STATUSES | {
+    "APIPENDING",
+    "API_PENDING",
+    "INIT",
+    "PENDINGCANCEL",
+    "PENDING_CANCEL",
+    "PENDINGSUBMIT",
+    "PENDING_SUBMIT",
+}
 REVERSE_CONFIRM_ATTEMPTS = max(1, int(os.environ.get("IBKR_REVERSE_CONFIRM_ATTEMPTS", "3") or "3"))
 REVERSE_CONFIRM_POLL_SECONDS = max(0.0, float(os.environ.get("IBKR_REVERSE_CONFIRM_POLL_SECONDS", "0.25") or 0.25))
 
@@ -251,6 +273,14 @@ class ReverseSignalHandler:
             or ""
         ).strip()
 
+    @staticmethod
+    def _status_key(value: Any) -> str:
+        return str(value or "").strip().upper().replace("-", "_").replace(" ", "_")
+
+    @classmethod
+    def _order_status_key(cls, order: Dict[str, Any]) -> str:
+        return cls._status_key(cls._order_status(order))
+
     @classmethod
     def _is_active_order_status(cls, status: Any) -> bool:
         text = str(status or "").strip().upper()
@@ -394,6 +424,54 @@ class ReverseSignalHandler:
             "ok": False,
             "ack_status": "pending",
             "reason": f"reverse pending retry: {block_detail['reason']}",
+            "detail": detail,
+        }
+
+    @classmethod
+    def _mark_invalidated(
+        cls,
+        detail: Dict[str, Any],
+        reason: str,
+        *,
+        ack_status: str = "expired",
+        **context: Any,
+    ) -> Dict[str, Any]:
+        cls._append_state(detail, "invalidated")
+        invalid_reason = str(reason or "real_order_preflight_failed")
+        detail["blocked"] = False
+        detail["ready_reentry"] = False
+        detail["reentry_submitted"] = False
+        detail["result_status"] = "invalidated"
+        detail["invalidated_by"] = "real_order_preflight"
+        detail["invalidated_reason"] = invalid_reason
+        detail["gateway_request_blocked"] = True
+        detail["execution_readiness"] = "not_executable"
+        detail["execution_blocked_reason"] = invalid_reason
+        detail["execution_blocked_message"] = (
+            "Execution action invalidated because no confirmed real broker order/position "
+            "was available for the requested follow-up action."
+        )
+        if context.get("order_linkage_status"):
+            detail["order_linkage_status"] = context.get("order_linkage_status")
+        if context:
+            detail["invalidation_context"] = {
+                key: value for key, value in context.items() if value not in (None, "")
+            }
+        runtime_detail = detail.setdefault("reverse_runtime_detail", {})
+        runtime_detail.update(
+            {
+                "invalidated_by": "real_order_preflight",
+                "invalidated_reason": invalid_reason,
+                "gateway_request_blocked": True,
+                "execution_readiness": "not_executable",
+            }
+        )
+        if context:
+            runtime_detail["invalidation_context"] = dict(detail.get("invalidation_context") or {})
+        return {
+            "ok": False,
+            "ack_status": ack_status if ack_status in REVERSE_PERSISTED_STATUSES else "expired",
+            "reason": f"execution invalidated: {invalid_reason}",
             "detail": detail,
         }
 
@@ -798,6 +876,27 @@ class ReverseSignalHandler:
                 safe_action="no_reentry_until_protection_reviewed",
             )
 
+        if action in {"close", "cancel", "adjust_sl", "adjust_tp"}:
+            preflight = self._execution_preflight(signal, action)
+            detail["execution_preflight"] = preflight
+            if not preflight.get("ok"):
+                return self._mark_invalidated(
+                    detail,
+                    str(preflight.get("reason") or "real_order_preflight_failed"),
+                    ack_status=str(preflight.get("ack_status") or "expired"),
+                    action=action,
+                    real_order_required=True,
+                    real_order_confirmed=preflight.get("real_order_confirmed"),
+                    filled_order_or_position_confirmed=preflight.get("filled_order_or_position_confirmed"),
+                    order_ids=preflight.get("order_ids"),
+                    trade_group_id=preflight.get("trade_group_id"),
+                    origin_signal_id=preflight.get("origin_signal_id"),
+                    origin_execution_status=preflight.get("origin_execution_status"),
+                    order_linkage_status=preflight.get("order_linkage_status"),
+                    pb_order_statuses=preflight.get("pb_order_statuses"),
+                    gateway_request_blocked=True,
+                )
+
         if action == "close":
             return self._handle_close(signal, detail)
         if action == "cancel":
@@ -828,6 +927,229 @@ class ReverseSignalHandler:
             if "protection_complete" in source and source.get("protection_complete") is False:
                 return True
         return False
+
+    def _execution_order_ids_from_signal(self, signal: dict) -> List[str]:
+        values = list(self._related_order_ids_from_signal(signal))
+        values.extend(
+            self._signal_value(signal, key)
+            for key in (
+                "sl_order_id",
+                "stop_loss_order_id",
+                "stop_order_id",
+                "tp_order_id",
+                "take_profit_order_id",
+                "profit_target_order_id",
+            )
+        )
+        return self._unique_nonempty(values)
+
+    def _requested_child_order_ids(self, signal: dict, action: str) -> List[str]:
+        keys: Tuple[str, ...]
+        if action == "adjust_sl":
+            keys = self._side_order_id_keys("stop_loss")
+        elif action == "adjust_tp":
+            keys = self._side_order_id_keys("take_profit")
+        elif action == "adjust_bracket":
+            explicit_sides, has_explicit_sides, _side_source = self._requested_adjust_sides(signal)
+            if has_explicit_sides:
+                requested_sides = set(explicit_sides)
+            else:
+                requested_sides = set()
+                if self._signal_has_value(signal, "new_sl"):
+                    requested_sides.add("stop_loss")
+                if self._signal_has_value(signal, "new_tp"):
+                    requested_sides.add("take_profit")
+                if not requested_sides:
+                    requested_sides.update({"stop_loss", "take_profit"})
+            selected_keys: List[str] = []
+            if "stop_loss" in requested_sides:
+                selected_keys.extend(self._side_order_id_keys("stop_loss"))
+            if "take_profit" in requested_sides:
+                selected_keys.extend(self._side_order_id_keys("take_profit"))
+            keys = tuple(selected_keys)
+        else:
+            keys = ()
+        return self._unique_nonempty([self._signal_value(signal, key) for key in keys])
+
+    def _origin_execution_status_key(self, origin: Dict[str, Any], execution_payload: Dict[str, Any]) -> str:
+        origin_extra = self._as_dict((origin or {}).get("extra"))
+        return self._status_key(
+            (execution_payload or {}).get("status")
+            or (execution_payload or {}).get("order_status")
+            or (execution_payload or {}).get("orderStatus")
+            or origin_extra.get("last_execution_status")
+            or origin_extra.get("status")
+            or (origin or {}).get("status")
+        )
+
+    def _signal_execution_status_keys(self, signal: dict) -> set[str]:
+        keys = {
+            self._status_key(self._signal_value(signal, key))
+            for key in (
+                "target_order_status",
+                "order_status",
+                "origin_execution_status",
+                "execution_status",
+                "last_execution_status",
+                "target_state",
+                "relation_status",
+            )
+        }
+        return {key for key in keys if key}
+
+    @staticmethod
+    def _orders_summary(orders: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return [
+            {
+                "id": str(order.get("id") or ""),
+                "order_id": ReverseSignalHandler._order_id(order),
+                "status": ReverseSignalHandler._order_status(order),
+                "role": str(order.get("role") or ReverseSignalHandler._as_dict(order.get("extra")).get("role") or ""),
+            }
+            for order in orders or []
+        ]
+
+    def _execution_preflight(self, signal: dict, action: str) -> Dict[str, Any]:
+        runtime_environment = normalize_broker_mode(
+            self._signal_value(signal, "broker_mode") or self._signal_value(signal, "environment"),
+            self.environment,
+        )
+        trade_group_id = self._related_trade_group_id(signal)
+        requested_child_order_ids = self._requested_child_order_ids(signal, action)
+        order_ids = self._unique_nonempty(self._execution_order_ids_from_signal(signal) + requested_child_order_ids)
+        related_orders = self._fetch_related_orders(
+            trade_group_id=trade_group_id,
+            order_ids=order_ids,
+            environment=runtime_environment,
+        ) if (trade_group_id or order_ids) else []
+        origin = self._origin_signal_record(signal)
+        execution_payload, execution_mode = self._origin_execution_payload(origin, runtime_environment)
+        origin_status_key = self._origin_execution_status_key(origin, execution_payload)
+        signal_status_keys = self._signal_execution_status_keys(signal)
+        order_status_keys = {self._order_status_key(order) for order in related_orders}
+        traceable_order_ids = self._unique_nonempty(order_ids + [self._order_id(order) for order in related_orders])
+        real_active_orders = [
+            order for order in related_orders if self._order_status_key(order) in REAL_ACTIVE_ORDER_STATUSES
+        ]
+        real_filled_orders = [
+            order for order in related_orders if self._order_status_key(order) in REAL_FILLED_ORDER_STATUSES
+        ]
+        traceable_cancel_orders = [
+            order for order in related_orders if self._order_status_key(order) in TRACEABLE_CANCEL_ORDER_STATUSES
+        ]
+        origin_real = origin_status_key in REAL_ORDER_STATUSES
+        origin_terminal = self._origin_execution_terminal(origin, execution_payload)
+        has_local_linkage = bool(trade_group_id or order_ids or related_orders or origin)
+        signal_claims_filled = bool(
+            (signal_status_keys & REAL_FILLED_ORDER_STATUSES) or "FILLED_POSITION" in signal_status_keys
+        ) and has_local_linkage
+        has_filled_state = bool(
+            real_filled_orders
+            or origin_status_key in REAL_FILLED_ORDER_STATUSES
+            or signal_claims_filled
+        )
+        has_real_order = bool(
+            real_active_orders
+            or real_filled_orders
+            or origin_real
+            or (signal_status_keys & REAL_ORDER_STATUSES)
+        )
+        has_traceable_cancel_target = bool(
+            traceable_order_ids
+            or traceable_cancel_orders
+            or (origin_real and (trade_group_id or order_ids))
+        )
+        explicit_sides, has_explicit_sides, _side_source = self._requested_adjust_sides(signal)
+        adjust_noop = action == "adjust_bracket" and has_explicit_sides and not explicit_sides
+        origin_child_order_ids = self._unique_nonempty(
+            [
+                self._child_order_id_from_payload(execution_payload, "stop_loss"),
+                self._child_order_id_from_payload(execution_payload, "take_profit"),
+            ]
+        )
+        requested_child_id_set = set(requested_child_order_ids)
+        verified_child_order_ids = set()
+        if requested_child_id_set:
+            for order in real_active_orders:
+                refs = set(self._order_ref_values(order))
+                if requested_child_id_set & refs:
+                    verified_child_order_ids.update(requested_child_id_set & refs)
+            if origin_real:
+                verified_child_order_ids.update(requested_child_id_set & set(origin_child_order_ids))
+        child_order_ids_verified = bool(
+            requested_child_order_ids
+            and requested_child_id_set.issubset(verified_child_order_ids)
+        )
+        if requested_child_order_ids:
+            has_adjust_target = child_order_ids_verified
+        else:
+            has_adjust_target = bool(
+                adjust_noop and origin_real
+                or real_active_orders
+                or origin_real
+            )
+
+        preflight = {
+            "ok": False,
+            "action": action,
+            "real_order_required": True,
+            "real_order_confirmed": has_real_order,
+            "filled_order_or_position_confirmed": has_filled_state,
+            "broker_mode": runtime_environment,
+            "trade_group_id": trade_group_id,
+            "order_ids": traceable_order_ids,
+            "requested_child_order_ids": requested_child_order_ids,
+            "verified_child_order_ids": sorted(verified_child_order_ids),
+            "origin_child_order_ids": origin_child_order_ids,
+            "adjust_noop": adjust_noop,
+            "pb_order_count": len(related_orders),
+            "pb_order_statuses": sorted(order_status_keys),
+            "pb_orders": self._orders_summary(related_orders),
+            "origin_signal_id": self._origin_signal_id(signal),
+            "origin_signal_found": bool(origin),
+            "origin_execution_mode": execution_mode,
+            "origin_execution_status": origin_status_key,
+            "origin_execution_terminal": origin_terminal,
+            "gateway_request_blocked": False,
+            "reason": "ok",
+        }
+
+        if action == "close":
+            preflight["ok"] = has_filled_state
+            if not preflight["ok"]:
+                if origin_terminal:
+                    preflight["reason"] = "tv_exit_origin_order_not_active" if self._is_tv_exit_signal(signal) else "origin_order_not_active"
+                    preflight["ack_status"] = "cancelled"
+                    preflight["order_linkage_status"] = "origin_order_not_active"
+                else:
+                    preflight["reason"] = "real_filled_order_required_for_close"
+                    preflight["ack_status"] = "expired"
+        elif action == "cancel":
+            preflight["ok"] = has_traceable_cancel_target
+            if not preflight["ok"]:
+                preflight["reason"] = "traceable_order_required_for_cancel"
+                preflight["ack_status"] = "expired"
+        elif action in {"adjust_sl", "adjust_tp", "adjust_bracket"}:
+            preflight["ok"] = has_adjust_target
+            if not preflight["ok"]:
+                if origin_terminal:
+                    preflight["reason"] = (
+                        "risk_update_origin_order_not_active"
+                        if self._is_tv_risk_update_signal(signal)
+                        else "origin_order_not_active"
+                    )
+                    preflight["ack_status"] = "cancelled"
+                    preflight["order_linkage_status"] = "origin_order_not_active"
+                else:
+                    preflight["reason"] = "real_child_order_required_for_adjust"
+                    preflight["ack_status"] = "expired"
+        else:
+            preflight["reason"] = "unsupported_reverse_action"
+            preflight["ack_status"] = "expired"
+
+        if not preflight["ok"]:
+            preflight["gateway_request_blocked"] = True
+        return preflight
 
     def _handle_close(self, signal: dict, detail: Dict[str, Any]) -> Dict[str, Any]:
         tv_exit_preflight = self._tv_exit_non_executable_preflight(signal)
@@ -1946,7 +2268,7 @@ class ReverseSignalHandler:
         for order in orders or []:
             if self._child_order_role(order) != side:
                 continue
-            if not self._is_active_order(order):
+            if self._order_status_key(order) not in REAL_ACTIVE_ORDER_STATUSES:
                 continue
             order_id = self._child_order_id_from_order(order)
             if order_id:
@@ -1983,7 +2305,7 @@ class ReverseSignalHandler:
         stable_refs: List[str],
     ) -> Tuple[str, Dict[str, Any]]:
         for order in orders or []:
-            if not self._is_active_order(order):
+            if self._order_status_key(order) not in REAL_ACTIVE_ORDER_STATUSES:
                 continue
             if self._child_order_role(order) != side:
                 continue
@@ -2318,6 +2640,26 @@ class ReverseSignalHandler:
                 "reason": "risk_update_seq_stale",
                 "detail": detail,
             }
+
+        preflight = self._execution_preflight(signal, "adjust_bracket")
+        detail["execution_preflight"] = preflight
+        if not preflight.get("ok"):
+            return self._mark_invalidated(
+                detail,
+                str(preflight.get("reason") or "real_child_order_required_for_adjust"),
+                ack_status=str(preflight.get("ack_status") or "expired"),
+                action="adjust_bracket",
+                real_order_required=True,
+                real_order_confirmed=preflight.get("real_order_confirmed"),
+                order_ids=preflight.get("order_ids"),
+                requested_child_order_ids=preflight.get("requested_child_order_ids"),
+                trade_group_id=preflight.get("trade_group_id"),
+                origin_signal_id=preflight.get("origin_signal_id"),
+                origin_execution_status=preflight.get("origin_execution_status"),
+                order_linkage_status=preflight.get("order_linkage_status"),
+                pb_order_statuses=preflight.get("pb_order_statuses"),
+                gateway_request_blocked=True,
+            )
 
         explicit_requested_sides, has_explicit_requested_sides, requested_sides_source = self._requested_adjust_sides(signal)
         if has_explicit_requested_sides:

@@ -60,6 +60,33 @@ def _summary_has_any(summary: dict[str, Any], *keys: str) -> bool:
     return any(str(key).strip().lower() in lookup for key in keys)
 
 
+def _summary_has_substantive_snapshot(summary: dict[str, Any]) -> bool:
+    lookup = _summary_lookup(summary)
+    for key in (
+        "account_type",
+        "net_liquidation",
+        "available_funds",
+        "excess_liquidity",
+        "equity_with_loan",
+        "gross_position_value",
+        "total_cash_value",
+        "initial_margin",
+        "maintenance_margin",
+    ):
+        raw_value = lookup.get(key)
+        if raw_value in (None, ""):
+            continue
+        if isinstance(raw_value, dict):
+            lowered = {str(k).strip().lower(): v for k, v in raw_value.items()}
+            raw_value = lowered.get("amount", lowered.get("value"))
+        number = _optional_float(raw_value)
+        if number is None:
+            return True
+        if number != 0.0:
+            return True
+    return False
+
+
 def _safe_bool(value: Any, default: bool = False) -> bool:
     if value is None:
         return bool(default)
@@ -179,6 +206,9 @@ def build_buying_power_guard(
     remaining_available = remaining_value is not None
     remaining = float(remaining_value) if remaining_available else None
     net_liq = _summary_number(summary_obj, "net_liquidation") or 0.0
+    snapshot_unavailable = not summary_obj or (
+        remaining_available and remaining == 0.0 and not _summary_has_substantive_snapshot(summary_obj)
+    )
     requested = max(0.0, _safe_float(requested_exposure, 0.0))
     remaining_after = remaining - requested if remaining is not None else None
     warn_usd = max(
@@ -224,6 +254,12 @@ def build_buying_power_guard(
     reason = "ok"
     if not enabled:
         reason = "buying_power_guard_disabled"
+    elif snapshot_unavailable:
+        state = "unavailable"
+        reason = "account_snapshot_unavailable"
+        remaining_available = False
+        remaining = None
+        remaining_after = None
     elif not remaining_available:
         state = "unavailable"
         reason = (

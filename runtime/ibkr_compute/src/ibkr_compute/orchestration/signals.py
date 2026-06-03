@@ -3,11 +3,13 @@ from __future__ import annotations
 import copy
 import json
 import time
+from datetime import datetime, timezone
 
 from ibkr_compute.api.account.buying_power_guard import (
     build_buying_power_guard,
     estimate_entry_exposure,
 )
+from ibkr_compute.core.time_utils import ET
 
 
 def _service_mod():
@@ -230,6 +232,17 @@ class TradingServiceSignalsMixin:
                     finalized = True
                     continue
 
+                if self._signal_runtime_expired(sig):
+                    service_mod.logger.info(
+                        "Signal expired before runtime readiness/submission: %s %s",
+                        sig.get("symbol"),
+                        sig.get("direction"),
+                    )
+                    self._mark_signal_validation_expired(sig)
+                    self.signal_router.mark_processed(signal_id)
+                    finalized = True
+                    continue
+
                 valid, reason = self.signal_processor.validate_signal(sig)
                 if not valid:
                     if reason == "signal_expired":
@@ -280,20 +293,36 @@ class TradingServiceSignalsMixin:
                     self._mark_signal_waiting_for_capacity(sig, capacity)
                     continue
 
-                guard_ok, guarded_sig, guard_reason = self._prepare_pre_submit_signal(sig)
-                if not guard_ok:
-                    service_mod.logger.warning(
-                        "Signal rejected by entry pre-submit guard: signal_id=%s symbol=%s reason=%s",
-                        signal_id,
-                        sig.get("symbol"),
-                        guard_reason,
-                    )
-                    self._mark_signal_entry_guard_rejected(sig, guard_reason)
-                    self.signal_router.mark_processed(signal_id)
-                    finalized = True
-                    continue
+                direct_tv_entry = self._tv_direct_execution_enabled(sig)
+                if direct_tv_entry:
+                    direct_ok, direct_sig, direct_reason = self._prepare_tv_direct_entry_signal(sig)
+                    if not direct_ok:
+                        service_mod.logger.info(
+                            "TV direct signal rejected before submission: signal_id=%s symbol=%s reason=%s",
+                            signal_id,
+                            sig.get("symbol"),
+                            direct_reason,
+                        )
+                        self._mark_signal_tv_direct_rejected(sig, direct_reason)
+                        self.signal_router.mark_processed(signal_id)
+                        finalized = True
+                        continue
+                    sig = direct_sig
+                else:
+                    guard_ok, guarded_sig, guard_reason = self._prepare_pre_submit_signal(sig)
+                    if not guard_ok:
+                        service_mod.logger.warning(
+                            "Signal rejected by entry pre-submit guard: signal_id=%s symbol=%s reason=%s",
+                            signal_id,
+                            sig.get("symbol"),
+                            guard_reason,
+                        )
+                        self._mark_signal_entry_guard_rejected(sig, guard_reason)
+                        self.signal_router.mark_processed(signal_id)
+                        finalized = True
+                        continue
 
-                sig = guarded_sig
+                    sig = guarded_sig
                 buying_power_guard = self._evaluate_signal_buying_power_guard(sig)
                 if buying_power_guard.get("state") == "unavailable":
                     service_mod.logger.warning(
@@ -366,7 +395,7 @@ class TradingServiceSignalsMixin:
 
                 order_flow_decision = {}
                 order_flow_manager = getattr(self, "order_flow_manager", None)
-                if order_flow_manager is not None:
+                if order_flow_manager is not None and not direct_tv_entry:
                     try:
                         quote = self._entry_guard_quote(symbol)
                         entry_decision = getattr(order_flow_manager, "entry_decision", None)
@@ -469,38 +498,73 @@ class TradingServiceSignalsMixin:
                             order_flow_err,
                         )
 
-                harvest_settings = self._harvest_entry_settings()
-                harvest_submitter = getattr(self.order_placer, "place_harvest_bracket_order", None)
-                if not callable(harvest_submitter):
-                    result = {
-                        "ok": False,
-                        "error": "intraday_harvest_submitter_unavailable",
-                        "protection_complete": False,
-                    }
+                if direct_tv_entry:
+                    direct_submitter = getattr(self.order_placer, "place_bracket_order", None)
+                    if not callable(direct_submitter):
+                        result = {
+                            "ok": False,
+                            "error": "tv_direct_submitter_unavailable",
+                            "protection_complete": False,
+                        }
+                    else:
+                        extra = self._signal_extra(sig)
+                        trade_group_id = str(extra.get("trade_group_id") or extra.get("bracket_group") or signal_id).strip()
+                        order_extra = {
+                            **extra,
+                            "trade_group_id": trade_group_id,
+                            "bracket_group": trade_group_id,
+                        }
+                        result = direct_submitter(
+                            conid=conid,
+                            symbol=symbol,
+                            direction=sig["direction"],
+                            quantity=sig["shares"],
+                            entry_price=sig["entry"],
+                            take_profit_price=sig["take_profit"],
+                            stop_loss_price=sig["stop_loss"],
+                            use_paper=service_mod.ENVIRONMENT == "paper",
+                            signal_id=signal_id,
+                            trade_group_id=trade_group_id,
+                            bracket_group=trade_group_id,
+                            order_extra=order_extra,
+                            order_ref_suffix="tv_direct",
+                            order_family_type="bracket_oco",
+                            entry_algo_strategy="Adaptive" if bool(extra.get("tv_entry_adaptive_enabled")) else "",
+                            entry_adaptive_priority=str(extra.get("tv_entry_adaptive_priority") or ""),
+                        )
                 else:
-                    extra = self._signal_extra(sig)
-                    trade_group_id = str(extra.get("trade_group_id") or extra.get("bracket_group") or signal_id).strip()
-                    sig["extra"] = {
-                        **extra,
-                        "trade_group_id": trade_group_id,
-                        "bracket_group": trade_group_id,
-                        "intraday_harvest_profile": "intraday_volatility_harvest_v1",
-                        "partial_harvest_requested": True,
-                        "intraday_harvest_split_requested": False,
-                    }
-                    result = harvest_submitter(
-                        conid=conid,
-                        symbol=symbol,
-                        direction=sig["direction"],
-                        quantity=sig["shares"],
-                        entry_price=sig["entry"],
-                        take_profit_price=sig["take_profit"],
-                        stop_loss_price=sig["stop_loss"],
-                        use_paper=service_mod.ENVIRONMENT == "paper",
-                        signal_id=signal_id,
-                        trade_group_id=trade_group_id,
-                        settings=harvest_settings,
-                    )
+                    harvest_settings = self._harvest_entry_settings()
+                    harvest_submitter = getattr(self.order_placer, "place_harvest_bracket_order", None)
+                    if not callable(harvest_submitter):
+                        result = {
+                            "ok": False,
+                            "error": "intraday_harvest_submitter_unavailable",
+                            "protection_complete": False,
+                        }
+                    else:
+                        extra = self._signal_extra(sig)
+                        trade_group_id = str(extra.get("trade_group_id") or extra.get("bracket_group") or signal_id).strip()
+                        sig["extra"] = {
+                            **extra,
+                            "trade_group_id": trade_group_id,
+                            "bracket_group": trade_group_id,
+                            "intraday_harvest_profile": "intraday_volatility_harvest_v1",
+                            "partial_harvest_requested": True,
+                            "intraday_harvest_split_requested": False,
+                        }
+                        result = harvest_submitter(
+                            conid=conid,
+                            symbol=symbol,
+                            direction=sig["direction"],
+                            quantity=sig["shares"],
+                            entry_price=sig["entry"],
+                            take_profit_price=sig["take_profit"],
+                            stop_loss_price=sig["stop_loss"],
+                            use_paper=service_mod.ENVIRONMENT == "paper",
+                            signal_id=signal_id,
+                            trade_group_id=trade_group_id,
+                            settings=harvest_settings,
+                        )
 
                 if result.get("ok"):
                     if order_flow_manager is not None:
@@ -574,6 +638,15 @@ class TradingServiceSignalsMixin:
         if number != number:
             return default
         return number
+
+    def _signal_runtime_expired(self, sig: dict) -> bool:
+        checker = getattr(getattr(self, "signal_processor", None), "_is_signal_expired", None)
+        if not callable(checker):
+            return False
+        try:
+            return bool(checker(sig, datetime.now(ET)))
+        except Exception:
+            return False
 
     @staticmethod
     def _round_price(value) -> float:
@@ -1912,6 +1985,7 @@ class TradingServiceSignalsMixin:
             status = "protection_incomplete" if protection_incomplete else "rejected"
             note = "protection_incomplete" if protection_incomplete else "submit_failed"
             status_reason = "bracket_protection_incomplete" if protection_incomplete else "submit_failed"
+            cancel_sync = self._cancel_unconfirmed_submission_orders(result or {})
             diagnostic = (
                 self._build_protection_incomplete_diagnostic(
                     sig,
@@ -1942,6 +2016,7 @@ class TradingServiceSignalsMixin:
                     **protection_fields,
                     "protection_incomplete_diagnostic": diagnostic,
                     "safety_cancel_recommended": bool(diagnostic.get("cancel_recommended")) if diagnostic else False,
+                    "submit_failed_cancel_sync": cancel_sync,
                 },
             )
             self.pb.update_record("ibkr_signals", record["id"], patch)
@@ -1951,6 +2026,66 @@ class TradingServiceSignalsMixin:
                 signal_id,
                 exc,
             )
+
+    @staticmethod
+    def _result_order_ids(result: dict) -> list[str]:
+        values = []
+        for key in ("order_ids", "submitted_order_ids", "broker_order_ids", "missing_order_ids"):
+            raw = (result or {}).get(key)
+            if isinstance(raw, str):
+                values.extend(part.strip() for part in raw.split(","))
+            elif isinstance(raw, (list, tuple, set)):
+                values.extend(str(item or "").strip() for item in raw)
+        seen = set()
+        order_ids = []
+        for value in values:
+            text = str(value or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            order_ids.append(text)
+        return order_ids
+
+    def _cancel_unconfirmed_submission_orders(self, result: dict) -> dict:
+        error_text = str((result or {}).get("error") or "").lower()
+        order_ids = self._result_order_ids(result or {})
+        should_cancel = bool(order_ids) and (
+            "order_submission_unconfirmed" in error_text
+            or "missing=" in error_text
+            or bool((result or {}).get("protection_incomplete"))
+            or bool((result or {}).get("missing_order_ids"))
+        )
+        detail = {
+            "real_order_required": True,
+            "precondition": "traceable_broker_order_ids",
+            "order_ids": order_ids,
+            "attempted": False,
+            "gateway_request_blocked": not should_cancel,
+            "reason": "not_unconfirmed_submission" if not should_cancel else "",
+            "results": [],
+        }
+        if not should_cancel:
+            return detail
+
+        cancel = getattr(getattr(self, "order_modifier", None), "cancel_order", None)
+        if not callable(cancel):
+            detail["reason"] = "order_modifier_unavailable"
+            detail["gateway_request_blocked"] = True
+            return detail
+
+        detail["attempted"] = True
+        detail["gateway_request_blocked"] = False
+        for order_id in order_ids:
+            try:
+                result_row = cancel(order_id)
+            except Exception as exc:
+                result_row = {"ok": False, "error": str(exc), "exception": type(exc).__name__}
+            detail["results"].append({"order_id": order_id, **dict(result_row or {})})
+        failed = [row for row in detail["results"] if not row.get("ok")]
+        detail["ok"] = not failed
+        detail["failed_order_ids"] = [row.get("order_id") for row in failed]
+        detail["reason"] = "cancel_sync_failed" if failed else "cancel_sync_requested"
+        return detail
 
     @staticmethod
     def _live_trailing_stop_metadata(signal_extra: dict) -> dict:

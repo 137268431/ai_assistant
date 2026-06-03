@@ -17,12 +17,40 @@ _SIGNAL_STATUS_META = {
     "awaiting_confirm": {"emoji": "🔔", "text": "待确认", "template": "orange"},
     "pending": {"emoji": "✅", "text": "已确认", "template": "green"},
     "submitted": {"emoji": "📨", "text": "订单已提交", "template": "blue"},
+    "submitted_waiting_fill": {"emoji": "⏳", "text": "已提交，等待成交", "template": "blue"},
+    "filled_repricing_protection": {"emoji": "🛠️", "text": "已成交，保护单重定价中", "template": "blue"},
+    "filled_position": {"emoji": "📈", "text": "持仓已建立", "template": "green"},
     "protected_active": {"emoji": "🛡️", "text": "保护单已生效", "template": "blue"},
     "protection_incomplete": {"emoji": "⚠️", "text": "保护单不完整", "template": "orange"},
+    "protection_reprice_failed": {"emoji": "❌", "text": "保护单重定价失败", "template": "red"},
+    "entry_missed_limit_cap": {"emoji": "⛔", "text": "入场未成交（触及限价上限）", "template": "orange"},
+    "ignored_no_broker_position": {"emoji": "🚫", "text": "已忽略：无券商持仓", "template": "grey"},
+    "stale_signal": {"emoji": "⏰", "text": "信号陈旧", "template": "grey"},
+    "signal_clock_skew": {"emoji": "⏱️", "text": "信号时钟偏差", "template": "orange"},
+    "stale_signal/signal_clock_skew": {"emoji": "⏱️", "text": "信号陈旧/时钟偏差", "template": "orange"},
     "executed": {"emoji": "🚀", "text": "已执行", "template": "blue"},
     "rejected": {"emoji": "❌", "text": "已拒绝", "template": "red"},
     "expired": {"emoji": "⏰", "text": "已过期", "template": "grey"},
     "closed": {"emoji": "🧾", "text": "已平仓", "template": "grey"},
+}
+
+_SIGNAL_CONSUMED_STATUSES = {
+    "submitted",
+    "submitted_waiting_fill",
+    "filled_repricing_protection",
+    "filled_position",
+    "protected_active",
+    "protection_incomplete",
+    "protection_reprice_failed",
+    "entry_missed_limit_cap",
+    "ignored_no_broker_position",
+    "stale_signal",
+    "signal_clock_skew",
+    "stale_signal/signal_clock_skew",
+    "executed",
+    "rejected",
+    "expired",
+    "closed",
 }
 
 
@@ -86,21 +114,12 @@ def _execution_broker_mode(signal_extra: dict[str, Any]) -> str:
     if not isinstance(execution_by_mode, dict):
         return ""
     scored: list[tuple[int, int, str]] = []
-    final_statuses = {
-        "submitted",
-        "protected_active",
-        "protection_incomplete",
-        "executed",
-        "rejected",
-        "expired",
-        "closed",
-    }
     for index, mode in enumerate(("paper", "live")):
         payload = execution_by_mode.get(mode)
         if not isinstance(payload, dict):
             continue
         status = to_text(payload.get("status")).lower()
-        score = 2 if status in final_statuses else 1 if status else 0
+        score = 2 if status in _SIGNAL_CONSUMED_STATUSES else 1 if status else 0
         scored.append((score, -index, mode))
     if not scored:
         return ""
@@ -188,6 +207,20 @@ def _format_signed_percent(value: Any) -> str:
     return f"{parsed:+.2f}%"
 
 
+def _format_signed_bps(value: Any) -> str:
+    parsed = _metric_float(value)
+    if parsed is None:
+        return "-"
+    return f"{parsed:+.2f} bps"
+
+
+def _format_signed_r(value: Any) -> str:
+    parsed = _metric_float(value)
+    if parsed is None:
+        return "-"
+    return f"{parsed:+.3f}R"
+
+
 def _format_number(value: Any, *, digits: int = 2) -> str:
     parsed = _metric_float(value)
     if parsed is None:
@@ -200,17 +233,266 @@ def _has_metric_number(value: Any) -> bool:
 
 
 def _positive_price(record_or_data: Any, *fields: str) -> float | None:
-    extra = get_signal_extra(record_or_data)
     for field in fields:
-        for value in (record_value(record_or_data, field), extra.get(field)):
-            parsed = to_float(value)
-            if parsed is not None and parsed > 0:
-                return parsed
+        parsed = to_float(_record_or_extra_value(record_or_data, field))
+        if parsed is not None and parsed > 0:
+            return parsed
     return None
+
+
+def _tv_reference_prices(record_or_data: Any) -> tuple[float | None, float | None, float | None]:
+    return (
+        _positive_price(
+            record_or_data,
+            "tv_reference_entry",
+            "tv_reference_entry_price",
+            "reference_entry",
+            "reference_entry_price",
+            "original_entry",
+            "initial_entry",
+            "tv_reference.entry",
+            "tv_reference.entry_price",
+            "tv_reference.limit_price",
+            "tv_reference_prices.entry",
+            "tv_reference_plan.entry",
+        ),
+        _positive_price(
+            record_or_data,
+            "tv_reference_stop_loss",
+            "tv_reference_sl",
+            "reference_stop_loss",
+            "reference_sl",
+            "original_stop_loss",
+            "initial_stop_loss",
+            "tv_reference.stop_loss",
+            "tv_reference.sl",
+            "tv_reference_prices.stop_loss",
+            "tv_reference_plan.stop_loss",
+        ),
+        _positive_price(
+            record_or_data,
+            "tv_reference_take_profit",
+            "tv_reference_tp",
+            "reference_take_profit",
+            "reference_tp",
+            "original_take_profit",
+            "initial_take_profit",
+            "tv_reference.take_profit",
+            "tv_reference.tp",
+            "tv_reference_prices.take_profit",
+            "tv_reference_plan.take_profit",
+        ),
+    )
+
+
+def _actual_fill_price(record_or_data: Any) -> float | None:
+    return _positive_price(
+        record_or_data,
+        "executed_price",
+        "actual_fill_price",
+        "entry_fill_price",
+        "fill_price",
+        "avg_fill_price",
+        "avgFillPrice",
+        "avgPrice",
+        "last_fill_price",
+        "lastFillPrice",
+        "protection_rebase_result.actual_fill_price",
+    )
+
+
+def _submitted_limit_price(record_or_data: Any) -> float | None:
+    return _positive_price(
+        record_or_data,
+        "submitted_entry_limit_price",
+        "submitted_limit_cap_price",
+        "submitted_limit_price",
+        "submitted_price",
+        "entry_limit_cap_price",
+        "limit_cap_price",
+        "bounded_limit_price",
+        "entry_limit_price",
+        "limit_price",
+        "order_flow_entry_limit_price",
+        "entry",
+        "protection_rebase_result.submitted_entry",
+    )
+
+
+def _submitted_limit_cap_price(record_or_data: Any) -> float | None:
+    return _positive_price(
+        record_or_data,
+        "submitted_entry_limit_price",
+        "submitted_limit_cap_price",
+        "submitted_limit_price",
+        "submitted_price",
+        "entry_limit_cap_price",
+        "limit_cap_price",
+        "bounded_limit_price",
+        "order_flow_entry_limit_price",
+        "protection_rebase_result.submitted_entry",
+    )
+
+
+def _truthy_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return to_text(value).lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _submitted_limit_cap_lines(record_or_data: Any) -> list[str]:
+    price = _submitted_limit_cap_price(record_or_data)
+    cap_bps = _record_or_extra_value(
+        record_or_data,
+        "submitted_limit_cap_bps",
+        "entry_limit_cap_bps",
+        "limit_cap_bps",
+        "limit_cap_applied_bps",
+        "entry_limit_cap_applied_bps",
+    )
+    cap_applied = _truthy_value(
+        _record_or_extra_value(
+            record_or_data,
+            "submitted_limit_cap_applied",
+            "entry_limit_cap_applied",
+            "limit_cap_applied",
+        )
+    )
+    plan = to_text(
+        _record_or_extra_value(record_or_data, "entry_price_plan", "entry_limit_intent", "order_flow_entry_plan")
+    )
+    if price is None and not _has_metric_number(cap_bps) and not cap_applied:
+        return []
+    suffix_parts: list[str] = []
+    if _has_metric_number(cap_bps):
+        suffix_parts.append(f"{_format_number(cap_bps, digits=1)} bps")
+    if cap_applied:
+        suffix_parts.append("cap applied")
+    if plan:
+        suffix_parts.append(plan)
+    suffix = f" ({' · '.join(suffix_parts)})" if suffix_parts else ""
+    return [f"**Submitted Limit Cap**: {_format_price(price)}{suffix}"]
+
+
+def _final_protection_price_lines(record_or_data: Any) -> list[str]:
+    status = _effective_signal_status(record_or_data)
+    final_sl = _positive_price(
+        record_or_data,
+        "final_stop_loss",
+        "final_sl",
+        "protection_final_stop_loss",
+        "repriced_stop_loss",
+        "rebased_stop_loss",
+        "updated_stop_loss",
+        "active_stop_loss",
+        "protection_rebase_result.stop_loss",
+        "protection_reprice_result.stop_loss",
+    )
+    final_tp = _positive_price(
+        record_or_data,
+        "final_take_profit",
+        "final_tp",
+        "protection_final_take_profit",
+        "repriced_take_profit",
+        "rebased_take_profit",
+        "updated_take_profit",
+        "active_take_profit",
+        "protection_rebase_result.take_profit",
+        "protection_reprice_result.take_profit",
+    )
+    if final_sl is None and final_tp is None and status in {
+        "filled_repricing_protection",
+        "filled_position",
+        "protected_active",
+        "protection_reprice_failed",
+        "protection_incomplete",
+    }:
+        final_sl = _positive_price(record_or_data, "stop_loss", "sl_price")
+        final_tp = _positive_price(record_or_data, "take_profit", "tp_price")
+    if final_sl is None and final_tp is None:
+        return []
+    reprice_reason = to_text(
+        _record_or_extra_value(record_or_data, "protection_rebase_result.reason", "protection_reprice_result.reason")
+    )
+    suffix = f" · {reprice_reason}" if reprice_reason else ""
+    return [f"**Final SL / TP**: {_format_price(final_sl)} / {_format_price(final_tp)}{suffix}"]
+
+
+def _directional_slippage_delta(direction: str, actual_fill: float, reference_entry: float) -> float:
+    if direction == "short":
+        return reference_entry - actual_fill
+    return actual_fill - reference_entry
+
+
+def _slippage_metric_lines(record_or_data: Any) -> list[str]:
+    bps_value = _record_or_extra_value(
+        record_or_data,
+        "entry_slippage_bps",
+        "actual_slippage_bps",
+        "fill_slippage_bps",
+        "slippage_bps",
+        "execution_slippage_bps",
+        "protection_rebase_result.slippage_bps",
+    )
+    r_value = _record_or_extra_value(
+        record_or_data,
+        "entry_slippage_r",
+        "actual_slippage_r",
+        "fill_slippage_r",
+        "slippage_r",
+        "execution_slippage_r",
+        "protection_rebase_result.slippage_r",
+    )
+    if not _has_metric_number(bps_value) or not _has_metric_number(r_value):
+        actual_fill = _actual_fill_price(record_or_data)
+        tv_entry, tv_sl, _tv_tp = _tv_reference_prices(record_or_data)
+        reference_entry = tv_entry or _submitted_limit_price(record_or_data)
+        if actual_fill is not None and reference_entry is not None and reference_entry > 0:
+            direction = to_text(record_value(record_or_data, "direction")).lower()
+            delta = _directional_slippage_delta(direction, actual_fill, reference_entry)
+            if not _has_metric_number(bps_value):
+                bps_value = delta / reference_entry * 10000.0
+            if not _has_metric_number(r_value):
+                risk_r = to_float(_record_or_extra_value(record_or_data, "risk_r", "initial_risk_r"))
+                if (risk_r is None or risk_r <= 0) and tv_entry is not None and tv_sl is not None:
+                    risk_r = abs(tv_entry - tv_sl)
+                if (risk_r is None or risk_r <= 0) and reference_entry is not None:
+                    plan_sl = _positive_price(record_or_data, "stop_loss", "sl_price")
+                    if plan_sl is not None:
+                        risk_r = abs(reference_entry - plan_sl)
+                if risk_r is not None and risk_r > 0:
+                    r_value = delta / risk_r
+    parts = []
+    if _has_metric_number(bps_value):
+        parts.append(_format_signed_bps(bps_value))
+    if _has_metric_number(r_value):
+        parts.append(_format_signed_r(r_value))
+    return [f"**Slippage**: {' / '.join(parts)}"] if parts else []
+
+
+def _adaptive_priority_lines(record_or_data: Any) -> list[str]:
+    priority = to_text(
+        _record_or_extra_value(
+            record_or_data,
+            "adaptive_priority",
+            "adaptivePriority",
+            "ib_algo_adaptive_priority",
+            "order_adaptive_priority",
+            "adaptive_order_priority",
+            "ibkr_adaptive_priority",
+            "adaptive.priority",
+            "algo.adaptive_priority",
+            "order_algo.adaptive_priority",
+        )
+    )
+    if not priority:
+        return []
+    return [f"**Adaptive priority**: {priority}"]
 
 
 def _price_plan_lines(record_or_data: Any) -> list[str]:
     extra = get_signal_extra(record_or_data)
+    tv_entry, tv_sl, tv_tp = _tv_reference_prices(record_or_data)
     reference_price = _positive_price(
         record_or_data,
         "pre_submit_reference_price",
@@ -219,26 +501,36 @@ def _price_plan_lines(record_or_data: Any) -> list[str]:
     )
     entry_limit = _positive_price(
         record_or_data,
+        "submitted_entry_limit_price",
+        "submitted_limit_price",
+        "submitted_price",
         "limit_price",
         "entry_limit_price",
         "entry",
     )
-    actual_fill = _positive_price(
-        record_or_data,
-        "executed_price",
-        "entry_fill_price",
-        "fill_price",
-        "avg_fill_price",
-        "avgPrice",
-    )
+    actual_fill = _actual_fill_price(record_or_data)
     reference_source = to_text(extra.get("pre_submit_reference_source") or extra.get("reference_source"))
     reference_suffix = f" ({reference_source})" if reference_price is not None and reference_source else ""
-    lines = [
-        f"**参考价**: {_format_price(reference_price)}{reference_suffix}",
-        f"**入场限价 / 止盈 / 止损**: {_format_price(entry_limit)} / {_format_price(record_value(record_or_data, 'take_profit'))} / {_format_price(record_value(record_or_data, 'stop_loss'))}",
-    ]
+    lines = []
+    if tv_entry is not None:
+        lines.append(
+            f"**TV参考 Entry / SL / TP**: {_format_price(tv_entry)} / {_format_price(tv_sl)} / {_format_price(tv_tp)}"
+        )
+    plan_take_profit = _record_or_extra_value(record_or_data, "take_profit", "tp_price")
+    plan_stop_loss = _record_or_extra_value(record_or_data, "stop_loss", "sl_price")
+    lines.extend(
+        [
+            f"**参考价**: {_format_price(reference_price)}{reference_suffix}",
+            f"**入场限价 / 止盈 / 止损**: "
+            f"{_format_price(entry_limit)} / {_format_price(plan_take_profit)} / {_format_price(plan_stop_loss)}",
+        ]
+    )
+    lines.extend(_submitted_limit_cap_lines(record_or_data))
     if actual_fill is not None:
         lines.append(f"**实际成交价**: {_format_price(actual_fill)}")
+    lines.extend(_final_protection_price_lines(record_or_data))
+    lines.extend(_slippage_metric_lines(record_or_data))
+    lines.extend(_adaptive_priority_lines(record_or_data))
     return lines
 
 
@@ -428,9 +720,29 @@ def _button_url(url: str) -> dict[str, str]:
     }
 
 
+def _nested_mapping_value(source: Any, path: str) -> Any:
+    if not isinstance(source, dict):
+        return None
+    current: Any = source
+    for part in path.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+        if current is None:
+            return None
+    return current
+
+
 def _record_or_extra_value(record_or_data: Any, *fields: str) -> Any:
     extra = get_signal_extra(record_or_data)
+    record_source = record_or_data if isinstance(record_or_data, dict) else {}
     for field in fields:
+        if "." in field:
+            for source in (record_source, extra):
+                value = _nested_mapping_value(source, field)
+                if value not in (None, ""):
+                    return value
+            continue
         value = first_defined(record_value(record_or_data, field), extra.get(field))
         if value not in (None, ""):
             return value

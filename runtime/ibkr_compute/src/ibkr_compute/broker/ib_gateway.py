@@ -19,6 +19,7 @@ from ibkr_compute.broker.ib_gateway_compat import (
     IBAPI_AVAILABLE,
     IBAPI_IMPORT_ERROR,
     Order,
+    TagValue,
 )
 from ibkr_compute.broker.ib_gateway_support import (
     BENIGN_ERROR_CODES,
@@ -59,6 +60,18 @@ logger = logging.getLogger(__name__)
 
 
 TICK_BY_TICK_DUPLICATE_WINDOW_SECONDS = 15.0
+ACCOUNT_DATA_REQUEST_KINDS = {
+    "account_pnl",
+    "account_summary",
+    "account_updates",
+    "open_orders",
+    "open_orders_all",
+    "positions",
+}
+ACCOUNT_DATA_UNSUBSCRIBED_CODES = {2100}
+ACCOUNT_DATA_CIRCUIT_WINDOW_SECONDS = 120.0
+ACCOUNT_DATA_CIRCUIT_COOLDOWN_SECONDS = 60.0
+ACCOUNT_DATA_CIRCUIT_MIN_FAILURES = 4
 
 
 from ibkr_compute.broker.ib_gateway_service import (
@@ -98,6 +111,10 @@ class _IBGatewayApp(EWrapper, EClient):
         self._last_error_message = ""
         self._last_error_at = 0.0
         self._recent_errors: list[dict[str, Any]] = []
+        self._account_data_failures: list[dict[str, Any]] = []
+        self._account_data_circuit_until = 0.0
+        self._account_data_circuit_reason = ""
+        self._account_data_circuit_last_trip_at = 0.0
         self._status_code = 0
 
         self._market_data_listeners: list[Callable[[dict], None]] = []
@@ -169,6 +186,77 @@ class _IBGatewayApp(EWrapper, EClient):
         if ready:
             return status
         raise self._broker_not_ready_error(action, status=status)
+
+    def _account_data_circuit_snapshot_locked(self, now: float | None = None) -> dict:
+        current = float(now or time.time())
+        self._account_data_failures = [
+            item
+            for item in self._account_data_failures[-20:]
+            if current - float(item.get("ts", 0) or 0) <= ACCOUNT_DATA_CIRCUIT_WINDOW_SECONDS
+        ]
+        active = bool(self._account_data_circuit_until and current < self._account_data_circuit_until)
+        return {
+            "active": active,
+            "reason": str(self._account_data_circuit_reason or ""),
+            "until": (
+                datetime.fromtimestamp(self._account_data_circuit_until, ET).isoformat()
+                if active else ""
+            ),
+            "remaining_s": round(max(0.0, self._account_data_circuit_until - current), 1) if active else 0.0,
+            "recent_failure_count": len(self._account_data_failures),
+            "recent_failures": [
+                {key: value for key, value in item.items() if key != "ts"}
+                for item in self._account_data_failures[-10:]
+            ],
+            "last_trip_at": (
+                datetime.fromtimestamp(self._account_data_circuit_last_trip_at, ET).isoformat()
+                if self._account_data_circuit_last_trip_at else ""
+            ),
+        }
+
+    def _account_data_circuit_snapshot(self) -> dict:
+        with self._state_lock:
+            return self._account_data_circuit_snapshot_locked()
+
+    def _record_account_data_issue(self, kind: str, reason: str) -> None:
+        normalized_kind = str(kind or "").strip().lower()
+        if normalized_kind not in ACCOUNT_DATA_REQUEST_KINDS:
+            return
+        normalized_reason = str(reason or "account_data_request_failed").strip() or "account_data_request_failed"
+        now = time.time()
+        with self._state_lock:
+            self._account_data_failures.append(
+                {
+                    "kind": normalized_kind,
+                    "reason": normalized_reason,
+                    "at": datetime.fromtimestamp(now, ET).isoformat(),
+                    "ts": now,
+                }
+            )
+            snapshot = self._account_data_circuit_snapshot_locked(now)
+            if snapshot["recent_failure_count"] >= ACCOUNT_DATA_CIRCUIT_MIN_FAILURES:
+                self._account_data_circuit_until = now + ACCOUNT_DATA_CIRCUIT_COOLDOWN_SECONDS
+                self._account_data_circuit_reason = normalized_reason
+                self._account_data_circuit_last_trip_at = now
+
+    def _record_account_data_success(self, kind: str) -> None:
+        normalized_kind = str(kind or "").strip().lower()
+        if normalized_kind not in ACCOUNT_DATA_REQUEST_KINDS:
+            return
+        with self._state_lock:
+            self._account_data_failures = []
+            self._account_data_circuit_until = 0.0
+            self._account_data_circuit_reason = ""
+
+    def _raise_if_account_data_circuit_open(self, kind: str) -> None:
+        normalized_kind = str(kind or "").strip().lower()
+        if normalized_kind not in ACCOUNT_DATA_REQUEST_KINDS:
+            return
+        snapshot = self._account_data_circuit_snapshot()
+        if bool(snapshot.get("active")):
+            reason = str(snapshot.get("reason") or "account_data_circuit_open")
+            remaining_s = float(snapshot.get("remaining_s") or 0.0)
+            raise TimeoutError(f"account_data_circuit_open:{reason}:retry_after_s={round(remaining_s, 1)}")
 
     def connect_and_start(self, timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS) -> bool:
         if not IBAPI_AVAILABLE:
@@ -260,6 +348,8 @@ class _IBGatewayApp(EWrapper, EClient):
             ]
             if errorCode not in BENIGN_ERROR_CODES:
                 logger.warning("IB Gateway error reqId=%s code=%s message=%s", reqId, errorCode, errorString)
+                if int(errorCode or 0) in ACCOUNT_DATA_UNSUBSCRIBED_CODES:
+                    self._record_account_data_issue("account_updates", str(errorString or "account_data_unsubscribed"))
                 numeric_req_id = int(reqId or 0)
                 if numeric_req_id > 0:
                     self._order_errors[str(numeric_req_id)] = {
@@ -334,10 +424,13 @@ class _IBGatewayApp(EWrapper, EClient):
     def _await(self, req_id: int, ctx: _PendingRequest, timeout: int) -> list:
         if not ctx.event.wait(timeout=max(1, int(timeout))):
             self._pending_requests.pop(req_id, None)
+            self._record_account_data_issue(ctx.kind, f"{ctx.kind}_timeout")
             raise TimeoutError(f"{ctx.kind}_timeout")
         self._pending_requests.pop(req_id, None)
         if ctx.error:
+            self._record_account_data_issue(ctx.kind, ctx.error)
             raise RuntimeError(ctx.error)
+        self._record_account_data_success(ctx.kind)
         return list(ctx.items)
 
     @staticmethod
@@ -1263,6 +1356,7 @@ class _IBGatewayApp(EWrapper, EClient):
         include_all: bool = False,
     ) -> List[dict]:
         self._ensure_ready(timeout, "request_open_orders")
+        self._raise_if_account_data_circuit_open("open_orders_all" if include_all else "open_orders")
         req_id, ctx = self._next_request("open_orders_all" if include_all else "open_orders")
         if include_all:
             self.reqAllOpenOrders()
@@ -1272,6 +1366,7 @@ class _IBGatewayApp(EWrapper, EClient):
 
     def request_positions(self, timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS) -> List[dict]:
         self._ensure_ready(timeout, "request_positions")
+        self._raise_if_account_data_circuit_open("positions")
         req_id, ctx = self._next_request("positions")
         self._positions = {}
         self.reqPositions()
@@ -1279,6 +1374,7 @@ class _IBGatewayApp(EWrapper, EClient):
 
     def request_account_summary(self, timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS) -> Dict[str, dict]:
         self._ensure_ready(timeout, "request_account_summary")
+        self._raise_if_account_data_circuit_open("account_summary")
         req_id, ctx = self._next_request("account_summary")
         self.reqAccountSummary(req_id, "All", "NetLiquidation,BuyingPower,AvailableFunds,ExcessLiquidity")
         items = self._await(req_id, ctx, timeout)
@@ -1295,6 +1391,7 @@ class _IBGatewayApp(EWrapper, EClient):
     ) -> Dict[str, Any]:
         with self._account_updates_request_lock:
             self._ensure_ready(timeout, "request_account_updates")
+            self._raise_if_account_data_circuit_open("account_updates")
             requested_account = str(account or "").strip()
             if not requested_account and self._managed_accounts:
                 requested_account = self._managed_accounts.split(",", 1)[0].strip()
@@ -1307,7 +1404,9 @@ class _IBGatewayApp(EWrapper, EClient):
             try:
                 self.reqAccountUpdates(True, requested_account)
                 if not capture.event.wait(timeout=max(1, int(timeout))):
+                    self._record_account_data_issue("account_updates", "account_updates_timeout")
                     raise TimeoutError("account_updates_timeout")
+                self._record_account_data_success("account_updates")
                 return {
                     "account": requested_account,
                     "summary": dict(capture.summary),
@@ -1330,6 +1429,7 @@ class _IBGatewayApp(EWrapper, EClient):
         timeout: int = DEFAULT_CONNECT_TIMEOUT_SECONDS,
     ) -> Dict[str, Any]:
         self._ensure_ready(timeout, "request_account_pnl")
+        self._raise_if_account_data_circuit_open("account_pnl")
         requested_account = str(account or "").strip()
         if not requested_account and self._managed_accounts:
             requested_account = self._managed_accounts.split(",", 1)[0].strip()
@@ -1591,6 +1691,7 @@ class _IBGatewayApp(EWrapper, EClient):
                 "ready": bool(self._ready),
                 "connected": bool(getattr(self, "isConnected", lambda: False)()),
                 "status_code": int(self._status_code or 0),
+                "account_data_circuit": self._account_data_circuit_snapshot_locked(now),
                 "last_connect_at": (
                     datetime.fromtimestamp(self._last_connect_at, ET).isoformat()
                     if self._last_connect_at else ""
@@ -2664,6 +2765,8 @@ class BrokerAdapter:
         trade_group_id: str = "",
         bracket_group: str = "",
         order_family_type: str = "",
+        entry_algo_strategy: str = "",
+        entry_adaptive_priority: str = "",
     ) -> dict:
         contract_info = self.resolve_contract(symbol=symbol, conid=conid)
         if not contract_info:
@@ -2722,6 +2825,11 @@ class BrokerAdapter:
         self._clear_legacy_order_flags(entry)
         if entry.orderType == "LMT":
             entry.lmtPrice = float(normalized_entry_price)
+        algo_strategy = str(entry_algo_strategy or "").strip()
+        adaptive_priority = str(entry_adaptive_priority or "").strip() or "Normal"
+        if algo_strategy.lower() == "adaptive":
+            entry.algoStrategy = "Adaptive"
+            entry.algoParams = [TagValue("adaptivePriority", adaptive_priority)]
 
         tp = Order()
         tp.orderId = int(order_ids[1])
@@ -2782,6 +2890,8 @@ class BrokerAdapter:
                 "take_profit_price": normalized_tp_price,
                 "stop_loss_price": normalized_sl_price,
                 "price_normalization": price_normalization,
+                "entry_algo_strategy": algo_strategy,
+                "entry_adaptive_priority": adaptive_priority if algo_strategy.lower() == "adaptive" else "",
             }
 
         submission_result = self.client.await_order_submissions(
@@ -2841,6 +2951,8 @@ class BrokerAdapter:
                     "take_profit_price": normalized_tp_price,
                     "stop_loss_price": normalized_sl_price,
                     "price_normalization": price_normalization,
+                    "entry_algo_strategy": algo_strategy,
+                    "entry_adaptive_priority": adaptive_priority if algo_strategy.lower() == "adaptive" else "",
                 }
             return {
                 "ok": False,
@@ -2866,6 +2978,8 @@ class BrokerAdapter:
                 "take_profit_price": normalized_tp_price,
                 "stop_loss_price": normalized_sl_price,
                 "price_normalization": price_normalization,
+                "entry_algo_strategy": algo_strategy,
+                "entry_adaptive_priority": adaptive_priority if algo_strategy.lower() == "adaptive" else "",
             }
 
         return {
@@ -2887,6 +3001,8 @@ class BrokerAdapter:
             "price_normalization": price_normalization,
             "submission": submission_result,
             "protection_complete": True,
+            "entry_algo_strategy": algo_strategy,
+            "entry_adaptive_priority": adaptive_priority if algo_strategy.lower() == "adaptive" else "",
         }
 
     def place_market_close(

@@ -585,6 +585,62 @@
             }).join('');
         }
 
+        function ensureRuntimeFaultRecoveryStrip() {
+            let strip = document.getElementById('runtimeFaultRecoveryStrip');
+            if (strip) return strip;
+            strip = document.createElement('div');
+            strip.id = 'runtimeFaultRecoveryStrip';
+            strip.setAttribute('role', 'region');
+            strip.setAttribute('aria-label', 'Runtime fault recovery');
+            strip.style.cssText = [
+                'position:fixed',
+                'left:16px',
+                'right:16px',
+                'bottom:16px',
+                'z-index:1200',
+                'display:none',
+                'gap:12px',
+                'align-items:center',
+                'justify-content:space-between',
+                'padding:14px',
+                'border:1px solid rgba(251,191,36,.45)',
+                'border-radius:18px',
+                'background:linear-gradient(135deg,rgba(15,23,42,.96),rgba(69,26,3,.94))',
+                'box-shadow:0 22px 60px rgba(15,23,42,.35)',
+                'color:#f8fafc',
+                'backdrop-filter:blur(14px)',
+                'flex-wrap:wrap'
+            ].join(';');
+            document.body.appendChild(strip);
+            return strip;
+        }
+
+        function renderRuntimeFaultRecoveryStrip(options = {}) {
+            const strip = ensureRuntimeFaultRecoveryStrip();
+            const visible = options.visible !== false;
+            if (!visible) {
+                strip.style.display = 'none';
+                return;
+            }
+            const rawMessage = String(options.message || '').trim();
+            const message = rawMessage || 'bootstrap / status payload 暂不可用，但恢复动作仍可直接提交。';
+            strip.style.display = 'flex';
+            strip.innerHTML = `
+                <div style="min-width:220px;flex:1 1 320px">
+                    <div style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#fbbf24;font-weight:800">Fault Recovery</div>
+                    <div style="font-size:15px;font-weight:800;margin-top:2px">Runtime 状态加载失败时仍可恢复</div>
+                    <div style="font-size:12px;color:#fde68a;margin-top:4px;line-height:1.5">${escapeHtml(message)}</div>
+                </div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+                    <button class="runtime-secondary-action" type="button" data-action="panic_reset_2fa" onclick="handleRuntimeAction('panic_reset_2fa')" style="border-color:rgba(248,113,113,.65);color:#fecaca;background:rgba(127,29,29,.38)">重开 2FA</button>
+                    <button class="runtime-secondary-action" type="button" data-action="gateway_restart" onclick="handleRuntimeAction('gateway_restart')" style="border-color:rgba(251,191,36,.55);color:#fef3c7;background:rgba(120,53,15,.35)">重启 Gateway</button>
+                    <button class="runtime-secondary-action" type="button" onclick="loadRuntimeData(true)" style="border-color:rgba(125,211,252,.45);color:#e0f2fe;background:rgba(12,74,110,.35)">手动刷新状态</button>
+                    <button class="runtime-secondary-action" type="button" onclick="openRuntimeSystemStatus()" style="border-color:rgba(148,163,184,.45);color:#f8fafc;background:rgba(51,65,85,.55)">查看系统状态</button>
+                </div>
+            `;
+            syncActionLocks();
+        }
+
         function renderServiceTopology(status = {}) {
             const el = document.getElementById('serviceTopologyArea');
             if (!el) return;
